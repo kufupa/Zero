@@ -408,11 +408,10 @@ function lunaWithMappedDates(luna: LunaAnalysis, mapped: MappedQuoteDecision): L
 
 const MAX_PREFILL_ROOMS = 20;
 
-function selectionSourceText(synced: SyncedQuoteSelection): string {
+function currentSourceText(synced: SyncedQuoteSelection): string {
   return [
     synced.subject,
     synced.bodyText,
-    ...synced.preceding.map((message) => message.bodyText),
     ...synced.attachments.map((attachment) => attachment.text ?? ''),
   ].join('\n');
 }
@@ -525,7 +524,7 @@ export async function analyseSyncedSelection(
         hmsTodoCard: await hmsTodoCardFromCached(
           cached.luna,
           synced.attachments,
-          selectionSourceText(synced),
+          currentSourceText(synced),
         ),
       };
       const analysisRunId = ledger
@@ -610,7 +609,7 @@ export async function analyseSyncedSelection(
       luna: dated,
       workflow: luna.workflow,
       amendment: amendmentFromAnalysis(luna),
-      hmsTodoCard: await hmsTodoCardFromLuna(dated, synced.attachments, selectionSourceText(synced)),
+      hmsTodoCard: await hmsTodoCardFromLuna(dated, synced.attachments, currentSourceText(synced)),
       sourceRevision: options.selectionEpoch,
       ratePlan: mapped.ratePlan,
       delivery: mapped.delivery,
@@ -681,7 +680,7 @@ export async function analyseSyncedSelection(
     hmsTodoCard: await hmsTodoCardFromLuna(
       override.luna,
       synced.attachments,
-      selectionSourceText(synced),
+      currentSourceText(synced),
     ),
     sourceRevision: options.selectionEpoch,
   };

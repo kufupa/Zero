@@ -560,7 +560,7 @@ describe('extractPopFacts', () => {
     expect(facts.amount).toBe(1850);
     expect(facts.amountText).toMatch(/1,?850/);
     expect(facts.currency).toBe('ZAR');
-    expect(facts.payerName).toBe('Smith');
+    expect(facts.payerName).toBeNull();
     expect(facts.reference).toBe('ABSA 99');
     expect(facts.paidOn).toBe('2026-11-10');
   });
@@ -604,12 +604,29 @@ describe('buildHmsTodoCard send_document', () => {
     expect(stepValue(card!, 'Document')).toBe('invoice / pro forma / folio / statement / credit note');
     expect(stepValue(card!, 'Next step')).toBe('HMS → Documents');
   });
+
+  it('uses luna arrival and departure when stayAsk is absent', () => {
+    const card = buildHmsTodoCard({
+      workflow: 'send_document',
+      confirmationNumber: '57291630-1',
+      guestLastName: 'Example',
+      arrival: '2026-11-12',
+      departure: '2026-11-14',
+      documentKind: 'folio',
+    });
+    expect(stepValue(card!, 'Arrival')).toBe('2026-11-12');
+    expect(stepValue(card!, 'Departure')).toBe('2026-11-14');
+  });
 });
 
 describe('extractBillingAskKind', () => {
   it('reads tax invoice and ignores a second different kind', () => {
     expect(extractBillingAskKind('Please send the tax invoice for 57291630-1')).toBe('invoice');
     expect(extractBillingAskKind('Need the folio and a credit note')).toBeNull();
+  });
+
+  it('treats pro forma invoice as pro forma, not both kinds', () => {
+    expect(extractBillingAskKind('Please send the pro forma invoice for 57291630-1')).toBe('pro_forma');
   });
 });
 
@@ -657,6 +674,34 @@ describe('analyseSyncedSelection payment and billing cards', () => {
     expect(card).toMatchObject({ kind: 'payment_proof', title: 'Post payment', writesEnabled: false });
     expect(stepValue(card!, 'Amount')).toMatch(/1,?850/);
     expect(stepValue(card!, 'Next step')).toBe('find the stay');
+  });
+
+  it('does not inherit a quote amount or date from earlier thread mail', async () => {
+    const { payload } = await analyseSyncedSelection(
+      {
+        subject: 'POP',
+        bodyText: 'Kindly find attached proof of payment.',
+        receivedAt: '2026-10-06T08:00:00.000Z',
+        preceding: [{ bodyText: 'Quote R 9,999.00 arrival 2026-01-01 for Smith.' }],
+        attachments: [],
+      },
+      options(
+        adapterReturning(
+          lunaBooking({
+            workflow: 'payment_ack',
+            groups: [],
+            tasks: [],
+            guestLastName: 'Smith',
+            confirmationNumber: null,
+          }),
+        ),
+      ),
+    );
+
+    const card = todoCardOf(payload);
+    expect(stepValue(card!, 'Amount')).toBeUndefined();
+    expect(stepValue(card!, 'Payment date')).toBeUndefined();
+    expect(labelsOf(card!)).not.toContain('Amount');
   });
 
   it('builds a Send document card from send_document', async () => {

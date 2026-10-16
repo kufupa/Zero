@@ -87,6 +87,8 @@ export type HmsTodoCardInput = {
   groups?: readonly HmsTodoGroup[] | null;
   confirmationNumber?: string | null;
   guestLastName?: string | null;
+  arrival?: string | null;
+  departure?: string | null;
   requestedChange?: string | null;
   party?: { reference?: string | null; name?: string | null } | null;
   attachmentFilenames?: readonly string[] | null;
@@ -189,12 +191,10 @@ export function extractPopFacts(
   const days = [...sourceText.matchAll(ISO_DAY)].map((match) => match[1]!);
   const paidOn = uniqueStrings(days);
 
-  const lastName = text(luna.guestLastName);
-  const payerName = lastName && new RegExp(`(^|[^a-z0-9])${lastName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`, 'i').test(sourceText)
-    ? lastName
-    : null;
   const reference = text(luna.party?.reference);
   const referenceInSource = reference && sourceText.includes(reference) ? reference : null;
+  const payer = text(luna.party?.name);
+  const payerName = payer && sourceText.includes(payer) ? payer : null;
 
   return {
     amount,
@@ -208,7 +208,10 @@ export function extractPopFacts(
 }
 
 export function extractBillingAskKind(sourceText: string): BillingDocumentAskKind | null {
-  const hits = ASK_KIND_RE.filter(([, re]) => re.test(sourceText)).map(([kind]) => kind);
+  let hits = ASK_KIND_RE.filter(([, re]) => re.test(sourceText)).map(([kind]) => kind);
+  if (hits.includes('pro_forma') || hits.includes('credit_note')) {
+    hits = hits.filter((kind) => kind !== 'invoice');
+  }
   return hits.length === 1 ? hits[0]! : null;
 }
 
@@ -395,7 +398,14 @@ function buildPaymentCard(input: HmsTodoCardInput, files: string | null): HmsTod
   const missing: string[] = [];
   const amountSource = pop.amountSource ?? 'mail';
 
-  pushFact(steps, missing, 'Confirmation number', match.stay ? match.stay.confirmationNumber : null, true);
+  const mailConf = match.status === 'none' ? text(input.confirmationNumber) : null;
+  pushFact(
+    steps,
+    missing,
+    'Confirmation number',
+    match.stay ? match.stay.confirmationNumber : mailConf,
+    true,
+  );
   if (match.stay) {
     pushFact(steps, missing, 'Guest last name', text(match.stay.lastName), false);
     pushFact(steps, missing, 'Arrival', text(match.stay.arrival), false);
@@ -428,6 +438,10 @@ function buildBillingCard(input: HmsTodoCardInput, files: string | null): HmsTod
   pushFact(steps, missing, 'Confirmation number', confirmation, Boolean(confirmation));
   pushFact(steps, missing, 'Guest last name', lastName, false);
   if (input.stayAsk) appendStayAsk(steps, missing, input.stayAsk, false);
+  else {
+    pushFact(steps, missing, 'Arrival', text(input.arrival), false);
+    pushFact(steps, missing, 'Departure', text(input.departure), false);
+  }
   const reply = pickReplyLine({
     code: 'S',
     attached: true,
