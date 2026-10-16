@@ -6,6 +6,9 @@ import { createDb } from '../src/db/client.js';
 import { partySenderMap } from '../src/db/schema/party-sender-map.js';
 
 const DEFAULT_FILE = '/home/orca/nava-research/gold/party-key/sender-host-map-20261016.json';
+// A host must be a plain domain, and never one of the hotel's own: our staff mail is not a company or agency.
+const HOST = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/;
+const OWN_DOMAIN = /(^|\.)legacyhotels\.co\.za$/;
 
 function fileArg(argv: string[]): string {
   const i = argv.indexOf('--file');
@@ -24,7 +27,7 @@ function parseRows(raw: unknown): Array<{ host: string; kind: 'company' | 'agenc
     const name = typeof rec?.name === 'string' ? rec.name.replace(/\s+/g, ' ').trim() : '';
     const kind = rec?.kind === 'company' || rec?.kind === 'agency' ? rec.kind : null;
     const support = Number(rec?.support);
-    if (!host || host.includes('@') || !name || !kind || !Number.isInteger(support) || support < 1) {
+    if (!HOST.test(host) || OWN_DOMAIN.test(host) || !name || !kind || !Number.isInteger(support) || support < 1) {
       skipped += 1;
       continue;
     }
