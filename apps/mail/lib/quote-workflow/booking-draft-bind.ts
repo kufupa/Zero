@@ -20,6 +20,15 @@ export type PrepareBookingDraftInput = {
   analysis: LunaAnalysisWire;
 };
 
+export const UNQUOTED_BOOKING_REVISION_REF = 'unquoted';
+export type PrepareUnquotedBookingDraftInput = {
+  messageId: string;
+  selectionEpoch: number;
+  inputRevision: number;
+  analysis: LunaAnalysisWire;
+  rateCode?: string;
+};
+
 export type PrepareBookingDraftResult =
   | { status: 'unavailable'; reason?: string }
   | ({ status: 'ready' } & BookingDraftReady);

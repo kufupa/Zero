@@ -186,6 +186,7 @@ export type PaneStayChoice = {
   track: string;
   sourceOfBusiness: string;
   guaranteeType: string;
+  ratePlan?: string;
   /** Typed in the card. A blank value is not sent. */
   bookingAgency?: string;
   organization?: string;
@@ -206,7 +207,7 @@ export function paneStayInputForRoom(
   const arrival = text(request.arrival);
   const departure = text(request.departure);
   const roomType = text(choice.roomType);
-  const ratePlan = text(request.ratePlan);
+  const ratePlan = text(choice.ratePlan ?? request.ratePlan);
   const adultsRaw = request.adults;
   const adults =
     typeof adultsRaw === 'number'

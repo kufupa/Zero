@@ -2,6 +2,9 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import type { ReservationistSourceFreshnessProof } from '../ai/draft-approval.js';
 
+/** How long a priced staff quote may be reused, measured from the HMS observation. */
+export const PRICED_QUOTE_REUSE_MS = 24 * 60 * 60_000;
+
 export type Board = 'room_only' | 'breakfast' | 'dinner_bed_breakfast';
 export type RoomRequest = {
   id: string;
@@ -437,7 +440,7 @@ export async function resolveQuoteRevision(input: {
     })),
   );
   const oldestObservation = Math.min(...groups.map(group => Date.parse(group.observedAt)));
-  const freshnessExpiry = oldestObservation + input.admission.maxSourceAgeMs;
+  const freshnessExpiry = oldestObservation + PRICED_QUOTE_REUSE_MS;
   if (!Number.isFinite(freshnessExpiry) || Math.abs(freshnessExpiry) > 8640000000000000) throw new Error('source_time_out_of_scope');
   const data = {
     sourceFreshness: {

@@ -99,7 +99,7 @@ import {
   staffQuoteRoomAlternatives,
   type StaffQuoteRunIdentity,
 } from './staff-quote-run.js';
-import { quoteDigest } from '../quote-proposal/quote-revision.js';
+import { PRICED_QUOTE_REUSE_MS, quoteDigest } from '../quote-proposal/quote-revision.js';
 import {
   type AiFailureClass,
   type AiRunFence,
@@ -2558,21 +2558,27 @@ function staffQuoteUserFromMetrics(metrics: Record<string, unknown>): StaffQuote
 }
 
 /**
- * How long a staff quote result is reused. A priced result lives only as long as its HMS evidence (freshUntil, 15
- * minutes), since the PDF refuses older evidence; opening the email after that queues a fresh quote. Other results
- * (refusals, no rate) keep the 6-hour TTL.
+ * How long a staff quote result is reused. A priced result lives 24 h from the HMS observation (`asOf`).
+ * Other results (refusals, no rate) keep the 6-hour TTL.
  */
 export function staffQuoteResultExpiry(result: Record<string, unknown>, now: Date): Date {
+  if (result.status === 'ready') {
+    const asOf = typeof result.asOf === 'string' ? Date.parse(result.asOf) : Number.NaN;
+    const origin = Number.isFinite(asOf) ? asOf : now.getTime();
+    return new Date(origin + PRICED_QUOTE_REUSE_MS);
+  }
   const ttl = now.getTime() + STAFF_QUOTE_RESULT_TTL_MS;
   const fresh = typeof result.freshUntil === 'string' ? Date.parse(result.freshUntil) : Number.NaN;
   return new Date(Number.isFinite(fresh) ? Math.min(ttl, fresh) : ttl);
 }
 
-/** A priced result is reused only while freshUntil is ahead; one stored without it (before 2026-10-13) never is. */
+/** A priced result is reused for 24 h from `asOf`; one stored without `asOf` or `freshUntil` never is. */
 export function staffQuoteResultReusable(result: unknown, now: Date): boolean {
   if (!result || typeof result !== 'object') return true;
-  const stored = result as { status?: unknown; freshUntil?: unknown };
+  const stored = result as { status?: unknown; freshUntil?: unknown; asOf?: unknown };
   if (stored.status !== 'ready') return true;
+  const asOf = typeof stored.asOf === 'string' ? Date.parse(stored.asOf) : Number.NaN;
+  if (Number.isFinite(asOf)) return asOf <= now.getTime() && asOf + PRICED_QUOTE_REUSE_MS > now.getTime();
   const fresh = typeof stored.freshUntil === 'string' ? Date.parse(stored.freshUntil) : Number.NaN;
   return Number.isFinite(fresh) && fresh > now.getTime();
 }
@@ -3045,13 +3051,13 @@ async function latestStaffQuoteRunFor(
       ),
     )
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
-  const reusable = (run: AiWorkflowRun) =>
-    run.state !== 'succeeded' ||
-    Boolean(
-      run.readResultExpiresAt &&
-        run.readResultExpiresAt > now &&
-        staffQuoteResultReusable(run.readResult, now),
-    );
+  const reusable = (run: AiWorkflowRun) => {
+    if (run.state !== 'succeeded') return true;
+    if (!staffQuoteResultReusable(run.readResult, now)) return false;
+    const stored = run.readResult as { status?: unknown } | null;
+    if (stored?.status === 'ready') return true;
+    return Boolean(run.readResultExpiresAt && run.readResultExpiresAt > now);
+  };
   // User quotes are independent per stay. Match the newest run whose stay terms equal this request.
   for (const userRun of rows) {
     if (objectRecord(userRun.metrics).userId !== userId || !reusable(userRun)) continue;
@@ -3109,9 +3115,20 @@ async function latestStaffQuoteRunFor(
 }
 
 function staffQuoteRunFreshness(now: Date) {
+  const asOfFloor = new Date(now.getTime() - PRICED_QUOTE_REUSE_MS).toISOString();
   return or(
     inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
-    and(eq(aiWorkflowRun.state, 'succeeded'), gt(aiWorkflowRun.readResultExpiresAt, now)),
+    and(
+      eq(aiWorkflowRun.state, 'succeeded'),
+      or(
+        gt(aiWorkflowRun.readResultExpiresAt, now),
+        and(
+          sql`${aiWorkflowRun.readResult}->>'status' = 'ready'`,
+          sql`(${aiWorkflowRun.readResult}->>'asOf')::timestamptz > ${asOfFloor}::timestamptz`,
+          sql`(${aiWorkflowRun.readResult}->>'asOf')::timestamptz <= ${now.toISOString()}::timestamptz`,
+        ),
+      ),
+    ),
     and(
       inArray(aiWorkflowRun.state, ['dead_letter', 'superseded']),
       sql`coalesce(${aiWorkflowRun.finishedAt}, ${aiWorkflowRun.updatedAt}, ${aiWorkflowRun.createdAt}) > ${new Date(now.getTime() - STAFF_QUOTE_RESULT_TTL_MS).toISOString()}::timestamp`,
