@@ -176,6 +176,6 @@ describe('Post payment and Send document cards', () => {
     expect(screen.getByText(/please see attached/i)).toBeDefined();
     expect(screen.getByText('HMS → Documents')).toBeDefined();
     expect(screen.queryByRole('button')).toBeNull();
-    expect(screen.getByText('Nava does not write to HMS')).toBeDefined();
+    expect(screen.queryByText('Nava does not write to HMS')).toBeNull();
   });
 });
