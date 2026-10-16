@@ -112,7 +112,6 @@ describe('prepared quote input from stored extraction', () => {
     '1 x single',
     '1 x queen',
     '1 x king',
-    '1 x twin',
     '1 x standard',
     '1 x deluxe',
   ])('falls back to any room type for ambiguous phrase %s', (roomType) => {
@@ -122,6 +121,16 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.inputs[0]?.groups[0]?.roomCodes).toBeUndefined();
     expect(plan.stays[0]?.reason).toBeUndefined();
   });
+
+  it.each(['1 x twin', 'twin', 'Twin room', '2 beds', 'two beds'])(
+    'prices an unpicked twin request %s as Standard Twin',
+    (roomType) => {
+      const plan = buildWithRoomType(roomType);
+
+      expect(plan.inputs).toHaveLength(1);
+      expect(plan.inputs[0]?.groups[0]?.roomCodes).toEqual(['STWN']);
+    },
+  );
 
   it('defaults missing occupancy to two adults per room', () => {
     const stay = payload().stays[0]!;

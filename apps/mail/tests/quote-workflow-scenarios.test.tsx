@@ -120,6 +120,6 @@ describe('quote workflow scenario matrix', () => {
 
   it('keeps secondary answers in the reviewed reply for native insert', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('uncertain-native')} />);
-    expect((screen.getByLabelText(/Reviewed reply/i) as HTMLTextAreaElement).value).toContain('Parking is available on site.');
+    expect(screen.getByLabelText(/Reviewed reply/i).innerHTML).toContain('Parking is available on site.');
   });
 });

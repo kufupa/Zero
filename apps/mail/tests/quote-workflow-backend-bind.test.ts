@@ -909,6 +909,33 @@ describe('staff quote execute/PDF header bind', () => {
       arrivalDate: '2026-11-12',
       departureDate: '2026-11-14',
       quantity: 1,
+      roomPreference: 'double',
+      adults: 2,
+      childrenAges: [],
+      board: 'bb',
+      specialRequests: [],
+      fields: { roomPreference: 'defaulted' },
+    }]);
+
+    expect(result).toEqual({
+      ok: [{
+        id: 'g1',
+        arrivalDate: '2026-11-12',
+        departureDate: '2026-11-14',
+        quantity: 1,
+        adults: 2,
+        childrenAges: [],
+        board: 'bb',
+      }],
+    });
+  });
+
+  it('prices an unpicked twin request as Standard Twin', () => {
+    const result = staffQuoteGroupsFromStay([{
+      id: 'g1',
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+      quantity: 1,
       roomPreference: 'Twin',
       adults: 2,
       childrenAges: [],
@@ -926,6 +953,7 @@ describe('staff quote execute/PDF header bind', () => {
         adults: 2,
         childrenAges: [],
         board: 'bb',
+        roomCodes: ['STWN'],
       }],
     });
   });

@@ -10,7 +10,7 @@ import { toast } from 'sonner';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
-import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
+import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote, reviewedReplyHtml, setReviewedReply } from './helpers/prepare-reviewed-quote';
 import { VOUCHER_COPY } from '../lib/quote-workflow/voucher-find';
 import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
@@ -1181,15 +1181,15 @@ describe('NavaPane screen states', () => {
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     render(<NavaPane bridge={fakeBridge} />);
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLElement;
     const expected = missingQuoteDetailsWrapperHtml(
       'David Miller',
       analysis.missingQuoteReplyFields,
       'R Opperman',
     );
-    await waitFor(() => expect(reply.value).toBe(expected));
-    expect(reply.value).not.toContain('Room type');
-    expect(reply.value).not.toContain('meal plan');
+    await waitFor(() => expect(reviewedReplyHtml()).toBe(expected));
+    expect(reply.innerHTML).not.toContain('Room type');
+    expect(reply.innerHTML).not.toContain('meal plan');
     const requestOnly = await screen.findByRole('button', { name: 'Draft reply asking for missing details' });
     expect((requestOnly as HTMLButtonElement).disabled).toBe(false);
 
@@ -1240,18 +1240,18 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
 
     await screen.findByRole('button', { name: 'Draft reply asking for missing details' });
-    const reply = screen.queryByLabelText('Reviewed reply') as HTMLTextAreaElement | null;
+    const reply = screen.queryByLabelText('Reviewed reply') as HTMLElement | null;
     expect(reply).not.toBeNull();
     if (!reply) return;
     await waitFor(() =>
       expect(
-        reply.value.includes(missingFields[0]!) && reply.value.includes(missingFields[1]!),
+        reply.innerHTML.includes(missingFields[0]!) && reply.innerHTML.includes(missingFields[1]!),
       ).toBe(true),
     );
 
     const editedReply = '<p>Staff-edited request reply</p>';
-    fireEvent.change(reply, { target: { value: editedReply } });
-    await waitFor(() => expect(reply.value === editedReply).toBe(true));
+    setReviewedReply(editedReply);
+    await waitFor(() => expect(reply.innerHTML === editedReply).toBe(true));
 
     // An empty reply keeps the button off, so it renders anew once the text is there.
     const draftRequest = screen.getByRole('button', { name: 'Draft reply asking for missing details' });
@@ -1292,8 +1292,8 @@ describe('NavaPane screen states', () => {
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     render(<NavaPane bridge={fakeBridge} />);
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
-    await waitFor(() => expect(reply.value).toContain('Please confirm the following details'));
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLElement;
+    await waitFor(() => expect(reply.innerHTML).toContain('Please confirm the following details'));
     fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-11-12' } });
     expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('2026-11-12');
 
@@ -1327,9 +1327,9 @@ describe('NavaPane screen states', () => {
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     render(<NavaPane bridge={fakeBridge} />);
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    await screen.findByLabelText('Reviewed reply');
     const bothDatesMissing = missingQuoteDetailsWrapperHtml('David Miller', missingFields, 'R Opperman');
-    await waitFor(() => expect(reply.value).toBe(bothDatesMissing));
+    await waitFor(() => expect(reviewedReplyHtml()).toBe(bothDatesMissing));
 
     fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-11-12' } });
 
@@ -1338,7 +1338,7 @@ describe('NavaPane screen states', () => {
       ['Departure date for stay 1'],
       'R Opperman',
     );
-    await waitFor(() => expect(reply.value).toBe(departureOnly));
+    await waitFor(() => expect(reviewedReplyHtml()).toBe(departureOnly));
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 
@@ -1366,9 +1366,9 @@ describe('NavaPane screen states', () => {
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     render(<NavaPane bridge={fakeBridge} preview />);
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    await screen.findByLabelText('Reviewed reply');
     const expected = missingQuoteDetailsWrapperHtml('David Miller', analysis.missingQuoteReplyFields, 'R Opperman');
-    await waitFor(() => expect(reply.value).toBe(expected));
+    await waitFor(() => expect(reviewedReplyHtml()).toBe(expected));
     fireEvent.click(await screen.findByRole('button', { name: 'Draft reply asking for missing details' }));
 
     await waitFor(() => expect(saveReplyMutate).toHaveBeenCalledWith(
@@ -1433,7 +1433,7 @@ describe('NavaPane screen states', () => {
     await prepareReviewedQuote(null);
 
     const expectedHtml = quoteWrapperHtml('', 'R Opperman');
-    expect((screen.getByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe(expectedHtml);
+    expect(reviewedReplyHtml()).toBe(expectedHtml);
     fireEvent.click(screen.getByRole('button', { name: 'Draft quotation into email reply' }));
 
     await waitFor(() => {
@@ -1673,12 +1673,12 @@ describe('NavaPane screen states', () => {
     await settle();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLElement;
     const declineHtml = '<p>Unfortunately, we are unable to accommodate your requested stay.</p>';
     await waitFor(() => {
-      expect(reply.value).toBe(declineHtml);
+      expect(reviewedReplyHtml()).toBe(declineHtml);
     });
-    expect(reply.value).not.toContain('Deluxe Twin');
+    expect(reply.innerHTML).not.toContain('Deluxe Twin');
     expect(screen.getByText('Requested type not available — available instead: Deluxe Twin × 2')).toBeDefined();
     expect((screen.getByRole('button', { name: 'Draft decline reply' }) as HTMLButtonElement).disabled).toBe(false);
 
@@ -1693,7 +1693,7 @@ describe('NavaPane screen states', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Use this' }));
     await waitFor(() => {
-      expect((screen.getByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe('');
+      expect(reviewedReplyHtml()).toBe('');
       expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('DLXTWN');
     });
     expect(await screen.findByText('Available')).toBeDefined();
@@ -1729,10 +1729,10 @@ describe('NavaPane screen states', () => {
     await settle();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLElement;
     const declineHtml = '<p>Unfortunately, we are unable to accommodate your requested stay.</p>';
-    await waitFor(() => expect(reply.value).toBe(declineHtml));
-    expect(reply.value).not.toContain('Deluxe Twin');
+    await waitFor(() => expect(reviewedReplyHtml()).toBe(declineHtml));
+    expect(reply.innerHTML).not.toContain('Deluxe Twin');
     expect(screen.getByText('Requested type not available — available instead: Deluxe Twin × 2')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Use this' })).toBeDefined();
     expect(quotePdfMutate).not.toHaveBeenCalled();
@@ -1769,7 +1769,7 @@ describe('NavaPane screen states', () => {
     await storedReadLands();
     await settle();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
-    expect((await screen.findByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe(declineHtml);
+    expect((await screen.findByLabelText('Reviewed reply')).innerHTML).toBe(declineHtml);
 
     fireEvent.click(screen.getByRole('button', { name: 'Draft decline reply' }));
     await waitFor(() =>
