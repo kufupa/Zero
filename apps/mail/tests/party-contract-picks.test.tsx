@@ -238,7 +238,9 @@ describe('PartyPicker preselects the top suggestion', () => {
     expect(screen.queryByRole('button', { name: 'Confirm CWT JNB' })).toBeNull();
     expect(picked).toEqual([agency]);
     expect(pickedParties({ agency })).toEqual({ agency });
-    const mutate = vi.fn(async () => ({ status: 'unavailable' as const }));
+    const mutate = vi.fn<(input: unknown) => Promise<{ status: 'unavailable' }>>(async () => ({
+      status: 'unavailable' as const,
+    }));
     await bindExecuteStaffQuote({
       mutate,
       source: { messageId: 'm', threadId: 't', sourceHash: 'ab'.repeat(32) },
