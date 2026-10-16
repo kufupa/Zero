@@ -21,7 +21,8 @@ Booking card:
 - mail `tests/hms-todo-card.test.tsx` **6 passed**
 - mail `tests/nava-pane-render.test.tsx` unquoted-on-open + restored-rate tests **passed**
 - Screenshots: `runs/proof/F1L2/book-card-editable-names.png`, `book-card-empty-first-name.png`
-- Remote typecheck `--app mail --baseline`: **new=0** (62/62, `1f55314b`)
+- Remote typecheck `--app mail --baseline`: **new=0** (62/62)
+- Greptile: round 1 P1 (unquoted card aborted quote poll) **fixed** (`priorQuoteKey` no longer includes `bookingDrafts`). Round 2 P1 (keep unquoted card across `staff_quote_ready`) **stripped** — quoted rooms use different `groupId`s, so keeping the mounted card would empty `ratePlan`/choices. Spec: priced quote wins; card remounts on the quoted draft.
 
 ## Not doing
 

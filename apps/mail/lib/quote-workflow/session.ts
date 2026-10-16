@@ -1590,8 +1590,8 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
               }
             : step,
         ),
-        // Only this stay's booking draft is stale. Keep a single-stay unquoted card until its quoted draft replaces it.
-        bookingDrafts: stayCount > 1 ? keepKeys(session.bookingDrafts, new Set([stayKey]), false) : session.bookingDrafts,
+        // Only this stay's booking draft is stale. The other stays' drafts still match their own runs.
+        bookingDrafts: stayCount > 1 ? keepKeys(session.bookingDrafts, new Set([stayKey]), false) : {},
       };
     }
     case 'booking_draft_ready': {

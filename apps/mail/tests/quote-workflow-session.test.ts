@@ -2304,33 +2304,6 @@ describe('quote session staff review items', () => {
       sourceHash: STAFF_HASH,
     });
     expect(besideQuote.bookingDrafts).toEqual({});
-    const shown = reduceQuoteSession(s, {
-      type: 'booking_draft_ready',
-      payload,
-      sourceHash: STAFF_HASH,
-    });
-    const quoteAfterCard = reduceQuoteSession(shown, {
-      type: 'staff_quote_ready',
-      offer: { ...authorisedOffer, id: 'rev-1', sourceRef: 'rev-1', nightly: [], stayTotalMinor: 850000 },
-      staffQuote: {
-        workflowRunId: 'run-1',
-        revisionRef: 'rev-1',
-        factRefs: [],
-        messageId: 'mail-1',
-        threadId: 'thread-1',
-        sourceHash: STAFF_HASH,
-        selectionEpoch: 1,
-        inputRevision: s.inputRevision,
-        inputDigest: 'digest',
-        totalMinor: 850000,
-        currency: 'ZAR',
-        quoteRequestKey: STAY_A,
-        approvedHeader: emptyHeader(),
-      },
-      selectionEpoch: 1,
-      inputRevision: s.inputRevision,
-    });
-    expect(quoteAfterCard.bookingDrafts[STAY_A]?.revisionRef).toBe('unquoted');
   });
 
   it('drops an unquoted draft on multi-stay mail', () => {
