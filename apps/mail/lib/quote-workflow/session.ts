@@ -1607,8 +1607,17 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const draftKey = Object.keys(session.staffQuotes).find(
         (key) => session.staffQuotes[key]?.revisionRef === action.payload.revisionRef,
       );
-      if (!draftKey) return session;
-      return { ...session, bookingDrafts: { ...session.bookingDrafts, [draftKey]: action.payload } };
+      if (draftKey) return { ...session, bookingDrafts: { ...session.bookingDrafts, [draftKey]: action.payload } };
+      const keys = requestedQuoteKeys(session.groups);
+      const room = action.payload.draft.rooms[0]?.request;
+      const stayKey =
+        typeof room?.arrival === 'string' && typeof room?.departure === 'string'
+          ? `${room.arrival}:${room.departure}`
+          : keys[0];
+      if (action.payload.revisionRef !== 'unquoted' || Object.keys(session.staffQuotes).length > 0 || keys.length !== 1 || stayKey !== keys[0]) {
+        return session;
+      }
+      return { ...session, bookingDrafts: { ...session.bookingDrafts, [stayKey]: action.payload } };
     }
     case 'handle_review_item': {
       const item = session.reviewItems.find((row) => row.id === action.itemId);

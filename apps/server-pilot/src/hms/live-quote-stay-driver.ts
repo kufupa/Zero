@@ -16,6 +16,7 @@ import type { HmsBrowserAuditSpec } from './browser-artifacts.js';
 import { HmsRuntimeError, type HmsRuntime } from './runtime.js';
 import { createQuoteStayFacade } from './quote-stay-facade.js';
 import type { ToolResult } from '../ai/draft-evidence.js';
+import { PRICED_QUOTE_REUSE_MS } from '../quote-proposal/quote-revision.js';
 import { createHash, randomUUID } from 'node:crypto';
 
 export const LIVE_QUOTE_AVAILABILITY_ALIAS_KEYS = [
@@ -405,7 +406,7 @@ function quoteToolResult(input: {
       toolVersion: '2.0.0',
       propertyCode: input.propertyCode ?? 'HRCEN',
       observedAt: input.observedAt.toISOString(),
-      expiresAt: new Date(input.observedAt.getTime() + 15 * 60_000).toISOString(),
+      expiresAt: new Date(input.observedAt.getTime() + PRICED_QUOTE_REUSE_MS).toISOString(),
       claimKeys,
       sourceHash: sha256Hex(
         canonicalJson({

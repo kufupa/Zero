@@ -1,6 +1,7 @@
 import type {
   PrepareBookingDraftInput,
   PrepareBookingDraftResult,
+  PrepareUnquotedBookingDraftInput,
   UsePriorQuoteForBookingInput,
   UsePriorQuoteForBookingReady,
 } from './booking-draft-bind';
@@ -157,6 +158,26 @@ function staffQuoteRequestMatches(
       Object.entries(input).filter(([key]) => key !== 'selectionEpoch' && key !== 'inputRevision'),
     );
   return stableJson(stableInput(request.input)) === stableJson(stableInput(expected));
+}
+
+function staffQuoteStayTermsMatch(
+  request: StaffQuoteJobView['request'],
+  expected: ExecuteStaffQuoteInput,
+): boolean {
+  if (request?.kind !== 'staff_quote') return false;
+  const terms = (groups: ExecuteStaffQuoteInput['groups']) =>
+    stableJson(
+      groups.map((group) => ({
+        arrivalDate: group.arrivalDate,
+        departureDate: group.departureDate,
+        quantity: group.quantity,
+        adults: group.adults,
+        childrenAges: group.childrenAges,
+        board: group.board,
+        roomCodes: [...(group.roomCodes ?? [])].sort(),
+      })),
+    );
+  return terms(request.input.groups) === terms(expected.groups);
 }
 
 type StaffQuoteCallOptions = {
@@ -1315,6 +1336,7 @@ export async function bindReadBackStaffQuote(
       ? await args.query({ input: built.input }, { signal: args.signal })
       : await args.query({ input: built.input });
     if (!first || args.signal?.aborted) return null;
+    if (first.request && !staffQuoteStayTermsMatch(first.request, built.input)) return null;
     if (
       first.status === 'done' &&
       (!first.asOf ||
@@ -1474,6 +1496,7 @@ type StaffQuoteClient = {
   qualifiedQuoteProposalPdf?: { mutate: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffPdfResult> };
   quoteWorkbook?: { mutate: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffWorkbookResult> };
   prepareBookingDraft?: { mutate: (input: PrepareBookingDraftInput) => Promise<PrepareBookingDraftResult> };
+  prepareUnquotedBookingDraft?: { mutate: (input: PrepareUnquotedBookingDraftInput) => Promise<PrepareBookingDraftResult> };
   listThreadQuoteRevisions?: {
     query: (input: { threadId: string }) => Promise<{ revisions?: Array<{ workflowRunId: string; revisionRef: string }> }>;
   };

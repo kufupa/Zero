@@ -8,7 +8,11 @@ import {
   type StaffQuoteAttestation,
 } from '../../ai/staff-quote-workflow.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
-import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-draft.js';
+import {
+  bookingDraftFromPrefill, buildBookingDrafts, createRequestFieldOptions,
+  isUnquotedSingleStayNewBooking, prefillBoardFromLuna, UNQUOTED_BOOKING_REVISION_REF,
+} from '../../ai/booking-draft.js';
+import { buildCreatePrefill } from '../../ai/aop/create-prefill.js';
 import {
   collectThreadQuoteRevisions,
   priorStaffQuoteRequotePayload,
@@ -48,7 +52,7 @@ import {
 } from '../../outlook-security/authorization.js';
 import { buildQuoteProposalPdf, ProposalInputError } from '../../quote-proposal/proposal-pdf.js';
 import type { ImportedOffer, QuoteRevision } from '../../quote-proposal/quote-revision.js';
-import { quoteDigest } from '../../quote-proposal/quote-revision.js';
+import { PRICED_QUOTE_REUSE_MS, quoteDigest } from '../../quote-proposal/quote-revision.js';
 import {
   classifyBookingDraft,
   classifyPdf,
@@ -160,6 +164,14 @@ export const prepareBookingDraftInput = z
     analysis: lunaAnalysisSchema,
   })
   .strict();
+
+export const prepareUnquotedBookingDraftInput = z.object({
+  messageId: z.string().min(1),
+  selectionEpoch: z.number().int().nonnegative(),
+  inputRevision: z.number().int().nonnegative(),
+  analysis: lunaAnalysisSchema,
+  rateCode: z.string().trim().regex(/^[A-Z0-9]{2,10}$/).optional(),
+}).strict();
 
 export const listThreadQuoteRevisionsInput = z.object({ threadId: z.string().min(1) }).strict();
 
@@ -343,13 +355,12 @@ export function resolvePreparedLedgerProposal(
     parsedInput.data.messageId === scope.messageId &&
     parsedInput.data.sourceHash === scope.sourceHash &&
     prepared?.sourceHash === scope.sourceHash;
+  const asOfMs = typeof result?.asOf === 'string' ? Date.parse(result.asOf) : Number.NaN;
   const freshResult = !!result &&
     staffQuoteResultReusable(result, now) &&
-    typeof result.asOf === 'string' &&
-    Number.isFinite(Date.parse(result.asOf)) &&
-    Date.parse(result.asOf) <= now.getTime() &&
-    !!run.readResultExpiresAt &&
-    run.readResultExpiresAt > now;
+    Number.isFinite(asOfMs) &&
+    asOfMs <= now.getTime() &&
+    asOfMs + PRICED_QUOTE_REUSE_MS > now.getTime();
   if (
     run.transportId !== scope.transportId ||
     run.triggerMessageId !== scope.messageId ||
@@ -950,6 +961,51 @@ export const workstationRouter = router({
           status: 'unavailable' as const,
           reason: error instanceof Error ? error.message : 'quote_revision_unavailable',
         };
+      }
+    }),
+  prepareUnquotedBookingDraft: mailboxProcedure
+    .input(prepareUnquotedBookingDraftInput)
+    .mutation(async ({ input }) => {
+      const unavailable = { status: 'unavailable' as const, reason: 'prefill_unavailable' };
+      if (!isUnquotedSingleStayNewBooking(input.analysis)) {
+        return { status: 'unavailable' as const, reason: 'not_a_single_stay_new_booking' };
+      }
+      const groups = input.analysis.groups.filter((g) => g.arrival?.trim());
+      const group = groups[0];
+      if (
+        !group?.arrival ||
+        groups.length !== 1 ||
+        groups.some((r) => !Number.isInteger(r.rooms) || (r.rooms ?? 0) < 1 || !Number.isInteger(r.adultsPerRoom) || (r.adultsPerRoom ?? 0) < 1)
+      ) {
+        return unavailable;
+      }
+      const party = input.analysis.party;
+      try {
+        const prefill = await buildCreatePrefill({
+          arrival: group.arrival, departure: group.departure ?? null, nights: null,
+          rooms: groups.flatMap((row) => Array.from({ length: row.rooms ?? 0 }, (_, i) => ({
+            adults: row.adultsPerRoom ?? 0, childAges: [...row.childAges],
+            roomTypeText: row.roomPreference ?? null, guestName: row.guestNames[i] ?? null,
+          }))),
+          boardText: group.board ?? null, rateText: input.rateCode ?? null,
+          agencyName: party.kind === 'agency' ? party.name : null,
+          organizationName: party.kind === 'organization' || party.kind === 'government' ? party.name : null,
+          voucherNumber: null, bookerName: null, bookerEmail: null, billingReference: party.reference,
+          paidBy: null, defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
+        });
+        if (!prefill.requests.length) return unavailable;
+        return {
+          status: 'ready' as const,
+          draft: bookingDraftFromPrefill({
+            requests: prefill.requests, missing: prefill.missing, schemaErrors: prefill.schemaErrors,
+            board: prefillBoardFromLuna(group.board),
+          }),
+          options: createRequestFieldOptions(),
+          messageId: input.messageId, selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision,
+          revisionRef: UNQUOTED_BOOKING_REVISION_REF,
+        };
+      } catch {
+        return unavailable;
       }
     }),
   listThreadQuoteRevisions: mailboxProcedure
