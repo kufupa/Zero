@@ -408,7 +408,7 @@ function lunaWithMappedDates(luna: LunaAnalysis, mapped: MappedQuoteDecision): L
 
 const MAX_PREFILL_ROOMS = 20;
 
-function currentSourceText(synced: SyncedQuoteSelection): string {
+export function currentSourceText(synced: SyncedQuoteSelection): string {
   return [
     synced.subject,
     synced.bodyText,
@@ -416,7 +416,7 @@ function currentSourceText(synced: SyncedQuoteSelection): string {
   ].join('\n');
 }
 
-async function hmsTodoCardFromLuna(
+export async function hmsTodoCardFromLuna(
   luna: LunaAnalysis | HmsTodoCardInput | null | undefined,
   attachments: SyncedQuoteAttachment[],
   sourceText = '',

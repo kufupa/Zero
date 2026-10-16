@@ -213,6 +213,35 @@ describe('stored read for the pane', () => {
       expect(await openStoredWork(db, lookup)).toMatchObject({ status: 'ready', analysis: { noReplySender: true } });
     }));
 
+  it('puts a payment_proof to-do card on a stored voucher_pop read, with payment_ack workflow', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'pop1');
+      await insertRead(db, messageId, {
+        version: 'extract-v1',
+        kind: 'voucher_pop',
+        payload: { ...payload(), confirmationNumbers: ['57291630-1'], stays: [] },
+      });
+      const work = await storedWorkFor(db, {
+        transportId: CENTURION,
+        internetMessageId: '<pop1@example.com>',
+      });
+      if (work.status !== 'ready') throw new Error(`expected ready, got ${work.status}`);
+      expect(work.analysis.luna.workflow).toBe('payment_ack');
+      expect(work.analysis.hmsTodoCard).toMatchObject({ kind: 'payment_proof' });
+    }));
+
+  it('puts a new_booking to-do card on a stored booking read', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'bk1');
+      await insertRead(db, messageId, { version: 'extract-v1', kind: 'booking', payload: payload() });
+      const work = await storedWorkFor(db, {
+        transportId: CENTURION,
+        internetMessageId: '<bk1@example.com>',
+      });
+      if (work.status !== 'ready') throw new Error(`expected ready, got ${work.status}`);
+      expect(work.analysis.hmsTodoCard).toMatchObject({ kind: 'new_booking' });
+    }));
+
   it('reads a stored read without writing: no work item is made or moved until the pane opens one', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'ro1');

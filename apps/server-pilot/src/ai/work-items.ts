@@ -13,7 +13,9 @@ import type { AttachmentRead } from './extraction/extract.js';
 import type { ExtractionRow, ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
 import {
   canonicalInternetMessageId,
+  currentSourceText,
   documentFailureItems,
+  hmsTodoCardFromLuna,
   questionItems,
 } from './quote-workflow-analyse-selection.js';
 import { amendmentFromAnalysis, mapLlmDecision, validIsoDate } from './quote-workflow-llm.js';
@@ -212,6 +214,7 @@ const WORKFLOW_BY_KIND: Partial<Record<MailKind, LunaAnalysis['workflow']>> = {
   booking: 'create_booking',
   amendment: 'amend',
   cancellation: 'cancel',
+  voucher_pop: 'payment_ack',
 };
 
 const FAILURE_COPY: Record<string, string> = {
@@ -1221,7 +1224,10 @@ export type StoredWork =
       extractionId: string;
       refs: Record<string, GroupRef>;
       /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
-      analysis: StoredAnalysis & { noReplySender: boolean };
+      analysis: StoredAnalysis & {
+        noReplySender: boolean;
+        hmsTodoCard: Awaited<ReturnType<typeof hmsTodoCardFromLuna>>;
+      };
       contact: StoredContact;
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
@@ -1293,10 +1299,10 @@ async function readyView(
   const paneItem = existingStayInformation ? null : item;
   const state = paneItem?.state ?? {};
   const selectedConfirmation = read.payload.confirmationNumbers[0]?.trim() ?? '';
+  const synced = await loadSyncedQuoteSelectionFromMailbox({ transportId, messageId: msg.id });
   const threadConfirmation = isHmsConfirmation(selectedConfirmation)
     ? undefined
-    : (await loadSyncedQuoteSelectionFromMailbox({ transportId, messageId: msg.id }))
-        ?.threadConfirmation;
+    : synced?.threadConfirmation;
   const stored = storedAnalysis(
     {
       ...read,
@@ -1307,6 +1313,9 @@ async function readyView(
     state,
     threadConfirmation,
   );
+  const sourceText = synced
+    ? currentSourceText(synced)
+    : [msg.subject ?? '', msg.textBody ?? ''].join('\n');
   return {
     status: 'ready',
     kind: existingStayInformation ? 'other' : read.kind,
@@ -1317,7 +1326,13 @@ async function readyView(
     extractionId: read.id,
     refs: stored.refs,
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
-    analysis: { ...stored.analysis, noReplySender: isNoReplyAddress(msg.fromAddress) },
+    analysis: {
+      ...stored.analysis,
+      noReplySender: isNoReplyAddress(msg.fromAddress),
+      hmsTodoCard: existingStayInformation
+        ? null
+        : await hmsTodoCardFromLuna(stored.analysis.luna, synced?.attachments ?? [], sourceText),
+    },
     contact: storedContact(read.payload, state),
     language: read.language,
     translation: storedTranslation(read.translation),
