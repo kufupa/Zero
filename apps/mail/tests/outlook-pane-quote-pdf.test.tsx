@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { toast } from 'sonner';
-import { findReadStayArrival, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
+import { findReadStayArrival, prepareReviewedQuote, setReviewedReply } from './helpers/prepare-reviewed-quote';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 
 const { sendCommandMock, quotePdfMutateMock, quoteWorkbookMutateMock, prepareDraftMutateMock, analyseOverride, sessionState } = vi.hoisted(() => ({
@@ -192,7 +192,7 @@ describe('Outlook pane quote proposal PDF', () => {
     await prepareReviewedQuote();
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
-    fireEvent.change(screen.getByLabelText('Reviewed reply'), { target: { value: '<p>Different quotation reply</p>' } });
+    setReviewedReply('<p>Different quotation reply</p>');
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.objectContaining({ htmlBody: '<p>Different quotation reply</p>' })));
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.objectContaining({ base64Data: AUTHORISED_QUOTE_PDF.pdfBase64 })));

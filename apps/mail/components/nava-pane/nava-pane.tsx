@@ -43,6 +43,7 @@ import {
 } from '@/lib/quote-workflow/backend-bind';
 import { overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
 import { storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
+import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
 import { bindPaneTelemetry, currentPaneOwner, setPaneTelemetryScope, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import {
   bindGetPriorStaffQuoteRequote,
@@ -594,6 +595,13 @@ export function NavaPane({
   documentContactRef.current = documentContact;
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
+  const treatAsMailKey = paneEditKey(activeConnection?.id ?? '', contactMessageKey);
+  useEffect(() => {
+    if (!quoteSession.binding || !treatAsMailKey) return;
+    const saved = readTreatAs(treatAsMailKey);
+    if (!saved || quoteSession.treatAs) return;
+    dispatchQuote({ type: 'treat_as', treatAs: saved });
+  }, [treatAsMailKey, quoteSession.binding, quoteSession.treatAs]);
   const [partySuggestions, setPartySuggestions] = useState<PartySuggestion[]>([]);
   const senderEmail = activeEmail?.senderEmail ?? '';
   const bodyText = activeEmail?.bodyText ?? '';
@@ -2042,6 +2050,7 @@ export function NavaPane({
               } : undefined}
               onIntentChange={isNonActionableMessage ? undefined : (treatAs) => {
                 suppressAutoStaffQuoteForCurrentEmail();
+                if (contactMessageKey) rememberTreatAs(treatAsMailKey, treatAs);
                 dispatchQuote({ type: 'treat_as', treatAs });
               }}
             />

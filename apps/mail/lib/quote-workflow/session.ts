@@ -24,7 +24,12 @@ import {
   type StaffExtraField,
 } from './types';
 import { documentFailureItems, projectQuoteReviewItems } from './review-items';
-import { approvedExecuteHeader, hasPerStaySingleChargeExtras, staffHeaderForStay } from './staff-quote-bind';
+import {
+  approvedExecuteHeader,
+  groupsWithPreparedStayRates,
+  hasPerStaySingleChargeExtras,
+  staffHeaderForStay,
+} from './staff-quote-bind';
 import { rowRoomLabel, rowRoomTypeCode, type RoomTypeCode } from './room-types';
 
 /**
@@ -1576,7 +1581,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
             ? undefined
             : session.reviewedReplySource,
         staffHeader,
-        groups: action.groups?.length ? replaceStayRows(session.groups, action.groups) : session.groups,
+        groups: groupsWithPreparedStayRates(
+          action.groups?.length ? replaceStayRows(session.groups, action.groups) : session.groups,
+          staffQuote,
+          runGroupIds,
+        ),
         stayRevision: action.groups?.length ? session.stayRevision + 1 : session.stayRevision,
         reviewItems: reviewItemsFromExtrasNotes(session, action.extrasReviewItems ?? []),
         steps: session.steps.map((step) =>
