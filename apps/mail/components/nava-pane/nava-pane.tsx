@@ -83,6 +83,7 @@ import {
   type BoundExecuteStaffQuote,
   type StaffQuoteJobQuery,
 } from '@/lib/quote-workflow/staff-quote-bind';
+import { trackingStaffQuoteJob, useRatesReadyNotice, type OwnStaffQuoteJob } from '@/lib/quote-workflow/rates-ready-notice';
 import { useHmsQueueStatus } from '@/lib/quote-workflow/use-hms-queue-status';
 import {
   admissionKey,
@@ -357,6 +358,22 @@ export function NavaPane({
     fetchStatus: () =>
       bindHmsQueueStatus(staffQuoteFromTrpc(trpcClient).workstation.hmsQueueStatus?.query),
   });
+  const ratesReadyJobs = useRef<OwnStaffQuoteJob[]>([]);
+  useRatesReadyNotice({
+    jobsRef: ratesReadyJobs,
+    openMessageId: quoteSession.staffSource?.messageId ?? null,
+    openEmailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
+    query: staffQuoteFromTrpc(trpcClient).workstation.staffQuoteJob?.query,
+    onOpenThread,
+  });
+  const trackRatesJob = (query: StaffQuoteJobQuery | undefined, source: { messageId: string; threadId: string }) =>
+    trackingStaffQuoteJob(ratesReadyJobs, query, () => ({
+      messageId: source.messageId,
+      threadId: source.threadId,
+      emailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
+      subject: activeEmail?.subject?.trim() || null,
+      entryId: activeEmail?.entryId ?? null,
+    }));
   const trackStaffQuoteRun = <T,>(run: Promise<T>): Promise<T> => {
     staffQuoteRunCount.current += 1;
     setQuoteRunPending(true);
@@ -881,7 +898,7 @@ export function NavaPane({
               (group) => stayKeyForGroup(group) === stayKey,
             );
             const result = await bindReadBackStaffQuote({
-              query: staff.workstation.staffQuoteJob?.query,
+              query: trackRatesJob(staff.workstation.staffQuoteJob?.query, source),
               signal: pollController.signal,
               source,
               selectionEpoch,
@@ -1376,7 +1393,7 @@ export function NavaPane({
       const run = bindExecuteStaffQuote({
         mutate: staff.workstation.executeStaffQuote?.mutate,
         queue: staff.workstation.queueStaffQuote?.mutate,
-        staffQuoteJob: staff.workstation.staffQuoteJob?.query,
+        staffQuoteJob: trackRatesJob(staff.workstation.staffQuoteJob?.query, source),
         source,
         selectionEpoch,
         inputRevision,
@@ -1524,10 +1541,11 @@ export function NavaPane({
     const originalStaffQuoteJob = staff.workstation.staffQuoteJob?.query;
     let lastStaffQuoteRunId: string | null = null;
     let pollLostRunId: string | null = null;
-    const observedStaffQuoteJob: StaffQuoteJobQuery | undefined = originalStaffQuoteJob
+    const trackedStaffQuoteJob = trackRatesJob(originalStaffQuoteJob, source);
+    const observedStaffQuoteJob: StaffQuoteJobQuery | undefined = trackedStaffQuoteJob
       ? async (input, options) => {
           if ('runId' in input) lastStaffQuoteRunId = input.runId;
-          return originalStaffQuoteJob(input, options);
+          return trackedStaffQuoteJob(input, options);
         }
       : undefined;
     const runHeader = autoStart || readBack
