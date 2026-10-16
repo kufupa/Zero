@@ -120,7 +120,17 @@ export type ReservationistStaffAction = {
 
 /** Local wire type mirroring server lunaAnalysisSchema. Do not import the server module. */
 export type LunaAnalysisWire = {
-  workflow: 'quote' | 'create_booking' | 'other' | 'skip';
+  workflow:
+    | 'quote'
+    | 'create_booking'
+    | 'other'
+    | 'skip'
+    // A stored read carries the ingest classifier's agent workflow.
+    | 'amend'
+    | 'cancel'
+    | 'payment_ack'
+    | 'send_document'
+    | 'forward_to_partner';
   flags: Array<
     | 'conference_or_group'
     | 'rooms_only_group'

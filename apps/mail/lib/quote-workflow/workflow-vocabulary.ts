@@ -82,6 +82,15 @@ export function quoteOrBookingWorkflow(
   return null;
 }
 
+/** The classifier-backed workflows a stored read can carry beyond quote/booking. */
+const WORKFLOW_READ_AS: Record<string, NavaReadAs> = {
+  amend: 'amendment',
+  cancel: 'cancellation',
+  payment_ack: 'payment',
+  send_document: 'billing',
+  forward_to_partner: 'group',
+};
+
 export function readAsForAnalysis(
   analysis: QuoteAnalysis | null | undefined,
   options: {
@@ -101,6 +110,8 @@ export function readAsForAnalysis(
   if (kindReadAs && ['amendment', 'cancellation', 'payment', 'billing', 'group'].includes(kindReadAs)) {
     return kindReadAs;
   }
+  const workflowReadAs = WORKFLOW_READ_AS[analysis?.luna?.workflow ?? ''];
+  if (workflowReadAs) return workflowReadAs;
   if (treatAs === 'quote') return 'quote';
   if (treatAs === 'create_booking') return 'new_booking';
   if (analysis?.luna?.rateClaims.some((claim) => claim.kind === 'paid')) return 'payment';
