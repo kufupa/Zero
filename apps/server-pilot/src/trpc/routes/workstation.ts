@@ -91,6 +91,7 @@ import {
   quotePreparationEnabled,
   HMS_JOB_PRIORITY_USER,
   HMS_JOB_PRIORITY_PREFETCH,
+  listUserStaffQuoteJobs,
   readHmsJobView,
   staffQuoteResultReusable,
 } from '../../ai/hms-jobs.js';
@@ -707,6 +708,7 @@ export const quoteRunScreenshotInput = z
 const staffQuoteJobInput = z.union([
   z.object({ runId: z.string().uuid() }).strict(),
   z.object({ input: staffQuoteInput }).strict(),
+  z.object({ messageId: z.string().min(1).max(128) }).strict(),
 ]);
 
 export const workstationRouter = router({
@@ -872,13 +874,27 @@ export const workstationRouter = router({
             runId: input.runId,
             staffQuoteOwnerId: ctx.sessionUser.id,
           }
-        : {
-            transportId: ctx.activeTransportId,
-            userId: ctx.sessionUser.id,
-            messageId: input.input.messageId,
-            kind: 'staff_quote',
-            input: input.input,
-          },
+        : 'input' in input
+          ? {
+              transportId: ctx.activeTransportId,
+              userId: ctx.sessionUser.id,
+              messageId: input.input.messageId,
+              kind: 'staff_quote' as const,
+              input: input.input,
+            }
+          : {
+              transportId: ctx.activeTransportId,
+              userId: ctx.sessionUser.id,
+              messageId: input.messageId,
+              kind: 'staff_quote' as const,
+            },
+      getDb(),
+    );
+  }),
+  ownStaffQuoteJobs: mailboxProcedure.query(({ ctx }) => {
+    if (!hmsJobQueueEnabled()) return [];
+    return listUserStaffQuoteJobs(
+      { transportId: ctx.activeTransportId, userId: ctx.sessionUser.id },
       getDb(),
     );
   }),

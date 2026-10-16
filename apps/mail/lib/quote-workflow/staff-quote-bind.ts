@@ -165,7 +165,7 @@ type StaffQuoteCallOptions = {
 };
 
 export type StaffQuoteJobQuery = (
-  input: { runId: string } | { input: ExecuteStaffQuoteInput },
+  input: { runId: string } | { input: ExecuteStaffQuoteInput } | { messageId: string },
   options?: StaffQuoteCallOptions,
 ) => Promise<StaffQuoteJobView | null>;
 
@@ -1311,9 +1311,10 @@ export async function bindReadBackStaffQuote(
   const built = staffQuoteRequest(args);
   if ('error' in built) return null;
   try {
+    const lookup = { messageId: args.source.messageId };
     const first = args.signal
-      ? await args.query({ input: built.input }, { signal: args.signal })
-      : await args.query({ input: built.input });
+      ? await args.query(lookup, { signal: args.signal })
+      : await args.query(lookup);
     if (!first || args.signal?.aborted) return null;
     if (
       first.status === 'done' &&
@@ -1467,6 +1468,17 @@ type StaffQuoteClient = {
   };
   queueStaffQuote?: { mutate: StaffQuoteJobQueue };
   staffQuoteJob?: { query: StaffQuoteJobQuery };
+  ownStaffQuoteJobs?: {
+    query: () => Promise<
+      Array<{
+        runId: string;
+        messageId: string;
+        threadId: string | null;
+        subject: string | null;
+        status: string;
+      }>
+    >;
+  };
   hmsQueueStatus?: { query: () => Promise<QueueStatus> };
   quoteRunScreenshot?: {
     query: (input: { runId: string; name: string }) => Promise<QuoteRunScreenshotResult>;

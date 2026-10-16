@@ -3016,10 +3016,10 @@ async function latestStaffQuoteRunFor(
   db: DB,
   scope: ReturnType<typeof and>,
   messageId: string,
-  quoteInput: StaffQuoteInput,
+  quoteInput: StaffQuoteInput | null,
   userId: string,
 ): Promise<AiWorkflowRun[]> {
-  const wanted = hmsRequestKey({ kind: 'staff_quote', input: quoteInput });
+  const wanted = quoteInput ? hmsRequestKey({ kind: 'staff_quote', input: quoteInput }) : null;
   const now = new Date();
   const ownerScope = quotePreparationEnabled()
     ? or(
@@ -3056,11 +3056,13 @@ async function latestStaffQuoteRunFor(
   // A later user quote still supersedes an older user quote on this message, even when its input changed.
   const newestUserRun = rows.find((run) => objectRecord(run.metrics).userId === userId);
   if (newestUserRun && reusable(newestUserRun)) {
+    if (!wanted) return [newestUserRun];
     const parsed = hmsJobRequestSchema.safeParse(newestUserRun.readRequest);
     if (parsed.success && parsed.data.kind === 'staff_quote' && hmsRequestKey(parsed.data) === wanted) {
       return [newestUserRun];
     }
   }
+  if (!quoteInput) return [];
 
   // System-prepared quotes are independent per stay. Look for the newest prepared price for these terms rather than
   // letting a different stay's more recently enqueued job hide a valid match.
@@ -3116,6 +3118,53 @@ function staffQuoteRunFreshness(now: Date) {
   );
 }
 
+export type OwnStaffQuoteJob = {
+  runId: string;
+  messageId: string;
+  threadId: string | null;
+  subject: string | null;
+  status: HmsJobStatus;
+};
+
+/** This user's recent staff_quote jobs, for a background "rates ready" toast. */
+export async function listUserStaffQuoteJobs(
+  input: { transportId: string; userId: string },
+  db: DB = getDb(),
+): Promise<OwnStaffQuoteJob[]> {
+  const now = new Date();
+  const rows = await db
+    .select({
+      id: aiWorkflowRun.id,
+      state: aiWorkflowRun.state,
+      triggerMessageId: aiWorkflowRun.triggerMessageId,
+      threadId: aiWorkflowRun.threadId,
+      subject: message.subject,
+    })
+    .from(aiWorkflowRun)
+    .leftJoin(message, eq(message.id, aiWorkflowRun.triggerMessageId))
+    .where(
+      and(
+        eq(aiWorkflowRun.transportId, input.transportId),
+        eq(aiWorkflowRun.runKind, 'read_tool'),
+        eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+        sql`${aiWorkflowRun.metrics}->>'userId' = ${input.userId}`,
+        sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+        staffQuoteRunFreshness(now),
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+    .limit(20);
+  return rows
+    .filter((row) => Boolean(row.triggerMessageId))
+    .map((row) => ({
+      runId: row.id,
+      messageId: row.triggerMessageId!,
+      threadId: row.threadId,
+      subject: row.subject?.trim() || null,
+      status: STATUS_BY_STATE[row.state],
+    }));
+}
+
 /**
  * The job's status and snapshot from the database. By run id for polling, or
  * the latest matching request to resume after the pane remounts. Null when nothing matches.
@@ -3128,7 +3177,7 @@ export async function readHmsJobView(
         userId: string;
         messageId: string;
         kind: 'staff_quote';
-        input: StaffQuoteInput;
+        input?: StaffQuoteInput;
       }
     | {
         transportId: string;
@@ -3197,7 +3246,7 @@ export async function readHmsJobView(
           )
           .limit(1)
       : input.kind === 'staff_quote'
-        ? await latestStaffQuoteRunFor(db, scope, input.messageId, input.input, input.userId)
+        ? await latestStaffQuoteRunFor(db, scope, input.messageId, input.input ?? null, input.userId)
         : await db
           .select()
           .from(aiWorkflowRun)

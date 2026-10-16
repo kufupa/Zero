@@ -138,9 +138,7 @@ describe('staff quote HMS job binding', () => {
     const result = await pending;
 
     expect(result).toMatchObject({ status: 'ok' });
-    expect(staffQuoteJob.mock.calls[0]?.[0]).toMatchObject({
-      input: expect.objectContaining({ messageId: source.messageId }),
-    });
+    expect(staffQuoteJob.mock.calls[0]?.[0]).toEqual({ messageId: source.messageId });
     expect(staffQuoteJob.mock.calls[0]?.[1]).toEqual({ context: { activeTransportId: 'transport-a' } });
     expect(staffQuoteJob.mock.calls[1]?.[1]).toMatchObject({
       context: { activeTransportId: 'transport-a' },
@@ -588,13 +586,7 @@ describe('staff quote HMS job binding', () => {
     const result = await pending;
 
     expect(query.mock.calls.map(([input]) => input)).toEqual([
-      {
-        input: expect.objectContaining({
-          messageId: source.messageId,
-          selectionEpoch: 3,
-          inputRevision: 4,
-        }),
-      },
+      { messageId: source.messageId },
       { runId: 'staff-job-1' },
     ]);
     expect(result).toMatchObject({
@@ -604,7 +596,7 @@ describe('staff quote HMS job binding', () => {
   });
 
   it('labels a prepared result for staff with its saved as-of time', async () => {
-    const asOf = '2026-10-14T10:35:00.000Z';
+    const asOf = new Date().toISOString();
     const query = vi.fn(async () => view('done', READY, asOf, true));
 
     const result = await bindReadBackStaffQuote({
