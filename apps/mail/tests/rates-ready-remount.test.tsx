@@ -8,6 +8,7 @@ const toast = vi.hoisted(() => vi.fn());
 vi.mock('sonner', () => ({ toast }));
 
 import { ratesReadyJobs, trackingStaffQuoteJob, useRatesReadyNotice } from '../lib/quote-workflow/rates-ready-notice';
+import type { StaffQuoteJobQuery } from '../lib/quote-workflow/staff-quote-bind';
 
 afterEach(() => {
   cleanup();
@@ -18,14 +19,14 @@ afterEach(() => {
 describe('rates ready notice across pane remounts', () => {
   it('toasts once when the job started on a pane that was replaced by another thread', async () => {
     let status: 'running' | 'done' = 'running';
-    const query = vi.fn(async ({ runId }: { runId: string }) => ({ runId, status }) as never);
+    const query: StaffQuoteJobQuery = vi.fn(async () => ({ runId: 'run-1', status, result: null, failureClass: null }));
     const first = renderHook(() =>
       useRatesReadyNotice({ jobsRef: ratesReadyJobs, openMessageId: 'mail-a', openEmailKey: '<a>', query }),
     );
     const tracked = trackingStaffQuoteJob(ratesReadyJobs, query, () => ({
       messageId: 'mail-a', threadId: 'thread-a', emailKey: '<a>', subject: 'Twin for 3 nights', entryId: null,
     }));
-    await tracked!({ runId: 'run-1' } as never);
+    await tracked!({ runId: 'run-1' });
     first.unmount();
 
     status = 'done';
