@@ -25,7 +25,12 @@ export function trpcRequestTimeoutMs(input: RequestInfo | URL): number {
     // 150 s, so the pair stays inside this six-minute wait.
     if (routes.includes('panePartyLookup.findParty')) return 6 * 60_000;
     // A cancel run is bounded by the server at 20 minutes, so the browser waits slightly longer than that.
-    if (routes.includes('paneStayCancel.previewCancel') || routes.includes('paneStayCancel.commitCancel'))
+    if (
+      routes.includes('paneStayCancel.previewCancel') ||
+      routes.includes('paneStayCancel.commitCancel') ||
+      routes.includes('paneStayAmend.previewAmend') ||
+      routes.includes('paneStayAmend.commitAmend')
+    )
       return 21 * 60_000;
     // A pane save runs the duplicate read (up to 5 minutes) and the save (up to 20) under the hotel lock.
     if (routes.includes('quoteWorkflow.previewStay') || routes.includes('quoteWorkflow.commitStay'))
