@@ -251,9 +251,41 @@ describe('booking cards', () => {
     expect(screen.getAllByRole('heading', { name: 'Standard Queen ×2' })).toHaveLength(2);
     expect(screen.getAllByText('STQN')).toHaveLength(2);
     expect(screen.getAllByText('TAXYZ')).toHaveLength(2);
-    expect(screen.getByText('Smith')).toBeDefined();
-    expect(screen.getByText('Doe')).toBeDefined();
+    expect(screen.getAllByLabelText('Last name').map((field) => (field as HTMLInputElement).value)).toEqual([
+      'Smith',
+      'Doe',
+    ]);
+    expect(screen.getAllByLabelText('First name').map((field) => (field as HTMLInputElement).value)).toEqual([
+      'John',
+      'Jane',
+    ]);
     expect(screen.getAllByRole('button', { name: 'Copy Adults for Standard Queen ×2' })).toHaveLength(2);
+  });
+
+  it('does not render raw schema error strings on the card', () => {
+    const draft = draftReady();
+    draft.draft.rooms[0]!.schemaErrors = ['$.roomType required', '$.firstName required'];
+    render(<BookingCards draft={draft} />);
+    expect(screen.queryByText('$.roomType required')).toBeNull();
+    expect(screen.queryByText('$.firstName required')).toBeNull();
+    expect(screen.queryByText(/\$\.\w+ required/)).toBeNull();
+  });
+
+  it('does not show Nava does not write to HMS above the Book card', () => {
+    const session = quotedSession();
+    session.analysis = {
+      ...session.analysis!,
+      hmsTodoCard: {
+        kind: 'new_booking',
+        title: 'Key into HMS',
+        writesEnabled: false,
+        missing: [],
+        steps: [{ label: 'Arrival', value: '2026-11-12', source: 'mail' }],
+      },
+    };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByRole('heading', { name: 'Book in HMS' })).toBeDefined();
+    expect(screen.queryByText('Nava does not write to HMS')).toBeNull();
   });
 
   it('lets staff type a rate code when the draft has none', () => {
@@ -264,6 +296,22 @@ describe('booking cards', () => {
     expect(fields).toHaveLength(2);
     fireEvent.change(fields[0]!, { target: { value: 'barro' } });
     expect((fields[0] as HTMLInputElement).value).toBe('BARRO');
+  });
+
+  it('prefills rate code and price from the prepared stay result', () => {
+    const draft = draftReady();
+    for (const room of draft.draft.rooms) delete room.request.ratePlan;
+    render(
+      <BookingCards
+        draft={draft}
+        groups={[{ ...g1, quotedRateCode: 'BARRO', quotedAmountMinor: 185000 }]}
+      />,
+    );
+    const fields = screen.getAllByLabelText('Rate code');
+    expect(fields.map((field) => (field as HTMLInputElement).value)).toEqual(['BARRO', 'BARRO']);
+    expect(screen.getAllByText('R1850.00')).toHaveLength(2);
+    fireEvent.change(fields[0]!, { target: { value: 'bco1b' } });
+    expect((fields[0] as HTMLInputElement).value).toBe('BCO1B');
   });
 
   it('shows an amber mismatch banner with the claim quote', () => {
@@ -578,6 +626,37 @@ describe('booking card pane save', () => {
     expect(screen.queryAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(0);
     expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
     expect(screen.queryByText('Coming soon')).toBeNull();
+  });
+
+  it('lets staff type guest first and last name and keeps Book locked while either is empty', () => {
+    const { client } = paneClient();
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    const lastName = screen.getAllByLabelText('Last name')[0] as HTMLInputElement;
+    const firstName = screen.getAllByLabelText('First name')[0] as HTMLInputElement;
+    expect(lastName.value).toBe('Smith');
+    expect(firstName.value).toBe('John');
+    pickRoomChoices(0);
+    expect(previewButton(0)).toHaveProperty('disabled', false);
+    fireEvent.change(firstName, { target: { value: '' } });
+    expect(previewButton(0)).toHaveProperty('disabled', true);
+    expect(screen.getByText('Set first name before you preview.')).toBeDefined();
+    fireEvent.change(firstName, { target: { value: 'Ada' } });
+    fireEvent.change(lastName, { target: { value: '   ' } });
+    expect(previewButton(0)).toHaveProperty('disabled', true);
+    expect(screen.getByText('Set last name before you preview.')).toBeDefined();
+    fireEvent.change(lastName, { target: { value: 'Lovelace' } });
+    expect(previewButton(0)).toHaveProperty('disabled', false);
+  });
+
+  it('previews with the typed guest names, not the draft request', async () => {
+    const { client, preview } = paneClient();
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.change(screen.getAllByLabelText('First name')[0]!, { target: { value: 'Ada' } });
+    fireEvent.change(screen.getAllByLabelText('Last name')[0]!, { target: { value: 'Lovelace' } });
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ firstName: 'Ada', lastName: 'Lovelace' }));
+    expect(await screen.findByText(/Nava will book Ada Lovelace/)).toBeDefined();
   });
 
   it('asks for the missing choices before Preview in HMS can run', () => {
@@ -949,6 +1028,38 @@ describe('pane save helpers', () => {
       stay: null,
       missing: ['last name', 'track', 'guarantee'],
     });
+  });
+
+  it('takes typed guest names over the draft request', () => {
+    const request = {
+      firstName: 'John',
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      departure: '2026-11-14',
+      adults: 1,
+      roomType: 'STQN',
+      ratePlan: 'TAXYZ',
+    };
+    const built = paneStayInputForRoom(request, {
+      roomType: 'STQN',
+      track: 'BAR',
+      sourceOfBusiness: 'E-Mail',
+      guaranteeType: '6pm Release',
+      firstName: 'Ada',
+      lastName: 'Lovelace',
+    });
+    expect(built.stay?.firstName).toBe('Ada');
+    expect(built.stay?.lastName).toBe('Lovelace');
+    expect(
+      paneStayInputForRoom(request, {
+        roomType: 'STQN',
+        track: 'BAR',
+        sourceOfBusiness: 'E-Mail',
+        guaranteeType: '6pm Release',
+        firstName: '',
+        lastName: 'Lovelace',
+      }),
+    ).toEqual({ stay: null, missing: ['first name'] });
   });
 
   it('takes a typed rate code when the draft request has none', () => {

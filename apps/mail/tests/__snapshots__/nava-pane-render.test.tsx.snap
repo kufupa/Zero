@@ -2622,10 +2622,12 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                       </span>
                     </label>
                   </div>
-                  <textarea
+                  <div
                     aria-label="Reviewed reply"
-                    class="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+                    class="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] [&_p]:m-0 [&_p+p]:mt-2"
+                    contenteditable="true"
                     id="quote-reviewed-reply"
+                    role="textbox"
                   />
                 </div>
               </div>
@@ -4700,10 +4702,12 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                       </span>
                     </label>
                   </div>
-                  <textarea
+                  <div
                     aria-label="Reviewed reply"
-                    class="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+                    class="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] [&_p]:m-0 [&_p+p]:mt-2"
+                    contenteditable="true"
                     id="quote-reviewed-reply"
+                    role="textbox"
                   />
                 </div>
               </div>
@@ -7102,10 +7106,12 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                       </span>
                     </label>
                   </div>
-                  <textarea
+                  <div
                     aria-label="Reviewed reply"
-                    class="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+                    class="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] [&_p]:m-0 [&_p+p]:mt-2"
+                    contenteditable="true"
                     id="quote-reviewed-reply"
+                    role="textbox"
                   />
                 </div>
               </div>
@@ -9080,10 +9086,12 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                       </span>
                     </label>
                   </div>
-                  <textarea
+                  <div
                     aria-label="Reviewed reply"
-                    class="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
+                    class="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] [&_p]:m-0 [&_p+p]:mt-2"
+                    contenteditable="true"
                     id="quote-reviewed-reply"
+                    role="textbox"
                   />
                 </div>
               </div>

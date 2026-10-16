@@ -10,7 +10,7 @@ import { toast } from 'sonner';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
-import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
+import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote, reviewedReplyHtml, setReviewedReply } from './helpers/prepare-reviewed-quote';
 import { VOUCHER_COPY } from '../lib/quote-workflow/voucher-find';
 import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
@@ -83,6 +83,7 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     listThreadQuoteRevisionsQuery: vi.fn().mockResolvedValue([]),
     usePriorQuoteForBookingMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No prior quote.' }),
     prepareBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
+    prepareUnquotedBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
     recordEvent: vi.fn(async (_input: unknown): Promise<unknown> => ({ aiValue: null, value: null })),
     retryTranslation: vi.fn(async (_input: unknown): Promise<unknown> => ({ status: 'capped', translation: null })),
   },
@@ -189,6 +190,9 @@ vi.mock('../providers/query-provider', () => ({
       listThreadQuoteRevisions: { query: (input: unknown) => bridgeMockState.listThreadQuoteRevisionsQuery(input) },
       usePriorQuoteForBooking: { mutate: (input: unknown) => bridgeMockState.usePriorQuoteForBookingMutation(input) },
       prepareBookingDraft: { mutate: (input: unknown) => bridgeMockState.prepareBookingDraftMutation(input) },
+      prepareUnquotedBookingDraft: {
+        mutate: (input: unknown) => bridgeMockState.prepareUnquotedBookingDraftMutation(input),
+      },
       executeStaffQuote: {
         mutate: async (input: { selectionEpoch: number; inputRevision: number; groups: Array<{ arrivalDate: string; departureDate: string }> }) => {
           if (bridgeMockState.staffQuoteFailure) {
@@ -433,6 +437,9 @@ describe('NavaPane', () => {
       .mockReset()
       .mockResolvedValue({ status: 'unavailable', reason: 'No prior quote.' });
     bridgeMockState.prepareBookingDraftMutation
+      .mockReset()
+      .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
+    bridgeMockState.prepareUnquotedBookingDraftMutation
       .mockReset()
       .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
     vi.mocked(toast.warning).mockClear();
@@ -708,6 +715,9 @@ describe('NavaPane screen states', () => {
       .mockReset()
       .mockResolvedValue({ status: 'unavailable', reason: 'No prior quote.' });
     bridgeMockState.prepareBookingDraftMutation
+      .mockReset()
+      .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
+    bridgeMockState.prepareUnquotedBookingDraftMutation
       .mockReset()
       .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
     vi.mocked(toast.warning).mockClear();
@@ -1114,7 +1124,7 @@ describe('NavaPane screen states', () => {
     if (visible) {
       expect(await screen.findByRole('region', { name: VOUCHER_COPY.heading }, { timeout: 5000 })).toBeDefined();
     } else {
-      const intent = (await screen.findByLabelText('Change how Nava reads this email')) as HTMLSelectElement;
+      const intent = (await screen.findByLabelText('Change how Nava reads this email')) as unknown as HTMLSelectElement;
       expect(intent.value).toBe(name);
       expect(voucherFindQuery).not.toHaveBeenCalled();
       expect(screen.queryByRole('region', { name: VOUCHER_COPY.heading })).toBeNull();
@@ -1181,15 +1191,15 @@ describe('NavaPane screen states', () => {
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     render(<NavaPane bridge={fakeBridge} />);
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLElement;
     const expected = missingQuoteDetailsWrapperHtml(
       'David Miller',
       analysis.missingQuoteReplyFields,
       'R Opperman',
     );
-    await waitFor(() => expect(reply.value).toBe(expected));
-    expect(reply.value).not.toContain('Room type');
-    expect(reply.value).not.toContain('meal plan');
+    await waitFor(() => expect(reviewedReplyHtml()).toBe(expected));
+    expect(reply.innerHTML).not.toContain('Room type');
+    expect(reply.innerHTML).not.toContain('meal plan');
     const requestOnly = await screen.findByRole('button', { name: 'Draft reply asking for missing details' });
     expect((requestOnly as HTMLButtonElement).disabled).toBe(false);
 
@@ -1240,18 +1250,18 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
 
     await screen.findByRole('button', { name: 'Draft reply asking for missing details' });
-    const reply = screen.queryByLabelText('Reviewed reply') as HTMLTextAreaElement | null;
+    const reply = screen.queryByLabelText('Reviewed reply') as HTMLElement | null;
     expect(reply).not.toBeNull();
     if (!reply) return;
     await waitFor(() =>
       expect(
-        reply.value.includes(missingFields[0]!) && reply.value.includes(missingFields[1]!),
+        reply.innerHTML.includes(missingFields[0]!) && reply.innerHTML.includes(missingFields[1]!),
       ).toBe(true),
     );
 
     const editedReply = '<p>Staff-edited request reply</p>';
-    fireEvent.change(reply, { target: { value: editedReply } });
-    await waitFor(() => expect(reply.value === editedReply).toBe(true));
+    setReviewedReply(editedReply);
+    await waitFor(() => expect(reply.innerHTML === editedReply).toBe(true));
 
     // An empty reply keeps the button off, so it renders anew once the text is there.
     const draftRequest = screen.getByRole('button', { name: 'Draft reply asking for missing details' });
@@ -1292,8 +1302,8 @@ describe('NavaPane screen states', () => {
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     render(<NavaPane bridge={fakeBridge} />);
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
-    await waitFor(() => expect(reply.value).toContain('Please confirm the following details'));
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLElement;
+    await waitFor(() => expect(reply.innerHTML).toContain('Please confirm the following details'));
     fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-11-12' } });
     expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('2026-11-12');
 
@@ -1327,9 +1337,9 @@ describe('NavaPane screen states', () => {
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     render(<NavaPane bridge={fakeBridge} />);
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    await screen.findByLabelText('Reviewed reply');
     const bothDatesMissing = missingQuoteDetailsWrapperHtml('David Miller', missingFields, 'R Opperman');
-    await waitFor(() => expect(reply.value).toBe(bothDatesMissing));
+    await waitFor(() => expect(reviewedReplyHtml()).toBe(bothDatesMissing));
 
     fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-11-12' } });
 
@@ -1338,7 +1348,7 @@ describe('NavaPane screen states', () => {
       ['Departure date for stay 1'],
       'R Opperman',
     );
-    await waitFor(() => expect(reply.value).toBe(departureOnly));
+    await waitFor(() => expect(reviewedReplyHtml()).toBe(departureOnly));
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 
@@ -1366,9 +1376,9 @@ describe('NavaPane screen states', () => {
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     render(<NavaPane bridge={fakeBridge} preview />);
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    await screen.findByLabelText('Reviewed reply');
     const expected = missingQuoteDetailsWrapperHtml('David Miller', analysis.missingQuoteReplyFields, 'R Opperman');
-    await waitFor(() => expect(reply.value).toBe(expected));
+    await waitFor(() => expect(reviewedReplyHtml()).toBe(expected));
     fireEvent.click(await screen.findByRole('button', { name: 'Draft reply asking for missing details' }));
 
     await waitFor(() => expect(saveReplyMutate).toHaveBeenCalledWith(
@@ -1383,7 +1393,7 @@ describe('NavaPane screen states', () => {
     bridgeMockState.analysisOverride = intentAnalysis({ intent: 'other', workflow: 'other' });
     render(<NavaPane bridge={fakeBridge} preview />);
 
-    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as HTMLSelectElement;
+    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as unknown as HTMLSelectElement;
     expect(intent.value).toBe('other');
     expect(screen.queryByRole('button', { name: 'Save reply' })).toBeNull();
     expect(screen.queryByText('Prepare the quote PDF first')).toBeNull();
@@ -1395,7 +1405,7 @@ describe('NavaPane screen states', () => {
   it('preview: the webmail reply saves to the thread, not that the add-in is too old', async () => {
     bridgeMockState.analysisOverride = intentAnalysis({ intent: 'quote', workflow: 'quote' });
     render(<NavaPane bridge={fakeBridge} preview />);
-    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as HTMLSelectElement;
+    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as unknown as HTMLSelectElement;
     expect(intent.value).toBe('quote');
     expect(await screen.findByRole('button', { name: 'Draft quotation into email reply' })).toBeDefined();
     expect(
@@ -1433,7 +1443,7 @@ describe('NavaPane screen states', () => {
     await prepareReviewedQuote(null);
 
     const expectedHtml = quoteWrapperHtml('', 'R Opperman');
-    expect((screen.getByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe(expectedHtml);
+    expect(reviewedReplyHtml()).toBe(expectedHtml);
     fireEvent.click(screen.getByRole('button', { name: 'Draft quotation into email reply' }));
 
     await waitFor(() => {
@@ -1631,6 +1641,65 @@ describe('NavaPane screen states', () => {
     );
   });
 
+  it('asks for an unquoted booking draft on open without waiting for staff-quote polling', async () => {
+    let resolveJob!: (view: unknown) => void;
+    bridgeMockState.storedWork = bookingStoredWork();
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveJob = resolve;
+      }),
+    );
+    bridgeMockState.prepareUnquotedBookingDraftMutation.mockImplementation(async (input: {
+      messageId: string;
+      selectionEpoch: number;
+      inputRevision: number;
+    }) => ({
+      status: 'ready',
+      draft: {
+        rooms: [
+          {
+            groupId: 'r_1',
+            roomIndex: 1,
+            request: {
+              arrival: '2026-11-03',
+              departure: '2026-11-05',
+              adults: 2,
+              childAges: [],
+              roomType: 'STQN',
+              ratePlan: 'BAR',
+              firstName: 'Ada',
+              lastName: 'Lovelace',
+            },
+            schemaErrors: ['$.roomType required'],
+          },
+        ],
+        rateCheck: [],
+        missing: [],
+        flags: [],
+      },
+      options: {
+        track: ['BAR'],
+        sourceOfBusiness: ['E-Mail'],
+        guaranteeType: ['6pm Release'],
+        roomType: ['STQN'],
+      },
+      messageId: input.messageId,
+      selectionEpoch: input.selectionEpoch,
+      inputRevision: input.inputRevision,
+      revisionRef: 'unquoted',
+    }));
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await waitFor(() => expect(bridgeMockState.prepareUnquotedBookingDraftMutation).toHaveBeenCalled());
+    expect(await screen.findByRole('heading', { name: 'Book in HMS' })).toBeDefined();
+    expect(screen.queryByText('$.roomType required')).toBeNull();
+    expect(screen.queryByText('Available')).toBeNull();
+    await act(async () => resolveJob(completedStaffQuoteJob(STAFF_QUOTE_READY)));
+    expect(await screen.findByText('Available')).toBeDefined();
+  });
+
   it('keeps a persisted staff-quote refusal instead of falling back to an older quote', async () => {
     const refusal = 'HMS has no rate for this meal plan under BAR. Try another meal plan.';
     bridgeMockState.storedWork = bookingStoredWork();
@@ -1673,12 +1742,12 @@ describe('NavaPane screen states', () => {
     await settle();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLElement;
     const declineHtml = '<p>Unfortunately, we are unable to accommodate your requested stay.</p>';
     await waitFor(() => {
-      expect(reply.value).toBe(declineHtml);
+      expect(reviewedReplyHtml()).toBe(declineHtml);
     });
-    expect(reply.value).not.toContain('Deluxe Twin');
+    expect(reply.innerHTML).not.toContain('Deluxe Twin');
     expect(screen.getByText('Requested type not available — available instead: Deluxe Twin × 2')).toBeDefined();
     expect((screen.getByRole('button', { name: 'Draft decline reply' }) as HTMLButtonElement).disabled).toBe(false);
 
@@ -1693,8 +1762,8 @@ describe('NavaPane screen states', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Use this' }));
     await waitFor(() => {
-      expect((screen.getByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe('');
-      expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('DLXTWN');
+      expect(reviewedReplyHtml()).toBe('');
+      expect((screen.getByLabelText('Room type') as unknown as HTMLSelectElement).value).toBe('DLXTWN');
     });
     expect(await screen.findByText('Available')).toBeDefined();
   });
@@ -1729,10 +1798,10 @@ describe('NavaPane screen states', () => {
     await settle();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
 
-    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLTextAreaElement;
+    const reply = (await screen.findByLabelText('Reviewed reply')) as HTMLElement;
     const declineHtml = '<p>Unfortunately, we are unable to accommodate your requested stay.</p>';
-    await waitFor(() => expect(reply.value).toBe(declineHtml));
-    expect(reply.value).not.toContain('Deluxe Twin');
+    await waitFor(() => expect(reviewedReplyHtml()).toBe(declineHtml));
+    expect(reply.innerHTML).not.toContain('Deluxe Twin');
     expect(screen.getByText('Requested type not available — available instead: Deluxe Twin × 2')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Use this' })).toBeDefined();
     expect(quotePdfMutate).not.toHaveBeenCalled();
@@ -1769,7 +1838,7 @@ describe('NavaPane screen states', () => {
     await storedReadLands();
     await settle();
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
-    expect((await screen.findByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe(declineHtml);
+    expect((await screen.findByLabelText('Reviewed reply')).innerHTML).toBe(declineHtml);
 
     fireEvent.click(screen.getByRole('button', { name: 'Draft decline reply' }));
     await waitFor(() =>
@@ -1996,6 +2065,30 @@ describe('NavaPane screen states', () => {
     );
     expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps Treat-as quote after switching emails and coming back', async () => {
+    const bridgeFor = (entryId: string, internetMessageId: string, subject: string) =>
+      ({
+        ...fakeBridge,
+        activeEmail: { ...fakeBridge.activeEmail!, entryId, internetMessageId, subject },
+      }) as unknown as PaneBridge;
+    const { rerender } = render(
+      <NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />,
+    );
+    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as unknown as HTMLSelectElement;
+    fireEvent.change(intent, { target: { value: 'create_booking' } });
+    await waitFor(() => expect(intent.value).toBe('create_booking'));
+
+    rerender(<NavaPane bridge={bridgeFor('002', '<other-quote@example.invalid>', 'Quote B')} />);
+    await screen.findByLabelText('Change how Nava reads this email');
+
+    rerender(<NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />);
+    await waitFor(() =>
+      expect((screen.getByLabelText('Change how Nava reads this email') as unknown as HTMLSelectElement).value).toBe(
+        'create_booking',
+      ),
+    );
   });
 
   // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.

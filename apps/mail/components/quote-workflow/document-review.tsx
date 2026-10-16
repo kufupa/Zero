@@ -9,6 +9,53 @@ import {
 } from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { Field, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
+import { useLayoutEffect, useRef } from 'react';
+
+function reviewedReplyValue(html: string): string {
+  const text = html.replace(/<br\s*\/?>/gi, '').replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').trim();
+  return text ? html : '';
+}
+
+/** Same HTML as the session; shown as formatted text, not tags. */
+function ReviewedReplyEditor({
+  html,
+  onChange,
+}: {
+  html: string;
+  onChange?: (html: string) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const lastHtml = useRef(html);
+  const skipInput = useRef(false);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node || node.innerHTML === html) {
+      lastHtml.current = html;
+      return;
+    }
+    skipInput.current = true;
+    node.innerHTML = html;
+    lastHtml.current = html;
+    skipInput.current = false;
+  }, [html]);
+  return (
+    <div
+      id="quote-reviewed-reply"
+      ref={ref}
+      role="textbox"
+      aria-label="Reviewed reply"
+      contentEditable={Boolean(onChange)}
+      suppressContentEditableWarning
+      className="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] [&_p]:m-0 [&_p+p]:mt-2"
+      onInput={(event) => {
+        if (skipInput.current) return;
+        const next = reviewedReplyValue(event.currentTarget.innerHTML);
+        lastHtml.current = next;
+        onChange?.(next);
+      }}
+    />
+  );
+}
 
 /** "1 of 2 stays rated" while a multi-stay quote still lacks a stay's run. Null once every stay is rated. */
 export function ratedStaysReason(session: QuoteSession): string | null {
@@ -112,13 +159,7 @@ export function DocumentReview({
       {/* A combined reply is built from every stay's quote; request-only replies still need the ordinary editor. */}
       {!isMultiStay(session) || replyOnly ? (
         <Field label="Reply to the client (you can edit it)" htmlFor="quote-reviewed-reply">
-          <textarea
-            id="quote-reviewed-reply"
-            aria-label="Reviewed reply"
-            className="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc]"
-            value={session.reviewedReplyHtml}
-            onChange={(event) => onReplyChange?.(event.target.value)}
-          />
+          <ReviewedReplyEditor html={session.reviewedReplyHtml} onChange={onReplyChange} />
         </Field>
       ) : null}
       {nativeReady ? (

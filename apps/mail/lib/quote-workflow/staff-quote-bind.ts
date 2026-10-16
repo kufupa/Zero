@@ -26,7 +26,7 @@ import type {
   StayGroupRequirement,
 } from './types';
 import { staffHeaderFieldProblem, staffStayExtrasFor } from './types';
-import { knownRoomCode, ROOM_TYPE_CODES, rowRoomTypeCode } from './room-types';
+import { knownRoomCode, ROOM_TYPE_CODES, rowRoomTypeCode, unpickedTwinRoomCode } from './room-types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
@@ -412,7 +412,7 @@ export function resolveNativeRoomCodes(input: {
   }
   const raw = input.roomPreference?.trim() ?? '';
   if (!raw) return { status: 'omitted' };
-  const code = knownNativeCode(raw);
+  const code = knownNativeCode(raw) ?? unpickedTwinRoomCode(raw) ?? null;
   if (code) return { status: 'codes', codes: [code] };
   return { status: 'unresolved', label: raw };
 }
@@ -618,6 +618,35 @@ export function readRowRates(value: unknown): StaffRowRate[] {
     });
   }
   return rates;
+}
+
+/** Rate code and nightly amount the quote panel reads from a prepared staff_quote. */
+export function preparedStayRate(
+  group: StayGroupRequirement,
+  quote?: StaffQuoteAllocation | null,
+): { rateCode: string; amountMinor: number | null } {
+  const row = quote?.rowRates?.find((item) => item.groupId === group.id);
+  const selected = quote?.rateOptions?.find((item) => item.groupId === group.id && item.selected);
+  const rateCode = (row?.rateCode ?? selected?.rateCode ?? group.rateCode ?? group.quotedRateCode ?? '').trim();
+  const amountMinor = row?.nightlyMinor[0] ?? selected?.perNightMinor ?? group.quotedAmountMinor ?? group.rowPrice?.amountMinor ?? null;
+  return { rateCode, amountMinor };
+}
+
+export function groupsWithPreparedStayRates(
+  groups: StayGroupRequirement[],
+  quote: StaffQuoteAllocation,
+  groupIds: ReadonlySet<string>,
+): StayGroupRequirement[] {
+  return groups.map((group) => {
+    if (!groupIds.has(group.id)) return group;
+    const prepared = preparedStayRate(group, quote);
+    if (!prepared.rateCode && prepared.amountMinor == null) return group;
+    return {
+      ...group,
+      ...(prepared.rateCode ? { quotedRateCode: prepared.rateCode } : {}),
+      ...(prepared.amountMinor != null ? { quotedAmountMinor: prepared.amountMinor } : {}),
+    };
+  });
 }
 
 export type BoundStaffSource =

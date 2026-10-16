@@ -446,6 +446,7 @@ function RoomTextField({
   disabled,
   maxLength,
   multiline = false,
+  pii = false,
   onChange,
 }: {
   label: string;
@@ -454,10 +455,11 @@ function RoomTextField({
   disabled: boolean;
   maxLength: number;
   multiline?: boolean;
+  pii?: boolean;
   onChange: (value: string) => void;
 }) {
   return (
-    <div className="flex items-end gap-2">
+    <div className="flex items-end gap-2" data-pii={pii || undefined}>
       <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
         {label}
         {multiline ? (
@@ -493,6 +495,8 @@ type RoomChoice = {
   sourceOfBusiness: string;
   guaranteeType: string;
   ratePlan: string;
+  firstName: string;
+  lastName: string;
   bookingAgency: string;
   organization: string;
   reservationNote: string;
@@ -506,6 +510,8 @@ const NO_CHOICE: RoomChoice = {
   sourceOfBusiness: '',
   guaranteeType: '',
   ratePlan: '',
+  firstName: '',
+  lastName: '',
   bookingAgency: '',
   organization: '',
   reservationNote: '',
@@ -545,7 +551,17 @@ export function BookingCards({
               track: textValue(room.request.track),
               sourceOfBusiness: textValue(room.request.sourceOfBusiness),
               guaranteeType: textValue(room.request.guaranteeType),
-              ratePlan: textValue(room.request.ratePlan),
+              ratePlan:
+                textValue(room.request.ratePlan) ||
+                (() => {
+                  const stay =
+                    groups.find((item) => item.id === room.groupId) ??
+                    groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
+                  return stay?.rateCode || stay?.quotedRateCode || '';
+                })() ||
+                '',
+              firstName: textValue(room.request.firstName),
+              lastName: textValue(room.request.lastName),
               bookingAgency: textValue(room.request.agency) || pickedName(parties?.agency),
               organization: textValue(room.request.organization) || pickedName(parties?.company),
               reservationNote: textValue(room.request.reservationNote),
@@ -708,9 +724,32 @@ export function BookingCards({
             ) : (
               <RoomTextField roomLabel={roomLabel} label="Rate code" value={choice.ratePlan} disabled={locked} maxLength={10} onChange={(value) => setChoice({ ratePlan: value.toUpperCase() })} />
             )}
+            {typeof group?.quotedAmountMinor === 'number' || group?.rowPrice ? (
+              <CopyRow
+                roomLabel={roomLabel}
+                label="Price"
+                value={`R${((group.rowPrice?.amountMinor ?? group.quotedAmountMinor ?? 0) / 100).toFixed(2)}`}
+              />
+            ) : null}
             <CopyRow roomLabel={roomLabel} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
-            <CopyRow roomLabel={roomLabel} label="Last name" value={textValue(request.lastName)} pii />
-            <CopyRow roomLabel={roomLabel} label="First name" value={textValue(request.firstName)} pii />
+            <RoomTextField
+              roomLabel={roomLabel}
+              label="Last name"
+              value={choice.lastName}
+              disabled={locked}
+              maxLength={PANE_BOOKER_NAME_MAX}
+              pii
+              onChange={(value) => setChoice({ lastName: value })}
+            />
+            <RoomTextField
+              roomLabel={roomLabel}
+              label="First name"
+              value={choice.firstName}
+              disabled={locked}
+              maxLength={PANE_BOOKER_NAME_MAX}
+              pii
+              onChange={(value) => setChoice({ firstName: value })}
+            />
             <RoomTextField
               roomLabel={roomLabel}
               label="Booking agency"
@@ -828,19 +867,17 @@ export function BookingCards({
                     specialRequests: group?.specialRequests,
                     authorisedBy: override?.note,
                     rate: {
-                      code: override?.rateCode ?? (choice.ratePlan || textValue(request.ratePlan)),
-                      nightlyMinor: price ? [price.amountMinor] : undefined,
+                      code:
+                        override?.rateCode ??
+                        (choice.ratePlan || textValue(request.ratePlan) || group?.rateCode || group?.quotedRateCode),
+                      nightlyMinor:
+                        price ? [price.amountMinor] : group?.quotedAmountMinor != null ? [group.quotedAmountMinor] : undefined,
                       board: BOARD_LABELS[room.board ?? ''],
                     },
                   },
                 ],
               })}
             />
-            {room.schemaErrors.map((error) => (
-              <p key={error} className="text-[11px] text-amber-800">
-                {error}
-              </p>
-            ))}
             {childCount > 0 ? (
               <p role="note" className="text-[11.5px] text-amber-900">
                 {PANE_CHILDREN_COPY}
