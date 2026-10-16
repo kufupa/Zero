@@ -48,6 +48,7 @@ import {
   bindListThreadQuoteRevisions,
   bindPrepareBookingDraft,
   bindUsePriorQuoteForBooking,
+  UNQUOTED_BOOKING_REVISION_REF,
   buildExpiredPriorRequoteBindArgs,
   EXPIRED_PRIOR_QUOTE_REQUOTE_LABEL,
   expiredPriorQuoteNotice,
@@ -1002,6 +1003,38 @@ export function NavaPane({
         } else if (notice === 'mismatch') {
           toast.warning('The dates no longer match the earlier quote. Run the search again.');
         }
+      }
+
+      const stayKey = unbound.size === 1 ? [...unbound][0] : null;
+      const rateCode = stayKey
+        ? quoteSession.groups.find((group) => stayKeyForGroup(group) === stayKey)?.rateCode
+        : undefined;
+      const mutate = staff.workstation.prepareUnquotedBookingDraft?.mutate;
+      const result =
+        stayKey &&
+        stayKeys.length <= 1 &&
+        !cancelled &&
+        !(luna.flags ?? []).some((flag) => flag === 'conference_or_group' || flag === 'rooms_only_group') &&
+        mutate
+          ? await mutate({
+              messageId: source.messageId,
+              selectionEpoch,
+              inputRevision,
+              analysis: { ...luna, groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups) },
+              ...(rateCode ? { rateCode } : {}),
+            }).catch(() => null)
+          : null;
+      if (
+        result?.status === 'ready' &&
+        result.revisionRef === UNQUOTED_BOOKING_REVISION_REF &&
+        result.selectionEpoch === selectionEpoch &&
+        result.inputRevision === inputRevision &&
+        result.messageId === source.messageId &&
+        result.draft?.rooms &&
+        result.options &&
+        quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })
+      ) {
+        dispatchQuote({ type: 'booking_draft_ready', payload: result, sourceHash: source.sourceHash });
       }
     })();
     void readBack.then(

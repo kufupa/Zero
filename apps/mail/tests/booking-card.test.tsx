@@ -250,10 +250,23 @@ describe('booking cards', () => {
     ]);
     expect(screen.getAllByRole('heading', { name: 'Standard Queen ×2' })).toHaveLength(2);
     expect(screen.getAllByText('STQN')).toHaveLength(2);
-    expect(screen.getAllByText('TAXYZ')).toHaveLength(2);
+    expect(screen.getAllByLabelText('Rate code').map((field) => (field as HTMLInputElement).value)).toEqual([
+      'TAXYZ',
+      'TAXYZ',
+    ]);
     expect(screen.getByText('Smith')).toBeDefined();
     expect(screen.getByText('Doe')).toBeDefined();
     expect(screen.getAllByRole('button', { name: 'Copy Adults for Standard Queen ×2' })).toHaveLength(2);
+  });
+
+  it('lets staff type a rate code when the draft has none', () => {
+    const draft = draftReady();
+    for (const room of draft.draft.rooms) delete room.request.ratePlan;
+    render(<QuoteWorkflowPanel session={quotedSession(draft)} />);
+    const fields = screen.getAllByLabelText('Rate code');
+    expect(fields).toHaveLength(2);
+    fireEvent.change(fields[0]!, { target: { value: 'barro' } });
+    expect((fields[0] as HTMLInputElement).value).toBe('BARRO');
   });
 
   it('shows an amber mismatch banner with the claim quote', () => {
@@ -939,6 +952,24 @@ describe('pane save helpers', () => {
       stay: null,
       missing: ['last name', 'track', 'guarantee'],
     });
+  });
+
+  it('takes a typed rate code when the draft request has none', () => {
+    const request = {
+      firstName: 'John',
+      lastName: 'Smith',
+      arrival: '2026-11-12',
+      departure: '2026-11-14',
+      adults: 1,
+    };
+    const built = paneStayInputForRoom(request, {
+      roomType: 'STQN',
+      track: 'BAR',
+      sourceOfBusiness: 'E-Mail',
+      guaranteeType: '6pm Release',
+      ratePlan: 'BARRO',
+    });
+    expect(built.stay?.ratePlan).toBe('BARRO');
   });
 
   it('reads the server flag, and reads off when the client has no brain router', async () => {

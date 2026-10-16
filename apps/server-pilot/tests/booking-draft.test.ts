@@ -1,15 +1,21 @@
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  bookingDraftFromPrefill,
   buildBookingDrafts,
   createRequestFieldOptions,
+  isUnquotedSingleStayNewBooking,
   requestFromQuotedRoom,
   splitGuestName,
+  UNQUOTED_BOOKING_REVISION_REF,
 } from '../src/ai/booking-draft.js';
 import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { appRouter } from '../src/trpc/router.js';
-import { prepareBookingDraftInput } from '../src/trpc/routes/workstation.js';
+import {
+  prepareBookingDraftInput,
+  prepareUnquotedBookingDraftInput,
+} from '../src/trpc/routes/workstation.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import type { QuoteRevision } from '../src/quote-proposal/quote-revision.js';
 
@@ -602,5 +608,115 @@ describe('prepareBookingDraft route', () => {
     const result = await draftCaller('transport-nava').workstation.prepareBookingDraft(draftInput);
     expect(result).toMatchObject({ status: 'unavailable' });
     expect(result).toHaveProperty('reason');
+  });
+});
+
+describe('unquoted single-stay booking draft', () => {
+  it('accepts one dated stay and refuses quote, multi-stay, and group mail', () => {
+    expect(isUnquotedSingleStayNewBooking(analysis())).toBe(true);
+    expect(isUnquotedSingleStayNewBooking(analysis({ workflow: 'quote' }))).toBe(false);
+    const first = analysis().groups[0]!;
+    expect(
+      isUnquotedSingleStayNewBooking(
+        analysis({
+          groups: [
+            { ...first, arrival: '2026-10-12', departure: '2026-10-13', rooms: 1 },
+            { ...first, arrival: '2026-12-01', departure: '2026-12-03', rooms: 1 },
+          ],
+        }),
+      ),
+    ).toBe(false);
+    expect(isUnquotedSingleStayNewBooking(analysis({ flags: ['conference_or_group'] }))).toBe(false);
+  });
+
+  it('maps prefill requests to rooms with an empty rateCheck and no ratePlan warning', () => {
+    const draft = bookingDraftFromPrefill({
+      requests: [
+        {
+          arrival: '2027-09-14',
+          departure: '2027-09-16',
+          adults: 1,
+          childAges: [],
+          firstName: 'Ada',
+          lastName: 'Lovelace',
+          roomType: 'STQN',
+        },
+      ],
+      missing: [{ field: 'ratePlan', question: 'Rate plan code for this booking?' }],
+      schemaErrors: [['ratePlan']],
+      board: 'bb',
+    });
+    expect(draft.rateCheck).toEqual([]);
+    expect(draft.missing).toEqual([]);
+    expect(draft.rooms).toEqual([
+      {
+        groupId: '2027-09-14:2027-09-16',
+        roomIndex: 1,
+        board: 'bb',
+        request: expect.objectContaining({ firstName: 'Ada', lastName: 'Lovelace', roomType: 'STQN' }),
+        schemaErrors: [],
+      },
+    ]);
+  });
+});
+
+const unquotedInput = {
+  messageId: 'message-1',
+  selectionEpoch: 1,
+  inputRevision: 1,
+  analysis: analysis(),
+};
+
+describe('prepareUnquotedBookingDraft route', () => {
+  it('rejects an extra input key', () => {
+    expect(prepareUnquotedBookingDraftInput.parse(unquotedInput).messageId).toBe('message-1');
+    expect(() => prepareUnquotedBookingDraftInput.parse({ ...unquotedInput, extra: true })).toThrow();
+  });
+
+  it('returns a booking draft with empty rateCheck for one create_booking stay', async () => {
+    const result = await draftCaller().workstation.prepareUnquotedBookingDraft(unquotedInput);
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    expect(result.revisionRef).toBe(UNQUOTED_BOOKING_REVISION_REF);
+    expect(result.draft.rateCheck).toEqual([]);
+    expect(result.draft.rooms.length).toBeGreaterThan(0);
+    expect(result.draft.rooms[0]?.request).toMatchObject({
+      arrival: '2026-10-12',
+      departure: '2026-10-13',
+      firstName: 'John',
+      lastName: 'Smith',
+    });
+    expect(result.draft.rooms[0]?.request).not.toHaveProperty('ratePlan');
+  });
+
+  it('prefills a party-contract rate code when given', async () => {
+    const result = await draftCaller().workstation.prepareUnquotedBookingDraft({
+      ...unquotedInput,
+      rateCode: 'BCO1B',
+    });
+    expect(result.status).toBe('ready');
+    if (result.status !== 'ready') return;
+    expect(result.draft.rooms[0]?.request).toMatchObject({ ratePlan: 'BCO1B' });
+  });
+
+  it('returns unavailable for a quote workflow or a second stay', async () => {
+    await expect(
+      draftCaller().workstation.prepareUnquotedBookingDraft({
+        ...unquotedInput,
+        analysis: analysis({ workflow: 'quote' }),
+      }),
+    ).resolves.toMatchObject({ status: 'unavailable' });
+    const first = analysis().groups[0]!;
+    await expect(
+      draftCaller().workstation.prepareUnquotedBookingDraft({
+        ...unquotedInput,
+        analysis: analysis({
+          groups: [
+            { ...first, arrival: '2026-10-12', departure: '2026-10-13', rooms: 1, guestNames: ['Ada Lovelace'] },
+            { ...first, arrival: '2026-12-01', departure: '2026-12-03', rooms: 1, guestNames: ['Alan Turing'] },
+          ],
+        }),
+      }),
+    ).resolves.toMatchObject({ status: 'unavailable' });
   });
 });

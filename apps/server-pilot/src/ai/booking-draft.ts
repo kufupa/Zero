@@ -32,6 +32,55 @@ export type BookingDraft = {
   flags: string[];
 };
 
+export const UNQUOTED_BOOKING_REVISION_REF = 'unquoted';
+
+export function isUnquotedSingleStayNewBooking(analysis: {
+  workflow?: string | null;
+  flags?: readonly string[] | null;
+  groups?: Array<{ arrival?: string | null; departure?: string | null }> | null;
+}): boolean {
+  if (analysis.workflow !== 'create_booking') return false;
+  if (analysis.flags?.some((flag) => flag === 'conference_or_group' || flag === 'rooms_only_group')) return false;
+  const keys = new Set(
+    (analysis.groups ?? [])
+      .filter((group) => group.arrival?.trim())
+      .map((group) => `${group.arrival}:${group.departure ?? ''}`),
+  );
+  return keys.size === 1;
+}
+
+export function prefillBoardFromLuna(board: string | null | undefined): QuotedBoard {
+  if (board === 'room_only') return 'room_only';
+  if (board === 'bb') return 'bb';
+  if (board === 'dbb' || board === 'dinner_bb') return 'dinner_bb';
+  return 'unknown';
+}
+
+export function bookingDraftFromPrefill(input: {
+  requests: Record<string, unknown>[];
+  missing: BookingDraftMissing[];
+  schemaErrors: string[][];
+  board?: QuotedBoard;
+}): BookingDraft {
+  const rooms: BookingDraftRoom[] = input.requests.map((request, index) => {
+    const arrival = typeof request.arrival === 'string' ? request.arrival : 'unknown';
+    const departure = typeof request.departure === 'string' ? request.departure : 'unknown';
+    return {
+      groupId: `${arrival}:${departure}`,
+      roomIndex: index + 1,
+      board: input.board ?? 'unknown',
+      request,
+      schemaErrors: (input.schemaErrors[index] ?? []).filter((error) => !/ratePlan/i.test(error)),
+    };
+  });
+  return {
+    rooms,
+    rateCheck: [],
+    missing: input.missing.filter((item) => item.field !== 'ratePlan'),
+    flags: [],
+  };
+}
+
 const TITLE = /\b(?:Mr|Mrs|Ms|Miss|Dr|Prof)\b\.?/gi;
 
 export function splitGuestName(raw: string): { firstName: string; lastName: string } {

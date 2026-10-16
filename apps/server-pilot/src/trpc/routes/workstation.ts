@@ -8,7 +8,15 @@ import {
   type StaffQuoteAttestation,
 } from '../../ai/staff-quote-workflow.js';
 import { bookingCodeDefaults, type PartyClass } from '../../ai/booking-code-rules.js';
-import { buildBookingDrafts, createRequestFieldOptions } from '../../ai/booking-draft.js';
+import {
+  bookingDraftFromPrefill,
+  buildBookingDrafts,
+  createRequestFieldOptions,
+  isUnquotedSingleStayNewBooking,
+  prefillBoardFromLuna,
+  UNQUOTED_BOOKING_REVISION_REF,
+} from '../../ai/booking-draft.js';
+import { buildCreatePrefill } from '../../ai/aop/create-prefill.js';
 import {
   collectThreadQuoteRevisions,
   priorStaffQuoteRequotePayload,
@@ -158,6 +166,16 @@ export const prepareBookingDraftInput = z
     selectionEpoch: z.number().int().nonnegative(),
     inputRevision: z.number().int().nonnegative(),
     analysis: lunaAnalysisSchema,
+  })
+  .strict();
+
+export const prepareUnquotedBookingDraftInput = z
+  .object({
+    messageId: z.string().min(1),
+    selectionEpoch: z.number().int().nonnegative(),
+    inputRevision: z.number().int().nonnegative(),
+    analysis: lunaAnalysisSchema,
+    rateCode: z.string().regex(/^[A-Z0-9]{2,10}$/).optional(),
   })
   .strict();
 
@@ -951,6 +969,61 @@ export const workstationRouter = router({
           reason: error instanceof Error ? error.message : 'quote_revision_unavailable',
         };
       }
+    }),
+  prepareUnquotedBookingDraft: mailboxProcedure
+    .input(prepareUnquotedBookingDraftInput)
+    .mutation(async ({ input }) => {
+      if (!isUnquotedSingleStayNewBooking(input.analysis)) {
+        return { status: 'unavailable' as const, reason: 'not_a_single_stay_new_booking' };
+      }
+      const groups = input.analysis.groups.filter((group) => group.arrival?.trim());
+      const group = groups[0];
+      if (!group?.arrival) return { status: 'unavailable' as const, reason: 'prefill_unavailable' };
+      const party = input.analysis.party;
+      let prefill;
+      try {
+        prefill = await buildCreatePrefill({
+          arrival: group.arrival,
+          departure: group.departure ?? null,
+          nights: null,
+          rooms: groups.flatMap((row) =>
+            Array.from({ length: Math.max(row.rooms ?? 1, 0) }, (_, index) => ({
+              adults: row.adultsPerRoom ?? 1,
+              childAges: [...row.childAges],
+              roomTypeText: row.roomPreference ?? null,
+              guestName: row.guestNames[index] ?? null,
+            })),
+          ),
+          boardText: group.board ?? null,
+          rateText: input.rateCode ?? null,
+          agencyName: party.kind === 'agency' ? party.name : null,
+          organizationName:
+            party.kind === 'organization' || party.kind === 'government' ? party.name : null,
+          voucherNumber: null,
+          bookerName: null,
+          bookerEmail: null,
+          billingReference: party.reference,
+          paidBy: null,
+          defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
+        });
+      } catch {
+        return { status: 'unavailable' as const, reason: 'prefill_unavailable' };
+      }
+      if (!prefill.requests.length) return { status: 'unavailable' as const, reason: 'prefill_unavailable' };
+      return {
+        status: 'ready' as const,
+        draft: bookingDraftFromPrefill({
+          requests: prefill.requests,
+          missing: prefill.missing,
+          schemaErrors: prefill.schemaErrors,
+          board: prefillBoardFromLuna(group.board),
+        }),
+        options: createRequestFieldOptions(),
+        messageId: input.messageId,
+        selectionEpoch: input.selectionEpoch,
+        inputRevision: input.inputRevision,
+        revisionRef: UNQUOTED_BOOKING_REVISION_REF,
+      };
     }),
   listThreadQuoteRevisions: mailboxProcedure
     .input(listThreadQuoteRevisionsInput)
