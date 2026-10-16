@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   lunaAnalysisSchema,
   RESERVATIONIST_WORKFLOWS,
@@ -318,5 +318,67 @@ describe('analyseSelectionWithAgent', () => {
     expect(prompt).toContain(selection.bodyText);
     expect(prompt).toContain('Use the November dates.');
     expect(prompt).toContain('Attachment note.');
+  });
+
+  describe('PANE_PRECLASSIFY hint', () => {
+    const prev = process.env.PANE_PRECLASSIFY;
+    afterEach(() => {
+      if (prev === undefined) delete process.env.PANE_PRECLASSIFY;
+      else process.env.PANE_PRECLASSIFY = prev;
+    });
+
+    function okGenerate() {
+      mocks.generate.mockResolvedValue({
+        object: decision('quote'),
+        usage: {},
+        steps: [],
+      });
+    }
+
+    it('does not classify when the flag is off', async () => {
+      delete process.env.PANE_PRECLASSIFY;
+      okGenerate();
+      const classify = vi.fn();
+      await analyseSelectionWithAgent({ selection, model: azureModel, classify });
+      expect(classify).not.toHaveBeenCalled();
+      const prompt = String(mocks.generate.mock.calls.at(-1)?.[0] ?? '');
+      expect(prompt).not.toContain('pre-classified');
+    });
+
+    it('injects a medium/high hint and skips low confidence', async () => {
+      process.env.PANE_PRECLASSIFY = 'on';
+      okGenerate();
+      const classify = vi.fn(async () => ({ workflow: 'quote_availability' as const, confidence: 'high' as const }));
+      await analyseSelectionWithAgent({ selection, model: azureModel, classify });
+      expect(classify).toHaveBeenCalledWith(
+        expect.objectContaining({
+          subject: selection.subject,
+          attachmentNames: ['request.txt'],
+          bodyHead: selection.bodyText.slice(0, 600),
+        }),
+      );
+      expect(String(mocks.generate.mock.calls.at(-1)?.[0] ?? '')).toContain(
+        'Workflow (pre-classified, confidence high): quote. Override only with clear evidence.',
+      );
+
+      mocks.generate.mockClear();
+      okGenerate();
+      classify.mockResolvedValueOnce({ workflow: 'amend', confidence: 'low' });
+      await analyseSelectionWithAgent({ selection, model: azureModel, classify });
+      expect(String(mocks.generate.mock.calls.at(-1)?.[0] ?? '')).not.toContain('pre-classified');
+    });
+
+    it('still runs the agent when classify throws', async () => {
+      process.env.PANE_PRECLASSIFY = 'on';
+      okGenerate();
+      const result = await analyseSelectionWithAgent({
+        selection,
+        model: azureModel,
+        classify: async () => {
+          throw new Error('classifier down');
+        },
+      });
+      expect(result.source).toBe('luna');
+    });
   });
 });
