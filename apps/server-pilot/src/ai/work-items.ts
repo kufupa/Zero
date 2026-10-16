@@ -1299,7 +1299,9 @@ async function readyView(
   const paneItem = existingStayInformation ? null : item;
   const state = paneItem?.state ?? {};
   const selectedConfirmation = read.payload.confirmationNumbers[0]?.trim() ?? '';
-  const synced = await loadSyncedQuoteSelectionFromMailbox({ transportId, messageId: msg.id });
+  const synced = existingStayInformation
+    ? null
+    : await loadSyncedQuoteSelectionFromMailbox({ transportId, messageId: msg.id });
   const threadConfirmation = isHmsConfirmation(selectedConfirmation)
     ? undefined
     : synced?.threadConfirmation;
