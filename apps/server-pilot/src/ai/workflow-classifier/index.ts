@@ -107,6 +107,24 @@ Attachments: ${attachments}
 Body start: ${input.bodyHead}`;
 }
 
+export function parseStoredClassifier(usage: unknown): ClassifierResult | null {
+  if (!usage || typeof usage !== 'object' || Array.isArray(usage)) return null;
+  const raw = (usage as Record<string, unknown>).classifier;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const workflow = (raw as { workflow?: unknown }).workflow;
+  const confidence = (raw as { confidence?: unknown }).confidence;
+  if (typeof workflow !== 'string' || typeof confidence !== 'string') return null;
+  if (!COARSE_SET.has(workflow) || !CONF_SET.has(confidence)) return null;
+  return { workflow: workflow as CoarseWorkflow, confidence: confidence as ClassifierConfidence };
+}
+
+export function mergeClassifierUsage(
+  usage: Record<string, unknown> | null | undefined,
+  result: ClassifierResult,
+): Record<string, unknown> {
+  return { ...(usage ?? {}), classifier: result };
+}
+
 export function parseClassifierOutput(text: string): ClassifierResult | null {
   const match = /\{[\s\S]*\}/.exec(text);
   if (!match) return null;

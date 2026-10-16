@@ -9,8 +9,10 @@ import {
   classifyWorkflow,
   classifierInputFromSelection,
   formatWorkflowHint,
+  mergeClassifierUsage,
   panePreclassifyEnabled,
   parseClassifierOutput,
+  parseStoredClassifier,
   shouldAttachWorkflowHint,
 } from '../src/ai/workflow-classifier/index.js';
 
@@ -118,6 +120,19 @@ describe('classifyWorkflow', () => {
         { invoke: async () => 'nope' },
       ),
     ).resolves.toBeNull();
+  });
+});
+
+describe('stored classifier on extraction usage', () => {
+  it('round-trips workflow + confidence on usage.classifier', () => {
+    const usage = mergeClassifierUsage({ extraction: { inputTokens: 1 } }, {
+      workflow: 'billing',
+      confidence: 'high',
+    });
+    expect(usage.extraction).toEqual({ inputTokens: 1 });
+    expect(parseStoredClassifier(usage)).toEqual({ workflow: 'billing', confidence: 'high' });
+    expect(parseStoredClassifier({ extraction: { inputTokens: 1 } })).toBeNull();
+    expect(parseStoredClassifier(null)).toBeNull();
   });
 });
 
