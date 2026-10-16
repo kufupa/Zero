@@ -36,11 +36,12 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
-import type { QuoteSessionAction, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
+import type { QuoteAnalysis, QuoteSessionAction, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
+import { overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
 import { storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import { bindPaneTelemetry, currentPaneOwner, setPaneTelemetryScope, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import {
@@ -225,6 +226,19 @@ function rememberAutoStaffQuoteSuppression(emailKey: string): void {
 
 function staffQuoteAttemptKey(transportId: string, messageId: string, sourceHash: string, stayKey: string): string {
   return JSON.stringify([transportId, messageId, sourceHash, stayKey]);
+}
+
+function analysisWithPaneEdits(
+  analysis: QuoteAnalysis,
+  transportId: string,
+  messageKey: string | undefined,
+): QuoteAnalysis {
+  if (!messageKey) return analysis;
+  const groups = overlayRememberedGroups(
+    analysis.groups,
+    recalledPaneEdits(paneEditKey(transportId, messageKey)),
+  );
+  return groups === analysis.groups ? analysis : { ...analysis, groups };
 }
 
 function staffQuoteNoticeView(jobId: string, result: BoundExecuteStaffQuote): HmsJobView {
@@ -624,6 +638,10 @@ export function NavaPane({
     dispatchQuote(action);
     const after = reduceQuoteSession(before, action);
     storedWork.recordGroups(before.groups, after.groups);
+    const messageKey = after.binding?.internetMessageId ?? before.binding?.internetMessageId;
+    if (after.binding?.transportId && messageKey) {
+      rememberPaneEdits(paneEditKey(after.binding.transportId, messageKey), after.groups);
+    }
   };
   // With a treat-as or note the read is live, so only Retry read (its count) re-runs it, not a stored-read change.
   const storedGate = storedOverridden ? `override|${storedWork.retryCount}` : storedWork.key;
@@ -638,7 +656,14 @@ export function NavaPane({
     const selectionEpoch = binding.selectionEpoch;
     const decision = storedDecision(storedWork.pane, storedOverridden);
     if (decision.kind === 'ready') {
-      const ready = { type: 'analysis_ready', analysis: decision.analysis } as const;
+      const ready = {
+        type: 'analysis_ready',
+        analysis: analysisWithPaneEdits(
+          decision.analysis,
+          binding.transportId,
+          binding.internetMessageId,
+        ),
+      } as const;
       const before = reduceQuoteSession(quoteSessionRef.current, { type: 'analysis_started' });
       dispatchQuote({ type: 'mailbox_status', status: 'ready' });
       dispatchQuote(ready);
@@ -670,7 +695,14 @@ export function NavaPane({
         if (cancelled) return;
         if (remote.kind === 'ready') {
           dispatchQuote({ type: 'mailbox_status', status: 'ready' });
-          dispatchQuote({ type: 'analysis_ready', analysis: remote.analysis });
+          dispatchQuote({
+            type: 'analysis_ready',
+            analysis: analysisWithPaneEdits(
+              remote.analysis,
+              binding.transportId,
+              binding.internetMessageId,
+            ),
+          });
           return;
         }
         if (remote.kind === 'unsynced') {
@@ -779,7 +811,12 @@ export function NavaPane({
     const waiting = (singleStayKey ? [singleStayKey] : stayKeys).filter(
       (key) => !quoteSession.staffQuotes[key] && !quoteSession.bookingDrafts[key],
     );
-    if (luna?.workflow !== 'create_booking' || !source || !binding || waiting.length === 0) {
+    const isBooking = luna?.workflow === 'create_booking';
+    const isQuote = quoteSession.analysis?.intent === 'quote' || luna?.workflow === 'quote';
+    if ((!isBooking && !isQuote) || !source || !binding || waiting.length === 0) {
+      return;
+    }
+    if (isQuote && !isBooking && staffQuoteQueueMode !== 'on') {
       return;
     }
     const generation = ++staffQuoteReadBackGeneration.current;
@@ -839,7 +876,7 @@ export function NavaPane({
       const reused: Array<{ stayKey: string; prior: UsePriorQuoteForBookingReady }> = [];
       const reasons: string[] = [];
       let expiredPrior: PriorStaffQuoteRequoteRow | null = null;
-      if (unbound.size > 0) {
+      if (unbound.size > 0 && isBooking && luna) {
         const revisions = await bindListThreadQuoteRevisions({
           query: staff.workstation.listThreadQuoteRevisions?.query,
           threadId: source.threadId,
@@ -897,7 +934,7 @@ export function NavaPane({
           approvedHeader: header,
         });
         for (const item of row.result.extrasReviewItems) toast.warning(item);
-        if (luna.workflow === 'create_booking') {
+        if (isBooking && luna) {
           if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
             toast.warning('Details changed while HMS was searching — search availability again.');
             return;
@@ -1009,7 +1046,7 @@ export function NavaPane({
       const mutate = staff.workstation.prepareUnquotedBookingDraft?.mutate;
       const rateCode = stayKey ? quoteSession.groups.find((g) => stayKeyForGroup(g) === stayKey)?.rateCode : undefined;
       const result =
-        stayKey && !cancelled && !(luna.flags ?? []).some((f) => f === 'conference_or_group' || f === 'rooms_only_group') && mutate
+        stayKey && luna && !cancelled && !(luna.flags ?? []).some((f) => f === 'conference_or_group' || f === 'rooms_only_group') && mutate
           ? await mutate({
               messageId: source.messageId,
               selectionEpoch,
@@ -1035,6 +1072,7 @@ export function NavaPane({
       () => {
         if (staffQuoteReadBackGeneration.current === generation) {
           staffQuoteReadBackInFlight.current = false;
+          if (isQuote && !isBooking) autoStartStaffQuoteStepRef.current();
         }
       },
       () => {
@@ -1051,7 +1089,7 @@ export function NavaPane({
         staffQuoteReadBackInFlight.current = false;
       }
     };
-  }, [priorQuoteKey, isNonActionableMessage]);
+  }, [priorQuoteKey, isNonActionableMessage, staffQuoteQueueMode]);
 
   useEffect(() => {
     if (staffQuoteQueueMode !== 'on') return;

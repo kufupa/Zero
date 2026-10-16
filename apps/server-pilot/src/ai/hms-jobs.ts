@@ -3025,7 +3025,6 @@ async function latestStaffQuoteRunFor(
   quoteInput: StaffQuoteInput,
   userId: string,
 ): Promise<AiWorkflowRun[]> {
-  const wanted = hmsRequestKey({ kind: 'staff_quote', input: quoteInput });
   const now = new Date();
   const ownerScope = quotePreparationEnabled()
     ? or(
@@ -3059,12 +3058,16 @@ async function latestStaffQuoteRunFor(
     if (stored?.status === 'ready') return true;
     return Boolean(run.readResultExpiresAt && run.readResultExpiresAt > now);
   };
-  // A later user quote still supersedes an older user quote on this message, even when its input changed.
-  const newestUserRun = rows.find((run) => objectRecord(run.metrics).userId === userId);
-  if (newestUserRun && reusable(newestUserRun)) {
-    const parsed = hmsJobRequestSchema.safeParse(newestUserRun.readRequest);
-    if (parsed.success && parsed.data.kind === 'staff_quote' && hmsRequestKey(parsed.data) === wanted) {
-      return [newestUserRun];
+  // User quotes are independent per stay. Match the newest run whose stay terms equal this request.
+  for (const userRun of rows) {
+    if (objectRecord(userRun.metrics).userId !== userId || !reusable(userRun)) continue;
+    const parsed = hmsJobRequestSchema.safeParse(userRun.readRequest);
+    if (
+      parsed.success &&
+      parsed.data.kind === 'staff_quote' &&
+      staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput)
+    ) {
+      return [userRun];
     }
   }
 
