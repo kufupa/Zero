@@ -1998,6 +1998,30 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps Treat-as quote after switching emails and coming back', async () => {
+    const bridgeFor = (entryId: string, internetMessageId: string, subject: string) =>
+      ({
+        ...fakeBridge,
+        activeEmail: { ...fakeBridge.activeEmail!, entryId, internetMessageId, subject },
+      }) as unknown as PaneBridge;
+    const { rerender } = render(
+      <NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />,
+    );
+    const intent = (await screen.findByLabelText('Change how Nava reads this email')) as HTMLSelectElement;
+    fireEvent.change(intent, { target: { value: 'create_booking' } });
+    await waitFor(() => expect(intent.value).toBe('create_booking'));
+
+    rerender(<NavaPane bridge={bridgeFor('002', '<other-quote@example.invalid>', 'Quote B')} />);
+    await screen.findByLabelText('Change how Nava reads this email');
+
+    rerender(<NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />);
+    await waitFor(() =>
+      expect((screen.getByLabelText('Change how Nava reads this email') as HTMLSelectElement).value).toBe(
+        'create_booking',
+      ),
+    );
+  });
+
   // Banner Retry removed (Greptile P1, 2026-10-13): a failed lookup is retried from its own card.
   it.skip('does not auto-run again after a failed background quote; Get rates remains a manual retry', async () => {
     bridgeMockState.storedWork = STORED_READY;

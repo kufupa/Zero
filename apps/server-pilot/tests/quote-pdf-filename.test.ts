@@ -29,9 +29,19 @@ describe('quote PDF filename party', () => {
   it('retargets a built PDF name without changing the stay span or option id', () => {
     expect(
       retargetQuotePdfFileName(
-        'Quote - Guest 26 October - 18 November 2026 (abcd1234).pdf',
+        'Quote - Quote 26 October - 18 November 2026 (abcd1234).pdf',
         'Jane Guest',
+        '',
       ),
     ).toBe('Quote - Jane Guest 26 October - 18 November 2026 (abcd1234).pdf');
+    expect(
+      retargetQuotePdfFileName('Quote - Quote 12-14 October 2026 (abcd1234).pdf', 'Jane Smith', ''),
+    ).toBe('Quote - Jane Smith 12-14 October 2026 (abcd1234).pdf');
+    expect(
+      retargetQuotePdfFileName('Quote - Acme 5 Star 12-14 October 2026.pdf', 'Jane Smith', 'Acme 5 Star'),
+    ).toBe('Quote - Jane Smith 12-14 October 2026.pdf');
+    expect(retargetQuotePdfFileName('Quote - Quote 12 Oct.pdf', 'A $$ $& Co', '')).toBe(
+      'Quote - A $$ $& Co 12 Oct.pdf',
+    );
   });
 });

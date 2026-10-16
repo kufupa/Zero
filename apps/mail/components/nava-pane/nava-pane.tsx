@@ -596,12 +596,12 @@ export function NavaPane({
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
   const treatAsMailKey = paneEditKey(activeConnection?.id ?? '', contactMessageKey);
-  useLayoutEffect(() => {
-    if (!contactMessageKey) return;
+  useEffect(() => {
+    if (!quoteSession.binding || !treatAsMailKey) return;
     const saved = readTreatAs(treatAsMailKey);
-    if (!saved) return;
+    if (!saved || quoteSession.treatAs) return;
     dispatchQuote({ type: 'treat_as', treatAs: saved });
-  }, [contactMessageKey, treatAsMailKey]);
+  }, [treatAsMailKey, quoteSession.binding, quoteSession.treatAs]);
   const [partySuggestions, setPartySuggestions] = useState<PartySuggestion[]>([]);
   const senderEmail = activeEmail?.senderEmail ?? '';
   const bodyText = activeEmail?.bodyText ?? '';

@@ -38,7 +38,14 @@ export function quotePdfFileName(agency: string, dateLabel: string, documentId?:
 }
 
 /** Swap the party segment of an already-built PDF name. Dates and the option id stay. */
-export function retargetQuotePdfFileName(fileName: string, partyName: string): string {
+export function retargetQuotePdfFileName(
+  fileName: string,
+  partyName: string,
+  previousParty?: string | null,
+): string {
   const party = quotePdfPartyName(partyName);
-  return fileName.replace(/^Quote - .+? (\d{1,2} [A-Za-z].*)$/, `Quote - ${party} $1`);
+  const previous = quotePdfPartyName(previousParty);
+  const prefix = `Quote - ${previous} `;
+  if (!fileName.startsWith(prefix)) return fileName;
+  return `Quote - ${party} ${fileName.slice(prefix.length)}`;
 }

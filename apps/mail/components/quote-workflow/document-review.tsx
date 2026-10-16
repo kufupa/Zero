@@ -11,6 +11,11 @@ import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { Field, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 import { useLayoutEffect, useRef } from 'react';
 
+function reviewedReplyValue(html: string): string {
+  const text = html.replace(/<br\s*\/?>/gi, '').replace(/<[^>]+>/g, '').replace(/&nbsp;/gi, ' ').trim();
+  return text ? html : '';
+}
+
 /** Same HTML as the session; shown as formatted text, not tags. */
 function ReviewedReplyEditor({
   html,
@@ -44,7 +49,7 @@ function ReviewedReplyEditor({
       className="min-h-28 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 py-1.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] [&_p]:m-0 [&_p+p]:mt-2"
       onInput={(event) => {
         if (skipInput.current) return;
-        const next = event.currentTarget.innerHTML;
+        const next = reviewedReplyValue(event.currentTarget.innerHTML);
         lastHtml.current = next;
         onChange?.(next);
       }}

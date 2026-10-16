@@ -1440,7 +1440,11 @@ export const workstationRouter = router({
       return {
         revisionId: result.revisionId,
         pdfHash: result.pdfHash,
-        fileName: retargetQuotePdfFileName(result.fileName, party),
+        fileName: retargetQuotePdfFileName(
+          result.fileName,
+          party,
+          quotePdfPartyName(input.agency, input.company),
+        ),
         totalMinor: result.totalMinor,
         pdfBase64: Buffer.from(result.pdf).toString('base64'),
       };

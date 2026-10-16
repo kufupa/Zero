@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DocumentReview } from '../components/quote-workflow/document-review';
 import { loadQuoteFixture } from '../lib/quote-workflow/fixtures';
@@ -93,5 +93,14 @@ describe('DocumentReview', () => {
     expect(editor.textContent).toContain('Thank you for your enquiry.');
     expect(editor.textContent).not.toContain('<p>');
     expect(editor.tagName.toLowerCase()).not.toBe('textarea');
+  });
+
+  it('saves a cleared formatted reply as empty HTML', () => {
+    const onReplyChange = vi.fn();
+    render(<DocumentReview session={readySession()} onReplyChange={onReplyChange} />);
+    const editor = screen.getByLabelText('Reviewed reply');
+    editor.innerHTML = '<p><br></p>';
+    fireEvent.input(editor);
+    expect(onReplyChange).toHaveBeenCalledWith('');
   });
 });
