@@ -4,7 +4,7 @@ Updated: 2026-10-16
 
 ## Done
 
-Lane code is on `feat/g-F4-10160221`. PR number filled after open.
+PR https://github.com/kufupa/Zero/pull/348 (`feat/g-F4-10160221`, `3b8f24de1`)
 
 Staff find a Labtest stay → pane amend form (HMS now | requested, changed rows highlighted) → **Preview** (HMS fills the diff, nothing saved) → **Approve** (digest-bound commit) → read-back screenshot.
 
