@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
@@ -179,23 +179,26 @@ describe('NavaPane mail-derived party hints', () => {
     cleanup();
   });
 
-  it('shows a sender hint as unverified and never binds a party or rateContext', async () => {
+  it('preselects the sender party once HMS returns it', async () => {
+    const agency = { kind: 'agency' as const, nativeId: '77', name: 'Example Travel Agency' };
+    findPartyMutation.mockResolvedValue({
+      outcome: 'resolved',
+      results: [agency],
+      truncated: false,
+      best: agency,
+      searchedFor: 'Example Travel Agency',
+    });
     render(<NavaPane bridge={fakeBridge} preview />);
-    const agency = await screen.findByRole('group', { name: 'Agency lookup in HMS' });
-    await waitFor(() =>
-      expect(
-        within(agency).getByText('Example Travel Agency (Agency), not confirmed in HMS'),
-      ).toBeTruthy(),
-    );
+    await waitFor(() => expect(screen.getByText('✓ Example Travel Agency (#77)')).toBeTruthy(), {
+      timeout: 4000,
+    });
     expect(suggestQuery).toHaveBeenCalledWith({
       sender: 'ops@example-agency.test',
       body: fakeBridge.activeEmail!.bodyText.slice(0, BODY_LIMIT),
     });
     expect(suggestQuery.mock.calls[0]?.[0].body).toHaveLength(BODY_LIMIT);
-    expect(screen.queryByText(/✓ /)).toBeNull();
-    expect(lastStaffQuoteInput.current).toBeNull();
-    expect(lastStaffQuoteInput.current).not.toMatchObject({ rateContext: expect.anything() });
-    expect(findPartyMutation).not.toHaveBeenCalled();
+    expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
+    expect(screen.queryByText(/learned/i)).toBeNull();
   });
 
   it('swallows a failed suggest and shows no hints', async () => {

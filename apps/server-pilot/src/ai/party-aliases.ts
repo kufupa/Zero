@@ -3,6 +3,7 @@
  * suggestion never sets a rate context by itself. No HMS id is carried here. Every suggestion is unverified, and staff
  * find its HMS id with Find in HMS, so a pick is always the one HMS returns live.
  */
+import { lookupLearnedSenderParty } from './party-sender-map.js';
 
 export type PartyKind = 'company' | 'agency';
 
@@ -84,8 +85,10 @@ export function suggestPartyFromSender(sender: unknown): PartySuggestion | null 
   const alias = SENDER_ALIASES.find((row) =>
     row.domains.some((domain) => host === domain || host.endsWith(`.${domain}`)),
   );
-  if (!alias) return null;
-  return { kind: alias.kind, name: alias.name, nativeId: null, idStatus: 'unverified' };
+  if (alias) return { kind: alias.kind, name: alias.name, nativeId: null, idStatus: 'unverified' };
+  const learned = lookupLearnedSenderParty(host);
+  if (!learned) return null;
+  return { kind: learned.kind, name: learned.name, nativeId: null, idStatus: 'unverified' };
 }
 
 function cleanPartyName(raw: string): string | null {

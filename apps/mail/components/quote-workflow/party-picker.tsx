@@ -26,8 +26,6 @@ export const PARTY_PICKER_HINT = 'Runs in the background. You can keep working.'
 
 export const PARTY_PICKER_BUSY = 'Searching HMS for companies and agencies.';
 
-export const PARTY_SUGGESTION_HINT =
-  'Suggested from this email. Staff confirm before any rate is used.';
 const PARTY_PREFETCH_HINT = 'Suggested match from HMS. Confirm before any rate is used.';
 
 /** How long the typing rests before the HMS list is searched. The list is local, so this only spares the server a call per key. */
@@ -343,6 +341,8 @@ export function PartyPicker({
   const latest = useRef(0);
   // A stored high-confidence V2 binding is applied once per run. Clearing/changing it must not silently reapply it.
   const appliedV2Bindings = useRef(new Set<string>());
+  const seededSuggestion = useRef<string | null>(null);
+  const appliedSuggestionPick = useRef(new Set<string>());
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   // A field that already holds its pick asks the list and HMS nothing more.
   const pickedHere = Boolean(kind ? parties[kind] : parties.company || parties.agency);
@@ -532,13 +532,24 @@ export function PartyPicker({
     });
   }, [currentJobView?.runId, onPick, pickedHere, v2BoundForField]);
 
+  const topSuggestion = !pickedHere ? suggestions.find((suggestion) => inScope(suggestion)) : undefined;
+
+  useEffect(() => {
+    if (pickedHere || v2BoundForField || !onSearchName || !topSuggestion) return;
+    const seedKey = `${topSuggestion.kind}:${topSuggestion.name}`;
+    if (seededSuggestion.current === seedKey) return;
+    if (query && searchKey(query) === searchKey(topSuggestion.name)) {
+      seededSuggestion.current = seedKey;
+      return;
+    }
+    if (query) return;
+    seededSuggestion.current = seedKey;
+    onSearchName(topSuggestion.name, topSuggestion.kind);
+  }, [onSearchName, pickedHere, query, topSuggestion, v2BoundForField]);
+
   const picked: StaffQuoteParty[] = [];
   for (const party of [parties.company, parties.agency])
     if (party && inScope(party)) picked.push(party);
-  const pickedKinds = new Set(picked.map((party) => party.kind));
-  const offered = suggestions.filter(
-    (suggestion) => inScope(suggestion) && !pickedKinds.has(suggestion.kind),
-  );
   // The automatic search's matches, without the row already picked for this field.
   const autoRows = uniqueCandidates(autoReply?.results ?? []).filter(
     (row) =>
@@ -565,6 +576,16 @@ export function PartyPicker({
   const pickRow = (row: PartyCandidate) => {
     onPick({ kind: row.kind, nativeId: row.nativeId, name: row.name });
   };
+
+  useEffect(() => {
+    if (pickedHere || !topSuggestion) return;
+    const candidate = autoBest ?? prefetchedBest;
+    if (!candidate || searchKey(query) !== searchKey(topSuggestion.name)) return;
+    const key = `${candidate.kind}:${candidate.nativeId}`;
+    if (appliedSuggestionPick.current.has(key)) return;
+    appliedSuggestionPick.current.add(key);
+    onPick({ kind: candidate.kind, nativeId: candidate.nativeId, name: candidate.name });
+  }, [autoBest, onPick, pickedHere, prefetchedBest, query, topSuggestion]);
   const showAutoStatus =
     Boolean(autoMemoKey) && !pickedHere && shown.status === 'idle';
   const jobFailureOutcome = jobReply?.outcome ?? 'execution_failure';
@@ -599,27 +620,6 @@ export function PartyPicker({
       ))}
       {Boolean(autoMemoKey) && pickedHere && autoRows.length ? (
         <ResultChips label="Also in HMS:" rows={autoRows} onPick={pickRow} />
-      ) : null}
-      {offered.length ? (
-        <div className="flex flex-col gap-1" aria-label="Suggested from this email">
-          <p>{PARTY_SUGGESTION_HINT}</p>
-          {offered.map((suggestion) => (
-            <div
-              key={`${suggestion.source}:${suggestion.kind}:${suggestion.name}`}
-              className="flex items-center gap-2"
-            >
-              <span>{`${suggestion.name} (${partyKindLabel(suggestion.kind)}), not confirmed in HMS`}</span>
-              <button
-                type="button"
-                className="rounded-xs border border-[#cbd5e1] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#1e293b] disabled:opacity-50"
-                disabled={!onSearchName}
-                onClick={() => onSearchName?.(suggestion.name, suggestion.kind)}
-              >
-                Search HMS for this name
-              </button>
-            </div>
-          ))}
-        </div>
       ) : null}
       {showAutoStatus ? (
         autoReply ? (
