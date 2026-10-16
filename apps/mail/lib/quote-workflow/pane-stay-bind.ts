@@ -187,6 +187,8 @@ export type PaneStayChoice = {
   sourceOfBusiness: string;
   guaranteeType: string;
   ratePlan?: string;
+  firstName?: string;
+  lastName?: string;
   /** Typed in the card. A blank value is not sent. */
   bookingAgency?: string;
   organization?: string;
@@ -202,8 +204,8 @@ export function paneStayInputForRoom(
   choice: PaneStayChoice,
 ): { stay: PaneStayInput | null; missing: string[] } {
   const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
-  const firstName = text(request.firstName);
-  const lastName = text(request.lastName);
+  const firstName = text(choice.firstName ?? request.firstName);
+  const lastName = text(choice.lastName ?? request.lastName);
   const arrival = text(request.arrival);
   const departure = text(request.departure);
   const roomType = text(choice.roomType);

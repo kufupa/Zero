@@ -805,7 +805,6 @@ export function NavaPane({
       .join(','),
     quoteSession.staffQuote ? 'quoted' : '',
     Object.keys(quoteSession.staffQuotes).join(','),
-    Object.keys(quoteSession.bookingDrafts).join(','),
   ].join(':');
   useEffect(() => {
     if (isNonActionableMessage) return;
@@ -837,6 +836,41 @@ export function NavaPane({
     const header = quoteSession.staffHeader;
     let cancelled = false;
     const pollController = new AbortController();
+    const unquotedStayKey = waiting.length === 1 && stayKeys.length <= 1 ? waiting[0]! : null;
+    const unquotedMutate = staff.workstation.prepareUnquotedBookingDraft?.mutate;
+    if (
+      isBooking &&
+      unquotedStayKey &&
+      luna &&
+      unquotedMutate &&
+      !(luna.flags ?? []).some((flag) => flag === 'conference_or_group' || flag === 'rooms_only_group')
+    ) {
+      const rateCode = quoteSession.groups.find((group) => stayKeyForGroup(group) === unquotedStayKey)?.rateCode;
+      void unquotedMutate({
+        messageId: source.messageId,
+        selectionEpoch,
+        inputRevision,
+        analysis: { ...luna, groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups) },
+        ...(rateCode ? { rateCode } : {}),
+      })
+        .then((result) => {
+          if (
+            cancelled ||
+            result?.status !== 'ready' ||
+            result.revisionRef !== UNQUOTED_BOOKING_REVISION_REF ||
+            result.selectionEpoch !== selectionEpoch ||
+            result.inputRevision !== inputRevision ||
+            result.messageId !== source.messageId ||
+            !result.draft?.rooms ||
+            !result.options ||
+            !quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })
+          ) {
+            return;
+          }
+          dispatchQuote({ type: 'booking_draft_ready', payload: result, sourceHash: source.sourceHash });
+        })
+        .catch(() => undefined);
+    }
     const readBack = (async () => {
       const readBacks = await trackStaffQuoteRun(
         Promise.all(
@@ -1048,32 +1082,6 @@ export function NavaPane({
         } else if (notice === 'mismatch') {
           toast.warning('The dates no longer match the earlier quote. Run the search again.');
         }
-      }
-
-      const stayKey = unbound.size === 1 && stayKeys.length <= 1 ? [...unbound][0] : null;
-      const mutate = staff.workstation.prepareUnquotedBookingDraft?.mutate;
-      const rateCode = stayKey ? quoteSession.groups.find((g) => stayKeyForGroup(g) === stayKey)?.rateCode : undefined;
-      const result =
-        stayKey && luna && !cancelled && !(luna.flags ?? []).some((f) => f === 'conference_or_group' || f === 'rooms_only_group') && mutate
-          ? await mutate({
-              messageId: source.messageId,
-              selectionEpoch,
-              inputRevision,
-              analysis: { ...luna, groups: overlayLunaGroupsFromStaff(luna, quoteSession.groups) },
-              ...(rateCode ? { rateCode } : {}),
-            }).catch(() => null)
-          : null;
-      if (
-        result?.status === 'ready' &&
-        result.revisionRef === UNQUOTED_BOOKING_REVISION_REF &&
-        result.selectionEpoch === selectionEpoch &&
-        result.inputRevision === inputRevision &&
-        result.messageId === source.messageId &&
-        result.draft?.rooms &&
-        result.options &&
-        quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })
-      ) {
-        dispatchQuote({ type: 'booking_draft_ready', payload: result, sourceHash: source.sourceHash });
       }
     })();
     void readBack.then(

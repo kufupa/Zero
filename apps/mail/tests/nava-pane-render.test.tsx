@@ -83,6 +83,7 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     listThreadQuoteRevisionsQuery: vi.fn().mockResolvedValue([]),
     usePriorQuoteForBookingMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No prior quote.' }),
     prepareBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
+    prepareUnquotedBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
     recordEvent: vi.fn(async (_input: unknown): Promise<unknown> => ({ aiValue: null, value: null })),
     retryTranslation: vi.fn(async (_input: unknown): Promise<unknown> => ({ status: 'capped', translation: null })),
   },
@@ -189,6 +190,9 @@ vi.mock('../providers/query-provider', () => ({
       listThreadQuoteRevisions: { query: (input: unknown) => bridgeMockState.listThreadQuoteRevisionsQuery(input) },
       usePriorQuoteForBooking: { mutate: (input: unknown) => bridgeMockState.usePriorQuoteForBookingMutation(input) },
       prepareBookingDraft: { mutate: (input: unknown) => bridgeMockState.prepareBookingDraftMutation(input) },
+      prepareUnquotedBookingDraft: {
+        mutate: (input: unknown) => bridgeMockState.prepareUnquotedBookingDraftMutation(input),
+      },
       executeStaffQuote: {
         mutate: async (input: { selectionEpoch: number; inputRevision: number; groups: Array<{ arrivalDate: string; departureDate: string }> }) => {
           if (bridgeMockState.staffQuoteFailure) {
@@ -433,6 +437,9 @@ describe('NavaPane', () => {
       .mockReset()
       .mockResolvedValue({ status: 'unavailable', reason: 'No prior quote.' });
     bridgeMockState.prepareBookingDraftMutation
+      .mockReset()
+      .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
+    bridgeMockState.prepareUnquotedBookingDraftMutation
       .mockReset()
       .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
     vi.mocked(toast.warning).mockClear();
@@ -708,6 +715,9 @@ describe('NavaPane screen states', () => {
       .mockReset()
       .mockResolvedValue({ status: 'unavailable', reason: 'No prior quote.' });
     bridgeMockState.prepareBookingDraftMutation
+      .mockReset()
+      .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
+    bridgeMockState.prepareUnquotedBookingDraftMutation
       .mockReset()
       .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
     vi.mocked(toast.warning).mockClear();
@@ -1629,6 +1639,65 @@ describe('NavaPane screen states', () => {
         expect.objectContaining({ workflowRunId: 'workflow-restored', revisionRef: 'revision-restored' }),
       ),
     );
+  });
+
+  it('asks for an unquoted booking draft on open without waiting for staff-quote polling', async () => {
+    let resolveJob!: (view: unknown) => void;
+    bridgeMockState.storedWork = bookingStoredWork();
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(
+      () => new Promise((resolve) => {
+        resolveJob = resolve;
+      }),
+    );
+    bridgeMockState.prepareUnquotedBookingDraftMutation.mockImplementation(async (input: {
+      messageId: string;
+      selectionEpoch: number;
+      inputRevision: number;
+    }) => ({
+      status: 'ready',
+      draft: {
+        rooms: [
+          {
+            groupId: 'r_1',
+            roomIndex: 1,
+            request: {
+              arrival: '2026-11-03',
+              departure: '2026-11-05',
+              adults: 2,
+              childAges: [],
+              roomType: 'STQN',
+              ratePlan: 'BAR',
+              firstName: 'Ada',
+              lastName: 'Lovelace',
+            },
+            schemaErrors: ['$.roomType required'],
+          },
+        ],
+        rateCheck: [],
+        missing: [],
+        flags: [],
+      },
+      options: {
+        track: ['BAR'],
+        sourceOfBusiness: ['E-Mail'],
+        guaranteeType: ['6pm Release'],
+        roomType: ['STQN'],
+      },
+      messageId: input.messageId,
+      selectionEpoch: input.selectionEpoch,
+      inputRevision: input.inputRevision,
+      revisionRef: 'unquoted',
+    }));
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await waitFor(() => expect(bridgeMockState.prepareUnquotedBookingDraftMutation).toHaveBeenCalled());
+    expect(await screen.findByRole('heading', { name: 'Book in HMS' })).toBeDefined();
+    expect(screen.queryByText('$.roomType required')).toBeNull();
+    expect(screen.queryByText('Available')).toBeNull();
+    await act(async () => resolveJob(completedStaffQuoteJob(STAFF_QUOTE_READY)));
+    expect(await screen.findByText('Available')).toBeDefined();
   });
 
   it('keeps a persisted staff-quote refusal instead of falling back to an older quote', async () => {
