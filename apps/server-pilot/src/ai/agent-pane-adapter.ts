@@ -16,6 +16,14 @@ import {
   type ReservationistRunners,
 } from './reservationist-agent.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
+import {
+  classifyWorkflow,
+  classifierInputFromSelection,
+  formatWorkflowHint,
+  panePreclassifyEnabled,
+  shouldAttachWorkflowHint,
+  type ClassifierResult,
+} from './workflow-classifier/index.js';
 
 const DEFAULT_DEADLINE_MS = 25_000;
 const MAX_STEPS = 10;
@@ -142,11 +150,13 @@ export function paneAnalysisTools(runners: Pick<ReservationistRunners, 'quote' |
 
 export function selectionToAgentPrompt(
   selection: SyncedQuoteSelection,
-  options?: { treatAs?: QuoteTreatAs; staffNote?: string },
+  options?: { treatAs?: QuoteTreatAs; staffNote?: string; workflowHint?: string },
 ): string {
   const parts: string[] = [];
   const staffNote = options?.staffNote?.trim();
   if (staffNote) parts.push(`Staff note (top-priority evidence):\n${maskCardNumbers(staffNote)}`);
+  const workflowHint = options?.workflowHint?.trim();
+  if (workflowHint) parts.push(workflowHint);
   if (options?.treatAs === 'create_booking') {
     parts.push('Staff override: treat this mail as a booking (workflow create).');
   } else if (options?.treatAs === 'quote') {
@@ -187,11 +197,24 @@ export async function analyseSelectionWithAgent(input: {
   deadlineMs?: number;
   treatAs?: QuoteTreatAs;
   staffNote?: string;
+  classify?: (input: ReturnType<typeof classifierInputFromSelection>) => Promise<ClassifierResult | null>;
 }): Promise<AnalyseSelectionWithAgentResult> {
   const started = Date.now();
   const deadlineMs = input.deadlineMs ?? DEFAULT_DEADLINE_MS;
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let workflowHint: string | undefined;
+  if (panePreclassifyEnabled()) {
+    try {
+      const classify = input.classify ?? classifyWorkflow;
+      const classified = await classify(classifierInputFromSelection(input.selection));
+      if (classified && shouldAttachWorkflowHint(classified.confidence)) {
+        workflowHint = formatWorkflowHint(classified);
+      }
+    } catch {
+      workflowHint = undefined;
+    }
+  }
   try {
     const agent = createReservationistAgent({
       model: input.model,
@@ -205,7 +228,11 @@ export async function analyseSelectionWithAgent(input: {
       ['liveQuoteOk', true],
     ]);
     const generatePromise = agent.generate(
-      selectionToAgentPrompt(input.selection, { treatAs: input.treatAs, staffNote: input.staffNote }),
+      selectionToAgentPrompt(input.selection, {
+        treatAs: input.treatAs,
+        staffNote: input.staffNote,
+        workflowHint,
+      }),
       {
         maxSteps: MAX_STEPS,
         requestContext,
