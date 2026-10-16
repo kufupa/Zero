@@ -251,15 +251,16 @@ describe('PartyPicker preselects the top suggestion', () => {
           departureDate: '2026-11-14',
           quantity: 1,
           adults: 1,
-          childrenAges: [],
-          board: 'bb',
-          specialRequests: [],
+          childrenAges: [] as number[],
+          board: 'bb' as const,
+          specialRequests: [] as string[],
           fields: {},
         },
       ],
       header: { ...emptyStaffQuoteHeader(), agency: 'CWT JNB', parties: { agency } },
     });
-    expect((mutate.mock.calls[0]?.[0] as { parties?: unknown }).parties).toEqual({ agency });
+    const sent = mutate.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    expect(sent?.parties).toEqual({ agency });
   });
 });
 
