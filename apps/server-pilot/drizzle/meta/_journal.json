@@ -351,6 +351,13 @@
       "when": 1791072016000,
       "tag": "0049_mail_action_label",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1791072017000,
+      "tag": "0050_party_sender_map",
+      "breakpoints": true
     }
   ]
 }

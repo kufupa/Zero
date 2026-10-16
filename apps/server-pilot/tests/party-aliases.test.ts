@@ -1,5 +1,10 @@
 import { extractPartyMentions, suggestPartyFromSender } from '../src/ai/party-aliases.js';
-import { describe, expect, it } from 'vitest';
+import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
+import { afterEach, describe, expect, it } from 'vitest';
+
+afterEach(() => {
+  replaceLearnedSenderMapForTests(null);
+});
 
 describe('suggestPartyFromSender', () => {
   it('suggests Rennies Travel for a sender at renniesbcdtravel.com, with no id until HMS confirms one', () => {
@@ -43,6 +48,51 @@ describe('suggestPartyFromSender', () => {
     expect(suggestPartyFromSender('a@notrenniesbcdtravel.com')).toBeNull();
     expect(suggestPartyFromSender('no address here')).toBeNull();
     expect(suggestPartyFromSender(undefined)).toBeNull();
+  });
+
+  it('suggests the party for a host in the learned table', () => {
+    replaceLearnedSenderMapForTests([
+      { host: 'learned-agency.test', kind: 'agency', name: 'Learned Agency', support: 4 },
+    ]);
+    expect(suggestPartyFromSender('ops@learned-agency.test')).toEqual({
+      kind: 'agency',
+      name: 'Learned Agency',
+      nativeId: null,
+      idStatus: 'unverified',
+    });
+  });
+
+  it('suggests nothing for freemail even when the table is loaded', () => {
+    replaceLearnedSenderMapForTests([
+      { host: 'gmail.com', kind: 'agency', name: 'Wrong Freemail Party', support: 9 },
+      { host: 'learned-agency.test', kind: 'agency', name: 'Learned Agency', support: 4 },
+    ]);
+    expect(suggestPartyFromSender('a@gmail.com')).toBeNull();
+  });
+
+  it('prefers an exact host over a parent domain', () => {
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.test', kind: 'company', name: 'Parent Co', support: 2 },
+      { host: 'desk.agency.test', kind: 'agency', name: 'Desk Agency', support: 3 },
+    ]);
+    expect(suggestPartyFromSender('a@desk.agency.test')).toEqual({
+      kind: 'agency',
+      name: 'Desk Agency',
+      nativeId: null,
+      idStatus: 'unverified',
+    });
+  });
+
+  it('lets a static alias win when the table has the same host', () => {
+    replaceLearnedSenderMapForTests([
+      { host: 'renniesbcdtravel.com', kind: 'company', name: 'Wrong Learned Name', support: 99 },
+    ]);
+    expect(suggestPartyFromSender('a@renniesbcdtravel.com')).toEqual({
+      kind: 'agency',
+      name: 'Rennies Travel',
+      nativeId: null,
+      idStatus: 'unverified',
+    });
   });
 });
 

@@ -3,7 +3,8 @@
  */
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { PartyPicker } from '../components/quote-workflow/party-picker';
+import { PartyPicker, resetPartyAutoLookupForTests } from '../components/quote-workflow/party-picker';
+import { useState } from 'react';
 import {
   partySuggesterFromTrpc,
   type PartyFindReply,
@@ -13,6 +14,7 @@ import { bindExecuteStaffQuote, pickedParties } from '../lib/quote-workflow/staf
 import { emptyStaffQuoteHeader, type StaffQuoteParty } from '../lib/quote-workflow/types';
 
 afterEach(() => {
+  resetPartyAutoLookupForTests();
   cleanup();
 });
 
@@ -114,7 +116,7 @@ describe('PartyPicker with both kinds and suggestions', () => {
     expect(onClear).toHaveBeenCalledWith('company');
   });
 
-  it('an unverified suggestion can only be searched: it is never a pick, and no lookup runs by itself', () => {
+  it('fills the top suggestion name when the field is empty, and does not pick without HMS', () => {
     const onPick = vi.fn();
     const onSearchName = vi.fn();
     const find = vi.fn(async (): Promise<PartyFindReply> => ({ outcome: 'no_match', results: [], truncated: false }));
@@ -129,15 +131,15 @@ describe('PartyPicker with both kinds and suggestions', () => {
         onSearchName={onSearchName}
       />,
     );
-    expect(screen.queryByRole('button', { name: /^Use / })).toBeNull();
-    expect(screen.getByText('RENNIES TRAVEL (PTY) LTD (Agency), not confirmed in HMS')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Search HMS for this name' }));
     expect(onSearchName).toHaveBeenCalledWith('RENNIES TRAVEL (PTY) LTD', 'agency');
+    expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
+    expect(screen.queryByText(/learned/i)).toBeNull();
     expect(onPick).not.toHaveBeenCalled();
     expect(find).not.toHaveBeenCalled();
   });
 
-  it('hides a suggestion for a kind already picked, and says so when nothing can search it', () => {
+  it('hides a suggestion for a kind already picked', () => {
+    const onSearchName = vi.fn();
     render(
       <PartyPicker
         name="Woolworths"
@@ -146,13 +148,12 @@ describe('PartyPicker with both kinds and suggestions', () => {
         onPick={vi.fn()}
         onClear={vi.fn()}
         suggestions={[{ ...RENNIES, kind: 'company', name: 'Another Company' }]}
+        onSearchName={onSearchName}
       />,
     );
+    expect(onSearchName).not.toHaveBeenCalled();
     expect(screen.queryByText(/Another Company/)).toBeNull();
-    render(
-      <PartyPicker name="Woolworths" parties={{}} find={noFind} onPick={vi.fn()} onClear={vi.fn()} suggestions={[RENNIES]} />,
-    );
-    expect((screen.getAllByRole('button', { name: 'Search HMS for this name' })[0] as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
   });
 });
 
@@ -179,7 +180,7 @@ describe('PartyPicker scoped to one field of the header', () => {
       />,
     );
     expect(screen.queryByText('✓ Woolworths (#49)')).toBeNull();
-    expect(screen.getByText('CWT JNB (Agency), not confirmed in HMS')).toBeTruthy();
+    expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
     expect(screen.queryByText(/Woolworths Company/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'CWT JNB' })).toBeTruthy());
@@ -199,6 +200,96 @@ describe('PartyPicker scoped to one field of the header', () => {
     await waitFor(() => expect(screen.getByRole('status').textContent).toBe('No agency match in HMS for this name.'));
     expect(screen.queryByRole('button', { name: 'Woolworths Holdings' })).toBeNull();
     expect(onPick).not.toHaveBeenCalled();
+  });
+});
+
+describe('PartyPicker preselects the top suggestion', () => {
+  it('picks the HMS best for a sender suggestion, and the quote bind carries that party', async () => {
+    const picked: StaffQuoteParty[] = [];
+    const agency = { kind: 'agency' as const, nativeId: '290', name: 'CWT JNB' };
+    const find = vi.fn(async (): Promise<PartyFindReply> => ({
+      outcome: 'resolved',
+      results: [agency],
+      truncated: false,
+      best: agency,
+      searchedFor: 'CWT JNB',
+    }));
+    function PreselectHarness() {
+      const [parties, setParties] = useState<{ agency?: StaffQuoteParty }>({});
+      return (
+        <PartyPicker
+          autoLookup
+          kind="agency"
+          name="CWT JNB"
+          parties={parties}
+          find={find}
+          suggestions={[CWT]}
+          onPick={(party) => {
+            picked.push(party);
+            setParties({ agency: party });
+          }}
+          onClear={vi.fn()}
+        />
+      );
+    }
+    render(<PreselectHarness />);
+    await waitFor(() => expect(screen.getByText('✓ CWT JNB (#290)')).toBeTruthy());
+    expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Confirm CWT JNB' })).toBeNull();
+    expect(picked).toEqual([agency]);
+    expect(pickedParties({ agency })).toEqual({ agency });
+    const mutate = vi.fn<(input: unknown) => Promise<{ status: 'unavailable' }>>(async () => ({
+      status: 'unavailable' as const,
+    }));
+    await bindExecuteStaffQuote({
+      mutate,
+      source: { messageId: 'm', threadId: 't', sourceHash: 'ab'.repeat(32) },
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [
+        {
+          id: 'g1',
+          arrivalDate: '2026-11-12',
+          departureDate: '2026-11-14',
+          quantity: 1,
+          adults: 1,
+          childrenAges: [] as number[],
+          board: 'bb' as const,
+          specialRequests: [] as string[],
+          fields: {},
+        },
+      ],
+      header: { ...emptyStaffQuoteHeader(), agency: 'CWT JNB', parties: { agency } },
+    });
+    const sent = mutate.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    expect(sent?.parties).toEqual({ agency });
+  });
+
+  it('does not pick an HMS best whose name is not the suggestion', async () => {
+    const onPick = vi.fn();
+    const best = { kind: 'agency' as const, nativeId: '1', name: 'Other Agency' };
+    const find = vi.fn(async (): Promise<PartyFindReply> => ({
+      outcome: 'resolved',
+      results: [best],
+      truncated: false,
+      best,
+      searchedFor: 'CWT JNB',
+    }));
+    render(
+      <PartyPicker
+        autoLookup
+        kind="agency"
+        name="CWT JNB"
+        parties={{}}
+        find={find}
+        suggestions={[CWT]}
+        onPick={onPick}
+        onClear={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole('button', { name: 'Confirm Other Agency' })).toBeTruthy();
+    expect(onPick).not.toHaveBeenCalled();
+    expect(screen.queryByText(/✓ /)).toBeNull();
   });
 });
 

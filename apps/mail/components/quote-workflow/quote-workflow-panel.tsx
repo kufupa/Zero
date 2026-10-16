@@ -378,7 +378,7 @@ function StaffPartyFields({
   onFieldEdit?: (kind: 'company' | 'agency') => void;
   /** Find in HMS. Null or absent keeps the company and agency as plain text, as before. */
   findParty?: PartyFinder | null;
-  /** Suggestions from the email, for staff to confirm. The pane computes them; nothing is picked by itself. */
+  /** Suggestions from the email. The top name is preselected when V2 has not bound a party. */
   partySuggestions?: PartySuggestion[];
   /** The HMS list searched while staff type. Null or absent leaves only the live search. */
   partyIndex?: PartyIndexSearcher | null;
