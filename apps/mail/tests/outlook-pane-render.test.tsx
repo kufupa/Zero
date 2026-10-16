@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { toast } from 'sonner';
 import path from 'node:path';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
-import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote } from './helpers/prepare-reviewed-quote';
+import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote, reviewedReplyHtml } from './helpers/prepare-reviewed-quote';
 import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
 
 const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.hoisted(() => ({
@@ -393,7 +393,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     await prepareReviewedQuote(null);
 
     const expectedHtml = quoteWrapperHtml('David Miller', 'R Opperman');
-    expect((screen.getByLabelText('Reviewed reply') as HTMLTextAreaElement).value).toBe(expectedHtml);
+    expect(reviewedReplyHtml()).toBe(expectedHtml);
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
 
     await waitFor(() => {

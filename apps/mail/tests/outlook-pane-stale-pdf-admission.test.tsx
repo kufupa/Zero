@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
-import { fillStayFactsMatchingAuthorisedOffer } from './helpers/prepare-reviewed-quote';
+import { fillStayFactsMatchingAuthorisedOffer, setReviewedReply } from './helpers/prepare-reviewed-quote';
 
 const { sendCommandMock, quotePdfMutateMock, executeStaffQuoteMutateMock } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
@@ -175,7 +175,7 @@ async function startPendingPdf() {
   const allocation = await waitForAllocation('Standard King');
   if (allocation.getAttribute('aria-pressed') !== 'true') fireEvent.click(allocation);
   // A draft needs a reviewed reply as well as a PDF, so a stale PDF would show up as a draft attempt.
-  fireEvent.change(screen.getByLabelText('Reviewed reply'), { target: { value: AUTHORISED_REPLY_HTML } });
+  setReviewedReply(AUTHORISED_REPLY_HTML);
   fireEvent.click(screen.getByRole('button', { name: /^Prepare PDF$/i }));
   await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalled());
 }

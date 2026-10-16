@@ -26,7 +26,7 @@ import type {
   StayGroupRequirement,
 } from './types';
 import { staffHeaderFieldProblem, staffStayExtrasFor } from './types';
-import { knownRoomCode, ROOM_TYPE_CODES, rowRoomTypeCode } from './room-types';
+import { knownRoomCode, ROOM_TYPE_CODES, rowRoomTypeCode, unpickedTwinRoomCode } from './room-types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
@@ -412,7 +412,7 @@ export function resolveNativeRoomCodes(input: {
   }
   const raw = input.roomPreference?.trim() ?? '';
   if (!raw) return { status: 'omitted' };
-  const code = knownNativeCode(raw);
+  const code = knownNativeCode(raw) ?? unpickedTwinRoomCode(raw) ?? null;
   if (code) return { status: 'codes', codes: [code] };
   return { status: 'unresolved', label: raw };
 }

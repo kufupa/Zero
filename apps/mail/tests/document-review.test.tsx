@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DocumentReview } from '../components/quote-workflow/document-review';
 import { loadQuoteFixture } from '../lib/quote-workflow/fixtures';
@@ -81,5 +81,26 @@ describe('DocumentReview', () => {
     expect(prepareAfter.className).toContain('bg-white');
     expect(prepareAfter.className).not.toContain('h-[38px]');
     expect(screen.getByText('Reply and PDF are ready. Next, create the Outlook draft. It is not sent.')).toBeDefined();
+  });
+
+  it('shows the reviewed reply as formatted text, not raw HTML', () => {
+    const session = {
+      ...readySession(),
+      reviewedReplyHtml: '<div style="font-family:Arial"><p>Thank you for your enquiry.</p></div>',
+    };
+    render(<DocumentReview session={session} />);
+    const editor = screen.getByLabelText('Reviewed reply');
+    expect(editor.textContent).toContain('Thank you for your enquiry.');
+    expect(editor.textContent).not.toContain('<p>');
+    expect(editor.tagName.toLowerCase()).not.toBe('textarea');
+  });
+
+  it('saves a cleared formatted reply as empty HTML', () => {
+    const onReplyChange = vi.fn();
+    render(<DocumentReview session={readySession()} onReplyChange={onReplyChange} />);
+    const editor = screen.getByLabelText('Reviewed reply');
+    editor.innerHTML = '<p><br></p>';
+    fireEvent.input(editor);
+    expect(onReplyChange).toHaveBeenCalledWith('');
   });
 });
