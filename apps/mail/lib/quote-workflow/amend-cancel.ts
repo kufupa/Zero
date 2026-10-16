@@ -191,9 +191,9 @@ export function canPreviewAmendFromCapabilities(
 
 export const AMEND_SAVE_COPY = {
   preview: 'Preview',
-  previewing: 'Nava is reading the change in HMS… (usually under a minute)',
+  previewing: 'Nava is reading the change in HMS… (a few minutes)',
   commit: 'Approve',
-  committing: 'Nava is saving the change in HMS… (usually under a minute)',
+  committing: 'Nava is saving the change in HMS… (a few minutes)',
   seeScreenshot: 'See what Nava saw in HMS',
   switchedOff: 'Changing this booking from here is switched off for now.',
   testOnly: 'Changing this booking from here only works on test bookings right now.',

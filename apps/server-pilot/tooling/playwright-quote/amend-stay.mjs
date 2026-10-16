@@ -82,6 +82,23 @@ async function clickSave(page) {
   }, '^Save');
 }
 
+// HMS keeps a changed date only after Check Availability has re-rated the stay; Save before that is discarded.
+async function checkAvailability(page) {
+  const clicked = await page.evaluate(() => {
+    const nodes = [...document.querySelectorAll('[data-qtip], button, .x-btn')];
+    const el = nodes.find((node) => /^Check Availability$/i.test(node.getAttribute('data-qtip') || node.textContent || ''));
+    if (!el) return false;
+    el.click();
+    return true;
+  });
+  if (!clicked) return false;
+  await page.waitForTimeout(2000);
+  const deadline = Date.now() + SAVE_WAIT_MS;
+  while ((await readSaveSnapshot(page)).maskVisible && Date.now() < deadline) await page.waitForTimeout(SAVE_POLL_MS);
+  await page.waitForTimeout(1500);
+  return true;
+}
+
 async function fillChangedFields(page, fields) {
   for (const [field, value] of Object.entries(fields)) {
     const input = page.locator(`input[name="${SELECTOR_BY_FIELD[field]}"]:visible`);
@@ -151,7 +168,9 @@ async function run(ctx, request) {
     await openGuestStay(ctx.page);
     await ctx.page.waitForTimeout(1500);
 
-    const lookup = await findByConfirmation(ctx, request, secret);
+    // The record sometimes fails to open on the first try; one fresh page retries it.
+    const lookup = await findByConfirmation(ctx, request, secret)
+      .catch(() => reopenByConfirmation(ctx, context, request, secret));
     ctx.result.findMethod = lookup.findMethod;
     if (lookup.outcome !== 'found' || !lookup.stay) {
       ctx.result.outcome = `refused_${lookup.outcome}`;
@@ -205,6 +224,11 @@ async function run(ctx, request) {
     if (ctx.args.mode === 'preview') {
       await shot(ctx, 'diff.png');
       ctx.result.outcome = 'previewed';
+      return;
+    }
+    if ((request.fields.arrival || request.fields.departure) && !(await checkAvailability(ctx.page))) {
+      ctx.result.outcome = 'refused_save_control_missing';
+      ctx.result.reason = 'check_availability_missing';
       return;
     }
     ctx.result.saveAttempted = true;
