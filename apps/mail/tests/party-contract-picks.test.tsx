@@ -264,6 +264,33 @@ describe('PartyPicker preselects the top suggestion', () => {
     const sent = mutate.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
     expect(sent?.parties).toEqual({ agency });
   });
+
+  it('does not pick an HMS best whose name is not the suggestion', async () => {
+    const onPick = vi.fn();
+    const best = { kind: 'agency' as const, nativeId: '1', name: 'Other Agency' };
+    const find = vi.fn(async (): Promise<PartyFindReply> => ({
+      outcome: 'resolved',
+      results: [best],
+      truncated: false,
+      best,
+      searchedFor: 'CWT JNB',
+    }));
+    render(
+      <PartyPicker
+        autoLookup
+        kind="agency"
+        name="CWT JNB"
+        parties={{}}
+        find={find}
+        suggestions={[CWT]}
+        onPick={onPick}
+        onClear={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole('button', { name: 'Confirm Other Agency' })).toBeTruthy();
+    expect(onPick).not.toHaveBeenCalled();
+    expect(screen.queryByText(/✓ /)).toBeNull();
+  });
 });
 
 describe('the quote workflow header: each field finds in HMS with its own text', () => {

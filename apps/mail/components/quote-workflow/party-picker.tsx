@@ -580,7 +580,12 @@ export function PartyPicker({
   useEffect(() => {
     if (pickedHere || !topSuggestion) return;
     const candidate = autoBest ?? prefetchedBest;
-    if (!candidate || searchKey(query) !== searchKey(topSuggestion.name)) return;
+    if (
+      !candidate ||
+      searchKey(query) !== searchKey(topSuggestion.name) ||
+      searchKey(candidate.name) !== searchKey(topSuggestion.name)
+    )
+      return;
     const key = `${candidate.kind}:${candidate.nativeId}`;
     if (appliedSuggestionPick.current.has(key)) return;
     appliedSuggestionPick.current.add(key);

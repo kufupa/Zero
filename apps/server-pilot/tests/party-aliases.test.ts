@@ -64,9 +64,23 @@ describe('suggestPartyFromSender', () => {
 
   it('suggests nothing for freemail even when the table is loaded', () => {
     replaceLearnedSenderMapForTests([
+      { host: 'gmail.com', kind: 'agency', name: 'Wrong Freemail Party', support: 9 },
       { host: 'learned-agency.test', kind: 'agency', name: 'Learned Agency', support: 4 },
     ]);
     expect(suggestPartyFromSender('a@gmail.com')).toBeNull();
+  });
+
+  it('prefers an exact host over a parent domain', () => {
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.test', kind: 'company', name: 'Parent Co', support: 2 },
+      { host: 'desk.agency.test', kind: 'agency', name: 'Desk Agency', support: 3 },
+    ]);
+    expect(suggestPartyFromSender('a@desk.agency.test')).toEqual({
+      kind: 'agency',
+      name: 'Desk Agency',
+      nativeId: null,
+      idStatus: 'unverified',
+    });
   });
 
   it('lets a static alias win when the table has the same host', () => {
