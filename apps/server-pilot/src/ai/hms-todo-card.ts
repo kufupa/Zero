@@ -2,19 +2,25 @@
  * Key into HMS to-do card.
  *
  * What: a structured staff checklist of facts to type into HMS (new booking, amend,
- * cancel) from fields Nava already extracted.
+ * cancel, post payment, send document) from fields Nava already extracted.
  * Why: HMS writes stay off. Staff still need what to key, the extracted values, and
  * what is missing — without Nava writing, calling HMS, or sending mail.
  * No-write guarantee: this module only shapes already-extracted fields. It never
  * calls HMS, never sends, and always returns `writesEnabled: false`.
- *
- * payment_proof is not a LunaAnalysis.workflow value, so this card does not invent
- * a payment kind. Proof-of-payment classification is a follow-up.
+ * Stay match uses pane find rows already in hand. No amount or document is invented.
  */
 
 import type { BuildCreatePrefillOutput } from './aop/create-prefill.js';
+import {
+  BILLING_DOCUMENT_ASK_KINDS,
+  pickBillingDocument,
+  type BillingDocumentAskKind,
+  type BillingDocumentRow,
+} from './aop/billing-document-pick.js';
+import { matchPaymentProof } from './aop/payment-proof-match.js';
+import { pickReplyLine } from './aop/reply-lines.js';
 
-export type HmsTodoKind = 'new_booking' | 'amend' | 'cancel';
+export type HmsTodoKind = 'new_booking' | 'amend' | 'cancel' | 'payment_proof' | 'send_document';
 
 export type HmsTodoStepSource = 'mail' | 'attachment' | 'missing';
 
@@ -55,19 +61,53 @@ export type HmsTodoGroup = {
   guestNames?: readonly string[] | null;
 };
 
+export type HmsTodoStayCandidate = {
+  confirmationNumber: string;
+  lastName: string;
+  arrival: string;
+  departure: string;
+  balanceDue?: number | null;
+  company?: string | null;
+};
+
+export type HmsTodoPopFacts = {
+  amount: number | null;
+  amountText: string | null;
+  currency: string | null;
+  reference: string | null;
+  payerName: string | null;
+  paidOn: string | null;
+  amountSource?: Exclude<HmsTodoStepSource, 'missing'>;
+};
+
 export type HmsTodoCardInput = {
   workflow?: string | null;
+  todoTarget?: string | null;
   stayAsk?: HmsTodoStayAsk | null;
   groups?: readonly HmsTodoGroup[] | null;
   confirmationNumber?: string | null;
   guestLastName?: string | null;
+  arrival?: string | null;
+  departure?: string | null;
   requestedChange?: string | null;
-  party?: { reference?: string | null } | null;
+  party?: { reference?: string | null; name?: string | null } | null;
   attachmentFilenames?: readonly string[] | null;
   prefill?: BuildCreatePrefillOutput | null;
+  stayCandidates?: readonly HmsTodoStayCandidate[] | null;
+  pop?: HmsTodoPopFacts | null;
+  documentKind?: string | null;
+  billingDocuments?: readonly BillingDocumentRow[] | null;
 };
 
 const TITLE = 'Key into HMS';
+const ASK_KIND_LABEL: Record<BillingDocumentAskKind, string> = {
+  invoice: 'invoice',
+  pro_forma: 'pro forma',
+  folio: 'folio',
+  statement: 'statement',
+  credit_note: 'credit note',
+};
+const ALL_ASK_KINDS = BILLING_DOCUMENT_ASK_KINDS.map((kind) => ASK_KIND_LABEL[kind]).join(' / ');
 
 const WORKFLOW_KIND: Record<string, HmsTodoKind> = {
   create: 'new_booking',
@@ -78,6 +118,9 @@ const WORKFLOW_KIND: Record<string, HmsTodoKind> = {
   amendment: 'amend',
   cancel: 'cancel',
   cancellation: 'cancel',
+  payment_ack: 'payment_proof',
+  payment_proof: 'payment_proof',
+  send_document: 'send_document',
 };
 
 function text(value: string | number | null | undefined): string | null {
@@ -94,9 +137,111 @@ function positiveCount(value: number | null | undefined): string | null {
   return String(value);
 }
 
-function kindOf(workflow: string | null | undefined): HmsTodoKind | null {
+function kindOf(workflow: string | null | undefined, todoTarget?: string | null): HmsTodoKind | null {
   const key = workflow?.trim().toLowerCase();
-  return key ? (WORKFLOW_KIND[key] ?? null) : null;
+  if (!key) return null;
+  if (key === 'hms_todo') {
+    const target = todoTarget?.trim().toLowerCase();
+    if (target === 'post_payment') return 'payment_proof';
+    if (target === 'document') return 'send_document';
+    return null;
+  }
+  return WORKFLOW_KIND[key] ?? null;
+}
+
+const AMOUNT_TOKEN =
+  /\b((?:ZAR|R)\s*)([0-9]{1,3}(?:[ ,][0-9]{3})*(?:\.[0-9]{2})?|[0-9]+(?:\.[0-9]{2})?)\b/gi;
+const ISO_DAY = /\b(\d{4}-\d{2}-\d{2})\b/g;
+const ASK_KIND_RE: Array<[BillingDocumentAskKind, RegExp]> = [
+  ['credit_note', /\bcredit\s*notes?\b/i],
+  ['pro_forma', /\bpro[\s-]?formas?\b/i],
+  ['statement', /\bstatements?\b/i],
+  ['folio', /\bfolios?\b/i],
+  ['invoice', /\b(?:tax\s+)?invoices?\b/i],
+];
+
+function parseAmountToken(raw: string): number | null {
+  const n = Number(raw.replace(/[ ,]/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function uniqueStrings(values: string[]): string | null {
+  const unique = [...new Set(values)];
+  return unique.length === 1 ? unique[0]! : null;
+}
+
+export function extractPopFacts(
+  sourceText: string,
+  luna: {
+    rateClaims?: ReadonlyArray<{ kind: string; amount: string; currency?: string; quote?: string }>;
+    guestLastName?: string | null;
+    party?: { reference?: string | null; name?: string | null } | null;
+  },
+): HmsTodoPopFacts {
+  const amounts: Array<{ value: number; text: string }> = [];
+  for (const match of sourceText.matchAll(AMOUNT_TOKEN)) {
+    const value = parseAmountToken(match[2] ?? '');
+    if (value == null) continue;
+    amounts.push({ value, text: match[0]!.replace(/\s+/g, ' ').trim() });
+  }
+  const uniqueAmount = [...new Set(amounts.map((row) => row.value))];
+  const amount = uniqueAmount.length === 1 ? uniqueAmount[0]! : null;
+  const amountText = amount == null ? null : (amounts.find((row) => row.value === amount)?.text ?? null);
+
+  const days = [...sourceText.matchAll(ISO_DAY)].map((match) => match[1]!);
+  const paidOn = uniqueStrings(days);
+
+  const reference = text(luna.party?.reference);
+  const referenceInSource = reference && sourceText.includes(reference) ? reference : null;
+  const payer = text(luna.party?.name);
+  const payerName = payer && sourceText.includes(payer) ? payer : null;
+
+  return {
+    amount,
+    amountText,
+    currency: amount == null ? null : 'ZAR',
+    reference: referenceInSource,
+    payerName,
+    paidOn,
+    amountSource: 'mail',
+  };
+}
+
+export function extractBillingAskKind(sourceText: string): BillingDocumentAskKind | null {
+  let hits = ASK_KIND_RE.filter(([, re]) => re.test(sourceText)).map(([kind]) => kind);
+  if (hits.includes('pro_forma') || hits.includes('credit_note')) {
+    hits = hits.filter((kind) => kind !== 'invoice');
+  }
+  return hits.length === 1 ? hits[0]! : null;
+}
+
+function asAskKind(value: string | null | undefined): BillingDocumentAskKind | null {
+  const key = value?.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (!key) return null;
+  if ((BILLING_DOCUMENT_ASK_KINDS as readonly string[]).includes(key)) return key as BillingDocumentAskKind;
+  if (key === 'tax_invoice') return 'invoice';
+  return null;
+}
+
+function matchedStay(
+  pop: HmsTodoPopFacts,
+  candidates: readonly HmsTodoStayCandidate[],
+): { status: 'exact' | 'unsure' | 'none'; stay: HmsTodoStayCandidate | null } {
+  if (candidates.length === 0) return { status: 'none', stay: null };
+  const result = matchPaymentProof({
+    pop: {
+      amount: pop.amount,
+      reference: pop.reference,
+      payerName: pop.payerName,
+      paidOn: pop.paidOn,
+    },
+    candidates: candidates.map((stay) => ({ ...stay })),
+  });
+  if (result.status === 'exact' && result.confirmationNumber) {
+    const stay = candidates.find((row) => row.confirmationNumber === result.confirmationNumber) ?? null;
+    return { status: 'exact', stay };
+  }
+  return { status: 'unsure', stay: null };
 }
 
 function guestsOf(group: HmsTodoGroup): string | null {
@@ -234,14 +379,92 @@ function appendGroups(
   }
 }
 
+function emptyPop(): HmsTodoPopFacts {
+  return {
+    amount: null,
+    amountText: null,
+    currency: null,
+    reference: null,
+    payerName: null,
+    paidOn: null,
+  };
+}
+
+function buildPaymentCard(input: HmsTodoCardInput, files: string | null): HmsTodoCard {
+  const pop = input.pop ?? emptyPop();
+  const candidates = input.stayCandidates ?? [];
+  const match = matchedStay(pop, candidates);
+  const steps: HmsTodoStep[] = [];
+  const missing: string[] = [];
+  const amountSource = pop.amountSource ?? 'mail';
+
+  const mailConf = match.status === 'none' ? text(input.confirmationNumber) : null;
+  pushFact(
+    steps,
+    missing,
+    'Confirmation number',
+    match.stay ? match.stay.confirmationNumber : mailConf,
+    true,
+  );
+  if (match.stay) {
+    pushFact(steps, missing, 'Guest last name', text(match.stay.lastName), false);
+    pushFact(steps, missing, 'Arrival', text(match.stay.arrival), false);
+    pushFact(steps, missing, 'Departure', text(match.stay.departure), false);
+  }
+  pushFact(steps, missing, 'Amount', pop.amount != null ? text(pop.amountText) : null, false, amountSource);
+  pushFact(steps, missing, 'Currency', pop.amount != null ? text(pop.currency) : null, false, amountSource);
+  pushFact(steps, missing, 'Payment date', text(pop.paidOn), false, amountSource);
+  pushFact(steps, missing, 'Payment reference', text(pop.reference), false);
+  if (!match.stay) pushFact(steps, missing, 'Payer', text(pop.payerName), false);
+  if (match.status === 'none') pushFact(steps, missing, 'Next step', 'find the stay', true);
+  if (match.status === 'unsure') pushFact(steps, missing, 'Next step', 'check conf#', true);
+  pushFact(steps, missing, 'Attachments', files, false, 'attachment');
+  return { kind: 'payment_proof', title: 'Post payment', steps, missing, writesEnabled: false };
+}
+
+function buildBillingCard(input: HmsTodoCardInput, files: string | null): HmsTodoCard {
+  const steps: HmsTodoStep[] = [];
+  const missing: string[] = [];
+  const ask = asAskKind(input.documentKind);
+  const documents = input.billingDocuments ?? [];
+  let documentLabel = ask ? ASK_KIND_LABEL[ask] : ALL_ASK_KINDS;
+  if (ask && documents.length > 0) {
+    const picked = pickBillingDocument({ kind: ask, confirmationNumber: text(input.confirmationNumber) ?? undefined, documents: [...documents] });
+    if (picked.status === 'one' && picked.document) documentLabel = picked.document.filename;
+  }
+  const confirmation = text(input.confirmationNumber);
+  const lastName = text(input.guestLastName);
+  pushFact(steps, missing, 'Document', documentLabel, true);
+  pushFact(steps, missing, 'Confirmation number', confirmation, Boolean(confirmation));
+  pushFact(steps, missing, 'Guest last name', lastName, false);
+  if (input.stayAsk) appendStayAsk(steps, missing, input.stayAsk, false);
+  else {
+    pushFact(steps, missing, 'Arrival', text(input.arrival), false);
+    pushFact(steps, missing, 'Departure', text(input.departure), false);
+  }
+  const reply = pickReplyLine({
+    code: 'S',
+    attached: true,
+    ...(ask ? { documentKind: ASK_KIND_LABEL[ask] } : {}),
+  }).line;
+  pushFact(steps, missing, 'Reply', reply, true);
+  pushFact(steps, missing, 'Next step', 'HMS → Documents', true);
+  if (!confirmation) pushFact(steps, missing, 'Stay', 'find the stay', true);
+  pushFact(steps, missing, 'Attachments', files, false, 'attachment');
+  return { kind: 'send_document', title: 'Send document', steps, missing, writesEnabled: false };
+}
+
 export function buildHmsTodoCard(input: HmsTodoCardInput): HmsTodoCard | null {
-  const kind = kindOf(input.workflow);
+  const kind = kindOf(input.workflow, input.todoTarget);
   if (!kind) return null;
+
+  const files = attachments(input);
+  if (kind === 'payment_proof') return buildPaymentCard(input, files);
+  if (kind === 'send_document') return buildBillingCard(input, files);
 
   const confirmation = text(input.confirmationNumber);
   const lastName = text(input.guestLastName);
   const change = text(input.requestedChange);
-  const files = attachments(input);
   const groups = input.groups ?? [];
   const stayRequired = kind === 'new_booking';
 

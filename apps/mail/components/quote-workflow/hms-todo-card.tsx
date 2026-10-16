@@ -1,6 +1,6 @@
 import { Section } from '@/components/nava-pane/pane-ui';
 
-export type HmsTodoKind = 'new_booking' | 'amend' | 'cancel' | 'payment_proof';
+export type HmsTodoKind = 'new_booking' | 'amend' | 'cancel' | 'payment_proof' | 'send_document';
 
 export type HmsTodoStepSource = 'mail' | 'attachment' | 'missing';
 
@@ -25,6 +25,7 @@ const PII_LABELS = new Set([
   'Confirmation number',
   'Requested change',
   'Payment reference',
+  'Payer',
   'Attachments',
   'Agency',
   'Billing reference',

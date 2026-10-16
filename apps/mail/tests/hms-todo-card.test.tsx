@@ -130,3 +130,51 @@ describe('Outlook NavaPane tree', () => {
     expect(screen.getAllByRole('heading', { name: 'Key into HMS' })).toHaveLength(1);
   });
 });
+
+describe('Post payment and Send document cards', () => {
+  it('renders matched stay and amount on a Post payment card', () => {
+    render(
+      <HmsTodoCard
+        card={{
+          kind: 'payment_proof',
+          title: 'Post payment',
+          writesEnabled: false,
+          missing: [],
+          steps: [
+            { label: 'Confirmation number', value: '9999901-1', source: 'mail' },
+            { label: 'Guest last name', value: 'Smith', source: 'mail' },
+            { label: 'Amount', value: 'R 1,850.00', source: 'attachment' },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByRole('heading', { name: 'Post payment' })).toBeDefined();
+    expect(screen.getByText('9999901-1')).toBeDefined();
+    expect(screen.getByText('R 1,850.00')).toBeDefined();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('renders document kind, reply line and HMS → Documents', () => {
+    render(
+      <HmsTodoCard
+        card={{
+          kind: 'send_document',
+          title: 'Send document',
+          writesEnabled: false,
+          missing: [],
+          steps: [
+            { label: 'Document', value: 'invoice', source: 'mail' },
+            { label: 'Confirmation number', value: '57291630-1', source: 'mail' },
+            { label: 'Reply', value: 'Good day, please see attached the invoice.', source: 'mail' },
+            { label: 'Next step', value: 'HMS → Documents', source: 'mail' },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByRole('heading', { name: 'Send document' })).toBeDefined();
+    expect(screen.getByText('invoice')).toBeDefined();
+    expect(screen.getByText(/please see attached/i)).toBeDefined();
+    expect(screen.getByText('HMS → Documents')).toBeDefined();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+});

@@ -7,7 +7,12 @@ import { createAzureLunaModel, LunaModelAdapter } from './bedrock/luna.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { analyseQuoteSources, type QuoteWorkflowAnalysis } from './quote-workflow-analyse.js';
 import { buildCreatePrefill, type BuildCreatePrefillOutput } from './aop/create-prefill.js';
-import { buildHmsTodoCard, type HmsTodoCardInput } from './hms-todo-card.js';
+import {
+  buildHmsTodoCard,
+  extractBillingAskKind,
+  extractPopFacts,
+  type HmsTodoCardInput,
+} from './hms-todo-card.js';
 import {
   amendmentFromAnalysis,
   mapLlmDecision,
@@ -403,9 +408,18 @@ function lunaWithMappedDates(luna: LunaAnalysis, mapped: MappedQuoteDecision): L
 
 const MAX_PREFILL_ROOMS = 20;
 
+function currentSourceText(synced: SyncedQuoteSelection): string {
+  return [
+    synced.subject,
+    synced.bodyText,
+    ...synced.attachments.map((attachment) => attachment.text ?? ''),
+  ].join('\n');
+}
+
 async function hmsTodoCardFromLuna(
   luna: LunaAnalysis | HmsTodoCardInput | null | undefined,
   attachments: SyncedQuoteAttachment[],
+  sourceText = '',
 ) {
   if (!luna) return null;
   const workflow = luna.workflow?.trim().toLowerCase();
@@ -448,16 +462,30 @@ async function hmsTodoCardFromLuna(
       prefill = null;
     }
   }
+  const pop = extractPopFacts(sourceText, {
+    rateClaims: (luna as LunaAnalysis).rateClaims,
+    guestLastName: (luna as HmsTodoCardInput).guestLastName,
+    party: (luna as HmsTodoCardInput).party,
+  });
+  if (pop.amountText && attachments.some((attachment) => (attachment.text ?? '').includes(pop.amountText!))) {
+    pop.amountSource = 'attachment';
+  }
   return buildHmsTodoCard({
     ...luna,
     attachmentFilenames: attachments.map((attachment) => attachment.filename),
     prefill,
+    pop,
+    documentKind: extractBillingAskKind(sourceText),
   });
 }
 
-async function hmsTodoCardFromCached(luna: unknown, attachments: SyncedQuoteAttachment[]) {
+async function hmsTodoCardFromCached(
+  luna: unknown,
+  attachments: SyncedQuoteAttachment[],
+  sourceText = '',
+) {
   if (!luna || typeof luna !== 'object' || Array.isArray(luna)) return null;
-  return hmsTodoCardFromLuna(luna as HmsTodoCardInput, attachments);
+  return hmsTodoCardFromLuna(luna as HmsTodoCardInput, attachments, sourceText);
 }
 
 /**
@@ -493,7 +521,11 @@ export async function analyseSyncedSelection(
       const payload = {
         ...cached,
         sourceRevision: options.selectionEpoch,
-        hmsTodoCard: await hmsTodoCardFromCached(cached.luna, synced.attachments),
+        hmsTodoCard: await hmsTodoCardFromCached(
+          cached.luna,
+          synced.attachments,
+          currentSourceText(synced),
+        ),
       };
       const analysisRunId = ledger
         ? await recordAgentRunCapped(ledger.recorder, {
@@ -577,7 +609,7 @@ export async function analyseSyncedSelection(
       luna: dated,
       workflow: luna.workflow,
       amendment: amendmentFromAnalysis(luna),
-      hmsTodoCard: await hmsTodoCardFromLuna(dated, synced.attachments),
+      hmsTodoCard: await hmsTodoCardFromLuna(dated, synced.attachments, currentSourceText(synced)),
       sourceRevision: options.selectionEpoch,
       ratePlan: mapped.ratePlan,
       delivery: mapped.delivery,
@@ -645,7 +677,11 @@ export async function analyseSyncedSelection(
     fallbackReason: llm.fallbackReason,
     aiUnavailable: true as const,
     amendment: null,
-    hmsTodoCard: await hmsTodoCardFromLuna(override.luna, synced.attachments),
+    hmsTodoCard: await hmsTodoCardFromLuna(
+      override.luna,
+      synced.attachments,
+      currentSourceText(synced),
+    ),
     sourceRevision: options.selectionEpoch,
   };
   const analysisRunId = ledger
