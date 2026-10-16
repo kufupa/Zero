@@ -41,10 +41,21 @@ const bookingPayload: MailExtractionPayload = {
 
 describe('stored read hmsTodoCard', () => {
   it('maps a stored voucher_pop read to payment_ack and a payment_proof card', async () => {
-    const { analysis } = storedAnalysis({ kind: 'voucher_pop', payload: emptyPayload, attachments: [] }, {});
+    const { analysis } = storedAnalysis(
+      { kind: 'voucher_pop', payload: emptyPayload, attachments: [], subject: 'POP for 57291630-1' },
+      {},
+    );
     expect(analysis.luna.workflow).toBe('payment_ack');
     const card = await hmsTodoCardFromLuna(analysis.luna, [], 'Kindly find attached proof of payment.');
     expect(card).toMatchObject({ kind: 'payment_proof' });
+  });
+
+  it('keeps a stored voucher with no payment cue as other', () => {
+    const { analysis } = storedAnalysis(
+      { kind: 'voucher_pop', payload: emptyPayload, attachments: [], subject: 'Hotel voucher', bodyText: 'Please find the voucher attached.' },
+      {},
+    );
+    expect(analysis.luna.workflow).toBe('other');
   });
 
   it('maps a stored booking read to a new_booking card', async () => {

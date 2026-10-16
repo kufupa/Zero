@@ -216,6 +216,7 @@ describe('stored read for the pane', () => {
   it('puts a payment_proof to-do card on a stored voucher_pop read, with payment_ack workflow', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'pop1');
+      await db.update(message).set({ subject: 'Proof of payment 57291630-1' }).where(eq(message.id, messageId));
       await insertRead(db, messageId, {
         version: 'extract-v1',
         kind: 'voucher_pop',

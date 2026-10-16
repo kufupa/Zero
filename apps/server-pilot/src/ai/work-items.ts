@@ -214,8 +214,22 @@ const WORKFLOW_BY_KIND: Partial<Record<MailKind, LunaAnalysis['workflow']>> = {
   booking: 'create_booking',
   amendment: 'amend',
   cancellation: 'cancel',
-  voucher_pop: 'payment_ack',
 };
+
+// voucher_pop covers agency vouchers as well as payments. Only payment cues in the subject, the start of the body
+// or a file name make it payment_ack; a voucher alone stays other.
+const PAYMENT_WORDS = /\bremittance\b|proof of payment|\bpayment (?:advice|confirmation|notification)\b/i;
+const POP_CAPS = /\bPOP\b/;
+
+function storedWorkflow(read: StoredRead): LunaAnalysis['workflow'] {
+  if (read.kind !== 'voucher_pop') return WORKFLOW_BY_KIND[read.kind] ?? 'other';
+  const text = [
+    read.subject ?? '',
+    (read.bodyText ?? '').slice(0, 2000),
+    ...(read.attachments ?? []).map((item) => item.filename ?? ''),
+  ].join('\n');
+  return PAYMENT_WORDS.test(text) || POP_CAPS.test(text) ? 'payment_ack' : 'other';
+}
 
 const FAILURE_COPY: Record<string, string> = {
   timeout: 'Nava ran out of time reading this email.',
@@ -322,7 +336,7 @@ export function storedAnalysis(
   const requested = payload.stays[0]?.requested;
   const overlaid = overlayHmsConfirmation(payload.confirmationNumbers[0] ?? null, threadConfirmation);
   const luna: LunaAnalysis = {
-    workflow: WORKFLOW_BY_KIND[kind] ?? 'other',
+    workflow: storedWorkflow(read),
     flags,
     groups,
     party: {
