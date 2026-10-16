@@ -404,6 +404,22 @@ it('persists source freshness using the admitted source age bound without renewi
  expect((value as any).sourceFreshness).toEqual({authorizationId:'auth-1',sourceRefs:['source-1'],observedAt:'2026-10-04T09:00:00.000Z',expiresAt:'2026-10-05T09:00:00.000Z',purpose:'offer_source'});
  expect(value.validity.cutoff).toBe('unresolved');
 });
+it('keeps a 15-minute admission as a 24 h priced-quote reuse window',async()=>{
+ const record=source();
+ const value=await resolveQuoteRevision({
+  admission:{...admission([record]),sourceEvaluationAt:'2026-10-04T09:05:00Z',maxSourceAgeMs:15*60_000},
+  propertyCode:'HRCEN',
+  selections:[{sourceRef:record.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'}],
+  authoredDate:'2026-10-04',
+  resolveSource:async()=>record,
+  resolvePolicy:async()=>policy,
+ });
+ expect(value.sourceFreshness).toMatchObject({
+  observedAt:'2026-10-04T09:00:00.000Z',
+  expiresAt:'2026-10-05T09:00:00.000Z',
+  purpose:'offer_source',
+ });
+});
 
 it('evaluates accepted-offer validity at acceptance and current inventory at its independent source time',async()=>{
  const r=await revision();
