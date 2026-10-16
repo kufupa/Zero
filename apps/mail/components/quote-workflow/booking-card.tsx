@@ -492,6 +492,7 @@ type RoomChoice = {
   track: string;
   sourceOfBusiness: string;
   guaranteeType: string;
+  ratePlan: string;
   bookingAgency: string;
   organization: string;
   reservationNote: string;
@@ -504,6 +505,7 @@ const NO_CHOICE: RoomChoice = {
   track: '',
   sourceOfBusiness: '',
   guaranteeType: '',
+  ratePlan: '',
   bookingAgency: '',
   organization: '',
   reservationNote: '',
@@ -543,11 +545,12 @@ export function BookingCards({
               track: textValue(room.request.track),
               sourceOfBusiness: textValue(room.request.sourceOfBusiness),
               guaranteeType: textValue(room.request.guaranteeType),
+              ratePlan: textValue(room.request.ratePlan),
               bookingAgency: textValue(room.request.agency) || pickedName(parties?.agency),
               organization: textValue(room.request.organization) || pickedName(parties?.company),
               reservationNote: textValue(room.request.reservationNote),
-              bookerName: textValue(room.request.bookerName),
-              bookerEmail: textValue(room.request.bookerEmail),
+              bookerName: textValue(room.request.bookerName) || contact?.name || '',
+              bookerEmail: textValue(room.request.bookerEmail) || contact?.email || '',
             },
           ];
         }),
@@ -649,7 +652,9 @@ export function BookingCards({
         const locked = commitStatus === 'running' || commitStatus === 'booked';
         const request = room.request;
         const built = paneStayInputForRoom(request, choice);
-        const group = groups.find((item) => item.id === room.groupId);
+        const group =
+          groups.find((item) => item.id === room.groupId) ??
+          groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
         // The quoted rate for the room's HMS notes: the row's price choice, its approval note for an override, and the
         // confirmation once Book in HMS has booked the room.
         const price = group?.rowPrice;
@@ -698,7 +703,11 @@ export function BookingCards({
               </label>
               <CopyButton label="Room type" roomLabel={roomLabel} value={choice.roomType} />
             </div>
-            <CopyRow roomLabel={roomLabel} label="Rate code" value={textValue(request.ratePlan)} />
+            {textValue(request.ratePlan) ? (
+              <CopyRow roomLabel={roomLabel} label="Rate code" value={textValue(request.ratePlan)} />
+            ) : (
+              <RoomTextField roomLabel={roomLabel} label="Rate code" value={choice.ratePlan} disabled={locked} maxLength={10} onChange={(value) => setChoice({ ratePlan: value.toUpperCase() })} />
+            )}
             <CopyRow roomLabel={roomLabel} label="Meal plan" value={BOARD_LABELS[room.board ?? ''] ?? ''} />
             <CopyRow roomLabel={roomLabel} label="Last name" value={textValue(request.lastName)} pii />
             <CopyRow roomLabel={roomLabel} label="First name" value={textValue(request.firstName)} pii />
@@ -819,7 +828,7 @@ export function BookingCards({
                     specialRequests: group?.specialRequests,
                     authorisedBy: override?.note,
                     rate: {
-                      code: override?.rateCode ?? textValue(request.ratePlan),
+                      code: override?.rateCode ?? (choice.ratePlan || textValue(request.ratePlan)),
                       nightlyMinor: price ? [price.amountMinor] : undefined,
                       board: BOARD_LABELS[room.board ?? ''],
                     },
