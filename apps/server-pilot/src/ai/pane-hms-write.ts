@@ -446,25 +446,14 @@ export async function spawnAmendStay(input: PaneAmendSpawnInput): Promise<PaneAm
 }
 
 export type PaneAmendPreviewInput = {
-  confirmation: string;
-  arrival: string;
-  lastName: string;
-  fields: AmendRequest;
+  confirmation: string; arrival: string; lastName: string; fields: AmendRequest;
 };
-export type PaneAmendCommitInput = PaneAmendPreviewInput & { previewDigest: string };
-type OwnedAmend<T> = T & { owner: string };
-
 export type PaneAmendResult = {
-  outcome: string;
-  screenshots: string[];
-  runId: string | null;
-  previewDigest: string | null;
-  changedFieldsReadback: Record<string, unknown> | null;
+  outcome: string; screenshots: string[]; runId: string | null;
+  previewDigest: string | null; changedFieldsReadback: Record<string, unknown> | null;
 };
-
-const refusedAmend = (outcome: string): PaneAmendResult => ({
-  outcome, screenshots: [], runId: null, previewDigest: null, changedFieldsReadback: null,
-});
+const refusedAmend = (outcome: string): PaneAmendResult =>
+  ({ outcome, screenshots: [], runId: null, previewDigest: null, changedFieldsReadback: null });
 
 export function checkAmendPaneInput(input: PaneAmendPreviewInput): string | null {
   const shape = checkCancelInput({ confirmation: input.confirmation, arrival: input.arrival });
@@ -475,7 +464,7 @@ export function checkAmendPaneInput(input: PaneAmendPreviewInput): string | null
 
 async function runPaneAmend(
   mode: 'preview' | 'commit',
-  input: OwnedAmend<PaneAmendPreviewInput & { previewDigest?: string }>,
+  input: PaneAmendPreviewInput & { owner: string; previewDigest?: string },
 ): Promise<PaneAmendResult> {
   if (paneHmsWriteMode() !== 'lab') return refusedAmend('refused_flag_off');
   const inputRefusal = checkAmendPaneInput(input);
@@ -486,26 +475,19 @@ async function runPaneAmend(
   const spawn = paneHmsWriteLoaders.spawnAmend ?? spawnAmendStay;
   try {
     await pruneExpiredPaneRuns(paneStayClock());
-    const spawned = await lock.withLock(
-      async () => {
-        if (mode === 'commit' && !takePanePreview(input.owner, input.previewDigest ?? '', paneStayClock())) return null;
-        return spawn({
-          confirmation: input.confirmation,
-          expectedLastName: input.lastName.trim(),
-          fields: input.fields,
-          ...(mode === 'commit'
-            ? { mode: 'commit' as const, previewDigest: input.previewDigest }
-            : { mode: 'preview' as const }),
-        });
-      },
-      acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
-    );
+    const spawned = await lock.withLock(async () => {
+      if (mode === 'commit' && !takePanePreview(input.owner, input.previewDigest ?? '', paneStayClock())) return null;
+      return spawn({
+        confirmation: input.confirmation,
+        expectedLastName: input.lastName.trim(),
+        fields: input.fields,
+        mode,
+        ...(mode === 'commit' ? { previewDigest: input.previewDigest } : {}),
+      });
+    }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
     if (spawned === null) return refusedAmend('amend_digest_mismatch');
-    let runId: string | null = null;
-    if (spawned.runDir) {
-      runId = randomUUID();
-      registerPaneRun({ runId, dir: spawned.runDir, owner: input.owner, now: paneStayClock() });
-    }
+    const runId = spawned.runDir ? randomUUID() : null;
+    if (runId && spawned.runDir) registerPaneRun({ runId, dir: spawned.runDir, owner: input.owner, now: paneStayClock() });
     const previewDigest = mode === 'preview' && spawned.outcome === 'previewed' ? spawned.previewDigest ?? null : null;
     if (previewDigest) recordPanePreview(input.owner, previewDigest, paneStayClock());
     return {
@@ -522,13 +504,9 @@ async function runPaneAmend(
   }
 }
 
-export function previewAmend(input: OwnedAmend<PaneAmendPreviewInput>): Promise<PaneAmendResult> {
-  return runPaneAmend('preview', input);
-}
-
-export function commitAmend(input: OwnedAmend<PaneAmendCommitInput>): Promise<PaneAmendResult> {
-  return runPaneAmend('commit', input);
-}
+export const previewAmend = (input: PaneAmendPreviewInput & { owner: string }) => runPaneAmend('preview', input);
+export const commitAmend = (input: PaneAmendPreviewInput & { owner: string; previewDigest: string }) =>
+  runPaneAmend('commit', input);
 
 type SaveOutcome = {
   outcome: string;

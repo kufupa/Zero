@@ -1821,7 +1821,9 @@ describe('AmendLookupPanel amend form', () => {
     expect(within(form).getAllByTestId('amend-diff-row').map((row) => row.getAttribute('data-field'))).toEqual([
       'arrival',
     ]);
-    expect(within(form).getByDisplayValue('2026-10-13')).toBeTruthy();
+    expect((within(form).getByTestId('amend-diff-row').querySelector('input') as HTMLInputElement).value).toBe(
+      '2026-10-13',
+    );
   });
 
   it('previews then approves with the digest and only the changed fields', async () => {
@@ -1846,7 +1848,8 @@ describe('AmendLookupPanel amend form', () => {
       <AmendLookupPanel session={sessionWith({ ...DATE_CHANGE, guestLastName: 'Labtest' })} trpc={amendTrpc(findStay, preview, commit)} />,
     );
     await pressFind();
-    fireEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+    const form = await screen.findByTestId('amend-form');
+    fireEvent.click(await within(form).findByRole('button', { name: 'Preview' }));
     expect(preview).toHaveBeenCalledWith({
       confirmation: CONFIRMATION,
       arrival: '2026-10-12',

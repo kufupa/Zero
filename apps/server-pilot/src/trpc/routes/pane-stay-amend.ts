@@ -1,9 +1,5 @@
 import { amendFieldsSchema, commitAmend, previewAmend } from '../../ai/pane-hms-write.js';
-import {
-  PANE_RUN_ID_PATTERN,
-  PANE_SCREENSHOT_NAME_PATTERN,
-  readPaneStayScreenshot,
-} from '../../ai/pane-stay-save.js';
+import { PANE_RUN_ID_PATTERN, PANE_SCREENSHOT_NAME_PATTERN, readPaneStayScreenshot } from '../../ai/pane-stay-save.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
 
@@ -16,9 +12,7 @@ const paneOwner = (ctx: { sessionUser: { id: string }; activeTransportId: string
   `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
 
 export const paneStayAmendRouter = router({
-  previewAmend: mailboxProcedure
-    .input(previewAmendInput)
-    .mutation(({ input, ctx }) => previewAmend({ ...input, owner: paneOwner(ctx) })),
+  previewAmend: mailboxProcedure.input(previewAmendInput).mutation(({ input, ctx }) => previewAmend({ ...input, owner: paneOwner(ctx) })),
   commitAmend: mailboxProcedure
     .input(previewAmendInput.extend({ previewDigest: z.string().regex(/^[0-9a-f]{64}$/) }).strict())
     .mutation(({ input, ctx }) => commitAmend({ ...input, owner: paneOwner(ctx) })),

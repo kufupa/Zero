@@ -12,7 +12,6 @@ import {
   cancelConfirmLine,
   cancelFeeSentence,
   cancelSwitchedOffNote,
-  changedAmendFields,
   changedAmendRows,
   isoDayOf,
   viewAfterAmendCommit,
@@ -20,6 +19,7 @@ import {
   viewAfterCommit,
   viewAfterPreview,
   type AmendCancelClient,
+  type AmendFormField,
   type AmendFormValues,
   type AmendStayClient,
   type AmendView,
@@ -232,7 +232,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     children: requested.children ?? stayCurrent.children ?? undefined,
   };
   const amendRows = stay && amendment.kind === 'amend' ? changedAmendRows(stayCurrent, requestedValues) : [];
-  const amendFields = changedAmendFields(amendRows, requestedValues);
+  const amendFields = Object.fromEntries(amendRows.map((row) => [row.field, requestedValues[row.field]])) as AmendFormValues;
   const amendLastName = stayText(stay?.lastName) ?? amendment.guestLastName ?? '';
   const amendInput =
     foundNumber && cancelArrival && amendLastName && Object.keys(amendFields).length
@@ -822,7 +822,7 @@ function AmendSection({
   values: AmendFormValues;
   current: Record<string, string | number | null>;
   client: AmendStayClient | null;
-  onChange: (field: (typeof AMEND_FORM_FIELDS)[number], value: string | number) => void;
+  onChange: (field: AmendFormField, value: string | number) => void;
   onPreview: () => void;
   onCommit: () => void;
 }) {
@@ -838,7 +838,6 @@ function AmendSection({
       alt="What Nava saw on the HMS amend screen"
     />
   );
-
   if (currentView.kind === 'done') {
     return (
       <div aria-live="polite" className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
@@ -848,7 +847,6 @@ function AmendSection({
       </div>
     );
   }
-
   return (
     <div data-testid="amend-form" aria-live="polite" className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       <p className={headingClass}>Change in HMS</p>
@@ -858,6 +856,7 @@ function AmendSection({
         {AMEND_FORM_FIELDS.map((field) => {
           const isChanged = changed.has(field);
           const from = current[field];
+          const countField = field === 'adults' || field === 'children';
           return (
             <div
               key={field}
@@ -867,67 +866,45 @@ function AmendSection({
             >
               <p className={valueClass}>{`${AMEND_FIELD_LABEL[field]}: ${from == null || from === '' ? '—' : String(from)}`}</p>
               {field === 'roomType' ? (
-                <select
-                  className={selectClass}
-                  disabled={busy}
-                  value={String(values[field] ?? '')}
-                  onChange={(event) => onChange(field, event.target.value)}
-                >
+                <select className={selectClass} disabled={busy} value={String(values[field] ?? '')} onChange={(event) => onChange(field, event.target.value)}>
                   {Object.entries(ROOM_TYPE_NAMES).map(([code, name]) => (
-                    <option key={code} value={code}>
-                      {name}
-                    </option>
+                    <option key={code} value={code}>{name}</option>
                   ))}
                 </select>
               ) : (
                 <input
                   className={selectClass}
                   disabled={busy}
-                  type={field === 'adults' || field === 'children' ? 'number' : field === 'arrival' || field === 'departure' ? 'date' : 'text'}
+                  type={countField ? 'number' : field === 'arrival' || field === 'departure' ? 'date' : 'text'}
                   min={field === 'adults' ? 1 : field === 'children' ? 0 : undefined}
-                  max={field === 'adults' || field === 'children' ? 16 : undefined}
+                  max={countField ? 16 : undefined}
                   value={String(values[field] ?? '')}
-                  onChange={(event) => {
-                    const raw = event.target.value;
-                    onChange(field, field === 'adults' || field === 'children' ? Number(raw) : raw);
-                  }}
+                  onChange={(event) => onChange(field, countField ? Number(event.target.value) : event.target.value)}
                 />
               )}
             </div>
           );
         })}
       </div>
-      {rows.length === 0 ? <p className={captionClass}>{AMEND_SAVE_COPY.noChanges}</p> : null}
       {currentView.kind === 'ready' || currentView.kind === 'committing' ? shot(currentView.run) : null}
       {canPreview ? (
-        currentView.kind === 'ready' || currentView.kind === 'committing' ? (
-          <button
-            type="button"
-            className={buttonClass}
-            disabled={currentView.kind === 'committing'}
-            onClick={onCommit}
-          >
-            {AMEND_SAVE_COPY.commit}
-          </button>
-        ) : (
-          <button
-            type="button"
-            className={buttonClass}
-            disabled={busy || rows.length === 0}
-            onClick={onPreview}
-          >
-            {AMEND_SAVE_COPY.preview}
-          </button>
-        )
+        <button
+          type="button"
+          className={buttonClass}
+          disabled={
+            currentView.kind === 'ready' || currentView.kind === 'committing'
+              ? currentView.kind === 'committing'
+              : busy || rows.length === 0
+          }
+          onClick={currentView.kind === 'ready' || currentView.kind === 'committing' ? onCommit : onPreview}
+        >
+          {currentView.kind === 'ready' || currentView.kind === 'committing' ? AMEND_SAVE_COPY.commit : AMEND_SAVE_COPY.preview}
+        </button>
       ) : (
-        <p data-pii className={infoNoteClass}>
-          {offNote}
-        </p>
+        <p data-pii className={infoNoteClass}>{offNote}</p>
       )}
-      {canPreview ? <p className={captionClass}>{AMEND_SAVE_COPY.previewHint}</p> : null}
       {currentView.kind === 'previewing' ? <p className={infoNoteClass}>{AMEND_SAVE_COPY.previewing}</p> : null}
       {currentView.kind === 'committing' ? <p className={infoNoteClass}>{AMEND_SAVE_COPY.committing}</p> : null}
-      {currentView.kind === 'ready' && currentView.note ? <p className={warnNoteClass}>{currentView.note}</p> : null}
       {currentView.kind === 'idle' && currentView.note ? <p className={warnNoteClass}>{currentView.note}</p> : null}
     </div>
   );
