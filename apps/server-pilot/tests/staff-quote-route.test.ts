@@ -325,28 +325,33 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await expect(other.workstation.staffQuoteJob({ input: request.input })).resolves.toBeNull();
         await expect(other.workstation.staffQuoteJob({ runId: queued.runId! })).resolves.toBeNull();
         await expect(other.paneStayLookup.jobStatus({ runId: queued.runId! })).resolves.toBeNull();
-        await expect(api.workstation.staffQuoteJob({ messageId: request.input.messageId })).resolves.toMatchObject({
-          runId: queued.runId,
-          status: 'queued',
-          sourceMessageId: request.input.messageId,
-        });
         const edited = {
           ...request.input,
           selectionEpoch: 9,
           groups: [{ ...request.input.groups[0]!, adults: 3 }],
         };
         await expect(api.workstation.staffQuoteJob({ input: edited })).resolves.toBeNull();
-        await expect(api.workstation.staffQuoteJob({ messageId: request.input.messageId })).resolves.toMatchObject({
+        await expect(
+          api.workstation.staffQuoteJob({ input: { ...request.input, attention: 'Someone else' } }),
+        ).resolves.toMatchObject({ runId: queued.runId });
+        const later = {
+          ...request.input,
+          groups: [
+            {
+              ...request.input.groups[0]!,
+              id: 'later',
+              arrivalDate: '2026-11-12',
+              departureDate: '2026-11-15',
+            },
+          ],
+        };
+        const laterQueued = await api.workstation.queueStaffQuote(later);
+        await expect(api.workstation.staffQuoteJob({ input: later })).resolves.toMatchObject({
+          runId: laterQueued.runId,
+        });
+        await expect(api.workstation.staffQuoteJob({ input: request.input })).resolves.toMatchObject({
           runId: queued.runId,
         });
-        const own = await api.workstation.ownStaffQuoteJobs();
-        expect(own).toEqual([
-          expect.objectContaining({
-            runId: queued.runId,
-            messageId: request.input.messageId,
-            status: 'queued',
-          }),
-        ]);
       });
     });
 

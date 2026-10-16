@@ -25,7 +25,7 @@ export function recalledPaneEdits(key: string): StayGroupRequirement[] | null {
     const raw = sessionStorage.getItem(`${STORAGE_PREFIX}${key}`);
     if (!raw) return null;
     const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed) || parsed.length === 0) return null;
+    if (!Array.isArray(parsed)) return null;
     memory.set(key, parsed as StayGroupRequirement[]);
     return structuredClone(parsed as StayGroupRequirement[]);
   } catch {
@@ -39,14 +39,9 @@ export function overlayRememberedGroups(
 ): StayGroupRequirement[] {
   if (!remembered) return groups;
   const kept = remembered.filter((row) => row.id !== DRAFT_GROUP_ID);
+  if (!remembered.length) return kept;
   if (!kept.length) return groups;
-  const byId = new Map(kept.map((row) => [row.id, row]));
-  const next = groups.filter((row) => byId.has(row.id)).map((row) => byId.get(row.id) ?? row);
-  for (const row of kept) {
-    if (next.some((item) => item.id === row.id)) continue;
-    next.push(row);
-  }
-  return next;
+  return kept;
 }
 
 export function resetPaneEditsForTests(options?: { keepSession?: boolean }): void {

@@ -50,4 +50,14 @@ describe('pane edits', () => {
     const extra = { ...GROUP, id: 'r_2', adults: 1 };
     expect(overlayRememberedGroups([extracted, extra], [GROUP])).toEqual([GROUP]);
   });
+
+  it('treats the saved list as complete, including an empty list after every room is removed', () => {
+    const key = paneEditKey('transport-1', '<quote-request@example.invalid>');
+    const extracted = { ...GROUP, adults: 2, fields: { adults: 'extracted' as const } };
+    const extra = { ...GROUP, id: 'r_2', adults: 1 };
+    rememberPaneEdits(key, []);
+    expect(recalledPaneEdits(key)).toEqual([]);
+    expect(overlayRememberedGroups([extracted, extra], [])).toEqual([]);
+    expect(overlayRememberedGroups([extracted, extra], [GROUP])).toEqual([GROUP]);
+  });
 });

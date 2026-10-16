@@ -227,8 +227,6 @@ function staffQuoteAttemptKey(transportId: string, messageId: string, sourceHash
   return JSON.stringify([transportId, messageId, sourceHash, stayKey]);
 }
 
-const toastedStaffQuoteRuns = new Set<string>();
-
 function analysisWithPaneEdits(
   analysis: QuoteAnalysis,
   transportId: string,
@@ -352,48 +350,6 @@ export function NavaPane({
       live = false;
     };
   }, []);
-  useEffect(() => {
-    if (staffQuoteQueueMode !== 'on') return;
-    const staff = staffQuoteFromTrpc(trpcClient);
-    const query = staff.workstation.ownStaffQuoteJobs?.query;
-    if (!query) return;
-    let stopped = false;
-    let primed = false;
-    const seen = new Map<string, string>();
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const tick = async () => {
-      let rows: Awaited<ReturnType<NonNullable<typeof query>>> = [];
-      try {
-        rows = await query();
-      } catch {
-        rows = [];
-      }
-      if (stopped) return;
-      const openId = quoteSessionRef.current.staffSource?.messageId;
-      for (const row of rows) {
-        const previous = seen.get(row.runId);
-        seen.set(row.runId, row.status);
-        if (!primed || toastedStaffQuoteRuns.has(row.runId) || row.messageId === openId) continue;
-        if (row.status !== 'done' || row.ok === false) continue;
-        if (previous !== 'queued' && previous !== 'running' && previous !== 'retrying') continue;
-        toastedStaffQuoteRuns.add(row.runId);
-        const label = row.subject ? `Rates ready · ${row.subject}` : 'Rates ready';
-        toast.success(
-          label,
-          row.threadId && onOpenThread
-            ? { action: { label: 'Open', onClick: () => onOpenThread(row.threadId!) } }
-            : undefined,
-        );
-      }
-      primed = true;
-      timer = setTimeout(tick, 4_000);
-    };
-    void tick();
-    return () => {
-      stopped = true;
-      clearTimeout(timer);
-    };
-  }, [staffQuoteQueueMode, onOpenThread]);
   const hmsQueue = useHmsQueueStatus({
     pending: quoteRunPending,
     fetchStatus: () =>

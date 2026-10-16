@@ -70,7 +70,6 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     // While set, the stored-read lookup waits for it, as a slow lookup does.
     storedLookupGate: null as null | Promise<void>,
     staffQuoteJobQuery: vi.fn().mockResolvedValue(null),
-    ownStaffQuoteJobsQuery: vi.fn().mockResolvedValue([]),
     queueStaffQuoteMutation: vi.fn().mockResolvedValue({ runId: null }),
     staffQuoteSources: {} as Record<string, { messageId: string; threadId: string; sourceHash: string }>,
     findPartyMutation: vi.fn().mockResolvedValue({
@@ -187,7 +186,6 @@ vi.mock('../providers/query-provider', () => ({
           return bridgeMockState.staffQuoteJobQuery(input);
         },
       },
-      ownStaffQuoteJobs: { query: () => bridgeMockState.ownStaffQuoteJobsQuery() },
       listThreadQuoteRevisions: { query: (input: unknown) => bridgeMockState.listThreadQuoteRevisionsQuery(input) },
       usePriorQuoteForBooking: { mutate: (input: unknown) => bridgeMockState.usePriorQuoteForBookingMutation(input) },
       prepareBookingDraft: { mutate: (input: unknown) => bridgeMockState.prepareBookingDraftMutation(input) },
@@ -430,7 +428,6 @@ describe('NavaPane', () => {
     saveReplyMutate.mockReset();
     saveReplyMutate.mockResolvedValue({ id: 'draft-1', replaced: false });
     bridgeMockState.staffQuoteJobQuery.mockReset().mockResolvedValue(null);
-    bridgeMockState.ownStaffQuoteJobsQuery.mockReset().mockResolvedValue([]);
     bridgeMockState.listThreadQuoteRevisionsQuery.mockReset().mockResolvedValue([]);
     bridgeMockState.usePriorQuoteForBookingMutation
       .mockReset()
@@ -706,7 +703,6 @@ describe('NavaPane screen states', () => {
     voucherFindQuery.mockResolvedValue({ status: 'not_voucher' });
     syncStatusQuery.mockReset().mockResolvedValue(null);
     bridgeMockState.staffQuoteJobQuery.mockReset().mockResolvedValue(null);
-    bridgeMockState.ownStaffQuoteJobsQuery.mockReset().mockResolvedValue([]);
     bridgeMockState.listThreadQuoteRevisionsQuery.mockReset().mockResolvedValue([]);
     bridgeMockState.usePriorQuoteForBookingMutation
       .mockReset()
@@ -1517,39 +1513,9 @@ describe('NavaPane screen states', () => {
     rerender(<NavaPane bridge={fakeBridge} />);
     expect(await screen.findByText('Available')).toBeDefined();
     expect(bridgeMockState.queueStaffQuoteMutation.mock.calls.length).toBe(queued);
-    expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({ messageId: 'mail-1' });
-  });
-
-  it('toasts Rates ready for another mail and Open selects that thread', async () => {
-    const onOpenThread = vi.fn();
-    bridgeMockState.storedWork = STORED_READY;
-    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
-    const otherJob = {
-      runId: 'staff-job-other',
-      messageId: 'mail-other',
-      threadId: 'thread-other',
-      subject: 'Group rates 12 Nov',
-      status: 'running' as const,
-      ok: true,
-    };
-    bridgeMockState.ownStaffQuoteJobsQuery
-      .mockResolvedValueOnce([otherJob])
-      .mockResolvedValue([{ ...otherJob, status: 'done' as const }]);
-    render(<NavaPane bridge={fakeBridge} onOpenThread={onOpenThread} />);
-    await storedReadLands();
-    await waitFor(() => expect(bridgeMockState.ownStaffQuoteJobsQuery).toHaveBeenCalled());
-    expect(toast.success).not.toHaveBeenCalledWith(expect.stringMatching(/^Rates ready/));
-    await waitFor(
-      () =>
-        expect(toast.success).toHaveBeenCalledWith(
-          'Rates ready · Group rates 12 Nov',
-          expect.objectContaining({ action: expect.objectContaining({ label: 'Open' }) }),
-        ),
-      { timeout: 6_000 },
+    expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({ messageId: 'mail-1' }) }),
     );
-    const call = vi.mocked(toast.success).mock.calls.find((row) => row[0] === 'Rates ready · Group rates 12 Nov');
-    (call?.[1] as { action?: { onClick: () => void } } | undefined)?.action?.onClick();
-    expect(onOpenThread).toHaveBeenCalledWith('thread-other');
   });
 
   it('retry read runs the read again after a failed live read', async () => {
@@ -1655,9 +1621,9 @@ describe('NavaPane screen states', () => {
 
     expect(await screen.findByText('Available')).toBeDefined();
     expect(screen.getByRole('button', { name: /Restored HMS allocation/ })).toBeDefined();
-    expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
-      messageId: 'mail-1',
-    });
+    expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({ messageId: 'mail-1' }) }),
+    );
     await waitFor(() =>
       expect(bridgeMockState.prepareBookingDraftMutation).toHaveBeenCalledWith(
         expect.objectContaining({ workflowRunId: 'workflow-restored', revisionRef: 'revision-restored' }),
@@ -2024,9 +1990,9 @@ describe('NavaPane screen states', () => {
 
     rerender(<NavaPane bridge={bridgeFor('001', '<quote-request@example.invalid>', 'Quote A')} />);
     await waitFor(() =>
-      expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith({
-        messageId: 'mail-1',
-      }),
+      expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith(
+        expect.objectContaining({ input: expect.objectContaining({ messageId: 'mail-1' }) }),
+      ),
     );
     expect(await screen.findByRole('button', { name: /Allocation for mail-1/ })).toBeDefined();
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(2);

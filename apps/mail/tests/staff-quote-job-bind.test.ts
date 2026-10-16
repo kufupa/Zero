@@ -138,7 +138,9 @@ describe('staff quote HMS job binding', () => {
     const result = await pending;
 
     expect(result).toMatchObject({ status: 'ok' });
-    expect(staffQuoteJob.mock.calls[0]?.[0]).toEqual({ messageId: source.messageId });
+    expect(staffQuoteJob.mock.calls[0]?.[0]).toEqual({
+      input: expect.objectContaining({ messageId: source.messageId, sourceHash: source.sourceHash }),
+    });
     expect(staffQuoteJob.mock.calls[0]?.[1]).toEqual({ context: { activeTransportId: 'transport-a' } });
     expect(staffQuoteJob.mock.calls[1]?.[1]).toMatchObject({
       context: { activeTransportId: 'transport-a' },
@@ -586,7 +588,7 @@ describe('staff quote HMS job binding', () => {
     const result = await pending;
 
     expect(query.mock.calls.map(([input]) => input)).toEqual([
-      { messageId: source.messageId },
+      { input: expect.objectContaining({ messageId: source.messageId }) },
       { runId: 'staff-job-1' },
     ]);
     expect(result).toMatchObject({
@@ -635,6 +637,143 @@ describe('staff quote HMS job binding', () => {
       header: emptyStaffQuoteHeader(),
     });
     expect(result).toBeNull();
+  });
+
+  it('restores rates when only the quote header changed', async () => {
+    const query = vi.fn(async () => ({
+      ...view('done', READY),
+      request: storedStaffQuoteRequest(
+        {
+          messageId: source.messageId,
+          sourceHash: source.sourceHash,
+          selectionEpoch: 1,
+          inputRevision: 1,
+          groups: [
+            {
+              id: 'single',
+              arrivalDate: '2026-11-12',
+              departureDate: '2026-11-14',
+              quantity: 1,
+              adults: 2,
+              childrenAges: [],
+              board: 'room_only',
+              roomCodes: ['SKNG'],
+            },
+          ],
+          salesStrategy: 'BAR' as const,
+          company: '',
+          agency: '',
+          attention: 'Earlier name',
+          clientEmail: '',
+          clientTelephone: '',
+        },
+      ),
+    }));
+    const result = await bindReadBackStaffQuote({
+      query: query as never,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: { ...emptyStaffQuoteHeader(), attention: 'New attention' },
+    });
+    expect(result).toMatchObject({ status: 'ok' });
+    expect(query).toHaveBeenCalledWith(
+      expect.objectContaining({ input: expect.objectContaining({ attention: 'New attention' }) }),
+    );
+  });
+
+  it('looks up each stay by its own terms instead of sharing one run', async () => {
+    const later: StayGroupRequirement = {
+      ...groups[0]!,
+      id: 'later',
+      arrivalDate: '2026-12-01',
+      departureDate: '2026-12-03',
+    };
+    const query = vi.fn(async (lookup: { input?: ExecuteStaffQuoteInput; runId?: string }) => {
+      const arrival = lookup.input?.groups[0]?.arrivalDate;
+      if (arrival === '2026-11-12') {
+        return {
+          ...view('done', READY),
+          runId: 'staff-job-first',
+          request: storedStaffQuoteRequest({
+            messageId: source.messageId,
+            sourceHash: source.sourceHash,
+            selectionEpoch: 1,
+            inputRevision: 1,
+            groups: [
+              {
+                id: 'single',
+                arrivalDate: '2026-11-12',
+                departureDate: '2026-11-14',
+                quantity: 1,
+                adults: 2,
+                childrenAges: [],
+                board: 'room_only',
+                roomCodes: ['SKNG'],
+              },
+            ],
+            salesStrategy: 'BAR',
+            company: '',
+            agency: '',
+            attention: '',
+            clientEmail: '',
+            clientTelephone: '',
+          }),
+        };
+      }
+      if (arrival === '2026-12-01') {
+        return {
+          ...view('done', { ...READY, arrivalDate: '2026-12-01', departureDate: '2026-12-03' }),
+          runId: 'staff-job-later',
+          request: storedStaffQuoteRequest({
+            messageId: source.messageId,
+            sourceHash: source.sourceHash,
+            selectionEpoch: 1,
+            inputRevision: 1,
+            groups: [
+              {
+                id: 'later',
+                arrivalDate: '2026-12-01',
+                departureDate: '2026-12-03',
+                quantity: 1,
+                adults: 2,
+                childrenAges: [],
+                board: 'room_only',
+                roomCodes: ['SKNG'],
+              },
+            ],
+            salesStrategy: 'BAR',
+            company: '',
+            agency: '',
+            attention: '',
+            clientEmail: '',
+            clientTelephone: '',
+          }),
+        };
+      }
+      return null;
+    });
+    const first = await bindReadBackStaffQuote({
+      query: query as never,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+      stayKey: '2026-11-12:2026-11-14',
+    });
+    const second = await bindReadBackStaffQuote({
+      query: query as never,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups: [later],
+      header: emptyStaffQuoteHeader(),
+      stayKey: '2026-12-01:2026-12-03',
+    });
+    expect(first).toMatchObject({ status: 'ok', staffQuote: { quoteRequestKey: '2026-11-12:2026-11-14' } });
+    expect(second).toMatchObject({ status: 'ok', staffQuote: { quoteRequestKey: '2026-12-01:2026-12-03' } });
   });
 
   it('labels a prepared result for staff with its saved as-of time', async () => {
