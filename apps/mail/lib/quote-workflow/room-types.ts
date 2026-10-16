@@ -97,6 +97,14 @@ export function knownRoomCode(raw: string | undefined): RoomTypeCode | null {
   return Object.hasOwn(ROOM_TYPE_NAMES, code) ? (code as RoomTypeCode) : (matchRoomType(raw).code ?? null);
 }
 
+/** Twin / 2 beds with no staff pick → Standard Twin. Unique names still win via matchRoomType. */
+export function unpickedTwinRoomCode(raw: string | undefined): 'STWN' | undefined {
+  if (!raw) return undefined;
+  const text = raw.normalize('NFKD').toLowerCase();
+  if (/\btwin\b/.test(text) || /\b(?:2|two)\s*beds?\b/.test(text)) return 'STWN';
+  return undefined;
+}
+
 /**
  * The room a row quotes. Staff picks win: a rate-card pick (roomCodes), then the select's value (roomPreference).
  * The server's projected roomTypeCode is only the fallback, so a stale projection never overrides a pick.

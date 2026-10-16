@@ -80,6 +80,11 @@ import {
 } from '../../ai/staff-quote-trace-async.js';
 import { QUOTE_MEALS } from '../../quote-proposal/description.js';
 import { emailsMatch } from '../../quote-proposal/identity.js';
+import {
+  quotePdfPartyName,
+  quotePdfSenderDisplayName,
+  retargetQuotePdfFileName,
+} from '../../quote-proposal/filename.js';
 import { and, eq, desc, sql } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
 import { assertCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
@@ -1421,10 +1426,25 @@ export const workstationRouter = router({
         throw error;
       }
       await proposalStaysFor(input, ctx, 'Proposal evidence expired during conversion');
+      const [mail] = await getDb()
+        .select({ fromAddress: message.fromAddress })
+        .from(message)
+        .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
+        .limit(1);
+      const party = quotePdfPartyName(
+        input.agency,
+        input.company,
+        input.attention,
+        quotePdfSenderDisplayName(mail?.fromAddress),
+      );
       return {
         revisionId: result.revisionId,
         pdfHash: result.pdfHash,
-        fileName: result.fileName,
+        fileName: retargetQuotePdfFileName(
+          result.fileName,
+          party,
+          quotePdfPartyName(input.agency, input.company),
+        ),
         totalMinor: result.totalMinor,
         pdfBase64: Buffer.from(result.pdf).toString('base64'),
       };
