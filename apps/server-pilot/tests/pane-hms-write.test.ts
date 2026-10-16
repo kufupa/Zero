@@ -734,6 +734,7 @@ describe('pane HMS write (U26)', () => {
       expect(amendCalls).toEqual([
         {
           confirmation: CONFIRMATION,
+          currentArrival: AMEND_FORM.arrival,
           expectedLastName: 'Labtest',
           fields: AMEND_FIELDS,
           previewDigest: AMEND_FORM.previewDigest,
