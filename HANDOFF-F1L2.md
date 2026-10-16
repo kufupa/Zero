@@ -20,8 +20,8 @@ Booking card:
 - mail `tests/booking-card.test.tsx` **78 passed**
 - mail `tests/hms-todo-card.test.tsx` **6 passed**
 - mail `tests/nava-pane-render.test.tsx` unquoted-on-open + restored-rate tests **passed**
-- Screenshots: `runs/proof/F1L2/`
-- Remote typecheck `--app mail --baseline`: run after this commit
+- Screenshots: `runs/proof/F1L2/book-card-editable-names.png`, `book-card-empty-first-name.png`
+- Remote typecheck `--app mail --baseline`: **new=0** (62/62, `1f55314b`)
 
 ## Not doing
 
