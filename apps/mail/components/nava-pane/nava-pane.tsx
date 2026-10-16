@@ -1046,7 +1046,7 @@ export function NavaPane({
       const mutate = staff.workstation.prepareUnquotedBookingDraft?.mutate;
       const rateCode = stayKey ? quoteSession.groups.find((g) => stayKeyForGroup(g) === stayKey)?.rateCode : undefined;
       const result =
-        stayKey && !cancelled && !(luna.flags ?? []).some((f) => f === 'conference_or_group' || f === 'rooms_only_group') && mutate
+        stayKey && luna && !cancelled && !(luna.flags ?? []).some((f) => f === 'conference_or_group' || f === 'rooms_only_group') && mutate
           ? await mutate({
               messageId: source.messageId,
               selectionEpoch,
