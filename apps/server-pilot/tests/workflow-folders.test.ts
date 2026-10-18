@@ -1,5 +1,7 @@
 import { and } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/postgres-js';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { __setDbForTests } from '../src/db/client.js';
 import { message } from '../src/db/schema/mail.js';
@@ -11,7 +13,10 @@ import {
 } from '../src/trpc/routes/workflow-folders.js';
 import { buildMailListConditions } from '../src/mail/folder-semantics.js';
 import {
+  GOLD_REVIEW_SINCE,
+  GOLD_REVIEW_UNTIL,
   hasPrefilledData,
+  latestWorkflowThreads,
   mapWorkflowFolder,
   workflowFolderMembershipSql,
 } from '../src/mail/workflow-folders.js';
@@ -192,6 +197,30 @@ describe('workflow folder mapping', () => {
     expect(hasPrefilledData({ contact: { name: null }, stays: [] })).toBe(false);
     expect(hasPrefilledData({ contact: { name: 'Taylor Guest' }, stays: [] })).toBe(true);
     expect(hasPrefilledData({ contact: {}, stays: [{ rows: [{ rooms: 2 }] }] })).toBe(true);
+  });
+});
+
+describe('gold review window SQL binds', () => {
+  it('binds the HITL window as timestamptz strings, not Date objects', async () => {
+    const conn = postgres({
+      hostname: '127.0.0.1',
+      port: 9,
+      max: 1,
+      connect_timeout: 1,
+      idle_timeout: 1,
+    });
+    try {
+      const db = drizzle(conn);
+      const latest = latestWorkflowThreads(db, TRANSPORT);
+      const query = db.with(latest).select().from(latest).toSQL();
+      expect(query.params.filter((value) => value instanceof Date)).toEqual([]);
+      expect(query.sql).toContain('::timestamptz');
+      expect(query.params).toEqual(
+        expect.arrayContaining([GOLD_REVIEW_SINCE.toISOString(), GOLD_REVIEW_UNTIL.toISOString()]),
+      );
+    } finally {
+      await conn.end({ timeout: 1 });
+    }
   });
 });
 

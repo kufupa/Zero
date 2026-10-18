@@ -508,8 +508,8 @@ export function latestWorkflowThreads(db: DB, transportId: string) {
           eq(mailExtraction.status, 'succeeded'),
           isNull(mailThread.trashedAt),
           staffOutboundExists(db, transportId),
-          sql`coalesce(${message.receivedAt}, ${message.createdAt}) >= ${GOLD_REVIEW_SINCE}`,
-          sql`coalesce(${message.receivedAt}, ${message.createdAt}) <= ${GOLD_REVIEW_UNTIL}`,
+          sql`coalesce(${message.receivedAt}, ${message.createdAt}) >= ${GOLD_REVIEW_SINCE.toISOString()}::timestamptz`,
+          sql`coalesce(${message.receivedAt}, ${message.createdAt}) <= ${GOLD_REVIEW_UNTIL.toISOString()}::timestamptz`,
         ),
       )
       .orderBy(
