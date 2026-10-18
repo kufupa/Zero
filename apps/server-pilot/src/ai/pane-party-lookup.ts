@@ -1,3 +1,4 @@
+import { hmsDavinciReadsEnabled } from '../hms/hms-read-target.js';
 import {
   isDaVinciMailboxOrigin,
   type MailboxHmsOriginFields,
@@ -485,7 +486,11 @@ export async function findParty(
   if (!enabled()) return replyWithout('refused_flag_off');
   const name = typeof input.name === 'string' ? input.name.trim() : '';
   if (!name || name.length > 256) return replyWithout('refused_input_invalid');
-  if (options.origin && isDaVinciMailboxOrigin(options.origin)) {
+  if (
+    options.origin &&
+    isDaVinciMailboxOrigin(options.origin) &&
+    !hmsDavinciReadsEnabled()
+  ) {
     return replyWithout('refused_origin_mismatch');
   }
   const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
