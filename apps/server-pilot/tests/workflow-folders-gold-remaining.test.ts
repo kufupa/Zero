@@ -2,6 +2,7 @@ import { and, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import {
+  attachment,
   mailActionLabel,
   mailboxTransport,
   mailThread,
@@ -70,6 +71,7 @@ async function seedQuoteRow(
     direction: 'inbound',
     fromAddress: 'fixture@example.invalid',
     subject: 'Quote request',
+    receivedAt: new Date('2026-10-05T10:00:00.000Z'),
   });
   await db.insert(mailExtraction).values({
     messageId: options.messageId,
@@ -77,6 +79,23 @@ async function seedQuoteRow(
     status: 'succeeded',
     kind: 'quote',
     payload: { action: 'quote_availability' },
+  });
+  const outboundId = `${options.messageId}-staff-out`;
+  await db.insert(message).values({
+    id: outboundId,
+    transportId,
+    threadId: options.threadId,
+    direction: 'outbound',
+    fromAddress: 'staff@example.invalid',
+    subject: 'Quote pdf',
+  });
+  await db.insert(attachment).values({
+    id: `${outboundId}-att`,
+    messageId: outboundId,
+    filename: 'quote.pdf',
+    mimeType: 'application/pdf',
+    sizeBytes: 2048,
+    s3Key: `test/${outboundId}.pdf`,
   });
 }
 
