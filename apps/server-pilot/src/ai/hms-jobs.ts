@@ -30,6 +30,16 @@ import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { classifyMailSource, isMailSourceClassification } from './mail-source.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
+import {
+  CENTURION_HMS_READ_TARGET,
+  DAVINCI_HMS_READ_TARGET,
+  hmsDavinciReadsEnabled,
+  hmsReadAuditMetrics,
+  hmsReadTargetJobMetrics,
+  isDaVinciTransport,
+  resolveHmsReadJobTarget,
+  type HmsReadTarget,
+} from '../hms/hms-read-target.js';
 import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import {
   acquisitionWithin,
@@ -641,11 +651,14 @@ export async function queueUserHmsJob(
     threadId: string;
     request: HmsJobRequest;
     idempotencyKey?: string;
+    target?: HmsReadTarget;
+    extraMetrics?: Record<string, unknown>;
   },
   db: DB = getDb(),
 ): Promise<AiWorkflowRun | null> {
   const triggerMessageId = await latestInboundMessageId(db, input.transportId, input.threadId);
   if (!triggerMessageId) return null;
+  const target = input.target ?? CENTURION_HMS_READ_TARGET;
   const { run } = await enqueueHmsJob(
     {
       transportId: input.transportId,
@@ -656,6 +669,11 @@ export async function queueUserHmsJob(
       request: input.request,
       priority: HMS_JOB_PRIORITY_USER,
       idempotencyKey: input.idempotencyKey ?? `hms-job:user:${randomUUID()}`,
+      extraMetrics: {
+        ...hmsReadAuditMetrics({ actorKind: 'user', actorUserId: input.userId, target }),
+        ...hmsReadTargetJobMetrics(target),
+        ...input.extraMetrics,
+      },
     },
     db,
   );
@@ -669,19 +687,20 @@ export class HmsPartyQueueLimitError extends Error {
   }
 }
 
-function userPartyIdempotencyKey(input: {
+export function userPartyIdempotencyKey(input: {
   transportId: string;
   request: Extract<HmsJobRequest, { kind: 'party' }>;
   day: string;
   retry: boolean;
+  propertyCode: string;
 }): string {
   const digest = createHash('sha256')
     .update(
-      `${input.request.partyKind ?? ''}\n${input.request.name.replace(/\s+/g, ' ').trim().toLowerCase()}\n${input.day}`,
+      `${input.propertyCode}\n${input.request.partyKind ?? ''}\n${input.request.name.replace(/\s+/g, ' ').trim().toLowerCase()}\n${input.day}`,
     )
     .digest('hex')
     .slice(0, 24);
-  const key = `hms-job:user-party:${input.transportId}:${digest}`;
+  const key = `hms-job:user-party:${input.propertyCode}:${input.transportId}:${digest}`;
   return input.retry ? `${key}:retry:${randomUUID()}` : key;
 }
 
@@ -693,6 +712,8 @@ export async function queueUserPartyHmsJob(
     threadId: string;
     request: Extract<HmsJobRequest, { kind: 'party' }>;
     retry?: boolean;
+    propertyCode?: string;
+    extraMetrics?: Record<string, unknown>;
   },
   db: DB = getDb(),
 ): Promise<AiWorkflowRun | null> {
@@ -700,11 +721,22 @@ export async function queueUserPartyHmsJob(
   if (!triggerMessageId) return null;
   const workItemId = await latestWorkItemId(db, input.transportId, input.threadId);
   const day = new Date().toISOString().slice(0, 10);
+  const propertyCode = input.propertyCode ?? 'HRCEN';
+  const target =
+    input.propertyCode === DAVINCI_HMS_READ_TARGET.propertyCode
+      ? DAVINCI_HMS_READ_TARGET
+      : CENTURION_HMS_READ_TARGET;
+  const audit = hmsReadAuditMetrics({
+    actorKind: 'user',
+    actorUserId: input.userId,
+    target,
+  });
   let idempotencyKey = userPartyIdempotencyKey({
     transportId: input.transportId,
     request: input.request,
     day,
     retry: input.retry === true,
+    propertyCode,
   });
 
   return db.transaction(async (tx) => {
@@ -730,6 +762,7 @@ export async function queueUserPartyHmsJob(
               request: input.request,
               priority: HMS_JOB_PRIORITY_USER,
               idempotencyKey,
+              extraMetrics: { ...audit, ...input.extraMetrics },
             },
             scoped,
           )
@@ -793,6 +826,7 @@ export async function queueUserPartyHmsJob(
           request: input.request,
           priority: HMS_JOB_PRIORITY_USER,
           idempotencyKey,
+          extraMetrics: { ...audit, ...input.extraMetrics },
         },
         scoped,
       )
@@ -1619,6 +1653,7 @@ export async function prefetchHmsConfirmations(
         priority: HMS_JOB_PRIORITY_PREFETCH,
         // Same number again on the same day is a no-op, whichever mail carried it.
         idempotencyKey: confirmationPrefetchIdempotencyKey(run.transportId, confirmation, dayKey),
+        extraMetrics: hmsReadAuditMetrics({ actorKind: 'system', target: CENTURION_HMS_READ_TARGET }),
       },
       db,
     );
@@ -1645,6 +1680,7 @@ export async function prefetchHmsConfirmations(
           lastName,
           arrival,
         ),
+        extraMetrics: hmsReadAuditMetrics({ actorKind: 'system', target: CENTURION_HMS_READ_TARGET }),
       },
       env.HMS_GUEST_PREFETCH_PER_HOUR,
     );
@@ -2262,12 +2298,14 @@ async function executePartyMatchV2(input: {
     threadId: input.run.threadId,
     messageId: input.run.triggerMessageId,
   });
-  if (!origin.ok) {
+  const davinciRead = isDaVinciTransport(input.run.transportId) || !origin.ok;
+  if (davinciRead && !hmsDavinciReadsEnabled()) {
     return {
       ...partyMatchV2NoMatch('Da Vinci mailbox origin is not bound to Centurion HMS'),
       outcome: 'refused_origin_mismatch',
     };
   }
+  const davinciTarget = davinciRead ? DAVINCI_HMS_READ_TARGET : null;
 
   const quoteLlmParty = await existingQuoteWorkflowParty(
     input.db,
@@ -2297,6 +2335,7 @@ async function executePartyMatchV2(input: {
         exactTerm: true,
         resultCap: PARTY_MATCH_V2_ROW_CAP,
         origin: mailboxOrigin,
+        target: davinciTarget,
       },
     );
     searchesTried.push({
@@ -2678,15 +2717,30 @@ export async function executeHmsJob(input: {
   // Worker-time origin recheck: jobs queued before the enqueue guard, or whose
   // thread became mixed-origin after enqueue, must not reach Centurion HMS.
   // Party V2 keeps its own refusal result shape below.
-  if (!(request.kind === 'party' && request.matchVersion === 2) && run.threadId) {
-    const origin = await guardCenturionHmsMailboxOrigin({
-      transportId: run.transportId,
-      threadId: run.threadId,
-      messageId: run.triggerMessageId,
-    });
-    if (!origin.ok) {
-      await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
-      return 'dead_letter';
+  const partyV2 = request.kind === 'party' && request.matchVersion === 2;
+  let davinciReadTarget: HmsReadTarget | null = null;
+  if (!partyV2 && run.threadId) {
+    if (request.kind === 'find' || request.kind === 'search_guest' || request.kind === 'party') {
+      const resolved = await resolveHmsReadJobTarget({
+        transportId: run.transportId,
+        threadId: run.threadId,
+        messageId: run.triggerMessageId,
+      });
+      if (!resolved.ok) {
+        await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
+        return 'dead_letter';
+      }
+      davinciReadTarget = hmsReadTargetJobMetrics(resolved.target)?.hmsReadTarget ?? null;
+    } else {
+      const origin = await guardCenturionHmsMailboxOrigin({
+        transportId: run.transportId,
+        threadId: run.threadId,
+        messageId: run.triggerMessageId,
+      });
+      if (!origin.ok) {
+        await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
+        return 'dead_letter';
+      }
     }
   }
   const metrics = objectRecord(run.metrics) as {
@@ -2843,12 +2897,14 @@ export async function executeHmsJob(input: {
   const ownerKey = metrics.owner ?? `hms-job-prefetch:${run.transportId}`;
   const screenshotDir: { value: string | null } = { value: null };
   const deps = {
-    lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
+    lock: () =>
+      paneStayLookupLoaders.lock ?? paneStayPropertyLock(davinciReadTarget?.propertyCode),
     acquisition: background ? { tryOnce: true } : acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     onRun: ({ runId, dir }: { runId: string; dir: string }) => {
       screenshotDir.value = dir;
       registerPaneRun({ runId, dir, owner: ownerKey, now: Date.now() });
     },
+    target: davinciReadTarget,
   };
   const audit = {
     transportId: run.transportId,
@@ -2856,51 +2912,50 @@ export async function executeHmsJob(input: {
     userId: metrics.userId ?? null,
     inputDigest: toolInputDigest(request as Record<string, unknown>),
   };
-  const result =
-    request.kind === 'availability'
-      ? await probeAvailability(request, { lock: deps.lock, acquisition: deps.acquisition })
-      : request.kind === 'find'
-        ? await recordedToolRun(
-            { kind: 'stay_lookup', ...audit },
+  const result = await (request.kind === 'availability'
+    ? probeAvailability(request, { lock: deps.lock, acquisition: deps.acquisition })
+    : request.kind === 'find'
+      ? recordedToolRun(
+          { kind: 'stay_lookup', ...audit },
+          () =>
+            findStay(
+              {
+                confirmation: request.confirmation,
+                ...(request.arrival ? { arrival: request.arrival } : {}),
+              },
+              deps,
+            ),
+          classifyFind,
+        )
+      : request.kind === 'party' &&
+          background &&
+          request.matchVersion === 2 &&
+          partyMatchV2Enabled()
+        ? executePartyMatchV2({
+            run,
+            db,
+            signal: input.signal,
+            deadlineAt: fence.deadlineAt.getTime(),
+            acquisition: deps.acquisition,
+          })
+        : request.kind === 'party'
+        ? findParty(
+            { name: request.name, ...(request.partyKind ? { kind: request.partyKind } : {}) },
+            { acquisition: deps.acquisition, target: davinciReadTarget },
+          )
+        : recordedToolRun(
+            { kind: 'guest_search', ...audit },
             () =>
-              findStay(
+              searchGuest(
                 {
-                  confirmation: request.confirmation,
-                  ...(request.arrival ? { arrival: request.arrival } : {}),
+                  lastName: request.lastName,
+                  arrival: request.arrival,
+                  ...(request.departure ? { departure: request.departure } : {}),
                 },
                 deps,
               ),
-            classifyFind,
-          )
-        : request.kind === 'party' &&
-            background &&
-            request.matchVersion === 2 &&
-            partyMatchV2Enabled()
-          ? await executePartyMatchV2({
-              run,
-              db,
-              signal: input.signal,
-              deadlineAt: fence.deadlineAt.getTime(),
-              acquisition: deps.acquisition,
-            })
-          : request.kind === 'party'
-          ? await findParty(
-              { name: request.name, ...(request.partyKind ? { kind: request.partyKind } : {}) },
-              { acquisition: deps.acquisition },
-            )
-          : await recordedToolRun(
-              { kind: 'guest_search', ...audit },
-              () =>
-                searchGuest(
-                  {
-                    lastName: request.lastName,
-                    arrival: request.arrival,
-                    ...(request.departure ? { departure: request.departure } : {}),
-                  },
-                  deps,
-                ),
-              classifySearch,
-            );
+            classifySearch,
+          ));
 
   const outcome: string = result.outcome;
   if (outcome === 'refused_lock_busy') {
@@ -2934,7 +2989,13 @@ export async function executeHmsJob(input: {
     {
       ...mark,
       readResult: { ...result, kind: request.kind, asOf: new Date().toISOString() },
-      metrics: { hmsJob: true, kind: request.kind, outcome, screenshotDir: screenshotDir.value },
+      metrics: {
+        hmsJob: true,
+        kind: request.kind,
+        outcome,
+        screenshotDir: screenshotDir.value,
+        ...(davinciReadTarget ? { hmsReadTarget: davinciReadTarget } : {}),
+      },
     },
     db,
   );

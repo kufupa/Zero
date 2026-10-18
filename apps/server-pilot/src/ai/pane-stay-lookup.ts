@@ -6,6 +6,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -141,6 +142,8 @@ export type PaneStayLookupDeps = {
   acquisition?: PropertyReadLockAcquisitionOptions;
   /** Called for each run that wrote a directory, so the caller can register its screenshots for reads. */
   onRun?: (run: { runId: string; dir: string }) => void;
+  /** Explicit HMS property/slot for the CLI env. Writes omit this and stay Centurion. */
+  target?: HmsReadTarget | null;
 };
 
 export const paneStayLookupLoaders: {
@@ -274,7 +277,10 @@ function toPaneStayCommercial(raw: unknown): PaneStayCommercial | undefined {
   return Object.keys(commercial).length > 0 ? commercial : undefined;
 }
 
-async function defaultSpawn(input: PaneStayLookupSpawnInput): Promise<PaneStayLookupSpawnResult> {
+async function defaultSpawn(
+  input: PaneStayLookupSpawnInput,
+  target?: HmsReadTarget | null,
+): Promise<PaneStayLookupSpawnResult> {
   const runId = randomUUID();
   const dir = join(tmpdir(), `pane-lookup-${runId}`);
   await mkdir(dir, { mode: 0o700 });
@@ -282,7 +288,7 @@ async function defaultSpawn(input: PaneStayLookupSpawnInput): Promise<PaneStayLo
   try {
     await execFileAsync('node', buildStayLookupArgs(input, dir), {
       timeout: LOOKUP_TIMEOUT_MS,
-      env: paneStaySpawnEnv(),
+      env: paneStaySpawnEnv(process.env, undefined, target ?? null),
     });
   } catch (error) {
     // The CLI exits 1 or 2 on failures and refusals but still writes result.json. Read that first.
@@ -323,7 +329,7 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
   if (input.arrival !== undefined && !isRealIsoDate(input.arrival)) return refused('refused_input_invalid');
   const lock = deps.lock();
   if (!lock) return refused('refused_lock_unavailable');
-  const spawn = paneStayLookupLoaders.spawn ?? defaultSpawn;
+  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target));
   let run: PaneStayLookupSpawnResult;
   try {
     run = await lock.withLock(
@@ -405,7 +411,7 @@ export async function searchGuest(
   }
   const lock = deps.lock();
   if (!lock) return refusedSearch('refused_lock_unavailable');
-  const spawn = paneStayLookupLoaders.spawn ?? defaultSpawn;
+  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target));
   let run: PaneStayLookupSpawnResult;
   try {
     run = await lock.withLock(

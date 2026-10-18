@@ -205,3 +205,39 @@ describe('U23 try-once acquisition', () => {
     );
   });
 });
+
+describe('two hotel slots', () => {
+  it('two properties can hold locks at once', async () => {
+    const hrcenHeld = deferred();
+    const hrdavHeld = deferred();
+    const hrcen = createPropertyReadLock({
+      tenantId: 'tenant-centurion',
+      propertyCode: 'HRCEN',
+      connectionFactory: async () => connection(),
+    });
+    const hrdav = createPropertyReadLock({
+      tenantId: 'tenant-centurion',
+      propertyCode: 'HRDAV',
+      connectionFactory: async () => connection(),
+    });
+    const first = hrcen.withLock(async () => {
+      hrcenHeld.resolve();
+      await hrdavHeld.promise;
+      return 'HRCEN';
+    });
+    const second = hrdav.withLock(async () => {
+      hrdavHeld.resolve();
+      await hrcenHeld.promise;
+      return 'HRDAV';
+    });
+    await expect(Promise.all([first, second])).resolves.toEqual(['HRCEN', 'HRDAV']);
+  });
+});
+
+function deferred<T = void>(): { promise: Promise<T>; resolve: (value: T) => void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}

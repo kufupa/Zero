@@ -2,6 +2,7 @@ import {
   readInstalledStaffQuoteConfiguration,
   type StaffQuoteInstallationConfiguration,
 } from './staff-quote-installation.js';
+import type { HmsReadTarget } from '../hms/hms-read-target.js';
 
 /**
  * The only variables a pane HMS CLI inherits: process basics, CDP endpoint and ownership, credential source, and the
@@ -24,16 +25,41 @@ export const PANE_CLI_ENV_ALLOWLIST = [
   'HMS_STAGEHAND_BROWSER_OWNERSHIP',
 ] as const;
 
+function davinciPaneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const name of PANE_CLI_ENV_ALLOWLIST) {
+    if (
+      name === 'HMS_STAGEHAND_CDP_URL' ||
+      name === 'HMS_QUOTE_SECRET_PATH' ||
+      name === 'HMS_READ_SECRET_ARN' ||
+      name === 'RESERVATIONIST_PANE_SAVE'
+    ) {
+      continue;
+    }
+    if (env[name] !== undefined) out[name] = env[name];
+  }
+  out.HMS_READ_SECRET_ARN = target.secretId;
+  const cdp = env.HMS_STAGEHAND_CDP_URL_DAVINCI;
+  if (cdp) {
+    out.HMS_STAGEHAND_CDP_URL = cdp;
+    out.HMS_STAGEHAND_BROWSER_OWNERSHIP = 'borrowed';
+  }
+  return out;
+}
+
 /**
  * The environment for a pane HMS CLI (stay-lookup, cancel-stay, create-lab-stay). The http process has no
  * HMS_STAGEHAND_* variables, so the CLIs refuse with CDP_URL_REQUIRED. The installed staff quote configuration names
  * the borrowed browser and the credential file, the same way the staff quote spawner passes them to its CLIs.
  * Variables already set in the environment win, so a local run keeps its own browser.
+ * A Da Vinci read target never inherits the Centurion CDP, quote secret file, or save gate.
  */
 export function paneStaySpawnEnv(
   env: NodeJS.ProcessEnv = process.env,
   readConfiguration: () => StaffQuoteInstallationConfiguration = readInstalledStaffQuoteConfiguration,
+  target: HmsReadTarget | null = null,
 ): NodeJS.ProcessEnv {
+  if (target?.browserSlot === 'davinci') return davinciPaneStaySpawnEnv(env, target);
   const out: NodeJS.ProcessEnv = {};
   for (const name of PANE_CLI_ENV_ALLOWLIST) {
     if (env[name] !== undefined) out[name] = env[name];

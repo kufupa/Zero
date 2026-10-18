@@ -1,7 +1,7 @@
 import { findParty } from '../../ai/pane-party-lookup.js';
 import { suggestPartiesFor } from '../../ai/party-aliases.js';
 import { typeaheadPartyIndex } from '../../ai/party-index.js';
-import { assertCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
+import { assertHmsReadOriginAllowed } from '../../hms/hms-read-target.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
 
@@ -23,14 +23,13 @@ const typeaheadInput = z.object({ query: z.string().max(256) }).strict();
 
 export const panePartyLookupRouter = router({
   findParty: mailboxProcedure.input(findPartyInput).mutation(async ({ input, ctx }) => {
-    if (input.threadId) {
-      await assertCenturionHmsMailboxOrigin({
-        transportId: ctx.activeTransportId,
-        threadId: input.threadId,
-        ...(input.messageId ? { messageId: input.messageId } : {}),
-      });
-    }
-    return findParty({ name: input.name, kind: input.kind });
+    if (!input.threadId) return findParty({ name: input.name, kind: input.kind });
+    const target = await assertHmsReadOriginAllowed({
+      transportId: ctx.activeTransportId,
+      threadId: input.threadId,
+      ...(input.messageId ? { messageId: input.messageId } : {}),
+    });
+    return findParty({ name: input.name, kind: input.kind }, { target });
   }),
   // Read-only. Suggestions come from the sender's domain and the body's names; only HMS-listed ids are ever attached.
   suggest: mailboxProcedure.input(suggestInput).query(({ input }) => ({ suggestions: suggestPartiesFor(input) })),

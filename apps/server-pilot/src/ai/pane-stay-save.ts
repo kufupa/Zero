@@ -310,13 +310,14 @@ export function paneStayTenantId(env: NodeJS.Dict<string> = process.env): string
   return configured ?? 'legacy';
 }
 
-// Production lock for the session's hotel. Cancel and save share this key, so they serialize with each other.
-export function paneStayPropertyLock(): PaneStayLock | null {
+// Production lock. Writes omit propertyCode and stay on the session hotel. Reads pass the resolved target.
+export function paneStayPropertyLock(propertyCode?: string): PaneStayLock | null {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) return null;
+  const code = propertyCode && propertyCode.trim() !== '' ? propertyCode : PANE_STAY_PROPERTY_CODE;
   return createPostgresPropertyReadLock({
     tenantId: paneStayTenantId(),
-    propertyCode: PANE_STAY_PROPERTY_CODE,
+    propertyCode: code,
     databaseUrl,
   });
 }

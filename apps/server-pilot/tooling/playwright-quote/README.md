@@ -283,3 +283,22 @@ timing and remaining source limits sit in
 `.private/playwright-quote/handoff.md`. Those records, not this README, prove
 verified capabilities. Partial/unknown outcomes mean unestablished coverage,
 eligibility or joint allocation — not sold out and not a payable quote.
+
+## Hotel slot owner (native)
+
+`slot-owner.mjs` is the production Chromium owner for hotel slots. It uses
+Playwright `launchPersistentContext` and loopback CDP. It does not load the
+Stagehand extension. systemd template: `apps/server-pilot/deploy/hms-slot@.service`
+(instances `hrcen`, `hrdav`). Do not enable the unit from this slice.
+
+Env names (values live in `/etc/nava/hms-slot-%i.env`, not here):
+
+- `HMS_SLOT_PROFILE_DIR` — persistent profile directory for one slot
+- `HMS_SLOT_CDP_PORT` — loopback debug port
+- `HMS_SLOT_DEBUG_ADDRESS` — must be loopback (`127.0.0.1`); non-loopback is refused
+- `HMS_SLOT_PHASE_PATH` — `ready` / `recovering` / `down` JSON
+- `HMS_SLOT_HEADLESS` — unit default `1`; headed vs headless is not decided here
+- `HMS_STAGEHAND_CDP_URL` — Centurion pane attach name (existing)
+- `HMS_STAGEHAND_CDP_URL_DAVINCI` — Da Vinci pane attach name
+- `PLAYWRIGHT_BROWSERS_PATH` — Playwright browser cache, not a Stagehand trial path
+
