@@ -1,4 +1,4 @@
-import { hmsDavinciReadsEnabled } from '../hms/hms-read-target.js';
+import { hmsDavinciReadsEnabled, type HmsReadTarget } from '../hms/hms-read-target.js';
 import {
   isDaVinciMailboxOrigin,
   type MailboxHmsOriginFields,
@@ -91,8 +91,14 @@ const CLI_OUTCOMES: ReadonlySet<string> = new Set([
 const KIND_FAILURES = ['execution_failure', 'external_system_unavailable', 'input_gap'] as const;
 
 // Test seam, like paneStayLookupLoaders. spawn returns what party-lookup.mjs prints as its result line.
+export type PanePartySpawnInput = {
+  kind: PanePartyKind;
+  name: string;
+  target?: HmsReadTarget | null;
+};
+
 export const panePartyLookupLoaders: {
-  spawn: ((input: { kind: PanePartyKind; name: string }) => Promise<unknown>) | null;
+  spawn: ((input: PanePartySpawnInput) => Promise<unknown>) | null;
   lock: PaneStayLock | null;
   enabled: (() => boolean) | null;
 } = {
@@ -204,10 +210,7 @@ export function mergePartyKindResults(
 }
 
 /** One runner run for one kind and name. The sweep and the pane both call it, so both use the fail-closed runner. */
-export async function spawnPartyLookup(input: {
-  kind: PanePartyKind;
-  name: string;
-}): Promise<unknown> {
+export async function spawnPartyLookup(input: PanePartySpawnInput): Promise<unknown> {
   // mkdtemp makes the directory 0700. The request holds only the typed name, and the directory goes after the run.
   const dir = await mkdtemp(join(tmpdir(), 'pane-party-'));
   try {
@@ -230,7 +233,7 @@ export async function spawnPartyLookup(input: {
         {
           timeout: PARTY_LOOKUP_KIND_TIMEOUT_MS,
           killSignal: 'SIGKILL',
-          env: paneStaySpawnEnv(),
+          env: paneStaySpawnEnv(process.env, undefined, input.target ?? null),
           maxBuffer: 1024 * 1024,
         },
       ));
@@ -421,13 +424,14 @@ async function lookupKind(
   kind: PanePartyKind,
   term: string,
   lock: PaneStayLock,
-  spawn: (input: { kind: PanePartyKind; name: string }) => Promise<unknown>,
+  spawn: (input: PanePartySpawnInput) => Promise<unknown>,
   acquisition?: PropertyReadLockAcquisitionOptions,
+  target?: HmsReadTarget | null,
 ): Promise<PanePartyLookupCore> {
   let raw: unknown;
   try {
     raw = await lock.withLock(
-      () => spawn({ kind, name: term }),
+      () => spawn({ kind, name: term, target }),
       acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {
@@ -446,11 +450,12 @@ async function findPartyOfKind(
   kind: PanePartyKind,
   name: string,
   lock: PaneStayLock,
-  spawn: (input: { kind: PanePartyKind; name: string }) => Promise<unknown>,
+  spawn: (input: PanePartySpawnInput) => Promise<unknown>,
   options: {
     acquisition?: PropertyReadLockAcquisitionOptions;
     exactTerm?: boolean;
     resultCap?: number;
+    target?: HmsReadTarget | null;
   } = {},
 ): Promise<PanePartyFindResult> {
   const terms = options.exactTerm ? [name] : partySearchTerms(name).slice(0, PARTY_KIND_SEARCH_TERMS);
@@ -459,7 +464,7 @@ async function findPartyOfKind(
   let searchedFor = tries[0];
   for (const term of tries) {
     searchedFor = term;
-    core = await lookupKind(kind, term, lock, spawn, options.acquisition);
+    core = await lookupKind(kind, term, lock, spawn, options.acquisition, options.target);
     if (!ANSWERED_OUTCOMES.has(core.outcome) || core.results.length) break;
   }
   return rankedReply(name, core, searchedFor, options.resultCap ?? PANE_PARTY_RESULT_CAP);
@@ -480,6 +485,8 @@ export async function findParty(
     resultCap?: number;
     /** Trigger mailbox origin. Da Vinci identity must not take the Centurion HMS slot. */
     origin?: MailboxHmsOriginFields;
+    /** Explicit HMS property/slot. Never a module global. */
+    target?: HmsReadTarget | null;
   } = {},
 ): Promise<PanePartyFindResult> {
   const enabled = panePartyLookupLoaders.enabled ?? (() => quoteRateContextEnabled());
@@ -502,7 +509,7 @@ export async function findParty(
     let raw: unknown;
     try {
       raw = await lock.withLock(
-        () => spawn({ kind, name }),
+        () => spawn({ kind, name, target: options.target }),
         options.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
       );
     } catch (error) {

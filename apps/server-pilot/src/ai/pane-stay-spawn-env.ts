@@ -25,22 +25,6 @@ export const PANE_CLI_ENV_ALLOWLIST = [
   'HMS_STAGEHAND_BROWSER_OWNERSHIP',
 ] as const;
 
-let activeHmsReadTarget: HmsReadTarget | null = null;
-
-/** Runs a pane HMS lookup under a job-carried read target. The worker sets this; HTTP writes never see it. */
-export async function runWithHmsReadTarget<T>(
-  target: HmsReadTarget | null | undefined,
-  run: () => Promise<T>,
-): Promise<T> {
-  const prev = activeHmsReadTarget;
-  activeHmsReadTarget = target ?? null;
-  try {
-    return await run();
-  } finally {
-    activeHmsReadTarget = prev;
-  }
-}
-
 function davinciPaneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const name of PANE_CLI_ENV_ALLOWLIST) {
@@ -73,7 +57,7 @@ function davinciPaneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget):
 export function paneStaySpawnEnv(
   env: NodeJS.ProcessEnv = process.env,
   readConfiguration: () => StaffQuoteInstallationConfiguration = readInstalledStaffQuoteConfiguration,
-  target: HmsReadTarget | null = activeHmsReadTarget,
+  target: HmsReadTarget | null = null,
 ): NodeJS.ProcessEnv {
   if (target?.browserSlot === 'davinci') return davinciPaneStaySpawnEnv(env, target);
   const out: NodeJS.ProcessEnv = {};

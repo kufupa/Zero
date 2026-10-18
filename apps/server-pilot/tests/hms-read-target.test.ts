@@ -1,3 +1,4 @@
+import { userPartyIdempotencyKey } from '../src/ai/hms-jobs.js';
 import { bindCenturionHmsMailboxProperty } from '../src/hms/mailbox-hms-origin-bind.js';
 import { findParty, panePartyLookupLoaders } from '../src/ai/pane-party-lookup.js';
 import {
@@ -233,5 +234,87 @@ describe('findParty flag', () => {
     ).resolves.toMatchObject({ outcome: 'no_match' });
     expect(seen[0]).toBe('lock');
     expect(panePartyLookupLoaders.spawn).toHaveBeenCalled();
+  });
+
+  it('overlapping Centurion and Da Vinci lookups keep distinct targets across a lock wait', async () => {
+    vi.stubEnv('HMS_DAVINCI_READS', 'on');
+    const captured: string[] = [];
+    let waiting = 0;
+    let bothWaiting!: () => void;
+    const bothInside = new Promise<void>((resolve) => {
+      bothWaiting = resolve;
+    });
+    let releaseLock!: () => void;
+    const lockHold = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    panePartyLookupLoaders.lock = {
+      withLock: async (fn) => {
+        waiting += 1;
+        if (waiting === 2) bothWaiting();
+        await lockHold;
+        return fn();
+      },
+    };
+    panePartyLookupLoaders.spawn = vi.fn(async (input: { kind: string; name: string; target?: { propertyCode?: string } }) => {
+      captured.push(input.target?.propertyCode ?? 'MISSING');
+      return { outcome: 'no_match', candidates: [], truncated: false };
+    });
+    panePartyLookupLoaders.enabled = () => true;
+    const davinci = findParty(
+      { name: 'Tourvest', kind: 'company' },
+      { origin: DAVINCI_ORIGIN, target: DAVINCI_HMS_READ_TARGET },
+    );
+    const centurion = findParty(
+      { name: 'Tourvest', kind: 'company' },
+      { origin: CENTURION_ORIGIN, target: CENTURION_HMS_READ_TARGET },
+    );
+    await bothInside;
+    releaseLock();
+    await Promise.all([davinci, centurion]);
+    expect([...captured].sort()).toEqual(['HRDAV', 'HRCEN'].sort());
+  });
+});
+
+describe('userPartyIdempotencyKey', () => {
+  const request = { kind: 'party' as const, name: 'Tourvest', partyKind: 'company' as const };
+  const day = '2026-10-18';
+
+  it('same party name on two properties yields two keys', () => {
+    const centurion = userPartyIdempotencyKey({
+      transportId: 'transport-centurion',
+      request,
+      day,
+      retry: false,
+      propertyCode: 'HRCEN',
+    });
+    const davinci = userPartyIdempotencyKey({
+      transportId: 'transport-faith',
+      request,
+      day,
+      retry: false,
+      propertyCode: 'HRDAV',
+    });
+    expect(centurion).not.toBe(davinci);
+    expect(centurion).toContain('HRCEN');
+    expect(davinci).toContain('HRDAV');
+  });
+
+  it('same property, same name, same day reuses one key', () => {
+    const first = userPartyIdempotencyKey({
+      transportId: 'transport-centurion',
+      request: { kind: 'party', name: '  Tourvest  ', partyKind: 'company' },
+      day,
+      retry: false,
+      propertyCode: 'HRCEN',
+    });
+    const second = userPartyIdempotencyKey({
+      transportId: 'transport-centurion',
+      request,
+      day,
+      retry: false,
+      propertyCode: 'HRCEN',
+    });
+    expect(first).toBe(second);
   });
 });
