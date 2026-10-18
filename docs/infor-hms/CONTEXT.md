@@ -140,3 +140,21 @@ _Avoid_: guessing beds from the room-type name
 A closed enum filled only from a documented native fact (`Two Double Beds` → `double`). Unmapped native text stays unknown.
 _Avoid_: `STWN` means twin beds
 
+## Multi-hotel slots (Centurion + Da Vinci)
+
+**Hotel slot**:
+One property + one dedicated robot HMS login + one borrowed Chromium + one lock. Parallel means two slots, not two jobs on one login.
+_Avoid_: lane (that is `default`/`hms` on the worker), always-on browser (that is a desired session state, not the slot)
+
+**NAVAAI**:
+The robot HMS user for a slot. Centurion and Da Vinci each have their own NAVAAI and secret. Staff never log into these.
+_Avoid_: staff HMS login, shared hotel login
+
+**Actor**:
+The Nava user who kicked or approved the work (`actorUserId`). Not a person in HMS. HMS always shows NAVAAI.
+_Avoid_: calling NAVAAI the actor, calling Actor and Slot the same user
+
+**Slot session**:
+Managed login state for one slot: `ready`, `recovering`, `down`. Desired state is `ready`. Recovery and reset are first-class, not afterthoughts.
+_Avoid_: login-per-job, zombie session with no recover path
+
