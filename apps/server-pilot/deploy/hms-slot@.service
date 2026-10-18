@@ -1,0 +1,20 @@
+[Unit]
+Description=NAVA HMS hotel slot %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+UMask=0077
+Restart=on-failure
+RestartSec=5
+Environment=HOME=/home/ubuntu
+Environment=HMS_SLOT_HEADLESS=1
+EnvironmentFile=-/etc/nava/hms-slot-%i.env
+ExecStart=/usr/bin/node /home/ubuntu/repos/zero/apps/server-pilot/tooling/playwright-quote/slot-owner.mjs
+WorkingDirectory=/home/ubuntu/repos/zero/apps/server-pilot
+
+[Install]
+WantedBy=multi-user.target
