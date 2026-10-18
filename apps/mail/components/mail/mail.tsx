@@ -17,6 +17,7 @@ import useCategoryIds from '@/hooks/use-category-ids';
 import * as CustomIcons from '@/components/icons/icons';
 import { MailList } from '@/components/mail/mail-list';
 import { MailSearchBar } from '@/components/mail/mail-search-bar';
+import { WorkflowFolderDoneButton } from '@/components/mail/workflow-folder-done-button';
 import { useNavigate, useParams } from 'react-router';
 import { useMail } from '@/components/mail/use-mail';
 import { SidebarToggle } from '../ui/sidebar-toggle';
@@ -609,6 +610,9 @@ function MailLayoutContent() {
                       <div className="flex-1 min-w-0">
                         <MailSearchBar folderTitle={folderTitle} />
                       </div>
+                      {isWorkflowFolderNavId(folder.toLowerCase()) ? (
+                        <WorkflowFolderDoneButton folder={folder.toLowerCase()} />
+                      ) : null}
 
                       {['google', 'mailbox'].includes(activeConnection?.providerId ?? '') &&
                         folder === 'inbox' && (

@@ -14,7 +14,7 @@ import {
   workEvent,
   workItem,
 } from '../db/schema/work.js';
-import type { MailAction } from './action-labels.js';
+import { MAIL_ACTIONS, type MailAction } from './action-labels.js';
 
 export const WORKFLOW_FOLDER_IDS = [
   'quotes',
@@ -175,6 +175,23 @@ const ACTION_FOLDERS: Record<string, WorkflowFolderId> = {
   other_actionable: 'other-to-do',
   no_action: 'not-for-nava',
 };
+
+/** Inverse of ACTION_FOLDERS: Done golds unmarked rows as this action. */
+export const FOLDER_ACTIONS = {
+  quotes: 'quote_availability',
+  'new-bookings': 'new_booking',
+  amendments: 'amend',
+  cancellations: 'cancel',
+  payments: 'payment_proof',
+  billing: 'billing',
+  'groups-events': 'group_event',
+  'other-to-do': 'other_actionable',
+  'not-for-nava': 'no_action',
+} as const satisfies Record<WorkflowFolderId, MailAction>;
+
+function isMailAction(value: unknown): value is MailAction {
+  return typeof value === 'string' && (MAIL_ACTIONS as readonly string[]).includes(value);
+}
 
 function actionFolderSql(action: SQLWrapper): SQL<WorkflowFolderId> {
   const actionCases = Object.entries(ACTION_FOLDERS).map(
@@ -659,6 +676,7 @@ function toWorkflowFolderRow(
     prefilled: hasPrefilledData(row.payload),
     workItemStatus: review?.status ?? null,
     review: review?.review ?? null,
+    ownerAction: isMailAction(row.ownerAction) ? row.ownerAction : null,
   };
 }
 
@@ -696,6 +714,45 @@ export async function listWorkflowFolderRows(
     ),
     nextOffset: hasNextPage ? offset + limit : null,
   };
+}
+
+export async function goldRemainingInFolder(
+  db: DB,
+  input: {
+    transportId: string;
+    folder: WorkflowFolderId;
+    labelledBy: string;
+  },
+): Promise<{ goldWrote: number }> {
+  const action = FOLDER_ACTIONS[input.folder];
+  const unmarked: string[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = await listWorkflowFolderRows(db, input.transportId, input.folder, offset, 200);
+    for (const row of page.rows) {
+      if (!row.ownerAction) unmarked.push(row.sourceMessageId);
+    }
+    if (page.nextOffset === null) break;
+    offset = page.nextOffset;
+  }
+  if (unmarked.length === 0) return { goldWrote: 0 };
+
+  const inserted = await db
+    .insert(mailActionLabel)
+    .values(
+      unmarked.map((messageId) => ({
+        transportId: input.transportId,
+        messageId,
+        source: 'owner' as const,
+        version: 'owner',
+        action,
+        needsAction: action !== 'no_action',
+        labelledBy: input.labelledBy,
+      })),
+    )
+    .onConflictDoNothing()
+    .returning({ messageId: mailActionLabel.messageId });
+  return { goldWrote: inserted.length };
 }
 
 async function listReviewSetRows(

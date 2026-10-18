@@ -7,6 +7,7 @@ import { MAIL_ACTIONS } from '../../mail/action-labels.js';
 import {
   getWorkflowFolderSummary,
   getWorkflowFolderThread,
+  goldRemainingInFolder as writeGoldRemainingInFolder,
   listWorkflowFolderRows,
   WORKFLOW_FOLDER_IDS,
 } from '../../mail/workflow-folders.js';
@@ -150,5 +151,17 @@ export const workflowFoldersRouter = router({
         })
         .returning({ action: mailActionLabel.action, markedAt: mailActionLabel.updatedAt });
       return { action: label!.action, markedAt: label!.markedAt.toISOString() };
+    }),
+  goldRemainingInFolder: mailboxProcedure
+    .input(z.object({ folder: folderId }).strict())
+    .mutation(async ({ input, ctx }) => {
+      if (ctx.accessRole === 'member') {
+        throw new TRPCError({ code: 'FORBIDDEN', message: 'Owner access required' });
+      }
+      return writeGoldRemainingInFolder(getDb(), {
+        transportId: ctx.activeTransportId,
+        folder: input.folder,
+        labelledBy: ctx.sessionUser.id,
+      });
     }),
 });
