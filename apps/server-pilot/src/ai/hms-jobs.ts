@@ -31,8 +31,10 @@ import { parseEnv } from '../env.js';
 import { classifyMailSource, isMailSourceClassification } from './mail-source.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
 import {
+  CENTURION_HMS_READ_TARGET,
   DAVINCI_HMS_READ_TARGET,
   hmsDavinciReadsEnabled,
+  hmsReadAuditMetrics,
   hmsReadTargetJobMetrics,
   isDaVinciTransport,
   resolveHmsReadJobTarget,
@@ -649,11 +651,14 @@ export async function queueUserHmsJob(
     threadId: string;
     request: HmsJobRequest;
     idempotencyKey?: string;
+    target?: HmsReadTarget;
+    extraMetrics?: Record<string, unknown>;
   },
   db: DB = getDb(),
 ): Promise<AiWorkflowRun | null> {
   const triggerMessageId = await latestInboundMessageId(db, input.transportId, input.threadId);
   if (!triggerMessageId) return null;
+  const target = input.target ?? CENTURION_HMS_READ_TARGET;
   const { run } = await enqueueHmsJob(
     {
       transportId: input.transportId,
@@ -664,6 +669,11 @@ export async function queueUserHmsJob(
       request: input.request,
       priority: HMS_JOB_PRIORITY_USER,
       idempotencyKey: input.idempotencyKey ?? `hms-job:user:${randomUUID()}`,
+      extraMetrics: {
+        ...hmsReadAuditMetrics({ actorKind: 'user', actorUserId: input.userId, target }),
+        ...hmsReadTargetJobMetrics(target),
+        ...input.extraMetrics,
+      },
     },
     db,
   );
@@ -712,6 +722,15 @@ export async function queueUserPartyHmsJob(
   const workItemId = await latestWorkItemId(db, input.transportId, input.threadId);
   const day = new Date().toISOString().slice(0, 10);
   const propertyCode = input.propertyCode ?? 'HRCEN';
+  const target =
+    input.propertyCode === DAVINCI_HMS_READ_TARGET.propertyCode
+      ? DAVINCI_HMS_READ_TARGET
+      : CENTURION_HMS_READ_TARGET;
+  const audit = hmsReadAuditMetrics({
+    actorKind: 'user',
+    actorUserId: input.userId,
+    target,
+  });
   let idempotencyKey = userPartyIdempotencyKey({
     transportId: input.transportId,
     request: input.request,
@@ -743,7 +762,7 @@ export async function queueUserPartyHmsJob(
               request: input.request,
               priority: HMS_JOB_PRIORITY_USER,
               idempotencyKey,
-              ...(input.extraMetrics ? { extraMetrics: input.extraMetrics } : {}),
+              extraMetrics: { ...audit, ...input.extraMetrics },
             },
             scoped,
           )
@@ -807,7 +826,7 @@ export async function queueUserPartyHmsJob(
           request: input.request,
           priority: HMS_JOB_PRIORITY_USER,
           idempotencyKey,
-          ...(input.extraMetrics ? { extraMetrics: input.extraMetrics } : {}),
+          extraMetrics: { ...audit, ...input.extraMetrics },
         },
         scoped,
       )
@@ -1634,6 +1653,7 @@ export async function prefetchHmsConfirmations(
         priority: HMS_JOB_PRIORITY_PREFETCH,
         // Same number again on the same day is a no-op, whichever mail carried it.
         idempotencyKey: confirmationPrefetchIdempotencyKey(run.transportId, confirmation, dayKey),
+        extraMetrics: hmsReadAuditMetrics({ actorKind: 'system', target: CENTURION_HMS_READ_TARGET }),
       },
       db,
     );
@@ -1660,6 +1680,7 @@ export async function prefetchHmsConfirmations(
           lastName,
           arrival,
         ),
+        extraMetrics: hmsReadAuditMetrics({ actorKind: 'system', target: CENTURION_HMS_READ_TARGET }),
       },
       env.HMS_GUEST_PREFETCH_PER_HOUR,
     );

@@ -227,13 +227,14 @@ export const paneStayLookupRouter = router({
     }),
   // HMS_JOB_QUEUE off (the default): nothing is queued. runId null tells the pane to run findStay or searchGuest above.
   queueFind: mailboxProcedure.input(queueFindInput).mutation(async ({ input, ctx }) => {
-    await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
+    const target = await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
     if (!hmsJobQueueEnabled()) return { runId: null };
     const run = await queueUserHmsJob({
       transportId: ctx.activeTransportId,
       userId: ctx.sessionUser.id,
       threadId: input.threadId,
       request: { kind: 'find', confirmation: input.confirmation, arrival: input.arrival },
+      target,
       ...(input.autoStart
         ? { idempotencyKey: confirmationPrefetchIdempotencyKey(ctx.activeTransportId, input.confirmation) }
         : {}),
@@ -244,7 +245,7 @@ export const paneStayLookupRouter = router({
   queueSearchGuest: mailboxProcedure
     .input(queueSearchGuestInput)
     .mutation(async ({ input, ctx }) => {
-      await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
+      const target = await assertHmsReadOriginAllowed(originGuardInput(input, ctx.activeTransportId));
       if (!hmsJobQueueEnabled()) return { runId: null };
       const run = await queueUserHmsJob({
         transportId: ctx.activeTransportId,
@@ -256,6 +257,7 @@ export const paneStayLookupRouter = router({
           arrival: input.arrival,
           departure: input.departure,
         },
+        target,
         ...(input.autoStart
           ? {
               idempotencyKey: guestSearchPrefetchIdempotencyKey(

@@ -146,3 +146,41 @@ export function hmsReadTargetJobMetrics(
   if (target.browserSlot !== 'davinci') return null;
   return { hmsReadTarget: target };
 }
+
+export class HmsReadActorRequiredError extends Error {
+  constructor() {
+    super('staff-kicked HMS read requires actorUserId');
+    this.name = 'HmsReadActorRequiredError';
+  }
+}
+
+export type HmsReadAuditMetrics = {
+  actorKind: 'user' | 'system' | 'h1';
+  actorUserId: string | null;
+  propertyCode: string;
+  slotId: HmsReadBrowserSlot;
+};
+
+/** Staff/system/h1 audit for a pane HMS read. Never stores NAVAAI. Never `unknown`. */
+export function hmsReadAuditMetrics(input: {
+  actorKind: 'user' | 'system' | 'h1';
+  actorUserId?: string | null;
+  target: HmsReadTarget;
+}): HmsReadAuditMetrics {
+  if (input.actorKind === 'user') {
+    const actorUserId = input.actorUserId?.trim() ?? '';
+    if (!actorUserId) throw new HmsReadActorRequiredError();
+    return {
+      actorKind: 'user',
+      actorUserId,
+      propertyCode: input.target.propertyCode,
+      slotId: input.target.browserSlot,
+    };
+  }
+  return {
+    actorKind: input.actorKind,
+    actorUserId: null,
+    propertyCode: input.target.propertyCode,
+    slotId: input.target.browserSlot,
+  };
+}
