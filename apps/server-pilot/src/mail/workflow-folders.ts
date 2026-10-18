@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, inArray, isNull, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/pg-core';
 import type { DB } from '../db/client.js';
 import {
@@ -15,6 +15,10 @@ import {
   workItem,
 } from '../db/schema/work.js';
 import { MAIL_ACTIONS, type MailAction } from './action-labels.js';
+
+/** Gold HITL window for nava-admin Workflows. Johannesburg SAST (UTC+2). Drop after this owner pass. */
+export const GOLD_REVIEW_SINCE = new Date('2026-09-28T06:00:00.000Z'); // Mon 28 Sep 2026 08:00 SAST
+export const GOLD_REVIEW_UNTIL = new Date('2026-10-16T14:00:00.000Z'); // Fri 16 Oct 2026 16:00 SAST
 
 export const WORKFLOW_FOLDER_IDS = [
   'quotes',
@@ -451,6 +455,22 @@ function hasPrefilledDataSql(): SQL<boolean> {
   )`;
 }
 
+function staffOutboundExists(db: DB, transportId: string) {
+  const staffOut = alias(message, 'staff_gold_out');
+  return exists(
+    db
+      .select({ id: staffOut.id })
+      .from(staffOut)
+      .where(
+        and(
+          eq(staffOut.threadId, message.threadId),
+          eq(staffOut.transportId, transportId),
+          eq(staffOut.direction, 'outbound'),
+        ),
+      ),
+  );
+}
+
 export function latestWorkflowThreads(db: DB, transportId: string) {
   const ownerAction = ownerActionSql(transportId);
   return db.$with('workflow_latest_threads').as(
@@ -487,6 +507,9 @@ export function latestWorkflowThreads(db: DB, transportId: string) {
           eq(mailThread.transportId, transportId),
           eq(mailExtraction.status, 'succeeded'),
           isNull(mailThread.trashedAt),
+          staffOutboundExists(db, transportId),
+          sql`coalesce(${message.receivedAt}, ${message.createdAt}) >= ${GOLD_REVIEW_SINCE}`,
+          sql`coalesce(${message.receivedAt}, ${message.createdAt}) <= ${GOLD_REVIEW_UNTIL}`,
         ),
       )
       .orderBy(

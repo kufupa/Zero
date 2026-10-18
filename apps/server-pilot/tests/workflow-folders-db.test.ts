@@ -8,6 +8,8 @@ import {
 } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import {
+  GOLD_REVIEW_SINCE,
+  GOLD_REVIEW_UNTIL,
   getWorkflowFolderSummary,
   getWorkflowFolderThread,
   listWorkflowFolderRows,
@@ -17,9 +19,31 @@ import { TEST_DB_AVAILABLE, withTestDb } from './helpers/test-db.js';
 
 const TRANSPORT_ID = 'workflow-folders-db-transport';
 
+async function seedStaffOutbound(
+  db: DB,
+  options: { threadId: string; inboundMessageId: string },
+) {
+  await db.insert(message).values({
+    id: `${options.inboundMessageId}-staff-out`,
+    transportId: TRANSPORT_ID,
+    threadId: options.threadId,
+    direction: 'outbound',
+    fromAddress: 'staff@example.invalid',
+    subject: 'Re: handled',
+    textBody: 'Booking amended as requested.',
+  });
+}
+
 async function seedWorkflowThread(
   db: DB,
-  options: { threadId: string; messageId: string; kind: string; automatedChannel?: boolean },
+  options: {
+    threadId: string;
+    messageId: string;
+    kind: string;
+    automatedChannel?: boolean;
+    staffEvidence?: boolean;
+    receivedAt?: Date;
+  },
 ) {
   await db.insert(mailboxTransport).values({
     id: TRANSPORT_ID,
@@ -40,6 +64,7 @@ async function seedWorkflowThread(
     direction: 'inbound',
     fromAddress: 'workflow-folders-db@example.invalid',
     subject: 'Synthetic workflow-folder fixture',
+    receivedAt: options.receivedAt ?? new Date('2026-10-05T10:00:00.000Z'),
   });
   await db.insert(mailExtraction).values({
     messageId: options.messageId,
@@ -48,6 +73,10 @@ async function seedWorkflowThread(
     kind: options.kind,
     payload: { contact: { name: 'Synthetic Guest' } },
   });
+
+  if (options.staffEvidence !== false) {
+    await seedStaffOutbound(db, { threadId: options.threadId, inboundMessageId: options.messageId });
+  }
 
   if (options.automatedChannel) {
     await db.insert(mailCategory).values({
@@ -65,6 +94,66 @@ async function seedWorkflowThread(
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE)('workflow folders (disposable PostgreSQL)', () => {
+  it('hides an inbound with no staff outbound artefact', async () => {
+    await withTestDb(async (db) => {
+      await seedWorkflowThread(db, {
+        threadId: 'workflow-folders-db-no-evidence-thread',
+        messageId: 'workflow-folders-db-no-evidence-message',
+        kind: 'quote',
+        staffEvidence: false,
+      });
+
+      const result = await listWorkflowFolderRows(db, TRANSPORT_ID, 'quotes', 0, 10);
+      expect(result.rows).toHaveLength(0);
+    });
+  });
+
+  it('hides a handled inbound before Mon 28 Sep 08:00 SAST', async () => {
+    await withTestDb(async (db) => {
+      await seedWorkflowThread(db, {
+        threadId: 'workflow-folders-db-before-window-thread',
+        messageId: 'workflow-folders-db-before-window-message',
+        kind: 'quote',
+        receivedAt: new Date(GOLD_REVIEW_SINCE.getTime() - 60_000),
+      });
+
+      const result = await listWorkflowFolderRows(db, TRANSPORT_ID, 'quotes', 0, 10);
+      expect(result.rows).toHaveLength(0);
+    });
+  });
+
+  it('hides a handled inbound after Fri 16 Oct 16:00 SAST', async () => {
+    await withTestDb(async (db) => {
+      await seedWorkflowThread(db, {
+        threadId: 'workflow-folders-db-after-window-thread',
+        messageId: 'workflow-folders-db-after-window-message',
+        kind: 'quote',
+        receivedAt: new Date(GOLD_REVIEW_UNTIL.getTime() + 60_000),
+      });
+
+      const result = await listWorkflowFolderRows(db, TRANSPORT_ID, 'quotes', 0, 10);
+      expect(result.rows).toHaveLength(0);
+    });
+  });
+
+  it('keeps an inbound when staff only sent a text reply (amend/cancel shape)', async () => {
+    await withTestDb(async (db) => {
+      await seedWorkflowThread(db, {
+        threadId: 'workflow-folders-db-text-out-thread',
+        messageId: 'workflow-folders-db-text-out-message',
+        kind: 'amendment',
+        staffEvidence: false,
+      });
+      await seedStaffOutbound(db, {
+        threadId: 'workflow-folders-db-text-out-thread',
+        inboundMessageId: 'workflow-folders-db-text-out-message',
+      });
+
+      const result = await listWorkflowFolderRows(db, TRANSPORT_ID, 'amendments', 0, 10);
+      expect(result.rows).toHaveLength(1);
+    });
+  });
+
   it('lists a succeeded extraction in the folder mapped from its kind', async () => {
     await withTestDb(async (db) => {
       const threadId = 'workflow-folders-db-quote-thread';
