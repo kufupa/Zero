@@ -2876,7 +2876,8 @@ export async function executeHmsJob(input: {
   const ownerKey = metrics.owner ?? `hms-job-prefetch:${run.transportId}`;
   const screenshotDir: { value: string | null } = { value: null };
   const deps = {
-    lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
+    lock: () =>
+      paneStayLookupLoaders.lock ?? paneStayPropertyLock(davinciReadTarget?.propertyCode),
     acquisition: background ? { tryOnce: true } : acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     onRun: ({ runId, dir }: { runId: string; dir: string }) => {
       screenshotDir.value = dir;

@@ -208,6 +208,16 @@ describe('pane stay save guards', () => {
     expect(lock?.key).not.toBe(propertyReadLockKey('centurion', 'OTHER'));
   });
 
+  it('read locks for HRCEN and HRDAV use distinct keys', () => {
+    vi.stubEnv('DATABASE_URL', 'postgres://user:secret@127.0.0.1:5432/zero_test');
+    vi.stubEnv('HMS_EXPECTED_TENANT', 'centurion');
+    const hrcen = paneStayPropertyLock('HRCEN') as unknown as { key: string } | null;
+    const hrdav = paneStayPropertyLock('HRDAV') as unknown as { key: string } | null;
+    expect(hrcen?.key).toBe(propertyReadLockKey('centurion', 'HRCEN'));
+    expect(hrdav?.key).toBe(propertyReadLockKey('centurion', 'HRDAV'));
+    expect(hrcen?.key).not.toBe(hrdav?.key);
+  });
+
   it('the lock tenant is PANE_STAY_TENANT_ID, then HMS_EXPECTED_TENANT, then legacy', () => {
     vi.stubEnv('PANE_STAY_TENANT_ID', '');
     vi.stubEnv('HMS_EXPECTED_TENANT', 'centurion');

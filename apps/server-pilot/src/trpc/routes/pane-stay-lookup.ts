@@ -183,7 +183,7 @@ export const paneStayLookupRouter = router({
           ? { confirmation: input.confirmation, arrival: input.arrival }
           : { confirmation: input.confirmation },
         {
-          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
+          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target?.propertyCode),
           onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
           ...(target ? { target } : {}),
         },
@@ -219,7 +219,7 @@ export const paneStayLookupRouter = router({
           ? { lastName: input.lastName, arrival: input.arrival, departure: input.departure }
           : { lastName: input.lastName, arrival: input.arrival },
         {
-          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(),
+          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target?.propertyCode),
           onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
           ...(target ? { target } : {}),
         },

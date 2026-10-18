@@ -1,9 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import type { StaffQuoteInstallationConfiguration } from '../src/ai/staff-quote-installation.js';
 import {
   PANE_CLI_ENV_ALLOWLIST,
   paneStaySpawnEnv,
   warnPaneStaySpawnFailed,
 } from '../src/ai/pane-stay-spawn-env.js';
+import { DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const configuration = {
@@ -82,6 +85,40 @@ describe('paneStaySpawnEnv', () => {
       throw new Error('staff_quote_installation_unavailable');
     });
     expect(env).toEqual({ PATH: '/usr/bin' });
+  });
+
+  it('HRDAV target plus Centurion-only install fails closed before reading that install', () => {
+    expect(() =>
+      paneStaySpawnEnv(
+        {
+          PATH: '/usr/bin',
+          HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
+        },
+        () => {
+          throw new Error('centurion installation must not be read for HRDAV');
+        },
+        DAVINCI_HMS_READ_TARGET,
+      ),
+    ).not.toThrow();
+    const env = paneStaySpawnEnv(
+      {
+        PATH: '/usr/bin',
+        HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
+      },
+      () => {
+        throw new Error('centurion installation must not be read for HRDAV');
+      },
+      DAVINCI_HMS_READ_TARGET,
+    );
+    expect(env.HMS_STAGEHAND_CDP_URL).toBeUndefined();
+    expect(env.HMS_READ_SECRET_ARN).toBe('nava-zero/server-pilot/infor-hms-read-davinci');
+  });
+});
+
+describe('worker HRCEN hardcode', () => {
+  it('read_tool default property remains Centurion on the non-quote/non-folio branch', () => {
+    const src = readFileSync(fileURLToPath(new URL('../src/ai/worker.ts', import.meta.url)), 'utf8');
+    expect(src).toMatch(/: 'HRCEN'/);
   });
 });
 

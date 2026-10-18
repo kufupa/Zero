@@ -500,7 +500,8 @@ export async function findParty(
   ) {
     return replyWithout('refused_origin_mismatch');
   }
-  const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
+  const lock =
+    panePartyLookupLoaders.lock ?? paneStayPropertyLock(options.target?.propertyCode);
   if (!lock) return replyWithout('refused_lock_unavailable');
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
   if (input.kind) return findPartyOfKind(input.kind, name, lock, spawn, options);
