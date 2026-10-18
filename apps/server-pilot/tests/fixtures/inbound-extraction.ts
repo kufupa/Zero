@@ -87,6 +87,10 @@ export const SPAM_TEXT = [
 ].join('\n');
 
 const EMPTY_OUTPUT = {
+  needsAction: true,
+  action: 'quote_availability',
+  actionEvidence: '',
+  actionConfidence: 'high',
   contact: { name: null, email: null, phone: null },
   agency: null,
   endClient: null,
@@ -156,7 +160,13 @@ export const VOUCHER_OUTPUT = {
   confirmationNumbers: ['57291630-2'],
 };
 
-export const SPAM_OUTPUT = { ...EMPTY_OUTPUT, sourceLanguage: 'en', kind: 'spam' };
+export const SPAM_OUTPUT = {
+  ...EMPTY_OUTPUT,
+  sourceLanguage: 'en',
+  kind: 'spam',
+  needsAction: false,
+  action: 'no_action',
+};
 
 export const CHANNEL_BOOKING_FROM = 'Reservations <notices@example-channel.test>';
 export const CHANNEL_BOOKING_SUBJECT = 'New reservation confirmed - 73114001-1';

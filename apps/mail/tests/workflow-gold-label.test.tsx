@@ -177,4 +177,12 @@ describe('WorkflowGoldLabel', () => {
       action: 'quote_availability',
     });
   });
+
+  it('keeps Save as gold and does not add a Done chip', async () => {
+    renderGoldLabel();
+    expect(await screen.findByRole('button', { name: 'Save as gold' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Done — rest are fine' })).toBeNull();
+    expect(screen.queryByText(/Done — rest are fine/)).toBeNull();
+    expect(screen.queryByTestId('gold-chip')).toBeNull();
+  });
 });

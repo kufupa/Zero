@@ -24,9 +24,15 @@ import {
   resolveMailBaselineExtractionRoute,
   type MailBaselineExtractionRoute,
 } from '../mail-baseline-extraction.js';
+import { lunaCallBudget } from '../bedrock/luna.js';
 import { resolveAdapter } from '../quote-workflow-analyse-selection.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../quote-workflow-synced-selection.js';
 import { CENTURION_HOTEL_RULES } from '../reservationist-decision.js';
+import {
+  extractionPromptMaxChars,
+  extractionReasoningEffort,
+  extractionVisionEnabled,
+} from './config.js';
 import { resolveTriageEventClock } from '../triage-input.js';
 import { TRIAGE_REVIEWER_VERSION } from '../triage.js';
 import { ensureWorkItemForMessage, MESSAGE_ARRIVED_AT } from '../work-items.js';
@@ -41,10 +47,15 @@ import {
   type AiWorkflowRun,
 } from '../run-ledger.js';
 import {
+  ACTION_CLASSIFICATION_RULES,
   attachmentReads,
-  EXTRACTION_DEADLINE_MS,
+  EXTRACTION_MAX_IMAGES,
+  EXTRACTION_MAX_PDF_PAGES,
+  EXTRACTION_MIN_IMAGE_BYTES,
   EXTRACTION_MODEL_ID,
   EXTRACTION_RULES,
+  EXTRACTION_THREAD_MESSAGE_MAX_CHARS,
+  EXTRACTION_THREAD_TOTAL_MAX_CHARS,
   extractInboundMail,
   UNTRUSTED_NOTE,
   type ModelUsage,
@@ -68,6 +79,16 @@ export const EXTRACTION_VERSION = `extract-${createHash('sha256')
   .update(CENTURION_HOTEL_RULES)
   .update('\n')
   .update(EXTRACTION_RULES)
+  .update('\n')
+  .update(ACTION_CLASSIFICATION_RULES)
+  .update('\n')
+  .update(String(extractionPromptMaxChars()))
+  .update('\n')
+  .update(extractionReasoningEffort())
+  .update('\n')
+  .update(
+    `vision/${extractionVisionEnabled()}/${EXTRACTION_MAX_IMAGES}/${EXTRACTION_MAX_PDF_PAGES}/${EXTRACTION_MIN_IMAGE_BYTES}/thread/${EXTRACTION_THREAD_TOTAL_MAX_CHARS}/${EXTRACTION_THREAD_MESSAGE_MAX_CHARS}`,
+  )
   .update('\n')
   .update(UNTRUSTED_NOTE)
   .update('\n')
@@ -270,6 +291,9 @@ export async function runInboundExtraction(
   const selection = await (deps.loadSelection ?? loadSyncedQuoteSelectionFromMailbox)({
     transportId: run.transportId,
     messageId: run.triggerMessageId,
+    includeThreadState: true,
+    includeVisionImages: extractionVisionEnabled(env),
+    trackVisionImages: true,
     signal: deps.signal,
   });
   if (!selection) {
@@ -290,9 +314,11 @@ export async function runInboundExtraction(
     from: trigger.fromAddress,
     mailbox: trigger.mailbox,
     signal: deps.signal,
-    deadlineMs: deps.extractionDeadlineMs ?? EXTRACTION_DEADLINE_MS,
+    deadlineMs:
+      deps.extractionDeadlineMs ?? lunaCallBudget(extractionReasoningEffort(env)).deadlineMs,
+    env,
   });
-  const attachments = attachmentReads(selection.attachments);
+  const attachments = extraction.attachments ?? attachmentReads(selection.attachments);
   if (!extraction.ok) {
     await commitRead(db, deps.claim, (tx) =>
       storeRead(tx, {

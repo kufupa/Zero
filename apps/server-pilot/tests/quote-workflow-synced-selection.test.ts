@@ -11,6 +11,7 @@ import {
   createArtifactReader,
   loadSyncedQuoteSelectionFromMailbox,
   orderCausalPreceding,
+  orderThreadContext,
   overlayHmsConfirmation,
   applyThreadConfirmationOverlay,
   readQuoteAttachments,
@@ -150,6 +151,7 @@ describe('readQuoteAttachments', () => {
         filename: 'quote-ask.pdf',
         mimeType: 'application/pdf',
         byteSize: 1_000,
+        isInline: false,
         bytesPresent: true,
         text: 'Rooming list text',
       },
@@ -158,6 +160,7 @@ describe('readQuoteAttachments', () => {
         filename: 'rooming.xlsx',
         mimeType: 'application/vnd.ms-excel',
         byteSize: 20_000,
+        isInline: false,
         bytesPresent: false,
         readFailure: 'not a PDF',
       },
@@ -276,7 +279,8 @@ describe('readQuoteAttachments', () => {
       { id: 'scan', status: 'not_read', reason: 'scanned PDF: no text layer, not sent to the model' },
     ]);
     const selection = { subject: '', bodyText: '', preceding: [], attachments: [result[0]!] };
-    expect(buildInboundPrompt(selection).user).not.toContain('scan.pdf');
+    expect(buildInboundPrompt(selection).user).toContain('scan.pdf');
+    expect(buildInboundPrompt(selection).user).not.toContain('%PDF');
     expect(buildQuoteWorkflowPrompt(selection).files).toEqual([
       { filename: 'scan.pdf', mediaType: 'application/pdf', data: pdf },
     ]);
@@ -378,6 +382,7 @@ describe('readQuoteAttachments', () => {
         filename: 'export.dat',
         mimeType: 'application/octet-stream',
         byteSize: 30_000,
+        isInline: false,
         bytesPresent: false,
         readFailure: 'not a PDF',
       },
@@ -663,6 +668,58 @@ function amendmentRead(confirmationNumbers: string[]) {
     attachments: [] as const,
   };
 }
+
+describe('extraction vision image admission', () => {
+  it('reads eligible non-inline images only when vision is enabled and tracks them unread when disabled', async () => {
+    const bytes = new Uint8Array(25 * 1024);
+    const imageRow = row({
+      id: 'proof-image',
+      filename: 'transfer-proof.png',
+      mimeType: 'image/png',
+      sizeBytes: bytes.byteLength,
+    });
+    const reader = vi.fn(async () => ({ text: null, image: { mediaType: 'image/png' as const, data: bytes } }));
+
+    const enabled = await readQuoteAttachments([imageRow], reader, { includeVisionImages: true });
+    expect(reader).toHaveBeenCalledOnce();
+    expect(enabled).toMatchObject([
+      { id: 'proof-image', bytesPresent: true, image: { mediaType: 'image/png', data: bytes } },
+    ]);
+
+    const disabledReader = vi.fn(async () => ({ text: null, image: { mediaType: 'image/png' as const, data: bytes } }));
+    const disabled = await readQuoteAttachments([imageRow], disabledReader, { trackVisionImages: true });
+    expect(disabledReader).not.toHaveBeenCalled();
+    expect(disabled).toMatchObject([
+      {
+        id: 'proof-image',
+        bytesPresent: false,
+        readFailure: 'vision disabled by EXTRACTION_VISION',
+      },
+    ]);
+  });
+});
+
+describe('orderThreadContext', () => {
+  it('keeps both earlier and later neighbouring messages in chronological order', () => {
+    const base = {
+      subject: 'Subject',
+      textBody: 'Body',
+      receivedAt: null,
+      sentAt: null,
+      createdAt: new Date('2026-10-13T12:00:00.000Z'),
+    };
+    const result = orderThreadContext('target', [
+      { ...base, id: 'later', direction: 'outbound', sentAt: new Date('2026-10-13T13:00:00.000Z') },
+      { ...base, id: 'target', direction: 'inbound', receivedAt: new Date('2026-10-13T12:30:00.000Z') },
+      { ...base, id: 'earlier', direction: 'inbound', receivedAt: new Date('2026-10-13T11:00:00.000Z') },
+    ]);
+
+    expect(result.map(({ direction, timestamp }) => [direction, timestamp])).toEqual([
+      ['inbound', '2026-10-13T11:00:00.000Z'],
+      ['outbound', '2026-10-13T13:00:00.000Z'],
+    ]);
+  });
+});
 
 describe('storedAnalysis thread confirmation overlay', () => {
   it('fills a stored amendment confirmation from sibling PDF evidence', () => {

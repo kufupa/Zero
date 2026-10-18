@@ -2,9 +2,9 @@
  * @vitest-environment happy-dom
  */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { PropsWithChildren } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDefaultStore } from 'jotai';
 import { WORKFLOW_FOLDER_NAV_ITEMS } from '../config/workflow-folders';
 import { navaSidePanelAtom } from '../store/navaSidePanel';
@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   listThreadInputs: [] as Array<Record<string, unknown>>,
   workflowRows: [] as Array<{ folder: string; threadId: string }>,
   mailThreads: [] as Array<Record<string, unknown>>,
+  workflowFolderRows: [] as Array<{ sourceMessageId: string; ownerAction: string | null }>,
+  goldRemainingInFolder: vi.fn(async () => ({ goldWrote: 0 })),
 }));
 
 for (const folder of workflowFolderIds) {
@@ -138,6 +140,7 @@ vi.mock('../providers/query-provider', () => ({
     },
     mail: {
       listThreads: {
+        infiniteQueryKey: () => ['mail', 'listThreads'],
         infiniteQueryOptions: (input: Record<string, any>, options: Record<string, any> = {}) => {
           mocks.listThreadInputs.push(input);
           return {
@@ -159,6 +162,28 @@ vi.mock('../providers/query-provider', () => ({
         },
       },
     },
+    workflowFolders: {
+      list: {
+        infiniteQueryKey: () => ['workflowFolders', 'list'],
+        infiniteQueryOptions: (input: Record<string, unknown>, options: Record<string, unknown> = {}) => ({
+          queryKey: ['workflowFolders', 'list', input],
+          queryFn: async () => ({ rows: mocks.workflowFolderRows, nextCursor: null }),
+          initialPageParam: '',
+          getNextPageParam: () => undefined,
+          ...options,
+        }),
+      },
+      summary: { queryKey: () => ['workflowFolders', 'summary'] },
+      thread: { queryKey: () => ['workflowFolders', 'thread'] },
+      getOwnerActionLabel: { queryKey: () => ['workflowFolders', 'getOwnerActionLabel'] },
+      goldRemainingInFolder: {
+        mutationOptions: (options: Record<string, unknown> = {}) => ({
+          mutationKey: ['workflowFolders', 'goldRemainingInFolder'],
+          mutationFn: mocks.goldRemainingInFolder,
+          ...options,
+        }),
+      },
+    },
   }),
   trpcClient: { workItems: { list: { query: async () => [] } } },
 }));
@@ -177,6 +202,11 @@ vi.mock('react-hotkeys-hook', () => ({
 vi.mock('../hooks/use-media-query', () => ({ useMediaQuery: () => true }));
 vi.mock('../hooks/use-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('../paraglide/messages', () => ({ m: new Proxy({}, { get: () => () => '' }) }));
+vi.mock(
+  '@/paraglide/messages',
+  () => ({ m: new Proxy({}, { get: () => () => '' }) }),
+  { virtual: true },
+);
 
 import { MailLayout } from '../components/mail/mail';
 
@@ -193,6 +223,12 @@ function renderMailLayout() {
   getDefaultStore().set(navaSidePanelAtom, true);
   return render(<MailLayout />, { wrapper });
 }
+
+beforeEach(() => {
+  mocks.workflowFolderRows = [];
+  mocks.goldRemainingInFolder.mockClear();
+  mocks.goldRemainingInFolder.mockResolvedValue({ goldWrote: 0 });
+});
 
 afterEach(() => {
   cleanup();
@@ -224,4 +260,39 @@ describe('workflow folders in the normal mail layout', () => {
       );
     },
   );
+
+  it('shows Done — rest are fine on the Quotes list header, not Quote Desk, and disables at n=0', async () => {
+    mocks.folder = 'quotes';
+    mocks.threadId = 'thread-quotes';
+    renderMailLayout();
+
+    const done = await screen.findByRole('button', { name: 'Done — rest are fine' });
+    expect((done as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(done);
+    expect(mocks.goldRemainingInFolder).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Quote Desk' })).toBeNull();
+    expect(document.querySelector('[data-testid="normal-mail-list"] ~ [class*="rounded-full"]')).toBeNull();
+  });
+
+  it('confirms remaining count and class, then golds unmarked rows', async () => {
+    mocks.folder = 'quotes';
+    mocks.threadId = 'thread-quotes';
+    mocks.workflowFolderRows = [
+      { sourceMessageId: 'm1', ownerAction: null },
+      { sourceMessageId: 'm2', ownerAction: null },
+      { sourceMessageId: 'm3', ownerAction: 'quote_availability' },
+    ];
+    mocks.goldRemainingInFolder.mockResolvedValue({ goldWrote: 2 });
+
+    renderMailLayout();
+    const done = await screen.findByRole('button', { name: 'Done — rest are fine' });
+    await waitFor(() => expect((done as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(done);
+    expect(screen.getByRole('dialog', { name: 'Mark 2 as gold as Quote' })).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    await waitFor(() =>
+      expect(mocks.goldRemainingInFolder).toHaveBeenCalledWith({ folder: 'quotes' }),
+    );
+  });
 });

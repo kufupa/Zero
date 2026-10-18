@@ -852,7 +852,11 @@ describe('flags, cap parsing and the rules', () => {
     expect(system).toMatch(/kind, stays, agency, endClient and contact come from the request passed on/);
     expect(system).toMatch(/The hotel and its group are never the agency/);
     expect(system).toMatch(/Only a staff mail that passes on no outside request is other/);
-    expect(user).toContain('Mailbox: centurion@legacyhotels.co.za\nFrom: hara@legacyhotels.co.za\n\n');
+    expect(user.indexOf('Subject:')).toBeGreaterThanOrEqual(0);
+    expect(user.indexOf('From: hara@legacyhotels.co.za')).toBeGreaterThan(user.indexOf('Subject:'));
+    expect(user.indexOf('Mailbox: centurion@legacyhotels.co.za')).toBeGreaterThan(
+      user.indexOf('From: hara@legacyhotels.co.za'),
+    );
     // No mailbox, no line: the From address alone, as before.
     expect(buildInboundPrompt(selectionFor(AE1_TEXT), 'hara@legacyhotels.co.za').user).not.toContain('Mailbox:');
   });

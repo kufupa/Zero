@@ -16,6 +16,19 @@ export const MAIL_ACTION_LABELS: Record<MailAction, string> = {
   no_action: 'Not for Nava',
 };
 
+/** Inverse of server ACTION_FOLDERS. Done golds unmarked rows as this action. */
+export const FOLDER_ACTIONS = {
+  quotes: 'quote_availability',
+  'new-bookings': 'new_booking',
+  amendments: 'amend',
+  cancellations: 'cancel',
+  payments: 'payment_proof',
+  billing: 'billing',
+  'groups-events': 'group_event',
+  'other-to-do': 'other_actionable',
+  'not-for-nava': 'no_action',
+} as const satisfies Record<string, MailAction>;
+
 export const GOLD_ACTION_FOR_READ_AS: Record<NavaReadAs, MailAction> = {
   quote: 'quote_availability',
   new_booking: 'new_booking',
