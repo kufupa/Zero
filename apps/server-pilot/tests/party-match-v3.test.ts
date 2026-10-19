@@ -5,9 +5,21 @@ import {
   sanitizePartySearchTerms,
   type PartyMatchV3Row,
 } from '../src/ai/party-match-v3.js';
-import { normalisePartyName, type PartyMatchCandidate } from '../src/ai/party-match-v2.js';
+import {
+  normalisePartyName,
+  pickPartyMatch,
+  type PartyMatchCandidate,
+} from '../src/ai/party-match-v2.js';
 import type { ModelAdapter, ModelInvokeResult } from '../src/ai/bedrock/adapter.js';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach } from 'vitest';
+
+vi.mock('../src/ai/party-match-v2.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ai/party-match-v2.js')>();
+  return {
+    ...actual,
+    pickPartyMatch: vi.fn(actual.pickPartyMatch),
+  };
+});
 
 const TOURVEST_IDS = [
   '280',
@@ -483,5 +495,201 @@ describe('PARTY MATCH V3 reservationist loop', () => {
     expect(findParty.mock.calls[0]?.[0]).toEqual([{ kind: 'agency', term: 'Acme Ltd' }]);
     expect(findParty.mock.calls[1]?.[0]).toEqual([{ kind: 'agency', term: 'Acme' }]);
     expect(result.boundParty).toMatchObject({ nativeId: '77', kind: 'agency' });
+  });
+});
+
+function isV2PickerPrompt(systemPrompt: string): boolean {
+  return systemPrompt.includes('records already returned by an HMS search');
+}
+
+describe('PARTY MATCH V3 v2 picker after unbound loop', () => {
+  beforeEach(async () => {
+    const actual = await vi.importActual<typeof import('../src/ai/party-match-v2.js')>(
+      '../src/ai/party-match-v2.js',
+    );
+    vi.mocked(pickPartyMatch).mockReset();
+    vi.mocked(pickPartyMatch).mockImplementation(actual.pickPartyMatch);
+  });
+
+  it('binds via v2 when the v3 picker returns null and v2 picks a single exact-ish row', async () => {
+    const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
+      searches.map((search) => ({
+        outcome: 'resolved' as const,
+        results: [{ kind: 'agency' as const, nativeId: '119', name: 'Acme and Travel Tours' }],
+        truncated: false,
+        searchedFor: search.term,
+      })),
+    );
+    const adapter: ModelAdapter = {
+      invoke: vi.fn(async (input) => {
+        if (input.systemPrompt.includes('Propose')) {
+          return invokeResult({ searches: [{ kind: 'agency', term: 'Acme Travel & Tours' }] });
+        }
+        if (isV2PickerPrompt(input.systemPrompt)) {
+          return invokeResult({
+            pickNativeId: '119',
+            kind: 'agency',
+            confidence: 'high',
+            reason: 'Same organisation; word order differs.',
+            alternatives: [],
+          });
+        }
+        return invokeResult({
+          pick: null,
+          kind: null,
+          confidence: 'low',
+          reason: 'Uncertain.',
+        });
+      }),
+    };
+
+    const result = await runPartyMatchV3({
+      adapter,
+      candidates: [candidate('Acme Travel & Tours')],
+      context: { ...context, extractedNames: ['Acme Travel & Tours'] },
+      emailText: 'Please quote for Acme Travel & Tours.',
+      findParty,
+    });
+
+    expect(findParty).toHaveBeenCalledTimes(1);
+    expect(pickPartyMatch).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      matchVersion: 2,
+      matcher: 'v3',
+      matchStatus: 'bound',
+      pickSource: 'llm',
+      boundParty: { nativeId: '119', kind: 'agency' },
+    });
+  });
+
+  it('stays needs_pick when v2 picks a duplicate-name copy with no city or IATA', async () => {
+    const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
+      searches.map((search) => ({
+        outcome: 'resolved' as const,
+        results: TOURVEST_COPIES,
+        truncated: false,
+        searchedFor: search.term,
+      })),
+    );
+    const adapter: ModelAdapter = {
+      invoke: vi.fn(async (input) => {
+        if (input.systemPrompt.includes('Propose')) {
+          return invokeResult({ searches: [{ kind: 'agency', term: 'Tourvest' }] });
+        }
+        if (isV2PickerPrompt(input.systemPrompt)) {
+          return invokeResult({
+            pickNativeId: '280',
+            kind: 'agency',
+            confidence: 'high',
+            reason: 'Named in the email.',
+            alternatives: [],
+          });
+        }
+        return invokeResult({
+          pick: null,
+          kind: null,
+          confidence: 'low',
+          reason: 'Uncertain.',
+        });
+      }),
+    };
+
+    const result = await runPartyMatchV3({
+      adapter,
+      candidates: [candidate('Tourvest Travel Services')],
+      context,
+      emailText: 'Please quote for Tourvest Travel Services.',
+      findParty,
+    });
+
+    expect(findParty).toHaveBeenCalledTimes(1);
+    expect(pickPartyMatch).toHaveBeenCalledTimes(1);
+    expect(result.matchStatus).toBe('needs_pick');
+    expect(result.boundParty).toBeNull();
+    expect(result.matcher).toBe('v3');
+    expect(result.matchVersion).toBe(2);
+  });
+
+  it('does not call the v2 picker when v3 already bound', async () => {
+    const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
+      searches.map((search) => ({
+        outcome: 'resolved' as const,
+        results: [tourvestAgency('280')],
+        truncated: false,
+        searchedFor: search.term,
+      })),
+    );
+    const adapter: ModelAdapter = {
+      invoke: vi.fn(async (input) => {
+        if (input.systemPrompt.includes('Propose')) {
+          return invokeResult({ searches: [{ kind: 'agency', term: 'Tourvest' }] });
+        }
+        if (isV2PickerPrompt(input.systemPrompt)) {
+          throw new Error('v2 picker should not run');
+        }
+        return invokeResult({
+          pick: '280',
+          kind: 'agency',
+          confidence: 'high',
+          reason: 'Exact agency name.',
+        });
+      }),
+    };
+
+    const result = await runPartyMatchV3({
+      adapter,
+      candidates: [candidate('Tourvest Travel Services')],
+      context,
+      emailText: 'Please quote for Tourvest Travel Services.',
+      findParty,
+    });
+
+    expect(findParty).toHaveBeenCalledTimes(1);
+    expect(pickPartyMatch).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      matchStatus: 'bound',
+      pickSource: 'llm',
+      boundParty: { nativeId: '280', kind: 'agency' },
+    });
+  });
+
+  it('keeps the v3 result when the v2 picker throws', async () => {
+    vi.mocked(pickPartyMatch).mockRejectedValueOnce(new Error('v2 picker down'));
+    const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
+      searches.map((search) => ({
+        outcome: 'resolved' as const,
+        results: [{ kind: 'agency' as const, nativeId: '119', name: 'Acme and Travel Tours' }],
+        truncated: false,
+        searchedFor: search.term,
+      })),
+    );
+    const adapter: ModelAdapter = {
+      invoke: vi.fn(async (input) => {
+        if (input.systemPrompt.includes('Propose')) {
+          return invokeResult({ searches: [{ kind: 'agency', term: 'Acme Travel & Tours' }] });
+        }
+        return invokeResult({
+          pick: null,
+          kind: null,
+          confidence: 'low',
+          reason: 'Uncertain.',
+        });
+      }),
+    };
+
+    const result = await runPartyMatchV3({
+      adapter,
+      candidates: [candidate('Acme Travel & Tours')],
+      context: { ...context, extractedNames: ['Acme Travel & Tours'] },
+      emailText: 'Please quote for Acme Travel & Tours.',
+      findParty,
+    });
+
+    expect(findParty).toHaveBeenCalledTimes(1);
+    expect(pickPartyMatch).toHaveBeenCalledTimes(1);
+    expect(result.matchStatus).toBe('needs_pick');
+    expect(result.boundParty).toBeNull();
+    expect(result.pickSource).toBe('llm');
+    expect(result.matcher).toBe('v3');
   });
 });
