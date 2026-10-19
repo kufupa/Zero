@@ -72,6 +72,8 @@ All four drivers hit the same wall: **gate latency and eval validity, not lane c
 | Live HMS tool path is DOM-verified with one read-only probe before any batch | 6 wasted live searches on an unverified Guest Search path |
 | Before building an agent/LLM loop, score the cheapest deterministic baseline (history, exact match, rule) on the same truth set | 2026-10-19: party v3 LLM loop took ~3 h and lost to v2 (14 vs 21/22); sender history, never scored, got 65/107 agencies right |
 | Accuracy evals use ≥ 100 truth rows by id that the system under test did not produce; report n and source with every rate | 2026-10-19: 42-mail party set, 22 rows were v2 binds staff accepted (circular) |
+| Lane gates run in parallel in the background (remote typecheck ‖ remote tests ‖ `greptile review --branch origin/main` after `git fetch`). No red-first runs, no self-review subagents. A UI lane's brief lists every test file that asserts the removed UI. Lanes never edit `/home/orca/bin` | 2026-10-19 evening: 6 PRs live in 95 min with parallel gates; the one lane without its test list stalled ~25 min; a stale Greptile base let 2 P1s reach main ([evening retro](docs/context/ledger/2026-10-19-evening-retro.md)) |
+| The coordinator reads every product diff before merge, even after green gates and Greptile | 2026-10-19: coordinator review caught 2 of 4 P1s (dropped junk-word list; contact questions scrolling to a step with no contact fields) |
 
 Run contracts, `/goal` vs `/loop`, and the overnight template: `docs/context/RUN-CONTRACT.md`.
 
