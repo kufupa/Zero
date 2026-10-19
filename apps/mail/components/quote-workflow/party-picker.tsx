@@ -327,6 +327,53 @@ function ResultChips({
   );
 }
 
+function PartyAlternatives({
+  rows,
+  defaultOpen,
+  onPick,
+}: {
+  rows: readonly PartyCandidate[];
+  defaultOpen: boolean;
+  onPick: (row: PartyCandidate) => void;
+}) {
+  return (
+    <details open={defaultOpen} className="flex flex-col gap-1">
+      <summary className="cursor-pointer text-[10.5px] font-semibold text-[#334155]">
+        {`Other HMS matches (${rows.length})`}
+      </summary>
+      <ul aria-label="Other HMS matches" className="flex flex-col gap-1">
+        {rows.map((row) => {
+          const details = [
+            typeof row.iata === 'string' && row.iata.trim() ? `IATA ${row.iata.trim()}` : null,
+            typeof row.city === 'string' && row.city.trim() ? row.city.trim() : null,
+            typeof row.address === 'string' && row.address.trim() ? row.address.trim() : null,
+            `#${row.nativeId}`,
+          ].filter((value): value is string => value !== null);
+          return (
+            <li
+              key={`${row.kind}:${row.nativeId}`}
+              className="flex items-center justify-between gap-2"
+            >
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-1">
+                <span className="text-[11.5px] font-semibold text-[#334155]">{row.name}</span>
+                <span className="text-[10.5px] text-[#64748b]">{details.join(' · ')}</span>
+              </div>
+              <button
+                type="button"
+                aria-label={`Use ${row.name} (#${row.nativeId})`}
+                className="shrink-0 rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
+                onClick={() => onPick(row)}
+              >
+                Use
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </details>
+  );
+}
+
 /**
  * Find in HMS for one field of the quote header. A field with a kind (Company or Agency) searches its own text, and shows
  * only that kind: its pick, its matches and its suggestions. Without a kind, one picker covers both kinds and each result
@@ -556,15 +603,13 @@ export function PartyPicker({
     : null;
   const v2BoundParty = isPartyCandidate(v2Result?.boundParty) ? v2Result.boundParty : null;
   const v2ResultRows = uniqueCandidates(partyCandidatesFrom(v2Result?.results) ?? []).filter(inScope);
-  const v2SuggestionRows = uniqueCandidates(
-    partyCandidatesFrom(v2Result?.suggestions) ?? [],
-  ).filter(inScope);
-  const v2AllRows = uniqueCandidates([...v2ResultRows, ...v2SuggestionRows]);
-  const v2DuplicateNames = duplicateCandidateNames(v2AllRows);
-  const v2Suggestions = uniqueCandidates([
-    ...v2SuggestionRows,
-    ...v2ResultRows.filter((row) => v2DuplicateNames.has(candidateNameKey(row.name))),
-  ]);
+  const v2Alternatives = v2ResultRows.filter(
+    (row) =>
+      v2MatchStatus !== 'bound' ||
+      !v2BoundParty ||
+      row.kind !== v2BoundParty.kind ||
+      row.nativeId !== v2BoundParty.nativeId,
+  );
   const v2Reason = typeof v2Result?.reason === 'string' ? v2Result.reason : '';
   const v2BoundForField =
     !pickedHere && v2MatchStatus === 'bound' && v2BoundParty && inScope(v2BoundParty)
@@ -677,9 +722,23 @@ export function PartyPicker({
           className="flex flex-wrap items-center gap-2 text-[12.5px] font-semibold text-[#166534]"
         >
           <span>{`✓ ${party.name} (#${party.nativeId})`}</span>
+          {v2MatchStatus === 'bound' &&
+          v2BoundParty?.kind === party.kind &&
+          v2BoundParty.nativeId === party.nativeId &&
+          v2Reason ? (
+            <span className="font-normal text-[#64748b]">{v2Reason}</span>
+          ) : null}
           <LinkButton onClick={() => onClear(party.kind)}>Change</LinkButton>
         </div>
       ))}
+      {v2PartyJob && v2MatchStatus === 'bound' && v2Alternatives.length ? (
+        <PartyAlternatives
+          key={currentJobView?.runId}
+          rows={v2Alternatives}
+          defaultOpen={false}
+          onPick={pickRow}
+        />
+      ) : null}
       {Boolean(autoMemoKey) && pickedHere && autoRows.length ? (
         <ResultChips label="Also in HMS:" rows={autoRows} onPick={pickRow} />
       ) : null}
@@ -742,17 +801,15 @@ export function PartyPicker({
       ) : null}
       {v2NeedsPick ? (
         <div className="flex flex-col gap-1" aria-label="Party match needs a pick">
-          {v2Suggestions.length ? (
-            <ResultChips
-              label="Pick the company/agency"
-              rows={v2Suggestions}
-              allRows={v2AllRows}
-              limit={3}
+          <p className="text-[10.5px] font-semibold text-[#334155]">Pick the company/agency</p>
+          {v2Alternatives.length ? (
+            <PartyAlternatives
+              key={currentJobView?.runId}
+              rows={v2Alternatives}
+              defaultOpen
               onPick={pickRow}
             />
-          ) : (
-            <p className="text-[10.5px] font-semibold text-[#334155]">Pick the company/agency</p>
-          )}
+          ) : null}
           {v2Reason ? <p role="status">{v2Reason}</p> : null}
           <HmsAsOf asOf={currentJobView?.asOf ?? null} />
         </div>

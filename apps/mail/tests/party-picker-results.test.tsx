@@ -497,7 +497,7 @@ describe('PartyPicker prefetched party jobs', () => {
       />,
     );
     expect(await screen.findByText('Pick the company/agency')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'ABCD Travel (#4412)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use ABCD Travel (#4412)' }));
     expect(onPick).toHaveBeenCalledWith(ABCD_TRAVEL);
     expect(screen.getByRole('button', { name: 'Find in HMS' })).toBeTruthy();
   });
