@@ -24,6 +24,7 @@ test('v1 kinds include A/R and exclude group', async () => {
   assert.ok(lookup.validateRequest({ kind: 'group', query: { lastName: 'x' } }).length);
   assert.deepEqual(schema.$defs.batchRequest.required, ['searches']);
   assert.equal(schema.$defs.batchRequest.properties.stopOnFirstHit.type, 'boolean');
+  assert.equal(schema.$defs.batchRequest.properties.searches.items.$ref, '#/$defs/search');
 });
 
 test('empty query is an input gap', () => {

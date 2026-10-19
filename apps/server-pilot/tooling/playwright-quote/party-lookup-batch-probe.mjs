@@ -37,11 +37,17 @@ export async function runPartyLookupBatchProbe({ env = process.env } = {}) {
   }
 }
 
+export function probeSucceeded(result) {
+  const searches = Array.isArray(result?.searches) ? result.searches : [];
+  return searches.length === PROBE_SEARCHES.length
+    && searches.every((item) => !item.skipped && ['resolved', 'ambiguous', 'no_match'].includes(item.outcome));
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runPartyLookupBatchProbe({ env: process.env })
     .then((result) => {
       process.stdout.write(`${JSON.stringify(result)}\n`);
-      process.exitCode = 0;
+      process.exitCode = probeSucceeded(result) ? 0 : 2;
     })
     .catch((error) => {
       process.stderr.write(`party lookup batch probe failed: ${scrubNavError(error?.message ?? error) ?? 'unknown'}\n`);

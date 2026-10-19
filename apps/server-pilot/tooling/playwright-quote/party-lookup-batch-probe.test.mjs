@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { probeCommandEnv } from './party-lookup-batch-probe.mjs';
+import { probeCommandEnv, probeSucceeded } from './party-lookup-batch-probe.mjs';
 
 test('import has no CLI, browser or credential side effects', () => {
   const child = spawnSync(
@@ -24,4 +24,22 @@ test('probe env requires loopback CDP, borrowed ownership, and a secret source',
     HMS_READ_SECRET_ARN: 'nava-zero/server-pilot/infor-hms-read-davinci',
   });
   assert.equal(env.HMS_STAGEHAND_CDP_URL, 'http://127.0.0.1:19225/');
+});
+
+test('probeSucceeded is true only when both searches answered', () => {
+  assert.equal(probeSucceeded({
+    searches: [
+      { outcome: 'no_match', skipped: false },
+      { outcome: 'no_match', skipped: false },
+    ],
+  }), true);
+  assert.equal(probeSucceeded({
+    searches: [{ outcome: 'execution_failure', skipped: false }],
+  }), false);
+  assert.equal(probeSucceeded({
+    searches: [
+      { outcome: 'no_match', skipped: false },
+      { outcome: 'execution_failure', skipped: false },
+    ],
+  }), false);
 });
