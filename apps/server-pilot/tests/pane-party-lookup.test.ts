@@ -457,6 +457,33 @@ describe('panePartyFindResultFromCli and panePartyCandidates', () => {
     });
   });
 
+  it('keeps optional HMS grid columns on each candidate', () => {
+    const kept = panePartyCandidates('agency', [
+      {
+        nativeId: '280',
+        displayName: 'Tourvest Travel Services',
+        kind: 'bookingAgency',
+        iata: '12345',
+        city: 'Cape Town',
+        address: '1 Example Road',
+        country: 'South Africa',
+        externalId: 'EXT-9',
+      },
+    ]);
+    expect(kept).toEqual([
+      {
+        kind: 'agency',
+        nativeId: '280',
+        name: 'Tourvest Travel Services',
+        iata: '12345',
+        city: 'Cape Town',
+        address: '1 Example Road',
+        country: 'South Africa',
+        externalId: 'EXT-9',
+      },
+    ]);
+  });
+
   it('drops candidates of the other HMS kind, or with no id or name', () => {
     const kept = panePartyCandidates('company', [
       { ...company(1), kind: 'organization' },
@@ -618,6 +645,36 @@ describe('partySearchTerms: the HMS texts to try for a name', () => {
 
 describe('findParty with a kind', () => {
   beforeEach(() => resetPartyCacheForTests());
+
+  it('keeps optional HMS grid columns through findParty', async () => {
+    panePartyLookupLoaders.lock = passingLock();
+    panePartyLookupLoaders.spawn = vi.fn(async () => ({
+      outcome: 'resolved',
+      candidates: [
+        {
+          kind: 'organization',
+          nativeId: '206',
+          displayName: 'Tourvest Test Profile',
+          city: 'Cape Town',
+          country: 'South Africa',
+          address: '1 Example Road',
+          externalId: 'EXT-1',
+        },
+      ],
+      truncated: false,
+    }));
+    const found = await findParty({ name: 'Tourvest', kind: 'company' });
+    expect(found.results[0]).toEqual({
+      kind: 'company',
+      nativeId: '206',
+      name: 'Tourvest Test Profile',
+      city: 'Cape Town',
+      country: 'South Africa',
+      address: '1 Example Road',
+      externalId: 'EXT-1',
+    });
+    expect(found.best).toEqual(found.results[0]);
+  });
 
   it('searches only that kind, in one HMS run, and reports the text it used', async () => {
     panePartyLookupLoaders.lock = passingLock();

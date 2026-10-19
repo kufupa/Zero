@@ -79,12 +79,18 @@ function firstStayText(stay, field, fields, ...names) {
   return text || firstText(fields, ...names);
 }
 
+function numericPartyId(value) {
+  return /^\d+$/.test(value);
+}
+
 function party(fields, { nameFields, idFields, fallbackName }) {
   const name = firstPartyName(fields, ...nameFields) || squash(fallbackName) || undefined;
   let nativeId;
   for (const field of idFields) {
     const candidate = fieldValue(fields, field);
-    if (candidate.value && candidate.value !== name) {
+    if (!candidate.value) continue;
+    // Keep a numeric id even when HMS shows it as the name. Otherwise the select's value is the id.
+    if (candidate.value !== name || numericPartyId(candidate.value)) {
       nativeId = candidate.value;
       break;
     }
@@ -109,11 +115,52 @@ export function commercialFieldsFromFormEntries(entries = []) {
   return fields;
 }
 
+/**
+ * Guest Stay ExtJS form record. Self-contained for page.evaluate. Visible inputs hold the
+ * agency name (ta1) but not companyid or bookingagency1iatanumber; those live on getRecord().data.
+ */
+export function snapshotStayFormRecord(ext = globalThis.Ext, doc = document) {
+  const textOf = (value) => {
+    if (value == null) return '';
+    return String(value).replace(/\s+/g, ' ').trim();
+  };
+  const recordOf = (input) => {
+    if (!input?.id || !ext?.getCmp) return null;
+    const cmp = ext.getCmp(String(input.id).replace(/-inputEl$/, ''));
+    const data = cmp?.up?.('form')?.getRecord?.()?.data;
+    return data && typeof data === 'object' ? data : null;
+  };
+  try {
+    const ta1 = doc.querySelector?.('input[name="ta1"]');
+    const company = doc.querySelector?.('input[name="company"]')
+      || doc.querySelector?.('input[name="companyname"]');
+    const data = recordOf(ta1) || recordOf(company) || {};
+    const companyid = textOf(data.companyid);
+    const iata = textOf(data.bookingagency1iatanumber);
+    const out = {};
+    if (companyid) out.companyid = companyid;
+    if (iata) out.bookingagency1iatanumber = iata;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Copies companyid and agency IATA from the Ext record onto the named-control field map. */
+export function mergeStayFormRecord(fields = {}, record = {}) {
+  const out = { ...fields };
+  for (const name of ['companyid', 'bookingagency1iatanumber']) {
+    const value = squash(record[name]);
+    if (value && !out[name]) out[name] = { value, text: value, kind: 'input' };
+  }
+  return out;
+}
+
 export function parseCommercialFields(fields, stay = {}) {
   const commercial = {};
   const company = party(fields, {
     nameFields: ['companyname', 'araccountname', 'company'],
-    idFields: ['company'],
+    idFields: ['companyid', 'company'],
     fallbackName: stay.organization,
   });
   const agency = party(fields, {
@@ -121,6 +168,11 @@ export function parseCommercialFields(fields, stay = {}) {
     idFields: ['bookingagency', 'ta1'],
     fallbackName: stay.bookingAgency,
   });
+  const iata = firstText(fields, 'bookingagency1iatanumber');
+  if (iata) {
+    if (agency) agency.iata = iata;
+    else commercial.agency = { iata };
+  }
   if (company) commercial.company = company;
   if (agency) commercial.agency = agency;
 

@@ -379,6 +379,12 @@ async function closeLookupDialog(page) {
   await dismissUnsaved(page);
 }
 
+function optionalStoreText(value) {
+  if (value == null) return undefined;
+  const text = String(value).trim();
+  return text.length ? text : undefined;
+}
+
 export function rowFromStoreData(data = {}) {
   const nativeId = String(
     data.companyid ?? data.organizationid ?? data.profileid ?? data.travelagencyid ?? data.accountid ?? data.id ?? '',
@@ -392,10 +398,20 @@ export function rowFromStoreData(data = {}) {
     ?? [data.lastname, data.firstname].filter(Boolean).join(', ')
     ?? '',
   );
+  const iata = optionalStoreText(data.iatanumber ?? data.iata);
+  const city = optionalStoreText(data.city);
+  const address = optionalStoreText(data.address);
+  const country = optionalStoreText(data.country);
+  const externalId = optionalStoreText(data.externalid ?? data.externalorganizationid ?? data.externalId);
   return {
     nativeId,
     displayName,
     matchedOn: Object.keys(data).slice(0, 12),
+    ...(iata ? { iata } : {}),
+    ...(city ? { city } : {}),
+    ...(address ? { address } : {}),
+    ...(country ? { country } : {}),
+    ...(externalId ? { externalId } : {}),
   };
 }
 

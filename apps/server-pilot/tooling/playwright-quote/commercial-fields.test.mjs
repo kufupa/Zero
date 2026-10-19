@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { parseCommercialFields, snapshotCommercialFields } from './commercial-fields.mjs';
+import {
+  mergeStayFormRecord,
+  parseCommercialFields,
+  snapshotCommercialFields,
+  snapshotStayFormRecord,
+} from './commercial-fields.mjs';
 
 const fixture = (name) => readFile(new URL(`./fixtures/commercial/${name}`, import.meta.url), 'utf8');
 
@@ -76,6 +81,48 @@ test('missing optional controls never create an empty commercial object', () => 
     company: { name: 'Northstar Conference Group' },
     agency: { name: 'Harbor Travel' },
   });
+});
+
+test('stay form record keeps companyid and agency IATA, not an agency id', async () => {
+  const fields = JSON.parse(await fixture('stay-form-record.json'));
+  const parsed = parseCommercialFields(fields);
+  assert.deepEqual(parsed.company, { name: 'Woolworths Holdings', nativeId: '49' });
+  assert.deepEqual(parsed.agency, { name: 'CWT JNB', iata: '77218175' });
+  assert.equal('nativeId' in parsed.agency, false);
+});
+
+test('snapshotStayFormRecord reads companyid and IATA from the Ext form record, not visible inputs', () => {
+  const record = { companyid: 49, bookingagency1iatanumber: '77218175', ta1: 'CWT JNB' };
+  const ta1 = { id: 'ta1-inputEl' };
+  const ext = {
+    getCmp(id) {
+      assert.equal(id, 'ta1');
+      return { up: (xtype) => (xtype === 'form' ? { getRecord: () => ({ data: record }) } : null) };
+    },
+  };
+  const doc = { querySelector: (selector) => (selector === 'input[name="ta1"]' ? ta1 : null) };
+  assert.deepEqual(snapshotStayFormRecord(ext, doc), {
+    companyid: '49',
+    bookingagency1iatanumber: '77218175',
+  });
+  const merged = mergeStayFormRecord(
+    { ta1: { value: 'CWT JNB', text: 'CWT JNB', kind: 'input' } },
+    snapshotStayFormRecord(ext, doc),
+  );
+  const parsed = parseCommercialFields(merged);
+  assert.deepEqual(parsed.company, { nativeId: '49' });
+  assert.deepEqual(parsed.agency, { name: 'CWT JNB', iata: '77218175' });
+});
+
+test('keeps a numeric party id even when it equals the name, else uses the select value', async () => {
+  const fields = JSON.parse(await fixture('numeric-id-equals-name.json'));
+  const parsed = parseCommercialFields(fields);
+  assert.deepEqual(parsed.company, { name: '49', nativeId: '49' });
+  assert.deepEqual(parsed.agency, { name: 'CWT JNB', nativeId: '290' });
+  const nameAsValue = parseCommercialFields({
+    ta1: { value: 'Harbor Travel', text: 'Harbor Travel', kind: 'select' },
+  });
+  assert.deepEqual(nameAsValue.agency, { name: 'Harbor Travel' });
 });
 
 test('reads commercial fields from live form snapshot entries', async () => {

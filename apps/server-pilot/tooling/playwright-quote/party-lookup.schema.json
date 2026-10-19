@@ -43,7 +43,12 @@
         "nativeId": { "type": "string", "minLength": 1 },
         "kind": { "type": "string", "enum": ["organization", "bookingAgency", "guest", "arAccount"] },
         "displayName": { "type": "string" },
-        "matchedOn": { "type": "array", "items": { "type": "string" } }
+        "matchedOn": { "type": "array", "items": { "type": "string" } },
+        "iata": { "type": "string" },
+        "city": { "type": "string" },
+        "address": { "type": "string" },
+        "country": { "type": "string" },
+        "externalId": { "type": "string" }
       }
     },
     "search": {

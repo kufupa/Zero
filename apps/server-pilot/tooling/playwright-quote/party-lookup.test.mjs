@@ -189,6 +189,31 @@ test('store rows map travelagencyid when IATA is blank', () => {
   assert.equal(mapped[0].nativeId, '290');
 });
 
+test('store row keeps optional HMS grid columns from the record', async () => {
+  const row = lookup.rowFromStoreData({
+    travelagencyid: 280,
+    travelagencyname: 'Tourvest Travel Services',
+    iatanumber: 12345,
+    address: '1 Example Road',
+    city: 'Cape Town',
+    country: 'South Africa',
+    externalid: 'EXT-9',
+  });
+  assert.equal(row.nativeId, '280');
+  assert.equal(row.displayName, 'Tourvest Travel Services');
+  assert.equal(row.iata, '12345');
+  assert.equal(row.city, 'Cape Town');
+  assert.equal(row.address, '1 Example Road');
+  assert.equal(row.country, 'South Africa');
+  assert.equal(row.externalId, 'EXT-9');
+  const blank = lookup.rowFromStoreData({ travelagencyid: 290, travelagencyname: 'CWT JNB', iatanumber: '' });
+  assert.equal('iata' in blank, false);
+  const schema = JSON.parse(await readFile(schemaUrl, 'utf8'));
+  for (const key of ['iata', 'city', 'address', 'country', 'externalId']) {
+    assert.equal(schema.$defs.candidate.properties[key].type, 'string');
+  }
+});
+
 test('candidate count maps to outcome', () => {
   assert.equal(lookup.classifyOutcome([]).outcome, 'no_match');
   assert.equal(lookup.classifyOutcome([{ nativeId: '1', kind: 'organization', displayName: 'A' }]).outcome, 'resolved');
