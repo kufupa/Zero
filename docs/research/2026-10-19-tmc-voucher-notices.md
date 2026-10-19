@@ -11,9 +11,9 @@ TMC = travel management company (corporate travel agency): Rennies BCD, FCM, Tra
 | Check | Result |
 |---|---|
 | Automated mail the v4 classifier labels `new_booking` | 15 (Travelit 3, Rennies 3, TWF 3, Nexus 2, Thompsons, NexCT, FCM, CRC 1 each) |
-| Carries a booking reference | 9/15: CRS-format `5940SH…` (TWF, FCM, CRC), Infor-format `NNNNNNNN-N` (Nexus, Travelit), supplier confirmation (Rennies) |
-| `5940SH…` reference seen earlier in **SynXis/Profitroom** mail | yes, 2 of 2 matched refs: 15 min and 2 days **before** the voucher, so the booking reached Infor through the CRS first |
-| Infor-format reference seen earlier in hotel staff mail | yes, 2 of 2 matched refs: 4 h and 2 days before the voucher |
+| Carries a machine-matchable booking reference (subject or extraction) | 6/15: CRS-format `5940SH…` (TWF ×2, FCM, CRC), Infor-format `NNNNNNNN-N` (Nexus, Travelit). Rennies/TWF bodies mention supplier/reservation numbers the extraction did not keep |
+| That reference seen earlier in other mail | 5/6: `5940SH…` in **SynXis/Profitroom** mail 15 min to 2 days **before** the voucher; Infor-format in hotel staff mail 4 h to 2 days before. CRC's ref was not seen earlier |
+| No reference matched | 10/15 (one is a duplicate of a matched TWF voucher). Owner is spot-checking these in HMS |
 | Body asks the hotel to book/confirm | 0/15 |
 | Staff replied in the thread | 1/15 |
 
@@ -30,6 +30,6 @@ Owner, 2026-10-13: agency vouchers are "both proof of payments and booking reque
 
 ## 4. Gaps
 
-- 6/15 vouchers had no reference we could match; some could be email-only bookings that staff do key in. A read-only HMS find per voucher would settle it; the pane's existing Find covers that case (no match → staff create).
+- 10/15 vouchers had no reference matched to earlier mail; some could be email-only bookings that staff do key in. A read-only HMS find per voucher would settle it; the pane's existing Find covers that case (no match → staff create).
 - Whether the Rennies supplier confirmation equals the Infor confirmation number was not checked in HMS.
 - Background HMS prefetch skips `system_notice` (`hms-jobs.ts` ~2052). Pre-running Find for vouchers is a separate follow-up.
