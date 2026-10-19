@@ -5,7 +5,7 @@ import {
   sanitizePartySearchTerms,
   type PartyMatchV3Row,
 } from '../src/ai/party-match-v3.js';
-import type { PartyMatchCandidate } from '../src/ai/party-match-v2.js';
+import { normalisePartyName, type PartyMatchCandidate } from '../src/ai/party-match-v2.js';
 import type { ModelAdapter, ModelInvokeResult } from '../src/ai/bedrock/adapter.js';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -285,5 +285,155 @@ describe('PARTY MATCH V3 reservationist loop', () => {
       expect.arrayContaining([{ kind: 'agency', term: 'EY' }]),
     );
     expect(result.boundParty).toMatchObject({ nativeId: 'ey', kind: 'agency' });
+  });
+
+  it('searches the distinctive word in round 2 when a full name returned 0 rows and the model echoes it', async () => {
+    const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
+      searches.map((search) => ({
+        outcome: search.term === 'Limits' ? ('resolved' as const) : ('no_match' as const),
+        results:
+          search.term === 'Limits'
+            ? [{ kind: 'agency' as const, nativeId: '119', name: 'No Limits Travel & Tours' }]
+            : [],
+        truncated: false,
+        searchedFor: search.term,
+      })),
+    );
+    const adapter: ModelAdapter = {
+      invoke: vi.fn(async (input) => {
+        if (input.systemPrompt.includes('Propose')) {
+          return invokeResult({
+            searches: [{ kind: 'agency', term: 'No Limits Travel & Tours' }],
+          });
+        }
+        if (String(input.userPrompt).includes('"returnedRows":[]')) {
+          return invokeResult({
+            pick: null,
+            kind: null,
+            confidence: 'low',
+            reason: 'No rows.',
+            nextTerms: [{ kind: 'agency', term: 'No Limits Travel & Tours' }],
+          });
+        }
+        return invokeResult({
+          pick: '119',
+          kind: 'agency',
+          confidence: 'high',
+          reason: 'Distinctive word hit.',
+        });
+      }),
+    };
+
+    const result = await runPartyMatchV3({
+      adapter,
+      candidates: [candidate('No Limits Travel & Tours')],
+      context: { ...context, extractedNames: ['No Limits Travel & Tours'] },
+      emailText: 'Please quote for No Limits Travel & Tours.',
+      findParty,
+    });
+
+    const firstPick = vi
+      .mocked(adapter.invoke)
+      .mock.calls.find(([input]) => input.systemPrompt.includes('Pick the HMS party'))?.[0];
+    expect(String(firstPick?.userPrompt)).toContain('"returned":0');
+    expect(firstPick?.systemPrompt.toLowerCase()).toMatch(/distinctive/);
+    expect(firstPick?.systemPrompt.toLowerCase()).toMatch(/never repeat/);
+    expect(findParty).toHaveBeenCalledTimes(2);
+    expect(findParty.mock.calls[0]?.[0]).toEqual([
+      { kind: 'agency', term: 'No Limits Travel & Tours' },
+    ]);
+    expect(findParty.mock.calls[1]?.[0]).toEqual([{ kind: 'agency', term: 'Limits' }]);
+    expect(result.matchVersion).toBe(2);
+    expect(result.boundParty).toMatchObject({ nativeId: '119', kind: 'agency' });
+  });
+
+  it('never re-searches a term already tried (same kind and normalised name)', async () => {
+    const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
+      searches.map((search) => ({
+        outcome: 'no_match' as const,
+        results: [],
+        truncated: false,
+        searchedFor: search.term,
+      })),
+    );
+    const adapter: ModelAdapter = {
+      invoke: vi.fn(async (input) => {
+        if (input.systemPrompt.includes('Propose')) {
+          return invokeResult({ searches: [{ kind: 'agency', term: 'Tourvest' }] });
+        }
+        return invokeResult({
+          pick: null,
+          kind: null,
+          confidence: 'low',
+          reason: 'No rows.',
+          nextTerms: [
+            { kind: 'agency', term: 'tourvest' },
+            { kind: 'agency', term: 'Travel With Flair' },
+          ],
+        });
+      }),
+    };
+
+    await runPartyMatchV3({
+      adapter,
+      candidates: [candidate('Tourvest Travel Services')],
+      context,
+      emailText: 'Please quote for Tourvest Travel Services.',
+      findParty,
+    });
+
+    expect(findParty).toHaveBeenCalledTimes(2);
+    expect(findParty.mock.calls[1]?.[0]).toEqual([
+      { kind: 'agency', term: 'Travel With Flair' },
+    ]);
+    const round2 = findParty.mock.calls[1]?.[0] ?? [];
+    expect(
+      round2.some((search) => normalisePartyName(search.term) === normalisePartyName('Tourvest')),
+    ).toBe(false);
+  });
+
+  it('keeps the round-2 cap of three after dropping already-tried terms', async () => {
+    const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
+      searches.map((search) => ({
+        outcome: 'no_match' as const,
+        results: [],
+        truncated: false,
+        searchedFor: search.term,
+      })),
+    );
+    const adapter: ModelAdapter = {
+      invoke: vi.fn(async (input) => {
+        if (input.systemPrompt.includes('Propose')) {
+          return invokeResult({ searches: [{ kind: 'agency', term: 'Tourvest' }] });
+        }
+        return invokeResult({
+          pick: null,
+          kind: null,
+          confidence: 'low',
+          reason: 'No rows.',
+          nextTerms: [
+            { kind: 'agency', term: 'Tourvest' },
+            { kind: 'agency', term: 'Alpha Agency' },
+            { kind: 'agency', term: 'Bravo Agency' },
+            { kind: 'agency', term: 'Charlie Agency' },
+            { kind: 'agency', term: 'Delta Agency' },
+          ],
+        });
+      }),
+    };
+
+    await runPartyMatchV3({
+      adapter,
+      candidates: [candidate('Tourvest Travel Services')],
+      context,
+      emailText: 'Please quote for Tourvest Travel Services.',
+      findParty,
+    });
+
+    expect(findParty.mock.calls[1]?.[0]).toEqual([
+      { kind: 'agency', term: 'Alpha Agency' },
+      { kind: 'agency', term: 'Bravo Agency' },
+      { kind: 'agency', term: 'Charlie Agency' },
+    ]);
   });
 });
