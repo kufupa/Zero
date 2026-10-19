@@ -225,3 +225,9 @@ test('import still has no CLI, browser or credential side effects', () => {
   assert.equal(child.stdout.trim(), 'import only');
   assert.equal(child.stderr, '');
 });
+
+test('login form detection matches the Infor password box by name (it renders as type=text)', async () => {
+  const source = await readFile(new URL('./session-reuse.mjs', import.meta.url), 'utf8');
+  const body = source.slice(source.indexOf('async function loginFormVisible'), source.indexOf('export async function waitForShellOrLoginForm'));
+  assert.match(body, /input\[name="password"\]:visible/);
+});
