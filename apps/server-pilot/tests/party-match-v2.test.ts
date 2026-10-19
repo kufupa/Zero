@@ -3,6 +3,7 @@ import {
   buildPartyMatchCandidates,
   normalisePartyName,
   partyMatchEmailContext,
+  partyMatchSearchTerms,
   pickPartyMatch,
   planPartySearches,
   type PartyMatchCandidate,
@@ -25,6 +26,13 @@ const candidate = (name: string, kind: 'company' | 'agency' = 'company'): PartyM
 });
 
 describe('PARTY MATCH V2 search plan', () => {
+  it('does not plan hotel or consulting as single search terms', () => {
+    const terms = partyMatchSearchTerms('Legacy Hotel Consulting');
+
+    expect(terms).not.toContain('Hotel');
+    expect(terms).not.toContain('Consulting');
+  });
+
   it('normalises legal forms, punctuation, accents and brackets without losing numeric tokens', () => {
     expect(normalisePartyName('Amícis Health (Pty) Ltd')).toBe('amicis health');
     expect(normalisePartyName('GP Destination Management SL')).toBe('gp destination management');

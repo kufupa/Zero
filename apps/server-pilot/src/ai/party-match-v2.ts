@@ -73,10 +73,12 @@ const MAX_PERSON_SCAN_CHARS = 20_000;
 
 const GENERIC_WORDS = new Set([
   'travel',
+  'travels',
   'tours',
   'tour',
   'group',
   'holdings',
+  'hotel',
   'services',
   'service',
   'pty',
@@ -85,7 +87,9 @@ const GENERIC_WORDS = new Set([
   'agencies',
   'the',
   'and',
+  'of',
   'management',
+  'consulting',
   'solutions',
   'africa',
   'south',
