@@ -329,6 +329,22 @@ describe('HMS batch request selection (pure)', () => {
     ).toEqual({ request: { kind: 'search_guest', lastName: 'Hale', arrival: ARRIVAL } });
   });
 
+  it('normalizes repeated spaces and tabs in an endClient name', () => {
+    expect(
+      selectHmsBatchRequest({
+        kind: 'amendment',
+        payload: {
+          confirmationNumbers: [],
+          endClient: 'Jordan  \tHale',
+          agency: 'Northwind Travel',
+          stays: [{ booked: { arrival: ARRIVAL } }],
+        },
+        subject: 'Please amend the stay',
+        textBody: 'Please change the dates.',
+      }),
+    ).toEqual({ request: { kind: 'search_guest', lastName: 'Hale', arrival: ARRIVAL } });
+  });
+
   it('does not take a surname from a company endClient', () => {
     expect(
       selectHmsBatchRequest({

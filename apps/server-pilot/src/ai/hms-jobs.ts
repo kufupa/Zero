@@ -317,7 +317,7 @@ const COMPANY_NAME_TOKEN = /^(?:pty|ltd|holdings|group|travel|services|bank|hote
 /** Two-or-more word person name with no company tokens, digits, or email. Surname is the last token via surnameFrom. */
 function personSurnameFromName(value: unknown): string | null {
   if (typeof value !== 'string') return null;
-  const name = value.trim();
+  const name = value.trim().replace(/\s+/g, ' ');
   if (!name || /\d/.test(name) || name.includes('@')) return null;
   const tokens = name.split(/\s+/).filter(Boolean);
   if (tokens.length < 2) return null;
