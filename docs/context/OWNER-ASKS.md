@@ -254,3 +254,4 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 125 | Index freshness: daily 02:00–03:00 UTC sweep + lowest-priority refresh ≤ every 2 h; track change counts | ⏸ | plan P9 | after P6/P7 |
 | 126 | Evidence-backed research written to dated md and merged | 🟡 | [party evidence](../research/2026-10-19-party-lookup-evidence.md) | this PR |
 | 127 | Da Vinci has 2 HMS logins with different corporate accounts/rates: key party data per login | ✅ | memory `project-party-profiles-per-login` | — |
+| 128 | 2026-10-19: Centurion likely does the same GDS check as Da Vinci (booking arrives twice: SynXis + agent voucher); build the GDS booking check for both hotels; track it so it isn't lost | 🟡 | WORKSTREAMS §2 row 3; [TMC voucher notices](../research/2026-10-19-tmc-voucher-notices.md) | Scope after quote bar; supersedes #83/#88 scoping |
