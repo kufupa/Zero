@@ -183,10 +183,10 @@ function candidateChoiceLabel(
   }
   const iata = typeof row.iata === 'string' ? row.iata.trim() : '';
   const city = typeof row.city === 'string' ? row.city.trim() : '';
-  const details = [iata ? `IATA ${iata}` : null, city || null, `(#${row.nativeId})`].filter(
+  const details = [iata ? `IATA ${iata}` : null, city || null].filter(
     (detail): detail is string => detail !== null,
   );
-  return `${row.name} · ${details.join(' · ')}`;
+  return `${row.name}${details.length ? ` · ${details.join(' · ')}` : ''} (#${row.nativeId})`;
 }
 
 function findWithMail(

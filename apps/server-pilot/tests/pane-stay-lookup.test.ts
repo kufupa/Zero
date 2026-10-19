@@ -223,7 +223,7 @@ describe('findStay', () => {
     });
     expect(result.commercial).toEqual({
       company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
-      agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+      agency: { name: 'Harbor Travel', nativeId: 'AG-9', iata: '77206673' },
       ratePlan: 'Corporate Saver',
       status: 'Reserved',
     });

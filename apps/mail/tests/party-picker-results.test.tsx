@@ -905,10 +905,10 @@ describe('PartyPicker duplicate-name choices', () => {
       />,
     );
 
-    const choices = await screen.findAllByRole('button', {
-      name: /^(?:Confirm )?Tourvest Travel Services · IATA /,
+    await screen.findByRole('button', {
+      name: 'Tourvest Travel Services · IATA 77206685 · Cape Town (#292)',
     });
-    expect(choices).toHaveLength(13);
+    expect(screen.getAllByRole('button', { name: /Tourvest Travel Services/ })).toHaveLength(13);
   });
 
   it('keeps unique-name choices unchanged even when rows carry IATA and city', async () => {
