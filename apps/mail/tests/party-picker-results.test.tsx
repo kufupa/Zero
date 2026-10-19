@@ -1003,6 +1003,40 @@ describe('PartyPicker duplicate-name choices', () => {
     expect(queue).not.toHaveBeenCalled();
   });
 
+  it('does not reuse cached V2 matches after the typed name changes', async () => {
+    const view = v2PartyView('needs_pick');
+    let statusCalls = 0;
+    const status = vi.fn(async () => (statusCalls++ === 0 ? view : null));
+    const jobTransport: HmsJobTransport = { queue: vi.fn(), status };
+    const Harness = () => {
+      const [name, setName] = useState('ABC Travel');
+      return (
+        <>
+          <button type="button" onClick={() => setName('Unrelated Agency')}>
+            Edit party name
+          </button>
+          <PartyPicker
+            name={name}
+            kind="company"
+            parties={{}}
+            find={vi.fn()}
+            jobTransport={jobTransport}
+            threadId="thread-typed-v2-edit"
+            sourceMessageId="message-1"
+            onPick={vi.fn()}
+            onClear={vi.fn()}
+          />
+        </>
+      );
+    };
+    render(<Harness />);
+
+    expect(await screen.findByRole('list', { name: 'HMS matches' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit party name' }));
+
+    await waitFor(() => expect(screen.queryByRole('list', { name: 'HMS matches' })).toBeNull());
+  });
+
   it('hides cached alternatives when a fresh HMS lookup starts', async () => {
     const base = v2PartyView('bound');
     const view: HmsJobView = {
