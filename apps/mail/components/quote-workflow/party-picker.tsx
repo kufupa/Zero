@@ -182,8 +182,9 @@ function candidateChoiceLabel(
     return includeNativeId ? `${row.name} (#${row.nativeId})` : row.name;
   }
   const iata = typeof row.iata === 'string' ? row.iata.trim() : '';
+  const address = typeof row.address === 'string' ? row.address.trim() : '';
   const city = typeof row.city === 'string' ? row.city.trim() : '';
-  const details = [iata ? `IATA ${iata}` : null, city || null].filter(
+  const details = [iata ? `IATA ${iata}` : null, address || null, city || null].filter(
     (detail): detail is string => detail !== null,
   );
   return `${row.name}${details.length ? ` · ${details.join(' · ')}` : ''} (#${row.nativeId})`;
@@ -554,9 +555,16 @@ export function PartyPicker({
     ? v2Result.matchStatus
     : null;
   const v2BoundParty = isPartyCandidate(v2Result?.boundParty) ? v2Result.boundParty : null;
-  const v2Suggestions = uniqueCandidates(partyCandidatesFrom(v2Result?.suggestions) ?? []).filter(
-    inScope,
-  );
+  const v2ResultRows = uniqueCandidates(partyCandidatesFrom(v2Result?.results) ?? []).filter(inScope);
+  const v2SuggestionRows = uniqueCandidates(
+    partyCandidatesFrom(v2Result?.suggestions) ?? [],
+  ).filter(inScope);
+  const v2AllRows = uniqueCandidates([...v2ResultRows, ...v2SuggestionRows]);
+  const v2DuplicateNames = duplicateCandidateNames(v2AllRows);
+  const v2Suggestions = uniqueCandidates([
+    ...v2SuggestionRows,
+    ...v2ResultRows.filter((row) => v2DuplicateNames.has(candidateNameKey(row.name))),
+  ]);
   const v2Reason = typeof v2Result?.reason === 'string' ? v2Result.reason : '';
   const v2BoundForField =
     !pickedHere && v2MatchStatus === 'bound' && v2BoundParty && inScope(v2BoundParty)
@@ -735,7 +743,13 @@ export function PartyPicker({
       {v2NeedsPick ? (
         <div className="flex flex-col gap-1" aria-label="Party match needs a pick">
           {v2Suggestions.length ? (
-            <ResultChips label="Pick the company/agency" rows={v2Suggestions} limit={3} onPick={pickRow} />
+            <ResultChips
+              label="Pick the company/agency"
+              rows={v2Suggestions}
+              allRows={v2AllRows}
+              limit={3}
+              onPick={pickRow}
+            />
           ) : (
             <p className="text-[10.5px] font-semibold text-[#334155]">Pick the company/agency</p>
           )}

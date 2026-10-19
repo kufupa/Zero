@@ -4,6 +4,7 @@ import type { StaffQuoteParty } from './types';
 export type PartyCandidate = StaffQuoteParty & {
   iata?: string;
   city?: string;
+  address?: string;
 };
 
 /** panePartyLookup.findParty's reply. Refusals and failures carry no results. */

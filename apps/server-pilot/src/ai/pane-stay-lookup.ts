@@ -260,7 +260,7 @@ function toPaneStayCommercial(raw: unknown): PaneStayCommercial | undefined {
     const name = text(candidate.name);
     const nativeId = text(candidate.nativeId);
     const iata = text(candidate.iata);
-    if (!name && !nativeId) return undefined;
+    if (!name && !nativeId && !iata) return undefined;
     return {
       ...(name ? { name } : {}),
       ...(nativeId ? { nativeId } : {}),

@@ -98,10 +98,11 @@ function listed(...results: PartyCandidate[]): PartyFindReply {
 function tourvestCopies(): PartyCandidate[] {
   return Array.from({ length: 13 }, (_, index): PartyCandidate => ({
     kind: 'agency',
-    nativeId: String(280 + index),
+    nativeId: index === 0 ? '6' : index === 1 ? '543' : `fixture-${index}`,
     name: 'Tourvest Travel Services',
-    iata: String(77206673 + index),
-    city: index === 0 ? 'Pretoria' : 'Cape Town',
+    iata: index < 2 ? '77206673' : String(77206673 + index),
+    ...(index === 0 ? { city: 'Bryanston' } : {}),
+    ...(index === 2 ? { address: 'Fixture address', city: 'Fixture city' } : {}),
   }));
 }
 
@@ -814,7 +815,7 @@ describe('PartyPicker results follow the name typed now', () => {
 });
 
 describe('PartyPicker duplicate-name choices', () => {
-  it('shows all 13 V2 suggestions for one name with IATA and city', async () => {
+  it('shows all 13 same-name V2 results beyond the three suggestions', async () => {
     const copies = tourvestCopies();
     const view: HmsJobView = {
       ...v2PartyView('needs_pick', 'Tourvest Travel Services'),
@@ -834,7 +835,7 @@ describe('PartyPicker duplicate-name choices', () => {
         matchVersion: 2,
         matchStatus: 'needs_pick',
         boundParty: null,
-        suggestions: copies,
+        suggestions: copies.slice(0, 3),
         reason: 'Several agencies share this name.',
       },
     };
@@ -859,17 +860,27 @@ describe('PartyPicker duplicate-name choices', () => {
     const choices = await screen.findByLabelText('Party match needs a pick');
     expect(within(choices).getAllByRole('button')).toHaveLength(13);
     const firstCopy = within(choices).getByRole('button', {
-      name: 'Tourvest Travel Services · IATA 77206673 · Pretoria (#280)',
+      name: 'Tourvest Travel Services · IATA 77206673 · Bryanston (#6)',
     });
     expect(
       within(choices).getByRole('button', {
-        name: 'Tourvest Travel Services · IATA 77206685 · Cape Town (#292)',
+        name: 'Tourvest Travel Services · IATA 77206673 (#543)',
+      }),
+    ).toBeTruthy();
+    expect(
+      within(choices).getByRole('button', {
+        name: 'Tourvest Travel Services · IATA 77206675 · Fixture address · Fixture city (#fixture-2)',
+      }),
+    ).toBeTruthy();
+    expect(
+      within(choices).getByRole('button', {
+        name: 'Tourvest Travel Services · IATA 77206685 (#fixture-12)',
       }),
     ).toBeTruthy();
     fireEvent.click(firstCopy);
     expect(onPick).toHaveBeenCalledWith({
       kind: 'agency',
-      nativeId: '280',
+      nativeId: '6',
       name: 'Tourvest Travel Services',
     });
   });
@@ -906,7 +917,7 @@ describe('PartyPicker duplicate-name choices', () => {
     );
 
     await screen.findByRole('button', {
-      name: 'Tourvest Travel Services · IATA 77206685 · Cape Town (#292)',
+      name: 'Tourvest Travel Services · IATA 77206685 (#fixture-12)',
     });
     expect(screen.getAllByRole('button', { name: /Tourvest Travel Services/ })).toHaveLength(13);
   });

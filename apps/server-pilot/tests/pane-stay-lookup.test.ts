@@ -229,6 +229,13 @@ describe('findStay', () => {
     });
   });
 
+  it('keeps an agency identified only by IATA in the commercial fields', async () => {
+    paneStayLookupLoaders.spawn = async () =>
+      lookupResult({ commercial: { agency: { iata: '77206673' } } });
+    const result = await findStay({ confirmation: '57291630-1' }, { lock: () => passingLock() });
+    expect(result.commercial?.agency).toEqual({ iata: '77206673' });
+  });
+
   it('refuses when no property lock can be made, with no spawn', async () => {
     paneStayLookupLoaders.spawn = async () => {
       throw new Error('must not spawn');
