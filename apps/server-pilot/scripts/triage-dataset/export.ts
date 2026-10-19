@@ -3,7 +3,7 @@
  *
  *   threads: every message of every thread that has an inbound in the window, with attachment metadata. Used for
  *            silver labels (staff outbound evidence) and prior-only context.
- *   selections: for --message-ids-file targets, the prod `loadSyncedQuoteSelectionFromMailbox` output (attachment
+ *   selections: for --message-ids-file targets (with the full thread incl. messageIdHeader/inReplyTo for leak checks), the prod `loadSyncedQuoteSelectionFromMailbox` output (attachment
  *            text via prod `readQuoteAttachments`). Image/PDF bytes are dropped; only their presence is kept.
  *
  * Never writes to the database. Logs print counts only, no subject, body or address.
@@ -12,12 +12,12 @@
  *   pnpm exec tsx scripts/triage-dataset/export.ts threads --transport-id <id> --since <iso> --until <iso> --out <dir>
  *   pnpm exec tsx scripts/triage-dataset/export.ts selections --transport-id <id> --message-ids-file <file> --out <dir>
  */
-import { createWriteStream, mkdirSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { parseArgs } from 'node:util';
-import { createGzip } from 'node:zlib';
-import { closeDb, getConn } from '../../src/db/client.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../../src/ai/quote-workflow-synced-selection.js';
+import { createWriteStream, mkdirSync, readFileSync } from 'node:fs';
+import { closeDb, getConn } from '../../src/db/client.js';
+import { createGzip } from 'node:zlib';
+import { parseArgs } from 'node:util';
+import { join } from 'node:path';
 
 const BODY_MAX = 100_000;
 
@@ -26,12 +26,16 @@ function gzWriter(path: string) {
   const out = createWriteStream(path);
   gz.pipe(out);
   return {
-    write: (row: unknown) => gz.write(`${JSON.stringify(row)}\n`),
-    close: () => new Promise<void>((resolve, reject) => {
-      out.on('finish', resolve);
-      out.on('error', reject);
-      gz.end();
-    }),
+    write: async (row: unknown) => {
+      if (!gz.write(`${JSON.stringify(row)}\n`))
+        await new Promise((resolve) => gz.once('drain', resolve));
+    },
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        out.on('finish', resolve);
+        out.on('error', reject);
+        gz.end();
+      }),
   };
 }
 
@@ -61,7 +65,7 @@ async function exportThreads(transportId: string, since: string, until: string, 
       from message m left join mailbox_transport mt on mt.id = m.transport_id
       where m.transport_id = ${transportId} and m.thread_id in ${sql(batch)}
       order by m.thread_id, coalesce(m.received_at, m.sent_at, m.created_at), m.id`;
-    for (const row of rows) writer.write(row);
+    for (const row of rows) await writer.write(row);
     messages += rows.length;
   }
   await writer.close();
@@ -69,26 +73,40 @@ async function exportThreads(transportId: string, since: string, until: string, 
     select l.message_id, l.source, l.action, l.needs_action, l.version, l.labelled_by, l.updated_at
     from mail_action_label l where l.transport_id = ${transportId}`;
   const labelWriter = gzWriter(join(outDir, `labels-${transportId}.jsonl.gz`));
-  for (const row of labels) labelWriter.write(row);
+  for (const row of labels) await labelWriter.write(row);
   await labelWriter.close();
   const extractions = await sql<Record<string, unknown>[]>`
     select distinct on (e.message_id) e.message_id, e.extractor_version, e.status, e.kind,
-      e.payload->>'action' as action, e.payload->>'needsAction' as needs_action, e.created_at
+      e.payload->>'action' as action, (e.payload->>'needsAction')::boolean as needs_action, e.created_at
     from mail_extraction e join message m on m.id = e.message_id
     where m.transport_id = ${transportId} and m.direction = 'inbound'
       and coalesce(m.received_at, m.created_at) >= ${since}::timestamptz
       and coalesce(m.received_at, m.created_at) <= ${until}::timestamptz
     order by e.message_id, e.created_at desc`;
   const extractionWriter = gzWriter(join(outDir, `prod-extractions-${transportId}.jsonl.gz`));
-  for (const row of extractions) extractionWriter.write(row);
+  for (const row of extractions) await extractionWriter.write(row);
   await extractionWriter.close();
   console.log(
-    JSON.stringify({ mode: 'threads', threads: threadIds.length, messages, labels: labels.length, extractions: extractions.length }),
+    JSON.stringify({
+      mode: 'threads',
+      threads: threadIds.length,
+      messages,
+      labels: labels.length,
+      extractions: extractions.length,
+    }),
   );
 }
 
-async function exportSelections(transportId: string, idsFile: string, outDir: string, concurrency: number) {
-  const ids = readFileSync(idsFile, 'utf8').split('\n').map((line) => line.trim()).filter(Boolean);
+async function exportSelections(
+  transportId: string,
+  idsFile: string,
+  outDir: string,
+  concurrency: number,
+) {
+  const ids = readFileSync(idsFile, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
   const writer = gzWriter(join(outDir, `selections-${transportId}.jsonl.gz`));
   let ok = 0;
   let missing = 0;
@@ -108,21 +126,22 @@ async function exportSelections(transportId: string, idsFile: string, outDir: st
         });
         if (!selection) {
           missing += 1;
-          writer.write({ messageId, missing: true });
+          await writer.write({ messageId, missing: true });
           continue;
         }
-        writer.write({
+        await writer.write({
           ...selection,
           attachments: selection.attachments.map(({ pdf, image, ...rest }) => ({
             ...rest,
             hadPdfBytes: Boolean(pdf),
-            hadImage: Boolean(image),
+            hadImageBytes: Boolean(image),
+            isImage: /^image\/(png|jpeg)$/i.test(rest.mimeType ?? ''),
           })),
         });
         ok += 1;
       } catch (error) {
         failed += 1;
-        writer.write({ messageId, error: error instanceof Error ? error.name : 'unknown' });
+        await writer.write({ messageId, error: error instanceof Error ? error.name : 'unknown' });
       }
     }
   };
@@ -153,7 +172,11 @@ async function main() {
     await exportThreads(transportId, values.since, values.until, outDir);
   } else if (mode === 'selections') {
     if (!values['message-ids-file']) throw new Error('--message-ids-file is required');
-    await exportSelections(transportId, values['message-ids-file'], outDir, Number(values.concurrency ?? '4'));
+    const concurrency = Number(values.concurrency ?? '4');
+    if (!Number.isSafeInteger(concurrency) || concurrency <= 0) {
+      throw new Error('--concurrency must be a positive safe integer');
+    }
+    await exportSelections(transportId, values['message-ids-file'], outDir, concurrency);
   } else {
     throw new Error('mode must be threads or selections');
   }
@@ -162,7 +185,9 @@ async function main() {
 main()
   .then(() => closeDb())
   .catch(async (error) => {
-    console.error(error instanceof Error ? `${error.name}: ${error.message.slice(0, 300)}` : 'export failed');
+    console.error(
+      error instanceof Error ? `${error.name}: ${error.message.slice(0, 300)}` : 'export failed',
+    );
     await closeDb();
     process.exit(1);
   });
