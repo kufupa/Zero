@@ -907,7 +907,7 @@ export function PartyPicker({
                 }}
               >
                 {!fieldPreset ? (
-                  <option value="" disabled>
+                  <option value="">
                     {`Choose ${label.toLowerCase()} (${fieldRows.length} found)`}
                   </option>
                 ) : null}

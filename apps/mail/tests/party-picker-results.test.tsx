@@ -584,9 +584,10 @@ describe('PartyPicker prefetched party jobs', () => {
     expect(agencyOptions.map((option) => option.textContent).join(' ')).not.toMatch(/#A-[1-5]/);
     expect(agencyOptions.find((option) => option.value === 'agency:A-4')?.title).toBe('A-4');
 
-    const company = (await screen.findByRole('combobox', { name: 'Company from HMS' })) as unknown as HTMLSelectElement;
-    expect(Array.from(company.options).map((option) => option.textContent).join(' ')).toContain('Nexus Group');
-    expect(Array.from(company.options).map((option) => option.textContent).join(' ')).not.toContain('Nexus Travel East');
+    // The company field never shows the agency's rows, pick or reason; it falls back to its own search.
+    const companyGroup = screen.getByRole('group', { name: 'Company lookup in HMS' });
+    expect(within(companyGroup).queryByText(/Nexus Travel/)).toBeNull();
+    expect(within(companyGroup).getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy();
     expect(screen.queryByText('Private matcher rationale must not be shown.')).toBeNull();
 
     onAgencyPick.mockClear();
