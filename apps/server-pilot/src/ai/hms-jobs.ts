@@ -2190,6 +2190,7 @@ export function scheduleQuotePreparationAfterPartyMatch(
 
 type PartyMatchV2JobResult = PanePartyFindResult & {
   matchVersion: 2;
+  matcher?: 'v3';
   matchStatus: 'bound' | 'needs_pick';
   boundParty: PartyMatchRow | null;
   suggestions: PartyMatchRow[];
@@ -2335,6 +2336,36 @@ async function executePartyMatchV2(input: {
   };
   const candidates = buildPartyMatchCandidates(emailInput);
   const context: PartyMatchEmailContext = partyMatchEmailContext(emailInput);
+  const { partyMatchV3Enabled, runPartyMatchV3 } = await import('./party-match-v3.js');
+  if (partyMatchV3Enabled(process.env)) {
+    let adapter: ReturnType<typeof resolveAdapter>['adapter'] = null;
+    try {
+      const route = resolveAdapter(quoteWorkflowLlmEnabled(process.env), null);
+      if (route.enabled) adapter = route.adapter;
+    } catch {
+      // Invalid/unavailable route settings are a closed-model case; exact-name fallback remains safe.
+    }
+    return runPartyMatchV3({
+      adapter,
+      candidates,
+      context,
+      emailText: `${source.subject ?? ''}\n${source.textBody ?? ''}`,
+      findParty: async (searches) => {
+        if (!searches.length) return [];
+        return findPartyJob(
+          searches.map((search) => ({ name: search.term, kind: search.kind })),
+          {
+            acquisition: input.acquisition,
+            resultCap: PARTY_MATCH_V2_ROW_CAP,
+            origin: mailboxOrigin,
+            target: davinciTarget,
+          },
+        );
+      },
+      signal: input.signal,
+      deadlineAt: input.deadlineAt,
+    });
+  }
   const plan = planPartySearches(candidates).slice(0, PARTY_MATCH_V2_SEARCH_CAP);
   const searchesTried: PartyMatchV2JobResult['searchesTried'] = [];
   const rowsById = new Map<string, PartyMatchRow>();
