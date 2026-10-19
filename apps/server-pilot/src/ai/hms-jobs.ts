@@ -1786,8 +1786,6 @@ export async function prefetchPartyForExtraction(
       extractionStatus: mailExtraction.status,
       kind: mailExtraction.kind,
       payload: mailExtraction.payload,
-      messageId: message.id,
-      transportId: message.transportId,
       subject: message.subject,
       textBody: message.textBody,
       htmlBody: message.htmlBody,
@@ -1822,7 +1820,6 @@ export async function prefetchPartyForExtraction(
     source.threadHistoryOnly ||
     source.historyOnly ||
     source.direction !== 'inbound' ||
-    objectRecord(source.payload).origin === 'system_notice' ||
     objectRecord(source.payload).action === 'no_action'
   ) {
     return 0;
@@ -1832,12 +1829,7 @@ export async function prefetchPartyForExtraction(
     subject: source.subject,
     bodyText: source.textBody ?? source.htmlBody,
   });
-  if (
-    sourceClassification.kind !== 'direct' ||
-    (await threadIsAutomatedChannel(db, { ...source, kind: source.kind ?? '' }))
-  ) {
-    return 0;
-  }
+  if (sourceClassification.kind !== 'direct') return 0;
   const from = normalizeEmailAddress(source.fromAddress);
   const mailbox = normalizeEmailAddress(source.mailboxEmail);
   if (from === mailbox) return 0;
