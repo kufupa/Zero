@@ -8,6 +8,7 @@ const jobMocks = vi.hoisted(() => ({
   markSucceeded: vi.fn(),
   markRetry: vi.fn(),
   markDeadLetter: vi.fn(),
+  staffQuoteInFlight: vi.fn(),
 }));
 
 vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => {
@@ -35,6 +36,11 @@ vi.mock('../src/ai/run-ledger.js', async (importOriginal) => ({
 vi.mock('../src/hms/mailbox-hms-origin-bind.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/hms/mailbox-hms-origin-bind.js')>()),
   guardCenturionHmsMailboxOrigin: async () => ({ ok: true }),
+}));
+
+vi.mock('../src/hms/property-queue-state.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/hms/property-queue-state.js')>()),
+  staffQuoteInFlight: jobMocks.staffQuoteInFlight,
 }));
 
 import { executeHmsJob, HMS_JOB_PRIORITY_PREFETCH } from '../src/ai/hms-jobs.js';
@@ -97,6 +103,7 @@ beforeEach(() => {
   jobMocks.markSucceeded.mockReset().mockResolvedValue({ id: 'job-1' });
   jobMocks.markRetry.mockReset().mockResolvedValue({ id: 'job-1' });
   jobMocks.markDeadLetter.mockReset().mockResolvedValue({ id: 'job-1' });
+  jobMocks.staffQuoteInFlight.mockReset().mockResolvedValue(false);
 });
 
 afterEach(() => {
