@@ -45,7 +45,7 @@ export type PaneStayFields = {
   organization: string | null;
 };
 
-export type PaneStayPartyIdentity = { name?: string; nativeId?: string };
+export type PaneStayPartyIdentity = { name?: string; nativeId?: string; iata?: string };
 
 /** Optional commercial facts read from the same opened Guest Stay record. */
 export type PaneStayCommercial = {
@@ -259,8 +259,13 @@ function toPaneStayCommercial(raw: unknown): PaneStayCommercial | undefined {
     const candidate = value as Record<string, unknown>;
     const name = text(candidate.name);
     const nativeId = text(candidate.nativeId);
-    if (!name && !nativeId) return undefined;
-    return { ...(name ? { name } : {}), ...(nativeId ? { nativeId } : {}) };
+    const iata = text(candidate.iata);
+    if (!name && !nativeId && !iata) return undefined;
+    return {
+      ...(name ? { name } : {}),
+      ...(nativeId ? { nativeId } : {}),
+      ...(iata ? { iata } : {}),
+    };
   };
   const commercial: PaneStayCommercial = {};
   const company = party(source.company);
