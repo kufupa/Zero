@@ -88,6 +88,11 @@ vi.mock('../src/ai/run-ledger.js', async (importOriginal) => ({
   markAiRunDeadLetter: jobMocks.markDeadLetter,
 }));
 
+vi.mock('../src/hms/mailbox-hms-origin-bind.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/hms/mailbox-hms-origin-bind.js')>()),
+  guardCenturionHmsMailboxOrigin: async () => ({ ok: true }),
+}));
+
 import { executeHmsJob, hmsJobRequestSchema, HMS_JOB_PRIORITY_USER } from '../src/ai/hms-jobs.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import { HMS_JOB_PROMPT_VERSION } from '../src/ai/run-ledger.js';
