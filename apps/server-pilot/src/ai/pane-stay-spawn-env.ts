@@ -5,9 +5,9 @@ import {
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 
 /**
- * The only variables a pane HMS CLI inherits: process basics, CDP endpoint and ownership, credential source, and the
- * shared save gate used by amend-stay.mjs. Everything else is dropped, so one-off lab flags or database URLs do not
- * reach a live HMS run.
+ * The only variables a pane HMS CLI inherits: process basics, CDP endpoint and ownership, credential source, the
+ * slot storageState path used to skip a repeat login, and the shared save gate used by amend-stay.mjs. Everything
+ * else is dropped, so one-off lab flags or database URLs do not reach a live HMS run.
  */
 export const PANE_CLI_ENV_ALLOWLIST = [
   'PATH',
@@ -23,6 +23,8 @@ export const PANE_CLI_ENV_ALLOWLIST = [
   'HMS_QUOTE_SECRET_PATH',
   'HMS_STAGEHAND_CDP_URL',
   'HMS_STAGEHAND_BROWSER_OWNERSHIP',
+  'HMS_SLOT_PROFILE_DIR',
+  'HMS_SLOT_STORAGE_STATE',
 ] as const;
 
 function davinciPaneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget): NodeJS.ProcessEnv {
@@ -32,7 +34,9 @@ function davinciPaneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget):
       name === 'HMS_STAGEHAND_CDP_URL' ||
       name === 'HMS_QUOTE_SECRET_PATH' ||
       name === 'HMS_READ_SECRET_ARN' ||
-      name === 'RESERVATIONIST_PANE_SAVE'
+      name === 'RESERVATIONIST_PANE_SAVE' ||
+      name === 'HMS_SLOT_PROFILE_DIR' ||
+      name === 'HMS_SLOT_STORAGE_STATE'
     ) {
       continue;
     }

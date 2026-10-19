@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkCdpEnv } from './cancel-stay-rules.mjs';
 import { openGuestStay, shot } from './cancel-stay.mjs';
-import { login, playwright, readSecret, displayDate } from './fetch-quote.mjs';
+import { login, newBorrowedContext, playwright, readSecret, displayDate } from './fetch-quote.mjs';
 import { findOnOpenGuestStay } from './stay-lookup.mjs';
 import { readSaveSnapshot, SAVE_POLL_MS, SAVE_WAIT_MS } from './save-wait.mjs';
 import {
@@ -161,7 +161,7 @@ async function run(ctx, request) {
     if (!cdp.ok) throw new Error(cdp.error);
     const secret = await readSecret();
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
-    context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
+    context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
     ctx.page = await context.newPage();
     ctx.page.setDefaultTimeout(20000);
     await login(ctx.page, secret);

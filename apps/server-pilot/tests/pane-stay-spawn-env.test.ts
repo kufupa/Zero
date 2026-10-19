@@ -80,6 +80,21 @@ describe('paneStaySpawnEnv', () => {
     expect(PANE_CLI_ENV_ALLOWLIST.filter((name) => /CANCEL|CONFIRM|WRITE|LAB|DATABASE/.test(name))).toEqual([]);
   });
 
+  it('forwards the slot storageState path so pane CLIs can skip a repeat login', () => {
+    expect(PANE_CLI_ENV_ALLOWLIST).toContain('HMS_SLOT_PROFILE_DIR');
+    expect(PANE_CLI_ENV_ALLOWLIST).toContain('HMS_SLOT_STORAGE_STATE');
+    const env = paneStaySpawnEnv(
+      {
+        PATH: '/usr/bin',
+        HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
+        HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
+        HMS_SLOT_PROFILE_DIR: '/var/lib/nava/hms-slot/hrcen/profile',
+      },
+      () => configuration,
+    );
+    expect(env.HMS_SLOT_PROFILE_DIR).toBe('/var/lib/nava/hms-slot/hrcen/profile');
+  });
+
   it('leaves the environment alone when no installation is configured', () => {
     const env = paneStaySpawnEnv({ PATH: '/usr/bin' }, () => {
       throw new Error('staff_quote_installation_unavailable');
@@ -112,6 +127,21 @@ describe('paneStaySpawnEnv', () => {
     );
     expect(env.HMS_STAGEHAND_CDP_URL).toBeUndefined();
     expect(env.HMS_READ_SECRET_ARN).toBe('nava-zero/server-pilot/infor-hms-read-davinci');
+  });
+
+  it('Da Vinci never inherits the Centurion slot storageState path', () => {
+    const env = paneStaySpawnEnv(
+      {
+        PATH: '/usr/bin',
+        HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
+        HMS_SLOT_PROFILE_DIR: '/var/lib/nava/hms-slot/hrcen/profile',
+        HMS_SLOT_STORAGE_STATE: '/var/lib/nava/hms-slot/hrcen/storageState.json',
+      },
+      () => configuration,
+      DAVINCI_HMS_READ_TARGET,
+    );
+    expect(env.HMS_SLOT_PROFILE_DIR).toBeUndefined();
+    expect(env.HMS_SLOT_STORAGE_STATE).toBeUndefined();
   });
 });
 

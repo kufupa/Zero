@@ -6,7 +6,7 @@ import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { displayDate, login, playwright, readSecret } from './fetch-quote.mjs';
+import { displayDate, login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { loadCreateRequest, loadCreateToolSchema, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, refuseRateRowClick, shopResult, stayActions } from './create-request.mjs';
 import { readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
@@ -174,7 +174,7 @@ async function observeBlankForm(page, dir) {
 }
 
 async function withReadOnlyGuestStay(browser, secret, dir, args, read) {
-  const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
+  const context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
   try {
     await installReadOnlyGuard(context);
     const page = await context.newPage();
@@ -288,7 +288,7 @@ async function main() {
   const secret = await readSecret();
   if (proofMode && secret.expectedPropertyCode !== 'HRCEN') throw new Error('PROOF_PROPERTY_HRCEN_REQUIRED');
   const browser = await playwright().chromium.connectOverCDP(url.href, { timeout: 20000 });
-  const context = await browser.newContext({
+  const context = await newBorrowedContext(browser, {
     ignoreHTTPSErrors: true,
     viewport: { width: 1600, height: 1000 },
   });

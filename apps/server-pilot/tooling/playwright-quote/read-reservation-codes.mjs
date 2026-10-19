@@ -5,7 +5,7 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, playwright, readSecret } from './fetch-quote.mjs';
+import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 
 const FIELD_NAMES = [
   'confirmationnumber',
@@ -315,7 +315,7 @@ async function main() {
   if (process.env.HMS_STAGEHAND_BROWSER_OWNERSHIP !== 'borrowed') throw new Error('BORROWED_REQUIRED');
   const secret = await readSecret();
   const browser = await playwright().chromium.connectOverCDP(url.href, { timeout: CONNECT_MS });
-  const context = await browser.newContext({
+  const context = await newBorrowedContext(browser, {
     ignoreHTTPSErrors: true,
     acceptDownloads: false,
     serviceWorkers: 'block',

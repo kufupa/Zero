@@ -19,7 +19,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, playwright, readSecret } from './fetch-quote.mjs';
+import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import {
   arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, formPairsFromSnapshot, hmsDateToIso, identityCheck,
   isCancelledStatus, normalizeReasons, outcomeAfterFailure, parseBalanceValue, parseCancelArgs, parseDateWindowLabel,
@@ -709,7 +709,7 @@ async function drive(ctx) {
     if (!cdp.ok) throw new Error(cdp.error);
     ctx.secret = await readSecret();
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
-    context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
+    context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
     ctx.page = await context.newPage();
     ctx.page.setDefaultTimeout(20000);
     await run(ctx);
