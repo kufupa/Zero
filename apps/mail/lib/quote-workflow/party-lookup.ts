@@ -1,7 +1,10 @@
 import type { StaffQuoteParty } from './types';
 
 /** One HMS company or agency that the Find in HMS search found. The nativeId is HMS's own id. */
-export type PartyCandidate = StaffQuoteParty;
+export type PartyCandidate = StaffQuoteParty & {
+  iata?: string;
+  city?: string;
+};
 
 /** panePartyLookup.findParty's reply. Refusals and failures carry no results. */
 export type PartyFindReply = {

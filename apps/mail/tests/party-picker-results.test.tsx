@@ -13,6 +13,7 @@ import type { HmsJobTransport, HmsJobView } from '../lib/quote-workflow/amend-fi
 import {
   PARTY_TRUNCATED_NOTE,
   partyNoCandidateNote,
+  type PartyCandidate,
   type PartyFindReply,
 } from '../lib/quote-workflow/party-lookup';
 
@@ -90,8 +91,18 @@ function manualPartyView(sourceMessageId?: string): HmsJobView {
 }
 
 
-function listed(...results: Array<typeof ABC_TRAVEL>): PartyFindReply {
+function listed(...results: PartyCandidate[]): PartyFindReply {
   return { outcome: 'ambiguous', results, truncated: false };
+}
+
+function tourvestCopies(): PartyCandidate[] {
+  return Array.from({ length: 13 }, (_, index): PartyCandidate => ({
+    kind: 'agency',
+    nativeId: String(280 + index),
+    name: 'Tourvest Travel Services',
+    iata: String(77206673 + index),
+    city: index === 0 ? 'Pretoria' : 'Cape Town',
+  }));
 }
 
 /** A reply the test settles by hand, so the order of replies is the test's choice. */
@@ -799,5 +810,121 @@ describe('PartyPicker results follow the name typed now', () => {
     });
     expect(screen.getByRole('button', { name: 'ABCD Travel' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'ABC Travel' })).toBeNull();
+  });
+});
+
+describe('PartyPicker duplicate-name choices', () => {
+  it('shows all 13 V2 suggestions for one name with IATA and city', async () => {
+    const copies = tourvestCopies();
+    const view: HmsJobView = {
+      ...v2PartyView('needs_pick', 'Tourvest Travel Services'),
+      request: {
+        kind: 'party',
+        name: 'Tourvest Travel Services',
+        partyKind: 'agency',
+        matchVersion: 2,
+      },
+      result: {
+        kind: 'party',
+        outcome: 'ambiguous',
+        results: copies,
+        best: null,
+        truncated: false,
+        searchedFor: 'Tourvest Travel Services',
+        matchVersion: 2,
+        matchStatus: 'needs_pick',
+        boundParty: null,
+        suggestions: copies,
+        reason: 'Several agencies share this name.',
+      },
+    };
+    const onPick = vi.fn();
+    const jobTransport: HmsJobTransport = {
+      queue: vi.fn(),
+      status: vi.fn(async () => view),
+    };
+    render(
+      <PartyPicker
+        name="Tourvest Travel Services"
+        kind="agency"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-tourvest"
+        onPick={onPick}
+        onClear={vi.fn()}
+      />,
+    );
+
+    const choices = await screen.findByLabelText('Party match needs a pick');
+    expect(within(choices).getAllByRole('button')).toHaveLength(13);
+    const firstCopy = within(choices).getByRole('button', {
+      name: 'Tourvest Travel Services · IATA 77206673 · Pretoria (#280)',
+    });
+    expect(
+      within(choices).getByRole('button', {
+        name: 'Tourvest Travel Services · IATA 77206685 · Cape Town (#292)',
+      }),
+    ).toBeTruthy();
+    fireEvent.click(firstCopy);
+    expect(onPick).toHaveBeenCalledWith({
+      kind: 'agency',
+      nativeId: '280',
+      name: 'Tourvest Travel Services',
+    });
+  });
+
+  it('shows every same-name choice across the five-chip prefetched limit', async () => {
+    const copies = tourvestCopies();
+    const view: HmsJobView = {
+      ...prefetchedPartyView(),
+      request: { kind: 'party', name: 'Tourvest Travel Services', partyKind: 'agency' },
+      result: {
+        kind: 'party',
+        outcome: 'ambiguous',
+        results: copies,
+        best: copies[0],
+        truncated: false,
+        searchedFor: 'Tourvest Travel Services',
+      },
+    };
+    const jobTransport: HmsJobTransport = {
+      queue: vi.fn(),
+      status: vi.fn(async () => view),
+    };
+    render(
+      <PartyPicker
+        name="Tourvest Travel Services"
+        kind="agency"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-tourvest"
+        onPick={vi.fn()}
+        onClear={vi.fn()}
+      />,
+    );
+
+    const choices = await screen.findAllByRole('button', {
+      name: /^(?:Confirm )?Tourvest Travel Services · IATA /,
+    });
+    expect(choices).toHaveLength(13);
+  });
+
+  it('keeps unique-name choices unchanged even when rows carry IATA and city', async () => {
+    const rows: PartyCandidate[] = [
+      { ...ABC_TRAVEL, iata: '4411', city: 'Pretoria' },
+      { ...ABCD_TRAVEL, iata: '4412', city: 'Cape Town' },
+    ];
+    render(picker('Travel', vi.fn(async () => listed(...rows))));
+    fireEvent.click(findButton());
+
+    const choices = await screen.findByRole('list', {
+      name: 'Companies and agencies found in HMS',
+    });
+    expect(within(choices).getAllByRole('button').map((button) => button.textContent)).toEqual([
+      'ABC Travel',
+      'ABCD Travel',
+    ]);
   });
 });

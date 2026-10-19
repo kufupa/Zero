@@ -151,6 +151,44 @@ function uniqueCandidates(candidates: PartyCandidate[]): PartyCandidate[] {
   });
 }
 
+function candidateNameKey(name: string): string {
+  return name.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en');
+}
+
+function duplicateCandidateNames(rows: readonly PartyCandidate[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const key = candidateNameKey(row.name);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return new Set([...counts].filter(([, count]) => count > 1).map(([key]) => key));
+}
+
+function candidatesWithinLimit(
+  rows: readonly PartyCandidate[],
+  allRows: readonly PartyCandidate[],
+  limit: number,
+): PartyCandidate[] {
+  const duplicates = duplicateCandidateNames(allRows);
+  return rows.filter((row, index) => index < limit || duplicates.has(candidateNameKey(row.name)));
+}
+
+function candidateChoiceLabel(
+  row: PartyCandidate,
+  duplicateNames: ReadonlySet<string>,
+  includeNativeId = false,
+): string {
+  if (!duplicateNames.has(candidateNameKey(row.name))) {
+    return includeNativeId ? `${row.name} (#${row.nativeId})` : row.name;
+  }
+  const iata = typeof row.iata === 'string' ? row.iata.trim() : '';
+  const city = typeof row.city === 'string' ? row.city.trim() : '';
+  const details = [iata ? `IATA ${iata}` : null, city || null, `(#${row.nativeId})`].filter(
+    (detail): detail is string => detail !== null,
+  );
+  return `${row.name} · ${details.join(' · ')}`;
+}
+
 function findWithMail(
   find: PartyFinder,
   query: string,
@@ -257,24 +295,30 @@ function noCandidateNote(
 function ResultChips({
   label,
   rows,
+  allRows = rows,
+  limit = CHIP_LIMIT,
   onPick,
 }: {
   label: string;
   rows: readonly PartyCandidate[];
+  allRows?: readonly PartyCandidate[];
+  limit?: number;
   onPick: (row: PartyCandidate) => void;
 }) {
+  const duplicateNames = duplicateCandidateNames(allRows);
+  const visibleRows = candidatesWithinLimit(rows, allRows, limit);
   return (
     <div className="flex flex-col gap-1">
       <p className="text-[10.5px] font-semibold text-[#334155]">{label}</p>
       <div className="flex flex-wrap gap-2">
-        {rows.slice(0, CHIP_LIMIT).map((row) => (
+        {visibleRows.map((row) => (
           <button
             key={`${row.kind}:${row.nativeId}`}
             type="button"
             className="rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
             onClick={() => onPick(row)}
           >
-            {`${row.name} (#${row.nativeId})`}
+            {candidateChoiceLabel(row, duplicateNames, true)}
           </button>
         ))}
       </div>
@@ -491,6 +535,8 @@ export function PartyPicker({
   // Results count only for the name typed now. A name change has already cleared them; this covers the render before
   // the effect runs.
   const shown: PickerState = state.status !== 'idle' && state.query === query ? state : IDLE;
+  const shownDuplicateNames =
+    shown.status === 'listed' ? duplicateCandidateNames(shown.results) : new Set<string>();
   const indexReply: PartyIndexReply | null =
     index.status === 'ready' && index.query === query ? index.reply : null;
   // The list's own matches need the list file.
@@ -499,6 +545,7 @@ export function PartyPicker({
   // With a kind, only that kind is in scope. Without one, every kind is.
   const inScope = (party: { kind: StaffQuoteParty['kind'] }) => !kind || party.kind === kind;
   const indexResults = (indexMatches?.results ?? []).filter(inScope);
+  const indexDuplicateNames = duplicateCandidateNames(indexResults);
   const v2PartyJob = Boolean(
     currentJobView?.prefetch && currentJobView.status === 'done' && partyJobIsV2(currentJobView),
   );
@@ -507,9 +554,9 @@ export function PartyPicker({
     ? v2Result.matchStatus
     : null;
   const v2BoundParty = isPartyCandidate(v2Result?.boundParty) ? v2Result.boundParty : null;
-  const v2Suggestions = uniqueCandidates(partyCandidatesFrom(v2Result?.suggestions) ?? [])
-    .filter(inScope)
-    .slice(0, 3);
+  const v2Suggestions = uniqueCandidates(partyCandidatesFrom(v2Result?.suggestions) ?? []).filter(
+    inScope,
+  );
   const v2Reason = typeof v2Result?.reason === 'string' ? v2Result.reason : '';
   const v2BoundForField =
     !pickedHere && v2MatchStatus === 'bound' && v2BoundParty && inScope(v2BoundParty)
@@ -557,6 +604,8 @@ export function PartyPicker({
       !picked.some((party) => party.kind === row.kind && party.nativeId === row.nativeId),
   );
   const jobResults = uniqueCandidates(jobReply?.results.filter(inScope) ?? []);
+  const autoDuplicateNames = duplicateCandidateNames(autoRows);
+  const jobDuplicateNames = duplicateCandidateNames(jobResults);
   const autoBest =
     !pickedHere && autoReply?.best && inScope(autoReply.best) ? autoReply.best : null;
   const autoOtherRows = autoRows.filter(
@@ -635,13 +684,18 @@ export function PartyPicker({
                 <button
                   type="button"
                   className="w-fit rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
-                  aria-label={`Confirm ${autoBest.name}`}
+                  aria-label={`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
                   onClick={() => pickRow(autoBest)}
                 >
-                  {`Confirm ${autoBest.name}`}
+                  {`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
                 </button>
                 {autoOtherRows.length ? (
-                  <ResultChips label="Other matches in HMS:" rows={autoOtherRows} onPick={pickRow} />
+                  <ResultChips
+                    label="Other matches in HMS:"
+                    rows={autoOtherRows}
+                    allRows={autoRows}
+                    onPick={pickRow}
+                  />
                 ) : null}
               </div>
             ) : autoRows.length ? (
@@ -681,7 +735,7 @@ export function PartyPicker({
       {v2NeedsPick ? (
         <div className="flex flex-col gap-1" aria-label="Party match needs a pick">
           {v2Suggestions.length ? (
-            <ResultChips label="Pick the company/agency" rows={v2Suggestions} onPick={pickRow} />
+            <ResultChips label="Pick the company/agency" rows={v2Suggestions} limit={3} onPick={pickRow} />
           ) : (
             <p className="text-[10.5px] font-semibold text-[#334155]">Pick the company/agency</p>
           )}
@@ -707,10 +761,10 @@ export function PartyPicker({
           <button
             type="button"
             className="w-fit rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
-            aria-label={`Confirm ${prefetchedBest.name}`}
+            aria-label={`Confirm ${candidateChoiceLabel(prefetchedBest, jobDuplicateNames)}`}
             onClick={() => pickRow(prefetchedBest)}
           >
-            {`Confirm ${prefetchedBest.name}`}
+            {`Confirm ${candidateChoiceLabel(prefetchedBest, jobDuplicateNames)}`}
           </button>
           <HmsAsOf asOf={currentJobView?.asOf ?? null} />
         </div>
@@ -738,7 +792,7 @@ export function PartyPicker({
                     setIndex(IDLE_INDEX);
                   }}
                 >
-                  {candidate.name}
+                  {candidateChoiceLabel(candidate, indexDuplicateNames)}
                 </button>
                 <span className="text-[10.5px] text-[#64748b]">
                   {partyKindLabel(candidate.kind)}
@@ -779,7 +833,7 @@ export function PartyPicker({
                   className="text-left text-[11.5px] font-semibold text-[#0066cc] underline"
                   onClick={() => pickRow(candidate)}
                 >
-                  {candidate.name}
+                  {candidateChoiceLabel(candidate, jobDuplicateNames)}
                 </button>
                 <span className="text-[10.5px] text-[#64748b]">
                   {partyKindLabel(candidate.kind)}
@@ -792,7 +846,12 @@ export function PartyPicker({
         </>
       ) : null}
       {prefetchedBest && otherJobResults.length ? (
-        <ResultChips label="Other matches in HMS:" rows={otherJobResults} onPick={pickRow} />
+        <ResultChips
+          label="Other matches in HMS:"
+          rows={otherJobResults}
+          allRows={jobResults}
+          onPick={pickRow}
+        />
       ) : null}
       {shown.status === 'listed' ? (
         <>
@@ -814,7 +873,7 @@ export function PartyPicker({
                     setState(IDLE);
                   }}
                 >
-                  {candidate.name}
+                  {candidateChoiceLabel(candidate, shownDuplicateNames)}
                 </button>
                 <span className="text-[10.5px] text-[#64748b]">
                   {partyKindLabel(candidate.kind)}
