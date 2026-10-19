@@ -133,6 +133,7 @@ export function confidentPartyFromV2Result(input: {
   subject?: string | null;
   body?: string | null;
   quoteLlmParty?: unknown;
+  allowLearnedSenderHistory?: boolean;
   result: unknown;
 }): StaffQuoteParties | undefined {
   const result = record(input.result);
@@ -182,6 +183,7 @@ export function confidentPartyFromV2Result(input: {
     subject: input.subject,
     body: input.body,
     quoteLlmParty: input.quoteLlmParty,
+    allowLearnedSenderHistory: input.allowLearnedSenderHistory,
   });
   const decision = applyPartyBindRule({
     candidates,

@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildPreparedStaffQuotePlan,
   confidentPartyFromV2Result,
   quotePrepareKindReason,
   staffQuoteInputsPriceEquivalent,
 } from '../src/ai/quote-ready.js';
+import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
 
 const messageId = 'quote-message-1';
 const sourceHash = 'a'.repeat(64);
@@ -416,6 +417,44 @@ describe('confident party bind for prepared quotes', () => {
     });
 
     expect(parties).toEqual({ agency: matchedRow });
+  });
+
+  it('revalidates learned sender history only when the caller allows it', () => {
+    vi.stubEnv('PARTY_HISTORY_BIND', 'on');
+    replaceLearnedSenderMapForTests([
+      {
+        host: 'acme.example.test',
+        kind: 'agency',
+        name: 'Historical Agency',
+        nativeId: 'agency-22',
+        support: 2,
+      },
+    ]);
+    const input = {
+      payload: { ...payload(), agency: null },
+      fromAddress: 'agent@acme.example.test',
+      subject: 'Quote request',
+      body: 'Please quote our guest.',
+      result: {
+        matchVersion: 2,
+        matchStatus: 'bound',
+        boundParty: { kind: 'agency', nativeId: 'agency-22', name: 'Historical Agency' },
+        results: [{ kind: 'agency', nativeId: 'agency-22', name: 'Historical Agency' }],
+        confidence: 'high',
+        pickSource: 'fallback',
+        truncated: false,
+      },
+    };
+
+    try {
+      expect(confidentPartyFromV2Result(input)).toBeUndefined();
+      expect(confidentPartyFromV2Result({ ...input, allowLearnedSenderHistory: true })).toEqual({
+        agency: { kind: 'agency', nativeId: 'agency-22', name: 'Historical Agency' },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      replaceLearnedSenderMapForTests(null);
+    }
   });
 
   it.each([

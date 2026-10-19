@@ -29,7 +29,11 @@ import {
   queueUserHmsJob,
   readHmsJobView,
   requeueHmsReadsAfterRestart,
+  isCenturionPartyHistoryTarget,
+  senderHostForPartyHistory,
+  staffQuoteCanTeachSenderHistory,
 } from '../src/ai/hms-jobs.js';
+import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { paneStayLookupLoaders, type PaneStayLookupSpawnResult } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import {
@@ -41,6 +45,7 @@ import {
   message,
   mailThread,
 } from '../src/db/schema/mail.js';
+import { partySenderMap } from '../src/db/schema/party-sender-map.js';
 import { hitlToolRun } from '../src/db/schema/hitl.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { runHmsJobOnce } from '../src/ai/worker.js';
@@ -474,6 +479,115 @@ describe('U23 HMS job queue (pure)', () => {
     expect(
       canClaimReadToolRun({ runKind: 'read_tool', lane: 'default', readServiceEnabled: true, promptVersion: HMS_JOB_PROMPT_VERSION }),
     ).toBe(false);
+  });
+});
+
+describe('party sender history policy', () => {
+  const triggerMail = {
+    direction: 'inbound' as const,
+    fromAddress: 'agent@trigger.example.test',
+    subject: 'Quote request',
+    textBody: 'Please send a quote for these dates.',
+    htmlBody: null,
+  };
+
+  it('uses direct external trigger sender, not an earlier sender in its thread', () => {
+    expect(
+      senderHostForPartyHistory({
+        trigger: triggerMail,
+        inbound: [{ ...triggerMail, fromAddress: 'agent@earlier.example.test' }],
+      }),
+    ).toBe('trigger.example.test');
+  });
+
+  it('falls back to earliest direct inbound only when trigger is not inbound', () => {
+    expect(
+      senderHostForPartyHistory({
+        trigger: { ...triggerMail, direction: 'outbound' },
+        inbound: [
+          { ...triggerMail, fromAddress: 'agent@earlier.example.test' },
+          { ...triggerMail, fromAddress: 'agent@later.example.test' },
+        ],
+      }),
+    ).toBe('earlier.example.test');
+  });
+
+  it('does not fall back when inbound trigger is internal or non-direct', () => {
+    expect(
+      senderHostForPartyHistory({
+        trigger: { ...triggerMail, fromAddress: 'staff@legacyhotel.com' },
+        inbound: [triggerMail],
+      }),
+    ).toBeNull();
+  });
+
+  it('allows sender history only for Centurion target', () => {
+    expect(isCenturionPartyHistoryTarget(null, TRANSPORT_ID)).toBe(true);
+    expect(isCenturionPartyHistoryTarget(CENTURION_HMS_READ_TARGET, TRANSPORT_ID)).toBe(true);
+    expect(isCenturionPartyHistoryTarget(DAVINCI_HMS_READ_TARGET, TRANSPORT_ID)).toBe(false);
+    expect(isCenturionPartyHistoryTarget(null, 'transport-davinci')).toBe(false);
+  });
+
+  it('learns from staff-initiated quotes only', () => {
+    expect(staffQuoteCanTeachSenderHistory(true, false)).toBe(true);
+    expect(staffQuoteCanTeachSenderHistory(false, false)).toBe(false);
+    expect(staffQuoteCanTeachSenderHistory(true, true)).toBe(false);
+  });
+
+  type SenderObservation = {
+    kind: 'company' | 'agency';
+    name: string;
+    nativeId: string;
+    iata: string | null;
+  };
+  const selectSenderPartyForHost = (hmsJobs as unknown as {
+    selectSenderPartyForHost?: (host: string, parties: SenderObservation[]) => SenderObservation | null;
+  }).selectSenderPartyForHost;
+  const agency = {
+    kind: 'agency' as const,
+    name: 'XL Nexus',
+    nativeId: 'agency-1',
+    iata: null,
+  };
+  const company = {
+    kind: 'company' as const,
+    name: 'Momentum Metropolitan Holdings',
+    nativeId: 'company-1',
+    iata: null,
+  };
+
+  it.each([
+    { host: 'nexustravel.example', expected: agency },
+    { host: 'momentum.example', expected: company },
+    { host: 'guest.example', expected: null },
+  ])('selects only party matching sender-host tokens: $host', ({ host, expected }) => {
+    expect(selectSenderPartyForHost).toBeTypeOf('function');
+    if (!selectSenderPartyForHost) return;
+    expect(selectSenderPartyForHost(host, [agency, company])).toEqual(expected);
+  });
+
+  it('ignores generic tokens and rejects hosts matching both parties', () => {
+    expect(selectSenderPartyForHost).toBeTypeOf('function');
+    if (!selectSenderPartyForHost) return;
+    expect(selectSenderPartyForHost('guest.example', [agency])).toEqual(agency);
+    expect(
+      selectSenderPartyForHost('travel.example', [
+        { ...agency, name: 'Travel Guides' },
+        { ...company, name: 'Momentum Holdings' },
+      ]),
+    ).toBeNull();
+    expect(
+      selectSenderPartyForHost('travelgroup.example', [
+        { ...agency, name: 'Travel Group' },
+        { ...company, name: 'Group Holdings' },
+      ]),
+    ).toBeNull();
+    expect(
+      selectSenderPartyForHost('sharedtravel.example', [
+        { ...agency, name: 'Shared Travel' },
+        { ...company, name: 'Shared Holdings' },
+      ]),
+    ).toBeNull();
   });
 });
 
@@ -2806,7 +2920,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
         },
       }));
-      const { threadId } = await seedThread(db);
+      const { threadId, messageId } = await seedThread(db);
+      const senderHost = `history-${randomUUID()}.example.test`;
+      await db
+        .update(message)
+        .set({ fromAddress: `guest@${senderHost}` })
+        .where(eq(message.id, messageId));
+      vi.stubEnv('PARTY_HISTORY_BIND', 'on');
       const queued = await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
         db,
@@ -2831,6 +2951,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
         },
       });
+      const [learned] = await db
+        .select()
+        .from(partySenderMap)
+        .where(eq(partySenderMap.host, senderHost));
+      expect(learned).toMatchObject({ kind: 'agency', name: 'Harbor Travel', nativeId: 'AG-9', support: 1 });
       // A restart of that worker while a job runs puts it back to retry_wait for the next claim.
       const again = await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
