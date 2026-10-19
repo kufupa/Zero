@@ -169,7 +169,7 @@ function candidateDetails(row: PartyCandidate): string[] {
   const iata = typeof row.iata === 'string' ? row.iata.trim() : '';
   const city = typeof row.city === 'string' ? row.city.trim() : '';
   const address = typeof row.address === 'string' ? row.address.trim() : '';
-  const country = typeof row.country === 'string' ? row.country.trim() : '';
+  const country = 'country' in row && typeof row.country === 'string' ? row.country.trim() : '';
   return [iata ? `IATA ${iata}` : null, city || null, address || null, country || null].filter(
     (detail): detail is string => detail !== null,
   );
