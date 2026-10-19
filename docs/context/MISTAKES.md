@@ -4,6 +4,8 @@ One entry per lesson: trigger, what happened, rule. Newest first. Add an entry w
 
 | Date | Trigger | What happened | Rule |
 |---|---|---|---|
+| 2026-10-19 | Overnight triage plan said "DSPy each improve round" | The driver swapped in hand rule rounds (faster) and mentioned it only in the report; the owner wanted DSPy | A planned method change is a scope trade: write it in the run log as a decision with the reason the moment it happens, and say it first in the final message |
+| 2026-10-19 | Plan facts quoted "9,637 inbound since 07-27" as the corpus | Owner: Aug–Sep pre-09-09 mail in RDS was thought to lack outbound; the private corpus shows Aug has 1,305 outbound | State the window and its outbound coverage with the source for every eval corpus |
 | 2026-10-19 | Moved the nohup HMS browser to `hms-slot@hrcen` | The unit env lacked `PLAYWRIGHT_BROWSERS_PATH`, Playwright looked in `~/.cache`, the unit crash-looped, HMS reads were down ~2 min | Copy the running process's full env (`/proc/<pid>/environ`) into a new unit's env file, and keep a rollback in the same SSM script |
 | 2026-10-19 | `until ! pgrep -f "rules-v4.txt"` waits | The wait loop matched its own command line and never ended (exit 144 on kill) | Same as 2026-10-15: wait on a PID or an output file, never a `pgrep -f` pattern |
 | 2026-10-15 | Replay scores for the agent and SOPs all evening | The eval fed the email body only; prod adds attachment text (74% of gold inbound have attachments). The owner caught it by asking about PDF inputs, hours in | Eval input = prod input. Build the prompt with prod's exported functions; state input parity in the brief |
