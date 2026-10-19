@@ -5482,6 +5482,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
 
     it('renders quoted allowlisted legacy values without remote forbidden credentials', async () => {
       const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { isInboundTriageClassifierEnabled } = await import('../src/env.js');
       const { spawnSync } = await import('node:child_process');
       const { tmpdir } = await import('node:os');
       const { fileURLToPath } = await import('node:url');
@@ -5501,6 +5502,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
             "AWS_REGION='af-south-1'",
             "S3_BUCKET='nava-test-bucket'",
             "MAIL_TRANSPORT_MODE='real'",
+            "INBOUND_EXTRACTION='on'",
+            "INBOUND_TRIAGE_CLASSIFIER='off'",
             "AI_MODEL_ID='model'\\''s'",
             "BETTER_AUTH_SECRET='legacy-signing-secret'",
             "POP3_PASSWORD='legacy-pop3-password'",
@@ -5521,6 +5524,8 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
             'AWS_REGION',
             'S3_BUCKET',
             'MAIL_TRANSPORT_MODE',
+            'INBOUND_EXTRACTION',
+            'INBOUND_TRIAGE_CLASSIFIER',
             'AI_MODEL_ID',
           ],
           { encoding: 'utf8' },
@@ -5537,10 +5542,18 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
             "AWS_REGION='af-south-1'",
             "S3_BUCKET='nava-test-bucket'",
             "MAIL_TRANSPORT_MODE='real'",
+            "INBOUND_EXTRACTION='on'",
+            "INBOUND_TRIAGE_CLASSIFIER='off'",
             "AI_MODEL_ID='model'\\''s'",
             '',
           ].join('\n'),
         );
+        expect(
+          isInboundTriageClassifierEnabled({
+            INBOUND_EXTRACTION: common.match(/^INBOUND_EXTRACTION='(.*)'$/m)?.[1],
+            INBOUND_TRIAGE_CLASSIFIER: common.match(/^INBOUND_TRIAGE_CLASSIFIER='(.*)'$/m)?.[1],
+          }),
+        ).toBe(false);
         expect(common).not.toContain('BETTER_AUTH_SECRET');
         expect(common).not.toContain('POP3_PASSWORD');
         expect(common).not.toContain('HMS_READ_SECRET_ARN');
@@ -5641,6 +5654,9 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       const keys = allowlist!.trim().split(/\s+/);
       expect(new Set(keys).size).toBe(keys.length);
       expect(keys).toContain('GOTENBERG_URL');
+      expect(keys).toContain('INBOUND_EXTRACTION');
+      expect(keys).toContain('INBOUND_TRIAGE_CLASSIFIER');
+      expect(allowlist).not.toContain('PANE_PRECLASSIFY');
       expect(allowlist).not.toContain('BETTER_AUTH_');
       expect(allowlist).not.toContain('POP3_');
       expect(keys.filter((key) => key.startsWith('HMS_'))).toEqual(['HMS_JOB_QUEUE']);
