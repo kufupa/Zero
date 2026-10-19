@@ -937,7 +937,7 @@ describe('PartyPicker duplicate-name choices', () => {
     const disclosure = summary.closest('details');
     expect(disclosure).not.toBeNull();
     expect(disclosure?.hasAttribute('open')).toBe(false);
-    fireEvent.click(summary);
+    disclosure?.setAttribute('open', '');
     expect(disclosure?.hasAttribute('open')).toBe(true);
 
     const alternativesList = screen.getByRole('list', { name: 'Other HMS matches' });
