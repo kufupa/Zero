@@ -240,3 +240,8 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 112 | Builder recency bar = commit in the past week; Heym too confusing for staff; Sim only if our own key works; Langflow/Dify only if staff can use them via chat | ✅ | R8 + B1 re-scoped | Builder decision |
 | 113 | Wrap up what's needed from the owner before sleep | ✅ | Coordinator reply 2026-10-15 ~00:40Z | — |
 | 114 | Lane TRI: move prod inbound triage from Bedrock Nova Lite to Azure GPT-6 Luna; test factory selection, inspect dead-letter recovery, put exact env/restart/process checks and success/dead-letter proof in the PR; code PR only, no prod changes | ✅ | [PR #297](https://github.com/kufupa/Zero/pull/297); 13/13 targeted adapter tests; no prod/EC2/env writes | After merge, owner-authorized cutover and live proof per PR body; Azure billing-rate parity not verified |
+| 115 | 2026-10-19 overnight: leak-free triage prompt → ship → improve → Da Vinci check (plan `docs/plans/2026-10-19-overnight-triage-dspy.md`) | 🟡 | #367 #368 #369 #370 #371 merged + deployed; v4 test 90.3% / 88.6 macro-F1 | Live quote-class read_tool proof; owner pass on disagreements |
+| 116 | Inline-text rates reply as a quote output (logged, not built) | ⏸ | Plan 2026-10-19 | — |
+| 117 | Party lookup for "do we have a corporate rate" (logged, not built) | ⏸ | Plan 2026-10-19 | — |
+| 118 | Decide: should automated agent/TMC booking notices (origin=system_notice, action≠no_action) reach action folders instead of Not for Nava? | ❓ owner | Report §5.1 | 31/431 test rows affected |
+

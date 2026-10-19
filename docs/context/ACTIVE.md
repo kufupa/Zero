@@ -1,6 +1,14 @@
 # Active context
 
-Updated 2026-10-15 after the Lane TRI handoff. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+Updated 2026-10-19 after the overnight leak-free triage run. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+
+## Overnight triage run — 2026-10-19
+
+- Classifier reads prior thread mail only (#369); action rules rewritten from a frozen eval (#370, #371). Prod at `357315940`, extractor `extract-3ccdd9c9966e` (rules v4). Last-good before: `f37e07b8b` (v2), `b529984b3` (pre-run).
+- Frozen Centurion test (431 rows, silver labels, leak-free prod prompts, Luna max): prod rules 81.0–83.3% acc / 78.5–81.1 macro-F1 → **v4 90.3% / 88.6**. Bar not fully met: quote P/R 88.5/88.5, new_booking P 85.9. Report: [2026-10-19 leak-free triage eval](../research/2026-10-19-leak-free-triage-eval.md).
+- Flags (owner-approved in the executing chat): `INBOUND_TRIAGE_CLASSIFIER=off` and `PANE_PRECLASSIFY` unset on http/worker/ai-worker (remote-http never had either); `/proc` checked. Backup `.env.production.bak-20261019-triage-flip`. Channel mail keeps its triage run by design.
+- HMS browser on 19223 now runs as `hms-slot@hrcen` (systemd, enabled; env `/etc/nava/hms-slot-hrcen.env` incl. `PLAYWRIGHT_BROWSERS_PATH=/opt/nava/ms-playwright`). First attempt without that path crash-looped; HMS reads were down ~2 min (04:15–04:17Z, 0 runs in flight).
+- Next acceptance check: one quote-class inbound on `extract-3ccdd9c9966e` with a succeeded `read_tool` (see run notes in the report if not yet observed). Owner decisions open: system_notice folder routing, 180 silver disagreements, Azure content-filter blocks.
 
 ## Lane TRI handoff — 2026-10-15
 
