@@ -32,7 +32,15 @@ import {
 } from '../src/ai/hms-jobs.js';
 import { paneStayLookupLoaders, type PaneStayLookupSpawnResult } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
-import { aiDraftGeneration, aiWorkflowRun, mailboxTransport, message, mailThread } from '../src/db/schema/mail.js';
+import {
+  aiDraftGeneration,
+  aiWorkflowRun,
+  mailCategory,
+  mailThreadCategory,
+  mailboxTransport,
+  message,
+  mailThread,
+} from '../src/db/schema/mail.js';
 import { hitlToolRun } from '../src/db/schema/hitl.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { runHmsJobOnce } from '../src/ai/worker.js';
@@ -2082,6 +2090,80 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const asOf = Date.parse(view!.asOf!);
       expect(asOf).toBeGreaterThanOrEqual(before - 1000);
       expect(asOf).toBeLessThanOrEqual(Date.now() + 1000);
+    }));
+
+  it('prefetches a party for a system notice from a direct agent sender', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { run } = await seedQuoteExtraction(db, {
+        fromAddress: 'agent@agency.example.test',
+        payload: { ...quoteExtractionPayload(), origin: 'system_notice' },
+      });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+
+      expect(await hmsJobs.prefetchPartyForExtraction(run, db, env)).toBe(1);
+    }));
+
+  it('prefetches a party for a direct agent quote', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { messageId, run } = await seedQuoteExtraction(db, { fromAddress: 'agent@agency.example.test' });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+
+      expect(await hmsJobs.prefetchPartyForExtraction(run, db, env)).toBe(1);
+      const [job] = await db
+        .select({ readRequest: aiWorkflowRun.readRequest })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, messageId),
+            eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+          ),
+        );
+      expect(job?.readRequest).toMatchObject({ kind: 'party', name: 'Acme Lodging Holdings' });
+    }));
+
+  it('skips party prefetch for a known channel sender', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { messageId, run } = await seedQuoteExtraction(db, { channel: true });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+
+      expect(await hmsJobs.prefetchPartyForExtraction(run, db, env)).toBe(0);
+      const jobs = await db
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, messageId),
+            eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+          ),
+        );
+      expect(jobs).toHaveLength(0);
+    }));
+
+  it('prefetches for a direct sender in an automated-channel thread', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, run } = await seedQuoteExtraction(db, { fromAddress: 'agent@agency.example.test' });
+      const [existingCategory] = await db
+        .select({ id: mailCategory.id })
+        .from(mailCategory)
+        .where(and(eq(mailCategory.transportId, TRANSPORT_ID), eq(mailCategory.slug, 'automated-channel')))
+        .limit(1);
+      const categoryId = existingCategory?.id ?? randomUUID();
+      if (!existingCategory) {
+        await db.insert(mailCategory).values({
+          id: categoryId,
+          transportId: TRANSPORT_ID,
+          slug: 'automated-channel',
+          name: 'Automated channel',
+        });
+      }
+      await db.insert(mailThreadCategory).values({ threadId, categoryId, transportId: TRANSPORT_ID });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+
+      expect(await hmsJobs.prefetchPartyForExtraction(run, db, env)).toBe(1);
     }));
 
   it('prefetches from the successful extraction rather than the classifier run or a sent copy', () =>

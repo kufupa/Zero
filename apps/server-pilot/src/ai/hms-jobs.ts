@@ -1788,6 +1788,7 @@ export async function prefetchPartyForExtraction(
       payload: mailExtraction.payload,
       subject: message.subject,
       textBody: message.textBody,
+      htmlBody: message.htmlBody,
       direction: message.direction,
       historyOnly: message.historyOnly,
       fromAddress: message.fromAddress,
@@ -1823,6 +1824,12 @@ export async function prefetchPartyForExtraction(
   ) {
     return 0;
   }
+  const sourceClassification = classifyMailSource({
+    fromAddress: source.fromAddress,
+    subject: source.subject,
+    bodyText: source.textBody ?? source.htmlBody,
+  });
+  if (sourceClassification.kind !== 'direct') return 0;
   const from = normalizeEmailAddress(source.fromAddress);
   const mailbox = normalizeEmailAddress(source.mailboxEmail);
   if (from === mailbox) return 0;
