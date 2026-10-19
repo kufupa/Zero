@@ -225,7 +225,7 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 97  | What does the perfect product need: ROI + ETA | ✅ | Coordinator reply 2026-10-14 ~23:55Z; `WORKSTREAMS.md` | Refresh after answers |
 | 98  | Grill the owner for scope/decisions before sleep; no questions the context already answers | 🟡 | Grill round 2026-10-14 | — |
 | 99  | Merge when threads are resolved + remote type check shows 0 new + tests green, without waiting for Greptile re-review; a post-merge review lane lands fix PRs; small frequent PRs; Greptile Apex only for big PRs (credits) | ✅ | Q9 answer 2026-10-14; PR1 lane on #246/#249 | Apply to every PR |
-| 100 | Da Vinci HMS: tenant `HMS_DAVINCI`, user NAVAAI (same user as Centurion `HMS_LEGACY`); behind the Infor LAN | 🟡 | D1 lane; secret `infor-hms-read` holds Centurion only | Coordinator read-only login probe; property code from the picker |
+| 100 | Da Vinci HMS: tenant `HMS_DAVINCI`, user NAVAAI (same user as Centurion `HMS_LEGACY`); behind the Infor LAN | ✅ | Secret `nava-zero/server-pilot/infor-hms-read-davinci` exists (owner, 2026-10-19: stop re-checking) | First HRDAV read through the slot |
 | 101 | Check whether Da Vinci/Faith mailboxes are M365 (Centurion = older Outlook/Exchange) and plan the mailbox connection | 🟡 | M1 lane | M1 report |
 | 102 | Da Vinci "live" = quotes ASAP; first users = whoever sends the most quotes | 🟡 | — | Quote pipeline first |
 | 103 | Two concurrent NAVAAI logins may have caused past HMS errors; per-property parallel HMS without one-Chrome bottleneck | 🟡 | D1 lane (hypothesis + lock design) | D1 report |
@@ -240,7 +240,7 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 112 | Builder recency bar = commit in the past week; Heym too confusing for staff; Sim only if our own key works; Langflow/Dify only if staff can use them via chat | ✅ | R8 + B1 re-scoped | Builder decision |
 | 113 | Wrap up what's needed from the owner before sleep | ✅ | Coordinator reply 2026-10-15 ~00:40Z | — |
 | 114 | Lane TRI: move prod inbound triage from Bedrock Nova Lite to Azure GPT-6 Luna; test factory selection, inspect dead-letter recovery, put exact env/restart/process checks and success/dead-letter proof in the PR; code PR only, no prod changes | ✅ | [PR #297](https://github.com/kufupa/Zero/pull/297); 13/13 targeted adapter tests; no prod/EC2/env writes | After merge, owner-authorized cutover and live proof per PR body; Azure billing-rate parity not verified |
-| 115 | 2026-10-19 overnight: leak-free triage prompt → ship → improve → Da Vinci check (plan `docs/plans/2026-10-19-overnight-triage-dspy.md`) | 🟡 | #367 #368 #369 #370 #371 merged + deployed; v4 test 90.3% / 88.6 macro-F1 | Live quote-class read_tool proof; owner pass on disagreements |
+| 115 | 2026-10-19 overnight: leak-free triage prompt → ship → improve → Da Vinci check (plan `docs/plans/2026-10-19-overnight-triage-dspy.md`) | 🟡 | #367–#372 merged; v4 live at `357315940`; v5 rejected; final quote-class live proof 2/2 succeeded | Classifier bar still missed (quote P/R 88.5/88.5; new_booking P 85.9); owner pass on 180 disagreements |
 | 116 | Inline-text rates reply as a quote output (logged, not built) | ⏸ | Plan 2026-10-19 | — |
 | 117 | Party lookup for "do we have a corporate rate" (logged, not built) | ⏸ | Plan 2026-10-19 | — |
 | 118 | Decide: should automated agent/TMC booking notices (origin=system_notice, action≠no_action) reach action folders instead of Not for Nava? | ❓ owner | Report §5.1 | 31/431 test rows affected |
