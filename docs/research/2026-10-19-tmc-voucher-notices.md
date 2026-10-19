@@ -33,3 +33,20 @@ Owner, 2026-10-13: agency vouchers are "both proof of payments and booking reque
 - 10/15 vouchers had no reference matched to earlier mail; some could be email-only bookings that staff do key in. A read-only HMS find per voucher would settle it; the pane's existing Find covers that case (no match → staff create).
 - Whether the Rennies supplier confirmation equals the Infor confirmation number was not checked in HMS.
 - Background HMS prefetch skips `system_notice` (`hms-jobs.ts` ~2052). Pre-running Find for vouchers is a separate follow-up.
+
+## 5. Second pass: match by guest surname (counts only)
+
+Surname from the subject, searched in SynXis/Profitroom mail (−10 days to +1 day) and hotel staff mail (−10 to +3 days). Of the 10 vouchers with no matched reference, 6 have the same guest in CRS or staff mail. **4/15 have no trace**: CRC (no name in subject), Rennies Oct 19 12:55, Travelit Oct 19 14:05 and 14:36 (subject names the company, not the guest). Staff mail after the voucher may be staff creating the booking, so the staff column is weaker evidence than the CRS column.
+
+## 6. Da Vinci keyframes (interview 2026-10-14, 04:55–07:03)
+
+`keyframes/crop_0076`, `crop_0079`, `crop_0080`: Ayanda's inbox interleaves **"SynXis Res Confirmed (5943SH…)"** mails (Source of Res **GDS:Sabre**, rate "Goldfields – 2nd Tier Corporate Rate") with **"Rennies BCD Travel Goldfields — Travel voucher for [traveller]"** mails (PDF, body: Customer = Goldfields Group Services, traveller, vendor, dossier no.). Same booking arrives twice: once through SynXis into Infor, once as the agent's voucher email.
+
+Her workflow (transcript 05:06–06:56), every GDS booking:
+1. Check it downloaded into Infor; if not, push it from Profitroom.
+2. Add the **company name** (the download omits it; they use it to track which companies book).
+3. Read the booking notes (e.g. "late arrival" = arrives next day).
+4. Voucher present → attach it to the booking. No voucher and arriving today → email the agent for prepayment.
+Credit cards from agents go to a POPIA shared folder, never onto the booking.
+
+Product implication (future workflow, not built): "GDS booking check" = match voucher ↔ SynXis booking ↔ Infor stay, fill company from the voucher's Customer line, flag no-voucher same-day arrivals.
