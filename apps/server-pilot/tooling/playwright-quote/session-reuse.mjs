@@ -39,6 +39,44 @@ export async function newBorrowedContext(browser, options = {}, env = process.en
   }
 }
 
+export const ATTACH_RETRY_BACKOFF_MS = 750;
+export const ATTACH_CDP_TIMEOUT_MS = 20000;
+const ATTACH_CONTEXT_OPTIONS = {
+  ignoreHTTPSErrors: true,
+  acceptDownloads: false,
+  serviceWorkers: 'block',
+  viewport: { width: 1280, height: 720 },
+};
+
+/** One CDP connect + isolated context. Retries once after a short backoff; closes a half-open session first. */
+export async function attachBorrowedSession({
+  href,
+  env = process.env,
+  timeoutMs = ATTACH_CDP_TIMEOUT_MS,
+  retries = 1,
+  connectOverCDP,
+  newContext = newBorrowedContext,
+  sleep = delay,
+}) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    let browser;
+    try {
+      browser = await connectOverCDP(href, { timeout: timeoutMs });
+      const context = await newContext(browser, ATTACH_CONTEXT_OPTIONS, env);
+      const page = await context.newPage();
+      page.setDefaultTimeout(20000);
+      return { browser, context, page, attachAttempts: attempt + 1 };
+    } catch (error) {
+      lastError = error;
+      if (browser) try { await browser.close(); } catch { /* detach anyway */ }
+      if (attempt >= retries) throw error;
+      await sleep(ATTACH_RETRY_BACKOFF_MS);
+    }
+  }
+  throw lastError;
+}
+
 export async function saveSlotStorageState(context, env = process.env) {
   const path = slotStorageStatePath(env);
   if (!path || typeof context?.storageState !== 'function') return false;

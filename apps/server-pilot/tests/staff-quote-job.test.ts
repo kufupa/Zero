@@ -34,16 +34,20 @@ const quoteLineMocks = vi.hoisted(() => ({
   rowRatesFor: vi.fn(),
 }));
 
-vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => ({
-  staffQuoteRoomAlternatives: (await importOriginal<typeof import('../src/ai/staff-quote-run.js')>()).staffQuoteRoomAlternatives,
-  runStaffQuote: jobMocks.runStaffQuote,
-  staffQuoteFailureCode: (error: unknown) => {
-    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-    const candidate = typeof code === 'string' ? code : error instanceof Error ? error.message : '';
-    return /^[A-Za-z0-9_.:-]{1,120}$/.test(candidate) ? candidate : 'unknown';
-  },
-  staffQuoteFailureMessage: () => 'Staff quote could not be completed.',
-}));
+vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ai/staff-quote-run.js')>();
+  return {
+    staffQuoteRoomAlternatives: actual.staffQuoteRoomAlternatives,
+    staffQuoteFailurePhase: actual.staffQuoteFailurePhase,
+    runStaffQuote: jobMocks.runStaffQuote,
+    staffQuoteFailureCode: (error: unknown) => {
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+      const candidate = typeof code === 'string' ? code : error instanceof Error ? error.message : '';
+      return /^[A-Za-z0-9_.:-]{1,120}$/.test(candidate) ? candidate : 'unknown';
+    },
+    staffQuoteFailureMessage: () => 'Staff quote could not be completed.',
+  };
+});
 
 vi.mock('../src/hms/property-queue-state.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/hms/property-queue-state.js')>()),
@@ -82,6 +86,11 @@ vi.mock('../src/ai/run-ledger.js', async (importOriginal) => ({
   markAiRunSucceeded: jobMocks.markSucceeded,
   markAiRunRetry: jobMocks.markRetry,
   markAiRunDeadLetter: jobMocks.markDeadLetter,
+}));
+
+vi.mock('../src/hms/mailbox-hms-origin-bind.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/hms/mailbox-hms-origin-bind.js')>()),
+  guardCenturionHmsMailboxOrigin: async () => ({ ok: true }),
 }));
 
 import { executeHmsJob, hmsJobRequestSchema, HMS_JOB_PRIORITY_USER } from '../src/ai/hms-jobs.js';

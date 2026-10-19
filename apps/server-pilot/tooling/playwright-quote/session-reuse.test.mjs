@@ -179,11 +179,85 @@ test('every playwright-quote tool that calls login() creates its context via new
   for (const name of LOGIN_CALLERS) {
     const source = await readFile(new URL(`./${name}`, import.meta.url), 'utf8');
     assert.match(source, /newBorrowedContext\s*\(/, name);
-    // The helper itself lives in fetch-quote.mjs and calls browser.newContext once.
+    // The helper itself lives in session-reuse.mjs and calls browser.newContext once.
     if (name !== 'fetch-quote.mjs') {
       assert.equal(source.includes('browser.newContext('), false, name);
     }
   }
+});
+
+function closedAttachError(message = 'Target page, context or browser has been closed') {
+  const error = new Error(message);
+  error.name = 'TargetClosedError';
+  return error;
+}
+
+function attachFakeBrowser() {
+  const page = { setDefaultTimeout() {} };
+  return {
+    closed: false,
+    async close() { this.closed = true; },
+    async newContext() { return { newPage: async () => page }; },
+  };
+}
+
+test('attachBorrowedSession retries connectOverCDP once after a closed-target blip', async () => {
+  const sleeps = [];
+  let connects = 0;
+  const session = await quote.attachBorrowedSession({
+    href: 'http://127.0.0.1:19223',
+    env: {},
+    timeoutMs: 20,
+    sleep: async (ms) => { sleeps.push(ms); },
+    connectOverCDP: async () => {
+      connects += 1;
+      if (connects === 1) throw closedAttachError();
+      return attachFakeBrowser();
+    },
+  });
+  assert.equal(connects, 2);
+  assert.deepEqual(sleeps, [quote.ATTACH_RETRY_BACKOFF_MS]);
+  assert.equal(session.attachAttempts, 2);
+  assert.ok(session.page);
+  assert.equal(session.browser.closed, false);
+});
+
+test('attachBorrowedSession closes the first CDP session before retrying a newContext failure', async () => {
+  const first = attachFakeBrowser();
+  let connects = 0;
+  const session = await quote.attachBorrowedSession({
+    href: 'http://127.0.0.1:19223',
+    env: {},
+    sleep: async () => {},
+    connectOverCDP: async () => {
+      connects += 1;
+      return connects === 1 ? first : attachFakeBrowser();
+    },
+    newContext: async (browser) => {
+      if (browser === first) throw closedAttachError('browserType.connectOverCDP: Timeout 20000ms exceeded.');
+      return browser.newContext();
+    },
+  });
+  assert.equal(first.closed, true);
+  assert.equal(connects, 2);
+  assert.equal(session.attachAttempts, 2);
+});
+
+test('attachBorrowedSession surfaces the second failure after one retry', async () => {
+  let connects = 0;
+  await assert.rejects(
+    quote.attachBorrowedSession({
+      href: 'http://127.0.0.1:19223',
+      env: {},
+      sleep: async () => {},
+      connectOverCDP: async () => {
+        connects += 1;
+        throw Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:19223'), { name: 'Error' });
+      },
+    }),
+    /ECONNREFUSED/,
+  );
+  assert.equal(connects, 2);
 });
 
 test('probe result names the fallback and never carries cookies or credentials', () => {

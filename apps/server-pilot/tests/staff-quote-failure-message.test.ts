@@ -131,6 +131,30 @@ describe('staffQuoteFailureLog', () => {
       phase: 'unknown',
     });
   });
+
+  it('logs a sanitized attach-phase name and message, never URLs or guest copy', () => {
+    const error = Object.assign(new Error('EXECUTION_FAILURE'), {
+      code: 'EXECUTION_FAILURE',
+      phase: 'attach',
+      errorName: 'TimeoutError',
+      errorMessage: 'browserType.connectOverCDP: Timeout 20000ms exceeded. ws://127.0.0.1:19223/devtools/browser/x user:pass',
+    });
+    expect(staffQuoteFailureLog(error)).toEqual({
+      code: 'EXECUTION_FAILURE',
+      phase: 'attach',
+      errorName: 'TimeoutError',
+      errorMessage: expect.stringMatching(/Timeout 20000ms exceeded/),
+    });
+    expect(staffQuoteFailureLog(error).errorMessage).not.toMatch(/ws:|http:|user:pass|127\.0\.0\.1/);
+    const guest = Object.assign(new Error('Guest Jane Doe room 12 at https://pms.example'), {
+      code: 'EXECUTION_FAILURE',
+      phase: 'attach',
+    });
+    expect(staffQuoteFailureLog(guest)).toEqual({
+      code: 'EXECUTION_FAILURE',
+      phase: 'attach',
+    });
+  });
 });
 
 describe('isReservationistCleanNoMatch', () => {

@@ -10,9 +10,9 @@ import { promisify } from 'node:util';
 import { createAudit } from './audit.mjs';
 import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
-import { authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
+import { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
 
-export { authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath };
+export { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath };
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
 const exec = promisify(execFile);
@@ -846,11 +846,16 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       if(secret.expectedPropertyCode!==request.propertyCode) throw new Error('ACCOUNT_PROPERTY_MISMATCH');
       event('attach');
       await clock.time('cdp',async()=>{
-        browser=await playwright().chromium.connectOverCDP(url.href,{timeout:20000});
         // Trace only our isolated context, never the borrowed owner's tabs.
-        context=await newBorrowedContext(browser,{ignoreHTTPSErrors:true,acceptDownloads:false,serviceWorkers:'block',viewport:{width:1280,height:720}},env);
-        page=await context.newPage();
-        page.setDefaultTimeout(20000);
+        const attached=await attachBorrowedSession({
+          href:url.href,
+          env,
+          connectOverCDP:(href,opts)=>playwright().chromium.connectOverCDP(href,opts),
+          newContext:(nextBrowser,options,nextEnv)=>newBorrowedContext(nextBrowser,options,nextEnv),
+        });
+        browser=attached.browser;
+        context=attached.context;
+        page=attached.page;
       });
       event('login'); await clock.time('login',()=>login(page,secret,env));
       event('audit_start'); await audit.start(page,[secret.password,secret.username,secret.loginUrl]);
