@@ -119,7 +119,10 @@ describe('automatic HMS lookup for a company or agency field', () => {
     const confirm = await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' });
     expect(screen.queryByText(/✓ Woolworths Holdings/)).toBeNull();
     fireEvent.click(confirm);
-    expect(await screen.findByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
+    const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
+    expect(companyPreset).toHaveValue('company:49');
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Company' }));
+    expect(screen.getByRole('button', { name: 'Edit Company' })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
     expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' });
   });
@@ -144,7 +147,9 @@ describe('automatic HMS lookup for a company or agency field', () => {
     });
     expect(find).toHaveBeenCalledTimes(2);
     fireEvent.click(within(results).getByRole('button', { name: 'Woolworths Holdings' }));
-    expect(await screen.findByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
+    const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
+    expect(companyPreset).toHaveValue('company:49');
+    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(2);
     expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' });
   });
@@ -184,7 +189,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     expect(find).not.toHaveBeenCalled();
   });
 
-  it('lists other matches as chips, and Change leaves one Find in HMS control', async () => {
+  it('keeps same-kind alternatives in the preset and opens manual search from the last option', async () => {
     const find = vi.fn(async () =>
       reply({
         outcome: 'ambiguous',
@@ -195,17 +200,19 @@ describe('automatic HMS lookup for a company or agency field', () => {
     );
     render(<Harness find={find} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' }));
-    expect(await screen.findByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Woolworths Foods (#50)' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Change' }));
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Confirm Woolworths Holdings' })).toBeTruthy(),
-    );
+    const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
+    expect(companyPreset).toHaveValue('company:49');
+    expect(within(companyPreset).getByRole('option', { name: 'Woolworths Foods' })).toBeTruthy();
+    fireEvent.change(companyPreset, { target: { value: 'company:50' } });
+    expect(companyPreset).toHaveValue('company:50');
+    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
+    fireEvent.change(companyPreset, { target: { value: '__search_hms__' } });
+    expect(screen.getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Find in HMS' })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
   });
 
-  it('a pick from the chips is staff-confirmed', async () => {
+  it('a same-kind preset change stays subject to staff confirmation', async () => {
     const find = vi.fn(async () =>
       reply({
         outcome: 'ambiguous',
@@ -216,8 +223,10 @@ describe('automatic HMS lookup for a company or agency field', () => {
     );
     render(<Harness find={find} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Woolworths Foods (#50)' }));
-    expect(await screen.findByText('✓ Woolworths Foods (#50)')).toBeTruthy();
+    const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
+    fireEvent.change(companyPreset, { target: { value: 'company:50' } });
+    expect(companyPreset).toHaveValue('company:50');
+    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
     expect(screen.queryByText(/picked by Nava/)).toBeNull();
   });
 
@@ -246,7 +255,9 @@ describe('automatic HMS lookup for a company or agency field', () => {
     const result = await screen.findByRole('list', { name: 'Companies and agencies found in HMS' });
     expect(screen.queryByText(/Not found in HMS/)).toBeNull();
     fireEvent.click(within(result).getByRole('button', { name: 'Woolworths Holdings' }));
-    expect(await screen.findByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
+    const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
+    expect(companyPreset).toHaveValue('company:49');
+    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
     expect(screen.queryByText(/picked by Nava/)).toBeNull();
     expect(find).toHaveBeenCalledTimes(2);
   });
@@ -335,7 +346,8 @@ describe('automatic HMS lookup for a company or agency field', () => {
     render(<Harness find={find} initial={{ company: WOOLWORTHS }} />);
     await waitForDebounce();
     expect(find).not.toHaveBeenCalled();
-    expect(screen.getByText('✓ Woolworths Holdings (#49)')).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Company from HMS' })).toHaveValue('company:49');
+    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
   });
 
   it('runs no search for a name under three characters', async () => {

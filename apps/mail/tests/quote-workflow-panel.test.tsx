@@ -380,7 +380,18 @@ describe('QuoteWorkflowPanel', () => {
     expect(within(ask).getByText('Confirm the company or agency for contract rates.')).toBeDefined();
     expect(within(ask).queryByText('What arrival and departure dates should be quoted?')).toBeNull();
     expect(primaryActions(container)).toHaveLength(1);
-    expect(primaryActions(container)[0]?.textContent).toBe('Review party and contact');
+    expect(primaryActions(container)[0]?.textContent).toBe('Review agency & company');
+  });
+
+  it('does not route a missing client email to the agency and company step', () => {
+    const session = withLunaMissing(sessionFromFixture('public-single'), [
+      { field: 'clientEmail', question: 'Which email should be printed on the quote?' },
+    ]);
+    render(<QuoteWorkflowPanel session={session} />);
+
+    expect(
+      screen.queryByRole('button', { name: /Review (?:party and contact|agency & company)/ }),
+    ).toBeNull();
   });
 
   it('skips a missing company ask after the quote header already has that company', () => {

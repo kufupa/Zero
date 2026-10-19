@@ -393,7 +393,7 @@ describe('PartyPicker prefetched party jobs', () => {
     expect(screen.queryByRole('button', { name: 'Confirm ABCD Travel' })).toBeNull();
   });
 
-  it('auto-binds a V2 high-precision job result and does not ask for confirmation', async () => {
+  it('auto-binds a V2 high-precision job result and presents it for staff confirmation', async () => {
     const onPick = vi.fn();
     const jobTransport: HmsJobTransport = {
       queue: vi.fn(),
@@ -413,7 +413,8 @@ describe('PartyPicker prefetched party jobs', () => {
       />,
     );
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL));
-    expect(screen.queryByRole('button', { name: 'Confirm ABC Travel' })).toBeNull();
+    expect(await screen.findByRole('combobox', { name: 'Company from HMS' })).toHaveValue('company:4411');
+    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
   });
 
   it('ignores a V2 bound result created for a different message in the same thread', async () => {

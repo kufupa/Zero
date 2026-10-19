@@ -210,7 +210,7 @@ describe('PartyPicker', () => {
         onClear={onClear}
       />,
     );
-    expect(screen.getByText('✓ ABC Travel (Pty) Ltd (#4411)')).toBeTruthy();
+    expect(screen.getByText('✓ ABC Travel (Pty) Ltd')).toBeTruthy();
     // Find stays: the other kind (agency) can still be picked alongside the company.
     expect(screen.queryByRole('button', { name: 'Find in HMS' })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Change' }));

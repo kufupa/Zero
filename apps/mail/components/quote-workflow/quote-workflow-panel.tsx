@@ -827,10 +827,25 @@ function hideQuoteWorkspace(phase: QuoteSession['phase']): boolean {
   );
 }
 
+const CONTACT_QUESTION_FIELDS = new Set([
+  'contact',
+  'attention',
+  'booker',
+  'contactname',
+  'clientname',
+  'email',
+  'clientemail',
+  'contactemail',
+  'phone',
+  'telephone',
+  'clienttelephone',
+  'contactphone',
+]);
+
 /** The first quote fact to resolve follows the reservationist's decision order, not model output order. */
 function missingQuestionPriority(field: string): number {
   const key = field.toLowerCase().replace(/[\s_-]/g, '');
-  if (/(party|company|agency|contact|attention|client|booker)/.test(key)) return 0;
+  if (/(party|company|agency)/.test(key)) return 0;
   if (/(authority|authoris|authoriz|approv|rateplan|salesstrategy|contract)/.test(key)) return 1;
   if (/(arrival|departure|checkin|checkout|stay|date|room|guest|adult|child|occupancy)/.test(key)) return 2;
   if (/(availability|price|amount|rate|nightly|cost)/.test(key)) return 3;
@@ -852,11 +867,9 @@ function missingQuestionAnswered(
   header: StaffQuoteHeader,
 ): boolean {
   const key = field.toLowerCase().replace(/[\s_-]/g, '');
+  if (CONTACT_QUESTION_FIELDS.has(key)) return true;
   const everyGroup = (answered: (group: StayGroupRequirement) => boolean) =>
     groups.length > 0 && groups.every(answered);
-  const hasContact = [header.attention, header.clientEmail, header.clientTelephone].some((value) =>
-    Boolean(value.trim()),
-  );
 
   if (['arrival', 'arrivaldate', 'checkin', 'checkindate'].includes(key)) {
     return everyGroup((group) => Boolean(group.arrivalDate));
@@ -883,16 +896,6 @@ function missingQuestionAnswered(
   }
   if (key === 'company') return Boolean(header.company.trim() || header.parties?.company?.nativeId);
   if (key === 'agency') return Boolean(header.agency.trim() || header.parties?.agency?.nativeId);
-  if (key === 'contact') return hasContact;
-  if (['attention', 'booker', 'contactname', 'clientname'].includes(key)) {
-    return Boolean(header.attention.trim());
-  }
-  if (['email', 'clientemail', 'contactemail'].includes(key)) {
-    return Boolean(header.clientEmail.trim());
-  }
-  if (['phone', 'telephone', 'clienttelephone', 'contactphone'].includes(key)) {
-    return Boolean(header.clientTelephone.trim());
-  }
   if (
     ['room', 'roomtype', 'roomtypes', 'roompreference', 'roomtypecode', 'roomcodes'].includes(key)
   ) {
@@ -1484,7 +1487,7 @@ export function QuoteWorkflowPanel({
   )[0]?.item;
   const currentAction: CurrentQuoteAction = firstMissingAnswer
     ? missingQuestionPriority(firstMissingAnswer.field) === 0
-      ? { kind: 'scroll', targetId: 'quote-party', label: 'Review party and contact' }
+      ? { kind: 'scroll', targetId: 'quote-party', label: 'Review agency & company' }
       : missingQuestionPriority(firstMissingAnswer.field) === 1
         ? { kind: 'scroll', targetId: 'quote-authority', label: 'Set rate authority' }
         : missingQuestionPriority(firstMissingAnswer.field) === 2
