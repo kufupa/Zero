@@ -388,14 +388,35 @@ function StaffPartyFields({
   /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
 }) {
-  // Each field's picker searches that field's own text and holds only that kind: its results, its pick and its suggestions.
-  // HOOK(#84, not on main): the HMS typeahead's onSearchName lands on the onSearchName prop below.
-  const partyPicker = (kind: 'company' | 'agency') =>
-    findParty ? (
+  const partyPicker = (kind: 'company' | 'agency') => {
+    const label = kind === 'agency' ? 'Agency' : 'Company';
+    const value = kind === 'agency' ? header.agency : header.company;
+    const id = `quote-${kind}-name`;
+    if (!findParty) {
+      return (
+        <Field label={label} htmlFor={id}>
+          <input
+            id={id}
+            aria-label={label}
+            className={paneFieldClass}
+            value={value}
+            onChange={(event) => {
+              const searched = event.target.value;
+              onFieldEdit?.(kind);
+              onPatch?.({
+                ...(kind === 'company' ? { company: searched } : { agency: searched }),
+                ...pickClearedBy(kind, header, searched),
+              });
+            }}
+          />
+        </Field>
+      );
+    }
+    return (
       <PartyPicker
         autoLookup
         kind={kind}
-        name={kind === 'company' ? header.company : header.agency}
+        name={value}
         parties={header.parties ?? {}}
         find={findParty}
         jobTransport={partyJobTransport}
@@ -425,75 +446,19 @@ function StaffPartyFields({
         }}
         onSearchName={(searched, searchKind) => {
           onFieldEdit?.(searchKind);
-          return onPatch?.(searchKind === 'company' ? { company: searched } : { agency: searched });
+          return onPatch?.({
+            ...(searchKind === 'company' ? { company: searched } : { agency: searched }),
+            ...pickClearedBy(searchKind, header, searched),
+          });
         }}
       />
-    ) : null;
+    );
+  };
   return (
     <div className="flex flex-col gap-2.5">
-      <p className="text-[13px] text-[#64748b]">
-        Optional if none in email. Company is the end client; Agency is the travel agent. Confirm an HMS result before using its contract rate.
-      </p>
-      <Field label="Agency (travel agent)" htmlFor="quote-agency">
-        <input
-          id="quote-agency"
-          aria-label="Agency (travel agent)"
-          className={paneFieldClass}
-          value={header.agency}
-          onChange={(event) => {
-            onFieldEdit?.('agency');
-            onPatch?.({ agency: event.target.value, ...pickClearedBy('agency', header, event.target.value) });
-          }}
-        />
-        {partyPicker('agency')}
-        {header.parties?.agency ? (
-          <span className="w-fit rounded-[2px] bg-[#eff6ff] px-1.5 py-0.5 text-[10.5px] font-semibold text-[#0066cc]">HMS agency contract selected</span>
-        ) : null}
-      </Field>
-      <Field label="Company (end client)" htmlFor="quote-company">
-        <input
-          id="quote-company"
-          aria-label="Company (end client)"
-          className={paneFieldClass}
-          value={header.company}
-          onChange={(event) => {
-            onFieldEdit?.('company');
-            onPatch?.({ company: event.target.value, ...pickClearedBy('company', header, event.target.value) });
-          }}
-        />
-        {partyPicker('company')}
-        {header.parties?.company ? (
-          <span className="w-fit rounded-[2px] bg-[#eff6ff] px-1.5 py-0.5 text-[10.5px] font-semibold text-[#0066cc]">HMS company contract selected</span>
-        ) : null}
-      </Field>
-      {/* The client block on the quote and the HMS booking. Typed by staff; nothing fills these from the email. */}
-      <Field label="Attention" htmlFor="quote-attention">
-        <input
-          id="quote-attention"
-          aria-label="Attention"
-          className={paneFieldClass}
-          value={header.attention}
-          onChange={(event) => onPatch?.({ attention: event.target.value })}
-        />
-      </Field>
-      <Field label="Client email" htmlFor="quote-client-email">
-        <input
-          id="quote-client-email"
-          aria-label="Client email"
-          className={paneFieldClass}
-          value={header.clientEmail}
-          onChange={(event) => onPatch?.({ clientEmail: event.target.value })}
-        />
-      </Field>
-      <Field label="Client telephone" htmlFor="quote-client-telephone">
-        <input
-          id="quote-client-telephone"
-          aria-label="Client telephone"
-          className={paneFieldClass}
-          value={header.clientTelephone}
-          onChange={(event) => onPatch?.({ clientTelephone: event.target.value })}
-        />
-      </Field>
+      {partyPicker('agency')}
+      <div aria-hidden="true" className="border-t border-[#e2e8f0]" />
+      {partyPicker('company')}
     </div>
   );
 }
@@ -1573,7 +1538,7 @@ export function QuoteWorkflowPanel({
         </div>
       ) : null}
       {showWorkspace ? (
-        <Section step={1} title="Party + contact" id="quote-party" action={<StepState state={partyState} />}>
+        <Section step={1} title="Agency & company" id="quote-party" action={<StepState state={partyState} />}>
           <StaffPartyFields
             header={header}
             onPatch={(header) => onPatchStaffHeader?.(header, { staffEdit: true })}

@@ -302,14 +302,17 @@ describe('QuoteWorkflowPanel', () => {
     expect(roomsAfterEdit[2]?.value).toBe(originalCode);
   });
 
-  it('has one Party + contact step with agency and company fields', () => {
+  it('has one Agency & company step with agency and company fields', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('agency-contract')} />);
     expect(
-      screen.getAllByRole('region', { name: 'Party + contact' }),
+      screen.getAllByRole('region', { name: 'Agency & company' }),
     ).toHaveLength(1);
-    expect(screen.getByLabelText('Agency (travel agent)')).toBeTruthy();
-    expect(screen.getByLabelText('Company (end client)')).toBeTruthy();
+    expect(screen.getByLabelText('Agency')).toBeTruthy();
+    expect(screen.getByLabelText('Company')).toBeTruthy();
     expect(screen.queryByLabelText('Company or agency')).toBeNull();
+    expect(screen.queryByLabelText('Attention')).toBeNull();
+    expect(screen.queryByLabelText('Client email')).toBeNull();
+    expect(screen.queryByLabelText('Client telephone')).toBeNull();
   });
 
   it('presents decision-ordered case-card sections with one primary action for the current state', () => {
@@ -340,7 +343,7 @@ describe('QuoteWorkflowPanel', () => {
       'quote-quote',
     ]);
     expect(steps.map((step) => step.getAttribute('aria-label'))).toEqual([
-      'Party + contact',
+      'Agency & company',
       'Rate authority',
       'Stay',
       'Availability & rates',
@@ -351,7 +354,7 @@ describe('QuoteWorkflowPanel', () => {
     for (const step of steps) {
       expect(within(step).getByTestId('quote-step-state')).toBeDefined();
     }
-    expect(within(steps[0]!).getByText(/Optional if none in email/)).toBeDefined();
+    expect(within(steps[0]!).queryByText(/Optional if none in email/)).toBeNull();
     expect(primaryActions(container)).toHaveLength(1);
     expect(primaryActions(container)[0]?.textContent).toBe('Search availability');
     expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
@@ -535,13 +538,13 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByText(/^Prepared by Nava · /)).toBeDefined();
   });
 
-  it('marks Party + contact as looking up while an HMS party search is pending', () => {
+  it('marks Agency & company as looking up while an HMS party search is pending', () => {
     const session = { ...sessionFromFixture('public-single'), pendingPartyKinds: ['company' as const] };
     render(<QuoteWorkflowPanel session={session} />);
     expect(
       within(
         screen.getByRole('region', {
-          name: 'Party + contact',
+          name: 'Agency & company',
         }),
       ).getByTestId('quote-step-state').textContent,
     ).toBe('Looking up');
@@ -1751,7 +1754,7 @@ describe('the Find in HMS picker in the quote header', () => {
     await waitFor(() => expect(find).toHaveBeenCalledTimes(2), { timeout: 3000 });
     expect(screen.getAllByRole('heading', { name: /Party \+ contact/ })).toHaveLength(1);
     expect(
-      screen.getByLabelText('Agency (travel agent)').compareDocumentPosition(screen.getByLabelText('Company (end client)')) &
+      screen.getByLabelText('Search agency in HMS').compareDocumentPosition(screen.getByLabelText('Search company in HMS')) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(screen.getAllByRole('group', { name: /lookup in HMS$/i })).toHaveLength(2);
@@ -1789,13 +1792,13 @@ describe('the Find in HMS picker in the quote header', () => {
 
     render(<EmailPrefilledPanel />);
     await waitFor(() => {
-      expect((screen.getByLabelText('Agency (travel agent)') as HTMLInputElement).value).toBe('Optimum Shared Services');
-      expect((screen.getByLabelText('Company (end client)') as HTMLInputElement).value).toBe('Optimum Insure Consulting');
+      expect((screen.getByLabelText('Agency') as HTMLInputElement).value).toBe('Optimum Shared Services');
+      expect((screen.getByLabelText('Company') as HTMLInputElement).value).toBe('Optimum Insure Consulting');
     });
 
-    fireEvent.change(screen.getByLabelText('Agency (travel agent)'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Agency'), { target: { value: '' } });
     await waitFor(() => expect(seen.latest?.staffHeader.agency).toBe(''));
-    expect((screen.getByLabelText('Agency (travel agent)') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Agency') as HTMLInputElement).value).toBe('');
   });
 
   it('uses named email company and agency values over an unedited Luna party prefill', async () => {
@@ -1838,13 +1841,41 @@ describe('the Find in HMS picker in the quote header', () => {
 
     render(<EmailPrefilledPanel />);
     await waitFor(() => {
-      expect((screen.getByLabelText('Agency (travel agent)') as HTMLInputElement).value).toBe('Optimum Shared Services');
-      expect((screen.getByLabelText('Company (end client)') as HTMLInputElement).value).toBe('Optimum Insure Consulting');
+      expect((screen.getByLabelText('Agency') as HTMLInputElement).value).toBe('Optimum Shared Services');
+      expect((screen.getByLabelText('Company') as HTMLInputElement).value).toBe('Optimum Insure Consulting');
     });
+  });
+
+  it('confirms a preset through the existing staff-edit path and collapses it', () => {
+    const onPatchStaffHeader = vi.fn();
+    render(
+      <QuoteWorkflowPanel
+        session={headerSession({ company: 'Acme Travel', parties: { company: ACME } })}
+        findParty={noMatch}
+        onPatchStaffHeader={onPatchStaffHeader}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Company' }));
+    expect(onPatchStaffHeader).toHaveBeenCalledWith(
+      expect.objectContaining({ company: 'Acme Travel', parties: { company: ACME } }),
+      { staffEdit: true },
+    );
+    expect(screen.getByRole('button', { name: 'Edit Company' })).toBeTruthy();
+    expect(screen.queryByRole('combobox', { name: 'Company from HMS' })).toBeNull();
   });
 
   it('drops a pick only when its own field is edited away from its name', () => {
     const seen: { latest: QuoteSession | null } = { latest: null };
+    const editName = (kind: 'company' | 'agency', value: string) => {
+      const label = kind === 'company' ? 'Company' : 'Agency';
+      const picker = screen.getByRole('group', { name: `${label} lookup in HMS` });
+      const select = within(picker).queryByRole('combobox');
+      if (select) fireEvent.change(select, { target: { value: '__search_hms__' } });
+      fireEvent.change(within(picker).getByRole('textbox', { name: `Search ${kind} in HMS` }), {
+        target: { value },
+      });
+    };
     const { unmount } = render(
       <PartyGate
         initial={headerSession({ company: 'Acme Travel', parties: { company: ACME } })}
@@ -1852,9 +1883,9 @@ describe('the Find in HMS picker in the quote header', () => {
         findParty={noMatch}
       />,
     );
-    fireEvent.change(screen.getByLabelText('Agency (travel agent)'), { target: { value: 'Hub' } });
+    editName('agency', 'Hub');
     expect(seen.latest?.staffHeader.parties?.company).toEqual(ACME);
-    fireEvent.change(screen.getByLabelText('Company (end client)'), { target: { value: 'Acme Travel Ltd' } });
+    editName('company', 'Acme Travel Ltd');
     expect(seen.latest?.staffHeader.parties?.company).toBeUndefined();
     unmount();
 
@@ -1869,10 +1900,10 @@ describe('the Find in HMS picker in the quote header', () => {
         findParty={noMatch}
       />,
     );
-    fireEvent.change(screen.getByLabelText('Company (end client)'), { target: { value: 'Acme Travel Ltd' } });
+    editName('company', 'Acme Travel Ltd');
     expect(seen.latest?.staffHeader.parties?.company).toBeUndefined();
     expect(seen.latest?.staffHeader.parties?.agency).toEqual(TRAVEL_HUB);
-    fireEvent.change(screen.getByLabelText('Agency (travel agent)'), { target: { value: 'Travel Hub Ltd' } });
+    editName('agency', 'Travel Hub Ltd');
     expect(seen.latest?.staffHeader.parties?.agency).toBeUndefined();
   });
 

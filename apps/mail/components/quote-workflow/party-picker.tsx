@@ -17,12 +17,13 @@ import {
   type HmsJobView,
 } from '../../lib/quote-workflow/amend-find';
 import type { StaffQuoteParties, StaffQuoteParty } from '../../lib/quote-workflow/types';
+import { Check, Pencil, Search, Sparkles } from 'lucide-react';
 import { LinkButton, Notice, SecondaryButton } from '../nava-pane/pane-ui';
 import { preconditionFailedMessage, useHmsJob } from '../../lib/quote-workflow/use-hms-job';
-import { useEffect, useReducer, useRef, useState } from 'react';
-import { HmsAsOf, HmsJobStatusLine, HmsLookupProgress } from './hms-queue-status';
+import { useEffect, useId, useReducer, useRef, useState } from 'react';
+import { HmsJobStatusLine, HmsLookupProgress } from './hms-queue-status';
 
-export const PARTY_PICKER_HINT = 'Runs in the background. You can keep working.';
+export const PARTY_PICKER_HINT = 'Takes ~30–40 s. Keep filling the stay below.';
 
 export const PARTY_PICKER_BUSY = 'Searching HMS for companies and agencies.';
 
@@ -166,11 +167,21 @@ function duplicateCandidateNames(rows: readonly PartyCandidate[]): Set<string> {
 
 function candidateDetails(row: PartyCandidate): string[] {
   const iata = typeof row.iata === 'string' ? row.iata.trim() : '';
-  const address = typeof row.address === 'string' ? row.address.trim() : '';
   const city = typeof row.city === 'string' ? row.city.trim() : '';
-  return [iata ? `IATA ${iata}` : null, address || null, city || null].filter(
+  const address = typeof row.address === 'string' ? row.address.trim() : '';
+  const country = typeof row.country === 'string' ? row.country.trim() : '';
+  return [iata ? `IATA ${iata}` : null, city || null, address || null, country || null].filter(
     (detail): detail is string => detail !== null,
   );
+}
+
+function candidateDisplayLabel(row: PartyCandidate): string {
+  const details = candidateDetails(row);
+  return `${row.name}${details.length ? ` · ${details.join(' · ')}` : ''}`;
+}
+
+function partyRowValue(row: PartyCandidate): string {
+  return `${row.kind}:${row.nativeId}`;
 }
 
 function candidatesWithinLimit(
@@ -183,16 +194,10 @@ function candidatesWithinLimit(
   );
 }
 
-function candidateChoiceLabel(
-  row: PartyCandidate,
-  duplicateNames: ReadonlySet<string>,
-  includeNativeId = false,
-): string {
-  if (!duplicateNames.has(candidateNameKey(row.name))) {
-    return includeNativeId ? `${row.name} (#${row.nativeId})` : row.name;
-  }
+function candidateChoiceLabel(row: PartyCandidate, duplicateNames: ReadonlySet<string>): string {
+  if (!duplicateNames.has(candidateNameKey(row.name))) return row.name;
   const details = candidateDetails(row);
-  return `${row.name}${details.length ? ` · ${details.join(' · ')}` : ''} (#${row.nativeId})`;
+  return `${row.name}${details.length ? ` · ${details.join(' · ')}` : ''}`;
 }
 
 function findWithMail(
@@ -319,10 +324,11 @@ function ResultChips({
           <button
             key={`${row.kind}:${row.nativeId}`}
             type="button"
+            title={row.nativeId}
             className="rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
             onClick={() => onPick(row)}
           >
-            {candidateChoiceLabel(row, duplicateNames, true)}
+            {candidateChoiceLabel(row, duplicateNames)}
           </button>
         ))}
       </div>
@@ -348,7 +354,7 @@ function PartyAlternatives({
       </summary>
       <ul aria-label={label} className="flex flex-col gap-1">
         {rows.map((row) => {
-          const details = [partyKindLabel(row.kind), ...candidateDetails(row), `#${row.nativeId}`];
+          const details = [partyKindLabel(row.kind), ...candidateDetails(row)];
           return (
             <li
               key={`${row.kind}:${row.nativeId}`}
@@ -360,7 +366,8 @@ function PartyAlternatives({
               </div>
               <button
                 type="button"
-                aria-label={`Use ${row.name} (${partyKindLabel(row.kind)}) (#${row.nativeId})`}
+                aria-label={`Use ${row.name} (${partyKindLabel(row.kind)})`}
+                title={row.nativeId}
                 className="shrink-0 rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
                 onClick={() => onPick(row)}
               >
@@ -425,7 +432,9 @@ export function PartyPicker({
   /** Told whether this field's automatic search still has to decide its pick. The pane holds a rates run until it does. */
   onLookupPending?: (pending: boolean) => void;
 }) {
-  const query = name.trim();
+  const [draftName, setDraftName] = useState(name);
+  useEffect(() => setDraftName(name), [name]);
+  const query = (onSearchName ? name : draftName).trim();
   const [state, setState] = useState<PickerState>(IDLE);
   const [index, setIndex] = useState<IndexState>(IDLE_INDEX);
   const indexToken = useRef(0);
@@ -439,6 +448,9 @@ export function PartyPicker({
   const seededSuggestion = useRef<string | null>(null);
   const appliedSuggestionPick = useRef(new Set<string>());
   const [, rerender] = useReducer((count: number) => count + 1, 0);
+  const fieldId = useId();
+  const [manualSearchOpen, setManualSearchOpen] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
   // A field that already holds its pick asks the list and HMS nothing more.
   const selectedParty = kind ? parties[kind] ?? null : parties.company ?? parties.agency ?? null;
   const pickedHere = Boolean(selectedParty);
@@ -637,7 +649,6 @@ export function PartyPicker({
       row.kind !== v2PartyToOmit.kind ||
       row.nativeId !== v2PartyToOmit.nativeId,
   );
-  const v2Reason = typeof v2Result?.reason === 'string' ? v2Result.reason : '';
   const v2BoundForField =
     !pickedHere && v2MatchStatus === 'bound' && v2BoundParty && inScope(v2BoundParty)
       ? v2BoundParty
@@ -645,10 +656,10 @@ export function PartyPicker({
   const v2NeedsPick = Boolean(
     v2PartyJob &&
       !pickedHere &&
-      (v2MatchStatus === 'needs_pick' ||
-        (v2MatchStatus === 'bound' &&
-          v2BoundParty &&
-          ((kind && !inScope(v2BoundParty)) || v2BoundWasApplied))),
+      (kind
+        ? v2MatchStatus === 'needs_pick' && v2ResultRows.length > 0
+        : v2MatchStatus === 'needs_pick' ||
+          (v2MatchStatus === 'bound' && v2BoundParty && v2BoundWasApplied)),
   );
 
   useEffect(() => {
@@ -741,8 +752,33 @@ export function PartyPicker({
         view: v2DisplayJobView,
       });
     }
+    setManualSearchOpen(false);
+    setConfirmed(false);
     onPick({ kind: row.kind, nativeId: row.nativeId, name: row.name });
   };
+
+  const fieldRows = kind
+    ? uniqueCandidates([
+        ...v2ResultRows,
+        ...autoRows,
+        ...jobResults,
+        ...indexResults,
+        ...(shown.status === 'listed' ? shown.results : []),
+        ...(selectedParty ? [selectedParty] : []),
+        ...(v2BoundForField ? [v2BoundForField] : []),
+      ]).filter(inScope)
+    : [];
+  const fieldPreset = kind
+    ? selectedParty
+      ? fieldRows.find(
+          (row) => row.kind === selectedParty.kind && row.nativeId === selectedParty.nativeId,
+        ) ?? selectedParty
+      : v2BoundForField
+    : null;
+  const fieldPresetKey = fieldPreset ? partyRowValue(fieldPreset) : null;
+  useEffect(() => {
+    setConfirmed(false);
+  }, [fieldPresetKey]);
 
   useEffect(() => {
     if (pickedHere || !topSuggestion) return;
@@ -775,24 +811,217 @@ export function PartyPicker({
   );
   const showManualButton = true;
 
+  if (kind && (v2PartyJob || selectedParty)) {
+    const label = partyKindLabel(kind);
+    const selectValue = manualSearchOpen
+      ? '__search_hms__'
+      : fieldPreset
+        ? partyRowValue(fieldPreset)
+        : '';
+    const rowsByValue = new Map(fieldRows.map((row) => [partyRowValue(row), row]));
+    const suggestedPreset = [v2BoundParty, autoBest, prefetchedBest].some(
+      (candidate) =>
+        candidate &&
+        fieldPreset &&
+        candidate.kind === fieldPreset.kind &&
+        candidate.nativeId === fieldPreset.nativeId,
+    );
+    const searchForm = (
+      <div className="flex flex-col gap-1.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            id={`${fieldId}-search`}
+            aria-label={`Search ${label.toLowerCase()} in HMS`}
+            className="min-w-0 flex-1 rounded-[3px] border border-[#cbd5e1] bg-white px-2 py-1.5 text-[13px] text-[#334155] focus:border-[#0066cc] focus:outline-none"
+            value={onSearchName ? name : draftName}
+            onChange={(event) => {
+              if (onSearchName) onSearchName(event.target.value, kind);
+              else setDraftName(event.target.value);
+            }}
+          />
+          <SecondaryButton
+            disabled={
+              query.length < MANUAL_LOOKUP_MIN_CHARS ||
+              shown.status === 'busy' ||
+              lookupPending ||
+              jobBusy
+            }
+            onClick={() => void run()}
+          >
+            <Search aria-hidden="true" className="h-4 w-4" />
+            Find in HMS
+          </SecondaryButton>
+        </div>
+        <p className="text-[10.5px] text-[#64748b]">{PARTY_PICKER_HINT}</p>
+      </div>
+    );
+
+    return (
+      <div
+        role="group"
+        aria-label={`${label} lookup in HMS`}
+        className="flex flex-col gap-1.5 text-[12.5px] text-[#64748b]"
+      >
+        <span className="text-[12.5px] font-semibold text-[#334155]">{label}</span>
+        {confirmed && fieldPreset ? (
+          <div className="flex min-w-0 items-center gap-1.5 text-[12.5px] font-semibold text-[#166534]">
+            <Check aria-hidden="true" className="h-4 w-4 shrink-0" />
+            {suggestedPreset ? (
+              <Sparkles aria-label="AI suggested" className="h-3.5 w-3.5 shrink-0 text-[#64748b]" />
+            ) : null}
+            <span className="min-w-0 truncate" title={candidateDisplayLabel(fieldPreset)}>
+              {candidateDisplayLabel(fieldPreset)}
+            </span>
+            <button
+              type="button"
+              aria-label={`Edit ${label}`}
+              title={`Edit ${label}`}
+              className="rounded-[3px] p-1 text-[#475569] hover:bg-[#f1f5f9]"
+              onClick={() => {
+                setConfirmed(false);
+                setManualSearchOpen(false);
+              }}
+            >
+              <Pencil aria-hidden="true" className="h-4 w-4" />
+            </button>
+          </div>
+        ) : fieldRows.length || v2NeedsPick ? (
+          <div className="flex flex-col gap-1.5">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <select
+                id={`${fieldId}-select`}
+                aria-label={`${label} from HMS`}
+                className="min-w-0 flex-1 rounded-[3px] border border-[#cbd5e1] bg-white px-2 py-1.5 text-[13px] text-[#334155] focus:border-[#0066cc] focus:outline-none"
+                value={selectValue}
+                onChange={(event) => {
+                  if (event.target.value === '__search_hms__') {
+                    setConfirmed(false);
+                    setManualSearchOpen(true);
+                    return;
+                  }
+                  const row = rowsByValue.get(event.target.value);
+                  if (row) {
+                    setState(IDLE);
+                    pickRow(row);
+                  }
+                }}
+              >
+                {!fieldPreset ? (
+                  <option value="" disabled>
+                    {`Choose ${label.toLowerCase()} (${fieldRows.length} found)`}
+                  </option>
+                ) : null}
+                {fieldRows.map((row) => (
+                  <option key={partyRowValue(row)} value={partyRowValue(row)} title={row.nativeId}>
+                    {candidateDisplayLabel(row)}
+                  </option>
+                ))}
+                <option value="__search_hms__">Search HMS…</option>
+              </select>
+              {fieldPreset && suggestedPreset ? (
+                <Sparkles aria-label="AI suggested" className="h-4 w-4 shrink-0 text-[#64748b]" />
+              ) : null}
+              {fieldPreset ? (
+                <button
+                  type="button"
+                  aria-label={`Confirm ${label}`}
+                  title={`Confirm ${label}`}
+                  className="rounded-[3px] p-1 text-[#166534] hover:bg-[#f0fdf4]"
+                  onClick={() => {
+                    onPick({
+                      kind: fieldPreset.kind,
+                      nativeId: fieldPreset.nativeId,
+                      name: fieldPreset.name,
+                    });
+                    setConfirmed(true);
+                  }}
+                >
+                  <Check aria-hidden="true" className="h-4 w-4" />
+                </button>
+              ) : null}
+            </div>
+            {manualSearchOpen ? searchForm : null}
+          </div>
+        ) : (
+          searchForm
+        )}
+        {showAutoStatus ? (
+          autoReply ? (
+            autoBest || autoRows.length ? null : (
+              <Notice
+                tone={autoReply.outcome === 'no_match' && !autoReply.truncated ? 'info' : 'warn'}
+                role="status"
+              >
+                {noCandidateNote(autoReply, kind, query)}
+              </Notice>
+            )
+          ) : (
+            <HmsLookupProgress
+              pending
+              detail={`Searching HMS for "${query}" (${label.toLowerCase()})`}
+            />
+          )
+        ) : null}
+        {jobReadBackPending ? <p role="status">Checking for a background HMS lookup…</p> : null}
+        {jobTransport ? (
+          <HmsJobStatusLine
+            view={currentJobView}
+            queuing={partyJob.queuing}
+            detail={jobDetail}
+            onRetry={partyJob.retry}
+            statusFailed={partyJob.statusFailed}
+            queueFailed={partyJob.queueFailed}
+            failureMessage={partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
+            failedMessage={partySearchTimedOut ? timeoutMessage : partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
+            queueFailureMessage={
+              partyJob.queueFailureMessage ?? partyNoCandidateNote('execution_failure', kind, query)
+            }
+          />
+        ) : null}
+        {jobTransport && !v2PartyJob && jobReply && !jobReply.results.length && currentJobView?.status !== 'failed' ? (
+          <Notice
+            tone={jobReply.outcome === 'no_match' && !jobReply.truncated ? 'info' : 'warn'}
+            role="status"
+          >
+            {noCandidateNote(jobReply, kind, jobDisplayName)}
+          </Notice>
+        ) : null}
+        {shown.status === 'busy' ? <p role="status">{PARTY_PICKER_BUSY}</p> : null}
+        {shown.status === 'none' ? <p role="status">{shown.note}</p> : null}
+        {(shown.status === 'listed' && shown.truncated) || (jobReply?.truncated ?? false) ? (
+          <p role="status">{PARTY_TRUNCATED_NOTE}</p>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
     <div
       role={kind ? 'group' : undefined}
       aria-label={kind ? `${partyKindLabel(kind)} lookup in HMS` : undefined}
       className="flex flex-col gap-1 text-[12.5px] text-[#64748b]"
     >
+      {kind ? (
+        <>
+          <span className="text-[12.5px] font-semibold text-[#334155]">{partyKindLabel(kind)}</span>
+          <input
+            id={`${fieldId}-search`}
+            aria-label={`Search ${partyKindLabel(kind).toLowerCase()} in HMS`}
+            className="rounded-[3px] border border-[#cbd5e1] bg-white px-2 py-1.5 text-[13px] text-[#334155] focus:border-[#0066cc] focus:outline-none"
+            value={onSearchName ? name : draftName}
+            onChange={(event) => {
+              if (onSearchName) onSearchName(event.target.value, kind);
+              else setDraftName(event.target.value);
+            }}
+          />
+        </>
+      ) : null}
       {picked.map((party) => (
         <div
           key={party.kind}
           className="flex flex-wrap items-center gap-2 text-[12.5px] font-semibold text-[#166534]"
         >
-          <span>{`✓ ${party.name} (#${party.nativeId})`}</span>
-          {v2MatchStatus === 'bound' &&
-          v2BoundParty?.kind === party.kind &&
-          v2BoundParty.nativeId === party.nativeId &&
-          v2Reason ? (
-            <span className="font-normal text-[#64748b]">{v2Reason}</span>
-          ) : null}
+          <span title={party.nativeId}>{`✓ ${party.name}`}</span>
           <LinkButton onClick={() => onClear(party.kind)}>Change</LinkButton>
         </div>
       ))}
@@ -821,6 +1050,7 @@ export function PartyPicker({
                   type="button"
                   className="w-fit rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
                   aria-label={`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
+                  title={autoBest.nativeId}
                   onClick={() => pickRow(autoBest)}
                 >
                   {`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
@@ -880,8 +1110,6 @@ export function PartyPicker({
               onPick={pickRow}
             />
           ) : null}
-          {v2Reason ? <p role="status">{v2Reason}</p> : null}
-          <HmsAsOf asOf={v2DisplayJobView?.asOf ?? null} />
         </div>
       ) : null}
       {jobTransport &&
@@ -903,11 +1131,11 @@ export function PartyPicker({
             type="button"
             className="w-fit rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
             aria-label={`Confirm ${candidateChoiceLabel(prefetchedBest, jobDuplicateNames)}`}
+            title={prefetchedBest.nativeId}
             onClick={() => pickRow(prefetchedBest)}
           >
             {`Confirm ${candidateChoiceLabel(prefetchedBest, jobDuplicateNames)}`}
           </button>
-          <HmsAsOf asOf={currentJobView?.asOf ?? null} />
         </div>
       ) : null}
       {indexResults.length ? (
@@ -923,6 +1151,7 @@ export function PartyPicker({
               >
                 <button
                   type="button"
+                  title={candidate.nativeId}
                   className="text-left text-[12.5px] font-semibold text-[#0066cc] underline"
                   onClick={() => {
                     onPick({
@@ -954,6 +1183,7 @@ export function PartyPicker({
             }
             onClick={() => void run()}
           >
+            <Search aria-hidden="true" className="h-4 w-4" />
             Find in HMS
           </SecondaryButton>
           <span>{PARTY_PICKER_HINT}</span>
@@ -971,6 +1201,7 @@ export function PartyPicker({
               >
                 <button
                   type="button"
+                  title={candidate.nativeId}
                   className="text-left text-[11.5px] font-semibold text-[#0066cc] underline"
                   onClick={() => pickRow(candidate)}
                 >
@@ -983,7 +1214,6 @@ export function PartyPicker({
             ))}
           </ul>
           {jobReply?.truncated ? <p role="status">{PARTY_TRUNCATED_NOTE}</p> : null}
-          <HmsAsOf asOf={currentJobView?.asOf ?? null} />
         </>
       ) : null}
       {prefetchedBest && otherJobResults.length ? (
@@ -1004,6 +1234,7 @@ export function PartyPicker({
               >
                 <button
                   type="button"
+                  title={candidate.nativeId}
                   className="text-left text-[11.5px] font-semibold text-[#0066cc] underline"
                   onClick={() => {
                     onPick({
