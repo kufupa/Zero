@@ -13,7 +13,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { TRPCError } from '@trpc/server';
-import { and, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
 import {
@@ -29,6 +29,12 @@ import { aiAgentRun } from '../db/schema/hitl.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { classifyMailSource, isMailSourceClassification } from './mail-source.js';
+import {
+  lookupLearnedSenderHistory,
+  partyHistoryBindEnabled,
+  recordSenderParty,
+  type RecordSenderPartyInput,
+} from './party-sender-map.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
 import {
   CENTURION_HMS_READ_TARGET,
@@ -2368,6 +2374,11 @@ async function executePartyMatchV2(input: {
   };
   const candidates = buildPartyMatchCandidates(emailInput);
   const context: PartyMatchEmailContext = partyMatchEmailContext(emailInput);
+  const senderHost = source.fromAddress?.match(/@([a-z0-9.-]+)/i)?.[1]?.toLowerCase().replace(/\.+$/, '');
+  const learnedSender =
+    partyHistoryBindEnabled(process.env) && senderHost
+      ? lookupLearnedSenderHistory(senderHost)
+      : null;
   const { partyMatchV3Enabled, runPartyMatchV3 } = await import('./party-match-v3.js');
   if (partyMatchV3Enabled(process.env)) {
     let adapter: ReturnType<typeof resolveAdapter>['adapter'] = null;
@@ -2382,6 +2393,9 @@ async function executePartyMatchV2(input: {
       candidates,
       context,
       emailText: `${source.subject ?? ''}\n${source.textBody ?? ''}`,
+      senderHistory: learnedSender?.nativeId
+        ? [{ kind: learnedSender.kind, nativeId: learnedSender.nativeId }]
+        : undefined,
       findParty: async (searches) => {
         if (!searches.length) return [];
         return findPartyJob(
@@ -2779,6 +2793,93 @@ export function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): {
   };
 }
 
+type SenderPartyObservation = Omit<RecordSenderPartyInput, 'host'>;
+
+function senderPartyObservation(
+  kind: 'company' | 'agency',
+  value: unknown,
+): SenderPartyObservation | null {
+  const row = objectRecord(value);
+  if (typeof row.name !== 'string' || typeof row.nativeId !== 'string') return null;
+  const name = row.name.trim();
+  const nativeId = row.nativeId.trim();
+  if (!name || !nativeId) return null;
+  return {
+    kind,
+    name,
+    nativeId,
+    iata: typeof row.iata === 'string' ? row.iata : null,
+  };
+}
+
+function senderPartyFromFindResult(result: unknown): SenderPartyObservation | null {
+  const commercial = objectRecord(objectRecord(result).commercial);
+  // The sender map has one row per host; prefer the booking agency when a stay carries both parties.
+  return (
+    senderPartyObservation('agency', commercial.agency) ??
+    senderPartyObservation('company', commercial.company)
+  );
+}
+
+function senderHostFromAddress(address: string): string | null {
+  const at = address.lastIndexOf('@');
+  if (at < 0) return null;
+  return address
+    .slice(at + 1)
+    .trim()
+    .match(/^[a-z0-9.-]+/i)?.[0]
+    ?.toLowerCase()
+    .replace(/\.+$/, '') ?? null;
+}
+
+async function firstDirectInboundSenderHost(
+  db: DB,
+  run: AiWorkflowRun,
+): Promise<string | null> {
+  if (!run.threadId) return null;
+  const inbound = await db
+    .select({ fromAddress: message.fromAddress, subject: message.subject, textBody: message.textBody, htmlBody: message.htmlBody })
+    .from(message)
+    .where(
+      and(
+        eq(message.transportId, run.transportId),
+        eq(message.threadId, run.threadId),
+        eq(message.direction, 'inbound'),
+      ),
+    )
+    .orderBy(asc(sql`coalesce(${message.receivedAt}, ${message.createdAt})`));
+  for (const row of inbound) {
+    if (
+      classifyMailSource({
+        fromAddress: row.fromAddress,
+        subject: row.subject,
+        bodyText: row.textBody ?? row.htmlBody,
+      }).kind !== 'direct'
+    ) {
+      continue;
+    }
+    const host = senderHostFromAddress(row.fromAddress);
+    if (!host || host === 'legacyhotels.co.za' || host.endsWith('.legacyhotels.co.za')) continue;
+    return host;
+  }
+  return null;
+}
+
+async function recordSenderHistoryAfterRead(
+  db: DB,
+  run: AiWorkflowRun,
+  party: SenderPartyObservation | null,
+): Promise<void> {
+  if (!party || !partyHistoryBindEnabled(process.env)) return;
+  try {
+    const host = await firstDirectInboundSenderHost(db, run);
+    if (!host) return;
+    await recordSenderParty(db, { host, ...party });
+  } catch {
+    console.warn('party_sender_map_write_failed', { count: 1 });
+  }
+}
+
 /**
  * Runs one claimed job. Called from executeAiRun after markAiRunRunning, so
  * the fence is already live. Returns the state the run should end in.
@@ -2913,6 +3014,19 @@ export async function executeHmsJob(input: {
         classifyStaffQuote,
         undefined,
         { recorder: createToolRunRecorder(db, { enabled: true }) ?? undefined },
+      );
+      const selectedParty = request.input.parties?.agency ?? request.input.parties?.company;
+      await recordSenderHistoryAfterRead(
+        db,
+        run,
+        selectedParty
+          ? {
+              kind: selectedParty.kind,
+              name: selectedParty.name,
+              nativeId: selectedParty.nativeId,
+              iata: null,
+            }
+          : null,
       );
       return 'succeeded';
     } catch (error) {
@@ -3096,6 +3210,9 @@ export async function executeHmsJob(input: {
     },
     db,
   );
+  if (marked && request.kind === 'find') {
+    await recordSenderHistoryAfterRead(db, run, senderPartyFromFindResult(result));
+  }
   // ponytail: the CLI spawn keeps its own 5-minute timeout; the run deadline is enforced at claim time, not during the spawn.
   await pruneExpiredPaneRuns(Date.now());
   return marked ? 'succeeded' : 'retry_wait';

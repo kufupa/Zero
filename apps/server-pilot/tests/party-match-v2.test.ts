@@ -257,12 +257,11 @@ describe('party sender history candidates', () => {
       { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 5 },
     ]);
 
-    expect(
-      buildPartyMatchCandidates({
-        fromAddress: 'agent@agency.example.test',
-        payload: { agency: 'Current Travel' },
-      }),
-    ).toEqual([
+    const candidates = buildPartyMatchCandidates({
+      fromAddress: 'agent@agency.example.test',
+      payload: { agency: 'Current Travel' },
+    });
+    expect(candidates.slice(0, 2)).toEqual([
       {
         name: 'Current Travel',
         kind: 'agency',

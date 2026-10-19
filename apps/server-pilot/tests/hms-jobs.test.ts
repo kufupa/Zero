@@ -41,6 +41,7 @@ import {
   message,
   mailThread,
 } from '../src/db/schema/mail.js';
+import { partySenderMap } from '../src/db/schema/party-sender-map.js';
 import { hitlToolRun } from '../src/db/schema/hitl.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { runHmsJobOnce } from '../src/ai/worker.js';
@@ -2806,7 +2807,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
         },
       }));
-      const { threadId } = await seedThread(db);
+      const { threadId, messageId } = await seedThread(db);
+      const senderHost = `history-${randomUUID()}.example.test`;
+      await db
+        .update(message)
+        .set({ fromAddress: `guest@${senderHost}` })
+        .where(eq(message.id, messageId));
+      vi.stubEnv('PARTY_HISTORY_BIND', 'on');
       const queued = await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
         db,
@@ -2831,6 +2838,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
         },
       });
+      const [learned] = await db
+        .select()
+        .from(partySenderMap)
+        .where(eq(partySenderMap.host, senderHost));
+      expect(learned).toMatchObject({ kind: 'agency', name: 'Harbor Travel', nativeId: 'AG-9', support: 1 });
       // A restart of that worker while a job runs puts it back to retry_wait for the next claim.
       const again = await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
