@@ -177,11 +177,26 @@ describe('workflow folder mapping', () => {
     expect(mapWorkflowFolder({ kind })).toBe(folder);
   });
 
-  it('sends system mail to Not for Nava and leaves unknown actions visible for review', () => {
+  it('routes system notices by action, except new bookings go to payments', () => {
     expect(mapWorkflowFolder({ action: 'new_booking', kind: 'booking', origin: 'system_notice' })).toBe(
+      'payments',
+    );
+    expect(mapWorkflowFolder({ action: 'new_booking', kind: 'booking', origin: 'person' })).toBe(
+      'new-bookings',
+    );
+    expect(mapWorkflowFolder({ action: 'amend', kind: 'amendment', origin: 'system_notice' })).toBe(
+      'amendments',
+    );
+    expect(mapWorkflowFolder({ action: 'payment_proof', kind: 'voucher_pop', origin: 'system_notice' })).toBe(
+      'payments',
+    );
+    expect(mapWorkflowFolder({ action: 'no_action', kind: 'booking', origin: 'system_notice' })).toBe(
       'not-for-nava',
     );
-    expect(mapWorkflowFolder({ kind: 'booking', automatedChannel: true })).toBe('not-for-nava');
+    expect(mapWorkflowFolder({ kind: 'booking', origin: 'system_notice' })).toBe('not-for-nava');
+    expect(
+      mapWorkflowFolder({ action: 'new_booking', kind: 'booking', automatedChannel: true }),
+    ).toBe('not-for-nava');
     expect(mapWorkflowFolder({ action: 'future_action', kind: 'spam' })).toBe('other-to-do');
   });
 
@@ -192,6 +207,18 @@ describe('workflow folder mapping', () => {
     expect(query.sql).toContain('"mail_action_label"."version" = \'owner\'');
     expect(query.sql).toContain('order by "mail_action_label"."updated_at" desc');
     expect(query.sql).toMatch(/coalesce\([\s\S]*?nullif\(btrim\(\([\s\S]*?select "mail_action_label"\."action"/);
+
+    const sqlWithBinds = query.sql.replace(/\$(\d+)/g, (_match, index: string) =>
+      String(query.params[Number(index) - 1]),
+    );
+    const newBookingCase = sqlWithBinds.slice(sqlWithBinds.indexOf('when new_booking then'));
+    expect(newBookingCase).toMatch(
+      /when new_booking then case when [\s\S]*?origin[\s\S]*?= 'system_notice'[\s\S]*?then payments else new-bookings end/,
+    );
+    expect(sqlWithBinds).toContain('when amend then amendments');
+    expect(sqlWithBinds).toMatch(
+      /when no_action then not-for-nava[\s\S]*?else 'other-to-do'\s+end\s+when [\s\S]*?origin[\s\S]*?= 'system_notice' then 'not-for-nava'/,
+    );
   });
 
   it('counts a successful extraction as prefilled only when a displayable value exists', () => {
