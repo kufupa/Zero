@@ -291,7 +291,21 @@ function uniqueNameHistoryMatch(
         matches.set(`${row.kind}:${row.nativeId}`, row);
     }
   }
-  return matches.size === 1 ? [...matches.values()][0] ?? null : null;
+  if (matches.size !== 1) return null;
+  const match = [...matches.values()][0] ?? null;
+  // The email beats history: a same-kind name in this email that exactly names a different row keeps the normal pick.
+  const emailNamesOtherRow = candidates.some(
+    (candidate) =>
+      candidate.source !== 'sender_history' &&
+      candidate.kind === match?.kind &&
+      rows.some(
+        (row) =>
+          row.kind === candidate.kind &&
+          row.nativeId !== match?.nativeId &&
+          normalisePartyName(row.name) === normalisePartyName(candidate.name),
+      ),
+  );
+  return emailNamesOtherRow ? null : match;
 }
 
 function copiesOf(picked: PartyMatchV3Row, rows: readonly PartyMatchV3Row[]): PartyMatchV3Row[] {

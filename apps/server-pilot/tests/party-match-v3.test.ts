@@ -218,6 +218,29 @@ describe('PARTY MATCH V3 duplicate bind', () => {
     });
   });
 
+  it('keeps the email-named row when name-only history points at a different row', () => {
+    const result = applyPartyBindV3({
+      candidates: [
+        candidate('Acme South'),
+        {
+          name: 'Acme North',
+          kind: 'agency',
+          source: 'sender_history',
+          strength: 'strong',
+        },
+      ],
+      rows: [
+        { kind: 'agency', nativeId: 'north', name: 'Acme North' },
+        { kind: 'agency', nativeId: 'south', name: 'Acme South' },
+      ],
+      pick: highPick('south'),
+      emailText: 'Please quote for Acme South.',
+      senderHistory: [{ kind: 'agency', nativeId: null, name: 'Acme North' }] as never,
+    });
+
+    expect(result.boundParty?.nativeId).not.toBe('north');
+  });
+
   it('requires every distinctive history token before a name-only bind', () => {
     const result = applyPartyBindV3({
       candidates: [
