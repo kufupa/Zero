@@ -8,7 +8,14 @@ import {
   type PartyMatchCandidate,
 } from '../src/ai/party-match-v2.js';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
+
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  replaceLearnedSenderMapForTests(null);
+});
 
 const candidate = (name: string, kind: 'company' | 'agency' = 'company'): PartyMatchCandidate => ({
   name,
@@ -203,6 +210,72 @@ describe('PARTY MATCH V2 search plan', () => {
       source: 'signature',
       strength: 'strong',
     });
+  });
+});
+
+describe('party sender history candidates', () => {
+  it('keeps learned sender history weak when the flag is off', () => {
+    vi.stubEnv('PARTY_HISTORY_BIND', 'off');
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 2 },
+    ]);
+
+    expect(buildPartyMatchCandidates({ fromAddress: 'agent@agency.example.test' })).toContainEqual({
+      name: 'Harbor Travel',
+      kind: 'agency',
+      source: 'sender_domain_alias',
+      strength: 'weak',
+    });
+  });
+
+  it('strengthens learned sender history only after two supports', () => {
+    vi.stubEnv('PARTY_HISTORY_BIND', 'on');
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 2 },
+    ]);
+    expect(buildPartyMatchCandidates({ fromAddress: 'agent@agency.example.test' })).toContainEqual({
+      name: 'Harbor Travel',
+      kind: 'agency',
+      source: 'sender_history',
+      strength: 'strong',
+    });
+
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 1 },
+    ]);
+    expect(buildPartyMatchCandidates({ fromAddress: 'agent@agency.example.test' })).toContainEqual({
+      name: 'Harbor Travel',
+      kind: 'agency',
+      source: 'sender_history',
+      strength: 'weak',
+    });
+  });
+
+  it('keeps a conflicting email-stated agency ahead of learned history', () => {
+    vi.stubEnv('PARTY_HISTORY_BIND', 'on');
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 5 },
+    ]);
+
+    expect(
+      buildPartyMatchCandidates({
+        fromAddress: 'agent@agency.example.test',
+        payload: { agency: 'Current Travel' },
+      }),
+    ).toEqual([
+      {
+        name: 'Current Travel',
+        kind: 'agency',
+        source: 'extraction_agency',
+        strength: 'strong',
+      },
+      {
+        name: 'Harbor Travel',
+        kind: 'agency',
+        source: 'sender_history',
+        strength: 'weak',
+      },
+    ]);
   });
 });
 
