@@ -100,6 +100,32 @@ describe('StayCard rooms', () => {
     expect(screen.getByRole('heading', { name: /Stay 2 of 2/ })).toBeTruthy();
   });
 
+  it('shows stay guidance as an info tooltip and keeps copy/remove actions wired', () => {
+    const { onStayAction } = renderStay([
+      stay(),
+      stay({ id: 'g2', roomPreference: 'STWN' }),
+    ]);
+    const info = screen.getByRole('button', { name: 'Stay information' });
+    expect(info.getAttribute('title')).toBe('One stay = one date range = one HMS booking.');
+    expect(screen.queryByText(/Separate HMS booking/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Copy stay' })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Copy room' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Remove' })).toHaveLength(3);
+
+    fireEvent.click(screen.getByTitle('Create another stay with the same dates and rooms.'));
+    expect(onStayAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'duplicate_stay', stayId: 's1', token: expect.any(String) }),
+    );
+    fireEvent.click(screen.getByTitle('Remove this stay and its room types.'));
+    expect(onStayAction).toHaveBeenLastCalledWith({ type: 'remove_stay', stayId: 's1' });
+    fireEvent.click(screen.getAllByTitle('Duplicate this room type and occupancy.')[0]!);
+    expect(onStayAction).toHaveBeenLastCalledWith(
+      expect.objectContaining({ type: 'duplicate_row', groupId: 'g1', token: expect.any(String) }),
+    );
+    fireEvent.click(screen.getAllByTitle('Remove this room type.')[0]!);
+    expect(onStayAction).toHaveBeenLastCalledWith({ type: 'remove_row', groupId: 'g1' });
+  });
+
   it('marks values read from the email and defaulted meal plans', () => {
     renderStay([stay({ fields: { arrivalDate: 'extracted', adults: 'extracted', board: 'defaulted' } })]);
     expect(screen.getAllByText('from email').length).toBeGreaterThanOrEqual(2);

@@ -1,5 +1,5 @@
 import { addDays, addMonths, format, isValid, parseISO, subMonths } from 'date-fns';
-import { ChevronLeft, ChevronRight, Moon } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useEffect, useId, useState } from 'react';
 import type { DateRange } from 'react-day-picker';
 
@@ -8,7 +8,6 @@ import { Field, FromEmailTag, LinkButton, paneFieldClass } from '@/components/na
 import type { FactProvenance } from '@/lib/quote-workflow/types';
 
 const ISO = 'yyyy-MM-dd';
-const QUICK_NIGHTS = [1, 2, 3, 7];
 
 export type StayDatePatch = { arrivalDate?: string; departureDate?: string };
 
@@ -108,8 +107,8 @@ export function StayDateRange({
   const departureDate = toDate(departure);
   const nights = nightsFor(arrival, departure);
   const [open, setOpen] = useState(false);
-  // Which tile the next calendar click fills in.
-  const [end, setEnd] = useState<'arrival' | 'departure'>(arrival && !departure ? 'departure' : 'arrival');
+  // The next calendar click starts an arrival unless we're waiting for a later departure.
+  const [end, setEnd] = useState<'arrival' | 'departure'>('arrival');
   const [month, setMonth] = useState<Date>(() => arrivalDate ?? departureDate ?? new Date());
 
   // Follow the arrival month when the arrival changes, so the calendar opens on the stay, not today.
@@ -118,85 +117,84 @@ export function StayDateRange({
     if (picked) setMonth(picked);
   }, [arrival]);
 
-  function openAt(next: 'arrival' | 'departure') {
+  function openAt() {
     setOpen(true);
-    setEnd(next);
+    setEnd('arrival');
   }
 
   function pickDay(day: Date) {
     const picked = format(day, ISO);
     if (end === 'departure' && arrival && picked > arrival) {
       onChange({ departureDate: picked });
+      setEnd('arrival');
       return;
     }
-    if (end === 'arrival') {
-      onChange({ arrivalDate: picked, departureDate: departure > picked ? departure : '' });
-      setEnd('departure');
-      return;
-    }
-    // A day on or before the arrival starts the stay again.
     onChange({ arrivalDate: picked, departureDate: '' });
-  }
-
-  function stayFor(n: number) {
-    if (arrivalDate) onChange({ departureDate: format(addDays(arrivalDate, n), ISO) });
+    setEnd('departure');
   }
 
   const range: DateRange = { from: arrivalDate, to: departureDate };
-  const nightsText =
-    nights === null
-      ? 'Pick both dates'
-      : nights > 0
-        ? `${nights} ${nights === 1 ? 'night' : 'nights'}`
-        : 'Check the dates';
+  const nightOptions = Array.from({ length: 14 }, (_, index) => index + 1);
+  if (nights !== null && Number.isInteger(nights) && nights > 14) nightOptions.push(nights);
+  const invalidDates = nights !== null && nights <= 0;
 
   return (
-    <div className="overflow-hidden rounded-[3px] border border-[#cbd5e1]">
-      <div className="grid grid-cols-2 divide-x divide-[#e2e8f0]">
-        <DateTile
-          caption="Check-in"
-          value={arrivalDate}
-          active={open && end === 'arrival'}
-          provenance={provenance?.arrival}
-          onClick={() => openAt('arrival')}
-        />
-        <DateTile
-          caption="Check-out"
-          value={departureDate}
-          active={open && end === 'departure'}
-          provenance={provenance?.departure}
-          onClick={() => openAt('departure')}
-        />
+    <div className="space-y-2">
+      <div className="grid grid-cols-[minmax(0,1fr)_5rem] items-end gap-2">
+        <div className="grid min-w-0 grid-cols-2 divide-x divide-[#e2e8f0]">
+          <DateTile
+            caption="Check-in"
+            value={arrivalDate}
+            active={open && end === 'arrival'}
+            provenance={provenance?.arrival}
+            onClick={openAt}
+          />
+          <DateTile
+            caption="Check-out"
+            value={departureDate}
+            active={open && end === 'departure'}
+            provenance={provenance?.departure}
+            onClick={openAt}
+          />
+        </div>
+        <Field label="Nights" htmlFor={`${id}-nights`}>
+          <select
+            id={`${id}-nights`}
+            aria-label="Nights"
+            className={paneFieldClass}
+            value={nights !== null && Number.isInteger(nights) && nights > 0 ? String(nights) : ''}
+            disabled={!arrivalDate}
+            onChange={(event) => {
+              const selectedNights = Number(event.target.value);
+              if (arrivalDate && selectedNights > 0) {
+                onChange({ departureDate: format(addDays(arrivalDate, selectedNights), ISO) });
+                setEnd('arrival');
+              }
+            }}
+          >
+            <option value="">Select</option>
+            {nightOptions.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </Field>
       </div>
-      <div className="flex items-center justify-between border-t border-[#e2e8f0] bg-[#f8fafc] px-2.5 py-1.5 text-[12.5px] text-[#475569]">
-        <span className="flex items-center gap-1.5">
-          <Moon aria-hidden="true" className="h-3 w-3" />
-          {nightsText}
-        </span>
-        <LinkButton ariaExpanded={open} onClick={() => setOpen((value) => !value)}>
+      <div className="flex items-center justify-between gap-2 text-[12.5px] text-[#475569]">
+        {invalidDates ? <span>Check the dates</span> : <span />}
+        <LinkButton
+          ariaExpanded={open}
+          onClick={() => {
+            if (!open) setEnd('arrival');
+            setOpen((value) => !value);
+          }}
+        >
           <span className="flex items-center gap-1.5">
             <span>Change dates</span>
             <span aria-hidden="true">{open ? '▴' : '▾'}</span>
           </span>
         </LinkButton>
-      </div>
-      <div className="grid grid-cols-4 gap-1 border-t border-[#e2e8f0] bg-white px-2.5 py-2">
-        {QUICK_NIGHTS.map((n) => (
-          <button
-            key={n}
-            type="button"
-            disabled={!arrivalDate}
-            aria-pressed={nights === n}
-            onClick={() => stayFor(n)}
-            className={`rounded-[2px] border py-1 text-[12.5px] transition-colors disabled:cursor-not-allowed disabled:text-[#cbd5e1] ${
-              nights === n
-                ? 'border-[#1a4332] bg-[#eaf4ee] font-bold text-[#1a4332]'
-                : 'border-[#e2e8f0] bg-[#f8fafc] text-[#475569] hover:bg-[#e2e8f0]'
-            }`}
-          >
-            {`${n} ${n === 1 ? 'night' : 'nights'}`}
-          </button>
-        ))}
       </div>
       <div hidden={!open} className="space-y-2 border-t border-[#e2e8f0] bg-white p-2.5">
         {open ? (

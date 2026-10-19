@@ -69,29 +69,31 @@ describe('stay and room builder', () => {
 
   it('shows the unknown room code the email asked for, and blocks Get rates until a room type is chosen', () => {
     renderPanel(requestSession([row('a1', dateA, { roomPreference: 'PENTHOUSE' })]));
-    expect(screen.getByText('Email asked for PENTHOUSE — choose a room type')).toBeTruthy();
+    const roomType = screen.getByLabelText('Room type');
+    if (!(roomType instanceof HTMLSelectElement)) throw new Error('Room type is not a select');
+    expect(roomType.value).toBe('PENTHOUSE');
+    expect(screen.getByRole('option', { name: 'Email request' })).toBeTruthy();
     expect(getRatesButton().disabled).toBe(true);
-    expect(screen.getByText('Choose a room type for each row.')).toBeTruthy();
+    expect(screen.getAllByText('Choose a room type for each room before searching.')).toHaveLength(2);
   });
 
   it('keeps Get rates off while any row of any stay has no room type', () => {
     renderPanel(requestSession([row('a1', dateA), row('b1', dateB, { roomPreference: undefined })]));
-    // Each date range has its own search button; the second stay's row has no room type, so its search stays off.
-    const searches = screen.getAllByRole('button', { name: 'Search availability' }) as HTMLButtonElement[];
+    const searches = screen.getAllByRole('button', { name: /Search this date range for Stay/ }) as HTMLButtonElement[];
     expect(searches).toHaveLength(2);
     expect(searches[1]!.disabled).toBe(true);
-    expect(screen.getByText('Choose a room type for each row.')).toBeTruthy();
+    expect(screen.getByText('Choose a room type for each room before searching.')).toBeTruthy();
   });
 
   it('hands stay actions to the shell: duplicate, remove and add', () => {
     const { onStayAction } = renderPanel(requestSession([row('a1', dateA), row('b1', dateB)]));
-    fireEvent.click(screen.getAllByRole('button', { name: 'Duplicate stay' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy stay' })[0]!);
     expect(onStayAction).toHaveBeenLastCalledWith({
       type: 'duplicate_stay',
       stayId: 'd:2026-11-12:2026-11-14',
       token: expect.any(String),
     });
-    fireEvent.click(screen.getAllByRole('button', { name: 'Remove stay' })[1]!);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]!);
     expect(onStayAction).toHaveBeenLastCalledWith({ type: 'remove_stay', stayId: 'd:2026-12-01:2026-12-03' });
     fireEvent.click(screen.getByRole('button', { name: '+ Add another date range' }));
     expect(onStayAction).toHaveBeenLastCalledWith({ type: 'add_stay', token: expect.any(String) });
