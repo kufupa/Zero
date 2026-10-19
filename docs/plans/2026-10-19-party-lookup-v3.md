@@ -64,6 +64,7 @@ Resolution — both, in this order:
 | P1 | Docs + Step 0 result | Opus | 10 | merged |
 | P2 | No party lookup on booking-system notices | Luna max | 40 | READY |
 | P3 | Keep city/IATA/agency id | Grok 4.6 high | 50 | READY |
+| P4 | Pane picker lists every duplicate copy with IATA/city (Greptile P1 on #392: today max 3–5 chips, name + id only) | Luna max, after P3 | 40 | READY |
 | P5 | Agent loop: LLM terms → batch → rows+columns → ≤1 vary round (≤3) → pick/ask; duplicate rule from S0b | Grok 4.6 high | 60 | READY |
 | P6 | Live replay ~20 mails with id truth through P5 | Opus | 25 | score table |
 | P7 | Sweep + offline replay of the same loop | Luna / Grok | after P6 | score on frozen index |

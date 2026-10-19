@@ -48,6 +48,12 @@ Coordinator: Opus chat "B2 party design" (worktree `oct19-party-eval`). Plan: [p
 - Tests: 13 same-name rows, no column → needs_pick listing all; email says "Cape Town" + one Cape Town copy → bind that copy; round 1 empty → round 2 runs ≤ 3 terms, then stops; model throws → V2 fallback; flag off → V2 path unchanged.
 - A coordinator message with the step-0 duplicate rule may arrive mid-lane. Fold it in if it lands before READY.
 
+## Lane P4 — picker shows every copy (Luna max, 40 min; starts after P3 merges)
+
+- Files: `apps/mail/components/quote-workflow/party-picker.tsx`, `apps/mail/tests/party-picker-results.test.tsx` (+ the result type, if P3 changed it).
+- Do: when ≥ 2 rows share a name, list every copy (no 3/5 cap for that name), each with IATA and city from P3's columns, e.g. `Tourvest Travel Services · IATA 77206673 · Pretoria (#280)`. Same look, both surfaces (the same component serves the Outlook pane and webmail).
+- Tests: 13 same-name rows → 13 choices with IATA; unique names → unchanged.
+
 ## Lane S0a — where the reservation screen holds the agency id (Sol high, computer use, read-only, 20 min)
 
 Run by the coordinator, not a coding lane.
