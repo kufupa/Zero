@@ -69,10 +69,12 @@ describe('stay and room builder', () => {
 
   it('shows the unknown room code the email asked for, and blocks Get rates until a room type is chosen', () => {
     renderPanel(requestSession([row('a1', dateA, { roomPreference: 'PENTHOUSE' })]));
-    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('PENTHOUSE');
+    const roomType = screen.getByLabelText('Room type');
+    if (!(roomType instanceof HTMLSelectElement)) throw new Error('Room type is not a select');
+    expect(roomType.value).toBe('PENTHOUSE');
     expect(screen.getByRole('option', { name: 'Email request' })).toBeTruthy();
     expect(getRatesButton().disabled).toBe(true);
-    expect(screen.getByText('Choose a room type for each room before searching.')).toBeTruthy();
+    expect(screen.getAllByText('Choose a room type for each room before searching.')).toHaveLength(2);
   });
 
   it('keeps Get rates off while any row of any stay has no room type', () => {
