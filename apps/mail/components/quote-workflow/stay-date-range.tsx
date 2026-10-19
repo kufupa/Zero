@@ -117,9 +117,10 @@ export function StayDateRange({
     if (picked) setMonth(picked);
   }, [arrival]);
 
-  function openAt() {
+  // Check-out edits the departure of a stay that has an arrival; anything else starts a new arrival.
+  function openAt(next: 'arrival' | 'departure') {
     setOpen(true);
-    setEnd('arrival');
+    setEnd(next === 'departure' && arrival ? 'departure' : 'arrival');
   }
 
   function pickDay(day: Date) {
@@ -147,14 +148,14 @@ export function StayDateRange({
             value={arrivalDate}
             active={open && end === 'arrival'}
             provenance={provenance?.arrival}
-            onClick={openAt}
+            onClick={() => openAt('arrival')}
           />
           <DateTile
             caption="Check-out"
             value={departureDate}
             active={open && end === 'departure'}
             provenance={provenance?.departure}
-            onClick={openAt}
+            onClick={() => openAt('departure')}
           />
         </div>
         <Field label="Nights" htmlFor={`${id}-nights`}>
