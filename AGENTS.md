@@ -70,6 +70,8 @@ All four drivers hit the same wall: **gate latency and eval validity, not lane c
 | Kill and monitor by PID, never `pkill -f` / `pgrep -f` patterns | 3 drivers matched their own shell (exit 144) or a monitor's own command line |
 | Never relay an owner approval between sessions. Prod/auth approvals are given in the executing session's own chat | The watchdog relayed a "pre-approval" for `--apply`; the main driver correctly refused |
 | Live HMS tool path is DOM-verified with one read-only probe before any batch | 6 wasted live searches on an unverified Guest Search path |
+| Before building an agent/LLM loop, score the cheapest deterministic baseline (history, exact match, rule) on the same truth set | 2026-10-19: party v3 LLM loop took ~3 h and lost to v2 (14 vs 21/22); sender history, never scored, got 65/107 agencies right |
+| Accuracy evals use ≥ 100 truth rows by id that the system under test did not produce; report n and source with every rate | 2026-10-19: 42-mail party set, 22 rows were v2 binds staff accepted (circular) |
 
 Run contracts, `/goal` vs `/loop`, and the overnight template: `docs/context/RUN-CONTRACT.md`.
 

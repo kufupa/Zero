@@ -2,11 +2,12 @@
 
 Updated 2026-10-19 after the overnight leak-free triage run. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
 
-## Party lookup v3 — 2026-10-19 (B2 party design chat)
+## Party lookup — 2026-10-19 (B2 party design chat)
 
-- Shipped and deployed `39fa0efc4` at 16:41Z (last-good before: `8e2a5aaf5`; health OK, 4 procs online): notices skip party lookup (#395), HMS reads keep city/IATA/company id (#394), the picker lists every duplicate copy with IATA/address/city (#403, live once staff bundles reload), and the v3 reservationist loop (#400, #406) behind `PARTY_MATCH_V3`, **off**.
-- Live replay (P6, 42 real mails, read-only): 0 wrong binds; p50 25 s vs v2 65 s. v3 15/22 vs v2 21/22 on staff-confirmed agencies (one agency's full name found nothing, then v3 repeated it) → #406 fix; re-run running. Evidence: [party evidence §11–12](../research/2026-10-19-party-lookup-evidence.md); plan: [party v3](../plans/2026-10-19-party-lookup-v3.md).
-- Hold: flag on = owner, only after the re-run shows v3 ≥ v2 on the same 42 mails with 0 wrong binds. Next: per-sender history by id (P8), the main lever for duplicate copies.
+- Deployed (flag-off parts live): notices skip party lookup (#395), HMS reads keep city/IATA/company id (#394), picker lists every duplicate copy (#403), v3 loop (#400, #406) behind `PARTY_MATCH_V3` **off**. #408 (v2 picker on v3 rows) READY, not merged.
+- Live replay (22 staff-confirmed mails, read-only): v2 21/22, v3 14/22, 0 wrong both; v3 p50 34 s vs v2 65 s. Prod named-party bind rate (30 d): v2 18/66 (27%).
+- Decision proposed (owner to confirm): hybrid = sender history → v3 search (+#408) → staff pick, and staff picks write history. History alone, earlier bookings only: 65/107 agencies right, 1 wrong. [Strategy decision](../research/2026-10-19-party-strategy-decision.md).
+- Running: `party-bigset-read2` on EC2 (read-only, 178 bookings). Next check: score v2 / v3+#408 / hybrid on the same rows. Hold: any flag on = owner.
 
 ## Chat A (HMS speed) — 2026-10-19
 
