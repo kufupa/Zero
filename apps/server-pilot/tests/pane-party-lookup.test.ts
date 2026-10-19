@@ -1,5 +1,6 @@
 import {
   findParty,
+  findPartyJob,
   mergePartyKindResults,
   PANE_PARTY_CANDIDATE_CAP,
   PANE_PARTY_PER_KIND_CAP,
@@ -66,15 +67,39 @@ function cliForGrid(
   return runner.classifyKindRows(kind, rows, { query }, loaded);
 }
 
-/** A spawn seam that answers each kind from its fixture grid. */
+function cliForPaneKind(
+  kind: 'company' | 'agency',
+  name: string,
+  grids: { organization?: typeof HMS_COMPANIES; bookingAgency?: typeof HMS_AGENCIES; loaded?: number } = {},
+) {
+  if (kind === 'company') {
+    return {
+      kind: 'organization' as const,
+      name,
+      ...cliForGrid('organization', name, grids.organization ?? HMS_COMPANIES, grids.loaded),
+    };
+  }
+  return {
+    kind: 'bookingAgency' as const,
+    name,
+    ...cliForGrid('bookingAgency', name, grids.bookingAgency ?? HMS_AGENCIES),
+  };
+}
+
+/** A spawn seam that answers each kind from its fixture grid. A batch `searches` list is one CLI envelope. */
 function fixtureSpawn(
   grids: { organization?: typeof HMS_COMPANIES; bookingAgency?: typeof HMS_AGENCIES; loaded?: number } = {},
 ) {
-  return vi.fn(async ({ kind, name }: { kind: 'company' | 'agency'; name: string }) => {
-    if (kind === 'company') {
-      return cliForGrid('organization', name, grids.organization ?? HMS_COMPANIES, grids.loaded);
-    }
-    return cliForGrid('bookingAgency', name, grids.bookingAgency ?? HMS_AGENCIES);
+  return vi.fn(async (input: {
+    kind: 'company' | 'agency';
+    name: string;
+    searches?: Array<{ kind: 'company' | 'agency'; name: string }>;
+  }) => {
+    const items = input.searches?.length ? input.searches : [{ kind: input.kind, name: input.name }];
+    const searches = items.map(({ kind, name }) => cliForPaneKind(kind, name, grids));
+    if (input.searches?.length) return { searches, phaseMs: { connect: 0, login: 0, navigate: 0, search: 0 } };
+    const { kind: _kind, name: _name, ...cli } = searches[0];
+    return cli;
   });
 }
 
@@ -191,11 +216,14 @@ describe('findParty: one search over companies and agencies', () => {
       best: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' },
       searchedFor: 'Tourvest',
     });
-    expect(spawn.mock.calls.map(([input]) => input)).toEqual([
-      { kind: 'company', name: 'Tourvest' },
-      { kind: 'agency', name: 'Tourvest' },
-    ]);
-    expect(seen).toEqual(['lock', 'lock']);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      searches: [
+        { kind: 'company', name: 'Tourvest' },
+        { kind: 'agency', name: 'Tourvest' },
+      ],
+    }));
+    expect(seen).toEqual(['lock']);
   });
 
   it('"360" is found as an agency, with its HMS id and name', async () => {
@@ -253,11 +281,20 @@ describe('findParty: one search over companies and agencies', () => {
 
   it('an agency failure beside a company match gives the failure, not the company', async () => {
     panePartyLookupLoaders.lock = passingLock();
-    panePartyLookupLoaders.spawn = vi.fn(async ({ kind, name }: { kind: string; name: string }) =>
-      kind === 'company'
-        ? cliForGrid('organization', name, HMS_COMPANIES)
-        : { outcome: 'external_system_unavailable', candidates: [] },
-    );
+    panePartyLookupLoaders.spawn = vi.fn(async (input: {
+      kind: string;
+      name: string;
+      searches?: Array<{ kind: 'company' | 'agency'; name: string }>;
+    }) => {
+      const items = input.searches?.length ? input.searches : [{ kind: input.kind, name: input.name }];
+      return {
+        searches: items.map(({ kind, name }) =>
+          kind === 'company'
+            ? { kind: 'organization', name, ...cliForGrid('organization', name, HMS_COMPANIES) }
+            : { kind: 'bookingAgency', name, outcome: 'external_system_unavailable', candidates: [] },
+        ),
+      };
+    });
     await expect(findParty({ name: 'Tourvest' })).resolves.toEqual({
       outcome: 'external_system_unavailable',
       results: [],
@@ -587,7 +624,9 @@ describe('findParty with a kind', () => {
     const spawn = fixtureSpawn();
     panePartyLookupLoaders.spawn = spawn;
     const found = await findParty({ name: 'Tourvest', kind: 'company' });
-    expect(spawn.mock.calls.map(([input]) => input)).toEqual([{ kind: 'company', name: 'Tourvest' }]);
+    expect(spawn.mock.calls.map(([input]) => ({ kind: input.kind, name: input.name }))).toEqual([
+      { kind: 'company', name: 'Tourvest' },
+    ]);
     expect(found).toMatchObject({
       outcome: 'resolved',
       best: { kind: 'company', nativeId: '206' },
@@ -595,20 +634,39 @@ describe('findParty with a kind', () => {
     });
   });
 
-  it('falls back to the first distinctive word when the full name finds nothing, at most two runs', async () => {
+  it('falls back to the first distinctive word when the full name finds nothing, in one spawn', async () => {
     panePartyLookupLoaders.lock = passingLock();
-    const spawn = vi.fn(async ({ name }: { kind: string; name: string }) =>
-      name === 'Foschini'
-        ? {
-            outcome: 'resolved',
-            candidates: [{ kind: 'organization', nativeId: '77', displayName: 'FOSCHINI GROUP LIMITED' }],
-            truncated: false,
-          }
-        : { outcome: 'no_match', candidates: [] },
-    );
+    const spawn = vi.fn(async (input: {
+      kind: string;
+      name: string;
+      searches?: Array<{ kind: string; name: string }>;
+      stopOnFirstHit?: boolean;
+    }) => {
+      const items = input.searches?.length ? input.searches : [{ kind: input.kind, name: input.name }];
+      return {
+        searches: items.map(({ kind, name }) =>
+          name === 'Foschini'
+            ? {
+                kind: 'organization',
+                name,
+                outcome: 'resolved',
+                candidates: [{ kind: 'organization', nativeId: '77', displayName: 'FOSCHINI GROUP LIMITED' }],
+                truncated: false,
+              }
+            : { kind: 'organization', name, outcome: 'no_match', candidates: [] },
+        ),
+      };
+    });
     panePartyLookupLoaders.spawn = spawn;
     const found = await findParty({ name: 'Foschini Retail Group (pty) Ltd', kind: 'company' });
-    expect(spawn.mock.calls.map(([input]) => input.name)).toEqual(['Foschini Retail Group', 'Foschini']);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      searches: [
+        { kind: 'company', name: 'Foschini Retail Group' },
+        { kind: 'company', name: 'Foschini' },
+      ],
+      stopOnFirstHit: true,
+    }));
     expect(found).toMatchObject({ outcome: 'resolved', searchedFor: 'Foschini', best: { nativeId: '77' } });
   });
 
@@ -626,6 +684,28 @@ describe('findParty with a kind', () => {
     expect(found.best).toEqual({ kind: 'company', nativeId: '2', name: 'FOSCHINI RETAIL GROUP (PTY) LTD' });
     expect(found.results.map((row) => row.nativeId)).toEqual(['2', '1']);
     expect(found.outcome).toBe('ambiguous');
+  });
+});
+
+describe('findPartyJob: V2 planned terms in one spawn', () => {
+  it('runs every planned term under one lock hold and one spawn', async () => {
+    const seen: string[] = [];
+    const spawn = fixtureSpawn();
+    panePartyLookupLoaders.lock = passingLock(seen);
+    panePartyLookupLoaders.spawn = spawn;
+    const found = await findPartyJob([
+      { kind: 'company', name: 'Tourvest' },
+      { kind: 'agency', name: '360' },
+    ]);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(spawn.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      searches: [
+        { kind: 'company', name: 'Tourvest' },
+        { kind: 'agency', name: '360' },
+      ],
+    }));
+    expect(seen).toEqual(['lock']);
+    expect(found.map((row) => row.best?.nativeId)).toEqual(['206', '113']);
   });
 });
 

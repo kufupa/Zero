@@ -141,6 +141,186 @@ export function validateRequest(request) {
   return issues;
 }
 
+const KIND_NAME_FIELD = {
+  organization: 'organizationName',
+  bookingAgency: 'bookingAgencyName',
+  arAccount: 'arAccountName',
+  guest: 'lastName',
+};
+
+const SESSION_DEAD_RE = /Target closed|Session closed|Browser closed|has been closed|Connection closed|Protocol error|disconnected|Execution context was destroyed|Page crashed|crashed/i;
+
+export function nameToQuery(kind, name) {
+  const field = KIND_NAME_FIELD[kind];
+  const trimmed = String(name ?? '').trim();
+  if (!field || !trimmed) return null;
+  return { [field]: trimmed };
+}
+
+function searchLabel(kind, query, name) {
+  if (typeof name === 'string' && name.trim()) return name.trim();
+  const q = query && typeof query === 'object' ? query : {};
+  return String(
+    q.organizationName || q.bookingAgencyName || q.arAccountName || q.iataNumber
+    || q.externalOrganizationId || q.lastName || '',
+  ).trim();
+}
+
+function normalizeOneSearch(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return { issues: ['search'] };
+  if (!KIND_SET.has(item.kind)) return { issues: ['kind'] };
+  if (item.query && typeof item.query === 'object' && !Array.isArray(item.query)) {
+    const issues = validateRequest({ kind: item.kind, query: item.query });
+    if (issues.length) return { issues };
+    return { kind: item.kind, query: item.query, name: searchLabel(item.kind, item.query, item.name) };
+  }
+  const query = nameToQuery(item.kind, item.name);
+  if (!query) return { issues: ['name'] };
+  return { kind: item.kind, query, name: String(item.name).trim() };
+}
+
+/** Turns a CLI request into ordered searches. Single `{kind,query}` and `{kind,name}` stay one search. */
+export function normalizePartyLookupRequest(request) {
+  if (Array.isArray(request)) {
+    if (!request.length) return { issues: ['searches'], searches: [], stopOnFirstHit: false, single: false };
+    const searches = [];
+    for (const item of request) {
+      const one = normalizeOneSearch(item);
+      if (one.issues) return { issues: one.issues, searches: [], stopOnFirstHit: false, single: false };
+      searches.push(one);
+    }
+    return { issues: [], searches, stopOnFirstHit: false, single: false };
+  }
+  if (!request || typeof request !== 'object') {
+    return { issues: ['request'], searches: [], stopOnFirstHit: false, single: false };
+  }
+  if (Array.isArray(request.searches)) {
+    if (!request.searches.length) return { issues: ['searches'], searches: [], stopOnFirstHit: false, single: false };
+    const searches = [];
+    for (const item of request.searches) {
+      const one = normalizeOneSearch(item);
+      if (one.issues) return { issues: one.issues, searches: [], stopOnFirstHit: Boolean(request.stopOnFirstHit), single: false };
+      searches.push(one);
+    }
+    return { issues: [], searches, stopOnFirstHit: Boolean(request.stopOnFirstHit), single: false };
+  }
+  const one = normalizeOneSearch(request);
+  if (one.issues) return { issues: one.issues, searches: [], stopOnFirstHit: false, single: true };
+  return { issues: [], searches: [one], stopOnFirstHit: false, single: true };
+}
+
+export function isSessionDeadError(error) {
+  return SESSION_DEAD_RE.test(String(error?.message || error || ''));
+}
+
+function kindHasRows(result) {
+  return (result?.outcome === 'resolved' || result?.outcome === 'ambiguous')
+    && Array.isArray(result.candidates)
+    && result.candidates.length > 0;
+}
+
+function searchFailureFromError(error, { sessionDead = false } = {}) {
+  return {
+    outcome: 'execution_failure',
+    candidates: [],
+    truncated: false,
+    issues: [{
+      code: 'EXECUTION_FAILURE',
+      path: 'run',
+      reason: sessionDead ? 'session_dead' : String(error?.message || error).slice(0, 180),
+    }],
+  };
+}
+
+/**
+ * Runs already-normalized searches in order on one page. A returned failure still runs the rest.
+ * A thrown session-dead error fills remaining searches with that failure.
+ */
+export async function runNormalizedSearches(searches, {
+  search,
+  stopOnFirstHit = false,
+  now = Date.now,
+} = {}) {
+  const out = [];
+  const hits = new Set();
+  let sessionDead = false;
+  for (const item of searches) {
+    const started = now();
+    if (sessionDead) {
+      out.push({
+        ...searchFailureFromError(new Error('session_dead'), { sessionDead: true }),
+        kind: item.kind,
+        name: item.name,
+        phaseMs: { search: 0 },
+      });
+      continue;
+    }
+    if (stopOnFirstHit && hits.has(item.kind)) {
+      out.push({
+        outcome: 'no_match',
+        candidates: [],
+        truncated: false,
+        skipped: true,
+        kind: item.kind,
+        name: item.name,
+        phaseMs: { search: 0 },
+      });
+      continue;
+    }
+    try {
+      const found = await search(item);
+      const elapsed = Math.max(0, now() - started);
+      const result = { ...found, kind: item.kind, name: item.name, phaseMs: { search: elapsed } };
+      out.push(result);
+      if (kindHasRows(result)) hits.add(item.kind);
+    } catch (error) {
+      sessionDead = isSessionDeadError(error);
+      const elapsed = Math.max(0, now() - started);
+      out.push({
+        ...searchFailureFromError(error, { sessionDead }),
+        kind: item.kind,
+        name: item.name,
+        phaseMs: { search: elapsed },
+      });
+    }
+  }
+  return out;
+}
+
+/** Coordinator probe output: outcomes and phaseMs only. Names and candidate text stay out. */
+export function redactPartyLookupProbe(result) {
+  const searches = Array.isArray(result?.searches)
+    ? result.searches.map((item) => ({
+      kind: item?.kind,
+      outcome: item?.outcome,
+      skipped: item?.skipped === true,
+      truncated: item?.truncated === true,
+      candidateCount: Array.isArray(item?.candidates) ? item.candidates.length : 0,
+      phaseMs: { search: Number(item?.phaseMs?.search) || 0 },
+    }))
+    : [];
+  return {
+    outcome: result?.outcome ?? 'execution_failure',
+    searches,
+    phaseMs: {
+      connect: Number(result?.phaseMs?.connect) || 0,
+      login: Number(result?.phaseMs?.login) || 0,
+      navigate: Number(result?.phaseMs?.navigate) || 0,
+      search: Number(result?.phaseMs?.search) || 0,
+    },
+  };
+}
+
+export function partyLookupJobPhaseMs({ connect = 0, login = 0, navigate = 0, searches = [] } = {}) {
+  const search = searches.reduce((sum, item) => sum + (Number(item?.phaseMs?.search) || 0), 0);
+  return {
+    connect: Number(connect) || 0,
+    login: Number(login) || 0,
+    navigate: Number(navigate) || 0,
+    search,
+  };
+}
+
 export function classifyOutcome(candidates = []) {
   const list = Array.isArray(candidates) ? candidates : [];
   if (list.length === 0) return { outcome: 'no_match', candidates: [] };
@@ -182,6 +362,21 @@ async function dismissUnsaved(page) {
   if (await cancel.count()) await cancel.click().catch(() => {});
   const no = page.getByRole('button', { name: /^No$/ }).first();
   if (await no.count()) await no.click().catch(() => {});
+}
+
+/** Closes an open party lookup dialog so the next search on this page starts clean. Guest Stay stays. */
+async function closeLookupDialog(page) {
+  for (const kind of KINDS) {
+    const win = await namedLookupWindow(page, kind);
+    if (!win) continue;
+    const cancel = win.getByRole('button', { name: 'Cancel', exact: true });
+    if (await cancel.count()) await cancel.first().click().catch(() => {});
+    else {
+      const closeBtn = win.locator('.x-tool-close, a.x-tool-close, .x-tool-img.x-tool-close');
+      if (await closeBtn.count()) await closeBtn.first().click().catch(() => {});
+    }
+  }
+  await dismissUnsaved(page);
 }
 
 export function rowFromStoreData(data = {}) {
@@ -839,12 +1034,25 @@ export async function searchKind(page, request) {
   return classifyKindRows('guest', grid.rows, request, grid.loaded);
 }
 
+function overallSearchOutcome(searches) {
+  const live = (searches ?? []).filter((item) => !item.skipped);
+  for (const failure of ['execution_failure', 'external_system_unavailable', 'input_gap']) {
+    if (live.some((item) => item.outcome === failure)) return failure;
+  }
+  if (live.some((item) => item.outcome === 'resolved' || item.outcome === 'ambiguous')) {
+    return live.some((item) => item.outcome === 'ambiguous') || live.filter((item) => item.outcome === 'resolved').length !== 1
+      ? 'ambiguous'
+      : 'resolved';
+  }
+  return live[0]?.outcome || 'no_match';
+}
+
 export async function lookupParty({ requestPath, outputDir, env = process.env } = {}) {
   process.umask(0o077);
   const request = JSON.parse(await readFile(requestPath, 'utf8'));
-  const issues = validateRequest(request);
-  if (issues.length) {
-    return applyScreenshotContract(resultEnvelope({ outcome: 'input_gap', issues: issues.map((path) => ({ code: 'INPUT_GAP', path })) }));
+  const normalized = normalizePartyLookupRequest(request);
+  if (normalized.issues.length) {
+    return applyScreenshotContract(resultEnvelope({ outcome: 'input_gap', issues: normalized.issues.map((path) => ({ code: 'INPUT_GAP', path })) }));
   }
   if (!env.HMS_STAGEHAND_CDP_URL || env.HMS_STAGEHAND_BROWSER_OWNERSHIP !== 'borrowed') {
     return resultEnvelope({
@@ -867,7 +1075,9 @@ export async function lookupParty({ requestPath, outputDir, env = process.env } 
   let page;
   let audit;
   let result;
+  const timed = { connect: 0, login: 0, navigate: 0 };
   try {
+    const connectStarted = Date.now();
     browser = await Promise.race([
       playwright().chromium.connectOverCDP(url.href, { timeout: CONNECT_MS }),
       new Promise((_, reject) => setTimeout(() => reject(new Error('CDP_CONNECT_TIMEOUT')), CONNECT_MS + 2000)),
@@ -883,29 +1093,54 @@ export async function lookupParty({ requestPath, outputDir, env = process.env } 
     ]);
     page = await context.newPage();
     page.setDefaultTimeout(20000);
+    timed.connect = Date.now() - connectStarted;
     audit = await createAudit(directory, { trace: false });
+    const loginStarted = Date.now();
     await login(page, secret, env);
+    timed.login = Date.now() - loginStarted;
     await audit.start(page, [secret.password, secret.username, secret.loginUrl]);
+    const navStarted = Date.now();
     await openGuestStayScreen(page);
     await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
     await page.locator('input[name="company"]:visible').waitFor();
+    timed.navigate = Date.now() - navStarted;
     await audit.checkpoint('criteria');
-    const found = await searchKind(page, request);
+    const foundSearches = await runNormalizedSearches(normalized.searches, {
+      stopOnFirstHit: normalized.stopOnFirstHit,
+      search: async (item) => {
+        await closeLookupDialog(page).catch(() => {});
+        return searchKind(page, { kind: item.kind, query: item.query });
+      },
+    });
     await audit.checkpoint('results');
     await dismissUnsaved(page);
-    result = applyScreenshotContract(resultEnvelope({
-      ...found,
-      screenshots: {
-        criteria: 'screenshots/criteria.png',
-        results: 'screenshots/results.png',
-      },
-      evidenceDirectory: directory,
-    }));
+    const screenshots = {
+      criteria: 'screenshots/criteria.png',
+      results: 'screenshots/results.png',
+    };
+    const phaseMs = partyLookupJobPhaseMs({ ...timed, searches: foundSearches });
+    if (normalized.single) {
+      result = applyScreenshotContract(resultEnvelope({
+        ...foundSearches[0],
+        screenshots,
+        evidenceDirectory: directory,
+        phaseMs,
+      }));
+    } else {
+      result = {
+        outcome: overallSearchOutcome(foundSearches),
+        searches: foundSearches.map((item) => applyScreenshotContract({ ...item, screenshots })),
+        screenshots,
+        evidenceDirectory: directory,
+        phaseMs,
+      };
+    }
   } catch (error) {
     result = resultEnvelope({
       outcome: 'execution_failure',
       issues: [{ code: 'EXECUTION_FAILURE', path: 'run', reason: String(error.message || error).slice(0, 180) }],
       evidenceDirectory: directory,
+      phaseMs: partyLookupJobPhaseMs(timed),
     });
     if (page) await dismissUnsaved(page).catch(() => {});
   } finally {
@@ -934,7 +1169,9 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     } else {
       lookupParty({ requestPath, outputDir }).then((result) => {
         console.log(JSON.stringify(result));
-        process.exit(['resolved', 'ambiguous', 'no_match', 'input_gap', 'external_system_unavailable'].includes(result.outcome) ? 0 : 2);
+        const ok = ['resolved', 'ambiguous', 'no_match', 'input_gap', 'external_system_unavailable'];
+        const searches = Array.isArray(result.searches) ? result.searches : [result];
+        process.exit(searches.every((item) => item.skipped || ok.includes(item.outcome)) ? 0 : 2);
       }).catch((error) => {
         console.error(error.message);
         process.exit(2);

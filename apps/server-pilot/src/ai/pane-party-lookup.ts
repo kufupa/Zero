@@ -28,8 +28,7 @@ const execFileAsync = promisify(execFile);
 const PARTY_LOOKUP = fileURLToPath(
   new URL('../../tooling/playwright-quote/party-lookup.mjs', import.meta.url),
 );
-// A search runs the lookup once per kind. Each run is bounded here, so the pair plus two 20 s lock waits stays under
-// the 6 min browser deadline for this route (apps/mail/lib/trpc-request-timeout.ts).
+// One spawn (one or many searches) is bounded here. Extra searches add 40 s each, capped in spawnTimeoutMs.
 const PARTY_LOOKUP_KIND_TIMEOUT_MS = 150_000;
 export const PANE_PARTY_CANDIDATE_CAP = 20;
 
@@ -91,10 +90,13 @@ const CLI_OUTCOMES: ReadonlySet<string> = new Set([
 const KIND_FAILURES = ['execution_failure', 'external_system_unavailable', 'input_gap'] as const;
 
 // Test seam, like paneStayLookupLoaders. spawn returns what party-lookup.mjs prints as its result line.
-export type PanePartySpawnInput = {
-  kind: PanePartyKind;
-  name: string;
+export type PanePartySearchInput = { kind: PanePartyKind; name: string };
+
+export type PanePartySpawnInput = PanePartySearchInput & {
   target?: HmsReadTarget | null;
+  /** When set, one CLI spawn runs every search on one login. */
+  searches?: readonly PanePartySearchInput[];
+  stopOnFirstHit?: boolean;
 };
 
 export const panePartyLookupLoaders: {
@@ -209,17 +211,52 @@ export function mergePartyKindResults(
   };
 }
 
+function hmsQueryForKind(kind: PanePartyKind, name: string): Record<string, string> {
+  return kind === 'company' ? { organizationName: name } : { bookingAgencyName: name };
+}
+
+function plannedSearchesOf(input: PanePartySpawnInput): PanePartySearchInput[] {
+  return input.searches?.length ? [...input.searches] : [{ kind: input.kind, name: input.name }];
+}
+
+function partyLookupRequestBody(input: PanePartySpawnInput): unknown {
+  const planned = plannedSearchesOf(input);
+  if (planned.length === 1 && !input.stopOnFirstHit) {
+    const one = planned[0];
+    return { kind: HMS_KIND[one.kind], query: hmsQueryForKind(one.kind, one.name) };
+  }
+  return {
+    searches: planned.map((item) => ({ kind: HMS_KIND[item.kind], name: item.name })),
+    ...(input.stopOnFirstHit ? { stopOnFirstHit: true } : {}),
+  };
+}
+
+function spawnTimeoutMs(searchCount: number): number {
+  return Math.min(300_000, PARTY_LOOKUP_KIND_TIMEOUT_MS + 40_000 * Math.max(0, searchCount - 1));
+}
+
+/** Maps a CLI result line (single envelope or `{searches}`) onto the planned pane searches, in order. */
+export function panePartyCoresFromSpawn(
+  raw: unknown,
+  planned: readonly PanePartySearchInput[],
+): PanePartyLookupCore[] {
+  const record = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? (raw as { searches?: unknown })
+    : {};
+  const list = Array.isArray(record.searches) ? record.searches : null;
+  if (list) {
+    return planned.map((item, index) => panePartyFindResultFromCli(item.kind, list[index] ?? {}));
+  }
+  return planned.map((item) => panePartyFindResultFromCli(item.kind, raw));
+}
+
 /** One runner run for one kind and name. The sweep and the pane both call it, so both use the fail-closed runner. */
 export async function spawnPartyLookup(input: PanePartySpawnInput): Promise<unknown> {
   // mkdtemp makes the directory 0700. The request holds only the typed name, and the directory goes after the run.
   const dir = await mkdtemp(join(tmpdir(), 'pane-party-'));
   try {
     const requestPath = join(dir, 'request.json');
-    const query =
-      input.kind === 'company'
-        ? { organizationName: input.name }
-        : { bookingAgencyName: input.name };
-    await writeFile(requestPath, JSON.stringify({ kind: HMS_KIND[input.kind], query }), {
+    await writeFile(requestPath, JSON.stringify(partyLookupRequestBody(input)), {
       mode: 0o600,
       flag: 'wx',
     });
@@ -231,7 +268,7 @@ export async function spawnPartyLookup(input: PanePartySpawnInput): Promise<unkn
         // The same borrowed browser and credential file the stay lookups use.
         // SIGKILL: a runner stuck on HMS is stopped outright, not asked politely. Its temp request goes in the finally.
         {
-          timeout: PARTY_LOOKUP_KIND_TIMEOUT_MS,
+          timeout: spawnTimeoutMs(plannedSearchesOf(input).length),
           killSignal: 'SIGKILL',
           env: paneStaySpawnEnv(process.env, undefined, input.target ?? null),
           maxBuffer: 1024 * 1024,
@@ -419,6 +456,29 @@ function rankedReply(
   };
 }
 
+type PartySpawnRun =
+  | { ok: true; raw: unknown }
+  | { ok: false; core: PanePartyLookupCore };
+
+async function spawnUnderOneLock(
+  input: PanePartySpawnInput,
+  lock: PaneStayLock,
+  spawn: (input: PanePartySpawnInput) => Promise<unknown>,
+  acquisition?: PropertyReadLockAcquisitionOptions,
+): Promise<PartySpawnRun> {
+  try {
+    const raw = await lock.withLock(
+      () => spawn(input),
+      acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
+    );
+    return { ok: true, raw };
+  } catch (error) {
+    if (isPropertyReadLockDeadline(error)) return { ok: false, core: withoutResults('refused_lock_busy') };
+    warnPaneStaySpawnFailed('party', error);
+    return { ok: false, core: withoutResults('execution_failure') };
+  }
+}
+
 /** One runner run for one kind and HMS text, under the property lock. A refusal or failure comes back in the core shape. */
 async function lookupKind(
   kind: PanePartyKind,
@@ -428,23 +488,14 @@ async function lookupKind(
   acquisition?: PropertyReadLockAcquisitionOptions,
   target?: HmsReadTarget | null,
 ): Promise<PanePartyLookupCore> {
-  let raw: unknown;
-  try {
-    raw = await lock.withLock(
-      () => spawn({ kind, name: term, target }),
-      acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
-    );
-  } catch (error) {
-    if (isPropertyReadLockDeadline(error)) return withoutResults('refused_lock_busy');
-    warnPaneStaySpawnFailed('party', error);
-    return withoutResults('execution_failure');
-  }
-  return panePartyFindResultFromCli(kind, raw);
+  const run = await spawnUnderOneLock({ kind, name: term, target }, lock, spawn, acquisition);
+  if (!run.ok) return run.core;
+  return panePartyFindResultFromCli(kind, run.raw);
 }
 
 /**
- * A search for one kind. Its HMS texts are tried in turn and the search stops at the first that finds rows, so there are
- * at most two HMS runs. A refusal or failure ends it at once.
+ * A search for one kind. Its HMS texts go in one spawn. The first term with rows is the answer; later same-kind
+ * terms are skipped by the CLI when stopOnFirstHit is set.
  */
 async function findPartyOfKind(
   kind: PanePartyKind,
@@ -460,11 +511,25 @@ async function findPartyOfKind(
 ): Promise<PanePartyFindResult> {
   const terms = options.exactTerm ? [name] : partySearchTerms(name).slice(0, PARTY_KIND_SEARCH_TERMS);
   const tries = terms.length ? terms : [name];
-  let core: PanePartyLookupCore = withoutResults('no_match');
+  const planned = tries.map((term) => ({ kind, name: term }));
+  const run = await spawnUnderOneLock(
+    {
+      kind,
+      name: tries[0],
+      target: options.target,
+      ...(tries.length > 1 ? { searches: planned, stopOnFirstHit: true } : {}),
+    },
+    lock,
+    spawn,
+    options.acquisition,
+  );
+  if (!run.ok) return rankedReply(name, run.core, tries[0], options.resultCap ?? PANE_PARTY_RESULT_CAP);
+  const cores = panePartyCoresFromSpawn(run.raw, planned);
+  let core: PanePartyLookupCore = cores[0] ?? withoutResults('no_match');
   let searchedFor = tries[0];
-  for (const term of tries) {
-    searchedFor = term;
-    core = await lookupKind(kind, term, lock, spawn, options.acquisition, options.target);
+  for (let index = 0; index < cores.length; index += 1) {
+    searchedFor = tries[index];
+    core = cores[index];
     if (!ANSWERED_OUTCOMES.has(core.outcome) || core.results.length) break;
   }
   return rankedReply(name, core, searchedFor, options.resultCap ?? PANE_PARTY_RESULT_CAP);
@@ -472,8 +537,8 @@ async function findPartyOfKind(
 
 /**
  * Read-only HMS search of companies and agencies for one name, under the session hotel's property lock. With a kind, only
- * that kind is searched, and its HMS texts are tried in turn. Without one, it runs one lookup per kind. It links nothing:
- * every candidate goes back to staff, who pick one. The kill switch QUOTE_RATE_CONTEXT=off refuses it.
+ * that kind is searched, and its HMS texts go in one spawn. Without one, both kinds share one spawn and one lock hold.
+ * It links nothing: every candidate goes back to staff, who pick one. The kill switch QUOTE_RATE_CONTEXT=off refuses it.
  */
 export async function findParty(
   input: PanePartyFindInput,
@@ -505,36 +570,73 @@ export async function findParty(
   if (!lock) return replyWithout('refused_lock_unavailable');
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
   if (input.kind) return findPartyOfKind(input.kind, name, lock, spawn, options);
-  const perKind: PanePartyLookupCore[] = [];
-  for (const kind of PARTY_KINDS) {
-    let raw: unknown;
-    try {
-      raw = await lock.withLock(
-        () => spawn({ kind, name, target: options.target }),
-        options.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
-      );
-    } catch (error) {
-      if (isPropertyReadLockDeadline(error)) {
-        perKind.push(withoutResults('refused_lock_busy'));
-      } else {
-        warnPaneStaySpawnFailed('party', error);
-        perKind.push(withoutResults('execution_failure'));
-      }
-      break;
-    }
-    const result = panePartyFindResultFromCli(kind, raw);
-    perKind.push(result);
-    // A refusal or failure already decides the search, so the other kind is not run.
-    if (
-      result.outcome !== 'resolved' &&
-      result.outcome !== 'ambiguous' &&
-      result.outcome !== 'no_match'
-    ) {
-      break;
-    }
-  }
+  const planned = PARTY_KINDS.map((kind) => ({ kind, name }));
+  const run = await spawnUnderOneLock(
+    { kind: planned[0].kind, name, searches: planned, target: options.target },
+    lock,
+    spawn,
+    options.acquisition,
+  );
+  const perKind = run.ok
+    ? panePartyCoresFromSpawn(run.raw, planned)
+    : [run.core];
   // Both kinds keep their own per-kind cap from the merge, as before. The 5-row cap is for a kind search.
   return rankedReply(name, mergePartyKindResults(perKind, name), name, Number.POSITIVE_INFINITY);
+}
+
+/**
+ * One lock hold and one CLI spawn for a planned list of (kind, term) searches. V2 uses this so a party job
+ * logs in once. Results stay in plan order.
+ */
+export async function findPartyJob(
+  searches: readonly PanePartySearchInput[],
+  options: {
+    acquisition?: PropertyReadLockAcquisitionOptions;
+    resultCap?: number;
+    origin?: MailboxHmsOriginFields;
+    target?: HmsReadTarget | null;
+  } = {},
+): Promise<PanePartyFindResult[]> {
+  const enabled = panePartyLookupLoaders.enabled ?? (() => quoteRateContextEnabled());
+  if (!enabled()) return searches.map(() => replyWithout('refused_flag_off'));
+  if (!searches.length) return [];
+  const planned = searches.map((item) => ({
+    kind: item.kind,
+    name: typeof item.name === 'string' ? item.name.trim() : '',
+  }));
+  if (planned.some((item) => !item.name || item.name.length > 256)) {
+    return planned.map((item) =>
+      !item.name || item.name.length > 256 ? replyWithout('refused_input_invalid') : replyWithout('execution_failure'),
+    );
+  }
+  if (
+    options.origin &&
+    isDaVinciMailboxOrigin(options.origin) &&
+    !hmsDavinciReadsEnabled()
+  ) {
+    return planned.map(() => replyWithout('refused_origin_mismatch'));
+  }
+  const lock =
+    panePartyLookupLoaders.lock ?? paneStayPropertyLock(options.target?.propertyCode);
+  if (!lock) return planned.map(() => replyWithout('refused_lock_unavailable'));
+  const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
+  const run = await spawnUnderOneLock(
+    {
+      kind: planned[0].kind,
+      name: planned[0].name,
+      searches: planned,
+      target: options.target,
+    },
+    lock,
+    spawn,
+    options.acquisition,
+  );
+  const cap = options.resultCap ?? PANE_PARTY_RESULT_CAP;
+  if (!run.ok) return planned.map((item) => rankedReply(item.name, run.core, item.name, cap));
+  const cores = panePartyCoresFromSpawn(run.raw, planned);
+  return planned.map((item, index) =>
+    rankedReply(item.name, cores[index] ?? withoutResults('execution_failure'), item.name, cap),
+  );
 }
 
 export type VerifiedPartyResult =
