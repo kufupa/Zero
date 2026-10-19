@@ -1,10 +1,12 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { z } from 'zod';
 import type { ModelAdapter } from './bedrock/adapter.js';
+import { matchKey } from './party-match.js';
 import type { PanePartyCandidate, PanePartyOutcome } from './pane-party-lookup.js';
 import {
   applyPartyBindRule,
   normalisePartyName,
+  partyMatchSearchTerms,
   pickPartyMatch,
   planPartySearches,
   type PartyMatchCandidate,
@@ -92,6 +94,43 @@ export function sanitizePartySearchTerms(
     if (!normalisePartyName(term) || seen.has(key)) continue;
     seen.add(key);
     out.push({ kind: item.kind, term });
+  }
+  return out;
+}
+
+function triedSearchKey(kind: PartyMatchKind, term: string): string {
+  // matchKey folds case/punctuation; unlike normalisePartyName it keeps legal suffixes, so
+  // "Acme Ltd" (0 rows) and "Acme" stay distinct HMS queries.
+  return `${kind}:${matchKey(term)}`;
+}
+
+/** Drop already-tried terms; if none remain and a round-1 term returned 0 rows, use V2 distinctive fallbacks. */
+export function selectRound2SearchTerms(
+  nextTerms: readonly PartyMatchV3Search[],
+  searchesTried: readonly Pick<
+    PartyMatchV3JobResult['searchesTried'][number],
+    'kind' | 'term' | 'returned'
+  >[],
+): PartyMatchV3Search[] {
+  const tried = new Set(searchesTried.map((row) => triedSearchKey(row.kind, row.term)));
+  const fromModel = sanitizePartySearchTerms(nextTerms).filter(
+    (item) => !tried.has(triedSearchKey(item.kind, item.term)),
+  );
+  if (fromModel.length) return fromModel.slice(0, ROUND2_TERM_CAP);
+  if (!searchesTried.some((row) => row.returned === 0)) return [];
+  const out: PartyMatchV3Search[] = [];
+  const seen = new Set(tried);
+  for (const search of searchesTried) {
+    if (search.returned !== 0) continue;
+    for (const term of partyMatchSearchTerms(search.term)) {
+      const [kept] = sanitizePartySearchTerms([{ kind: search.kind, term }]);
+      if (!kept) continue;
+      const key = triedSearchKey(kept.kind, kept.term);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(kept);
+      if (out.length >= ROUND2_TERM_CAP) return out;
+    }
   }
   return out;
 }
@@ -298,6 +337,7 @@ async function pickFromRows(
     candidates: readonly PartyMatchCandidate[];
     context: PartyMatchEmailContext;
     rows: readonly PartyMatchV3Row[];
+    searchesTried: PartyMatchV3JobResult['searchesTried'];
     signal?: AbortSignal;
     deadlineAt?: number;
   },
@@ -307,10 +347,21 @@ async function pickFromRows(
     systemPrompt: [
       'Pick the HMS party row that matches the organisation or booking agency in the email.',
       'Rows include optional iata, city, address, country and externalId columns.',
+      'searchesTried lists each term already typed with how many HMS rows it returned.',
+      'If a full name returned 0 rows, suggest its most distinctive single word or a shorter form as nextTerms.',
+      'Never repeat a tried term (same kind and name).',
       'Return pick=null when uncertain. If no row fits, you may suggest nextTerms to type next.',
       'Return JSON matching the supplied schema.',
     ].join('\n'),
-    userPrompt: JSON.stringify({ context: input.context, returnedRows: input.rows }),
+    userPrompt: JSON.stringify({
+      context: input.context,
+      returnedRows: input.rows,
+      searchesTried: input.searchesTried.map((row) => ({
+        kind: row.kind,
+        term: row.term,
+        returned: row.returned,
+      })),
+    }),
     responseSchema: zodToJsonSchema(pickSchema, { $refStrategy: 'none' }) as Record<
       string,
       unknown
@@ -479,6 +530,7 @@ export async function runPartyMatchV3(input: {
       candidates: input.candidates,
       context: input.context,
       rows: collected(),
+      searchesTried,
       signal: input.signal,
       deadlineAt: input.deadlineAt,
     });
@@ -486,8 +538,9 @@ export async function runPartyMatchV3(input: {
     return closedModel();
   }
 
-  if (!loopPick.pickNativeId && loopPick.nextTerms.length && batches < MAX_BATCHES) {
-    await runBatch(loopPick.nextTerms.slice(0, ROUND2_TERM_CAP));
+  const round2 = selectRound2SearchTerms(loopPick.nextTerms, searchesTried);
+  if (!loopPick.pickNativeId && round2.length && batches < MAX_BATCHES) {
+    await runBatch(round2);
     if (failure) {
       const pick = await fallbackPick(input.candidates, collected(), input.context);
       return finish({
@@ -504,6 +557,7 @@ export async function runPartyMatchV3(input: {
         candidates: input.candidates,
         context: input.context,
         rows: collected(),
+        searchesTried,
         signal: input.signal,
         deadlineAt: input.deadlineAt,
       });

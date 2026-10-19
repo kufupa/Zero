@@ -205,7 +205,7 @@ describe('findStay', () => {
     paneStayLookupLoaders.spawn = async () => lookupResult({
       commercial: {
         company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
-        agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+        agency: { name: 'Harbor Travel', nativeId: 'AG-9', iata: '77206673' },
         ratePlan: 'Corporate Saver',
         status: 'Reserved',
         unknownField: 'must be dropped',
@@ -216,17 +216,24 @@ describe('findStay', () => {
       outcome: 'found',
       commercial: {
         company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
-        agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+        agency: { name: 'Harbor Travel', nativeId: 'AG-9', iata: '77206673' },
         ratePlan: 'Corporate Saver',
         status: 'Reserved',
       },
     });
     expect(result.commercial).toEqual({
       company: { name: 'Northstar Conference Group', nativeId: 'COMP-42' },
-      agency: { name: 'Harbor Travel', nativeId: 'AG-9' },
+      agency: { name: 'Harbor Travel', nativeId: 'AG-9', iata: '77206673' },
       ratePlan: 'Corporate Saver',
       status: 'Reserved',
     });
+  });
+
+  it('keeps an agency identified only by IATA in the commercial fields', async () => {
+    paneStayLookupLoaders.spawn = async () =>
+      lookupResult({ commercial: { agency: { iata: '77206673' } } });
+    const result = await findStay({ confirmation: '57291630-1' }, { lock: () => passingLock() });
+    expect(result.commercial?.agency).toEqual({ iata: '77206673' });
   });
 
   it('refuses when no property lock can be made, with no spawn', async () => {

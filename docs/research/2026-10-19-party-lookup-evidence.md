@@ -138,3 +138,20 @@ Method: opened each answer-key reservation on HRCEN by confirmation (Guest Stay,
 3. Spelling is a signal: the single title-case Tourvest copy (#8, TOU001) is a different branch from the all-caps ones.
 
 So v3's duplicate rule (bind only if one copy's city/IATA appears in the email, or sender history names one id; else list all copies) matches what staff do. History (P8) is the main lever: once a sender's staff pick is stored by id, every later mail from that branch binds.
+
+## 12. P6: live replay of v3 vs v2 (2026-10-19 16:00–16:20Z, read-only)
+
+Method: main `03dbbae46` on the EC2 scratch checkout, prod env, `PARTY_MATCH_V3` set in that process only, the real `findPartyJob` under the HRCEN property lock, one job at a time. Inputs = the stored extraction + mail of past V2 party jobs. Truth = staff party picks on later staff quotes (id-level). Script outside the repo; ids and outcomes only.
+
+| Set | n | v2 | v3 | v3 wrong binds |
+|---|---:|---|---|---:|
+| A: staff-confirmed (mostly v2 binds staff accepted, so v2-favoured) | 22 | 21 right | 15 right | **0** |
+| B: recent v2 misses on direct mail (one per sender domain, not staff/SynXis) | 20 | 0 bound | 2 bound; 10 show HMS rows to pick | 0 known (1 unconfirmed) |
+
+Time per mail: p50 25 s, p90 40 s (v2 prod p50 65 s, p90 86 s, §2).
+
+**Why v3 missed 7 in set A:** all 7 are one agency, No Limits Travel & Tours (#119). v3 typed the full name → 0 rows; in round 2 the model saw only the (empty) rows and asked for the same name again. v2 bound it through its short-word fallback ("Limits" → 1 row). Fix = P5b: tell the model what it already typed and the row counts, never repeat a term, and fall back to v2's short-word variants when a full name finds nothing.
+
+**Set B binds:** BE Travel mail → agency #402 BAITHAUPI EXECUTIVE TRAVEL (T/A BE TRAVEL) (right by name). LetsCruize mail → company #301 Department of Health, which is the end client in the extracted booking (`endClient`); the right company-profile pattern, not yet confirmed by staff. Tourvest and Rennies mails went to needs_pick with their duplicate copies listed first (the intended duplicate rule).
+
+**Verdict:** 0 wrong binds (bar met on these 42). Auto-bind is below v2 on staff-confirmed agencies until P5b lands. Flag stays off until a re-run after P5b shows v3 ≥ v2 on set A.
