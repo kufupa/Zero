@@ -2,12 +2,12 @@
 
 Updated 2026-10-19 after the overnight leak-free triage run. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
 
-## Party lookup — 2026-10-19 (B2 party design chat)
+## Party lookup + pane review — 2026-10-19 (B2 party design chat)
 
-- Deployed (flag-off parts live): notices skip party lookup (#395), HMS reads keep city/IATA/company id (#394), picker lists every duplicate copy (#403), v3 loop (#400, #406) behind `PARTY_MATCH_V3` **off**. #408 (v2 picker on v3 rows) READY, not merged.
-- Live replay (22 staff-confirmed mails, read-only): v2 21/22, v3 14/22, 0 wrong both; v3 p50 34 s vs v2 65 s. Prod named-party bind rate (30 d): v2 18/66 (27%).
-- Decision proposed (owner to confirm): hybrid = sender history → v3 search (+#408) → staff pick, and staff picks write history. History alone, earlier bookings only: 65/107 agencies right, 1 wrong. [Strategy decision](../research/2026-10-19-party-strategy-decision.md).
-- Running: `party-bigset-read2` on EC2 (read-only, 178 bookings). Next check: score v2 / v3+#408 / hybrid on the same rows. Hold: any flag on = owner.
+- Live at `78c29b5ae` (deployed 23:33Z; last-good before `1c74f42b5`, env backup `.env.production.bak-20261019-party-hybrid`). `PARTY_MATCH_V3=true` and `PARTY_HISTORY_BIND=on` on http/worker/ai-worker (`/proc` checked); remote-http has no party flags, same as V2. Pane bundle `nava-pane-D22iMVfj.js`.
+- Hybrid shipped: v2 picker on v3 rows (#408), sender history learned from staff picks (#410, migration 0051), history binds on shared distinctive tokens + no own-brand/country search terms (#414), email-named party beats name-only history (#417). [Decision](../research/2026-10-19-party-strategy-decision.md) §5c–5d.
+- Owner pane review (asks 133–137): step 1 is now "Agency & company", a preset dropdown with every same-kind HMS row (IATA · city · address, no id), ✓ confirm / ✏ edit / "Search HMS…" (#413); stay card ⓘ, Copy/Remove icons, nights dropdown, Skyscanner date clicks (#416, Check-out fix #417); rooms left on rate cards (#412); Source of business preset Email (#415).
+- Next acceptance check: replay p9 (same 42 mails, deployed code) ≥ v2's 21/22 right, 0 wrong; owner look at the pane before 05:00Z staff start; staff bundle load in nginx. Open: asks 134 (real rates in Rate authority), 136 (extras/shuttle), 132 (reusable HMS login).
 
 ## Chat A (HMS speed) — 2026-10-19
 
@@ -88,6 +88,7 @@ At handoff: update this short file with verified state, next acceptance check an
 
 ## Other open items and navigation
 
+- Host tooling audit (not Zero product work): all four CLIs currently use separate registrations for the same Exa endpoint/key; the hosted tool surface lacks Dynamic Highlights. No client settings changed. Plan: [Exa Dynamic Highlights across four agent CLIs](../plans/2026-10-19-001-exa-dynamic-highlights-plan.md). Next acceptance check: owner explicitly authorizes execution; then test the local stdio canary before any config swap. Hold: implementation and client changes are not authorized by this planning-only request.
 - Webmail sync/access wording and the earlier workflow-folder load error: current live status not reverified. All core-workflow accuracy and final staff-bundle proof remain open. Historical overnight statuses are in the dated assessment, not silently claimed complete.
 - Current source exemptions preserve human Profitroom enquiries and non-notice H-Pay finance mail. RateTiger had no host evidence in the handoff. If broad vendor-skip wording means something different, clarify the policy before changing revenue-mail handling.
 - Code map and commands: AGENT.md. Verified solutions: docs/solutions/. Vocabulary: CONCEPTS.md. Mistakes: docs/context/MISTAKES.md. Run history: docs/context/ledger/. Record new verified mistakes at handoff.
