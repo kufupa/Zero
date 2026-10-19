@@ -3,13 +3,14 @@
  */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import {
   PARTY_PICKER_HINT,
   PARTY_SEARCH_DEADLINE_MS,
   PartyPicker,
 } from '../components/quote-workflow/party-picker';
 import type { HmsJobTransport, HmsJobView } from '../lib/quote-workflow/amend-find';
+import type { StaffQuoteParties } from '../lib/quote-workflow/types';
 import {
   PARTY_TRUNCATED_NOTE,
   partyNoCandidateNote,
@@ -909,19 +910,26 @@ describe('PartyPicker duplicate-name choices', () => {
     const status = vi.fn(async () => view);
     const jobTransport: HmsJobTransport = { queue, status };
 
-    render(
-      <PartyPicker
-        name="ABC Travel"
-        kind="company"
-        parties={{}}
-        find={find}
-        jobTransport={jobTransport}
-        threadId="thread-bound-alternatives"
-        sourceMessageId="message-1"
-        onPick={onPick}
-        onClear={vi.fn()}
-      />,
-    );
+    const Harness = () => {
+      const [parties, setParties] = useState<StaffQuoteParties>({});
+      return (
+        <PartyPicker
+          name="ABC Travel"
+          kind="company"
+          parties={parties}
+          find={find}
+          jobTransport={jobTransport}
+          threadId="thread-bound-alternatives"
+          sourceMessageId="message-1"
+          onPick={(party) => {
+            setParties((current) => ({ ...current, [party.kind]: party }));
+            onPick(party);
+          }}
+          onClear={vi.fn()}
+        />
+      );
+    };
+    render(<Harness />);
 
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL));
     expect(await screen.findByText(reason)).toBeTruthy();
