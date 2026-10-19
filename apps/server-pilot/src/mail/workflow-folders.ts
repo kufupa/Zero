@@ -181,6 +181,11 @@ const ACTION_FOLDERS: Record<string, WorkflowFolderId> = {
   no_action: 'not-for-nava',
 };
 
+/** System TMC vouchers are checked against an existing stay, even when extraction labels them new_booking. */
+const SYSTEM_NOTICE_ACTION_FOLDERS: Partial<Record<MailAction, WorkflowFolderId>> = {
+  new_booking: 'payments',
+};
+
 /** Inverse of ACTION_FOLDERS: Done golds unmarked rows as this action. */
 export const FOLDER_ACTIONS = {
   quotes: 'quote_availability',
@@ -266,11 +271,17 @@ const LEGACY_KIND_FOLDERS: Record<string, WorkflowFolderId> = {
 export function mapWorkflowFolder(input: WorkflowMappingInput): WorkflowFolderId {
   const payload = asRecord(input.payload);
   const origin = cleanString(input.origin) ?? cleanString(payload.origin);
-  if (input.automatedChannel || origin === 'system_notice') return 'not-for-nava';
+  if (input.automatedChannel) return 'not-for-nava';
 
   const action =
     cleanString(input.ownerAction) ?? cleanString(input.action) ?? cleanString(payload.action);
-  if (action) return ACTION_FOLDERS[action] ?? 'other-to-do';
+  if (action) {
+    if (origin === 'system_notice' && isMailAction(action)) {
+      return SYSTEM_NOTICE_ACTION_FOLDERS[action] ?? ACTION_FOLDERS[action] ?? 'other-to-do';
+    }
+    return ACTION_FOLDERS[action] ?? 'other-to-do';
+  }
+  if (origin === 'system_notice') return 'not-for-nava';
 
   const kind = cleanString(input.kind);
   return (kind && LEGACY_KIND_FOLDERS[kind]) || 'not-for-nava';
@@ -377,18 +388,23 @@ const automatedChannel = sql<boolean>`exists (
 
 /** SQL form used by the paged list/summary queries. It shares the same mapping tables as mapWorkflowFolder. */
 function mapWorkflowFolderSql(action: SQL<unknown> = effectiveAction): SQL<WorkflowFolderId> {
-  const actionCases = Object.entries(ACTION_FOLDERS).map(
-    ([action, folder]) => sql`when ${action} then ${folder}`,
-  );
+  const actionCases = Object.entries(ACTION_FOLDERS).map(([action, folder]) => {
+    const systemNoticeFolder = isMailAction(action) ? SYSTEM_NOTICE_ACTION_FOLDERS[action] : undefined;
+    return systemNoticeFolder
+      ? sql`when ${action} then case when ${payloadOrigin} = 'system_notice'
+        then ${systemNoticeFolder} else ${folder} end`
+      : sql`when ${action} then ${folder}`;
+  });
   const kindCases = Object.entries(LEGACY_KIND_FOLDERS).map(
     ([kind, folder]) => sql`when ${kind} then ${folder}`,
   );
   return sql<WorkflowFolderId>`case
-    when ${automatedChannel} or ${payloadOrigin} = 'system_notice' then 'not-for-nava'
+    when ${automatedChannel} then 'not-for-nava'
     when ${action} is not null then case ${action}
       ${sql.join(actionCases, sql` `)}
       else 'other-to-do'
     end
+    when ${payloadOrigin} = 'system_notice' then 'not-for-nava'
     else case ${mailExtraction.kind}
       ${sql.join(kindCases, sql` `)}
       else 'not-for-nava'

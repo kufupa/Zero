@@ -210,7 +210,7 @@ describe('workflow folder mapping', () => {
     );
     const newBookingCase = sqlWithBinds.slice(sqlWithBinds.indexOf('when new_booking then'));
     expect(newBookingCase).toMatch(
-      /when new_booking then case when [\s\S]*?origin[\s\S]*?system_notice then payments else new-bookings end/,
+      /when new_booking then case when [\s\S]*?origin[\s\S]*?= 'system_notice'[\s\S]*?then payments else new-bookings end/,
     );
   });
 
