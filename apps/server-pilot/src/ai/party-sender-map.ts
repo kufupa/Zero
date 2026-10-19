@@ -41,7 +41,7 @@ const FREEMAIL = new Set([
   'live.com',
   'msn.com',
 ]);
-const OWNED_HOTEL_HOSTS = new Set([
+export const OWNED_HOTEL_HOSTS = new Set([
   'legacyhotels.co.za',
   'legacyhotels.com',
   'legacyhotel.com',
