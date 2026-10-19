@@ -208,6 +208,24 @@ describe('prepared quote attach-phase retry', () => {
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
 
+  it('keeps the attach retry when a later claim yields to a staff quote', async () => {
+    const { run, fence } = preparedRun({ attempts: 1, lastError: 'staff quote attach failed' });
+    jobMocks.staffQuoteInFlight.mockResolvedValue(true);
+
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('retry_wait');
+
+    expect(jobMocks.runStaffQuote).not.toHaveBeenCalled();
+    expect(jobMocks.markRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempts: 1,
+        failureClass: 'STAFF_QUOTE_ACTIVE',
+        lastError: 'staff quote attach failed',
+      }),
+      db,
+    );
+    expect(jobMocks.markDeadLetter).not.toHaveBeenCalled();
+  });
+
   it('still exhausts a prepared quote that already used a non-attach attempt', async () => {
     const { run, fence } = preparedRun({ attempts: 1 });
 

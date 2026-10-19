@@ -2454,6 +2454,11 @@ async function requeueRun(
 const PREPARED_QUOTE_LOCK_WAIT_MS = 15 * 60_000;
 const PREPARED_QUOTE_ATTACH_FAILED = 'staff quote attach failed';
 
+/** Uncharged yields must not wipe the attach-retry token stored in lastError. */
+function preparedQuoteYieldLastError(run: AiWorkflowRun, lastError: string): string {
+  return run.lastError === PREPARED_QUOTE_ATTACH_FAILED ? PREPARED_QUOTE_ATTACH_FAILED : lastError;
+}
+
 async function retryOrFail(
   db: DB,
   run: AiWorkflowRun,
@@ -2784,7 +2789,7 @@ export async function executeHmsJob(input: {
       attempts: run.attempts,
       delayMs: JOB_YIELD_MS,
       failureClass: 'STAFF_QUOTE_ACTIVE',
-      lastError: 'staff quote in flight',
+      lastError: preparedQuoteYieldLastError(run, 'staff quote in flight'),
     });
   }
 
@@ -2855,7 +2860,7 @@ export async function executeHmsJob(input: {
           attempts: run.attempts,
           delayMs: 0,
           failureClass: 'WORKER_SHUTDOWN',
-          lastError: 'worker shutdown',
+          lastError: preparedQuoteYieldLastError(run, 'worker shutdown'),
         });
       }
       if (isPropertyReadLockDeadline(error)) {
@@ -2872,7 +2877,7 @@ export async function executeHmsJob(input: {
             attempts: run.attempts,
             delayMs: JOB_YIELD_MS,
             failureClass: 'HMS_LOCK_BUSY',
-            lastError: 'property lock busy',
+            lastError: preparedQuoteYieldLastError(run, 'property lock busy'),
           });
         }
         return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'property lock busy');
