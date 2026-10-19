@@ -533,6 +533,62 @@ describe('party sender history policy', () => {
     expect(staffQuoteCanTeachSenderHistory(false, false)).toBe(false);
     expect(staffQuoteCanTeachSenderHistory(true, true)).toBe(false);
   });
+
+  type SenderObservation = {
+    kind: 'company' | 'agency';
+    name: string;
+    nativeId: string;
+    iata: string | null;
+  };
+  const selectSenderPartyForHost = (hmsJobs as unknown as {
+    selectSenderPartyForHost?: (host: string, parties: SenderObservation[]) => SenderObservation | null;
+  }).selectSenderPartyForHost;
+  const agency = {
+    kind: 'agency' as const,
+    name: 'XL Nexus',
+    nativeId: 'agency-1',
+    iata: null,
+  };
+  const company = {
+    kind: 'company' as const,
+    name: 'Momentum Metropolitan Holdings',
+    nativeId: 'company-1',
+    iata: null,
+  };
+
+  it.each([
+    { host: 'nexustravel.example', expected: agency },
+    { host: 'momentum.example', expected: company },
+    { host: 'guest.example', expected: null },
+  ])('selects only party matching sender-host tokens: $host', ({ host, expected }) => {
+    expect(selectSenderPartyForHost).toBeTypeOf('function');
+    if (!selectSenderPartyForHost) return;
+    expect(selectSenderPartyForHost(host, [agency, company])).toEqual(expected);
+  });
+
+  it('ignores generic tokens and rejects hosts matching both parties', () => {
+    expect(selectSenderPartyForHost).toBeTypeOf('function');
+    if (!selectSenderPartyForHost) return;
+    expect(selectSenderPartyForHost('guest.example', [agency])).toEqual(agency);
+    expect(
+      selectSenderPartyForHost('travel.example', [
+        { ...agency, name: 'Travel Guides' },
+        { ...company, name: 'Momentum Holdings' },
+      ]),
+    ).toBeNull();
+    expect(
+      selectSenderPartyForHost('travelgroup.example', [
+        { ...agency, name: 'Travel Group' },
+        { ...company, name: 'Group Holdings' },
+      ]),
+    ).toBeNull();
+    expect(
+      selectSenderPartyForHost('sharedtravel.example', [
+        { ...agency, name: 'Shared Travel' },
+        { ...company, name: 'Shared Holdings' },
+      ]),
+    ).toBeNull();
+  });
 });
 
 // Each case seeds a fresh rolled-back database; the shared lane box is slow under load.

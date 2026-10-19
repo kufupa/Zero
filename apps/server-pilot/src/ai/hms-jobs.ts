@@ -2831,13 +2831,55 @@ function senderPartyObservation(
   };
 }
 
-function senderPartyFromFindResult(result: unknown): SenderPartyObservation | null {
+const GENERIC_SENDER_PARTY_TOKENS = new Set([
+  'travel',
+  'tours',
+  'group',
+  'holdings',
+  'services',
+  'pty',
+  'ltd',
+]);
+
+/** Pick a single party only when sender-host evidence separates company from agency. */
+export function selectSenderPartyForHost(
+  host: string,
+  parties: readonly SenderPartyObservation[],
+): SenderPartyObservation | null {
+  const agency = parties.find((party) => party.kind === 'agency');
+  const company = parties.find((party) => party.kind === 'company');
+  if (!agency || !company) return agency ?? company ?? null;
+
+  const hostLabel = (host.trim().toLowerCase().replace(/\.+$/, '').split('.')[0] ?? '')
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9]/g, '');
+  if (!hostLabel) return null;
+
+  const matchesHost = (name: string) =>
+    name
+      .normalize('NFKD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .some(
+        (token) =>
+          token.length >= 3 &&
+          !GENERIC_SENDER_PARTY_TOKENS.has(token) &&
+          hostLabel.includes(token),
+      );
+  const agencyMatches = matchesHost(agency.name);
+  const companyMatches = matchesHost(company.name);
+  if (agencyMatches === companyMatches) return null;
+  return agencyMatches ? agency : company;
+}
+
+function senderPartiesFromFindResult(result: unknown): SenderPartyObservation[] {
   const commercial = objectRecord(objectRecord(result).commercial);
-  // The sender map has one row per host; prefer the booking agency when a stay carries both parties.
-  return (
-    senderPartyObservation('agency', commercial.agency) ??
-    senderPartyObservation('company', commercial.company)
-  );
+  return [
+    senderPartyObservation('agency', commercial.agency),
+    senderPartyObservation('company', commercial.company),
+  ].filter((party): party is SenderPartyObservation => party !== null);
 }
 
 function senderHostFromAddress(address: string): string | null {
@@ -2948,17 +2990,19 @@ async function firstDirectInboundSenderHost(
 async function recordSenderHistoryAfterRead(
   db: DB,
   run: AiWorkflowRun,
-  party: SenderPartyObservation | null,
+  parties: readonly SenderPartyObservation[],
   target: HmsReadTarget | null,
 ): Promise<void> {
   if (
-    !party ||
+    !parties.length ||
     !partyHistoryBindEnabled(process.env) ||
     !isCenturionPartyHistoryTarget(target, run.transportId)
   ) return;
   try {
     const host = await firstDirectInboundSenderHost(db, run);
     if (!host) return;
+    const party = selectSenderPartyForHost(host, parties);
+    if (!party) return;
     await recordSenderParty(db, { host, ...party });
   } catch {
     console.warn('party_sender_map_write_failed', { count: 1 });
@@ -3101,20 +3145,24 @@ export async function executeHmsJob(input: {
         { recorder: createToolRunRecorder(db, { enabled: true }) ?? undefined },
       );
       if (staffQuoteCanTeachSenderHistory(Boolean(user), systemPreparedQuote)) {
-        const selectedParty = request.input.parties?.agency ?? request.input.parties?.company;
-        await recordSenderHistoryAfterRead(
-          db,
-          run,
-          selectedParty
-            ? {
-                kind: selectedParty.kind,
-                name: selectedParty.name,
-                nativeId: selectedParty.nativeId,
-                iata: null,
-              }
-            : null,
-          null,
-        );
+        const selectedParties: SenderPartyObservation[] = [];
+        if (request.input.parties?.agency) {
+          selectedParties.push({
+            kind: 'agency',
+            name: request.input.parties.agency.name,
+            nativeId: request.input.parties.agency.nativeId,
+            iata: null,
+          });
+        }
+        if (request.input.parties?.company) {
+          selectedParties.push({
+            kind: 'company',
+            name: request.input.parties.company.name,
+            nativeId: request.input.parties.company.nativeId,
+            iata: null,
+          });
+        }
+        await recordSenderHistoryAfterRead(db, run, selectedParties, null);
       }
       return 'succeeded';
     } catch (error) {
@@ -3302,7 +3350,7 @@ export async function executeHmsJob(input: {
     await recordSenderHistoryAfterRead(
       db,
       run,
-      senderPartyFromFindResult(result),
+      senderPartiesFromFindResult(result),
       davinciReadTarget,
     );
   }
