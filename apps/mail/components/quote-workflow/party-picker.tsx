@@ -652,16 +652,21 @@ export function PartyPicker({
   );
 
   useEffect(() => {
-    if (currentJobView?.status === 'done' && partyJobIsV2(currentJobView)) {
+    if (
+      currentJobView?.status === 'done' &&
+      partyJobIsV2(currentJobView) &&
+      currentJobView.request?.kind === 'party'
+    ) {
+      const sourceQuery = searchKey(currentJobView.request.name);
       setV2JobCache((cached) =>
         cached?.scope === v2JobScopeKey &&
-        cached.query === v2JobQueryKey &&
+        cached.query === sourceQuery &&
         cached.view === currentJobView
           ? cached
-          : { scope: v2JobScopeKey, query: v2JobQueryKey, view: currentJobView },
+          : { scope: v2JobScopeKey, query: sourceQuery, view: currentJobView },
       );
     }
-  }, [currentJobView, v2JobQueryKey, v2JobScopeKey]);
+  }, [currentJobView, v2JobScopeKey]);
 
   useEffect(() => {
     if (!v2BoundForField || !v2BoundKey || !v2DisplayJobView || pickedHere) return;
