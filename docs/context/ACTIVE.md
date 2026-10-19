@@ -2,6 +2,12 @@
 
 Updated 2026-10-19 after the overnight leak-free triage run. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
 
+## Party lookup v3 — 2026-10-19 (B2 party design chat)
+
+- Shipped and deployed `39fa0efc4` at 16:41Z (last-good before: `8e2a5aaf5`; health OK, 4 procs online): notices skip party lookup (#395), HMS reads keep city/IATA/company id (#394), the picker lists every duplicate copy with IATA/address/city (#403, live once staff bundles reload), and the v3 reservationist loop (#400, #406) behind `PARTY_MATCH_V3`, **off**.
+- Live replay (P6, 42 real mails, read-only): 0 wrong binds; p50 25 s vs v2 65 s. v3 15/22 vs v2 21/22 on staff-confirmed agencies (one agency's full name found nothing, then v3 repeated it) → #406 fix; re-run running. Evidence: [party evidence §11–12](../research/2026-10-19-party-lookup-evidence.md); plan: [party v3](../plans/2026-10-19-party-lookup-v3.md).
+- Hold: flag on = owner, only after the re-run shows v3 ≥ v2 on the same 42 mails with 0 wrong binds. Next: per-sender history by id (P8), the main lever for duplicate copies.
+
 ## Chat A (HMS speed) — 2026-10-19
 
 - Party wait p50 411 s (72 h) was an overnight backfill burst, not queue order; staff-hours wait 1–3 s. Fix #376 (`57b23c965`, **deployed 10:43Z**, last-good before `a00c2b783`; ops-deploy rc=1 only from the 24 h dead-letter gate, health/4 procs/VPN OK): background party/quote prep only for live-admitted, actionable mail. Handoff and next slice (session reuse; ~75% of party run time is repeat login/navigation): [Chat A handoff](../plans/2026-10-19-chatA-handoff.md).
