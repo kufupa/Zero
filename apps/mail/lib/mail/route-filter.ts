@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react';
+import { isWorkflowFolderNavId } from '@/config/workflow-folders';
 
 const SYSTEM_FOLDERS = new Set([
   'inbox',
@@ -106,6 +107,9 @@ export function resolveMailRouteFilter(
   const normalized = raw.toLowerCase();
   if (SYSTEM_FOLDERS.has(normalized))
     return { folder: normalized as MailListFolderSlug, filters: {} };
+  // Workflow URLs reuse legacy hotel slugs (new-bookings, groups-events). Membership
+  // is workflowFolder on listThreads, not mail_thread_category.
+  if (isWorkflowFolderNavId(normalized)) return { folder: 'inbox', filters: {} };
   const categoryId = categoryBySlug.get(normalized);
   if (categoryId) return { folder: 'inbox', filters: { categoryIds: [categoryId] } };
   if (labelIdSet?.has(normalized) || LABEL_ID_SHAPE.test(raw)) {

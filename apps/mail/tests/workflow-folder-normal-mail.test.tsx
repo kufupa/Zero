@@ -105,7 +105,10 @@ vi.mock('../components/mail/use-mail', async () => {
 vi.mock('../hooks/use-labels-search', () => ({ default: () => ({ labels: [] }) }));
 vi.mock('../hooks/use-category-ids', () => ({ default: () => ({ categoryIds: [] }) }));
 vi.mock('../hooks/use-categories', () => ({
-  useCategorySettings: () => [],
+  useCategorySettings: () => [
+    { id: 'cat-new-bookings', slug: 'new-bookings', name: 'New Bookings' },
+    { id: 'cat-groups-events', slug: 'groups-events', name: 'Groups & events' },
+  ],
   useDefaultCategoryId: () => 'Important',
 }));
 vi.mock('../hooks/use-labels', () => ({ useLabels: () => ({ userLabels: [] }) }));
@@ -258,6 +261,9 @@ describe('workflow folders in the normal mail layout', () => {
       expect(mocks.listThreadInputs).toContainEqual(
         expect.objectContaining({ workflowFolder: folder }),
       );
+      for (const input of mocks.listThreadInputs.filter((row) => row.workflowFolder === folder)) {
+        expect(input.filters?.categoryIds ?? []).toEqual([]);
+      }
     },
   );
 
