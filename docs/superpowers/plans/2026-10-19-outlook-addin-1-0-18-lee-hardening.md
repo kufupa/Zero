@@ -1,4 +1,4 @@
-# Outlook add-in 1.0.18 Lee hardening Implementation Plan
+# Outlook add-in 1.0.18 client-reviewer hardening Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -28,11 +28,11 @@
 
 ## LLM brief (read first)
 
-Client reviewer Lee (via Darren) flagged: DLL copy with no integrity check (Critical), hardcoded URL, in-memory op cache, double-click, failed WebView not disposed, reply-before-Drafts, no logging, 256 cap.
+Client reviewer the client IT reviewer (via the client contact) flagged: DLL copy with no integrity check (Critical), hardcoded URL, in-memory op cache, double-click, failed WebView not disposed, reply-before-Drafts, no logging, 256 cap.
 
 Locked owner decisions (2026-10-19):
 
-| Lee item | Action |
+| client-reviewer item | Action |
 |---|---|
 | DLL copy / malware | **Push back in email, no code.** Copy is local from installer-shipped `WebView2Loader.dll`. Shipping already done. No hash/sig check this EXE. |
 | Pane URL not hardcoded | **Already done.** `PaneUrl` + `IsTrustedPaneUri` exact `https://nava.legacyhotels.co.za/outlook-pane`. |
@@ -45,7 +45,7 @@ Locked owner decisions (2026-10-19):
 
 `ResumeSync` / `SyncTimer_Tick` empty `catch` must stay **non-throwing** (Outlook must not die) but must write the log.
 
-Bongi may not be on 1.0.17. Native `GET_CAPABILITIES` already returns `addinVersion`. Do not invent live proof she installed. Owner checks her PC.
+One staff user may not be on 1.0.17. Native `GET_CAPABILITIES` already returns `addinVersion`. Do not invent live proof she installed. Owner checks her PC.
 
 ## Repos and current pins
 
@@ -265,7 +265,7 @@ Staff-facing label may still show `ex.Message` (already did). Log must not.
 
 - [ ] **Step 4: `ToggleTaskPane` catch**
 
-Keep success path and the existing `_taskPane = null; EnsurePane(true);`. On exception add only `NativeDiagnosticLog.Write("toggle_pane_failed", ex);` first. Do **not** dispose `_control` here: the old CustomTaskPane can't be removed (the Zero contract slices from the first `ThisAddIn_Shutdown` mention, which forbids `CustomTaskPanes.Remove` almost file-wide), so it would stay in the collection holding a disposed control, and a paint on it can throw `ObjectDisposedException` inside Outlook. The Lee item ("failed WebView null-and-reopen") is covered by `ShowPaneError` in Step 3. (Review note, 2026-10-19.)
+Keep success path and the existing `_taskPane = null; EnsurePane(true);`. On exception add only `NativeDiagnosticLog.Write("toggle_pane_failed", ex);` first. Do **not** dispose `_control` here: the old CustomTaskPane can't be removed (the Zero contract slices from the first `ThisAddIn_Shutdown` mention, which forbids `CustomTaskPanes.Remove` almost file-wide), so it would stay in the collection holding a disposed control, and a paint on it can throw `ObjectDisposedException` inside Outlook. The client-reviewer item ("failed WebView null-and-reopen") is covered by `ShowPaneError` in Step 3. (Review note, 2026-10-19.)
 
 - [ ] **Step 5: Sync / attach**
 
@@ -364,7 +364,7 @@ Windows CI artifact is **not** live until copied to the download path the way 1.
 - [ ] **Step 1:** From the green Windows CI run, give owner `NavaOutlookSetup.exe` + SHA-256 + byte size.
 - [ ] **Step 2:** Owner: download, Edge/Defender **not** “virus,” close Outlook, install 1.0.18, pane opens, `GET_CAPABILITIES.addinVersion === "1.0.18"`, quote/draft still works. Optional: `%LocalAppData%\NavaOutlookAddin\native.log` exists after a sync tick.
 - [ ] **Step 3:** Only after owner says the EXE is clean: authorized publish to `/download/NavaOutlookSetup.exe`, backup 1.0.17, record new SHA in `docs/pilot/2026-10-08-install-and-onboarding.md`.
-- [ ] **Step 4:** Owner sends **their** Darren email. Do not send mail from the agent.
+- [ ] **Step 4:** Owner sends **their** client email. Do not send mail from the agent.
 
 ---
 
