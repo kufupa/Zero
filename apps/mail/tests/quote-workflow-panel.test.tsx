@@ -1752,7 +1752,7 @@ describe('the Find in HMS picker in the quote header', () => {
       <QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel', agency: 'Travel Hub' })} findParty={find} />,
     );
     await waitFor(() => expect(find).toHaveBeenCalledTimes(2), { timeout: 3000 });
-    expect(screen.getAllByRole('heading', { name: /Party \+ contact/ })).toHaveLength(1);
+    expect(screen.getAllByRole('heading', { name: 'Agency & company' })).toHaveLength(1);
     expect(
       screen.getByLabelText('Search agency in HMS').compareDocumentPosition(screen.getByLabelText('Search company in HMS')) &
         Node.DOCUMENT_POSITION_FOLLOWING,
