@@ -4,6 +4,7 @@ One entry per lesson: trigger, what happened, rule. Newest first. Add an entry w
 
 | Date | Trigger | What happened | Rule |
 |---|---|---|---|
+| 2026-10-19 | `ops-deploy.sh --migrate` for 0051 (party history) | drizzle-kit migrate failed `SELF_SIGNED_CERT_IN_CHAIN`: `drizzle.config.ts` uses `sslmode=require` (pg now treats it as verify-full) without the RDS CA the app loads from `deploy/rds-ca-global.pem`. Deploy stopped before restart (no outage) | Apply migrations with `NODE_EXTRA_CA_CERTS=deploy/rds-ca-global.pem pnpm db:migrate` (env sourced with `set -a`), then deploy without `--migrate`; fix `--migrate` to set it |
 | 2026-10-19 | Owner: "15% is shit… are we over-engineering?" (party v3) | Built an LLM search-and-pick loop (P5, then patches P5b/P5c) before scoring sender history, which was already in the code as a weak hint. On a 42-mail set (22 circular) v3 bound 14/22 vs v2 21/22; history alone scores 65/107 agencies right, 1 wrong, on real HMS bookings | Score the cheapest deterministic baseline on ≥ 100 independent truth rows (by id) before building an agent; two patch rounds on one design = re-plan |
 | 2026-10-19 | Big-set HMS read (party) | Batch reader exited after 16/194 bookings when staff held the property lock (`LOCK_BUSY` not retried) | Long HMS batch reads retry `LOCK_BUSY` with backoff and append to a file |
 | 2026-10-19 | `party_sender_map` review | Learned sender history was loaded once from a file (10-16) and nothing writes it; staff picks never fed it | A learned table names its live writer before merge |
