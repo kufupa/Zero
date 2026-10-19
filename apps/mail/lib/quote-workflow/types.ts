@@ -254,6 +254,8 @@ export type RateOption = {
   onlyContract: boolean;
   matchesRequest: boolean;
   perNightMinor: number;
+  /** Minimum per-night HMS inventory, for display only. */
+  roomsLeft?: number;
   totalMinor: number;
   currency: string;
   priced: 'full' | 'summary';

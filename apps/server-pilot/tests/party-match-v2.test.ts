@@ -3,12 +3,20 @@ import {
   buildPartyMatchCandidates,
   normalisePartyName,
   partyMatchEmailContext,
+  partyMatchSearchTerms,
   pickPartyMatch,
   planPartySearches,
   type PartyMatchCandidate,
 } from '../src/ai/party-match-v2.js';
 import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
+
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  replaceLearnedSenderMapForTests(null);
+});
 
 const candidate = (name: string, kind: 'company' | 'agency' = 'company'): PartyMatchCandidate => ({
   name,
@@ -18,6 +26,13 @@ const candidate = (name: string, kind: 'company' | 'agency' = 'company'): PartyM
 });
 
 describe('PARTY MATCH V2 search plan', () => {
+  it('does not plan hotel or consulting as single search terms', () => {
+    const terms = partyMatchSearchTerms('Legacy Hotel Consulting');
+
+    expect(terms).not.toContain('Hotel');
+    expect(terms).not.toContain('Consulting');
+  });
+
   it('normalises legal forms, punctuation, accents and brackets without losing numeric tokens', () => {
     expect(normalisePartyName('Amícis Health (Pty) Ltd')).toBe('amicis health');
     expect(normalisePartyName('GP Destination Management SL')).toBe('gp destination management');
@@ -203,6 +218,106 @@ describe('PARTY MATCH V2 search plan', () => {
       source: 'signature',
       strength: 'strong',
     });
+  });
+});
+
+describe('party sender history candidates', () => {
+  it('keeps learned sender history weak when the flag is off', () => {
+    vi.stubEnv('PARTY_HISTORY_BIND', 'off');
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 2 },
+    ]);
+
+    expect(buildPartyMatchCandidates({ fromAddress: 'agent@agency.example.test' })).toContainEqual({
+      name: 'Harbor Travel',
+      kind: 'agency',
+      source: 'sender_domain_alias',
+      strength: 'weak',
+    });
+  });
+
+  it('strengthens learned sender history only after two supports', () => {
+    vi.stubEnv('PARTY_HISTORY_BIND', 'on');
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 2 },
+    ]);
+    expect(
+      buildPartyMatchCandidates({
+        fromAddress: 'agent@agency.example.test',
+        allowLearnedSenderHistory: false,
+      }),
+    ).not.toContainEqual(expect.objectContaining({ source: 'sender_history' }));
+    expect(
+      buildPartyMatchCandidates({
+        fromAddress: 'agent@agency.example.test',
+        allowLearnedSenderHistory: true,
+      }),
+    ).toContainEqual({
+      name: 'Harbor Travel',
+      kind: 'agency',
+      source: 'sender_history',
+      strength: 'strong',
+    });
+
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 1 },
+    ]);
+    expect(
+      buildPartyMatchCandidates({
+        fromAddress: 'agent@agency.example.test',
+        allowLearnedSenderHistory: true,
+      }),
+    ).toContainEqual({
+      name: 'Harbor Travel',
+      kind: 'agency',
+      source: 'sender_history',
+      strength: 'weak',
+    });
+  });
+
+  it('downgrades history when names share no distinctive token', () => {
+    vi.stubEnv('PARTY_HISTORY_BIND', 'on');
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.example.test', kind: 'agency', name: 'Tourvest', support: 5 },
+    ]);
+
+    const candidates = buildPartyMatchCandidates({
+      fromAddress: 'agent@agency.example.test',
+      payload: { agency: 'Flight Centre' },
+      allowLearnedSenderHistory: true,
+    });
+    expect(candidates.slice(0, 2)).toEqual([
+      {
+        name: 'Flight Centre',
+        kind: 'agency',
+        source: 'extraction_agency',
+        strength: 'strong',
+      },
+      {
+        name: 'Tourvest',
+        kind: 'agency',
+        source: 'sender_history',
+        strength: 'weak',
+      },
+    ]);
+  });
+
+  it.each([
+    { emailName: 'Nexus Travel', historyName: 'XL Nexus' },
+    { emailName: 'Rennies BCD', historyName: 'RENNIES TRAVEL' },
+  ])('keeps learned history strong when names share distinctive tokens: $emailName', ({ emailName, historyName }) => {
+    vi.stubEnv('PARTY_HISTORY_BIND', 'on');
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.example.test', kind: 'agency', name: historyName, support: 2 },
+    ]);
+
+    const history = buildPartyMatchCandidates({
+      fromAddress: 'agent@agency.example.test',
+      payload: { agency: emailName },
+      allowLearnedSenderHistory: true,
+    }).find((candidate) => candidate.source === 'sender_history');
+
+    expect(history?.strength).toBe('strong');
   });
 });
 

@@ -2,9 +2,11 @@ import { zodToJsonSchema } from 'zod-to-json-schema';
 import { z } from 'zod';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { matchKey } from './party-match.js';
+import { OWNED_HOTEL_HOSTS } from './party-sender-map.js';
 import type { PanePartyCandidate, PanePartyOutcome } from './pane-party-lookup.js';
 import {
   applyPartyBindRule,
+  distinctivePartyTokens,
   normalisePartyName,
   partyMatchSearchTerms,
   pickPartyMatch,
@@ -74,6 +76,56 @@ const ROUND1_TERM_CAP = 5;
 const ROUND2_TERM_CAP = 3;
 const MAX_BATCHES = 2;
 const MIN_TERM_CHARS = 3;
+const COUNTRY_REGION_TOKENS = new Set([
+  'africa',
+  'argentina',
+  'asia',
+  'australia',
+  'botswana',
+  'brazil',
+  'canada',
+  'caribbean',
+  'central',
+  'chile',
+  'china',
+  'east',
+  'eswatini',
+  'europe',
+  'france',
+  'germany',
+  'india',
+  'italy',
+  'japan',
+  'kenya',
+  'kingdom',
+  'lesotho',
+  'middle',
+  'mozambique',
+  'namibia',
+  'netherlands',
+  'new',
+  'nigeria',
+  'north',
+  'oceania',
+  'portugal',
+  'south',
+  'spain',
+  'states',
+  'united',
+  'west',
+  'zambia',
+  'zimbabwe',
+]);
+const OWNED_HOTEL_DOMAIN_LABELS = new Set(
+  [...OWNED_HOTEL_HOSTS].map((host) => host.split('.')[0] ?? ''),
+);
+
+function isNonPartySearchTerm(term: string): boolean {
+  const compact = normalisePartyName(term).replace(/\s+/gu, '');
+  if (OWNED_HOTEL_DOMAIN_LABELS.has(compact)) return true;
+  if ([...compact].length < MIN_TERM_CHARS) return false;
+  return !distinctivePartyTokens(term).some((token) => !COUNTRY_REGION_TOKENS.has(token));
+}
 
 /** Default-off. Same explicit true/1 gate as PARTY_MATCH_V2 so `on` cannot silently enable it. */
 export function partyMatchV3Enabled(env: NodeJS.Dict<string> = process.env): boolean {
@@ -89,7 +141,7 @@ export function sanitizePartySearchTerms(
   for (const item of terms) {
     if (item.kind !== 'company' && item.kind !== 'agency') continue;
     const term = item.term.replace(/\s+/g, ' ').trim();
-    if (term.length < minChars) continue;
+    if (term.length < minChars || isNonPartySearchTerm(term)) continue;
     const key = `${item.kind}:${normalisePartyName(term)}`;
     if (!normalisePartyName(term) || seen.has(key)) continue;
     seen.add(key);
@@ -164,7 +216,11 @@ const pickSchema = z
     }
   });
 
-export type PartySenderHistory = { kind: PartyMatchKind; nativeId: string };
+export type PartySenderHistory = {
+  kind: PartyMatchKind;
+  nativeId: string | null;
+  name?: string;
+};
 
 function emailHaystack(emailText: string, context?: PartyMatchEmailContext): string {
   return [
@@ -203,10 +259,53 @@ function uniqueSenderCopy(
 ): PartyMatchV3Row | null {
   if (!senderHistory?.length) return null;
   const wanted = new Set(
-    senderHistory.map((row) => `${row.kind}:${row.nativeId}`),
+    senderHistory.filter((row) => row.nativeId).map((row) => `${row.kind}:${row.nativeId}`),
   );
   const hits = copies.filter((row) => wanted.has(`${row.kind}:${row.nativeId}`));
   return hits.length === 1 ? (hits[0] ?? null) : null;
+}
+
+function uniqueNameHistoryMatch(
+  rows: readonly PartyMatchV3Row[],
+  senderHistory: readonly PartySenderHistory[] | undefined,
+  candidates: readonly PartyMatchCandidate[],
+): PartyMatchV3Row | null {
+  if (!senderHistory?.length) return null;
+  const matches = new Map<string, PartyMatchV3Row>();
+  for (const history of senderHistory) {
+    if (history.nativeId || !history.name) continue;
+    const hasStrongHistoryCandidate = candidates.some(
+      (candidate) =>
+        candidate.source === 'sender_history' &&
+        candidate.strength === 'strong' &&
+        candidate.kind === history.kind &&
+        normalisePartyName(candidate.name) === normalisePartyName(history.name ?? ''),
+    );
+    if (!hasStrongHistoryCandidate) continue;
+    const historyTokens = new Set(distinctivePartyTokens(history.name));
+    if (!historyTokens.size) continue;
+    for (const row of rows) {
+      if (row.kind !== history.kind) continue;
+      const rowTokens = new Set(distinctivePartyTokens(row.name));
+      if ([...historyTokens].every((token) => rowTokens.has(token)))
+        matches.set(`${row.kind}:${row.nativeId}`, row);
+    }
+  }
+  if (matches.size !== 1) return null;
+  const match = [...matches.values()][0] ?? null;
+  // The email beats history: a same-kind name in this email that exactly names a different row keeps the normal pick.
+  const emailNamesOtherRow = candidates.some(
+    (candidate) =>
+      candidate.source !== 'sender_history' &&
+      candidate.kind === match?.kind &&
+      rows.some(
+        (row) =>
+          row.kind === candidate.kind &&
+          row.nativeId !== match?.nativeId &&
+          normalisePartyName(row.name) === normalisePartyName(candidate.name),
+      ),
+  );
+  return emailNamesOtherRow ? null : match;
 }
 
 function copiesOf(picked: PartyMatchV3Row, rows: readonly PartyMatchV3Row[]): PartyMatchV3Row[] {
@@ -249,6 +348,27 @@ export function applyPartyBindV3(input: {
   context?: PartyMatchEmailContext;
   senderHistory?: readonly PartySenderHistory[];
 }): PartyMatchDecision {
+  const historyMatch = uniqueNameHistoryMatch(
+    input.rows,
+    input.senderHistory,
+    input.candidates,
+  );
+  if (historyMatch) {
+    return applyPartyBindRule({
+      candidates: input.candidates,
+      rows: input.rows,
+      pick: {
+        ...input.pick,
+        pickNativeId: historyMatch.nativeId,
+        kind: historyMatch.kind,
+        confidence: 'high',
+        reason: 'Name-only sender history matches one same-kind HMS row.',
+        alternatives: [],
+        source: 'fallback',
+      },
+      truncated: input.truncated,
+    });
+  }
   const picked = rowById(input.rows, input.pick.kind, input.pick.pickNativeId);
   const copies = picked ? copiesOf(picked, input.rows) : [];
   if (picked && copies.length >= 2) {
@@ -574,12 +694,39 @@ export async function runPartyMatchV3(input: {
     alternatives: loopPick.alternatives,
     source: loopPick.source,
   };
+  const rows = collected();
+  let decision = bind(pick);
+  if (decision.matchStatus !== 'bound' && rows.length) {
+    try {
+      const v2Pick = await pickPartyMatch({
+        adapter: input.adapter,
+        candidates: input.candidates,
+        rows,
+        context: input.context,
+        signal: input.signal,
+        deadlineAt: input.deadlineAt,
+      });
+      const v2Decision = bind(v2Pick);
+      if (v2Decision.matchStatus === 'bound') {
+        return finish({
+          rows,
+          truncated,
+          searchesTried,
+          pick: v2Pick,
+          decision: v2Decision,
+          failure,
+        });
+      }
+    } catch {
+      // Keep the v3 needs_pick when the v2 picker throws.
+    }
+  }
   return finish({
-    rows: collected(),
+    rows,
     truncated,
     searchesTried,
     pick,
-    decision: bind(pick),
+    decision,
     failure,
   });
 }

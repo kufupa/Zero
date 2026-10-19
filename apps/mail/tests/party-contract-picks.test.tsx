@@ -108,8 +108,8 @@ describe('PartyPicker with both kinds and suggestions', () => {
         onClear={onClear}
       />,
     );
-    expect(screen.getByText('✓ Woolworths (#49)')).toBeTruthy();
-    expect(screen.getByText('✓ Woolworths Agency (#569)')).toBeTruthy();
+    expect(screen.getByText('✓ Woolworths')).toBeTruthy();
+    expect(screen.getByText('✓ Woolworths Agency')).toBeTruthy();
     const clears = screen.getAllByRole('button', { name: 'Change' });
     expect(clears).toHaveLength(2);
     fireEvent.click(clears[0]!);
@@ -179,7 +179,7 @@ describe('PartyPicker scoped to one field of the header', () => {
         suggestions={[CWT, companySuggestion]}
       />,
     );
-    expect(screen.queryByText('✓ Woolworths (#49)')).toBeNull();
+    expect(screen.queryByText('✓ Woolworths')).toBeNull();
     expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
     expect(screen.queryByText(/Woolworths Company/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Find in HMS' }));
@@ -233,9 +233,10 @@ describe('PartyPicker preselects the top suggestion', () => {
       );
     }
     render(<PreselectHarness />);
-    await waitFor(() => expect(screen.getByText('✓ CWT JNB (#290)')).toBeTruthy());
+    const agencyPreset = await screen.findByRole('combobox', { name: 'Agency from HMS' });
+    expect((agencyPreset as unknown as HTMLSelectElement).value).toBe('agency:290');
     expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Confirm CWT JNB' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Confirm Agency' })).toBeTruthy();
     expect(picked).toEqual([agency]);
     expect(pickedParties({ agency })).toEqual({ agency });
     const mutate = vi.fn<(input: unknown) => Promise<{ status: 'unavailable' }>>(async () => ({

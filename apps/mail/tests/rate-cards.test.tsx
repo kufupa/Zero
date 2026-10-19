@@ -211,6 +211,23 @@ describe('rate cards in the quote panel', () => {
     expect(within(cards[2]!).queryByText(/Total/)).toBeNull();
   });
 
+  it('shows rooms left beside the price without hiding options', async () => {
+    render(
+      <QuoteWorkflowPanel
+        session={await quotedSession([
+          rate({ ...NCOR, roomsLeft: 5 }),
+          rate({ ...BAR, roomsLeft: 2 }),
+          BARRO,
+        ])}
+      />,
+    );
+    const cards = rateCards();
+    expect(cards).toHaveLength(3);
+    expect(within(cards[0]!).getByText('5 left').className).toMatch(/text-\[#64748b\]/);
+    expect(within(cards[1]!).getByText('Only 2 left').className).toMatch(/text-amber/);
+    expect(within(cards[2]!).queryByText(/left/)).toBeNull();
+  });
+
   it('uses two compact card rows so the title can wrap without squeezing the price at narrow widths', async () => {
     render(<QuoteWorkflowPanel session={await quotedSession([NCOR, BAR])} />);
     const card = rateCards()[0]!;
@@ -475,6 +492,25 @@ describe('the pinned rate on the execute request', () => {
     expect(result.status).toBe('ok');
     expect(mutate.mock.calls[0]?.[0].groups[0]).not.toHaveProperty('rateCode');
     if (result.status === 'ok') expect(result.staffQuote).not.toHaveProperty('rateOptions');
+  });
+
+  it('keeps valid rooms-left values and omits invalid or legacy values', () => {
+    const [withRooms, zero, legacy, negative, fractional, infinite, text] = readRateOptions([
+      { ...NCOR, roomsLeft: 5 },
+      { ...BAR, id: 'zero', roomsLeft: 0 },
+      BAR,
+      { ...BAR, id: 'negative', roomsLeft: -1 },
+      { ...BAR, id: 'fractional', roomsLeft: 1.5 },
+      { ...BAR, id: 'infinite', roomsLeft: Number.POSITIVE_INFINITY },
+      { ...BAR, id: 'text', roomsLeft: '5' },
+    ]);
+
+    expect(withRooms).toMatchObject({ roomsLeft: 5 });
+    expect(zero).toMatchObject({ roomsLeft: 0 });
+    expect(legacy).not.toHaveProperty('roomsLeft');
+    for (const option of [negative, fractional, infinite, text]) {
+      expect(option).not.toHaveProperty('roomsLeft');
+    }
   });
 
   it('keeps well-formed rate rows and drops the rest', () => {

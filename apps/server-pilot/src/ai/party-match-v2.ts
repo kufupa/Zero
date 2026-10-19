@@ -1,4 +1,5 @@
 import { extractPartyMentions, suggestPartyFromSender } from './party-aliases.js';
+import { lookupLearnedSenderHistory, partyHistoryBindEnabled } from './party-sender-map.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { matchKey } from './party-match.js';
@@ -12,6 +13,7 @@ export type PartyMatchSource =
   | 'quote_llm'
   | 'body'
   | 'signature'
+  | 'sender_history'
   | 'sender_domain_alias'
   | 'sender_domain_label';
 
@@ -19,7 +21,7 @@ export type PartyMatchCandidate = {
   name: string;
   kind: PartyMatchKind;
   source: PartyMatchSource;
-  /** Domain-derived candidates can guide searches and suggestions, but can never authorize a bind. */
+  /** Static domain aliases are hints; learned sender history is separately gated and support-scored. */
   strength: PartyMatchStrength;
 };
 
@@ -70,23 +72,32 @@ const MAX_SIGNATURE_CHARS = 2_000;
 const MAX_PERSON_SCAN_CHARS = 20_000;
 
 const GENERIC_WORDS = new Set([
-  'group',
   'travel',
   'travels',
   'tours',
-  'services',
+  'tour',
+  'group',
   'holdings',
   'hotel',
-  'company',
-  'solutions',
-  'management',
-  'consulting',
-  'international',
-  'africa',
-  'sa',
+  'services',
+  'service',
+  'pty',
+  'ltd',
+  'agency',
+  'agencies',
   'the',
   'and',
   'of',
+  'management',
+  'consulting',
+  'solutions',
+  'africa',
+  'south',
+  'sa',
+  'international',
+  'co',
+  'company',
+  'corporate',
 ]);
 const LEGAL_FORMS = new Set([
   'pty',
@@ -141,13 +152,11 @@ export function normalisePartyName(value: string): string {
   return matchKey(cleanPartySearchName(value));
 }
 
-function distinctiveTokens(value: string): string[] {
+export function distinctivePartyTokens(value: string): string[] {
   return cleanPartySearchName(value)
     .split(/\s+/u)
-    .filter((word) => {
-      const key = matchKey(word);
-      return [...key].length >= 3 && !GENERIC_WORDS.has(key);
-    });
+    .map(matchKey)
+    .filter((key) => [...key].length >= 3 && !GENERIC_WORDS.has(key));
 }
 
 function bracketedAcronyms(value: string): string[] {
@@ -166,7 +175,10 @@ function bracketedAcronyms(value: string): string[] {
 export function partyMatchSearchTerms(name: string): string[] {
   const full = cleanPartySearchName(name);
   if (!full) return [];
-  const distinctive = distinctiveTokens(full);
+  const distinctiveKeys = new Set(distinctivePartyTokens(full));
+  const distinctive = full
+    .split(/\s+/u)
+    .filter((word) => distinctiveKeys.has(matchKey(word)));
   const acronyms = bracketedAcronyms(name);
   const singles = distinctive.slice(0, acronyms.length ? 1 : 2);
   const phrase = distinctive.slice(0, 2).join(' ');
@@ -472,6 +484,7 @@ export function buildPartyMatchCandidates(input: {
   body?: string | null;
   quoteLlmParty?: unknown;
   guestNames?: readonly string[];
+  allowLearnedSenderHistory?: boolean;
 }): PartyMatchCandidate[] {
   const payload = objectRecord(input.payload);
   const sender = parseSender(input.fromAddress);
@@ -486,6 +499,11 @@ export function buildPartyMatchCandidates(input: {
   const signatureOrganisations = signatureOrganisationRows(signature);
   const domain = domainLabel(sender.address);
   const alias = suggestPartyFromSender(sender.address);
+  const senderHistory =
+    input.allowLearnedSenderHistory && sender.address
+      ? lookupLearnedSenderHistory(sender.address.slice(sender.address.lastIndexOf('@') + 1))
+      : null;
+  const historyEnabled = partyHistoryBindEnabled(process.env);
   const people = new Set(
     explicitPersonNames({
       displayName,
@@ -528,7 +546,21 @@ export function buildPartyMatchCandidates(input: {
   }
   for (const row of signatureOrganisations) add(row.name, row.kind, 'signature', 'strong');
 
-  if (alias) add(alias.name, alias.kind, 'sender_domain_alias', 'weak');
+  if (historyEnabled && senderHistory) {
+    const historyTokens = new Set(distinctivePartyTokens(senderHistory.name));
+    const emailContradictsHistory = candidates.some((candidate) => {
+      if (candidate.kind !== senderHistory.kind) return false;
+      return !distinctivePartyTokens(candidate.name).some((token) => historyTokens.has(token));
+    });
+    add(
+      senderHistory.name,
+      senderHistory.kind,
+      'sender_history',
+      senderHistory.support >= 2 && !emailContradictsHistory ? 'strong' : 'weak',
+    );
+  } else if (alias) {
+    add(alias.name, alias.kind, 'sender_domain_alias', 'weak');
+  }
   if (domain) {
     const kind: PartyMatchKind =
       alias?.kind ?? (isAgencyDomainLabel(domain.name) ? 'agency' : 'company');
@@ -738,7 +770,7 @@ function partyClaimScore(candidate: PartyMatchCandidate, row: PartyMatchRow): 0 
   const found = normalisePartyName(row.name);
   if (!wanted || !found) return 0;
   if (wanted === found) return 2;
-  const distinctive = distinctiveTokens(candidate.name).map(matchKey);
+  const distinctive = distinctivePartyTokens(candidate.name);
   if (!distinctive.length) return 0;
   const foundWords = new Set(found.split(' '));
   return distinctive.every((token) => foundWords.has(token)) ? 1 : 0;

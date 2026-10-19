@@ -1,4 +1,5 @@
 import { format, isValid, parseISO } from 'date-fns';
+import { Copy, Info, Trash2 } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
 
 import {
@@ -122,17 +123,50 @@ export function StayCard({
     <article aria-label={`Stay ${stayNumber} details`} className="overflow-hidden rounded-[4px] border border-[#cbd5e1] bg-white">
       <header className="flex flex-col gap-1.5 border-b border-[#dbe5f0] bg-[#f5f9ff] px-3 py-2.5">
         <div className="flex flex-wrap items-start justify-between gap-2">
-          <h4 className="text-[13px] font-bold leading-5 text-[#1e293b]">
-            {`Stay ${stayNumber} of ${stayCount} · ${stayHeaderDates(first?.arrivalDate, first?.departureDate)}`}
-          </h4>
+          <div className="flex min-w-0 items-center gap-1.5">
+            <h4 className="text-[13px] font-bold leading-5 text-[#1e293b]">
+              {`Stay ${stayNumber} of ${stayCount} · ${stayHeaderDates(first?.arrivalDate, first?.departureDate)}`}
+            </h4>
+            <span className="group relative inline-flex">
+              <button
+                type="button"
+                aria-label="Stay information"
+                aria-describedby={`${id}-stay-info`}
+                title="One stay = one date range = one HMS booking."
+                className="rounded-[3px] text-[#64748b] hover:text-[#1e293b] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+              >
+                <Info aria-hidden="true" className="h-3.5 w-3.5" />
+              </button>
+              <span
+                id={`${id}-stay-info`}
+                role="tooltip"
+                className="absolute left-0 top-full z-10 hidden w-56 rounded-[3px] bg-[#1e293b] px-2 py-1 text-[12px] font-normal leading-4 text-white shadow-md group-hover:block group-focus-within:block"
+              >
+                One stay = one date range = one HMS booking.
+              </span>
+            </span>
+          </div>
           <div className="flex items-center gap-3">
-            <LinkButton onClick={() => onStayAction?.({ type: 'duplicate_stay', stayId, token: newQuoteToken() })}>
-              Duplicate stay
-            </LinkButton>
-            <LinkButton onClick={() => onStayAction?.({ type: 'remove_stay', stayId })}>Remove stay</LinkButton>
+            <button
+              type="button"
+              title="Create another stay with the same dates and rooms."
+              className="inline-flex items-center gap-1 rounded-[3px] text-[13px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+              onClick={() => onStayAction?.({ type: 'duplicate_stay', stayId, token: newQuoteToken() })}
+            >
+              <Copy aria-hidden="true" className="h-3.5 w-3.5" />
+              Copy stay
+            </button>
+            <button
+              type="button"
+              title="Remove this stay and its room types."
+              className="inline-flex items-center gap-1 rounded-[3px] text-[13px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+              onClick={() => onStayAction?.({ type: 'remove_stay', stayId })}
+            >
+              <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
+              Remove
+            </button>
           </div>
         </div>
-        <p className="text-[13px] text-[#475569]">Separate HMS booking. Each date range is searched and booked independently.</p>
         <p className="text-[13px] font-semibold text-[#1e293b]">
           {splitNotSet
             ? `${requestedRoomsTotal} rooms requested · split not set`
@@ -262,11 +296,25 @@ export function RequirementCard({
       <div role="rowheader" className="flex flex-wrap items-center justify-between gap-2">
         <span className="text-[13px] font-bold text-[#334155]">{displayName}</span>
         <div className="flex items-center gap-3">
-          <LinkButton onClick={() => onStayAction?.({ type: 'duplicate_row', groupId: group.id, token: newQuoteToken() })}>
-            Duplicate room
-          </LinkButton>
+          <button
+            type="button"
+            title="Duplicate this room type and occupancy."
+            className="inline-flex items-center gap-1 rounded-[3px] text-[13px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+            onClick={() => onStayAction?.({ type: 'duplicate_row', groupId: group.id, token: newQuoteToken() })}
+          >
+            <Copy aria-hidden="true" className="h-3.5 w-3.5" />
+            Copy room
+          </button>
           {canRemove ? (
-            <LinkButton onClick={() => onStayAction?.({ type: 'remove_row', groupId: group.id })}>Remove room</LinkButton>
+            <button
+              type="button"
+              title="Remove this room type."
+              className="inline-flex items-center gap-1 rounded-[3px] text-[13px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
+              onClick={() => onStayAction?.({ type: 'remove_row', groupId: group.id })}
+            >
+              <Trash2 aria-hidden="true" className="h-3.5 w-3.5" />
+              Remove
+            </button>
           ) : null}
         </div>
       </div>

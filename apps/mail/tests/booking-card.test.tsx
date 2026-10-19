@@ -358,6 +358,32 @@ describe('booking cards', () => {
     expect(screen.queryByRole('button', { name: /save draft/i })).toBeNull();
   });
 
+  it('prefills email source only when the booking request has no source', () => {
+    const options = { ...OPTIONS, sourceOfBusiness: ['Walk In', 'Email', 'Phone'] };
+    const emptySourceDraft = { ...draftReady(), options };
+    const emptySource = render(<BookingCards draft={emptySourceDraft} />);
+    expect(fieldValues('Source of business')[0]).toBe('Email');
+    emptySource.unmount();
+
+    const existingSourceDraft = { ...draftReady(), options };
+    existingSourceDraft.draft.rooms[0]!.request.sourceOfBusiness = 'Phone';
+    const existingSource = render(<BookingCards draft={existingSourceDraft} />);
+    expect(fieldValues('Source of business')[0]).toBe('Phone');
+    existingSource.unmount();
+
+    const noEmailDraft = {
+      ...draftReady(),
+      options: { ...OPTIONS, sourceOfBusiness: ['Walk In', 'Phone'] },
+    };
+    render(<BookingCards draft={noEmailDraft} />);
+    expect(fieldValues('Source of business')).toEqual(['Select source', 'Select source']);
+    for (const copyButton of screen.getAllByRole('button', {
+      name: 'Copy Source of business for Standard Queen ×2',
+    })) {
+      expect(copyButton).toHaveProperty('disabled', true);
+    }
+  });
+
   it('keeps track/source/guarantee selects local-only', () => {
     const session = quotedSession();
     render(<QuoteWorkflowPanel session={session} />);
@@ -679,11 +705,12 @@ describe('booking card pane save', () => {
     expect(await screen.findByText(/Nava will book Ada Lovelace/)).toBeDefined();
   });
 
-  it('asks for the missing choices before Preview in HMS can run', () => {
+  it('prefills email source and asks for the remaining choices before Preview', () => {
     const { client, preview } = paneClient();
     render(<BookingCards draft={draftReady()} paneSave={client} />);
+    expect(fieldValues('Source of business')).toEqual(['E-Mail', 'E-Mail']);
     expect(previewButton(0)).toHaveProperty('disabled', true);
-    expect(screen.getAllByText('Set source of business, track, guarantee before you preview.')).toHaveLength(2);
+    expect(screen.getAllByText('Set track, guarantee before you preview.')).toHaveLength(2);
     pickRoomChoices(0);
     expect(previewButton(0)).toHaveProperty('disabled', false);
     expect(preview).not.toHaveBeenCalled();

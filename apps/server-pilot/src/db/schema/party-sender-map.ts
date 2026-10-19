@@ -8,6 +8,8 @@ export const partySenderMap = pgTable(
     host: text('host').primaryKey(),
     kind: text('kind').notNull(),
     name: text('name').notNull(),
+    nativeId: text('native_id'),
+    iata: text('iata'),
     support: integer('support').notNull(),
   },
   (t) => [
