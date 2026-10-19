@@ -10,12 +10,12 @@ import { fileURLToPath } from 'node:url';
 import { playwright, readSecret } from './fetch-quote.mjs';
 import { loopbackCdpUrl, scrubNavError } from './hms-deeplink-probe.mjs';
 import {
-  authenticatedShellReady,
   login,
   newBorrowedContext,
   saveSlotStorageState,
   sessionReuseProbeResult,
   slotStorageStatePath,
+  waitForShellOrLoginForm,
 } from './session-reuse.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
@@ -50,7 +50,8 @@ export async function runSessionReuseProbe({ env = process.env } = {}) {
     const loginStarted = Date.now();
     const loggedIn = await login(seed, secret, slotEnv);
     const firstLoginMs = Date.now() - loginStarted;
-    const saved = await saveSlotStorageState(first, slotEnv);
+    let saved = false;
+    try { saved = await saveSlotStorageState(first, slotEnv); } catch { saved = false; }
     await seed.close().catch(() => {});
     await first.close().catch(() => {});
     first = null;
@@ -65,8 +66,9 @@ export async function runSessionReuseProbe({ env = process.env } = {}) {
     const page = await second.newPage();
     page.setDefaultTimeout(20000);
     await page.goto(secret.loginUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-    const portable = await authenticatedShellReady(page, secret).catch(() => false);
-    const loginVisible = (await page.locator('input[type="password"]:visible').count().catch(() => 1)) > 0;
+    const waited = await waitForShellOrLoginForm(page, secret, Date.now() + 20000);
+    const portable = waited.ready;
+    const loginVisible = waited.loginForm;
     const reuseCheckMs = Date.now() - reuseStarted;
     await page.close().catch(() => {});
     const stateMode = saved ? (await stat(statePath)).mode & 0o777 : null;

@@ -39,12 +39,12 @@ function readyDocument(bodyText = 'Hotel') {
   };
 }
 
-function fakePage({ readyOn = 1, fills = [] } = {}) {
+function fakePage({ readyOn = 1, fills = [], formCount = 1 } = {}) {
   let reads = 0;
   const control = {
     fill: async (value) => { fills.push(value); },
     press: async () => {},
-    count: async () => 1,
+    count: async () => formCount,
     click: async () => {},
   };
   return {
@@ -118,6 +118,30 @@ test('newBorrowedContext ignores a group-or-world-readable storageState file', a
   assert.equal(Object.hasOwn(calls[0], 'storageState'), false);
 });
 
+test('login waits for a still-loading shell and does not fill a missing login form', async () => {
+  const fills = [];
+  const page = fakePage({ readyOn: 3, fills, formCount: 0 });
+  const result = await quote.login(page, secret, {});
+  assert.deepEqual(result, { reused: true });
+  assert.equal(fills.length, 0);
+  assert.equal(page.reads(), 3);
+});
+
+test('login still succeeds when the optional storageState save throws', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'hms-slot-save-fail-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const profile = join(dir, 'profile');
+  await mkdir(profile, { recursive: true, mode: 0o700 });
+  const fills = [];
+  const page = fakePage({ readyOn: 2, fills });
+  page.context = () => ({
+    storageState: async () => { throw new Error('EACCES'); },
+  });
+  const result = await quote.login(page, secret, { HMS_SLOT_PROFILE_DIR: profile });
+  assert.deepEqual(result, { reused: false });
+  assert.ok(fills.includes('user'));
+});
+
 test('login skips credential fill when the authenticated shell is already ready', async () => {
   const fills = [];
   const page = fakePage({ readyOn: 1, fills });
@@ -183,7 +207,7 @@ test('probe result names the fallback and never carries cookies or credentials',
 test('session-reuse-probe is read-only and never prints secrets', async () => {
   const source = await readFile(new URL('./session-reuse-probe.mjs', import.meta.url), 'utf8');
   assert.match(source, /newBorrowedContext/);
-  assert.match(source, /authenticatedShellReady/);
+  assert.match(source, /waitForShellOrLoginForm/);
   assert.match(source, /sessionReuseProbeResult/);
   assert.match(source, /\.close\(\)/);
   assert.doesNotMatch(source, /SecretString|cookie-value|secret\.password/);

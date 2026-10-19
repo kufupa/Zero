@@ -73,6 +73,24 @@ async function shellReadyOrFalse(page, secret) {
   }
 }
 
+async function loginFormVisible(page) {
+  try {
+    return (await page.locator('input[type="password"]:visible').count()) > 0;
+  } catch {
+    return false;
+  }
+}
+
+export async function waitForShellOrLoginForm(page, secret, deadline = Date.now() + 120000) {
+  while (Date.now() < deadline) {
+    if (await shellReadyOrFalse(page, secret)) return { ready: true, loginForm: false };
+    if (await loginFormVisible(page)) return { ready: false, loginForm: true };
+    await delay(250);
+  }
+  if (await shellReadyOrFalse(page, secret)) return { ready: true, loginForm: false };
+  return { ready: false, loginForm: await loginFormVisible(page) };
+}
+
 export function sessionReuseProbeResult({
   portable = false,
   firstContextReused = false,
@@ -98,7 +116,9 @@ export async function login(page, secret, env = process.env) {
   const deadline = Date.now() + 120000;
   const budget = () => Math.max(1, deadline - Date.now());
   await page.goto(secret.loginUrl, { waitUntil: 'domcontentloaded', timeout: budget() });
-  if (await shellReadyOrFalse(page, secret)) return { reused: true };
+  const first = await waitForShellOrLoginForm(page, secret, deadline);
+  if (first.ready) return { reused: true };
+  if (!first.loginForm) throw new Error('AUTHENTICATED_SHELL_TIMEOUT');
   await page.locator('input[name="userid"], input[name="username"]').fill(secret.username, { timeout: budget() });
   const password = page.locator('input[name="password"]');
   await password.fill(secret.password, { timeout: budget() });
@@ -108,7 +128,7 @@ export async function login(page, secret, env = process.env) {
   while (Date.now() < deadline) {
     if (await shellReadyOrFalse(page, secret)) {
       const context = typeof page.context === 'function' ? page.context() : null;
-      await saveSlotStorageState(context, env);
+      try { await saveSlotStorageState(context, env); } catch { /* cache is optional */ }
       return { reused: false };
     }
     await delay(250);
