@@ -17,7 +17,7 @@ The action classifier now reads **prior thread mail only** (#369), and its rules
 | Leak size | 812 / 1,694 sampled rows (48%) had later thread messages in the old prod prompt |
 | Silver labels | Staff-outbound rules first (HRCEN confirmation letter → new_booking/amend, quote file → quote, POP file → payment_proof), else Luna (high) and Sol 6.1 (high) agree, each seeing prior thread + target + attachment text + staff replies ≤7 days. 1,514 silver; 180 disagreements (10.6%) set aside |
 | Owner gold | 8 owner labels overlap: 6 agree with silver; the 2 disagreements are overridden with the owner label |
-| Split | Thread-disjoint, stratified: test 431, val 186, train 740. Prompts were tuned on val/train errors only |
+| Split | Stratified by label, then made thread-disjoint: val/train rows sharing a thread with a test row (or train rows sharing one with val) were dropped, 157 of 1,514. Result: test 431, val 186, train 740. Prompts were tuned on val/train errors only |
 
 ## 2. Scores (frozen test n=431)
 
