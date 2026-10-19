@@ -18,6 +18,7 @@ type Row = {
   eligibility?: string;
   held?: boolean;
   amount?: string;
+  inventories?: Array<number | undefined>;
 };
 
 function row(r: Row): NativeOption {
@@ -33,7 +34,11 @@ function row(r: Row): NativeOption {
     matchStatus: r.match ?? 'match',
     held: r.held ?? false,
     totals: { taxInclusive: true },
-    nightly: DATES.map((date) => ({ date, inventory: 8, price: { amount: r.amount ?? '500.00', currency: 'ZAR' } })),
+    nightly: DATES.map((date, index) => ({
+      date,
+      inventory: r.inventories ? (r.inventories[index] as number) : 8,
+      price: { amount: r.amount ?? '500.00', currency: 'ZAR' },
+    })),
   } as NativeOption;
 }
 
@@ -143,6 +148,31 @@ describe('rate cards from one summary read', () => {
     // 500.00 a night for two nights, for two rooms: 1,000.00 per room and 2,000.00 in total, in cents.
     expect(cards[0]).toMatchObject({ perNightMinor: 50000, totalMinor: 200000, currency: 'ZAR' });
     expect(cards[1]).toMatchObject({ contract: true, onlyContract: true, matchesRequest: false });
+  });
+
+  it('reports the minimum inventory across all nights without changing rate order', () => {
+    const cards = buildRateOptions(
+      source(
+        [
+          row({ id: 'SKNG:BARRO', rate: 'BARRO', inventories: [7, 3] }),
+          row({ id: 'SKNG:BBP', rate: 'BBP', board: 'Bed & Breakfast R', match: 'alternative', inventories: [5, 4] }),
+        ],
+        ROOM_ONLY,
+      ),
+      [],
+    );
+
+    expect(cards.map(({ rateCode }) => rateCode)).toEqual(['BARRO', 'BBP']);
+    expect(cards.map(({ roomsLeft }) => roomsLeft)).toEqual([3, 4]);
+  });
+
+  it('does not return options with a missing night inventory', () => {
+    const cards = buildRateOptions(
+      source([row({ id: 'SKNG:BARRO', rate: 'BARRO', inventories: [8, undefined] })], ROOM_ONLY),
+      [],
+    );
+
+    expect(cards).toEqual([]);
   });
 
   it('keeps the quoted option even when a cheaper room that was not requested exists', () => {
