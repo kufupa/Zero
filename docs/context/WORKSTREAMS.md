@@ -25,6 +25,7 @@ Confidence key: **H** = scoped with a pass/fail check · **M** = scoped, evidenc
 | 6 | Evals truth: golden set #218 + #244 capture | #218 open | M | Merge #218; connect #244 to it |
 | 7 | Extraction v2 fields (every-ask coverage, meal/payer) | Parked `park/extract-v2-20261014` | M | Revive after the pilot |
 | 8 | Case mix with OTA/SynXis rules applied | R3 = LLM analyst, unadjusted | L | Cheap re-cut with existing triage rules, only if a decision needs it |
+| 9 | **HMS: one reusable login for every read** (owner 2026-10-19, OWNER-ASKS 132). Every HMS read logs in fresh: ~4–6 s of each job, ~75% of party time is login + navigation. F2 (#390) only shares one login *inside* a party job; across jobs, quote/find/party/batch evals all log in again. Infor rejected a reused session in the #382 probe, so the fix is a long-lived logged-in page per property slot (`feat/oct18-hms-slots`: `slot-session.ts`, `slot-owner.mjs`), not cookie reuse. Also: batch eval scripts must close the open reservation instead of re-logging (big-set read 2026-10-19 used `BATCH=1`) | Not started; design in [Chat A handoff](../plans/2026-10-19-chatA-handoff.md) | M | Probe: does one slot page survive N reads without re-login? Then party → find → quote, measured p50 before/after |
 
 ## 3. Parked / later
 
