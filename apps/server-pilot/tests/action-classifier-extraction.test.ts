@@ -8,6 +8,7 @@ import {
   type AttachmentRead,
 } from '../src/ai/extraction/extract.js';
 import type { ModelAdapter, ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
+import { orderThreadContext } from '../src/ai/quote-workflow-synced-selection.js';
 import type { SyncedQuoteAttachment } from '../src/ai/quote-workflow-synced-selection.js';
 import { AE1_OUTPUT, selectionFor } from './fixtures/inbound-extraction.js';
 
@@ -39,7 +40,12 @@ const ACTION_OUTPUT = {
 
 describe('generic action-classifier prompt', () => {
   it('uses the target and thread state, applies document precedence, and excludes OTA before classify', () => {
-    expect(ACTION_CLASSIFICATION_RULES).toMatch(/TARGET message plus prior and next thread messages/i);
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(
+      /TARGET message plus prior thread messages.*using prior messages to recognise work already handled/i,
+    );
+    expect(ACTION_CLASSIFICATION_RULES).not.toMatch(
+      /\b(?:next|later)\s+(?:thread\s+)?messages\b/i,
+    );
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/acknowledgements?.*thanks.*FYI.*resolved.*no_action/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/agent\/TMC voucher.*new_booking/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/money already moved/i);
@@ -96,7 +102,62 @@ describe('generic action-classifier prompt', () => {
     expect(filesAt).toBeGreaterThan(bodyAt);
     expect(attachAt).toBeGreaterThan(filesAt);
     expect(threadAt).toBeGreaterThan(attachAt);
+    expect(prompt.user).toContain('THREAD CONTEXT (prior thread messages; chronological):');
     expect(prompt.attachmentReads).toMatchObject([{ id: 'quote-text', status: 'read' }]);
+  });
+
+  it('excludes later inbound and outbound thread mail from the classifier prompt', () => {
+    const targetAt = new Date('2026-10-13T12:00:00.000Z');
+    const base = {
+      subject: 'Thread subject',
+      textBody: '',
+      receivedAt: null,
+      sentAt: null,
+      createdAt: new Date('2026-10-13T10:00:00.000Z'),
+      arrivedAt: new Date('2026-10-13T10:00:00.000Z'),
+    };
+    const targetRow = {
+      ...base,
+      id: 'target',
+      direction: 'inbound' as const,
+      textBody: 'TARGET body asks for availability.',
+      receivedAt: targetAt,
+      createdAt: new Date('2026-10-13T12:00:01.000Z'),
+      arrivedAt: targetAt,
+    };
+    const selection = selectionFor(targetRow.textBody);
+    selection.threadReferenceAt = targetAt.toISOString();
+    selection.threadMessages = orderThreadContext(targetRow, [
+      {
+        ...base,
+        id: 'later-outbound',
+        direction: 'outbound',
+        textBody: 'LATER OUTBOUND reply.',
+        sentAt: new Date('2026-10-13T13:00:00.000Z'),
+      },
+      targetRow,
+      {
+        ...base,
+        id: 'later-inbound',
+        direction: 'inbound',
+        textBody: 'LATER INBOUND follow-up.',
+        receivedAt: new Date('2026-10-13T14:00:00.000Z'),
+      },
+      {
+        ...base,
+        id: 'earlier-staff',
+        direction: 'outbound',
+        textBody: 'EARLIER STAFF reply.',
+        sentAt: new Date('2026-10-13T11:00:00.000Z'),
+      },
+    ]);
+
+    const prompt = buildInboundPrompt(selection);
+
+    expect(prompt.user).toContain('EARLIER STAFF reply.');
+    expect(prompt.user).not.toContain('LATER OUTBOUND reply.');
+    expect(prompt.user).not.toContain('LATER INBOUND follow-up.');
+    expect(prompt.user.match(/TARGET body asks for availability\./g)).toHaveLength(1);
   });
 
   it('places attachment text before thread history and caps the user prompt without silently marking a complete attachment read', () => {
@@ -168,12 +229,23 @@ describe('generic action-classifier prompt', () => {
 
     const nearTargetFirst = buildInboundPrompt(selection);
     expect(nearTargetFirst.user).toContain('The request is resolved.');
+    expect(nearTargetFirst.user).toContain(
+      '[Thread context incomplete: some prior messages were clipped or omitted.]',
+    );
     expect(nearTargetFirst.threadContextTruncated).toBe(true);
-    expect(nearTargetFirst.system).toMatch(/thread context status: incomplete/i);
+    expect(nearTargetFirst.system).toMatch(
+      /thread context status: incomplete; some prior thread messages were clipped or omitted/i,
+    );
+
+    expect(buildInboundPrompt(selectionFor('Target only.')).system).toContain(
+      'no prior thread messages provided',
+    );
 
     const omittedByPromptCap = buildInboundPrompt(selection, undefined, undefined, { maxChars: 100 });
     expect(omittedByPromptCap.threadContextTruncated).toBe(true);
-    expect(omittedByPromptCap.system).toMatch(/thread context status: incomplete/i);
+    expect(omittedByPromptCap.system).toMatch(
+      /thread context status: incomplete; some prior thread messages were clipped or omitted/i,
+    );
   });
 });
 

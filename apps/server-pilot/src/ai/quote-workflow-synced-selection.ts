@@ -17,6 +17,7 @@ import {
   type ReservationistOfficeConverter,
 } from './reservationist-attachment-input.js';
 import { attachmentMattersForReview, isGenericAttachment, isPdfAttachment } from './quote-attachment-review.js';
+import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 
 export type SyncedQuoteAttachment = {
   id: string;
@@ -50,7 +51,7 @@ export type SyncedQuoteSelection = {
   /** Selected message's best stored time for finding its closest thread neighbours when receivedAt is missing. */
   threadReferenceAt?: string;
   preceding: Array<{ bodyText: string; direction?: 'inbound' | 'outbound' }>;
-  /** Optional full thread state, including later replies, for inbound action classification. */
+  /** Optional full thread state, limited to prior messages, for inbound action classification. */
   threadMessages?: SyncedThreadMessage[];
   attachments: SyncedQuoteAttachment[];
   /** Stable DB ids of the selected message and its thread. Not part of the source hash. */
@@ -539,9 +540,16 @@ export function orderCausalPreceding(
     }));
 }
 
-/** All neighbouring messages in stored time order. The selected target is omitted. */
+/** Prior thread messages by message time; later-arriving inbound rows and ties are omitted. */
 export function orderThreadContext(
-  selectedId: string,
+  selected: {
+    id: string;
+    direction: 'inbound' | 'outbound';
+    receivedAt: Date | null;
+    sentAt: Date | null;
+    createdAt: Date;
+    arrivedAt: Date | null;
+  },
   threadRows: Array<{
     id: string;
     direction: 'inbound' | 'outbound';
@@ -550,10 +558,15 @@ export function orderThreadContext(
     receivedAt: Date | null;
     sentAt: Date | null;
     createdAt: Date;
+    arrivedAt: Date | null;
   }>,
 ): SyncedThreadMessage[] {
+  const selectedAt =
+    selected.direction === 'outbound'
+      ? selected.sentAt ?? selected.receivedAt ?? selected.createdAt
+      : selected.receivedAt ?? selected.sentAt ?? selected.createdAt;
   return threadRows
-    .filter((candidate) => candidate.id !== selectedId)
+    .filter((candidate) => candidate.id !== selected.id)
     .map((candidate) => ({
       candidate,
       timestamp:
@@ -561,6 +574,15 @@ export function orderThreadContext(
           ? candidate.sentAt ?? candidate.receivedAt ?? candidate.createdAt
           : candidate.receivedAt ?? candidate.sentAt ?? candidate.createdAt,
     }))
+    // Sender-authored inbound dates can be backdated; use mailbox arrival time as an additional guard.
+    .filter(
+      ({ candidate, timestamp }) =>
+        timestamp.getTime() < selectedAt.getTime() &&
+        (candidate.direction !== 'inbound' ||
+          (candidate.arrivedAt !== null &&
+            selected.arrivedAt !== null &&
+            candidate.arrivedAt.getTime() < selected.arrivedAt.getTime())),
+    )
     .sort(
       (left, right) =>
         left.timestamp.getTime() - right.timestamp.getTime() ||
@@ -593,7 +615,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
   internetMessageId?: string;
   /** The stored row's id. When set it is used instead of the header, which can be missing or shared by two rows. */
   messageId?: string;
-  /** Include full prior/next context for action classification, instead of only causal preceding text. */
+  /** Include all prior thread messages for action classification, instead of only causal preceding text. */
   includeThreadState?: boolean;
   /** Include bounded non-inline PNG/JPEG reads for the extraction vision route. */
   includeVisionImages?: boolean;
@@ -618,6 +640,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       receivedAt: message.receivedAt,
       sentAt: message.sentAt,
       createdAt: message.createdAt,
+      arrivedAt: MESSAGE_ARRIVED_AT,
       direction: message.direction,
       fromAddress: message.fromAddress,
     })
@@ -643,12 +666,13 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       receivedAt: message.receivedAt,
       sentAt: message.sentAt,
       createdAt: message.createdAt,
+      arrivedAt: MESSAGE_ARRIVED_AT,
     })
     .from(message)
     .where(and(eq(message.transportId, input.transportId), eq(message.threadId, row.threadId)));
 
   const preceding = orderCausalPreceding(row, threadRows);
-  const threadMessages = input.includeThreadState ? orderThreadContext(row.id, threadRows) : undefined;
+  const threadMessages = input.includeThreadState ? orderThreadContext(row, threadRows) : undefined;
 
   const threadMessageIds = threadRows.map((item) => item.id);
   const threadIdSet = new Set(threadMessageIds);

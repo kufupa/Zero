@@ -2,6 +2,8 @@ import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, ne, notExists, or, sq
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { sqlList } from '../db/schema/hitl.js';
+import { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
+export { MESSAGE_ARRIVED_AT, MESSAGE_DELIVERED_AT, OUTLOOK_SYNCED } from './message-arrival-time.js';
 import {
   FOLLOW_UP_DRAFT_FIELD_PATH,
   mailExtraction,
@@ -586,30 +588,8 @@ export function outboundSentAfter(at: Date) {
   );
 }
 
-/**
- * Outlook sync created the row: persistOutlookHistory stamps canonicalContentVersion on every row it inserts, and never
- * on a row POP3 created. POP3 matching an imported row later adds a pop3Uidl but keeps its dates and provenance, so
- * receivedAt stays Outlook's delivery time.
- */
-export const OUTLOOK_SYNCED = sql<boolean>`(${message.sourceProvenance}->>'canonicalContentVersion') is not null`;
-
 const DELIVERY_TIME_FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
 const DELIVERY_TIME_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-
-/** Decodes the raw `timestamp` text of a bare SQL value as the mail table's timestamp columns do (UTC wall time). */
-function decodeDeliveredAt(raw: string | null): Date | null {
-  return raw === null ? null : new Date(`${raw}+0000`);
-}
-
-/**
- * ISO timestamps written by POP3 ingest/backfill, normalized to UTC and the mail table's timestamp type. The driver
- * passes timestamp text through unparsed, so the decoder makes a selected value a Date like a column would.
- */
-export const MESSAGE_DELIVERED_AT = sql`case
-  when ${message.sourceProvenance}->>'deliveredAt' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$'
-    then (${message.sourceProvenance}->>'deliveredAt')::timestamptz at time zone 'UTC'
-  else null
-end`.mapWith(decodeDeliveredAt);
 
 /**
  * When an inbound message reached the mailbox. A non-Outlook POP3 row uses the top Received stamp when it is within
@@ -632,16 +612,6 @@ export function messageArrivedAt(m: {
     ? m.deliveredAt!
     : m.createdAt;
 }
-
-/** SQL twin of messageArrivedAt, for a `message` row. */
-export const MESSAGE_ARRIVED_AT = sql`case
-  when ${message.pop3Uidl} is null or ${OUTLOOK_SYNCED}
-    then coalesce(${message.receivedAt}, ${message.createdAt})
-  when ${MESSAGE_DELIVERED_AT} between ${message.createdAt} - interval '30 days'
-    and ${message.createdAt} + interval '5 minutes'
-    then ${MESSAGE_DELIVERED_AT}
-  else ${message.createdAt}
-end`;
 
 /** The message's latest succeeded read, or the one with `id` when given. */
 async function succeededRead(db: DB, messageId: string, id?: string) {

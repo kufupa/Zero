@@ -700,23 +700,83 @@ describe('extraction vision image admission', () => {
 });
 
 describe('orderThreadContext', () => {
-  it('keeps both earlier and later neighbouring messages in chronological order', () => {
+  it('uses delivery time to exclude backdated later mail without losing imported prior history', () => {
+    const targetAt = new Date('2026-10-13T12:00:00.000Z');
+    const target = {
+      id: 'target',
+      direction: 'inbound' as const,
+      receivedAt: targetAt,
+      sentAt: null,
+      createdAt: new Date('2026-10-13T12:01:00.000Z'),
+      arrivedAt: targetAt,
+    };
+    const result = orderThreadContext(target, [
+      {
+        id: 'later-inbound',
+        direction: 'inbound',
+        subject: 'Thread subject',
+        textBody: 'Backdated inbound arrived after target',
+        receivedAt: new Date('2026-10-13T11:00:00.000Z'),
+        sentAt: null,
+        createdAt: new Date('2026-10-13T12:05:00.000Z'),
+        arrivedAt: new Date('2026-10-13T12:05:00.000Z'),
+      },
+      {
+        id: 'earlier-staff',
+        direction: 'outbound',
+        subject: 'Thread subject',
+        textBody: 'Earlier staff reply',
+        receivedAt: null,
+        sentAt: new Date('2026-10-13T11:30:00.000Z'),
+        createdAt: new Date('2026-10-13T11:50:00.000Z'),
+        arrivedAt: new Date('2026-10-13T11:50:00.000Z'),
+      },
+      {
+        id: 'imported-prior',
+        direction: 'inbound',
+        subject: 'Earlier thread request',
+        textBody: 'Prior history arrived before target but imported later',
+        receivedAt: new Date('2026-10-13T10:30:00.000Z'),
+        sentAt: null,
+        createdAt: new Date('2026-10-13T12:06:00.000Z'),
+        arrivedAt: new Date('2026-10-13T10:30:00.000Z'),
+      },
+    ]);
+
+    expect(result.map(({ bodyText }) => bodyText)).toEqual([
+      'Prior history arrived before target but imported later',
+      'Earlier staff reply',
+    ]);
+  });
+
+  it('keeps only messages strictly before the target, including earlier staff replies', () => {
     const base = {
       subject: 'Subject',
       textBody: 'Body',
       receivedAt: null,
       sentAt: null,
       createdAt: new Date('2026-10-13T12:00:00.000Z'),
+      arrivedAt: new Date('2026-10-13T12:00:00.000Z'),
     };
-    const result = orderThreadContext('target', [
-      { ...base, id: 'later', direction: 'outbound', sentAt: new Date('2026-10-13T13:00:00.000Z') },
-      { ...base, id: 'target', direction: 'inbound', receivedAt: new Date('2026-10-13T12:30:00.000Z') },
-      { ...base, id: 'earlier', direction: 'inbound', receivedAt: new Date('2026-10-13T11:00:00.000Z') },
+    const targetAt = new Date('2026-10-13T12:30:00.000Z');
+    const target = {
+      ...base,
+      id: 'target',
+      direction: 'inbound' as const,
+      receivedAt: targetAt,
+      createdAt: new Date('2026-10-13T12:30:01.000Z'),
+      arrivedAt: targetAt,
+    };
+    const result = orderThreadContext(target, [
+      { ...base, id: 'later-outbound', direction: 'outbound', sentAt: new Date('2026-10-13T13:00:00.000Z') },
+      target,
+      { ...base, id: 'tied-inbound', direction: 'inbound', receivedAt: targetAt },
+      { ...base, id: 'earlier-staff', direction: 'outbound', textBody: 'Earlier staff reply', sentAt: new Date('2026-10-13T11:00:00.000Z') },
+      { ...base, id: 'later-inbound', direction: 'inbound', receivedAt: new Date('2026-10-13T14:00:00.000Z') },
     ]);
 
-    expect(result.map(({ direction, timestamp }) => [direction, timestamp])).toEqual([
-      ['inbound', '2026-10-13T11:00:00.000Z'],
-      ['outbound', '2026-10-13T13:00:00.000Z'],
+    expect(result.map(({ direction, bodyText }) => [direction, bodyText])).toEqual([
+      ['outbound', 'Earlier staff reply'],
     ]);
   });
 });
