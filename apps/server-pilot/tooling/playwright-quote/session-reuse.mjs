@@ -75,7 +75,8 @@ async function shellReadyOrFalse(page, secret) {
 
 async function loginFormVisible(page) {
   try {
-    return (await page.locator('input[type="password"]:visible').count()) > 0;
+    // Infor's login page renders the password box as type=text name=password (live HRDAV DOM, 2026-10-19).
+    return (await page.locator('input[name="password"]:visible, input[type="password"]:visible').count()) > 0;
   } catch {
     return false;
   }
