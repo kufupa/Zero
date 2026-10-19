@@ -234,7 +234,7 @@ describe('PartyPicker preselects the top suggestion', () => {
     }
     render(<PreselectHarness />);
     const agencyPreset = await screen.findByRole('combobox', { name: 'Agency from HMS' });
-    expect(agencyPreset).toHaveValue('agency:290');
+    expect((agencyPreset as unknown as HTMLSelectElement).value).toBe('agency:290');
     expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
     expect(screen.getByRole('button', { name: 'Confirm Agency' })).toBeTruthy();
     expect(picked).toEqual([agency]);

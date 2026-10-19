@@ -413,7 +413,7 @@ describe('PartyPicker prefetched party jobs', () => {
       />,
     );
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL));
-    expect(await screen.findByRole('combobox', { name: 'Company from HMS' })).toHaveValue('company:4411');
+    expect(((await screen.findByRole('combobox', { name: 'Company from HMS' })) as unknown as HTMLSelectElement).value).toBe('company:4411');
     expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
   });
 

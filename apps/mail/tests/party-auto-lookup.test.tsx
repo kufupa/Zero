@@ -120,7 +120,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     expect(screen.queryByText(/✓ Woolworths Holdings/)).toBeNull();
     fireEvent.click(confirm);
     const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
-    expect(companyPreset).toHaveValue('company:49');
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:49');
     fireEvent.click(screen.getByRole('button', { name: 'Confirm Company' }));
     expect(screen.getByRole('button', { name: 'Edit Company' })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(1);
@@ -148,7 +148,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     expect(find).toHaveBeenCalledTimes(2);
     fireEvent.click(within(results).getByRole('button', { name: 'Woolworths Holdings' }));
     const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
-    expect(companyPreset).toHaveValue('company:49');
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:49');
     expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(2);
     expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' });
@@ -201,10 +201,10 @@ describe('automatic HMS lookup for a company or agency field', () => {
     render(<Harness find={find} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' }));
     const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
-    expect(companyPreset).toHaveValue('company:49');
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:49');
     expect(within(companyPreset).getByRole('option', { name: 'Woolworths Foods' })).toBeTruthy();
     fireEvent.change(companyPreset, { target: { value: 'company:50' } });
-    expect(companyPreset).toHaveValue('company:50');
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:50');
     expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
     fireEvent.change(companyPreset, { target: { value: '__search_hms__' } });
     expect(screen.getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy();
@@ -225,7 +225,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' }));
     const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
     fireEvent.change(companyPreset, { target: { value: 'company:50' } });
-    expect(companyPreset).toHaveValue('company:50');
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:50');
     expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
     expect(screen.queryByText(/picked by Nava/)).toBeNull();
   });
@@ -256,7 +256,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     expect(screen.queryByText(/Not found in HMS/)).toBeNull();
     fireEvent.click(within(result).getByRole('button', { name: 'Woolworths Holdings' }));
     const companyPreset = await screen.findByRole('combobox', { name: 'Company from HMS' });
-    expect(companyPreset).toHaveValue('company:49');
+    expect((companyPreset as unknown as HTMLSelectElement).value).toBe('company:49');
     expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
     expect(screen.queryByText(/picked by Nava/)).toBeNull();
     expect(find).toHaveBeenCalledTimes(2);
@@ -346,7 +346,7 @@ describe('automatic HMS lookup for a company or agency field', () => {
     render(<Harness find={find} initial={{ company: WOOLWORTHS }} />);
     await waitForDebounce();
     expect(find).not.toHaveBeenCalled();
-    expect(screen.getByRole('combobox', { name: 'Company from HMS' })).toHaveValue('company:49');
+    expect((screen.getByRole('combobox', { name: 'Company from HMS' }) as unknown as HTMLSelectElement).value).toBe('company:49');
     expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
   });
 
