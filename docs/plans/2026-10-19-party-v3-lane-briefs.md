@@ -15,7 +15,7 @@ Coordinator: Opus chat "B2 party design" (worktree `oct19-party-eval`). Plan: [p
 - F2 #390 (`bc856082c`) merged: `party-lookup.mjs` takes `{searches:[{kind,name}], stopOnFirstHit}` = one CDP connect + one login + one screen; `findPartyJob(searches, …)` in `pane-party-lookup.ts` = one spawn, one lock hold; per-search `phaseMs`. Cost ≈ 16 s fixed + 4–10 s per search (HRDAV probe 14:40Z).
 - HMS party grid columns: Booking Agency Name / Name, IATA/Reference Number, Address, City, Country, External ID (`GRID_HEADER_RE` in `party-lookup.mjs`). Results keep only `{kind,nativeId,name}` today.
 - HMS returns duplicate copies in a stable order not sorted by id or name (Tourvest ×13: 280, 543, 6, 123, …). Copies seen: Tourvest Travel Services 13, Travel With Flair 3, Rennies/Flight Centre/WebBeds/Cullinan/BCD ×2.
-- Quote rate search (`fetch-quote.mjs` `pickerFilter`/`matchReference`): `agency` has no `idFilter`, so it matches by name and throws `AMBIGUOUS_REFERENCE` on duplicates; `codeFilter` is `ff_iatanumber`.
+- Quote rate search (`fetch-quote.mjs` `pickerFilter`/`matchReference`): `agency` has no `idFilter`, so it searches by name, but `matchReference` then selects by `nativeId` when one is passed. Duplicates only break the search when the id is missing (name-only reference) → `AMBIGUOUS_REFERENCE`. So the bound id must be right; that is the whole fight.
 - Reservation read (`commercial-fields.mjs` `party()`): keeps an id only when the field value ≠ the name; prod agency always loses its id.
 - Bind rule today: `applyPartyBindRule` in `party-match-v2.ts` (high confidence, untruncated, unique strongest claim). Candidate builder `buildPartyMatchCandidates`; V2 job `runPartyMatchV2` area in `hms-jobs.ts` (~line 2280–2430).
 - Prod misses since 10-14 (153 V2 lookups, 24 bound): SynXis/channel notices 53 (0 bound), duplicate ties 43, no rows 24, junk terms ("South Africa", "For", disclaimers) fill the 25-row cap.
@@ -32,12 +32,12 @@ Coordinator: Opus chat "B2 party design" (worktree `oct19-party-eval`). Plan: [p
 - Do:
   1. Each result row also carries the optional `iata`, `city`, `address`, `country` and `externalId` taken from the store record, and they survive through `pane-party-lookup.ts`.
   2. In `commercial-fields.mjs`, keep the agency/company id from the id field even when its value equals the name only if it's numeric; otherwise read the id from the select's value. Add a test with a fixture.
-  3. In `fetch-quote.mjs`, when an agency reference has an `iata`/`code`, use `codeFilter` so duplicates resolve to one row. Unchanged when absent.
-- Tests: a row keeps its columns; two same-name agencies + iata → one match; no iata → `AMBIGUOUS_REFERENCE` (unchanged).
+  3. (Dropped 15:20Z after Greptile on #392: `fetch-quote.mjs` already resolves duplicates by `nativeId`. Don't touch it.)
+- Tests: a row keeps its columns; agency id read from the reservation form when the field shows the name.
 
 ## Lane P5 — the reservationist loop (Grok 4.6 high, 60 min; flag `PARTY_MATCH_V3`, default off)
 
-- Files: new `apps/server-pilot/src/ai/party-match-v3.ts`, new `apps/server-pilot/tests/party-match-v3.test.ts`; `apps/server-pilot/src/ai/hms-jobs.ts`, only the V2 run branch: if `PARTY_MATCH_V3` is on, call v3 instead. Same result shape as V2 plus `matchVersion: 3`, so the pane and quote-ready keep working.
+- Files: new `apps/server-pilot/src/ai/party-match-v3.ts`, new `apps/server-pilot/tests/party-match-v3.test.ts`; `apps/server-pilot/src/ai/hms-jobs.ts`, only the V2 run branch: if `PARTY_MATCH_V3` is on, call v3 instead. Keep `matchVersion: 2` on the request and result (quote prep `confidentPartyFromV2Result`, `partyJobIsV2` and the pane all require 2) and add `matcher: 'v3'` to the result for scoring. No consumer changes.
 - Loop (directional):
   1. **Round 1:** the LLM reads the email context (`partyMatchEmailContext` + extraction + `buildPartyMatchCandidates` as hints) and proposes ≤ 5 `{kind, term}` it would type. One `findPartyJob` batch.
   2. The LLM sees all rows with columns. It returns `{pick: nativeId|null, kind, confidence, reason, nextTerms?}`.

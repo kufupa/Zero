@@ -12,7 +12,7 @@ Prod binds an HMS company/agency on ~16% of party lookups (24/153 since 2026-10-
 |---|---|---|
 | No past data shows which duplicate staff pick: 0 of 27 staff picks, 69 reservation reads and 30 Nava binds touch a duplicated name | evidence §9 (SQL 15:45Z) | No "learned rule" yet. Start collecting it now (P3), let staff pick duplicates in the meantime, learn from the picks |
 | Reservation reads drop the agency id (`commercial-fields.mjs` keeps an id only when it differs from the name) | evidence §9 | P3 keeps it |
-| Quote rate search picks an agency **by name** and fails with `AMBIGUOUS_REFERENCE` on duplicates (`fetch-quote.mjs` `pickerFilter`/`matchReference`) | code | P3 passes the IATA code (the existing `codeFilter`) when the bound agency has one, so the price search hits one copy |
+| Quote rate search types the agency name, then selects by `nativeId` (`fetch-quote.mjs` `matchReference`); name-only on a duplicate throws `AMBIGUOUS_REFERENCE` | code (corrected after Greptile #392) | The bound id decides the copy and so the rate; no fetch-quote change |
 | Lane B's "3 wrong binds" were all Nexus Travel #27, which staff also picked 9 times | evidence §10 | 0 known wrong binds. Truth = staff picks on quotes first; reservation party second (it can differ) |
 
 ## Requirements
@@ -63,7 +63,7 @@ Resolution — both, in this order:
 | S0b | Batched read of the 49 duplicate-name reservations: copy id + its position in the HMS search grid + city/IATA | Opus runs (dev priority, property lock) | 30 min | table: copy used per sender domain, top-row yes/no |
 | P1 | Docs + Step 0 result | Opus | 10 | merged |
 | P2 | No party lookup on booking-system notices | Luna max | 40 | READY |
-| P3 | Keep city/IATA/agency id; rate search by IATA | Grok 4.6 high | 50 | READY |
+| P3 | Keep city/IATA/agency id | Grok 4.6 high | 50 | READY |
 | P5 | Agent loop: LLM terms → batch → rows+columns → ≤1 vary round (≤3) → pick/ask; duplicate rule from S0b | Grok 4.6 high | 60 | READY |
 | P6 | Live replay ~20 mails with id truth through P5 | Opus | 25 | score table |
 | P7 | Sweep + offline replay of the same loop | Luna / Grok | after P6 | score on frozen index |

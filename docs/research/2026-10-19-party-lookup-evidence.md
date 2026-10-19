@@ -108,7 +108,7 @@ Question (owner): learn a general rule from past mail for which copy of a duplic
 - `commercial-fields.mjs` `party()` takes the agency id from field `bookingagency`/`ta1` only when its value differs from the name. In prod, the value is the name, so every reservation read loses the agency id (prod `find` result keys: `commercial.agency.name` only; company keeps `nativeId`).
 - `party-lookup.mjs` drops the City / Address / IATA columns (§4) that HMS shows beside each copy, which are what a person reads to tell copies apart. The synthetic fixtures confirm the agency dialog has `Booking Agency Name, IATA/Reference Number, Address, City`.
 
-What changes the price is the rate, not the id: the quote's rate search picks the agency by **name** (`fetch-quote.mjs` `pickerFilter`: `agency` has no `idFilter`, so `matchReference` matches by normalised name), and it throws `AMBIGUOUS_REFERENCE` when several copies share the name. So for agencies, which copy is bound does not reach the price today; a duplicated agency name breaks the rate search instead.
+The quote's rate search types the agency **name** into HMS (`fetch-quote.mjs` `pickerFilter`: `agency` has no `idFilter`), then `matchReference` selects the row by `nativeId` when one is passed and by name only when it is not. So the bound copy's id does reach the price: a wrong copy can give a wrong contract rate, and a name-only reference on a duplicated name throws `AMBIGUOUS_REFERENCE`. (Corrected 15:20Z after Greptile review on #392.)
 
 ## 10. Lane B's "3 wrong binds" are not wrong
 
