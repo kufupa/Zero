@@ -948,7 +948,13 @@ describe('PartyPicker duplicate-name choices', () => {
       within(alternativesList).getByRole('button', { name: 'Use Partner 1 (#9001)' }),
     );
 
-    await waitFor(() => expect(onPick).toHaveBeenLastCalledWith(alternatives[0]));
+    await waitFor(() =>
+      expect(onPick).toHaveBeenLastCalledWith({
+        kind: 'company',
+        nativeId: '9001',
+        name: 'Partner 1',
+      }),
+    );
     expect(find).not.toHaveBeenCalled();
     expect(queue).not.toHaveBeenCalled();
     expect(status).toHaveBeenCalledTimes(statusCallsBeforePick);
