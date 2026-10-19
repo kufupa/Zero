@@ -10,7 +10,7 @@ import {
   writeFileSync,
   existsSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -123,9 +123,13 @@ test('install copies the hrcen env, switches port/profile/secret, keeps browsers
     assert.equal(hrcen.HMS_READ_SECRET_ARN, HRCEN_SECRET);
     assert.equal(existsSync(join(harness.lib, 'hrdav', 'profile')), true);
     const calls = readFileSync(harness.log, 'utf8');
-    assert.match(calls, /enable --now hms-slot@hrdav/);
+    assert.match(calls, /enable hms-slot@hrdav/);
+    assert.match(calls, /restart hms-slot@hrdav/);
     assert.doesNotMatch(calls, /hms-slot@hrcen/);
     assert.doesNotMatch(result.stdout + result.stderr, /pkill/);
+    const script = readFileSync(scriptPath, 'utf8');
+    assert.doesNotMatch(script, /mktemp "\$\{NAVA_ETC\}/);
+    assert.match(script, /run "\$SYSTEMCTL"/);
   } finally {
     rmSync(harness.root, { recursive: true, force: true });
   }
@@ -161,6 +165,34 @@ test('failed start rolls back the new env when none existed before', () => {
     const calls = readFileSync(harness.log, 'utf8');
     assert.match(calls, /disable --now hms-slot@hrdav/);
     assert.equal(existsSync(join(harness.etc, 'hms-slot-hrcen.env')), true);
+  } finally {
+    rmSync(harness.root, { recursive: true, force: true });
+  }
+});
+
+test('uses sudo for env install and systemctl when SUDO is set', () => {
+  const harness = makeHarness();
+  const sudoLog = join(harness.root, 'sudo.log');
+  writeFileSync(
+    join(harness.bin, 'sudo'),
+    `#!/bin/bash
+printf '%s\\n' "$*" >> "$SUDO_LOG"
+exec "$@"
+`,
+    { mode: 0o755 },
+  );
+  chmodSync(join(harness.bin, 'sudo'), 0o755);
+  writeFileSync(sudoLog, '');
+  try {
+    const result = runScript(harness, [], {
+      SUDO: join(harness.bin, 'sudo'),
+      SUDO_LOG: sudoLog,
+      HMS_SLOT_USER: userInfo().username,
+    });
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const sudoed = readFileSync(sudoLog, 'utf8');
+    assert.match(sudoed, /hms-slot-hrdav\.env/);
+    assert.match(sudoed, /systemctl/);
   } finally {
     rmSync(harness.root, { recursive: true, force: true });
   }
