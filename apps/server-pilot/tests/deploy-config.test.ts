@@ -5501,6 +5501,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
             "AWS_REGION='af-south-1'",
             "S3_BUCKET='nava-test-bucket'",
             "MAIL_TRANSPORT_MODE='real'",
+            "INBOUND_EXTRACTION='on'",
             "INBOUND_TRIAGE_CLASSIFIER='off'",
             "AI_MODEL_ID='model'\\''s'",
             "BETTER_AUTH_SECRET='legacy-signing-secret'",
@@ -5522,6 +5523,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
             'AWS_REGION',
             'S3_BUCKET',
             'MAIL_TRANSPORT_MODE',
+            'INBOUND_EXTRACTION',
             'INBOUND_TRIAGE_CLASSIFIER',
             'AI_MODEL_ID',
           ],
@@ -5539,6 +5541,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
             "AWS_REGION='af-south-1'",
             "S3_BUCKET='nava-test-bucket'",
             "MAIL_TRANSPORT_MODE='real'",
+            "INBOUND_EXTRACTION='on'",
             "INBOUND_TRIAGE_CLASSIFIER='off'",
             "AI_MODEL_ID='model'\\''s'",
             '',
@@ -5644,6 +5647,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       const keys = allowlist!.trim().split(/\s+/);
       expect(new Set(keys).size).toBe(keys.length);
       expect(keys).toContain('GOTENBERG_URL');
+      expect(keys).toContain('INBOUND_EXTRACTION');
       expect(keys).toContain('INBOUND_TRIAGE_CLASSIFIER');
       expect(allowlist).not.toContain('PANE_PRECLASSIFY');
       expect(allowlist).not.toContain('BETTER_AUTH_');
