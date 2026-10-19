@@ -817,7 +817,7 @@ export function PartyPicker({
       ? '__search_hms__'
       : fieldPreset
         ? partyRowValue(fieldPreset)
-        : '';
+        : '__choose__';
     const rowsByValue = new Map(fieldRows.map((row) => [partyRowValue(row), row]));
     const suggestedPreset = [v2BoundParty, autoBest, prefetchedBest].some(
       (candidate) =>
@@ -907,7 +907,7 @@ export function PartyPicker({
                 }}
               >
                 {!fieldPreset ? (
-                  <option value="">
+                  <option value="__choose__" disabled>
                     {`Choose ${label.toLowerCase()} (${fieldRows.length} found)`}
                   </option>
                 ) : null}

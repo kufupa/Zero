@@ -632,7 +632,7 @@ describe('PartyPicker prefetched party jobs', () => {
     );
 
     const select = (await screen.findByRole('combobox', { name: 'Agency from HMS' })) as unknown as HTMLSelectElement;
-    expect(select.value).toBe('');
+    expect(select.value).toBe('__choose__');
     expect(select.options[0]?.textContent).toBe('Choose agency (3 found)');
     expect(Array.from(select.options).filter((option) => option.value.startsWith('agency:'))).toHaveLength(3);
     expect(screen.queryByText('Pick the company/agency')).toBeNull();
