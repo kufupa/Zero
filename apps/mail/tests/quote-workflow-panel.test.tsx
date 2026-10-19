@@ -285,7 +285,7 @@ describe('QuoteWorkflowPanel', () => {
     const afterEdit = screen.getAllByLabelText('Arrival') as HTMLInputElement[];
     expect(afterEdit[0]?.value).toBe('2026-10-16');
     expect(afterEdit[1]?.value).toBe('2026-12-20');
-    expect(screen.getAllByText(/Each date range is searched and booked independently/)).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Stay information' })).toHaveLength(2);
   });
 
   it('keeps duplicated room edits independent', () => {
@@ -1326,7 +1326,8 @@ describe('QuoteWorkflowPanel', () => {
       'One stay = one date range = one HMS booking.',
       'One stay = one date range = one HMS booking.',
     ]);
-    expect(screen.queryByText(/Separate HMS booking/)).toBeNull();
+    expect(screen.getByRole('article', { name: 'Stay 1 details' }).textContent).not.toMatch(/Separate HMS booking/);
+    expect(screen.getByRole('article', { name: 'Stay 2 details' }).textContent).not.toMatch(/Separate HMS booking/);
     expect(screen.getAllByText('1 of 2 stays rated').length).toBeGreaterThan(0);
     const firstSubtotal = screen.getAllByText('Stay subtotal')[0]!;
     const addRange = screen.getByRole('button', { name: '+ Add another date range' });
