@@ -1,4 +1,5 @@
 import { extractPartyMentions, suggestPartyFromSender } from './party-aliases.js';
+import { lookupLearnedSenderHistory, partyHistoryBindEnabled } from './party-sender-map.js';
 import type { ModelAdapter } from './bedrock/adapter.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { matchKey } from './party-match.js';
@@ -12,6 +13,7 @@ export type PartyMatchSource =
   | 'quote_llm'
   | 'body'
   | 'signature'
+  | 'sender_history'
   | 'sender_domain_alias'
   | 'sender_domain_label';
 
@@ -19,7 +21,7 @@ export type PartyMatchCandidate = {
   name: string;
   kind: PartyMatchKind;
   source: PartyMatchSource;
-  /** Domain-derived candidates can guide searches and suggestions, but can never authorize a bind. */
+  /** Static domain aliases are hints; learned sender history is separately gated and support-scored. */
   strength: PartyMatchStrength;
 };
 
@@ -472,6 +474,7 @@ export function buildPartyMatchCandidates(input: {
   body?: string | null;
   quoteLlmParty?: unknown;
   guestNames?: readonly string[];
+  allowLearnedSenderHistory?: boolean;
 }): PartyMatchCandidate[] {
   const payload = objectRecord(input.payload);
   const sender = parseSender(input.fromAddress);
@@ -486,6 +489,11 @@ export function buildPartyMatchCandidates(input: {
   const signatureOrganisations = signatureOrganisationRows(signature);
   const domain = domainLabel(sender.address);
   const alias = suggestPartyFromSender(sender.address);
+  const senderHistory =
+    input.allowLearnedSenderHistory && sender.address
+      ? lookupLearnedSenderHistory(sender.address.slice(sender.address.lastIndexOf('@') + 1))
+      : null;
+  const historyEnabled = partyHistoryBindEnabled(process.env);
   const people = new Set(
     explicitPersonNames({
       displayName,
@@ -528,7 +536,21 @@ export function buildPartyMatchCandidates(input: {
   }
   for (const row of signatureOrganisations) add(row.name, row.kind, 'signature', 'strong');
 
-  if (alias) add(alias.name, alias.kind, 'sender_domain_alias', 'weak');
+  if (historyEnabled && senderHistory) {
+    const emailContradictsHistory = candidates.some(
+      (candidate) =>
+        candidate.kind === senderHistory.kind &&
+        normalisePartyName(candidate.name) !== normalisePartyName(senderHistory.name),
+    );
+    add(
+      senderHistory.name,
+      senderHistory.kind,
+      'sender_history',
+      senderHistory.support >= 2 && !emailContradictsHistory ? 'strong' : 'weak',
+    );
+  } else if (alias) {
+    add(alias.name, alias.kind, 'sender_domain_alias', 'weak');
+  }
   if (domain) {
     const kind: PartyMatchKind =
       alias?.kind ?? (isAgencyDomainLabel(domain.name) ? 'agency' : 'company');

@@ -181,6 +181,45 @@ describe('PARTY MATCH V3 duplicate bind', () => {
 });
 
 describe('PARTY MATCH V3 reservationist loop', () => {
+  it('uses sender history to bind the matching duplicate copy through the full loop', async () => {
+    const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
+      searches.map((search) => ({
+        outcome: 'resolved' as const,
+        results: TOURVEST_COPIES,
+        truncated: false,
+        searchedFor: search.term,
+      })),
+    );
+
+    const adapter: ModelAdapter = {
+      invoke: vi.fn(async (input) =>
+        input.systemPrompt.includes('Propose')
+          ? invokeResult({ searches: [{ kind: 'agency', term: 'Tourvest' }] })
+          : invokeResult({
+              pick: '280',
+              kind: 'agency',
+              confidence: 'high',
+              reason: 'Exact party name.',
+            }),
+      ),
+    };
+    const result = await runPartyMatchV3({
+      adapter,
+      candidates: [candidate('Tourvest Travel Services')],
+      context,
+      emailText: 'Please quote for Tourvest Travel Services.',
+      senderHistory: [{ kind: 'agency', nativeId: '6' }],
+      findParty,
+    });
+
+    expect(findParty).toHaveBeenCalled();
+    expect(result).toMatchObject({
+      matcher: 'v3',
+      matchStatus: 'bound',
+      boundParty: { kind: 'agency', nativeId: '6' },
+    });
+  });
+
   it('runs round 2 with at most three terms after an empty round 1, then stops', async () => {
     const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
       searches.map((search) => ({

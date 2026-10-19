@@ -13,7 +13,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { TRPCError } from '@trpc/server';
-import { and, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
 import {
@@ -29,6 +29,13 @@ import { aiAgentRun } from '../db/schema/hitl.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { parseEnv } from '../env.js';
 import { classifyMailSource, isMailSourceClassification } from './mail-source.js';
+import {
+  isOwnedHotelHost,
+  lookupLearnedSenderHistory,
+  partyHistoryBindEnabled,
+  recordSenderParty,
+  type RecordSenderPartyInput,
+} from './party-sender-map.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
 import {
   CENTURION_HMS_READ_TARGET,
@@ -37,6 +44,7 @@ import {
   hmsReadAuditMetrics,
   hmsReadTargetJobMetrics,
   isDaVinciTransport,
+  parseHmsReadTarget,
   resolveHmsReadJobTarget,
   type HmsReadTarget,
 } from '../hms/hms-read-target.js';
@@ -450,6 +458,7 @@ export function selectPartyMatchV2PrefetchRequest(input: {
   sender: string | null;
   subject?: string | null;
   body: string | null;
+  allowLearnedSenderHistory?: boolean;
 }): Extract<HmsJobRequest, { kind: 'party' }> | null {
   if (
     quotePrepareKindReason({ kind: input.kind, payload: input.payload, subject: input.subject }) === 'not_quote'
@@ -461,6 +470,7 @@ export function selectPartyMatchV2PrefetchRequest(input: {
     fromAddress: input.sender,
     subject: input.subject,
     body: input.body,
+    allowLearnedSenderHistory: input.allowLearnedSenderHistory,
   });
   const first = planPartySearches(candidates)[0];
   if (!first || !first.candidateName.trim() || first.candidateName.length > 256) return null;
@@ -1883,6 +1893,7 @@ export async function prefetchPartyForExtraction(
         sender: source.fromAddress,
         subject: source.subject,
         body: source.textBody,
+        allowLearnedSenderHistory: isCenturionPartyHistoryTarget(null, run.transportId),
       })
     : selectPartyPrefetchRequest({
         kind: source.kind,
@@ -2117,12 +2128,19 @@ export async function evaluateQuoteReadyForMessage(
   let parties;
   if (partyRun?.state === 'succeeded') {
     const quoteLlmParty = await existingQuoteWorkflowParty(db, source.transportId, source.messageId);
+    const partyMetrics = objectRecord(partyRun.metrics);
+    const hasRecordedTarget = partyMetrics.hmsReadTarget !== undefined;
+    const target = hasRecordedTarget ? parseHmsReadTarget(partyMetrics.hmsReadTarget) : null;
+    const allowLearnedSenderHistory =
+      !isDaVinciTransport(source.transportId) &&
+      (!hasRecordedTarget || target?.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode);
     parties = confidentPartyFromV2Result({
       payload: source.payload,
       fromAddress: source.fromAddress,
       subject: source.subject,
       body: source.textBody ?? source.htmlBody,
       quoteLlmParty,
+      allowLearnedSenderHistory,
       result: partyRun.readResult,
     });
   }
@@ -2366,8 +2384,20 @@ async function executePartyMatchV2(input: {
     body: source.textBody,
     quoteLlmParty,
   };
-  const candidates = buildPartyMatchCandidates(emailInput);
+  const historyTargetAllowed = isCenturionPartyHistoryTarget(
+    davinciTarget,
+    input.run.transportId,
+  );
+  const candidates = buildPartyMatchCandidates({
+    ...emailInput,
+    allowLearnedSenderHistory: historyTargetAllowed,
+  });
   const context: PartyMatchEmailContext = partyMatchEmailContext(emailInput);
+  const senderHost = source.fromAddress?.match(/@([a-z0-9.-]+)/i)?.[1]?.toLowerCase().replace(/\.+$/, '');
+  const learnedSender =
+    partyHistoryBindEnabled(process.env) && historyTargetAllowed && senderHost
+      ? lookupLearnedSenderHistory(senderHost)
+      : null;
   const { partyMatchV3Enabled, runPartyMatchV3 } = await import('./party-match-v3.js');
   if (partyMatchV3Enabled(process.env)) {
     let adapter: ReturnType<typeof resolveAdapter>['adapter'] = null;
@@ -2382,6 +2412,9 @@ async function executePartyMatchV2(input: {
       candidates,
       context,
       emailText: `${source.subject ?? ''}\n${source.textBody ?? ''}`,
+      senderHistory: learnedSender?.nativeId
+        ? [{ kind: learnedSender.kind, nativeId: learnedSender.nativeId }]
+        : undefined,
       findParty: async (searches) => {
         if (!searches.length) return [];
         return findPartyJob(
@@ -2779,6 +2812,203 @@ export function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): {
   };
 }
 
+type SenderPartyObservation = Omit<RecordSenderPartyInput, 'host'>;
+
+function senderPartyObservation(
+  kind: 'company' | 'agency',
+  value: unknown,
+): SenderPartyObservation | null {
+  const row = objectRecord(value);
+  if (typeof row.name !== 'string' || typeof row.nativeId !== 'string') return null;
+  const name = row.name.trim();
+  const nativeId = row.nativeId.trim();
+  if (!name || !nativeId) return null;
+  return {
+    kind,
+    name,
+    nativeId,
+    iata: typeof row.iata === 'string' ? row.iata : null,
+  };
+}
+
+const GENERIC_SENDER_PARTY_TOKENS = new Set([
+  'travel',
+  'tours',
+  'group',
+  'holdings',
+  'services',
+  'pty',
+  'ltd',
+]);
+
+/** Pick a single party only when sender-host evidence separates company from agency. */
+export function selectSenderPartyForHost(
+  host: string,
+  parties: readonly SenderPartyObservation[],
+): SenderPartyObservation | null {
+  const agency = parties.find((party) => party.kind === 'agency');
+  const company = parties.find((party) => party.kind === 'company');
+  if (!agency || !company) return agency ?? company ?? null;
+
+  const hostLabel = (host.trim().toLowerCase().replace(/\.+$/, '').split('.')[0] ?? '')
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .replace(/[^a-z0-9]/g, '');
+  if (!hostLabel) return null;
+
+  const matchesHost = (name: string) =>
+    name
+      .normalize('NFKD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .some(
+        (token) =>
+          token.length >= 3 &&
+          !GENERIC_SENDER_PARTY_TOKENS.has(token) &&
+          hostLabel.includes(token),
+      );
+  const agencyMatches = matchesHost(agency.name);
+  const companyMatches = matchesHost(company.name);
+  if (agencyMatches === companyMatches) return null;
+  return agencyMatches ? agency : company;
+}
+
+function senderPartiesFromFindResult(result: unknown): SenderPartyObservation[] {
+  const commercial = objectRecord(objectRecord(result).commercial);
+  return [
+    senderPartyObservation('agency', commercial.agency),
+    senderPartyObservation('company', commercial.company),
+  ].filter((party): party is SenderPartyObservation => party !== null);
+}
+
+function senderHostFromAddress(address: string): string | null {
+  const at = address.lastIndexOf('@');
+  if (at < 0) return null;
+  return address
+    .slice(at + 1)
+    .trim()
+    .match(/^[a-z0-9.-]+/i)?.[0]
+    ?.toLowerCase()
+    .replace(/\.+$/, '') ?? null;
+}
+
+export function isCenturionPartyHistoryTarget(
+  target: HmsReadTarget | null,
+  transportId: string,
+): boolean {
+  return (
+    !isDaVinciTransport(transportId) &&
+    (!target || target.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode)
+  );
+}
+
+export function staffQuoteCanTeachSenderHistory(
+  hasStaffUser: boolean,
+  systemPreparedQuote: boolean,
+): boolean {
+  return hasStaffUser && !systemPreparedQuote;
+}
+
+type SenderHistorySourceMessage = {
+  direction: string;
+  fromAddress: string | null;
+  subject: string | null;
+  textBody: string | null;
+  htmlBody: string | null;
+};
+
+function directExternalSenderHost(row: SenderHistorySourceMessage): string | null {
+  if (
+    row.direction !== 'inbound' ||
+    classifyMailSource({
+      fromAddress: row.fromAddress,
+      subject: row.subject,
+      bodyText: row.textBody ?? row.htmlBody,
+    }).kind !== 'direct'
+  ) {
+    return null;
+  }
+  const host = row.fromAddress ? senderHostFromAddress(row.fromAddress) : null;
+  return host && !isOwnedHotelHost(host) ? host : null;
+}
+
+export function senderHostForPartyHistory(input: {
+  trigger: SenderHistorySourceMessage | null;
+  inbound: SenderHistorySourceMessage[];
+}): string | null {
+  if (input.trigger?.direction === 'inbound') {
+    return directExternalSenderHost(input.trigger);
+  }
+  for (const row of input.inbound) {
+    const host = directExternalSenderHost(row);
+    if (host) return host;
+  }
+  return null;
+}
+
+async function firstDirectInboundSenderHost(
+  db: DB,
+  run: AiWorkflowRun,
+): Promise<string | null> {
+  if (!run.threadId) return null;
+  const sourceColumns = {
+    direction: message.direction,
+    fromAddress: message.fromAddress,
+    subject: message.subject,
+    textBody: message.textBody,
+    htmlBody: message.htmlBody,
+  };
+  const [trigger] = await db
+    .select(sourceColumns)
+    .from(message)
+    .where(
+      and(
+        eq(message.id, run.triggerMessageId),
+        eq(message.transportId, run.transportId),
+        eq(message.threadId, run.threadId),
+      ),
+    )
+    .limit(1);
+  if (trigger?.direction === 'inbound') {
+    return senderHostForPartyHistory({ trigger, inbound: [] });
+  }
+  const inbound = await db
+    .select(sourceColumns)
+    .from(message)
+    .where(
+      and(
+        eq(message.transportId, run.transportId),
+        eq(message.threadId, run.threadId),
+        eq(message.direction, 'inbound'),
+      ),
+    )
+    .orderBy(asc(sql`coalesce(${message.receivedAt}, ${message.createdAt})`));
+  return senderHostForPartyHistory({ trigger: trigger ?? null, inbound });
+}
+
+async function recordSenderHistoryAfterRead(
+  db: DB,
+  run: AiWorkflowRun,
+  parties: readonly SenderPartyObservation[],
+  target: HmsReadTarget | null,
+): Promise<void> {
+  if (
+    !parties.length ||
+    !partyHistoryBindEnabled(process.env) ||
+    !isCenturionPartyHistoryTarget(target, run.transportId)
+  ) return;
+  try {
+    const host = await firstDirectInboundSenderHost(db, run);
+    if (!host) return;
+    const party = selectSenderPartyForHost(host, parties);
+    if (!party) return;
+    await recordSenderParty(db, { host, ...party });
+  } catch {
+    console.warn('party_sender_map_write_failed', { count: 1 });
+  }
+}
+
 /**
  * Runs one claimed job. Called from executeAiRun after markAiRunRunning, so
  * the fence is already live. Returns the state the run should end in.
@@ -2914,6 +3144,26 @@ export async function executeHmsJob(input: {
         undefined,
         { recorder: createToolRunRecorder(db, { enabled: true }) ?? undefined },
       );
+      if (staffQuoteCanTeachSenderHistory(Boolean(user), systemPreparedQuote)) {
+        const selectedParties: SenderPartyObservation[] = [];
+        if (request.input.parties?.agency) {
+          selectedParties.push({
+            kind: 'agency',
+            name: request.input.parties.agency.name,
+            nativeId: request.input.parties.agency.nativeId,
+            iata: null,
+          });
+        }
+        if (request.input.parties?.company) {
+          selectedParties.push({
+            kind: 'company',
+            name: request.input.parties.company.name,
+            nativeId: request.input.parties.company.nativeId,
+            iata: null,
+          });
+        }
+        await recordSenderHistoryAfterRead(db, run, selectedParties, null);
+      }
       return 'succeeded';
     } catch (error) {
       if (systemPreparedQuote && preparedQuoteYielded(error)) {
@@ -3096,6 +3346,14 @@ export async function executeHmsJob(input: {
     },
     db,
   );
+  if (marked && request.kind === 'find') {
+    await recordSenderHistoryAfterRead(
+      db,
+      run,
+      senderPartiesFromFindResult(result),
+      davinciReadTarget,
+    );
+  }
   // ponytail: the CLI spawn keeps its own 5-minute timeout; the run deadline is enforced at claim time, not during the spawn.
   await pruneExpiredPaneRuns(Date.now());
   return marked ? 'succeeded' : 'retry_wait';
