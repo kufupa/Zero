@@ -1,4 +1,3 @@
-import { describe, expect, it, vi } from 'vitest';
 import {
   ACTION_CLASSIFICATION_RULES,
   buildInboundPrompt,
@@ -7,10 +6,11 @@ import {
   prepareExtractionVisionImages,
   type AttachmentRead,
 } from '../src/ai/extraction/extract.js';
+import type { SyncedQuoteAttachment } from '../src/ai/quote-workflow-synced-selection.js';
 import type { ModelAdapter, ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
 import { orderThreadContext } from '../src/ai/quote-workflow-synced-selection.js';
-import type { SyncedQuoteAttachment } from '../src/ai/quote-workflow-synced-selection.js';
 import { AE1_OUTPUT, selectionFor } from './fixtures/inbound-extraction.js';
+import { describe, expect, it, vi } from 'vitest';
 
 const signal = new AbortController().signal;
 
@@ -43,10 +43,10 @@ describe('generic action-classifier prompt', () => {
     expect(ACTION_CLASSIFICATION_RULES).toMatch(
       /TARGET message plus prior thread messages.*using prior messages to recognise work already handled/i,
     );
-    expect(ACTION_CLASSIFICATION_RULES).not.toMatch(
-      /\b(?:next|later)\s+(?:thread\s+)?messages\b/i,
+    expect(ACTION_CLASSIFICATION_RULES).not.toMatch(/\b(?:next|later)\s+(?:thread\s+)?messages\b/i);
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(
+      /acknowledgements?.*thanks.*FYI.*resolved.*no_action/i,
     );
-    expect(ACTION_CLASSIFICATION_RULES).toMatch(/acknowledgements?.*thanks.*FYI.*resolved.*no_action/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/agent\/TMC voucher.*new_booking/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/money already moved/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(
@@ -55,17 +55,33 @@ describe('generic action-classifier prompt', () => {
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/conference.*function.*rooming list.*group_event/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/sender domain alone/i);
     expect(ACTION_CLASSIFICATION_RULES).not.toMatch(/Centurion|HRCEN|Legacy Hotels/i);
-    expect(ACTION_CLASSIFICATION_RULES).not.toMatch(/channel, agent and TMC notices remain in scope/i);
+    expect(ACTION_CLASSIFICATION_RULES).not.toMatch(
+      /channel, agent and TMC notices remain in scope/i,
+    );
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/OTA.*excluded|hard skip/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/person travel agents remain/i);
-    expect(ACTION_CLASSIFICATION_RULES).toMatch(/OTA or channel-manager body still reaches.*no_action/i);
-    expect(ACTION_CLASSIFICATION_RULES).toMatch(/system-generated mail is classed by what it carries/i);
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(
+      /OTA or channel-manager body still reaches.*no_action/i,
+    );
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(
+      /system-generated mail is classed by what it carries/i,
+    );
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/more than 12 guests/i);
-    expect(ACTION_CLASSIFICATION_RULES).toMatch(/cancellation notification.*a person writing to ask for a cancellation is cancel/i);
-    expect(ACTION_CLASSIFICATION_RULES).toMatch(/booking request that also asks the rate.*still new_booking/i);
-    expect(ACTION_CLASSIFICATION_RULES).toMatch(/Internal mail with no outside request is no_action/i);
-    expect((ACTION_CLASSIFICATION_RULES.match(/Example \d+:/g) ?? []).length).toBeGreaterThanOrEqual(6);
-    expect((ACTION_CLASSIFICATION_RULES.match(/Example \d+:/g) ?? []).length).toBeLessThanOrEqual(10);
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(
+      /cancellation notification.*a person writing to ask for a cancellation is cancel/i,
+    );
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(
+      /booking request that also asks the rate.*still new_booking/i,
+    );
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(
+      /Internal mail with no outside request is no_action/i,
+    );
+    expect(
+      (ACTION_CLASSIFICATION_RULES.match(/Example \d+:/g) ?? []).length,
+    ).toBeGreaterThanOrEqual(6);
+    expect((ACTION_CLASSIFICATION_RULES.match(/Example \d+:/g) ?? []).length).toBeLessThanOrEqual(
+      10,
+    );
   });
 
   it('places subject before from and body, then filenames, then attachment text, then thread', () => {
@@ -94,7 +110,9 @@ describe('generic action-classifier prompt', () => {
       },
     ];
 
-    const prompt = buildInboundPrompt(selection, 'agent@ta.example', 'hotel@example.test', { maxChars: 4_000 });
+    const prompt = buildInboundPrompt(selection, 'agent@ta.example', 'hotel@example.test', {
+      maxChars: 4_000,
+    });
     const subjectAt = prompt.user.indexOf('Subject:');
     const fromAt = prompt.user.indexOf('From:');
     const bodyAt = prompt.user.indexOf('TARGET body asks for availability.');
@@ -187,7 +205,9 @@ describe('generic action-classifier prompt', () => {
     const prompt = buildInboundPrompt(selection, undefined, undefined, { maxChars: 1_000 });
     expect(prompt.user.length).toBeLessThanOrEqual(1_000);
     expect(prompt.user.indexOf('ATTACHMENT_EVIDENCE')).toBeGreaterThanOrEqual(0);
-    expect(prompt.user.indexOf('ATTACHMENT_EVIDENCE')).toBeLessThan(prompt.user.indexOf('THREAD CONTEXT'));
+    expect(prompt.user.indexOf('ATTACHMENT_EVIDENCE')).toBeLessThan(
+      prompt.user.indexOf('THREAD CONTEXT'),
+    );
     expect(prompt.attachmentReads).toMatchObject([{ id: 'quote-text', status: 'read' }]);
   });
 
@@ -201,7 +221,9 @@ describe('generic action-classifier prompt', () => {
       text: 'x'.repeat(25_000),
       bytesPresent: true,
     });
-    const perAttachment = buildInboundPrompt(selection, undefined, undefined, { maxChars: 200_000 });
+    const perAttachment = buildInboundPrompt(selection, undefined, undefined, {
+      maxChars: 200_000,
+    });
     expect(perAttachment.attachmentReads).toMatchObject([
       { id: 'long-text', status: 'not_read', truncated: true },
     ]);
@@ -246,7 +268,9 @@ describe('generic action-classifier prompt', () => {
       'no prior thread messages provided',
     );
 
-    const omittedByPromptCap = buildInboundPrompt(selection, undefined, undefined, { maxChars: 100 });
+    const omittedByPromptCap = buildInboundPrompt(selection, undefined, undefined, {
+      maxChars: 100,
+    });
     expect(omittedByPromptCap.threadContextTruncated).toBe(true);
     expect(omittedByPromptCap.system).toMatch(
       /thread context status: incomplete; some prior thread messages were clipped or omitted/i,
@@ -353,11 +377,14 @@ describe('extraction call budget', () => {
 describe('extraction vision inputs', () => {
   it('gates vision off explicitly and honestly marks eligible visual sources unread', async () => {
     const renderPdf = vi.fn(async () => []);
-    const result = await prepareExtractionVisionImages([image('inline', 21_000, { isInline: true }), image('ok')], {
-      enabled: false,
-      signal,
-      renderPdf,
-    });
+    const result = await prepareExtractionVisionImages(
+      [image('inline', 21_000, { isInline: true }), image('ok')],
+      {
+        enabled: false,
+        signal,
+        renderPdf,
+      },
+    );
 
     expect(result.images).toEqual([]);
     expect(renderPdf).not.toHaveBeenCalled();
@@ -382,8 +409,16 @@ describe('extraction vision inputs', () => {
     expect(result.images[0]?.filename).toBe('pop-absa.png');
     expect(result.attachmentReads).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: 'cid', status: 'not_read', reason: expect.stringMatching(/junk/i) }),
-        expect.objectContaining({ id: 'winmail', status: 'not_read', reason: expect.stringMatching(/junk/i) }),
+        expect.objectContaining({
+          id: 'cid',
+          status: 'not_read',
+          reason: expect.stringMatching(/junk/i),
+        }),
+        expect.objectContaining({
+          id: 'winmail',
+          status: 'not_read',
+          reason: expect.stringMatching(/junk/i),
+        }),
         expect.objectContaining({ id: 'pop', status: 'read' }),
         expect.objectContaining({ id: 'receipt', status: 'not_read' }),
       ]),
@@ -438,10 +473,11 @@ describe('extraction vision inputs', () => {
       { id: 'scan', status: 'not_read', truncated: true },
     ]);
 
-    const mixed = await prepareExtractionVisionImages(
-      [pdf, image('direct')],
-      { enabled: true, signal, renderPdf: async () => pages },
-    );
+    const mixed = await prepareExtractionVisionImages([pdf, image('direct')], {
+      enabled: true,
+      signal,
+      renderPdf: async () => pages,
+    });
     expect(mixed.images).toHaveLength(4);
   });
 
