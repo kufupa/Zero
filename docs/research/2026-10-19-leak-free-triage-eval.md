@@ -1,10 +1,10 @@
-# Leak-free triage eval and rules v2–v4 (2026-10-19 overnight)
+# Leak-free triage eval and rules v2–v5 (2026-10-19 overnight)
 
 Plan: [2026-10-19-overnight-triage-dspy.md](../plans/2026-10-19-overnight-triage-dspy.md). Data, prompts, predictions and disagreement files are on the coding VPS at `/home/orca/nava-research/triage-20261019/` (PII; never in git).
 
 ## Answer
 
-The action classifier now reads **prior thread mail only** (#369), and its rules were rewritten from a frozen eval (#370 = v2, deployed 04:09Z; #371 = v4, deployed ~05:08Z, prod `357315940`, extractor `extract-3ccdd9c9966e`). On the same 431 frozen test rows with leak-free prod input, **accuracy goes from 81.0–83.3% (prod rules, run ×2) to 90.3% (v4), and macro-F1 from 78.5–81.1 to 88.6.** Parse failures: 0.
+The action classifier now reads **prior thread mail only** (#369), and its rules were rewritten from a frozen eval (#370 = v2, deployed 04:09Z; #371 = v4, deployed ~05:08Z, prod `357315940`, extractor `extract-3ccdd9c9966e`). On the same 431 frozen test rows with leak-free prod input, **v4 accuracy is 90.3% and macro-F1 88.6**, up from 81.0–83.3% / 78.5–81.1 for the two prod-rule runs. A v5 candidate scored 91.2% / 88.0 but was rejected: its macro-F1 and quote/cancel recall were lower. V4 remains deployed; parse failures on its frozen test run: 0. Final live proof: 2 quote-class `read_tool` runs succeeded on v4.
 
 ## 1. Data and labels
 
@@ -28,10 +28,13 @@ The action classifier now reads **prior thread mail only** (#369), and its rules
 | v2 generic (#370, live 04:09–05:08Z) | 87.0 | 82.6 | 81.5/84.6 | 86.1/95.8 | 83.3/83.3 | 75.0/100 | 100/86.2 |
 | v3 (round 3) | 88.6 | 84.0 | 88.5/88.5 | 87.2/95.8 | 83.3/83.3 | 85.7/100 | 96.2/86.2 |
 | **v4 (round 4, #371, live since ~05:08Z)** | **90.3** | **88.6** | 88.5/88.5 | 85.9/94.4 | 95.2/83.3 | 100/100 | 100/93.1 |
+| v5 candidate (round 5, not deployed) | 91.2 | 88.0 | 88.0/84.6 | 87.0/94.4 | 100/83.3 | 100/83.3 | 100/93.1 |
 
 Val (n=186) macro-F1: prod 81.0/81.9 → v2 93.1 → v3 94.6 → v4 95.8 (rerun 96.0).
 
-**Against the bar** (≥90% precision on money classes; quote and new_booking recall ≥95%): met for amend, cancel and payment_proof precision. Not met: quote P 88.5 / R 88.5 (n=26), new_booking P 85.9 / R 94.4. Small-n classes swing ±4 points per row.
+**Against the bar** (≥90% precision on money classes; quote and new_booking recall ≥95%): v4 met amend, cancel and payment_proof precision. Not met: quote P 88.5 / R 88.5 (n=26), new_booking P 85.9 / R 94.4. V5's accuracy rose 0.9 points, but macro-F1 fell 0.6; quote recall fell to 84.6 and cancel recall to 83.3, so v4 stayed deployed. Small-n classes swing ±4 points per row.
+
+The v5 test score is complete (431/431 predictions). Do not use its val/train score: the combined candidate ID file omitted one val and one train ID, and two model results were absent. The candidate was derived from train-error review; v5 is rejected on the frozen test result, and further tuning requires a fresh holdout.
 
 ## 3. What moved the score (rule changes)
 
@@ -41,9 +44,10 @@ Val (n=186) macro-F1: prod 81.0/81.9 → v2 93.1 → v3 94.6 → v4 95.8 (rerun 
 | v2 | System-generated mail is classed by what it carries (agent/TMC voucher → new_booking, extension → amend, VCC → billing, bank paid-in notice → payment_proof); internal staff mail with no outside request = no_action | new_booking R 69→94, no_action P 85→94 |
 | v3 | Booking request that also asks the rate stays new_booking; TMC/platform cancellation **notification** = no_action (owner policy 2026-10-14), a person asking = cancel; extra night / early check-in = amend; inventory-update / review-site / integration-error notices = no_action | quote P 81→88, cancel P 75→86 |
 | v4 | Changes to an existing group booking stay group_event; amend = individual bookings; POP + invoice ask = payment_proof; "payment was made" with no proof = billing | amend P 83→95, payment_proof R 86→93 |
+| v5 candidate (rejected) | Payment-platform notices and hotel-sent customer documents → no_action | test macro-F1 −0.6; quote/cancel recall regressed |
 | dropped | Internal mail asking a colleague for concrete work classed by that work; job applications = no_action | val −7/+5 rows |
 
-DSPy (MIPROv2/GEPA) was not run: the plan's "measure first" rule applied. Hand-written rule rounds from error reading gained 2–4 points per round, and each round was 6 min. DSPy is installed in the run venv if a later plateau needs it.
+DSPy (MIPROv2/GEPA) was not run: the plan's "measure first" rule applied. The v5 candidate was derived from train-error inspection, then checked once on the frozen test; its test macro-F1 and quote/cancel recall regressed, so v4 stayed live. Do not tune further on this holdout; use a fresh test set if the loop resumes.
 
 ## 4. Da Vinci transfer (report only, small n, no Da Vinci tuning)
 
@@ -67,8 +71,9 @@ Few money-class rows (ayanda: none; faith: 2 new_booking, 7 amend, 1 payment_pro
 |---|---|
 | `INBOUND_TRIAGE_CLASSIFIER=off`, `PANE_PRECLASSIFY` unset | http/worker/ai-worker, checked in `/proc/<pid>/environ`; remote-http never had either. Backup `.env.production.bak-20261019-triage-flip` |
 | `hms-slot@hrcen` systemd unit (CDP 19223) | enabled + active; env `/etc/nava/hms-slot-hrcen.env`. First swap lacked `PLAYWRIGHT_BROWSERS_PATH` → crash loop, HMS reads down 04:15:23–04:17:19Z, 0 runs in flight; fixed and re-swapped, ready 04:17:45Z; party read succeeded 04:29Z |
-| Live check after deploy 1 | 4 new-version extractions on post-deploy mail, 0 failures. Post-flip `inbound_triage` runs were channel mail only (expected). One staff_quote `read_tool` dead letter `TRANSIENT_NETWORK`, same as the pre-existing pattern (5 in 24 h vs 154 succeeded) |
+| Live check after deploy 1 | 4 new-version extractions on post-deploy mail, 0 failures. One staff_quote `read_tool` dead letter `TRANSIENT_NETWORK`, same as the pre-existing pattern (5 in 24 h vs 154 succeeded) |
+| Final v4 proof, snapshot 10:01Z | 55 succeeded extractions on post-deploy Centurion mail; 2 quote-class `read_tool` runs succeeded (09:55:25Z, 09:58:12Z); zero dead letters after deploy. No HMS writes or email sends were performed |
 
 ## 7. Reproduce
 
-`apps/server-pilot/scripts/triage-dataset/export.ts` (EC2, read-only) → `build-prompts.ts` (VPS, no DB) → `work/label.py`, `work/predict.py`, `work/score.py` in the run folder. LLM spend for the whole run is ≈ **$31 at Luna list price** (57M input / 50M output tokens across labelling, two baselines, 6 rule variants and Da Vinci). The Sol labelling share is priced at the Luna rate, so the real figure differs by the Sol/Luna price gap.
+`apps/server-pilot/scripts/triage-dataset/export.ts` (EC2, read-only) → `build-prompts.ts` (VPS, no DB) → `work/label.py`, `work/predict.py`, `work/score.py` in the run folder. Initial eval spend was ≈ **$31 at Luna list price**; round 5 added one candidate inference pass. The Sol labelling share was priced at the Luna rate, so actual spend differs by the Sol/Luna price gap.
