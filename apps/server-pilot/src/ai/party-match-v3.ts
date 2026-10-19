@@ -574,12 +574,39 @@ export async function runPartyMatchV3(input: {
     alternatives: loopPick.alternatives,
     source: loopPick.source,
   };
+  const rows = collected();
+  let decision = bind(pick);
+  if (decision.matchStatus !== 'bound' && rows.length) {
+    try {
+      const v2Pick = await pickPartyMatch({
+        adapter: input.adapter,
+        candidates: input.candidates,
+        rows,
+        context: input.context,
+        signal: input.signal,
+        deadlineAt: input.deadlineAt,
+      });
+      const v2Decision = bind(v2Pick);
+      if (v2Decision.matchStatus === 'bound') {
+        return finish({
+          rows,
+          truncated,
+          searchesTried,
+          pick: v2Pick,
+          decision: v2Decision,
+          failure,
+        });
+      }
+    } catch {
+      // Keep the v3 needs_pick when the v2 picker throws.
+    }
+  }
   return finish({
-    rows: collected(),
+    rows,
     truncated,
     searchesTried,
     pick,
-    decision: bind(pick),
+    decision,
     failure,
   });
 }
