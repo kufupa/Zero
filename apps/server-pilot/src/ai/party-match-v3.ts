@@ -1,7 +1,7 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { z } from 'zod';
 import type { ModelAdapter } from './bedrock/adapter.js';
-import type { PanePartyOutcome } from './pane-party-lookup.js';
+import type { PanePartyCandidate, PanePartyOutcome } from './pane-party-lookup.js';
 import {
   applyPartyBindRule,
   normalisePartyName,
@@ -15,13 +15,8 @@ import {
   type PartyMatchRow,
 } from './party-match-v2.js';
 
-export type PartyMatchV3Row = PartyMatchRow & {
-  iata?: string | null;
-  city?: string | null;
-  address?: string | null;
-  country?: string | null;
-  externalId?: string | null;
-};
+export type PartyMatchV3Row = PartyMatchRow &
+  Pick<PanePartyCandidate, 'iata' | 'city' | 'address' | 'country' | 'externalId'>;
 
 export type PartyMatchV3Search = { kind: PartyMatchKind; term: string };
 
