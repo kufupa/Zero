@@ -54,6 +54,7 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
       'OutlookFolderEmailSnapshotStore.cs',
       'OutlookBridgeOperationCache.cs',
       'NavaRibbon.cs',
+      'NativeDiagnosticLog.cs',
       'NavaOutlookAddin.csproj',
     ]) {
       expect(existsSync(path.join(vstoRoot, name)), name).toBe(true);
@@ -63,12 +64,13 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
     expect(project).toContain('ThisAddIn.Designer.cs');
     expect(project).toContain('Compile Include="OutlookMailOperations.cs"');
     expect(project).toContain('Compile Include="OutlookBridgeAuthorization.cs"');
+    expect(project).toContain('Compile Include="NativeDiagnosticLog.cs"');
     expect(project).toContain('CopyWebView2Loader');
     expect(project).toContain('win-x86');
     expect(project).toContain('win-x64');
   });
 
-  it('aligns installer, manifests, assembly, and bridge versions at 1.0.17/v4', () => {
+  it('aligns installer, manifests, assembly, and bridge versions at 1.0.18/v4', () => {
     const dispatcher = read('OutlookBridgeDispatcher.cs');
     const assembly = read('Properties/AssemblyInfo.cs');
     const installer = readFileSync(path.join(nativeRoot, 'installer/setup.iss'), 'utf8');
@@ -77,12 +79,12 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
       'utf8',
     );
     expect(dispatcher).toContain('BRIDGE_VERSION = 4');
-    expect(dispatcher).toContain('ADDIN_VERSION = "1.0.17"');
-    expect(assembly).toContain('AssemblyVersion("1.0.17.0")');
-    expect(assembly).toContain('AssemblyFileVersion("1.0.17.0")');
-    expect(installer).toContain('AppVersion=1.0.17');
-    expect(workflow).toContain('-Version 1.0.17.0');
-    expect(workflow).toContain('-p:ApplicationVersion=1.0.17.0');
+    expect(dispatcher).toContain('ADDIN_VERSION = "1.0.18"');
+    expect(assembly).toContain('AssemblyVersion("1.0.18.0")');
+    expect(assembly).toContain('AssemblyFileVersion("1.0.18.0")');
+    expect(installer).toContain('AppVersion=1.0.18');
+    expect(workflow).toContain('-Version 1.0.18.0');
+    expect(workflow).toContain('-p:ApplicationVersion=1.0.18.0');
   });
 
   it('keeps the committed server golden fixture byte-identical to the exact native checkout', () => {
@@ -356,6 +358,7 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
     expect(pane).toContain('Assembly.GetExecutingAssembly().Location');
     expect(pane).toContain('File.Copy(src, dest, true);');
     expect(pane).not.toContain('if (!File.Exists(dest))');
+    expect(pane).toContain('_webView.Dispose()');
     expect(pane).toMatch(/could not start the side pane/i);
   });
 
@@ -366,6 +369,8 @@ describe.skipIf(!hasVstoSource)('VSTO v4 source contracts (Linux; no Outlook run
     expect(ribbon).toContain('Globals.ThisAddIn');
     expect(ribbon).toContain('ToggleTaskPane');
     expect(addin).toContain('Pane/WebView2 failures must not unload');
+    expect(addin).toContain('NativeDiagnosticLog');
+    expect(addin).toContain('resume_sync_failed');
     expect(addin).toContain('SelectionChange -=');
     expect(addin).toContain('EnsurePane(true)');
     expect(addin).toContain('CustomTaskPanes.Add');
