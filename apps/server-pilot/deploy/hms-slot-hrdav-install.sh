@@ -21,6 +21,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UNIT_SRC="${SCRIPT_DIR}/hms-slot@.service"
 ROLLBACK_NEEDED=0
 WORK=""
+WAS_ENABLED=0
+WAS_ACTIVE=0
 
 run() {
   if [ -n "$SUDO" ]; then
@@ -36,20 +38,41 @@ fail() {
   exit 1
 }
 
-rollback() {
-  run "$SYSTEMCTL" disable --now "$UNIT" >/dev/null 2>&1 || true
+restore_env() {
   if run test -f "$HRDAV_PREV"; then
     run mv -f "$HRDAV_PREV" "$HRDAV_ENV"
   else
     run rm -f "$HRDAV_ENV"
   fi
+}
+
+restore_unit() {
+  if [ "$WAS_ENABLED" -eq 1 ]; then
+    run "$SYSTEMCTL" enable "$UNIT"
+    if [ "$WAS_ACTIVE" -eq 1 ]; then
+      run "$SYSTEMCTL" restart "$UNIT"
+    fi
+  else
+    run "$SYSTEMCTL" disable --now "$UNIT" >/dev/null 2>&1 || true
+  fi
+}
+
+rollback_failure() {
+  restore_env
+  restore_unit
+  echo "HMS_SLOT_HRDAV_ROLLBACK_OK"
+}
+
+rollback_explicit() {
+  run "$SYSTEMCTL" disable --now "$UNIT" >/dev/null 2>&1 || true
+  restore_env
   echo "HMS_SLOT_HRDAV_ROLLBACK_OK"
 }
 
 on_exit() {
   local rc=$?
   if [ "$ROLLBACK_NEEDED" -eq 1 ] && [ "$rc" -ne 0 ]; then
-    rollback || true
+    rollback_failure || true
   fi
   [ -n "$WORK" ] && rm -rf "$WORK"
   exit "$rc"
@@ -90,6 +113,9 @@ install_slot() {
   grep -q '^PLAYWRIGHT_BROWSERS_PATH=.\+' "$WORK/hrcen.env" ||
     fail "PLAYWRIGHT_BROWSERS_PATH missing from ${HRCEN_ENV}"
 
+  if run "$SYSTEMCTL" is-enabled --quiet "$UNIT"; then WAS_ENABLED=1; fi
+  if run "$SYSTEMCTL" is-active --quiet "$UNIT"; then WAS_ACTIVE=1; fi
+
   if run test -f "$HRDAV_ENV"; then
     run cp -a "$HRDAV_ENV" "$HRDAV_PREV"
   else
@@ -101,13 +127,14 @@ install_slot() {
   run cp -a "$WORK/hrdav.env" "$HRDAV_ENV"
   run chmod 0600 "$HRDAV_ENV"
 
-  local profile
+  local profile slot_dir
   profile="$(profile_dir_from_env "$WORK/hrdav.env")"
   [ -n "$profile" ] || fail "HMS_SLOT_PROFILE_DIR missing after rewrite"
+  slot_dir="$(dirname "$profile")"
   run mkdir -p "$profile"
-  run chmod 0700 "$profile"
+  run chmod 0700 "$slot_dir" "$profile"
   if [ -n "$SUDO" ]; then
-    run chown "${HMS_SLOT_USER}:${HMS_SLOT_USER}" "$profile"
+    run chown "${HMS_SLOT_USER}:${HMS_SLOT_USER}" "$slot_dir" "$profile"
   fi
 
   if [ -f "$UNIT_SRC" ] && ! run test -f "${HMS_SLOT_SYSTEMD_DIR}/hms-slot@.service"; then
@@ -128,7 +155,7 @@ case "$ACTION" in
     install_slot
     ;;
   rollback)
-    rollback
+    rollback_explicit
     ;;
   *)
     fail "usage: $0 [install|rollback]"

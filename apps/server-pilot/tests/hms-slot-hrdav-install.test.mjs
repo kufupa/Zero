@@ -67,18 +67,31 @@ function makeHarness(options = {}) {
   if (options.hrdavEnv != null) {
     writeFileSync(join(etc, 'hms-slot-hrdav.env'), options.hrdavEnv, { mode: 0o600 });
   }
+  if (options.hrdavEnv != null) {
+    writeFileSync(join(root, 'was-enabled'), '1');
+    writeFileSync(join(root, 'was-active'), '1');
+  }
   writeFileSync(
     join(bin, 'systemctl'),
     `#!/bin/bash
 set -euo pipefail
 printf '%s\\n' "$*" >> "$SYSTEMCTL_LOG"
-if [[ "\${1:-}" == is-active ]]; then
-  if [[ "\${SYSTEMCTL_FAIL_ACTIVE:-}" == 1 ]]; then exit 3; fi
-  exit 0
-fi
-if [[ "\${1:-}" == is-enabled ]]; then
-  exit 0
-fi
+case "\${1:-}" in
+  restart) : > "$SYSTEMCTL_RESTARTED" ;;
+  is-enabled)
+    [ -f "$SYSTEMCTL_WAS_ENABLED" ] || exit 1
+    exit 0
+    ;;
+  is-active)
+    if [[ "\${SYSTEMCTL_FAIL_ACTIVE:-}" == 1 && -f "$SYSTEMCTL_RESTARTED" ]]; then
+      exit 3
+    fi
+    if [ -f "$SYSTEMCTL_RESTARTED" ] || [ -f "$SYSTEMCTL_WAS_ACTIVE" ]; then
+      exit 0
+    fi
+    exit 3
+    ;;
+esac
 exit 0
 `,
     { mode: 0o755 },
@@ -100,6 +113,9 @@ function runScript(harness, args = [], extraEnv = {}) {
       HMS_SLOT_SYSTEMD_DIR: harness.systemd,
       SYSTEMCTL: join(harness.bin, 'systemctl'),
       SYSTEMCTL_LOG: harness.log,
+      SYSTEMCTL_WAS_ENABLED: join(harness.root, 'was-enabled'),
+      SYSTEMCTL_WAS_ACTIVE: join(harness.root, 'was-active'),
+      SYSTEMCTL_RESTARTED: join(harness.root, 'restarted'),
       ...extraEnv,
     },
   });
@@ -122,12 +138,14 @@ test('install copies the hrcen env, switches port/profile/secret, keeps browsers
     assert.equal(hrcen.HMS_SLOT_CDP_PORT, '19223');
     assert.equal(hrcen.HMS_READ_SECRET_ARN, HRCEN_SECRET);
     assert.equal(existsSync(join(harness.lib, 'hrdav', 'profile')), true);
+    assert.equal(existsSync(join(harness.lib, 'hrdav')), true);
+    const script = readFileSync(scriptPath, 'utf8');
+    assert.match(script, /dirname "\$profile"/);
     const calls = readFileSync(harness.log, 'utf8');
     assert.match(calls, /enable hms-slot@hrdav/);
     assert.match(calls, /restart hms-slot@hrdav/);
     assert.doesNotMatch(calls, /hms-slot@hrcen/);
     assert.doesNotMatch(result.stdout + result.stderr, /pkill/);
-    const script = readFileSync(scriptPath, 'utf8');
     assert.doesNotMatch(script, /mktemp "\$\{NAVA_ETC\}/);
     assert.match(script, /run "\$SYSTEMCTL"/);
   } finally {
@@ -151,6 +169,23 @@ test('rollback disables hrdav, restores a previous hrdav env, and does not touch
     const calls = readFileSync(harness.log, 'utf8');
     assert.match(calls, /disable --now hms-slot@hrdav/);
     assert.doesNotMatch(calls, /disable --now hms-slot@hrcen|stop hms-slot@hrcen/);
+  } finally {
+    rmSync(harness.root, { recursive: true, force: true });
+  }
+});
+
+test('failed reinstall restores a previously running hrdav unit instead of leaving it disabled', () => {
+  const previous = 'HMS_SLOT_CDP_PORT=19999\nHMS_READ_SECRET_ARN=old\n';
+  const harness = makeHarness({ hrdavEnv: previous });
+  try {
+    const result = runScript(harness, [], { SYSTEMCTL_FAIL_ACTIVE: '1' });
+    assert.notEqual(result.status, 0);
+    assert.equal(readFileSync(join(harness.etc, 'hms-slot-hrdav.env'), 'utf8'), previous);
+    const calls = readFileSync(harness.log, 'utf8');
+    assert.match(calls, /enable hms-slot@hrdav/);
+    assert.match(calls, /restart hms-slot@hrdav/);
+    const afterFail = calls.split('is-active --quiet hms-slot@hrdav').pop() ?? '';
+    assert.doesNotMatch(afterFail, /disable --now hms-slot@hrdav/);
   } finally {
     rmSync(harness.root, { recursive: true, force: true });
   }
