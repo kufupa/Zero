@@ -74,6 +74,18 @@ Read-only HMS read of 194 more conf numbers from outside-sender threads (prod ma
 - H1 records history only when the sender's host matches the recorded party name (Greptile P1 on #410), so a corporate sender doesn't learn its agency as its own party.
 - Still unscored: v2 / v3+#408 on the same rows needs a live replay (needs the inbound mail per conf, not just the booking); planned tonight after deploy.
 
+## 5d. Live replay after deploy (2026-10-19 ~20:10Z, `347c188bc`, flags on, read-only, same 42 mails)
+
+| | v2 (old prod) | v3 + #408 | + history candidates |
+|---|---:|---:|---:|
+| Right profile bound (22 staff-confirmed) | 21/22 | 19/22 | 19/22 |
+| Wrong binds | 0 | 0 | 0 |
+| Right profile in top 3 | — | 20/22 | 20/22 |
+| Bound on 20 v2-misses | 0 | 2 | 1 |
+| p50 / p90 per mail | 65 s / 86 s | 38 s / 46 s | 40 s / 48 s |
+
+History turned strong on 1 of 14 history hits. Cause: the "email beats history" rule treats any differently spelled name of the same kind as a contradiction (exact normalised compare), so "Nexus Travel" in the email vs "XL Nexus" in the map, or "Rennies BCD" vs "RENNIES TRAVEL", downgrade history to weak. Also the map was loaded on 10-16 by name only (no `native_id`), so the duplicate-copy path never fires. Next: (1) contradiction = no shared distinctive token, not any spelling difference; (2) backfill `native_id`/`iata` from the 253-booking read; (3) never search the hotel's own name ("Legacy Hotels", 2 of 3 remaining misses).
+
 ## 5b. Owner calls (2026-10-19 ~18:00Z, this chat)
 
 | # | Call |
