@@ -935,8 +935,10 @@ describe('PartyPicker duplicate-name choices', () => {
     expect(await screen.findByText(reason)).toBeTruthy();
     const summary = screen.getByText('Other HMS matches (5)');
     const disclosure = summary.closest('details');
-    expect(disclosure?.open).toBe(false);
+    expect(disclosure).not.toBeNull();
+    expect(disclosure?.hasAttribute('open')).toBe(false);
     fireEvent.click(summary);
+    expect(disclosure?.hasAttribute('open')).toBe(true);
 
     const alternativesList = screen.getByRole('list', { name: 'Other HMS matches' });
     expect(within(alternativesList).getAllByRole('listitem')).toHaveLength(5);
