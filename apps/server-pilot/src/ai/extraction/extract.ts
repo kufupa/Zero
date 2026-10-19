@@ -75,7 +75,7 @@ export const ACTION_CLASSIFICATION_RULES = `Action classification is independent
 
 Synthetic examples:
 Example 1: Target "Thanks, that is sorted." Thread says the booking was confirmed -> needsAction=false, no_action.
-Example 2: Target "Please quote availability for two rooms this coming month." -> true, quote_availability.
+Example 2: Target "Please quote availability for two rooms next month." -> true, quote_availability.
 Example 3: Target "Reservation confirmed; voucher attached." -> true, new_booking.
 Example 4: Target "Here is our travel voucher for the confirmed stay." -> true, new_booking, not payment_proof.
 Example 5: Target "Please move the existing arrival by one day." -> true, amend.

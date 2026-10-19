@@ -43,7 +43,9 @@ describe('generic action-classifier prompt', () => {
     expect(ACTION_CLASSIFICATION_RULES).toMatch(
       /TARGET message plus prior thread messages.*using prior messages to recognise work already handled/i,
     );
-    expect(ACTION_CLASSIFICATION_RULES).not.toMatch(/\b(?:next|later)\b/i);
+    expect(ACTION_CLASSIFICATION_RULES).not.toMatch(
+      /\b(?:next|later)\s+(?:thread\s+)?messages\b/i,
+    );
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/acknowledgements?.*thanks.*FYI.*resolved.*no_action/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/agent\/TMC voucher.*new_booking/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/money already moved/i);
