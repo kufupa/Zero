@@ -20,7 +20,7 @@ Outcome: staff never wait on a party or quote read that Nava could have run firs
 1. Diagnose the 7 `staff quote execution failed` dead letters (`last_error`, run logs, artifacts). One fix PR if the cause is code.
 2. Party wait: order the queue so a quote prep and staff-kicked reads run before party prefetch, and skip party prefetch on `no_action`. Measure p50 wait after deploy.
 3. Party run 70 s: one read-only probe of where the time goes; cut only if one obvious step dominates.
-4. Decide on `feat/oct18-hms-slots`: merge only what HRDAV parallel reads need. A second HRCEN browser needs a second HMS login (one-browser-per-login rule): **owner question**, do not build.
+4. Centurion and Da Vinci reads in parallel (owner, 2026-10-19): one browser per property (HRCEN, HRDAV), never two on one login. #362 merged the base; `feat/oct18-hms-slots` (6 unmerged commits: slot owner, property-keyed locks, HRDAV routing) finishes it. Rebase, review, merge, then prove one HRCEN and one HRDAV read run at the same time.
 5. Deploy B/C/D PRs as they land via `ops-deploy.sh`; `/proc` check all four procs after env changes.
 Bar: party p50 wait < 60 s, 0 new `staff_quote` dead letters for a staff day. Live HMS = Opus only.
 
