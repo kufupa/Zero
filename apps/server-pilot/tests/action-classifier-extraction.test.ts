@@ -40,7 +40,10 @@ const ACTION_OUTPUT = {
 
 describe('generic action-classifier prompt', () => {
   it('uses the target and thread state, applies document precedence, and excludes OTA before classify', () => {
-    expect(ACTION_CLASSIFICATION_RULES).toMatch(/TARGET message plus prior and next thread messages/i);
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(
+      /TARGET message plus prior thread messages.*using prior messages to recognise work already handled/i,
+    );
+    expect(ACTION_CLASSIFICATION_RULES).not.toMatch(/\b(?:next|later)\b/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/acknowledgements?.*thanks.*FYI.*resolved.*no_action/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/agent\/TMC voucher.*new_booking/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/money already moved/i);
@@ -97,6 +100,7 @@ describe('generic action-classifier prompt', () => {
     expect(filesAt).toBeGreaterThan(bodyAt);
     expect(attachAt).toBeGreaterThan(filesAt);
     expect(threadAt).toBeGreaterThan(attachAt);
+    expect(prompt.user).toContain('THREAD CONTEXT (prior thread messages; chronological):');
     expect(prompt.attachmentReads).toMatchObject([{ id: 'quote-text', status: 'read' }]);
   });
 
@@ -118,7 +122,7 @@ describe('generic action-classifier prompt', () => {
     };
     const selection = selectionFor(targetRow.textBody);
     selection.threadReferenceAt = targetAt.toISOString();
-    selection.threadMessages = orderThreadContext('target', [
+    selection.threadMessages = orderThreadContext(targetRow, [
       {
         ...base,
         id: 'later-outbound',
@@ -220,12 +224,23 @@ describe('generic action-classifier prompt', () => {
 
     const nearTargetFirst = buildInboundPrompt(selection);
     expect(nearTargetFirst.user).toContain('The request is resolved.');
+    expect(nearTargetFirst.user).toContain(
+      '[Thread context incomplete: some prior messages were clipped or omitted.]',
+    );
     expect(nearTargetFirst.threadContextTruncated).toBe(true);
-    expect(nearTargetFirst.system).toMatch(/thread context status: incomplete/i);
+    expect(nearTargetFirst.system).toMatch(
+      /thread context status: incomplete; some prior thread messages were clipped or omitted/i,
+    );
+
+    expect(buildInboundPrompt(selectionFor('Target only.')).system).toContain(
+      'no prior thread messages provided',
+    );
 
     const omittedByPromptCap = buildInboundPrompt(selection, undefined, undefined, { maxChars: 100 });
     expect(omittedByPromptCap.threadContextTruncated).toBe(true);
-    expect(omittedByPromptCap.system).toMatch(/thread context status: incomplete/i);
+    expect(omittedByPromptCap.system).toMatch(
+      /thread context status: incomplete; some prior thread messages were clipped or omitted/i,
+    );
   });
 });
 

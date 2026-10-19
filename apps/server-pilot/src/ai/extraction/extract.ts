@@ -65,7 +65,7 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - Use null for anything not stated. Never guess.`;
 
 /** Generic action classifier. Independent of legacy kind, sender domain, and property-specific workflows. */
-export const ACTION_CLASSIFICATION_RULES = `Action classification is independent of legacy kind; never infer needsAction or action from kind. Decide from the TARGET message plus prior and next thread messages: identify whether the target adds open work now, using later messages to recognize work already handled. Never classify by sender domain alone. OTA, booking-channel, system-notice and H-Pay payment-link mail is excluded before this prompt (Layer 0 hard skip). Person travel agents remain in scope. If a channel or system body still reaches this prompt, class it no_action.
+export const ACTION_CLASSIFICATION_RULES = `Action classification is independent of legacy kind; never infer needsAction or action from kind. Decide from the TARGET message plus prior thread messages: identify whether the target adds open work now, using prior messages to recognise work already handled. Never classify by sender domain alone. OTA, booking-channel, system-notice and H-Pay payment-link mail is excluded before this prompt (Layer 0 hard skip). Person travel agents remain in scope. If a channel or system body still reaches this prompt, class it no_action.
 - Pure acknowledgements, thanks, FYI, and resolved/already-handled messages with no new ask or actionable document are no_action (needsAction=false). A separate current ask still counts.
 - Map active work to exactly one action: quote_availability, new_booking, amend, cancel, payment_proof, billing, group_event or other_actionable. Set needsAction=true for all except no_action. Give short supporting actionEvidence (<=200 characters) and actionConfidence high|medium|low.
 - An agent/TMC voucher or reservation confirmation is new_booking even when phrased as FYI or thanks, unless the target says amend or cancel. It is not payment_proof.
@@ -75,7 +75,7 @@ export const ACTION_CLASSIFICATION_RULES = `Action classification is independent
 
 Synthetic examples:
 Example 1: Target "Thanks, that is sorted." Thread says the booking was confirmed -> needsAction=false, no_action.
-Example 2: Target "Please quote availability for two rooms next month." -> true, quote_availability.
+Example 2: Target "Please quote availability for two rooms this coming month." -> true, quote_availability.
 Example 3: Target "Reservation confirmed; voucher attached." -> true, new_booking.
 Example 4: Target "Here is our travel voucher for the confirmed stay." -> true, new_booking, not payment_proof.
 Example 5: Target "Please move the existing arrival by one day." -> true, amend.
@@ -188,7 +188,7 @@ export function buildInboundPrompt(
     attachmentRanges.push({ id: attachment.id, end: full.length, excerpted });
   }
   const context = promptThreadContext(selection);
-  if (context.text) parts.push(`THREAD CONTEXT (prior and next messages; chronological):\n${context.text}`);
+  if (context.text) parts.push(`THREAD CONTEXT (prior thread messages; chronological):\n${context.text}`);
   const fullUser = maskCardNumbers(parts.join('\n\n'));
   const maxChars = options.maxChars ?? extractionPromptMaxChars(options.env ?? process.env);
   if (!Number.isSafeInteger(maxChars) || maxChars < 1) {
@@ -216,7 +216,7 @@ export function buildInboundPrompt(
     return { id: range.id, status: 'read' };
   });
   return {
-    system: `${CENTURION_HOTEL_RULES}\n${EXTRACTION_RULES}\n\n${ACTION_CLASSIFICATION_RULES}\n\nThread context status: ${threadContextTruncated ? 'incomplete; some prior or next messages were clipped or omitted' : context.text ? 'included without prompt-budget truncation' : 'no neighboring messages provided'}.`,
+    system: `${CENTURION_HOTEL_RULES}\n${EXTRACTION_RULES}\n\n${ACTION_CLASSIFICATION_RULES}\n\nThread context status: ${threadContextTruncated ? 'incomplete; some prior thread messages were clipped or omitted' : context.text ? 'included without prompt-budget truncation' : 'no prior thread messages provided'}.`,
     user,
     attachmentReads,
     threadContextTruncated,
@@ -291,7 +291,7 @@ function promptThreadContext(selection: SyncedQuoteSelection): { text: string; t
     })
     .map((item) => item.rendered)
     .join('\n---\n');
-  const marker = '[Thread context incomplete: some prior or next messages were clipped or omitted.]';
+  const marker = '[Thread context incomplete: some prior messages were clipped or omitted.]';
   const text = truncated
     ? `${marker}\n${rendered}`.slice(0, EXTRACTION_THREAD_TOTAL_MAX_CHARS)
     : rendered;

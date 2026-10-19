@@ -31,7 +31,7 @@ const extractionOriginSchema = z.enum(['person', 'system_notice']);
 
 const mailExtractionObjectSchema = z.object({
   needsAction: z.boolean().describe('Whether this target message represents open or newly requested work.'),
-  action: z.enum(MAIL_ACTIONS).describe('The target message action, considered with prior and next thread state.'),
+  action: z.enum(MAIL_ACTIONS).describe('The target message action, considered with prior thread messages.'),
   actionEvidence: z.string().max(200).describe('Short supporting evidence, no card digits; empty when none.'),
   actionConfidence: z.enum(ACTION_CONFIDENCE_LEVELS).describe('Confidence in needsAction and action.'),
   sourceLanguage: z
