@@ -12,7 +12,8 @@ import type { MailAction } from '../src/mail/action-labels.js';
 const DEFAULT_TRANSPORT_ID = 'transport-centurion';
 const QUOTE_BLOCKERS = new Set([
   'source_not_found', 'extraction_not_succeeded', 'not_quote', 'not_inbound', 'history_copy', 'spam',
-  'system_notice', 'channel_or_ota', 'triage_pending', 'missing_sender', 'mailbox_sender', 'staff_sender',
+  'system_notice', 'no_action', 'channel_or_ota', 'triage_pending', 'missing_sender', 'mailbox_sender',
+  'staff_sender',
   'party_match_pending', 'invalid_extraction', 'invalid_quote_input', 'missing_stay', 'missing_dates',
   'invalid_dates', 'past_dates', 'stay_too_long', 'missing_rooms', 'too_many_room_types',
   'missing_occupancy', 'room_type_unresolved', 'not_ready',
