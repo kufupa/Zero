@@ -5482,6 +5482,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
 
     it('renders quoted allowlisted legacy values without remote forbidden credentials', async () => {
       const { mkdtempSync, readFileSync, rmSync, writeFileSync } = await import('node:fs');
+      const { isInboundTriageClassifierEnabled } = await import('../src/env.js');
       const { spawnSync } = await import('node:child_process');
       const { tmpdir } = await import('node:os');
       const { fileURLToPath } = await import('node:url');
@@ -5547,6 +5548,12 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
             '',
           ].join('\n'),
         );
+        expect(
+          isInboundTriageClassifierEnabled({
+            INBOUND_EXTRACTION: common.match(/^INBOUND_EXTRACTION='(.*)'$/m)?.[1],
+            INBOUND_TRIAGE_CLASSIFIER: common.match(/^INBOUND_TRIAGE_CLASSIFIER='(.*)'$/m)?.[1],
+          }),
+        ).toBe(false);
         expect(common).not.toContain('BETTER_AUTH_SECRET');
         expect(common).not.toContain('POP3_PASSWORD');
         expect(common).not.toContain('HMS_READ_SECRET_ARN');
