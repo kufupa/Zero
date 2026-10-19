@@ -987,7 +987,7 @@ describe('PartyPicker duplicate-name choices', () => {
     expect(screen.queryByRole('button', { name: 'Use Partner 1 (Company) (#9001)' })).toBeNull();
     expect(find).not.toHaveBeenCalled();
     expect(queue).not.toHaveBeenCalled();
-    expect(status).toHaveBeenCalledTimes(statusCallsBeforePick + 1);
+    expect(status).toHaveBeenCalledTimes(statusCallsBeforePick);
 
     fireEvent.click(screen.getByRole('button', { name: 'Change' }));
     const restoredChoices = await screen.findByText('HMS matches (6)');

@@ -433,7 +433,9 @@ export function PartyPicker({
   const latest = useRef(0);
   // A stored high-confidence V2 binding is applied once per run. Clearing/changing it must not silently reapply it.
   const appliedV2Bindings = useRef(new Set<string>());
-  const [v2JobCache, setV2JobCache] = useState<{ scope: string; view: HmsJobView } | null>(null);
+  const [v2JobCache, setV2JobCache] = useState<
+    { scope: string; query: string; view: HmsJobView } | null
+  >(null);
   const seededSuggestion = useRef<string | null>(null);
   const appliedSuggestionPick = useRef(new Set<string>());
   const [, rerender] = useReducer((count: number) => count + 1, 0);
@@ -496,17 +498,18 @@ export function PartyPicker({
     (!kind || viewRequest.partyKind === kind || (partyJob.view?.prefetch && !viewRequest.partyKind))
       ? partyJob.view
       : null;
-  const v2JobFieldKey = JSON.stringify([
+  const v2JobScopeKey = JSON.stringify([
     threadId ?? null,
     sourceMessageId ?? null,
     kind ?? null,
-    searchKey(query),
   ]);
+  const v2JobQueryKey = searchKey(query);
   const v2CachedJobView =
     !partyJob.queuing &&
     !partyJob.queueFailed &&
     !partyJob.statusFailed &&
-    v2JobCache?.scope === v2JobFieldKey
+    v2JobCache?.scope === v2JobScopeKey &&
+    v2JobCache.query === v2JobQueryKey
       ? v2JobCache.view
       : null;
   const v2DisplayJobView = currentJobView
@@ -651,23 +654,30 @@ export function PartyPicker({
   useEffect(() => {
     if (currentJobView?.status === 'done' && partyJobIsV2(currentJobView)) {
       setV2JobCache((cached) =>
-        cached?.scope === v2JobFieldKey && cached.view === currentJobView
+        cached?.scope === v2JobScopeKey &&
+        cached.query === v2JobQueryKey &&
+        cached.view === currentJobView
           ? cached
-          : { scope: v2JobFieldKey, view: currentJobView },
+          : { scope: v2JobScopeKey, query: v2JobQueryKey, view: currentJobView },
       );
     }
-  }, [currentJobView, v2JobFieldKey]);
+  }, [currentJobView, v2JobQueryKey, v2JobScopeKey]);
 
   useEffect(() => {
-    if (!v2BoundForField || !v2BoundKey || pickedHere) return;
+    if (!v2BoundForField || !v2BoundKey || !v2DisplayJobView || pickedHere) return;
     if (appliedV2Bindings.current.has(v2BoundKey)) return;
     appliedV2Bindings.current.add(v2BoundKey);
+    setV2JobCache({
+      scope: v2JobScopeKey,
+      query: searchKey(v2BoundForField.name),
+      view: v2DisplayJobView,
+    });
     onPick({
       kind: v2BoundForField.kind,
       nativeId: v2BoundForField.nativeId,
       name: v2BoundForField.name,
     });
-  }, [v2BoundKey, onPick, pickedHere, v2BoundForField]);
+  }, [v2BoundKey, v2DisplayJobView, v2JobScopeKey, onPick, pickedHere, v2BoundForField]);
 
   const topSuggestion = !pickedHere ? suggestions.find((suggestion) => inScope(suggestion)) : undefined;
 
@@ -713,6 +723,19 @@ export function PartyPicker({
   );
   // A row staff pick, in this field's search, is theirs: the search does not pick over it.
   const pickRow = (row: PartyCandidate) => {
+    if (
+      v2PartyJob &&
+      v2DisplayJobView &&
+      v2ResultRows.some(
+        (candidate) => candidate.kind === row.kind && candidate.nativeId === row.nativeId,
+      )
+    ) {
+      setV2JobCache({
+        scope: v2JobScopeKey,
+        query: searchKey(row.name),
+        view: v2DisplayJobView,
+      });
+    }
     onPick({ kind: row.kind, nativeId: row.nativeId, name: row.name });
   };
 
