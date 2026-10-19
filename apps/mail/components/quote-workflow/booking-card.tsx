@@ -67,6 +67,18 @@ function textValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
+function initialSourceOfBusiness(requestSource: unknown, options: string[]): string {
+  const source = textValue(requestSource);
+  if (source) return source;
+
+  return (
+    options.find((option) => {
+      const normalized = option.trim().toLowerCase();
+      return normalized === 'email' || normalized.startsWith('e-mail') || normalized.startsWith('email');
+    }) ?? ''
+  );
+}
+
 // A company or agency picked for the quote fills an empty field with its HMS name. Only a pick with an HMS id counts.
 function pickedName(party: StaffQuoteParty | undefined): string {
   return party?.nativeId ? party.name : '';
@@ -553,7 +565,10 @@ export function BookingCards({
             {
               roomType: textValue(room.request.roomType),
               track: textValue(room.request.track),
-              sourceOfBusiness: textValue(room.request.sourceOfBusiness),
+              sourceOfBusiness: initialSourceOfBusiness(
+                room.request.sourceOfBusiness,
+                draft.options.sourceOfBusiness,
+              ),
               guaranteeType: textValue(room.request.guaranteeType),
               ratePlan:
                 textValue(room.request.ratePlan) ||
