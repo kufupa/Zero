@@ -474,6 +474,7 @@ export function buildPartyMatchCandidates(input: {
   body?: string | null;
   quoteLlmParty?: unknown;
   guestNames?: readonly string[];
+  allowLearnedSenderHistory?: boolean;
 }): PartyMatchCandidate[] {
   const payload = objectRecord(input.payload);
   const sender = parseSender(input.fromAddress);
@@ -488,7 +489,10 @@ export function buildPartyMatchCandidates(input: {
   const signatureOrganisations = signatureOrganisationRows(signature);
   const domain = domainLabel(sender.address);
   const alias = suggestPartyFromSender(sender.address);
-  const senderHistory = sender.address ? lookupLearnedSenderHistory(sender.address.slice(sender.address.lastIndexOf('@') + 1)) : null;
+  const senderHistory =
+    input.allowLearnedSenderHistory && sender.address
+      ? lookupLearnedSenderHistory(sender.address.slice(sender.address.lastIndexOf('@') + 1))
+      : null;
   const historyEnabled = partyHistoryBindEnabled(process.env);
   const people = new Set(
     explicitPersonNames({

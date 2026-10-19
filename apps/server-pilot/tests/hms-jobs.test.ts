@@ -29,7 +29,11 @@ import {
   queueUserHmsJob,
   readHmsJobView,
   requeueHmsReadsAfterRestart,
+  isCenturionPartyHistoryTarget,
+  senderHostForPartyHistory,
+  staffQuoteCanTeachSenderHistory,
 } from '../src/ai/hms-jobs.js';
+import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { paneStayLookupLoaders, type PaneStayLookupSpawnResult } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import {
@@ -475,6 +479,59 @@ describe('U23 HMS job queue (pure)', () => {
     expect(
       canClaimReadToolRun({ runKind: 'read_tool', lane: 'default', readServiceEnabled: true, promptVersion: HMS_JOB_PROMPT_VERSION }),
     ).toBe(false);
+  });
+});
+
+describe('party sender history policy', () => {
+  const triggerMail = {
+    direction: 'inbound' as const,
+    fromAddress: 'agent@trigger.example.test',
+    subject: 'Quote request',
+    textBody: 'Please send a quote for these dates.',
+    htmlBody: null,
+  };
+
+  it('uses direct external trigger sender, not an earlier sender in its thread', () => {
+    expect(
+      senderHostForPartyHistory({
+        trigger: triggerMail,
+        inbound: [{ ...triggerMail, fromAddress: 'agent@earlier.example.test' }],
+      }),
+    ).toBe('trigger.example.test');
+  });
+
+  it('falls back to earliest direct inbound only when trigger is not inbound', () => {
+    expect(
+      senderHostForPartyHistory({
+        trigger: { ...triggerMail, direction: 'outbound' },
+        inbound: [
+          { ...triggerMail, fromAddress: 'agent@earlier.example.test' },
+          { ...triggerMail, fromAddress: 'agent@later.example.test' },
+        ],
+      }),
+    ).toBe('earlier.example.test');
+  });
+
+  it('does not fall back when inbound trigger is internal or non-direct', () => {
+    expect(
+      senderHostForPartyHistory({
+        trigger: { ...triggerMail, fromAddress: 'staff@legacyhotel.com' },
+        inbound: [triggerMail],
+      }),
+    ).toBeNull();
+  });
+
+  it('allows sender history only for Centurion target', () => {
+    expect(isCenturionPartyHistoryTarget(null, TRANSPORT_ID)).toBe(true);
+    expect(isCenturionPartyHistoryTarget(CENTURION_HMS_READ_TARGET, TRANSPORT_ID)).toBe(true);
+    expect(isCenturionPartyHistoryTarget(DAVINCI_HMS_READ_TARGET, TRANSPORT_ID)).toBe(false);
+    expect(isCenturionPartyHistoryTarget(null, 'transport-davinci')).toBe(false);
+  });
+
+  it('learns from staff-initiated quotes only', () => {
+    expect(staffQuoteCanTeachSenderHistory(true, false)).toBe(true);
+    expect(staffQuoteCanTeachSenderHistory(false, false)).toBe(false);
+    expect(staffQuoteCanTeachSenderHistory(true, true)).toBe(false);
   });
 });
 

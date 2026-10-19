@@ -233,7 +233,18 @@ describe('party sender history candidates', () => {
     replaceLearnedSenderMapForTests([
       { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 2 },
     ]);
-    expect(buildPartyMatchCandidates({ fromAddress: 'agent@agency.example.test' })).toContainEqual({
+    expect(
+      buildPartyMatchCandidates({
+        fromAddress: 'agent@agency.example.test',
+        allowLearnedSenderHistory: false,
+      }),
+    ).not.toContainEqual(expect.objectContaining({ source: 'sender_history' }));
+    expect(
+      buildPartyMatchCandidates({
+        fromAddress: 'agent@agency.example.test',
+        allowLearnedSenderHistory: true,
+      }),
+    ).toContainEqual({
       name: 'Harbor Travel',
       kind: 'agency',
       source: 'sender_history',
@@ -243,7 +254,12 @@ describe('party sender history candidates', () => {
     replaceLearnedSenderMapForTests([
       { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 1 },
     ]);
-    expect(buildPartyMatchCandidates({ fromAddress: 'agent@agency.example.test' })).toContainEqual({
+    expect(
+      buildPartyMatchCandidates({
+        fromAddress: 'agent@agency.example.test',
+        allowLearnedSenderHistory: true,
+      }),
+    ).toContainEqual({
       name: 'Harbor Travel',
       kind: 'agency',
       source: 'sender_history',
@@ -260,6 +276,7 @@ describe('party sender history candidates', () => {
     const candidates = buildPartyMatchCandidates({
       fromAddress: 'agent@agency.example.test',
       payload: { agency: 'Current Travel' },
+      allowLearnedSenderHistory: true,
     });
     expect(candidates.slice(0, 2)).toEqual([
       {

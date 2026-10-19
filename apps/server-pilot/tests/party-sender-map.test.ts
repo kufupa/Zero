@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  isOwnedHotelHost,
   lookupLearnedSenderHistory,
   recordSenderParty,
   replaceLearnedSenderMapForTests,
@@ -13,6 +14,23 @@ const dbAvailable = await probeTestDb();
 afterEach(() => {
   vi.unstubAllEnvs();
   replaceLearnedSenderMapForTests(null);
+});
+
+describe('owned hotel sender hosts', () => {
+  it.each([
+    'legacyhotels.co.za',
+    'centurion.legacyhotels.co.za',
+    'legacyhotels.com',
+    'mail.legacyhotels.com',
+    'legacyhotel.com',
+    'mail.legacyhotel.com',
+  ])('excludes owned host %s', (host) => {
+    expect(isOwnedHotelHost(host)).toBe(true);
+  });
+
+  it('keeps unrelated sender hosts eligible', () => {
+    expect(isOwnedHotelHost('travel.example.test')).toBe(false);
+  });
 });
 
 describe('learned sender history', () => {

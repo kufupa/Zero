@@ -41,6 +41,11 @@ const FREEMAIL = new Set([
   'live.com',
   'msn.com',
 ]);
+const OWNED_HOTEL_HOSTS = new Set([
+  'legacyhotels.co.za',
+  'legacyhotels.com',
+  'legacyhotel.com',
+]);
 let rows: StoredLearnedSenderRow[] = [];
 let loadedAt = 0;
 let failedAt = 0;
@@ -65,12 +70,18 @@ function take(list: LearnedSenderRow[]): StoredLearnedSenderRow[] {
   });
 }
 
+export function isOwnedHotelHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/\.+$/, '');
+  return [...OWNED_HOTEL_HOSTS].some(
+    (domain) => normalized === domain || normalized.endsWith(`.${domain}`),
+  );
+}
+
 function senderHostExcluded(host: string): boolean {
   return (
     FREEMAIL.has(host) ||
     [...FREEMAIL].some((domain) => host.endsWith(`.${domain}`)) ||
-    host === 'legacyhotels.co.za' ||
-    host.endsWith('.legacyhotels.co.za')
+    isOwnedHotelHost(host)
   );
 }
 
