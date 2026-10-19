@@ -85,13 +85,14 @@ export function partyMatchV3Enabled(env: NodeJS.Dict<string> = process.env): boo
 
 export function sanitizePartySearchTerms(
   terms: readonly PartyMatchV3Search[],
+  minChars = MIN_TERM_CHARS,
 ): PartyMatchV3Search[] {
   const out: PartyMatchV3Search[] = [];
   const seen = new Set<string>();
   for (const item of terms) {
     if (item.kind !== 'company' && item.kind !== 'agency') continue;
     const term = item.term.replace(/\s+/g, ' ').trim();
-    if (term.length < MIN_TERM_CHARS) continue;
+    if (term.length < minChars) continue;
     const key = `${item.kind}:${normalisePartyName(term)}`;
     if (!normalisePartyName(term) || seen.has(key)) continue;
     seen.add(key);
@@ -228,10 +229,13 @@ export function applyPartyBindV3(input: {
         truncated: input.truncated,
       });
     }
+    const rest = input.rows.filter(
+      (row) => !copies.some((copy) => copy.kind === row.kind && copy.nativeId === row.nativeId),
+    );
     return {
       matchStatus: 'needs_pick',
       boundParty: null,
-      suggestions: copies,
+      suggestions: [...copies, ...rest],
       reason:
         'More than one HMS row shares this party name; choose the matching city, IATA, or copy.',
     };
@@ -344,6 +348,7 @@ async function pickFromRows(
 function v3PlanTerms(candidates: readonly PartyMatchCandidate[]): PartyMatchV3Search[] {
   return sanitizePartySearchTerms(
     planPartySearches(candidates).map((search) => ({ kind: search.kind, term: search.term })),
+    1,
   ).slice(0, ROUND1_TERM_CAP);
 }
 

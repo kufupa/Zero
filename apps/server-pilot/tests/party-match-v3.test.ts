@@ -119,7 +119,22 @@ describe('PARTY MATCH V3 duplicate bind', () => {
     });
     expect(result.matchStatus).toBe('needs_pick');
     expect(result.boundParty).toBeNull();
-    expect(result.suggestions.map((row) => row.nativeId)).toEqual([...TOURVEST_IDS]);
+    expect(result.suggestions.map((row) => row.nativeId)).toEqual([...TOURVEST_IDS, 'co-1']);
+  });
+
+  it('keeps an exact different-name row after the duplicate copies', () => {
+    const result = applyPartyBindV3({
+      candidates: [candidate('Nexus Travel'), candidate('XL Nexus Travel ATNS')],
+      rows: [
+        { kind: 'agency', nativeId: 'exact', name: 'Nexus Travel' },
+        { kind: 'agency', nativeId: '1', name: 'XL Nexus Travel ATNS' },
+        { kind: 'agency', nativeId: '2', name: 'XL Nexus Travel ATNS' },
+      ],
+      pick: highPick('1'),
+      emailText: 'Please quote for Nexus Travel.',
+    });
+    expect(result.matchStatus).toBe('needs_pick');
+    expect(result.suggestions.map((row) => row.nativeId)).toEqual(['1', '2', 'exact']);
   });
 
   it('binds the Cape Town copy when the email names that city and only one copy has it', () => {
@@ -245,5 +260,30 @@ describe('PARTY MATCH V3 reservationist loop', () => {
       matchStatus: 'bound',
       boundParty: { nativeId: '280', kind: 'agency' },
     });
+  });
+
+  it('still searches a two-letter extracted name when the model is unavailable', async () => {
+    const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
+      searches.map((search) => ({
+        outcome: 'resolved' as const,
+        results: [{ kind: 'agency' as const, nativeId: 'ey', name: 'EY' }],
+        truncated: false,
+        searchedFor: search.term,
+      })),
+    );
+
+    const result = await runPartyMatchV3({
+      adapter: null,
+      candidates: [candidate('EY')],
+      context: { ...context, extractedNames: ['EY'] },
+      emailText: 'Please quote for EY.',
+      findParty,
+    });
+
+    expect(findParty).toHaveBeenCalled();
+    expect(findParty.mock.calls[0]?.[0]).toEqual(
+      expect.arrayContaining([{ kind: 'agency', term: 'EY' }]),
+    );
+    expect(result.boundParty).toMatchObject({ nativeId: 'ey', kind: 'agency' });
   });
 });
