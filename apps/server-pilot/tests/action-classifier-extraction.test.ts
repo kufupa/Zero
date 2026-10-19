@@ -114,6 +114,7 @@ describe('generic action-classifier prompt', () => {
       receivedAt: null,
       sentAt: null,
       createdAt: new Date('2026-10-13T10:00:00.000Z'),
+      arrivedAt: new Date('2026-10-13T10:00:00.000Z'),
     };
     const targetRow = {
       ...base,
@@ -122,6 +123,7 @@ describe('generic action-classifier prompt', () => {
       textBody: 'TARGET body asks for availability.',
       receivedAt: targetAt,
       createdAt: new Date('2026-10-13T12:00:01.000Z'),
+      arrivedAt: targetAt,
     };
     const selection = selectionFor(targetRow.textBody);
     selection.threadReferenceAt = targetAt.toISOString();

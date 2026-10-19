@@ -708,6 +708,7 @@ describe('orderThreadContext', () => {
       receivedAt: targetAt,
       sentAt: null,
       createdAt: new Date('2026-10-13T12:01:00.000Z'),
+      arrivedAt: targetAt,
     };
     const result = orderThreadContext(target, [
       {
@@ -718,6 +719,7 @@ describe('orderThreadContext', () => {
         receivedAt: new Date('2026-10-13T11:00:00.000Z'),
         sentAt: null,
         createdAt: new Date('2026-10-13T12:05:00.000Z'),
+        arrivedAt: new Date('2026-10-13T12:05:00.000Z'),
       },
       {
         id: 'earlier-staff',
@@ -727,6 +729,7 @@ describe('orderThreadContext', () => {
         receivedAt: null,
         sentAt: new Date('2026-10-13T11:30:00.000Z'),
         createdAt: new Date('2026-10-13T11:50:00.000Z'),
+        arrivedAt: new Date('2026-10-13T11:50:00.000Z'),
       },
       {
         id: 'imported-prior',
@@ -736,6 +739,7 @@ describe('orderThreadContext', () => {
         receivedAt: new Date('2026-10-13T10:30:00.000Z'),
         sentAt: null,
         createdAt: new Date('2026-10-13T12:06:00.000Z'),
+        arrivedAt: new Date('2026-10-13T10:30:00.000Z'),
       },
     ]);
 
@@ -752,6 +756,7 @@ describe('orderThreadContext', () => {
       receivedAt: null,
       sentAt: null,
       createdAt: new Date('2026-10-13T12:00:00.000Z'),
+      arrivedAt: new Date('2026-10-13T12:00:00.000Z'),
     };
     const targetAt = new Date('2026-10-13T12:30:00.000Z');
     const target = {
@@ -760,6 +765,7 @@ describe('orderThreadContext', () => {
       direction: 'inbound' as const,
       receivedAt: targetAt,
       createdAt: new Date('2026-10-13T12:30:01.000Z'),
+      arrivedAt: targetAt,
     };
     const result = orderThreadContext(target, [
       { ...base, id: 'later-outbound', direction: 'outbound', sentAt: new Date('2026-10-13T13:00:00.000Z') },

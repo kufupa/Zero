@@ -17,6 +17,7 @@ import {
   type ReservationistOfficeConverter,
 } from './reservationist-attachment-input.js';
 import { attachmentMattersForReview, isGenericAttachment, isPdfAttachment } from './quote-attachment-review.js';
+import { MESSAGE_ARRIVED_AT } from './message-arrival-time.js';
 
 export type SyncedQuoteAttachment = {
   id: string;
@@ -539,7 +540,7 @@ export function orderCausalPreceding(
     }));
 }
 
-/** Prior thread messages by message time; later-ingested rows and ties are omitted. */
+/** Prior thread messages by message time; later-arriving inbound rows and ties are omitted. */
 export function orderThreadContext(
   selected: {
     id: string;
@@ -547,6 +548,7 @@ export function orderThreadContext(
     receivedAt: Date | null;
     sentAt: Date | null;
     createdAt: Date;
+    arrivedAt: Date | null;
   },
   threadRows: Array<{
     id: string;
@@ -556,6 +558,7 @@ export function orderThreadContext(
     receivedAt: Date | null;
     sentAt: Date | null;
     createdAt: Date;
+    arrivedAt: Date | null;
   }>,
 ): SyncedThreadMessage[] {
   const selectedAt =
@@ -571,11 +574,14 @@ export function orderThreadContext(
           ? candidate.sentAt ?? candidate.receivedAt ?? candidate.createdAt
           : candidate.receivedAt ?? candidate.sentAt ?? candidate.createdAt,
     }))
-    // Sender-authored dates can be backdated; ingestion time blocks mail received after the target.
+    // Sender-authored inbound dates can be backdated; use mailbox arrival time as an additional guard.
     .filter(
       ({ candidate, timestamp }) =>
         timestamp.getTime() < selectedAt.getTime() &&
-        candidate.createdAt.getTime() < selected.createdAt.getTime(),
+        (candidate.direction !== 'inbound' ||
+          (candidate.arrivedAt !== null &&
+            selected.arrivedAt !== null &&
+            candidate.arrivedAt.getTime() < selected.arrivedAt.getTime())),
     )
     .sort(
       (left, right) =>
@@ -634,6 +640,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       receivedAt: message.receivedAt,
       sentAt: message.sentAt,
       createdAt: message.createdAt,
+      arrivedAt: MESSAGE_ARRIVED_AT,
       direction: message.direction,
       fromAddress: message.fromAddress,
     })
@@ -659,6 +666,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
       receivedAt: message.receivedAt,
       sentAt: message.sentAt,
       createdAt: message.createdAt,
+      arrivedAt: MESSAGE_ARRIVED_AT,
     })
     .from(message)
     .where(and(eq(message.transportId, input.transportId), eq(message.threadId, row.threadId)));
