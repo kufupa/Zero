@@ -2305,8 +2305,12 @@ describe('NavaPane screen states', () => {
 
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
-    fireEvent.change(screen.getByLabelText('Agency (travel agent)'), { target: { value: 'Edited Agency' } });
-    fireEvent.change(screen.getByLabelText('Company (end client)'), { target: { value: 'Edited Company' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search agency in HMS' }), {
+      target: { value: 'Edited Agency' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search company in HMS' }), {
+      target: { value: 'Edited Company' },
+    });
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'government' } });
     await waitFor(() => expect(queueModeResolvers.length).toBeGreaterThan(0));
     await act(async () => queueModeResolvers.forEach((resolve) => resolve(true)));
