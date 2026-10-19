@@ -107,6 +107,7 @@ import {
   runStaffQuote,
   staffQuoteFailureCode,
   staffQuoteFailureMessage,
+  staffQuoteFailurePhase,
   staffQuoteRoomAlternatives,
   type StaffQuoteRunIdentity,
 } from './staff-quote-run.js';
@@ -2451,6 +2452,7 @@ async function requeueRun(
 }
 
 const PREPARED_QUOTE_LOCK_WAIT_MS = 15 * 60_000;
+const PREPARED_QUOTE_ATTACH_FAILED = 'staff quote attach failed';
 
 async function retryOrFail(
   db: DB,
@@ -2764,7 +2766,11 @@ export async function executeHmsJob(input: {
     await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, db);
     return 'dead_letter';
   }
-  if (systemPreparedQuote && run.attempts > 0) {
+  if (
+    systemPreparedQuote &&
+    run.attempts > 0 &&
+    !(run.attempts === 1 && run.lastError === PREPARED_QUOTE_ATTACH_FAILED)
+  ) {
     await markAiRunDeadLetter(
       { ...mark, lastError: 'prepared_quote_attempt_exhausted', failureClass: 'TRANSIENT_NETWORK' },
       db,
@@ -2882,13 +2888,14 @@ export async function executeHmsJob(input: {
         );
       }
       if (staffQuoteTransientFailure(error)) {
+        const attachFailed = staffQuoteFailurePhase(error) === 'attach';
         return retryOrFail(
           db,
           run,
           mark,
           'TRANSIENT_NETWORK',
-          'staff quote execution failed',
-          systemPreparedQuote ? 1 : JOB_MAX_ATTEMPTS,
+          attachFailed ? PREPARED_QUOTE_ATTACH_FAILED : 'staff quote execution failed',
+          systemPreparedQuote ? (attachFailed ? 2 : 1) : JOB_MAX_ATTEMPTS,
         );
       }
       const refusal = staffQuoteRefusal(error, request.input);

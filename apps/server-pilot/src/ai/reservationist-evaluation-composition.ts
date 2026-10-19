@@ -188,6 +188,28 @@ export function nativeQuoteGapDetail(capture:{allocation?:{status?:unknown;reaso
 }
 type NativeSummaryCapture={schemaVersion:number;outcome:string;propertyCode:string;observedAt:string;requested:QuoteSourceRecord['request'];groups:(Omit<QuoteSourceRecord['result']['groups'][number],'options'>&{outcome:string;issues:unknown[];restrictedNights?:{roomCode:string;roomLabel:string;date:string}[];options:(QuoteSourceRecord['result']['groups'][number]['options'][number]&{issues:unknown[];details?:{status:string}})[]})[];allocation:{status:string;reason?:string};issues:unknown[];searchCompleteness:{status:string};audit:{status:string};evidenceDirectory:string};
 export type ExistingOwnerNativeQuoteOptions={owner:{cdpUrl:string;browserOwnership:'borrowed';propertyCode:string;secretPath:string};outputDir:string;dispatch?:(input:{executable:string;args:string[];env:NodeJS.ProcessEnv;signal:AbortSignal;timeout:number})=>Promise<{stdout:string;traceFinish?:'pending'}>};
+const SAFE_EXECUTION_ERROR_NAME=/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/;
+const ATTACH_LOG_KEEP=/timeout|ECONN|EPIPE|ENOTFOUND|ETIMEDOUT|Target\b.*\bclosed|browser has been closed|connectOverCDP|Protocol error|net::ERR_|CDP_/i;
+
+/** Playwright/CDP messages only. URLs, loopback hosts, and leftover user:pass tokens are stripped. */
+export function sanitizeHmsExecutionLogMessage(message:string):string|undefined{
+ const next=message
+  .replace(/\b(?:https?|wss?):\/\/[^\s]+/gi,'[url]')
+  .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b/g,'[host]')
+  .replace(/\b[A-Za-z0-9._-]+:[A-Za-z0-9._-]{1,64}\b/g,(token)=>/^(connectOverCDP|Timeout|Error|Code):/i.test(token)?token:'[redacted]')
+  .trim()
+  .slice(0,180);
+ if(!next||!ATTACH_LOG_KEEP.test(next)) return undefined;
+ return next;
+}
+
+function throwSavedExecutionFailure(source:{phase?:unknown;error?:unknown}):never{
+ const phase=typeof source.phase==='string'?source.phase:'unknown';
+ const raw=source.error&&typeof source.error==='object'?source.error as {name?:unknown;message?:unknown}:{};
+ const errorName=typeof raw.name==='string'&&SAFE_EXECUTION_ERROR_NAME.test(raw.name)?raw.name:undefined;
+ const errorMessage=typeof raw.message==='string'?sanitizeHmsExecutionLogMessage(raw.message):undefined;
+ throw Object.assign(new Error('EXECUTION_FAILURE'),{code:'EXECUTION_FAILURE',phase,...(errorName?{errorName}:{}),...(errorMessage?{errorMessage}:{})});
+}
 /** Explicit installed lower edge: only the existing native Hotel Availability tool and borrowed browser owner. */
 export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNativeQuoteOptions):(request:QuoteSourceRecord['request'],signal:AbortSignal)=>Promise<QuoteSourceRecord>{
  const repo=fileURLToPath(new URL('../../../../',import.meta.url)),privateRoot=resolve(repo,'.private/playwright-quote'),output=resolve(options.outputDir),owner=structuredClone(options.owner);
@@ -208,7 +230,7 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
   const dispatched:{stdout:string;traceFinish?:'pending'}=await dispatch({executable:process.execPath,args:[script,'--request',requestPath,'--output',output],signal,timeout:15*60000,env:{...process.env,HMS_STAGEHAND_CDP_URL:owner.cdpUrl,HMS_STAGEHAND_BROWSER_OWNERSHIP:owner.browserOwnership,HMS_QUOTE_SECRET_PATH:owner.secretPath}});signal.throwIfAborted();const provisional=dispatched.traceFinish==='pending';
   const evidence=/^Evidence: (.+)$/m.exec(dispatched.stdout)?.[1];if(!evidence||!inside(evidence)||!resolve(evidence).startsWith(`${output}/`))throw new Error('native_quote_capture_unavailable');
   const bytes=await readFile(join(evidence,provisional?'result.provisional.json':'result.json'));if(bytes.length>20*1024*1024)throw new Error('native_quote_capture_oversized');const source=JSON.parse(bytes.toString()) as NativeSummaryCapture;
-  if(source.outcome==='execution_failure'){const phase=(source as {phase?:unknown}).phase;throw Object.assign(new Error('EXECUTION_FAILURE'),{code:'EXECUTION_FAILURE',phase:typeof phase==='string'?phase:'unknown'});}
+  if(source.outcome==='execution_failure') throwSavedExecutionFailure(source as {phase?:unknown;error?:unknown});
   const summaryPartial=isReservationistAuditedSummaryPartial(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation);
   if(source.schemaVersion!==2||(source.propertyCode!==undefined&&source.propertyCode!==request.propertyCode)||source.requested.propertyCode!==request.propertyCode||(provisional?source.audit?.status!=='pending'||source.outcome!=='quote':source.audit?.status!=='complete')||quoteDigest(source.requested)!==quoteDigest(normalized.request)||source.evidenceDirectory!==evidence||!Number.isFinite(Date.parse(source.observedAt))||Date.parse(source.observedAt)>Date.now()||!Array.isArray(source.groups)||quoteDigest(options.owner)!==ownerHash)throw new Error('native_quote_capture_scope_or_completeness_invalid');
   const toolHash=createHash('sha256').update(await readFile(script)).update(await readFile(contract)).digest('hex');if(toolHash!==toolHashBefore)throw new Error('native_quote_tool_changed');

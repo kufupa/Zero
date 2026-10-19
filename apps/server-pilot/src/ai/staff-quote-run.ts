@@ -35,7 +35,10 @@ import {
   propertyReadLockKey,
 } from '../hms/property-read-lock.js';
 import { quoteTraceAsyncEnabled, registerPendingStaffQuote } from './staff-quote-trace-async.js';
-import type { NativeQuoteGapDetail } from './reservationist-evaluation-composition.js';
+import {
+  sanitizeHmsExecutionLogMessage,
+  type NativeQuoteGapDetail,
+} from './reservationist-evaluation-composition.js';
 import { type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { ReservationistTaskEvidenceUnavailable } from './reservationist-execution.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js';
@@ -70,7 +73,7 @@ const HMS_EXECUTION_CODES = new Set([
   'native_quote_capture_unavailable',
   'native_quote_read_unavailable',
 ]);
-const HMS_EXECUTION_PHASE = /^(login|hotel_availability|search|details|run|execution)$/;
+const HMS_EXECUTION_PHASE = /^(attach|login|hotel_availability|search|details|run|execution)$/;
 
 /**
  * Prices the staff extras for one approved revision. Invalid or oversize extras are the caller's mistake,
@@ -131,6 +134,7 @@ export function staffQuoteCauseSummary(error: unknown): {
   name: string;
   code: string;
   message: string;
+  phase?: string;
   staffQuoteRefusal?: true;
   alternatives?: StaffQuoteRoomAlternative[];
 } {
@@ -176,10 +180,12 @@ export function staffQuoteCauseSummary(error: unknown): {
   const record = leaf && typeof leaf === 'object' ? (leaf as { name?: unknown; code?: unknown }) : {};
   const rawName = typeof record.name === 'string' ? record.name : 'Error';
   const rawCode = typeof record.code === 'string' ? record.code : staffQuoteFailureCode(leaf);
+  const phase = staffQuoteFailurePhase(error);
   return {
     name: /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(rawName) ? rawName : 'Error',
     code: transientCode ?? (/^[A-Za-z0-9_.:-]{1,120}$/.test(rawCode) ? rawCode : 'unknown'),
     message: 'Staff quote execution failed.',
+    ...(phase !== 'unknown' ? { phase } : {}),
     ...(alternatives.length ? { staffQuoteRefusal: true, alternatives } : {}),
   };
 }
@@ -211,9 +217,15 @@ function dinnerAddOnDetails(
  * failure (ReservationistTaskEvidenceUnavailable) happens after HMS answered, while Nava qualifies the answer: 'qualification'.
  */
 export function staffQuoteFailurePhase(error: unknown): string {
-  const phase = error && typeof error === 'object' && 'phase' in error ? error.phase : undefined;
-  if (typeof phase === 'string' && /^[a-z_]{1,40}$/.test(phase)) return phase;
-  return error instanceof ReservationistTaskEvidenceUnavailable ? 'qualification' : 'unknown';
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== undefined && current !== null; depth += 1) {
+    if (typeof current !== 'object') break;
+    const record = current as { phase?: unknown; cause?: unknown };
+    if (typeof record.phase === 'string' && /^[a-z_]{1,40}$/.test(record.phase)) return record.phase;
+    if (current instanceof ReservationistTaskEvidenceUnavailable) return 'qualification';
+    current = record.cause ?? null;
+  }
+  return 'unknown';
 }
 
 /** The native gap detail an evidence failure carries (statuses and HMS codes only), or undefined. */
@@ -229,13 +241,40 @@ export function staffQuoteFailureLog(error: unknown): {
   code: string;
   phase: string;
   detail?: NativeQuoteGapDetail;
+  errorName?: string;
+  errorMessage?: string;
 } {
   const detail = nativeQuoteGapOf(error);
-  return {
-    code: staffQuoteFailureCode(error),
-    phase: staffQuoteFailurePhase(error),
+  const code = staffQuoteFailureCode(error);
+  const phase = staffQuoteFailurePhase(error);
+  const log: {
+    code: string;
+    phase: string;
+    detail?: NativeQuoteGapDetail;
+    errorName?: string;
+    errorMessage?: string;
+  } = {
+    code,
+    phase,
     ...(detail ? { detail } : {}),
   };
+  if (code === 'EXECUTION_FAILURE' && phase === 'attach') {
+    const record =
+      error && typeof error === 'object'
+        ? (error as { errorName?: unknown; errorMessage?: unknown; name?: unknown; message?: unknown })
+        : {};
+    const rawName = typeof record.errorName === 'string' ? record.errorName : typeof record.name === 'string' ? record.name : '';
+    if (/^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(rawName) && rawName !== 'Error') log.errorName = rawName;
+    const rawMessage =
+      typeof record.errorMessage === 'string'
+        ? record.errorMessage
+        : typeof record.message === 'string'
+          ? record.message
+          : '';
+    const errorMessage = sanitizeHmsExecutionLogMessage(rawMessage);
+    if (errorMessage) log.errorMessage = errorMessage;
+  }
+  return log;
 }
 
 /** The staff message when HMS gave no building and the property room profile is missing or out of date, so rooms cannot be pooled. */

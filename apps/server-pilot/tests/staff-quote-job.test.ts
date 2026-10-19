@@ -34,16 +34,20 @@ const quoteLineMocks = vi.hoisted(() => ({
   rowRatesFor: vi.fn(),
 }));
 
-vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => ({
-  staffQuoteRoomAlternatives: (await importOriginal<typeof import('../src/ai/staff-quote-run.js')>()).staffQuoteRoomAlternatives,
-  runStaffQuote: jobMocks.runStaffQuote,
-  staffQuoteFailureCode: (error: unknown) => {
-    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-    const candidate = typeof code === 'string' ? code : error instanceof Error ? error.message : '';
-    return /^[A-Za-z0-9_.:-]{1,120}$/.test(candidate) ? candidate : 'unknown';
-  },
-  staffQuoteFailureMessage: () => 'Staff quote could not be completed.',
-}));
+vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/ai/staff-quote-run.js')>();
+  return {
+    staffQuoteRoomAlternatives: actual.staffQuoteRoomAlternatives,
+    staffQuoteFailurePhase: actual.staffQuoteFailurePhase,
+    runStaffQuote: jobMocks.runStaffQuote,
+    staffQuoteFailureCode: (error: unknown) => {
+      const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+      const candidate = typeof code === 'string' ? code : error instanceof Error ? error.message : '';
+      return /^[A-Za-z0-9_.:-]{1,120}$/.test(candidate) ? candidate : 'unknown';
+    },
+    staffQuoteFailureMessage: () => 'Staff quote could not be completed.',
+  };
+});
 
 vi.mock('../src/hms/property-queue-state.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/hms/property-queue-state.js')>()),
@@ -558,6 +562,88 @@ describe('staff_quote HMS job execution', () => {
     expect(jobMocks.runStaffQuote).toHaveBeenCalledOnce();
     expect(jobMocks.markDeadLetter).toHaveBeenCalledWith(
       expect.objectContaining({ failureClass: 'TRANSIENT_NETWORK', lastError: 'staff quote execution failed' }),
+      db,
+    );
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
+
+  it('requeues a prepared quote once when the reader fails in the attach phase', async () => {
+    const { run, fence } = preparedFixture();
+    jobMocks.runStaffQuote.mockRejectedValue(
+      new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: "HMS didn't respond as expected. Try again; if it fails twice, quote in HMS directly.",
+        cause: { name: 'TimeoutError', code: 'EXECUTION_FAILURE', message: 'Staff quote execution failed.', phase: 'attach' },
+      }),
+    );
+
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('retry_wait');
+
+    expect(jobMocks.runStaffQuote).toHaveBeenCalledOnce();
+    expect(jobMocks.markRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempts: 1,
+        failureClass: 'TRANSIENT_NETWORK',
+        lastError: 'staff quote attach failed',
+      }),
+      db,
+    );
+    expect(jobMocks.markDeadLetter).not.toHaveBeenCalled();
+  });
+
+  it('runs a prepared quote again after one attach failure', async () => {
+    const { run, fence } = preparedFixture();
+    run.attempts = 1;
+    run.lastError = 'staff quote attach failed';
+    const result = {
+      status: 'ready',
+      workflowRunId: 'workflow-1',
+      revisionRef: 'revision-1',
+      messageId: STAFF_QUOTE_INPUT.messageId,
+      threadId: 'thread-1',
+      factRefs: [],
+      selectionEpoch: STAFF_QUOTE_INPUT.selectionEpoch,
+      inputRevision: STAFF_QUOTE_INPUT.inputRevision,
+      inputDigest: 'b'.repeat(64),
+      totalMinor: 240_000,
+      currency: 'ZAR',
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+      description: 'Standard King; Room Only',
+      rateOptions: [{ id: 'rate-1' }],
+      rowRates: [{ groupId: 'single' }],
+    };
+    jobMocks.runStaffQuote.mockImplementation(async (...args: unknown[]) => {
+      const transaction = args[2] as DB;
+      const options = args[3] as {
+        commitQueuedResult?: (value: Record<string, unknown>, transaction: DB) => Promise<boolean>;
+      };
+      await options.commitQueuedResult?.(result, transaction);
+      return result;
+    });
+
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('succeeded');
+
+    expect(jobMocks.runStaffQuote).toHaveBeenCalledOnce();
+    expect(jobMocks.markDeadLetter).not.toHaveBeenCalled();
+  });
+
+  it('dead-letters a prepared quote after a second attach failure', async () => {
+    const { run, fence } = preparedFixture();
+    run.attempts = 1;
+    run.lastError = 'staff quote attach failed';
+    jobMocks.runStaffQuote.mockRejectedValue(
+      Object.assign(new Error('EXECUTION_FAILURE'), { code: 'EXECUTION_FAILURE', phase: 'attach' }),
+    );
+
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
+
+    expect(jobMocks.runStaffQuote).toHaveBeenCalledOnce();
+    expect(jobMocks.markDeadLetter).toHaveBeenCalledWith(
+      expect.objectContaining({
+        failureClass: 'TRANSIENT_NETWORK',
+        lastError: 'staff quote attach failed',
+      }),
       db,
     );
     expect(jobMocks.markRetry).not.toHaveBeenCalled();

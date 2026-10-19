@@ -64,6 +64,34 @@ describe('createExistingOwnerNativeQuoteReader default dispatch', () => {
     });
   });
 
+  it('carries the sanitized attach error name and message from result.json', async () => {
+    cliExit.failure = {
+      stdout: await savedCapture({
+        outcome: 'execution_failure',
+        phase: 'attach',
+        error: {
+          name: 'TimeoutError',
+          message: 'browserType.connectOverCDP: Timeout 20000ms exceeded. http://127.0.0.1:19223',
+        },
+      }),
+    };
+    const read = createExistingOwnerNativeQuoteReader({ owner, outputDir: join(root, 'out') });
+    await read(request, new AbortController().signal).then(
+      () => {
+        throw new Error('expected EXECUTION_FAILURE');
+      },
+      (error: { errorMessage?: string }) => {
+        expect(error).toMatchObject({
+          code: 'EXECUTION_FAILURE',
+          phase: 'attach',
+          errorName: 'TimeoutError',
+          errorMessage: expect.stringMatching(/Timeout 20000ms exceeded/),
+        });
+        expect(error.errorMessage).not.toMatch(/http:|127\.0\.0\.1/);
+      },
+    );
+  });
+
   it('keeps native_quote_read_unavailable when a non-zero exit saved something other than a failure', async () => {
     cliExit.failure = { stdout: await savedCapture({ outcome: 'partial', phase: 'run' }) };
     const read = createExistingOwnerNativeQuoteReader({ owner, outputDir: join(root, 'out') });
