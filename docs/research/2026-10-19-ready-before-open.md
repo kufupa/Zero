@@ -66,6 +66,8 @@ The query cannot estimate counterfactual staff-minutes removed, so these are ran
 
 The production run was a single-statement, read-only aggregate at the snapshot above. This excerpt shows its event/action cohort, exact-message run mapping, and quote-ready predicate; the reported reason and percentile buckets were computed in the same aggregate and only grouped counts/percentiles were returned.
 
+Review validation: a follow-up aggregate using the same `as_of` cutoff compared both extraction orderings. Latest-success-then-target-filter and target-filter-then-latest produced identical per-action window counts for this cohort, so the published denominators did not change. The excerpt below uses latest-success-then-target-filter ordering.
+
 ```sql
 WITH params AS (
   SELECT TIMESTAMPTZ '2026-10-19 15:33:23.580562+00' AS as_of
@@ -85,15 +87,18 @@ WITH params AS (
     AND m.direction = 'inbound'
     AND p.opened_at > params.as_of - INTERVAL '7 days'
     AND p.opened_at <= params.as_of
-), action_at_snapshot AS (
+), latest_success AS (
   SELECT DISTINCT ON (e.message_id)
          e.message_id, e.payload->>'action' AS action
   FROM mail_extraction AS e
   CROSS JOIN params
   WHERE e.status = 'succeeded'
     AND e.created_at <= params.as_of
-    AND e.payload->>'action' IN ('quote_availability', 'new_booking', 'amend', 'cancel')
   ORDER BY e.message_id, e.created_at DESC
+), action_at_snapshot AS (
+  SELECT message_id, action
+  FROM latest_success
+  WHERE action IN ('quote_availability', 'new_booking', 'amend', 'cancel')
 ), matched_runs AS (
   SELECT p.message_id, p.opened_at, a.action, r.*
   FROM pane_cohort AS p
