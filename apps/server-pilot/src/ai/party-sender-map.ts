@@ -93,9 +93,9 @@ export function replaceLearnedSenderMapForTests(next: LearnedSenderRow[] | null)
 }
 
 export function lookupLearnedSenderParty(host: string): { kind: 'company' | 'agency'; name: string } | null {
+  const h = host.trim().toLowerCase().replace(/\.+$/, '');
+  if (senderHostExcluded(h)) return null;
   if (!testsPinned) void refreshIfDue();
-  const h = host.toLowerCase();
-  if (FREEMAIL.has(h) || [...FREEMAIL].some((d) => h.endsWith(`.${d}`))) return null;
   const exact = rows.find((r) => h === r.host);
   if (exact) return { kind: exact.kind, name: exact.name };
   const parent = rows
@@ -106,9 +106,9 @@ export function lookupLearnedSenderParty(host: string): { kind: 'company' | 'age
 
 /** History row for matching; exact host wins, then the longest stored parent host. */
 export function lookupLearnedSenderHistory(host: string): LearnedSenderHistory | null {
+  const h = host.trim().toLowerCase().replace(/\.+$/, '');
+  if (senderHostExcluded(h)) return null;
   if (!testsPinned) void refreshIfDue();
-  const h = host.toLowerCase();
-  if (FREEMAIL.has(h) || [...FREEMAIL].some((d) => h.endsWith(`.${d}`))) return null;
   const exact = rows.find((r) => h === r.host);
   const row =
     exact ??

@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   isOwnedHotelHost,
   lookupLearnedSenderHistory,
+  lookupLearnedSenderParty,
   recordSenderParty,
   replaceLearnedSenderMapForTests,
 } from '../src/ai/party-sender-map.js';
@@ -59,6 +60,25 @@ describe('learned sender history', () => {
     });
     expect(lookupLearnedSenderHistory('person@gmail.com')).toBeNull();
     expect(lookupLearnedSenderHistory('gmail.com')).toBeNull();
+  });
+
+  it.each([
+    { storedHost: 'legacyhotels.com', lookupHost: 'legacyhotels.com' },
+    { storedHost: 'legacyhotel.com', lookupHost: 'mail.legacyhotel.com' },
+  ])('never binds from an existing owned-host row: $lookupHost', ({ storedHost, lookupHost }) => {
+    replaceLearnedSenderMapForTests([
+      {
+        host: storedHost,
+        kind: 'agency',
+        name: 'Internal Party',
+        nativeId: 'AG-99',
+        iata: null,
+        support: 2,
+      },
+    ]);
+
+    expect(lookupLearnedSenderHistory(lookupHost)).toBeNull();
+    expect(lookupLearnedSenderParty(lookupHost)).toBeNull();
   });
 
   it.skipIf(!dbAvailable)('increments same party, replaces different party, skips freemail and own domain', () =>
