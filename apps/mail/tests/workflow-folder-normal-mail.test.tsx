@@ -14,7 +14,10 @@ const workflowFolderIds = WORKFLOW_FOLDER_NAV_ITEMS.map((item) => item.id);
 const mocks = vi.hoisted(() => ({
   folder: 'quotes',
   threadId: 'thread-quotes',
-  listThreadInputs: [] as Array<Record<string, unknown>>,
+  listThreadInputs: [] as Array<{
+    workflowFolder?: string;
+    filters?: { categoryIds?: string[] };
+  }>,
   workflowRows: [] as Array<{ folder: string; threadId: string }>,
   mailThreads: [] as Array<Record<string, unknown>>,
   workflowFolderRows: [] as Array<{ sourceMessageId: string; ownerAction: string | null }>,
