@@ -14,7 +14,10 @@ const workflowFolderIds = WORKFLOW_FOLDER_NAV_ITEMS.map((item) => item.id);
 const mocks = vi.hoisted(() => ({
   folder: 'quotes',
   threadId: 'thread-quotes',
-  listThreadInputs: [] as Array<Record<string, unknown>>,
+  listThreadInputs: [] as Array<{
+    workflowFolder?: string;
+    filters?: { categoryIds?: string[] };
+  }>,
   workflowRows: [] as Array<{ folder: string; threadId: string }>,
   mailThreads: [] as Array<Record<string, unknown>>,
   workflowFolderRows: [] as Array<{ sourceMessageId: string; ownerAction: string | null }>,
@@ -105,7 +108,10 @@ vi.mock('../components/mail/use-mail', async () => {
 vi.mock('../hooks/use-labels-search', () => ({ default: () => ({ labels: [] }) }));
 vi.mock('../hooks/use-category-ids', () => ({ default: () => ({ categoryIds: [] }) }));
 vi.mock('../hooks/use-categories', () => ({
-  useCategorySettings: () => [],
+  useCategorySettings: () => [
+    { id: 'cat-new-bookings', slug: 'new-bookings', name: 'New Bookings' },
+    { id: 'cat-groups-events', slug: 'groups-events', name: 'Groups & events' },
+  ],
   useDefaultCategoryId: () => 'Important',
 }));
 vi.mock('../hooks/use-labels', () => ({ useLabels: () => ({ userLabels: [] }) }));
@@ -258,6 +264,9 @@ describe('workflow folders in the normal mail layout', () => {
       expect(mocks.listThreadInputs).toContainEqual(
         expect.objectContaining({ workflowFolder: folder }),
       );
+      for (const input of mocks.listThreadInputs.filter((row) => row.workflowFolder === folder)) {
+        expect(input.filters?.categoryIds ?? []).toEqual([]);
+      }
     },
   );
 

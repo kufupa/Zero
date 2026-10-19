@@ -20,12 +20,37 @@ import { canUseNaturalLanguageSearch, PILOT_CAPABILITIES } from '../lib/pilot/ca
 describe('mail route filter contract', () => {
   it('maps hotel category slug to structured category filter', () => {
     const result = resolveMailRouteFilter(
-      'new-bookings',
-      new Map([['new-bookings', 'cat-new-bookings']]),
+      'at-risk',
+      new Map([['at-risk', 'cat-at-risk']]),
     );
     expect(result).toEqual({
       folder: 'inbox',
-      filters: { categoryIds: ['cat-new-bookings'] },
+      filters: { categoryIds: ['cat-at-risk'] },
+    });
+  });
+
+  it('does not AND hotel category membership onto workflow folder routes', () => {
+    const categories = new Map([
+      ['new-bookings', 'cat-new-bookings'],
+      ['groups-events', 'cat-groups-events'],
+      ['quotes', 'cat-quotes'],
+      ['at-risk', 'cat-at-risk'],
+    ]);
+    expect(resolveMailRouteFilter('new-bookings', categories)).toEqual({
+      folder: 'inbox',
+      filters: {},
+    });
+    expect(resolveMailRouteFilter('groups-events', categories)).toEqual({
+      folder: 'inbox',
+      filters: {},
+    });
+    expect(resolveMailRouteFilter('quotes', categories)).toEqual({
+      folder: 'inbox',
+      filters: {},
+    });
+    expect(resolveMailRouteFilter('at-risk', categories)).toEqual({
+      folder: 'inbox',
+      filters: { categoryIds: ['cat-at-risk'] },
     });
   });
 
@@ -98,13 +123,13 @@ describe('mail route filter contract', () => {
 
   it('category slug still wins over labelIdSet miss', () => {
     const result = resolveMailRouteFilter(
-      'new-bookings',
-      new Map([['new-bookings', 'cat-new-bookings']]),
+      'at-risk',
+      new Map([['at-risk', 'cat-at-risk']]),
       new Set(['some-label']),
     );
     expect(result).toEqual({
       folder: 'inbox',
-      filters: { categoryIds: ['cat-new-bookings'] },
+      filters: { categoryIds: ['cat-at-risk'] },
     });
   });
 

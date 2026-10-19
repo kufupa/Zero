@@ -60,33 +60,33 @@ describe('search-list helpers', () => {
 
   it('keeps this-folder category search on hotel slug', () => {
     const routeResolved = resolveMailRouteFilter(
-      'new-bookings',
-      new Map([['new-bookings', 'cat-new-bookings']]),
+      'at-risk',
+      new Map([['at-risk', 'cat-at-risk']]),
     );
     const result = expectValidSearchListRequest(resolveSearchListRequest({
       scope: 'folder',
       query: 'deposit',
       filters: [],
       routeResolved,
-      baseFilters: { categoryIds: ['cat-new-bookings'] },
+      baseFilters: { categoryIds: ['cat-at-risk'] },
     }));
     expect(result.folder).toBe('inbox');
-    expect(result.filters.categoryIds).toEqual(['cat-new-bookings']);
+    expect(result.filters.categoryIds).toEqual(['cat-at-risk']);
     expect(result.q).toBe('deposit');
     expect(result.useDraftsList).toBe(false);
   });
 
   it('all-folders plus query drops route categoryIds and uses folder all', () => {
     const routeResolved = resolveMailRouteFilter(
-      'new-bookings',
-      new Map([['new-bookings', 'cat-new-bookings']]),
+      'at-risk',
+      new Map([['at-risk', 'cat-at-risk']]),
     );
     const result = expectValidSearchListRequest(resolveSearchListRequest({
       scope: 'all',
       query: 'deposit',
       filters: [],
       routeResolved,
-      baseFilters: { categoryIds: ['cat-new-bookings'] },
+      baseFilters: { categoryIds: ['cat-at-risk'] },
     }));
     expect(result.folder).toBe('all');
     expect(result.filters.categoryIds).toBeUndefined();
