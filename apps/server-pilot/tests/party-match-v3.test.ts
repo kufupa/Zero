@@ -116,6 +116,18 @@ describe('sanitizePartySearchTerms', () => {
       { kind: 'agency', term: 'Travel With Flair' },
     ]);
   });
+
+  it('drops own-brand and country-only searches but keeps distinctive party terms', () => {
+    expect(
+      sanitizePartySearchTerms([
+        { kind: 'agency', term: 'Legacy Hotels' },
+        { kind: 'agency', term: 'Argentina' },
+        { kind: 'agency', term: 'South Africa' },
+        { kind: 'agency', term: 'Nexus' },
+      ]),
+    ).toEqual([{ kind: 'agency', term: 'Nexus' }]);
+  });
+
 });
 
 describe('PARTY MATCH V3 duplicate bind', () => {
@@ -177,6 +189,77 @@ describe('PARTY MATCH V3 duplicate bind', () => {
       matchStatus: 'bound',
       boundParty: { nativeId: '6', kind: 'agency' },
     });
+  });
+
+  it('binds a unique same-kind token match from name-only sender history', () => {
+    const result = applyPartyBindV3({
+      candidates: [
+        candidate('Nexus Travel'),
+        {
+          name: 'XL Nexus',
+          kind: 'agency',
+          source: 'sender_history',
+          strength: 'strong',
+        },
+      ],
+      rows: [
+        { kind: 'agency', nativeId: 'nexus', name: 'XL Nexus' },
+        { kind: 'agency', nativeId: 'other', name: 'Beacon Agency' },
+        { kind: 'company', nativeId: 'company', name: 'XL Nexus' },
+      ],
+      pick: highPick('other'),
+      emailText: 'Please quote for Nexus Travel.',
+      senderHistory: [{ kind: 'agency', nativeId: null, name: 'XL Nexus' }] as never,
+    });
+
+    expect(result).toMatchObject({
+      matchStatus: 'bound',
+      boundParty: { nativeId: 'nexus', kind: 'agency' },
+    });
+  });
+
+  it('requires every distinctive history token before a name-only bind', () => {
+    const result = applyPartyBindV3({
+      candidates: [
+        candidate('Acme Consulting'),
+        {
+          name: 'Acme Consulting',
+          kind: 'agency',
+          source: 'sender_history',
+          strength: 'strong',
+        },
+      ],
+      rows: [{ kind: 'agency', nativeId: 'beacon', name: 'Beacon Consulting' }],
+      pick: highPick('beacon'),
+      emailText: 'Please quote for Acme Consulting.',
+      senderHistory: [{ kind: 'agency', nativeId: null, name: 'Acme Consulting' }] as never,
+    });
+
+    expect(result.matchStatus).toBe('needs_pick');
+    expect(result.boundParty).toBeNull();
+  });
+
+  it('does not bind name-only history when multiple same-kind rows share its token', () => {
+    const result = applyPartyBindV3({
+      candidates: [
+        candidate('Tourvest Travel Services'),
+        {
+          name: 'Tourvest Travel Services',
+          kind: 'agency',
+          source: 'sender_history',
+          strength: 'strong',
+        },
+      ],
+      rows: TOURVEST_COPIES.slice(0, 2),
+      pick: highPick('280'),
+      emailText: 'Please quote for Tourvest Travel Services.',
+      senderHistory: [
+        { kind: 'agency', nativeId: null, name: 'Tourvest Travel Services' },
+      ] as never,
+    });
+
+    expect(result.matchStatus).toBe('needs_pick');
+    expect(result.boundParty).toBeNull();
   });
 });
 

@@ -82,6 +82,7 @@ import { resolveAdapter } from './quote-workflow-analyse-selection.js';
 import {
   applyPartyBindRule,
   buildPartyMatchCandidates,
+  distinctivePartyTokens,
   partyMatchEmailContext,
   PARTY_MATCH_V2_ROW_CAP,
   PARTY_MATCH_V2_SEARCH_CAP,
@@ -2412,8 +2413,8 @@ async function executePartyMatchV2(input: {
       candidates,
       context,
       emailText: `${source.subject ?? ''}\n${source.textBody ?? ''}`,
-      senderHistory: learnedSender?.nativeId
-        ? [{ kind: learnedSender.kind, nativeId: learnedSender.nativeId }]
+      senderHistory: learnedSender
+        ? [{ kind: learnedSender.kind, nativeId: learnedSender.nativeId, name: learnedSender.name }]
         : undefined,
       findParty: async (searches) => {
         if (!searches.length) return [];
@@ -2831,16 +2832,6 @@ function senderPartyObservation(
   };
 }
 
-const GENERIC_SENDER_PARTY_TOKENS = new Set([
-  'travel',
-  'tours',
-  'group',
-  'holdings',
-  'services',
-  'pty',
-  'ltd',
-]);
-
 /** Pick a single party only when sender-host evidence separates company from agency. */
 export function selectSenderPartyForHost(
   host: string,
@@ -2857,17 +2848,7 @@ export function selectSenderPartyForHost(
   if (!hostLabel) return null;
 
   const matchesHost = (name: string) =>
-    name
-      .normalize('NFKD')
-      .replace(/\p{M}/gu, '')
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .some(
-        (token) =>
-          token.length >= 3 &&
-          !GENERIC_SENDER_PARTY_TOKENS.has(token) &&
-          hostLabel.includes(token),
-      );
+    distinctivePartyTokens(name).some((token) => hostLabel.includes(token));
   const agencyMatches = matchesHost(agency.name);
   const companyMatches = matchesHost(company.name);
   if (agencyMatches === companyMatches) return null;
