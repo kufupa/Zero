@@ -4,7 +4,7 @@ import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { login, playwright, readSecret } from './fetch-quote.mjs';
+import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { labGuard, parsePenalty } from './cancel-stay-rules.mjs';
 
 const TARGET = {
@@ -194,7 +194,7 @@ async function main() {
   if (process.env.HMS_STAGEHAND_BROWSER_OWNERSHIP !== 'borrowed') throw new Error('BORROWED_REQUIRED');
   const secret = await readSecret();
   const browser = await playwright().chromium.connectOverCDP(url.href, { timeout: 20000 });
-  const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
+  const context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
   const page = await context.newPage();
   page.setDefaultTimeout(20000);
   const result = { target: TARGET, cancelled: false };

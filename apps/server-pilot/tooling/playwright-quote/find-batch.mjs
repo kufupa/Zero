@@ -6,7 +6,7 @@ import { appendFile, chmod, mkdir, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, playwright, readSecret } from './fetch-quote.mjs';
+import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { checkCdpEnv, windowCovers } from './cancel-stay-rules.mjs';
 import { openGuestStay, readWindow, setQuickWindow } from './cancel-stay.mjs';
 import { findOnOpenGuestStay } from './stay-lookup.mjs';
@@ -145,18 +145,18 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   if (!cdp.ok) throw new Error(cdp.error);
   const secret = await readSecret(env);
   const browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: CONNECT_TIMEOUT_MS });
-  const context = await browser.newContext({
+  const context = await newBorrowedContext(browser, {
     ignoreHTTPSErrors: true,
     acceptDownloads: false,
     serviceWorkers: 'block',
     viewport: { width: 1600, height: 1000 },
-  });
+  }, env);
   let page = null;
   let processed = 0;
   try {
     await installReadOnlyGuard(context);
     page = await createStayPage(context, null, { open: false });
-    await login(page, secret);
+    await login(page, secret, env);
     const shellUrl = page.url();
     await openGuestStay(page);
     await page.waitForTimeout(1500);

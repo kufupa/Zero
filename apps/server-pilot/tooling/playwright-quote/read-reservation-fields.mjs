@@ -5,7 +5,7 @@ import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, playwright, readSecret } from './fetch-quote.mjs';
+import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 
 const FIELDS = [
   'confirmationnumber', 'status', 'arrivaldate', 'departuredate', 'nights', 'adults', 'children',
@@ -382,7 +382,7 @@ async function main() {
   const url = assertBorrowedCdp(process.env);
   const secret = await readSecret();
   const browser = await playwright().chromium.connectOverCDP(url.href, { timeout: 25_000 });
-  const ctx = await browser.newContext({ ignoreHTTPSErrors: true, acceptDownloads: false, serviceWorkers: 'block' });
+  const ctx = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, acceptDownloads: false, serviceWorkers: 'block' });
   await ctx.route('**/*', (route) => {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() === 'POST' && /save|delete|cancel|duplicate|checkin|checkout|crs/i.test(path)) {

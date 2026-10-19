@@ -13,7 +13,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, playwright, readSecret } from './fetch-quote.mjs';
+import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { findStay, openGuestStay, openRecord, readRecord, shot } from './cancel-stay.mjs';
 import { checkCdpEnv, identityCheck, parseIsoDate, preflight, squash } from './cancel-stay-rules.mjs';
 
@@ -358,7 +358,7 @@ async function attachLive(args, dir) {
     const origin = new URL(ctx.secret.loginUrl).origin;
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
     // serviceWorkers block: a service worker's requests would not pass through context.route.
-    context = await browser.newContext({
+    context = await newBorrowedContext(browser, {
       ignoreHTTPSErrors: true,
       acceptDownloads: false,
       serviceWorkers: 'block',

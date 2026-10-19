@@ -7,10 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { setTimeout as delay } from 'node:timers/promises';
 import { createAudit } from './audit.mjs';
 import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
+import { authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
+
+export { authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath };
 
 const require = createRequire(new URL('../stagehand/package.json', import.meta.url));
 const exec = promisify(execFile);
@@ -34,37 +36,6 @@ export async function readSecret(env = process.env) {
     }
     return source.property ? validateHmsPropertySecret(source.property, secret) : secret;
   } catch { throw new Error('PMS_CREDENTIAL_CONFIGURATION'); }
-}
-
-export async function login(page, secret) {
-  const deadline = Date.now() + 120000;
-  const budget = () => Math.max(1, deadline - Date.now());
-  await page.goto(secret.loginUrl, { waitUntil: 'domcontentloaded', timeout: budget() });
-  await page.locator('input[name="userid"], input[name="username"]').fill(secret.username, { timeout: budget() });
-  const password = page.locator('input[name="password"]');
-  await password.fill(secret.password, { timeout: budget() });
-  const submit = page.getByRole('button', { name: 'Sign in', exact: true });
-  if (await submit.count()) await submit.click({ timeout: budget() });
-  else await password.press('Enter', { timeout: budget() });
-  while (Date.now() < deadline) {
-    try {
-      const ready = await page.evaluate(({ expectedTenant, expectedPropertyCode, expectedPropertyName }) => {
-        const html = document.documentElement.outerHTML;
-        const tenant = document.documentElement.dataset.tenant ??
-          /"tenantid"\s*:\s*"([^"]+)"/i.exec(html)?.[1] ?? new URL(location.href).searchParams.get('tenant');
-        const property = document.documentElement.dataset.propertyCode ?? /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1];
-        const visible = (el) => !!(el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
-        return ![...document.querySelectorAll('input[type="password"], .x-mask, .x-mask-msg, .x-loadmask, [aria-busy="true"]')].some(visible) &&
-          tenant === expectedTenant && property === expectedPropertyCode && (document.body?.innerText ?? '').includes(expectedPropertyName);
-      }, { expectedTenant: secret.expectedTenant, expectedPropertyCode: secret.expectedPropertyCode,
-        expectedPropertyName: secret.expectedPropertyName });
-      if (ready) return;
-    } catch (error) {
-      if (!/Execution context was destroyed|navigation|Cannot find context/i.test(error.message)) throw error;
-    }
-    await delay(250);
-  }
-  throw new Error('AUTHENTICATED_SHELL_TIMEOUT');
 }
 
 export async function openHotelAvailability(page) {
@@ -877,11 +848,11 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       await clock.time('cdp',async()=>{
         browser=await playwright().chromium.connectOverCDP(url.href,{timeout:20000});
         // Trace only our isolated context, never the borrowed owner's tabs.
-        context=await browser.newContext({ignoreHTTPSErrors:true,acceptDownloads:false,serviceWorkers:'block',viewport:{width:1280,height:720}});
+        context=await newBorrowedContext(browser,{ignoreHTTPSErrors:true,acceptDownloads:false,serviceWorkers:'block',viewport:{width:1280,height:720}},env);
         page=await context.newPage();
         page.setDefaultTimeout(20000);
       });
-      event('login'); await clock.time('login',()=>login(page,secret));
+      event('login'); await clock.time('login',()=>login(page,secret,env));
       event('audit_start'); await audit.start(page,[secret.password,secret.username,secret.loginUrl]);
       await audit.checkpoint('login-complete');
       event('hotel_availability'); await clock.time('nav',()=>openHotelAvailability(page));

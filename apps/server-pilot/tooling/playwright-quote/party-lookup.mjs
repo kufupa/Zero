@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAudit } from './audit.mjs';
-import { login, playwright, readSecret } from './fetch-quote.mjs';
+import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 
 const KINDS = ['organization', 'bookingAgency', 'guest', 'arAccount'];
 const KIND_SET = new Set(KINDS);
@@ -873,18 +873,18 @@ export async function lookupParty({ requestPath, outputDir, env = process.env } 
       new Promise((_, reject) => setTimeout(() => reject(new Error('CDP_CONNECT_TIMEOUT')), CONNECT_MS + 2000)),
     ]);
     context = await Promise.race([
-      browser.newContext({
+      newBorrowedContext(browser, {
         ignoreHTTPSErrors: true,
         acceptDownloads: false,
         serviceWorkers: 'block',
         viewport: { width: 1280, height: 720 },
-      }),
+      }, env),
       new Promise((_, reject) => setTimeout(() => reject(new Error('CONTEXT_TIMEOUT')), CONNECT_MS)),
     ]);
     page = await context.newPage();
     page.setDefaultTimeout(20000);
     audit = await createAudit(directory, { trace: false });
-    await login(page, secret);
+    await login(page, secret, env);
     await audit.start(page, [secret.password, secret.username, secret.loginUrl]);
     await openGuestStayScreen(page);
     await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();

@@ -9,7 +9,7 @@ import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { login, playwright, readSecret } from './fetch-quote.mjs';
+import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
 const PRIVATE_QUOTE_ROOT = resolve(REPO_ROOT, '.private/playwright-quote');
@@ -192,10 +192,10 @@ export async function runDeeplinkProbe({
   let context;
   try {
     // A new context inside the borrowed browser. ignoreHTTPSErrors stays off, like the staff tools.
-    context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+    context = await newBorrowedContext(browser, { viewport: { width: 1600, height: 1000 } }, env);
     const seed = await context.newPage();
     try {
-      await login(seed, secret);
+      await login(seed, secret, env);
     } finally {
       await seed.close().catch(() => {});
     }
