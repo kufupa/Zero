@@ -243,7 +243,7 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 115 | 2026-10-19 overnight: leak-free triage prompt → ship → improve → Da Vinci check (plan `docs/plans/2026-10-19-overnight-triage-dspy.md`) | 🟡 | #367–#372 merged; v4 live at `357315940`; v5 rejected; final quote-class live proof 2/2 succeeded | Classifier bar still missed (quote P/R 88.5/88.5; new_booking P 85.9); owner pass on 180 disagreements |
 | 116 | Inline-text rates reply as a quote output (logged, not built) | ⏸ | Plan 2026-10-19 | — |
 | 117 | Party lookup for "do we have a corporate rate" (logged, not built) | ⏸ | Plan 2026-10-19 | — |
-| 118 | Decide: should automated agent/TMC booking notices (origin=system_notice, action≠no_action) reach action folders instead of Not for Nava? | ❓ owner | Report §5.1 | 31/431 test rows affected |
+| 118 | Decide: should automated agent/TMC booking notices (origin=system_notice, action≠no_action) reach action folders instead of Not for Nava? | ✅ YES (owner 2026-10-19 15:25Z; new_booking → payments) | [TMC voucher notice evidence](../research/2026-10-19-tmc-voucher-notices.md) | Implementation PR pending; 31/431 test rows affected |
 
 | 119 | 2026-10-19 Chat A: party wait bar = A (staff-kicked p50 wait + share of mail with party ready before open); start at < 120 s guideline, push as low as possible; research the best deterministic, benchmarkable method (Exa if needed) | 🟡 | Chat A plan | Baseline, then fixes |
 | 120 | Every number (bar, ETA) needs an evidence basis or is labelled a guideline; ledger exists for this | ✅ | memory `feedback-evidence-backed-numbers` | — |
