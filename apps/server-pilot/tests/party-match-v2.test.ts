@@ -293,6 +293,24 @@ describe('party sender history candidates', () => {
       },
     ]);
   });
+
+  it.each([
+    { emailName: 'Nexus Travel', historyName: 'XL Nexus' },
+    { emailName: 'Rennies BCD', historyName: 'RENNIES TRAVEL' },
+  ])('keeps learned history strong when names share distinctive tokens: $emailName', ({ emailName, historyName }) => {
+    vi.stubEnv('PARTY_HISTORY_BIND', 'on');
+    replaceLearnedSenderMapForTests([
+      { host: 'agency.example.test', kind: 'agency', name: historyName, support: 2 },
+    ]);
+
+    const history = buildPartyMatchCandidates({
+      fromAddress: 'agent@agency.example.test',
+      payload: { agency: emailName },
+      allowLearnedSenderHistory: true,
+    }).find((candidate) => candidate.source === 'sender_history');
+
+    expect(history?.strength).toBe('strong');
+  });
 });
 
 describe('PARTY MATCH V2 binding', () => {
