@@ -79,12 +79,18 @@ function firstStayText(stay, field, fields, ...names) {
   return text || firstText(fields, ...names);
 }
 
+function numericPartyId(value) {
+  return /^\d+$/.test(value);
+}
+
 function party(fields, { nameFields, idFields, fallbackName }) {
   const name = firstPartyName(fields, ...nameFields) || squash(fallbackName) || undefined;
   let nativeId;
   for (const field of idFields) {
     const candidate = fieldValue(fields, field);
-    if (candidate.value && candidate.value !== name) {
+    if (!candidate.value) continue;
+    // Keep a numeric id even when HMS shows it as the name. Otherwise the select's value is the id.
+    if (candidate.value !== name || numericPartyId(candidate.value)) {
       nativeId = candidate.value;
       break;
     }

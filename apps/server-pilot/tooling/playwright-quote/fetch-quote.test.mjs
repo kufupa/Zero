@@ -287,6 +287,17 @@ test('picker filters only use fields the live HMS pickers expose',()=>{
   assert.deepEqual(quote.pickerFilter('group',{name:'Conference'}),{name:'ff_groupsname',value:'Conference'});
   assert.throws(()=>quote.pickerFilter('agency',{nativeId:'290'}),/REFERENCE_FILTER_MISSING/);
 });
+test('agency iata uses the IATA filter so duplicate names resolve to one row',()=>{
+  const rows=[
+    {id:'280',code:'111',name:'Tourvest Travel Services'},
+    {id:'543',code:'222',name:'Tourvest Travel Services'},
+  ];
+  assert.equal(quote.matchReference({name:'Tourvest Travel Services',iata:'111'},rows).id,'280');
+  assert.throws(()=>quote.matchReference({name:'Tourvest Travel Services'},rows),/AMBIGUOUS_REFERENCE/);
+  assert.deepEqual(quote.pickerFilter('agency',{name:'Tourvest Travel Services',iata:'111'}),{name:'ff_iatanumber',value:'111'});
+  assert.deepEqual(quote.pickerFilter('agency',{name:'Tourvest Travel Services'}),{name:'ff_travelagencyname',value:'Tourvest Travel Services'});
+  assert.deepEqual(quote.pickerFilter('agency',{name:'CWT',code:'77218175'}),{name:'ff_iatanumber',value:'77218175'});
+});
 test('search signatures share quantity/preferences only, never occupancy/context/currency/filter changes',()=>{
   const a=quote.searchSignature?.(request,request.rooms[0]);
   assert.equal(typeof a,'string');

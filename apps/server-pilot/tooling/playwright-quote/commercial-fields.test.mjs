@@ -78,6 +78,17 @@ test('missing optional controls never create an empty commercial object', () => 
   });
 });
 
+test('keeps a numeric party id even when it equals the name, else uses the select value', async () => {
+  const fields = JSON.parse(await fixture('numeric-id-equals-name.json'));
+  const parsed = parseCommercialFields(fields);
+  assert.deepEqual(parsed.company, { name: '49', nativeId: '49' });
+  assert.deepEqual(parsed.agency, { name: 'CWT JNB', nativeId: '290' });
+  const nameAsValue = parseCommercialFields({
+    ta1: { value: 'Harbor Travel', text: 'Harbor Travel', kind: 'select' },
+  });
+  assert.deepEqual(nameAsValue.agency, { name: 'Harbor Travel' });
+});
+
 test('reads commercial fields from live form snapshot entries', async () => {
   const { commercialFieldsFromFormEntries, parseCommercialFields } = await import('./commercial-fields.mjs');
   const fields = commercialFieldsFromFormEntries([

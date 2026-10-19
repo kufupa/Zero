@@ -35,7 +35,25 @@ export const PANE_PARTY_CANDIDATE_CAP = 20;
 /** The pane's words for a party. The HMS kinds are organization (company) and bookingAgency (agency). */
 export type PanePartyKind = 'agency' | 'company';
 
-export type PanePartyCandidate = { kind: PanePartyKind; nativeId: string; name: string };
+export type PanePartyCandidate = {
+  kind: PanePartyKind;
+  nativeId: string;
+  name: string;
+  iata?: string;
+  city?: string;
+  address?: string;
+  country?: string;
+  externalId?: string;
+};
+
+const OPTIONAL_PARTY_COLUMNS = ['iata', 'city', 'address', 'country', 'externalId'] as const;
+
+function optionalPartyColumn(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  return text || undefined;
+}
 
 /** A kind is searched alone when given. Without one, both kinds are searched, as before. */
 export type PanePartyFindInput = { name: string; kind?: PanePartyKind };
@@ -118,12 +136,26 @@ export function panePartyCandidates(kind: PanePartyKind, raw: unknown): PanePart
   if (!Array.isArray(raw)) return [];
   const out: PanePartyCandidate[] = [];
   for (const item of raw) {
-    const candidate = (item ?? {}) as { nativeId?: unknown; displayName?: unknown; kind?: unknown };
+    const candidate = (item ?? {}) as {
+      nativeId?: unknown;
+      displayName?: unknown;
+      kind?: unknown;
+      iata?: unknown;
+      city?: unknown;
+      address?: unknown;
+      country?: unknown;
+      externalId?: unknown;
+    };
     if (candidate.kind !== HMS_KIND[kind]) continue;
     if (typeof candidate.nativeId !== 'string' || !candidate.nativeId.trim()) continue;
     if (typeof candidate.displayName !== 'string' || !candidate.displayName.trim()) continue;
+    const extra: Partial<Pick<PanePartyCandidate, (typeof OPTIONAL_PARTY_COLUMNS)[number]>> = {};
+    for (const key of OPTIONAL_PARTY_COLUMNS) {
+      const value = optionalPartyColumn(candidate[key]);
+      if (value) extra[key] = value;
+    }
     // The name is sent back as the rate context name, so it stays exactly as HMS shows it.
-    out.push({ kind, nativeId: candidate.nativeId.trim(), name: candidate.displayName });
+    out.push({ kind, nativeId: candidate.nativeId.trim(), name: candidate.displayName, ...extra });
   }
   return out;
 }
