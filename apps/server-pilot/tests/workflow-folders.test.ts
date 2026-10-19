@@ -244,9 +244,8 @@ describe('gold review window SQL binds', () => {
         expect.arrayContaining([GOLD_REVIEW_SINCE.toISOString(), GOLD_REVIEW_UNTIL.toISOString()]),
       );
       expect(davinciQuery.sql).not.toContain('staff_gold_out');
-      expect(davinciQuery.params).not.toEqual(
-        expect.arrayContaining([GOLD_REVIEW_SINCE.toISOString(), GOLD_REVIEW_UNTIL.toISOString()]),
-      );
+      expect(davinciQuery.params).not.toContain(GOLD_REVIEW_SINCE.toISOString());
+      expect(davinciQuery.params).not.toContain(GOLD_REVIEW_UNTIL.toISOString());
     } finally {
       await conn.end({ timeout: 1 });
     }

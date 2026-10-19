@@ -88,14 +88,14 @@ async function seedWorkflowThread(
   if (options.automatedChannel) {
     await db.insert(mailCategory).values({
       id: 'workflow-folders-db-automated-channel',
-      transportId: TRANSPORT_ID,
+      transportId,
       slug: 'automated-channel',
       name: 'Automated channel',
     });
     await db.insert(mailThreadCategory).values({
       threadId: options.threadId,
       categoryId: 'workflow-folders-db-automated-channel',
-      transportId: TRANSPORT_ID,
+      transportId,
     });
   }
 }
