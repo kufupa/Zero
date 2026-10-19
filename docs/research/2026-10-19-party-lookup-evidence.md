@@ -113,3 +113,28 @@ The quote's rate search types the agency **name** into HMS (`fetch-quote.mjs` `p
 ## 10. Lane B's "3 wrong binds" are not wrong
 
 Lane B flagged 3 binds that disagree with the sender domain's dominant agency (`19cccb9a7973`, `091cc81fd284`, `2e63cb1e3e9c`). All 3 bound **Nexus Travel #27** for `nexustravel.co.za`. Staff picked agency #27 on their own quotes 9 times; Nava's 8 Nexus binds are all #27. The domain label came from HMS reservations, where the same agency's bookings carry a different agency name ("XL Nexus") and company ("XL Nexus Travel"). **The party on the quote can differ from the party on the final reservation.** Truth for the quote workflow = what staff pick on the quote; reservation party is a second, weaker label.
+
+## 11. Step 0: which duplicate copy staff link (2026-10-19 15:15–16:00Z, read-only HMS)
+
+Method: opened each answer-key reservation on HRCEN by confirmation (Guest Stay, read-only guard, property lock) and read the ExtJS form record; then one batched agency search (Tourvest, Rennies, Flight Centre) reading the lookup grid's store records. No writes. Script kept outside the repo; counts and profile ids only.
+
+**Where the id lives.** The Guest Stay record has `companyid` for the company. For the agency it has **no id**: only `ta1` (name) and `bookingagency1iatanumber` (IATA). So a reservation tells us an agency copy only by name + IATA.
+
+**Which IATA staff used** (23 answer-key reservations on duplicated agency names, all read):
+
+| Agency name on booking | Bookings | IATA on booking | Copies with that name + IATA |
+|---|---:|---|---|
+| TOURVEST TRAVEL SERVICES | 10 | 77206673 | **2: #6 (Bryanston, ref type IATA) and #543 (no address, ref type TIDS)** |
+| TOURVEST TRAVEL SERVICES | 1 | 77269990 | 1: #326 |
+| Tourvest Travel Services | 3 | TOU001 | 1: #8 (Roggebaai; the only title-case copy) |
+| RENNIES TRAVEL (PTY) LTD | 7 | 77200292 | 1: #16 (Johannesburg); #562 has 77299294 |
+| FLIGHT CENTRE TRAVEL GROUP | 2 | 77200351 | 1: #15 (Northcliff); #217 has 77200561 |
+
+**Grid store keys (confirmed live):** `travelagencyid`, `travelagencyname`, `iatanumber`, `referencenumbertype` (IATA / TIDS), `internalreferencenumber`, `address`, `city`, `country`, contact names. Tourvest: 13 copies named TOURVEST TRAVEL SERVICES / Tourvest Travel Services, 11 distinct IATA numbers.
+
+**Rule (general, not per entity).**
+1. Staff use **one copy per sending agency branch**, consistently (10/11 Tourvest all-caps bookings, 7/7 Rennies, 2/2 Flight Centre on one IATA).
+2. IATA + name picks the copy in 4 of 5 groups. In the 5th, two copies share the IATA; the one with an address and ref type IATA (#6) is the likely real profile, but no booking proves #6 over #543 (the booking stores IATA only). That stays a staff pick until a staff quote picks one.
+3. Spelling is a signal: the single title-case Tourvest copy (#8, TOU001) is a different branch from the all-caps ones.
+
+So v3's duplicate rule (bind only if one copy's city/IATA appears in the email, or sender history names one id; else list all copies) matches what staff do. History (P8) is the main lever: once a sender's staff pick is stored by id, every later mail from that branch binds.
