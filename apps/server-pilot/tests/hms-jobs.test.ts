@@ -2092,15 +2092,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(asOf).toBeLessThanOrEqual(Date.now() + 1000);
     }));
 
-  it('skips party prefetch for a system-notice extraction', () =>
+  it('prefetches a party for a system notice from a direct agent sender', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { run } = await seedQuoteExtraction(db, {
+        fromAddress: 'agent@agency.example.test',
         payload: { ...quoteExtractionPayload(), origin: 'system_notice' },
       });
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
 
-      expect(await hmsJobs.prefetchPartyForExtraction(run, db, env)).toBe(0);
+      expect(await hmsJobs.prefetchPartyForExtraction(run, db, env)).toBe(1);
     }));
 
   it('prefetches a party for a direct agent quote', () =>
@@ -2141,10 +2142,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(jobs).toHaveLength(0);
     }));
 
-  it('skips party prefetch for an automated-channel thread', () =>
+  it('prefetches for a direct sender in an automated-channel thread', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
-      const { threadId, run } = await seedQuoteExtraction(db);
+      const { threadId, run } = await seedQuoteExtraction(db, { fromAddress: 'agent@agency.example.test' });
       const [existingCategory] = await db
         .select({ id: mailCategory.id })
         .from(mailCategory)
@@ -2162,7 +2163,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       await db.insert(mailThreadCategory).values({ threadId, categoryId, transportId: TRANSPORT_ID });
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
 
-      expect(await hmsJobs.prefetchPartyForExtraction(run, db, env)).toBe(0);
+      expect(await hmsJobs.prefetchPartyForExtraction(run, db, env)).toBe(1);
     }));
 
   it('prefetches from the successful extraction rather than the classifier run or a sent copy', () =>
