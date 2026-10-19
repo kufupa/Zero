@@ -7,6 +7,7 @@ import {
   message,
 } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
+import { TRANSPORT_ID as CENTURION_TRANSPORT_ID } from '../src/db/seed.js';
 import {
   GOLD_REVIEW_SINCE,
   GOLD_REVIEW_UNTIL,
@@ -17,15 +18,15 @@ import {
 import type { DB } from '../src/db/client.js';
 import { TEST_DB_AVAILABLE, withTestDb } from './helpers/test-db.js';
 
-const TRANSPORT_ID = 'workflow-folders-db-transport';
+const TRANSPORT_ID = CENTURION_TRANSPORT_ID;
 
 async function seedStaffOutbound(
   db: DB,
-  options: { threadId: string; inboundMessageId: string },
+  options: { threadId: string; inboundMessageId: string; transportId?: string },
 ) {
   await db.insert(message).values({
     id: `${options.inboundMessageId}-staff-out`,
-    transportId: TRANSPORT_ID,
+    transportId: options.transportId ?? TRANSPORT_ID,
     threadId: options.threadId,
     direction: 'outbound',
     fromAddress: 'staff@example.invalid',
@@ -43,23 +44,25 @@ async function seedWorkflowThread(
     automatedChannel?: boolean;
     staffEvidence?: boolean;
     receivedAt?: Date;
+    transportId?: string;
   },
 ) {
+  const transportId = options.transportId ?? TRANSPORT_ID;
   await db.insert(mailboxTransport).values({
-    id: TRANSPORT_ID,
-    email: 'workflow-folders-db@example.invalid',
-    ownerHeaderValue: 'workflow-folders-db@example.invalid',
+    id: transportId,
+    email: `${transportId}@example.invalid`,
+    ownerHeaderValue: `${transportId}@example.invalid`,
     mailboxType: 'personal',
   });
   await db.insert(mailThread).values({
     id: options.threadId,
-    transportId: TRANSPORT_ID,
+    transportId,
     threadRootId: options.threadId,
     subject: 'Synthetic workflow-folder fixture',
   });
   await db.insert(message).values({
     id: options.messageId,
-    transportId: TRANSPORT_ID,
+    transportId,
     threadId: options.threadId,
     direction: 'inbound',
     fromAddress: 'workflow-folders-db@example.invalid',
@@ -75,25 +78,48 @@ async function seedWorkflowThread(
   });
 
   if (options.staffEvidence !== false) {
-    await seedStaffOutbound(db, { threadId: options.threadId, inboundMessageId: options.messageId });
+    await seedStaffOutbound(db, {
+      threadId: options.threadId,
+      inboundMessageId: options.messageId,
+      transportId,
+    });
   }
 
   if (options.automatedChannel) {
     await db.insert(mailCategory).values({
       id: 'workflow-folders-db-automated-channel',
-      transportId: TRANSPORT_ID,
+      transportId,
       slug: 'automated-channel',
       name: 'Automated channel',
     });
     await db.insert(mailThreadCategory).values({
       threadId: options.threadId,
       categoryId: 'workflow-folders-db-automated-channel',
-      transportId: TRANSPORT_ID,
+      transportId,
     });
   }
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE)('workflow folders (disposable PostgreSQL)', () => {
+  it('keeps Da Vinci inbound outside the Centurion window without staff outbound', async () => {
+    await withTestDb(async (db) => {
+      await seedWorkflowThread(db, {
+        threadId: 'workflow-folders-db-davinci-thread',
+        messageId: 'workflow-folders-db-davinci-message',
+        kind: 'quote',
+        transportId: 'transport-ayanda',
+        receivedAt: new Date(GOLD_REVIEW_SINCE.getTime() - 60_000),
+        staffEvidence: false,
+      });
+
+      const result = await listWorkflowFolderRows(db, 'transport-ayanda', 'quotes', 0, 10);
+
+      expect(result.rows).toMatchObject([
+        { threadId: 'workflow-folders-db-davinci-thread', folder: 'quotes' },
+      ]);
+    });
+  });
+
   it('hides an inbound with no staff outbound artefact', async () => {
     await withTestDb(async (db) => {
       await seedWorkflowThread(db, {
