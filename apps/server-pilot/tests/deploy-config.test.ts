@@ -5664,6 +5664,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         'HMS_JOB_QUEUE',
         'HMS_QUOTE_PREPARE',
         'HMS_QUOTE_PREPARE_PER_HOUR',
+        'HMS_STAGEHAND_CDP_URL_DAVINCI',
       ]);
       expect(allowlist).not.toContain('GOOGLE_');
       expect(writer).toContain('const parsed = JSON.parse(data);');
@@ -5810,6 +5811,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         "HMS_QUOTE_PREPARE='true'",
         "HMS_QUOTE_PREPARE_PER_HOUR='6'",
         "HMS_DAVINCI_READS='on'",
+        "HMS_STAGEHAND_CDP_URL_DAVINCI='http://127.0.0.1:19225'",
         '',
       ].join('\n');
       try {
