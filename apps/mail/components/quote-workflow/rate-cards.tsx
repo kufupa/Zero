@@ -77,8 +77,15 @@ export function RateCards({
                   {option.rateCode}
                 </span>
               </span>
-              <span className={`whitespace-nowrap text-right text-[12.5px] font-extrabold text-[#1e293b] ${restricted ? 'line-through' : ''}`}>
-                {`${from}${draftMoney(option.perNightMinor)} avg / room / night`}
+              <span className="inline-flex items-baseline justify-end gap-x-2 whitespace-nowrap text-right text-[12.5px] font-extrabold text-[#1e293b]">
+                <span className={`whitespace-nowrap ${restricted ? 'line-through' : ''}`}>
+                  {`${from}${draftMoney(option.perNightMinor)} avg / room / night`}
+                </span>
+                {option.roomsLeft !== undefined ? (
+                  <span className={`font-semibold ${option.roomsLeft <= 3 ? 'text-amber-700' : 'text-[#64748b]'}`}>
+                    {option.roomsLeft <= 3 ? `Only ${option.roomsLeft} left` : `${option.roomsLeft} left`}
+                  </span>
+                ) : null}
               </span>
               <span className="col-span-2 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-[12px] text-[#64748b]">
                 {boardRoomLabel ? <span>{boardRoomLabel}</span> : null}

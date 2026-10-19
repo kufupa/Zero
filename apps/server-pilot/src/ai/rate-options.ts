@@ -20,6 +20,8 @@ export type RateOption = {
   onlyContract: boolean;
   matchesRequest: boolean;
   perNightMinor: number;
+  /** Minimum per-night HMS inventory, for display only. */
+  roomsLeft?: number;
   totalMinor: number;
   currency: string;
   priced: 'full' | 'summary';
@@ -70,10 +72,14 @@ export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {gro
   const ranked=[...cheapest.values()].sort((a,b)=>Number(b.matches)-Number(a.matches)||Number(b.contract)-Number(a.contract)||a.totalMinor-b.totalMinor||a.option.id.localeCompare(b.option.id));
   // onlyContract is counted across every distinct rate code staff can see.
   const contracts=ranked.filter(r=>r.contract).length;
-  return ranked.map(r=>{const isSelected=selected.some(s=>s.groupId===request.id&&s.optionId===r.option.id);return{
-   id:`${request.id}:${r.option.id}`,groupId:request.id,board:r.board,boardLabel:r.option.board??'',rateCode:r.option.rate.code,rateLabel:r.option.rate.label,
-   roomCode:r.option.room.code,roomLabel:r.option.room.label,contract:r.contract,onlyContract:r.contract&&contracts===1,matchesRequest:r.matches,
-   perNightMinor:Math.round(r.perRoomMinor/nights),totalMinor:r.totalMinor,currency:source.request.requestedCurrency,priced:isSelected?'full':'summary',selected:isSelected,...(EVENT_RATE_CODES.has(r.option.rate.code)?{hint:'event_rate' as const}:{})};});
+  return ranked.map(r=>{
+   const isSelected=selected.some(s=>s.groupId===request.id&&s.optionId===r.option.id);
+   const inventory=r.option.nightly.map(n=>n.inventory),roomsLeft=inventory.length>0&&inventory.every(n=>Number.isFinite(n)&&n>=0)?Math.min(...inventory):undefined;
+   return{
+    id:`${request.id}:${r.option.id}`,groupId:request.id,board:r.board,boardLabel:r.option.board??'',rateCode:r.option.rate.code,rateLabel:r.option.rate.label,
+    roomCode:r.option.room.code,roomLabel:r.option.room.label,contract:r.contract,onlyContract:r.contract&&contracts===1,matchesRequest:r.matches,
+    perNightMinor:Math.round(r.perRoomMinor/nights),...(roomsLeft===undefined?{}:{roomsLeft}),totalMinor:r.totalMinor,currency:source.request.requestedCurrency,priced:isSelected?'full':'summary',selected:isSelected,...(EVENT_RATE_CODES.has(r.option.rate.code)?{hint:'event_rate' as const}:{})};
+  });
  });
 }
 
