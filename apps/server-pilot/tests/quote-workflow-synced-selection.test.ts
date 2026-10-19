@@ -700,7 +700,7 @@ describe('extraction vision image admission', () => {
 });
 
 describe('orderThreadContext', () => {
-  it('keeps both earlier and later neighbouring messages in chronological order', () => {
+  it('keeps only messages strictly before the target, including earlier staff replies', () => {
     const base = {
       subject: 'Subject',
       textBody: 'Body',
@@ -708,15 +708,17 @@ describe('orderThreadContext', () => {
       sentAt: null,
       createdAt: new Date('2026-10-13T12:00:00.000Z'),
     };
+    const targetAt = new Date('2026-10-13T12:30:00.000Z');
     const result = orderThreadContext('target', [
-      { ...base, id: 'later', direction: 'outbound', sentAt: new Date('2026-10-13T13:00:00.000Z') },
-      { ...base, id: 'target', direction: 'inbound', receivedAt: new Date('2026-10-13T12:30:00.000Z') },
-      { ...base, id: 'earlier', direction: 'inbound', receivedAt: new Date('2026-10-13T11:00:00.000Z') },
+      { ...base, id: 'later-outbound', direction: 'outbound', sentAt: new Date('2026-10-13T13:00:00.000Z') },
+      { ...base, id: 'target', direction: 'inbound', receivedAt: targetAt },
+      { ...base, id: 'tied-inbound', direction: 'inbound', receivedAt: targetAt },
+      { ...base, id: 'earlier-staff', direction: 'outbound', textBody: 'Earlier staff reply', sentAt: new Date('2026-10-13T11:00:00.000Z') },
+      { ...base, id: 'later-inbound', direction: 'inbound', receivedAt: new Date('2026-10-13T14:00:00.000Z') },
     ]);
 
-    expect(result.map(({ direction, timestamp }) => [direction, timestamp])).toEqual([
-      ['inbound', '2026-10-13T11:00:00.000Z'],
-      ['outbound', '2026-10-13T13:00:00.000Z'],
+    expect(result.map(({ direction, bodyText }) => [direction, bodyText])).toEqual([
+      ['outbound', 'Earlier staff reply'],
     ]);
   });
 });

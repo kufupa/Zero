@@ -8,6 +8,7 @@ import {
   type AttachmentRead,
 } from '../src/ai/extraction/extract.js';
 import type { ModelAdapter, ModelInvokeInput } from '../src/ai/bedrock/adapter.js';
+import { orderThreadContext } from '../src/ai/quote-workflow-synced-selection.js';
 import type { SyncedQuoteAttachment } from '../src/ai/quote-workflow-synced-selection.js';
 import { AE1_OUTPUT, selectionFor } from './fixtures/inbound-extraction.js';
 
@@ -97,6 +98,57 @@ describe('generic action-classifier prompt', () => {
     expect(attachAt).toBeGreaterThan(filesAt);
     expect(threadAt).toBeGreaterThan(attachAt);
     expect(prompt.attachmentReads).toMatchObject([{ id: 'quote-text', status: 'read' }]);
+  });
+
+  it('excludes later inbound and outbound thread mail from the classifier prompt', () => {
+    const targetAt = new Date('2026-10-13T12:00:00.000Z');
+    const base = {
+      subject: 'Thread subject',
+      textBody: '',
+      receivedAt: null,
+      sentAt: null,
+      createdAt: new Date('2026-10-13T10:00:00.000Z'),
+    };
+    const targetRow = {
+      ...base,
+      id: 'target',
+      direction: 'inbound' as const,
+      textBody: 'TARGET body asks for availability.',
+      receivedAt: targetAt,
+    };
+    const selection = selectionFor(targetRow.textBody);
+    selection.threadReferenceAt = targetAt.toISOString();
+    selection.threadMessages = orderThreadContext('target', [
+      {
+        ...base,
+        id: 'later-outbound',
+        direction: 'outbound',
+        textBody: 'LATER OUTBOUND reply.',
+        sentAt: new Date('2026-10-13T13:00:00.000Z'),
+      },
+      targetRow,
+      {
+        ...base,
+        id: 'later-inbound',
+        direction: 'inbound',
+        textBody: 'LATER INBOUND follow-up.',
+        receivedAt: new Date('2026-10-13T14:00:00.000Z'),
+      },
+      {
+        ...base,
+        id: 'earlier-staff',
+        direction: 'outbound',
+        textBody: 'EARLIER STAFF reply.',
+        sentAt: new Date('2026-10-13T11:00:00.000Z'),
+      },
+    ]);
+
+    const prompt = buildInboundPrompt(selection);
+
+    expect(prompt.user).toContain('EARLIER STAFF reply.');
+    expect(prompt.user).not.toContain('LATER OUTBOUND reply.');
+    expect(prompt.user).not.toContain('LATER INBOUND follow-up.');
+    expect(prompt.user.match(/TARGET body asks for availability\./g)).toHaveLength(1);
   });
 
   it('places attachment text before thread history and caps the user prompt without silently marking a complete attachment read', () => {
