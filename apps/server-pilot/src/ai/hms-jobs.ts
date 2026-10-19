@@ -1786,8 +1786,11 @@ export async function prefetchPartyForExtraction(
       extractionStatus: mailExtraction.status,
       kind: mailExtraction.kind,
       payload: mailExtraction.payload,
+      messageId: message.id,
+      transportId: message.transportId,
       subject: message.subject,
       textBody: message.textBody,
+      htmlBody: message.htmlBody,
       direction: message.direction,
       historyOnly: message.historyOnly,
       fromAddress: message.fromAddress,
@@ -1819,7 +1822,19 @@ export async function prefetchPartyForExtraction(
     source.threadHistoryOnly ||
     source.historyOnly ||
     source.direction !== 'inbound' ||
+    objectRecord(source.payload).origin === 'system_notice' ||
     objectRecord(source.payload).action === 'no_action'
+  ) {
+    return 0;
+  }
+  const sourceClassification = classifyMailSource({
+    fromAddress: source.fromAddress,
+    subject: source.subject,
+    bodyText: source.textBody ?? source.htmlBody,
+  });
+  if (
+    sourceClassification.kind !== 'direct' ||
+    (await threadIsAutomatedChannel(db, { ...source, kind: source.kind ?? '' }))
   ) {
     return 0;
   }
