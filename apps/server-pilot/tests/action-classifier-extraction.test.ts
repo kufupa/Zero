@@ -61,6 +61,8 @@ describe('generic action-classifier prompt', () => {
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/OTA or channel-manager body still reaches.*no_action/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/system-generated mail is classed by what it carries/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/more than 12 guests/i);
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(/cancellation notification.*a person writing to ask for a cancellation is cancel/i);
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(/booking request that also asks the rate.*still new_booking/i);
     expect(ACTION_CLASSIFICATION_RULES).toMatch(/Internal mail with no outside request is no_action/i);
     expect((ACTION_CLASSIFICATION_RULES.match(/Example \d+:/g) ?? []).length).toBeGreaterThanOrEqual(6);
     expect((ACTION_CLASSIFICATION_RULES.match(/Example \d+:/g) ?? []).length).toBeLessThanOrEqual(10);
