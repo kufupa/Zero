@@ -56,7 +56,8 @@ export type PartyMatchV3JobResult = {
   truncated: boolean;
   best: PartyMatchV3Row | null;
   searchedFor: string | null;
-  matchVersion: 3;
+  matchVersion: 2;
+  matcher: 'v3';
   matchStatus: 'bound' | 'needs_pick';
   boundParty: PartyMatchV3Row | null;
   suggestions: PartyMatchV3Row[];
@@ -367,7 +368,8 @@ function finish(input: {
     truncated: input.truncated,
     best: input.decision.boundParty,
     searchedFor: input.searchesTried.at(-1)?.term ?? input.failure?.searchedFor ?? null,
-    matchVersion: 3,
+    matchVersion: 2,
+    matcher: 'v3',
     matchStatus: input.decision.matchStatus,
     boundParty: input.decision.boundParty,
     suggestions: input.decision.suggestions,

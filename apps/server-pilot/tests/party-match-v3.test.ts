@@ -208,7 +208,8 @@ describe('PARTY MATCH V3 reservationist loop', () => {
       { kind: 'agency', term: 'Rennies' },
     ]);
     expect(adapter.invoke).toHaveBeenCalledTimes(3);
-    expect(result.matchVersion).toBe(3);
+    expect(result.matchVersion).toBe(2);
+    expect(result.matcher).toBe('v3');
     expect(result.pickSource).toBe('llm');
     expect(result.boundParty?.nativeId).toBe('280');
   });
@@ -238,7 +239,8 @@ describe('PARTY MATCH V3 reservationist loop', () => {
 
     expect(findParty).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
-      matchVersion: 3,
+      matchVersion: 2,
+      matcher: 'v3',
       pickSource: 'fallback',
       matchStatus: 'bound',
       boundParty: { nativeId: '280', kind: 'agency' },

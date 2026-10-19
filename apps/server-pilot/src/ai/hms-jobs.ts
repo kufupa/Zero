@@ -2182,7 +2182,8 @@ export function scheduleQuotePreparationAfterPartyMatch(
 }
 
 type PartyMatchV2JobResult = PanePartyFindResult & {
-  matchVersion: 2 | 3;
+  matchVersion: 2;
+  matcher?: 'v3';
   matchStatus: 'bound' | 'needs_pick';
   boundParty: PartyMatchRow | null;
   suggestions: PartyMatchRow[];
