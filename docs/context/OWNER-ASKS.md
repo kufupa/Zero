@@ -247,3 +247,11 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 
 | 119 | 2026-10-19 Chat A: party wait bar = A (staff-kicked p50 wait + share of mail with party ready before open); start at < 120 s guideline, push as low as possible; research the best deterministic, benchmarkable method (Exa if needed) | 🟡 | Chat A plan | Baseline, then fixes |
 | 120 | Every number (bar, ETA) needs an evidence basis or is labelled a guideline; ledger exists for this | ✅ | memory `feedback-evidence-backed-numbers` | — |
+| 121 | 2026-10-19 party design chat: party v3 = reservationist loop (agent proposes terms, reads HMS rows, varies ≤1 round, picks/asks); local index = fast tool + offline replay, not a prerequisite | 🟡 | [party v3 plan](../plans/2026-10-19-party-lookup-v3.md) | P5 + P6 score |
+| 122 | Skip party lookup on SynXis/channel/OTA notices | ⬜ | plan P2 | — |
+| 123 | Duplicate HMS profiles: hotel won't clean; learn which copy staff use from real HMS bookings (step 0), work around like a reservationist | 🟡 | plan S0 | 49 answer-key bookings |
+| 124 | Keep every HMS column we load (city/IATA/agency id); note dropped fields | ⬜ | plan P3; memory `feedback-dont-discard-hms-data` | — |
+| 125 | Index freshness: daily 02:00–03:00 UTC sweep + lowest-priority refresh ≤ every 2 h; track change counts | ⏸ | plan P9 | after P6/P7 |
+| 126 | Evidence-backed research written to dated md and merged | 🟡 | [party evidence](../research/2026-10-19-party-lookup-evidence.md) | this PR |
+| 127 | Da Vinci has 2 HMS logins with different corporate accounts/rates: key party data per login | ✅ | memory `project-party-profiles-per-login` | — |
+| 128 | 2026-10-19: Centurion likely does the same GDS check as Da Vinci (booking arrives twice: SynXis + agent voucher); build the GDS booking check for both hotels; track it so it isn't lost | 🟡 | WORKSTREAMS §2 row 3; [TMC voucher notices](../research/2026-10-19-tmc-voucher-notices.md) | Scope after quote bar; supersedes #83/#88 scoping |
