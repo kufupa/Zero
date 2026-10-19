@@ -23,7 +23,12 @@ import {
 } from './cancel-stay.mjs';
 import { driveQuickSearch, windowAction } from './quick-search.mjs';
 import { snapshotPanel, snapshotRecordForm } from './stay-lookup-dom.mjs';
-import { commercialFieldsFromFormEntries, parseCommercialFields } from './commercial-fields.mjs';
+import {
+  commercialFieldsFromFormEntries,
+  mergeStayFormRecord,
+  parseCommercialFields,
+  snapshotStayFormRecord,
+} from './commercial-fields.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 
 const QUICK_WAIT_MS = 8000;
@@ -122,7 +127,11 @@ export async function findOnOpenGuestStay(ctx, { captureScreenshots = true } = {
   try {
     // The live ExtJS record exposes named fields through the same form snapshot readStayFields uses.
     const form = await page.evaluate(snapshotRecordForm, false);
-    result.commercial = parseCommercialFields(commercialFieldsFromFormEntries(form.entries), result.stay);
+    const record = await page.evaluate(snapshotStayFormRecord);
+    result.commercial = parseCommercialFields(
+      mergeStayFormRecord(commercialFieldsFromFormEntries(form.entries), record),
+      result.stay,
+    );
   } catch {
     result.commercial = null;
   }
