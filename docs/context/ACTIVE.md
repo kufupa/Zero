@@ -6,6 +6,11 @@ Updated 2026-10-19 after the overnight leak-free triage run. Already imported by
 
 - Party wait p50 411 s (72 h) was an overnight backfill burst, not queue order; staff-hours wait 1–3 s. Fix #376 (`57b23c965`, **deployed 10:43Z**, last-good before `a00c2b783`; ops-deploy rc=1 only from the 24 h dead-letter gate, health/4 procs/VPN OK): background party/quote prep only for live-admitted, actionable mail. Handoff and next slice (session reuse; ~75% of party run time is repeat login/navigation): [Chat A handoff](../plans/2026-10-19-chatA-handoff.md).
 
+## Lane R (ready before open) — 2026-10-19
+
+- Read-only snapshot at 15:33Z: 3/21 quote opens ready (14.3%); party 0/36 and booking-find 0/21. All 78 recorded target-action pane events preceded the ~15:00Z #390/#391 rollout, so post-rollout effect is unmeasured. Report: [ready-before-open scoreboard](../research/2026-10-19-ready-before-open.md).
+- Hold: action-at-open is unavailable for 73/78 rows and persisted skip reasons do not prove “flag off” or workflow eligibility. Next acceptance check: after pane events arrive post-rollout, remeasure readiness and waits with action-at-open coverage and persisted prefetch decision reasons; coordinator merges the docs-only PR.
+
 ## Overnight triage run — 2026-10-19
 
 - Classifier reads prior thread mail only (#369); action rules rewritten from a frozen eval (#370, #371). Prod at `357315940`, extractor `extract-3ccdd9c9966e` (rules v4). Last-good before: `f37e07b8b` (v2), `b529984b3` (pre-run).
