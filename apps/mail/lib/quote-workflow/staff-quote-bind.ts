@@ -561,6 +561,12 @@ export function readRateOptions(value: unknown): RateOption[] {
       currency: typeof raw.currency === 'string' ? raw.currency : 'ZAR',
       priced: raw.priced === 'summary' ? 'summary' : 'full',
       selected: raw.selected === true,
+      ...(typeof raw.roomsLeft === 'number' &&
+      Number.isFinite(raw.roomsLeft) &&
+      Number.isInteger(raw.roomsLeft) &&
+      raw.roomsLeft >= 0
+        ? { roomsLeft: raw.roomsLeft }
+        : {}),
       ...(raw.hint === 'event_rate' ? { hint: 'event_rate' as const } : {}),
     });
   }

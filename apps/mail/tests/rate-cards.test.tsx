@@ -495,8 +495,9 @@ describe('the pinned rate on the execute request', () => {
   });
 
   it('keeps valid rooms-left values and omits invalid or legacy values', () => {
-    const [withRooms, legacy, negative, fractional, infinite, text] = readRateOptions([
+    const [withRooms, zero, legacy, negative, fractional, infinite, text] = readRateOptions([
       { ...NCOR, roomsLeft: 5 },
+      { ...BAR, id: 'zero', roomsLeft: 0 },
       BAR,
       { ...BAR, id: 'negative', roomsLeft: -1 },
       { ...BAR, id: 'fractional', roomsLeft: 1.5 },
@@ -505,6 +506,7 @@ describe('the pinned rate on the execute request', () => {
     ]);
 
     expect(withRooms).toMatchObject({ roomsLeft: 5 });
+    expect(zero).toMatchObject({ roomsLeft: 0 });
     expect(legacy).not.toHaveProperty('roomsLeft');
     for (const option of [negative, fractional, infinite, text]) {
       expect(option).not.toHaveProperty('roomsLeft');
