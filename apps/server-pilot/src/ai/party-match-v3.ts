@@ -269,9 +269,9 @@ function uniqueNameHistoryMatch(
   rows: readonly PartyMatchV3Row[],
   senderHistory: readonly PartySenderHistory[] | undefined,
   candidates: readonly PartyMatchCandidate[],
-): { row: PartyMatchV3Row; token: string } | null {
+): PartyMatchV3Row | null {
   if (!senderHistory?.length) return null;
-  const matches = new Map<string, { row: PartyMatchV3Row; token: string }>();
+  const matches = new Map<string, PartyMatchV3Row>();
   for (const history of senderHistory) {
     if (history.nativeId || !history.name) continue;
     const hasStrongHistoryCandidate = candidates.some(
@@ -283,10 +283,12 @@ function uniqueNameHistoryMatch(
     );
     if (!hasStrongHistoryCandidate) continue;
     const historyTokens = new Set(distinctivePartyTokens(history.name));
+    if (!historyTokens.size) continue;
     for (const row of rows) {
       if (row.kind !== history.kind) continue;
-      const token = distinctivePartyTokens(row.name).find((value) => historyTokens.has(value));
-      if (token) matches.set(`${row.kind}:${row.nativeId}`, { row, token });
+      const rowTokens = new Set(distinctivePartyTokens(row.name));
+      if ([...historyTokens].every((token) => rowTokens.has(token)))
+        matches.set(`${row.kind}:${row.nativeId}`, row);
     }
   }
   return matches.size === 1 ? [...matches.values()][0] ?? null : null;
@@ -339,20 +341,12 @@ export function applyPartyBindV3(input: {
   );
   if (historyMatch) {
     return applyPartyBindRule({
-      candidates: [
-        ...input.candidates,
-        {
-          name: historyMatch.token,
-          kind: historyMatch.row.kind,
-          source: 'sender_history',
-          strength: 'strong',
-        },
-      ],
+      candidates: input.candidates,
       rows: input.rows,
       pick: {
         ...input.pick,
-        pickNativeId: historyMatch.row.nativeId,
-        kind: historyMatch.row.kind,
+        pickNativeId: historyMatch.nativeId,
+        kind: historyMatch.kind,
         confidence: 'high',
         reason: 'Name-only sender history matches one same-kind HMS row.',
         alternatives: [],
