@@ -375,6 +375,16 @@ describe('U23 HMS job queue (pure)', () => {
         stays: [{ requested: { arrival: '2026-11-12' } }, { requested: { arrival: 'invalid' } }],
       }),
     ).toBeNull();
+    expect(
+      extractUniqueArrivalForHmsPrefetch('amendment', {
+        stays: [{ requested: { arrival: '2026-12-01' }, booked: null }],
+      }),
+    ).toBeNull();
+    expect(
+      extractUniqueArrivalForHmsPrefetch('cancellation', {
+        stays: [{ requested: { arrival: '2026-12-01' }, booked: { arrival: null } }],
+      }),
+    ).toBeNull();
   });
 
   it('builds one stable guest-prefetch key from transport, thread, normalized surname and arrival', () => {
@@ -2363,7 +2373,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(rows).toHaveLength(1);
     }));
 
-  it('does not guess a guest surname from the booker contact or conflicting guest labels', () =>
+  it('does not guess a guest surname from an agency booker contact or conflicting guest labels', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
@@ -2371,13 +2381,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         {
           textBody: 'Please arrange the stay.',
           payload: {
-            contact: { name: 'Jane Smith' },
+            agency: 'Northwind Travel',
+            contact: { name: 'Riley Quinn' },
             confirmationNumbers: [],
             stays: [{ requested: { arrival: '2026-11-12' } }],
           },
         },
         {
-          textBody: 'Guest: John Smith\nGuest: Jane Jones',
+          textBody: 'Guest: Jordan Hale\nGuest: Riley Quinn',
           payload: { confirmationNumbers: [], stays: [{ requested: { arrival: '2026-11-12' } }] },
         },
       ];
@@ -2388,6 +2399,60 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         await insertStoredExtraction(db, messageId, 'booking', fixture.payload);
         expect(await prefetchHmsConfirmations(run, db, env)).toBe(0);
       }
+    }));
+
+  it('queues guest search from endClient person and booked arrival when mail has no confirmation or guest label', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Please amend the stay');
+      await db
+        .update(message)
+        .set({ textBody: 'Please change the dates for our client.' })
+        .where(eq(message.id, messageId));
+      const run = await insertInboundExtraction(db, threadId, messageId);
+      await insertStoredExtraction(db, messageId, 'amendment', {
+        confirmationNumbers: [],
+        endClient: 'Jordan Hale',
+        agency: 'Northwind Travel',
+        contact: { name: 'Riley Quinn' },
+        stays: [
+          {
+            requested: { arrival: '2026-12-01', departure: '2026-12-03' },
+            booked: { arrival: '2026-11-12', departure: '2026-11-14' },
+          },
+        ],
+      });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+
+      expect(await prefetchHmsConfirmations(run, db, env)).toBe(1);
+      const [job] = await db
+        .select({ readRequest: aiWorkflowRun.readRequest })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION));
+      expect(job?.readRequest).toMatchObject({ kind: 'search_guest', lastName: 'Hale', arrival: '2026-11-12' });
+    }));
+
+  it('queues guest search from a private-sender contact name when endClient is absent', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Please cancel my stay');
+      await db.update(message).set({ textBody: 'Please cancel this booking.' }).where(eq(message.id, messageId));
+      const run = await insertInboundExtraction(db, threadId, messageId);
+      await insertStoredExtraction(db, messageId, 'cancellation', {
+        confirmationNumbers: [],
+        endClient: null,
+        agency: null,
+        contact: { name: 'Riley Quinn' },
+        stays: [{ booked: { arrival: '2026-11-12' } }],
+      });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+
+      expect(await prefetchHmsConfirmations(run, db, env)).toBe(1);
+      const [job] = await db
+        .select({ readRequest: aiWorkflowRun.readRequest })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION));
+      expect(job?.readRequest).toMatchObject({ kind: 'search_guest', lastName: 'Quinn', arrival: '2026-11-12' });
     }));
 
   it.each(['quote', 'spam', 'other'] as const)('does not prefetch guest or confirmation reads for extraction kind %s', (kind) =>

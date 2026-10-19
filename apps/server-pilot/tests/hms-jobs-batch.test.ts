@@ -312,6 +312,107 @@ describe('HMS batch request selection (pure)', () => {
     });
   });
 
+  it('queues search_guest from an endClient person name and booked arrival', () => {
+    expect(
+      selectHmsBatchRequest({
+        kind: 'amendment',
+        payload: {
+          confirmationNumbers: [],
+          endClient: 'Jordan Hale',
+          agency: 'Northwind Travel',
+          contact: { name: 'Riley Quinn' },
+          stays: [{ booked: { arrival: ARRIVAL }, requested: { arrival: '2026-12-01' } }],
+        },
+        subject: 'Please amend the stay',
+        textBody: 'Please change the dates.',
+      }),
+    ).toEqual({ request: { kind: 'search_guest', lastName: 'Hale', arrival: ARRIVAL } });
+  });
+
+  it('normalizes repeated spaces and tabs in an endClient name', () => {
+    expect(
+      selectHmsBatchRequest({
+        kind: 'amendment',
+        payload: {
+          confirmationNumbers: [],
+          endClient: 'Jordan  \tHale',
+          agency: 'Northwind Travel',
+          stays: [{ booked: { arrival: ARRIVAL } }],
+        },
+        subject: 'Please amend the stay',
+        textBody: 'Please change the dates.',
+      }),
+    ).toEqual({ request: { kind: 'search_guest', lastName: 'Hale', arrival: ARRIVAL } });
+  });
+
+  it('does not take a surname from a company endClient', () => {
+    expect(
+      selectHmsBatchRequest({
+        kind: 'cancellation',
+        payload: {
+          confirmationNumbers: [],
+          endClient: 'Acme Holdings Pty Ltd',
+          agency: null,
+          contact: { name: null },
+          stays: [{ booked: { arrival: ARRIVAL } }],
+        },
+        subject: 'Please cancel',
+        textBody: 'Please cancel this booking.',
+      }),
+    ).toEqual({ skipped: 'insufficient_data' });
+  });
+
+  it('does not use the booker contact when an agency is set', () => {
+    expect(
+      selectHmsBatchRequest({
+        kind: 'amendment',
+        payload: {
+          confirmationNumbers: [],
+          endClient: null,
+          agency: 'Northwind Travel',
+          contact: { name: 'Riley Quinn' },
+          stays: [{ booked: { arrival: ARRIVAL } }],
+        },
+        subject: 'Please amend the stay',
+        textBody: 'Please change the dates.',
+      }),
+    ).toEqual({ skipped: 'insufficient_data' });
+  });
+
+  it('uses the contact surname for a private sender with no guest label', () => {
+    expect(
+      selectHmsBatchRequest({
+        kind: 'amendment',
+        payload: {
+          confirmationNumbers: [],
+          endClient: null,
+          agency: null,
+          contact: { name: 'Riley Quinn' },
+          stays: [{ booked: { arrival: ARRIVAL } }],
+        },
+        subject: 'Please amend my stay',
+        textBody: 'Please change the dates.',
+      }),
+    ).toEqual({ request: { kind: 'search_guest', lastName: 'Quinn', arrival: ARRIVAL } });
+  });
+
+  it('keeps an explicit guest label ahead of endClient and contact', () => {
+    expect(
+      selectHmsBatchRequest({
+        kind: 'amendment',
+        payload: {
+          confirmationNumbers: [],
+          endClient: 'Jordan Hale',
+          agency: null,
+          contact: { name: 'Riley Quinn' },
+          stays: [{ booked: { arrival: ARRIVAL } }],
+        },
+        subject: 'Please amend the stay',
+        textBody: 'Guest: Alex Morgan\nPlease change the dates.',
+      }),
+    ).toEqual({ request: { kind: 'search_guest', lastName: 'Morgan', arrival: ARRIVAL } });
+  });
+
   it('queue, read, and cancel procedures are no-ops while HMS_JOB_QUEUE is off', async () => {
     vi.stubEnv('HMS_JOB_QUEUE', 'off');
     const batchId = randomUUID();
