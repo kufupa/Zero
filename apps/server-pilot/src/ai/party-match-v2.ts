@@ -72,23 +72,28 @@ const MAX_SIGNATURE_CHARS = 2_000;
 const MAX_PERSON_SCAN_CHARS = 20_000;
 
 const GENERIC_WORDS = new Set([
-  'group',
   'travel',
-  'travels',
   'tours',
-  'services',
+  'tour',
+  'group',
   'holdings',
-  'hotel',
-  'company',
-  'solutions',
-  'management',
-  'consulting',
-  'international',
-  'africa',
-  'sa',
+  'services',
+  'service',
+  'pty',
+  'ltd',
+  'agency',
+  'agencies',
   'the',
   'and',
-  'of',
+  'management',
+  'solutions',
+  'africa',
+  'south',
+  'sa',
+  'international',
+  'co',
+  'company',
+  'corporate',
 ]);
 const LEGAL_FORMS = new Set([
   'pty',
@@ -143,13 +148,11 @@ export function normalisePartyName(value: string): string {
   return matchKey(cleanPartySearchName(value));
 }
 
-function distinctiveTokens(value: string): string[] {
+export function distinctivePartyTokens(value: string): string[] {
   return cleanPartySearchName(value)
     .split(/\s+/u)
-    .filter((word) => {
-      const key = matchKey(word);
-      return [...key].length >= 3 && !GENERIC_WORDS.has(key);
-    });
+    .map(matchKey)
+    .filter((key) => [...key].length >= 3 && !GENERIC_WORDS.has(key));
 }
 
 function bracketedAcronyms(value: string): string[] {
@@ -168,7 +171,10 @@ function bracketedAcronyms(value: string): string[] {
 export function partyMatchSearchTerms(name: string): string[] {
   const full = cleanPartySearchName(name);
   if (!full) return [];
-  const distinctive = distinctiveTokens(full);
+  const distinctiveKeys = new Set(distinctivePartyTokens(full));
+  const distinctive = full
+    .split(/\s+/u)
+    .filter((word) => distinctiveKeys.has(matchKey(word)));
   const acronyms = bracketedAcronyms(name);
   const singles = distinctive.slice(0, acronyms.length ? 1 : 2);
   const phrase = distinctive.slice(0, 2).join(' ');
@@ -537,11 +543,11 @@ export function buildPartyMatchCandidates(input: {
   for (const row of signatureOrganisations) add(row.name, row.kind, 'signature', 'strong');
 
   if (historyEnabled && senderHistory) {
-    const emailContradictsHistory = candidates.some(
-      (candidate) =>
-        candidate.kind === senderHistory.kind &&
-        normalisePartyName(candidate.name) !== normalisePartyName(senderHistory.name),
-    );
+    const historyTokens = new Set(distinctivePartyTokens(senderHistory.name));
+    const emailContradictsHistory = candidates.some((candidate) => {
+      if (candidate.kind !== senderHistory.kind) return false;
+      return !distinctivePartyTokens(candidate.name).some((token) => historyTokens.has(token));
+    });
     add(
       senderHistory.name,
       senderHistory.kind,
@@ -760,7 +766,7 @@ function partyClaimScore(candidate: PartyMatchCandidate, row: PartyMatchRow): 0 
   const found = normalisePartyName(row.name);
   if (!wanted || !found) return 0;
   if (wanted === found) return 2;
-  const distinctive = distinctiveTokens(candidate.name).map(matchKey);
+  const distinctive = distinctivePartyTokens(candidate.name);
   if (!distinctive.length) return 0;
   const foundWords = new Set(found.split(' '));
   return distinctive.every((token) => foundWords.has(token)) ? 1 : 0;

@@ -267,26 +267,26 @@ describe('party sender history candidates', () => {
     });
   });
 
-  it('keeps a conflicting email-stated agency ahead of learned history', () => {
+  it('downgrades history when names share no distinctive token', () => {
     vi.stubEnv('PARTY_HISTORY_BIND', 'on');
     replaceLearnedSenderMapForTests([
-      { host: 'agency.example.test', kind: 'agency', name: 'Harbor Travel', support: 5 },
+      { host: 'agency.example.test', kind: 'agency', name: 'Tourvest', support: 5 },
     ]);
 
     const candidates = buildPartyMatchCandidates({
       fromAddress: 'agent@agency.example.test',
-      payload: { agency: 'Current Travel' },
+      payload: { agency: 'Flight Centre' },
       allowLearnedSenderHistory: true,
     });
     expect(candidates.slice(0, 2)).toEqual([
       {
-        name: 'Current Travel',
+        name: 'Flight Centre',
         kind: 'agency',
         source: 'extraction_agency',
         strength: 'strong',
       },
       {
-        name: 'Harbor Travel',
+        name: 'Tourvest',
         kind: 'agency',
         source: 'sender_history',
         strength: 'weak',
