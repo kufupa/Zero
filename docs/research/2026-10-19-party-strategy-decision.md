@@ -60,6 +60,20 @@ Same rows for every variant: the 167 + new big-set bookings (178 left to read, r
 
 History is scored offline (no HMS). Search steps need one night live replay (read-only, property lock, after 19:00 SAST).
 
+## 5c. Big-set score (2026-10-19 ~19:05Z)
+
+Read-only HMS read of 194 more conf numbers from outside-sender threads (prod mail since 2026-07-27): 88 found, 86 usable after the join. Total truth now **253 bookings, 104 sender domains** (was 167 / 76). Leave-one-out, unanimous history, freemail skipped:
+
+| Kind | Support ≥ 1 | Support ≥ 2 |
+|---|---|---|
+| Agency | **109/150 right, 0 wrong**, 41 abstain | 95/150 right, 0 wrong |
+| Company (sender never books via an agency) | 27/159 right, 3 wrong | 15/159 right, 1 wrong |
+
+- Agency history holds up on the larger set (73% bind, 0 wrong). Company history stays weak: most companies book through an agency, so the sender is the agency.
+- By IATA/id (new rows only): of 11 senders with ≥ 2 same-kind bookings, 7 always use the same copy and 4 mix. Example: one corporate sender used Tourvest copy TOU001 4× and 77206905 1×. The unanimity rule abstains there and staff pick, which is the right outcome.
+- H1 records history only when the sender's host matches the recorded party name (Greptile P1 on #410), so a corporate sender doesn't learn its agency as its own party.
+- Still unscored: v2 / v3+#408 on the same rows needs a live replay (needs the inbound mail per conf, not just the booking); planned tonight after deploy.
+
 ## 5b. Owner calls (2026-10-19 ~18:00Z, this chat)
 
 | # | Call |
