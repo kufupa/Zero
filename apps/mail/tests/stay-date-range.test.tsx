@@ -82,6 +82,13 @@ describe('StayDateRange', () => {
     expect(onChange).toHaveBeenLastCalledWith({ arrivalDate: '2026-10-14', departureDate: '' });
   });
 
+  it('edits only the departure when staff open the Check-out tile', () => {
+    const { onChange } = renderRange({ arrival: '2026-10-15', departure: '2026-10-17' });
+    fireEvent.click(screen.getByRole('button', { name: /check-out/i }));
+    fireEvent.click(dayButton(19));
+    expect(onChange).toHaveBeenLastCalledWith({ departureDate: '2026-10-19' });
+  });
+
   it('starts a new range after a complete range and resets again on the third click', () => {
     const onChange = vi.fn();
     const { rerender } = render(
