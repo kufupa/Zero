@@ -756,6 +756,7 @@ describe('orderThreadContext', () => {
       id: 'target',
       direction: 'inbound' as const,
       receivedAt: targetAt,
+      createdAt: new Date('2026-10-13T12:30:01.000Z'),
     };
     const result = orderThreadContext(target, [
       { ...base, id: 'later-outbound', direction: 'outbound', sentAt: new Date('2026-10-13T13:00:00.000Z') },
