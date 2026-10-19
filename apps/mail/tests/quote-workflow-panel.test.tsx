@@ -292,7 +292,7 @@ describe('QuoteWorkflowPanel', () => {
     const initial = sessionFromFixture('mixed-same-dates');
     const originalCode = initial.groups[0]?.roomTypeCode ?? initial.groups[0]?.roomPreference;
     render(<EditableStayPanel initial={initial} />);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Duplicate room' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy room' })[0]!);
     const roomsBeforeEdit = screen.getAllByLabelText('Room type') as HTMLSelectElement[];
     expect(roomsBeforeEdit).toHaveLength(3);
     fireEvent.change(roomsBeforeEdit[0]!, { target: { value: 'LUXKNG' } });
@@ -1320,8 +1320,13 @@ describe('QuoteWorkflowPanel', () => {
     render(<QuoteWorkflowPanel session={quoted} onRunStep={onRunStep} onRunNext={vi.fn()} />);
     expect(screen.getByRole('heading', { name: /Stay 1 of 2/ })).toBeDefined();
     expect(screen.getByRole('heading', { name: /Stay 2 of 2/ })).toBeDefined();
-    expect(screen.getByRole('article', { name: 'Stay 1 details' }).textContent).toMatch(/Separate HMS booking/);
-    expect(screen.getByRole('article', { name: 'Stay 2 details' }).textContent).toMatch(/Separate HMS booking/);
+    expect(
+      screen.getAllByRole('button', { name: 'Stay information' }).map((button) => button.getAttribute('title')),
+    ).toEqual([
+      'One stay = one date range = one HMS booking.',
+      'One stay = one date range = one HMS booking.',
+    ]);
+    expect(screen.queryByText(/Separate HMS booking/)).toBeNull();
     expect(screen.getAllByText('1 of 2 stays rated').length).toBeGreaterThan(0);
     const firstSubtotal = screen.getAllByText('Stay subtotal')[0]!;
     const addRange = screen.getByRole('button', { name: '+ Add another date range' });
