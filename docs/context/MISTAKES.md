@@ -4,6 +4,7 @@ One entry per lesson: trigger, what happened, rule. Newest first. Add an entry w
 
 | Date | Trigger | What happened | Rule |
 |---|---|---|---|
+| 2026-10-19 | Plan quoted "party wait p50 411 s (72 h)" and planned queue reordering | The 72 h p50 was a 7 h overnight burst from a backfill re-extraction; staff-hours wait was 1–3 s. Reordering would not have touched it | Split wait by hour and by source (live vs backfill, action) before naming a cause or fix |
 | 2026-10-19 | Overnight triage plan said "DSPy each improve round" | The driver swapped in hand rule rounds (faster) and mentioned it only in the report; the owner wanted DSPy | A planned method change is a scope trade: write it in the run log as a decision with the reason the moment it happens, and say it first in the final message |
 | 2026-10-19 | Plan facts quoted "9,637 inbound since 07-27" as the corpus | Owner: Aug–Sep pre-09-09 mail in RDS was thought to lack outbound; the private corpus shows Aug has 1,305 outbound | State the window and its outbound coverage with the source for every eval corpus |
 | 2026-10-19 | Moved the nohup HMS browser to `hms-slot@hrcen` | The unit env lacked `PLAYWRIGHT_BROWSERS_PATH`, Playwright looked in `~/.cache`, the unit crash-looped, HMS reads were down ~2 min | Copy the running process's full env (`/proc/<pid>/environ`) into a new unit's env file, and keep a rollback in the same SSM script |

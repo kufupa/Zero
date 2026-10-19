@@ -673,6 +673,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     ['missing dates', { payload: quoteExtractionPayload({ arrival: null, departure: null }) }],
     ['spam', { spam: true }],
     ['channel sender', { channel: true }],
+    ['no_action', { payload: { ...quoteExtractionPayload(), action: 'no_action', needsAction: false } }],
   ] as const)('does not prepare quote extraction with %s', (_reason, fixture) =>
     withSeededTestDb(async (db) => {
       const { messageId, run } = await seedQuoteExtraction(db, fixture);
