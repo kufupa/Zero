@@ -164,13 +164,23 @@ function duplicateCandidateNames(rows: readonly PartyCandidate[]): Set<string> {
   return new Set([...counts].filter(([, count]) => count > 1).map(([key]) => key));
 }
 
+function candidateDetails(row: PartyCandidate): string[] {
+  const iata = typeof row.iata === 'string' ? row.iata.trim() : '';
+  const address = typeof row.address === 'string' ? row.address.trim() : '';
+  const city = typeof row.city === 'string' ? row.city.trim() : '';
+  return [iata ? `IATA ${iata}` : null, address || null, city || null].filter(
+    (detail): detail is string => detail !== null,
+  );
+}
+
 function candidatesWithinLimit(
   rows: readonly PartyCandidate[],
   allRows: readonly PartyCandidate[],
-  limit: number,
 ): PartyCandidate[] {
   const duplicates = duplicateCandidateNames(allRows);
-  return rows.filter((row, index) => index < limit || duplicates.has(candidateNameKey(row.name)));
+  return rows.filter(
+    (row, index) => index < CHIP_LIMIT || duplicates.has(candidateNameKey(row.name)),
+  );
 }
 
 function candidateChoiceLabel(
@@ -181,12 +191,7 @@ function candidateChoiceLabel(
   if (!duplicateNames.has(candidateNameKey(row.name))) {
     return includeNativeId ? `${row.name} (#${row.nativeId})` : row.name;
   }
-  const iata = typeof row.iata === 'string' ? row.iata.trim() : '';
-  const address = typeof row.address === 'string' ? row.address.trim() : '';
-  const city = typeof row.city === 'string' ? row.city.trim() : '';
-  const details = [iata ? `IATA ${iata}` : null, address || null, city || null].filter(
-    (detail): detail is string => detail !== null,
-  );
+  const details = candidateDetails(row);
   return `${row.name}${details.length ? ` · ${details.join(' · ')}` : ''} (#${row.nativeId})`;
 }
 
@@ -297,17 +302,15 @@ function ResultChips({
   label,
   rows,
   allRows = rows,
-  limit = CHIP_LIMIT,
   onPick,
 }: {
   label: string;
   rows: readonly PartyCandidate[];
   allRows?: readonly PartyCandidate[];
-  limit?: number;
   onPick: (row: PartyCandidate) => void;
 }) {
   const duplicateNames = duplicateCandidateNames(allRows);
-  const visibleRows = candidatesWithinLimit(rows, allRows, limit);
+  const visibleRows = candidatesWithinLimit(rows, allRows);
   return (
     <div className="flex flex-col gap-1">
       <p className="text-[10.5px] font-semibold text-[#334155]">{label}</p>
@@ -330,25 +333,22 @@ function ResultChips({
 function PartyAlternatives({
   rows,
   defaultOpen,
+  label,
   onPick,
 }: {
   rows: readonly PartyCandidate[];
   defaultOpen: boolean;
+  label: string;
   onPick: (row: PartyCandidate) => void;
 }) {
   return (
     <details open={defaultOpen} className="flex flex-col gap-1">
       <summary className="cursor-pointer text-[10.5px] font-semibold text-[#334155]">
-        {`Other HMS matches (${rows.length})`}
+        {`${label} (${rows.length})`}
       </summary>
-      <ul aria-label="Other HMS matches" className="flex flex-col gap-1">
+      <ul aria-label={label} className="flex flex-col gap-1">
         {rows.map((row) => {
-          const details = [
-            typeof row.iata === 'string' && row.iata.trim() ? `IATA ${row.iata.trim()}` : null,
-            typeof row.city === 'string' && row.city.trim() ? row.city.trim() : null,
-            typeof row.address === 'string' && row.address.trim() ? row.address.trim() : null,
-            `#${row.nativeId}`,
-          ].filter((value): value is string => value !== null);
+          const details = [partyKindLabel(row.kind), ...candidateDetails(row), `#${row.nativeId}`];
           return (
             <li
               key={`${row.kind}:${row.nativeId}`}
@@ -360,7 +360,7 @@ function PartyAlternatives({
               </div>
               <button
                 type="button"
-                aria-label={`Use ${row.name} (#${row.nativeId})`}
+                aria-label={`Use ${row.name} (${partyKindLabel(row.kind)}) (#${row.nativeId})`}
                 className="shrink-0 rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
                 onClick={() => onPick(row)}
               >
@@ -438,7 +438,8 @@ export function PartyPicker({
   const appliedSuggestionPick = useRef(new Set<string>());
   const [, rerender] = useReducer((count: number) => count + 1, 0);
   // A field that already holds its pick asks the list and HMS nothing more.
-  const pickedHere = Boolean(kind ? parties[kind] : parties.company || parties.agency);
+  const selectedParty = kind ? parties[kind] ?? null : parties.company ?? parties.agency ?? null;
+  const pickedHere = Boolean(selectedParty);
   const [queueMode, setQueueMode] = useState<'checking' | 'on' | 'off'>(() =>
     jobTransport?.jobQueueEnabled ? 'checking' : 'off',
   );
@@ -499,15 +500,20 @@ export function PartyPicker({
     threadId ?? null,
     sourceMessageId ?? null,
     kind ?? null,
-    !threadId && !sourceMessageId ? searchKey(query) : null,
+    searchKey(query),
   ]);
+  const v2CachedJobView =
+    !partyJob.queuing &&
+    !partyJob.queueFailed &&
+    !partyJob.statusFailed &&
+    v2JobCache?.scope === v2JobFieldKey
+      ? v2JobCache.view
+      : null;
   const v2DisplayJobView = currentJobView
     ? currentJobView.status === 'done' && partyJobIsV2(currentJobView)
       ? currentJobView
       : null
-    : v2JobCache?.scope === v2JobFieldKey
-      ? v2JobCache.view
-      : null;
+    : v2CachedJobView;
   const jobReply = partyReplyFromJob(currentJobView, query, kind);
   const autoReply = autoMemoKey ? (autoMemo.get(autoMemoKey)?.reply ?? null) : null;
   // Only an explicit, user-started job can hold rates. A prefetch and the typed-name read-back never do.
@@ -569,6 +575,7 @@ export function PartyPicker({
     const token = ++latest.current;
     if (jobTransport) {
       setState(IDLE);
+      setV2JobCache(null);
       const request = { kind: 'party' as const, name: query, ...(kind ? { partyKind: kind } : {}) };
       partyJob.start(request);
       return;
@@ -608,23 +615,24 @@ export function PartyPicker({
   const inScope = (party: { kind: StaffQuoteParty['kind'] }) => !kind || party.kind === kind;
   const indexResults = (indexMatches?.results ?? []).filter(inScope);
   const indexDuplicateNames = duplicateCandidateNames(indexResults);
-  const v2PartyJob = Boolean(
-    v2DisplayJobView?.prefetch &&
-      v2DisplayJobView.status === 'done' &&
-      partyJobIsV2(v2DisplayJobView),
-  );
+  const v2PartyJob = Boolean(v2DisplayJobView?.prefetch);
   const v2Result = v2PartyJob ? v2DisplayJobView?.result : null;
   const v2MatchStatus = v2Result?.matchStatus === 'bound' || v2Result?.matchStatus === 'needs_pick'
     ? v2Result.matchStatus
     : null;
   const v2BoundParty = isPartyCandidate(v2Result?.boundParty) ? v2Result.boundParty : null;
+  const v2BoundKey =
+    v2DisplayJobView?.runId && v2BoundParty
+      ? `${v2DisplayJobView.runId}:${v2BoundParty.kind}:${v2BoundParty.nativeId}`
+      : null;
+  const v2BoundWasApplied = Boolean(v2BoundKey && appliedV2Bindings.current.has(v2BoundKey));
   const v2ResultRows = uniqueCandidates(partyCandidatesFrom(v2Result?.results) ?? []).filter(inScope);
+  const v2PartyToOmit = selectedParty ?? (v2BoundWasApplied ? null : v2BoundParty);
   const v2Alternatives = v2ResultRows.filter(
     (row) =>
-      v2MatchStatus !== 'bound' ||
-      !v2BoundParty ||
-      row.kind !== v2BoundParty.kind ||
-      row.nativeId !== v2BoundParty.nativeId,
+      !v2PartyToOmit ||
+      row.kind !== v2PartyToOmit.kind ||
+      row.nativeId !== v2PartyToOmit.nativeId,
   );
   const v2Reason = typeof v2Result?.reason === 'string' ? v2Result.reason : '';
   const v2BoundForField =
@@ -632,8 +640,12 @@ export function PartyPicker({
       ? v2BoundParty
       : null;
   const v2NeedsPick = Boolean(
-    v2PartyJob && !pickedHere &&
-      (v2MatchStatus === 'needs_pick' || (v2MatchStatus === 'bound' && v2BoundParty && kind && !inScope(v2BoundParty))),
+    v2PartyJob &&
+      !pickedHere &&
+      (v2MatchStatus === 'needs_pick' ||
+        (v2MatchStatus === 'bound' &&
+          v2BoundParty &&
+          ((kind && !inScope(v2BoundParty)) || v2BoundWasApplied))),
   );
 
   useEffect(() => {
@@ -647,16 +659,15 @@ export function PartyPicker({
   }, [currentJobView, v2JobFieldKey]);
 
   useEffect(() => {
-    if (!v2BoundForField || !v2DisplayJobView?.runId || pickedHere) return;
-    const key = `${v2DisplayJobView.runId}:${v2BoundForField.kind}:${v2BoundForField.nativeId}`;
-    if (appliedV2Bindings.current.has(key)) return;
-    appliedV2Bindings.current.add(key);
+    if (!v2BoundForField || !v2BoundKey || pickedHere) return;
+    if (appliedV2Bindings.current.has(v2BoundKey)) return;
+    appliedV2Bindings.current.add(v2BoundKey);
     onPick({
       kind: v2BoundForField.kind,
       nativeId: v2BoundForField.nativeId,
       name: v2BoundForField.name,
     });
-  }, [v2DisplayJobView?.runId, onPick, pickedHere, v2BoundForField]);
+  }, [v2BoundKey, onPick, pickedHere, v2BoundForField]);
 
   const topSuggestion = !pickedHere ? suggestions.find((suggestion) => inScope(suggestion)) : undefined;
 
@@ -757,11 +768,15 @@ export function PartyPicker({
           <LinkButton onClick={() => onClear(party.kind)}>Change</LinkButton>
         </div>
       ))}
-      {v2PartyJob && v2MatchStatus === 'bound' && v2Alternatives.length ? (
+      {v2PartyJob &&
+      v2Alternatives.length > 0 &&
+      ((v2MatchStatus === 'bound' && !v2NeedsPick) ||
+        (v2MatchStatus === 'needs_pick' && pickedHere)) ? (
         <PartyAlternatives
           key={v2DisplayJobView?.runId}
           rows={v2Alternatives}
           defaultOpen={false}
+          label="Other HMS matches"
           onPick={pickRow}
         />
       ) : null}
@@ -833,6 +848,7 @@ export function PartyPicker({
               key={v2DisplayJobView?.runId}
               rows={v2Alternatives}
               defaultOpen
+              label="HMS matches"
               onPick={pickRow}
             />
           ) : null}

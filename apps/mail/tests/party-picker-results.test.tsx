@@ -498,7 +498,7 @@ describe('PartyPicker prefetched party jobs', () => {
       />,
     );
     expect(await screen.findByText('Pick the company/agency')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Use ABCD Travel (#4412)' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Use ABCD Travel (Company) (#4412)' }));
     expect(onPick).toHaveBeenCalledWith(ABCD_TRAVEL);
     expect(screen.getByRole('button', { name: 'Find in HMS' })).toBeTruthy();
   });
@@ -982,6 +982,9 @@ describe('PartyPicker duplicate-name choices', () => {
       ).toBeTruthy(),
     );
     expect(screen.queryByRole('button', { name: 'Use Partner 1 (Company) (#9001)' })).toBeNull();
+    expect(find).not.toHaveBeenCalled();
+    expect(queue).not.toHaveBeenCalled();
+    expect(status).toHaveBeenCalledTimes(statusCallsBeforePick);
 
     fireEvent.click(screen.getByRole('button', { name: 'Change' }));
     const restoredChoices = await screen.findByText('HMS matches (6)');
@@ -993,10 +996,8 @@ describe('PartyPicker duplicate-name choices', () => {
       within(restoredList).getByRole('button', { name: 'Use ABC Travel (Company) (#4411)' }),
     );
     await waitFor(() => expect(onPick).toHaveBeenLastCalledWith(ABC_TRAVEL));
-
     expect(find).not.toHaveBeenCalled();
     expect(queue).not.toHaveBeenCalled();
-    expect(status).toHaveBeenCalledTimes(statusCallsBeforePick);
   });
 
   it('hides cached alternatives when a fresh HMS lookup starts', async () => {
