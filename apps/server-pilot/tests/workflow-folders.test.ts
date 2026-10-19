@@ -4,6 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import { __setDbForTests } from '../src/db/client.js';
+import { TRANSPORT_ID as CENTURION_TRANSPORT_ID } from '../src/db/seed.js';
 import { message } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { appRouter } from '../src/trpc/router.js';
@@ -21,7 +22,7 @@ import {
   workflowFolderMembershipSql,
 } from '../src/mail/workflow-folders.js';
 
-const TRANSPORT = 'transport-centurion';
+const TRANSPORT = CENTURION_TRANSPORT_ID;
 const USER = 'user-ropperman';
 const MESSAGE_ID = 'message-source-1';
 const EXTRACTION_ID = '00000000-0000-4000-8000-000000000001';
@@ -216,6 +217,34 @@ describe('gold review window SQL binds', () => {
       expect(query.params.filter((value) => value instanceof Date)).toEqual([]);
       expect(query.sql).toContain('::timestamptz');
       expect(query.params).toEqual(
+        expect.arrayContaining([GOLD_REVIEW_SINCE.toISOString(), GOLD_REVIEW_UNTIL.toISOString()]),
+      );
+    } finally {
+      await conn.end({ timeout: 1 });
+    }
+  });
+
+  it('applies the gold window and staff-outbound filter only to Centurion', async () => {
+    const conn = postgres({
+      hostname: '127.0.0.1',
+      port: 9,
+      max: 1,
+      connect_timeout: 1,
+      idle_timeout: 1,
+    });
+    try {
+      const db = drizzle(conn);
+      const centurion = latestWorkflowThreads(db, TRANSPORT);
+      const centurionQuery = db.with(centurion).select().from(centurion).toSQL();
+      const davinci = latestWorkflowThreads(db, 'transport-ayanda');
+      const davinciQuery = db.with(davinci).select().from(davinci).toSQL();
+
+      expect(centurionQuery.sql).toContain('staff_gold_out');
+      expect(centurionQuery.params).toEqual(
+        expect.arrayContaining([GOLD_REVIEW_SINCE.toISOString(), GOLD_REVIEW_UNTIL.toISOString()]),
+      );
+      expect(davinciQuery.sql).not.toContain('staff_gold_out');
+      expect(davinciQuery.params).not.toEqual(
         expect.arrayContaining([GOLD_REVIEW_SINCE.toISOString(), GOLD_REVIEW_UNTIL.toISOString()]),
       );
     } finally {
