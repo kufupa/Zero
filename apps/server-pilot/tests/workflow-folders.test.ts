@@ -184,6 +184,9 @@ describe('workflow folder mapping', () => {
     expect(mapWorkflowFolder({ action: 'new_booking', kind: 'booking', origin: 'person' })).toBe(
       'new-bookings',
     );
+    expect(mapWorkflowFolder({ action: 'amend', kind: 'amendment', origin: 'system_notice' })).toBe(
+      'amendments',
+    );
     expect(mapWorkflowFolder({ action: 'payment_proof', kind: 'voucher_pop', origin: 'system_notice' })).toBe(
       'payments',
     );
@@ -211,6 +214,10 @@ describe('workflow folder mapping', () => {
     const newBookingCase = sqlWithBinds.slice(sqlWithBinds.indexOf('when new_booking then'));
     expect(newBookingCase).toMatch(
       /when new_booking then case when [\s\S]*?origin[\s\S]*?= 'system_notice'[\s\S]*?then payments else new-bookings end/,
+    );
+    expect(sqlWithBinds).toContain('when amend then amendments');
+    expect(sqlWithBinds).toMatch(
+      /when no_action then not-for-nava[\s\S]*?else 'other-to-do' end\s+when [\s\S]*?origin[\s\S]*?= 'system_notice' then 'not-for-nava'/,
     );
   });
 
