@@ -700,7 +700,7 @@ describe('extraction vision image admission', () => {
 });
 
 describe('orderThreadContext', () => {
-  it('excludes mail ingested after the target even when sender timestamps are backdated', () => {
+  it('uses delivery time to exclude backdated later mail without losing imported prior history', () => {
     const targetAt = new Date('2026-10-13T12:00:00.000Z');
     const target = {
       id: 'target',
@@ -729,17 +729,20 @@ describe('orderThreadContext', () => {
         createdAt: new Date('2026-10-13T11:50:00.000Z'),
       },
       {
-        id: 'later-outbound',
-        direction: 'outbound',
-        subject: 'Thread subject',
-        textBody: 'Backdated outbound arrived after target',
-        receivedAt: null,
-        sentAt: new Date('2026-10-13T11:45:00.000Z'),
+        id: 'imported-prior',
+        direction: 'inbound',
+        subject: 'Earlier thread request',
+        textBody: 'Prior history arrived before target but imported later',
+        receivedAt: new Date('2026-10-13T10:30:00.000Z'),
+        sentAt: null,
         createdAt: new Date('2026-10-13T12:06:00.000Z'),
       },
     ]);
 
-    expect(result.map(({ bodyText }) => bodyText)).toEqual(['Earlier staff reply']);
+    expect(result.map(({ bodyText }) => bodyText)).toEqual([
+      'Prior history arrived before target but imported later',
+      'Earlier staff reply',
+    ]);
   });
 
   it('keeps only messages strictly before the target, including earlier staff replies', () => {
