@@ -923,14 +923,16 @@ describe('PartyPicker duplicate-name choices', () => {
     const onPick = vi.fn();
     const find = vi.fn();
     const queue = vi.fn();
-    const status = vi.fn(async () => view);
+    let statusCalls = 0;
+    const status = vi.fn(async () => (statusCalls++ === 0 ? view : null));
     const jobTransport: HmsJobTransport = { queue, status };
 
     const Harness = () => {
       const [parties, setParties] = useState<StaffQuoteParties>({});
+      const [name, setName] = useState('ABC Travel');
       return (
         <PartyPicker
-          name="ABC Travel"
+          name={name}
           kind="company"
           parties={parties}
           find={find}
@@ -939,6 +941,7 @@ describe('PartyPicker duplicate-name choices', () => {
           sourceMessageId="message-1"
           onPick={(party) => {
             setParties((current) => ({ ...current, [party.kind]: party }));
+            setName(party.name);
             onPick(party);
           }}
           onClear={(partyKind) => {
@@ -984,7 +987,7 @@ describe('PartyPicker duplicate-name choices', () => {
     expect(screen.queryByRole('button', { name: 'Use Partner 1 (Company) (#9001)' })).toBeNull();
     expect(find).not.toHaveBeenCalled();
     expect(queue).not.toHaveBeenCalled();
-    expect(status).toHaveBeenCalledTimes(statusCallsBeforePick);
+    expect(status).toHaveBeenCalledTimes(statusCallsBeforePick + 1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Change' }));
     const restoredChoices = await screen.findByText('HMS matches (6)');
