@@ -20,8 +20,7 @@ Confidence key: **H** = scoped with a pass/fail check · **M** = scoped, evidenc
 |---|---|---|---|---|
 | 1 | **Agent stack / staff workflow builder** (swap Mastra?) | R1, R1b, R4 done (none pass all gates; Sim copilot = paid key; Langflow = Python, no tenant isolation). R5 running: per-layer stack, OSS LangSmith replacement, mem0/Graphiti/Letta, per-hotel pattern, 10/10 ideas | **M** | R5 → recommendation → ADR |
 | 2 | Create flow (next after quote) | R2 write-flows audit done; create guarded, not prod-proven | M | Owner yes → lane |
-| 3 | Voucher = already-paid booking (reclassify) | Facts settled; reuse `feat/action-classifier` | M | Lane after the pilot |
-| 4 | SynXis "failed to integrate" fix-up workflow | 84 mails / 11 weeks; staff fill company/agency in Infor | L | Scope a read-only compare after the pilot |
+| 3 | **GDS booking check** (merges old rows 3 + 4; owner 2026-10-19: build for Centurion and Da Vinci): every GDS/agent booking arrives twice (SynXis/Profitroom into Infor + agent voucher email). Staff check it landed, add the company (GDS download omits it), read notes, attach voucher, chase prepayment if same-day with no voucher | Centurion 30 d: SynXis 370 (224 new, 73 modify, 44 failed-to-integrate, 29 cancel), Profitroom 85, agent vouchers 15 (11/15 traced to CRS/staff mail). #118 routes vouchers to Payments (lane N). Evidence: [TMC voucher notices](../research/2026-10-19-tmc-voucher-notices.md) §2, §5, §6 | M | Scope after quote bar: read-only match voucher ↔ SynXis ↔ Infor stay + company gap; OWNER-ASKS #128 |
 | 5 | Da Vinci (second hotel): per-hotel tenant + per-property HMS browser | Interview saved; generic pre-stay regex parked (`park/d1-prestay-20261014`) | L | Owner provides Infor login |
 | 6 | Evals truth: golden set #218 + #244 capture | #218 open | M | Merge #218; connect #244 to it |
 | 7 | Extraction v2 fields (every-ask coverage, meal/payer) | Parked `park/extract-v2-20261014` | M | Revive after the pilot |
