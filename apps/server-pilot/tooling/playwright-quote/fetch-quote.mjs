@@ -224,11 +224,10 @@ async function expandCriteria(page) {
 
 const normalizedText=value=>String(value??'').trim().replace(/\s+/g,' ').toLowerCase();
 export function matchReference(reference,rows) {
-  const code=reference.code??reference.iata;
   const matches=rows.filter(r=>reference.nativeId!==undefined
     ? String(r.id)===String(reference.nativeId)
-    : code!==undefined
-      ? r.code===code
+    : reference.code!==undefined
+      ? r.code===reference.code
       : normalizedText(r.name)===normalizedText(reference.name));
   if (matches.length!==1) {
     const error=new Error(matches.length?'AMBIGUOUS_REFERENCE':'REFERENCE_NOT_FOUND');
@@ -254,9 +253,8 @@ export function searchSignature(request,room) {
 // Agency has no ID filter in HMS: a nativeId is searched by its name, then matched on travelagencyid.
 export function pickerFilter(kind,reference) {
   const config=contextControls[kind];
-  const code=reference.code??(kind==='agency'?reference.iata:undefined);
   const filter=reference.nativeId!==undefined&&config.idFilter?{name:config.idFilter,value:reference.nativeId}
-    :code!==undefined?{name:config.codeFilter,value:code}
+    :reference.code!==undefined?{name:config.codeFilter,value:reference.code}
     :{name:config.nameFilter,value:reference.name};
   if (typeof filter.value!=='string'||!filter.value) throw new Error(`REFERENCE_FILTER_MISSING_${kind}`);
   return filter;
