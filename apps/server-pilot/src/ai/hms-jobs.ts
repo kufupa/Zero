@@ -1817,7 +1817,8 @@ export async function prefetchPartyForExtraction(
     source.spamAt ||
     source.threadHistoryOnly ||
     source.historyOnly ||
-    source.direction !== 'inbound'
+    source.direction !== 'inbound' ||
+    objectRecord(source.payload).action === 'no_action'
   ) {
     return 0;
   }
@@ -2048,6 +2049,7 @@ export async function evaluateQuoteReadyForMessage(
   if (source.spamAt) return empty('spam', source);
   const payload = objectRecord(source.payload);
   if (payload.origin === 'system_notice') return empty('system_notice', source);
+  if (payload.action === 'no_action') return empty('no_action', source);
   const sourceClassification = classifyMailSource({
     fromAddress: source.fromAddress,
     subject: source.subject,
@@ -2152,10 +2154,14 @@ export async function prefetchQuoteReadyForExtraction(
   return created;
 }
 
-/** Sequences party matching before quote preparation so an available V2 bind is never raced by a public-rate quote. */
+/**
+ * Sequences party matching before quote preparation so an available V2 bind is never raced by a public-rate quote.
+ * Live admission only: a backfill re-extraction (no admission snapshot) of days-old mail must not fill the one HMS browser.
+ */
 export function scheduleQuotePreparationForExtraction(
-  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
+  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId' | 'admissionSnapshotId'>,
 ): void {
+  if (!run.admissionSnapshotId) return;
   const extraction = { ...run, runKind: 'inbound_extraction' as const };
   void (async () => {
     const db = getDb();

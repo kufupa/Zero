@@ -85,6 +85,7 @@ async function seedQuote(
     ccAddresses?: string[];
     ownerHeaderValue?: string | null;
   } = {},
+  action?: string,
 ) {
   const threadId = `thread-${randomUUID()}`;
   const messageId = `message-${randomUUID()}`;
@@ -113,7 +114,7 @@ async function seedQuote(
     extractorVersion: `party-job-test-${randomUUID()}`,
     status: 'succeeded',
     kind,
-    payload: { agency },
+    payload: { agency, ...(action ? { action } : {}) },
   });
   const [run] = await db
     .insert(aiWorkflowRun)
@@ -418,6 +419,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(await prefetchPartyForExtraction(spam, db, env)).toBe(0);
         const booking = await seedQuote(db, 'booking', 'No Quote Agency');
         expect(await prefetchPartyForExtraction(booking, db, env)).toBe(0);
+        const noAction = await seedQuote(db, 'quote', 'Already Handled Tours', false, {}, 'no_action');
+        expect(await prefetchPartyForExtraction(noAction, db, env)).toBe(0);
 
         const rows = await db
           .select({
