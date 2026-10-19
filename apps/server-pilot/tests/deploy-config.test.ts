@@ -5659,7 +5659,11 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(allowlist).not.toContain('PANE_PRECLASSIFY');
       expect(allowlist).not.toContain('BETTER_AUTH_');
       expect(allowlist).not.toContain('POP3_');
-      expect(keys.filter((key) => key.startsWith('HMS_'))).toEqual(['HMS_JOB_QUEUE']);
+      expect(keys.filter((key) => key.startsWith('HMS_'))).toEqual([
+        'HMS_JOB_QUEUE',
+        'HMS_QUOTE_PREPARE',
+        'HMS_QUOTE_PREPARE_PER_HOUR',
+      ]);
       expect(allowlist).not.toContain('GOOGLE_');
       expect(writer).toContain('const parsed = JSON.parse(data);');
       expect(writer).toContain('process.stdout.write(parsed.BETTER_AUTH_SECRET)');
@@ -5802,11 +5806,16 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         "DATABASE_URL='postgres://example.invalid/zero'",
         "AWS_REGION='af-south-1'",
         "S3_BUCKET='nava-test-bucket'",
+        "HMS_QUOTE_PREPARE='true'",
+        "HMS_QUOTE_PREPARE_PER_HOUR='6'",
         '',
       ].join('\n');
       try {
         writeFileSync(commonEnv, valid, 'utf8');
-        expect(validate(commonEnv).status).toBe(0);
+        expect(
+          validate(commonEnv).status,
+          '--validate rejected remote quote-preparation flags',
+        ).toBe(0);
 
         for (const url of ['http://127.0.0.1:3000', 'https://converter.example']) {
           writeFileSync(commonEnv, `${valid}GOTENBERG_URL='${url}'\n`, 'utf8');
