@@ -255,3 +255,6 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 126 | Evidence-backed research written to dated md and merged | 🟡 | [party evidence](../research/2026-10-19-party-lookup-evidence.md) | this PR |
 | 127 | Da Vinci has 2 HMS logins with different corporate accounts/rates: key party data per login | ✅ | memory `project-party-profiles-per-login` | — |
 | 128 | 2026-10-19: Centurion likely does the same GDS check as Da Vinci (booking arrives twice: SynXis + agent voucher); build the GDS booking check for both hotels; track it so it isn't lost | 🟡 | WORKSTREAMS §2 row 3; [TMC voucher notices](../research/2026-10-19-tmc-voucher-notices.md) | Scope after quote bar; supersedes #83/#88 scoping |
+| 129 | 2026-10-19: hybrid party lookup (history → search → staff pick); bind both kinds; booking truth wins | 🟡 | [strategy decision](../research/2026-10-19-party-strategy-decision.md) §5b | lanes H1 |
+| 130 | 2026-10-19: "even if we bind one… show the alternative stuff": pane shows every HMS option with the info staff see in HMS, instant switch, no extra lookup (rooms too: alternatives miss price and availability) | 🟡 | decision §5b D3 | lane U1 (party); rooms not started |
+| 131 | 2026-10-19: flags may flip any time; push back if there is an effect | ✅ | decision §5b D4 | — |

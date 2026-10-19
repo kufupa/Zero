@@ -60,6 +60,15 @@ Same rows for every variant: the 167 + new big-set bookings (178 left to read, r
 
 History is scored offline (no HMS). Search steps need one night live replay (read-only, property lock, after 19:00 SAST).
 
+## 5b. Owner calls (2026-10-19 ~18:00Z, this chat)
+
+| # | Call |
+|---|---|
+| D1 | History binds **both** agencies and companies; "fair fight", staff verify |
+| D2 | Booking (reservation) truth wins over quote picks; either can be a staff slip, so staff verify |
+| D3 | 1 wrong agency bind in ~66 is fine, as long as the pane shows every option with the info staff use in HMS (IATA, city, address, id) and switching is instant, no new HMS lookup |
+| D4 | Flags can flip any time (owner OK). Coordinator pushback: flip `PARTY_MATCH_V3` only once #408 is live and re-scored (v3 alone binds less than v2) |
+
 ## 6. Unknowns (honest)
 
 | Unknown | Why it matters | How we close it |
