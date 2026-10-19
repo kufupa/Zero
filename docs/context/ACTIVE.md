@@ -8,7 +8,7 @@ Updated 2026-10-19 after the overnight leak-free triage run. Already imported by
 
 ## Lane R (ready before open) — 2026-10-19
 
-- Read-only snapshot at 15:33Z: 3/21 quote opens ready (14.3%); party 0/36 and booking-find 0/21. All 78 recorded target-action pane events preceded the ~15:00Z #390/#391 rollout, so post-rollout effect is unmeasured. Report: [ready-before-open scoreboard](../research/2026-10-19-ready-before-open.md).
+- Read-only snapshot at 15:33Z: 3/21 quote opens had persisted-ready receipts (14.3%; `dinnerAddOnRequired=false` on all three, full pane usability unproven); party 0/36 and booking-find 0/21. All 78 recorded target-action pane events preceded the ~15:00Z #390/#391 rollout, so post-rollout effect is unmeasured. Report: [ready-before-open scoreboard](../research/2026-10-19-ready-before-open.md).
 - Hold: action-at-open is unavailable for 73/78 rows and persisted skip reasons do not prove “flag off” or workflow eligibility. Next acceptance check: after pane events arrive post-rollout, remeasure readiness and waits with action-at-open coverage and persisted prefetch decision reasons; coordinator merges the docs-only PR.
 
 ## Overnight triage run — 2026-10-19

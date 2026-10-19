@@ -4,28 +4,28 @@ Snapshot: 2026-10-19 15:33:23 UTC, one read-only Postgres statement. Source-code
 
 ## Headline
 
-In the 7-day cohort, 3 of 21 quote opens (14.3%) had a prepared quote available at the first recorded pane-open event. Party preparation was ready for 0 of 36 new-booking opens; booking-find preparation was ready for 0 of 18 amend opens and 0 of 3 cancel opens. The 24-hour subset had 7 recorded opens and no workflow was ready before open. All 78 target-action pane events in the snapshot were before the approximate 15:00Z rollout of #390/#391; there were no **recorded** post-15:00Z opens to measure either change.
+In the 7-day cohort, 3 of 21 quote opens (14.3%) had a successful, unexpired system-prepared quote receipt whose stored result status was `ready` at the first recorded pane-open event. A same-cutoff aggregate found `dinnerAddOnRequired=false` on all 3 receipts, so that specific rejection did not apply; the application-level proposal path also checks current source/party/revision, which this aggregate did not establish. Treat 3/21 as a receipt-ready rate, not a proven pane-usable-quote rate. Party preparation was ready for 0 of 36 new-booking opens; booking-find preparation was ready for 0 of 18 amend opens and 0 of 3 cancel opens. The 24-hour subset had 7 recorded opens and no workflow met its persisted-ready predicate before open. All 78 target-action pane events in the snapshot were before the approximate 15:00Z rollout of #390/#391; there were no **recorded** post-15:00Z opens to measure either change.
 
 Important cohort caveat: workflow labels below are the latest successful extraction action at query time, not a historical label guaranteed to have been visible at open. A separate as-of-open check at 15:35:40Z found `payload.action` null in the latest successful extraction available at open for 73 of the 78 messages; only 5 had a target action then. Historical action-at-open coverage is therefore not reconstructible for most of this cohort.
 
-| Window / source | Action → workflow | First opens | Ready before open | Ready rate | Observed open-to-result wait |
+| Window / source | Action → workflow | First opens | Persisted-ready before open | Persisted-ready rate | Observed open-to-result wait |
 |---|---|---:|---:|---:|---|
 | 24 h, pane event | `quote_availability` → quote | 2 | 0 | 0% | — (n=0) |
 | 24 h, pane event | `new_booking` → party | 0 | 0 | — | — (n=0) |
 | 24 h, pane event | `amend` → booking find | 4 | 0 | 0% | — (n=0) |
 | 24 h, pane event | `cancel` → booking find | 1 | 0 | 0% | — (n=0) |
-| 7 d, pane event | `quote_availability` → quote | 21 | 3 | 14.3% | p50 4m22s; p90 1h50m17s (n=3) |
+| 7 d, pane event | `quote_availability` → quote | 21 | 3 receipts* | 14.3%* | p50 4m22s; p90 1h50m17s (n=3) |
 | 7 d, pane event | `new_booking` → party | 36 | 0 | 0% | — (n=0) |
 | 7 d, pane event | `amend` → booking find | 18 | 0 | 0% | — (n=0) |
 | 7 d, pane event | `cancel` → booking find | 3 | 0 | 0% | — (n=0) |
 
-The wait percentiles are not a population-wide staff-wait estimate: they use only three successful matching results observed after open (one already-created system run and two priority-10 interactive results). They exclude system-prep jobs first created after open, failures, unresolved rows, and opens with no observed successful completion. They are small-sample diagnostics, not a causal estimate of time saved.
+*Quote percentages count persisted ready receipts, not confirmed pane-usable quotes. A separate aggregate at the same cutoff found 3 receipts with `dinnerAddOnRequired=false`, 0 true, and 0 unknown; the other proposal usability checks were not evaluated. The wait percentiles are not a population-wide staff-wait estimate: they use only three successful matching results observed after open (one already-created system run and two priority-10 interactive results). They exclude system-prep jobs first created after open, failures, unresolved rows, and opens with no observed successful completion. They are small-sample diagnostics, not a causal estimate of time saved or time to a usable quote.
 
 Fallback proxy, kept separate from pane events: for messages with no recorded pane event, the first exact-message priority-10 `read_tool` job was used as a proxy for staff starting work. In the 7-day window this found 2 quote messages, 0 ready at that proxy time, and no successful wait sample; it found no party or booking-find rows. A staff-kicked job is not proof that a pane was opened.
 
 ## Not ready at first recorded open: ranked persisted reasons
 
-These are the 75 non-ready pane events in the 7-day cohort; the 3 ready quote events bring the cohort to 78. Ties are shown together. “Admission snapshot present” means only that the run row had an admission snapshot; it does not establish that a workflow-specific prefetch was eligible or expected.
+These are the 75 events that did not meet the persisted-ready predicate in the 7-day cohort; the 3 quote-receipt-ready events bring the cohort to 78. Ties are shown together. “Admission snapshot present” means only that the run row had an admission snapshot; it does not establish that a workflow-specific prefetch was eligible or expected.
 
 | Rank | First-open bucket | Events | Action mix | What the database establishes |
 |---:|---|---:|---|---|
@@ -47,7 +47,7 @@ The query cannot estimate counterfactual staff-minutes removed, so these are ran
 
 | Rank | Follow-up target | Evidence in this snapshot | Limitation / next measurement |
 |---:|---|---|---|
-| 1 | Verify quote preparation and the #391 attach-retry change against first-open readiness. | 21 quote opens; 3 ready; 2 system jobs running at open; 3 successful post-open waits, p50 4m22s and p90 1h50m17s. | No recorded open occurred after the ~15:00Z rollout, and this data does not attribute misses to attach failures. Re-measure after post-rollout pane events. |
+| 1 | Verify quote preparation and the #391 attach-retry change against first-open readiness. | 21 quote opens; 3 persisted-ready receipts (all have `dinnerAddOnRequired=false`; other usability checks unproven); 2 system jobs running at open; 3 successful post-open waits, p50 4m22s and p90 1h50m17s. | No recorded open occurred after the ~15:00Z rollout, and this data does not attribute misses to attach failures. Re-measure after post-rollout pane events. |
 | 2 | Instrument party-prefetch eligibility/skip reasons, then ensure eligible candidates are queued before open. | 36 new-booking opens; 0 ready; 8 system jobs first created after open; 24 had an admission snapshot but no exact-message system prep run by open. | Party prep is candidate-conditional; the 24 rows do not identify flag, candidate, cap, origin, or reuse causes. #390’s effect is unmeasured here. |
 | 3 | Instrument booking-find eligibility and result-reuse misses for amend/cancel. | 21 amend/cancel opens; 0 ready; 12 had an admission snapshot but no exact-message system prep run; 4 had no prep admission snapshot; the remaining 5 were superseded (1), non-reusable (3), or system-notice (1). | No successful post-open wait sample; action-at-open labels are incomplete; eligibility requires the relevant lookup inputs. |
 
@@ -56,7 +56,7 @@ The query cannot estimate counterfactual staff-minutes removed, so these are ran
 - A real open is the earliest persisted `work_event` with type `pane.opened` for a `work_item.source_message_id`. The pane records it only after stored work is ready and a work-item ID exists. Telemetry is asynchronous, batched on a 5-second flush interval; failed sends are dropped, and the database event time is the server insert time. This measures the first **recorded** open, not a guaranteed exact UI-open time, and missing telemetry is not proof that staff never opened the pane. See `apps/mail/components/nava-pane/nava-pane.tsx`, `apps/mail/lib/quote-workflow/pane-telemetry.ts`, and `apps/server-pilot/src/ai/work-events.ts`.
 - The target actions are grouped from the latest successful `mail_extraction.payload->>'action'` at the snapshot: `quote_availability` → quote, `new_booking` → party, and `amend`/`cancel` → booking find. As noted above, this is not a reliable historical action-at-open label for 73/78 rows.
 - Runs are linked only by exact `ai_workflow_run.trigger_message_id = message.id`. The request discriminator is `read_request->>'kind'` (with `tool` accepted as a compatibility fallback); matching workflows are `staff_quote`, `party`, and `find`/`search_guest`. This avoids joining a later run to an earlier pane event, but may miss reusable/idempotent work whose original trigger message was different.
-- Quote readiness required a priority-0 system `read_tool` run, `metrics.quotePrepared=true`, succeeded and finished by open, a present `read_result` with status `ready`, and an unexpired receipt at open. Party/find readiness required a matching successful system result usable at open. “Running at open” required the matching system run to exist by open and not yet be complete. The wait sample is `finished_at - first_recorded_open_at` for qualifying successful results after open; jobs first created after open are counted separately, not mixed into the running-at-open or pre-existing-system wait percentiles.
+- Quote receipt readiness required a priority-0 system `read_tool` run, `metrics.quotePrepared=true`, succeeded and finished by open, a present `read_result` with status `ready`, and an unexpired receipt at open. This is not the later application-level quote-usability predicate: `resolvePreparedLedgerProposal` also checks current source/party/revision and rejects `dinnerAddOnRequired=true` (`apps/server-pilot/src/trpc/routes/workstation.ts`). A same-cutoff aggregate found that field false on all three receipts; current-source/party/revision checks were not evaluated. Party/find readiness required a matching successful system result usable at open. “Running at open” required the matching system run to exist by open and not yet be complete. The wait sample is `finished_at - first_recorded_open_at` for qualifying successful results after open; jobs first created after open are counted separately, not mixed into the running-at-open or pre-existing-system wait percentiles.
 - Queue state and scoped read receipts are persisted, so a result can finish while the pane is unmounted; readiness here uses the DB receipt and its expiry/scope checks, not whether the pane stayed mounted (`apps/server-pilot/src/ai/run-ledger.ts`).
 - The separate inbound-coverage check around 15:34Z found 1,145 Centurion inbound messages received in the prior 7 days; 18 had no extraction and no recorded pane event. They are outside the action-labeled pane cohort because there is no action to assign. This is a separate statement, not part of the 15:33:23 readiness snapshot.
 - The rollout cutoff is approximate (~15:00Z, #390/#391). At the readiness snapshot, every target-action pane event and both fallback-proxy rows were pre-cutoff; recorded post-cutoff sample size was zero.
@@ -128,7 +128,7 @@ SELECT action,
          AND read_result IS NOT NULL
          AND read_result->>'status' = 'ready'
          AND read_result_expires_at > opened_at
-       ) AS quote_ready_at_open
+       ) AS quote_receipt_ready_at_open
 FROM matched_runs
 GROUP BY action;
 ```
