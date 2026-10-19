@@ -218,6 +218,27 @@ describe('PARTY MATCH V3 duplicate bind', () => {
     });
   });
 
+  it('requires every distinctive history token before a name-only bind', () => {
+    const result = applyPartyBindV3({
+      candidates: [
+        candidate('Acme Consulting'),
+        {
+          name: 'Acme Consulting',
+          kind: 'agency',
+          source: 'sender_history',
+          strength: 'strong',
+        },
+      ],
+      rows: [{ kind: 'agency', nativeId: 'beacon', name: 'Beacon Consulting' }],
+      pick: highPick('beacon'),
+      emailText: 'Please quote for Acme Consulting.',
+      senderHistory: [{ kind: 'agency', nativeId: null, name: 'Acme Consulting' }] as never,
+    });
+
+    expect(result.matchStatus).toBe('needs_pick');
+    expect(result.boundParty).toBeNull();
+  });
+
   it('does not bind name-only history when multiple same-kind rows share its token', () => {
     const result = applyPartyBindV3({
       candidates: [
