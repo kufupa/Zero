@@ -22,6 +22,9 @@ test('v1 kinds include A/R and exclude group', async () => {
   assert.deepEqual(schema.$defs.request.properties.kind.enum, ['organization', 'bookingAgency', 'guest', 'arAccount']);
   assert.deepEqual(lookup.validateRequest({ kind: 'arAccount', query: { arAccountName: 'x' } }), []);
   assert.ok(lookup.validateRequest({ kind: 'group', query: { lastName: 'x' } }).length);
+  assert.deepEqual(schema.$defs.batchRequest.required, ['searches']);
+  assert.equal(schema.$defs.batchRequest.properties.stopOnFirstHit.type, 'boolean');
+  assert.equal(schema.$defs.batchRequest.properties.searches.items.$ref, '#/$defs/search');
 });
 
 test('empty query is an input gap', () => {
@@ -31,6 +34,151 @@ test('empty query is an input gap', () => {
 
 test('organization name request validates', () => {
   assert.deepEqual(lookup.validateRequest({ kind: 'organization', query: { organizationName: 'ACME' } }), []);
+});
+
+test('normalizePartyLookupRequest keeps a single kind+query as one search', () => {
+  const got = lookup.normalizePartyLookupRequest({ kind: 'organization', query: { organizationName: 'ACME' } });
+  assert.deepEqual(got.issues, []);
+  assert.equal(got.single, true);
+  assert.equal(got.stopOnFirstHit, false);
+  assert.equal(got.searches.length, 1);
+  assert.equal(got.searches[0].kind, 'organization');
+  assert.deepEqual(got.searches[0].query, { organizationName: 'ACME' });
+});
+
+test('normalizePartyLookupRequest accepts a single {kind, name} and maps it to the kind query', () => {
+  const org = lookup.normalizePartyLookupRequest({ kind: 'organization', name: 'ACME' });
+  assert.deepEqual(org.issues, []);
+  assert.equal(org.single, true);
+  assert.deepEqual(org.searches[0].query, { organizationName: 'ACME' });
+  const agency = lookup.normalizePartyLookupRequest({ kind: 'bookingAgency', name: 'CWT' });
+  assert.deepEqual(agency.searches[0].query, { bookingAgencyName: 'CWT' });
+});
+
+test('normalizePartyLookupRequest accepts searches [{kind, name}] plus stopOnFirstHit', () => {
+  const got = lookup.normalizePartyLookupRequest({
+    searches: [
+      { kind: 'organization', name: 'A' },
+      { kind: 'bookingAgency', name: 'B' },
+    ],
+    stopOnFirstHit: true,
+  });
+  assert.deepEqual(got.issues, []);
+  assert.equal(got.single, false);
+  assert.equal(got.stopOnFirstHit, true);
+  assert.equal(got.searches.length, 2);
+  assert.equal(got.searches[0].kind, 'organization');
+  assert.equal(got.searches[1].kind, 'bookingAgency');
+  assert.deepEqual(got.searches[1].query, { bookingAgencyName: 'B' });
+});
+
+test('normalizePartyLookupRequest accepts a bare list of searches', () => {
+  const got = lookup.normalizePartyLookupRequest([
+    { kind: 'organization', name: 'A' },
+    { kind: 'organization', name: 'B' },
+  ]);
+  assert.deepEqual(got.issues, []);
+  assert.equal(got.single, false);
+  assert.equal(got.searches.length, 2);
+});
+
+test('normalizePartyLookupRequest rejects an empty searches list and a bad kind', () => {
+  assert.ok(lookup.normalizePartyLookupRequest({ searches: [] }).issues.length);
+  assert.ok(lookup.normalizePartyLookupRequest({ searches: [{ kind: 'group', name: 'x' }] }).issues.length);
+  assert.ok(lookup.normalizePartyLookupRequest(null).issues.length);
+});
+
+test('runNormalizedSearches continues after one search failure and records per-search phaseMs', async () => {
+  let now = 1000;
+  const calls = [];
+  const results = await lookup.runNormalizedSearches(
+    [
+      { kind: 'organization', query: { organizationName: 'A' }, name: 'A' },
+      { kind: 'bookingAgency', query: { bookingAgencyName: 'B' }, name: 'B' },
+    ],
+    {
+      now: () => now,
+      search: async (item) => {
+        calls.push(item.name);
+        now += item.name === 'A' ? 12 : 7;
+        if (item.name === 'A') {
+          return lookup.filterNotApplied();
+        }
+        return { outcome: 'resolved', candidates: [{ nativeId: '1', kind: 'bookingAgency', displayName: 'B' }], truncated: false };
+      },
+    },
+  );
+  assert.deepEqual(calls, ['A', 'B']);
+  assert.equal(results[0].outcome, 'execution_failure');
+  assert.equal(results[1].outcome, 'resolved');
+  assert.equal(results[0].phaseMs.search, 12);
+  assert.equal(results[1].phaseMs.search, 7);
+  assert.equal(results[0].kind, 'organization');
+  assert.equal(results[1].name, 'B');
+});
+
+test('runNormalizedSearches stopOnFirstHit skips later searches of the same kind after rows', async () => {
+  const calls = [];
+  const results = await lookup.runNormalizedSearches(
+    [
+      { kind: 'organization', query: { organizationName: 'Full' }, name: 'Full' },
+      { kind: 'organization', query: { organizationName: 'Short' }, name: 'Short' },
+      { kind: 'bookingAgency', query: { bookingAgencyName: 'Full' }, name: 'Agency' },
+    ],
+    {
+      stopOnFirstHit: true,
+      search: async (item) => {
+        calls.push(item.name);
+        return { outcome: 'resolved', candidates: [{ nativeId: '1', kind: item.kind, displayName: item.name }], truncated: false };
+      },
+    },
+  );
+  assert.deepEqual(calls, ['Full', 'Agency']);
+  assert.equal(results[1].skipped, true);
+  assert.equal(results[1].outcome, 'no_match');
+  assert.equal(results[1].phaseMs.search, 0);
+  assert.equal(results[2].outcome, 'resolved');
+});
+
+test('runNormalizedSearches stops remaining searches when the session is dead', async () => {
+  const calls = [];
+  const results = await lookup.runNormalizedSearches(
+    [
+      { kind: 'organization', query: { organizationName: 'A' }, name: 'A' },
+      { kind: 'bookingAgency', query: { bookingAgencyName: 'B' }, name: 'B' },
+    ],
+    {
+      search: async (item) => {
+        calls.push(item.name);
+        throw new Error('Target closed');
+      },
+    },
+  );
+  assert.deepEqual(calls, ['A']);
+  assert.equal(results[0].outcome, 'execution_failure');
+  assert.equal(results[1].outcome, 'execution_failure');
+  assert.equal(results[1].issues[0].reason, 'session_dead');
+  assert.equal(lookup.isSessionDeadError(new Error('Target closed')), true);
+  assert.equal(lookup.isSessionDeadError(new Error('filter_not_applied')), false);
+});
+
+test('redactPartyLookupProbe keeps outcomes and phaseMs and drops names', () => {
+  const redacted = lookup.redactPartyLookupProbe({
+    outcome: 'resolved',
+    searches: [{
+      kind: 'organization',
+      name: 'Secret Co',
+      outcome: 'resolved',
+      candidates: [{ nativeId: '9', displayName: 'Secret Co' }],
+      phaseMs: { search: 12 },
+    }],
+    phaseMs: { connect: 1, login: 8000, navigate: 4000, search: 12 },
+  });
+  assert.equal(JSON.stringify(redacted).includes('Secret'), false);
+  assert.equal(redacted.searches[0].outcome, 'resolved');
+  assert.equal(redacted.searches[0].phaseMs.search, 12);
+  assert.equal(redacted.phaseMs.login, 8000);
+  assert.equal(redacted.phaseMs.navigate, 4000);
 });
 
 test('store rows map travelagencyid when IATA is blank', () => {

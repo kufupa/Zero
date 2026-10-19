@@ -67,7 +67,7 @@ import {
   paneStayLookupLoaders,
   searchGuest,
 } from './pane-stay-lookup.js';
-import { findParty, type PanePartyFindResult, type PanePartyKind } from './pane-party-lookup.js';
+import { findParty, findPartyJob, type PanePartyFindResult, type PanePartyKind } from './pane-party-lookup.js';
 import { suggestPartiesFor } from './party-aliases.js';
 import { QUOTE_WORKFLOW_PROMPT_VERSION, quoteWorkflowLlmEnabled } from './quote-workflow-llm.js';
 import { resolveAdapter } from './quote-workflow-analyse-selection.js';
@@ -2333,17 +2333,26 @@ async function executePartyMatchV2(input: {
   let truncated = false;
   let failure: PanePartyFindResult | null = null;
 
-  for (const search of plan) {
-    const result = await findParty(
-      { name: search.term, kind: search.kind },
-      {
-        acquisition: input.acquisition,
-        exactTerm: true,
-        resultCap: PARTY_MATCH_V2_ROW_CAP,
-        origin: mailboxOrigin,
-        target: davinciTarget,
-      },
-    );
+  const jobResults = plan.length
+    ? await findPartyJob(
+        plan.map((search) => ({ name: search.term, kind: search.kind })),
+        {
+          acquisition: input.acquisition,
+          resultCap: PARTY_MATCH_V2_ROW_CAP,
+          origin: mailboxOrigin,
+          target: davinciTarget,
+        },
+      )
+    : [];
+
+  for (const [index, search] of plan.entries()) {
+    const result = jobResults[index] ?? {
+      outcome: 'execution_failure' as const,
+      results: [],
+      truncated: false,
+      best: null,
+      searchedFor: search.term,
+    };
     searchesTried.push({
       term: search.term,
       candidateName: search.candidateName,
