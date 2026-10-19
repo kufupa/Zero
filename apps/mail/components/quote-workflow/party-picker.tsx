@@ -433,6 +433,7 @@ export function PartyPicker({
   const latest = useRef(0);
   // A stored high-confidence V2 binding is applied once per run. Clearing/changing it must not silently reapply it.
   const appliedV2Bindings = useRef(new Set<string>());
+  const [v2JobCache, setV2JobCache] = useState<{ scope: string; view: HmsJobView } | null>(null);
   const seededSuggestion = useRef<string | null>(null);
   const appliedSuggestionPick = useRef(new Set<string>());
   const [, rerender] = useReducer((count: number) => count + 1, 0);
@@ -493,6 +494,19 @@ export function PartyPicker({
     (!query || v2Prefetch || sameJobName(viewRequest.name, query)) &&
     (!kind || viewRequest.partyKind === kind || (partyJob.view?.prefetch && !viewRequest.partyKind))
       ? partyJob.view
+      : null;
+  const v2JobFieldKey = JSON.stringify([
+    threadId ?? null,
+    sourceMessageId ?? null,
+    kind ?? null,
+    !threadId && !sourceMessageId ? searchKey(query) : null,
+  ]);
+  const v2DisplayJobView = currentJobView
+    ? currentJobView.status === 'done' && partyJobIsV2(currentJobView)
+      ? currentJobView
+      : null
+    : v2JobCache?.scope === v2JobFieldKey
+      ? v2JobCache.view
       : null;
   const jobReply = partyReplyFromJob(currentJobView, query, kind);
   const autoReply = autoMemoKey ? (autoMemo.get(autoMemoKey)?.reply ?? null) : null;
@@ -595,9 +609,11 @@ export function PartyPicker({
   const indexResults = (indexMatches?.results ?? []).filter(inScope);
   const indexDuplicateNames = duplicateCandidateNames(indexResults);
   const v2PartyJob = Boolean(
-    currentJobView?.prefetch && currentJobView.status === 'done' && partyJobIsV2(currentJobView),
+    v2DisplayJobView?.prefetch &&
+      v2DisplayJobView.status === 'done' &&
+      partyJobIsV2(v2DisplayJobView),
   );
-  const v2Result = v2PartyJob ? currentJobView?.result : null;
+  const v2Result = v2PartyJob ? v2DisplayJobView?.result : null;
   const v2MatchStatus = v2Result?.matchStatus === 'bound' || v2Result?.matchStatus === 'needs_pick'
     ? v2Result.matchStatus
     : null;
@@ -621,8 +637,18 @@ export function PartyPicker({
   );
 
   useEffect(() => {
-    if (!v2BoundForField || !currentJobView?.runId || pickedHere) return;
-    const key = `${currentJobView.runId}:${v2BoundForField.kind}:${v2BoundForField.nativeId}`;
+    if (currentJobView?.status === 'done' && partyJobIsV2(currentJobView)) {
+      setV2JobCache((cached) =>
+        cached?.scope === v2JobFieldKey && cached.view === currentJobView
+          ? cached
+          : { scope: v2JobFieldKey, view: currentJobView },
+      );
+    }
+  }, [currentJobView, v2JobFieldKey]);
+
+  useEffect(() => {
+    if (!v2BoundForField || !v2DisplayJobView?.runId || pickedHere) return;
+    const key = `${v2DisplayJobView.runId}:${v2BoundForField.kind}:${v2BoundForField.nativeId}`;
     if (appliedV2Bindings.current.has(key)) return;
     appliedV2Bindings.current.add(key);
     onPick({
@@ -630,7 +656,7 @@ export function PartyPicker({
       nativeId: v2BoundForField.nativeId,
       name: v2BoundForField.name,
     });
-  }, [currentJobView?.runId, onPick, pickedHere, v2BoundForField]);
+  }, [v2DisplayJobView?.runId, onPick, pickedHere, v2BoundForField]);
 
   const topSuggestion = !pickedHere ? suggestions.find((suggestion) => inScope(suggestion)) : undefined;
 
@@ -733,7 +759,7 @@ export function PartyPicker({
       ))}
       {v2PartyJob && v2MatchStatus === 'bound' && v2Alternatives.length ? (
         <PartyAlternatives
-          key={currentJobView?.runId}
+          key={v2DisplayJobView?.runId}
           rows={v2Alternatives}
           defaultOpen={false}
           onPick={pickRow}
@@ -804,14 +830,14 @@ export function PartyPicker({
           <p className="text-[10.5px] font-semibold text-[#334155]">Pick the company/agency</p>
           {v2Alternatives.length ? (
             <PartyAlternatives
-              key={currentJobView?.runId}
+              key={v2DisplayJobView?.runId}
               rows={v2Alternatives}
               defaultOpen
               onPick={pickRow}
             />
           ) : null}
           {v2Reason ? <p role="status">{v2Reason}</p> : null}
-          <HmsAsOf asOf={currentJobView?.asOf ?? null} />
+          <HmsAsOf asOf={v2DisplayJobView?.asOf ?? null} />
         </div>
       ) : null}
       {jobTransport &&
