@@ -89,7 +89,7 @@ import {
   registerPaneRun,
 } from './pane-stay-save.js';
 import { normalizeEmailAddress } from './never-spam.js';
-import { extractVoucherGuest } from './voucher-find.js';
+import { extractVoucherGuest, surnameFrom } from './voucher-find.js';
 import { isStaffSender, knownSenders } from './work-items.js';
 import {
   staffQuoteInput,
@@ -312,6 +312,35 @@ function explicitGuestSurname(subject: string | null, textBody: string | null): 
   }).lastName;
 }
 
+const COMPANY_NAME_TOKEN = /^(?:pty|ltd|holdings|group|travel|services|bank|hotel)$/i;
+
+/** Two-or-more word person name with no company tokens, digits, or email. Surname is the last token via surnameFrom. */
+function personSurnameFromName(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const name = value.trim();
+  if (!name || /\d/.test(name) || name.includes('@')) return null;
+  const tokens = name.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+  if (tokens.some((token) => COMPANY_NAME_TOKEN.test(token.replace(/[().,]/g, '')))) return null;
+  return surnameFrom(name);
+}
+
+/** Labelled guest first; else a person endClient; else a private-sender contact name. */
+function prefetchGuestSurname(
+  subject: string | null,
+  textBody: string | null,
+  payload: unknown,
+): string | null {
+  const labelled = explicitGuestSurname(subject, textBody);
+  if (labelled) return labelled;
+  const record = objectRecord(payload);
+  const fromEndClient = personSurnameFromName(record.endClient);
+  if (fromEndClient) return fromEndClient;
+  const agency = typeof record.agency === 'string' ? record.agency.trim() : '';
+  if (agency) return null;
+  return personSurnameFromName(objectRecord(record.contact).name);
+}
+
 function extractionConfirmations(payload: unknown): string[] {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
   const values = (payload as { confirmationNumbers?: unknown }).confirmationNumbers;
@@ -321,7 +350,10 @@ function extractionConfirmations(payload: unknown): string[] {
   );
 }
 
-/** Reads only when every valid matching stay resolves to one arrival; ambiguous/missing dates are not auto-searched. */
+/**
+ * One arrival for every stay, else null. Booking uses requested; amendment/cancellation/voucher_pop use booked only.
+ * search_guest matches the stay's arrival day exactly, so requested (often the new dates) is not a fallback.
+ */
 export function extractUniqueArrivalForHmsPrefetch(kind: string, payload: unknown): string | null {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const stays = (payload as { stays?: unknown }).stays;
@@ -456,7 +488,7 @@ export function selectHmsBatchRequest(input: {
   const confirmation = prefetchConfirmations(input.payload, input.subject, input.textBody)[0];
   if (confirmation) return { request: { kind: 'find', confirmation } };
 
-  const lastName = explicitGuestSurname(input.subject, input.textBody);
+  const lastName = prefetchGuestSurname(input.subject, input.textBody, input.payload);
   const arrival = extractUniqueArrivalForHmsPrefetch(input.kind ?? '', input.payload);
   const search = hmsJobRequestSchema.safeParse({ kind: 'search_guest', lastName, arrival });
   if (search.success) return { request: search.data };
@@ -1662,7 +1694,7 @@ export async function prefetchHmsConfirmations(
   }
 
   if (numbers.length === 0) {
-    const lastName = explicitGuestSurname(source.subject, source.textBody);
+    const lastName = prefetchGuestSurname(source.subject, source.textBody, source.payload);
     const arrival = extractUniqueArrivalForHmsPrefetch(source.kind ?? '', source.payload);
     if (!lastName || !arrival || env.HMS_GUEST_PREFETCH_PER_HOUR <= 0) return created;
     const queued = await enqueueGuestPrefetchWithinCap(
