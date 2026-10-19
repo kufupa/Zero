@@ -217,7 +217,7 @@ describe('workflow folder mapping', () => {
     );
     expect(sqlWithBinds).toContain('when amend then amendments');
     expect(sqlWithBinds).toMatch(
-      /when no_action then not-for-nava[\s\S]*?else 'other-to-do' end\s+when [\s\S]*?origin[\s\S]*?= 'system_notice' then 'not-for-nava'/,
+      /when no_action then not-for-nava[\s\S]*?else 'other-to-do'\s+end\s+when [\s\S]*?origin[\s\S]*?= 'system_notice' then 'not-for-nava'/,
     );
   });
 
