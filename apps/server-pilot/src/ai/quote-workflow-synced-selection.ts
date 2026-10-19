@@ -539,7 +539,7 @@ export function orderCausalPreceding(
     }));
 }
 
-/** Prior thread messages in stored time order. The selected target and ties are omitted. */
+/** Prior thread messages by message time; later-ingested rows and ties are omitted. */
 export function orderThreadContext(
   selected: {
     id: string;
@@ -571,7 +571,12 @@ export function orderThreadContext(
           ? candidate.sentAt ?? candidate.receivedAt ?? candidate.createdAt
           : candidate.receivedAt ?? candidate.sentAt ?? candidate.createdAt,
     }))
-    .filter(({ timestamp }) => timestamp.getTime() < selectedAt.getTime())
+    // Sender-authored dates can be backdated; ingestion time blocks mail received after the target.
+    .filter(
+      ({ candidate, timestamp }) =>
+        timestamp.getTime() < selectedAt.getTime() &&
+        candidate.createdAt.getTime() < selected.createdAt.getTime(),
+    )
     .sort(
       (left, right) =>
         left.timestamp.getTime() - right.timestamp.getTime() ||
