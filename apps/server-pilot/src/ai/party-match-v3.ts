@@ -1,6 +1,7 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { z } from 'zod';
 import type { ModelAdapter } from './bedrock/adapter.js';
+import { matchKey } from './party-match.js';
 import type { PanePartyCandidate, PanePartyOutcome } from './pane-party-lookup.js';
 import {
   applyPartyBindRule,
@@ -98,7 +99,9 @@ export function sanitizePartySearchTerms(
 }
 
 function triedSearchKey(kind: PartyMatchKind, term: string): string {
-  return `${kind}:${normalisePartyName(term)}`;
+  // matchKey folds case/punctuation; unlike normalisePartyName it keeps legal suffixes, so
+  // "Acme Ltd" (0 rows) and "Acme" stay distinct HMS queries.
+  return `${kind}:${matchKey(term)}`;
 }
 
 /** Drop already-tried terms; if none remain and a round-1 term returned 0 rows, use V2 distinctive fallbacks. */

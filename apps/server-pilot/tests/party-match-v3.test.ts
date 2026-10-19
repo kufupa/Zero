@@ -436,4 +436,52 @@ describe('PARTY MATCH V3 reservationist loop', () => {
       { kind: 'agency', term: 'Charlie Agency' },
     ]);
   });
+
+  it('still searches a shorter form when the tried full name only differed by a legal suffix', async () => {
+    const findParty = vi.fn(async (searches: ReadonlyArray<{ kind: string; term: string }>) =>
+      searches.map((search) => ({
+        outcome: search.term === 'Acme' ? ('resolved' as const) : ('no_match' as const),
+        results:
+          search.term === 'Acme'
+            ? [{ kind: 'agency' as const, nativeId: '77', name: 'Acme' }]
+            : [],
+        truncated: false,
+        searchedFor: search.term,
+      })),
+    );
+    const adapter: ModelAdapter = {
+      invoke: vi.fn(async (input) => {
+        if (input.systemPrompt.includes('Propose')) {
+          return invokeResult({ searches: [{ kind: 'agency', term: 'Acme Ltd' }] });
+        }
+        if (String(input.userPrompt).includes('"returnedRows":[]')) {
+          return invokeResult({
+            pick: null,
+            kind: null,
+            confidence: 'low',
+            reason: 'No rows.',
+            nextTerms: [{ kind: 'agency', term: 'Acme' }],
+          });
+        }
+        return invokeResult({
+          pick: '77',
+          kind: 'agency',
+          confidence: 'high',
+          reason: 'Shorter form hit.',
+        });
+      }),
+    };
+
+    const result = await runPartyMatchV3({
+      adapter,
+      candidates: [candidate('Acme Ltd')],
+      context: { ...context, extractedNames: ['Acme Ltd'] },
+      emailText: 'Please quote for Acme Ltd.',
+      findParty,
+    });
+
+    expect(findParty.mock.calls[0]?.[0]).toEqual([{ kind: 'agency', term: 'Acme Ltd' }]);
+    expect(findParty.mock.calls[1]?.[0]).toEqual([{ kind: 'agency', term: 'Acme' }]);
+    expect(result.boundParty).toMatchObject({ nativeId: '77', kind: 'agency' });
+  });
 });
