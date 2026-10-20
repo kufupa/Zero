@@ -255,6 +255,9 @@ describe('rate cards in the quote panel', () => {
       },
     ];
     expect(projectBarGrid(board).map((cell) => cell.roomCode)).toEqual(['STWN', 'STQN']);
+    const oneAdult = { ...board[0]!, groupId: 'g-1ad', nightlyPriceMinor: 100_000 };
+    const twoAdult = { ...board[0]!, groupId: 'g-2ad', nightlyPriceMinor: 150_000 };
+    expect(projectBarGrid([oneAdult, twoAdult]).map((cell) => cell.nightlyPriceMinor)).toEqual([100_000, 150_000]);
     const session = await quotedSession([BAR]);
     const quoted = session.staffQuote ?? session.staffQuotes[STAY_KEY];
     const withBoard: QuoteSession = {

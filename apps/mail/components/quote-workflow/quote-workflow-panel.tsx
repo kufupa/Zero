@@ -1707,7 +1707,7 @@ export function QuoteWorkflowPanel({
                 const preparedAtLabel = preparedAt && Number.isFinite(preparedAt.getTime())
                   ? preparedAt.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
                   : null;
-                const barGridCells = projectBarGrid(stayQuote?.availabilityBoard ?? []);
+                const stayBoard = stayQuote?.availabilityBoard ?? [];
                 return (
                   <article key={`${stay.id}-search`} className="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3">
                     {stayQuote?.preparedByNava ? (
@@ -1792,10 +1792,9 @@ export function QuoteWorkflowPanel({
                         </div>
                       </details>
                     ) : null}
-                    <BarAvailabilityGrid
-                      cells={barGridCells}
-                      truncated={stayQuote?.availabilityTruncated === true}
-                    />
+                    {stayQuote?.availabilityTruncated === true ? (
+                      <p className="text-[12px] text-[#64748b]">More room options exist than this grid shows.</p>
+                    ) : null}
                     {stay.rows.map((group) => {
                       const rateGroup = rateGroups.find((item) => item.group.id === group.id);
                       const rowStep = stepFor(group);
@@ -1831,6 +1830,9 @@ export function QuoteWorkflowPanel({
                       return (
                         <div key={group.id} className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5">
                           <h5 className="text-[13px] font-semibold text-[#475569]">{`${rowLabels.get(group.id) ?? 'Room type needed'} rates`}</h5>
+                          <BarAvailabilityGrid
+                            cells={projectBarGrid(stayBoard.filter((row) => row.groupId === group.id))}
+                          />
                           {rateGroup?.options.length ? (
                             <RateCards
                               options={rateGroup.options}

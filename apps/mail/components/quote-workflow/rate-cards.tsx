@@ -12,6 +12,7 @@ function displayLabel(label: string): string {
 
 /** One read-only BAR cell. Local projection only — not stored on QuoteSession. */
 export type BarGridCell = {
+  groupId: string;
   roomCode: string;
   roomLabel: string;
   rateCode: string;
@@ -22,22 +23,23 @@ export type BarGridCell = {
   roomsLeft: number | null;
 };
 
-function barGridKey(roomCode: string, rateCode: string, board: string): string {
-  return `${roomCode}|${rateCode}|${board}`;
+function barGridKey(groupId: string, roomCode: string, rateCode: string, board: string): string {
+  return `${groupId}|${roomCode}|${rateCode}|${board}`;
 }
 
 /**
- * Room × rate × board projection for the read-only BAR grid. Unpriced rows stay as "not checked".
- * Pass the raw availability board, not `buildRateOptions` cards.
+ * Stay-group × room × rate × board projection. Occupancy groups keep separate cells.
+ * Pass the raw availability board, not `buildRateOptions` cards. Unpriced rows stay "not checked".
  */
 export function projectBarGrid(options: readonly AvailabilityBoardRow[]): BarGridCell[] {
   const byKey = new Map<string, BarGridCell>();
   for (const option of options) {
-    const key = barGridKey(option.roomCode, option.rateCode, option.board);
+    const key = barGridKey(option.groupId, option.roomCode, option.rateCode, option.board);
     const nightlyPriceMinor =
       option.nightlyPriceMinor !== null && option.nightlyPriceMinor > 0 ? option.nightlyPriceMinor : null;
     const roomsLeft = option.roomsLeft;
     const next: BarGridCell = {
+      groupId: option.groupId,
       roomCode: option.roomCode,
       roomLabel: displayLabel(option.roomLabel) || option.roomCode,
       rateCode: option.rateCode,
@@ -87,7 +89,7 @@ export function BarAvailabilityGrid({
         </thead>
         <tbody>
           {cells.map((cell) => (
-            <tr key={barGridKey(cell.roomCode, cell.rateCode, cell.board)} className="border-b border-[#f1f5f9] text-[#1e293b]">
+            <tr key={barGridKey(cell.groupId, cell.roomCode, cell.rateCode, cell.board)} className="border-b border-[#f1f5f9] text-[#1e293b]">
               <td className="py-1 pr-2">{`${cell.roomLabel} (${cell.roomCode})`}</td>
               <td className="py-1 pr-2">{cell.rateCode}</td>
               <td className="py-1 pr-2">{cell.boardLabel}</td>
