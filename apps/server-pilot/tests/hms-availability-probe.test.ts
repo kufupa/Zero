@@ -58,6 +58,7 @@ type ReaderNight = {
 type ReaderOption = {
   room: { code: string; label?: string };
   rate: { code: string; label: string };
+  board?: string | null;
   availability: string;
   eligibility?: string;
   nightly: ReaderNight[];
@@ -151,6 +152,7 @@ function nightlyQuoteResultFromSavedFixture(): QuoteEnvelope {
   const options = extraction.options.map((option) => ({
     room: option.room,
     rate: option.rate,
+    board: option.board,
     availability: option.availability,
     eligibility: option.eligibility,
     nightly: option.nightly.map((night) => ({ ...night })),
@@ -354,6 +356,7 @@ describe('U10 availability probe (pure)', () => {
       arrivalDate: '2026-10-26',
       departureDate: '2026-10-27',
       details: 'summary',
+      maxOptionsPerGroup: 200,
       rooms: [
         { id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] },
         { id: 'group-2', quantity: 1, adults: 2, children: 0, childAges: [] },
@@ -391,6 +394,37 @@ describe('U10 availability probe (pure)', () => {
       groups: [{ id: 'g', outcome: 'quote', options: [{ room: { code: 'X' } }] }],
     });
     expect(bare.groups[0]!.options[0]).toEqual({ room: 'X', rate: null, availability: 'unknown' });
+    expect(bare.truncated).toBeUndefined();
+  });
+
+  it('carries board on each option, requests 200 options, and flags truncation', () => {
+    const [request] = availabilityRequestsFor(PAYLOAD) as AvailabilityRequest[];
+    expect(quoteRequestFor(request!).maxOptionsPerGroup).toBe(200);
+    const snapshot = availabilitySnapshotOf({
+      outcome: 'partial',
+      groups: [
+        {
+          id: 'group-1',
+          outcome: 'partial',
+          completeness: { search: 'truncated', matchingRowsUnseen: true, returnedOptions: 200 },
+          options: [
+            {
+              room: { code: 'STQN', label: 'Standard Queen' },
+              rate: { code: 'BAR', label: 'Best available' },
+              board: 'Bed & Breakfast R',
+              availability: 'available',
+            },
+          ],
+        },
+      ],
+    });
+    expect(snapshot.truncated).toBe(true);
+    expect(snapshot.groups[0]!.options[0]).toMatchObject({
+      room: 'STQN',
+      rate: 'BAR',
+      board: 'Bed & Breakfast R',
+      availability: 'available',
+    });
   });
 
   it('keeps every reader room and night with stock, requested count, nightly price and completeness', () => {
@@ -417,6 +451,7 @@ describe('U10 availability probe (pure)', () => {
     expect(group.options.every((option) => option.nightly?.length === nightlyDates.length)).toBe(true);
 
     const queen = group.options.find((option) => option.room === 'STQN')!;
+    expect(queen.board === undefined || typeof queen.board === 'string').toBe(true);
     expect(queen).toMatchObject({
       roomLabel: 'Standard Queen',
       rateLabel: 'Best Available Rate',

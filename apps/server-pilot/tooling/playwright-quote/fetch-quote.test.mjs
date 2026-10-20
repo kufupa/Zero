@@ -411,6 +411,14 @@ test('OPTION_LIMIT counts only a cut row that is not an alternative',()=>{
   assert.equal(quote.hiddenRowsMatter(rows,0),true);
   assert.equal(quote.hiddenRowsMatter([{matchStatus:'match'},{matchStatus:'unresolved'}],1),true);
 });
+test('a 200-option cap truncates a further matching row',()=>{
+  const rows=Array.from({length:201},(_,id)=>({id,matchStatus:'match',eligibility:'verified',availability:'available'}));
+  const limited=quote.limitOptions(rows,200);
+  assert.equal(limited.options.length,200);
+  assert.equal(limited.truncated,true);
+  assert.equal(limited.matchingRowsUnseen,true);
+  assert.equal(quote.hiddenRowsMatter(rows,200),true);
+});
 test('summary states BAR is not a contracted rate when no special rates',()=>{
   const text=quote.summarize({
     outcome:'quote',

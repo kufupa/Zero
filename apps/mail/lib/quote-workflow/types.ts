@@ -262,6 +262,11 @@ export type RateOption = {
   selected: boolean;
   /** Staff-only label. Ranking, matching and pricing never read it. */
   hint?: 'event_rate';
+  /**
+   * Grid-only unpriced or incomplete HMS row. Rate cards ignore it. The BAR grid keeps it as "not checked".
+   * Not a QuoteSession DTO: the grid is a projection of rateOptions keyed by room × rate × board.
+   */
+  incomplete?: boolean;
 };
 
 /** What one row was charged on its last run: HMS's nightly rates, the rates charged, and for an override its HMS comment. */

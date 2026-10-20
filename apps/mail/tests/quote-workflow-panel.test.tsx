@@ -606,31 +606,26 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.queryByText('Coming soon')).toBeNull();
   });
 
-  it('adds room types and explains why Search availability is disabled until all rows are matchable', () => {
+  it('searches on dates and occupancy without a room type pick', () => {
     const onStayAction = vi.fn();
+    const onRunStep = vi.fn();
     const base = sessionFromFixture('failed-run');
     const session = {
       ...base,
-      groups: base.groups.map((group) => ({ ...group, roomPreference: '', roomTypeCode: undefined })),
+      groups: base.groups.map((group) => ({ ...group, roomPreference: '', roomTypeCode: undefined, roomCodes: [] })),
+      steps: base.steps.map((step) => (step.kind === 'quote_stay' ? { ...step, status: 'ready' as const } : step)),
     };
-    const { container } = render(<QuoteWorkflowPanel session={session} onStayAction={onStayAction} />);
+    const { container } = render(
+      <QuoteWorkflowPanel session={session} onStayAction={onStayAction} onRunStep={onRunStep} />,
+    );
     fireEvent.click(screen.getByRole('button', { name: /Add room type/ }));
     expect(onStayAction).toHaveBeenCalledWith(expect.objectContaining({ type: 'add_row', stayId: expect.any(String) }));
-    expect(primaryActions(container)).toHaveLength(1);
-    expect(primaryActions(container)[0]?.textContent).toBe('Complete stay details');
-    expect(screen.getByLabelText('Needs your answer')).toBeDefined();
+    expect(screen.queryByText('Choose a room type for each room before searching.')).toBeNull();
     const search = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
-    expect(search.disabled).toBe(true);
-    const reasons = screen.getAllByText('Choose a room type for each room before searching.');
-    expect(reasons).toHaveLength(2);
-    const reason = reasons[0]?.closest('p');
-    expect(reason).toBeTruthy();
-    expect(reason?.className).toMatch(/text-center text-\[11px\].*text-\[#64748b\]/);
-    expect(reason?.previousElementSibling).toBe(search);
-    expect(reason?.querySelector('svg')).toBeNull();
-    const roomType = screen.getByLabelText('Room type') as HTMLSelectElement;
-    expect(roomType.getAttribute('aria-invalid')).toBe('true');
-    expect(roomType.className).toMatch(/border-\[#c01823\]/);
+    expect(search.disabled).toBe(false);
+    fireEvent.click(search);
+    expect(onRunStep).toHaveBeenCalled();
+    expect(primaryActions(container).some((button) => button.textContent === 'Search availability')).toBe(true);
   });
 
   it('keeps a defaulted any-type row ready and searchable after room and occupancy edits', () => {
@@ -671,7 +666,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(onRunStep).toHaveBeenCalledWith(base.steps[0]!.id);
   });
 
-  it('keeps a blank defaulted room preference blocked until staff choose a type', () => {
+  it('searches a blank defaulted room preference on dates and occupancy alone', () => {
     const onRunStep = vi.fn();
     const base = sessionFromFixture('public-single');
     const session = withLunaMissing(
@@ -701,9 +696,11 @@ describe('QuoteWorkflowPanel', () => {
     );
     render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} />);
 
+    expect(screen.queryByText('Choose a room type for each room before searching.')).toBeNull();
     const search = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
-    expect(search.disabled).toBe(true);
-    expect(screen.getAllByText('Choose a room type for each room before searching.')).toHaveLength(2);
+    expect(search.disabled).toBe(false);
+    fireEvent.click(search);
+    expect(onRunStep).toHaveBeenCalledWith(base.steps[0]!.id);
   });
 
   it('labels missing fields and extracted provenance', () => {
@@ -1655,6 +1652,59 @@ describe('the Find in HMS picker in the quote header', () => {
     assertRatePlanVisible();
     expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government');
     expect(screen.getByRole('option', { name: 'All government rates' })).toBeDefined();
+  });
+
+  it('renders a read-only BAR grid before room cards and keeps unpriced rows as not checked', () => {
+    const base = sessionFromFixture('public-single');
+    const groupId = base.groups[0]!.id;
+    const rateOptions: RateOption[] = [
+      {
+        id: `${groupId}:BAR`,
+        groupId,
+        board: 'bb',
+        boardLabel: 'Bed & Breakfast',
+        rateCode: 'BAR',
+        rateLabel: 'Best Available Rate',
+        roomCode: 'STQN',
+        roomLabel: 'Standard Queen',
+        contract: false,
+        onlyContract: false,
+        matchesRequest: true,
+        perNightMinor: 100_000,
+        roomsLeft: 4,
+        totalMinor: 200_000,
+        currency: 'ZAR',
+        priced: 'summary',
+        selected: true,
+      },
+      {
+        id: `${groupId}:BAR-stwn`,
+        groupId,
+        board: 'bb',
+        boardLabel: 'Bed & Breakfast',
+        rateCode: 'BAR',
+        rateLabel: 'Best Available Rate',
+        roomCode: 'STWN',
+        roomLabel: 'Standard Twin',
+        contract: false,
+        onlyContract: false,
+        matchesRequest: true,
+        perNightMinor: 0,
+        totalMinor: 0,
+        currency: 'ZAR',
+        priced: 'summary',
+        selected: false,
+        incomplete: true,
+      },
+    ];
+    const { container } = render(<QuoteWorkflowPanel session={{ ...base, rateOptions }} />);
+    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    const roomCards = screen.getByRole('group', { name: 'Room rates from HMS' });
+    expect(grid.compareDocumentPosition(roomCards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(grid).getByText('Standard Queen (STQN)')).toBeDefined();
+    expect(within(grid).getAllByText('not checked').length).toBeGreaterThan(0);
+    expect(grid.querySelector('button')).toBeNull();
+    expect(container.querySelector('[aria-label="Room rates from HMS"]')).toBeTruthy();
   });
 
   it('filters returned rate cards locally without clearing the quoted HMS results', () => {

@@ -99,6 +99,9 @@ export function availabilityRequestsFor(payload: unknown): AvailabilityRequest[]
   });
 }
 
+/** Return cap for an all-room BAR probe. Matches quote-contract MAX_OPTIONS. */
+export const AVAILABILITY_MAX_OPTIONS_PER_GROUP = 200;
+
 /** The quote tool's v2 request for one probe. Groups carry no room or rate codes, so every room type is read. */
 export function quoteRequestFor(request: AvailabilityRequest): Record<string, unknown> {
   return {
@@ -107,6 +110,7 @@ export function quoteRequestFor(request: AvailabilityRequest): Record<string, un
     arrivalDate: request.arrival,
     departureDate: request.departure,
     details: 'summary',
+    maxOptionsPerGroup: AVAILABILITY_MAX_OPTIONS_PER_GROUP,
     rooms: request.rooms.map((room, index) => ({
       id: `group-${index + 1}`,
       quantity: room.quantity,
@@ -129,6 +133,7 @@ type QuoteNight = {
 type QuoteOption = {
   room?: { code?: unknown; label?: unknown } | null;
   rate?: { code?: unknown; label?: unknown } | null;
+  board?: unknown;
   availability?: unknown;
   availabilityReason?: unknown;
   eligibility?: unknown;
@@ -189,6 +194,7 @@ export type AvailabilitySnapshot = {
     options: Array<{
       room: string | null;
       rate: string | null;
+      board?: string;
       availability: string;
       roomLabel?: string;
       rateLabel?: string;
@@ -196,6 +202,8 @@ export type AvailabilitySnapshot = {
       nightly?: AvailabilityNightFact[];
     }>;
   }>;
+  /** True when the reader cut matching rows at maxOptionsPerGroup. */
+  truncated?: boolean;
 };
 
 export type AvailabilityProbeResult =
@@ -227,6 +235,10 @@ function completeness(value: unknown): AvailabilityCompleteness | undefined {
     }
   }
   return Object.keys(flags).length > 0 ? flags : undefined;
+}
+
+function truncatedOf(flags: AvailabilityCompleteness | undefined): boolean {
+  return flags?.search === 'truncated' || flags?.matchingRowsUnseen === true;
 }
 
 function positiveCount(value: unknown): number | null {
@@ -414,11 +426,13 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
         );
         const roomLabel = text(option?.room?.label);
         const eligibility = text(option?.eligibility);
+        const board = text(option?.board);
         const hasNightlyFacts = nightly !== undefined;
         return {
           room: text(option?.room?.code),
           rate,
           availability,
+          ...(board ? { board } : {}),
           ...(availabilityReason ? { availabilityReason } : {}),
           ...(hasNightlyFacts && roomLabel ? { roomLabel } : {}),
           ...(hasNightlyFacts && rateLabel ? { rateLabel } : {}),
@@ -433,6 +447,8 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
     0,
   );
   const searchCompleteness = completeness(result.searchCompleteness);
+  const truncated =
+    truncatedOf(searchCompleteness) || groups.some((group) => truncatedOf(group.completeness));
   return {
     roomScope: 'all_room_types',
     searchOutcome: text(result.outcome) ?? 'execution_failure',
@@ -440,6 +456,7 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
     availableOptions,
     ...(searchCompleteness ? { searchCompleteness } : {}),
     groups,
+    ...(truncated ? { truncated: true } : {}),
   };
 }
 

@@ -67,7 +67,7 @@ import { NeedsAnswerList } from './needs-answer-list';
 import { NotSupportedList } from './not-supported-list';
 import { PaneStatusLine } from './pane-status-line';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
-import { RateCards } from './rate-cards';
+import { BarAvailabilityGrid, projectBarGrid, RateCards } from './rate-cards';
 import {
   CopyHmsNotesButton,
   hmsNotesBlock,
@@ -957,7 +957,6 @@ function stayRatesBlockReason(
   if (rows.some((group) => !group.arrivalDate || !group.departureDate)) {
     return 'Add arrival and departure dates first.';
   }
-  if (rows.some((group) => !roomRequirementReady(group))) return 'Choose a room type for each room before searching.';
   if (rows.some((group) => !group.quantity)) return 'Add the number of rooms first.';
   if (!step) return 'The HMS search is not ready yet.';
   if (step.status === 'succeeded') return null;
@@ -1357,7 +1356,7 @@ export function QuoteWorkflowPanel({
       (stay) =>
         stay.rows.length > 0 &&
         stay.rows.every(
-          (row) => Boolean(row.arrivalDate && row.departureDate && roomRequirementReady(row) && row.quantity && row.adults),
+          (row) => Boolean(row.arrivalDate && row.departureDate && row.quantity && row.adults),
         ),
     );
   const partyState =
@@ -1380,7 +1379,9 @@ export function QuoteWorkflowPanel({
     session.steps.find((item) => item.kind === 'quote_stay' && item.shareKey === stayKeyForGroup(group));
   // All returned codes stay visible under All rates; a plan filters cards, and the meal dropdown only highlights them.
   const rateGroups = session.groups.flatMap((group) => {
-    const groupOptions = (session.rateOptions ?? []).filter((option) => option.groupId === group.id);
+    const groupOptions = (session.rateOptions ?? []).filter(
+      (option) => option.groupId === group.id && option.incomplete !== true,
+    );
     const options = filteredRateOptions(groupOptions, ratePlan, ratePlans);
     if (!groupOptions.length) return [];
     const step = stepFor(group);
@@ -1706,6 +1707,10 @@ export function QuoteWorkflowPanel({
                 const preparedAtLabel = preparedAt && Number.isFinite(preparedAt.getTime())
                   ? preparedAt.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
                   : null;
+                const stayIds = new Set(stay.rows.map((row) => row.id));
+                const barGridCells = projectBarGrid(
+                  (session.rateOptions ?? []).filter((option) => stayIds.has(option.groupId)),
+                );
                 return (
                   <article key={`${stay.id}-search`} className="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3">
                     {stayQuote?.preparedByNava ? (
@@ -1790,6 +1795,7 @@ export function QuoteWorkflowPanel({
                         </div>
                       </details>
                     ) : null}
+                    <BarAvailabilityGrid cells={barGridCells} truncated={barGridCells.length >= 200} />
                     {stay.rows.map((group) => {
                       const rateGroup = rateGroups.find((item) => item.group.id === group.id);
                       const rowStep = stepFor(group);
@@ -1835,7 +1841,9 @@ export function QuoteWorkflowPanel({
                               selectedControls={cardHostsControls ? rowControls : undefined}
                               onPick={pickRate}
                             />
-                          ) : session.rateOptions?.some((option) => option.groupId === group.id) ? (
+                          ) : session.rateOptions?.some(
+                              (option) => option.groupId === group.id && option.incomplete !== true,
+                            ) ? (
                             <p className="text-[13px] text-[#64748b]">No rates match this filter. Choose All rates to show every HMS code.</p>
                           ) : null}
                           {rowControlsHostedBelow ? rowControls : null}

@@ -67,22 +67,22 @@ describe('stay and room builder', () => {
     expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('STQN');
   });
 
-  it('shows the unknown room code the email asked for, and blocks Get rates until a room type is chosen', () => {
+  it('shows the unknown room code the email asked for and still allows search on dates and occupancy', () => {
     renderPanel(requestSession([row('a1', dateA, { roomPreference: 'PENTHOUSE' })]));
     const roomType = screen.getByLabelText('Room type');
     if (!(roomType instanceof HTMLSelectElement)) throw new Error('Room type is not a select');
     expect(roomType.value).toBe('PENTHOUSE');
     expect(screen.getByRole('option', { name: 'Email request' })).toBeTruthy();
-    expect(getRatesButton().disabled).toBe(true);
-    expect(screen.getAllByText('Choose a room type for each room before searching.')).toHaveLength(2);
+    expect(screen.queryByText('Choose a room type for each room before searching.')).toBeNull();
+    expect(getRatesButton().disabled).toBe(false);
   });
 
-  it('keeps Get rates off while any row of any stay has no room type', () => {
+  it('keeps date-range search enabled when a stay has no room type yet', () => {
     renderPanel(requestSession([row('a1', dateA), row('b1', dateB, { roomPreference: undefined })]));
     const searches = screen.getAllByRole('button', { name: /Search this date range for Stay/ }) as HTMLButtonElement[];
     expect(searches).toHaveLength(2);
-    expect(searches[1]!.disabled).toBe(true);
-    expect(screen.getByText('Choose a room type for each room before searching.')).toBeTruthy();
+    expect(searches[1]!.disabled).toBe(false);
+    expect(screen.queryByText('Choose a room type for each room before searching.')).toBeNull();
   });
 
   it('hands stay actions to the shell: duplicate, remove and add', () => {

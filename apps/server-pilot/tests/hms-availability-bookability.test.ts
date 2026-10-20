@@ -67,6 +67,10 @@ describe('whole-stay bookability in availability snapshots', () => {
     const option = snapshot.groups[0]!.options[0]!;
     expect(read.options[0]).toMatchObject({ availability: 'restricted', availabilityReason: reason });
     expect(option).toMatchObject({ availability: 'restricted', availabilityReason: reason });
+    const readerBoard = read.options[0]?.board;
+    if (typeof readerBoard === 'string' && readerBoard.trim()) {
+      expect(option.board).toBe(readerBoard);
+    }
     expect(option.nightly).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
