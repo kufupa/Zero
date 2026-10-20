@@ -164,6 +164,8 @@ Cut order exists because the owner is the only human: a shipped smaller set beat
 
 ## 7. Lane launch (exact)
 
+**You (the orchestrator) create every worktree and terminal yourself with `orca-ide`.** No human or other session does it for you. Every worker is a visible Orca terminal (owner watches/steers in Orca). Grok built-in subagents are off for coders (`--no-subagents`); headless `grok -p` reviews and `codex exec` evals run as background shell commands inside the unit's worktree. Record each handle in `/tmp/sr2/state.md`.
+
 ```bash
 orca-ide skills get orca-cli            # once, read the version-matched guide
 orca-ide worktree create --repo path:/home/ubuntu/projects/zero --name sr2-<unit> --base-branch origin/main --no-parent --json
@@ -175,6 +177,17 @@ orca-ide terminal send --terminal <handle> --text "<lane brief>" --enter --json
 ```
 
 A prompt typed into a TUI that is still starting is lost — check `satisfied`.
+
+Other Orca commands you will need:
+
+```bash
+orca-ide terminal list --worktree id:<repoId>::<path> --json      # find handles again (after Orca restart / terminal_handle_stale)
+orca-ide terminal read --terminal <handle> --json                 # 10-min check-in
+orca-ide terminal send --terminal <handle> --text "<steer>" --enter --json
+orca-ide terminal create --worktree id:<repoId>::<path> --title sr2-<unit>-eval --command '<codex exec ... | grok -p ...>' --json   # visible eval/review worker in the same unit worktree
+```
+
+Never `terminal create` a second coder in a worktree that already has one; steer the existing handle.
 
 ---
 

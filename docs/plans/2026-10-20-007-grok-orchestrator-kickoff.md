@@ -1,6 +1,6 @@
 # Grok orchestrator kickoff — stay-request build v2
 
-Paste the block below into a new Orca terminal running `grok -m grok-4.7 --effort xhigh --permission-mode bypassPermissions` with cwd `/home/ubuntu/projects/zero`. The owner pastes it, so the approvals inside are given in the executing chat (AGENTS.md: approvals never relay between sessions).
+The planning session (Claude Opus) launches this itself via Orca CLI, on the owner's in-chat instruction (ask 172, 2026-10-20 18:20Z: "why can't you do that yourself using Orca CLI"): `orca-ide terminal create --worktree id:<repoId>::/home/ubuntu/projects/zero --title sr2-orchestrator --command 'grok -m grok-4.7 --effort xhigh --permission-mode bypassPermissions'` → `terminal wait --for tui-idle` → `terminal send` of the block below. The approvals A1–A4 inside were given by the owner in the planning chat (Q3/Q4/D18/H1, 2026-10-20) and the launch instruction was given in that same chat; the orchestrator must still refuse any approval relayed later from another session. The owner can watch and steer the terminal in Orca at any time.
 
 ---
 
@@ -21,11 +21,19 @@ HARD RULES (PRODUCT.md / AGENTS.md):
 - No mail bodies, guest names, emails or phones in logs, PRs or chat. Prod SQL is read-only only: `BEGIN READ ONLY … ROLLBACK` via apps/server-pilot/deploy/ssm-run-command.sh, counts only.
 - PR size: one behaviour per PR, <= ~500 product lines. Never stack on an unmerged PR >500 lines. Merge origin/main into a branch before its first review, then freeze.
 
-LANES (Orca CLI = `orca-ide`; load its guide once: `orca-ide skills get orca-cli`):
+LANES — YOU LAUNCH EVERYTHING YOURSELF VIA ORCA CLI (`orca-ide`, never bare `orca`, which is the GNOME screen reader). Nobody else will create worktrees or terminals for you. Load the guide once: `orca-ide skills get orca-cli`.
+- Every worker you start (coder, reviewer you want visible, Luna eval, fix lane) is an Orca terminal in an Orca worktree, so the owner can watch it in Orca. Do not use Grok's built-in subagents for lane work (start coders with --no-subagents); a headless `grok -p` review or `codex exec` eval is fine as a background shell command inside the unit's worktree.
+- Track every handle you create in /tmp/sr2/state.md (unit | worktree id | terminal handle | state). Re-list with `orca-ide terminal list --worktree id:<repoId>::<path> --json` after an Orca restart or a terminal_handle_stale error; never send to an old handle.
 - One child worktree per unit: `orca-ide worktree create --repo path:/home/ubuntu/projects/zero --name sr2-<unit> --base-branch origin/main --no-parent --json`.
 - Coder in that worktree: `orca-ide terminal create --worktree id:<repoId>::<path> --title sr2-<unit> --command 'grok -m grok-4.6 --effort high --permission-mode bypassPermissions --no-subagents' --json`, then `terminal wait --for tui-idle --timeout-ms 60000` (send only when satisfied: true), then `terminal send --text "<unit brief>" --enter`.
 - Unit brief = the unit's section from the plan verbatim + owned files (Waves table) + the exact test files listed + "commit on branch sr2-<unit>, push, open a PR; do not merge; do not run tsc/vitest locally; run gates with the two remote scripts".
 - Waves: start every Wave A unit at once (U1, U2, U3, U4-code, U5a, U7, U11a). Start any other unit the moment every unit in its "After" column is merged (not when its wave letter opens). U10→U6→U9 run strictly in that order (shared quote-workflow-panel.tsx); U7→U8 likewise. A shared file means queued, never parallel.
+
+UDV — DA VINCI INGEST (parallel lane, owner option B; disjoint files; off the critical path; does not displace any unit). Evidence: docs/research/2026-10-20-davinci-ingest-quarantine.md. Start it with Wave A.
+- Owned files: apps/server-pilot/scripts/provision-prod.ts, apps/server-pilot/src/db/provision.ts, apps/server-pilot/scripts/promote-quarantine.ts, apps/server-pilot/src/mail/ingest/promote-quarantine.ts (+ store.ts only for the promotion override type). Tests: apps/server-pilot/tests/provision.test.ts, apps/server-pilot/tests/promote-quarantine.test.ts.
+- PR 1: `provision-prod.ts --transports-only` — plans/applies ONLY missing transports + the Nava-user grants; never creates users/credentials, never edits aliases of existing transports; dry-run stays default.
+- PR 2: generalise the promoter — resolve target transport from parsed To/Cc/Bcc/From identity via the same resolver store.ts uses (no Centurion constants), infer direction (own-From = outbound), leave ambiguous/multi rows quarantined, `--dry-run` default, `--transport <id>` filter.
+- You do NOT run either against prod. The prod write (3 transport rows) and any promotion are owner holds executed in the planning chat after the end deploy. Report both PR numbers in the closeout.
 
 PER-UNIT PIPELINE (owner routing):
 1 Grok 4.6 high codes (the coder terminal).
@@ -46,5 +54,5 @@ U12 END: after every unit is merged, do the A2 deploy (fetch first), then a read
 
 CLOSEOUT: update docs/context/ACTIVE.md (verified state, next acceptance check, holds), add a retro line per unit, record mistakes in docs/context/MISTAKES.md, report `grok usage` $ per model. Report to the owner in chat: what's live, what passed, what failed with evidence, open holds.
 
-Start now: read the files, write the ledger start row, create the six Wave A worktrees + coder terminals, and post a lane table (unit | worktree | terminal | state).
+Start now: read the files, write the ledger start row, create the Wave A worktrees + coder terminals (U1, U2, U3, U4-code, U5a, U7, U11a, UDV), and post a lane table (unit | worktree | terminal | state).
 ```
