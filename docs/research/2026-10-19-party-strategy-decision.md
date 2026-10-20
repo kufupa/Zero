@@ -86,6 +86,17 @@ Read-only HMS read of 194 more conf numbers from outside-sender threads (prod ma
 
 History turned strong on 1 of 14 history hits. Cause: the "email beats history" rule treats any differently spelled name of the same kind as a contradiction (exact normalised compare), so "Nexus Travel" in the email vs "XL Nexus" in the map, or "Rennies BCD" vs "RENNIES TRAVEL", downgrade history to weak. Also the map was loaded on 10-16 by name only (no `native_id`), so the duplicate-copy path never fires. Next: (1) contradiction = no shared distinctive token, not any spelling difference; (2) backfill `native_id`/`iata` from the 253-booking read; (3) never search the hotel's own name ("Legacy Hotels", 2 of 3 remaining misses).
 
+**Correction (2026-10-20 00:30Z, replays p9/p10, same 42 mails, read-only).** Step (1) was wrong. History stayed weak because the email itself named the agency, and the email's own name already bound the right profile. Loosening the rule (#414) made "XL Nexus" history (support 19) strong. It then tied with the email's "Nexus Travel" #27, and the tie meant no bind. Step (2) was dropped: the HMS read holds 0/43 agency ids. #418 restored the exact-name rule and kept (3) plus the null-id single-row bind.
+
+| Code (same 42 mails) | Right / 22 | Wrong | Top 3 | Bound on 20 v2-misses | History strong | p50 / p90 |
+|---|---:|---:|---:|---:|---:|---|
+| v2 (old prod) | 21 | 0 | — | 0 | — | 65 s / 86 s |
+| p8 `347c188bc` | 19 | 0 | 20 | 1 | 1 / 14 | 39 s / 47 s |
+| p9 `78c29b5ae` (#414 loose rule) | 12 | 0 | 20 | 2 | 11 / 14 | 34 s / 46 s |
+| **p10 #418 (live `1181ca923`)** | **20** | **0** | 20 | **2** | 1 / 14 | **29 s / 42 s** |
+
+Live hybrid vs v2: one right bind fewer on the 22 (20 vs 21), 2 more binds on mails v2 missed, 0 wrong, 2.2× faster. Both v2-only wins are "No Limits" mails, where v3 still finds the right profile in its top 3.
+
 ## 5b. Owner calls (2026-10-19 ~18:00Z, this chat)
 
 | # | Call |

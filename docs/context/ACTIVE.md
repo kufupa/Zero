@@ -4,10 +4,11 @@ Updated 2026-10-19 after the overnight leak-free triage run. Already imported by
 
 ## Party lookup + pane review — 2026-10-19 (B2 party design chat)
 
-- Live at `78c29b5ae` (deployed 23:33Z; last-good before `1c74f42b5`, env backup `.env.production.bak-20261019-party-hybrid`). `PARTY_MATCH_V3=true` and `PARTY_HISTORY_BIND=on` on http/worker/ai-worker (`/proc` checked); remote-http has no party flags, same as V2. Pane bundle `nava-pane-D22iMVfj.js`.
-- Hybrid shipped: v2 picker on v3 rows (#408), sender history learned from staff picks (#410, migration 0051), history binds on shared distinctive tokens + no own-brand/country search terms (#414), email-named party beats name-only history (#417). [Decision](../research/2026-10-19-party-strategy-decision.md) §5c–5d.
+- Live at `1181ca923` (#418, deployed 00:28Z 2026-10-20; last-good before `78c29b5ae`, then `1c74f42b5`; env backup `.env.production.bak-20261019-party-hybrid`). `PARTY_MATCH_V3=true` and `PARTY_HISTORY_BIND=on` on http/worker/ai-worker (`/proc` checked); remote-http has no party flags, same as V2. Health 200/200.
+- Hybrid shipped: v2 picker on v3 rows (#408), sender history learned from staff picks (#410, migration 0051), null-id history binds a unique same-kind row + no own-brand/country search terms (#414), email-named party beats history (#417, #418 exact-name rule restored).
+- Score (same 42 mails, read-only replay p10 on #418): **20/22 right, 0 wrong**, top-3 20/22, 2 of 20 v2-misses bound, p50 29 s / p90 42 s vs v2 21/22 at 65 s. p9 on `78c29b5ae` was 12/22 (regression, fixed). [Decision](../research/2026-10-19-party-strategy-decision.md) §5d.
 - Owner pane review (asks 133–137): step 1 is now "Agency & company", a preset dropdown with every same-kind HMS row (IATA · city · address, no id), ✓ confirm / ✏ edit / "Search HMS…" (#413); stay card ⓘ, Copy/Remove icons, nights dropdown, Skyscanner date clicks (#416, Check-out fix #417); rooms left on rate cards (#412); Source of business preset Email (#415).
-- Next acceptance check: replay p9 (same 42 mails, deployed code) ≥ v2's 21/22 right, 0 wrong; owner look at the pane before 05:00Z staff start; staff bundle load in nginx. Open: asks 134 (real rates in Rate authority), 136 (extras/shuttle), 132 (reusable HMS login).
+- Next acceptance check: owner look at the pane before 05:00Z staff start; staff bundle load in nginx; party bar needs ≥ 100 non-circular truth rows (only 22 here). Open: asks 134 (real rates in Rate authority), 136 (extras/shuttle), 137 rest (no re-editable fields at Book in HMS), 132 (reusable HMS login).
 
 ## Chat A (HMS speed) — 2026-10-19
 
