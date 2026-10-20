@@ -5,6 +5,7 @@ import {
   partyFinderFromTrpc,
   type PartyFindReply,
   type PartyFinder,
+  type PartySuggestion,
 } from '../lib/quote-workflow/party-lookup';
 import {
   hmsJobTransport,
@@ -58,6 +59,8 @@ function Harness({
   name = 'Woolworths',
   kind = 'company',
   jobTransport,
+  suggestions,
+  onPick,
 }: {
   find: PartyFinder;
   autoLookup?: boolean;
@@ -65,6 +68,8 @@ function Harness({
   name?: string;
   kind?: StaffQuoteParty['kind'];
   jobTransport?: HmsJobTransport | null;
+  suggestions?: PartySuggestion[];
+  onPick?: (party: StaffQuoteParty) => void;
 }) {
   const [parties, setParties] = useState<StaffQuoteParties>(initial);
   return (
@@ -76,7 +81,11 @@ function Harness({
       autoLookup={autoLookup}
       jobTransport={jobTransport}
       threadId="thread-1"
-      onPick={(party) => setParties((current) => ({ ...current, [party.kind]: party }))}
+      suggestions={suggestions}
+      onPick={(party) => {
+        onPick?.(party);
+        setParties((current) => ({ ...current, [party.kind]: party }));
+      }}
       onClear={(cleared) => setParties((current) => ({ ...current, [cleared]: undefined }))}
     />
   );
@@ -152,6 +161,36 @@ describe('automatic HMS lookup for a company or agency field', () => {
     expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
     expect(find).toHaveBeenCalledTimes(2);
     expect(find).toHaveBeenCalledWith('Woolworths', 'company', { threadId: 'thread-1' });
+  });
+
+  it('does not bind a domain suggestion when auto-lookup finds a matching HMS row', async () => {
+    const onPick = vi.fn();
+    const domainHint: PartySuggestion = {
+      source: 'sender',
+      kind: 'company',
+      name: 'Woolworths Holdings',
+      nativeId: null,
+      idStatus: 'unverified',
+    };
+    const find = vi.fn(async () =>
+      reply({
+        outcome: 'resolved',
+        results: [WOOLWORTHS],
+        best: WOOLWORTHS,
+        searchedFor: 'Woolworths Holdings',
+      }),
+    );
+    render(
+      <Harness
+        find={find}
+        name="Woolworths Holdings"
+        suggestions={[domainHint]}
+        onPick={onPick}
+      />,
+    );
+    expect(await screen.findByRole('button', { name: 'Confirm Woolworths Holdings' })).toBeTruthy();
+    expect(onPick).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Edit Company' })).toBeNull();
   });
 
   it('does not queue HMS jobs while typing; explicit Find queues one user lookup', async () => {
