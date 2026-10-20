@@ -20,7 +20,6 @@ import {
   releaseIngestUidlClaim,
   type QuarantineReason,
 } from './store.js';
-import { completeFanoutAfterPrimary } from './fanout.js';
 import {
   candidateMessageIdForPop3Uidl,
   parseRawMessage,
@@ -28,7 +27,7 @@ import {
   type ParsedInboundMessage,
 } from './parse-message.js';
 import { getS3Storage, quarantineArchiveKey, type S3Storage } from '../../storage/s3.js';
-import { mailIngestQuarantine } from '../../db/schema/mail.js';
+import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { DB } from '../../db/client.js';
 
@@ -174,6 +173,12 @@ async function recoverOneParseFailureRow(
       return { kind: 'dry-run' };
     }
 
+    const existing = await findExistingMessageAnyDirection(db, meta);
+    if (existing) {
+      await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
+      return { kind: 'duplicate' };
+    }
+
     const claimToken = await claimIngestUidl(db, meta);
     if (!claimToken) {
       return { kind: 'error', reason: 'ingest_uidl_claim_pending' };
@@ -185,45 +190,29 @@ async function recoverOneParseFailureRow(
         storage,
       });
 
-      const persistMeta = {
-        ...meta,
-        messageId,
-        ...(loaded.source === 'primary' ? { rawMimeS3Key: row.rawMimeS3Key } : {}),
-      };
       const persistResult = await persistInboundMessage(
         parsed,
         loaded.object.body,
-        persistMeta,
+        {
+          ...meta,
+          messageId,
+          ...(loaded.source === 'primary' ? { rawMimeS3Key: row.rawMimeS3Key } : {}),
+        },
         {
           db,
           storage,
-          deferQuarantineDelete: true,
+          promoteQuarantineId: row.id,
           skipAiEnqueue: opts.skipAiEnqueue,
           activeIngestUidlClaimToken: claimToken,
         },
       );
 
-      if (
-        persistResult.kind === 'stored' ||
-        persistResult.kind === 'duplicate' ||
-        persistResult.kind === 'reconciled'
-      ) {
-        const copiesOk = await completeFanoutAfterPrimary({
-          db,
-          storage,
-          raw: loaded.object.body,
-          meta: persistMeta,
-          persistResult,
-          skipAiEnqueue: opts.skipAiEnqueue,
-        });
-        if (!copiesOk) {
-          return { kind: 'error', reason: 'recovery_failed' };
-        }
-        await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
-        return persistResult.kind === 'duplicate' ? { kind: 'duplicate' } : { kind: 'stored' };
+      if (persistResult.kind === 'stored') {
+        return { kind: 'stored' };
       }
-      if (persistResult.kind === 'failed' || persistResult.kind === 'deferred') {
-        return { kind: 'error', reason: 'recovery_failed' };
+      if (persistResult.kind === 'duplicate') {
+        await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
+        return { kind: 'duplicate' };
       }
       if (persistResult.kind === 'quarantined' && persistResult.reason !== PARSE_FAILURE_REASON) {
         await db
@@ -291,3 +280,16 @@ async function loadRecoverRawMime(
   return { object: archived, source: 'archive' };
 }
 
+async function findExistingMessageAnyDirection(
+  db: DB,
+  meta: Pick<PromoteQuarantineRow, 'ingestMailboxId' | 'pop3Uidl'>,
+): Promise<{ id: string; transportId: string } | undefined> {
+  const rows = await db
+    .select({ id: message.id, transportId: message.transportId })
+    .from(message)
+    .where(
+      and(eq(message.ingestMailboxId, meta.ingestMailboxId), eq(message.pop3Uidl, meta.pop3Uidl)),
+    )
+    .limit(1);
+  return rows[0];
+}

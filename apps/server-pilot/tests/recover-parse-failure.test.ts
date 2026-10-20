@@ -6,13 +6,10 @@ import {
 } from '../src/storage/s3.js';
 import { recoverParseFailureQuarantine } from '../src/mail/ingest/recover-parse-failure.js';
 import { candidateMessageIdForPop3Uidl } from '../src/mail/ingest/parse-message.js';
-import { claimIngestUidl } from '../src/mail/ingest/store.js';
-import { fanoutCopyPop3Uidl } from '../src/mail/ingest/fanout.js';
-import { mailIngestQuarantine, mailboxTransport } from '../src/db/schema/mail.js';
+import { mailIngestQuarantine } from '../src/db/schema/mail.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
 
 const ingestMailboxId = 'ingest-nava-legacy';
 function mail(outbound = false): Buffer {
@@ -227,60 +224,6 @@ describe('parse-failure recovery through real PostgreSQL persistence', () => {
       expect(await sql`SELECT id FROM message`).toHaveLength(0);
       expect(await sql`SELECT id FROM ai_workflow_run`).toHaveLength(0);
       expect(await sql`SELECT * FROM mail_ingest_uidl_claim`).toHaveLength(0);
-    });
-  }, 30000);
-
-  it('does not report stored until every mailbox copy succeeds and keeps quarantine for retry', async () => {
-    await withIngestionDb(async ({ db, sql }) => {
-      await db
-        .update(mailboxTransport)
-        .set({
-          email: 'hotel-cen@example.test',
-          ownerHeaderValue: 'hotel-cen@example.test',
-          sendFromConfig: null,
-          isActive: true,
-        })
-        .where(eq(mailboxTransport.id, 'transport-centurion'));
-      await db.insert(mailboxTransport).values({
-        id: 'transport-davinci',
-        email: 'hotel-dav@example.test',
-        ownerHeaderValue: 'hotel-dav@example.test',
-        mailboxType: 'personal',
-        isActive: true,
-        sendFromConfig: null,
-      });
-      const storage = new FakeS3Storage('recovery-fanout-copy');
-      const pop3Uidl = 'recover-fanout-copy-fail';
-      const row = quarantine(pop3Uidl);
-      await db.insert(mailIngestQuarantine).values(row);
-      const raw = Buffer.from(
-        [
-          'From: guest@example.test',
-          'To: hotel-cen@example.test, hotel-dav@example.test',
-          'Subject: recover copies',
-          'MIME-Version: 1.0',
-          'Content-Type: text/plain; charset=utf-8',
-          '',
-          'Synthetic body.',
-        ].join('\r\n'),
-        'utf8',
-      );
-      await storage.putObject({
-        key: row.rawMimeS3Key,
-        body: raw,
-        contentType: 'message/rfc822',
-      });
-      const copyUidl = fanoutCopyPop3Uidl(pop3Uidl, 'transport-davinci');
-      expect(
-        await claimIngestUidl(db, { ingestMailboxId, pop3Uidl: copyUidl }),
-      ).toBeTruthy();
-      const result = await recoverParseFailureQuarantine({ db, storage });
-      expect(result.stored).toBe(0);
-      expect(result.errors).toBe(1);
-      expect(result.outcomes).toEqual([
-        { id: row.id, kind: 'error', reason: 'recovery_failed' },
-      ]);
-      expect(await sql`SELECT id FROM mail_ingest_quarantine`).toEqual([{ id: row.id }]);
     });
   }, 30000);
 });
