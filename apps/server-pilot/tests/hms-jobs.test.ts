@@ -663,8 +663,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         ...autoStaffQuoteRequest(threadId, messageId),
         request: { kind: 'staff_quote', input: paneInput },
       }, db);
-      expect(reused).toMatchObject({ created: false, run: { id: prepared?.id } });
-      expect(reused.run.priority).toBe(priority);
+      if (priority === HMS_JOB_PRIORITY_PREFETCH) {
+        expect(reused).toMatchObject({ created: false, run: { id: prepared?.id } });
+        expect(reused.run.priority).toBe(priority);
+      } else {
+        // A queued dev price is not adopted; staff get their own read at staff priority.
+        expect(reused.created).toBe(true);
+        expect(reused.run.id).not.toBe(prepared?.id);
+        expect(reused.run.priority).toBe(HMS_JOB_PRIORITY_USER);
+      }
     }));
 
   it('does not reuse a queued dev-eval quote for a later staff quote', () =>
