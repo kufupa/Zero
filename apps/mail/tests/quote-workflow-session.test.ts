@@ -176,6 +176,37 @@ describe('quote session', () => {
     expect(preservedForGovernmentParty.staffHeader.company).toBe('Department X');
   });
 
+  it('returns to BAR when a corrected read or a row edit removes dinner, unless staff chose the strategy', () => {
+    const dinnerAnalysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+    };
+    const bbAnalysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'bb' as const })),
+    };
+    const dinner = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis: dinnerAnalysis });
+    expect(dinner.staffHeader.salesStrategy).toBe('Government');
+    const corrected = reduceQuoteSession(dinner, { type: 'analysis_ready', analysis: bbAnalysis });
+    expect(corrected.staffHeader.salesStrategy).toBe('BAR');
+
+    const edited = dinner.groups.reduce(
+      (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: { board: 'bb' } }),
+      dinner,
+    );
+    expect(edited.staffHeader.salesStrategy).toBe('BAR');
+
+    const staffGovernment = reduceQuoteSession(dinner, {
+      type: 'patch_staff_header',
+      header: { salesStrategy: 'Government' },
+    });
+    const kept = staffGovernment.groups.reduce(
+      (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: { board: 'bb' } }),
+      staffGovernment,
+    );
+    expect(kept.staffHeader.salesStrategy).toBe('Government');
+  });
+
   it('keeps the existing Government-party default for B&B asks', () => {
     const analysis: QuoteAnalysis = {
       ...quoteAnalysis,

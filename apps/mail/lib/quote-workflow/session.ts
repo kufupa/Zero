@@ -779,6 +779,15 @@ function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
   return texts.some((text) => /shuttle|airport/i.test(text));
 }
 
+/** Government for a government party or when every row asks Dinner B&B; otherwise BAR. */
+function automaticSalesStrategy(
+  groups: readonly { board: string }[],
+  partyKind: string | undefined,
+): StaffQuoteHeader['salesStrategy'] {
+  const allDinner = groups.length > 0 && groups.every((group) => group.board === 'dinner_bb');
+  return partyKind === 'government' || allDinner ? 'Government' : 'BAR';
+}
+
 function prefillStaffHeaderFromLuna(
   header: StaffQuoteHeader,
   analysis: QuoteAnalysis,
@@ -798,13 +807,9 @@ function prefillStaffHeaderFromLuna(
       };
     }
   }
-  if (
-    !staffSalesStrategyEdited &&
-    next.salesStrategy === 'BAR' &&
-    analysis.groups.length > 0 &&
-    analysis.groups.every((group) => group.board === 'dinner_bb')
-  ) {
-    next = { ...next, salesStrategy: 'Government' };
+  // Until staff pick a strategy, each read decides it again, so a corrected read without dinner returns to BAR.
+  if (!staffSalesStrategyEdited) {
+    next = { ...next, salesStrategy: automaticSalesStrategy(analysis.groups, party?.kind) };
   }
   if (!next.shuttleRequested && shuttleRequestedFromAnalysis(analysis)) {
     next = { ...next, shuttleRequested: true };
@@ -1731,9 +1736,14 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const patched = groups.find((group) => group.id === action.groupId)!;
       // A date edit moves the stay: its saved extras follow it to the new dates.
       const staffHeader = carryStayExtras(session.staffHeader, groups, stayKeyForGroup(target), stayKeyForGroup(patched));
+      // A board edit can change the automatic strategy; a strategy staff picked stays.
+      const salesStrategy = session.staffSalesStrategyEdited
+        ? staffHeader.salesStrategy
+        : automaticSalesStrategy(groups, session.analysis?.luna?.party?.kind);
+      const header = salesStrategy === staffHeader.salesStrategy ? staffHeader : { ...staffHeader, salesStrategy };
       // A rate pick or a row price keeps its own cards on screen while the re-run is pending. Other edits clear them.
       return editStays(
-        staffHeader === session.staffHeader ? session : { ...session, staffHeader },
+        header === session.staffHeader ? session : { ...session, staffHeader: header },
         groups,
         new Set([stayKeyForGroup(target), stayKeyForGroup(patched)]),
         'rateCode' in action.patch || 'rowPrice' in action.patch ? action.groupId : undefined,
