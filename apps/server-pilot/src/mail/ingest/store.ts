@@ -1045,7 +1045,7 @@ export async function persistInboundMessage(
     };
   }
   if (malformedDeliveryOutcomeQuarantine) {
-    return quarantineWithAttachmentCleanup({
+    return quarantineOrFail(opts, {
       db,
       storage,
       parsed,
@@ -1988,7 +1988,6 @@ async function collectFanoutTransportIds(
     .where(eq(mailboxTransport.isActive, true));
   const addresses = [
     parsed.fromHeaderAddress,
-    parsed.fromAddress,
     ...parsed.toAddresses,
     ...parsed.ccAddresses,
     ...parsed.bccAddresses,
