@@ -275,7 +275,7 @@ describe('rate cards in the quote panel', () => {
     expect(rateCards()).toHaveLength(1);
   });
 
-  it('omits roomCodes when no room preference is set and still refuses garbage codes', () => {
+  it('omits roomCodes when no room preference is set and still refuses garbage codes', async () => {
     const blank: StayGroupRequirement = {
       ...stay,
       roomPreference: '',
