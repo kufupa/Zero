@@ -264,9 +264,22 @@ export type RateOption = {
   hint?: 'event_rate';
   /**
    * Grid-only unpriced or incomplete HMS row. Rate cards ignore it. The BAR grid keeps it as "not checked".
-   * Not a QuoteSession DTO: the grid is a projection of rateOptions keyed by room × rate × board.
+   * Prefer `availabilityBoard` on the allocation for the grid.
    */
   incomplete?: boolean;
+};
+
+/** Raw HMS row for the read-only BAR grid. Room × rate × board; unpriced nights stay null. */
+export type AvailabilityBoardRow = {
+  groupId: string;
+  roomCode: string;
+  roomLabel: string;
+  rateCode: string;
+  rateLabel: string;
+  board: string;
+  boardLabel: string;
+  nightlyPriceMinor: number | null;
+  roomsLeft: number | null;
 };
 
 /** What one row was charged on its last run: HMS's nightly rates, the rates charged, and for an override its HMS comment. */
@@ -324,6 +337,10 @@ export type StaffQuoteAllocation = {
   screenshots?: string[];
   /** Rate options from this run. Carried on the allocation because the pane dispatches the allocation alone. */
   rateOptions?: RateOption[];
+  /** Raw HMS board for the read-only BAR grid. Not collapsed by buildRateOptions. */
+  availabilityBoard?: AvailabilityBoardRow[];
+  /** Server flag: the reader cut matching rows at maxOptionsPerGroup. */
+  availabilityTruncated?: boolean;
   /** Each row's charged rate from this run, with the HMS comment for an override. */
   rowRates?: StaffRowRate[];
 };

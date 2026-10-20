@@ -127,6 +127,8 @@ export const staffQuoteInput = z
     parties: staffQuoteParties.optional(),
     // Row prices staff chose instead of HMS's nightly rate. Part of the approved input digest, so an approval binds them.
     rowPrices: z.array(staffRowPriceInput).max(8).optional(),
+    /** All-room BAR search sends 200. A pinned room type keeps the default 50. */
+    maxOptionsPerGroup: z.number().int().min(1).max(200).optional(),
   })
   .strict();
 export type StaffQuoteInput = z.infer<typeof staffQuoteInput>;
@@ -396,7 +398,9 @@ export function prepareStaffQuote(
         salesStrategy: input.salesStrategy,
       },
       details: 'full',
-      maxOptionsPerGroup: 50,
+      maxOptionsPerGroup:
+        input.maxOptionsPerGroup ??
+        (input.groups.some((group) => !group.roomCodes?.length) ? 200 : 50),
       // Without a picked party the request is unchanged: no rateContext key at all.
       ...(partyContext ? { rateContext: partyContext } : {}),
     };

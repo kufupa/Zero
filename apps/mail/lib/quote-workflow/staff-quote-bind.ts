@@ -24,6 +24,7 @@ import type {
   StaffRowRate,
   StaffStayExtras,
   StayGroupRequirement,
+  AvailabilityBoardRow,
 } from './types';
 import { staffHeaderFieldProblem, staffStayExtrasFor } from './types';
 import { knownRoomCode, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
@@ -95,6 +96,8 @@ export type ExecuteStaffQuoteInput = {
   parties?: StaffQuoteParties;
   /** Sent only when staff priced a row. Without one the request is unchanged. */
   rowPrices?: StaffRowPriceWire[];
+  /** All-room BAR search. Absent when a room type is already pinned. */
+  maxOptionsPerGroup?: number;
 };
 
 export type ExecuteStaffQuoteResult = {
@@ -121,6 +124,9 @@ export type ExecuteStaffQuoteResult = {
   dinnerAddOn?: { label: string; amountMinor: number; unit: DinnerAddOnUnit; totalMinor: number };
   /** Optional: an older server sends none. */
   rateOptions?: RateOption[];
+  /** Optional: an older server sends none. */
+  availabilityBoard?: AvailabilityBoardRow[];
+  availabilityTruncated?: boolean;
   /** Optional: an older server sends none. */
   rowRates?: StaffRowRate[];
 };
@@ -574,6 +580,36 @@ export function readRateOptions(value: unknown): RateOption[] {
   return options;
 }
 
+function readAvailabilityBoard(value: unknown): AvailabilityBoardRow[] {
+  if (!Array.isArray(value)) return [];
+  const rows: AvailabilityBoardRow[] = [];
+  for (const row of value) {
+    if (!row || typeof row !== 'object') continue;
+    const raw = row as Record<string, unknown>;
+    if (typeof raw.roomCode !== 'string' || typeof raw.rateCode !== 'string') continue;
+    const nightlyPriceMinor =
+      typeof raw.nightlyPriceMinor === 'number' && Number.isSafeInteger(raw.nightlyPriceMinor) && raw.nightlyPriceMinor > 0
+        ? raw.nightlyPriceMinor
+        : null;
+    const roomsLeft =
+      typeof raw.roomsLeft === 'number' && Number.isInteger(raw.roomsLeft) && raw.roomsLeft >= 0
+        ? raw.roomsLeft
+        : null;
+    rows.push({
+      groupId: typeof raw.groupId === 'string' ? raw.groupId : '',
+      roomCode: raw.roomCode,
+      roomLabel: typeof raw.roomLabel === 'string' ? raw.roomLabel : raw.roomCode,
+      rateCode: raw.rateCode,
+      rateLabel: typeof raw.rateLabel === 'string' ? raw.rateLabel : raw.rateCode,
+      board: typeof raw.board === 'string' ? raw.board : '',
+      boardLabel: typeof raw.boardLabel === 'string' ? raw.boardLabel : typeof raw.board === 'string' ? raw.board : '',
+      nightlyPriceMinor,
+      roomsLeft,
+    });
+  }
+  return rows;
+}
+
 /** The row prices on these rows, in the shape the server reads. A row without a price is left out, so HMS prices it. */
 export function rowPricesFor(groups: readonly StayGroupRequirement[]): StaffRowPriceWire[] {
   return groups.flatMap((group): StaffRowPriceWire[] => {
@@ -970,6 +1006,7 @@ function staffQuoteRequest(
       prepared.ok.map((group) => group.id),
     );
     const rowPrices = rowPricesFor(args.groups);
+    const allRoomSearch = prepared.ok.every((group) => !group.roomCodes?.length);
     return {
       input: {
         messageId: args.source.messageId,
@@ -980,6 +1017,7 @@ function staffQuoteRequest(
         ...header,
         ...(pickedParties(sent.parties) ? { parties: pickedParties(sent.parties) } : {}),
         ...(rowPrices.length ? { rowPrices } : {}),
+        ...(allRoomSearch ? { maxOptionsPerGroup: 200 } : {}),
       },
       sent,
       header,
@@ -1043,6 +1081,7 @@ function boundStaffQuoteResult(
     };
   }
   const rateOptions = readRateOptions(result.rateOptions);
+  const availabilityBoard = readAvailabilityBoard(result.availabilityBoard);
   const rowRates = readRowRates(result.rowRates);
   const dinnerFallbackGroupIds = Array.isArray(result.dinnerFallbackGroupIds)
     ? [...new Set(result.dinnerFallbackGroupIds.filter((id): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id)))].slice(0, 8)
@@ -1091,6 +1130,8 @@ function boundStaffQuoteResult(
         )
       : [],
     ...(rateOptions.length ? { rateOptions } : {}),
+    ...(availabilityBoard.length ? { availabilityBoard } : {}),
+    ...(result.availabilityTruncated === true ? { availabilityTruncated: true } : {}),
     ...(rowRates.length ? { rowRates } : {}),
   };
   return {

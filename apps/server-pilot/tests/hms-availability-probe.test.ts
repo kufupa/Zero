@@ -20,6 +20,7 @@ import {
   availabilityProbeLoaders,
   availabilityRequestsFor,
   availabilitySnapshotOf,
+  availabilityBoardOf,
   probeAvailability,
   quoteRequestFor,
   type AvailabilityRequest,
@@ -439,6 +440,40 @@ describe('U10 availability probe (pure)', () => {
       truncated: true,
       matchingRowsUnseen: true,
     });
+  });
+
+  it('keeps two room types on the same rate on the availability board, including an unpriced row', () => {
+    const board = availabilityBoardOf({
+      outcome: 'quote',
+      groups: [
+        {
+          id: 'group-1',
+          outcome: 'quote',
+          options: [
+            {
+              room: { code: 'STQN', label: 'Standard Queen' },
+              rate: { code: 'BAR', label: 'Best available' },
+              board: 'Bed & Breakfast R',
+              availability: 'available',
+              nightly: [{ date: '2026-10-26', inventory: 4, price: { amount: '1780.00', currency: 'ZAR' } }],
+            },
+            {
+              room: { code: 'STWN', label: 'Standard Twin' },
+              rate: { code: 'BAR', label: 'Best available' },
+              board: 'Bed & Breakfast R',
+              availability: 'available',
+            },
+          ],
+        },
+      ],
+    });
+    expect(board.truncated).toBe(false);
+    expect(board.rows.map((row) => row.roomCode)).toEqual(['STQN', 'STWN']);
+    expect(board.rows.map((row) => row.rateCode)).toEqual(['BAR', 'BAR']);
+    expect(board.rows[0]?.nightlyPriceMinor).toBe(178000);
+    expect(board.rows[0]?.roomsLeft).toBe(4);
+    expect(board.rows[1]?.nightlyPriceMinor).toBeNull();
+    expect(board.rows[1]?.roomsLeft).toBeNull();
   });
 
   it('keeps every reader room and night with stock, requested count, nightly price and completeness', () => {

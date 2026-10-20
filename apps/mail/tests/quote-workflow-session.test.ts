@@ -43,7 +43,6 @@ import { approvedExecuteHeader, staffHeaderForStay } from '../lib/quote-workflow
 import { workbookRequestFor } from '../lib/quote-workflow/quote-workbook-download';
 import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { pdfBlockReason } from '../components/quote-workflow/document-review';
-import { projectBarGrid } from '../components/quote-workflow/rate-cards';
 import type {
   LunaAnalysisWire,
   QuoteAnalysis,
@@ -3410,9 +3409,6 @@ describe('stay edits: rows, stays and their rates', () => {
     expect(gone.rateOptions?.map((option) => option.groupId)).toEqual(['a1']);
     const back = reduceQuoteSession(gone, { type: 'restore_stay', removal });
     expect(back.rateOptions?.map((option) => option.groupId).sort()).toEqual(['a1', 'b1']);
-    expect(projectBarGrid(back.rateOptions ?? []).map((cell) => `${cell.roomCode}:${cell.rateCode}:${cell.board}`)).toEqual([
-      'STWN:BAR:bb',
-    ]);
     expect(back.selectedStayKey).toBe(keyB);
     expect(back.selectedOfferIds).toEqual(['ob']);
     expect(back.staffQuote).toBe(s.staffQuote);

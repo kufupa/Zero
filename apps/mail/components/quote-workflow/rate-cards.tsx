@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 
 import { draftMoney } from '@/lib/quote-workflow/multi-option-draft';
-import type { QuoteBoard, RateOption } from '@/lib/quote-workflow/types';
+import type { AvailabilityBoardRow, QuoteBoard, RateOption } from '@/lib/quote-workflow/types';
 
 /** Shown on GNC3B and GNC4B. The server marks these as event rates; they are never matched, ranked or priced differently. */
 export const CRICKET_RATE_HINT = 'Cricket event rate. Shown for reference: never matched, ranked or priced differently.';
@@ -27,17 +27,16 @@ function barGridKey(roomCode: string, rateCode: string, board: string): string {
 }
 
 /**
- * Room × rate × board projection for the read-only BAR grid. Unpriced or incomplete rows stay as "not checked".
- * `buildRateOptions` still feeds the priced room cards; this keeps rows those cards drop.
+ * Room × rate × board projection for the read-only BAR grid. Unpriced rows stay as "not checked".
+ * Pass the raw availability board, not `buildRateOptions` cards.
  */
-export function projectBarGrid(options: readonly RateOption[]): BarGridCell[] {
+export function projectBarGrid(options: readonly AvailabilityBoardRow[]): BarGridCell[] {
   const byKey = new Map<string, BarGridCell>();
   for (const option of options) {
     const key = barGridKey(option.roomCode, option.rateCode, option.board);
     const nightlyPriceMinor =
-      option.incomplete === true || !(option.perNightMinor > 0) ? null : option.perNightMinor;
-    const roomsLeft =
-      option.incomplete === true || option.roomsLeft === undefined ? null : option.roomsLeft;
+      option.nightlyPriceMinor !== null && option.nightlyPriceMinor > 0 ? option.nightlyPriceMinor : null;
+    const roomsLeft = option.roomsLeft;
     const next: BarGridCell = {
       roomCode: option.roomCode,
       roomLabel: displayLabel(option.roomLabel) || option.roomCode,

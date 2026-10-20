@@ -17,6 +17,7 @@ import {
 } from '../lib/quote-workflow/staff-quote-bind';
 import {
   emptyStaffQuoteHeader,
+  type AvailabilityBoardRow,
   type QuoteSession,
   type RateOption,
   type StaffQuoteHeader,
@@ -228,35 +229,45 @@ describe('rate cards in the quote panel', () => {
     expect(within(cards[2]!).queryByText(/left/)).toBeNull();
   });
 
-  it('projects a read-only BAR grid and keeps incomplete rows as not checked', async () => {
-    const incomplete = rate({
-      id: 'o-incomplete',
-      rateCode: 'BAR',
-      roomCode: 'STQN',
-      roomLabel: 'Standard Queen',
-      perNightMinor: 0,
-      totalMinor: 0,
-      incomplete: true,
-    });
-    const session = await quotedSession([rate({ ...BAR, roomsLeft: 3 }), incomplete]);
-    expect(projectBarGrid(session.rateOptions ?? [])).toEqual([
-      expect.objectContaining({
+  it('shows two room types on the same rate in the BAR grid, including an unpriced row as not checked', async () => {
+    const board: AvailabilityBoardRow[] = [
+      {
+        groupId: 'g1',
         roomCode: 'STWN',
+        roomLabel: 'Standard Twin',
         rateCode: 'BAR',
+        rateLabel: 'Best available rate',
         board: 'bb',
+        boardLabel: 'Bed & breakfast',
         nightlyPriceMinor: BAR.perNightMinor,
         roomsLeft: 3,
-      }),
-      expect.objectContaining({
+      },
+      {
+        groupId: 'g1',
         roomCode: 'STQN',
+        roomLabel: 'Standard Queen',
         rateCode: 'BAR',
+        rateLabel: 'Best available rate',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
         nightlyPriceMinor: null,
         roomsLeft: null,
-      }),
-    ]);
-    render(<QuoteWorkflowPanel session={session} />);
+      },
+    ];
+    expect(projectBarGrid(board).map((cell) => cell.roomCode)).toEqual(['STWN', 'STQN']);
+    const session = await quotedSession([BAR]);
+    const quoted = session.staffQuote ?? session.staffQuotes[STAY_KEY];
+    const withBoard: QuoteSession = {
+      ...session,
+      staffQuote: quoted ? { ...quoted, availabilityBoard: board } : quoted,
+      staffQuotes: quoted
+        ? { ...session.staffQuotes, [STAY_KEY]: { ...quoted, availabilityBoard: board } }
+        : session.staffQuotes,
+    };
+    render(<QuoteWorkflowPanel session={withBoard} />);
     const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
     expect(within(grid).getByText('Standard Twin (STWN)')).toBeDefined();
+    expect(within(grid).getByText('Standard Queen (STQN)')).toBeDefined();
     expect(within(grid).getAllByText('not checked').length).toBeGreaterThan(0);
     expect(rateCards()).toHaveLength(1);
   });
@@ -273,6 +284,23 @@ describe('rate cards in the quote panel', () => {
       ok: [expect.objectContaining({ id: 'g1', arrivalDate: stay.arrivalDate, departureDate: stay.departureDate })],
     });
     if (empty && 'ok' in empty) expect(empty.ok[0]).not.toHaveProperty('roomCodes');
+
+    const mutate = vi.fn(async (input: ExecuteStaffQuoteInput) => ({
+      ...READY,
+      selectionEpoch: input.selectionEpoch,
+      inputRevision: input.inputRevision,
+    }));
+    const run = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [blank],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(run.status).toBe('ok');
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ maxOptionsPerGroup: 200 }));
+    expect(mutate.mock.calls[0]?.[0].groups[0]).not.toHaveProperty('roomCodes');
 
     const garbage = staffQuoteGroupsFromStay([{ ...stay, roomPreference: 'PENTHOUSE', roomCodes: undefined, fields: {} }]);
     expect(garbage).toEqual({

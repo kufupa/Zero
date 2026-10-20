@@ -1707,10 +1707,7 @@ export function QuoteWorkflowPanel({
                 const preparedAtLabel = preparedAt && Number.isFinite(preparedAt.getTime())
                   ? preparedAt.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
                   : null;
-                const stayIds = new Set(stay.rows.map((row) => row.id));
-                const barGridCells = projectBarGrid(
-                  (session.rateOptions ?? []).filter((option) => stayIds.has(option.groupId)),
-                );
+                const barGridCells = projectBarGrid(stayQuote?.availabilityBoard ?? []);
                 return (
                   <article key={`${stay.id}-search`} className="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3">
                     {stayQuote?.preparedByNava ? (
@@ -1795,7 +1792,10 @@ export function QuoteWorkflowPanel({
                         </div>
                       </details>
                     ) : null}
-                    <BarAvailabilityGrid cells={barGridCells} truncated={barGridCells.length >= 200} />
+                    <BarAvailabilityGrid
+                      cells={barGridCells}
+                      truncated={stayQuote?.availabilityTruncated === true}
+                    />
                     {stay.rows.map((group) => {
                       const rateGroup = rateGroups.find((item) => item.group.id === group.id);
                       const rowStep = stepFor(group);

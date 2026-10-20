@@ -1657,52 +1657,86 @@ describe('the Find in HMS picker in the quote header', () => {
   it('renders a read-only BAR grid before room cards and keeps unpriced rows as not checked', () => {
     const base = sessionFromFixture('public-single');
     const groupId = base.groups[0]!.id;
-    const rateOptions: RateOption[] = [
-      {
-        id: `${groupId}:BAR`,
-        groupId,
-        board: 'bb',
-        boardLabel: 'Bed & Breakfast',
-        rateCode: 'BAR',
-        rateLabel: 'Best Available Rate',
-        roomCode: 'STQN',
-        roomLabel: 'Standard Queen',
-        contract: false,
-        onlyContract: false,
-        matchesRequest: true,
-        perNightMinor: 100_000,
-        roomsLeft: 4,
+    const stayKey = '2026-11-12:2026-11-14';
+    const priced: RateOption = {
+      id: `${groupId}:BAR`,
+      groupId,
+      board: 'bb',
+      boardLabel: 'Bed & Breakfast',
+      rateCode: 'BAR',
+      rateLabel: 'Best Available Rate',
+      roomCode: 'STQN',
+      roomLabel: 'Standard Queen',
+      contract: false,
+      onlyContract: false,
+      matchesRequest: true,
+      perNightMinor: 100_000,
+      roomsLeft: 4,
+      totalMinor: 200_000,
+      currency: 'ZAR',
+      priced: 'summary',
+      selected: true,
+    };
+    const staffQuote = {
+      ...(base.staffQuote ?? base.staffQuotes[stayKey] ?? {
+        workflowRunId: 'run-1',
+        revisionRef: 'rev-1',
+        factRefs: [],
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        sourceHash: 'ab'.repeat(32),
+        selectionEpoch: 1,
+        inputRevision: 1,
+        inputDigest: 'digest',
         totalMinor: 200_000,
         currency: 'ZAR',
-        priced: 'summary',
-        selected: true,
-      },
-      {
-        id: `${groupId}:BAR-stwn`,
-        groupId,
-        board: 'bb',
-        boardLabel: 'Bed & Breakfast',
-        rateCode: 'BAR',
-        rateLabel: 'Best Available Rate',
-        roomCode: 'STWN',
-        roomLabel: 'Standard Twin',
-        contract: false,
-        onlyContract: false,
-        matchesRequest: true,
-        perNightMinor: 0,
-        totalMinor: 0,
-        currency: 'ZAR',
-        priced: 'summary',
-        selected: false,
-        incomplete: true,
-      },
-    ];
-    const { container } = render(<QuoteWorkflowPanel session={{ ...base, rateOptions }} />);
+        quoteRequestKey: stayKey,
+        approvedHeader: base.staffHeader,
+      }),
+      rateOptions: [priced],
+      availabilityBoard: [
+        {
+          groupId,
+          roomCode: 'STQN',
+          roomLabel: 'Standard Queen',
+          rateCode: 'BAR',
+          rateLabel: 'Best Available Rate',
+          board: 'bb',
+          boardLabel: 'Bed & Breakfast',
+          nightlyPriceMinor: 100_000,
+          roomsLeft: 4,
+        },
+        {
+          groupId,
+          roomCode: 'STWN',
+          roomLabel: 'Standard Twin',
+          rateCode: 'BAR',
+          rateLabel: 'Best Available Rate',
+          board: 'bb',
+          boardLabel: 'Bed & Breakfast',
+          nightlyPriceMinor: null,
+          roomsLeft: null,
+        },
+      ],
+      availabilityTruncated: true,
+    };
+    const { container } = render(
+      <QuoteWorkflowPanel
+        session={{
+          ...base,
+          rateOptions: [priced],
+          staffQuote,
+          staffQuotes: { ...base.staffQuotes, [stayKey]: staffQuote },
+        }}
+      />,
+    );
     const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
     const roomCards = screen.getByRole('group', { name: 'Room rates from HMS' });
     expect(grid.compareDocumentPosition(roomCards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(grid).getByText('Standard Queen (STQN)')).toBeDefined();
+    expect(within(grid).getByText('Standard Twin (STWN)')).toBeDefined();
     expect(within(grid).getAllByText('not checked').length).toBeGreaterThan(0);
+    expect(screen.getByText('More room options exist than this grid shows.')).toBeDefined();
     expect(grid.querySelector('button')).toBeNull();
     expect(container.querySelector('[aria-label="Room rates from HMS"]')).toBeTruthy();
   });

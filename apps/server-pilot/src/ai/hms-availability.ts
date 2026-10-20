@@ -460,6 +460,65 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
   };
 }
 
+/** One raw HMS row for the read-only BAR grid. Not collapsed per rate like `buildRateOptions`. */
+export type AvailabilityBoardRow = {
+  groupId: string;
+  roomCode: string;
+  roomLabel: string;
+  rateCode: string;
+  rateLabel: string;
+  board: string;
+  boardLabel: string;
+  nightlyPriceMinor: number | null;
+  roomsLeft: number | null;
+};
+
+function amountMinor(amount: string | null): number | null {
+  if (!amount || !/^\d+\.\d{2}$/.test(amount)) return null;
+  const [rand, cents] = amount.split('.');
+  const value = Number(rand) * 100 + Number(cents);
+  return Number.isSafeInteger(value) ? value : null;
+}
+
+/** Room × rate × board rows from a quote envelope, including unpriced nights as null. */
+export function availabilityBoardOf(result: QuoteEnvelope): {
+  rows: AvailabilityBoardRow[];
+  truncated: boolean;
+} {
+  const snapshot = availabilitySnapshotOf(result);
+  const rows: AvailabilityBoardRow[] = [];
+  for (const group of snapshot.groups) {
+    const groupId = group.id ?? '';
+    for (const option of group.options) {
+      const roomCode = option.room;
+      const rateCode = option.rate;
+      if (!roomCode || !rateCode) continue;
+      const nights = option.nightly ?? [];
+      const priced = nights
+        .map((night) => amountMinor(night.price.amount))
+        .filter((value): value is number => value !== null && value > 0);
+      const stocks = nights
+        .map((night) => night.availableCount)
+        .filter((value): value is number => value !== null);
+      const boardLabel = option.board ?? '';
+      rows.push({
+        groupId,
+        roomCode,
+        roomLabel: option.roomLabel ?? roomCode,
+        rateCode,
+        rateLabel: option.rateLabel ?? rateCode,
+        board: boardLabel || rateCode,
+        boardLabel,
+        nightlyPriceMinor: priced.length
+          ? Math.round(priced.reduce((sum, value) => sum + value, 0) / priced.length)
+          : null,
+        roomsLeft: stocks.length ? Math.min(...stocks) : null,
+      });
+    }
+  }
+  return { rows, truncated: snapshot.truncated === true };
+}
+
 /**
  * Test seam: when set, replaces the spawn of the quote tool. Production runs fetch-quote.mjs. The seam returns the same
  * result.json the tool writes.
