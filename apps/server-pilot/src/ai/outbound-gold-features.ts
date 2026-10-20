@@ -320,7 +320,7 @@ export function formatAggregateStdout(summary: OutboundGoldSummary): string {
     letters: summary.letters,
     lettersCovered: summary.lettersCovered,
     lettersUncovered: summary.lettersUncovered,
-    coveragePass: summary.coveragePass,
+    coveragePass: summary.pass,
     cards: summary.cards,
     distinctDateSets: summary.distinctDateSets,
     dateSetCardPass: summary.dateSetCardPass,
