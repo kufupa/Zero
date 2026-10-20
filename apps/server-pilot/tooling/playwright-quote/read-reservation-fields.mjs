@@ -16,6 +16,13 @@ const FIELDS = [
   'externalreference1', 'billingreference', 'caller', 'reservationnote', 'cancellationnote',
   'confidentialratecb', 'viplevel', 'revenuedesc',
 ];
+export const BOOKING_STATE_KEYS = {
+  guaranteeType: 'guaranteetype',
+  depositReceived: 'depositreceived',
+  arAccount: 'araccountname',
+  agency: 'ta1',
+  company: 'company',
+};
 export const ALLOWED_PATH = /^\/web\/base\/(OSRESS\.search|OSRESV\.HDR)$/;
 const PAUSE_MS = 400;
 export const OSRESS_OR_UNUSED_TOKEN = '___NOMATCH___';
@@ -289,7 +296,39 @@ function pageData(text) {
   return null;
 }
 
-function pickFields(text) {
+function attrValue(attrs, attr) {
+  const m = new RegExp(`(?:^|\\s)${attr}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs);
+  return m ? (m[1] ?? m[2] ?? m[3] ?? '') : undefined;
+}
+
+function pickDomNamedValue(html, name) {
+  const tagRe = new RegExp(`<(input|select|textarea)\\b([^>]*\\bname\\s*=\\s*(?:"${name}"|'${name}'|${name})[^>]*)>`, 'gi');
+  let chosen;
+  let m;
+  while ((m = tagRe.exec(html))) {
+    const tag = m[1].toLowerCase();
+    const attrs = m[2];
+    const type = (attrValue(attrs, 'type') || 'text').toLowerCase();
+    let value = '';
+    if (tag === 'select') {
+      const end = html.toLowerCase().indexOf('</select>', m.index);
+      const inner = end === -1 ? '' : html.slice(m.index, end);
+      const selected = /<option\b([^>]*\bselected\b[^>]*)>([^<]*)/i.exec(inner);
+      if (selected) value = (selected[2] || attrValue(selected[1], 'value') || '').trim();
+    } else {
+      value = (attrValue(attrs, 'value') ?? '').trim();
+    }
+    if (type === 'hidden') {
+      if (chosen === undefined) chosen = value;
+      continue;
+    }
+    if (value !== '') chosen = value;
+    else if (chosen === undefined) chosen = '';
+  }
+  return chosen;
+}
+
+export function pickFields(text) {
   const out = {};
   for (const name of FIELDS) {
     const re = new RegExp(`"${name}"\\s*:\\s*(?:"((?:\\\\.|[^"\\\\])*)"|(-?\\d+(?:\\.\\d+)?)|(true|false|null))`, 'i');
@@ -304,6 +343,24 @@ function pickFields(text) {
       /* keep raw */
     }
     if (String(value).trim() !== '') out[name] = String(value).trim();
+  }
+  return out;
+}
+
+function firstNonEmpty(...vals) {
+  for (const value of vals) {
+    if (value == null) continue;
+    const text = String(value).trim();
+    if (text !== '') return text;
+  }
+  return null;
+}
+
+export function bookingStateFields(text) {
+  const fromJson = pickFields(text);
+  const out = {};
+  for (const [key, name] of Object.entries(BOOKING_STATE_KEYS)) {
+    out[key] = firstNonEmpty(fromJson[name], pickDomNamedValue(text, name));
   }
   return out;
 }
@@ -352,6 +409,7 @@ async function readOne(page, origin, conf) {
   };
   const hdr = await post(page, origin, '/web/base/OSRESV.HDR', form);
   const fields = pickFields(hdr);
+  const bookingState = bookingStateFields(hdr);
   if (fields.confirmationnumber && fields.confirmationnumber !== conf) {
     return { conf, outcome: 'identity_mismatch', envelope };
   }
@@ -361,6 +419,7 @@ async function readOne(page, origin, conf) {
     conf,
     outcome: Object.keys(fields).length > 3 ? 'read' : 'thin',
     fields,
+    bookingState,
     grid,
     hdrBytes: hdr.length,
     envelope,

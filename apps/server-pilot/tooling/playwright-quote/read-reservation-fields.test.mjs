@@ -316,6 +316,79 @@ test('borrowed CDP is 127.0.0.1 only', () => {
   );
 });
 
+test('booking-state returns guarantee, deposit, A/R, agency, company from DOM when present', () => {
+  const html = [
+    '<input name="guaranteetype" value="Non-Guaranteed Individual">',
+    '<input name="depositreceived" value="0.00">',
+    '<input name="araccountname" value="AR-SYNTH">',
+    '<input name="ta1" value="AG-SYNTH">',
+    '<input name="company" value="ORG-SYNTH">',
+  ].join('');
+  assert.deepEqual(reader.bookingStateFields(html), {
+    guaranteeType: 'Non-Guaranteed Individual',
+    depositReceived: '0.00',
+    arAccount: 'AR-SYNTH',
+    agency: 'AG-SYNTH',
+    company: 'ORG-SYNTH',
+  });
+});
+
+test('booking-state returns null when DOM fields are absent and never guesses payment', () => {
+  const absent = reader.bookingStateFields('<input name="status" value="Reserved">');
+  assert.deepEqual(absent, {
+    guaranteeType: null,
+    depositReceived: null,
+    arAccount: null,
+    agency: null,
+    company: null,
+  });
+  assert.equal(absent.depositReceived, null);
+  assert.equal(JSON.stringify(absent).includes('unpaid'), false);
+  assert.equal(JSON.stringify(absent).includes('paid'), false);
+});
+
+test('booking-state from HDR JSON uses allow-listed keys and stays fail-closed', () => {
+  const present = reader.bookingStateFields(JSON.stringify({
+    confirmationnumber: '00000000-1',
+    guaranteetype: 'Walk in',
+    depositreceived: '0',
+    araccountname: 'AR-SYNTH',
+    ta1: 'AG-SYNTH',
+    company: 'ORG-SYNTH',
+  }));
+  assert.deepEqual(present, {
+    guaranteeType: 'Walk in',
+    depositReceived: '0',
+    arAccount: 'AR-SYNTH',
+    agency: 'AG-SYNTH',
+    company: 'ORG-SYNTH',
+  });
+  const missing = reader.bookingStateFields(JSON.stringify({
+    confirmationnumber: '00000000-1',
+    status: 'Reserved',
+  }));
+  assert.equal(missing.guaranteeType, null);
+  assert.equal(missing.depositReceived, null);
+  assert.equal(missing.arAccount, null);
+  assert.equal(missing.agency, null);
+  assert.equal(missing.company, null);
+});
+
+test('stdout payload still omits bookingState values', () => {
+  const payload = reader.stdoutPayload({
+    phase: 'search',
+    outcome: 'read',
+    rowCount: 1,
+    bookingState: { guaranteeType: 'Walk in', depositReceived: '0' },
+    envelope: reader.envelopeShape({ GRIDRESULT: { GRID: { DATA: [{ lastname: 'PII' }] } } }),
+    positiveControl: true,
+  });
+  const json = JSON.stringify(payload);
+  assert.equal('bookingState' in payload, false);
+  assert.equal(json.includes('Walk in'), false);
+  assert.equal(json.includes('PII'), false);
+});
+
 test('source stays read-only: Guest Stay menu nav, no save/cancel/checkin, no mail UI', async () => {
   const source = await readFile(sourceUrl, 'utf8');
   assert.match(source, /text=\$\{label\}/);

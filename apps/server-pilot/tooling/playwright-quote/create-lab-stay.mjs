@@ -68,12 +68,37 @@ async function readMessage(page) {
   });
 }
 
+// Ext combo opens on the visible arrow trigger, not ArrowDown on the input.
+// page.getByText(label).last() matched hidden ARIA / the closed input and
+// then option.click({ timeout: 5000 }) died with no option list logged.
+async function listVisibleComboOptions(page) {
+  return page.evaluate(() => {
+    const visible = (el) => !!(el.offsetParent || el.getClientRects().length);
+    const lists = [...document.querySelectorAll('.x-boundlist')].filter(visible);
+    const list = lists.at(-1);
+    if (!list) return [];
+    return [...list.querySelectorAll('.x-boundlist-item')]
+      .filter(visible)
+      .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+  });
+}
+
 async function chooseCombo(page, name, label) {
   const input = page.locator(`input[name="${name}"]:visible`).first();
-  await input.click();
-  await input.fill('');
-  await input.press('ArrowDown');
-  const option = page.getByText(label, { exact: true }).last();
+  const trigger = input.locator('xpath=ancestor::table[1]').locator('.x-form-arrow-trigger:visible, .x-form-trigger:visible').first();
+  if (await trigger.count()) await trigger.click();
+  else {
+    await input.click();
+    await input.press('ArrowDown');
+  }
+  const list = page.locator('.x-boundlist:visible').last();
+  await list.locator('.x-boundlist-item:visible').first().waitFor({ timeout: 5000 }).catch(() => {});
+  const options = await listVisibleComboOptions(page);
+  process.stderr.write(`${JSON.stringify({ phase: 'chooseCombo', name, optionCount: options.length, options })}\n`);
+  if (!options.length) throw new Error(`combo_options_missing:${name}`);
+  if (!options.includes(label)) throw new Error(`combo_option_missing:${name}`);
+  const option = list.locator('.x-boundlist-item:visible').getByText(label, { exact: true });
   await option.click({ timeout: 5000 });
 }
 
