@@ -641,16 +641,16 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
               and(
                 eq(higherTierRun.executorLane, 'hms'),
                 gte(higherTierRun.priority, HMS_DEV_GATE_PREFETCH_PRIORITY),
+                // Writes have their own runner; a parked write must not hold dev reads all day.
+                ne(higherTierRun.runKind, HMS_WRITE_RUN_KIND),
                 or(
                   and(
                     inArray(higherTierRun.state, ['queued', 'retry_wait']),
                     or(sql`${higherTierRun.nextRunAt} IS NULL`, lte(higherTierRun.nextRunAt, now)),
-                    sql`${higherTierRun.runKind} <> ${HMS_WRITE_RUN_KIND} OR ${higherTierRun.state} = 'queued'`,
                   ),
                   and(
                     inArray(higherTierRun.state, ['claimed', 'running']),
                     lte(higherTierRun.updatedAt, staleBefore),
-                    ne(higherTierRun.runKind, HMS_WRITE_RUN_KIND),
                   ),
                 ),
               ),
