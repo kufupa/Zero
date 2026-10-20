@@ -1761,6 +1761,34 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
   });
 
+  it('All rates returns to Government for a Dinner B&B ask without a government party', () => {
+    const onPatch = vi.fn();
+    const base = headerSession({ salesStrategy: 'Government' });
+    const analysis = {
+      ...base.analysis!,
+      groups: base.groups.map((group) => ({ ...group, board: 'dbb' as const })),
+      luna: {
+        workflow: 'quote' as const,
+        flags: [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    };
+    const dinnerSession = reduceQuoteSession(base, { type: 'analysis_ready', analysis });
+
+    render(<RatePlanGate initial={dinnerSession} onPatch={onPatch} />);
+    const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    expect(planSelect.value).toBe('government');
+    fireEvent.change(planSelect, { target: { value: 'public' } });
+    expect(onPatch).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
+    fireEvent.change(planSelect, { target: { value: 'all' } });
+    expect(onPatch).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
+  });
+
   // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.
   it('runs one HMS lookup per party and gives each party one retry control', async () => {
     resetPartyAutoLookupForTests();

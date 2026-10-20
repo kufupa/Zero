@@ -77,7 +77,7 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.inputs[0]?.salesStrategy).toBe('BAR');
   });
 
-  it('keeps dinner as an add-on request only when extraction explicitly asks for dinner', () => {
+  it('routes an explicit dinner B&B ask to Government without inventing an allowance', () => {
     const plan = build({
       stays: [
         {
@@ -94,7 +94,30 @@ describe('prepared quote input from stored extraction', () => {
     });
 
     expect(plan.inputs[0]?.groups[0]?.board).toBe('dinner_bb');
+    expect(plan.inputs[0]?.salesStrategy).toBe('Government');
     expect(plan.inputs[0]).not.toHaveProperty('dinnerAllowanceMinor');
+  });
+
+  it('chooses rate strategy separately for each mixed-board stay', () => {
+    const baseStay = payload().stays[0]!;
+    const plan = build({
+      stays: [
+        {
+          ...baseStay,
+          id: 'stay-dinner',
+          rows: baseStay.rows.map((row) => ({ ...row, id: 'row-dinner', board: 'dbb' })),
+        },
+        {
+          ...baseStay,
+          id: 'stay-bb',
+          requested: { arrival: '2026-10-24', departure: '2026-10-27' },
+          rows: baseStay.rows.map((row) => ({ ...row, id: 'row-bb', board: 'bb' })),
+        },
+      ],
+    });
+
+    expect(plan.inputs.map((input) => input.salesStrategy)).toEqual(['Government', 'BAR']);
+    expect(plan.inputs.map((input) => input.groups[0]?.board)).toEqual(['dinner_bb', 'bb']);
   });
 
   it.each([
@@ -525,6 +548,7 @@ describe('prepared quote reuse price fields', () => {
     ['room count', { groups: [{ ...base.groups[0]!, quantity: 3 }] }],
     ['occupancy', { groups: [{ ...base.groups[0]!, adults: 1 }] }],
     ['board', { groups: [{ ...base.groups[0]!, board: 'room_only' as const }] }],
+    ['sales strategy', { salesStrategy: 'Government' as const }],
   ])('requires the same %s for reuse', (_label, changes) => {
     expect(staffQuoteInputsPriceEquivalent(base, { ...base, ...changes })).toBe(false);
   });

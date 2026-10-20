@@ -770,7 +770,11 @@ function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
   return texts.some((text) => /shuttle|airport/i.test(text));
 }
 
-function prefillStaffHeaderFromLuna(header: StaffQuoteHeader, analysis: QuoteAnalysis): StaffQuoteHeader {
+function prefillStaffHeaderFromLuna(
+  header: StaffQuoteHeader,
+  analysis: QuoteAnalysis,
+  staffSalesStrategyEdited: boolean,
+): StaffQuoteHeader {
   let next = header;
   const party = analysis.luna?.party;
   const name = party?.name?.trim();
@@ -778,8 +782,19 @@ function prefillStaffHeaderFromLuna(header: StaffQuoteHeader, analysis: QuoteAna
     if (party.kind === 'agency') next = { ...next, agency: name };
     else if (party.kind === 'organization') next = { ...next, company: name };
     else if (party.kind === 'government') {
-      next = { ...next, company: name, salesStrategy: 'Government' };
+      next = {
+        ...next,
+        company: name,
+        ...(!staffSalesStrategyEdited ? { salesStrategy: 'Government' } : {}),
+      };
     }
+  }
+  if (
+    !staffSalesStrategyEdited &&
+    next.salesStrategy === 'BAR' &&
+    analysis.groups.some((group) => group.board === 'dbb')
+  ) {
+    next = { ...next, salesStrategy: 'Government' };
   }
   if (!next.shuttleRequested && shuttleRequestedFromAnalysis(analysis)) {
     next = { ...next, shuttleRequested: true };
@@ -1292,7 +1307,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           analysis: action.analysis,
           analysisStartStayRevision: null,
           staffActions,
-          staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
+          staffHeader: prefillStaffHeaderFromLuna(
+            session.staffHeader,
+            action.analysis,
+            session.staffSalesStrategyEdited === true,
+          ),
           reviewItems,
           handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
         };
@@ -1329,7 +1348,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           groups: [],
           reviewItems: unreadItems,
           handledReviewItemIds: [],
-          staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
+          staffHeader: prefillStaffHeaderFromLuna(
+            session.staffHeader,
+            action.analysis,
+            session.staffSalesStrategyEdited === true,
+          ),
         };
       }
       const keys = requestedQuoteKeys(action.analysis.groups);
@@ -1356,7 +1379,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           ? session.steps
           : planQuoteSteps(action.analysis.groups, base.staffQuotes),
         staffActions: action.analysis.staffActions ?? session.staffActions,
-        staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
+        staffHeader: prefillStaffHeaderFromLuna(
+          session.staffHeader,
+          action.analysis,
+          session.staffSalesStrategyEdited === true,
+        ),
         reviewItems,
         handledSourceKey: sourceKey || null,
         handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
@@ -1449,6 +1476,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       return clearDownstream({
         ...session,
         staffHeader,
+        ...(session.staffSalesStrategyEdited || action.header.salesStrategy !== undefined
+          ? { staffSalesStrategyEdited: true }
+          : {}),
         inputRevision: session.inputRevision + 1,
       });
     }

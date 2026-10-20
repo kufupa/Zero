@@ -8,6 +8,8 @@ import {
   quoteWithPartyFallback,
   staffQuoteDinnerFallback,
   staffQuoteDinnerGroupIdsToRetryAsBb,
+  staffQuoteDinnerNoMatchFallback,
+  staffQuoteGovernmentDinnerNote,
   staffQuoteSourceHash,
   type StaffQuoteAttestation,
   type StaffQuoteDinnerAddOn,
@@ -776,6 +778,7 @@ export async function runStaffQuote(
           };
           const quote = (async () => {
             const allDinnerFallback = staffQuoteDinnerFallback(quoteInput);
+            const noMatchDinnerFallback = staffQuoteDinnerNoMatchFallback(quoteInput);
             const retryDinnerAsBb = (fallback = allDinnerFallback) => {
               if (!fallback) throw new Error('staff_quote_dinner_fallback_missing');
               // Retry only groups without a selected verified party contract; another group's contract stays pinned.
@@ -783,20 +786,30 @@ export async function runStaffQuote(
               rateOptions = [];
               return quoteOneInput(fallback.input, prepare(undefined, fallback.input));
             };
-            const retryAllDinnerAsBb = () => {
-              if (!allDinnerFallback) throw new Error('staff_quote_dinner_fallback_missing');
-              // A no-match result has no selected-rate evidence, so preserve the existing all-dinner retry behavior.
-              dinnerFallbackGroupIds = allDinnerFallback.groupIds;
+            const retryAllDinnerAsBb = async () => {
+              if (!noMatchDinnerFallback) throw new Error('staff_quote_dinner_fallback_missing');
+              // No-match has no selected-rate evidence, so retry all dinner groups on the fallback input.
+              dinnerFallbackGroupIds = noMatchDinnerFallback.groupIds;
               rateOptions = [];
-              return quoteOneInput(allDinnerFallback.input, prepare(undefined, allDinnerFallback.input));
+              const fallbackResult = await quoteOneInput(
+                noMatchDinnerFallback.input,
+                prepare(undefined, noMatchDinnerFallback.input),
+              );
+              if (noMatchDinnerFallback.note) notes.push(noMatchDinnerFallback.note);
+              return fallbackResult;
             };
             const attemptNotesStart = notes.length;
             let result: Awaited<ReturnType<typeof quoteOneInput>>;
             try {
               result = await quoteOneInput(quoteInput, prepared);
             } catch (error) {
-              if (staffQuoteFailureCode(error) !== 'native_quote_no_matching_rate' || !allDinnerFallback) throw error;
-              // Preserve the same dates, room, occupancy, strategy and verified party context.
+              if (
+                staffQuoteFailureCode(error) !== 'native_quote_no_matching_rate' ||
+                !noMatchDinnerFallback
+              ) {
+                throw error;
+              }
+              // Keep stay and party context; a Government no-match fallback explicitly switches to BAR.
               return retryAllDinnerAsBb();
             }
             const fallbackGroupIds = staffQuoteDinnerGroupIdsToRetryAsBb(quoteInput, rateOptions);
@@ -808,6 +821,8 @@ export async function runStaffQuote(
               notes.splice(attemptNotesStart);
               return retryDinnerAsBb(dinnerFallback);
             }
+            const governmentDinnerNote = staffQuoteGovernmentDinnerNote(quoteInput);
+            if (governmentDinnerNote) notes.push(governmentDinnerNote);
             return result;
           })();
           return traceAsync ? awaitProvisionalCapture(quote, traceFinishes, captured) : quote;
@@ -904,7 +919,10 @@ export async function runStaffQuote(
             executorLane: 'hms',
             generationId,
             metrics: {
-              staffQuoteAttestation: { ...attestation!, salesStrategy: input.salesStrategy },
+              staffQuoteAttestation: {
+                ...attestation!,
+                salesStrategy: effectiveQuoteInput.salesStrategy,
+              },
               reservationistResult: {
                 readiness: 'ready_for_staff_review',
                 quoteRevisionIds: [revision.id],

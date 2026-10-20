@@ -5,6 +5,8 @@ import {
   attestStaffQuote,
   staffQuoteDinnerFallback,
   staffQuoteDinnerGroupIdsToRetryAsBb,
+  staffQuoteDinnerNoMatchFallback,
+  staffQuoteGovernmentDinnerNote,
   buildStaffProposalFacts,
 } from '../src/ai/staff-quote-workflow.js';
 import { mapLlmDecision } from '../src/ai/quote-workflow-llm.js';
@@ -156,7 +158,7 @@ describe('staff-approved quotation beneath native guards', () => {
     const source = input();
     source.groups[0]!.board = 'dinner_bb';
     source.groups[0]!.rateCode = 'AGENCY';
-    source.salesStrategy = 'Government';
+    source.salesStrategy = 'BAR';
     source.parties = {
       company: { kind: 'company', nativeId: 'co-17', name: 'Example Company' },
       agency: { kind: 'agency', nativeId: 'ag-29', name: 'Example Travel' },
@@ -178,7 +180,7 @@ describe('staff-approved quotation beneath native guards', () => {
     expect(staffQuoteDinnerFallback(input())).toBeNull();
   });
 
-  it('retries only dinner groups without a selected verified party contract rate', () => {
+  it('BAR retries only dinner groups without a selected verified party contract rate', () => {
     const publicDinner = input();
     publicDinner.groups[0]!.board = 'dinner_bb';
     expect(
@@ -217,6 +219,38 @@ describe('staff-approved quotation beneath native guards', () => {
       ]),
     ).toEqual(['single']);
     expect(staffQuoteDinnerGroupIdsToRetryAsBb(input(), [])).toEqual([]);
+
+    const governmentDinner = { ...publicDinner, salesStrategy: 'Government' as const };
+    expect(
+      staffQuoteDinnerGroupIdsToRetryAsBb(governmentDinner, [
+        { groupId: 'single', selected: true, contract: false, rateCode: 'NGOVDB' },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('keeps Government DBB results, but falls back to BAR B&B plus dinner after no-match', () => {
+    const governmentDinner = input();
+    governmentDinner.groups[0]!.board = 'dinner_bb';
+    governmentDinner.salesStrategy = 'Government';
+
+    expect(staffQuoteGovernmentDinnerNote(governmentDinner)).toBe(
+      'Priced on the Government Dinner B&B rate because the guest asked for dinner. ' +
+        'Switch to All rates if the guest is not entitled.',
+    );
+    const governmentFallback = staffQuoteDinnerNoMatchFallback(governmentDinner);
+    expect(governmentFallback).toMatchObject({
+      groupIds: ['single'],
+      note:
+        'No Government Dinner B&B rate in HMS for these dates — priced on B&B with dinner separately.',
+      input: { salesStrategy: 'BAR', groups: [{ board: 'bb' }] },
+    });
+
+    const barDinner = { ...governmentDinner, salesStrategy: 'BAR' as const };
+    expect(staffQuoteGovernmentDinnerNote(barDinner)).toBeNull();
+    expect(staffQuoteDinnerNoMatchFallback(barDinner)).toMatchObject({
+      note: null,
+      input: { salesStrategy: 'BAR', groups: [{ board: 'bb' }] },
+    });
   });
 
   it('can apply the B&B retry to only the uncontracted dinner groups', () => {

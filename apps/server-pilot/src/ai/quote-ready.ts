@@ -229,7 +229,8 @@ export function buildPreparedStaffQuotePlan(input: {
       selectionEpoch: 0,
       inputRevision: 0,
       groups: groupResult.groups,
-      salesStrategy: 'BAR',
+      salesStrategy:
+        groupResult.groups.some((group) => group.board === 'dinner_bb') ? 'Government' : 'BAR',
       company: payload.endClient ?? '',
       agency: payload.agency ?? '',
       attention: payload.contact.name ?? '',

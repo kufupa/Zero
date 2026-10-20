@@ -165,6 +165,31 @@ export function staffQuoteDinnerFallback(
   };
 }
 
+/** No-match retry preserves the current BAR path; a missing Government dinner rate retries B&B on BAR. */
+export function staffQuoteDinnerNoMatchFallback(
+  input: StaffQuoteInput,
+): { input: StaffQuoteInput; groupIds: string[]; note: string | null } | null {
+  const fallback = staffQuoteDinnerFallback(input);
+  if (!fallback) return null;
+  const governmentNoMatch = input.salesStrategy === 'Government';
+  return {
+    ...fallback,
+    input: governmentNoMatch ? { ...fallback.input, salesStrategy: 'BAR' } : fallback.input,
+    note: governmentNoMatch
+      ? 'No Government Dinner B&B rate in HMS for these dates — ' +
+        'priced on B&B with dinner separately.'
+      : null,
+  };
+}
+
+/** Staff note for a successful Government Dinner B&B quote. */
+export function staffQuoteGovernmentDinnerNote(input: StaffQuoteInput): string | null {
+  return input.salesStrategy === 'Government' && input.groups.some((group) => group.board === 'dinner_bb')
+    ? 'Priced on the Government Dinner B&B rate because the guest asked for dinner. ' +
+      'Switch to All rates if the guest is not entitled.'
+    : null;
+}
+
 export type StaffQuoteRates = 'party' | 'public';
 export type PartyRateRef = { nativeId: string; name: string };
 export type PartyRateContext = { organization?: PartyRateRef; agency?: PartyRateRef };
@@ -212,6 +237,7 @@ export function staffQuoteDinnerGroupIdsToRetryAsBb(
   input: StaffQuoteInput,
   rateOptions: readonly { groupId: string; selected: boolean; contract: boolean; rateCode: string }[],
 ): string[] {
+  if (input.salesStrategy === 'Government') return [];
   const dinnerGroupIds = input.groups.filter((group) => group.board === 'dinner_bb').map((group) => group.id);
   if (!input.parties) return dinnerGroupIds;
   const verifiedContractGroupIds = new Set(

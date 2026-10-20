@@ -137,6 +137,64 @@ describe('quote session', () => {
     expect(airport.staffHeader.shuttleRequested).toBe(true);
   });
 
+  it('defaults Dinner B&B asks to Government unless staff already chose a rate strategy', () => {
+    const dinnerAnalysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dbb' as const })),
+    };
+    const defaulted = reduceQuoteSession(initialQuoteSession(), {
+      type: 'analysis_ready',
+      analysis: dinnerAnalysis,
+    });
+    expect(defaulted.staffHeader.salesStrategy).toBe('Government');
+
+    const staffBar = reduceQuoteSession(initialQuoteSession(), {
+      type: 'patch_staff_header',
+      header: { salesStrategy: 'BAR' },
+    });
+    const preserved = reduceQuoteSession(staffBar, {
+      type: 'analysis_ready',
+      analysis: dinnerAnalysis,
+    });
+    expect(preserved.staffSalesStrategyEdited).toBe(true);
+    expect(preserved.staffHeader.salesStrategy).toBe('BAR');
+
+    const governmentBAndB: QuoteAnalysis = {
+      ...dinnerAnalysis,
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'bb' as const })),
+      luna: {
+        ...dinnerAnalysis.luna!,
+        party: { kind: 'government', name: 'Department X', reference: null },
+      },
+    };
+    const preservedForGovernmentParty = reduceQuoteSession(staffBar, {
+      type: 'analysis_ready',
+      analysis: governmentBAndB,
+    });
+    expect(preservedForGovernmentParty.staffHeader.salesStrategy).toBe('BAR');
+    expect(preservedForGovernmentParty.staffHeader.company).toBe('Department X');
+  });
+
+  it('keeps the existing Government-party default for B&B asks', () => {
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      luna: {
+        workflow: 'quote',
+        flags: [],
+        groups: [],
+        party: { kind: 'government', name: 'Department X', reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    };
+    const ready = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis });
+
+    expect(ready.staffHeader.salesStrategy).toBe('Government');
+    expect(ready.staffHeader.company).toBe('Department X');
+  });
+
   it('an unreadable amount blocks the run and the PDF until it is fixed, without clearing results', () => {
     const start = initialQuoteSession();
     const errored = reduceQuoteSession(start, {
