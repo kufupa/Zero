@@ -58,7 +58,7 @@ import { BOARD_LABELS, BookingCards } from './booking-card';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { PartyPicker } from './party-picker';
-import { DocumentReview } from './document-review';
+import { DocumentReview, pdfBlockReason } from './document-review';
 import { useFailedHmsJobNoticeMessage } from './hms-job-notices';
 import { HmsQueueStatusLine } from './hms-queue-status';
 import { HmsTodoCard } from './hms-todo-card';
@@ -296,7 +296,10 @@ function pickClearedBy(kind: 'company' | 'agency', header: StaffQuoteHeader, tex
 }
 
 type RatePlanCategory = 'public' | 'contract' | 'government' | 'other';
-type RatePlanChoice = RatePlanCatalogueEntry & { category: RatePlanCategory };
+type RatePlanChoice = RatePlanCatalogueEntry & {
+  category: RatePlanCategory;
+  readByNava: boolean;
+};
 
 const RATE_OPTION_BOARD: Record<RateOption['board'], RatePlanBoard> = {
   room_only: 'room_only',
@@ -316,10 +319,20 @@ function ratePlanChoices(
   catalogue: readonly RatePlanCatalogueEntry[],
   hmsOptions: readonly RateOption[],
 ): RatePlanChoice[] {
+  const readByNavaCodes = new Set(
+    hmsOptions.map((option) => option.rateCode.trim().toUpperCase()).filter(Boolean),
+  );
   const choices = new Map<string, RatePlanChoice>();
   for (const entry of catalogue) {
     const code = entry.code.trim().toUpperCase();
-    if (code) choices.set(code, { ...entry, code, category: ratePlanCategory(entry) });
+    if (code) {
+      choices.set(code, {
+        ...entry,
+        code,
+        category: ratePlanCategory(entry),
+        readByNava: readByNavaCodes.has(code),
+      });
+    }
   }
   for (const option of hmsOptions) {
     const code = option.rateCode.trim().toUpperCase();
@@ -332,6 +345,7 @@ function ratePlanChoices(
       ...(event ? { event: true } : {}),
       ...(option.contract ? { contract: true } : {}),
       category: event ? 'other' : option.contract ? 'contract' : 'other',
+      readByNava: true,
     });
   }
   return [...choices.values()];
@@ -676,25 +690,18 @@ function StayExtrasFields({
   );
 }
 
-function RatePlanFields({
+function RatePlanSelect({
   ratePlans,
   ratePlan,
   onRatePlanChange,
-  notesBlock,
-  notes,
-  onNotesChange,
 }: {
   ratePlans: RatePlanChoice[];
   ratePlan: string;
   onRatePlanChange: (value: string) => void;
-  notesBlock: string;
-  /** The staff note for HMS, stored on the quote header so it survives the pane and goes to the booking. */
-  notes: string;
-  onNotesChange: (value: string) => void;
 }) {
   return (
     <div className="flex flex-col gap-3">
-      <Field label="Rate plan" htmlFor="quote-rate-plan">
+      <Field label="Showing rates for" htmlFor="quote-rate-plan">
         <select
           id="quote-rate-plan"
           aria-label="Rate plan"
@@ -704,7 +711,9 @@ function RatePlanFields({
         >
           <option value="all">All rates</option>
           {(['public', 'contract', 'government', 'other'] as const).map((category) => {
-            const plans = ratePlans.filter((entry) => entry.category === category);
+            const plans = ratePlans
+              .filter((entry) => entry.category === category)
+              .sort((left, right) => Number(right.readByNava) - Number(left.readByNava));
             // Public (BAR) and government keep their "All" choice even when the catalogue is down.
             if (!plans.length && category !== 'government' && category !== 'public') return null;
             const label = category === 'other' ? 'Other HMS rates' : `${category[0]!.toUpperCase()}${category.slice(1)}`;
@@ -715,6 +724,7 @@ function RatePlanFields({
                 {plans.map((plan) => (
                   <option key={plan.code} value={plan.code}>
                     {plan.name === plan.code ? plan.code : `${plan.code}: ${plan.name}`}
+                    {plan.readByNava ? ' (read by Nava)' : ''}
                   </option>
                 ))}
               </optgroup>
@@ -725,6 +735,22 @@ function RatePlanFields({
           All rates shows every code HMS returned. Choosing a plan filters the cards below.
         </span>
       </Field>
+    </div>
+  );
+}
+
+function HmsNotesFields({
+  notesBlock,
+  notes,
+  onNotesChange,
+}: {
+  notesBlock: string;
+  /** The staff note for HMS, stored on the quote header so it survives the pane and goes to the booking. */
+  notes: string;
+  onNotesChange: (value: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
       <Disclosure summary={<span>HMS notes (optional)</span>}>
         <Field label="Notes for HMS" htmlFor="quote-hms-notes">
           <textarea
@@ -1022,6 +1048,7 @@ export function QuoteWorkflowPanel({
   onPreparePdf,
   onDownloadWorkbook,
   workbookPending,
+  pdfPending,
   onHandleReviewItem,
   onUndoReviewItem,
   onRetryRead,
@@ -1072,6 +1099,8 @@ export function QuoteWorkflowPanel({
   onDownloadWorkbook?: () => void;
   /** An Excel export is being made; the Excel button is disabled meanwhile. */
   workbookPending?: boolean;
+  /** A PDF is being prepared; both PDF actions stay disabled until it settles. */
+  pdfPending?: boolean;
   onHandleReviewItem?: (itemId: string) => void;
   onUndoReviewItem?: (itemId: string) => void;
   /** Runs the read again after an analysis failure. Absent when there is nothing to retry. */
@@ -1290,16 +1319,16 @@ export function QuoteWorkflowPanel({
       : header.salesStrategy === 'Government'
         ? 'government'
         : 'all';
-  // A government party defaults to Government (session.ts prefill); "All rates" returns to that default.
+  // Government parties and Dinner B&B asks default to Government; "All rates" returns to that default.
   const governmentParty = session.analysis?.luna?.party?.kind === 'government';
+  const dinnerBbAsk = session.groups.length > 0 && session.groups.every((group) => group.board === 'dinner_bb');
   const changeRatePlan = (value: string) => {
     setRatePlanState({ selectionEpoch, analysis: session.analysis, value });
-    // The search's sales strategy lives in the header. A government plan asks HMS for Government
-    // pricing. "All rates" restores the party's default: Government for a government party, else BAR.
-    // Public (BAR) and any other plan ask for BAR.
+    // The search's sales strategy lives in the header. "All rates" restores the default for
+    // government parties and Dinner B&B asks; public and other plans ask HMS for BAR pricing.
     const government =
       value === 'all'
-        ? governmentParty
+        ? governmentParty || dinnerBbAsk
         : value === 'government' || ratePlans.some((plan) => plan.code === value && plan.category === 'government');
     const salesStrategy = government ? 'Government' : 'BAR';
     if (salesStrategy !== header.salesStrategy) onPatchStaffHeader?.({ salesStrategy }, { staffEdit: true });
@@ -1489,7 +1518,7 @@ export function QuoteWorkflowPanel({
     ? missingQuestionPriority(firstMissingAnswer.field) === 0
       ? { kind: 'scroll', targetId: 'quote-party', label: 'Review agency & company' }
       : missingQuestionPriority(firstMissingAnswer.field) === 1
-        ? { kind: 'scroll', targetId: 'quote-authority', label: 'Set rate authority' }
+        ? { kind: 'scroll', targetId: 'quote-rates', label: 'Choose rate plan' }
         : missingQuestionPriority(firstMissingAnswer.field) === 2
           ? {
               kind: 'scroll',
@@ -1506,6 +1535,8 @@ export function QuoteWorkflowPanel({
         ? { kind: 'scroll', targetId: 'quote-quote', label: 'Review documents' }
         : { kind: 'documents', label: isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF' }
       : { kind: 'search', label: 'Search availability' };
+  const canPreparePdfAtTop =
+    currentAction.kind === 'documents' && !session.pdf && canCreatePdf(session);
   const runNextRate = () => {
     if (!nextRateStep) return;
     if (nextRateStep.shareKey) onSelectStayKey?.(nextRateStep.shareKey);
@@ -1523,9 +1554,11 @@ export function QuoteWorkflowPanel({
       {session.analysis?.alternatives.length ? (
         <StatusNote>The email also mentions: {session.analysis.alternatives.join(', ')}. These are not quoted yet.</StatusNote>
       ) : null}
-      {showWorkspace && (firstMissingAnswer || currentAction.kind !== 'documents') ? (
+      {showWorkspace && (firstMissingAnswer || currentAction.kind !== 'documents' || canPreparePdfAtTop) ? (
         <div className="flex flex-col gap-2">
-          <NeedsAnswerList missing={firstMissingAnswer ? [firstMissingAnswer] : undefined} />
+          {firstMissingAnswer || currentAction.kind !== 'documents' ? (
+            <NeedsAnswerList missing={firstMissingAnswer ? [firstMissingAnswer] : undefined} />
+          ) : null}
           {currentAction.kind !== 'documents' ? (
             <PrimaryButton
               disabled={currentAction.kind === 'search' && nextRateReason !== null}
@@ -1536,6 +1569,18 @@ export function QuoteWorkflowPanel({
               }}
             >
               {currentAction.label}
+            </PrimaryButton>
+          ) : canPreparePdfAtTop ? (
+            <PrimaryButton
+              disabled={Boolean(pdfPending) || !canCreatePdf(session) || !onPreparePdf}
+              disabledReason={
+                pdfPending
+                  ? 'Preparing PDF…'
+                  : pdfBlockReason(session) ?? (!onPreparePdf ? 'PDF preparation is not available in this view.' : null)
+              }
+              onClick={onPreparePdf}
+            >
+              {pdfPending ? 'Preparing PDF…' : isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF + reply'}
             </PrimaryButton>
           ) : null}
         </div>
@@ -1555,22 +1600,19 @@ export function QuoteWorkflowPanel({
             onPartyLookupPending={onPartyLookupPending}
           />
           <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-authority')}>
-            Continue to Rate authority
+            Continue to HMS notes
           </SecondaryButton>
         </Section>
       ) : null}
       {showWorkspace ? (
         <Section
           step={2}
-          title="Rate authority"
+          title="HMS notes"
           id="quote-authority"
-          action={<StepState state={header.salesStrategy ? 'Done' : 'Pending'} />}
+          action={<StepState state={header.notes?.trim() ? 'Done' : 'Optional'} />}
         >
-          <RatePlanFields
+          <HmsNotesFields
             key={selectionEpoch}
-            ratePlans={ratePlans}
-            ratePlan={ratePlan}
-            onRatePlanChange={changeRatePlan}
             notesBlock={quoteNotesBlock(session, rowLabels, contact)}
             notes={header.notes ?? ''}
             onNotesChange={(value) => onPatchStaffHeader?.({ notes: value }, { staffEdit: true })}
@@ -1614,6 +1656,11 @@ export function QuoteWorkflowPanel({
       ) : null}
       {showWorkspace ? (
         <Section step={4} title="Availability & rates" id="quote-rates" action={<StepState state={ratesState} />}>
+          <RatePlanSelect
+            ratePlans={ratePlans}
+            ratePlan={ratePlan}
+            onRatePlanChange={changeRatePlan}
+          />
           {showRates ? (
             <h4 className="text-[13px] font-semibold text-[#475569]">Search availability & room rates</h4>
           ) : null}
@@ -1943,7 +1990,8 @@ export function QuoteWorkflowPanel({
               onPreparePdf={onPreparePdf}
               onDownloadWorkbook={onDownloadWorkbook}
               workbookPending={workbookPending}
-              primaryAction={currentAction.kind === 'documents' && !session.pdf}
+              pdfPending={pdfPending}
+              primaryAction={false}
             />
           ) : (
             <>
