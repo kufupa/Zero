@@ -1319,16 +1319,16 @@ export function QuoteWorkflowPanel({
       : header.salesStrategy === 'Government'
         ? 'government'
         : 'all';
-  // A government party defaults to Government (session.ts prefill); "All rates" returns to that default.
+  // Government parties and Dinner B&B asks default to Government; "All rates" returns to that default.
   const governmentParty = session.analysis?.luna?.party?.kind === 'government';
+  const dinnerBbAsk = session.groups.length > 0 && session.groups.every((group) => group.board === 'dinner_bb');
   const changeRatePlan = (value: string) => {
     setRatePlanState({ selectionEpoch, analysis: session.analysis, value });
-    // The search's sales strategy lives in the header. A government plan asks HMS for Government
-    // pricing. "All rates" restores the party's default: Government for a government party, else BAR.
-    // Public (BAR) and any other plan ask for BAR.
+    // The search's sales strategy lives in the header. "All rates" restores the default for
+    // government parties and Dinner B&B asks; public and other plans ask HMS for BAR pricing.
     const government =
       value === 'all'
-        ? governmentParty
+        ? governmentParty || dinnerBbAsk
         : value === 'government' || ratePlans.some((plan) => plan.code === value && plan.category === 'government');
     const salesStrategy = government ? 'Government' : 'BAR';
     if (salesStrategy !== header.salesStrategy) onPatchStaffHeader?.({ salesStrategy }, { staffEdit: true });

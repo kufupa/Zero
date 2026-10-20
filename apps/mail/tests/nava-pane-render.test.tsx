@@ -1938,6 +1938,28 @@ describe('NavaPane screen states', () => {
     expect(within(notice).getByRole('button', { name: 'Show' }).getAttribute('aria-controls')).toBe('quote-rates');
   });
 
+  it('auto-queues a Dinner B&B ask on the Government strategy the background prepare uses', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: STORED_READY.analysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+      },
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.queueStaffQuoteMutation.mockImplementation((input: Record<string, unknown>) => {
+      bridgeMockState.lastStaffQuoteInput = input;
+      return Promise.resolve({ runId: 'staff-job-dbb' });
+    });
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(null);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({ autoStart: true, salesStrategy: 'Government' });
+  });
+
   it('auto-queues each complete date option once', async () => {
     const firstGroup = STORED_READY.analysis.groups[0]!;
     bridgeMockState.storedWork = {

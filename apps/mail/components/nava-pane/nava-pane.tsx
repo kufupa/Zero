@@ -96,6 +96,7 @@ import {
   missingQuoteDetailsReplyOnly,
   missingQuoteReplyFieldsForGroups,
   evidenceMatchesSession,
+  autoRunHeader,
   groupsForQuoteStep,
   isMultiStay,
   quoteRunIsCurrent,
@@ -1548,9 +1549,9 @@ export function NavaPane({
           return trackedStaffQuoteJob(input, options);
         }
       : undefined;
-    const runHeader = autoStart || readBack
-      ? { ...quoteSession.staffHeader, salesStrategy: 'BAR' as const }
-      : quoteSession.staffHeader;
+    // Auto-start and read-back use the session strategy, as the background prepare does (Government only when every
+    // row is Dinner B&B), so a prepared run's price shape matches.
+    const runHeader = autoStart || readBack ? autoRunHeader(quoteSession) : quoteSession.staffHeader;
     // Get rates is where she proceeds with the read as shown, so unedited AI fields are accepted (v5 B2).
     if (!autoStart && !readBack && !storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
     const run = readBack
@@ -1732,7 +1733,6 @@ export function NavaPane({
     if (!source || !binding) return;
     const staff = staffQuoteFromTrpc(trpcClient);
     if (!staff.workstation.queueStaffQuote?.mutate || !staff.workstation.staffQuoteJob?.query) return;
-    const header = { ...quoteSession.staffHeader, salesStrategy: 'BAR' as const };
     const step = quoteSession.steps.find((candidate) => {
       if (
         candidate.kind !== 'quote_stay' ||
@@ -1749,7 +1749,7 @@ export function NavaPane({
         selectionEpoch: binding.selectionEpoch,
         inputRevision: quoteSession.inputRevision,
         groups: groupsForQuoteStep(quoteSession, candidate),
-        header,
+        header: autoRunHeader(quoteSession),
         stayKey: candidate.shareKey,
       });
     });

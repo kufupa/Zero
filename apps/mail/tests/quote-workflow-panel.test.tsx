@@ -1620,7 +1620,8 @@ describe('the Find in HMS picker in the quote header', () => {
     assertRatePlanVisible();
     const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
     const values = [...planSelect.options].map((option) => option.value);
-    expect(planSelect.value).toBe('all');
+    // The fixture asks Dinner B&B on every row, so the plan defaults to Government.
+    expect(planSelect.value).toBe('government');
     expect(values).toEqual(
       expect.arrayContaining([
         'all', 'BAR', 'BARRO', 'DBB', 'DBBX', 'NCOR1B', 'NCOR2B', 'GNC3B', 'GNC4B',
@@ -1831,6 +1832,34 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
     fireEvent.change(planSelect, { target: { value: 'all' } });
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
+  });
+
+  it('All rates returns to Government for a Dinner B&B ask without a government party', () => {
+    const onPatch = vi.fn();
+    const base = headerSession({ salesStrategy: 'Government' });
+    const analysis = {
+      ...base.analysis!,
+      groups: base.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+      luna: {
+        workflow: 'quote' as const,
+        flags: [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    };
+    const dinnerSession = reduceQuoteSession(base, { type: 'analysis_ready', analysis });
+
+    render(<RatePlanGate initial={dinnerSession} onPatch={onPatch} />);
+    const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    expect(planSelect.value).toBe('government');
+    fireEvent.change(planSelect, { target: { value: 'public' } });
+    expect(onPatch).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
+    fireEvent.change(planSelect, { target: { value: 'all' } });
+    expect(onPatch).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
   });
 
   // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.

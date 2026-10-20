@@ -220,6 +220,10 @@ export function buildPreparedStaffQuotePlan(input: {
   }
   const payload = parsedPayload.data;
   const today = (input.now ?? new Date()).toISOString().slice(0, 10);
+  // A Dinner B&B ask prices on Government (every DBB booking read from HMS is NGOVDB). The strategy is one per mail,
+  // as in the pane header, so a mixed DBB + B&B mail stays on BAR.
+  const rows = payload.stays.flatMap((stay) => stay.rows);
+  const salesStrategy = rows.length > 0 && rows.every((row) => row.board === 'dbb') ? 'Government' : 'BAR';
   const stays: PreparedStaffQuoteStay[] = payload.stays.map((stay) => {
     const groupResult = groupForStay(stay, today, payload.missing);
     if (groupResult.reason) return { stayId: stay.id, reason: groupResult.reason };
@@ -229,7 +233,7 @@ export function buildPreparedStaffQuotePlan(input: {
       selectionEpoch: 0,
       inputRevision: 0,
       groups: groupResult.groups,
-      salesStrategy: 'BAR',
+      salesStrategy,
       company: payload.endClient ?? '',
       agency: payload.agency ?? '',
       attention: payload.contact.name ?? '',

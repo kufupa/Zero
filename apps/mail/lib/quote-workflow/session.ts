@@ -55,6 +55,15 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
   };
 }
 
+/**
+ * The header an automatic (auto-start or read-back) rate run sends. It mirrors the background prepare in
+ * quote-ready.ts: Government only when every requested row is Dinner B&B, else BAR, so the prepared run matches.
+ */
+export function autoRunHeader(session: Pick<QuoteSession, 'staffHeader' | 'groups'>): StaffQuoteHeader {
+  const allDinner = session.groups.length > 0 && session.groups.every((group) => group.board === 'dinner_bb');
+  return { ...session.staffHeader, salesStrategy: allDinner ? 'Government' : 'BAR' };
+}
+
 export function groupsForQuoteStep(
   session: Pick<QuoteSession, 'groups'>,
   step: QuoteToolStep,
@@ -770,7 +779,20 @@ function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
   return texts.some((text) => /shuttle|airport/i.test(text));
 }
 
-function prefillStaffHeaderFromLuna(header: StaffQuoteHeader, analysis: QuoteAnalysis): StaffQuoteHeader {
+/** Government for a government party or when every row asks Dinner B&B; otherwise BAR. */
+function automaticSalesStrategy(
+  groups: readonly { board: string }[],
+  partyKind: string | null | undefined,
+): StaffQuoteHeader['salesStrategy'] {
+  const allDinner = groups.length > 0 && groups.every((group) => group.board === 'dinner_bb');
+  return partyKind === 'government' || allDinner ? 'Government' : 'BAR';
+}
+
+function prefillStaffHeaderFromLuna(
+  header: StaffQuoteHeader,
+  analysis: QuoteAnalysis,
+  staffSalesStrategyEdited: boolean,
+): StaffQuoteHeader {
   let next = header;
   const party = analysis.luna?.party;
   const name = party?.name?.trim();
@@ -778,8 +800,16 @@ function prefillStaffHeaderFromLuna(header: StaffQuoteHeader, analysis: QuoteAna
     if (party.kind === 'agency') next = { ...next, agency: name };
     else if (party.kind === 'organization') next = { ...next, company: name };
     else if (party.kind === 'government') {
-      next = { ...next, company: name, salesStrategy: 'Government' };
+      next = {
+        ...next,
+        company: name,
+        ...(!staffSalesStrategyEdited ? { salesStrategy: 'Government' } : {}),
+      };
     }
+  }
+  // Until staff pick a strategy, each read decides it again, so a corrected read without dinner returns to BAR.
+  if (!staffSalesStrategyEdited) {
+    next = { ...next, salesStrategy: automaticSalesStrategy(analysis.groups, party?.kind) };
   }
   if (!next.shuttleRequested && shuttleRequestedFromAnalysis(analysis)) {
     next = { ...next, shuttleRequested: true };
@@ -1292,7 +1322,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           analysis: action.analysis,
           analysisStartStayRevision: null,
           staffActions,
-          staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
+          staffHeader: prefillStaffHeaderFromLuna(
+            session.staffHeader,
+            action.analysis,
+            session.staffSalesStrategyEdited === true,
+          ),
           reviewItems,
           handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
         };
@@ -1329,7 +1363,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           groups: [],
           reviewItems: unreadItems,
           handledReviewItemIds: [],
-          staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
+          staffHeader: prefillStaffHeaderFromLuna(
+            session.staffHeader,
+            action.analysis,
+            session.staffSalesStrategyEdited === true,
+          ),
         };
       }
       const keys = requestedQuoteKeys(action.analysis.groups);
@@ -1356,7 +1394,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           ? session.steps
           : planQuoteSteps(action.analysis.groups, base.staffQuotes),
         staffActions: action.analysis.staffActions ?? session.staffActions,
-        staffHeader: prefillStaffHeaderFromLuna(session.staffHeader, action.analysis),
+        staffHeader: prefillStaffHeaderFromLuna(
+          session.staffHeader,
+          action.analysis,
+          session.staffSalesStrategyEdited === true,
+        ),
         reviewItems,
         handledSourceKey: sourceKey || null,
         handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
@@ -1449,6 +1491,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       return clearDownstream({
         ...session,
         staffHeader,
+        ...(session.staffSalesStrategyEdited || action.header.salesStrategy !== undefined
+          ? { staffSalesStrategyEdited: true }
+          : {}),
         inputRevision: session.inputRevision + 1,
       });
     }
@@ -1691,9 +1736,14 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const patched = groups.find((group) => group.id === action.groupId)!;
       // A date edit moves the stay: its saved extras follow it to the new dates.
       const staffHeader = carryStayExtras(session.staffHeader, groups, stayKeyForGroup(target), stayKeyForGroup(patched));
+      // A board edit can change the automatic strategy; a strategy staff picked stays.
+      const salesStrategy = session.staffSalesStrategyEdited
+        ? staffHeader.salesStrategy
+        : automaticSalesStrategy(groups, session.analysis?.luna?.party?.kind);
+      const header = salesStrategy === staffHeader.salesStrategy ? staffHeader : { ...staffHeader, salesStrategy };
       // A rate pick or a row price keeps its own cards on screen while the re-run is pending. Other edits clear them.
       return editStays(
-        staffHeader === session.staffHeader ? session : { ...session, staffHeader },
+        header === session.staffHeader ? session : { ...session, staffHeader: header },
         groups,
         new Set([stayKeyForGroup(target), stayKeyForGroup(patched)]),
         'rateCode' in action.patch || 'rowPrice' in action.patch ? action.groupId : undefined,
