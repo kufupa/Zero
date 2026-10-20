@@ -51,6 +51,7 @@ Sources: [goal](https://code.claude.com/docs/en/goal), [scheduled tasks](https:/
 
 ## 5. Closing the run
 
-- Close every ledger row (`end`, `actual_min`, `ratio`, `outcome`, `mistake_class`).
-- Update `docs/context/ACTIVE.md`; add `MISTAKES.md` rows for owner corrections and failed fixes.
-- Report: pass bars before/after (same set), what is live, what is blocked (file:line), $ by model vs budget.
+- Close every ledger row (`end`, `actual_min`, `ratio`, `outcome`, `mistake_class`); coordinator reuses each execution ID and does not open duplicate starts.
+- Update `docs/context/ACTIVE.md`; add `MISTAKES.md` rows for owner corrections and failed fixes. Preserve unrelated owner asks and dirty files.
+- Automatically run `ce-compound mode:lane-close` for each merged/abandoned lane before spin-down. At whole overnight-run close, run `nightly-retro.sh` and write the evidence-backed dated context-ledger retro; link any material research report from the research index/catalog. No separate owner prompt is needed; this adds no cron or hook.
+- Report: pass bars before/after (same set), what is live, what is blocked (file:line), $ by model vs budget, and any unknown/unpriced spend.

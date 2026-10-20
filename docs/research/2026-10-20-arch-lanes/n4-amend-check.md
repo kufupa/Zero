@@ -1,0 +1,14 @@
+| Capability | File:line | Prod-wired? (route + job kind) | Lab-only? |
+|---|---|---|---|
+| Read existing booking fields, including raw `guaranteetype`, `totalrate`, `depositreceived` | [read-reservation-fields.mjs:10-18,292-308,353-368] | No route/job for this CLI found in named paths; separate staff lookup uses `find` / `search_guest` | No; reader allows only read endpoints [read-reservation-fields.mjs:2-3,19] |
+| Staff booking lookup | [pane-stay-lookup.ts:156-228]; [amend-find.ts:65-86] | Yes: `paneStayLookup` routes; `find` / `search_guest` jobs [router.ts:48-52; hms-jobs.ts:205-237] | No |
+| New reservation creation (separate from amend) | [create-lab-stay.mjs:15-26,324-343] | Yes: `quoteWorkflow.previewStay` / `commitStay`; no create job kind [quote-workflow.ts:236-275; hms-jobs.ts:205-237] | `RESERVATIONIST_PANE_SAVE` supports `lab` and `on`; Labtest guard applies in `lab` mode [pane-stay-save.ts:134-177] |
+| Amend existing booking dates, room, adults/children | [amend-stay.mjs:22-30,229-269]; [pane-hms-write.ts:120-126] | Yes: `paneStayAmend.previewAmend` / `commitAmend`, registered in router; no amend write job kind [pane-stay-amend.ts:14-21; router.ts:23-50; hms-jobs.ts:205-237] | Yes: amend gate accepts only `RESERVATIONIST_PANE_SAVE=lab`; requires Labtest surname [pane-hms-write.ts:87-90,149-155,460-475] |
+
+> 🧠 **From Hindsight memory (Initiatives and enhancements)** — CHECK and unpaid in-place amendment were recorded as scoped work, not proof they landed; source shows amend writes remain Labtest-gated [pane-hms-write.ts:87-90,471-475].
+
+- **CHECK:** Core candidate-pick exists, embedded in Amend Lookup: when booking link is missing/unusable, not found, or ambiguous, staff can search surname + arrival/optional departure; up to five results show confirmation, guest, status, dates, then staff picks one [amend-lookup-panel.tsx:191-193,452-485,538-611,646-675]. Missing: explicit CHECK state/gate, and a way to reopen candidate choice after a valid-but-suspect link resolves; search is shown only when no stay is resolved [amend-lookup-panel.tsx:191-193,312-325].
+
+- **Unpaid amend save:** Preview/commit path and date/room/occupancy fields exist, but only for Labtest; `RESERVATIONIST_PANE_SAVE=on` does not enable this amend path [pane-hms-write.ts:87-90,120-126,471-475]. No unpaid/payment guard found; current checks cover identity, status, date, and changed fields [amend-stay-rules.mjs:65-80]. Existing-stay edit controls and Save behavior remain `TODO-LIVE-PROBE` [amend-stay.mjs:22-30].
+
+- **Paid detection:** Raw reader extracts guarantee type and deposit received [read-reservation-fields.mjs:10-18,292-308]. Production read type has `guaranteeType`, total, and balance, but `depositReceived` / paid flag: **not found**; amend panel does not show those payment fields [amend-find.ts:65-86; amend-lookup-panel.tsx:343-350]. No paid/unpaid classification found in these paths.

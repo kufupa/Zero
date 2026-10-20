@@ -1,7 +1,7 @@
 ---
 title: "HMS job priority queue: staff clicks > prefill > dev/eval > refresh"
 date: 2026-10-20
-status: owner GO 2026-10-20 ~02:55Z ("go queue"); runs after quote slice (~06:00Z)
+status: merged-partial; owner GO 2026-10-20 ~02:55Z ("go queue"); deployed `3e1acb694`
 owner_ask: OWNER-ASKS 151; original definition 2026-10-19 chat ("number one, HMS stuff that the user has added … number two is like the pre-fill slash backfill stuff … testing stuff … fourth priority … refresh … when the HMS is completely not being used")
 ---
 
@@ -56,3 +56,7 @@ Risks / holds:
 ## Next after this (not tonight)
 1. Refresh sweep (ask 125) at REFRESH tier, 02:00–03:00Z.
 2. Second HMS session for dev/eval (parallel slot) — real fix for dev-while-live.
+
+## Execution outcome — 2026-10-20
+
+PR #425 merged and deployed at `3e1acb694`. Named tiers and DEV-prepared reuse shipped; one DEV-tier quote-read succeeded and remained Nava-prepared. The 05:00–10:05Z read-only check found no DEV runs, so the staff-hours hold was **not proven** (no queued DEV job was observed held behind PREFILL). See the [run retro](../research/2026-10-20-overnight-quote-retro.md). Prepared-quote queue TTL/retry failures remain separate open run-health issues.
