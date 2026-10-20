@@ -16,6 +16,63 @@ Plan: `docs/plans/2026-10-20-006-stay-request-build-plan-v2.md`. Kickoff prompt:
 | Skills (`orca-cli`, `ce-compound`, `greptile-cli`) | `~/.grok/skills` → same tree, so skills load. Invoke by name if needed | Commands below are written out in full anyway |
 | Auto-compaction keeps Claude's memory | Grok auto-compacts at 85 % of 256k (`~/.grok/README.md:1388`). A compaction **loses** rules not in a file | Orchestrator re-reads this file + the plan's Waves table + `/tmp/sr2/state.md` after every compaction (§8) |
 
+
+## 0b. Context the planning session had that you don't (read this, then look things up)
+
+Claude Code sessions here carry ~50 memory files and know where the repo keeps its history. Grok has neither. This section is that memory, distilled for this run. **When unsure, look it up in the table below before guessing or asking the owner** (MISTAKES 2026-10-15: the driver asked the owner something the corpus already answered).
+
+### Where things live (open the row's file when its trigger fires)
+
+| Need | File (on `origin/main`) | Who / when |
+|---|---|---|
+| Owner spec, pass bars, hard rules | `PRODUCT.md` | Everyone, at start (§1) |
+| Current live SHA, flags, open holds | `docs/context/ACTIVE.md` (top 60 lines) | Orchestrator at start + after compaction |
+| Owner's original words, numbered | `docs/context/OWNER-ASKS.md` (rows 139–173 cover this run) | Orchestrator before any scope call; cite by row number |
+| Decisions already made (do not re-open) | `docs/context/DECISIONS-2026-10-20.md` (D18 routing, D19 quote bar, D20/D21 Da Vinci) | Orchestrator before any design question |
+| Settled facts (HMS lane, staff defaults, quote proof) | `docs/context/FACTS.md` §8 | Before any research or "is X true?" question |
+| Past research, do not redo | `docs/research/README.md`, `docs/research/CATALOG.md`; this run: `docs/research/2026-10-20-*.md`, `docs/research/2026-10-20-arch-lanes/` | Before any analysis; a lane may re-analyse only if it names the prior file and why it is not enough |
+| Mistakes already made (full table) | `docs/context/MISTAKES.md` — read the **whole** file once, not only the head | Orchestrator at start; lanes grep it for their module name |
+| How the last runs went wrong | `docs/context/ledger/2026-10-19-evening-retro.md`, `2026-10-20-overnight-retro.md`, `2026-10-20-planning-retro.md`; `docs/research/2026-10-20-overnight-quote-retro.md` | Orchestrator at start (≈15 KB total) |
+| Verified fixes / gotchas by module | `docs/solutions/<category>/*.md` — `grep -rl 'module:.*<area>' docs/solutions` (areas: `server-pilot`, `deploy`, `infor-hms`, `trpc`, `real mail`) | Lane, **before** changing behaviour in that area, and the orchestrator before deploy (`workflow-issues/ec2-pilot-*`) |
+| Domain words (stay, party, transport, quarantine, prepared quote…) | `CONCEPTS.md` (repo root, 54 KB — grep the term, don't read whole) | Anyone meeting an unknown term |
+| Infor HMS screens, traps, tool catalog | `docs/infor-hms/CONTEXT.md`, `capability-matrix.md` | Orchestrator before U4/U8 live runs |
+| Run contract / overnight template | `docs/context/RUN-CONTRACT.md` | Orchestrator at start |
+| All workstreams by ROI | `docs/context/WORKSTREAMS.md` | Only if a cut/next-item decision is needed (§6b) |
+| Code lookup | `cd /home/ubuntu/projects/zero && codegraph explore "<symbol names or question>"` (index is on the main checkout, ≈ origin/main; lane worktrees have no index). Returns verbatim source + callers. Use before grep for "where/how does X work" | Anyone |
+
+### Memory rules that apply to this run (owner-given unless marked)
+
+| Rule | Why (evidence) | Applies to |
+|---|---|---|
+| **Both surfaces.** Any pane change works in the Outlook pane *and* the webmail panel (same `apps/mail` code; check no host-only branch breaks the other). Reply action = insert/save reply, never "copy reply" | Owner tests on webmail, staff use Outlook; drift made tests prove nothing (2026-10-09) | U2, U3, U6, U9, U10, U11 |
+| **Pane UI: each fact once.** No per-field "From the email" captions; no orange/warning banner for neutral info; button text "Edit", never "Correct"; hide dead controls | Owner "commented on this so many times" (2026-10-14) | All UI lanes |
+| **Generalise, no overfit.** No company/agency/sender-specific rules; edge cases become tests, not code paths. Rare cases (multi-room "options" quotes, ~0.2% of mail) stay simple | Woolworths-only rule was "the most shit thing ever"; v5 burned ~14 task-hours on a 0.2% case | All lanes, esp. U5a/U5r/UDV |
+| **Never discard HMS data.** An HMS reader returns every column the screen already loaded (city, IATA, address, agency id); log any field you drop | 13 identical "Tourvest" rows unresolvable because city/IATA were dropped (2026-10-19) | U4, U8, any `*.mjs` tool change |
+| **Diagnostics first.** A failure you can't see (client PC, HMS DOM): capture the real error/screenshot/DOM first, state the causal chain, then fix. Never ship a guessed fix | Clock-skew guess on 2026-10-08 was wrong; 2 h lost | U4 combo, any live failure |
+| **Live proof = real runtime.** "Works in prod" is proven through pm2 or `ops-run.sh` (systemd-run), never an ad-hoc SSM shell or a direct function call that skips the tRPC route | AE3 PDF sandbox falsely "proven" from an unconfined shell (2026-10-10); a direct call skipped tRPC input validation (2026-10-14) | U12, H5 checks |
+| **Done = live check passes after the last fix**, not merged/deployed. Pane change is live only after a staff bundle load is seen in nginx after the deploy | PRODUCT.md pass bars | Orchestrator |
+| **Greptile P1s:** triage every one (real / already fixed / not a bug), fix real ones, reply to every thread before merge | 47 P1s merged open on 2026-10-10 | Orchestrator merges |
+| **Prod ops gotchas:** `ops-deploy.sh` exits 1 when any dead letter exists in 24 h even if prod is healthy (check health + 4 procs + run `vpn-health-assert.sh` yourself); pending migration needs `ops-deploy.sh --migrate`; `ops-restart.sh` may exit 7 at 0 s uptime — re-check after 20 s; `systemd-run` under SSM needs `sudo -n`; SSM stdout cap ~24 KB; POP3 mailbox quiet ~20:00–01:00 UTC (live-arrival proofs need daytime) | `docs/solutions/workflow-issues/ec2-pilot-*`, 2026-10-11/14 runs | Orchestrator deploy (U12) |
+| **Labtest only.** Writes only on guest "Proof Labtest", arrival ≥ 2027-01-01, profile `apps/server-pilot/tooling/playwright-quote/examples/lab-proof-request.json`. No Infor test property exists; this is live HRCEN | Owner 2026-10-14 | U4, U8 |
+| **Pre-stay self-mail** (own mailbox → itself, "Pre Stay … Confirmation No <conf>") = existing stay, never new booking / create. General rule, not a Centurion string match | PRODUCT.md Front door | U5a, U5r |
+| **OTA out of scope.** OTA/channel mail skipped at the door; travel-agent mail stays in scope | PRODUCT.md, owner 2026-10-14 | U5a, U5r, UDV |
+| **Party data per HMS tenant.** HRCEN and HRDAV party/profile data never shared | Owner 2026-10-20 | UDV-1/2/3 |
+| **Evidence-backed numbers.** Every ETA/rate/threshold names its source (run, file, ledger) or says "ballpark"; report n and source with every rate | Owner 2026-10-19 | Everyone |
+| **Never invent constraints or owner rules.** Quote owner rules verbatim with a source; your own inference is labelled "my inference" | "<2%" and "load<12" were agent inventions copied as owner rules (MISTAKES 2026-10-14/15) | Everyone |
+| **Look it up before asking.** Use 2–3 strategies (files above, codegraph, read-only SQL) before asking the owner. Ask only for real holds (§3, approvals) | MISTAKES 2026-10-15 | Orchestrator |
+| **Orchestrator owns the plan; owner doesn't slice.** Scope change = a trade naming what it displaces + new ETA, logged in the run report | AGENTS.md "Slicing", PRODUCT.md rule 7 | Orchestrator |
+| **Report in plain words**, short, tables, bold answer first; cost in $ by model | Owner style | Final report |
+
+### Brief completeness check (orchestrator, before sending any lane brief)
+
+A lane has no memory either. Before `terminal send`, confirm the brief file contains:
+1. The §10 header verbatim.
+2. The unit's plan section **pasted verbatim** (not summarised) incl. its test scenarios and gate thresholds.
+3. Owned files (Waves table) and the exact test files it must update (rule 21).
+4. Which rows of this §0b table apply to it (copy those rows in).
+5. Any `docs/solutions` / `MISTAKES` lines that match its module (grep first).
+6. Done definition + what it must NOT do (no live HMS, no merge, no deploy).
+
 ---
 
 ## 1. Read list (every agent, every start, every compaction)
@@ -29,7 +86,7 @@ git show origin/main:AGENTS.md            # FULL file — Grok's auto-load trunc
 git show origin/main:docs/context/ACTIVE.md | head -60
 git show origin/main:docs/plans/2026-10-20-008-grok-run-handbook.md   # this file
 git show origin/main:docs/plans/2026-10-20-006-stay-request-build-plan-v2.md
-git show origin/main:docs/context/MISTAKES.md | head -40
+git show origin/main:docs/context/MISTAKES.md          # whole file, once (see §0b)
 git show origin/main:docs/context/DECISIONS-2026-10-20.md | sed -n '/D18/,/D19/p'
 ```
 
@@ -168,7 +225,7 @@ Cut order exists because the owner is the only human: a shipped smaller set beat
 
 ```bash
 orca-ide skills get orca-cli            # once, read the version-matched guide
-orca-ide worktree create --repo path:/home/ubuntu/projects/zero --name sr2-<unit> --base-branch origin/main --no-parent --json
+orca-ide worktree create --repo path:/home/ubuntu/projects/zero --name sr2-<unit> --base-branch origin/main --parent-worktree active --json   # lanes show as children of sr2-orch in the Orca sidebar; run from the sr2-orch terminal (or pass --parent-worktree id:<repoId>::/home/orca/orca/workspaces/zero/sr2-orch)
 # copy the full "id" field (<repoId>::<path>)
 orca-ide terminal create --worktree id:<repoId>::<path> --title sr2-<unit> \
   --command 'grok -m grok-4.6 --effort high --permission-mode bypassPermissions --no-subagents' --json
@@ -193,7 +250,7 @@ Never `terminal create` a second coder in a worktree that already has one; steer
 
 ## 8. Compaction / context hygiene
 
-- After any auto-compaction (Grok compacts at 85 % of 256k), re-run §1 and read `/tmp/sr2/state.md` before the next action.
+- After any auto-compaction (Grok compacts at 85 % of 256k), re-run §1, re-read §0b and `/tmp/sr2/state.md` before the next action.
 - Bulk reads (SQL dumps, eval output, logs > ~200 lines) go to a Luna worker that returns a ≤ 40-line summary. Do not paste them into the orchestrator context.
 - Never trust a fact from before compaction that is not in a file: re-read it.
 
@@ -222,7 +279,8 @@ Never `terminal create` a second coder in a worktree that already has one; steer
 You are a coding lane in the Nava repo (pnpm monorepo, TypeScript). You are NOT the orchestrator.
 FIRST: cat these and say "Read: … origin/main=<sha>":
   git -C . fetch -q origin; git rev-parse --short origin/main
-  git show origin/main:docs/plans/2026-10-20-008-grok-run-handbook.md   (sections 2, 3, 4)
+  git show origin/main:docs/plans/2026-10-20-008-grok-run-handbook.md   (sections 0b, 2, 3, 4)
+  before changing behaviour: grep -rl "module:.*<your area>" docs/solutions; grep -i "<your module>" docs/context/MISTAKES.md; codegraph explore "<symbols>" (run from /home/ubuntu/projects/zero)
   your unit section of docs/plans/2026-10-20-006-stay-request-build-plan-v2.md
 RULES (no exceptions):
 - Never run tsc/tsgo/typecheck/vitest/any test runner here. Gates: bash /home/orca/bin/remote-typecheck.sh <this wt> --app <app>; bash /home/orca/bin/remote-vitest.sh <this wt> <app> <files>.
