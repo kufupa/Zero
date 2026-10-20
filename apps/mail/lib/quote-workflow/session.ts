@@ -56,20 +56,12 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
 }
 
 /**
- * The header a rate run sends for one stay, matching the background prepare (quote-ready.ts), which decides per stay:
- * a Dinner B&B stay prices on Government, any other stay on BAR. A staff plan choice always wins. A manual run of a
- * non-dinner stay keeps the session header (a government party defaults to Government there).
+ * The header an automatic (auto-start or read-back) rate run sends. It mirrors the background prepare in
+ * quote-ready.ts: Government only when every requested row is Dinner B&B, else BAR, so the prepared run matches.
  */
-export function runHeaderForStay(
-  session: Pick<QuoteSession, 'staffHeader' | 'staffSalesStrategyEdited'>,
-  groups: readonly Pick<StayGroupRequirement, 'board'>[],
-  automatic: boolean,
-): StaffQuoteHeader {
-  if (session.staffSalesStrategyEdited) return session.staffHeader;
-  if (groups.some((group) => group.board === 'dinner_bb')) {
-    return { ...session.staffHeader, salesStrategy: 'Government' };
-  }
-  return automatic ? { ...session.staffHeader, salesStrategy: 'BAR' } : session.staffHeader;
+export function autoRunHeader(session: Pick<QuoteSession, 'staffHeader' | 'groups'>): StaffQuoteHeader {
+  const allDinner = session.groups.length > 0 && session.groups.every((group) => group.board === 'dinner_bb');
+  return { ...session.staffHeader, salesStrategy: allDinner ? 'Government' : 'BAR' };
 }
 
 export function groupsForQuoteStep(

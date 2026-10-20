@@ -98,7 +98,7 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.inputs[0]).not.toHaveProperty('dinnerAllowanceMinor');
   });
 
-  it('chooses rate strategy separately for each mixed-board stay', () => {
+  it('keeps a mixed Dinner B&B + B&B mail on BAR, one strategy per mail like the pane', () => {
     const baseStay = payload().stays[0]!;
     const plan = build({
       stays: [
@@ -116,7 +116,7 @@ describe('prepared quote input from stored extraction', () => {
       ],
     });
 
-    expect(plan.inputs.map((input) => input.salesStrategy)).toEqual(['Government', 'BAR']);
+    expect(plan.inputs.map((input) => input.salesStrategy)).toEqual(['BAR', 'BAR']);
     expect(plan.inputs.map((input) => input.groups[0]?.board)).toEqual(['dinner_bb', 'bb']);
   });
 

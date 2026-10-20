@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   allocationTotal,
-  runHeaderForStay,
+  autoRunHeader,
   canCreateNativeDraft,
   canCreatePdf,
   canRunQuoteStep,
@@ -2854,6 +2854,8 @@ describe('staff dinner B&B fallback', () => {
       groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
     };
     let before = withStaffSource(analysisReady(analysis));
+    // The B&B-plus-dinner fallback is the BAR path; a Dinner B&B ask now defaults to Government.
+    before = reduceQuoteSession(before, { type: 'patch_staff_header', header: { salesStrategy: 'BAR' } });
     before = reduceQuoteSession(before, { type: 'staff_dinner_bb_fallback', groupIds: ['g1'] });
     before = reduceQuoteSession(before, {
       type: 'patch_staff_stay_extras',
@@ -3738,23 +3740,17 @@ describe('rowRoomCode: staff picks beat the projected room type', () => {
   });
 });
 
-describe('runHeaderForStay', () => {
+describe('autoRunHeader', () => {
   const header = { ...emptyStaffQuoteHeader(), salesStrategy: 'Government' as const };
 
-  it('prices a stay like the background prepare: Dinner B&B on Government, automatic B&B on BAR', () => {
-    const session = { staffHeader: header };
-    expect(runHeaderForStay(session, [{ board: 'dinner_bb' }], true).salesStrategy).toBe('Government');
-    expect(runHeaderForStay(session, [{ board: 'bb' }], true).salesStrategy).toBe('BAR');
-    expect(runHeaderForStay({ staffHeader: emptyStaffQuoteHeader() }, [{ board: 'dinner_bb' }], false).salesStrategy).toBe(
+  it('mirrors the background prepare: Government only when every row is Dinner B&B, else BAR', () => {
+    expect(autoRunHeader({ staffHeader: emptyStaffQuoteHeader(), groups: [{ board: 'dinner_bb' }] as never }).salesStrategy).toBe(
       'Government',
     );
-  });
-
-  it('keeps the session header for a manual B&B run and a staff plan choice everywhere', () => {
-    expect(runHeaderForStay({ staffHeader: header }, [{ board: 'bb' }], false).salesStrategy).toBe('Government');
-    const bar = { ...emptyStaffQuoteHeader(), salesStrategy: 'BAR' as const };
-    const edited = { staffHeader: bar, staffSalesStrategyEdited: true };
-    expect(runHeaderForStay(edited, [{ board: 'dinner_bb' }], true).salesStrategy).toBe('BAR');
+    expect(autoRunHeader({ staffHeader: header, groups: [{ board: 'bb' }] as never }).salesStrategy).toBe('BAR');
+    expect(
+      autoRunHeader({ staffHeader: header, groups: [{ board: 'dinner_bb' }, { board: 'bb' }] as never }).salesStrategy,
+    ).toBe('BAR');
   });
 });
 

@@ -1597,7 +1597,8 @@ describe('the Find in HMS picker in the quote header', () => {
     assertRatePlanVisible();
     const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
     const values = [...planSelect.options].map((option) => option.value);
-    expect(planSelect.value).toBe('all');
+    // The fixture asks Dinner B&B on every row, so the plan defaults to Government.
+    expect(planSelect.value).toBe('government');
     expect(values).toEqual(
       expect.arrayContaining([
         'all', 'BAR', 'BARRO', 'DBB', 'DBBX', 'NCOR1B', 'NCOR2B', 'GNC3B', 'GNC4B',
