@@ -535,6 +535,40 @@ type SaveOutcome = {
   runDir?: string;
 };
 
+/**
+ * Cancel CLI stayChanges compares every expected key. readStayFields only returns STAY_FIELDS
+ * (cancel-stay-rules.mjs). Lookup may carry depositReceived for the amend classifier; cancel must not.
+ */
+export const CANCEL_EXPECT_STAY_KEYS = [
+  'status',
+  'confirmation',
+  'lastName',
+  'firstName',
+  'arrival',
+  'departure',
+  'nights',
+  'adults',
+  'children',
+  'roomType',
+  'ratePlan',
+  'mealPlan',
+  'averageRate',
+  'grandTotal',
+  'balance',
+  'sourceOfBusiness',
+  'guaranteeType',
+  'bookingAgency',
+  'organization',
+  'reservationNote',
+] as const;
+
+export function cancelExpectStay(stay: PaneStayFields): Record<string, unknown> {
+  const source = stay as Record<string, unknown>;
+  return Object.fromEntries(
+    CANCEL_EXPECT_STAY_KEYS.filter((key) => Object.hasOwn(source, key)).map((key) => [key, source[key]]),
+  );
+}
+
 /** `approvedStay` is the read that matched the approval's HMS digest. The cancel CLI refuses if its own read differs. */
 async function saveCancel(form: CancelForm, approvedStay: PaneStayFields): Promise<SaveOutcome> {
   const spawn = paneStayCancelLoaders.spawn ?? spawnPaneStayCancel;
@@ -544,7 +578,7 @@ async function saveCancel(form: CancelForm, approvedStay: PaneStayFields): Promi
     arrival: form.arrival,
     reason: squash(form.reason),
     allowRealGuest: false,
-    expectStay: approvedStay,
+    expectStay: cancelExpectStay(approvedStay),
   };
   const result: PaneStayCancelSpawnResult = await spawn(request);
   return {

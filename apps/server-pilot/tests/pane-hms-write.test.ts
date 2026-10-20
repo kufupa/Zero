@@ -27,6 +27,7 @@ import {
 } from '../src/ai/pane-stay-lookup.js';
 import {
   PANE_ATTACH_MAX_BYTES,
+  cancelExpectStay,
   paneHmsWriteLoaders,
   paneHmsWriteMode,
   paneAmendPreviewDigest,
@@ -649,6 +650,7 @@ describe('pane HMS write (U26)', () => {
         outcome: 'cancelled',
         evidence: ['before.png', 'after.png'],
       });
+      expect(LAB_STAY.depositReceived).toBe('0');
       expect(cancelCalls).toEqual([
         {
           mode: 'commit',
@@ -657,9 +659,10 @@ describe('pane HMS write (U26)', () => {
           reason: 'Test Reservations',
           allowRealGuest: false,
           // The read that matched the approval: the cancel CLI compares its own read of the record with it before OK.
-          expectStay: LAB_STAY,
+          expectStay: cancelExpectStay(LAB_STAY),
         },
       ]);
+      expect(cancelCalls[0]?.expectStay).not.toHaveProperty('depositReceived');
       expect((await runRow(db, run.runId)).state).toBe('succeeded');
     });
   });
@@ -684,7 +687,7 @@ describe('pane HMS write (U26)', () => {
         failureClass: 'NEEDS_CHECK',
         reason: 'refused_stay_changed',
       });
-      expect(cancelCalls[0]?.expectStay).toEqual(LAB_STAY);
+      expect(cancelCalls[0]?.expectStay).toEqual(cancelExpectStay(LAB_STAY));
       // Nothing was written, so a fresh read and approval are allowed without a read-back.
       expect((await stateOf(db, workItemId)).hmsSnapshot).toBeUndefined();
     });
