@@ -31,10 +31,17 @@ function requestSession(groups: StayGroupRequirement[], over: Partial<QuoteSessi
   return { ...initialQuoteSession(), phase: 'requirements', groups, steps: planQuoteSteps(groups), ...over };
 }
 
-function renderPanel(session: QuoteSession) {
+function renderPanel(session: QuoteSession, extra: { onRunStep?: (stepId: string) => void } = {}) {
   const onPatchGroup = vi.fn();
   const onStayAction = vi.fn();
-  render(<QuoteWorkflowPanel session={session} onPatchGroup={onPatchGroup} onStayAction={onStayAction} />);
+  render(
+    <QuoteWorkflowPanel
+      session={session}
+      onPatchGroup={onPatchGroup}
+      onStayAction={onStayAction}
+      {...(extra.onRunStep ? { onRunStep: extra.onRunStep } : {})}
+    />,
+  );
   return { onPatchGroup, onStayAction };
 }
 
@@ -68,7 +75,7 @@ describe('stay and room builder', () => {
   });
 
   it('shows the unknown room code the email asked for and still allows search on dates and occupancy', () => {
-    renderPanel(requestSession([row('a1', dateA, { roomPreference: 'PENTHOUSE' })]));
+    renderPanel(requestSession([row('a1', dateA, { roomPreference: 'PENTHOUSE' })]), { onRunStep: vi.fn() });
     const roomType = screen.getByLabelText('Room type');
     if (!(roomType instanceof HTMLSelectElement)) throw new Error('Room type is not a select');
     expect(roomType.value).toBe('PENTHOUSE');
@@ -78,7 +85,9 @@ describe('stay and room builder', () => {
   });
 
   it('keeps date-range search enabled when a stay has no room type yet', () => {
-    renderPanel(requestSession([row('a1', dateA), row('b1', dateB, { roomPreference: undefined })]));
+    renderPanel(requestSession([row('a1', dateA), row('b1', dateB, { roomPreference: undefined })]), {
+      onRunStep: vi.fn(),
+    });
     const searches = screen.getAllByRole('button', { name: /Search this date range for Stay/ }) as HTMLButtonElement[];
     expect(searches).toHaveLength(2);
     expect(searches[1]!.disabled).toBe(false);
