@@ -18,7 +18,8 @@ import {
 } from '@aws-sdk/client-s3';
 import { cleanupPartialParseFailureAttachments, persistInboundMessage } from './store.js';
 import { completeFanoutAfterPrimary } from './fanout.js';
-import { mailIngestQuarantine } from '../../db/schema/mail.js';
+import { mailIngestQuarantine, mailIngestSourceReceipt, message } from '../../db/schema/mail.js';
+import { eq } from 'drizzle-orm';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
 import type { DB } from '../../db/client.js';
@@ -201,18 +202,45 @@ type OneOutcome =
   | { kind: 'quarantined' }
   | { kind: 'error'; message: string };
 
+async function findExistingUidlByRawMimeS3Key(
+  db: DB,
+  rawMimeS3Key: string,
+): Promise<string | null> {
+  const receipts = await db
+    .select({ pop3Uidl: mailIngestSourceReceipt.pop3Uidl })
+    .from(mailIngestSourceReceipt)
+    .where(eq(mailIngestSourceReceipt.rawMimeS3Key, rawMimeS3Key));
+  const primaryReceipt = receipts.find((row) => !row.pop3Uidl.includes('#t:'));
+  if (primaryReceipt) return primaryReceipt.pop3Uidl;
+  if (receipts[0]) return receipts[0]!.pop3Uidl;
+
+  const messages = await db
+    .select({ pop3Uidl: message.pop3Uidl })
+    .from(message)
+    .where(eq(message.rawMimeS3Key, rawMimeS3Key));
+  const primaryMessage = messages.find(
+    (row) => row.pop3Uidl && !row.pop3Uidl.includes('#t:'),
+  );
+  if (primaryMessage?.pop3Uidl) return primaryMessage.pop3Uidl;
+  return messages[0]?.pop3Uidl ?? null;
+}
+
 async function rehydrateOne(
   ref: RawMimeObjectRef,
   opts: { db: DB; storage: S3Storage; triage: boolean },
 ): Promise<OneOutcome> {
   const { db, storage } = opts;
-  const messageId = candidateMessageIdForPop3Uidl(ref.ingestMailboxId, ref.pop3Uidl);
   let parsed: ParsedInboundMessage | undefined;
+  let pop3Uidl = ref.pop3Uidl;
+  let messageId = candidateMessageIdForPop3Uidl(ref.ingestMailboxId, pop3Uidl);
   try {
     const object = await storage.getObject(ref.key);
     if (!object) {
       return { kind: 'error', message: `missing s3 object ${ref.key}` };
     }
+
+    pop3Uidl = (await findExistingUidlByRawMimeS3Key(db, ref.key)) ?? ref.pop3Uidl;
+    messageId = candidateMessageIdForPop3Uidl(ref.ingestMailboxId, pop3Uidl);
 
     parsed = await parseRawMessage(object.body, {
       messageId,
@@ -221,7 +249,7 @@ async function rehydrateOne(
 
     const persistMeta = {
       ingestMailboxId: ref.ingestMailboxId,
-      pop3Uidl: ref.pop3Uidl,
+      pop3Uidl,
       messageId,
       rawMimeS3Key: ref.key,
     };
@@ -267,7 +295,7 @@ async function rehydrateOne(
           attachments: uploadedAttachments,
           meta: {
             ingestMailboxId: ref.ingestMailboxId,
-            pop3Uidl: ref.pop3Uidl,
+            pop3Uidl,
             messageId,
             rawMimeS3Key: ref.key,
           },
