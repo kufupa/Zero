@@ -1312,6 +1312,71 @@ describe.skipIf(!ingestionDbAvailable)('mailbox fan-out routing', () => {
     });
   });
 
+  it('a real UIDL equal to the old copy suffix is a new message, not a copy duplicate', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db);
+      const rawUidl = 'uidl-copy-identity';
+      const collidingUidl = `${rawUidl}#t:${DAV_ID}`;
+      const first = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl: rawUidl,
+        raw: syntheticEml({
+          from: 'guest@example.test',
+          to: `${CEN_EMAIL}, ${DAV_EMAIL}`,
+          subject: 'primary then colliding uidl',
+        }),
+      });
+      expect(first.primary.kind).toBe('stored');
+      const copyUidl = fanoutCopyPop3Uidl(rawUidl, DAV_ID);
+      expect(copyUidl).not.toBe(collidingUidl);
+      const second = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl: collidingUidl,
+        raw: syntheticEml({
+          from: 'guest@example.test',
+          to: CEN_EMAIL,
+          subject: 'real uidl that looks like an old copy',
+        }),
+      });
+      expect(second.primary.kind).toBe('stored');
+      if (second.primary.kind !== 'stored') return;
+      expect(second.primary.messageId).not.toBe(first.messageId);
+      const rows = await db.select().from(message);
+      expect(rows.some((row) => row.pop3Uidl === collidingUidl)).toBe(true);
+      expect(rows.some((row) => row.pop3Uidl === copyUidl)).toBe(true);
+    });
+  });
+
+  it('copy direction uses From, not Sender, on a delegated send', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db);
+      const pop3Uidl = 'uidl-fanout-delegated-from';
+      const { primary, copies } = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl,
+        raw: syntheticEml({
+          from: FTH_EMAIL,
+          to: DAV_EMAIL,
+          extraHeaders: ['Sender: assistant@example.test'],
+          subject: 'delegated send',
+        }),
+      });
+      expect(primary.kind).toBe('stored');
+      if (primary.kind !== 'stored') return;
+      expect(primary.transportId).toBe(DAV_ID);
+      expect(primary.fanoutTransportIds).toEqual([FTH_ID]);
+      expect(copies?.results[0]?.result.kind).toBe('stored');
+      const rows = await db.select().from(message);
+      expect(rows).toHaveLength(2);
+      const byTransport = Object.fromEntries(rows.map((row) => [row.transportId, row]));
+      expect(byTransport[DAV_ID]?.direction).toBe('inbound');
+      expect(byTransport[FTH_ID]?.direction).toBe('outbound');
+      expect(byTransport[FTH_ID]?.isRead).toBe(true);
+    });
+  });
+
   it('5. To one hotel box plus one non-hotel transport quarantines', async () => {
     const { withIngestionDb } = await import('./helpers/ingestion-db.js');
     await withIngestionDb(async ({ db }) => {

@@ -1,11 +1,10 @@
 /**
  * Persist one extra mailbox copy per named hotel transport.
  *
- * Each copy uses UIDL `<uidl>#t:<transportId>` everywhere (receipt, message
- * row, attachment-key ownership, UIDL claim, pending-cleanup check). The raw
- * UIDL is never passed to a copy call. Claim the copy UIDL and skip parse
- * when cleanup is pending, so attachments are not uploaded under an unclaimed
- * key. `fanoutCopy: true` never inserts quarantine.
+ * Each copy uses a UIDL outside the RFC 1939 POP3 unique-id charset
+ * (0x21–0x7E), so a later real message cannot collide with a copy receipt.
+ * The raw UIDL is never passed to a copy call. Claim the copy UIDL and skip
+ * parse when cleanup is pending. `fanoutCopy: true` never inserts quarantine.
  */
 import {
   claimIngestUidl,
@@ -26,8 +25,11 @@ import {
 import type { DB } from '../../db/client.js';
 import type { S3Storage } from '../../storage/s3.js';
 
+/** Unit separator — outside POP3 UIDL charset (RFC 1939: 0x21–0x7E). */
+const COPY_UIDL_MARK = '\u001f';
+
 export function fanoutCopyPop3Uidl(pop3Uidl: string, transportId: string): string {
-  return `${pop3Uidl}#t:${transportId}`;
+  return `${COPY_UIDL_MARK}copy${COPY_UIDL_MARK}${transportId}${COPY_UIDL_MARK}${pop3Uidl}`;
 }
 
 export type FanoutCopyOutcome = {

@@ -141,6 +141,15 @@ async function persistPrimaryAndCopies(args: {
 }
 
 describe('mailbox fan-out copies without ingest db', () => {
+  it('keeps copy UIDLs outside the RFC 1939 POP3 unique-id charset', () => {
+    const copyUidl = fanoutCopyPop3Uidl('uidl-raw', DAV_ID);
+    expect(copyUidl).not.toBe(`uidl-raw#t:${DAV_ID}`);
+    expect([...copyUidl].some((ch) => {
+      const code = ch.charCodeAt(0);
+      return code < 0x21 || code > 0x7e;
+    })).toBe(true);
+  });
+
   it('claims the copy UIDL before parse and does not upload when the claim is not held', async () => {
     type QueryRows = unknown[];
     type SelectResult = Promise<QueryRows> & {

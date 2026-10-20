@@ -747,7 +747,9 @@ export async function persistInboundMessage(
       return;
     }
 
-    const sender = normalizeEmailAddress(parsed.fromAddress ?? '');
+    const sender = normalizeEmailAddress(
+      (opts.fanoutCopy ? parsed.fromHeaderAddress : parsed.fromAddress) ?? '',
+    );
     const identities = transportIdentitySet(transport.email, transport.sendFromConfig);
     const recipients = [...parsed.toAddresses, ...parsed.ccAddresses, ...parsed.bccAddresses].map(
       normalizeEmailAddress,
@@ -838,7 +840,9 @@ export async function persistInboundMessage(
       });
 
     const transportEmail = (transport.email ?? '').trim().toLowerCase();
-    const fromAddress = (parsed.fromAddress ?? '').trim().toLowerCase();
+    const fromAddress = (
+      (opts.fanoutCopy ? parsed.fromHeaderAddress : parsed.fromAddress) ?? ''
+    ).trim().toLowerCase();
     const fromEmail = normalizeEmailAddress(fromAddress);
     const recipientEmails = [
       ...parsed.toAddresses,
