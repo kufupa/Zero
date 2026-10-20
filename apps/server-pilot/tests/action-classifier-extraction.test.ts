@@ -76,6 +76,9 @@ describe('generic action-classifier prompt', () => {
     expect(ACTION_CLASSIFICATION_RULES).toMatch(
       /Internal mail with no outside request is no_action/i,
     );
+    expect(ACTION_CLASSIFICATION_RULES).toMatch(
+      /A staff mail that asks colleagues to quote, book, amend or cancel a specific guest stay is that action even when no outside request is passed on/,
+    );
     expect(
       (ACTION_CLASSIFICATION_RULES.match(/Example \d+:/g) ?? []).length,
     ).toBeGreaterThanOrEqual(6);
