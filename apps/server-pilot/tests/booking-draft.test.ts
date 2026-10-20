@@ -257,16 +257,19 @@ describe('buildBookingDrafts', () => {
     },
   );
 
-  it('assigns guest names from the luna group with the same stay dates, not array index', async () => {
+  it('keeps each same-date stay its own guests', async () => {
     const revision = await agencyRevision();
-    revision.groups[0]!.arrivalDate = '2026-12-01';
-    revision.groups[0]!.departureDate = '2026-12-03';
-    const first = analysis().groups[0]!;
+    const first = structuredClone(revision.groups[0]!);
+    first.id = 'g2';
+    first.quantity = 1;
+    revision.groups[0]!.quantity = 1;
+    revision.groups.push(first);
+    const row = analysis().groups[0]!;
     const draft = await buildBookingDrafts({
       analysis: analysis({
         groups: [
-          { ...first, arrival: '2026-10-12', departure: '2026-10-13', guestNames: ['Wrong Person'] },
-          { ...first, arrival: '2026-12-01', departure: '2026-12-03', guestNames: ['Right Guest'] },
+          { ...row, guestNames: ['Ada Example'] },
+          { ...row, guestNames: ['Bea Example'] },
         ],
       }),
       revision,
@@ -274,7 +277,10 @@ describe('buildBookingDrafts', () => {
       messageId: 'message-1',
       validate: validateCreate,
     });
-    expect(draft.rooms[0]!.request).toMatchObject({ firstName: 'Right', lastName: 'Guest' });
+    const ada = draft.rooms.filter((room) => room.groupId === revision.groups[0]!.id);
+    const bea = draft.rooms.filter((room) => room.groupId === 'g2');
+    expect(ada[0]!.request).toMatchObject({ firstName: 'Ada', lastName: 'Example' });
+    expect(bea[0]!.request).toMatchObject({ firstName: 'Bea', lastName: 'Example' });
   });
 
   it('marks a voucher ceiling below the quoted night as mismatch', async () => {

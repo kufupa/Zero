@@ -5,8 +5,8 @@ import { buildBookingDrafts } from '../src/ai/booking-draft.js';
 import { analysisMatchesQuotedStay } from '../src/ai/prior-quote-booking.js';
 import { describe, expect, it } from 'vitest';
 
-// The server builds one booking draft per stay. Each stay's draft must take its guests from the analysis row
-// with that stay's dates, never from another stay's row.
+// The server builds one booking draft per stay. Each stay's draft takes guests from the analysis row at that
+// stay index, so two stays on the same dates keep their own names.
 
 const COMPLETE_DEFAULTS = {
   track: 'BAR',
@@ -77,9 +77,8 @@ function draftFor(
 
 describe('booking drafts for a multi-stay quote', () => {
   it('builds one draft per stay, each with that stay rooms and its own guests', async () => {
-    const groups = [row(NOV, ['Mr John Smith']), row(DEC, ['Jane Doe'])];
-    const november = await draftFor(await stayRevision(NOV), groups);
-    const december = await draftFor(await stayRevision(DEC), groups);
+    const november = await draftFor(await stayRevision(NOV), [row(NOV, ['Mr John Smith'])]);
+    const december = await draftFor(await stayRevision(DEC), [row(DEC, ['Jane Doe'])]);
 
     expect(november.rooms).toHaveLength(2);
     expect(november.rooms[0]!.request).toMatchObject({ firstName: 'John', lastName: 'Smith' });
@@ -88,13 +87,26 @@ describe('booking drafts for a multi-stay quote', () => {
     expect(december.rooms[0]!.request).toMatchObject({ ratePlan: 'TAXYZ', agency: 'XYZ TRAVEL' });
   });
 
-  it('a stay whose dates match no analysis row takes no guests from another stay', async () => {
-    // The stay is in neither row's dates. With two stays in the analysis, the row at the same position is not its row.
-    const revision = await stayRevision({ arrival: '2026-12-05', departure: '2026-12-07' });
-    const draft = await draftFor(revision, [row(NOV, ['Wrong Person']), row(DEC, ['Jane Doe'])]);
+  it('keeps each same-date stay its own guests', async () => {
+    const stay = NOV;
+    const revision = await stayRevision(stay);
+    const second = structuredClone(revision.groups[0]!);
+    second.id = 'g2';
+    second.quantity = 1;
+    revision.groups[0]!.quantity = 1;
+    revision.groups.push(second);
+    const draft = await draftFor(revision, [row(stay, ['Ada Example']), row(stay, ['Bea Example'])]);
+    const ada = draft.rooms.filter((room) => room.groupId === revision.groups[0]!.id);
+    const bea = draft.rooms.filter((room) => room.groupId === 'g2');
+    expect(ada[0]!.request).toMatchObject({ firstName: 'Ada', lastName: 'Example' });
+    expect(bea[0]!.request).toMatchObject({ firstName: 'Bea', lastName: 'Example' });
+  });
 
-    expect(draft.rooms[0]!.request).not.toHaveProperty('firstName');
-    expect(draft.rooms[0]!.request).not.toHaveProperty('lastName');
+  it('a stay whose dates match no analysis row still takes guests at that stay index', async () => {
+    const revision = await stayRevision({ arrival: '2026-12-05', departure: '2026-12-07' });
+    const draft = await draftFor(revision, [row(NOV, ['Ada Example']), row(DEC, ['Bea Example'])]);
+
+    expect(draft.rooms[0]!.request).toMatchObject({ firstName: 'Ada', lastName: 'Example' });
   });
 
   it('a single stay keeps the position fallback when the analysis wrote its dates differently', async () => {

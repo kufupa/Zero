@@ -314,11 +314,8 @@ export async function buildBookingDrafts(input: {
   );
   const stayUnclear = lunaStayKeys.size > 1;
   for (const [gi, group] of revision.groups.entries()) {
-    // A position only names a row when the analysis has one stay. With several, that row belongs to another stay.
-    const lunaGroup =
-      input.analysis.groups.find(
-        (row) => row.arrival === group.arrivalDate && row.departure === group.departureDate,
-      ) ?? (stayUnclear ? undefined : input.analysis.groups[gi]);
+    // Stay index, not date equality: two stays on the same dates keep their own guests.
+    const lunaGroup = input.analysis.groups[gi];
     const names = lunaGroup?.guestNames ?? [];
     const party = partyFromContext(group.context);
     for (let roomIndex = 1; roomIndex <= group.quantity; roomIndex++) {

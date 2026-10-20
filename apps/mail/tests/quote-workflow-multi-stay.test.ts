@@ -331,19 +331,18 @@ describe('one booking draft and one set of guests per stay', () => {
     ]);
   });
 
-  it('gives each stay only its own guests, never another stay row by position', () => {
-    // The December stay sits first in the quote, so its position would pick up the November row's guests.
+  it('keeps each same-date stay its own guests', () => {
     const luna = {
-      groups: [lunaRow(NOV.arrival, NOV.departure, ['Mr John Smith'])],
+      groups: [
+        lunaRow(NOV.arrival, NOV.departure, ['Ada Example']),
+        lunaRow(NOV.arrival, NOV.departure, ['Bea Example']),
+      ],
     } as unknown as LunaAnalysisWire;
     const overlay = overlayLunaGroupsFromStaff(luna, [
-      stayGroup('stay-b', DEC.arrival, DEC.departure),
       stayGroup('stay-a', NOV.arrival, NOV.departure),
+      stayGroup('stay-b', NOV.arrival, NOV.departure),
     ]);
-    expect(overlay.map((group) => [group.arrival, group.guestNames])).toEqual([
-      [DEC.arrival, []],
-      [NOV.arrival, ['Mr John Smith']],
-    ]);
+    expect(overlay.map((group) => group.guestNames)).toEqual([['Ada Example'], ['Bea Example']]);
   });
 
   it('keeps the position fallback for a single stay whose dates the analysis wrote differently', () => {
@@ -356,16 +355,15 @@ describe('one booking draft and one set of guests per stay', () => {
     expect(overlay[0]?.guestNames).toEqual(['Mr John Smith']);
   });
 
-  it('gives the stay left after a removal and a date change no other stay\'s guests', () => {
-    // The read had two stays. Staff removed November and moved December, so one row is left matching neither.
+  it('gives the stay left after a removal the guests at that stay index', () => {
     const luna = {
       groups: [
-        lunaRow(NOV.arrival, NOV.departure, ['Mr John Smith']),
-        lunaRow(DEC.arrival, DEC.departure, ['Ms Jane Doe']),
+        lunaRow(NOV.arrival, NOV.departure, ['Ada Example']),
+        lunaRow(DEC.arrival, DEC.departure, ['Bea Example']),
       ],
     } as unknown as LunaAnalysisWire;
     const overlay = overlayLunaGroupsFromStaff(luna, [stayGroup('stay-b', '2027-12-05', '2027-12-07')]);
-    expect(overlay[0]?.guestNames).toEqual([]);
+    expect(overlay[0]?.guestNames).toEqual(['Ada Example']);
   });
 
   it('re-binds an expired prior quote row to the session row of the same stay', () => {

@@ -126,15 +126,9 @@ export function overlayLunaGroupsFromStaff(
   groups: StayGroupRequirement[],
 ): LunaAnalysisWire['groups'] {
   if (!groups.length) return luna.groups;
-  // A position only means a row when the email has one stay and the rows still do. With several in either, another
-  // stay's row must not supply guests (removing one of two stays leaves one row, but the read still has both).
-  const lunaStays = new Set(luna.groups.map((row) => `${row.arrival ?? ''}:${row.departure ?? ''}`));
-  const oneStay = new Set(groups.map(dateKeyOf)).size <= 1 && lunaStays.size <= 1;
+  // Stay index, not date equality: two stays on the same dates keep their own guests.
   return groups.map((group, index) => {
-    const match =
-      luna.groups.find(
-        (row) => row.arrival === (group.arrivalDate ?? null) && row.departure === (group.departureDate ?? null),
-      ) ?? (oneStay ? luna.groups[index] : undefined);
+    const match = luna.groups[index];
     return {
       arrival: group.arrivalDate ?? null,
       departure: group.departureDate ?? null,
