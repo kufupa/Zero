@@ -2,28 +2,34 @@
  * Persist an inbound message to Postgres + S3.
  *
  * Routing:
- *   1. Direct `To` identity match first (email + aliases). Unique is a
- *      candidate. One identity matching ≥2 transports → `ambiguous_transport`.
- *      Distinct addresses matching ≥2 transports → `multi_transport`. Multi
- *      and ambiguous win over `X-Zero-Mailbox`.
- *   2. A unique stamp is trusted only when `isStampCorroborated` — the
+ *   1. A unique stamp is trusted only when `isStampCorroborated` — the
  *      stamped transport identity (email + send_from_config aliases)
  *      appears in parsed To/Cc/Bcc, or the actual From header is that
  *      identity (own outbound echo — same trust as unstamped equated-From
- *      routing; never Sender). Else ignore the stamp and fall through to
- *      the unstamped path. Stamp may only select a transport unstamped
- *      routing would also accept from those fields; it never moves mail
- *      to a hotel not named in To/Cc/Bcc/From. Sender-forgeable envelope
- *      headers (Delivered-To, X-Original-To) and Sender are not
- *      corroboration.
+ *      routing; never Sender). Corroborated stamp is the primary, even
+ *      when Direct-To names several transports. Else ignore the stamp and
+ *      fall through. Stamp may only select a transport unstamped routing
+ *      would also accept from those fields; it never moves mail to a hotel
+ *      not named in To/Cc/Bcc/From. Sender-forgeable envelope headers
+ *      (Delivered-To, X-Original-To) and Sender are not corroboration.
+ *      Stamp ambiguous / multi / unknown still quarantine.
+ *   2. Direct `To` identity match (email + aliases). Unique is a candidate.
+ *      One identity matching ≥2 transports → `ambiguous_transport`. Distinct
+ *      addresses matching ≥2 transports → `multi_transport`, except when
+ *      every id is in `HOTEL_EQUATED_TRANSPORT_IDS`: primary = first sorted
+ *      id (copies of the others are persisted separately). Any non-hotel id
+ *      in a multi set keeps today's quarantine.
  *   3. Unstamped / ignored-stamp: unique Direct-To → that transport. When
  *      `INGEST_REQUIRE_OWNER_HEADER=false` and Direct-To is none, also match
- *      hotel transport identities on To/Cc/Bcc then From. On miss quarantine
- *      with `missing_owner_header`. Present but unknown stamp →
+ *      hotel transport identities on To/Cc/Bcc then From. Hotel-only equated
+ *      multi uses the same first-sorted primary. On miss quarantine with
+ *      `missing_owner_header`. Present but unknown stamp →
  *      `unknown_transport`; >1 stamp match → `ambiguous_transport`.
  *   4. Degraded containment: when `AI_WRITE_GATE_ENABLED` is not `'true'`,
  *      apply soft label `soft-quarantine` for From domains outside the
  *      transport domain (healthy gated path stays inbox-first).
+ *   Stored / duplicate / reconciled results include `fanoutTransportIds`:
+ *   every other active hotel transport whose identity is in To/Cc/Bcc/From.
  *
  * Persistence order (inside one PG transaction):
  *   - raw MIME already uploaded to S3 BEFORE this function is called (worker
@@ -32,7 +38,8 @@
  *   - insert `message` + `attachment` rows in one transaction; commit.
  *
  * The PG transaction here is the *real* commit for the worker's safety order.
- * If this commit succeeds, the worker is allowed to DELE the POP3 message.
+ * If this commit succeeds, the worker may persist mailbox copies, then DELE
+ * the POP3 message only when every copy is stored, duplicate, or reconciled.
  *
  * Tests run this inside `withTestDb` so the transaction is rolled back; in
  * production the transaction commits for real.
@@ -99,6 +106,7 @@ const HOTEL_EQUATED_TRANSPORT_IDS = [
   EPICK_TRANSPORT_ID,
   KMGIDI_TRANSPORT_ID,
 ] as const;
+const HOTEL_EQUATED_TRANSPORT_ID_SET: ReadonlySet<string> = new Set(HOTEL_EQUATED_TRANSPORT_IDS);
 export const CANDIDATE_ATTACHMENT_DELETE_CONCURRENCY = 4;
 export const CANDIDATE_ATTACHMENT_CLEANUP_SWEEP_LIMIT = 500;
 const CANDIDATE_ATTACHMENT_CLEANUP_RETRY_BASE_MS = 1_000;
@@ -142,7 +150,13 @@ export type QuarantineReason =
   | 'parse_failure'
   | 'malformed_delivery_outcome';
 
-export type PersistKind = 'stored' | 'quarantined' | 'duplicate' | 'reconciled' | 'deferred';
+export type PersistKind =
+  | 'stored'
+  | 'quarantined'
+  | 'duplicate'
+  | 'reconciled'
+  | 'deferred'
+  | 'failed';
 
 export interface IngestMeta {
   /** Mailbox id the message was ingested from (e.g. `ingest-nava-legacy`). */
@@ -171,6 +185,8 @@ export interface PersistStoredResult {
   threadId: string;
   rawMimeS3Key: string;
   attachmentCount: number;
+  /** Other active hotel transports named in To/Cc/Bcc/From. Absent on copies. */
+  fanoutTransportIds?: string[];
 }
 
 export interface PersistQuarantinedResult {
@@ -187,6 +203,7 @@ export interface PersistDuplicateResult {
   messageId: string;
   rawMimeS3Key: string;
   candidateAttachmentCleanupFailureCount: number;
+  fanoutTransportIds?: string[];
 }
 
 export interface PersistReconciledResult {
@@ -195,6 +212,7 @@ export interface PersistReconciledResult {
   messageId: string;
   rawMimeS3Key: string;
   attachmentCount: number;
+  fanoutTransportIds?: string[];
 }
 
 export interface PersistDeferredResult {
@@ -205,20 +223,34 @@ export interface PersistDeferredResult {
   candidateAttachmentCleanupFailureCount: number;
 }
 
+export interface PersistFailedResult {
+  kind: 'failed';
+}
+
 export type PersistResult =
   | PersistStoredResult
   | PersistQuarantinedResult
   | PersistDuplicateResult
   | PersistReconciledResult
-  | PersistDeferredResult;
+  | PersistDeferredResult
+  | PersistFailedResult;
 
 export interface PersistOptions {
   /** DB handle (production: getDb(); tests: transaction-scoped handle). */
   db: DB;
   /** S3 storage override (tests inject a fake). */
   storage?: S3Storage;
-  /** Narrow promotion-only transport route; generic ingest must not set this. */
-  transportOverride?: 'transport-centurion';
+  /**
+   * Explicit transport route, resolved from the active row. Promotion and
+   * mailbox copies may set any active hotel transport; generic ingest must
+   * not set this.
+   */
+  transportOverride?: string;
+  /**
+   * Mailbox copy persist. Never inserts quarantine. Unresolved override
+   * returns `{ kind: 'failed' }` so the worker keeps the UIDL on POP3.
+   */
+  fanoutCopy?: boolean;
   /** Optional trusted direction selected by a narrow historical promotion. */
   directionOverride?: 'inbound' | 'outbound';
   /**
@@ -289,18 +321,22 @@ export async function persistInboundMessage(
       canonicalMessageId: existingMessage.id,
       activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
     });
-    return {
-      kind: 'duplicate',
-      transportId: existingMessage.transportId,
-      messageId: existingMessage.id,
-      rawMimeS3Key,
-      candidateAttachmentCleanupFailureCount,
-    };
+    return withFanoutTransportIds(
+      {
+        kind: 'duplicate',
+        transportId: existingMessage.transportId,
+        messageId: existingMessage.id,
+        rawMimeS3Key,
+        candidateAttachmentCleanupFailureCount,
+      },
+      db,
+      parsed,
+      opts,
+    );
   }
 
-  const existingQuarantine = opts.promoteQuarantineId
-    ? undefined
-    : await findExistingQuarantine(db, meta);
+  const existingQuarantine =
+    opts.promoteQuarantineId || opts.fanoutCopy ? undefined : await findExistingQuarantine(db, meta);
   if (existingQuarantine) {
     const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
       db,
@@ -323,12 +359,12 @@ export async function persistInboundMessage(
   let stampRoute: 'stamp_corroborated' | 'stamp_ignored_uncorroborated' | undefined;
 
   if (opts.transportOverride !== undefined) {
-    // Promotion has already applied its exact sender/recipient gate. Still
-    // resolve the requested route from the active transport row; never trust
-    // a caller-supplied id or a stale/hard-coded transport address.
+    // Promotion / mailbox copy has already chosen the route. Still resolve
+    // the requested id from the active transport row; never trust a
+    // caller-supplied id or a stale/hard-coded transport address.
     transport = await findActiveTransportById(db, opts.transportOverride);
     if (!transport) {
-      return quarantineWithAttachmentCleanup({
+      return quarantineOrFail(opts, {
         db,
         storage,
         parsed,
@@ -338,25 +374,12 @@ export async function persistInboundMessage(
         activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
       });
     }
-    // Explicit promotion route wins over owner-header/direct-To routing.
+    // Explicit promotion/copy route wins over owner-header/direct-To routing.
   } else {
-    const direct = await findDirectToTransport(db, parsed.toAddresses);
-    if (direct.kind === 'ambiguous' || direct.kind === 'multi') {
-      return quarantineWithAttachmentCleanup({
-        db,
-        storage,
-        parsed,
-        meta,
-        rawMimeS3Key,
-        reason: quarantineReasonForMatch(direct),
-        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
-      });
-    }
-
     if (parsed.ownerHeaderValue) {
       const stamped = await findTransportByStamp(db, parsed.ownerHeaderValue);
       if (stamped.kind === 'ambiguous' || stamped.kind === 'multi') {
-        return quarantineWithAttachmentCleanup({
+        return quarantineOrFail(opts, {
           db,
           storage,
           parsed,
@@ -367,7 +390,7 @@ export async function persistInboundMessage(
         });
       }
       if (stamped.kind === 'none') {
-        return quarantineWithAttachmentCleanup({
+        return quarantineOrFail(opts, {
           db,
           storage,
           parsed,
@@ -386,14 +409,39 @@ export async function persistInboundMessage(
     }
 
     if (!transport) {
+      const direct = await findDirectToTransport(db, parsed.toAddresses);
+      if (direct.kind === 'ambiguous') {
+        return quarantineOrFail(opts, {
+          db,
+          storage,
+          parsed,
+          meta,
+          rawMimeS3Key,
+          reason: quarantineReasonForMatch(direct),
+          activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+        });
+      }
       if (direct.kind === 'unique') {
         transport = direct.transport;
+      } else if (direct.kind === 'multi') {
+        transport = await resolveHotelOnlyMultiPrimary(db, direct.ids);
+        if (!transport) {
+          return quarantineOrFail(opts, {
+            db,
+            storage,
+            parsed,
+            meta,
+            rawMimeS3Key,
+            reason: quarantineReasonForMatch(direct),
+            activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+          });
+        }
       } else if (!ingestRequireOwnerHeader()) {
         const equated = await findEquatedHotelTransport(db, parsed);
         if (equated.kind === 'unique') {
           transport = equated.transport;
-        } else if (equated.kind === 'ambiguous' || equated.kind === 'multi') {
-          return quarantineWithAttachmentCleanup({
+        } else if (equated.kind === 'ambiguous') {
+          return quarantineOrFail(opts, {
             db,
             storage,
             parsed,
@@ -403,10 +451,24 @@ export async function persistInboundMessage(
             routingDetail: stampRoute ? { stampRoute } : undefined,
             activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
           });
+        } else if (equated.kind === 'multi') {
+          transport = await resolveHotelOnlyMultiPrimary(db, equated.ids);
+          if (!transport) {
+            return quarantineOrFail(opts, {
+              db,
+              storage,
+              parsed,
+              meta,
+              rawMimeS3Key,
+              reason: quarantineReasonForMatch(equated),
+              routingDetail: stampRoute ? { stampRoute } : undefined,
+              activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+            });
+          }
         }
       }
       if (!transport) {
-        return quarantineWithAttachmentCleanup({
+        return quarantineOrFail(opts, {
           db,
           storage,
           parsed,
@@ -958,9 +1020,11 @@ export async function persistInboundMessage(
       canonicalMessageId: duplicateCanonicalMessageId,
       activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
     });
-    return withCandidateAttachmentCleanupFailures(
-      duplicate,
-      candidateAttachmentCleanupFailureCount,
+    return withFanoutTransportIds(
+      withCandidateAttachmentCleanupFailures(duplicate, candidateAttachmentCleanupFailureCount),
+      db,
+      parsed,
+      opts,
     );
   }
   const deferredResult = deferred as Omit<
@@ -1002,17 +1066,22 @@ export async function persistInboundMessage(
         canonicalMessageId: reconciledResult.messageId,
         activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
       });
-    return reconciledResult;
+    return withFanoutTransportIds(reconciledResult, db, parsed, opts);
   }
 
-  return {
-    kind: 'stored',
-    transportId: transport.id,
-    messageId,
-    threadId,
-    rawMimeS3Key,
-    attachmentCount: parsed.attachments.length,
-  };
+  return withFanoutTransportIds(
+    {
+      kind: 'stored',
+      transportId: transport.id,
+      messageId,
+      threadId,
+      rawMimeS3Key,
+      attachmentCount: parsed.attachments.length,
+    },
+    db,
+    parsed,
+    opts,
+  );
 }
 
 export function ownedCandidateAttachmentKeys(
@@ -1875,7 +1944,7 @@ async function findDirectToTransport(
 
 async function findActiveTransportById(
   db: DB,
-  transportId: 'transport-centurion',
+  transportId: string,
 ): Promise<RoutedTransport | null> {
   const rows = await db
     .select({
@@ -1886,7 +1955,81 @@ async function findActiveTransportById(
     .from(mailboxTransport)
     .where(and(eq(mailboxTransport.id, transportId), eq(mailboxTransport.isActive, true)))
     .limit(1);
-  return rows[0] ?? null;
+  return rows.find((row) => row.id === transportId) ?? null;
+}
+
+function hotelOnlyMultiPrimaryId(ids: string[]): string | null {
+  if (ids.length < 2) return null;
+  if (!ids.every((id) => HOTEL_EQUATED_TRANSPORT_ID_SET.has(id))) return null;
+  return ids[0] ?? null;
+}
+
+async function resolveHotelOnlyMultiPrimary(
+  db: DB,
+  ids: string[],
+): Promise<RoutedTransport | null> {
+  const primaryId = hotelOnlyMultiPrimaryId(ids);
+  if (!primaryId) return null;
+  return findActiveTransportById(db, primaryId);
+}
+
+async function collectFanoutTransportIds(
+  db: DB,
+  parsed: ParsedInboundMessage,
+  primaryTransportId: string,
+): Promise<string[]> {
+  const rows = await db
+    .select({
+      id: mailboxTransport.id,
+      email: mailboxTransport.email,
+      sendFromConfig: mailboxTransport.sendFromConfig,
+    })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.isActive, true));
+  const addresses = [
+    parsed.fromHeaderAddress,
+    parsed.fromAddress,
+    ...parsed.toAddresses,
+    ...parsed.ccAddresses,
+    ...parsed.bccAddresses,
+  ];
+  const named = new Set<string>();
+  for (const row of rows) {
+    if (!HOTEL_EQUATED_TRANSPORT_ID_SET.has(row.id) || row.id === primaryTransportId) continue;
+    const identities = transportIdentitySet(row.email, row.sendFromConfig);
+    if (identities.size === 0) continue;
+    for (const address of addresses) {
+      if (!address) continue;
+      if (identities.has(normalizeEmailAddress(address))) {
+        named.add(row.id);
+        break;
+      }
+    }
+  }
+  return [...named].sort();
+}
+
+async function withFanoutTransportIds<
+  T extends PersistStoredResult | PersistDuplicateResult | PersistReconciledResult,
+>(
+  result: T,
+  db: DB,
+  parsed: ParsedInboundMessage,
+  opts: PersistOptions,
+): Promise<T> {
+  if (opts.fanoutCopy) return result;
+  return {
+    ...result,
+    fanoutTransportIds: await collectFanoutTransportIds(db, parsed, result.transportId),
+  };
+}
+
+async function quarantineOrFail(
+  opts: PersistOptions,
+  args: Parameters<typeof quarantineWithAttachmentCleanup>[0],
+): Promise<PersistQuarantinedResult | PersistFailedResult> {
+  if (opts.fanoutCopy) return { kind: 'failed' };
+  return quarantineWithAttachmentCleanup(args);
 }
 
 function normalizeEmailAddress(raw: string): string {
