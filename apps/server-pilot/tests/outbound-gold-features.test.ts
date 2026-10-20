@@ -9,7 +9,7 @@ import {
   scoreOutboundGoldFixture,
   type GoldCardInput,
   type GoldLetterInput,
-} from './outbound-gold-features.js';
+} from '../src/ai/outbound-gold-features.js';
 
 const FIXTURE_GUEST_A = 'Fixturealpha';
 const FIXTURE_GUEST_B = 'Fixturebravo';
