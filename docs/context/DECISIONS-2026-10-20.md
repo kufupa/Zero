@@ -27,3 +27,17 @@ Running log so nothing from the chat gets lost. Source: this chat; asks 155–16
 
 - Owner: "isnt that literally what mem0 / this open source stuff is built for?" (precedent retrieval for staff). Stale-source objection: mem0 maintainer link was a 2025 issue. Rule: **use only current (≥2026-04) evidence for tool decisions**; everything must be self-hostable; Letta + Graphiti "kinda makes sense".
 - Action: Exa agent **ultra** run `agent_run_381441c270994597b6735bdff2a10013` (budget $40, ≤40 min), use cases U1 precedent retrieval, U2 sender knowledge, U3 request↔booking linkage, U4 hotel SOPs, U5 task scratchpad; 2026-dated sources only; includes "where previous run was stale".
+
+## Owner decisions 15:30Z (ask 163)
+
+| # | Decision | Note |
+|---|---|---|
+| D9 | Two end buttons, one intake/prefill: "Make quote" (default) and "Create provisional booking" | Supersedes single STAY flow |
+| D10 | Lift D4 (UI hold) once the code-grounded plan (P1) is reviewed | Owner fills pane defaults when asked |
+| D11 | Slice order: price grid, then party step | Same pane files → queued, not parallel |
+| D12 | Labtest Infor check approved, test guest "Proof Labtest" 2027+ only | Find guarantee/deposit fields and how the confirmation email is sent |
+| D13 | PR #424 merged (c4cdb56f5) | docs only |
+| D14 | Stale PRs: close/supersede per P1 overlap list | — |
+| D15 | Memory-framework comparison (mem0 OSS vs Mastra memory vs Hindsight) parked as ask 162 | L7 baseline kept for later |
+| D16 | Code stack: Luna max implements → Grok 4.6 high review+fix → Greptile → Grok 4.6 fixes; Opus coordinates/merges/deploys; lanes visible in Orca | Grok 4.7 only as plan critic |
+| D17 | No owner data labelling; truth comes from staff artefacts (HMS letters, quote PDFs, replies) | — |
