@@ -1,3 +1,6 @@
+import { access, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   checkAmendPaneInput,
   commitAmend,
@@ -58,7 +61,19 @@ const UNPAID_STAY: PaneStayFields = {
   organization: null,
 };
 
-function enableAmend(lookupStay: PaneStayFields = UNPAID_STAY): PaneAmendSpawnInput[] {
+async function dirExists(dir: string): Promise<boolean> {
+  try {
+    await access(dir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function enableAmend(
+  lookupStay: PaneStayFields = UNPAID_STAY,
+  lookupDir?: string,
+): PaneAmendSpawnInput[] {
   const calls: PaneAmendSpawnInput[] = [];
   paneHmsWriteLoaders.lock = passingLock();
   paneStayLookupLoaders.enabled = () => true;
@@ -68,6 +83,7 @@ function enableAmend(lookupStay: PaneStayFields = UNPAID_STAY): PaneAmendSpawnIn
     stay: lookupStay,
     rows: [],
     screenshots: [],
+    ...(lookupDir ? { runId: 'lookup-run', runDir: lookupDir } : {}),
   });
   paneHmsWriteLoaders.spawnAmend = async (input) => {
     calls.push(input);
@@ -90,13 +106,16 @@ function mailboxCaller() {
 }
 
 describe('pane stay amend', () => {
-  afterEach(() => {
+  const leftoverDirs: string[] = [];
+
+  afterEach(async () => {
     paneHmsWriteLoaders.spawnAmend = null;
     paneHmsWriteLoaders.lock = null;
     paneStayLookupLoaders.spawn = null;
     paneStayLookupLoaders.enabled = null;
     paneStaySaveLoaders.now = null;
     vi.unstubAllEnvs();
+    await Promise.all(leftoverDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {})));
   });
 
   it('preview refuses a non-Labtest last name when mode is lab, with no spawn', async () => {
@@ -163,5 +182,22 @@ describe('pane stay amend', () => {
     const missingGuarantee = enableAmend({ ...UNPAID_STAY, guaranteeType: null });
     await expect(previewAmend({ ...stay, owner })).resolves.toMatchObject({ outcome: 'refused_payment_unknown' });
     expect(missingGuarantee).toEqual([]);
+  });
+
+  it('removes the findStay lookup dir after a payment refusal and after a preview', async () => {
+    vi.stubEnv('RESERVATIONIST_PANE_SAVE', 'lab');
+    const refusedDir = await mkdtemp(join(tmpdir(), 'pane-amend-lookup-refuse-'));
+    leftoverDirs.push(refusedDir);
+    enableAmend({ ...UNPAID_STAY, depositReceived: '120.00' }, refusedDir);
+    await expect(previewAmend({ ...stay, owner })).resolves.toMatchObject({
+      outcome: 'refused_payment_unknown',
+    });
+    expect(await dirExists(refusedDir)).toBe(false);
+
+    const previewDir = await mkdtemp(join(tmpdir(), 'pane-amend-lookup-preview-'));
+    leftoverDirs.push(previewDir);
+    enableAmend(UNPAID_STAY, previewDir);
+    await expect(previewAmend({ ...stay, owner })).resolves.toMatchObject({ outcome: 'previewed' });
+    expect(await dirExists(previewDir)).toBe(false);
   });
 });

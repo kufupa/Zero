@@ -479,10 +479,11 @@ async function runPaneAmend(
     await pruneExpiredPaneRuns(paneStayClock());
     let paymentRefusal: string | null = null;
     const spawned = await lock.withLock(async () => {
+      const lookupDirs: string[] = [];
       const found = await findStay(
         { confirmation: input.confirmation, arrival: input.arrival },
-        { lock: () => HELD_LOCK },
-      );
+        { lock: () => HELD_LOCK, onRun: ({ dir }) => lookupDirs.push(dir) },
+      ).finally(() => removeDirs(lookupDirs));
       if (found.outcome !== 'found' || !found.stay) {
         paymentRefusal = found.outcome === 'found' ? 'refused_payment_unknown' : `read_${found.outcome}`;
         return null;
