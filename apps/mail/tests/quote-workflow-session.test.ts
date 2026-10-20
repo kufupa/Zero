@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   allocationTotal,
+  autoRunHeader,
   canCreateNativeDraft,
   canCreatePdf,
   canRunQuoteStep,
@@ -135,6 +136,95 @@ describe('quote session', () => {
       { type: 'analysis_ready', analysis: analysisWith('Airport transfer on arrival') },
     );
     expect(airport.staffHeader.shuttleRequested).toBe(true);
+  });
+
+  it('defaults Dinner B&B asks to Government unless staff already chose a rate strategy', () => {
+    const dinnerAnalysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+    };
+    const defaulted = reduceQuoteSession(initialQuoteSession(), {
+      type: 'analysis_ready',
+      analysis: dinnerAnalysis,
+    });
+    expect(defaulted.staffHeader.salesStrategy).toBe('Government');
+
+    const staffBar = reduceQuoteSession(initialQuoteSession(), {
+      type: 'patch_staff_header',
+      header: { salesStrategy: 'BAR' },
+    });
+    const preserved = reduceQuoteSession(staffBar, {
+      type: 'analysis_ready',
+      analysis: dinnerAnalysis,
+    });
+    expect(preserved.staffSalesStrategyEdited).toBe(true);
+    expect(preserved.staffHeader.salesStrategy).toBe('BAR');
+
+    const governmentBAndB: QuoteAnalysis = {
+      ...dinnerAnalysis,
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'bb' as const })),
+      luna: {
+        ...dinnerAnalysis.luna!,
+        party: { kind: 'government', name: 'Department X', reference: null },
+      },
+    };
+    const preservedForGovernmentParty = reduceQuoteSession(staffBar, {
+      type: 'analysis_ready',
+      analysis: governmentBAndB,
+    });
+    expect(preservedForGovernmentParty.staffHeader.salesStrategy).toBe('BAR');
+    expect(preservedForGovernmentParty.staffHeader.company).toBe('Department X');
+  });
+
+  it('returns to BAR when a corrected read or a row edit removes dinner, unless staff chose the strategy', () => {
+    const dinnerAnalysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+    };
+    const bbAnalysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'bb' as const })),
+    };
+    const dinner = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis: dinnerAnalysis });
+    expect(dinner.staffHeader.salesStrategy).toBe('Government');
+    const corrected = reduceQuoteSession(dinner, { type: 'analysis_ready', analysis: bbAnalysis });
+    expect(corrected.staffHeader.salesStrategy).toBe('BAR');
+
+    const edited = dinner.groups.reduce(
+      (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: { board: 'bb' } }),
+      dinner,
+    );
+    expect(edited.staffHeader.salesStrategy).toBe('BAR');
+
+    const staffGovernment = reduceQuoteSession(dinner, {
+      type: 'patch_staff_header',
+      header: { salesStrategy: 'Government' },
+    });
+    const kept = staffGovernment.groups.reduce(
+      (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: { board: 'bb' } }),
+      staffGovernment,
+    );
+    expect(kept.staffHeader.salesStrategy).toBe('Government');
+  });
+
+  it('keeps the existing Government-party default for B&B asks', () => {
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis,
+      luna: {
+        workflow: 'quote',
+        flags: [],
+        groups: [],
+        party: { kind: 'government', name: 'Department X', reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    };
+    const ready = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis });
+
+    expect(ready.staffHeader.salesStrategy).toBe('Government');
+    expect(ready.staffHeader.company).toBe('Department X');
   });
 
   it('an unreadable amount blocks the run and the PDF until it is fixed, without clearing results', () => {
@@ -2795,6 +2885,8 @@ describe('staff dinner B&B fallback', () => {
       groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
     };
     let before = withStaffSource(analysisReady(analysis));
+    // The B&B-plus-dinner fallback is the BAR path; a Dinner B&B ask now defaults to Government.
+    before = reduceQuoteSession(before, { type: 'patch_staff_header', header: { salesStrategy: 'BAR' } });
     before = reduceQuoteSession(before, { type: 'staff_dinner_bb_fallback', groupIds: ['g1'] });
     before = reduceQuoteSession(before, {
       type: 'patch_staff_stay_extras',
@@ -3677,4 +3769,31 @@ describe('rowRoomCode: staff picks beat the projected room type', () => {
   it('a cleared select leaves the row with no room type', () => {
     expect(rowRoomCode(row({ roomPreference: '', roomTypeCode: undefined }))).toBeNull();
   });
+});
+
+describe('autoRunHeader', () => {
+  const header = { ...emptyStaffQuoteHeader(), salesStrategy: 'Government' as const };
+
+  it('mirrors the background prepare: Government only when every row is Dinner B&B, else BAR', () => {
+    expect(autoRunHeader({ staffHeader: emptyStaffQuoteHeader(), groups: [{ board: 'dinner_bb' }] as never }).salesStrategy).toBe(
+      'Government',
+    );
+    expect(autoRunHeader({ staffHeader: header, groups: [{ board: 'bb' }] as never }).salesStrategy).toBe('BAR');
+    expect(
+      autoRunHeader({ staffHeader: header, groups: [{ board: 'dinner_bb' }, { board: 'bb' }] as never }).salesStrategy,
+    ).toBe('BAR');
+  });
+});
+
+it('a mixed Dinner B&B + B&B mail keeps the session default on BAR', () => {
+  const mixed: QuoteAnalysis = {
+    ...quoteAnalysis,
+    groups: quoteAnalysis.groups.flatMap((group, index) =>
+      index === 0
+        ? [{ ...group, board: 'dinner_bb' as const }, { ...group, id: `${group.id}-bb`, board: 'bb' as const }]
+        : [group],
+    ),
+  };
+  const session = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis: mixed });
+  expect(session.staffHeader.salesStrategy).toBe('BAR');
 });

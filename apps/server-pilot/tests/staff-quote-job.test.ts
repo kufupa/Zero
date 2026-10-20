@@ -435,6 +435,206 @@ describe('staff_quote HMS job execution', () => {
     );
   });
 
+  it('keeps a successful Government Dinner B&B quote and shows its rate note', async () => {
+    const groups: StaffQuoteInput['groups'] = [
+      {
+        id: 'single',
+        arrivalDate: '2026-11-12',
+        departureDate: '2026-11-14',
+        quantity: 1,
+        adults: 2,
+        childrenAges: [],
+        board: 'dinner_bb',
+        roomCodes: ['SKNG'],
+      },
+    ];
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
+      groups,
+      salesStrategy: 'Government',
+    });
+    quoteRunMocks.readConfiguration.mockReturnValue({
+      tenantId: 'synthetic-hotel',
+      owner: { propertyCode: 'HRCEN' },
+      outputDir: '/tmp/synthetic-staff-quote',
+      dinnerAddOn: {
+        amountMinor: 35_000,
+        unit: 'per_person_per_night',
+        label: 'Dinner Allowance',
+      },
+    });
+    const requests: Array<{ salesStrategy: string; boardBases: string[] }> = [];
+    workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: {
+      authorizationId: string;
+      request: {
+        search: { salesStrategy: string };
+        rooms: Array<{ required: { boardBases: string[] } }>;
+      };
+    }) => {
+      requests.push({
+        salesStrategy: prepared.request.search.salesStrategy,
+        boardBases: prepared.request.rooms[0]!.required.boardBases,
+      });
+      return syntheticRevision(
+        ['600.00', '600.00'],
+        'Dinner, Bed and Breakfast R',
+        'SKNG',
+        undefined,
+        '2026-11-12',
+        prepared.authorizationId,
+      );
+    });
+
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+
+    expect(workflowMocks.executeStaffQuote).toHaveBeenCalledOnce();
+    expect(requests).toEqual([{ salesStrategy: 'Government', boardBases: ['dinner_bed_breakfast'] }]);
+    const readResult = jobMocks.markSucceeded.mock.calls[0]?.[0].readResult;
+    expect(readResult.extrasReviewItems).toContain(
+      'Priced on the Government Dinner B&B rate because the guest asked for dinner. ' +
+        'Choose All public rates (BAR) if the guest is not entitled.',
+    );
+    expect(readResult.dinnerAddOnRequired).toBe(false);
+  });
+
+  it('keeps BAR Dinner B&B on the existing B&B-plus-dinner retry path', async () => {
+    const groups: StaffQuoteInput['groups'] = [
+      {
+        id: 'single',
+        arrivalDate: '2026-11-12',
+        departureDate: '2026-11-14',
+        quantity: 1,
+        adults: 2,
+        childrenAges: [],
+        board: 'dinner_bb',
+        roomCodes: ['SKNG'],
+      },
+    ];
+    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
+      groups,
+      salesStrategy: 'BAR',
+    });
+    quoteRunMocks.readConfiguration.mockReturnValue({
+      tenantId: 'synthetic-hotel',
+      owner: { propertyCode: 'HRCEN' },
+      outputDir: '/tmp/synthetic-staff-quote',
+      dinnerAddOn: {
+        amountMinor: 35_000,
+        unit: 'per_person_per_night',
+        label: 'Dinner Allowance',
+      },
+    });
+    const requests: Array<{ salesStrategy: string; boardBases: string[] }> = [];
+    workflowMocks.executeStaffQuote.mockImplementation(async (prepared: {
+      authorizationId: string;
+      request: {
+        search: { salesStrategy: string };
+        rooms: Array<{ required: { boardBases: string[] } }>;
+      };
+    }) => {
+      requests.push({
+        salesStrategy: prepared.request.search.salesStrategy,
+        boardBases: prepared.request.rooms[0]!.required.boardBases,
+      });
+      return syntheticRevision(
+        ['600.00', '600.00'],
+        requests.length === 1 ? 'Dinner, Bed and Breakfast R' : 'Bed & Breakfast R',
+        'SKNG',
+        undefined,
+        '2026-11-12',
+        prepared.authorizationId,
+      );
+    });
+
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+
+    expect(requests).toEqual([
+      { salesStrategy: 'BAR', boardBases: ['dinner_bed_breakfast'] },
+      { salesStrategy: 'BAR', boardBases: ['breakfast'] },
+    ]);
+    const readResult = jobMocks.markSucceeded.mock.calls[0]?.[0].readResult;
+    expect(readResult).toMatchObject({
+      dinnerAddOn: { amountMinor: 35_000, unit: 'per_person_per_night' },
+      dinnerFallbackGroupIds: ['single'],
+    });
+    expect(readResult.extrasReviewItems).not.toContain(
+      'No Government Dinner B&B rate in HMS for these dates — priced on B&B with dinner separately.',
+    );
+    expect(inserted.find(({ table }) => table === aiWorkflowRun)?.values).toMatchObject({
+      metrics: { staffQuoteAttestation: { salesStrategy: 'BAR' } },
+    });
+  });
+
+  it('retries Government no-match on BAR B&B with dinner separately and explains the fallback', async () => {
+    const groups: StaffQuoteInput['groups'] = [
+      {
+        id: 'single',
+        arrivalDate: '2026-11-12',
+        departureDate: '2026-11-14',
+        quantity: 1,
+        adults: 2,
+        childrenAges: [],
+        board: 'dinner_bb',
+        roomCodes: ['SKNG'],
+      },
+    ];
+    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
+      groups,
+      salesStrategy: 'Government',
+    });
+    quoteRunMocks.readConfiguration.mockReturnValue({
+      tenantId: 'synthetic-hotel',
+      owner: { propertyCode: 'HRCEN' },
+      outputDir: '/tmp/synthetic-staff-quote',
+      dinnerAddOn: {
+        amountMinor: 35_000,
+        unit: 'per_person_per_night',
+        label: 'Dinner Allowance',
+      },
+    });
+    const requests: Array<{ salesStrategy: string; boardBases: string[] }> = [];
+    workflowMocks.executeStaffQuote.mockImplementation(async (prepared: {
+      authorizationId: string;
+      request: {
+        search: { salesStrategy: string };
+        rooms: Array<{ required: { boardBases: string[] } }>;
+      };
+    }) => {
+      requests.push({
+        salesStrategy: prepared.request.search.salesStrategy,
+        boardBases: prepared.request.rooms[0]!.required.boardBases,
+      });
+      if (requests.length === 1) throw new Error('native_quote_no_matching_rate');
+      return syntheticRevision(
+        ['600.00', '600.00'],
+        'Bed & Breakfast R',
+        'SKNG',
+        undefined,
+        '2026-11-12',
+        prepared.authorizationId,
+      );
+    });
+
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+
+    expect(workflowMocks.executeStaffQuote).toHaveBeenCalledTimes(2);
+    expect(requests).toEqual([
+      { salesStrategy: 'Government', boardBases: ['dinner_bed_breakfast'] },
+      { salesStrategy: 'BAR', boardBases: ['breakfast'] },
+    ]);
+    const readResult = jobMocks.markSucceeded.mock.calls[0]?.[0].readResult;
+    expect(readResult.extrasReviewItems).toContain(
+      'No Government Dinner B&B rate in HMS for these dates — priced on B&B with dinner separately.',
+    );
+    expect(readResult).toMatchObject({
+      dinnerAddOn: { amountMinor: 35_000, unit: 'per_person_per_night' },
+      dinnerAddOnRequired: false,
+      dinnerFallbackGroupIds: ['single'],
+    });
+    expect(inserted.find(({ table }) => table === aiWorkflowRun)?.values).toMatchObject({
+      metrics: { staffQuoteAttestation: { salesStrategy: 'BAR' } },
+    });
+  });
+
   it('does not report a separate dinner charge as a B&B fallback for room-only accommodation', async () => {
     const groups: StaffQuoteInput['groups'] = [
       {
