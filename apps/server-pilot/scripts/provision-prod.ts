@@ -293,7 +293,11 @@ async function main(): Promise<void> {
   const db = drizzle(conn, { schema });
   try {
     const spec = flags.transportsOnly ? transportsOnlySpec(PROVISION_SPEC) : PROVISION_SPEC;
-    const planned = await planProvision(db, spec);
+    const planned = await planProvision(
+      db,
+      spec,
+      flags.transportsOnly ? { skipExistingAliasAdds: true } : undefined,
+    );
     const plan = flags.transportsOnly ? stripPlanForTransportsOnly(planned) : planned;
     printPlan(plan);
     const fromCredentialsIn =

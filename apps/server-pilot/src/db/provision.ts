@@ -229,7 +229,11 @@ function resolveSpecUsers(spec: ProvisionSpec, rows: Array<{ id: string; email: 
   return { usersToCreate, alreadyUsers, effectiveUserId };
 }
 
-export async function planProvision(db: DB, spec: ProvisionSpec): Promise<ProvisionPlan> {
+export async function planProvision(
+  db: DB,
+  spec: ProvisionSpec,
+  opts?: { skipExistingAliasAdds?: boolean },
+): Promise<ProvisionPlan> {
   // id+email only — name is intentionally not selected or compared.
   const userRows = await db.select({ id: userTable.id, email: userTable.email }).from(userTable);
   const transportRows = await db
@@ -273,7 +277,7 @@ export async function planProvision(db: DB, spec: ProvisionSpec): Promise<Provis
         });
       }
     }
-    if (existing.isActive === false) continue;
+    if (existing.isActive === false || opts?.skipExistingAliasAdds) continue;
     const missing = missingAliases(existing.sendFromConfig, transport.aliases);
     if (missing.length) aliasesToAdd.push({ transportId: transport.id, aliases: missing });
   }
