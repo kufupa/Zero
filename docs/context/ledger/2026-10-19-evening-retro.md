@@ -47,11 +47,19 @@ Deploy: `ops-deploy.sh` rc=1 only from the 24 h dead-letter gate. Health OK. `PA
 | Deploy worktree's local `main` was stale | 2 refused deploy attempts (~3 min; nothing shipped) | `git merge --ff-only origin/main` in `recover-parse-failure` before `ops-deploy.sh` |
 | Pane snapshot can't come back from EC2 by S3 (PutObject denied) | 10 min finding a route | `vitest -u` on EC2, gzip+base64 the diff, read it over SSM (<24 KB) |
 
-## 5. Still open
+## 5. Post-deploy replay caught a regression (00:00–00:30Z)
+
+Replay p9 on live `78c29b5ae`: right binds 19 → **12/22** (0 wrong). #414's looser "email beats history" rule let history tie with the email's own exact name. I had diagnosed that rule as the bug in §5d; it was correct behaviour. #418 restored it, and replay p10 on the fix commit was the merge gate: **20/22 right, 0 wrong, 2 extra binds, p50 29 s**. Deployed `1181ca923` at 00:28Z, flags checked in `/proc`, health 200/200. Live for ~55 min outside staff hours; no wrong binds at any point.
+
+| Lesson | Rule |
+|---|---|
+| A matcher rule change shipped on unit tests + Greptile alone; only the live replay showed the score drop | Any change to party bind rules runs the 42-mail replay on its own commit **before merge** (the p10 pattern), not after deploy |
+| §5d blamed the contradiction rule without checking what the weak rows actually bound | Before "fixing" a gate, check what the rows it blocks did instead (here: the email's own name already bound the right profile) |
+
+## 6. Still open
 
 | Item | Next check |
 |---|---|
-| Party score on live code | Replay p9 (same 42 mails, `78c29b5ae`, read-only) vs v2 21/22, 0 wrong → decision doc §5d |
 | Owner look at the pane | Before 05:00Z staff start; staff bundle load in nginx after that |
 | Asks 134 (real rates in Rate authority), 136 (extras/shuttle trips, R up front) | Next lanes; both touch `quote-workflow-panel.tsx`, now free |
 | Ask 132 reusable HMS login | Tracked in WORKSTREAMS §2 row 9 |
