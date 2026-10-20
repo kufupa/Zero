@@ -565,7 +565,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
             if (amendView?.kind === 'ready') void commitAmendStay(amendView);
           }}
         />
-      ) : amendment.kind === 'amend' ? (
+      ) : amendment.kind === 'amend' && !(stay && foundNumber) ? (
         <div data-testid="amend-run-placeholder" className="flex justify-end border-t border-[#e2e8f0] pt-2">
           <button type="button" className={buttonClass} disabled title="Find the booking first">
             {AMEND_SAVE_COPY.preview}
