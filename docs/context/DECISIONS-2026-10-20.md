@@ -41,3 +41,4 @@ Running log so nothing from the chat gets lost. Source: this chat; asks 155–16
 | D15 | Memory-framework comparison (mem0 OSS vs Mastra memory vs Hindsight) parked as ask 162 | L7 baseline kept for later |
 | D16 | Code stack: Luna max implements → Grok 4.6 high review+fix → Greptile → Grok 4.6 fixes; Opus coordinates/merges/deploys; lanes visible in Orca | Grok 4.7 only as plan critic |
 | D17 | No owner data labelling; truth comes from staff artefacts (HMS letters, quote PDFs, replies) | — |
+| D18 | (owner 17:20Z) Grok orchestrator may merge, deploy and run live HMS scripts (deterministic only); replaces "Opus merges/deploys/live HMS". H1: `RESERVATIONIST_PANE_SAVE` stays `lab`. H3: close PRs #301, #308, #334. Coder Grok 4.6 high, reviewer Grok 4.7 xhigh (supersedes D16 stack) | AGENTS.md Writers row updated |
