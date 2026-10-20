@@ -7,6 +7,8 @@ import {
   planProvision,
   PROVISION_SPEC,
   STALE_PLAN_MESSAGE,
+  stripPlanForTransportsOnly,
+  transportsOnlySpec,
   type ProvisionPlan,
   type ProvisionSpec,
 } from '../src/db/provision.js';
@@ -1170,6 +1172,135 @@ describe('PROVISION_SPEC', () => {
   });
 });
 
+describe('transports-only provision', () => {
+  const existingHotelA = (): TransportRow => ({
+    id: 'transport-hotel-a',
+    email: 'hotel-a@example.test',
+    ownerHeaderValue: 'hotel-a@example.test',
+    displayName: 'Hotel A',
+    isActive: true,
+    sendFromConfig: { aliases: [] },
+  });
+
+  it('spec filter has no users and only Nava non-default grants', () => {
+    const spec = transportsOnlySpec(TEST_SPEC);
+    expect(spec.users).toEqual([]);
+    expect(spec.transports).toEqual(TEST_SPEC.transports);
+    expect(spec.grants).toEqual([
+      { userId: NAVA_USER_ID, transportId: 'transport-hotel-a', role: 'owner', isDefault: false },
+      { userId: NAVA_USER_ID, transportId: 'transport-hotel-b', role: 'owner', isDefault: false },
+      { userId: NAVA_USER_ID, transportId: 'transport-hotel-c', role: 'owner', isDefault: false },
+    ]);
+    expect(spec.grants.every((g) => g.userId === NAVA_USER_ID && g.isDefault === false)).toBe(true);
+    const prod = transportsOnlySpec(PROVISION_SPEC);
+    expect(prod.users).toEqual([]);
+    expect(prod.grants.length).toBeGreaterThan(0);
+    expect(prod.grants.every((g) => g.userId === NAVA_USER_ID && g.isDefault === false)).toBe(true);
+    expect(prod.grants.length).toBe(PROVISION_SPEC.grants.filter((g) => g.userId === NAVA_USER_ID).length);
+  });
+
+  it('stripped plan has empty usersToCreate and aliasesToAdd', async () => {
+    const { db } = createFakeDb({ users: [navaUser], transports: [existingHotelA()] });
+    const planned = await planProvision(db, transportsOnlySpec(TEST_SPEC));
+    expect(planned.usersToCreate).toEqual([]);
+    expect(planned.aliasesToAdd).toEqual([
+      { transportId: 'transport-hotel-a', aliases: ['transport-hotel-a@example.com'] },
+    ]);
+    const plan = stripPlanForTransportsOnly(planned);
+    expect(plan.usersToCreate).toEqual([]);
+    expect(plan.aliasesToAdd).toEqual([]);
+    expect(plan.transportsToCreate.map((t) => t.id).sort()).toEqual([
+      'transport-hotel-b',
+      'transport-hotel-c',
+    ]);
+    expect(plan.grantsToCreate.map((g) => g.transportId).sort()).toEqual([
+      'transport-hotel-a',
+      'transport-hotel-b',
+      'transport-hotel-c',
+    ]);
+    expect(plan.grantsToCreate.every((g) => g.userId === NAVA_USER_ID && !g.isDefault)).toBe(true);
+  });
+
+  it('apply of stripped plan creates no users and no alias edits', async () => {
+    const { db, state } = createFakeDb({ users: [navaUser], transports: [existingHotelA()] });
+    const full = await planProvision(db, TEST_SPEC);
+    expect(full.usersToCreate.map((u) => u.id).sort()).toEqual([
+      'user-hotel-a',
+      'user-hotel-b',
+      'user-hotel-c',
+    ]);
+    expect(full.aliasesToAdd).toEqual([
+      { transportId: 'transport-hotel-a', aliases: ['transport-hotel-a@example.com'] },
+    ]);
+    const stripped = stripPlanForTransportsOnly(full);
+    expect(stripped.usersToCreate).toEqual([]);
+    expect(stripped.aliasesToAdd).toEqual([]);
+    await applyProvision(db, stripped, {});
+    expect(state.users.map((u) => u.id)).toEqual([NAVA_USER_ID]);
+    expect(state.accounts).toEqual([]);
+    expect(state.transports.find((t) => t.id === 'transport-hotel-a')?.sendFromConfig).toEqual({
+      aliases: [],
+    });
+  });
+
+  it('apply of transports-only spec+strip creates missing transports and Nava grants only', async () => {
+    const { db, state } = createFakeDb({ users: [navaUser], transports: [existingHotelA()] });
+    const plan = stripPlanForTransportsOnly(
+      await planProvision(db, transportsOnlySpec(TEST_SPEC)),
+    );
+    await applyProvision(db, plan, {});
+    expect(state.users.map((u) => u.id)).toEqual([NAVA_USER_ID]);
+    expect(state.accounts).toEqual([]);
+    expect(state.transports.find((t) => t.id === 'transport-hotel-a')?.sendFromConfig).toEqual({
+      aliases: [],
+    });
+    expect(state.transports.map((t) => t.id).sort()).toEqual([
+      'transport-hotel-a',
+      'transport-hotel-b',
+      'transport-hotel-c',
+    ]);
+    expect(
+      state.grants.map((g) => ({ userId: g.userId, transportId: g.transportId, isDefault: g.isDefault })),
+    ).toEqual(
+      expect.arrayContaining([
+        { userId: NAVA_USER_ID, transportId: 'transport-hotel-a', isDefault: false },
+        { userId: NAVA_USER_ID, transportId: 'transport-hotel-b', isDefault: false },
+        { userId: NAVA_USER_ID, transportId: 'transport-hotel-c', isDefault: false },
+      ]),
+    );
+    expect(state.grants).toHaveLength(3);
+    expect(state.grants.every((g) => g.userId === NAVA_USER_ID)).toBe(true);
+  });
+
+  it('second apply of stripped transports-only plan is 0 changes', async () => {
+    const { db, state } = createFakeDb({ users: [navaUser], transports: [existingHotelA()] });
+    const spec = transportsOnlySpec(TEST_SPEC);
+    await applyProvision(db, stripPlanForTransportsOnly(await planProvision(db, spec)), {});
+    const afterFirst = {
+      users: state.users.map((row) => ({ ...row })),
+      accounts: state.accounts.map((row) => ({ ...row })),
+      transports: state.transports.map((row) => ({
+        ...row,
+        sendFromConfig: row.sendFromConfig ? { ...(row.sendFromConfig as object) } : row.sendFromConfig,
+      })),
+      grants: state.grants.map((row) => ({ ...row })),
+    };
+    const second = stripPlanForTransportsOnly(await planProvision(db, spec));
+    expect(second.usersToCreate).toEqual([]);
+    expect(second.transportsToCreate).toEqual([]);
+    expect(second.grantsToCreate).toEqual([]);
+    expect(second.aliasesToAdd).toEqual([]);
+    await applyProvision(db, second, {});
+    expect(state.users).toEqual(afterFirst.users);
+    expect(state.accounts).toEqual(afterFirst.accounts);
+    expect(state.transports).toEqual(afterFirst.transports);
+    expect(state.grants).toEqual(afterFirst.grants);
+    expect(state.transports.find((t) => t.id === 'transport-hotel-a')?.sendFromConfig).toEqual({
+      aliases: [],
+    });
+  });
+});
+
 describe('printPlan', () => {
   it('prints aliasesToAdd as transportId and count without addresses', () => {
     const plan: ProvisionPlan = {
@@ -1216,6 +1347,7 @@ describe('parseFlags', () => {
   it('accepts --apply and --credentials-out', () => {
     expect(parseFlags(['--apply', '--credentials-out', '/tmp/out.json'])).toEqual({
       apply: true,
+      transportsOnly: false,
       credentialsOut: '/tmp/out.json',
       credentialsIn: null,
     });
@@ -1232,8 +1364,27 @@ describe('parseFlags', () => {
       ]),
     ).toEqual({
       apply: true,
+      transportsOnly: false,
       credentialsOut: '/tmp/out.json',
       credentialsIn: '/tmp/in.json',
+    });
+  });
+
+  it('accepts --transports-only without --apply (dry-run default)', () => {
+    expect(parseFlags(['--transports-only'])).toEqual({
+      apply: false,
+      transportsOnly: true,
+      credentialsOut: null,
+      credentialsIn: null,
+    });
+  });
+
+  it('accepts --apply --transports-only with no credentials file', () => {
+    expect(parseFlags(['--apply', '--transports-only'])).toEqual({
+      apply: true,
+      transportsOnly: true,
+      credentialsOut: null,
+      credentialsIn: null,
     });
   });
 
@@ -1273,6 +1424,11 @@ describe('parseFlags', () => {
     }
     expect(existsSync('--apply')).toBe(false);
     expect(existsSync('--credentials-out')).toBe(false);
+  });
+
+  it('still requires --credentials-out for --apply without --transports-only', () => {
+    expect(() => parseFlags(['--apply'])).toThrow(ProvisionUsageError);
+    expect(() => parseFlags(['--apply', '--transports-only'])).not.toThrow();
   });
 });
 
