@@ -201,7 +201,84 @@ export const AMEND_SAVE_COPY = {
   unconfirmed: 'HMS may have saved this change. Check HMS before trying again.',
   failed: "Nava couldn't finish in HMS. Check HMS yourself.",
   done: 'Saved in HMS.',
+  handleInHms: 'This booking is not unpaid. Change it in HMS yourself.',
 } as const;
+
+export type AmendPaymentClass = 'unpaid' | 'paid' | 'guaranteed' | 'unknown';
+
+export type AmendPaymentStay = {
+  status?: string | null;
+  guaranteeType?: string | null;
+  depositReceived?: string | null;
+};
+
+function paymentText(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+export function parseDepositReceived(value: unknown): number | null {
+  const text = paymentText(value);
+  if (!text) return null;
+  const cleaned = text.replace(/[^\d.,-]/g, '');
+  if (!cleaned) return null;
+  const normalized = /^\d{1,3}(\.\d{3})+(,\d+)?$/.test(cleaned)
+    ? cleaned.replace(/\./g, '').replace(',', '.')
+    : cleaned.includes(',') && !cleaned.includes('.')
+      ? cleaned.replace(',', '.')
+      : cleaned.replace(/,/g, '');
+  const amount = Number(normalized);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
+
+function guaranteeKind(guaranteeType: unknown): 'non_paying' | 'paying' | 'missing' | 'unknown' {
+  const text = paymentText(guaranteeType).toLowerCase();
+  if (!text) return 'missing';
+  if (/^non[-\s]?guaranteed/.test(text) || text === 'none') return 'non_paying';
+  if (
+    /guaranteed/.test(text) ||
+    /confirmation received/.test(text) ||
+    /awaiting voucher/.test(text) ||
+    /deposit requested/.test(text) ||
+    /group definite/.test(text) ||
+    /credit card/.test(text)
+  ) {
+    return 'paying';
+  }
+  return 'unknown';
+}
+
+function isProvisionalStatus(status: unknown): boolean {
+  const text = paymentText(status).toLowerCase();
+  return text === 'reserved' || text === 'provisional';
+}
+
+/** R7: unpaid = provisional + deposit 0 + non-paying guarantee. Missing field = unknown. */
+export function classifyAmendPayment(stay: AmendPaymentStay | null | undefined): AmendPaymentClass {
+  if (!stay) return 'unknown';
+  if (!paymentText(stay.status) || !paymentText(stay.guaranteeType) || !paymentText(stay.depositReceived)) {
+    return 'unknown';
+  }
+  const deposit = parseDepositReceived(stay.depositReceived);
+  if (deposit == null) return 'unknown';
+  const guarantee = guaranteeKind(stay.guaranteeType);
+  if (guarantee === 'missing' || guarantee === 'unknown') return 'unknown';
+  if (deposit > 0) return 'paid';
+  if (guarantee === 'paying') return 'guaranteed';
+  if (isProvisionalStatus(stay.status) && deposit === 0 && guarantee === 'non_paying') return 'unpaid';
+  return 'unknown';
+}
+
+export function paymentStayFromRecord(
+  stay: { status?: string | null; guaranteeType?: string | null } | null,
+): AmendPaymentStay | null {
+  if (!stay) return null;
+  const extra = stay as { depositReceived?: string | null };
+  return {
+    status: stay.status ?? null,
+    guaranteeType: stay.guaranteeType ?? null,
+    depositReceived: extra.depositReceived ?? null,
+  };
+}
 
 export const AMEND_FORM_FIELDS = ['arrival', 'departure', 'roomType', 'adults', 'children'] as const;
 export type AmendFormField = (typeof AMEND_FORM_FIELDS)[number];
@@ -240,6 +317,7 @@ export type AmendView =
 function amendOutcomeNote(outcome: string, confirmation: string): string {
   if (outcome === 'refused_flag_off') return `${AMEND_SAVE_COPY.switchedOff} Open ${confirmation} in HMS and save the change there.`;
   if (outcome === 'refused_not_lab') return AMEND_SAVE_COPY.testOnly;
+  if (outcome === 'refused_payment_unknown') return AMEND_SAVE_COPY.handleInHms;
   if (outcome === 'refused_lock_busy') return AMEND_FIND_COPY.busy;
   if (outcome === 'refused_lock_unavailable') return AMEND_FIND_COPY.unreachable;
   if (outcome === 'amend_preview_required' || outcome === 'amend_digest_mismatch' || outcome === 'refused_digest_mismatch') {

@@ -64,6 +64,7 @@ const STAY: PaneStayFields = {
   balance: '0.00',
   sourceOfBusiness: 'Walk in',
   guaranteeType: 'Non-Guaranteed Indi...',
+  depositReceived: null,
   bookingAgency: null,
   organization: null,
 };
@@ -226,6 +227,23 @@ describe('findStay', () => {
       agency: { name: 'Harbor Travel', nativeId: 'AG-9', iata: '77206673' },
       ratePlan: 'Corporate Saver',
       status: 'Reserved',
+    });
+  });
+
+  it('keeps depositReceived and guaranteeType on the found stay and commercial allow-list', async () => {
+    paneStayLookupLoaders.spawn = async () =>
+      lookupResult({
+        stay: { ...STAY, guaranteeType: 'Non-Guaranteed Individual', depositReceived: '0.00' },
+        commercial: { guaranteeType: 'Non-Guaranteed Individual', depositReceived: '0.00', unknownField: 'drop' } as never,
+      });
+    const result = await findStay({ confirmation: '57291630-1' }, { lock: () => passingLock() });
+    expect(result.stay).toMatchObject({
+      guaranteeType: 'Non-Guaranteed Individual',
+      depositReceived: '0.00',
+    });
+    expect(result.commercial).toEqual({
+      guaranteeType: 'Non-Guaranteed Individual',
+      depositReceived: '0.00',
     });
   });
 

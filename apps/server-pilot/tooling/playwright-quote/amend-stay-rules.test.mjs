@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   amendCommitAllowed,
   amendPreviewDigest,
+  classifyAmendPayment,
   compareChangedFields,
   dangerousDialogKind,
   parseAmendArgs,
@@ -31,6 +32,8 @@ const CURRENT = {
   adults: 1,
   children: 0,
   roomType: 'DBL',
+  guaranteeType: 'Non-Guaranteed Individual',
+  depositReceived: '0',
 };
 
 function args(mode = 'preview', digest) {
@@ -168,6 +171,29 @@ test('compareChangedFields reports exact fresh matches and per-field mismatches'
     matches: false,
     diff: { arrival: { expected: '2027-09-15', actual: null }, adults: { expected: 2, actual: null } },
   });
+});
+
+test('classifyAmendPayment is unpaid only for provisional + deposit 0 + non-paying guarantee', () => {
+  assert.equal(classifyAmendPayment(CURRENT), 'unpaid');
+  assert.equal(classifyAmendPayment({ ...CURRENT, depositReceived: '0.00' }), 'unpaid');
+  assert.equal(classifyAmendPayment({ ...CURRENT, guaranteeType: 'Non-Guaranteed Indi...' }), 'unpaid');
+  assert.equal(classifyAmendPayment({ ...CURRENT, depositReceived: '250.00' }), 'paid');
+  assert.equal(classifyAmendPayment({ ...CURRENT, guaranteeType: 'Guaranteed By Agent' }), 'guaranteed');
+  assert.equal(classifyAmendPayment({ ...CURRENT, depositReceived: '' }), 'unknown');
+  assert.equal(classifyAmendPayment({ ...CURRENT, depositReceived: null }), 'unknown');
+  assert.equal(classifyAmendPayment({ ...CURRENT, guaranteeType: null }), 'unknown');
+  assert.equal(classifyAmendPayment({ ...CURRENT, status: 'Confirmed' }), 'unknown');
+});
+
+test('validateAmendCurrent refuses paid, guaranteed, and missing payment fields', () => {
+  assert.equal(validateAmendCurrent(REQUEST, CURRENT), null);
+  assert.equal(validateAmendCurrent(REQUEST, { ...CURRENT, depositReceived: '500.00' }), 'payment_unknown');
+  assert.equal(
+    validateAmendCurrent(REQUEST, { ...CURRENT, guaranteeType: 'Guaranteed By Credit Card' }),
+    'payment_unknown',
+  );
+  assert.equal(validateAmendCurrent(REQUEST, { ...CURRENT, depositReceived: null }), 'payment_unknown');
+  assert.equal(validateAmendCurrent(REQUEST, { ...CURRENT, guaranteeType: '' }), 'payment_unknown');
 });
 
 test('pane save gate allows preview but permits commit only in lab mode', () => {

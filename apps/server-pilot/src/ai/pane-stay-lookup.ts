@@ -41,6 +41,8 @@ export type PaneStayFields = {
   balance: string | null;
   sourceOfBusiness: string | null;
   guaranteeType: string | null;
+  /** HMS deposit received. Null when the control is missing. Absent on older snapshots. */
+  depositReceived?: string | null;
   bookingAgency: string | null;
   organization: string | null;
 };
@@ -60,6 +62,8 @@ export type PaneStayCommercial = {
   status?: string;
   arrival?: string;
   departure?: string;
+  guaranteeType?: string;
+  depositReceived?: string;
 };
 
 /** One quick-search dropdown row. Dates are ISO; departure is null when the row shows none. */
@@ -161,6 +165,74 @@ export function paneStayLookupEnabled(env: NodeJS.Dict<string> = process.env): b
   return env.PANE_STAY_LOOKUP !== 'off';
 }
 
+export type AmendPaymentClass = 'unpaid' | 'paid' | 'guaranteed' | 'unknown';
+
+export type AmendPaymentStay = {
+  status?: string | null;
+  guaranteeType?: string | null;
+  depositReceived?: string | null;
+};
+
+function paymentText(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+/** Deposit amount from HMS text. Null when the field is missing or not a number. */
+export function parseDepositReceived(value: unknown): number | null {
+  const text = paymentText(value);
+  if (!text) return null;
+  const cleaned = text.replace(/[^\d.,-]/g, '');
+  if (!cleaned) return null;
+  const normalized = /^\d{1,3}(\.\d{3})+(,\d+)?$/.test(cleaned)
+    ? cleaned.replace(/\./g, '').replace(',', '.')
+    : cleaned.includes(',') && !cleaned.includes('.')
+      ? cleaned.replace(',', '.')
+      : cleaned.replace(/,/g, '');
+  const amount = Number(normalized);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
+
+function guaranteeKind(guaranteeType: unknown): 'non_paying' | 'paying' | 'missing' | 'unknown' {
+  const text = paymentText(guaranteeType).toLowerCase();
+  if (!text) return 'missing';
+  if (/^non[-\s]?guaranteed/.test(text) || text === 'none') return 'non_paying';
+  if (
+    /guaranteed/.test(text) ||
+    /confirmation received/.test(text) ||
+    /awaiting voucher/.test(text) ||
+    /deposit requested/.test(text) ||
+    /group definite/.test(text) ||
+    /credit card/.test(text)
+  ) {
+    return 'paying';
+  }
+  return 'unknown';
+}
+
+function isProvisionalStatus(status: unknown): boolean {
+  const text = paymentText(status).toLowerCase();
+  return text === 'reserved' || text === 'provisional';
+}
+
+/**
+ * R7 unpaid amend: provisional + deposit received 0 + non-paying guarantee.
+ * Missing or unreadable field, paid deposit, paying guarantee, or anything else = fail closed.
+ */
+export function classifyAmendPayment(stay: AmendPaymentStay | null | undefined): AmendPaymentClass {
+  if (!stay) return 'unknown';
+  if (!paymentText(stay.status) || !paymentText(stay.guaranteeType) || !paymentText(stay.depositReceived)) {
+    return 'unknown';
+  }
+  const deposit = parseDepositReceived(stay.depositReceived);
+  if (deposit == null) return 'unknown';
+  const guarantee = guaranteeKind(stay.guaranteeType);
+  if (guarantee === 'missing' || guarantee === 'unknown') return 'unknown';
+  if (deposit > 0) return 'paid';
+  if (guarantee === 'paying') return 'guaranteed';
+  if (isProvisionalStatus(stay.status) && deposit === 0 && guarantee === 'non_paying') return 'unpaid';
+  return 'unknown';
+}
+
 function isRealIsoDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const date = new Date(`${value}T00:00:00Z`);
@@ -243,6 +315,7 @@ function toPaneStayFields(raw: Partial<PaneStayFields> | null | undefined): Pane
     balance: text(raw.balance),
     sourceOfBusiness: text(raw.sourceOfBusiness),
     guaranteeType: text(raw.guaranteeType),
+    depositReceived: text(raw.depositReceived),
     bookingAgency: text(raw.bookingAgency),
     organization: text(raw.organization),
   };
@@ -274,7 +347,7 @@ function toPaneStayCommercial(raw: unknown): PaneStayCommercial | undefined {
   if (agency) commercial.agency = agency;
   for (const field of [
     'ratePlan', 'mealPlan', 'roomType', 'marketSegment', 'sourceOfBusiness', 'averageRate',
-    'status', 'arrival', 'departure',
+    'status', 'arrival', 'departure', 'guaranteeType', 'depositReceived',
   ] as const) {
     const value = text(source[field]);
     if (value) commercial[field] = value;

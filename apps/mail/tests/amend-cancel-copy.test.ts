@@ -5,6 +5,7 @@ import {
   canPreviewAmendFromCapabilities,
   canPreviewCancelFromCapabilities,
   cancellationChargeCopy,
+  classifyAmendPayment,
   cancelledText,
   cancelOutcomeNote,
   changedAmendRows,
@@ -143,5 +144,34 @@ describe('amend preview and commit views', () => {
       kind: 'idle',
       note: AMEND_SAVE_COPY.previewAgain,
     });
+  });
+
+  it('a payment refusal tells staff to change the booking in HMS', () => {
+    expect(viewAfterAmendCommit(amendRun({ outcome: 'refused_payment_unknown' }), CONFIRMATION)).toEqual({
+      kind: 'idle',
+      note: AMEND_SAVE_COPY.handleInHms,
+    });
+  });
+});
+
+describe('classifyAmendPayment', () => {
+  const unpaid = {
+    status: 'Reserved',
+    guaranteeType: 'Non-Guaranteed Individual',
+    depositReceived: '0',
+  };
+
+  it('is unpaid only with provisional status, deposit 0, and a non-paying guarantee', () => {
+    expect(classifyAmendPayment(unpaid)).toBe('unpaid');
+    expect(classifyAmendPayment({ ...unpaid, depositReceived: '0.00' })).toBe('unpaid');
+    expect(classifyAmendPayment({ ...unpaid, guaranteeType: 'Non-Guaranteed Indi...' })).toBe('unpaid');
+  });
+
+  it('fails closed for paid, guaranteed, and missing fields', () => {
+    expect(classifyAmendPayment({ ...unpaid, depositReceived: '80.00' })).toBe('paid');
+    expect(classifyAmendPayment({ ...unpaid, guaranteeType: 'Guaranteed By Agent' })).toBe('guaranteed');
+    expect(classifyAmendPayment({ ...unpaid, depositReceived: null })).toBe('unknown');
+    expect(classifyAmendPayment({ ...unpaid, guaranteeType: null })).toBe('unknown');
+    expect(classifyAmendPayment({ ...unpaid, status: 'Confirmed' })).toBe('unknown');
   });
 });

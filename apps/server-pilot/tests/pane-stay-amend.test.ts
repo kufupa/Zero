@@ -6,6 +6,7 @@ import {
   type PaneAmendSpawnInput,
   type PaneAmendSpawnResult,
 } from '../src/ai/pane-hms-write.js';
+import { paneStayLookupLoaders, type PaneStayFields } from '../src/ai/pane-stay-lookup.js';
 import { paneStaySaveLoaders, type PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
@@ -34,9 +35,40 @@ function spawnResult(overrides: Partial<PaneAmendSpawnResult> = {}): PaneAmendSp
   };
 }
 
-function enableAmend(): PaneAmendSpawnInput[] {
+const UNPAID_STAY: PaneStayFields = {
+  status: 'Reserved',
+  confirmation: stay.confirmation,
+  lastName: stay.lastName,
+  firstName: 'Lab',
+  arrival: stay.arrival,
+  departure: '2027-09-16',
+  nights: 2,
+  adults: 1,
+  children: 0,
+  roomType: 'STQN',
+  ratePlan: 'BAR',
+  mealPlan: 'BB',
+  averageRate: '1000.00',
+  grandTotal: '2000.00',
+  balance: '0.00',
+  sourceOfBusiness: 'Walk in',
+  guaranteeType: 'Non-Guaranteed Individual',
+  depositReceived: '0',
+  bookingAgency: null,
+  organization: null,
+};
+
+function enableAmend(lookupStay: PaneStayFields = UNPAID_STAY): PaneAmendSpawnInput[] {
   const calls: PaneAmendSpawnInput[] = [];
   paneHmsWriteLoaders.lock = passingLock();
+  paneStayLookupLoaders.enabled = () => true;
+  paneStayLookupLoaders.spawn = async () => ({
+    outcome: 'found',
+    reason: null,
+    stay: lookupStay,
+    rows: [],
+    screenshots: [],
+  });
   paneHmsWriteLoaders.spawnAmend = async (input) => {
     calls.push(input);
     return input.mode === 'preview'
@@ -61,6 +93,8 @@ describe('pane stay amend', () => {
   afterEach(() => {
     paneHmsWriteLoaders.spawnAmend = null;
     paneHmsWriteLoaders.lock = null;
+    paneStayLookupLoaders.spawn = null;
+    paneStayLookupLoaders.enabled = null;
     paneStaySaveLoaders.now = null;
     vi.unstubAllEnvs();
   });
@@ -105,5 +139,29 @@ describe('pane stay amend', () => {
       mailboxCaller().paneStayAmend.commitAmend({ ...stay, previewDigest: 'cd'.repeat(32) }),
     ).resolves.toMatchObject({ outcome: 'amend_digest_mismatch' });
     expect(preview.previewDigest).toBe(DIGEST);
+  });
+
+  it('preview and commit refuse a paid, guaranteed, or unknown payment stay with no spawn', async () => {
+    vi.stubEnv('RESERVATIONIST_PANE_SAVE', 'lab');
+    const paid = enableAmend({ ...UNPAID_STAY, depositReceived: '120.00' });
+    await expect(previewAmend({ ...stay, owner })).resolves.toMatchObject({
+      outcome: 'refused_payment_unknown',
+      previewDigest: null,
+    });
+    expect(paid).toEqual([]);
+
+    const guaranteed = enableAmend({ ...UNPAID_STAY, guaranteeType: 'Guaranteed By Agent' });
+    await expect(previewAmend({ ...stay, owner })).resolves.toMatchObject({ outcome: 'refused_payment_unknown' });
+    expect(guaranteed).toEqual([]);
+
+    const missingDeposit = enableAmend({ ...UNPAID_STAY, depositReceived: null });
+    await expect(commitAmend({ ...stay, owner, previewDigest: DIGEST })).resolves.toMatchObject({
+      outcome: 'refused_payment_unknown',
+    });
+    expect(missingDeposit).toEqual([]);
+
+    const missingGuarantee = enableAmend({ ...UNPAID_STAY, guaranteeType: null });
+    await expect(previewAmend({ ...stay, owner })).resolves.toMatchObject({ outcome: 'refused_payment_unknown' });
+    expect(missingGuarantee).toEqual([]);
   });
 });

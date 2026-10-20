@@ -56,6 +56,11 @@ const amendCliRules = (await import('../tooling/playwright-quote/amend-stay-rule
     current: PaneStayFields;
     fields: Record<string, string | number>;
   }): string;
+  classifyAmendPayment(stay: {
+    status?: string | null;
+    guaranteeType?: string | null;
+    depositReceived?: string | null;
+  }): 'unpaid' | 'paid' | 'guaranteed' | 'unknown';
 };
 
 const TRANSPORT_ID = 'transport-centurion';
@@ -96,7 +101,8 @@ const LAB_STAY: PaneStayFields = {
   grandTotal: '2000.00',
   balance: '0.00',
   sourceOfBusiness: 'Direct',
-  guaranteeType: 'None',
+  guaranteeType: 'Non-Guaranteed Individual',
+  depositReceived: '0',
   bookingAgency: null,
   organization: null,
 };
@@ -329,6 +335,44 @@ async function eventsOf(db: DB, workItemId: string, type: WorkEventType) {
 }
 
 describe('pane HMS write (U26)', () => {
+  it('CLI payment classifier matches the writer: unpaid only with provisional + deposit 0 + non-paying guarantee', () => {
+    expect(
+      amendCliRules.classifyAmendPayment({
+        status: 'Reserved',
+        guaranteeType: 'Non-Guaranteed Individual',
+        depositReceived: '0',
+      }),
+    ).toBe('unpaid');
+    expect(
+      amendCliRules.classifyAmendPayment({
+        status: 'Reserved',
+        guaranteeType: 'Non-Guaranteed Individual',
+        depositReceived: '40.00',
+      }),
+    ).toBe('paid');
+    expect(
+      amendCliRules.classifyAmendPayment({
+        status: 'Reserved',
+        guaranteeType: 'Guaranteed By Agent',
+        depositReceived: '0',
+      }),
+    ).toBe('guaranteed');
+    expect(
+      amendCliRules.classifyAmendPayment({
+        status: 'Reserved',
+        guaranteeType: 'Non-Guaranteed Individual',
+        depositReceived: null,
+      }),
+    ).toBe('unknown');
+    expect(
+      amendCliRules.classifyAmendPayment({
+        status: 'Reserved',
+        guaranteeType: null,
+        depositReceived: '0',
+      }),
+    ).toBe('unknown');
+  });
+
   it('pins attach cap and keeps all pane HMS writes behind SAVE=lab', () => {
     expect(attachCli.ATTACH_MAX_BYTES).toBe(ARTIFACT_MAX_INPUT_BYTES);
     expect(PANE_ATTACH_MAX_BYTES).toBe(ARTIFACT_MAX_INPUT_BYTES);
@@ -742,6 +786,30 @@ describe('pane HMS write (U26)', () => {
       ]);
       expect(attachCalls).toHaveLength(0);
       expect(cancelCalls).toHaveLength(0);
+    });
+  });
+
+  it('refuses amend commit when the re-read stay is paid, guaranteed, or missing payment fields', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const cases: PaneStayFields[] = [
+        { ...LAB_STAY, depositReceived: '500.00' },
+        { ...LAB_STAY, guaranteeType: 'Guaranteed By Agent', depositReceived: '0' },
+        { ...LAB_STAY, depositReceived: null },
+        { ...LAB_STAY, guaranteeType: null },
+      ];
+      for (const [index, nextStay] of cases.entries()) {
+        hmsStay = nextStay;
+        const workItemId = await seedWriteItem(db, { n: 10 + index, state: AMEND_FORM });
+        await prepare(db, workItemId);
+        await approve(db, workItemId);
+        const run = await claimWrite(db);
+        expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
+          status: 'ended',
+          failureClass: 'NEEDS_CHECK',
+          reason: 'refused_payment_unknown',
+        });
+        expect(amendCalls).toEqual([]);
+      }
     });
   });
 

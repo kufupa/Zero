@@ -8,6 +8,7 @@
   "averagerate": { "value": "1250.00", "text": "1250.00", "kind": "input" },
   "track": { "value": "BUS", "text": "Business", "kind": "select" },
   "guaranteetype": { "value": "GTD", "text": "Guaranteed", "kind": "select" },
+  "depositreceived": { "value": "0.00", "text": "0.00", "kind": "input" },
   "sourceofbusiness": { "value": "TA", "text": "TA", "kind": "input" },
   "sourceofbusinessdesc": { "value": "Travel Agency", "text": "Travel Agency", "kind": "input" },
   "marketsegment": { "value": "CORP", "text": "Corporate", "kind": "select" },

@@ -49,7 +49,7 @@ import {
   takePanePreview,
   type PaneStayLock,
 } from './pane-stay-save.js';
-import { findStay, type PaneStayFields } from './pane-stay-lookup.js';
+import { classifyAmendPayment, findStay, type PaneStayFields } from './pane-stay-lookup.js';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import {
   heartbeatAiRun,
@@ -477,7 +477,20 @@ async function runPaneAmend(
   const spawn = paneHmsWriteLoaders.spawnAmend ?? spawnAmendStay;
   try {
     await pruneExpiredPaneRuns(paneStayClock());
+    let paymentRefusal: string | null = null;
     const spawned = await lock.withLock(async () => {
+      const found = await findStay(
+        { confirmation: input.confirmation, arrival: input.arrival },
+        { lock: () => HELD_LOCK },
+      );
+      if (found.outcome !== 'found' || !found.stay) {
+        paymentRefusal = found.outcome === 'found' ? 'refused_payment_unknown' : `read_${found.outcome}`;
+        return null;
+      }
+      if (classifyAmendPayment(found.stay) !== 'unpaid') {
+        paymentRefusal = 'refused_payment_unknown';
+        return null;
+      }
       if (mode === 'commit' && !takePanePreview(input.owner, input.previewDigest ?? '', paneStayClock())) return null;
       return spawn({
         confirmation: input.confirmation,
@@ -488,6 +501,7 @@ async function runPaneAmend(
         ...(mode === 'commit' ? { previewDigest: input.previewDigest } : {}),
       });
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+    if (paymentRefusal) return refusedAmend(paymentRefusal);
     if (spawned === null) return refusedAmend('amend_digest_mismatch');
     const runId = spawned.runDir ? randomUUID() : null;
     if (runId && spawned.runDir) registerPaneRun({ runId, dir: spawned.runDir, owner: input.owner, now: paneStayClock() });
@@ -545,6 +559,7 @@ const amendRefusal = (outcome: string): SaveOutcome => ({ outcome, clickedOk: fa
 
 async function saveAmend(form: AmendForm, stay: PaneStayFields): Promise<SaveOutcome> {
   if (stay.status !== 'Reserved' && stay.status !== 'Confirmed') return amendRefusal('refused_status_unsupported');
+  if (classifyAmendPayment(stay) !== 'unpaid') return amendRefusal('refused_payment_unknown');
   const fields = Object.fromEntries(AMEND_FIELDS.filter((field) => form.fields[field] !== undefined &&
     String(form.fields[field]) !== String(stay[field] ?? '')).map((field) => [field, form.fields[field]])) as AmendRequest;
   if (!Object.keys(fields).length) return amendRefusal('no_changes');

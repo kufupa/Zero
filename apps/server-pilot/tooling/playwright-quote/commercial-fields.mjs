@@ -7,8 +7,8 @@ const NON_VALUE_INPUT = /^(hidden|button|submit|reset|image|file|checkbox|radio)
 export function snapshotCommercialFields(doc = document) {
   const names = [
     'status', 'arrivaldate', 'departuredate', 'roomtype', 'rateplan', 'mealplan', 'averagerate', 'track',
-    'guaranteetype', 'sourceofbusiness', 'sourceofbusinessdesc', 'marketsegment', 'company', 'companyname',
-    'araccountname', 'bookingagency', 'bookingagencyname', 'ta1',
+    'guaranteetype', 'depositreceived', 'sourceofbusiness', 'sourceofbusinessdesc', 'marketsegment', 'company',
+    'companyname', 'araccountname', 'bookingagency', 'bookingagencyname', 'ta1',
   ];
   const fields = {};
   const controlsFor = (selector) => doc.querySelectorAll
@@ -185,6 +185,8 @@ export function parseCommercialFields(fields, stay = {}) {
       || firstStayText(stay, 'sourceOfBusiness', fields, 'sourceofbusiness'),
     averageRate: firstStayText(stay, 'averageRate', fields, 'averagerate'),
     status: firstStayText(stay, 'status', fields, 'status'),
+    guaranteeType: firstStayText(stay, 'guaranteeType', fields, 'guaranteetype'),
+    depositReceived: firstText(fields, 'depositreceived'),
   };
   for (const [key, value] of Object.entries(scalar)) {
     if (value) commercial[key] = value;

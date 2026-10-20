@@ -15,6 +15,62 @@ export function amendCommitAllowed(mode, env = process.env) {
   return mode !== 'commit' || env.RESERVATIONIST_PANE_SAVE === 'lab';
 }
 
+function paymentText(value) {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+export function parseDepositReceived(value) {
+  const text = paymentText(value);
+  if (!text) return null;
+  const cleaned = text.replace(/[^\d.,-]/g, '');
+  if (!cleaned) return null;
+  const normalized = /^\d{1,3}(\.\d{3})+(,\d+)?$/.test(cleaned)
+    ? cleaned.replace(/\./g, '').replace(',', '.')
+    : cleaned.includes(',') && !cleaned.includes('.')
+      ? cleaned.replace(',', '.')
+      : cleaned.replace(/,/g, '');
+  const amount = Number(normalized);
+  return Number.isFinite(amount) && amount >= 0 ? amount : null;
+}
+
+function guaranteeKind(guaranteeType) {
+  const text = paymentText(guaranteeType).toLowerCase();
+  if (!text) return 'missing';
+  if (/^non[-\s]?guaranteed/.test(text) || text === 'none') return 'non_paying';
+  if (
+    /guaranteed/.test(text) ||
+    /confirmation received/.test(text) ||
+    /awaiting voucher/.test(text) ||
+    /deposit requested/.test(text) ||
+    /group definite/.test(text) ||
+    /credit card/.test(text)
+  ) {
+    return 'paying';
+  }
+  return 'unknown';
+}
+
+function isProvisionalStatus(status) {
+  const text = paymentText(status).toLowerCase();
+  return text === 'reserved' || text === 'provisional';
+}
+
+/** R7: unpaid = provisional + deposit 0 + non-paying guarantee. Missing field = unknown. */
+export function classifyAmendPayment(stay) {
+  if (!stay || typeof stay !== 'object') return 'unknown';
+  if (!paymentText(stay.status) || !paymentText(stay.guaranteeType) || !paymentText(stay.depositReceived)) {
+    return 'unknown';
+  }
+  const deposit = parseDepositReceived(stay.depositReceived);
+  if (deposit == null) return 'unknown';
+  const guarantee = guaranteeKind(stay.guaranteeType);
+  if (guarantee === 'missing' || guarantee === 'unknown') return 'unknown';
+  if (deposit > 0) return 'paid';
+  if (guarantee === 'paying') return 'guaranteed';
+  if (isProvisionalStatus(stay.status) && deposit === 0 && guarantee === 'non_paying') return 'unpaid';
+  return 'unknown';
+}
+
 export function parseAmendArgs(argv) {
   const values = new Map();
   for (let i = 0; i < argv.length; i += 1) {
@@ -72,6 +128,7 @@ export function validateAmendCurrent(request, current) {
   if (!realDate(current.departure) || current.departure <= current.arrival) return 'departure_not_after_arrival';
   if (!count(current.adults) || !count(current.children)) return 'current_count_invalid';
   if (typeof current.roomType !== 'string' || !current.roomType) return 'current_room_type_unreadable';
+  if (classifyAmendPayment(current) !== 'unpaid') return 'payment_unknown';
   const arrival = request.fields.arrival ?? current.arrival;
   const departure = request.fields.departure ?? current.departure;
   if (!realDate(arrival)) return 'date_invalid';
