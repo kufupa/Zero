@@ -344,13 +344,23 @@ describe('QuoteWorkflowPanel', () => {
     ]);
     expect(steps.map((step) => step.getAttribute('aria-label'))).toEqual([
       'Agency & company',
-      'Rate authority',
+      'HMS notes',
       'Stay',
       'Availability & rates',
       'Extras & alternatives',
       'Documents',
     ]);
     expect(steps.map((step) => step.querySelector('h3 span')?.textContent)).toEqual(['1', '2', '3', '4', '5', '6']);
+    expect(within(steps[0]!).getByRole('button', { name: 'Continue to HMS notes' })).toBeDefined();
+    expect(within(steps[1]!).queryByLabelText('Rate plan')).toBeNull();
+    expect(within(steps[1]!).getByText('HMS notes (optional)')).toBeDefined();
+    expect(within(steps[1]!).getByTestId('quote-step-state').textContent).toBe('Optional');
+    const ratesStep = steps[3]!;
+    const ratePlanSelect = within(ratesStep).getByLabelText('Rate plan');
+    const searchHeading = within(ratesStep).getByText('Search availability & room rates');
+    expect(
+      ratePlanSelect.compareDocumentPosition(searchHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     for (const step of steps) {
       expect(within(step).getByTestId('quote-step-state')).toBeDefined();
     }
@@ -1097,7 +1107,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(onUndo).toHaveBeenCalledWith('question:how many children, and what ages?');
   });
 
-  it('does not show signature noise and does not let a secondary ask disable an authorised PDF', () => {
+  it('shows one top PDF + reply primary when rates are ready without letting a secondary ask block it', () => {
     const noisy = sessionFromFixture('public-single');
     noisy.reviewItems = [
       {
@@ -1143,8 +1153,42 @@ describe('QuoteWorkflowPanel', () => {
         },
       ],
     };
-    render(<QuoteWorkflowPanel session={ready} onPreparePdf={vi.fn()} />);
-    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', false);
+    const onPreparePdf = vi.fn();
+    const { container, rerender } = render(<QuoteWorkflowPanel session={ready} onPreparePdf={onPreparePdf} />);
+    const topPrepare = screen.getByRole('button', { name: 'Prepare PDF + reply' }) as HTMLButtonElement;
+    const documents = container.querySelector('#quote-quote') as HTMLElement;
+    const documentPrepare = within(documents).getByRole('button', { name: 'Prepare PDF' }) as HTMLButtonElement;
+    expect(topPrepare.disabled).toBe(false);
+    expect(topPrepare.className).toContain('bg-[#0066cc]');
+    expect(topPrepare.compareDocumentPosition(documents) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(primaryActions(container)).toEqual([topPrepare]);
+    expect(documentPrepare.className).toContain('border-[#0066cc]');
+    expect(documentPrepare.className).not.toContain('bg-[#0066cc]');
+    fireEvent.click(topPrepare);
+    expect(onPreparePdf).toHaveBeenCalledTimes(1);
+
+    rerender(<QuoteWorkflowPanel session={ready} onPreparePdf={onPreparePdf} pdfPending />);
+    const pendingButtons = screen.getAllByRole('button', { name: 'Preparing PDF…' }) as HTMLButtonElement[];
+    expect(pendingButtons).toHaveLength(2);
+    expect(pendingButtons.every((button) => button.disabled)).toBe(true);
+
+    rerender(
+      <QuoteWorkflowPanel
+        session={{
+          ...ready,
+          pdf: {
+            fileName: 'Quote - Standard King.pdf',
+            bytesBase64: 'JVBERi0xLjQK',
+            pdfHash: 'cd'.repeat(32),
+            revisionId: 'quotes:public-single',
+            totalMinor: 272000,
+          },
+        }}
+        onPreparePdf={onPreparePdf}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Prepare PDF + reply' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Review documents' })).toBeDefined();
     expect(screen.getByText('Is an airport shuttle available?')).toBeDefined();
   });
 
@@ -1531,6 +1575,19 @@ describe('the Find in HMS picker in the quote header', () => {
     return { ...base, offers: [], phase: 'requirements', staffHeader: { ...base.staffHeader, ...staffHeader } };
   }
 
+  it('shows the rate selector above the availability action before rates are read', () => {
+    const session = headerSession({ company: 'Sample Company', parties: {} });
+    expect(session.rateOptions ?? []).toHaveLength(0);
+    const { container } = render(<QuoteWorkflowPanel session={session} />);
+    const ratesStep = container.querySelector<HTMLElement>('#quote-rates');
+    if (!ratesStep) throw new Error('Expected the Availability & rates step.');
+    const planSelect = within(ratesStep).getByLabelText('Rate plan');
+    const searchAction = within(ratesStep).getByRole('button', { name: 'Search availability' });
+    expect(
+      planSelect.compareDocumentPosition(searchAction) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   // Applies each header patch through the real reducer, so a test reads the header the quote would send.
   function PartyGate({
     initial,
@@ -1563,7 +1620,8 @@ describe('the Find in HMS picker in the quote header', () => {
     assertRatePlanVisible();
     const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
     const values = [...planSelect.options].map((option) => option.value);
-    expect(planSelect.value).toBe('all');
+    // The fixture asks Dinner B&B on every row, so the plan defaults to Government.
+    expect(planSelect.value).toBe('government');
     expect(values).toEqual(
       expect.arrayContaining([
         'all', 'BAR', 'BARRO', 'DBB', 'DBBX', 'NCOR1B', 'NCOR2B', 'GNC3B', 'GNC4B',
@@ -1642,6 +1700,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const rateCatalogue: RatePlanCatalogueEntry[] = [
       { code: 'BAR', name: 'Best Available Rate', board: 'bed_breakfast' },
       { code: 'NCOR1B', name: 'Corporate Negotiated', board: 'unknown', contract: true },
+      { code: 'NCOR2B', name: 'Corporate Negotiated 2', board: 'unknown', contract: true },
     ];
 
     function FilterHarness() {
@@ -1657,14 +1716,28 @@ describe('the Find in HMS picker in the quote header', () => {
       );
     }
 
-    render(<FilterHarness />);
+    const { container } = render(<FilterHarness />);
     assertRatePlanVisible();
-    expect(screen.getByRole('button', { name: /Best Available Rate BAR/ })).toBeDefined();
-    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'NCOR1B' } });
+    const ratesStep = container.querySelector<HTMLElement>('#quote-rates');
+    if (!ratesStep) throw new Error('Expected the Availability & rates step.');
+    const planSelect = within(ratesStep).getByLabelText('Rate plan') as HTMLSelectElement;
+    const barCard = within(ratesStep).getByRole('button', { name: /Best Available Rate BAR/ });
+    expect(planSelect.compareDocumentPosition(barCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(planSelect.querySelector('option[value="BAR"]')?.textContent).toContain('(read by Nava)');
+    const contractOptions = Array.from(
+      planSelect.querySelector('optgroup[label="Contract"]')?.querySelectorAll<HTMLOptionElement>('option') ?? [],
+    );
+    expect(contractOptions.map((option) => option.value)).toEqual(['NCOR1B', 'NCOR2B']);
+    expect(contractOptions[0]?.textContent).toContain('(read by Nava)');
+    expect(contractOptions[1]?.textContent).not.toContain('(read by Nava)');
+    expect(
+      Array.from(planSelect.options).every((option) => !/\bR\d[\d,.]*/.test(option.textContent ?? '')),
+    ).toBe(true);
+    fireEvent.change(planSelect, { target: { value: 'NCOR1B' } });
 
-    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('NCOR1B');
-    expect(screen.queryByRole('button', { name: /Best Available Rate BAR/ })).toBeNull();
-    expect(screen.getByRole('button', { name: /Corporate Negotiated NCOR1B/ })).toBeDefined();
+    expect(planSelect.value).toBe('NCOR1B');
+    expect(within(ratesStep).queryByRole('button', { name: /Best Available Rate BAR/ })).toBeNull();
+    expect(within(ratesStep).getByRole('button', { name: /Corporate Negotiated NCOR1B/ })).toBeDefined();
   });
 
   it('a government plan asks HMS for Government pricing; a public plan goes back to BAR', () => {
@@ -1759,6 +1832,34 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
     fireEvent.change(planSelect, { target: { value: 'all' } });
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
+  });
+
+  it('All rates returns to Government for a Dinner B&B ask without a government party', () => {
+    const onPatch = vi.fn();
+    const base = headerSession({ salesStrategy: 'Government' });
+    const analysis = {
+      ...base.analysis!,
+      groups: base.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+      luna: {
+        workflow: 'quote' as const,
+        flags: [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    };
+    const dinnerSession = reduceQuoteSession(base, { type: 'analysis_ready', analysis });
+
+    render(<RatePlanGate initial={dinnerSession} onPatch={onPatch} />);
+    const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    expect(planSelect.value).toBe('government');
+    fireEvent.change(planSelect, { target: { value: 'public' } });
+    expect(onPatch).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
+    fireEvent.change(planSelect, { target: { value: 'all' } });
+    expect(onPatch).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
   });
 
   // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.

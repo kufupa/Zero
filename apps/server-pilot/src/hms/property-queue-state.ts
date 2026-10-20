@@ -236,6 +236,8 @@ export async function staffQuoteInFlight(db: DB): Promise<boolean> {
         inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running']),
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
         sql`${aiWorkflowRun.metrics}->>'userId' IS NOT NULL`,
+        // A dev/eval quote carries a user id but is background work; it must not make itself (or others) yield.
+        sql`coalesce(${aiWorkflowRun.metrics}->>'devEval', 'false') <> 'true'`,
         sql`${aiWorkflowRun.updatedAt} > clock_timestamp() - interval '20 minutes'`,
       ),
     )

@@ -1,6 +1,6 @@
 /**
- * Generic sequential /nava-preview quote proof. One browser serves each requested thread in order; the request guard
- * allows only quote reads and the pane's local work-item support, never HMS or mailbox writes.
+ * Generic sequential /nava-preview quote proof. One browser serves each requested thread in order; queued HMS reads
+ * are marked dev-eval, and the request guard allows only quote reads and pane support, never HMS or mailbox writes.
  */
 import { chmodSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -20,6 +20,7 @@ import {
   openProofPage,
   openThread,
   stayKeyOfRatesInput,
+  withDevEvalTrpcInput,
   type GuardDecision,
 } from './nava-proof-kit';
 import { quoteProofPass } from './nava-quote-proof-result.js';
@@ -271,7 +272,21 @@ export function classifyQuoteRequest(
     state.pdfs += pending.pdfs;
     state.workbooks += pending.workbooks;
   }
-  return { allowed, procedures, blocked };
+  const devEvalPostData = allowed
+    ? procedures.reduce<string | undefined>(
+        (data, procedure, index) =>
+          procedure === QUEUED_STAFF_QUOTE_PROCEDURE || procedure === QUEUED_PARTY_LOOKUP_PROCEDURE
+            ? withDevEvalTrpcInput(data ?? null, index)
+            : data,
+        postData ?? undefined,
+      )
+    : undefined;
+  return {
+    allowed,
+    procedures,
+    blocked,
+    ...(devEvalPostData && devEvalPostData !== postData ? { postData: devEvalPostData } : {}),
+  };
 }
 
 export type QuotePrefilledRoom = { room: number; type: string | null; rooms: number | null; adults: number | null };

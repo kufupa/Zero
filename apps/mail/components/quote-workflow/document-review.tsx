@@ -108,6 +108,7 @@ export function DocumentReview({
   onPreparePdf,
   onDownloadWorkbook,
   workbookPending,
+  pdfPending,
   primaryAction,
 }: {
   session: QuoteSession;
@@ -116,7 +117,9 @@ export function DocumentReview({
   onDownloadWorkbook?: () => void;
   /** An Excel export is being made. The button stays disabled until it settles. */
   workbookPending?: boolean;
-  /** The pane may keep this as the secondary PDF action while an earlier quote blocker is active. */
+  /** A PDF is being prepared; the action stays disabled until it settles. */
+  pdfPending?: boolean;
+  /** Set false when another primary PDF action is shown above the panel. */
   primaryAction?: boolean;
 }) {
   const pdfReady = canCreatePdf(session);
@@ -137,11 +140,15 @@ export function DocumentReview({
     <div className="flex flex-col gap-3.5">
       <PdfActionButton
         className="w-full"
-        disabled={!pdfReady || !onPreparePdf}
-        disabledReason={pdfReason ?? (!onPreparePdf ? 'PDF preparation is not available in this view.' : null)}
+        disabled={Boolean(pdfPending) || !pdfReady || !onPreparePdf}
+        disabledReason={
+          pdfPending
+            ? 'Preparing PDF…'
+            : pdfReason ?? (!onPreparePdf ? 'PDF preparation is not available in this view.' : null)
+        }
         onClick={onPreparePdf}
       >
-        {pdfButtonLabel}
+        {pdfPending ? 'Preparing PDF…' : pdfButtonLabel}
       </PdfActionButton>
       {session.pdf ? (
         <p className="text-[12.5px] text-[#1e293b]">
