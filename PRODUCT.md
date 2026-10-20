@@ -104,4 +104,5 @@ _(agents append dated one-liners; owner promotes into the spec above)_
 
 - 2026-10-20 (owner): PDF click acceptable; autonomy means reliable end-to-end connections, not mandatory automatic PDF. Consider prominent Generate PDF + reply then review; editable Excel first-class. Replan technical scope and ETA basis before product execution. Original ask147 in OWNER-ASKS.
 
+- 2026-10-20 (owner, D19): quote recall bar ≥85% (was 95%, arbitrary) on ≥100 independent outbound-grounded quote rows, not n=26.
 - 2026-10-20 (owner): critically review best/elegant pilot product and exact first-release work/elapsed estimate; Grok final review with Sol coordination, not routine expensive Opus. Assessment only, no product execution approval. Original ask148 in OWNER-ASKS.
