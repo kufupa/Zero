@@ -1,9 +1,12 @@
 /** Additive provision runner. Dry-run default. --apply inserts only; never prunes. Never Secrets Manager. */
 import {
+  applyProvision,
   applyProvisionThenWriteCredentials,
   planProvision,
   PROVISION_SPEC,
   STALE_PLAN_MESSAGE,
+  stripPlanForTransportsOnly,
+  transportsOnlySpec,
   type ProvisionPlan,
 } from '../src/db/provision.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
@@ -27,7 +30,7 @@ import { resolve } from 'node:path';
 import postgres from 'postgres';
 
 export const USAGE =
-  'usage: provision-prod.ts [--credentials-in <path>] [--apply --credentials-out <path>]';
+  'usage: provision-prod.ts [--transports-only] [--credentials-in <path>] [--apply [--credentials-out <path>]]';
 export const CREDENTIALS_IN_PLACEHOLDER = '<from credentials-in>';
 
 export class ProvisionUsageError extends Error {
@@ -47,15 +50,36 @@ function requireFlagValue(argv: string[], flagIndex: number): string {
 export function parseFlags(
   argv: string[],
 ):
-  | { apply: false; credentialsOut: string | null; credentialsIn: string | null }
-  | { apply: true; credentialsOut: string; credentialsIn: string | null } {
+  | {
+      apply: false;
+      transportsOnly: boolean;
+      credentialsOut: string | null;
+      credentialsIn: string | null;
+    }
+  | {
+      apply: true;
+      transportsOnly: false;
+      credentialsOut: string;
+      credentialsIn: string | null;
+    }
+  | {
+      apply: true;
+      transportsOnly: true;
+      credentialsOut: string | null;
+      credentialsIn: string | null;
+    } {
   let apply = false;
+  let transportsOnly = false;
   let credentialsOut: string | null = null;
   let credentialsIn: string | null = null;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--apply') {
       apply = true;
+      continue;
+    }
+    if (arg === '--transports-only') {
+      transportsOnly = true;
       continue;
     }
     if (arg === '--credentials-out') {
@@ -71,10 +95,13 @@ export function parseFlags(
     throw new ProvisionUsageError();
   }
   if (apply) {
+    if (transportsOnly) {
+      return { apply: true, transportsOnly: true, credentialsOut, credentialsIn };
+    }
     if (!credentialsOut) throw new ProvisionUsageError();
-    return { apply: true, credentialsOut, credentialsIn };
+    return { apply: true, transportsOnly: false, credentialsOut, credentialsIn };
   }
-  return { apply: false, credentialsOut, credentialsIn };
+  return { apply: false, transportsOnly, credentialsOut, credentialsIn };
 }
 
 export function redactCredentialsOut(
@@ -265,17 +292,33 @@ async function main(): Promise<void> {
   });
   const db = drizzle(conn, { schema });
   try {
-    const plan = await planProvision(db, PROVISION_SPEC);
+    const spec = flags.transportsOnly ? transportsOnlySpec(PROVISION_SPEC) : PROVISION_SPEC;
+    const planned = await planProvision(
+      db,
+      spec,
+      flags.transportsOnly ? { skipExistingAliasAdds: true } : undefined,
+    );
+    const plan = flags.transportsOnly ? stripPlanForTransportsOnly(planned) : planned;
     printPlan(plan);
-    const fromCredentialsIn = flags.credentialsIn
-      ? loadCredentialsIn(
-          flags.credentialsIn,
-          PROVISION_SPEC.users.map((user) => user.email),
-          plan.usersToCreate.map((user) => user.email),
-        )
-      : null;
+    const fromCredentialsIn =
+      flags.credentialsIn && !flags.transportsOnly
+        ? loadCredentialsIn(
+            flags.credentialsIn,
+            PROVISION_SPEC.users.map((user) => user.email),
+            plan.usersToCreate.map((user) => user.email),
+          )
+        : null;
     if (!flags.apply) {
-      console.log('dry-run only (never prunes); pass --apply --credentials-out <path> to insert');
+      console.log(
+        flags.transportsOnly
+          ? 'dry-run only (never prunes); pass --apply --transports-only to insert'
+          : 'dry-run only (never prunes); pass --apply --credentials-out <path> to insert',
+      );
+      return;
+    }
+    if (flags.transportsOnly) {
+      await applyProvision(db, plan, {});
+      console.log('provision apply complete (insert-only; never prunes)');
       return;
     }
     await applyAfterReservingCredentialsFile({

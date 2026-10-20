@@ -111,6 +111,20 @@ export type ProvisionPlan = {
 
 export const STALE_PLAN_MESSAGE = 'stale plan, re-run dry-run';
 
+/** Users empty; grants are Nava non-default only. Alias edits are stripped from the plan, not the spec. */
+export function transportsOnlySpec(spec: ProvisionSpec): ProvisionSpec {
+  return {
+    users: [],
+    transports: spec.transports,
+    grants: spec.grants.filter((g) => g.userId === seed.NAVA_USER_ID && !g.isDefault),
+  };
+}
+
+/** Apply of this plan creates no users and writes no aliases on existing transports. */
+export function stripPlanForTransportsOnly(plan: ProvisionPlan): ProvisionPlan {
+  return { ...plan, usersToCreate: [], aliasesToAdd: [] };
+}
+
 const grantRowId = (g: ProvisionGrantSpec) => `access-${g.userId}-${g.transportId}`;
 
 function emailKey(email: string): string {
@@ -215,7 +229,11 @@ function resolveSpecUsers(spec: ProvisionSpec, rows: Array<{ id: string; email: 
   return { usersToCreate, alreadyUsers, effectiveUserId };
 }
 
-export async function planProvision(db: DB, spec: ProvisionSpec): Promise<ProvisionPlan> {
+export async function planProvision(
+  db: DB,
+  spec: ProvisionSpec,
+  opts?: { skipExistingAliasAdds?: boolean },
+): Promise<ProvisionPlan> {
   // id+email only — name is intentionally not selected or compared.
   const userRows = await db.select({ id: userTable.id, email: userTable.email }).from(userTable);
   const transportRows = await db
@@ -259,7 +277,7 @@ export async function planProvision(db: DB, spec: ProvisionSpec): Promise<Provis
         });
       }
     }
-    if (existing.isActive === false) continue;
+    if (existing.isActive === false || opts?.skipExistingAliasAdds) continue;
     const missing = missingAliases(existing.sendFromConfig, transport.aliases);
     if (missing.length) aliasesToAdd.push({ transportId: transport.id, aliases: missing });
   }
