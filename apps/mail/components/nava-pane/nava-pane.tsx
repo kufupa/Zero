@@ -2210,7 +2210,7 @@ export function NavaPane({
                 key={`${contactMessageKey}|${storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state}`}
                 contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
                 senderFallback={senderFallback}
-                quote={readAs === 'quote' || readAs === 'new_booking' || readAs === 'group'}
+                quote={readAs === 'quote' || readAs === 'group'}
                 onEdit={storedWork.recordContact}
               />
             ) : null}

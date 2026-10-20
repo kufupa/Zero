@@ -2713,6 +2713,12 @@ describe('NavaPane contact and translation on both surfaces', () => {
       expect(contact.compareDocumentPosition(translation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
+    it(`${surface}: labels a new booking Contact, not Quote contact`, async () => {
+      bridgeMockState.storedWork = { ...STORED_FRENCH, kind: 'booking' };
+      render(<NavaPane bridge={fakeBridge} preview={preview} />);
+      expect(await screen.findByRole('region', { name: 'Contact' })).toBeDefined();
+    });
+
     it(surface + ': uses the external sender as a name and email fallback while the read is unavailable', async () => {
       bridgeMockState.storedWork = null;
       render(<NavaPane bridge={fakeBridge} preview={preview} />);
