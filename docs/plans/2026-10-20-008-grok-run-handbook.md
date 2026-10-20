@@ -167,6 +167,8 @@ First message of every agent: "Read: <files>. origin/main = <sha>." (AGENTS.md r
 | Tests | `bash /home/orca/bin/remote-vitest.sh <worktree> <server-pilot\|mail> <file> [file…]` | Runs typecheck first unless `SKIP_TYPECHECK=1` after a green typecheck on the **same HEAD**. Exit 0 pass, 1 fail, 70 SSM failure. Shares one EC2 lock with typecheck → they serialize |
 | Snapshot update | same, after editing; snapshots update only on EC2 | never `-u` locally |
 | Greptile | `cd <wt> && git fetch -q origin && greptile review --branch main --json` | Must be on the final head. Stale base let 2 P1s reach main on 10-19 |
+| Greptile, big PR | Same, add `--apex` when the PR is > ~500 changed product lines **or** touches mail ingest/persist, HMS writes, migrations or auth. Apex costs more credits but finds the whole bug class in one pass | Owner 2026-10-20: UDV-2 (~750 lines) ran 4 standard rounds, each finding a new P1 next to the last fix. Prefer small PRs; when one can't be small, apex first, not a 3rd standard round |
+| DB-backed tests | `bash /tmp/sr2/bin/remote-vitest-db.sh <wt> server-pilot <files>` (copy of remote-vitest.sh that starts a throwaway `postgres:16` container on EC2 127.0.0.1:55432 and sets `TEST_DATABASE_URL` + `CONFIRM_DISPOSABLE_TEST_DB=1`; removed after) | Suites guarded by `describe.skipIf(!ingestionDbAvailable)` silently SKIP under plain remote-vitest.sh. A skipped DB suite is not a pass: grep the output for `skipped` |
 | Grok review | `grok -p "<brief + git diff origin/main...HEAD>" -m grok-4.7 --effort xhigh --cwd <wt> --no-subagents --disable-web-search --permission-mode default --max-turns 60` | If it hits max-turns without a table, resume with `grok -c -p "Stop investigating. Output the final table now." --max-turns 6` (happened on 10-20) |
 | Coder lane | see §7 | Grok 4.6 high |
 | Research/eval worker | `codex exec --skip-git-repo-check -m gpt-6-luna -c model_reasoning_effort=xhigh -c features.collab=false -s read-only -C <dir> -o <out.md> "<prompt>"` | xhigh or max only, never lower |
@@ -218,6 +220,8 @@ T0 = kickoff. Lanes have no caps; the **run** has checkpoints. At each, write th
 | T0 + 360 min | hard stop for new merges | finish live checks + closeout only |
 
 Cut order exists because the owner is the only human: a shipped smaller set beats an unshipped full set.
+
+**Owner update 2026-10-20 ~22:30Z:** no staff use Nava on 2026-10-21, so the checkpoints above are progress markers, **not** a hard stop. Overrunning is fine; do not cut units to hit a clock. Goal: build fast and fully, test properly (real DB tests, live Labtest proof) without overkill plumbing. Deploy when a live check needs it or at the end; no deploy-per-merge.
 
 ## 7. Lane launch (exact)
 
