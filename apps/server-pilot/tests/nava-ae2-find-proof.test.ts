@@ -50,7 +50,9 @@ describe('request guard', () => {
     const state = newAe2GuardState();
     expect(classifyAe2Request(url('mail.get,workItems.getByMessage'), null, state).allowed).toBe(true);
     expect(classifyAe2Request(url('paneStayLookup.jobStatus,paneStayLookup.screenshot'), null, state).allowed).toBe(true);
-    expect(classifyAe2Request(url('paneStayLookup.queueFind'), body(FIND), state).allowed).toBe(true);
+    const find = classifyAe2Request(url('paneStayLookup.queueFind'), body(FIND), state);
+    expect(find.allowed).toBe(true);
+    expect(find.postData).toBe(body({ ...FIND, devEval: true }));
     expect(state).toMatchObject({ queueFinds: 1, sentArrival: '2026-11-01' });
     const second = classifyAe2Request(url('paneStayLookup.queueFind'), body(FIND), state);
     expect(second.blocked).toEqual([{ procedure: 'paneStayLookup.queueFind', reason: 'second_find' }]);

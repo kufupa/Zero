@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { closeDb, getDb } from '../src/db/client.js';
 import {
+  HMS_JOB_PRIORITY_DEV,
   evaluateQuoteReadyForMessage,
   prefetchQuoteReadyForExtraction,
 } from '../src/ai/hms-jobs.js';
@@ -46,7 +47,7 @@ function summary(evaluation: Awaited<ReturnType<typeof evaluateQuoteReadyForMess
   };
 }
 
-async function main(argv: string[]): Promise<number> {
+export async function main(argv: string[]): Promise<number> {
   let cli: Cli;
   try {
     cli = parseQuoteReadyEvalArgs(argv);
@@ -60,11 +61,17 @@ async function main(argv: string[]): Promise<number> {
     for (const messageId of cli.messageIds) {
       const evaluation = await evaluateQuoteReadyForMessage({ messageId }, db);
       const queued = cli.enqueue && evaluation.transportId
-        ? await prefetchQuoteReadyForExtraction({
-            runKind: 'inbound_extraction',
-            transportId: evaluation.transportId,
-            triggerMessageId: messageId,
-          }, db)
+        ? await prefetchQuoteReadyForExtraction(
+            {
+              runKind: 'inbound_extraction',
+              transportId: evaluation.transportId,
+              triggerMessageId: messageId,
+            },
+            db,
+            process.env,
+            new Date(),
+            HMS_JOB_PRIORITY_DEV,
+          )
         : 0;
       console.log(JSON.stringify({ ...summary(evaluation), ...(cli.enqueue ? { queued } : {}) }));
     }

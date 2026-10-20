@@ -98,8 +98,9 @@ import {
   queueAutoStaffQuoteHmsJob,
   hmsJobQueueEnabled,
   quotePreparationEnabled,
+  HMS_JOB_PRIORITY_DEV,
   HMS_JOB_PRIORITY_USER,
-  HMS_JOB_PRIORITY_PREFETCH,
+  isSystemPreparedPriority,
   readHmsJobView,
   staffQuoteResultReusable,
 } from '../../ai/hms-jobs.js';
@@ -372,7 +373,7 @@ export function resolvePreparedLedgerProposal(
     run.runKind !== 'read_tool' ||
     run.promptVersion !== HMS_JOB_PROMPT_VERSION ||
     run.executorLane !== 'hms' ||
-    run.priority !== HMS_JOB_PRIORITY_PREFETCH ||
+    !isSystemPreparedPriority(run.priority) ||
     run.generationId !== null ||
     run.state !== 'succeeded' ||
     metrics.quotePrepared !== true ||
@@ -569,7 +570,7 @@ async function proposalStaysFor(
         )
         .limit(1);
       if (!run) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
-      const systemPrepared = run.run.priority === HMS_JOB_PRIORITY_PREFETCH &&
+      const systemPrepared = isSystemPreparedPriority(run.run.priority) &&
         run.run.metrics?.quotePrepared === true &&
         run.run.metrics.userId == null;
       if (systemPrepared && !quotePreparationEnabled())
@@ -841,10 +842,10 @@ export const workstationRouter = router({
       );
     }),
   queueStaffQuote: mailboxProcedure
-    .input(staffQuoteInput.extend({ autoStart: z.literal(true).optional() }))
+    .input(staffQuoteInput.extend({ autoStart: z.literal(true).optional(), devEval: z.literal(true).optional() }))
     .mutation(async ({ input, ctx }) => {
       if (!hmsJobQueueEnabled()) return { runId: null };
-      const { autoStart, ...quoteInput } = input;
+      const { autoStart, devEval, ...quoteInput } = input;
       const db = getDb();
       const [mail] = await db
         .select()
@@ -870,8 +871,8 @@ export const workstationRouter = router({
         workItemId: null,
         userId: staffQuoteUser.id,
         request: { kind: 'staff_quote' as const, input: quoteInput },
-        priority: HMS_JOB_PRIORITY_USER,
-        extraMetrics: { staffQuoteUser },
+        priority: devEval ? HMS_JOB_PRIORITY_DEV : HMS_JOB_PRIORITY_USER,
+        extraMetrics: { staffQuoteUser, ...(devEval ? { devEval: true } : {}) },
       };
       const { run } = autoStart
         ? await queueAutoStaffQuoteHmsJob(request, db)

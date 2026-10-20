@@ -544,14 +544,24 @@ describe('quote proof request guard', () => {
 
   it('allows queued quote and party reads while retaining the per-stay and party-search limits', () => {
     const state = newQuoteGuardState(['2026-11-02:2026-11-04']);
-    const quoteInput = batch({ groups: [{ arrivalDate: '2026-11-02', departureDate: '2026-11-04' }] });
+    const quotePayload = { groups: [{ arrivalDate: '2026-11-02', departureDate: '2026-11-04' }] };
+    const quoteInput = batch(quotePayload);
 
-    expect(classifyQuoteRequest(tRPC('workstation.queueStaffQuote'), quoteInput, state).allowed).toBe(true);
+    const queuedQuote = classifyQuoteRequest(tRPC('workstation.queueStaffQuote'), quoteInput, state);
+    expect(queuedQuote.allowed).toBe(true);
+    expect(queuedQuote.postData).toBe(batch({ ...quotePayload, devEval: true }));
     expect(classifyQuoteRequest(tRPC('workstation.staffQuoteJob'), null, state).allowed).toBe(true);
     expect(classifyQuoteRequest(tRPC('paneStayLookup.jobStatus'), null, state).allowed).toBe(true);
     expect(classifyQuoteRequest(tRPC('paneStayLookup.jobQueueEnabled'), null, state).allowed).toBe(true);
     expect(classifyQuoteRequest(tRPC('workstation.executeStaffQuote'), quoteInput, state).allowed).toBe(false);
 
+    const partyPayload = { threadId: 'thread-1', name: 'Centurion Travel', partyKind: 'company' };
+    const queuedParty = classifyQuoteRequest(
+      tRPC('paneStayLookup.queueParty'),
+      batch(partyPayload),
+      newQuoteGuardState(),
+    );
+    expect(queuedParty.postData).toBe(batch({ ...partyPayload, devEval: true }));
     expect(classifyQuoteRequest(tRPC('paneStayLookup.queueParty'), null, state).allowed).toBe(true);
     expect(classifyQuoteRequest(tRPC('paneStayLookup.queueParty'), null, state).allowed).toBe(true);
     expect(classifyQuoteRequest(tRPC('paneStayLookup.queueParty'), null, state).allowed).toBe(false);
