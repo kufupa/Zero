@@ -2,6 +2,12 @@
 
 Updated 2026-10-19 after the overnight leak-free triage run. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
 
+## Quote-first planning and cleanup — 2026-10-20
+
+- Planning only. Current planner branch starts at main9ad55993e; prod independently1181ca923. Quote queue/preparation enabled; save remains lab on3procs and unsetremote-http. No new product build/deploy/write.
+- Owner147/148: reliable quote chain, click PDF acceptable. [Current plan](../plans/2026-10-20-001-fix-centurion-quote-ready-plan.md) proposes one coherent pending-safe accessible Prepare PDF + reply PR, not two micro-PRs. Grok final review + Greptile, Sol coordination; no routine extra Opus. First browser-proved release90min working estimate includes15baseline/45all-in UI/10deploy/20canary; native/staff waits and price defects excluded, full quote bar unproved. Next rate selector beside existing prices45min guideline, no duplicate display. Planning only.
+- Removed5merged-clean Orca trees with archive branches; preserved3parent untrackeddocs byte-exact and tar-backed. Dirty triage/diskretention, old mainWIP and open handoffPR420 remain. Original owner asks139–146 retained.
+
 ## Party lookup + pane review — 2026-10-19 (B2 party design chat)
 
 - Live at `1181ca923` (#418, deployed 00:28Z 2026-10-20; last-good before `78c29b5ae`, then `1c74f42b5`; env backup `.env.production.bak-20261019-party-hybrid`). `PARTY_MATCH_V3=true` and `PARTY_HISTORY_BIND=on` on http/worker/ai-worker (`/proc` checked); remote-http has no party flags, same as V2. Health 200/200.
@@ -26,6 +32,12 @@ Updated 2026-10-19 after the overnight leak-free triage run. Already imported by
 - Flags (owner-approved in the executing chat): `INBOUND_TRIAGE_CLASSIFIER=off` and `PANE_PRECLASSIFY` unset on http/worker/ai-worker (remote-http never had either); `/proc` checked. Backup `.env.production.bak-20261019-triage-flip`. Channel mail keeps its triage run by design.
 - HMS browser on 19223 now runs as `hms-slot@hrcen` (systemd, enabled; env `/etc/nava/hms-slot-hrcen.env` incl. `PLAYWRIGHT_BROWSERS_PATH=/opt/nava/ms-playwright`). First attempt without that path crash-looped; HMS reads were down ~2 min (04:15–04:17Z, 0 runs in flight).
 - Final live proof at 2026-10-19 10:01Z: 55 successful post-deploy Centurion extractions on `extract-3ccdd9c9966e`, 2 quote-class `read_tool` runs succeeded (09:55Z, 09:58Z), zero dead letters. Acceptance proof complete; no HMS writes or sends. V5 candidate rejected after test macro-F1 and quote/cancel recall regressed; v4 remains live. #118 decided YES (2026-10-19 15:25Z): system_notice + new_booking routes to payments; PR #399 open. Remote workflow tests 33/33, typecheck 0 errors, oxlint clean, Greptile round 1 had 0 comments. Next check: coordinator review/merge; this lane did no deploy, live HMS probe, or DB-backed SQL proof. Other owner decisions open: 180 silver disagreements, Azure content-filter blocks.
+
+## Chat D (triage holdout) — 2026-10-19
+
+- D0 export: 3,083 threads / 4,802 messages / 712 labels / 0 extraction rows. The header probe verified 45 broad outbound-PDF candidates, not the plan's exact 43; no inbound link was found, so quote-reply linkage remains unresolved.
+- D3: production-checkout prompt builder generated 1,500 prompts; 1,374 silver labels / 126 disagreements; spend $0.56 Luna + $9.18 Sol = $9.74. Pre-label thread split: test 477 / val 206 / train 817; 436 test rows received silver labels.
+- Hold: D5 was not run. Prompt build omitted vision-image payloads while the 2026-10-19 overnight runtime record had `EXTRACTION_VISION` on; the image-free test subset has 359 silver rows but only 7 quote labels. No classifier score or production pass claim is valid. D1/D2/D4/D5/GEPA remain open; GEPA requires the hand-rule gate first. Next acceptance: build vision-complete production-equivalent input, preserve thread-disjoint split, then score the untouched holdout.
 
 ## Lane TRI handoff — 2026-10-15
 

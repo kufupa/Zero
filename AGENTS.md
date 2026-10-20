@@ -78,3 +78,7 @@ All four drivers hit the same wall: **gate latency and eval validity, not lane c
 Run contracts, `/goal` vs `/loop`, and the overnight template: `docs/context/RUN-CONTRACT.md`.
 
 Do not copy this file into other worktrees by hand. It lives on `main`. A worktree sees it when that worktree’s HEAD contains this commit (`git merge origin/main` on an **idle** tree). Never merge into a live Luna/Codex lane.
+
+## Decision-ready chat output (owner, 2026-10-20)
+
+The owner reads the chat reply, not only linked plans. Report concrete work, evidence-backed/conditional elapsed-to-production ETAs, ROI, alternatives, fallbacks and exact authority needs in chat. Sol coordination may be slower than Opus under the owner’s observed half/third-speed assumption; delegate bounded work to Luna max and account for serial HMS/remote-gate constraints. Dated basis and unresolved gaps live in the plan/research; see OWNER-ASKS.md 139–146.
