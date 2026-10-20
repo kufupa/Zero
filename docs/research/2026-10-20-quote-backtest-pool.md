@@ -72,3 +72,15 @@ Pattern: R1 700 single DBB appears on 5 threads → a recurring contract/package
 **Run-health findings (not fixed tonight).**
 1. **Queue TTL:** a `staff_quote` still queued after 10 min is superseded (`run-ledger.ts` `HMS_STAFF_QUOTE_QUEUE_TTL_MS`). 3 of 8 expired when 8 were queued at once (~2 min each). A morning burst of ≥5 prepares loses the tail.
 2. **One attempt for prepared quotes:** a transient failure dead-letters a prepared quote after 1 attempt (`hms-jobs.ts` `retryOrFail(... systemPreparedQuote ? 1 : JOB_MAX_ATTEMPTS)`). 2 of 8 dead-lettered, then succeeded on a manual retry minutes later. This matches the ~15% "staff quote execution failed" dead-letter class.
+
+## Post-run production check — 2026-10-20 10:18Z
+
+Read-only prod SQL and nginx check; current deploy remained `3e1acb694`.
+
+| Queue tier | Rows in window | Wait p50 / p90 | Caveat |
+|---|---:|---:|---|
+| 10 (staff) | 10 succeeded | 3 s / 82 s | Small 05:00–10:05Z sample; not a reliability estimate. |
+| 0 (prefill) | 48 succeeded, 1 dead-letter | 3 s / 50 s | Dead-letter was `staff_quote`; prepared-quote retry/TTL issue remains. |
+| DEV | 0 observed | — | No DEV rows means staff-hours hold behavior remains unproved. |
+
+Nginx recorded `nava-pane-D0woVfWG.js` at 05:12:56Z and 10:18:57Z (200; two distinct source IPs). Requester identity was not verified; this proves asset requests after deploy, not staff identity or viewer completion. See [full run retro](2026-10-20-overnight-quote-retro.md).

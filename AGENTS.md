@@ -10,6 +10,7 @@ Read by Cursor CLI, Codex CLI, and any agent that looks for `AGENTS.md`. Claude 
 4. `AGENT.md` — repo layout and commands.
 
 - Before any research or analysis lane, read `docs/context/FACTS.md` and `docs/research/CATALOG.md` and reuse.
+- Reusable learnings live in `docs/solutions/<category>/`, searchable by YAML `module`, `tags` and `problem_type`; they are relevant before changing behavior or revisiting a documented failure.
 - A lane may only re-analyse when it names the prior artifact and why it’s insufficient.
 - Latest settled facts (live quote proof, HMS lane, staff defaults, "same move as staff" metric): `docs/context/FACTS.md` section 8 (2026-10-15).
 - New or migrated VPS: restore from `docs/context/VPS-MIGRATION.md` (GitHub branches, S3 backups, local tooling, backup cron).
@@ -23,7 +24,7 @@ Done = score on the golden set in `PRODUCT.md`, not a merge.
 - Batch-read the mandatory rules and short ACTIVE context, then inspect relevant changes since its checkpoint. A new session alone is not a reason to scan every transcript or corpus.
 - Open the research index and exact evidence for the chosen slice. Refresh volatile runtime/price/authorization facts; do not treat dated observations as live permission.
 - Start product discussion from settled conclusions while independent verification runs. Bulk archives go to Luna; fresh Haiku max reviews bounded changes, not the entire product.
-- Preserve original asks in OWNER-ASKS.md. At handoff update ACTIVE.md with verified state, the next acceptance check and holds; put detailed findings and methods in dated research files.
+- Preserve original asks in OWNER-ASKS.md. At handoff update ACTIVE.md with verified state, the next acceptance check and holds; put detailed findings and methods in dated research files. At each lane close, the coordinator runs `ce-compound mode:lane-close` before spin-down; at full overnight-run close, run the nightly retro and link the evidence-backed closeout. This is normal closeout, not a separate owner ask; preserve unrelated asks and edits.
 - Root CLAUDE.md already imports ACTIVE.md. These files improve discovery, not behavioural enforcement; no new startup hook or memory system is implied.
 
 ## Limits that keep runs finishing (2026-10-14 retro)

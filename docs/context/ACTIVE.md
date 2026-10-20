@@ -1,16 +1,17 @@
 # Active context
 
-Updated 2026-10-19 after the overnight leak-free triage run. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+Updated 2026-10-20 after the overnight quote run. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
 
 ## Overnight quote run — 2026-10-20 (Opus orchestrator, ask 150/151)
 
 - **Live: `3e1acb694`** (deploys 03:47Z `593d36283`, 04:24Z `3e1acb694`; last-good before `1181ca923`). ops-deploy rc=1 = 24 h dead-letter gate only; health 200/200; 4 pm2 procs; `/proc` flags unchanged (save `lab` on 3 procs, unset remote-http). Served bundle `/var/www/nava-mail/assets/nava-pane-D0woVfWG.js` carries "Prepare PDF + reply".
-- Merged: #421 top Prepare PDF + reply, #423 rate plan picker in step 4, #422 Dinner B&B ask priced on Government (NGOVDB) by prepare + pane auto-runs, one strategy per mail, staff choice sticks; #425 HMS tiers STAFF 10 > PREFILL 0 > DEV -10 > REFRESH -20, dev held 05–16Z while prefill/staff waits (`HMS_DEV_GATE=off` disables — behaviour change, default on).
+- Merged: #421 top Prepare PDF + reply, #423 rate plan picker in step 4, #422 Dinner B&B ask priced on Government (NGOVDB) by prepare + pane auto-runs, one strategy per mail, staff choice sticks; #425 HMS tiers STAFF 10 > PREFILL 0 > DEV -10 > REFRESH -20. DEV work is configured to defer 05–16Z when staff/prefill work is pending (`HMS_DEV_GATE=off` disables it); the live held-job behavior remains unproved.
 - **Quote score (individual threads, n=8, staff PDF/reply truth): 5/8 plan class + board + room** (was 1/8 on `1181ca923`), exact price 2/8. Misses: extraction board/occupancy 2, contract party not bound 1, government B&B ask not detected 1. n < 10 → quote bar **not passed**. [Scoreboard](../research/2026-10-20-quote-backtest-pool.md).
 - Run-health: staff_quote queue TTL 10 min drops tail of a ≥5-job burst; prepared quotes get 1 attempt on transient failure (~15% dead-letter class). Not fixed.
 - Labtest create (plan Part 2 N-d): **blocked**. Preview passes 4/4; pane commit fails 2/2 at guarantee-type combo (`create-lab-stay.mjs` `chooseCombo`, 5 s) before Save — `clickedSave` null, nothing booked. Needs a DOM look at the commit screen state: failure screenshots on EC2 `/tmp/pane-stay-e635e858-*/failure.png` and `/tmp/pane-stay-c87e5e65-*/failure.png` (SSM 24k cap blocked fetch). Untracked eval scripts on EC2 `apps/server-pilot/scripts/_backtest-reprice-20261020.ts`, `_lab-book-20261020.ts`. Prefill backtest N-b: truth too thin (1 provisional row) — [report](../research/2026-10-20-booking-prefill-backtest.md).
 - Bundle `nava-pane-D0woVfWG.js` loaded from nginx at 05:12:56Z (200), after the last deploy; requester IP not checked, so this proves a load, not who loaded it. A prefill `search_guest` ran at 05:14Z.
-- Next acceptance check: owner UI review 08:20Z (two PDF buttons accepted for tonight). Holds: no flag flips; D2 server job tests in `staff-quote-job.test.ts` fail in the same `retry_wait` harness as 4 pre-existing — D2 proven live (NGOVDB R1 700), not by those tests.
+- Read-only prod check 10:18Z: still `3e1acb694`; priority 10 n=10 succeeded (wait p50/p90 3/82 s), priority 0 n=49 (48 succeeded, 1 staff_quote dead-letter; wait 3/50 s). No DEV runs, so the staff-hours DEV hold is not proved. Bundle returned 200 at 10:18:57Z (two source IPs across both observed loads; identities unverified). Details and limits: [overnight retro](../research/2026-10-20-overnight-quote-retro.md).
+- Next acceptance: owner UI review remains unrecorded; quote truth set ≥10, prepared-quote TTL/retry fix, DEV-held-behind-PREFILL proof, Labtest DOM diagnosis, and webmail viewer + unsent draft remain open. Holds: no flag flips; 7 D2 `staff-quote-job.test.ts` failures share the `retry_wait` harness (4 baseline + 3 D2); the live NGOVDB R1 700 proof does not cover these tests.
 
 ## Quote-first planning and cleanup — 2026-10-20
 

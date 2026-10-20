@@ -31,6 +31,8 @@ Mail-mix, party-lookup, UI-ask, and quote-gold research was repeated across sepa
 4. Keep `needs_action` separate from `primary_action`: one says whether the inbound still needs work, the other says what work. Keep source routing separate from work labels; travel-agent mail stays in scope when it requests reservation work.
 5. Use private, reservation-level answer keys from read-only HMS reads as ground truth; the party lane used a read-only `find-batch` loop. Missing company or agency data in a PDF is unknown, not a confirmed negative.
 6. Define done by a score on real past mail against those answer keys, with denominators, unscorable cases, and failure classes reported. A running job, merge, or deployment alone is not a correctness result.
+7. For a threshold stated in unique threads, count after deduplication and every scope/plannability exclusion before owner GO. A raw message-row pool is not an eligible-thread denominator; if eligible n is short, report a partial improvement and the extra truth required rather than planning an impossible pass. The 2026-10-20 overnight pool reduced to eight scored individual threads, below the ≥10 bar ([retro](../../research/2026-10-20-overnight-quote-retro.md)).
+8. If historical mail is priced from a pre-reply extraction because later thread history changes current eligibility, label it as a historical pricing counterfactual and keep it separate from proof of current live admission/preparation.
 
 ## Why This Matters
 

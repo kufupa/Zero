@@ -1,7 +1,7 @@
 ---
 title: "Overnight run 2026-10-20: quote 10/10, then new booking (Labtest)"
 date: 2026-10-20
-status: awaiting-owner-go
+status: completed-partial
 coordinator: Opus 5.5
 ---
 
@@ -106,3 +106,7 @@ Send email; real-guest HMS write; flip any flag (save stays `lab`); accept cance
 
 ### At 08:00Z
 Update `docs/context/ACTIVE.md` (verified state, next check, holds), scoreboard table in the backtest pool doc, close ETA ledger row, post chat summary for owner: what's live (SHA), score n/N with source, screenshots/where to look for UI review, what's left.
+
+## Execution outcome — 2026-10-20
+
+See the [overnight run retro](../research/2026-10-20-overnight-quote-retro.md). PRs #421, #422, and #423 deployed at `3e1acb694`; the same eight-thread score improved from 1/8 to 5/8 on rate-plan class + board + room, but the ≥10-thread pass bar was not met. Labtest commit stopped before Save after two guarantee-combo timeouts; webmail viewer/draft proof was not run. Owner-authorized queue plan 003 then shipped as #425. Final outcome: **partial**, not done.
