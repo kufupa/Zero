@@ -15,7 +15,7 @@ Readiness stays `requirements-only` until the review chain (ponytail cut → ce-
 ## Goal Capsule
 
 - **Objective:** in one run, ship every stay-request feature the owner listed (asks 164–165): multi-ask, CHECK screen, unpaid amend in place, BAR grid before room pick, party ranking with no forced pick, Contact label, Labtest probe, two end buttons, contract/government overlay. Paid amend/cancel stay later.
-- **Authority:** PRODUCT.md hard rules > owner asks (OWNER-ASKS 157–165, DECISIONS D9–D17) > this plan > lane judgement.
+- **Authority:** PRODUCT.md hard rules > owner asks (OWNER-ASKS 157–170, DECISIONS D9–D19) > this plan > lane judgement. Two owner overrides apply to this run only: (a) D18 replaces PRODUCT.md "Luna max for implementation; Opus for merges, deploys, live HMS" with Grok 4.6 high code / Grok 4.7 xhigh review / Grok orchestrator merge, deploy and deterministic live HMS; all other hard rules stay. (b) Asks 164–165 ("every feature in one run") override PRODUCT.md WIP=1 for this run; workflows still ship behind their own gates and the quote bar is reported separately.
 - **Executor:** one Grok CLI orchestrator chat, started by the owner in Orca. It spawns one child Orca worktree per unit. No Opus after planning (owner Q1).
 - **Stop conditions:** a P0/P1 still open after round 3 of one design → split, strip or redesign (AGENTS.md:67-68), never a 4th round; a live HMS DOM timeout → screenshot and DOM capture before any retry (MISTAKES 2026-10-20); any real-guest write path reached → stop.
 - **Deploy:** once, at the end, from `.worktrees/recover-parse-failure` via `apps/server-pilot/deploy/ops-deploy.sh` (owner Q3).
@@ -44,25 +44,26 @@ Extend the agent; do not rewrite it (R1 trace, ARCHITECTURE.md:5-10). The extrac
 - Anti-over-index: cancellation is 1.6%, so paid amend/cancel stay deferred; contract/government overlay is limited to data already read (see U10).
 
 ### Requirements
-- R1 One inbound mail → one card per **date set** (= one HMS booking by default), listing its guests/rooms and its own action and conf#. Staff can split a card into separate bookings with one click. Different date sets are always separate cards.
-- R2 Quote pane shows BAR for every room type × rate × board with nightly price and rooms left, before any room pick; missing data reads "not checked".
+- R1 One inbound mail → one card per **date set** (= one HMS booking by default), listing its guests/rooms and its own action and conf#. Staff can split a card into separate bookings with one click. Different date sets are always separate cards. Each guest on a card keeps its own conf# when the mail gives one, so a split never loses the guest↔conf# link.
+- R2 Quote pane shows BAR for every room type × rate × board with nightly price and rooms left, before any room pick; missing data reads "not checked". The grid is read-only information; rate choice and pinning stay on the room cards.
 - R3 Party suggestions rank email-named > sender history > domain. Domain never binds. Staff can price BAR with no party picked.
 - R4 A new-booking pane labels the person "Contact", not "Quote contact".
 - R5 Labtest probe records where guarantee type, deposit, A/R account, agency and company live, whether Save emails the confirmation letter, and why create stops at the guarantee combo. One Save + one amend on "Proof Labtest", arrival ≥ 2027-01-01 (owner Q4).
-- R6 When a mail's booking link is missing, ambiguous or suspect, the pane shows CHECK: candidates, staff pick, exact conf# re-read. No preview or write before that.
-- R7 Unpaid provisional amend saves in place on the same conf#. Paid or unknown state routes to CHECK / "handle in HMS". Proven on Labtest only.
+- R6 When a mail refers to an **existing** booking (amend/cancel/voucher read) and its HMS link is missing, ambiguous or suspect, the pane shows CHECK: candidates, staff pick, exact conf# re-read. No preview or write before that. New-booking and quote asks keep the quote panel route.
+- R7 Unpaid provisional amend saves in place on the same conf#. "Unpaid" needs affirmative HMS evidence (provisional status + deposit received = 0 + no guarantee type that implies payment). Paid, guaranteed, direct-bill, conflicting or missing evidence = `unknown` → CHECK / "handle in HMS" (fail closed). Proven on Labtest only.
 - R8 Two end buttons: **Make quote** (PDF/Excel/reply, default) and **Create provisional booking** (approved write; Labtest-gated).
 - R9 Contract/government overlay: when a party is confirmed, or the ask is DBB, the grid tags contract / Government rows next to BAR.
 
 ### Scope boundaries
 - Deferred: paid amend/cancel, memory A/B, queue TTL fix, four-field party split (U2b).
+- Da Vinci (ask 170, 2026-10-20 17:45Z verdict): the quote path takes its property from the mailbox resolver (not a global HRCEN→HRDAV swap); gaps G1–G5 are listed in the 17:45Z chat reply and the DV ledger row `dv-hrdav-lane-proposal-20261020`. Recommended: DV mailbox ingest + quarantine promotion as a parallel lane now (no file overlap; the prod transport-row write is an owner hold); DV quote path next run. Not in this run's units unless the owner picks option A.
 - Not this run: `RESERVATIONIST_PANE_SAVE=on`, real-guest writes, sending mail, GitHub Actions.
 
 ## Planning Contract
 
 ### Key technical decisions
 - **KTD1 Extend, not rewrite.** Keep the Mastra workflow, door and Postgres; change the extraction schema, consumers and pane (R1 §5).
-- **KTD2 Multi-ask lives in extraction; the card is the date set.** Owner heuristic (ask 168): separate dates = separate HMS bookings; same dates + several rooms = one booking. Evidence: in threads where staff sent several letters, same-date guests got separate conf# (core 17/17, broad 110/110; R2). That cohort is biased toward splits, and m1 found 7 N-conf vs 2 one-conf among 9 linked same-date asks, all agency. n=9 is too small for an auto-split rule. Add per-stay `guestNames[]`, `action` and `confirmationNumbers[]`; group by date set, as today. Staff split manually. `EXTRACTION_VERSION` hashes the prompt and schema, so no manual version bump is needed (inbound-run.ts:78). New fields are optional so legacy payloads still parse.
+- **KTD2 Multi-ask lives in extraction; the card is the date set.** Owner heuristic (ask 168): separate dates = separate HMS bookings; same dates + several rooms = one booking. Evidence: in threads where staff sent several letters, same-date guests got separate conf# (core 17/17, broad 110/110; R2). That cohort is biased toward splits, and m1 found 7 N-conf vs 2 one-conf among 9 linked same-date asks, all agency. n=9 is too small for an auto-split rule. Add per-stay `guests: {name, confirmationNumber|null}[]` and `action`; group by date set, as today. One list keeps each guest tied to its conf#, so a split cannot mis-assign them (adversarial review). Staff split manually. `EXTRACTION_VERSION` hashes the prompt and schema, so no manual version bump is needed (inbound-run.ts:78). New fields are optional so legacy payloads still parse.
 - **KTD3 The grid reuses the existing HMS read.** `fetch-quote.mjs` already reads every room × rate plan with board and nightly prices; the server drops `board` (hms-availability.ts:418) and caps at 50 options per group (quote-contract.mjs:474). No new DOM path (n3).
 - **KTD4 No extra HMS read for the overlay.** `fetch-quote.mjs:519` already tags each rate `rateScope` public/contextual. A read takes 12–413 s and the queue waits 80–1,025 s (FACTS.md:145), so U10 tags rows from the existing read (ponytail −40 min).
 - **KTD5 Paid state comes from HMS fields, not mail.** Letters carry boilerplate guarantee text (1,174/1,174). The reader has `guaranteetype`/`depositreceived` (read-reservation-fields.mjs:10-18); the prod lookup lacks `depositReceived` (n4). U4 confirms the DOM; U8 adds the field.
@@ -80,11 +81,12 @@ Extend the agent; do not rewrite it (R1 trace, ARCHITECTURE.md:5-10). The extrac
 | A | U5a Extractor asks | `extraction/extract.ts`, `extraction/schema.ts` | — |
 | A | U7 CHECK | `amend-lookup-panel.tsx`, `amend-find.ts` | — |
 | B | U5b Consumers | `quote-ready.ts`, `work-items.ts`, `hms-jobs.ts` (prefetch per stay) | U5a |
-| B | U8 Unpaid amend | `pane-hms-write.ts`, `amend-stay*.mjs`, `pane-stay-lookup.ts`, `amend-cancel.ts`, `amend-lookup-panel.tsx` | U4, U7 |
+| B | U8 Unpaid amend | `pane-hms-write.ts`, `amend-stay*.mjs`, `stay-lookup.mjs`, `commercial-fields.mjs`, `pane-stay-lookup.ts`, `amend-cancel.ts`, `amend-lookup-panel.tsx` | U4, U7 |
 | B | U10 Overlay (tags only) | `hms-availability.ts`, `quote-workflow-panel.tsx` rates section | U2, U3 |
 | C | U6 Multi-ask pane | `session.ts`, `document-review.tsx`, `quote-workflow-panel.tsx`, `booking-draft.ts` | U2, U5b, U10 |
 | C | U9 Two end buttons | `quote-workflow-panel.tsx`, `booking-card.tsx`, `document-review.tsx` | U6, U4 |
-| D | U11 Replay checks | scripts only | U5b, U6 |
+| A | U11a Outbound-gold harness (build) | `scripts/outbound-gold-backtest.ts`, `src/ai/outbound-gold-features.ts` | — |
+| D | U11b Replay runs | — | U5b, U6, U11a |
 | D | U12 Deploy + live e2e | — | all |
 
 ### Per-unit pipeline (owner model routing, 2026-10-20 17:02Z)
@@ -104,7 +106,7 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 - **Goal:** R2. Carry `board` through `QuoteOption`/`AvailabilitySnapshot` (hms-availability.ts:129,189,418). Request 200 options per group and flag truncation (:103; quote-contract.mjs:474). Search on dates + occupancy alone, dropping `roomRequirementReady` as a search gate (quote-workflow-panel.tsx:884,960,1360). Grid DTO per stay in `QuoteSession` (types.ts:247,662), rendered before room cards (:1658).
 - **Tests:** `hms-availability-probe.test.ts`, `hms-availability-bookability.test.ts`, `fetch-quote.test.mjs:352-399,530-590`, `quote-contract.test.mjs:325-413`, `rate-cards.test.tsx:191-273`, `quote-workflow-panel.test.tsx:609,861,1660`, `quote-workflow-session.test.ts:3393`.
 - **Replay:** ≥10 independent quote threads; staff PDF nights vs grid BAR (PRODUCT.md quote bar; pool today n=8, ACTIVE.md).
-- **Ponytail:** no new `QuoteSession` grid DTO. Render `buildRateOptions` (rate-options.ts:58) once `board` is carried through. `MAX_OPTIONS` is already 200 (quote-contract.mjs:7); pass `maxOptionsPerGroup: 200` + truncation flag. Also take U3's party-gate line (same file), so BAR works with no party.
+- **Ponytail:** no new `QuoteSession` grid DTO. Render a read-only grid projection keyed by room code × rate code × board that keeps unpriced/incomplete rows as "not checked"; `buildRateOptions` (rate-options.ts:58) stays for the priced room cards (adversarial review: it drops rows the grid must show). `MAX_OPTIONS` is already 200 (quote-contract.mjs:7); pass `maxOptionsPerGroup: 200` + truncation flag. Also take U3's party-gate line (same file), so BAR works with no party.
 - **Raw min:** 35–50 (#414 +258 → 50).
 
 ### U3. Party rank, no forced pick
@@ -114,25 +116,25 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 - **Raw min:** 13–50.
 
 ### U4. Labtest booking-state probe (live, one HMS lock)
-- **Goal:** R5. First diagnose the create stop at the guarantee combo (create-lab-stay.mjs `chooseCombo`, 5 s; failure PNGs on EC2 `/tmp/pane-stay-*/failure.png`). Capture DOM and options before any retry. Then: one Save on Proof Labtest; read back guarantee / deposit / A-R / agency / company; watch centurion@ for an auto letter (send_on_save yes/no); one amend (dates) on the same conf#.
+- **Goal:** R5. First diagnose the create stop at the guarantee combo (create-lab-stay.mjs `chooseCombo`, 5 s; failure PNGs on EC2 `/tmp/pane-stay-*/failure.png`). Capture DOM and options before any retry. Then: one Save on Proof Labtest; read back guarantee / deposit / A-R / agency / company; watch centurion@ for an auto letter (send_on_save yes/no). U4 does **not** amend; the single amend belongs to U8.
 - **Counting:** an attempt that stops before Save does not count against the one-Save budget (assumption A1).
 - **Files:** extend `read-reservation-fields.mjs` (guaranteetype, depositreceived, araccountname, ta1, company are already allow-listed, :10-18) + one fixture test; `create-lab-stay.mjs` only for the combo fix. A new probe file only if the combo DOM is unreadable.
 - **Output:** a field table in `docs/infor-hms/` + screenshots. **Raw min:** 13 code + live p50 8 / p75 38.
 
 ### U5a. Extractor asks
-- **Goal:** R1 backend. Optional per-stay `guestNames: string[]`, `action` (same enum as top-level) and `confirmationNumbers: string[]`. Grouping stays one stay per date set (extract.ts:54). Stay id = `stableId('s', messageId, dates)`, not position (schema.ts:205,224). Top-level `kind`/`action` stay as a summary.
+- **Goal:** R1 backend. Optional per-stay `guests: {name: string, confirmationNumber: string|null}[]` (conf# grounded with the same verbatim check as top-level, schema.ts:221-225) and `action` (same enum as top-level). Grouping stays one stay per date set (extract.ts:54). **Stay id stays positional** `stableId('s', messageId, String(stayIndex))` (schema.ts:227): saved staff corrections key on stay id (work-items.ts:58-79), so a new id formula would orphan them (feasibility review). Top-level `kind`/`action` stay as a summary.
 - **Gate (critical, m3):** `ACTION_CLASSIFICATION_RULES` sit inside the extraction prompt (extract.ts:68,226), so the new fields can shift `action`. Rebuild prompts from the branch (`scripts/triage-dataset/build-prompts.ts`) on the saved exports, then run one Luna pass over the 431 frozen rows (`/home/orca/nava-research/triage-20261019/work/predict.py` → `score.py`). That is ~4–7 min, under $5. Investigate on >20/431 action flips vs v4 or >10/431 fewer correct. Quote recall must stay ≥85% (D19).
 - **Check before coding:** what `stale_version` (inbound-run.ts:256) does to open items when the version changes (re-extract or keep).
 - **Tests:** `extraction-schema.test.ts:101`, `inbound-extraction.test.ts:96,276`, `extraction-date-anchoring.test.ts:29,141`.
 - **Raw min:** 50 (+ eval 30–60, runs in the background).
 
 ### U5b. Multi-ask consumers
-- **Goal:** R1. Booking kind: allow >1 stay (quote-ready.ts:39-52). `multi_date` = distinct date sets (work-items.ts:314). `guestNames` from each stay (:349). Booked/requested/conf per stay, not `[0]` (:353-380, :1302). Prefetch keeps the first conf#; the other confs show on their cards (`selectHmsBatchRequest` is one find, hms-jobs.ts:505). Work item stays one per message; cards are per stay (decision: no work-item identity change → smaller blast radius).
+- **Goal:** R1. Booking kind: allow >1 stay (quote-ready.ts:39-52). `multi_date` = distinct date sets (work-items.ts:314). `guests[].name` from each stay (:349). Booked/requested/conf per stay from `guests[].confirmationNumber`, then top-level, not `[0]` (:353-380, :1302). Prefetch keeps the first conf#; the other confs show on their cards (`selectHmsBatchRequest` is one find, hms-jobs.ts:505). Work item stays one per message; cards are per stay (decision: no work-item identity change → smaller blast radius).
 - **Tests:** `quote-ready.test.ts:6,304,446`, `work-items.test.ts:311,807,958`, `hms-jobs.test.ts:944`.
 - **Raw min:** 35–50.
 
 ### U6. Multi-ask pane
-- **Goal:** R1 UI. One card per stay (date set) with its guest list, action badge and a **Split into separate bookings** control (split = one card per guest, same dates; pane-only, no re-extract). No new card framework. Quote/booking cards use the quote panel; amend/cancel cards open CHECK/amend with that card's conf#. Booking drafts are already one per date key (quote-workflow-panel.tsx:2035-2048); the combined proposal stays available for multi-date quotes to one client (document-review.tsx:136,155).
+- **Goal:** R1 UI. One card per stay (date set) with its guest list, action badge and a **Split into separate bookings** control (split = one card per guest, same dates, each keeping its own conf#; pane-only, no re-extract). Room allocation on split: enabled only when guests = total rooms; each child card gets one room of its source row's type and occupancy, and the children's room total must equal the source. Otherwise the control reads "Split in HMS" (design review). No new card framework. Quote/booking cards use the quote panel; amend/cancel cards open CHECK/amend with that card's conf#. Booking drafts are already one per date key (quote-workflow-panel.tsx:2035-2048); the combined proposal stays available for multi-date quotes to one client (document-review.tsx:136,155).
 - **Tests:** `quote-workflow-multi-stay.test.ts:206-268`, `quote-workflow-session.test.ts:26,2399`, `quote-workflow-luna-render.test.tsx:347`, `document-review.test.tsx:53`, `nava-pane-render.test.tsx:952`, `booking-draft-multistay.test.ts`.
 - **Raw min:** 25–41 (#416); 92 if it fights the pane like #413.
 
@@ -142,9 +144,9 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 - **Raw min:** 13–50.
 
 ### U8. Unpaid amend in place
-- **Goal:** R7. Add `depositReceived` (+ paid classification: unpaid / paid / unknown) to the lookup (pane-stay-lookup.ts:43,245; amend-find.ts:83), using U4's field table. Preview/Approve only for unpaid + exact conf# + passed CHECK. The amend gate stays `lab` only (pane-hms-write.ts:87-90); no `on` arm this run (H1, ponytail).
+- **Goal:** R7. Add `depositReceived` + `guaranteeType` (classification unpaid / paid / guaranteed / unknown, fail closed per R7) to the live pane lookup: the reader `tooling/playwright-quote/stay-lookup.mjs` + `commercial-fields.mjs` (allow-list), the result parser (pane-stay-lookup.ts:43,245,251) and `amend-find.ts:83` (feasibility review: the plan missed the reader). Uses U4's field table. Preview/Approve only for unpaid + exact conf# + passed CHECK. The amend gate stays `lab` only (pane-hms-write.ts:87-90); no `on` arm this run (H1, ponytail).
 - **Tests:** `pane-hms-write.test.ts:52,335`, `pane-stay-amend.test.ts:44,69-103`, `amend-stay-rules.test.mjs:78-209`, `aop-amend-cancel-payload.test.ts:6,41`, `amend-cancel-copy.test.ts`, `amend-find-panel.test.tsx`.
-- **Live:** Labtest amend from the pane (counts as U4's one amend if U4 has not used it).
+- **Live:** the run's one Labtest amend is reserved for U8, from the pane, after its writer merges (scope review); U4 records the result in its field table.
 - **Raw min:** 35–50.
 
 ### U9. Two end buttons
@@ -158,7 +160,7 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 - **Raw min:** 13–22.
 
 ### U11. Outbound-gold replay (behaviour checks; rates only where n allows)
-- Multi-ask: the 17 core threads (l1 S1, corpus 2026-10-13) + R2 cohorts, run through prod input (`readQuoteAttachments` + `selectionToAgentPrompt`) on EC2. Truth = HRCEN letters (guest + arrival + conf#). Pass = N cards = N letter pairs.
+- Multi-ask: the 17 core threads (l1 S1, corpus 2026-10-13) + R2 cohorts, run through prod input (`readQuoteAttachments` + `selectionToAgentPrompt`) on EC2. Truth = HRCEN letters (guest + arrival + conf#). Pass = every letter's guest + dates + conf# is covered by some card (several letters may sit on one date-set card); distinct date sets = distinct cards. m1: same-date asks got 2+ confs in 7/9 linked cases, so letters ≠ cards by design.
 - Quote: ≥10 independent threads, staff PDF nights vs grid.
 - CHECK: golden amend rows + every corpus amend with no conf# or an `ambiguous` result. Pass = no write before pick + re-read.
 - Harness (m2): new `apps/server-pilot/scripts/outbound-gold-backtest.ts` + `src/ai/outbound-gold-features.ts` (~200–300 LOC). Same prod input (`readQuoteAttachments` → `selectionToAgentPrompt`) on EC2; L1 linker pairs each ask with its staff reply / HRCEN letter / quote PDF; fields parsed today: guest 1,127/1,180, conf# 1,174/1,180, arrival 1,179/1,180. Vision parity is a reported gap.
@@ -166,7 +168,7 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 - **Raw min:** 50 (#414-class, new harness) + runs.
 
 ### U12. Deploy + live e2e (end of run)
-- `git -C .worktrees/recover-parse-failure merge --ff-only origin/main`, then `ops-deploy.sh` (rc=1 from the 24 h dead-letter gate is known). Record the last-good SHA first.
+- `git -C .worktrees/recover-parse-failure fetch origin && git -C .worktrees/recover-parse-failure merge --ff-only origin/main`, then `ops-deploy.sh` (rc=1 from the 24 h dead-letter gate is known). Record the last-good SHA first.
 - Health 200/200; 4 pm2 procs; `/proc` flags unchanged.
 - Bundle load in nginx; Outlook pane + webmail check per R1–R9; one prod HMS read per grid; Labtest-only writes.
 - **Raw min:** deploy p50 7; live p50 8 / p75 38 per check batch.
@@ -192,7 +194,7 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 | U5b | 35 + 20 | #414 shrunk |
 | U6 | 25–41 + 20 | #416 |
 | U9 | 13 + 15 | #412 |
-| U11 + U12 | 30–60 | deploy p50 7; live p50 8 / p75 38 |
+| U11b runs + U12 | 30–60 | deploy p50 7; live p50 8 / p75 38; U11a harness (50 raw) is built in Wave A, off the chain |
 | **Total** | **~215–275 min (3.6–4.6 h)** | retro actuals include gates; no extra ratio |
 
 - U2/U3/U7/U10 finish in parallel before U6/U9 need them.
@@ -210,6 +212,26 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 - A2 Work items stay one per message; per-ask identity lives in stay ids (U5b).
 - A3 R2 (multi-ask truth) lands before U11; if not, U11 uses the l1 cohorts.
 
+## Review log (ce-doc-review, 5 Luna xhigh personas, 2026-10-20 17:48Z)
+
+| Finding | Reviewer | Resolution |
+|---|---|---|
+| R6 CHECK collides with new-booking route | coherence | applied: CHECK = existing booking only |
+| U11 card count ≠ letter count | coherence | applied: coverage check |
+| Authority order contradicts Grok execution | coherence | applied: D18 + asks 164–165 named as run overrides |
+| U8 misses the live lookup reader | feasibility | applied: `stay-lookup.mjs` + `commercial-fields.mjs` |
+| Guaranteed stays have no safe amend state | feasibility + adversarial | applied: fail-closed classes incl. `guaranteed` |
+| Deploy merges stale ref | feasibility | applied: fetch first |
+| Date-based stay ids orphan saved edits | feasibility | applied: stay id stays positional |
+| Split loses guest↔conf# | adversarial | applied: `guests[{name, conf#}]` |
+| Grid via `buildRateOptions` drops rows | adversarial | applied: grid projection keeps "not checked" |
+| Split room allocation undefined | design | applied: guests = rooms or "Split in HMS" |
+| Grid selection unspecified | design | applied: read-only, picks on cards |
+| U4 can eat U8's only amend | scope | applied: amend reserved for U8 |
+| ETA omits U11 harness | scope | applied: U11a in Wave A, off chain |
+| Wave A breaks WIP=1 | feasibility + scope | **rejected**: owner asks 164–165 "all features one run"; recorded as run override |
+| Model routing breaks PRODUCT.md Opus rule | feasibility | **rejected**: owner D18 (17:20Z) |
+
 ## Sources
-- Research: `docs/research/2026-10-20-arch-lanes/` (ARCHITECTURE, l1, l2, p1, p2-scope-grok46, grok-4.6-p1-review); `/tmp/opus-run-1020/research/{r1-agent-trace,r3-stale-prs,r4-test-plan}.md`, `n/n1..n5-out.md` (copied to the research folder at plan lock).
+- Research: `docs/research/2026-10-20-arch-lanes/` (ARCHITECTURE, l1, l2, p1, p2-scope-grok46, grok-4.6-p1-review); `r1-agent-trace`, `r2-multi-ask-truth`, `r3-stale-prs`, `r4-test-plan`, `n1..n5-*`, `m2-outbound-gold-harness`, `m3-classifier-gate`, `ponytail-plan-cut` (same folder).
 - Retro: `docs/context/ledger/2026-10-19-evening-retro.md`. Rules: AGENTS.md, MISTAKES.md, PRODUCT.md.
