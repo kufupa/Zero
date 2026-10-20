@@ -88,6 +88,7 @@ const queueFindInput = z
     confirmation,
     arrival: arrival.optional(),
     autoStart: z.literal(true).optional(),
+    devEval: z.literal(true).optional(),
   })
   .strict();
 const queueSearchGuestInput = z
@@ -110,6 +111,7 @@ const queuePartyInput = z
     name: z.string().min(1).max(256),
     partyKind: z.enum(['company', 'agency']).optional(),
     retry: z.literal(true).optional(),
+    devEval: z.literal(true).optional(),
   })
   .strict();
 const hmsBatchIdInput = z.object({ batchId: z.string().uuid() }).strict();
@@ -235,6 +237,7 @@ export const paneStayLookupRouter = router({
       threadId: input.threadId,
       request: { kind: 'find', confirmation: input.confirmation, arrival: input.arrival },
       target,
+      ...(input.devEval ? { devEval: true } : {}),
       ...(input.autoStart
         ? { idempotencyKey: confirmationPrefetchIdempotencyKey(ctx.activeTransportId, input.confirmation) }
         : {}),
@@ -287,6 +290,7 @@ export const paneStayLookupRouter = router({
           ...(input.partyKind ? { partyKind: input.partyKind } : {}),
         },
         propertyCode: target.propertyCode,
+        ...(input.devEval ? { devEval: true } : {}),
         ...(davinciMetrics ? { extraMetrics: davinciMetrics } : {}),
         ...(input.retry ? { retry: true } : {}),
       });

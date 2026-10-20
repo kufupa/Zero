@@ -29,7 +29,8 @@ import type {
   aiWorkflowRunKindEnum,
   aiWorkflowRunStateEnum,
 } from '../db/schema/mail.js';
-import { and, desc, eq, inArray, like, lte, ne, or, sql, type SQL } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, like, lte, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { folioReadDataSchema } from '../hms/folio-read-contract.js';
 import { READ_TOOLS, type ReadToolId } from '../hms/read-tools.js';
 import { readRequestSchema } from '../hms/read-service.js';
@@ -45,6 +46,8 @@ export const NOT_APPLICABLE_MODEL_ID = 'not_applicable';
 export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
 /** Pane HMS lookups queued as read_tool runs on the hms lane (CLI-backed; no read-service admission). */
 export const HMS_JOB_PROMPT_VERSION = 'hms-job/1';
+// Keep aligned with HMS_JOB_PRIORITY_PREFETCH in hms-jobs.ts without creating a module cycle.
+const HMS_DEV_GATE_PREFETCH_PRIORITY = 0;
 /** Staff quote jobs get a 7-minute claim budget for their measured ~5-minute native rate read. */
 const HMS_STAFF_QUOTE_RUN_DEADLINE_MS = 7 * 60_000;
 /** An unclaimed staff quote that waited this long is stale and must be queued again explicitly. */
@@ -617,6 +620,44 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
     lte(aiWorkflowRun.updatedAt, staleBefore),
     ne(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
   );
+  const configuredHour = (name: string, fallback: number) => {
+    const raw = process.env[name]?.trim();
+    const value = raw ? Number(raw) : fallback;
+    return Number.isInteger(value) && value >= 0 && value < 24 ? value : fallback;
+  };
+  const startHour = configuredHour('HMS_DEV_GATE_START_HOUR_UTC', 5);
+  const endHour = configuredHour('HMS_DEV_GATE_END_HOUR_UTC', 16);
+  const utcHour = now.getUTCHours();
+  const inStaffHours = utcHour >= startHour && utcHour < endHour;
+  const higherTierRun = alias(aiWorkflowRun, 'higher_tier_hms_run');
+  const devGate = input.lane === 'hms' && process.env.HMS_DEV_GATE !== 'off' && inStaffHours
+    ? or(
+        gte(aiWorkflowRun.priority, HMS_DEV_GATE_PREFETCH_PRIORITY),
+        notExists(
+          db
+            .select({ id: higherTierRun.id })
+            .from(higherTierRun)
+            .where(
+              and(
+                eq(higherTierRun.executorLane, 'hms'),
+                gte(higherTierRun.priority, HMS_DEV_GATE_PREFETCH_PRIORITY),
+                or(
+                  and(
+                    inArray(higherTierRun.state, ['queued', 'retry_wait']),
+                    or(sql`${higherTierRun.nextRunAt} IS NULL`, lte(higherTierRun.nextRunAt, now)),
+                    sql`${higherTierRun.runKind} <> ${HMS_WRITE_RUN_KIND} OR ${higherTierRun.state} = 'queued'`,
+                  ),
+                  and(
+                    inArray(higherTierRun.state, ['claimed', 'running']),
+                    lte(higherTierRun.updatedAt, staleBefore),
+                    ne(higherTierRun.runKind, HMS_WRITE_RUN_KIND),
+                  ),
+                ),
+              ),
+            ),
+        ),
+      )
+    : undefined;
   const runDeadlineMs = env.HMS_RUN_DEADLINE_MS;
   const scope = scopePredicates({
     transportId: input.transportId,
@@ -633,6 +674,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
     eq(aiWorkflowRun.executorLane, input.lane),
     hmsWriteClaim ? undefined : ne(aiWorkflowRun.runKind, HMS_WRITE_RUN_KIND),
     ...scope,
+    devGate,
     or(
       and(
         inArray(aiWorkflowRun.state, hmsWriteClaim ? ['queued'] : ['queued', 'retry_wait']),

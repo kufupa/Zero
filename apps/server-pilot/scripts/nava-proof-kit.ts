@@ -44,7 +44,28 @@ export type GuardDecision<Reason extends string = string> = {
   allowed: boolean;
   procedures: string[];
   blocked: Array<{ procedure: string; reason: Reason }>;
+  postData?: string;
 };
+
+export function withDevEvalTrpcInput(postData: string | null, index: number): string | undefined {
+  if (!postData) return undefined;
+  try {
+    const body = JSON.parse(postData) as Record<string, unknown>;
+    const key = String(index);
+    const entry = key in body ? body[key] : index === 0 ? body : undefined;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
+    const wrapped = entry as Record<string, unknown>;
+    const input = 'json' in wrapped ? wrapped.json : wrapped;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+    const marked = { ...(input as Record<string, unknown>), devEval: true };
+    if ('json' in wrapped) wrapped.json = marked;
+    else if (key in body) body[key] = marked;
+    else Object.assign(body, marked);
+    return JSON.stringify(body);
+  } catch {
+    return undefined;
+  }
+}
 
 export type ProofPage = { browser: Browser; context: BrowserContext; page: Page; captured: Captured };
 
@@ -93,7 +114,7 @@ export async function openProofPage(
       const request: Request = route.request();
       const decision = await classify(request.url(), request.postData());
       if (decision.allowed) {
-        await route.continue();
+        await route.continue(decision.postData ? { postData: decision.postData } : undefined);
         return;
       }
       for (const item of decision.blocked) captured.blocked.push(`${item.procedure} (${item.reason})`);

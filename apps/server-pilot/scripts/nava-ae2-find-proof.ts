@@ -9,7 +9,7 @@
  *
  * The driver opens one thread in /nava-preview, waits for the pane to read it and for the amendment card, clicks "Find
  * this booking in HMS" once, waits for the job to settle, and screenshots the card with guest details masked. When the card
- * already shows a stored lookup (a staff or prefetch job read back from the database), the button is gone: the driver
+ * already shows a stored lookup (staff, prefetch, or dev-eval job read back from the database), the button is gone: the driver
  * reports that job's request and result instead, and makes no HMS call.
  *
  * Mailbox: when NAVA_PREVIEW_TRANSPORT_ID is not the account's default mailbox, the driver makes it the default with
@@ -24,7 +24,7 @@
  * unknown call is aborted. workItems.recordActions is the only pane support write that passes.
  *
  * HMS calls: one read-only find (Guest Stay quick search and the booking record). No HMS write.
- * Rows written: one ai_workflow_run (the queued find job, priority user), which the hms worker updates with its status and
+ * Rows written: one ai_workflow_run (the queued find job, priority dev for this proof), which the hms worker updates with its status and
  * snapshot; the pane may also write local workItems.recordActions entries. With the HITL ledger on, the worker may add
  * its hitl_tool_run kind stay_lookup. With the queue off, findStay adds that hitl_tool_run row only.
  *
@@ -66,6 +66,7 @@ import {
   withMailboxPermit,
   type GuardDecision,
   type MailboxRecord,
+  withDevEvalTrpcInput,
 } from './nava-proof-kit';
 import { ANALYSIS_PROCEDURES, KNOWN_WRITE_PROCEDURES, parseRunConfig, READ_PROCEDURES, redactText, type RunConfig } from './nava-preview-run';
 
@@ -121,6 +122,7 @@ export function classifyAe2Request(
   let queueFinds = 0;
   let syncFinds = 0;
   let sentArrival: string | null | undefined;
+  let devEvalPostData: string | undefined;
   procedures.forEach((procedure, index) => {
     if (READ_PROCEDURES.has(procedure) || ANALYSIS_PROCEDURES.has(procedure)) return;
     if (procedure === QUEUE_FIND_PROCEDURE) {
@@ -128,6 +130,7 @@ export function classifyAe2Request(
       else {
         queueFinds += 1;
         sentArrival = arrivalOf(batchInput(postData, index));
+        devEvalPostData = withDevEvalTrpcInput(postData, index);
       }
       return;
     }
@@ -146,7 +149,7 @@ export function classifyAe2Request(
     state.syncFinds += syncFinds;
     if (sentArrival !== undefined) state.sentArrival = sentArrival;
   }
-  return { allowed, procedures, blocked };
+  return { allowed, procedures, blocked, ...(allowed && devEvalPostData ? { postData: devEvalPostData } : {}) };
 }
 
 /** Writes the pane sends on open that the proof blocks by design. They do not fail AE2: the card renders without them. */

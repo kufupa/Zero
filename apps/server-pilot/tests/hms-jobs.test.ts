@@ -21,7 +21,9 @@ import {
   guestSearchPrefetchIdempotencyKey,
   hmsJobQueueEnabled,
   hmsJobRequestSchema,
+  HMS_JOB_PRIORITY_DEV,
   HMS_JOB_PRIORITY_PREFETCH,
+  HMS_JOB_PRIORITY_REFRESH,
   HMS_JOB_PRIORITY_USER,
   prefetchHmsConfirmations,
   prefetchQuoteReadyForExtraction,
@@ -171,6 +173,28 @@ async function claimJob(db: DB, ownerId = LANE_OWNER): Promise<AiWorkflowRun> {
   });
   if (!claimed) throw new Error('expected a claimable HMS job');
   return claimed;
+}
+
+async function enqueuePriorityJob(
+  db: DB,
+  threadId: string,
+  messageId: string,
+  prefix: string,
+  priority: number,
+  createdAt: Date,
+) {
+  return enqueueHmsJob({
+    transportId: TRANSPORT_ID,
+    threadId,
+    triggerMessageId: messageId,
+    workItemId: null,
+    userId: priority === HMS_JOB_PRIORITY_USER ? CENTURION_USER_ID : null,
+    request: { kind: 'find', confirmation: CONFIRMATION, arrival: '2099-11-12' },
+    priority,
+    idempotencyKey: `${prefix}:${randomUUID()}`,
+    createdAt,
+    nextRunAt: createdAt,
+  }, db);
 }
 
 async function runClaimedJob(db: DB, run: AiWorkflowRun) {
@@ -602,19 +626,22 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     vi.stubEnv('S3_BUCKET', 'u23-synthetic-bucket');
   });
 
-  it('prepares one future quote once, at prefetch priority and with no staff user', () =>
+  it.each([
+    ['prefetch', HMS_JOB_PRIORITY_PREFETCH],
+    ['dev', HMS_JOB_PRIORITY_DEV],
+  ] as const)('prepares and reuses one future quote at %s priority', (_tier, priority) =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
 
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV, undefined, priority)).toBe(1);
       expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(0);
       const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
       expect(prepared).toMatchObject({
         runKind: 'read_tool',
         state: 'queued',
-        priority: HMS_JOB_PRIORITY_PREFETCH,
+        priority,
         readRequest: {
           kind: 'staff_quote',
           input: {
@@ -637,7 +664,96 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         request: { kind: 'staff_quote', input: paneInput },
       }, db);
       expect(reused).toMatchObject({ created: false, run: { id: prepared?.id } });
-      expect(reused.run.priority).toBe(HMS_JOB_PRIORITY_PREFETCH);
+      expect(reused.run.priority).toBe(priority);
+    }));
+
+  it('does not reuse a queued dev-eval quote for a later staff quote', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId } = await seedThread(db);
+      const request = autoStaffQuoteRequest(threadId, messageId);
+      const dev = await hmsJobs.queueAutoStaffQuoteHmsJob({
+        ...request,
+        priority: HMS_JOB_PRIORITY_DEV,
+        extraMetrics: { ...request.extraMetrics, devEval: true },
+      }, db);
+      const staff = await hmsJobs.queueAutoStaffQuoteHmsJob(request, db);
+
+      expect(dev.run.priority).toBe(HMS_JOB_PRIORITY_DEV);
+      expect(staff).toMatchObject({ created: true, run: { priority: HMS_JOB_PRIORITY_USER } });
+      expect(staff.run.id).not.toBe(dev.run.id);
+    }));
+
+  it('claims staff, prefill, dev, and refresh tiers in descending priority order', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_DEV_GATE', 'off');
+      const { threadId, messageId } = await seedThread(db);
+      const now = new Date('2099-05-10T10:00:00Z');
+      const createdAt = new Date('2099-05-10T09:59:00Z');
+      for (const [tier, priority] of [
+        ['staff', HMS_JOB_PRIORITY_USER],
+        ['prefill', HMS_JOB_PRIORITY_PREFETCH],
+        ['dev', HMS_JOB_PRIORITY_DEV],
+        ['refresh', HMS_JOB_PRIORITY_REFRESH],
+      ] as const) {
+        await enqueuePriorityJob(db, threadId, messageId, `priority-${tier}`, priority, createdAt);
+      }
+      const claimed: number[] = [];
+      for (let index = 0; index < 4; index++) {
+        const run = await claimNextAiRun({
+          ownerId: LANE_OWNER,
+          lane: 'hms',
+          runKind: 'read_tool',
+          promptVersion: HMS_JOB_PROMPT_VERSION,
+          db,
+          now,
+        });
+        if (run) claimed.push(run.priority);
+      }
+      expect(claimed).toEqual([
+        HMS_JOB_PRIORITY_USER,
+        HMS_JOB_PRIORITY_PREFETCH,
+        HMS_JOB_PRIORITY_DEV,
+        HMS_JOB_PRIORITY_REFRESH,
+      ]);
+    }));
+
+  it.each([
+    ['prefill queued during staff hours', new Date('2099-05-10T10:00:00Z'), true, 'on', false],
+    ['no higher tier queued during staff hours', new Date('2099-05-10T10:00:00Z'), false, 'on', true],
+    ['outside staff hours', new Date('2099-05-10T16:00:00Z'), true, 'on', true],
+    ['gate disabled', new Date('2099-05-10T10:00:00Z'), true, 'off', true],
+  ] as const)('dev gate: %s', async (_case, now, queuePrefill, gate, shouldClaim) =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_DEV_GATE', gate);
+      vi.stubEnv('HMS_DEV_GATE_START_HOUR_UTC', '5');
+      vi.stubEnv('HMS_DEV_GATE_END_HOUR_UTC', '16');
+      const { threadId, messageId } = await seedThread(db);
+      const prefix = `dev-gate-${randomUUID()}`;
+      const createdAt = new Date(now.getTime() - 60_000);
+      if (queuePrefill) {
+        await enqueuePriorityJob(
+          db,
+          threadId,
+          messageId,
+          `${prefix}:prefill`,
+          HMS_JOB_PRIORITY_PREFETCH,
+          createdAt,
+        );
+      }
+      await enqueuePriorityJob(db, threadId, messageId, `${prefix}:dev`, HMS_JOB_PRIORITY_DEV, createdAt);
+      const claimed = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        idempotencyPrefix: `${prefix}:dev`,
+        db,
+        now,
+      });
+      expect(Boolean(claimed)).toBe(shouldClaim);
+      if (claimed) expect(claimed.priority).toBe(HMS_JOB_PRIORITY_DEV);
     }));
 
   it('claims a prepared quote with the staff quote read budget', () =>
@@ -1788,6 +1904,29 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         db,
       );
       expect(view?.runId).toBe(shared?.id);
+    }));
+
+  it('does not dedupe or supersede a staff party request with a dev-eval read', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      const request = { kind: 'party' as const, name: 'Horizon Trail Tours', partyKind: 'company' as const };
+      const dev = await queueUserPartyHmsJob({
+        transportId: TRANSPORT_ID,
+        userId: CENTURION_USER_ID,
+        threadId,
+        request,
+        devEval: true,
+      }, db);
+      const staff = await queueUserPartyHmsJob({
+        transportId: TRANSPORT_ID,
+        userId: CENTURION_USER_ID,
+        threadId,
+        request,
+      }, db);
+
+      expect(dev).toMatchObject({ priority: HMS_JOB_PRIORITY_DEV, state: 'queued', metrics: { devEval: true } });
+      expect(staff).toMatchObject({ priority: HMS_JOB_PRIORITY_USER, state: 'queued' });
+      expect(staff?.id).not.toBe(dev?.id);
     }));
 
   it('deduplicates user party searches per transport, normalized name, kind and day; a new field Find preserves jobs shared with another thread', () =>

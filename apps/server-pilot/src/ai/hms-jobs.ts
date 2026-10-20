@@ -13,7 +13,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { TRPCError } from '@trpc/server';
-import { and, asc, desc, eq, gt, gte, inArray, like, lt, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray, like, lt, lte, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
 import {
@@ -182,6 +182,12 @@ export function availabilityProbesPerHour(env: NodeJS.Dict<string> = process.env
 
 export const HMS_JOB_PRIORITY_USER = 10;
 export const HMS_JOB_PRIORITY_PREFETCH = 0;
+export const HMS_JOB_PRIORITY_DEV = -10;
+export const HMS_JOB_PRIORITY_REFRESH = -20;
+
+export function isSystemPreparedPriority(priority: number): boolean {
+  return priority <= HMS_JOB_PRIORITY_PREFETCH;
+}
 const JOB_MAX_ATTEMPTS = 3;
 const JOB_RETRY_MS = 30_000;
 const JOB_YIELD_MS = 30_000;
@@ -608,7 +614,7 @@ function hmsJobInsertValues(input: HmsJobEnqueueInput): typeof aiWorkflowRun.$in
     nextRunAt: input.nextRunAt ?? now,
     metrics: {
       hmsJob: true,
-      prefetch: input.priority === HMS_JOB_PRIORITY_PREFETCH,
+      prefetch: isSystemPreparedPriority(input.priority),
       userId: input.userId,
       owner: input.userId ? `${input.userId}:${input.transportId}` : null,
       ...input.extraMetrics,
@@ -681,6 +687,7 @@ export async function queueAutoStaffQuoteHmsJob(
       input.request.input.messageId,
       input.request.input,
       input.userId,
+      input.extraMetrics?.devEval === true,
     );
     if (existing) return { run: existing, created: false };
     return enqueueHmsJob({ ...input, idempotencyKey: `hms-job:staff-quote:${randomUUID()}` }, scoped);
@@ -696,6 +703,7 @@ export async function queueUserHmsJob(
     request: HmsJobRequest;
     idempotencyKey?: string;
     target?: HmsReadTarget;
+    devEval?: boolean;
     extraMetrics?: Record<string, unknown>;
   },
   db: DB = getDb(),
@@ -711,12 +719,13 @@ export async function queueUserHmsJob(
       workItemId: await latestWorkItemId(db, input.transportId, input.threadId),
       userId: input.userId,
       request: input.request,
-      priority: HMS_JOB_PRIORITY_USER,
+      priority: input.devEval ? HMS_JOB_PRIORITY_DEV : HMS_JOB_PRIORITY_USER,
       idempotencyKey: input.idempotencyKey ?? `hms-job:user:${randomUUID()}`,
       extraMetrics: {
         ...hmsReadAuditMetrics({ actorKind: 'user', actorUserId: input.userId, target }),
         ...hmsReadTargetJobMetrics(target),
         ...input.extraMetrics,
+        ...(input.devEval ? { devEval: true } : {}),
       },
     },
     db,
@@ -737,6 +746,7 @@ export function userPartyIdempotencyKey(input: {
   day: string;
   retry: boolean;
   propertyCode: string;
+  devEval?: boolean;
 }): string {
   const digest = createHash('sha256')
     .update(
@@ -744,7 +754,7 @@ export function userPartyIdempotencyKey(input: {
     )
     .digest('hex')
     .slice(0, 24);
-  const key = `hms-job:user-party:${input.propertyCode}:${input.transportId}:${digest}`;
+  const key = `hms-job:user-party:${input.propertyCode}:${input.transportId}:${digest}${input.devEval ? ':dev-eval' : ''}`;
   return input.retry ? `${key}:retry:${randomUUID()}` : key;
 }
 
@@ -756,6 +766,7 @@ export async function queueUserPartyHmsJob(
     threadId: string;
     request: Extract<HmsJobRequest, { kind: 'party' }>;
     retry?: boolean;
+    devEval?: boolean;
     propertyCode?: string;
     extraMetrics?: Record<string, unknown>;
   },
@@ -781,7 +792,10 @@ export async function queueUserPartyHmsJob(
     day,
     retry: input.retry === true,
     propertyCode,
+    devEval: input.devEval === true,
   });
+  const priority = input.devEval ? HMS_JOB_PRIORITY_DEV : HMS_JOB_PRIORITY_USER;
+  const extraMetrics = { ...audit, ...input.extraMetrics, ...(input.devEval ? { devEval: true } : {}) };
 
   return db.transaction(async (tx) => {
     await tx.execute(
@@ -804,9 +818,9 @@ export async function queueUserPartyHmsJob(
               workItemId,
               userId: input.userId,
               request: input.request,
-              priority: HMS_JOB_PRIORITY_USER,
+              priority,
               idempotencyKey,
-              extraMetrics: { ...audit, ...input.extraMetrics },
+              extraMetrics,
             },
             scoped,
           )
@@ -849,7 +863,7 @@ export async function queueUserPartyHmsJob(
           eq(aiWorkflowRun.threadId, input.threadId),
           eq(aiWorkflowRun.runKind, 'read_tool'),
           eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
-          eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_USER),
+          eq(aiWorkflowRun.priority, priority),
           eq(aiWorkflowRun.state, 'queued'),
           sql`coalesce(${aiWorkflowRun.metrics}->'sharedThreadIds', '[]'::jsonb) = '[]'::jsonb`,
           sql`${aiWorkflowRun.readRequest}->>'kind' = 'party'`,
@@ -868,9 +882,9 @@ export async function queueUserPartyHmsJob(
           workItemId,
           userId: input.userId,
           request: input.request,
-          priority: HMS_JOB_PRIORITY_USER,
+          priority,
           idempotencyKey,
-          extraMetrics: { ...audit, ...input.extraMetrics },
+          extraMetrics,
         },
         scoped,
       )
@@ -1456,7 +1470,7 @@ async function countRecentPrefetches(
       and(
         eq(aiWorkflowRun.transportId, transportId),
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
-        eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+        lte(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
         // Staff batch rows share the prefetch priority but carry batchId: they neither use nor are capped by these budgets.
         sql`${aiWorkflowRun.metrics}->>'batchId' IS NULL`,
         ...(kind === 'staff_quote'
@@ -2063,7 +2077,7 @@ async function latestPartyMatchV2ForMessage(
         eq(aiWorkflowRun.runKind, 'read_tool'),
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
         eq(aiWorkflowRun.executorLane, 'hms'),
-        eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+        lte(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
         sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'party'`,
         sql`${aiWorkflowRun.readRequest}->>'matchVersion' = '2'`,
@@ -2173,6 +2187,7 @@ export async function prefetchQuoteReadyForExtraction(
   db: DB = getDb(),
   env: NodeJS.Dict<string> = process.env,
   now: Date = new Date(),
+  priority: number = HMS_JOB_PRIORITY_PREFETCH,
 ): Promise<number> {
   if (run.runKind !== 'inbound_extraction' || !quotePreparationEnabled(env)) return 0;
   const evaluation = await evaluateQuoteReadyForMessage(
@@ -2202,7 +2217,7 @@ export async function prefetchQuoteReadyForExtraction(
         workItemId,
         userId: null,
         request: { kind: 'staff_quote', input: quoteInput },
-        priority: HMS_JOB_PRIORITY_PREFETCH,
+        priority,
         idempotencyKey: `hms-job:staff-quote-prepared:${evaluation.transportId}:${evaluation.messageId}:${digest}`,
         extraMetrics: { quotePrepared: true },
       },
@@ -3054,7 +3069,7 @@ export async function executeHmsJob(input: {
   };
   const systemPreparedQuote =
     request.kind === 'staff_quote' &&
-    run.priority === HMS_JOB_PRIORITY_PREFETCH &&
+    isSystemPreparedPriority(run.priority) &&
     metrics.userId == null &&
     metrics.quotePrepared === true;
   if (systemPreparedQuote && !quotePreparationEnabled()) {
@@ -3410,7 +3425,7 @@ async function toView(
     runId: run.id,
     sourceMessageId: run.triggerMessageId,
     request: request.success ? request.data : null,
-    prefetch: run.priority === HMS_JOB_PRIORITY_PREFETCH,
+    prefetch: isSystemPreparedPriority(run.priority),
     status,
     position:
       status === 'queued' && options.includePosition !== false
@@ -3432,13 +3447,14 @@ async function latestStaffQuoteRunFor(
   messageId: string,
   quoteInput: StaffQuoteInput,
   userId: string,
+  includeDevEval = false,
 ): Promise<AiWorkflowRun[]> {
   const now = new Date();
   const ownerScope = quotePreparationEnabled()
     ? or(
         sql`${aiWorkflowRun.metrics}->>'userId' = ${userId}`,
         and(
-          eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+          lte(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
           sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
           sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
         ),
@@ -3468,7 +3484,8 @@ async function latestStaffQuoteRunFor(
   };
   // User quotes are independent per stay. Match the newest run whose stay terms equal this request.
   for (const userRun of rows) {
-    if (objectRecord(userRun.metrics).userId !== userId || !reusable(userRun)) continue;
+    const userMetrics = objectRecord(userRun.metrics);
+    if (userMetrics.userId !== userId || (userMetrics.devEval === true && !includeDevEval) || !reusable(userRun)) continue;
     const parsed = hmsJobRequestSchema.safeParse(userRun.readRequest);
     if (
       parsed.success &&
@@ -3484,7 +3501,7 @@ async function latestStaffQuoteRunFor(
   for (const preparedRun of rows) {
     const metrics = objectRecord(preparedRun.metrics);
     if (
-      preparedRun.priority !== HMS_JOB_PRIORITY_PREFETCH ||
+      !isSystemPreparedPriority(preparedRun.priority) ||
       metrics.userId != null ||
       metrics.quotePrepared !== true ||
       preparedRun.state === 'dead_letter' ||
@@ -3609,7 +3626,7 @@ export async function readHmsJobView(
                           ...(quotePreparationEnabled()
                             ? [
                                 and(
-                                  eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+                                  lte(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
                                   sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
                                   sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
                                 ),
@@ -3667,7 +3684,7 @@ export async function readHmsJobView(
                     or(
                       sql`${aiWorkflowRun.readRequest}->>'partyKind' = ${input.partyKind}`,
                       and(
-                        eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+                        lte(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
                         sql`${aiWorkflowRun.readRequest}->>'partyKind' IS NULL`,
                       ),
                     ),
