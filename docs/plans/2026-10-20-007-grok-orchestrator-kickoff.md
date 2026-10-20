@@ -10,7 +10,7 @@ You are the orchestrator for the Nava stay-request build v2. Repo: /home/ubuntu/
 OWNER APPROVALS (given here, in this chat, by the owner pasting this):
 - A1 You may merge PRs for units U1–U12 to main after gates pass (D18).
 - A2 You may deploy ONCE at the end: `git -C /home/ubuntu/projects/zero/.worktrees/recover-parse-failure merge --ff-only origin/main`, record the last-good SHA (now 3e1acb694) first, then run apps/server-pilot/deploy/ops-deploy.sh from that worktree. rc=1 from the 24 h dead-letter gate alone is known and OK; check health 200/200, 4 pm2 procs, /proc flags unchanged.
-- A3 You may run deterministic HMS scripts over SSM for U4/U8 on the test guest "Proof Labtest" only (arrival >= 2027-01-01, guard /^labtest$/i): at most ONE Save and ONE amend. An attempt that stops before the Save click does not count. Before any retry after a DOM timeout: screenshot + DOM capture first.
+- A3 You may run deterministic HMS scripts over SSM for U4/U8 on the test guest "Proof Labtest" only (arrival >= 2027-01-01, guard /^labtest$/i): at most ONE Save (U4) and ONE amend (U8, from the pane after U8 merges). An attempt that stops before the Save click does not count. The Save goes through the pane save path or `create-lab-stay.mjs --proof` inside the property lock; bare create-lab-stay.mjs without --proof is forbidden. Before any retry after a DOM timeout: screenshot + DOM capture first.
 - A4 RESERVATIONIST_PANE_SAVE stays `lab`. Do not flip any flag or env. Do not close/open PRs other than this run's.
 NOT approved (stop and ask the owner): real-guest HMS writes, any flag/env change, sending mail, GitHub Actions/workflow files, deleting branches/worktrees you did not create, a second deploy.
 
@@ -25,7 +25,7 @@ LANES (Orca CLI = `orca-ide`; load its guide once: `orca-ide skills get orca-cli
 - One child worktree per unit: `orca-ide worktree create --repo path:/home/ubuntu/projects/zero --name sr2-<unit> --base-branch origin/main --no-parent --json`.
 - Coder in that worktree: `orca-ide terminal create --worktree id:<repoId>::<path> --title sr2-<unit> --command 'grok -m grok-4.6 --effort high --permission-mode bypassPermissions --no-subagents' --json`, then `terminal wait --for tui-idle --timeout-ms 60000` (send only when satisfied: true), then `terminal send --text "<unit brief>" --enter`.
 - Unit brief = the unit's section from the plan verbatim + owned files (Waves table) + the exact test files listed + "commit on branch sr2-<unit>, push, open a PR; do not merge; do not run tsc/vitest locally; run gates with the two remote scripts".
-- Waves: start every Wave A unit at once (U1, U2, U3, U4-code, U5a, U7). Start a Wave B/C/D unit the moment its "After" units are merged. A shared file means queued, never parallel.
+- Waves: start every Wave A unit at once (U1, U2, U3, U4-code, U5a, U7, U11a). Start any other unit the moment every unit in its "After" column is merged (not when its wave letter opens). U10→U6→U9 run strictly in that order (shared quote-workflow-panel.tsx); U7→U8 likewise. A shared file means queued, never parallel.
 
 PER-UNIT PIPELINE (owner routing):
 1 Grok 4.6 high codes (the coder terminal).
@@ -40,9 +40,9 @@ SUPERVISION: no command or time caps. Check every lane's terminal (`orca-ide ter
 
 U5a CLASSIFIER GATE (critical): after U5a's code is green, rebuild prompts from its branch (scripts/triage-dataset/build-prompts.ts) and run one Luna pass on the 431 frozen rows (/home/orca/nava-research/triage-20261019/work/predict.py → score.py; command: `codex exec --skip-git-repo-check -m gpt-6-luna -c model_reasoning_effort=xhigh ...`). Block the merge on >20/431 action flips vs v4, >10/431 fewer correct, or quote recall <85% (D19).
 
-ETA LEDGER: append-only `jq -c` rows to ~/.claude/eta-ledger.jsonl. Start row now: id stay-request-v2-run-20261020, kind orchestration, estimate_min 245 (plan range 215–275), model grok-4.7 orchestrator + grok-4.6 coders. One start row per unit (kind code-ui / code-server). Close every row with actual_min, ratio, drift, outcome.
+ETA LEDGER: append-only `jq -c` rows to ~/.claude/eta-ledger.jsonl. Start row now: id stay-request-v2-run-20261020, kind orchestration, estimate_min 285 (plan range 245–320), model grok-4.7 orchestrator + grok-4.6 coders. One start row per unit (kind code-ui / code-server). Close every row with actual_min, ratio, drift, outcome.
 
-U12 END: after every unit is merged, do the A2 deploy, then the live checks in plan U12 (bundle load seen in nginx after the deploy; Outlook pane + webmail per R1–R9; one prod HMS read per grid; Labtest-only writes). Done = plan Definition of Done, not "merged".
+U12 END: after every unit is merged, do the A2 deploy (fetch first), then a read-only count of inbound extraction runs dead-lettered as stale_version since the deploy and re-enqueue those messages' extraction (LLM cost only, no HMS write), then the live checks in plan U12 (bundle load seen in nginx after the deploy; Outlook pane + webmail per R1–R9; one prod HMS read per grid; Labtest-only writes). Done = plan Definition of Done, not "merged".
 
 CLOSEOUT: update docs/context/ACTIVE.md (verified state, next acceptance check, holds), add a retro line per unit, record mistakes in docs/context/MISTAKES.md, report `grok usage` $ per model. Report to the owner in chat: what's live, what passed, what failed with evidence, open holds.
 

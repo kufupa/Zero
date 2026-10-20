@@ -3,14 +3,14 @@ title: Stay-request build v2 (all features, one Grok-orchestrated run) - Plan
 type: feat
 date: 2026-10-20
 artifact_contract: ce-unified-plan/v1
-artifact_readiness: requirements-only
+artifact_readiness: implementation-ready
 product_contract_source: owner asks 157-165 + ARCHITECTURE.md
 execution: code
 ---
 
 # Stay-request build v2 (all features, one Grok-orchestrated run) - Plan
 
-Readiness stays `requirements-only` until the review chain (ponytail cut → ce-doc-review → Grok 4.7 xhigh → plan-eng-review) passes and owner holds H1–H4 are answered.
+Readiness: `implementation-ready` (2026-10-20 ~18:05Z) after ponytail cut → ce-doc-review (5 personas) → Grok 4.7 xhigh adversarial → plan-eng-review (collision check, version rollover). Owner holds H1–H4 answered.
 
 ## Goal Capsule
 
@@ -72,16 +72,18 @@ Extend the agent; do not rewrite it (R1 trace, ARCHITECTURE.md:5-10). The extrac
 
 ### Waves (disjoint files; a shared file = queued)
 
+A unit starts when every unit in its **After** column has merged, not when its wave letter opens. U10→U6→U9 share `quote-workflow-panel.tsx` and run strictly in that order; U7→U8 share `amend-lookup-panel.tsx`. Cited test **lines** show where similar assertions live; each unit adds new assertions for its new behaviour (Grok 4.7 P2).
+
 | Wave | Unit | Owns | After |
 |---|---|---|---|
 | A | U1 Contact label | `nava-pane.tsx`, `contact-block.tsx` | — |
-| A | U2 BAR grid | `hms-availability.ts`, `quote-contract.mjs`, `quote-workflow-panel.tsx`, `rate-cards.tsx`, `lib/quote-workflow/types.ts` | — |
+| A | U2 BAR grid | `hms-availability.ts`, `quote-contract.mjs`, `staff-quote-bind.ts`, `quote-workflow-panel.tsx`, `rate-cards.tsx`, `lib/quote-workflow/types.ts` | — |
 | A | U3 Party rank | `party-aliases.ts`, `party-sender-map.ts`, `party-picker.tsx` | — |
 | A | U4 Labtest probe | `read-reservation-fields.mjs` (extend); `create-lab-stay.mjs` only for the guarantee combo fix | — |
 | A | U5a Extractor asks | `extraction/extract.ts`, `extraction/schema.ts` | — |
-| A | U7 CHECK | `amend-lookup-panel.tsx`, `amend-find.ts` | — |
+| A | U7 CHECK | `apps/mail/components/quote-workflow/amend-lookup-panel.tsx`, `apps/mail/lib/quote-workflow/amend-find.ts` | — |
 | B | U5b Consumers | `quote-ready.ts`, `work-items.ts`, `hms-jobs.ts` (prefetch per stay) | U5a |
-| B | U8 Unpaid amend | `pane-hms-write.ts`, `amend-stay*.mjs`, `stay-lookup.mjs`, `commercial-fields.mjs`, `pane-stay-lookup.ts`, `amend-cancel.ts`, `amend-lookup-panel.tsx` | U4, U7 |
+| B | U8 Unpaid amend | `pane-hms-write.ts`, `amend-stay*.mjs`, `stay-lookup.mjs`, `commercial-fields.mjs`, `pane-stay-lookup.ts`, `apps/mail/lib/quote-workflow/amend-cancel.ts`, `apps/mail/components/quote-workflow/amend-lookup-panel.tsx` | U4, U7 |
 | B | U10 Overlay (tags only) | `hms-availability.ts`, `quote-workflow-panel.tsx` rates section | U2, U3 |
 | C | U6 Multi-ask pane | `session.ts`, `document-review.tsx`, `quote-workflow-panel.tsx`, `booking-draft.ts` | U2, U5b, U10 |
 | C | U9 Two end buttons | `quote-workflow-panel.tsx`, `booking-card.tsx`, `document-review.tsx` | U6, U4 |
@@ -106,7 +108,7 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 - **Goal:** R2. Carry `board` through `QuoteOption`/`AvailabilitySnapshot` (hms-availability.ts:129,189,418). Request 200 options per group and flag truncation (:103; quote-contract.mjs:474). Search on dates + occupancy alone, dropping `roomRequirementReady` as a search gate (quote-workflow-panel.tsx:884,960,1360). Grid DTO per stay in `QuoteSession` (types.ts:247,662), rendered before room cards (:1658).
 - **Tests:** `hms-availability-probe.test.ts`, `hms-availability-bookability.test.ts`, `fetch-quote.test.mjs:352-399,530-590`, `quote-contract.test.mjs:325-413`, `rate-cards.test.tsx:191-273`, `quote-workflow-panel.test.tsx:609,861,1660`, `quote-workflow-session.test.ts:3393`.
 - **Replay:** ≥10 independent quote threads; staff PDF nights vs grid BAR (PRODUCT.md quote bar; pool today n=8, ACTIVE.md).
-- **Ponytail:** no new `QuoteSession` grid DTO. Render a read-only grid projection keyed by room code × rate code × board that keeps unpriced/incomplete rows as "not checked"; `buildRateOptions` (rate-options.ts:58) stays for the priced room cards (adversarial review: it drops rows the grid must show). `MAX_OPTIONS` is already 200 (quote-contract.mjs:7); pass `maxOptionsPerGroup: 200` + truncation flag. Also take U3's party-gate line (same file), so BAR works with no party.
+- **Ponytail:** no new `QuoteSession` grid DTO. Render a read-only grid projection keyed by room code × rate code × board that keeps unpriced/incomplete rows as "not checked"; `buildRateOptions` (rate-options.ts:58) stays for the priced room cards (adversarial review: it drops rows the grid must show). `MAX_OPTIONS` is already 200 (quote-contract.mjs:7); pass `maxOptionsPerGroup: 200` + truncation flag. (The "party-gate" step is dropped: BAR search already runs with no party, quote-workflow-panel.tsx:954-960 — Grok 4.7.) Dropping `roomRequirementReady` in the panel alone is not enough: the bind refuses an unknown room type before HMS (`staff-quote-bind.ts:451-461`), so U2 also owns that file and allows empty `roomCodes` when no room preference is set (garbage codes still refused).
 - **Raw min:** 35–50 (#414 +258 → 50).
 
 ### U3. Party rank, no forced pick
@@ -117,14 +119,16 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 
 ### U4. Labtest booking-state probe (live, one HMS lock)
 - **Goal:** R5. First diagnose the create stop at the guarantee combo (create-lab-stay.mjs `chooseCombo`, 5 s; failure PNGs on EC2 `/tmp/pane-stay-*/failure.png`). Capture DOM and options before any retry. Then: one Save on Proof Labtest; read back guarantee / deposit / A-R / agency / company; watch centurion@ for an auto letter (send_on_save yes/no). U4 does **not** amend; the single amend belongs to U8.
+- **Safety (Grok 4.7, P0):** the Save runs through the pane save path (`pane-stay-save.ts:365` takes `paneStayPropertyLock`) or, if run as a CLI over SSM, only with `--proof` (the Labtest/2027 guard runs only in proof mode, `create-lab-stay.mjs:246,273-279`) **and** inside the same property lock. Bare `create-lab-stay.mjs` without `--proof` is forbidden in this run.
 - **Counting:** an attempt that stops before Save does not count against the one-Save budget (assumption A1).
 - **Files:** extend `read-reservation-fields.mjs` (guaranteetype, depositreceived, araccountname, ta1, company are already allow-listed, :10-18) + one fixture test; `create-lab-stay.mjs` only for the combo fix. A new probe file only if the combo DOM is unreadable.
 - **Output:** a field table in `docs/infor-hms/` + screenshots. **Raw min:** 13 code + live p50 8 / p75 38.
 
 ### U5a. Extractor asks
-- **Goal:** R1 backend. Optional per-stay `guests: {name: string, confirmationNumber: string|null}[]` (conf# grounded with the same verbatim check as top-level, schema.ts:221-225) and `action` (same enum as top-level). Grouping stays one stay per date set (extract.ts:54). **Stay id stays positional** `stableId('s', messageId, String(stayIndex))` (schema.ts:227): saved staff corrections key on stay id (work-items.ts:58-79), so a new id formula would orphan them (feasibility review). Top-level `kind`/`action` stay as a summary.
+- **Goal:** R1 backend. Optional per-stay `guests: {name: string, confirmationNumber: string|null}[]` (conf# grounded with the same verbatim check as top-level, schema.ts:221-225) and `action` (same enum as top-level). Grouping stays one stay per date set (extract.ts:54). **Stay id stays positional** `stableId('s', messageId, String(stayIndex))` (schema.ts:225): saved staff corrections key on stay id (work-items.ts:58-79), so a new id formula would orphan them (feasibility review). Top-level `kind`/`action` stay as a summary.
 - **Gate (critical, m3):** `ACTION_CLASSIFICATION_RULES` sit inside the extraction prompt (extract.ts:68,226), so the new fields can shift `action`. Rebuild prompts from the branch (`scripts/triage-dataset/build-prompts.ts`) on the saved exports, then run one Luna pass over the 431 frozen rows (`/home/orca/nava-research/triage-20261019/work/predict.py` → `score.py`). That is ~4–7 min, under $5. Investigate on >20/431 action flips vs v4 or >10/431 fewer correct. Quote recall must stay ≥85% (D19).
-- **Check before coding:** what `stale_version` (inbound-run.ts:256) does to open items when the version changes (re-extract or keep).
+- **Grounding:** each `guests[].confirmationNumber` passes the same pattern + verbatim `includes()` check as top-level confs inside `sanitizeExtraction` (schema.ts:219-225), else null.
+- **Version rollover (checked):** the schema change re-hashes `EXTRACTION_VERSION` (inbound-run.ts:78). At deploy, runs still queued under the old version are refused as `stale_version` and dead-lettered (:256,532-540); succeeded old extractions stay readable because `succeededRead` ignores version (work-items.ts:617-629). So open items keep old payloads with no `guests`/`action` → consumers must treat both as optional (legacy = today's behaviour). U12 checks the dead-letter count right after deploy and re-enqueues inbound mail whose extraction was superseded in that window (read-only count first; re-enqueue is an LLM cost, not an HMS write).
 - **Tests:** `extraction-schema.test.ts:101`, `inbound-extraction.test.ts:96,276`, `extraction-date-anchoring.test.ts:29,141`.
 - **Raw min:** 50 (+ eval 30–60, runs in the background).
 
@@ -144,8 +148,8 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 - **Raw min:** 13–50.
 
 ### U8. Unpaid amend in place
-- **Goal:** R7. Add `depositReceived` + `guaranteeType` (classification unpaid / paid / guaranteed / unknown, fail closed per R7) to the live pane lookup: the reader `tooling/playwright-quote/stay-lookup.mjs` + `commercial-fields.mjs` (allow-list), the result parser (pane-stay-lookup.ts:43,245,251) and `amend-find.ts:83` (feasibility review: the plan missed the reader). Uses U4's field table. Preview/Approve only for unpaid + exact conf# + passed CHECK. The amend gate stays `lab` only (pane-hms-write.ts:87-90); no `on` arm this run (H1, ponytail).
-- **Tests:** `pane-hms-write.test.ts:52,335`, `pane-stay-amend.test.ts:44,69-103`, `amend-stay-rules.test.mjs:78-209`, `aop-amend-cancel-payload.test.ts:6,41`, `amend-cancel-copy.test.ts`, `amend-find-panel.test.tsx`.
+- **Goal:** R7. Add `depositReceived` + `guaranteeType` (classification unpaid / paid / guaranteed / unknown, fail closed per R7) to the live pane lookup: the reader `tooling/playwright-quote/stay-lookup.mjs` + `commercial-fields.mjs` (allow-list), the result parser (pane-stay-lookup.ts:43,245,251) and `amend-find.ts:83` (feasibility review: the plan missed the reader). Uses U4's field table. Preview/Approve only for unpaid + exact conf# + passed CHECK. **The writer enforces it, not just the UI (Grok 4.7, P0):** `saveAmend` (pane-hms-write.ts:546-557) re-reads the stay and refuses commit (`refused_payment_unknown`) unless the reader returns provisional + deposit received 0 + a non-paying guarantee type; a missing field = refuse. The amend gate stays `lab` only (pane-hms-write.ts:87-90); no `on` arm this run (H1, ponytail).
+- **Tests:** writer refusal for paid / guaranteed / missing deposit / missing guarantee (new cases in `pane-hms-write.test.ts`); `pane-hms-write.test.ts:52,335`, `pane-stay-amend.test.ts:44,69-103`, `amend-stay-rules.test.mjs:78-209`, `aop-amend-cancel-payload.test.ts:6,41`, `amend-cancel-copy.test.ts`, `amend-find-panel.test.tsx`.
 - **Live:** the run's one Labtest amend is reserved for U8, from the pane, after its writer merges (scope review); U4 records the result in its field table.
 - **Raw min:** 35–50.
 
@@ -155,7 +159,7 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 - **Raw min:** 13–50.
 
 ### U10. Contract / government overlay
-- **Goal:** R9. Carry `rateScope` (fetch-quote.mjs:519) and the Government strategy (quote-ready.ts:223-226) into grid tags public / contract / government, reusing `RatePlanCategory` (quote-workflow-panel.tsx:298-371,713). A confirmed party with no contract row reads 'not checked'. No second HMS read.
+- **Goal:** R9. Carry `rateScope` (fetch-quote.mjs:519) and the Government strategy (quote-ready.ts:223-226) into grid tags, reusing `RatePlanCategory` (quote-workflow-panel.tsx:298-371,713). A BAR-only read can only say public/unknown; `contextual` (contract) needs a party-context read (`isNegotiatedRate` under `rateContext`, staff-quote-workflow.ts:367,400-401) — Grok 4.7 P1. So: contract tags appear only when the existing staff_quote read for a confirmed party already ran; otherwise the grid header reads "Public rates — contract not checked". No new read added.
 - **Tests:** `party-contract-rates.test.ts:298-515`, `rate-cards.test.tsx:267-320`, `rate-options.test.ts:81`.
 - **Raw min:** 13–22.
 
@@ -190,14 +194,15 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 | Chain step | Raw min | Source |
 |---|---:|---|
 | U5a code + Grok review/fix | 35 + 20 | #414 shrunk; Grok review 6 min (grok-p1 15:55→16:01) + fix |
-| U5a classifier gate | 10 | m3: 431 rows ~4–7 min |
+| U5a classifier gate | 30 | m3: 431 rows ~4–7 min per run; prompt rebuild + ×2 noise-band runs + score (Grok 4.7: 10 was low) |
 | U5b | 35 + 20 | #414 shrunk |
 | U6 | 25–41 + 20 | #416 |
 | U9 | 13 + 15 | #412 |
 | U11b runs + U12 | 30–60 | deploy p50 7; live p50 8 / p75 38; U11a harness (50 raw) is built in Wave A, off the chain |
-| **Total** | **~215–275 min (3.6–4.6 h)** | retro actuals include gates; no extra ratio |
+| **Total** | **~245–320 min (4.1–5.3 h)** | retro actuals include gates; no extra ratio |
 
 - U2/U3/U7/U10 finish in parallel before U6/U9 need them.
+- Off the chain but can extend the run: U4 live p75 38 + U8 Labtest amend p75 38 (serial HMS lock); a third Greptile round on any chain unit adds ~20–40.
 - Unmeasured: Grok 4.6 coding speed and the Grok orchestrator (all comparables were Luna max lanes); the U4 combo fix.
 - Cost: Grok prices are unverified here; report actual $ from `grok usage` after the run.
 
@@ -231,6 +236,12 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 | ETA omits U11 harness | scope | applied: U11a in Wave A, off chain |
 | Wave A breaks WIP=1 | feasibility + scope | **rejected**: owner asks 164–165 "all features one run"; recorded as run override |
 | Model routing breaks PRODUCT.md Opus rule | feasibility | **rejected**: owner D18 (17:20Z) |
+| U4 Save lock-free / guard only with `--proof` | Grok 4.7 xhigh | applied: pane path or `--proof` + lock; bare CLI forbidden |
+| U8 unpaid gate UI-only | Grok 4.7 xhigh | applied: `saveAmend` refuses without payment proof |
+| U5a version bump strands open items | Grok 4.7 xhigh | P0→P1: old payloads stay readable; consumers optional; U12 re-enqueues superseded |
+| U10 contract tag needs party read | Grok 4.7 xhigh | applied: contract tag only from existing party read, else "contract not checked" |
+| U2 bind refuses empty room type; party-gate anchor dead | Grok 4.7 xhigh | applied: own `staff-quote-bind.ts`; anchor removed |
+| Bare paths, schema anchor, per-guest grounding, Wave C order, ETA low | Grok 4.7 xhigh | applied |
 
 ## Sources
 - Research: `docs/research/2026-10-20-arch-lanes/` (ARCHITECTURE, l1, l2, p1, p2-scope-grok46, grok-4.6-p1-review); `r1-agent-trace`, `r2-multi-ask-truth`, `r3-stale-prs`, `r4-test-plan`, `n1..n5-*`, `m2-outbound-gold-harness`, `m3-classifier-gate`, `ponytail-plan-cut` (same folder).
