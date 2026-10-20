@@ -37,6 +37,13 @@ Correction: my earlier "16 quote-PDF threads" counted only replies inside the sa
 - Every sampled letter is provisional with deposit 0 → the letter is sent at **save time, before payment**. It does not by itself say paid vs unpaid; payment state needs another source (POP mail, voucher, HMS deposit/folio read).
 - Board split in letters: B&B ~64%, DBB ~30%. DBB letters show "Rate Includes: Dinner, Bed & Breakfast"; no separate "allowance" wording seen. Dinner allowance as an add-on: **not found in letters; ask client**.
 
+### 3b. Prepaid travel-agent asks (voucher/POP/order attached) — prod SQL `m.sql` + `vletters.sh`, since 09-21
+
+- Inbound mails whose latest extraction kind = voucher_pop: 293. Of these, the ones followed by an HMS letter to the same sender address within 3 days: 20 (~7%, lower bound).
+- All **42/42** letters sent to those senders in that window show **Deposit paid 0.00**, the provisional clause and the Proforma table.
+- Meaning: the letter template ignores a voucher/POP in the email. Either staff record the guarantee after the letter goes out, or record it somewhere the letter doesn't print (**inference**). Caveat: the matching is by sender + 3 days, so some letters may belong to a different booking from the same agent.
+- So paid/unpaid state **cannot** come from the letter. It must come from the inbound voucher/POP mail itself, or from an HMS deposit/guarantee read (`hms-deposit-*` probes exist in `apps/server-pilot/scripts/`).
+
 ## 4. Quote/booking ask → staff reply → HMS letter (prod SQL `j.sql`, asks since 09-21)
 
 Population: first inbound per thread where the latest extraction kind ∈ {quote, booking}, sender address known: **642 asks**.
