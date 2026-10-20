@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
-import { CRICKET_RATE_HINT } from '../components/quote-workflow/rate-cards';
+import { CRICKET_RATE_HINT, projectBarGrid } from '../components/quote-workflow/rate-cards';
 import { draftMoney } from '../lib/quote-workflow/multi-option-draft';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import {
@@ -17,6 +17,7 @@ import {
 } from '../lib/quote-workflow/staff-quote-bind';
 import {
   emptyStaffQuoteHeader,
+  type AvailabilityBoardRow,
   type QuoteSession,
   type RateOption,
   type StaffQuoteHeader,
@@ -226,6 +227,88 @@ describe('rate cards in the quote panel', () => {
     expect(within(cards[0]!).getByText('5 left').className).toMatch(/text-\[#64748b\]/);
     expect(within(cards[1]!).getByText('Only 2 left').className).toMatch(/text-amber/);
     expect(within(cards[2]!).queryByText(/left/)).toBeNull();
+  });
+
+  it('shows two room types on the same rate in the BAR grid, including an unpriced row as not checked', async () => {
+    const board: AvailabilityBoardRow[] = [
+      {
+        groupId: 'g1',
+        roomCode: 'STWN',
+        roomLabel: 'Standard Twin',
+        rateCode: 'BAR',
+        rateLabel: 'Best available rate',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
+        nightlyPriceMinor: BAR.perNightMinor,
+        roomsLeft: 3,
+      },
+      {
+        groupId: 'g1',
+        roomCode: 'STQN',
+        roomLabel: 'Standard Queen',
+        rateCode: 'BAR',
+        rateLabel: 'Best available rate',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
+        nightlyPriceMinor: null,
+        roomsLeft: null,
+      },
+    ];
+    expect(projectBarGrid(board).map((cell) => cell.roomCode)).toEqual(['STWN', 'STQN']);
+    const oneAdult = { ...board[0]!, groupId: 'g-1ad', nightlyPriceMinor: 100_000 };
+    const twoAdult = { ...board[0]!, groupId: 'g-2ad', nightlyPriceMinor: 150_000 };
+    expect(projectBarGrid([oneAdult, twoAdult]).map((cell) => cell.nightlyPriceMinor)).toEqual([100_000, 150_000]);
+    const session = await quotedSession([BAR]);
+    const quoted = session.staffQuote ?? session.staffQuotes[STAY_KEY];
+    const withBoard: QuoteSession = {
+      ...session,
+      staffQuote: quoted ? { ...quoted, availabilityBoard: board } : quoted,
+      staffQuotes: quoted
+        ? { ...session.staffQuotes, [STAY_KEY]: { ...quoted, availabilityBoard: board } }
+        : session.staffQuotes,
+    };
+    render(<QuoteWorkflowPanel session={withBoard} />);
+    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    expect(within(grid).getByText('Standard Twin (STWN)')).toBeDefined();
+    expect(within(grid).getByText('Standard Queen (STQN)')).toBeDefined();
+    expect(within(grid).getAllByText('not checked').length).toBeGreaterThan(0);
+    expect(rateCards()).toHaveLength(1);
+  });
+
+  it('omits roomCodes when no room preference is set and still refuses garbage codes', async () => {
+    const blank: StayGroupRequirement = {
+      ...stay,
+      roomPreference: '',
+      roomCodes: [],
+      roomTypeCode: 'STQN',
+    };
+    const empty = staffQuoteGroupsFromStay([blank]);
+    expect(empty).toEqual({
+      ok: [expect.objectContaining({ id: 'g1', arrivalDate: stay.arrivalDate, departureDate: stay.departureDate })],
+    });
+    if (empty && 'ok' in empty) expect(empty.ok[0]).not.toHaveProperty('roomCodes');
+
+    const mutate = vi.fn(async (input: ExecuteStaffQuoteInput) => ({
+      ...READY,
+      selectionEpoch: input.selectionEpoch,
+      inputRevision: input.inputRevision,
+    }));
+    const run = await bindExecuteStaffQuote({
+      mutate,
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [blank],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(run.status).toBe('ok');
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ maxOptionsPerGroup: 200 }));
+    expect(mutate.mock.calls[0]?.[0].groups[0]).not.toHaveProperty('roomCodes');
+
+    const garbage = staffQuoteGroupsFromStay([{ ...stay, roomPreference: 'PENTHOUSE', roomCodes: undefined, fields: {} }]);
+    expect(garbage).toEqual({
+      error: expect.stringMatching(/Room type "PENTHOUSE" is not one HMS knows/),
+    });
   });
 
   it('uses two compact card rows so the title can wrap without squeezing the price at narrow widths', async () => {

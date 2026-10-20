@@ -322,6 +322,16 @@ test('quantity multiplies exact cents; mixed currency or missing night yields no
   assert.ok(['missing_amount', 'incomplete_dates', 'unsupported_amount_format'].includes(missing.reason));
 });
 
+test('maxOptionsPerGroup 200 is accepted and 201 is refused', () => {
+  const rooms = [{ id: 'g', quantity: 1, adults: 1, children: 0, childAges: [] }];
+  const ok = normalizeQuoteRequest(v2(rooms, { maxOptionsPerGroup: 200 }));
+  assert.equal(ok.ok, true);
+  assert.equal(ok.request.maxOptionsPerGroup, 200);
+  const over = normalizeQuoteRequest(v2(rooms, { maxOptionsPerGroup: 201 }));
+  assert.equal(over.ok, false);
+  assert.ok(over.issues.some((issue) => issue.code === 'INVALID_MAX_OPTIONS'));
+});
+
 test('available room alternatives keep only observed, usable rooms on the requested board', () => {
   const request = {
     propertyCode: 'HRCEN',

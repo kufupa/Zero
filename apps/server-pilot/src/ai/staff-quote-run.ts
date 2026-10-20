@@ -47,6 +47,7 @@ import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js'
 import { mailExtraction } from '../db/schema/work.js';
 import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
 import { otherBoardContractNotes, type RateOption } from './rate-options.js';
+import type { AvailabilityBoardRow } from './hms-availability.js';
 import { quoteWorkItemIdFor, recordRateEvents } from './work-events.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
 import {
@@ -610,6 +611,8 @@ export async function runStaffQuote(
   const notes: string[] = [];
   // The rate cards of the attempt that priced. Empty when the quote failed before they were built.
   let rateOptions: RateOption[] = [];
+  let availabilityBoard: AvailabilityBoardRow[] = [];
+  let availabilityTruncated = false;
   let quoteInput: StaffQuoteInput = input;
   let effectiveQuoteInput: StaffQuoteInput = input;
   let dinnerFallbackGroupIds: string[] = [];
@@ -736,6 +739,10 @@ export async function runStaffQuote(
                 onRateOptions: (options: RateOption[]) => {
                   rateOptions = options;
                 },
+                onAvailabilityBoard: (board) => {
+                  availabilityBoard = board.rows;
+                  availabilityTruncated = board.truncated;
+                },
               },
             );
             return executeStaffQuote(
@@ -784,6 +791,8 @@ export async function runStaffQuote(
               // Retry only groups without a selected verified party contract; another group's contract stays pinned.
               dinnerFallbackGroupIds = fallback.groupIds;
               rateOptions = [];
+              availabilityBoard = [];
+              availabilityTruncated = false;
               return quoteOneInput(fallback.input, prepare(undefined, fallback.input));
             };
             const retryAllDinnerAsBb = async () => {
@@ -791,6 +800,8 @@ export async function runStaffQuote(
               // No-match has no selected-rate evidence, so retry all dinner groups on the fallback input.
               dinnerFallbackGroupIds = noMatchDinnerFallback.groupIds;
               rateOptions = [];
+              availabilityBoard = [];
+              availabilityTruncated = false;
               const fallbackResult = await quoteOneInput(
                 noMatchDinnerFallback.input,
                 prepare(undefined, noMatchDinnerFallback.input),
@@ -1001,6 +1012,8 @@ export async function runStaffQuote(
       ...(dinnerFallbackGroupIds.length ? { dinnerFallbackGroupIds } : {}),
       ...(dinnerAddOnDetails(proposal, revision) ? { dinnerAddOn: dinnerAddOnDetails(proposal, revision) } : {}),
       rateOptions,
+      ...(availabilityBoard.length ? { availabilityBoard } : {}),
+      ...(availabilityTruncated ? { availabilityTruncated: true } : {}),
       selectionEpoch: input.selectionEpoch,
       inputRevision: input.inputRevision,
       inputDigest: prepared.inputDigest,
