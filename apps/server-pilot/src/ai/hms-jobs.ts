@@ -1470,7 +1470,8 @@ async function countRecentPrefetches(
       and(
         eq(aiWorkflowRun.transportId, transportId),
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
-        lte(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
+        // Live prefill budgets only: dev/eval runs (lower tiers) must not use up the hourly cap for real mail.
+        eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
         // Staff batch rows share the prefetch priority but carry batchId: they neither use nor are capped by these budgets.
         sql`${aiWorkflowRun.metrics}->>'batchId' IS NULL`,
         ...(kind === 'staff_quote'
@@ -3505,7 +3506,9 @@ async function latestStaffQuoteRunFor(
       metrics.userId != null ||
       metrics.quotePrepared !== true ||
       preparedRun.state === 'dead_letter' ||
-      preparedRun.state === 'superseded'
+      preparedRun.state === 'superseded' ||
+      // A dev/eval price is shown only once it is ready; staff never wait behind a lower-tier job.
+      (preparedRun.priority < HMS_JOB_PRIORITY_PREFETCH && preparedRun.state !== 'succeeded')
     ) {
       continue;
     }

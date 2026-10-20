@@ -238,7 +238,8 @@ export const paneStayLookupRouter = router({
       request: { kind: 'find', confirmation: input.confirmation, arrival: input.arrival },
       target,
       ...(input.devEval ? { devEval: true } : {}),
-      ...(input.autoStart
+      // A dev/eval find never takes the live auto-start key, so it cannot stand in for staff's own read.
+      ...(input.autoStart && !input.devEval
         ? { idempotencyKey: confirmationPrefetchIdempotencyKey(ctx.activeTransportId, input.confirmation) }
         : {}),
     });
