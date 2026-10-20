@@ -290,6 +290,7 @@ describe('rate cards in the quote panel', () => {
         boardLabel: 'Bed & breakfast',
         nightlyPriceMinor: NCOR.perNightMinor,
         roomsLeft: 3,
+        rateScope: 'contextual',
       },
       {
         groupId: 'g1',
@@ -301,6 +302,7 @@ describe('rate cards in the quote panel', () => {
         boardLabel: 'Bed & breakfast',
         nightlyPriceMinor: BAR.perNightMinor,
         roomsLeft: 4,
+        rateScope: 'public',
       },
       {
         groupId: 'g1',
@@ -374,6 +376,89 @@ describe('rate cards in the quote panel', () => {
     const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
     expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
     expect(within(grid).queryByText('Contract')).toBeNull();
+  });
+
+  it('tags a contextual board row with no matching rate card, and not when the party read did not run', async () => {
+    const board: AvailabilityBoardRow[] = [
+      {
+        groupId: 'g1',
+        roomCode: 'STWN',
+        roomLabel: 'Standard Twin',
+        rateCode: 'BCO1B',
+        rateLabel: 'Negotiated',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
+        nightlyPriceMinor: null,
+        roomsLeft: null,
+        rateScope: 'contextual',
+      },
+    ];
+    expect(projectBarGrid(board).map((cell) => cell.rateScope)).toEqual(['contextual']);
+
+    const header = { parties: { company: { kind: 'company' as const, nativeId: 'C1', name: 'Provincial Treasury' } } };
+    const withParty = await quotedSession([BAR], header);
+    const quoted = withParty.staffQuote ?? withParty.staffQuotes[STAY_KEY];
+    const partySession: QuoteSession = {
+      ...withParty,
+      staffQuote: quoted ? { ...quoted, availabilityBoard: board } : quoted,
+      staffQuotes: quoted
+        ? { ...withParty.staffQuotes, [STAY_KEY]: { ...quoted, availabilityBoard: board } }
+        : withParty.staffQuotes,
+    };
+    const { unmount } = render(<QuoteWorkflowPanel session={partySession} />);
+    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    expect(screen.queryByText('Public rates — contract not checked')).toBeNull();
+    expect(within(grid).getByText('Contract')).toBeDefined();
+    expect(within(grid).getByText('BCO1B')).toBeDefined();
+    expect(rateCards().some((card) => card.textContent?.includes('BCO1B'))).toBe(false);
+    unmount();
+
+    const noParty = await quotedSession([BAR]);
+    const noPartyQuoted = noParty.staffQuote ?? noParty.staffQuotes[STAY_KEY];
+    const noPartySession: QuoteSession = {
+      ...noParty,
+      staffQuote: noPartyQuoted ? { ...noPartyQuoted, availabilityBoard: board } : noPartyQuoted,
+      staffQuotes: noPartyQuoted
+        ? { ...noParty.staffQuotes, [STAY_KEY]: { ...noPartyQuoted, availabilityBoard: board } }
+        : noParty.staffQuotes,
+    };
+    render(<QuoteWorkflowPanel session={noPartySession} />);
+    const publicGrid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
+    expect(within(publicGrid).queryByText('Contract')).toBeNull();
+  });
+
+  it('keeps board rateScope through the staff quote bind', async () => {
+    const run = await bindExecuteStaffQuote({
+      mutate: async (input) => ({
+        ...READY,
+        selectionEpoch: input.selectionEpoch,
+        inputRevision: input.inputRevision,
+        rateOptions: [BAR],
+        availabilityBoard: [
+          {
+            groupId: 'g1',
+            roomCode: 'STWN',
+            roomLabel: 'Standard Twin',
+            rateCode: 'BCO1B',
+            rateLabel: 'Negotiated',
+            board: 'bb',
+            boardLabel: 'Bed & breakfast',
+            nightlyPriceMinor: null,
+            roomsLeft: null,
+            rateScope: 'contextual',
+          },
+        ],
+      }),
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [stay],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(run.status).toBe('ok');
+    if (run.status !== 'ok') return;
+    expect(run.staffQuote.availabilityBoard?.[0]?.rateScope).toBe('contextual');
   });
 
   it('omits roomCodes when no room preference is set and still refuses garbage codes', async () => {

@@ -280,6 +280,8 @@ export type AvailabilityBoardRow = {
   boardLabel: string;
   nightlyPriceMinor: number | null;
   roomsLeft: number | null;
+  /** Reader fact only. Contract tags must not be invented from a public code. */
+  rateScope?: 'public' | 'contextual' | 'unknown';
 };
 
 /** What one row was charged on its last run: HMS's nightly rates, the rates charged, and for an override its HMS comment. */

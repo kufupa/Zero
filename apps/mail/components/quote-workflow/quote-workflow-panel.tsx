@@ -330,24 +330,23 @@ function confirmedPartyRead(header: StaffQuoteHeader, stayFound: boolean): boole
 }
 
 /**
- * Grid tag from facts already on the read. Contract only from HMS negotiated (`RateOption.contract` /
- * rateScope contextual). Never from a public rate code or the catalogue contract flag.
+ * Grid tag from facts already on the board cell. Contract only when the party read ran and this
+ * cell's rateScope is contextual. Never from a public code or the catalogue contract flag.
  */
 function gridRateTag(
   rateCode: string,
+  rateScope: BarGridCell['rateScope'],
   args: {
     contractChecked: boolean;
-    options: readonly RateOption[];
     plans: readonly RatePlanChoice[];
   },
 ): Exclude<RatePlanCategory, 'other'> | null {
   const code = rateCode.trim().toUpperCase();
   if (!code) return null;
-  const option = args.options.find((item) => item.rateCode.trim().toUpperCase() === code);
   const plan = args.plans.find((item) => item.code === code);
-  if (args.contractChecked && option?.contract === true) return 'contract';
+  if (args.contractChecked && rateScope === 'contextual') return 'contract';
   if (plan?.category === 'government') return 'government';
-  if (PUBLIC_RATE_CODES.has(code) || plan?.category === 'public') return 'public';
+  if (rateScope === 'public' || PUBLIC_RATE_CODES.has(code) || plan?.category === 'public') return 'public';
   return null;
 }
 
@@ -780,12 +779,10 @@ function RatePlanSelect({
 function RatesBarGrid({
   cells,
   contractChecked,
-  options,
   plans,
 }: {
   cells: BarGridCell[];
   contractChecked: boolean;
-  options: readonly RateOption[];
   plans: readonly RatePlanChoice[];
 }) {
   if (!cells.length) return null;
@@ -808,7 +805,7 @@ function RatesBarGrid({
         </thead>
         <tbody>
           {cells.map((cell) => {
-            const tag = gridRateTag(cell.rateCode, { contractChecked, options, plans });
+            const tag = gridRateTag(cell.rateCode, cell.rateScope, { contractChecked, plans });
             return (
               <tr
                 key={`${cell.groupId}|${cell.roomCode}|${cell.rateCode}|${cell.board}`}
@@ -1932,7 +1929,6 @@ export function QuoteWorkflowPanel({
                           <RatesBarGrid
                             cells={projectBarGrid(stayBoard.filter((row) => row.groupId === group.id))}
                             contractChecked={contractChecked}
-                            options={(session.rateOptions ?? []).filter((option) => option.groupId === group.id)}
                             plans={ratePlans}
                           />
                           {rateGroup?.options.length ? (
