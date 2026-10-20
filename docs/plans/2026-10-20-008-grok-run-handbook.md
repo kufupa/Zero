@@ -148,6 +148,20 @@ Never Sonnet, never "fast" SKUs, never Nova Lite. No Opus in this run.
 
 ---
 
+## 6b. Run time-box (checkpoints, not lane caps)
+
+T0 = kickoff. Lanes have no caps; the **run** has checkpoints. At each, write the state to `/tmp/sr2/state.md` and post a 5-line status in the orchestrator chat.
+
+| Checkpoint | Expected (plan ETA 245–320 min) | If behind |
+|---|---|---|
+| T0 + 90 min | U1, U3, U7 merged; U2 and U5a in review; U4 combo DOM captured | keep going; note which unit is slow |
+| T0 + 150 min | Wave A merged incl. U5a gate result | start Wave B anyway for units whose After is merged; consider cutting U10 (tags only) |
+| T0 + 240 min | U6 merged or in final review | **cut** whatever is not in review (candidates in order: U10, U9 relabel, U6 split control) and go to deploy |
+| T0 + 300 min | deploy done, live checks running | deploy what is merged; report the rest as open |
+| T0 + 360 min | hard stop for new merges | finish live checks + closeout only |
+
+Cut order exists because the owner is the only human: a shipped smaller set beats an unshipped full set.
+
 ## 7. Lane launch (exact)
 
 ```bash
