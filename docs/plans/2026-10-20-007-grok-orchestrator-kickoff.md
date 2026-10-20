@@ -30,8 +30,8 @@ LANES — YOU LAUNCH EVERYTHING YOURSELF VIA ORCA CLI (`orca-ide`, never bare `o
 - Waves: start every Wave A unit at once (U1, U2, U3, U4-code, U5a, U7, U11a). Start any other unit the moment every unit in its "After" column is merged (not when its wave letter opens). U10→U6→U9 run strictly in that order (shared quote-workflow-panel.tsx); U7→U8 likewise. A shared file means queued, never parallel.
 
 UDV-1/2/3 — DA VINCI INGEST FAN-OUT (owner option B + ask 173; disjoint files from U1–U11; must merge before U12). Unit text: plan section "UDV". Evidence: docs/research/2026-10-20-davinci-ingest-quarantine.md.
-- UDV-1 (Wave A) `provision-prod.ts --transports-only`. UDV-2 (Wave A) fan-out in store.ts: one message row per named hotel mailbox (To/Cc/Bcc/From), primary copy byte-identical to today, extra copies keyed `<uidl>#t:<transportId>`, no migration. UDV-3 (after UDV-2) general promoter with skipAiEnqueue, dry-run default.
-- UDV-2 is ingest for ALL live mail incl. Centurion: you read its full diff yourself, and all 7 listed routing tests + ingest-store.test.ts + ingest-dedupe-transport.test.ts must pass on EC2 before merge.
+- UDV-1 (Wave A) `provision-prod.ts --transports-only`. UDV-2 (Wave A) fan-out (design r2): routing returns extra hotel mailboxes; each copy is its own persist call + transaction + re-parse via new fanout.ts; worker DELEs only after every copy succeeds; primary unchanged; no migration. UDV-3 (after UDV-2) general promoter with skipAiEnqueue, dry-run default.
+- UDV-2 is ingest for ALL live mail incl. Centurion: you read its full diff yourself, and all 9 listed fan-out/routing tests + ingest-store.test.ts + mailbox-ingest-lock.test.ts + ingest-dedupe-transport.test.ts must pass on EC2 before merge.
 - You do NOT run provision or promotion against prod. That is hold H5 for the planning chat after U12.
 
 U5r — INTERNAL STAFF ASK RULE (owner ruling "A narrow"; after U5a merges; extract.ts rules text only). Unit text: plan section "U5r". Gate = held-out 436 ×2 + frozen 431 as listed there; fail → drop U5r, never retune on test rows.

@@ -1,0 +1,6 @@
+| # | sev | issue | path:line | fix |
+|---|---|---|---|---|
+| 1 | P0 | A copy that returns `quarantined` inserts `mail_ingest_quarantine` on **that call's** `pop3Uidl`. r2 passes the raw UIDL into `persistInboundMessage` and only suffixes the receipt/message UIDL. `findExistingQuarantine` is unique on `(ingestMailboxId, pop3Uidl)` and runs before routing. Next poll returns `quarantined` for the raw UIDL, then DELE, so missing copies never run. `duplicate` does not do this. `quarantined` does. | `store.ts:304-317`, `:1840-1854`, `:2113-2118`; `mail.ts:119` | Persist copies with `pop3Uidl = <uidl>#t:<transportId>` everywhere, including quarantine. Or refuse to insert quarantine for a fan-out call. |
+| 2 | P0 | UDV-3 says delete the quarantine row only after every copy succeeds. `persistInboundMessage` deletes `promoteQuarantineId` inside the primary transaction, before `persistFanoutCopies`. A later copy failure cannot put the row back. Re-promote then hits `findExistingMessageAnyDirection` on the raw UIDL, returns `duplicate`, and drops the backlog row with copies missing. | `store.ts:944-948`; `promote-quarantine.ts:308-318` | Delete the quarantine row only after primary and every copy return `stored`/`duplicate`/`reconciled`. Do not pass `promoteQuarantineId` into the primary call. |
+
+FIX FIRST
