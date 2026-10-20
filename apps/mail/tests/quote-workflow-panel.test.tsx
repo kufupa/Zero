@@ -1800,7 +1800,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const base = headerSession({ salesStrategy: 'Government' });
     const analysis = {
       ...base.analysis!,
-      groups: base.groups.map((group) => ({ ...group, board: 'dbb' as const })),
+      groups: base.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
       luna: {
         workflow: 'quote' as const,
         flags: [],

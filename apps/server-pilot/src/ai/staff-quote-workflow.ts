@@ -186,7 +186,7 @@ export function staffQuoteDinnerNoMatchFallback(
 export function staffQuoteGovernmentDinnerNote(input: StaffQuoteInput): string | null {
   return input.salesStrategy === 'Government' && input.groups.some((group) => group.board === 'dinner_bb')
     ? 'Priced on the Government Dinner B&B rate because the guest asked for dinner. ' +
-      'Switch to All rates if the guest is not entitled.'
+      'Choose All public rates (BAR) if the guest is not entitled.'
     : null;
 }
 

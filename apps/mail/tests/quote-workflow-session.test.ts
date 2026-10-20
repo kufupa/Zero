@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   allocationTotal,
+  autoRunHeaderForStay,
   canCreateNativeDraft,
   canCreatePdf,
   canRunQuoteStep,
@@ -140,7 +141,7 @@ describe('quote session', () => {
   it('defaults Dinner B&B asks to Government unless staff already chose a rate strategy', () => {
     const dinnerAnalysis: QuoteAnalysis = {
       ...quoteAnalysis,
-      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dbb' as const })),
+      groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
     };
     const defaulted = reduceQuoteSession(initialQuoteSession(), {
       type: 'analysis_ready',
@@ -3734,5 +3735,20 @@ describe('rowRoomCode: staff picks beat the projected room type', () => {
 
   it('a cleared select leaves the row with no room type', () => {
     expect(rowRoomCode(row({ roomPreference: '', roomTypeCode: undefined }))).toBeNull();
+  });
+});
+
+describe('autoRunHeaderForStay', () => {
+  const header = { ...emptyStaffQuoteHeader(), salesStrategy: 'Government' as const };
+
+  it('prices each automatic stay like the background prepare: Dinner B&B on Government, B&B on BAR', () => {
+    const session = { staffHeader: header, analysis: null };
+    expect(autoRunHeaderForStay(session, [{ board: 'dinner_bb' }]).salesStrategy).toBe('Government');
+    expect(autoRunHeaderForStay(session, [{ board: 'bb' }]).salesStrategy).toBe('BAR');
+  });
+
+  it('keeps a staff plan choice for every stay', () => {
+    const session = { staffHeader: header, staffSalesStrategyEdited: true, analysis: null };
+    expect(autoRunHeaderForStay(session, [{ board: 'bb' }]).salesStrategy).toBe('Government');
   });
 });

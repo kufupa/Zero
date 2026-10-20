@@ -1295,7 +1295,7 @@ export function QuoteWorkflowPanel({
         : 'all';
   // Government parties and Dinner B&B asks default to Government; "All rates" returns to that default.
   const governmentParty = session.analysis?.luna?.party?.kind === 'government';
-  const dinnerBbAsk = session.analysis?.groups.some((group) => group.board === 'dbb') ?? false;
+  const dinnerBbAsk = session.analysis?.groups.some((group) => group.board === 'dinner_bb') ?? false;
   const changeRatePlan = (value: string) => {
     setRatePlanState({ selectionEpoch, analysis: session.analysis, value });
     // The search's sales strategy lives in the header. "All rates" restores the default for

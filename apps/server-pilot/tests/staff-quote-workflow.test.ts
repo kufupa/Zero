@@ -235,7 +235,7 @@ describe('staff-approved quotation beneath native guards', () => {
 
     expect(staffQuoteGovernmentDinnerNote(governmentDinner)).toBe(
       'Priced on the Government Dinner B&B rate because the guest asked for dinner. ' +
-        'Switch to All rates if the guest is not entitled.',
+        'Choose All public rates (BAR) if the guest is not entitled.',
     );
     const governmentFallback = staffQuoteDinnerNoMatchFallback(governmentDinner);
     expect(governmentFallback).toMatchObject({

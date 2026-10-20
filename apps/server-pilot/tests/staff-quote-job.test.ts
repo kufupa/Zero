@@ -491,7 +491,7 @@ describe('staff_quote HMS job execution', () => {
     const readResult = jobMocks.markSucceeded.mock.calls[0]?.[0].readResult;
     expect(readResult.extrasReviewItems).toContain(
       'Priced on the Government Dinner B&B rate because the guest asked for dinner. ' +
-        'Switch to All rates if the guest is not entitled.',
+        'Choose All public rates (BAR) if the guest is not entitled.',
     );
     expect(readResult.dinnerAddOnRequired).toBe(false);
   });

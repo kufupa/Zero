@@ -1944,7 +1944,7 @@ describe('NavaPane screen states', () => {
       ...STORED_READY,
       analysis: {
         ...STORED_READY.analysis,
-        groups: STORED_READY.analysis.groups.map((group) => ({ ...group, board: 'dbb' as const })),
+        groups: STORED_READY.analysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
       },
     };
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);

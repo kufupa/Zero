@@ -55,6 +55,22 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
   };
 }
 
+/**
+ * The header an automatic (auto-start or read-back) rate run sends for one stay. It mirrors the background prepare,
+ * which decides per stay: a Dinner B&B stay prices on Government, other stays on BAR. A staff plan choice and a
+ * government party keep the session header.
+ */
+export function autoRunHeaderForStay(
+  session: Pick<QuoteSession, 'staffHeader' | 'staffSalesStrategyEdited' | 'analysis'>,
+  groups: readonly Pick<StayGroupRequirement, 'board'>[],
+): StaffQuoteHeader {
+  if (session.staffSalesStrategyEdited || session.analysis?.luna?.party?.kind === 'government') {
+    return session.staffHeader;
+  }
+  const salesStrategy = groups.some((group) => group.board === 'dinner_bb') ? 'Government' : 'BAR';
+  return { ...session.staffHeader, salesStrategy };
+}
+
 export function groupsForQuoteStep(
   session: Pick<QuoteSession, 'groups'>,
   step: QuoteToolStep,
@@ -792,7 +808,7 @@ function prefillStaffHeaderFromLuna(
   if (
     !staffSalesStrategyEdited &&
     next.salesStrategy === 'BAR' &&
-    analysis.groups.some((group) => group.board === 'dbb')
+    analysis.groups.some((group) => group.board === 'dinner_bb')
   ) {
     next = { ...next, salesStrategy: 'Government' };
   }
