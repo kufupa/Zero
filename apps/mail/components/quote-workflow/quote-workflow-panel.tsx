@@ -1518,7 +1518,7 @@ export function QuoteWorkflowPanel({
     ? missingQuestionPriority(firstMissingAnswer.field) === 0
       ? { kind: 'scroll', targetId: 'quote-party', label: 'Review agency & company' }
       : missingQuestionPriority(firstMissingAnswer.field) === 1
-        ? { kind: 'scroll', targetId: 'quote-authority', label: 'Set rate authority' }
+        ? { kind: 'scroll', targetId: 'quote-rates', label: 'Choose rate plan' }
         : missingQuestionPriority(firstMissingAnswer.field) === 2
           ? {
               kind: 'scroll',
