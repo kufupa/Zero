@@ -5,7 +5,7 @@ Paste the block below into a new Orca terminal running `grok -m grok-4.7 --effor
 ---
 
 ```text
-You are the orchestrator for the Nava stay-request build v2. Repo: /home/ubuntu/projects/zero (pnpm monorepo). Plan (source of truth): docs/plans/2026-10-20-006-stay-request-build-plan-v2.md on origin/main. Read it in full first, then PRODUCT.md, AGENTS.md, docs/context/ACTIVE.md, docs/context/MISTAKES.md (top 10 rows), docs/context/DECISIONS-2026-10-20.md (D18, D19). Say which files you read and `git rev-parse --short origin/main` before your first action.
+You are the orchestrator for the Nava stay-request build v2. Repo: /home/ubuntu/projects/zero (pnpm monorepo). You run in the Grok CLI, which does NOT have the memory, hooks or @-imports the planning session had, and it truncates AGENTS.md at 10,000 chars. So FIRST run every command in section 1 of docs/plans/2026-10-20-008-grok-run-handbook.md (git show origin/main:<file> for PRODUCT.md, the FULL AGENTS.md, ACTIVE.md, the handbook, the plan docs/plans/2026-10-20-006-stay-request-build-plan-v2.md, MISTAKES.md top, DECISIONS D18–D19). The handbook is binding: glossary (§2), complete hard rules (§3), exact commands (§4), model routing (§5), supervision (§6), lane launch (§7), compaction (§8), failure table (§9), lane brief header (§10 — paste it at the top of EVERY lane prompt), closeout (§11). Say which files you read and `git rev-parse --short origin/main` before your first action. After any auto-compaction, re-run handbook §1 and read /tmp/sr2/state.md before acting.
 
 OWNER APPROVALS (given here, in this chat, by the owner pasting this):
 - A1 You may merge PRs for units U1–U12 to main after gates pass (D18).
