@@ -58,7 +58,7 @@ import { BOARD_LABELS, BookingCards } from './booking-card';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { PartyPicker } from './party-picker';
-import { DocumentReview } from './document-review';
+import { DocumentReview, pdfBlockReason } from './document-review';
 import { useFailedHmsJobNoticeMessage } from './hms-job-notices';
 import { HmsQueueStatusLine } from './hms-queue-status';
 import { HmsTodoCard } from './hms-todo-card';
@@ -1022,6 +1022,7 @@ export function QuoteWorkflowPanel({
   onPreparePdf,
   onDownloadWorkbook,
   workbookPending,
+  pdfPending,
   onHandleReviewItem,
   onUndoReviewItem,
   onRetryRead,
@@ -1072,6 +1073,8 @@ export function QuoteWorkflowPanel({
   onDownloadWorkbook?: () => void;
   /** An Excel export is being made; the Excel button is disabled meanwhile. */
   workbookPending?: boolean;
+  /** A PDF is being prepared; both PDF actions stay disabled until it settles. */
+  pdfPending?: boolean;
   onHandleReviewItem?: (itemId: string) => void;
   onUndoReviewItem?: (itemId: string) => void;
   /** Runs the read again after an analysis failure. Absent when there is nothing to retry. */
@@ -1506,6 +1509,8 @@ export function QuoteWorkflowPanel({
         ? { kind: 'scroll', targetId: 'quote-quote', label: 'Review documents' }
         : { kind: 'documents', label: isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF' }
       : { kind: 'search', label: 'Search availability' };
+  const canPreparePdfAtTop =
+    currentAction.kind === 'documents' && !session.pdf && canCreatePdf(session);
   const runNextRate = () => {
     if (!nextRateStep) return;
     if (nextRateStep.shareKey) onSelectStayKey?.(nextRateStep.shareKey);
@@ -1523,9 +1528,11 @@ export function QuoteWorkflowPanel({
       {session.analysis?.alternatives.length ? (
         <StatusNote>The email also mentions: {session.analysis.alternatives.join(', ')}. These are not quoted yet.</StatusNote>
       ) : null}
-      {showWorkspace && (firstMissingAnswer || currentAction.kind !== 'documents') ? (
+      {showWorkspace && (firstMissingAnswer || currentAction.kind !== 'documents' || canPreparePdfAtTop) ? (
         <div className="flex flex-col gap-2">
-          <NeedsAnswerList missing={firstMissingAnswer ? [firstMissingAnswer] : undefined} />
+          {firstMissingAnswer || currentAction.kind !== 'documents' ? (
+            <NeedsAnswerList missing={firstMissingAnswer ? [firstMissingAnswer] : undefined} />
+          ) : null}
           {currentAction.kind !== 'documents' ? (
             <PrimaryButton
               disabled={currentAction.kind === 'search' && nextRateReason !== null}
@@ -1536,6 +1543,18 @@ export function QuoteWorkflowPanel({
               }}
             >
               {currentAction.label}
+            </PrimaryButton>
+          ) : canPreparePdfAtTop ? (
+            <PrimaryButton
+              disabled={Boolean(pdfPending) || !canCreatePdf(session) || !onPreparePdf}
+              disabledReason={
+                pdfPending
+                  ? 'Preparing PDF…'
+                  : pdfBlockReason(session) ?? (!onPreparePdf ? 'PDF preparation is not available in this view.' : null)
+              }
+              onClick={onPreparePdf}
+            >
+              {pdfPending ? 'Preparing PDF…' : isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF + reply'}
             </PrimaryButton>
           ) : null}
         </div>
@@ -1943,7 +1962,8 @@ export function QuoteWorkflowPanel({
               onPreparePdf={onPreparePdf}
               onDownloadWorkbook={onDownloadWorkbook}
               workbookPending={workbookPending}
-              primaryAction={currentAction.kind === 'documents' && !session.pdf}
+              pdfPending={pdfPending}
+              primaryAction={false}
             />
           ) : (
             <>
