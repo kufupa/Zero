@@ -37,3 +37,10 @@ Luna max lanes (codex, read-only, local corpus 2026-07-30..10-13) + Exa agent ru
 - **C8 (L2, amend = edit in place).** Of 74 amend asks with a usable prior letter, 14 got a later letter with the **same** confirmation number, **0** with a new one, 60 no letter in 3 days. Answers the owner's "delete + recreate?" question: evidence points to modify-in-place; not proof of the HMS write.
 - **C9 (L2, payment state is mostly invisible in mail).** At amend time: paid evidence 44/223, unpaid 54/223, **unknown 125/223**. Letters say deposit 0 on 1,114/1,174. So paid/unpaid must come from an HMS read (deposit / folio / guarantee), not mail. Travel-agent voucher threads: 181, of which travelit.co.za 154; prepaid wording 0/181.
 - **C10 (L6, precedent baseline).** BM25 top-5 majority predicts the first-reply answer type on 302/411 held-out asks vs 301/411 for "always text only". Answer type is a bad target (text-only 73%). Human check: useful top-3 precedent 6/20, useful-or-partly 19/20. **Consequence for the Hindsight A/B:** score human-judged useful@3 (and fact recall: rate, board, party), not answer type. BM25 useful@3 = 6/20 is the bar to beat.
+
+## L7 decision-memory baseline (15:40Z) — parked with ask 162
+
+- [l7-decision-memory-baseline.md](l7-decision-memory-baseline.md). Wide cohort (exact recipient within 72 h before letter, unreviewed): 191/655 conf IDs linked, test 60 rows / 38 asks. Strict L1 cohort: 0 index rows → unusable.
+- Sender→domain history on letter party line: right 11/56, **wrong 17/56**, abstain 28/56; confident-only 5 right / 1 wrong / 50 abstain.
+- **C11 (Opus): conflicts with L0 party history 109/150 right, 0 wrong.** Different truth: L7 compares the whole normalised letter party block (1–3 lines, agency + company joined) as one exact string; L0 compared HMS profile picks. Wrong-17 likely includes partial matches (same agency, different company line). Do not quote L7 party numbers until scored per line (agency vs company). Test set n=60 < 100 bar anyway.
+- Useful: current ask disagrees with sender history on nights 15/18 and board 5/16 → current mail must override precedent (design rule already in ARCHITECTURE §3).
