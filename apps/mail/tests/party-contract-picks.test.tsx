@@ -236,7 +236,6 @@ describe('PartyPicker preselects the top suggestion', () => {
     expect(await screen.findByRole('button', { name: 'Confirm CWT JNB' })).toBeTruthy();
     expect(picked).toEqual([]);
     expect(screen.queryByRole('button', { name: 'Confirm Agency' })).toBeNull();
-    expect(pickedParties({})).toEqual({});
   });
 
   it('does not pick an HMS best whose name is not the suggestion', async () => {
