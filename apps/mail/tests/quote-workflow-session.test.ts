@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   allocationTotal,
-  autoRunHeaderForStay,
+  runHeaderForStay,
   canCreateNativeDraft,
   canCreatePdf,
   canRunQuoteStep,
@@ -3738,17 +3738,35 @@ describe('rowRoomCode: staff picks beat the projected room type', () => {
   });
 });
 
-describe('autoRunHeaderForStay', () => {
+describe('runHeaderForStay', () => {
   const header = { ...emptyStaffQuoteHeader(), salesStrategy: 'Government' as const };
 
-  it('prices each automatic stay like the background prepare: Dinner B&B on Government, B&B on BAR', () => {
-    const session = { staffHeader: header, analysis: null };
-    expect(autoRunHeaderForStay(session, [{ board: 'dinner_bb' }]).salesStrategy).toBe('Government');
-    expect(autoRunHeaderForStay(session, [{ board: 'bb' }]).salesStrategy).toBe('BAR');
+  it('prices a stay like the background prepare: Dinner B&B on Government, automatic B&B on BAR', () => {
+    const session = { staffHeader: header };
+    expect(runHeaderForStay(session, [{ board: 'dinner_bb' }], true).salesStrategy).toBe('Government');
+    expect(runHeaderForStay(session, [{ board: 'bb' }], true).salesStrategy).toBe('BAR');
+    expect(runHeaderForStay({ staffHeader: emptyStaffQuoteHeader() }, [{ board: 'dinner_bb' }], false).salesStrategy).toBe(
+      'Government',
+    );
   });
 
-  it('keeps a staff plan choice for every stay', () => {
-    const session = { staffHeader: header, staffSalesStrategyEdited: true, analysis: null };
-    expect(autoRunHeaderForStay(session, [{ board: 'bb' }]).salesStrategy).toBe('Government');
+  it('keeps the session header for a manual B&B run and a staff plan choice everywhere', () => {
+    expect(runHeaderForStay({ staffHeader: header }, [{ board: 'bb' }], false).salesStrategy).toBe('Government');
+    const bar = { ...emptyStaffQuoteHeader(), salesStrategy: 'BAR' as const };
+    const edited = { staffHeader: bar, staffSalesStrategyEdited: true };
+    expect(runHeaderForStay(edited, [{ board: 'dinner_bb' }], true).salesStrategy).toBe('BAR');
   });
+});
+
+it('a mixed Dinner B&B + B&B mail keeps the session default on BAR', () => {
+  const mixed: QuoteAnalysis = {
+    ...quoteAnalysis,
+    groups: quoteAnalysis.groups.flatMap((group, index) =>
+      index === 0
+        ? [{ ...group, board: 'dinner_bb' as const }, { ...group, id: `${group.id}-bb`, board: 'bb' as const }]
+        : [group],
+    ),
+  };
+  const session = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis: mixed });
+  expect(session.staffHeader.salesStrategy).toBe('BAR');
 });

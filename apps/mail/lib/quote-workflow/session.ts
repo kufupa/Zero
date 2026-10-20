@@ -56,19 +56,20 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
 }
 
 /**
- * The header an automatic (auto-start or read-back) rate run sends for one stay. It mirrors the background prepare,
- * which decides per stay: a Dinner B&B stay prices on Government, other stays on BAR. A staff plan choice and a
- * government party keep the session header.
+ * The header a rate run sends for one stay, matching the background prepare (quote-ready.ts), which decides per stay:
+ * a Dinner B&B stay prices on Government, any other stay on BAR. A staff plan choice always wins. A manual run of a
+ * non-dinner stay keeps the session header (a government party defaults to Government there).
  */
-export function autoRunHeaderForStay(
-  session: Pick<QuoteSession, 'staffHeader' | 'staffSalesStrategyEdited' | 'analysis'>,
+export function runHeaderForStay(
+  session: Pick<QuoteSession, 'staffHeader' | 'staffSalesStrategyEdited'>,
   groups: readonly Pick<StayGroupRequirement, 'board'>[],
+  automatic: boolean,
 ): StaffQuoteHeader {
-  if (session.staffSalesStrategyEdited || session.analysis?.luna?.party?.kind === 'government') {
-    return session.staffHeader;
+  if (session.staffSalesStrategyEdited) return session.staffHeader;
+  if (groups.some((group) => group.board === 'dinner_bb')) {
+    return { ...session.staffHeader, salesStrategy: 'Government' };
   }
-  const salesStrategy = groups.some((group) => group.board === 'dinner_bb') ? 'Government' : 'BAR';
-  return { ...session.staffHeader, salesStrategy };
+  return automatic ? { ...session.staffHeader, salesStrategy: 'BAR' } : session.staffHeader;
 }
 
 export function groupsForQuoteStep(
@@ -808,7 +809,8 @@ function prefillStaffHeaderFromLuna(
   if (
     !staffSalesStrategyEdited &&
     next.salesStrategy === 'BAR' &&
-    analysis.groups.some((group) => group.board === 'dinner_bb')
+    analysis.groups.length > 0 &&
+    analysis.groups.every((group) => group.board === 'dinner_bb')
   ) {
     next = { ...next, salesStrategy: 'Government' };
   }
