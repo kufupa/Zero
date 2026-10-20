@@ -249,6 +249,42 @@ describe('inbound extraction stored read', () => {
       }));
   }
 
+  it('channel modification stay lists guests with own conf and per-stay action', () =>
+    withIngestionDb(async ({ db }) => {
+      const messageId = await seedMail(
+        db,
+        'kind-channel-amendment-guests',
+        CHANNEL_AMENDMENT_TEXT,
+        'inbound',
+        CHANNEL_BOOKING_FROM,
+      );
+      const model = fakeModel(() => ({
+        ...CHANNEL_AMENDMENT_OUTPUT,
+        action: 'amend' as const,
+        stays: [
+          {
+            ...CHANNEL_AMENDMENT_OUTPUT.stays[0]!,
+            action: 'amend' as const,
+            guests: [
+              { name: 'Guest', confirmationNumber: '73114001-1' },
+              { name: 'Other Guest', confirmationNumber: '99999999-9' },
+            ],
+          },
+        ],
+      }));
+      const selection = selectionFor(CHANNEL_AMENDMENT_TEXT, 'Reservation updated');
+
+      expect(await readMail(db, messageId, selection, model.adapter)).toBe('stored');
+      const payload = (await rowFor(db, messageId))!.payload as MailExtractionPayload;
+      expect(payload.action).toBe('amend');
+      expect(payload.stays).toHaveLength(1);
+      expect(payload.stays[0]!.action).toBe('amend');
+      expect(payload.stays[0]!.guests).toEqual([
+        { name: 'Guest', confirmationNumber: '73114001-1' },
+        { name: 'Other Guest', confirmationNumber: null },
+      ]);
+    }));
+
   it('AE1: two date sets make two stays with stable ids, and the agency is the sender, not the end client', () =>
     withIngestionDb(async ({ db }) => {
       const messageId = await seedMail(db, 'thread-ae1', AE1_TEXT, 'inbound', AE1_FROM);
@@ -271,6 +307,9 @@ describe('inbound extraction stored read', () => {
         { arrival: '2027-10-26', departure: '2027-10-28' },
         { arrival: '2027-11-17', departure: '2027-11-19' },
       ]);
+      expect(payload.stays).toHaveLength(2);
+      expect(payload.stays[0]!.guests).toBeUndefined();
+      expect(payload.stays[0]!.action).toBeUndefined();
       // 30 rooms is a stay total with no split: the total is kept, the rows keep their types, rooms is asked for.
       expect(payload.stays.map((stay) => stay.totalRooms)).toEqual([30, 30]);
       expect(payload.stays[0]!.rows.map((room) => [room.roomType, room.rooms])).toEqual([
@@ -291,6 +330,44 @@ describe('inbound extraction stored read', () => {
       expect(again.ok ? again.payload.stays[1]!.rows.map((row) => row.id) : null).toEqual(
         payload.stays[1]!.rows.map((row) => row.id),
       );
+    }));
+
+  it('AE1: two date sets keep one stay each, with guests, per-stay action, and top-level summary', () =>
+    withIngestionDb(async ({ db }) => {
+      const messageId = await seedMail(db, 'thread-ae1-guests', AE1_TEXT, 'inbound', AE1_FROM);
+      const model = fakeModel(() => ({
+        ...AE1_OUTPUT,
+        stays: [
+          {
+            ...AE1_OUTPUT.stays[0]!,
+            action: 'quote_availability' as const,
+            guests: [{ name: 'Guest', confirmationNumber: '57291630-1' }],
+          },
+          {
+            ...AE1_OUTPUT.stays[1]!,
+            action: 'new_booking' as const,
+            guests: [{ name: 'Other Guest', confirmationNumber: null }],
+          },
+        ],
+      }));
+      const selection = selectionFor(AE1_TEXT, AE1_SUBJECT);
+
+      expect(await readMail(db, messageId, selection, model.adapter)).toBe('stored');
+      const row = await rowFor(db, messageId);
+      expect(row).toMatchObject({ status: 'succeeded', kind: 'quote' });
+      const payload = row!.payload as MailExtractionPayload;
+      expect(payload.action).toBe('quote_availability');
+      expect(payload.stays).toHaveLength(2);
+      expect(payload.stays.map((stay) => stay.requested)).toEqual([
+        { arrival: '2027-10-26', departure: '2027-10-28' },
+        { arrival: '2027-11-17', departure: '2027-11-19' },
+      ]);
+      expect(payload.stays[0]!.action).toBe('quote_availability');
+      expect(payload.stays[1]!.action).toBe('new_booking');
+      expect(payload.stays[0]!.guests).toEqual([{ name: 'Guest', confirmationNumber: null }]);
+      expect(payload.stays[1]!.guests).toEqual([{ name: 'Other Guest', confirmationNumber: null }]);
+      expect(payload.stays[0]!.id).toMatch(/^s_[0-9a-f]{8}$/);
+      expect(new Set(payload.stays.map((stay) => stay.id)).size).toBe(2);
     }));
 
   it('a staff forward of an outside request: the model gets the mailbox and the staff rule, and the read is the request', () =>

@@ -6,8 +6,9 @@ import {
   mailExtractionPayloadSchema,
   mailExtractionSchema,
   sanitizeExtraction,
+  stableId,
 } from '../src/ai/extraction/schema.js';
-import { AE1_OUTPUT, AE1_TEXT } from './fixtures/inbound-extraction.js';
+import { AE1_OUTPUT, AE1_TEXT, AE2_TEXT } from './fixtures/inbound-extraction.js';
 
 const ACTION_OUTPUT = {
   ...AE1_OUTPUT,
@@ -177,5 +178,88 @@ describe('mail extraction MAIL_ACTIONS', () => {
     delete legacyPayload.actionEvidence;
     delete legacyPayload.actionConfidence;
     expect(mailExtractionPayloadSchema.safeParse(legacyPayload).success).toBe(true);
+  });
+});
+
+describe('mail extraction stay guests and action', () => {
+  const stayGuestOutput = {
+    ...ACTION_OUTPUT,
+    confirmationNumbers: ['57291630-1'],
+    stays: [
+      {
+        ...AE1_OUTPUT.stays[0]!,
+        action: 'quote_availability' as const,
+        guests: [
+          { name: 'Guest', confirmationNumber: '57291630-1' },
+          { name: 'Other Guest', confirmationNumber: 'ABC-12' },
+        ],
+      },
+      {
+        ...AE1_OUTPUT.stays[1]!,
+        action: 'new_booking' as const,
+        guests: [{ name: 'Guest', confirmationNumber: null }],
+      },
+    ],
+  };
+
+  it('exposes optional stay guests and action in the JSON schema, using MAIL_ACTIONS', () => {
+    const jsonSchema = zodToJsonSchema(mailExtractionSchema, { $refStrategy: 'none' }) as {
+      properties?: {
+        stays?: {
+          items?: {
+            properties?: { guests?: unknown; action?: { enum?: string[] } };
+            required?: string[];
+          };
+        };
+      };
+    };
+    const staySchema = jsonSchema.properties?.stays?.items;
+    expect(staySchema?.properties).toHaveProperty('guests');
+    expect(staySchema?.properties).toHaveProperty('action');
+    expect(staySchema?.required ?? []).not.toContain('guests');
+    expect(staySchema?.required ?? []).not.toContain('action');
+    expect(staySchema?.properties?.action?.enum).toEqual([...MAIL_ACTIONS]);
+  });
+
+  it('grounds each stay guest confirmation number with the same verbatim check as top-level', () => {
+    const parsed = mailExtractionSchema.parse(stayGuestOutput);
+    const { payload } = sanitizeExtraction(parsed, {
+      messageId: 'msg-stay-guests',
+      sourceText: AE2_TEXT,
+    });
+    expect(payload.confirmationNumbers).toEqual(['57291630-1']);
+    expect(payload.stays[0]!.guests).toEqual([
+      { name: 'Guest', confirmationNumber: '57291630-1' },
+      { name: 'Other Guest', confirmationNumber: null },
+    ]);
+    expect(payload.stays[1]!.guests).toEqual([{ name: 'Guest', confirmationNumber: null }]);
+    expect(payload.stays[0]!.action).toBe('quote_availability');
+    expect(payload.stays[1]!.action).toBe('new_booking');
+    expect(payload.action).toBe('quote_availability');
+    expect(payload.stays[0]!.id).toBe(stableId('s', 'msg-stay-guests', '0'));
+    expect(payload.stays[1]!.id).toBe(stableId('s', 'msg-stay-guests', '1'));
+  });
+
+  it('keeps stay guests and action optional on a stored payload without them', () => {
+    const parsed = mailExtractionSchema.parse(ACTION_OUTPUT);
+    const legacyPayload: Record<string, unknown> = {
+      ...sanitizeExtraction(parsed, { messageId: 'msg-stay-guests-legacy', sourceText: AE1_TEXT }).payload,
+    };
+    const stays = (legacyPayload.stays as Array<Record<string, unknown>>).map((stay) => {
+      const copy = { ...stay };
+      delete copy.guests;
+      delete copy.action;
+      return copy;
+    });
+    expect(mailExtractionPayloadSchema.safeParse({ ...legacyPayload, stays }).success).toBe(true);
+  });
+
+  it('asks the model for per-stay guests and action without rewriting classification rules', () => {
+    expect(EXTRACTION_RULES).toContain(
+      "For each stay, guests is optional: that stay's named guests, each with name as written and confirmationNumber exactly as written for that guest, or null.",
+    );
+    expect(EXTRACTION_RULES).toContain(
+      'For each stay, action is optional and uses the same enum as top-level action. Top-level kind and action remain a summary of the mail.',
+    );
   });
 });

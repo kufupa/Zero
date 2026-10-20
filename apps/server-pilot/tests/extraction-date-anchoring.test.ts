@@ -14,6 +14,8 @@ async function extractRequestedDates(input: {
   dateEvidence?: string | null;
   kind?: MailKind;
   preceding?: Array<{ bodyText: string }>;
+  guests?: Array<{ name: string; confirmationNumber: string | null }>;
+  action?: 'quote_availability' | 'new_booking' | 'amend' | 'no_action';
 }) {
   const baseSelection = selectionFor(input.bodyText, input.subject);
   const selection = {
@@ -29,6 +31,8 @@ async function extractRequestedDates(input: {
         ...AE1_OUTPUT.stays[0]!,
         requested: { arrival: input.arrival, departure: input.departure },
         requestedDateEvidence: input.dateEvidence === undefined ? input.bodyText : input.dateEvidence,
+        ...(input.guests !== undefined ? { guests: input.guests } : {}),
+        ...(input.action !== undefined ? { action: input.action } : {}),
       },
     ],
   }));
@@ -46,7 +50,13 @@ async function extractRequestedDates(input: {
 async function extractRequestedDateSets(input: {
   bodyText: string;
   receivedAt: string;
-  stays: Array<{ arrival: string; departure: string; dateEvidence: string }>;
+  stays: Array<{
+    arrival: string;
+    departure: string;
+    dateEvidence: string;
+    guests?: Array<{ name: string; confirmationNumber: string | null }>;
+    action?: 'quote_availability' | 'new_booking' | 'amend' | 'no_action';
+  }>;
 }) {
   const selection = { ...selectionFor(input.bodyText), receivedAt: input.receivedAt };
   const model = fakeModel(() => ({
@@ -55,6 +65,8 @@ async function extractRequestedDateSets(input: {
       ...AE1_OUTPUT.stays[0]!,
       requested: { arrival: stay.arrival, departure: stay.departure },
       requestedDateEvidence: stay.dateEvidence,
+      ...(stay.guests !== undefined ? { guests: stay.guests } : {}),
+      ...(stay.action !== undefined ? { action: stay.action } : {}),
     })),
   }));
   const result = await extractInboundMail({
@@ -162,6 +174,23 @@ describe('received-time date anchoring', () => {
     expect(result.requested).toEqual(scenario.expected);
   });
 
+  it('keeps optional stay guests and action while anchoring a yearless quote', async () => {
+    const result = await extractRequestedDates({
+      kind: 'quote',
+      bodyText: 'Please quote 12–17 March.',
+      dateEvidence: '12–17 March',
+      receivedAt: '2026-03-14T12:00:00.000Z',
+      arrival: '2026-03-12',
+      departure: '2026-03-18',
+      guests: [{ name: 'Guest', confirmationNumber: null }],
+      action: 'quote_availability',
+    });
+
+    expect(result.requested).toEqual({ arrival: '2027-03-12', departure: '2027-03-18' });
+    expect(result.payload.stays[0]?.guests).toEqual([{ name: 'Guest', confirmationNumber: null }]);
+    expect(result.payload.stays[0]?.action).toBe('quote_availability');
+  });
+
   it('reproduces a yearless March stay accepted in the past after a December email', async () => {
     const result = await extractRequestedDates({
       bodyText: 'Please quote 12-14 March.',
@@ -217,6 +246,35 @@ describe('received-time date anchoring', () => {
       ],
     });
 
+    expect(requested).toEqual([
+      { arrival: '2026-12-25', departure: '2026-12-27' },
+      { arrival: '2027-01-04', departure: '2027-01-07' },
+    ]);
+  });
+
+  it('keeps one stay per date set when guests and action are present', async () => {
+    const requested = await extractRequestedDateSets({
+      bodyText: 'Please quote next Friday for two nights, and 4–6 January.',
+      receivedAt: '2026-12-18T12:00:00.000Z',
+      stays: [
+        {
+          arrival: '2026-12-11',
+          departure: '2026-12-13',
+          dateEvidence: 'next Friday for two nights',
+          guests: [{ name: 'Guest', confirmationNumber: null }],
+          action: 'quote_availability',
+        },
+        {
+          arrival: '2026-01-04',
+          departure: '2026-01-07',
+          dateEvidence: '4–6 January',
+          guests: [{ name: 'Other Guest', confirmationNumber: null }],
+          action: 'quote_availability',
+        },
+      ],
+    });
+
+    expect(requested).toHaveLength(2);
     expect(requested).toEqual([
       { arrival: '2026-12-25', departure: '2026-12-27' },
       { arrival: '2027-01-04', departure: '2027-01-07' },
