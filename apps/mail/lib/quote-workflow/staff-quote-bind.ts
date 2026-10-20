@@ -595,6 +595,10 @@ function readAvailabilityBoard(value: unknown): AvailabilityBoardRow[] {
       typeof raw.roomsLeft === 'number' && Number.isInteger(raw.roomsLeft) && raw.roomsLeft >= 0
         ? raw.roomsLeft
         : null;
+    const rateScope =
+      raw.rateScope === 'public' || raw.rateScope === 'contextual' || raw.rateScope === 'unknown'
+        ? raw.rateScope
+        : undefined;
     rows.push({
       groupId: typeof raw.groupId === 'string' ? raw.groupId : '',
       roomCode: raw.roomCode,
@@ -605,6 +609,7 @@ function readAvailabilityBoard(value: unknown): AvailabilityBoardRow[] {
       boardLabel: typeof raw.boardLabel === 'string' ? raw.boardLabel : typeof raw.board === 'string' ? raw.board : '',
       nightlyPriceMinor,
       roomsLeft,
+      ...(rateScope ? { rateScope } : {}),
     });
   }
   return rows;

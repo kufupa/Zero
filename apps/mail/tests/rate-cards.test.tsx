@@ -272,7 +272,193 @@ describe('rate cards in the quote panel', () => {
     expect(within(grid).getByText('Standard Twin (STWN)')).toBeDefined();
     expect(within(grid).getByText('Standard Queen (STQN)')).toBeDefined();
     expect(within(grid).getAllByText('not checked').length).toBeGreaterThan(0);
+    expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
+    expect(within(grid).getAllByText('Public').length).toBe(2);
+    expect(within(grid).queryByText('Contract')).toBeNull();
     expect(rateCards()).toHaveLength(1);
+  });
+
+  it('tags contract and government from the existing read, and never invents a contract tag from a public code', async () => {
+    const board: AvailabilityBoardRow[] = [
+      {
+        groupId: 'g1',
+        roomCode: 'STWN',
+        roomLabel: 'Standard Twin',
+        rateCode: 'NCOR',
+        rateLabel: 'Corporate negotiated',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
+        nightlyPriceMinor: NCOR.perNightMinor,
+        roomsLeft: 3,
+        rateScope: 'contextual',
+      },
+      {
+        groupId: 'g1',
+        roomCode: 'STWN',
+        roomLabel: 'Standard Twin',
+        rateCode: 'BAR',
+        rateLabel: 'Best available rate',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
+        nightlyPriceMinor: BAR.perNightMinor,
+        roomsLeft: 4,
+        rateScope: 'public',
+      },
+      {
+        groupId: 'g1',
+        roomCode: 'STWN',
+        roomLabel: 'Standard Twin',
+        rateCode: 'NGOVB',
+        rateLabel: 'Local Government Rate Breakfast',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
+        nightlyPriceMinor: 190000,
+        roomsLeft: 2,
+      },
+    ];
+    const header = { parties: { company: { kind: 'company' as const, nativeId: 'C1', name: 'Provincial Treasury' } } };
+    const session = await quotedSession(
+      [{ ...NCOR, contract: true, onlyContract: true }, BAR],
+      header,
+    );
+    const quoted = session.staffQuote ?? session.staffQuotes[STAY_KEY];
+    const withBoard: QuoteSession = {
+      ...session,
+      staffQuote: quoted ? { ...quoted, availabilityBoard: board } : quoted,
+      staffQuotes: quoted
+        ? { ...session.staffQuotes, [STAY_KEY]: { ...quoted, availabilityBoard: board } }
+        : session.staffQuotes,
+    };
+    render(
+      <QuoteWorkflowPanel
+        session={withBoard}
+        rateCatalogue={[
+          { code: 'NGOVB', name: 'Local Government Rate Breakfast', board: 'bed_breakfast', government: true },
+        ]}
+      />,
+    );
+    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    expect(screen.queryByText('Public rates — contract not checked')).toBeNull();
+    expect(within(grid).getByText('Contract')).toBeDefined();
+    expect(within(grid).getByText('Public')).toBeDefined();
+    expect(within(grid).getByText('Government')).toBeDefined();
+  });
+
+  it('does not invent a contract tag from a public rate code when the party read did not run', async () => {
+    const board: AvailabilityBoardRow[] = [
+      {
+        groupId: 'g1',
+        roomCode: 'STWN',
+        roomLabel: 'Standard Twin',
+        rateCode: 'NCOR',
+        rateLabel: 'Corporate negotiated',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
+        nightlyPriceMinor: NCOR.perNightMinor,
+        roomsLeft: 3,
+      },
+    ];
+    const session = await quotedSession([NCOR]);
+    const quoted = session.staffQuote ?? session.staffQuotes[STAY_KEY];
+    const withBoard: QuoteSession = {
+      ...session,
+      staffQuote: quoted ? { ...quoted, availabilityBoard: board } : quoted,
+      staffQuotes: quoted
+        ? { ...session.staffQuotes, [STAY_KEY]: { ...quoted, availabilityBoard: board } }
+        : session.staffQuotes,
+    };
+    render(
+      <QuoteWorkflowPanel
+        session={withBoard}
+        rateCatalogue={[{ code: 'NCOR', name: 'Corporate negotiated', board: 'bed_breakfast', contract: true }]}
+      />,
+    );
+    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
+    expect(within(grid).queryByText('Contract')).toBeNull();
+  });
+
+  it('tags a contextual board row with no matching rate card, and not when the party read did not run', async () => {
+    const board: AvailabilityBoardRow[] = [
+      {
+        groupId: 'g1',
+        roomCode: 'STWN',
+        roomLabel: 'Standard Twin',
+        rateCode: 'BCO1B',
+        rateLabel: 'Negotiated',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
+        nightlyPriceMinor: null,
+        roomsLeft: null,
+        rateScope: 'contextual',
+      },
+    ];
+    expect(projectBarGrid(board).map((cell) => cell.rateScope)).toEqual(['contextual']);
+
+    const header = { parties: { company: { kind: 'company' as const, nativeId: 'C1', name: 'Provincial Treasury' } } };
+    const withParty = await quotedSession([BAR], header);
+    const quoted = withParty.staffQuote ?? withParty.staffQuotes[STAY_KEY];
+    const partySession: QuoteSession = {
+      ...withParty,
+      staffQuote: quoted ? { ...quoted, availabilityBoard: board } : quoted,
+      staffQuotes: quoted
+        ? { ...withParty.staffQuotes, [STAY_KEY]: { ...quoted, availabilityBoard: board } }
+        : withParty.staffQuotes,
+    };
+    const { unmount } = render(<QuoteWorkflowPanel session={partySession} />);
+    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    expect(screen.queryByText('Public rates — contract not checked')).toBeNull();
+    expect(within(grid).getByText('Contract')).toBeDefined();
+    expect(within(grid).getByText('BCO1B')).toBeDefined();
+    expect(rateCards().some((card) => card.textContent?.includes('BCO1B'))).toBe(false);
+    unmount();
+
+    const noParty = await quotedSession([BAR]);
+    const noPartyQuoted = noParty.staffQuote ?? noParty.staffQuotes[STAY_KEY];
+    const noPartySession: QuoteSession = {
+      ...noParty,
+      staffQuote: noPartyQuoted ? { ...noPartyQuoted, availabilityBoard: board } : noPartyQuoted,
+      staffQuotes: noPartyQuoted
+        ? { ...noParty.staffQuotes, [STAY_KEY]: { ...noPartyQuoted, availabilityBoard: board } }
+        : noParty.staffQuotes,
+    };
+    render(<QuoteWorkflowPanel session={noPartySession} />);
+    const publicGrid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
+    expect(within(publicGrid).queryByText('Contract')).toBeNull();
+  });
+
+  it('keeps board rateScope through the staff quote bind', async () => {
+    const run = await bindExecuteStaffQuote({
+      mutate: async (input) => ({
+        ...READY,
+        selectionEpoch: input.selectionEpoch,
+        inputRevision: input.inputRevision,
+        rateOptions: [BAR],
+        availabilityBoard: [
+          {
+            groupId: 'g1',
+            roomCode: 'STWN',
+            roomLabel: 'Standard Twin',
+            rateCode: 'BCO1B',
+            rateLabel: 'Negotiated',
+            board: 'bb',
+            boardLabel: 'Bed & breakfast',
+            nightlyPriceMinor: null,
+            roomsLeft: null,
+            rateScope: 'contextual',
+          },
+        ],
+      }),
+      source,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [stay],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(run.status).toBe('ok');
+    if (run.status !== 'ok') return;
+    expect(run.staffQuote.availabilityBoard?.[0]?.rateScope).toBe('contextual');
   });
 
   it('omits roomCodes when no room preference is set and still refuses garbage codes', async () => {

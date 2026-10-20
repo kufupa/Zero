@@ -20,6 +20,7 @@ import {
 } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
+import { draftMoney } from '@/lib/quote-workflow/multi-option-draft';
 import { emptyStaffQuoteHeader, staffStayExtrasFor } from '@/lib/quote-workflow/types';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
@@ -67,7 +68,7 @@ import { NeedsAnswerList } from './needs-answer-list';
 import { NotSupportedList } from './not-supported-list';
 import { PaneStatusLine } from './pane-status-line';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
-import { BarAvailabilityGrid, projectBarGrid, RateCards } from './rate-cards';
+import { projectBarGrid, RateCards, type BarGridCell } from './rate-cards';
 import {
   CopyHmsNotesButton,
   hmsNotesBlock,
@@ -312,6 +313,41 @@ function ratePlanCategory(entry: RatePlanCatalogueEntry): RatePlanCategory {
   if (entry.government) return 'government';
   if (entry.contract) return 'contract';
   return 'public';
+}
+
+const PUBLIC_RATE_CODES = new Set(['BAR', 'BARRO']);
+const GRID_TAG_LABEL: Record<Exclude<RatePlanCategory, 'other'>, string> = {
+  public: 'Public',
+  government: 'Government',
+  contract: 'Contract',
+};
+
+/** Contract tags need the existing staff_quote read for a confirmed party. No new HMS read. */
+function confirmedPartyRead(header: StaffQuoteHeader, stayFound: boolean): boolean {
+  return (
+    stayFound && Boolean(header.parties?.company?.nativeId || header.parties?.agency?.nativeId)
+  );
+}
+
+/**
+ * Grid tag from facts already on the board cell. Contract only when the party read ran and this
+ * cell's rateScope is contextual. Never from a public code or the catalogue contract flag.
+ */
+function gridRateTag(
+  rateCode: string,
+  rateScope: BarGridCell['rateScope'],
+  args: {
+    contractChecked: boolean;
+    plans: readonly RatePlanChoice[];
+  },
+): Exclude<RatePlanCategory, 'other'> | null {
+  const code = rateCode.trim().toUpperCase();
+  if (!code) return null;
+  const plan = args.plans.find((item) => item.code === code);
+  if (args.contractChecked && rateScope === 'contextual') return 'contract';
+  if (plan?.category === 'government') return 'government';
+  if (rateScope === 'public' || PUBLIC_RATE_CODES.has(code) || plan?.category === 'public') return 'public';
+  return null;
 }
 
 /** Add HMS-only codes without treating their labels or flags as static catalogue facts. */
@@ -735,6 +771,65 @@ function RatePlanSelect({
           All rates shows every code HMS returned. Choosing a plan filters the cards below.
         </span>
       </Field>
+    </div>
+  );
+}
+
+/** Read-only BAR table with public / government / contract tags from the existing read. */
+function RatesBarGrid({
+  cells,
+  contractChecked,
+  plans,
+}: {
+  cells: BarGridCell[];
+  contractChecked: boolean;
+  plans: readonly RatePlanChoice[];
+}) {
+  if (!cells.length) return null;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <h5 className="text-[13px] font-semibold text-[#475569]">BAR by room, rate and board</h5>
+      {contractChecked ? null : (
+        <p className="text-[12px] text-[#64748b]">Public rates — contract not checked</p>
+      )}
+      <table className="w-full border-collapse text-[12px]" aria-label="BAR by room, rate and board">
+        <thead>
+          <tr className="border-b border-[#e2e8f0] text-left text-[11px] font-semibold uppercase tracking-wide text-[#64748b]">
+            <th className="py-1 pr-2 font-semibold">Room</th>
+            <th className="py-1 pr-2 font-semibold">Rate</th>
+            <th className="py-1 pr-2 font-semibold">Board</th>
+            <th className="py-1 pr-2 font-semibold">Nightly</th>
+            <th className="py-1 pr-2 font-semibold">Rooms left</th>
+            <th className="py-1 font-semibold">Tag</th>
+          </tr>
+        </thead>
+        <tbody>
+          {cells.map((cell) => {
+            const tag = gridRateTag(cell.rateCode, cell.rateScope, { contractChecked, plans });
+            return (
+              <tr
+                key={`${cell.groupId}|${cell.roomCode}|${cell.rateCode}|${cell.board}`}
+                className="border-b border-[#f1f5f9] text-[#1e293b]"
+              >
+                <td className="py-1 pr-2">{`${cell.roomLabel} (${cell.roomCode})`}</td>
+                <td className="py-1 pr-2">{cell.rateCode}</td>
+                <td className="py-1 pr-2">{cell.boardLabel}</td>
+                <td className="py-1 pr-2">
+                  {cell.nightlyPriceMinor === null ? 'not checked' : draftMoney(cell.nightlyPriceMinor)}
+                </td>
+                <td className="py-1 pr-2">{cell.roomsLeft === null ? 'not checked' : String(cell.roomsLeft)}</td>
+                <td className="py-1">
+                  {tag ? (
+                    <span className="rounded-[2px] bg-[#eff6ff] px-1 py-px text-[10px] font-semibold text-[#0066cc]">
+                      {GRID_TAG_LABEL[tag]}
+                    </span>
+                  ) : null}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -1708,6 +1803,7 @@ export function QuoteWorkflowPanel({
                   ? preparedAt.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
                   : null;
                 const stayBoard = stayQuote?.availabilityBoard ?? [];
+                const contractChecked = confirmedPartyRead(header, stayFound);
                 return (
                   <article key={`${stay.id}-search`} className="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3">
                     {stayQuote?.preparedByNava ? (
@@ -1830,8 +1926,10 @@ export function QuoteWorkflowPanel({
                       return (
                         <div key={group.id} className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5">
                           <h5 className="text-[13px] font-semibold text-[#475569]">{`${rowLabels.get(group.id) ?? 'Room type needed'} rates`}</h5>
-                          <BarAvailabilityGrid
+                          <RatesBarGrid
                             cells={projectBarGrid(stayBoard.filter((row) => row.groupId === group.id))}
+                            contractChecked={contractChecked}
+                            plans={ratePlans}
                           />
                           {rateGroup?.options.length ? (
                             <RateCards

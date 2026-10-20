@@ -94,6 +94,21 @@ describe('rate cards from one summary read', () => {
     expect(cards[0]).toMatchObject({ roomCode: 'STQN', matchesRequest: false, contract: false, selected: false, priced: 'summary' });
   });
 
+  it('marks contextual rows as contract and never a public BAR code', () => {
+    const cards = buildRateOptions(
+      source(
+        [
+          row({ id: 'SKNG:BARRO', rate: 'BARRO' }),
+          row({ id: 'STQN:BCO1B', room: 'STQN', rate: 'BCO1B', scope: 'contextual', match: 'alternative' }),
+        ],
+        ROOM_ONLY,
+      ),
+      [],
+    );
+    expect(cards.find((card) => card.rateCode === 'BARRO')).toMatchObject({ contract: false });
+    expect(cards.find((card) => card.rateCode === 'BCO1B')).toMatchObject({ contract: true });
+  });
+
   it('keeps every distinct available rate code, and never a restricted, unavailable, held, unresolved or unverified row', () => {
     const selected = row({ id: 'SKNG:BARRO', rate: 'BARRO', amount: '500.00' });
     const kept = [

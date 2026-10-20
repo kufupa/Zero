@@ -21,6 +21,7 @@ export type BarGridCell = {
   boardLabel: string;
   nightlyPriceMinor: number | null;
   roomsLeft: number | null;
+  rateScope?: 'public' | 'contextual' | 'unknown';
 };
 
 function barGridKey(groupId: string, roomCode: string, rateCode: string, board: string): string {
@@ -48,6 +49,7 @@ export function projectBarGrid(options: readonly AvailabilityBoardRow[]): BarGri
       boardLabel: displayLabel(option.boardLabel) || option.board,
       nightlyPriceMinor,
       roomsLeft,
+      ...(option.rateScope ? { rateScope: option.rateScope } : {}),
     };
     const held = byKey.get(key);
     if (!held) {
