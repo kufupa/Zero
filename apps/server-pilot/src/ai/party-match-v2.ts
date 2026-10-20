@@ -547,11 +547,13 @@ export function buildPartyMatchCandidates(input: {
   for (const row of signatureOrganisations) add(row.name, row.kind, 'signature', 'strong');
 
   if (historyEnabled && senderHistory) {
-    const historyTokens = new Set(distinctivePartyTokens(senderHistory.name));
-    const emailContradictsHistory = candidates.some((candidate) => {
-      if (candidate.kind !== senderHistory.kind) return false;
-      return !distinctivePartyTokens(candidate.name).some((token) => historyTokens.has(token));
-    });
+    // The email beats history: any same-kind name in the email that is not the history name keeps history weak, so the
+    // email's own name binds (live replay 2026-10-19: "Nexus Travel" in the email vs "XL Nexus" history tied when both were strong).
+    const emailContradictsHistory = candidates.some(
+      (candidate) =>
+        candidate.kind === senderHistory.kind &&
+        normalisePartyName(candidate.name) !== normalisePartyName(senderHistory.name),
+    );
     add(
       senderHistory.name,
       senderHistory.kind,

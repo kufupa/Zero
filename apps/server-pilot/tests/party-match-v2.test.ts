@@ -305,7 +305,7 @@ describe('party sender history candidates', () => {
   it.each([
     { emailName: 'Nexus Travel', historyName: 'XL Nexus' },
     { emailName: 'Rennies BCD', historyName: 'RENNIES TRAVEL' },
-  ])('keeps learned history strong when names share distinctive tokens: $emailName', ({ emailName, historyName }) => {
+  ])('keeps learned history weak when the email names a different same-kind party: $emailName', ({ emailName, historyName }) => {
     vi.stubEnv('PARTY_HISTORY_BIND', 'on');
     replaceLearnedSenderMapForTests([
       { host: 'agency.example.test', kind: 'agency', name: historyName, support: 2 },
@@ -317,7 +317,7 @@ describe('party sender history candidates', () => {
       allowLearnedSenderHistory: true,
     }).find((candidate) => candidate.source === 'sender_history');
 
-    expect(history?.strength).toBe('strong');
+    expect(history?.strength).toBe('weak');
   });
 });
 
