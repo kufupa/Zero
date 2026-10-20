@@ -1,0 +1,6 @@
+| # | sev | issue | path:line | fix |
+|---|---|---|---|---|
+| 1 | P0 | Copy UIDL not isolated. `findExistingQuarantine` keys `(ingestMailboxId, pop3Uidl)` with no transport. Raw UIDL on a copy hits the primary quarantine and returns `quarantined` forever, so the worker never `DELE`s. `fanoutCopy` only named at `:304-317` and `:1840-1854`. Those sites do not insert. Same raw UIDL also hits pre-route duplicate (`:280-298`), receipt unique ([mail.ts:719](apps/server-pilot/src/db/schema/mail.ts)), inbound UIDL unique ([mail.ts:367](apps/server-pilot/src/db/schema/mail.ts)), cleanup lock/pending (`store.ts:1084`, `:1137-1149`). | store.ts:1829-1854 | Copy `meta.pop3Uidl` = `<uidl>#t:<transportId>` on every copy call: receipt, message, cleanup, quarantine lookup. Never pass raw UIDL. |
+| 2 | P0 | `promoteQuarantineId` still deletes quarantine inside the primary transaction (`:944-948`). Primary commit drops the row before copies finish. Failed copy then has nothing to retry; re-run sees primary `duplicate` and no quarantine. | store.ts:944-948 | `deferQuarantineDelete` skips the short-circuit (`:301`) and does not delete in the txn. Promoter deletes only after every copy is `stored`/`duplicate`/`reconciled`. |
+
+No new P0 in the two named fixes once both land. Other r3 gaps are P1, out of this check.

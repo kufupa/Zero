@@ -56,7 +56,7 @@ Extend the agent; do not rewrite it (R1 trace, ARCHITECTURE.md:5-10). The extrac
 
 ### Scope boundaries
 - Deferred: paid amend/cancel, memory A/B, queue TTL fix, four-field party split (U2b).
-- Da Vinci (ask 170, 2026-10-20 17:45Z verdict): the quote path takes its property from the mailbox resolver (not a global HRCEN→HRDAV swap); gaps G1–G5 are listed in the 17:45Z chat reply and the DV ledger row `dv-hrdav-lane-proposal-20261020`. Recommended: DV mailbox ingest + quarantine promotion as a parallel lane now (no file overlap; the prod transport-row write is an owner hold); DV quote path next run. **Owner picked B (2026-10-20 18:20Z, ask 172).** Parallel lane UDV in this run (disjoint files, off the critical path): see the kickoff's UDV block and `docs/research/2026-10-20-davinci-ingest-quarantine.md` (3 of 5 DV mailboxes have no transport row → 3,422 DV mails quarantined in 30 d). The prod row write stays an owner hold, executed in the planning chat after UDV deploys.
+- Da Vinci (ask 170, 2026-10-20 17:45Z verdict): the quote path takes its property from the mailbox resolver (not a global HRCEN→HRDAV swap); gaps G1–G5 are listed in the 17:45Z chat reply and the DV ledger row `dv-hrdav-lane-proposal-20261020`. Recommended: DV mailbox ingest + quarantine promotion as a parallel lane now (no file overlap; the prod transport-row write is an owner hold); DV quote path next run. **Owner picked B (2026-10-20 18:20Z, ask 172).** Lanes UDV-1/2/3 in this run (fan-out instead of quarantine, ask 173) (disjoint files, off the critical path): see the kickoff's UDV block and `docs/research/2026-10-20-davinci-ingest-quarantine.md` (3 of 5 DV mailboxes have no transport row → 3,422 DV mails quarantined in 30 d). The prod row write stays an owner hold, executed in the planning chat after UDV deploys.
 - Not this run: `RESERVATIONIST_PANE_SAVE=on`, real-guest writes, sending mail, GitHub Actions.
 
 ## Planning Contract
@@ -88,6 +88,10 @@ A unit starts when every unit in its **After** column has merged, not when its w
 | C | U6 Multi-ask pane | `session.ts`, `document-review.tsx`, `quote-workflow-panel.tsx`, `booking-draft.ts` | U2, U5b, U10 |
 | C | U9 Two end buttons | `quote-workflow-panel.tsx`, `booking-card.tsx`, `document-review.tsx` | U6, U4 |
 | A | U11a Outbound-gold harness (build) | `scripts/outbound-gold-backtest.ts`, `src/ai/outbound-gold-features.ts` | — |
+| A | UDV-1 Transport-only provision | `scripts/provision-prod.ts`, `src/db/provision.ts` | — |
+| A | UDV-2 Mailbox fan-out | `src/mail/ingest/store.ts`, `src/mail/ingest/fanout.ts` (new), `src/mail/ingest/worker.ts` | — |
+| B | UDV-3 General promoter | `src/mail/ingest/promote-quarantine.ts`, `scripts/promote-quarantine.ts` | UDV-1, UDV-2 |
+| B | U5r Internal staff ask rule (A narrow) | `extraction/extract.ts` (rules text only) | U5a |
 | D | U11b Replay runs | — | U5b, U6, U11a |
 | D | U12 Deploy + live e2e | — | all |
 
@@ -171,10 +175,85 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 - Action truth = staff outbound + owner rules (session e49ceaf9: change after letter = amend; go-ahead after quote = new booking; send proforma after booking = billing). 12 owner labels in prod `mail_action_label`; the 40-row sheet has 0 owner cells.
 - **Raw min:** 50 (#414-class, new harness) + runs.
 
+### UDV. Da Vinci ingest: every mailbox gets its own copy (owner option B + ask 173)
+Evidence: `docs/research/2026-10-20-davinci-ingest-quarantine.md`. Off the critical path, but **must merge before U12** so the one deploy carries it. Nothing here writes prod data; the 3 transport rows and the promotion are hold H5.
+
+**Problem (prod, read-only):** the sink gets **one** POP copy per mail (3,422 quarantined DV mails, all with exactly 1 copy per Message-ID). Ingest stores one `message` row per mail with one `transportId`. When a mail names two hotel mailboxes, `resolveTransportMatch` returns `multi` and the mail is quarantined (`store.ts:343-354`, `:392-404`). When `To` names one box, the box in `Cc`, or the sender's own box, never gets it (`findDirectToTransport` reads `To` only, `store.ts:1859-1873`). Of the 3,422 DV mails: 1,265 (37%) name 2–4 DV boxes. Without this fix, adding the 3 rows would quarantine up to 98/478 mails that route today.
+
+**Rule (generic, no mailbox names):** a mailbox gets a copy when its identity (email + `send_from_config` aliases) is in `To`, `Cc`, `Bcc` (its inbox) or `From` (its sent items). Same as what that mailbox shows in Outlook.
+
+- **UDV-1 transport-only provision.** `provision-prod.ts --transports-only`: plans/applies only missing transports + the Nava-user grants (`grant(seed.NAVA_USER_ID, …, false)`). Never creates users or credentials, never adds aliases to an existing transport (the as-is apply would create 3 logins and 2 Centurion aliases). Dry-run stays the default. Tests: `tests/provision.test.ts` (spec filter: no users, no alias edits, idempotent second run = 0 changes). ~40 LOC.
+- **UDV-2 fan-out: one persist call per mailbox copy (design r2, after the Grok 4.7 critic found 4 P0s in r1).**
+  - **Why not N copies in one call (r1, rejected):**
+    - `mail_ingest_source_receipt_identity_uidx` is `(ingestMailboxId, pop3Uidl)` with no transport (`schema/mail.ts:719`), and the pre-route duplicate check treats any receipt as the whole mail (`store.ts:280-298`).
+    - One transaction means one failed copy rolls back the primary (`store.ts:433`).
+    - The worker `DELE`s after one result (`worker.ts:406-408`).
+    - Attachment keys and cleanup are per message id and UIDL (`parse-message.ts:604-609`, `store.ts:1089-1095`, `:1512-1533`).
+  - **Routing change (`store.ts`):**
+    - (a) A corroborated owner stamp is checked **before** the direct-To `multi` quarantine. Corroboration already requires the stamped mailbox in To/Cc/Bcc/From (`isStampCorroborated`, `:1928`), so no mail moves to an unnamed mailbox.
+    - (b) When direct-To or equated matching returns `multi` and **every** id is in `HOTEL_EQUATED_TRANSPORT_IDS`, primary = the first sorted id, not quarantine. Any non-hotel id in the set keeps today's quarantine. `ambiguous` keeps today's quarantine.
+    - (c) `stored` / `duplicate` / `reconciled` results gain `fanoutTransportIds`: every **other** active hotel transport whose identity is in To/Cc/Bcc/From.
+    - Mail that routes today keeps the same primary transport, `message.id`, `pop3Uidl` and direction. New rows appear only in the extra mailboxes.
+  - **Copies (`src/mail/ingest/fanout.ts`, new, ~120 LOC):** `persistFanoutCopies({db, storage, raw, meta, transportIds, ingestSource, skipAiEnqueue})`. For each extra transport, in sorted order:
+    - Copy UIDL = `<uidl>#t:<transportId>` is the copy's `meta.pop3Uidl` **everywhere**: receipt, message row, candidate-attachment cleanup and quarantine lookups. The raw UIDL is never passed to a copy call. `messageId = candidateMessageIdForPop3Uidl(ingestMailboxId, copyUidl)`.
+    - New option `fanoutCopy: true`: a copy call **never inserts quarantine** (`store.ts:304-317`, `:1840-1854`). If its transport can't be resolved, it returns `{kind:'failed'}`. The worker then keeps the UIDL on POP3 (no `DELE`) and retries.
+    - **Re-parse** the raw MIME with that messageId, so its attachments upload under its own `attachments/{copyMessageId}/…` keys. Cleanup ownership then stays per copy.
+    - Call `persistInboundMessage` in its **own transaction** with `transportOverride: <id>` (widened from the Centurion literal to any active hotel transport; still resolved from the active row, `store.ts:323-334`) and the shared `rawMimeS3Key`.
+    - Each copy has its own UIDL, so the receipt index, `message_ingest_uidl_uidx` and the duplicate checks work per copy as they are. **No migration.**
+    - Direction per copy uses the existing rule (`store.ts:659-666`): outbound when From is that mailbox and no recipient is. A mail sent to itself stays an inbound loopback, as today.
+  - **Worker (`worker.ts`):** after the primary result (`stored`/`duplicate`/`reconciled`), run `persistFanoutCopies`, and `DELE` only when every copy returned `stored`/`duplicate`/`reconciled`. A failed copy leaves the UIDL on POP3. The next poll gets `duplicate` for the primary and for each existing copy, and creates only the missing ones (idempotent). Copies retry under the existing `failureCounts` path.
+  - **Kept as is:** live admission per copy (`mail_live_admission` is `(transportId, canonicalMessageId)`), thread resolution per transport, one advisory lock per call.
+  - **Tests:**
+    - In `tests/ingest-store-routing.test.ts`, driven with the worker's `candidateMessageIdForPop3Uidl` ids:
+      1. A stamped Centurion mail whose To also names 2 hotel boxes → Centurion primary with the same id and raw UIDL as before, plus 2 copies (was `multi_transport`).
+      2. An unstamped To-unique mail → the primary is unchanged, plus copies for its Cc/From hotel boxes.
+      3. To fkhumalo + davinci → 2 rows, 0 quarantine.
+      4. From fkhumalo, To davinci → fkhumalo outbound + davinci inbound.
+      5. To one hotel box + one non-hotel transport → quarantine, as today.
+      6. One address on two transports → `ambiguous_transport`.
+    - New `tests/ingest-fanout.test.ts`:
+      7. Copy 2 fails → no `DELE`, primary kept. The re-poll creates only copy 2.
+      8. Re-poll after success → 0 new rows.
+      9. Copies have distinct attachment keys, and cleanup of one leaves the other's object.
+    - Unchanged and green: `tests/ingest-store.test.ts`, `tests/ingest-dedupe-transport.test.ts`, `tests/mailbox-ingest-lock.test.ts`.
+  - ~200–280 product LOC (`store.ts` ~60, `fanout.ts` ~120, `worker.ts` ~25).
+- **UDV-3 general promoter.** `promote-quarantine.ts`:
+  - The Penny path (`isPromotableReserveCloudStaff`, `:86-98`, with the Centurion override and forced outbound) stays **exactly** as is.
+  - Every other `missing_owner_header` or `multi_transport` row goes through normal routing (no override) plus `persistFanoutCopies`, with **`skipAiEnqueue: true`**. Old mail is history only: no extraction, no HMS.
+  - The quarantine row is deleted only after the primary and every copy succeed. New option `deferQuarantineDelete: true` skips the existing-quarantine short-circuit (like `promoteQuarantineId`) but does **not** delete inside the primary transaction (`store.ts:944-948`). The promoter deletes the row itself after the last copy. On a re-run, the existing `duplicate` path for primary or copy is fine, because each missing copy still runs.
+  - `--dry-run` is the default; `--apply` is explicit; `--limit` and `--reason` are kept.
+  - Rows that still route nowhere stay quarantined.
+  - Tests in `tests/promote-quarantine.test.ts`:
+    1. A Penny row → Centurion, `direction = 'outbound'`, same as before.
+    2. A DV row naming 2 boxes → 2 rows.
+    3. 0 AI runs are enqueued.
+    4. A dry run writes nothing.
+    5. A failed copy keeps the quarantine row.
+  - ~100–150 LOC.
+- **UDV-1 detail (critic P1):** the apply path creates every `usersToCreate` and writes `aliasesToAdd` (`provision.ts:263-264`, `:331-353`, `:389-395`), and `--apply` needs `--credentials-out` (`provision-prod.ts:73-76`). `--transports-only` passes a stripped plan (empty users and aliases) into `applyProvision` and needs no credentials file. Test the apply function, not only the planner.
+- **Not a property of fan-out (critic P1):** 0 duplicate HMS reads holds only while `HMS_DAVINCI_READS` is off (`hms-read-target.ts:92-101`). Keep it off until run-once dedup across copies (ask 111) ships.
+- **Accepted cost (ask 111 stays open):** each inbound copy runs its own extraction. About 1,700 extra copies per 30 d (from the 1/2/3/4-box counts) is ~57 extractions/day. At the held-out run's $3.35 / 872 calls, that is about **$0.22/day of Luna (estimate)**. DV HMS prefetch is refused today (Centurion guard), so there are 0 duplicate HMS reads. Run-once dedup across copies is needed before the DV quote path ships (next run).
+- **Raw min:** UDV-1 30, UDV-2 95 + review 25, UDV-3 55. UDV-1 ‖ UDV-2, then UDV-3. Chain ≈ 175 raw ≈ 140 min at code-server 0.80, which is inside the main chain's 245–320.
+
+### U5r. Internal staff ask rule (owner ruling A narrow, 2026-10-20 ~18:45Z)
+- **Goal:** a hotel-staff mail asking colleagues to **quote, book, amend or cancel** a specific guest stay is that action, even when no outside request is passed on. Other internal mail (stats, rooming-list hand-offs, billing follow-ups, "already done" notes) stays `other`/`no_action` as now.
+- **Change:** one sentence in the Hotel staff bullet of `ACTION_CLASSIFICATION_RULES` (`extraction/extract.ts:60`), after the "Only a staff mail that passes on no outside request is other" clause. Generic wording; no names, no hotel strings.
+- **Why a separate unit, after U5a:** same file as U5a, and one rule change per eval keeps flips attributable.
+- **Gate:** the held-out runner (`/home/orca/nava-research/triage-chatd-20261020/runner.ts` on EC2, prod prompt + vision, ×2 passes, ~$3.35) on the same 436 rows, plus the 431 frozen rows. Pass when all of these hold:
+  - `e0e0f8dd` reads new_booking on **both** passes.
+  - The group headcount increase `f9122031` reads amend or group_event.
+  - Per pass: ≤10 fewer correct than U5a's branch.
+  - ≤5 silver `no_action` rows turn actionable.
+  - Quote recall ≥85% (D19).
+  - On a fail, drop U5r (cut order) and report it. Never retune on the test rows.
+- **Version:** re-hashes `EXTRACTION_VERSION` again; U12's stale_version re-enqueue covers it (one deploy).
+- **Raw min:** 10 code + 35 gate (two passes ~4–7 min each, plus the rebuild and score).
+
 ### U12. Deploy + live e2e (end of run)
 - `git -C .worktrees/recover-parse-failure fetch origin && git -C .worktrees/recover-parse-failure merge --ff-only origin/main`, then `ops-deploy.sh` (rc=1 from the 24 h dead-letter gate is known). Record the last-good SHA first.
 - Health 200/200; 4 pm2 procs; `/proc` flags unchanged.
 - Bundle load in nginx; Outlook pane + webmail check per R1–R9; one prod HMS read per grid; Labtest-only writes.
+- Ingest (UDV-2): 30 min after the deploy, read-only counts: Centurion new messages > 0, with its quarantine rate unchanged vs the 30 min before; no new `multi_transport` rows naming a hotel mailbox. Then hold H5.
 - **Raw min:** deploy p50 7; live p50 8 / p75 38 per check batch.
 
 ## Verification Contract
@@ -211,6 +290,7 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 - H2 The deploy at the end is approved (Q3). The Labtest Save + amend is approved (Q4). Per AGENTS.md, both approvals must be restated in the Grok orchestrator's own chat; the kickoff prompt carries them because the owner pastes it.
 - H3 ✅ owner 17:20Z: close PRs #301, #308, #334; park #336.
 - H4 ✅ D18: Grok orchestrator merges, deploys and runs deterministic live HMS scripts.
+- H5 (planning chat, not the orchestrator) After U12 is live: `provision-prod.ts --transports-only` dry-run → apply (3 DV rows + Nava grants). Check 30 min of DV routing (no new DV quarantine; copies in each named box). Then promoter dry-run → `--apply --limit 50` → rest. Owner approval in that chat.
 
 ## Assumptions
 - A1 A Labtest attempt that stops before the Save click does not use the one-Save budget.
@@ -240,6 +320,9 @@ Gates run in parallel, in the background: `bash /home/orca/bin/remote-typecheck.
 | U8 unpaid gate UI-only | Grok 4.7 xhigh | applied: `saveAmend` refuses without payment proof |
 | U5a version bump strands open items | Grok 4.7 xhigh | P0→P1: old payloads stay readable; consumers optional; U12 re-enqueues superseded |
 | U10 contract tag needs party read | Grok 4.7 xhigh | applied: contract tag only from existing party read, else "contract not checked" |
+| UDV r1: receipt key has no transport, one-txn rollback, DELE after one result, shared attachment keys (4 P0) | Grok 4.7 xhigh | applied: r2, one persist call per copy + re-parse + DELE after all |
+| UDV: stamp loses to direct-To multi; Penny promoter gate; provision apply still makes users; HMS dedup is flag-dependent (4 P1) | Grok 4.7 xhigh | applied |
+| UDV r2: copy quarantine on raw UIDL blocks retries; promoter deletes quarantine before copies (2 P0) | Grok 4.7 xhigh | applied: suffixed UIDL everywhere + `fanoutCopy` never quarantines; `deferQuarantineDelete` |
 | U2 bind refuses empty room type; party-gate anchor dead | Grok 4.7 xhigh | applied: own `staff-quote-bind.ts`; anchor removed |
 | Bare paths, schema anchor, per-guest grounding, Wave C order, ETA low | Grok 4.7 xhigh | applied |
 

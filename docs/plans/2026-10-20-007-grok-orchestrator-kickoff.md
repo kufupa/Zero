@@ -29,11 +29,12 @@ LANES — YOU LAUNCH EVERYTHING YOURSELF VIA ORCA CLI (`orca-ide`, never bare `o
 - Unit brief = the unit's section from the plan verbatim + owned files (Waves table) + the exact test files listed + "commit on branch sr2-<unit>, push, open a PR; do not merge; do not run tsc/vitest locally; run gates with the two remote scripts".
 - Waves: start every Wave A unit at once (U1, U2, U3, U4-code, U5a, U7, U11a). Start any other unit the moment every unit in its "After" column is merged (not when its wave letter opens). U10→U6→U9 run strictly in that order (shared quote-workflow-panel.tsx); U7→U8 likewise. A shared file means queued, never parallel.
 
-UDV — DA VINCI INGEST (parallel lane, owner option B; disjoint files; off the critical path; does not displace any unit). Evidence: docs/research/2026-10-20-davinci-ingest-quarantine.md. Start it with Wave A.
-- Owned files: apps/server-pilot/scripts/provision-prod.ts, apps/server-pilot/src/db/provision.ts, apps/server-pilot/scripts/promote-quarantine.ts, apps/server-pilot/src/mail/ingest/promote-quarantine.ts (+ store.ts only for the promotion override type). Tests: apps/server-pilot/tests/provision.test.ts, apps/server-pilot/tests/promote-quarantine.test.ts.
-- PR 1: `provision-prod.ts --transports-only` — plans/applies ONLY missing transports + the Nava-user grants; never creates users/credentials, never edits aliases of existing transports; dry-run stays default.
-- PR 2: generalise the promoter — resolve target transport from parsed To/Cc/Bcc/From identity via the same resolver store.ts uses (no Centurion constants), infer direction (own-From = outbound), leave ambiguous/multi rows quarantined, `--dry-run` default, `--transport <id>` filter.
-- You do NOT run either against prod. The prod write (3 transport rows) and any promotion are owner holds executed in the planning chat after the end deploy. Report both PR numbers in the closeout.
+UDV-1/2/3 — DA VINCI INGEST FAN-OUT (owner option B + ask 173; disjoint files from U1–U11; must merge before U12). Unit text: plan section "UDV". Evidence: docs/research/2026-10-20-davinci-ingest-quarantine.md.
+- UDV-1 (Wave A) `provision-prod.ts --transports-only`. UDV-2 (Wave A) fan-out (design r2): routing returns extra hotel mailboxes; each copy is its own persist call + transaction + re-parse via new fanout.ts; worker DELEs only after every copy succeeds; primary unchanged; no migration. UDV-3 (after UDV-2) general promoter with skipAiEnqueue, dry-run default.
+- UDV-2 is ingest for ALL live mail incl. Centurion: you read its full diff yourself, and all 9 listed fan-out/routing tests + ingest-store.test.ts + mailbox-ingest-lock.test.ts + ingest-dedupe-transport.test.ts must pass on EC2 before merge.
+- You do NOT run provision or promotion against prod. That is hold H5 for the planning chat after U12.
+
+U5r — INTERNAL STAFF ASK RULE (owner ruling "A narrow"; after U5a merges; extract.ts rules text only). Unit text: plan section "U5r". Gate = held-out 436 ×2 + frozen 431 as listed there; fail → drop U5r, never retune on test rows.
 
 PER-UNIT PIPELINE (owner routing):
 1 Grok 4.6 high codes (the coder terminal).
@@ -54,5 +55,5 @@ U12 END: after every unit is merged, do the A2 deploy (fetch first), then a read
 
 CLOSEOUT: update docs/context/ACTIVE.md (verified state, next acceptance check, holds), add a retro line per unit, record mistakes in docs/context/MISTAKES.md, report `grok usage` $ per model. Report to the owner in chat: what's live, what passed, what failed with evidence, open holds.
 
-Start now: read the files, write the ledger start row, create the Wave A worktrees + coder terminals (U1, U2, U3, U4-code, U5a, U7, U11a, UDV), and post a lane table (unit | worktree | terminal | state).
+Start now: read the files, write the ledger start row, create the Wave A worktrees + coder terminals (U1, U2, U3, U4-code, U5a, U7, U11a, UDV-1, UDV-2), and post a lane table (unit | worktree | terminal | state).
 ```
