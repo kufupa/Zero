@@ -76,6 +76,22 @@ const mailExtractionObjectSchema = z.object({
         .int()
         .nullable()
         .describe('Total rooms asked for in this stay, as stated. Null if not stated.'),
+      guests: z
+        .array(
+          z.object({
+            name: z.string().describe('Guest name as written for this stay.'),
+            confirmationNumber: z
+              .string()
+              .nullable()
+              .describe('Existing confirmation number for this guest exactly as written, or null.'),
+          }),
+        )
+        .optional()
+        .describe('Named guests on this stay, each with their own confirmation number when written.'),
+      action: z
+        .enum(MAIL_ACTIONS)
+        .optional()
+        .describe('Action for this stay; same enum as top-level action. Top-level action remains a summary.'),
       rows: z.array(
         z.object({
           roomType: nullableText.describe(
@@ -124,6 +140,10 @@ export type ExtractionRow = {
   childAges: number[];
   board: ExtractionBoard | null;
 };
+export type ExtractionGuest = {
+  name: string;
+  confirmationNumber: string | null;
+};
 export type ExtractionStay = {
   id: string;
   hotel: string | null;
@@ -132,6 +152,8 @@ export type ExtractionStay = {
   /** Stay total as stated. Set when the mail gives a total without a per-type split (rows then carry rooms null). */
   totalRooms: number | null;
   rows: ExtractionRow[];
+  guests?: ExtractionGuest[];
+  action?: MailAction;
 };
 
 const storedExtractionRowSchema = mailExtractionObjectSchema.shape.stays.element.shape.rows.element.extend({
@@ -142,7 +164,7 @@ const storedExtractionStaySchema = mailExtractionObjectSchema.shape.stays.elemen
   rows: z.array(storedExtractionRowSchema),
 });
 
-/** Stored mail-extraction payload. New action fields and origin stay optional for legacy rows. */
+/** Stored mail-extraction payload. Action fields, origin, and per-stay guests/action stay optional for legacy rows. */
 export const mailExtractionPayloadSchema = z.object({
   needsAction: z.boolean().optional(),
   action: z.enum(MAIL_ACTIONS).optional(),
@@ -175,10 +197,17 @@ export type SanitizedExtraction = {
 const TEXT_MAX = 200;
 const MAX_STAYS = 8; // the quote engine prices at most 8 groups
 const MAX_ROWS = 40;
+const MAX_GUESTS = 40;
 const MAX_CONFIRMATIONS = 10;
 const MAX_MISSING = 20;
 const CONFIRMATION_PATTERN = /^\d+-\d+$/;
 const LANGUAGE_PATTERN = /^[a-z]{2}$/;
+
+/** Digits-dash-digits and present verbatim in the text the model read; otherwise null. */
+function groundedConfirmationNumber(value: string, sourceText: string): string | null {
+  const trimmed = value.trim();
+  return CONFIRMATION_PATTERN.test(trimmed) && sourceText.includes(trimmed) ? trimmed : null;
+}
 
 /** Card-mask, then cap, so a number cut at the limit is never left half-unmasked. Empty becomes null. */
 export function cleanText(value: string | null | undefined, max = TEXT_MAX): string | null {
@@ -219,7 +248,7 @@ export function sanitizeExtraction(
   const confirmationNumbers = [
     ...new Set(output.confirmationNumbers.map((value) => value.trim())),
   ]
-    .filter((value) => CONFIRMATION_PATTERN.test(value) && input.sourceText.includes(value))
+    .filter((value) => groundedConfirmationNumber(value, input.sourceText) !== null)
     .slice(0, MAX_CONFIRMATIONS);
   const stays = output.stays.slice(0, MAX_STAYS).map((stay, stayIndex): ExtractionStay => {
     const id = stableId('s', input.messageId, String(stayIndex));
@@ -252,6 +281,24 @@ export function sanitizeExtraction(
           .slice(0, 9),
         board: row.board,
       })),
+      ...(stay.guests !== undefined
+        ? {
+            guests: stay.guests.slice(0, MAX_GUESTS).flatMap((guest) => {
+              const name = cleanText(guest.name);
+              if (!name) return [];
+              return [
+                {
+                  name,
+                  confirmationNumber:
+                    guest.confirmationNumber == null
+                      ? null
+                      : groundedConfirmationNumber(guest.confirmationNumber, input.sourceText),
+                },
+              ];
+            }),
+          }
+        : {}),
+      ...(stay.action !== undefined ? { action: stay.action } : {}),
     };
   });
   const reversedDateWarnings = output.stays.slice(0, MAX_STAYS).flatMap((stay) => {
