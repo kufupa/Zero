@@ -1097,7 +1097,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(onUndo).toHaveBeenCalledWith('question:how many children, and what ages?');
   });
 
-  it('does not show signature noise and does not let a secondary ask disable an authorised PDF', () => {
+  it('shows one top PDF + reply primary when rates are ready without letting a secondary ask block it', () => {
     const noisy = sessionFromFixture('public-single');
     noisy.reviewItems = [
       {
@@ -1143,8 +1143,42 @@ describe('QuoteWorkflowPanel', () => {
         },
       ],
     };
-    render(<QuoteWorkflowPanel session={ready} onPreparePdf={vi.fn()} />);
-    expect(screen.getByRole('button', { name: /^Prepare PDF$/i })).toHaveProperty('disabled', false);
+    const onPreparePdf = vi.fn();
+    const { container, rerender } = render(<QuoteWorkflowPanel session={ready} onPreparePdf={onPreparePdf} />);
+    const topPrepare = screen.getByRole('button', { name: 'Prepare PDF + reply' }) as HTMLButtonElement;
+    const documents = container.querySelector('#quote-quote') as HTMLElement;
+    const documentPrepare = within(documents).getByRole('button', { name: 'Prepare PDF' }) as HTMLButtonElement;
+    expect(topPrepare.disabled).toBe(false);
+    expect(topPrepare.className).toContain('bg-[#0066cc]');
+    expect(topPrepare.compareDocumentPosition(documents) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(primaryActions(container)).toEqual([topPrepare]);
+    expect(documentPrepare.className).toContain('border-[#0066cc]');
+    expect(documentPrepare.className).not.toContain('bg-[#0066cc]');
+    fireEvent.click(topPrepare);
+    expect(onPreparePdf).toHaveBeenCalledTimes(1);
+
+    rerender(<QuoteWorkflowPanel session={ready} onPreparePdf={onPreparePdf} pdfPending />);
+    const pendingButtons = screen.getAllByRole('button', { name: 'Preparing PDF…' }) as HTMLButtonElement[];
+    expect(pendingButtons).toHaveLength(2);
+    expect(pendingButtons.every((button) => button.disabled)).toBe(true);
+
+    rerender(
+      <QuoteWorkflowPanel
+        session={{
+          ...ready,
+          pdf: {
+            fileName: 'Quote - Standard King.pdf',
+            bytesBase64: 'JVBERi0xLjQK',
+            pdfHash: 'cd'.repeat(32),
+            revisionId: 'quotes:public-single',
+            totalMinor: 272000,
+          },
+        }}
+        onPreparePdf={onPreparePdf}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Prepare PDF + reply' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Review documents' })).toBeDefined();
     expect(screen.getByText('Is an airport shuttle available?')).toBeDefined();
   });
 

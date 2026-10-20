@@ -167,7 +167,7 @@ async function waitForAllocation(label: string) {
   });
 }
 
-async function startPendingPdf() {
+async function startPendingPdf({ doubleClick = false }: { doubleClick?: boolean } = {}) {
   render(<OutlookPanePage />);
   await fillStayFactsMatchingAuthorisedOffer();
   fireEvent.click(await screen.findByRole('button', { name: /^Search availability$/i }));
@@ -176,7 +176,15 @@ async function startPendingPdf() {
   if (allocation.getAttribute('aria-pressed') !== 'true') fireEvent.click(allocation);
   // A draft needs a reviewed reply as well as a PDF, so a stale PDF would show up as a draft attempt.
   setReviewedReply(AUTHORISED_REPLY_HTML);
-  fireEvent.click(screen.getByRole('button', { name: /^Prepare PDF$/i }));
+  const prepare = screen.getByRole('button', { name: 'Prepare PDF + reply' }) as HTMLButtonElement;
+  if (doubleClick) {
+    act(() => {
+      fireEvent.click(prepare);
+      fireEvent.click(prepare);
+    });
+  } else {
+    fireEvent.click(prepare);
+  }
   await waitFor(() => expect(quotePdfMutateMock).toHaveBeenCalled());
 }
 
@@ -207,6 +215,22 @@ describe('deferred quote PDF / unavailable cannot mutate a newer session', () =>
     localStorage.clear();
     sessionStorage.clear();
     cleanup();
+  });
+
+  it('sends one single-stay PDF request when staff double-click the top action', async () => {
+    const pending = deferred<typeof AUTHORISED_QUOTE_PDF>();
+    quotePdfMutateMock.mockReturnValue(pending.promise);
+    await startPendingPdf({ doubleClick: true });
+
+    expect(quotePdfMutateMock).toHaveBeenCalledTimes(1);
+    const pendingButtons = screen.getAllByRole('button', { name: 'Preparing PDF…' }) as HTMLButtonElement[];
+    expect(pendingButtons).toHaveLength(2);
+    expect(pendingButtons.every((button) => button.disabled)).toBe(true);
+
+    await act(async () => {
+      pending.resolve(AUTHORISED_QUOTE_PDF);
+      await pending.promise;
+    });
   });
 
   it('rejects a PDF that returns after the stay group is edited', async () => {
