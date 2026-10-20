@@ -256,6 +256,24 @@ export function reportScoreKind(n: number): ScoreKindReport {
   return { scoreKind: 'rate', n, label: 'rate' };
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function letterFieldOk(value: unknown): boolean {
+  return value === undefined || value === null || isPlainObject(value);
+}
+
+function cardsFieldOk(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  return value.every((item) => isPlainObject(item));
+}
+
+function rowArtifactsOk(row: { letter?: unknown; cards?: unknown }): boolean {
+  return letterFieldOk(row.letter) && cardsFieldOk(row.cards);
+}
+
 export function parseFixtureJsonl(textValue: string): {
   rows: OutboundGoldFixtureRow[];
   jsonlErrors: number;
@@ -270,12 +288,13 @@ export function parseFixtureJsonl(textValue: string): {
         jsonlErrors += 1;
         continue;
       }
-      const id = text((value as { id?: unknown }).id);
-      if (!id) {
+      const record = value as Record<string, unknown>;
+      const id = text(record.id);
+      if (!id || !rowArtifactsOk(record)) {
         jsonlErrors += 1;
         continue;
       }
-      rows.push({ ...(value as OutboundGoldFixtureRow), id });
+      rows.push({ ...(record as OutboundGoldFixtureRow), id });
     } catch {
       jsonlErrors += 1;
     }
@@ -287,30 +306,55 @@ export function scoreOutboundGoldFixture(
   rows: readonly OutboundGoldFixtureRow[],
   jsonlErrors = 0,
 ): OutboundGoldSummary {
-  const letters: GoldLetterInput[] = [];
-  const cards: GoldCardInput[] = [];
+  let letters = 0;
+  let lettersCovered = 0;
+  let lettersUncovered = 0;
+  let cards = 0;
+  let distinctDateSets = 0;
+  let dateSetCardPass = true;
   let withReply = 0;
   let withLetter = 0;
   let withQuotePdf = 0;
+  let scoredRows = 0;
+  let errors = jsonlErrors;
+
   for (const row of rows) {
+    if (!rowArtifactsOk(row)) {
+      errors += 1;
+      continue;
+    }
+    scoredRows += 1;
     if (text(row.replyId)) withReply += 1;
     if (text(row.letterId) || row.letter) withLetter += 1;
     if (text(row.quotePdfId)) withQuotePdf += 1;
-    if (row.letter) letters.push({ id: text(row.letterId) ?? `${row.id}:letter`, ...row.letter });
-    for (const item of row.cards ?? []) cards.push(item);
+    const rowLetters: GoldLetterInput[] = row.letter
+      ? [{ id: text(row.letterId) ?? `${row.id}:letter`, ...row.letter }]
+      : [];
+    const coverage = checkLetterCoverage({ letters: rowLetters, cards: row.cards ?? [] });
+    letters += coverage.letters;
+    lettersCovered += coverage.lettersCovered;
+    lettersUncovered += coverage.lettersUncovered;
+    cards += coverage.cards;
+    distinctDateSets += coverage.distinctDateSets;
+    if (!coverage.dateSetCardPass) dateSetCardPass = false;
   }
-  const coverage = checkLetterCoverage({ letters, cards });
-  const n = coverage.letters;
+
   return {
-    ...coverage,
-    ...reportScoreKind(n),
-    rows: rows.length,
+    pass: lettersUncovered === 0 && dateSetCardPass && letters > 0,
+    letters,
+    lettersCovered,
+    lettersUncovered,
+    cards,
+    distinctDateSets,
+    dateSetCardPass,
+    ...reportScoreKind(letters),
+    rows: scoredRows,
     withReply,
     withLetter,
     withQuotePdf,
     visionParity: OUTBOUND_GOLD_VISION_PARITY,
     prodInput: OUTBOUND_GOLD_PROD_INPUT,
-    jsonlErrors,
+    jsonlErrors: errors,
   };
 }
 

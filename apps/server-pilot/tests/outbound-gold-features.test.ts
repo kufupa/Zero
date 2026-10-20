@@ -181,4 +181,40 @@ describe('stdout shape is counts', () => {
     expect(stdout).not.toContain('not-json');
     expect(JSON.parse(stdout).jsonlErrors).toBe(1);
   });
+
+  it('fails two swapped rows that would pass if cards were pooled', () => {
+    const scored = scoreOutboundGoldFixture([
+      {
+        id: 'ask-1',
+        letter: { guest: FIXTURE_GUEST_A, conf: CONF_A, arrival: ARRIVAL },
+        cards: [card({ id: 'card-b', guests: [{ guest: FIXTURE_GUEST_B, conf: CONF_B }] })],
+      },
+      {
+        id: 'ask-2',
+        letter: { guest: FIXTURE_GUEST_B, conf: CONF_B, arrival: ARRIVAL },
+        cards: [card({ id: 'card-a', guests: [{ guest: FIXTURE_GUEST_A, conf: CONF_A }] })],
+      },
+    ]);
+    expect(scored.pass).toBe(false);
+    expect(scored.letters).toBe(2);
+    expect(scored.lettersCovered).toBe(0);
+    expect(scored.lettersUncovered).toBe(2);
+    expect(scored.cards).toBe(2);
+  });
+
+  it('drops rows whose letter or cards are not objects and counts jsonlErrors', () => {
+    const parsed = parseFixtureJsonl(
+      [
+        '{"id":"ask-ok","letter":{},"cards":[]}',
+        '{"id":"ask-letter","letter":"nope","cards":[]}',
+        '{"id":"ask-cards","letter":{},"cards":"nope"}',
+        '{"id":"ask-item","letter":{},"cards":[1]}',
+      ].join('\n'),
+    );
+    expect(parsed.rows.map((row) => row.id)).toEqual(['ask-ok']);
+    expect(parsed.jsonlErrors).toBe(3);
+    const scored = scoreOutboundGoldFixture(parsed.rows, parsed.jsonlErrors);
+    expect(scored.rows).toBe(1);
+    expect(scored.jsonlErrors).toBe(3);
+  });
 });
