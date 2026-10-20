@@ -138,6 +138,8 @@ type QuoteOption = {
   availabilityReason?: unknown;
   eligibility?: unknown;
   nightly?: unknown;
+  /** fetch-quote.mjs: public / contextual / unknown. Never inferred from the rate code here. */
+  rateScope?: unknown;
 } | null;
 type QuoteGroup = {
   id?: unknown;
@@ -200,6 +202,7 @@ export type AvailabilitySnapshot = {
       rateLabel?: string;
       eligibility?: string;
       nightly?: AvailabilityNightFact[];
+      rateScope?: 'public' | 'contextual' | 'unknown';
     }>;
   }>;
   /** True when the reader cut matching rows at maxOptionsPerGroup. */
@@ -239,6 +242,13 @@ function completeness(value: unknown): AvailabilityCompleteness | undefined {
 
 function truncatedOf(flags: AvailabilityCompleteness | undefined): boolean {
   return flags?.search === 'truncated' || flags?.matchingRowsUnseen === true;
+}
+
+/** Pass through the reader's rateScope. A missing or unknown value stays unknown; BAR codes are not invented here. */
+function rateScopeOf(option: QuoteOption): 'public' | 'contextual' | 'unknown' | undefined {
+  const scope = text(option?.rateScope);
+  if (scope === 'public' || scope === 'contextual' || scope === 'unknown') return scope;
+  return undefined;
 }
 
 function positiveCount(value: unknown): number | null {
@@ -427,6 +437,7 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
         const roomLabel = text(option?.room?.label);
         const eligibility = text(option?.eligibility);
         const board = text(option?.board);
+        const rateScope = rateScopeOf(option);
         const hasNightlyFacts = nightly !== undefined;
         return {
           room: text(option?.room?.code),
@@ -438,6 +449,7 @@ export function availabilitySnapshotOf(result: QuoteEnvelope, request?: Availabi
           ...(hasNightlyFacts && rateLabel ? { rateLabel } : {}),
           ...(hasNightlyFacts && eligibility ? { eligibility } : {}),
           ...(hasNightlyFacts ? { nightly } : {}),
+          ...(rateScope ? { rateScope } : {}),
         };
       }),
     };
@@ -471,6 +483,8 @@ export type AvailabilityBoardRow = {
   boardLabel: string;
   nightlyPriceMinor: number | null;
   roomsLeft: number | null;
+  /** Reader fact only. Contract tags must not be invented from a public code. */
+  rateScope?: 'public' | 'contextual' | 'unknown';
 };
 
 function amountMinor(amount: string | null): number | null {
@@ -513,6 +527,7 @@ export function availabilityBoardOf(result: QuoteEnvelope): {
           ? Math.round(priced.reduce((sum, value) => sum + value, 0) / priced.length)
           : null,
         roomsLeft: stocks.length ? Math.min(...stocks) : null,
+        ...(option.rateScope ? { rateScope: option.rateScope } : {}),
       });
     }
   }

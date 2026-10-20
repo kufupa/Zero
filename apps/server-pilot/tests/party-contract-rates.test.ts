@@ -14,6 +14,7 @@ import {
   partyContractChoice,
 } from '../src/ai/reservationist-business-services.js';
 import { occupiedDates } from '../src/quote-proposal/quote-revision.js';
+import { availabilityBoardOf } from '../src/ai/hms-availability.js';
 import { otherBoardContractNotes, type RateOption } from '../src/ai/rate-options.js';
 import { panePartyLookupLoaders, verifyPartyPick } from '../src/ai/pane-party-lookup.js';
 import { suggestPartiesFor } from '../src/ai/party-aliases.js';
@@ -448,6 +449,67 @@ describe('contract rates from the picked company or agency', () => {
     const context = partyRateContext({ company: company('49', 'Woolworths'), agency: agency('569', 'Agency') });
     expect(Object.keys(context ?? {}).sort()).toEqual(['agency', 'organization']);
     expect(partyRateContext(undefined)).toBeUndefined();
+  });
+});
+
+describe('availability board overlay from the existing read', () => {
+  it('carries rateScope onto board rows and never treats a public or unknown code as contextual', () => {
+    const board = availabilityBoardOf({
+      outcome: 'quote',
+      groups: [
+        {
+          id: 'group-1',
+          options: [
+            {
+              room: { code: 'STQN', label: 'Standard Queen' },
+              rate: { code: 'BARRO', label: 'Room Only' },
+              rateScope: 'public',
+              board: 'Room Only R',
+              availability: 'available',
+            },
+            {
+              room: { code: 'STQN', label: 'Standard Queen' },
+              rate: { code: 'BCO1B', label: 'Negotiated' },
+              rateScope: 'contextual',
+              board: 'Room Only R',
+              availability: 'available',
+            },
+            {
+              room: { code: 'STQN', label: 'Standard Queen' },
+              rate: { code: 'NCORRO', label: 'Named plan' },
+              rateScope: 'unknown',
+              board: 'Room Only R',
+              availability: 'available',
+            },
+          ],
+        },
+      ],
+    });
+    expect(board.rows.map((row) => [row.rateCode, row.rateScope])).toEqual([
+      ['BARRO', 'public'],
+      ['BCO1B', 'contextual'],
+      ['NCORRO', 'unknown'],
+    ]);
+  });
+
+  it('omits rateScope when the reader did not send one', () => {
+    const board = availabilityBoardOf({
+      outcome: 'quote',
+      groups: [
+        {
+          id: 'group-1',
+          options: [
+            {
+              room: { code: 'STQN', label: 'Standard Queen' },
+              rate: { code: 'BAR', label: 'Best available' },
+              board: 'Bed & Breakfast R',
+              availability: 'available',
+            },
+          ],
+        },
+      ],
+    });
+    expect(board.rows[0]).not.toHaveProperty('rateScope');
   });
 });
 
