@@ -31,13 +31,24 @@ All 5 mailboxes' mail reaches the sink, but only the two mailboxes with a `mailb
 
 So the as-is apply does more than the 3 rows. A transport-only path (`--transports-only`: transports + Nava grants, no users, no alias edits) is the safe write.
 
-## 4. Side effect to accept
+## 4. Multi-mailbox mail (superseded the "accept 20%" proposal; owner ask 173)
 
-Ingest has no per-mailbox membership yet (ask 111): one message → one transport. After the 3 rows exist, a mail whose **To** names e.g. fkhumalo **and** davinci matches two transports → `multi_transport` quarantine instead of routing to fkhumalo. Upper bound from routed mail since 10-16 (To/Cc/Bcc, so it over-counts): fkhumalo 62/268, adladla 36/210 = **up to 98/478 (20%)**. Gain: ~930 mails per 4 days stop quarantining. Nothing is deleted either way; quarantined rows stay promotable.
+| Fact (read-only, 18:40–18:55Z) | Count |
+|---|---:|
+| POP copies per quarantined DV Message-ID | 1 for all 3,422 (the sink gets one copy, not one per mailbox) |
+| Distinct DV mails naming 1 / 2 / 3 / 4 DV boxes | 2,157 / 1,007 / 76 / 182 |
+| Of those, From is a hotel mailbox | 1,254 |
+| Routed fkhumalo/adladla mail whose From is another DV box (that box never got its sent copy) | 86 / 19 |
+| Routed fkhumalo/adladla mail that would turn `multi` once the 3 rows exist | up to 62 / 36 |
+| Centurion mail (30 d) naming any DV box | 11 / 5,414 |
+| Ingest sinks | 1 (`ingest-nava-legacy`) |
+| fkhumalo/adladla mail live-admitted / with extraction | 480 / 335 (AI already runs on DV mail) |
+
+Fix: fan-out, so every named mailbox gets its own `message` row (plan unit UDV-2). It needs no migration, because extra copies key on `<uidl>#t:<transportId>`. It removes `multi_transport` for hotel mailboxes and the lost Cc/sent copies.
 
 ## 5. Promotion of the backlog
 
-`promote-quarantine.ts` is Centurion-only (`CENTURION_TRANSPORT_ID`, `CENTURION_INGEST_MAILBOX_IDS`, sender predicate, hard-coded outbound direction). Promoting Da Vinci history needs it generalised to resolve the target transport from parsed To/Cc/Bcc/From identity with the same resolver as `store.ts`, infer direction, and leave ambiguous rows quarantined. The promoter does not enqueue extraction itself.
+`promote-quarantine.ts` is Centurion-only (plan unit UDV-3 generalises it with `skipAiEnqueue`) (`CENTURION_TRANSPORT_ID`, `CENTURION_INGEST_MAILBOX_IDS`, sender predicate, hard-coded outbound direction). Promoting Da Vinci history needs it generalised to resolve the target transport from parsed To/Cc/Bcc/From identity with the same resolver as `store.ts`, infer direction, and leave ambiguous rows quarantined. The promoter does not enqueue extraction itself.
 
 ## 6. Limits
 

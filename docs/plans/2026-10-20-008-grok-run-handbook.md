@@ -154,9 +154,9 @@ T0 = kickoff. Lanes have no caps; the **run** has checkpoints. At each, write th
 
 | Checkpoint | Expected (plan ETA 245–320 min) | If behind |
 |---|---|---|
-| T0 + 90 min | U1, U3, U7 merged; U2 and U5a in review; U4 combo DOM captured | keep going; note which unit is slow |
+| T0 + 90 min | U1, U3, U7, UDV-1 merged; U2, U5a, UDV-2 in review; U4 combo DOM captured | keep going; note which unit is slow |
 | T0 + 150 min | Wave A merged incl. U5a gate result | start Wave B anyway for units whose After is merged; consider cutting U10 (tags only) |
-| T0 + 240 min | U6 merged or in final review | **cut** whatever is not in review (candidates in order: U10, U9 relabel, U6 split control) and go to deploy |
+| T0 + 240 min | U6 merged or in final review | **cut** whatever is not in review (candidates in order: U5r, UDV-3, U10, U9 relabel, U6 split control; UDV-2 is not cut once in review, H5 needs it) and go to deploy |
 | T0 + 300 min | deploy done, live checks running | deploy what is merged; report the rest as open |
 | T0 + 360 min | hard stop for new merges | finish live checks + closeout only |
 
