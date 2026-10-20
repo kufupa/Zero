@@ -22,3 +22,8 @@ Running log so nothing from the chat gets lost. Source: this chat; asks 155–16
 | O1 | Merge PR #424 (docs only) | Merge |
 | O2 | Wayfinder (issue-tracker decision map) vs repo md decision log | Repo md (this file) + research md per lane |
 | O3 | Client questions that corpus cannot answer (see chat) | Ask in today's call |
+
+## Owner challenge 12:15Z (ask 161)
+
+- Owner: "isnt that literally what mem0 / this open source stuff is built for?" (precedent retrieval for staff). Stale-source objection: mem0 maintainer link was a 2025 issue. Rule: **use only current (≥2026-04) evidence for tool decisions**; everything must be self-hostable; Letta + Graphiti "kinda makes sense".
+- Action: Exa agent **ultra** run `agent_run_381441c270994597b6735bdff2a10013` (budget $40, ≤40 min), use cases U1 precedent retrieval, U2 sender knowledge, U3 request↔booking linkage, U4 hotel SOPs, U5 task scratchpad; 2026-dated sources only; includes "where previous run was stale".
