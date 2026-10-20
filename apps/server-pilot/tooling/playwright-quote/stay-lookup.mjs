@@ -135,6 +135,15 @@ export async function findOnOpenGuestStay(ctx, { captureScreenshots = true } = {
   } catch {
     result.commercial = null;
   }
+  // Named commercial controls carry deposit/guarantee when the labelled stay snapshot omitted them.
+  if (result.stay) {
+    if (!result.stay.depositReceived && result.commercial?.depositReceived) {
+      result.stay.depositReceived = result.commercial.depositReceived;
+    }
+    if (!result.stay.guaranteeType && result.commercial?.guaranteeType) {
+      result.stay.guaranteeType = result.commercial.guaranteeType;
+    }
+  }
   if (captureScreenshots) await shot(ctx, 'record.png');
   mark(ctx, 'opened');
   const verdict = stayIdentityVerdict(args, result.stay);

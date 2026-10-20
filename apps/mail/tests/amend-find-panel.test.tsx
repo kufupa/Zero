@@ -38,7 +38,7 @@ import {
   type HmsSearchRun,
   type StayRecordWire,
 } from '../lib/quote-workflow/amend-find';
-import type { CancelRun } from '../lib/quote-workflow/amend-cancel';
+import { AMEND_SAVE_COPY, type CancelRun } from '../lib/quote-workflow/amend-cancel';
 import { amendmentOf, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type { QuoteAmendment, QuoteSession } from '../lib/quote-workflow/types';
 
@@ -103,8 +103,10 @@ function sessionWith(amendment: QuoteAmendment | null, threadId: string | null =
   return session;
 }
 
+type StayOverrides = Partial<StayRecordWire> & { depositReceived?: string | null };
+
 /** One Guest Stay as findStay returns it. Override any field; the defaults are a booked, rated stay. */
-function stayRecord(overrides: Partial<StayRecordWire> = {}): StayRecordWire {
+function stayRecord(overrides: StayOverrides = {}): StayRecordWire {
   return {
     status: 'Reserved',
     confirmation: CONFIRMATION,
@@ -129,8 +131,15 @@ function stayRecord(overrides: Partial<StayRecordWire> = {}): StayRecordWire {
   };
 }
 
-function found(stay: Partial<StayRecordWire> = {}, screenshots: string[] = ['record.png', 'panel.png']): FindStayReply {
+function found(stay: StayOverrides = {}, screenshots: string[] = ['record.png', 'panel.png']): FindStayReply {
   return { outcome: 'found', reason: null, stay: stayRecord(stay), screenshots, runId: RUN_ID };
+}
+
+function unpaidFound(stay: StayOverrides = {}, screenshots?: string[]): FindStayReply {
+  return found(
+    { guaranteeType: 'Non-Guaranteed Individual', depositReceived: '0', ...stay },
+    screenshots,
+  );
 }
 
 const NOT_FOUND: FindStayReply = { outcome: 'not_found', reason: null, stay: null, screenshots: [], runId: null };
@@ -1929,7 +1938,9 @@ describe('AmendLookupPanel amend form', () => {
       previewDigest: null,
       changedFieldsReadback: { arrival: '2026-10-13' },
     });
-    const findStay = vi.fn().mockResolvedValue(found({ lastName: 'Labtest', arrival: '2026-10-12' }));
+    const findStay = vi.fn().mockResolvedValue(
+      unpaidFound({ lastName: 'Labtest', arrival: '2026-10-12' }),
+    );
     render(
       <AmendLookupPanel session={sessionWith({ ...DATE_CHANGE, guestLastName: 'Labtest' })} trpc={amendTrpc(findStay, preview, commit)} />,
     );
@@ -1951,5 +1962,40 @@ describe('AmendLookupPanel amend form', () => {
       fields: { arrival: '2026-10-13' },
       previewDigest: DIGEST,
     });
+  });
+
+  it('hides Preview when the found stay is paid or missing payment fields', async () => {
+    capabilities.paneSave = true;
+    capabilities.paneSaveMode = 'lab';
+    const preview = vi.fn();
+    const findStay = vi.fn().mockResolvedValue(
+      found({ lastName: 'Labtest', arrival: '2026-10-12', guaranteeType: 'Guaranteed By Agent', depositReceived: '0' }),
+    );
+    render(
+      <AmendLookupPanel session={sessionWith({ ...DATE_CHANGE, guestLastName: 'Labtest' })} trpc={amendTrpc(findStay, preview)} />,
+    );
+    await pressFind();
+    expect(await screen.findByText(AMEND_SAVE_COPY.handleInHms)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('hides Preview while CHECK is open even for an unpaid stay', async () => {
+    capabilities.paneSave = true;
+    capabilities.paneSaveMode = 'lab';
+    const preview = vi.fn();
+    const findStay = vi.fn().mockResolvedValue(
+      unpaidFound({ lastName: 'Labtest', arrival: '2026-10-12' }, []),
+    );
+    render(
+      <AmendLookupPanel
+        session={sessionWith({ ...DATE_CHANGE, guestLastName: 'Other', confirmationNumber: CONFIRMATION })}
+        trpc={amendTrpc(findStay, preview)}
+      />,
+    );
+    await pressFind();
+    expect(await screen.findByTestId('amend-check-banner')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
   });
 });

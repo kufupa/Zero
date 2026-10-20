@@ -13,7 +13,9 @@ import {
   cancelFeeSentence,
   cancelSwitchedOffNote,
   changedAmendRows,
+  classifyAmendPayment,
   isoDayOf,
+  paymentStayFromRecord,
   viewAfterAmendCommit,
   viewAfterAmendPreview,
   viewAfterCommit,
@@ -262,6 +264,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const amendRows = stay && amendment.kind === 'amend' ? changedAmendRows(stayCurrent, requestedValues) : [];
   const amendFields = Object.fromEntries(amendRows.map((row) => [row.field, requestedValues[row.field]])) as AmendFormValues;
   const amendLastName = stayText(stay?.lastName) ?? amendment.guestLastName ?? '';
+  const unpaidStay = classifyAmendPayment(paymentStayFromRecord(stay)) === 'unpaid';
+  const canAmendWrite = Boolean(canPreviewAmend && unpaidStay && !checkReason && foundNumber);
   const amendInput =
     foundNumber && cancelArrival && amendLastName && Object.keys(amendFields).length
       ? { confirmation: foundNumber, arrival: cancelArrival, lastName: amendLastName, fields: amendFields }
@@ -294,7 +298,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   };
 
   const previewAmendStay = async () => {
-    if (!canPreviewAmend || !amendScope || !amendClient || !amendInput) return;
+    if (!canAmendWrite || !amendScope || !amendClient || !amendInput) return;
     const scope = amendScope;
     setAmendViews((prev) => ({ ...prev, [scope]: { kind: 'previewing' } }));
     try {
@@ -307,7 +311,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
 
   const commitAmendStay = async (ready: Extract<AmendView, { kind: 'ready' }>) => {
     const previewDigest = ready.run.previewDigest;
-    if (!canPreviewAmend || !amendScope || !amendClient || !amendInput || !previewDigest) return;
+    if (!canAmendWrite || !amendScope || !amendClient || !amendInput || !previewDigest) return;
     const scope = amendScope;
     setAmendViews((prev) => ({ ...prev, [scope]: { kind: 'committing', run: ready.run } }));
     try {
@@ -534,11 +538,15 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           }}
         />
       ) : null}
-      {amendment.kind === 'amend' && stay && foundNumber ? (
+      {amendment.kind === 'amend' && stay && foundNumber && !checkReason ? (
         <AmendSection
           view={amendView}
-          canPreview={canPreviewAmend}
-          offNote={`${AMEND_SAVE_COPY.switchedOff} Open ${foundNumber} in HMS and save the change there.`}
+          canPreview={canAmendWrite}
+          offNote={
+            unpaidStay
+              ? `${AMEND_SAVE_COPY.switchedOff} Open ${foundNumber} in HMS and save the change there.`
+              : AMEND_SAVE_COPY.handleInHms
+          }
           rows={amendRows}
           values={requestedValues}
           current={stayCurrent}
@@ -557,7 +565,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
             if (amendView?.kind === 'ready') void commitAmendStay(amendView);
           }}
         />
-      ) : amendment.kind === 'amend' ? (
+      ) : amendment.kind === 'amend' && !(stay && foundNumber) ? (
         <div data-testid="amend-run-placeholder" className="flex justify-end border-t border-[#e2e8f0] pt-2">
           <button type="button" className={buttonClass} disabled title="Find the booking first">
             {AMEND_SAVE_COPY.preview}

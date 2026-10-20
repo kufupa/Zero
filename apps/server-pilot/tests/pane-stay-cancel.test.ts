@@ -1,3 +1,4 @@
+import { cancelExpectStay } from '../src/ai/pane-hms-write.js';
 import {
   buildCancelStayArgs,
   checkCancelInput,
@@ -534,6 +535,39 @@ describe('pane stay cancel', () => {
     ).not.toContain('--expect-stay');
     expect(commit).toContain('--mode');
     expect(commit[commit.indexOf('--mode') + 1]).toBe('commit');
+  });
+
+  it('an approved cancel with lookup depositReceived 0 is not refused when the cancel read omits that key', async () => {
+    const { stayChanges } = (await import('../tooling/playwright-quote/cancel-stay-rules.mjs' as string)) as {
+      stayChanges(expected: Record<string, unknown>, actual: Record<string, unknown>): string[];
+    };
+    const lookupStay = {
+      status: 'Reserved',
+      confirmation: '57291630-1',
+      lastName: 'Labtest',
+      firstName: 'Lab',
+      arrival: '2027-09-14',
+      departure: '2027-09-16',
+      nights: 2,
+      adults: 1,
+      children: 0,
+      roomType: 'DBL',
+      ratePlan: 'BAR',
+      mealPlan: 'BB',
+      averageRate: '1000.00',
+      grandTotal: '2000.00',
+      balance: '0.00',
+      sourceOfBusiness: 'Direct',
+      guaranteeType: 'Non-Guaranteed Individual',
+      depositReceived: '0',
+      bookingAgency: null,
+      organization: null,
+    };
+    const expected = cancelExpectStay(lookupStay);
+    expect(expected).not.toHaveProperty('depositReceived');
+    const cancelRead = { ...expected };
+    expect(stayChanges(expected, cancelRead)).toEqual([]);
+    expect(stayChanges(lookupStay, cancelRead)).toEqual(['depositReceived']);
   });
 
   it('returns a run id whose screenshots load through paneStayScreenshot, for the owner only', async () => {

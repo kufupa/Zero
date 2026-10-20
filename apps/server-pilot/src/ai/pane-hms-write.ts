@@ -49,7 +49,7 @@ import {
   takePanePreview,
   type PaneStayLock,
 } from './pane-stay-save.js';
-import { findStay, type PaneStayFields } from './pane-stay-lookup.js';
+import { classifyAmendPayment, findStay, type PaneStayFields } from './pane-stay-lookup.js';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import {
   heartbeatAiRun,
@@ -477,7 +477,21 @@ async function runPaneAmend(
   const spawn = paneHmsWriteLoaders.spawnAmend ?? spawnAmendStay;
   try {
     await pruneExpiredPaneRuns(paneStayClock());
+    let paymentRefusal: string | null = null;
     const spawned = await lock.withLock(async () => {
+      const lookupDirs: string[] = [];
+      const found = await findStay(
+        { confirmation: input.confirmation, arrival: input.arrival },
+        { lock: () => HELD_LOCK, onRun: ({ dir }) => lookupDirs.push(dir) },
+      ).finally(() => removeDirs(lookupDirs));
+      if (found.outcome !== 'found' || !found.stay) {
+        paymentRefusal = found.outcome === 'found' ? 'refused_payment_unknown' : `read_${found.outcome}`;
+        return null;
+      }
+      if (classifyAmendPayment(found.stay) !== 'unpaid') {
+        paymentRefusal = 'refused_payment_unknown';
+        return null;
+      }
       if (mode === 'commit' && !takePanePreview(input.owner, input.previewDigest ?? '', paneStayClock())) return null;
       return spawn({
         confirmation: input.confirmation,
@@ -488,6 +502,7 @@ async function runPaneAmend(
         ...(mode === 'commit' ? { previewDigest: input.previewDigest } : {}),
       });
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
+    if (paymentRefusal) return refusedAmend(paymentRefusal);
     if (spawned === null) return refusedAmend('amend_digest_mismatch');
     const runId = spawned.runDir ? randomUUID() : null;
     if (runId && spawned.runDir) registerPaneRun({ runId, dir: spawned.runDir, owner: input.owner, now: paneStayClock() });
@@ -520,6 +535,40 @@ type SaveOutcome = {
   runDir?: string;
 };
 
+/**
+ * Cancel CLI stayChanges compares every expected key. readStayFields only returns STAY_FIELDS
+ * (cancel-stay-rules.mjs). Lookup may carry depositReceived for the amend classifier; cancel must not.
+ */
+export const CANCEL_EXPECT_STAY_KEYS = [
+  'status',
+  'confirmation',
+  'lastName',
+  'firstName',
+  'arrival',
+  'departure',
+  'nights',
+  'adults',
+  'children',
+  'roomType',
+  'ratePlan',
+  'mealPlan',
+  'averageRate',
+  'grandTotal',
+  'balance',
+  'sourceOfBusiness',
+  'guaranteeType',
+  'bookingAgency',
+  'organization',
+  'reservationNote',
+] as const;
+
+export function cancelExpectStay(stay: PaneStayFields): Record<string, unknown> {
+  const source = stay as Record<string, unknown>;
+  return Object.fromEntries(
+    CANCEL_EXPECT_STAY_KEYS.filter((key) => Object.hasOwn(source, key)).map((key) => [key, source[key]]),
+  );
+}
+
 /** `approvedStay` is the read that matched the approval's HMS digest. The cancel CLI refuses if its own read differs. */
 async function saveCancel(form: CancelForm, approvedStay: PaneStayFields): Promise<SaveOutcome> {
   const spawn = paneStayCancelLoaders.spawn ?? spawnPaneStayCancel;
@@ -529,7 +578,7 @@ async function saveCancel(form: CancelForm, approvedStay: PaneStayFields): Promi
     arrival: form.arrival,
     reason: squash(form.reason),
     allowRealGuest: false,
-    expectStay: approvedStay,
+    expectStay: cancelExpectStay(approvedStay),
   };
   const result: PaneStayCancelSpawnResult = await spawn(request);
   return {
@@ -545,6 +594,7 @@ const amendRefusal = (outcome: string): SaveOutcome => ({ outcome, clickedOk: fa
 
 async function saveAmend(form: AmendForm, stay: PaneStayFields): Promise<SaveOutcome> {
   if (stay.status !== 'Reserved' && stay.status !== 'Confirmed') return amendRefusal('refused_status_unsupported');
+  if (classifyAmendPayment(stay) !== 'unpaid') return amendRefusal('refused_payment_unknown');
   const fields = Object.fromEntries(AMEND_FIELDS.filter((field) => form.fields[field] !== undefined &&
     String(form.fields[field]) !== String(stay[field] ?? '')).map((field) => [field, form.fields[field]])) as AmendRequest;
   if (!Object.keys(fields).length) return amendRefusal('no_changes');

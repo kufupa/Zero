@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildStayLookupArgs,
+  classifyAmendPayment,
   findStay,
   guestDatesDuplicateCheckViaCli,
   guestDatesVerdict,
@@ -64,6 +65,7 @@ const STAY: PaneStayFields = {
   balance: '0.00',
   sourceOfBusiness: 'Walk in',
   guaranteeType: 'Non-Guaranteed Indi...',
+  depositReceived: null,
   bookingAgency: null,
   organization: null,
 };
@@ -137,6 +139,29 @@ afterEach(async () => {
   mailboxHmsOriginBindLoaders.loadWorkItemAnchors = null;
   vi.unstubAllEnvs();
   await Promise.all(cleanupDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+describe('classifyAmendPayment', () => {
+  const unpaid = {
+    status: 'Reserved',
+    guaranteeType: 'Non-Guaranteed Individual',
+    depositReceived: '0',
+  };
+
+  it('is unpaid only for provisional + deposit 0 + non-paying guarantee', () => {
+    expect(classifyAmendPayment(unpaid)).toBe('unpaid');
+    expect(classifyAmendPayment({ ...unpaid, depositReceived: '0.00' })).toBe('unpaid');
+    expect(classifyAmendPayment({ ...unpaid, guaranteeType: 'Non-Guaranteed Indi...' })).toBe('unpaid');
+    expect(classifyAmendPayment({ ...unpaid, guaranteeType: 'None' })).toBe('unpaid');
+  });
+
+  it('fails closed for paid, guaranteed, and missing fields', () => {
+    expect(classifyAmendPayment({ ...unpaid, depositReceived: '80.00' })).toBe('paid');
+    expect(classifyAmendPayment({ ...unpaid, guaranteeType: 'Guaranteed By Agent' })).toBe('guaranteed');
+    expect(classifyAmendPayment({ ...unpaid, depositReceived: null })).toBe('unknown');
+    expect(classifyAmendPayment({ ...unpaid, guaranteeType: null })).toBe('unknown');
+    expect(classifyAmendPayment({ ...unpaid, status: 'Confirmed' })).toBe('unknown');
+  });
 });
 
 describe('pane stay lookup flag', () => {
@@ -226,6 +251,23 @@ describe('findStay', () => {
       agency: { name: 'Harbor Travel', nativeId: 'AG-9', iata: '77206673' },
       ratePlan: 'Corporate Saver',
       status: 'Reserved',
+    });
+  });
+
+  it('keeps depositReceived and guaranteeType on the found stay and commercial allow-list', async () => {
+    paneStayLookupLoaders.spawn = async () =>
+      lookupResult({
+        stay: { ...STAY, guaranteeType: 'Non-Guaranteed Individual', depositReceived: '0.00' },
+        commercial: { guaranteeType: 'Non-Guaranteed Individual', depositReceived: '0.00', unknownField: 'drop' } as never,
+      });
+    const result = await findStay({ confirmation: '57291630-1' }, { lock: () => passingLock() });
+    expect(result.stay).toMatchObject({
+      guaranteeType: 'Non-Guaranteed Individual',
+      depositReceived: '0.00',
+    });
+    expect(result.commercial).toEqual({
+      guaranteeType: 'Non-Guaranteed Individual',
+      depositReceived: '0.00',
     });
   });
 
