@@ -1,9 +1,9 @@
 /**
  * Rehydrate wiped message rows from S3 `raw-mime/{ingestMailboxId}/*.eml`.
  *
- * Requires `INGEST_REQUIRE_OWNER_HEADER=false`. Skips keys already present as
- * message.raw_mime_s3_key or quarantine.raw_mime_s3_key. Default skips AI
- * enqueue (`skipAiEnqueue`) so bulk restore does not flood triage.
+ * Requires `INGEST_REQUIRE_OWNER_HEADER=false`. Skips keys already in
+ * quarantine. Existing message keys re-run persist (duplicate) plus mailbox
+ * copies so a failed copy can retry. Default skips AI enqueue.
  */
 import {
   candidateMessageIdForPop3Uidl,
@@ -17,10 +17,10 @@ import {
   type ListObjectsV2CommandOutput,
 } from '@aws-sdk/client-s3';
 import { cleanupPartialParseFailureAttachments, persistInboundMessage } from './store.js';
-import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
+import { completeFanoutAfterPrimary } from './fanout.js';
+import { mailIngestQuarantine } from '../../db/schema/mail.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
-import { and, eq, isNotNull } from 'drizzle-orm';
 import type { DB } from '../../db/client.js';
 
 const DEFAULT_PREFIX = 'raw-mime/ingest-nava-legacy/';
@@ -129,7 +129,7 @@ export async function rehydrateRawMimeFromS3(opts: RehydrateOptions): Promise<Re
     }));
   const keys = opts.limit !== undefined ? allKeys.slice(0, opts.limit) : allKeys;
 
-  const existingMessageKeys = await loadExistingMessageKeys(opts.db);
+  const processedKeys = new Set<string>();
   const quarantineKeys = await loadQuarantineKeys(opts.db);
 
   const result: RehydrateResult = {
@@ -145,7 +145,7 @@ export async function rehydrateRawMimeFromS3(opts: RehydrateOptions): Promise<Re
   };
 
   for (const ref of keys) {
-    if (existingMessageKeys.has(ref.key)) {
+    if (processedKeys.has(ref.key)) {
       result.skippedExisting += 1;
       continue;
     }
@@ -168,11 +168,11 @@ export async function rehydrateRawMimeFromS3(opts: RehydrateOptions): Promise<Re
     switch (outcome.kind) {
       case 'stored':
         result.stored += 1;
-        existingMessageKeys.add(ref.key);
+        processedKeys.add(ref.key);
         break;
       case 'duplicate':
         result.duplicate += 1;
-        existingMessageKeys.add(ref.key);
+        processedKeys.add(ref.key);
         break;
       case 'quarantined':
         result.quarantined += 1;
@@ -186,18 +186,6 @@ export async function rehydrateRawMimeFromS3(opts: RehydrateOptions): Promise<Re
   }
 
   return result;
-}
-
-async function loadExistingMessageKeys(db: DB): Promise<Set<string>> {
-  const rows = await db
-    .select({ key: message.rawMimeS3Key })
-    .from(message)
-    .where(isNotNull(message.rawMimeS3Key));
-  const set = new Set<string>();
-  for (const row of rows) {
-    if (row.key) set.add(row.key);
-  }
-  return set;
 }
 
 async function loadQuarantineKeys(db: DB): Promise<Set<string>> {
@@ -221,11 +209,6 @@ async function rehydrateOne(
   const messageId = candidateMessageIdForPop3Uidl(ref.ingestMailboxId, ref.pop3Uidl);
   let parsed: ParsedInboundMessage | undefined;
   try {
-    const existing = await findExistingAnyDirection(db, ref);
-    if (existing) {
-      return { kind: 'duplicate' };
-    }
-
     const object = await storage.getObject(ref.key);
     if (!object) {
       return { kind: 'error', message: `missing s3 object ${ref.key}` };
@@ -236,24 +219,36 @@ async function rehydrateOne(
       storage,
     });
 
-    const persistResult = await persistInboundMessage(
-      parsed,
-      object.body,
-      {
-        ingestMailboxId: ref.ingestMailboxId,
-        pop3Uidl: ref.pop3Uidl,
-        messageId,
-        rawMimeS3Key: ref.key,
-      },
-      {
+    const persistMeta = {
+      ingestMailboxId: ref.ingestMailboxId,
+      pop3Uidl: ref.pop3Uidl,
+      messageId,
+      rawMimeS3Key: ref.key,
+    };
+    const persistResult = await persistInboundMessage(parsed, object.body, persistMeta, {
+      db,
+      storage,
+      skipAiEnqueue: !opts.triage,
+    });
+
+    if (
+      persistResult.kind === 'stored' ||
+      persistResult.kind === 'duplicate' ||
+      persistResult.kind === 'reconciled'
+    ) {
+      const copiesOk = await completeFanoutAfterPrimary({
         db,
         storage,
+        raw: object.body,
+        meta: persistMeta,
+        persistResult,
         skipAiEnqueue: !opts.triage,
-      },
-    );
-
-    if (persistResult.kind === 'stored') return { kind: 'stored' };
-    if (persistResult.kind === 'duplicate') return { kind: 'duplicate' };
+      });
+      if (!copiesOk) {
+        return { kind: 'error', message: 'fanout_copy_pending' };
+      }
+      return persistResult.kind === 'duplicate' ? { kind: 'duplicate' } : { kind: 'stored' };
+    }
     return { kind: 'quarantined' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -288,27 +283,6 @@ async function rehydrateOne(
     }
     return { kind: 'error', message };
   }
-}
-
-async function findExistingAnyDirection(
-  db: DB,
-  ref: Pick<RawMimeObjectRef, 'ingestMailboxId' | 'pop3Uidl' | 'key'>,
-): Promise<{ id: string } | undefined> {
-  const byKey = await db
-    .select({ id: message.id })
-    .from(message)
-    .where(eq(message.rawMimeS3Key, ref.key))
-    .limit(1);
-  if (byKey[0]) return byKey[0];
-
-  const byUidl = await db
-    .select({ id: message.id })
-    .from(message)
-    .where(
-      and(eq(message.ingestMailboxId, ref.ingestMailboxId), eq(message.pop3Uidl, ref.pop3Uidl)),
-    )
-    .limit(1);
-  return byUidl[0];
 }
 
 function normalizePrefix(prefix: string): string {

@@ -276,6 +276,11 @@ export interface PersistOptions {
    */
   promoteQuarantineId?: string;
   /**
+   * Skip existing-quarantine short-circuit like promote, but leave the row.
+   * Recovery deletes it only after every mailbox copy succeeds.
+   */
+  deferQuarantineDelete?: boolean;
+  /**
    * Rehydrate path: restore rows without enqueueing inbound_triage (avoids
    * flooding Bedrock when bulk-recovering historical S3 MIME).
    */
@@ -347,9 +352,10 @@ export async function persistInboundMessage(
     );
   }
 
-  const existingQuarantine = opts.promoteQuarantineId
-    ? undefined
-    : await findExistingQuarantine(db, meta);
+  const existingQuarantine =
+    opts.promoteQuarantineId || opts.deferQuarantineDelete
+      ? undefined
+      : await findExistingQuarantine(db, meta);
   if (existingQuarantine) {
     if (opts.fanoutCopy) {
       await cleanupCandidateAttachmentTasks({
@@ -2016,18 +2022,25 @@ async function collectFanoutTransportIds(
     ...parsed.ccAddresses,
     ...parsed.bccAddresses,
   ];
+  const hotelRows = rows.filter((row) => HOTEL_EQUATED_TRANSPORT_ID_SET.has(row.id));
   const named = new Set<string>();
-  for (const row of rows) {
-    if (!HOTEL_EQUATED_TRANSPORT_ID_SET.has(row.id) || row.id === primaryTransportId) continue;
-    const identities = transportIdentitySet(row.email, row.sendFromConfig);
-    if (identities.size === 0) continue;
-    for (const address of addresses) {
-      if (!address) continue;
-      if (identities.has(normalizeEmailAddress(address))) {
-        named.add(row.id);
-        break;
-      }
-    }
+  for (const address of addresses) {
+    if (!address) continue;
+    const normalized = normalizeEmailAddress(address);
+    if (!normalized) continue;
+    const matchingIds = [
+      ...new Set(
+        hotelRows
+          .filter((row) =>
+            transportIdentitySet(row.email, row.sendFromConfig).has(normalized),
+          )
+          .map((row) => row.id),
+      ),
+    ];
+    if (matchingIds.length !== 1) continue;
+    const id = matchingIds[0]!;
+    if (id === primaryTransportId) continue;
+    named.add(id);
   }
   return [...named].sort();
 }

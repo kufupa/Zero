@@ -44,7 +44,7 @@ import {
   sweepCandidateAttachmentCleanupTasks,
   type PersistResult,
 } from './store.js';
-import { fanoutCopiesSucceeded, fanoutCopyPop3Uidl, persistFanoutCopies } from './fanout.js';
+import { completeFanoutAfterPrimary } from './fanout.js';
 import {
   createPop3Client,
   type Pop3Client,
@@ -412,51 +412,19 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
         }
 
         if (
-          result.kind === 'stored' ||
-          result.kind === 'duplicate' ||
-          result.kind === 'reconciled'
+          !(await completeFanoutAfterPrimary({
+            db,
+            storage,
+            raw: msg.raw,
+            meta,
+            persistResult: result,
+            ingestSource: 'live-pop3',
+          }))
         ) {
-          const transportIds = result.fanoutTransportIds ?? [];
-          if (transportIds.length > 0) {
-            const copies = await persistFanoutCopies({
-              db,
-              storage,
-              raw: msg.raw,
-              meta,
-              transportIds,
-              ingestSource: 'live-pop3',
-              activeIngestUidlClaimToken: claimToken ?? undefined,
-            });
-            if (!fanoutCopiesSucceeded(copies.results)) {
-              for (const copy of copies.results) {
-                if (copy.result.kind !== 'failed') continue;
-                const keys = copy.result.uploadedAttachmentKeys;
-                if (keys.length === 0) continue;
-                const copyUidl = fanoutCopyPop3Uidl(uidl, copy.transportId);
-                await cleanupPartialParseFailureAttachments({
-                  db,
-                  storage,
-                  attachments: keys.map((s3Key) => ({
-                    s3Key,
-                    filename: 'failed',
-                    mimeType: 'application/octet-stream',
-                    sizeBytes: 0,
-                    contentId: null,
-                    isInline: false,
-                  })),
-                  meta: {
-                    ingestMailboxId,
-                    pop3Uidl: copyUidl,
-                    messageId: candidateMessageIdForPop3Uidl(ingestMailboxId, copyUidl),
-                  },
-                });
-              }
-              failureCounts.delete(uidl);
-              items.push({ uidl, result, status: 'deferred' });
-              processed += 1;
-              continue;
-            }
-          }
+          failureCounts.delete(uidl);
+          items.push({ uidl, result, status: 'deferred' });
+          processed += 1;
+          continue;
         }
 
         failureCounts.delete(uidl);

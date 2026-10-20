@@ -7,6 +7,10 @@ import {
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
 import { FakeS3Storage, rawMimeKey } from '../src/storage/s3';
 import * as ingestStore from '../src/mail/ingest/store';
+import { claimIngestUidl } from '../src/mail/ingest/store';
+import { fanoutCopyPop3Uidl } from '../src/mail/ingest/fanout';
+import { mailboxTransport } from '../src/db/schema/mail';
+import { eq } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client';
 
@@ -194,6 +198,82 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('rehydrate raw MIME cleanup re
 
       expect(result.errors).toBe(1);
       expect(storage.listKeys('attachments/')).toEqual([]);
+    } finally {
+      if (previousOwnerHeaderSetting === undefined) {
+        delete process.env.INGEST_REQUIRE_OWNER_HEADER;
+      } else {
+        process.env.INGEST_REQUIRE_OWNER_HEADER = previousOwnerHeaderSetting;
+      }
+    }
+  }, 30000);
+
+  it('does not report stored until every mailbox copy succeeds', async () => {
+    const storage = new FakeS3Storage('rehydrate-fanout-copy');
+    const ingestMailboxId = 'ingest-nava-legacy';
+    const pop3Uidl = `rehydrate-fanout-${crypto.randomUUID()}`;
+    const key = rawMimeKey({ ingestMailboxId, pop3Uidl });
+    const raw = Buffer.from(
+      [
+        'From: guest@example.test',
+        'To: hotel-cen@example.test, hotel-dav@example.test',
+        'Subject: rehydrate copies',
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        'Synthetic body.',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const previousOwnerHeaderSetting = process.env.INGEST_REQUIRE_OWNER_HEADER;
+    process.env.INGEST_REQUIRE_OWNER_HEADER = 'false';
+    try {
+      await storage.putObject({
+        key,
+        body: raw,
+        contentType: 'message/rfc822',
+      });
+      const result = await withSeededTestDb(async (db) => {
+        await db
+          .update(mailboxTransport)
+          .set({
+            email: 'hotel-cen@example.test',
+            ownerHeaderValue: 'hotel-cen@example.test',
+            sendFromConfig: null,
+            isActive: true,
+          })
+          .where(eq(mailboxTransport.id, 'transport-centurion'));
+        await db
+          .insert(mailboxTransport)
+          .values({
+            id: 'transport-davinci',
+            email: 'hotel-dav@example.test',
+            ownerHeaderValue: 'hotel-dav@example.test',
+            mailboxType: 'personal',
+            isActive: true,
+            sendFromConfig: null,
+          })
+          .onConflictDoUpdate({
+            target: mailboxTransport.id,
+            set: {
+              email: 'hotel-dav@example.test',
+              ownerHeaderValue: 'hotel-dav@example.test',
+              isActive: true,
+              sendFromConfig: null,
+            },
+          });
+        const copyUidl = fanoutCopyPop3Uidl(pop3Uidl, 'transport-davinci');
+        expect(
+          await claimIngestUidl(db, { ingestMailboxId, pop3Uidl: copyUidl }),
+        ).toBeTruthy();
+        return rehydrateRawMimeFromS3({
+          db,
+          storage,
+          keys: [{ key, ingestMailboxId, pop3Uidl }],
+        });
+      });
+      expect(result.stored).toBe(0);
+      expect(result.errors).toBe(1);
+      expect(result.errorKeys).toEqual([key]);
     } finally {
       if (previousOwnerHeaderSetting === undefined) {
         delete process.env.INGEST_REQUIRE_OWNER_HEADER;

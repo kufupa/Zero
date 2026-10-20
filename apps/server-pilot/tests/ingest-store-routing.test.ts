@@ -740,6 +740,43 @@ describe('persistInboundMessage fail-closed transport match', () => {
     expect(result.fanoutTransportIds ?? []).toEqual([]);
   });
 
+  it('does not copy a Cc alias shared by two other hotels', async () => {
+    const cen = {
+      id: 'transport-centurion',
+      email: 'hotel-cen@example.test',
+      sendFromConfig: null,
+    };
+    const dav = {
+      id: 'transport-davinci',
+      email: 'hotel-dav@example.test',
+      sendFromConfig: { aliases: ['shared-desk@example.test'] },
+    };
+    const fth = {
+      id: 'transport-faith',
+      email: 'hotel-fth@example.test',
+      sendFromConfig: { aliases: ['shared-desk@example.test'] },
+    };
+    const fake = dbWithActiveTransports([
+      { ...cen, ownerHeaderValue: cen.email },
+      { ...dav, ownerHeaderValue: dav.email },
+      { ...fth, ownerHeaderValue: fth.email },
+    ]);
+    const result = await persistSynthetic(
+      syntheticEml({
+        from: 'guest@example.test',
+        to: cen.email,
+        cc: 'shared-desk@example.test',
+        subject: 'shared alias is not a copy',
+      }),
+      'uidl-shared-alias-no-copy',
+      fake.db,
+    );
+    expect(result.kind).toBe('stored');
+    if (result.kind !== 'stored') return;
+    expect(result.transportId).toBe(cen.id);
+    expect(result.fanoutTransportIds ?? []).toEqual([]);
+  });
+
   it('copy persist never inserts quarantine when the override cannot resolve', async () => {
     let quarantineInserts = 0;
     const fake = dbWithActiveTransports([

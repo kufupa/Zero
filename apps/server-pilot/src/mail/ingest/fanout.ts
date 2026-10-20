@@ -9,6 +9,7 @@
  */
 import {
   claimIngestUidl,
+  cleanupPartialParseFailureAttachments,
   hasPendingCandidateAttachmentCleanup,
   persistInboundMessage,
   releaseIngestUidlClaim,
@@ -138,4 +139,65 @@ export async function persistFanoutCopies(args: {
     }
   }
   return { results };
+}
+
+/**
+ * After a primary stored/duplicate/reconciled persist, create mailbox copies.
+ * Returns false when any copy is not stored/duplicate/reconciled. Failed
+ * copy keys are registered for cleanup. Caller must not report success or
+ * consume the source (DELE / delete quarantine) until this returns true.
+ */
+export async function completeFanoutAfterPrimary(args: {
+  db: DB;
+  storage: S3Storage;
+  raw: Buffer;
+  meta: IngestMeta;
+  persistResult: PersistResult;
+  ingestSource?: 'live-pop3';
+  skipAiEnqueue?: boolean;
+}): Promise<boolean> {
+  const { persistResult } = args;
+  if (
+    persistResult.kind !== 'stored' &&
+    persistResult.kind !== 'duplicate' &&
+    persistResult.kind !== 'reconciled'
+  ) {
+    return true;
+  }
+  const transportIds = persistResult.fanoutTransportIds ?? [];
+  if (transportIds.length === 0) return true;
+  const copies = await persistFanoutCopies({
+    db: args.db,
+    storage: args.storage,
+    raw: args.raw,
+    meta: args.meta,
+    transportIds,
+    ingestSource: args.ingestSource,
+    skipAiEnqueue: args.skipAiEnqueue,
+  });
+  if (fanoutCopiesSucceeded(copies.results)) return true;
+  for (const copy of copies.results) {
+    if (copy.result.kind !== 'failed') continue;
+    const keys = copy.result.uploadedAttachmentKeys;
+    if (keys.length === 0) continue;
+    const copyUidl = fanoutCopyPop3Uidl(args.meta.pop3Uidl, copy.transportId);
+    await cleanupPartialParseFailureAttachments({
+      db: args.db,
+      storage: args.storage,
+      attachments: keys.map((s3Key) => ({
+        s3Key,
+        filename: 'failed',
+        mimeType: 'application/octet-stream',
+        sizeBytes: 0,
+        contentId: null,
+        isInline: false,
+      })),
+      meta: {
+        ingestMailboxId: args.meta.ingestMailboxId,
+        pop3Uidl: copyUidl,
+        messageId: candidateMessageIdForPop3Uidl(args.meta.ingestMailboxId, copyUidl),
+      },
+    });
+  }
+  return false;
 }
