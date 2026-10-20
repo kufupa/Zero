@@ -71,12 +71,12 @@ describe('whole-stay bookability in availability snapshots', () => {
     if (typeof readerBoard === 'string' && readerBoard.trim()) {
       expect(option.board).toBe(readerBoard);
     }
+    // LOS is whole-stay (option.availability). Nightly stock stays the HMS night count.
     expect(option.nightly).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           availableCount: 3,
-          stockStatus: 'restricted',
-          restrictionReason: reason,
+          stockStatus: 'available',
         }),
       ]),
     );

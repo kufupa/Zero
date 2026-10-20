@@ -69,6 +69,10 @@ const quoteFixtureTool = (await import('../tooling/playwright-quote/fetch-quote.
     room: ReaderRequest['rooms'][number],
     windows: Array<{ data: unknown; calendar: unknown }>,
   ) => { options: ReaderOption[]; completeness: Record<string, unknown> };
+  limitOptions: (
+    ordered: Array<{ matchStatus?: string; eligibility?: string; availability?: string }>,
+    max: number,
+  ) => { options: unknown[]; truncated: boolean; matchingRowsUnseen: boolean };
 };
 const quoteFixtures = (await import('../tooling/playwright-quote/fetch-quote-fixtures.mjs' as string)) as {
   manyRoomSource: (additionalRoomCount: number) => { data: unknown; calendar: unknown };
@@ -424,6 +428,16 @@ describe('U10 availability probe (pure)', () => {
       rate: 'BAR',
       board: 'Bed & Breakfast R',
       availability: 'available',
+    });
+    const rows = Array.from({ length: 201 }, () => ({
+      matchStatus: 'match',
+      eligibility: 'verified',
+      availability: 'available',
+    }));
+    expect(quoteFixtureTool.limitOptions(rows, 200)).toEqual({
+      options: rows.slice(0, 200),
+      truncated: true,
+      matchingRowsUnseen: true,
     });
   });
 
