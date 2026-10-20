@@ -26,9 +26,24 @@ function record(value: unknown): Record<string, unknown> | null {
 const HMS_CONFIRMATION = /^\d{6,10}-\d{1,2}$/;
 const CONFIRMATION_IN_TEXT = /(?<![\d-])\d{6,10}-\d{1,2}(?![\d-])/g;
 
+function guestHasConfirmation(stay: unknown): boolean {
+  if (!stay || typeof stay !== 'object' || Array.isArray(stay)) return false;
+  const guests = (stay as { guests?: unknown }).guests;
+  if (!Array.isArray(guests)) return false;
+  return guests.some((guest) => {
+    if (!guest || typeof guest !== 'object' || Array.isArray(guest)) return false;
+    const value = (guest as { confirmationNumber?: unknown }).confirmationNumber;
+    return typeof value === 'string' && value.trim().length > 0;
+  });
+}
+
 function payloadHasConfirmation(payload: Record<string, unknown> | null): boolean {
   const values = payload?.confirmationNumbers;
-  return Array.isArray(values) && values.some((value) => typeof value === 'string' && value.trim().length > 0);
+  if (Array.isArray(values) && values.some((value) => typeof value === 'string' && value.trim().length > 0)) {
+    return true;
+  }
+  const stays = payload?.stays;
+  return Array.isArray(stays) && stays.some(guestHasConfirmation);
 }
 
 function subjectHasConfirmation(subject: string): boolean {
@@ -36,7 +51,7 @@ function subjectHasConfirmation(subject: string): boolean {
   return CONFIRMATION_IN_TEXT.test(subject) || HMS_CONFIRMATION.test(subject.trim());
 }
 
-/** Quote extractions always admit. New-booking extractions admit only a single stay with no confirmation number. */
+/** Quote extractions always admit. New-booking extractions admit one or more stays with no confirmation number. */
 export function quotePrepareKindReason(input: {
   kind: string | null | undefined;
   payload: unknown;
@@ -46,7 +61,7 @@ export function quotePrepareKindReason(input: {
   if (input.kind !== 'booking') return 'not_quote';
   const payload = record(input.payload);
   const stays = payload?.stays;
-  if (!Array.isArray(stays) || stays.length !== 1) return 'not_quote';
+  if (!Array.isArray(stays) || stays.length < 1) return 'not_quote';
   if (payloadHasConfirmation(payload) || subjectHasConfirmation(input.subject ?? '')) return 'not_quote';
   return null;
 }

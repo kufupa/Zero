@@ -346,6 +346,72 @@ describe('stored read for the pane', () => {
       expect(work.analysis.luna.flags).toContain('amendment_or_cancel');
     }));
 
+  it('flags multi_date only when stays have distinct date sets', () => {
+    const extracted = payload({ stayOneArrival: '2027-10-26', stayTwoArrival: '2027-10-26' });
+    extracted.stays[1]!.requested.departure = '2027-10-28';
+    expect(storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).analysis.luna.flags).not.toContain(
+      'multi_date',
+    );
+    expect(storedAnalysis({ kind: 'quote', payload: payload(), attachments: [] }, {}).analysis.luna.flags).toContain(
+      'multi_date',
+    );
+  });
+
+  it('puts each stay guest name and confirmation on that stay, then top-level, never only the first stay', () => {
+    const extracted = payload();
+    extracted.confirmationNumbers = ['57291630-1'];
+    extracted.stays[0] = {
+      ...extracted.stays[0]!,
+      booked: { arrival: '2026-11-01', departure: '2026-11-06' },
+      requested: { arrival: '2026-10-31', departure: '2026-11-07' },
+      guests: [{ name: 'Ada Example', confirmationNumber: null }],
+    };
+    extracted.stays[1] = {
+      ...extracted.stays[1]!,
+      booked: { arrival: '2026-12-01', departure: '2026-12-03' },
+      requested: { arrival: '2026-12-10', departure: '2026-12-12' },
+      guests: [{ name: 'Bea Example', confirmationNumber: '1111111-1' }],
+    };
+    const { analysis, refs } = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {});
+    expect(analysis.luna.groups.map((group) => group.guestNames)).toEqual([
+      ['Ada Example'],
+      ['Ada Example'],
+      ['Bea Example'],
+    ]);
+    expect(analysis.groups.map((group) => group.confirmationNumber)).toEqual([
+      '57291630-1',
+      '57291630-1',
+      '1111111-1',
+    ]);
+    expect(analysis.luna.confirmationNumber).toBe('1111111-1');
+    expect(analysis.luna.arrival).toBe('2026-12-01');
+    expect(analysis.luna.departure).toBe('2026-12-03');
+    expect(analysis.luna.requestedArrival).toBe('2026-12-10');
+    expect(analysis.luna.requestedDeparture).toBe('2026-12-12');
+    expect(Object.keys(refs)).toHaveLength(3);
+  });
+
+  it('keeps one work item for a multi-stay mail', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'ma1');
+      const extracted = payload();
+      extracted.stays[0] = {
+        ...extracted.stays[0]!,
+        guests: [{ name: 'Ada Example', confirmationNumber: '1111111-1' }],
+      };
+      extracted.stays[1] = {
+        ...extracted.stays[1]!,
+        guests: [{ name: 'Bea Example', confirmationNumber: '2222222-2' }],
+      };
+      await insertRead(db, messageId, { version: 'extract-v1', payload: extracted });
+      const work = await readyWork(db, 'ma1');
+      const items = await db.select({ id: workItem.id }).from(workItem).where(eq(workItem.sourceMessageId, messageId));
+      expect(items).toHaveLength(1);
+      expect(work.workItemId).toBe(items[0]!.id);
+      expect(work.analysis.groups.map((group) => group.stayId)).toEqual([STAY_ONE, STAY_ONE, STAY_TWO]);
+      expect(work.confirmationNumbers).toEqual(['1111111-1', '2222222-2']);
+    }));
+
   it('fills a stored amendment confirmation from thread PDF evidence when the selected read has none', () => {
     const extracted = payload();
     extracted.confirmationNumbers = [];
