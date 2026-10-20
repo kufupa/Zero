@@ -782,7 +782,7 @@ function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
 /** Government for a government party or when every row asks Dinner B&B; otherwise BAR. */
 function automaticSalesStrategy(
   groups: readonly { board: string }[],
-  partyKind: string | undefined,
+  partyKind: string | null | undefined,
 ): StaffQuoteHeader['salesStrategy'] {
   const allDinner = groups.length > 0 && groups.every((group) => group.board === 'dinner_bb');
   return partyKind === 'government' || allDinner ? 'Government' : 'BAR';
