@@ -33,3 +33,42 @@ Caveats: `kind='quote'` is the extractor label (precision ~88% on the 431-row fr
 | Not run: 22 Oct 16 single DBB, 08 Nov single DBB, 05 Jan 4 single DBB | all **R1 700 DBB** | — | — |
 
 Pattern: R1 700 single DBB appears on 5 threads → a recurring contract/package rate Nava never picks (it prices BAR B&B). Biggest failure class for the price bar.
+
+## Scoreboard — individual threads, prod `593d36283` (2026-10-20 ~04:10Z)
+
+**Truth set (n=8).** Inbound quote asks, individual (non-group), stay still in the future, staff priced. Truth is the staff PDF (pdftotext) or the staff reply text. Groups are out (owner ask 150). The ≥10-thread bar was **not reachable**: widening to 120 days only added groups.
+
+**Method.**
+- Each ask was priced once on Nava's HMS login through the live prepared-quote path (`buildPreparedStaffQuotePlan` → serial HMS `staff_quote` job, priority 0).
+- Input = the ask's **pre-reply** extraction. 6/8 carry a later history-aware extraction (`extract-3e750d4a3e7c`, 10-18/19 backfill) that marks them `no_action` because staff had already replied. Live prepare correctly skips those, so live prepare can't be backtested on answered mail.
+- The script was untracked on EC2: `apps/server-pilot/scripts/_backtest-reprice-20261020.ts`. Runs are marked `metrics.backtest='2026-10-20'`, keys `hms-job:staff-quote-backtest-20261020*`. Read-only HMS; no writes.
+
+**Match rule.** Plan class + board + room category/occupancy.
+- Plan class: BAR / government / contract.
+- Board: BB / DBB.
+- Room: standard vs deluxe, and occupancy. A staff "single" is occupancy 1 on any standard room.
+- Price is reported separately.
+
+| Msg | Ask as extracted | Nava (593d36283) | Staff truth | Class | Board | Room | Result |
+|---|---|---|---|---|---|---|---|
+| b0b003f2 | DBB 1×1ad | NGOVDB SKNG DBB R1 700 | NGOVDB R1 700 | ✅ | ✅ | ✅ | **match, exact price** |
+| f0ad8779 | BB 1×1ad | BAR SKNG BB R1 940 | BAR R1 940 | ✅ | ✅ | ✅ | **match, exact price** |
+| 5af62fbf | BB 1×1ad | BAR SKNG BB avg R2 020 | R1 980 flat | ✅ | ✅ | ✅ | match (price moved; quoted 5 days apart) |
+| 9526392b | BB 2 rooms ×2ad | BAR STWN+SKNG BB R1 912 | BAR R1 940 single / R2 140 double | ✅ | ✅ | ≈ | match class (price differs, no HMS reason found) |
+| c307df06 | BB 1×1ad | BAR STWN BB R1 940 | "government rate BB" (NGOVB), no staff price | ✗ | ✅ | ✅ | miss: government B&B ask not detected |
+| f127953c | BB 1×1ad | BAR SKNG BB R1 780 | Tourvest contract R1 140 | ✗ | ✅ | ✅ | miss: no party run, so no contract |
+| 6508204c | **BB** 1×1ad (extraction miss) | BAR SKNG BB R1 940 | NGOVDB DBB R1 700 | ✗ | ✗ | ✅ | miss: extraction said BB |
+| e547b629 | DBB **4×2ad** (extraction miss) | NGOVDB STQN DBB R2 310 | NGOVDB R1 700 single | ✅ | ✅ | ✗ | miss: extraction occupancy |
+
+**Score: 5/8 plan class + board + room** (2/8 exact price).
+- Pre-deploy baseline on the same 8 rows (latest prod run per ask, 2026-10-19 runs on `1181ca923`): **1/8** (f0ad8779). Every DBB ask was priced BAR B&B or dead-lettered.
+- n=8 is below the PRODUCT.md bar (≥10), so the quote bar is **not passed**.
+
+**Misses by cause.**
+- Extraction board/occupancy: 2.
+- Party/contract not bound: 1.
+- Government B&B ask not detected: 1, counted as a class miss. Only DBB maps to Government today.
+
+**Run-health findings (not fixed tonight).**
+1. **Queue TTL:** a `staff_quote` still queued after 10 min is superseded (`run-ledger.ts` `HMS_STAFF_QUOTE_QUEUE_TTL_MS`). 3 of 8 expired when 8 were queued at once (~2 min each). A morning burst of ≥5 prepares loses the tail.
+2. **One attempt for prepared quotes:** a transient failure dead-letters a prepared quote after 1 attempt (`hms-jobs.ts` `retryOrFail(... systemPreparedQuote ? 1 : JOB_MAX_ATTEMPTS)`). 2 of 8 dead-lettered, then succeeded on a manual retry minutes later. This matches the ~15% "staff quote execution failed" dead-letter class.
