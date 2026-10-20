@@ -344,13 +344,23 @@ describe('QuoteWorkflowPanel', () => {
     ]);
     expect(steps.map((step) => step.getAttribute('aria-label'))).toEqual([
       'Agency & company',
-      'Rate authority',
+      'HMS notes',
       'Stay',
       'Availability & rates',
       'Extras & alternatives',
       'Documents',
     ]);
     expect(steps.map((step) => step.querySelector('h3 span')?.textContent)).toEqual(['1', '2', '3', '4', '5', '6']);
+    expect(within(steps[0]!).getByRole('button', { name: 'Continue to HMS notes' })).toBeDefined();
+    expect(within(steps[1]!).queryByLabelText('Rate plan')).toBeNull();
+    expect(within(steps[1]!).getByText('HMS notes (optional)')).toBeDefined();
+    expect(within(steps[1]!).getByTestId('quote-step-state').textContent).toBe('Optional');
+    const ratesStep = steps[3]!;
+    const ratePlanSelect = within(ratesStep).getByLabelText('Rate plan');
+    const searchHeading = within(ratesStep).getByText('Search availability & room rates');
+    expect(
+      ratePlanSelect.compareDocumentPosition(searchHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
     for (const step of steps) {
       expect(within(step).getByTestId('quote-step-state')).toBeDefined();
     }
@@ -1565,6 +1575,19 @@ describe('the Find in HMS picker in the quote header', () => {
     return { ...base, offers: [], phase: 'requirements', staffHeader: { ...base.staffHeader, ...staffHeader } };
   }
 
+  it('shows the rate selector above the availability action before rates are read', () => {
+    const session = headerSession({ company: 'Sample Company', parties: {} });
+    expect(session.rateOptions ?? []).toHaveLength(0);
+    const { container } = render(<QuoteWorkflowPanel session={session} />);
+    const ratesStep = container.querySelector<HTMLElement>('#quote-rates');
+    if (!ratesStep) throw new Error('Expected the Availability & rates step.');
+    const planSelect = within(ratesStep).getByLabelText('Rate plan');
+    const searchAction = within(ratesStep).getByRole('button', { name: 'Search availability' });
+    expect(
+      planSelect.compareDocumentPosition(searchAction) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   // Applies each header patch through the real reducer, so a test reads the header the quote would send.
   function PartyGate({
     initial,
@@ -1677,6 +1700,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const rateCatalogue: RatePlanCatalogueEntry[] = [
       { code: 'BAR', name: 'Best Available Rate', board: 'bed_breakfast' },
       { code: 'NCOR1B', name: 'Corporate Negotiated', board: 'unknown', contract: true },
+      { code: 'NCOR2B', name: 'Corporate Negotiated 2', board: 'unknown', contract: true },
     ];
 
     function FilterHarness() {
@@ -1692,14 +1716,28 @@ describe('the Find in HMS picker in the quote header', () => {
       );
     }
 
-    render(<FilterHarness />);
+    const { container } = render(<FilterHarness />);
     assertRatePlanVisible();
-    expect(screen.getByRole('button', { name: /Best Available Rate BAR/ })).toBeDefined();
-    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'NCOR1B' } });
+    const ratesStep = container.querySelector<HTMLElement>('#quote-rates');
+    if (!ratesStep) throw new Error('Expected the Availability & rates step.');
+    const planSelect = within(ratesStep).getByLabelText('Rate plan') as HTMLSelectElement;
+    const barCard = within(ratesStep).getByRole('button', { name: /Best Available Rate BAR/ });
+    expect(planSelect.compareDocumentPosition(barCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(planSelect.querySelector('option[value="BAR"]')?.textContent).toContain('(read by Nava)');
+    const contractOptions = Array.from(
+      planSelect.querySelector('optgroup[label="Contract"]')?.querySelectorAll<HTMLOptionElement>('option') ?? [],
+    );
+    expect(contractOptions.map((option) => option.value)).toEqual(['NCOR1B', 'NCOR2B']);
+    expect(contractOptions[0]?.textContent).toContain('(read by Nava)');
+    expect(contractOptions[1]?.textContent).not.toContain('(read by Nava)');
+    expect(
+      Array.from(planSelect.options).every((option) => !/\bR\d[\d,.]*/.test(option.textContent ?? '')),
+    ).toBe(true);
+    fireEvent.change(planSelect, { target: { value: 'NCOR1B' } });
 
-    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('NCOR1B');
-    expect(screen.queryByRole('button', { name: /Best Available Rate BAR/ })).toBeNull();
-    expect(screen.getByRole('button', { name: /Corporate Negotiated NCOR1B/ })).toBeDefined();
+    expect(planSelect.value).toBe('NCOR1B');
+    expect(within(ratesStep).queryByRole('button', { name: /Best Available Rate BAR/ })).toBeNull();
+    expect(within(ratesStep).getByRole('button', { name: /Corporate Negotiated NCOR1B/ })).toBeDefined();
   });
 
   it('a government plan asks HMS for Government pricing; a public plan goes back to BAR', () => {
