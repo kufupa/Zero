@@ -1243,8 +1243,9 @@ export function NavaPane({
   // stays disabled until the export settles. The server call is a tRPC mutation, so it also counts as in flight.
   const [workbookPending, setWorkbookPending] = useState(false);
   const workbookInFlight = useRef(false);
-  // The combined quote for every stay. A second click while it is being made does nothing.
+  // Only one quote PDF request at a time, for single- and multi-stay quotes.
   const pdfInFlight = useRef(false);
+  const [pdfPending, setPdfPending] = useState(false);
   const downloadWorkbook = () => {
     if (workbookInFlight.current) return;
     workbookInFlight.current = true;
@@ -1770,6 +1771,7 @@ export function NavaPane({
    * A null stayKey means the selected option (the "Prepare quotation PDF" button).
    */
   const preparePdfFor = (stayKey: string | null) => {
+    if (pdfInFlight.current) return;
     const session = quoteSessionRef.current;
     // The PDF is recorded on the item it was made for, even if staff open another mail while it builds.
     const owner = currentPaneOwner();
@@ -1784,8 +1786,8 @@ export function NavaPane({
         toast.warning(request.reason);
         return;
       }
-      if (pdfInFlight.current) return;
       pdfInFlight.current = true;
+      setPdfPending(true);
       const selectionEpoch = session.binding?.selectionEpoch ?? 0;
       const inputRevision = session.inputRevision;
       // The combined PDF is bound to the stays' runs, not to the selected option, so selecting another option while it
@@ -1820,6 +1822,7 @@ export function NavaPane({
         trackPaneAction({ type: 'pdf.created', kind: 'combined' }, owner);
       }).finally(() => {
         pdfInFlight.current = false;
+        setPdfPending(false);
       });
       return;
     }
@@ -1863,6 +1866,8 @@ export function NavaPane({
         })
       : undefined;
     const staff = staffQuoteFromTrpc(trpcClient);
+    pdfInFlight.current = true;
+    setPdfPending(true);
     void bindQualifiedStaffProposalPdf({
       mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
       input: {
@@ -1900,6 +1905,9 @@ export function NavaPane({
         reviewedReplyHtml,
       });
       trackPaneAction({ type: 'pdf.created', kind: 'option' }, owner);
+    }).finally(() => {
+      pdfInFlight.current = false;
+      setPdfPending(false);
     });
   };
 
@@ -2297,6 +2305,7 @@ export function NavaPane({
               onPreparePdf={() => preparePdfFor(null)}
               onDownloadWorkbook={downloadWorkbook}
               workbookPending={workbookPending}
+              pdfPending={pdfPending}
               replyContent={quoteOrBookingEmail ? replyBody : undefined}
             />
 

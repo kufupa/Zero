@@ -219,12 +219,18 @@ async function runOption(arrival: string): Promise<void> {
   await waitFor(() => expect(within(stayCard).getByText('Available')).toBeDefined());
 }
 
+function topPrimaryButton(label: string): HTMLButtonElement {
+  const button = screen
+    .getAllByRole('button', { name: label })
+    .find((candidate) => candidate.className.includes('bg-[#0066cc]'));
+  if (!button) throw new Error(`Expected a primary "${label}" button.`);
+  return button as HTMLButtonElement;
+}
+
 /** With every stay rated, one Prepare quote click makes the combined PDF for all of them. */
 async function prepareCombinedQuote(): Promise<void> {
-  await waitFor(() =>
-    expect((screen.getByRole('button', { name: 'Prepare quote' }) as HTMLButtonElement).disabled).toBe(false),
-  );
-  fireEvent.click(screen.getByRole('button', { name: 'Prepare quote' }));
+  await waitFor(() => expect(topPrimaryButton('Prepare quote').disabled).toBe(false));
+  fireEvent.click(topPrimaryButton('Prepare quote'));
   await waitFor(() =>
     expect(screen.getByText(/Prepared quote Quote - Standard King\.pdf for all stays/)).toBeDefined(),
   );
