@@ -84,7 +84,7 @@ async function listVisibleComboOptions(page) {
   });
 }
 
-async function chooseCombo(page, name, label) {
+export async function chooseCombo(page, name, label) {
   const input = page.locator(`input[name="${name}"]:visible`).first();
   const trigger = input.locator('xpath=ancestor::table[1]').locator('.x-form-arrow-trigger:visible, .x-form-trigger:visible').first();
   if (await trigger.count()) await trigger.click();
