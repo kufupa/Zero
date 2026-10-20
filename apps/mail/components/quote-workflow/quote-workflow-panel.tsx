@@ -296,7 +296,10 @@ function pickClearedBy(kind: 'company' | 'agency', header: StaffQuoteHeader, tex
 }
 
 type RatePlanCategory = 'public' | 'contract' | 'government' | 'other';
-type RatePlanChoice = RatePlanCatalogueEntry & { category: RatePlanCategory };
+type RatePlanChoice = RatePlanCatalogueEntry & {
+  category: RatePlanCategory;
+  readByNava: boolean;
+};
 
 const RATE_OPTION_BOARD: Record<RateOption['board'], RatePlanBoard> = {
   room_only: 'room_only',
@@ -316,10 +319,20 @@ function ratePlanChoices(
   catalogue: readonly RatePlanCatalogueEntry[],
   hmsOptions: readonly RateOption[],
 ): RatePlanChoice[] {
+  const readByNavaCodes = new Set(
+    hmsOptions.map((option) => option.rateCode.trim().toUpperCase()).filter(Boolean),
+  );
   const choices = new Map<string, RatePlanChoice>();
   for (const entry of catalogue) {
     const code = entry.code.trim().toUpperCase();
-    if (code) choices.set(code, { ...entry, code, category: ratePlanCategory(entry) });
+    if (code) {
+      choices.set(code, {
+        ...entry,
+        code,
+        category: ratePlanCategory(entry),
+        readByNava: readByNavaCodes.has(code),
+      });
+    }
   }
   for (const option of hmsOptions) {
     const code = option.rateCode.trim().toUpperCase();
@@ -332,6 +345,7 @@ function ratePlanChoices(
       ...(event ? { event: true } : {}),
       ...(option.contract ? { contract: true } : {}),
       category: event ? 'other' : option.contract ? 'contract' : 'other',
+      readByNava: true,
     });
   }
   return [...choices.values()];
@@ -676,25 +690,18 @@ function StayExtrasFields({
   );
 }
 
-function RatePlanFields({
+function RatePlanSelect({
   ratePlans,
   ratePlan,
   onRatePlanChange,
-  notesBlock,
-  notes,
-  onNotesChange,
 }: {
   ratePlans: RatePlanChoice[];
   ratePlan: string;
   onRatePlanChange: (value: string) => void;
-  notesBlock: string;
-  /** The staff note for HMS, stored on the quote header so it survives the pane and goes to the booking. */
-  notes: string;
-  onNotesChange: (value: string) => void;
 }) {
   return (
     <div className="flex flex-col gap-3">
-      <Field label="Rate plan" htmlFor="quote-rate-plan">
+      <Field label="Showing rates for" htmlFor="quote-rate-plan">
         <select
           id="quote-rate-plan"
           aria-label="Rate plan"
@@ -704,7 +711,9 @@ function RatePlanFields({
         >
           <option value="all">All rates</option>
           {(['public', 'contract', 'government', 'other'] as const).map((category) => {
-            const plans = ratePlans.filter((entry) => entry.category === category);
+            const plans = ratePlans
+              .filter((entry) => entry.category === category)
+              .sort((left, right) => Number(right.readByNava) - Number(left.readByNava));
             // Public (BAR) and government keep their "All" choice even when the catalogue is down.
             if (!plans.length && category !== 'government' && category !== 'public') return null;
             const label = category === 'other' ? 'Other HMS rates' : `${category[0]!.toUpperCase()}${category.slice(1)}`;
@@ -715,6 +724,7 @@ function RatePlanFields({
                 {plans.map((plan) => (
                   <option key={plan.code} value={plan.code}>
                     {plan.name === plan.code ? plan.code : `${plan.code}: ${plan.name}`}
+                    {plan.readByNava ? ' (read by Nava)' : ''}
                   </option>
                 ))}
               </optgroup>
@@ -725,6 +735,22 @@ function RatePlanFields({
           All rates shows every code HMS returned. Choosing a plan filters the cards below.
         </span>
       </Field>
+    </div>
+  );
+}
+
+function HmsNotesFields({
+  notesBlock,
+  notes,
+  onNotesChange,
+}: {
+  notesBlock: string;
+  /** The staff note for HMS, stored on the quote header so it survives the pane and goes to the booking. */
+  notes: string;
+  onNotesChange: (value: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3">
       <Disclosure summary={<span>HMS notes (optional)</span>}>
         <Field label="Notes for HMS" htmlFor="quote-hms-notes">
           <textarea
@@ -1492,7 +1518,7 @@ export function QuoteWorkflowPanel({
     ? missingQuestionPriority(firstMissingAnswer.field) === 0
       ? { kind: 'scroll', targetId: 'quote-party', label: 'Review agency & company' }
       : missingQuestionPriority(firstMissingAnswer.field) === 1
-        ? { kind: 'scroll', targetId: 'quote-authority', label: 'Set rate authority' }
+        ? { kind: 'scroll', targetId: 'quote-rates', label: 'Choose rate plan' }
         : missingQuestionPriority(firstMissingAnswer.field) === 2
           ? {
               kind: 'scroll',
@@ -1574,22 +1600,19 @@ export function QuoteWorkflowPanel({
             onPartyLookupPending={onPartyLookupPending}
           />
           <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-authority')}>
-            Continue to Rate authority
+            Continue to HMS notes
           </SecondaryButton>
         </Section>
       ) : null}
       {showWorkspace ? (
         <Section
           step={2}
-          title="Rate authority"
+          title="HMS notes"
           id="quote-authority"
-          action={<StepState state={header.salesStrategy ? 'Done' : 'Pending'} />}
+          action={<StepState state={header.notes?.trim() ? 'Done' : 'Optional'} />}
         >
-          <RatePlanFields
+          <HmsNotesFields
             key={selectionEpoch}
-            ratePlans={ratePlans}
-            ratePlan={ratePlan}
-            onRatePlanChange={changeRatePlan}
             notesBlock={quoteNotesBlock(session, rowLabels, contact)}
             notes={header.notes ?? ''}
             onNotesChange={(value) => onPatchStaffHeader?.({ notes: value }, { staffEdit: true })}
@@ -1633,6 +1656,11 @@ export function QuoteWorkflowPanel({
       ) : null}
       {showWorkspace ? (
         <Section step={4} title="Availability & rates" id="quote-rates" action={<StepState state={ratesState} />}>
+          <RatePlanSelect
+            ratePlans={ratePlans}
+            ratePlan={ratePlan}
+            onRatePlanChange={changeRatePlan}
+          />
           {showRates ? (
             <h4 className="text-[13px] font-semibold text-[#475569]">Search availability & room rates</h4>
           ) : null}

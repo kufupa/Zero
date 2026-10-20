@@ -1381,12 +1381,12 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                 type="button"
               >
-                Continue to Rate authority
+                Continue to HMS notes
               </button>
             </div>
           </section>
           <section
-            aria-label="Rate authority"
+            aria-label="HMS notes"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-authority"
           >
@@ -1401,13 +1401,13 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
                 >
                   2
                 </span>
-                Rate authority
+                HMS notes
               </h3>
               <span
-                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#eaf4ee] text-[#1a4332]"
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
                 data-testid="quote-step-state"
               >
-                Done
+                Optional
               </span>
             </div>
             <div
@@ -1416,56 +1416,6 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
               <div
                 class="flex flex-col gap-3"
               >
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-rate-plan"
-                    >
-                      <span>
-                        Rate plan
-                      </span>
-                    </label>
-                  </div>
-                  <select
-                    aria-label="Rate plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-rate-plan"
-                  >
-                    <option
-                      value="all"
-                    >
-                      All rates
-                    </option>
-                    <optgroup
-                      label="Public"
-                    >
-                      <option
-                        value="public"
-                      >
-                        All public rates (BAR)
-                      </option>
-                    </optgroup>
-                    <optgroup
-                      label="Government"
-                    >
-                      <option
-                        value="government"
-                      >
-                        All government rates
-                      </option>
-                    </optgroup>
-                  </select>
-                  <span
-                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
-                  >
-                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
-                  </span>
-                </div>
                 <details
                   class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
                 >
@@ -2319,6 +2269,60 @@ exports[`NavaPane screen states > review: the system check results sit at the fo
             <div
               class="flex flex-col gap-3.5 p-3"
             >
+              <div
+                class="flex flex-col gap-3"
+              >
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-rate-plan"
+                    >
+                      <span>
+                        Showing rates for
+                      </span>
+                    </label>
+                  </div>
+                  <select
+                    aria-label="Rate plan"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-rate-plan"
+                  >
+                    <option
+                      value="all"
+                    >
+                      All rates
+                    </option>
+                    <optgroup
+                      label="Public"
+                    >
+                      <option
+                        value="public"
+                      >
+                        All public rates (BAR)
+                      </option>
+                    </optgroup>
+                    <optgroup
+                      label="Government"
+                    >
+                      <option
+                        value="government"
+                      >
+                        All government rates
+                      </option>
+                    </optgroup>
+                  </select>
+                  <span
+                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
+                  >
+                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
+                  </span>
+                </div>
+              </div>
               <h4
                 class="text-[13px] font-semibold text-[#475569]"
               >
@@ -3592,12 +3596,12 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                 type="button"
               >
-                Continue to Rate authority
+                Continue to HMS notes
               </button>
             </div>
           </section>
           <section
-            aria-label="Rate authority"
+            aria-label="HMS notes"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-authority"
           >
@@ -3612,13 +3616,13 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
                 >
                   2
                 </span>
-                Rate authority
+                HMS notes
               </h3>
               <span
-                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#eaf4ee] text-[#1a4332]"
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
                 data-testid="quote-step-state"
               >
-                Done
+                Optional
               </span>
             </div>
             <div
@@ -3627,56 +3631,6 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
               <div
                 class="flex flex-col gap-3"
               >
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-rate-plan"
-                    >
-                      <span>
-                        Rate plan
-                      </span>
-                    </label>
-                  </div>
-                  <select
-                    aria-label="Rate plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-rate-plan"
-                  >
-                    <option
-                      value="all"
-                    >
-                      All rates
-                    </option>
-                    <optgroup
-                      label="Public"
-                    >
-                      <option
-                        value="public"
-                      >
-                        All public rates (BAR)
-                      </option>
-                    </optgroup>
-                    <optgroup
-                      label="Government"
-                    >
-                      <option
-                        value="government"
-                      >
-                        All government rates
-                      </option>
-                    </optgroup>
-                  </select>
-                  <span
-                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
-                  >
-                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
-                  </span>
-                </div>
                 <details
                   class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
                 >
@@ -4530,6 +4484,60 @@ exports[`NavaPane screen states > tool: a finished first run opens the quote too
             <div
               class="flex flex-col gap-3.5 p-3"
             >
+              <div
+                class="flex flex-col gap-3"
+              >
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-rate-plan"
+                    >
+                      <span>
+                        Showing rates for
+                      </span>
+                    </label>
+                  </div>
+                  <select
+                    aria-label="Rate plan"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-rate-plan"
+                  >
+                    <option
+                      value="all"
+                    >
+                      All rates
+                    </option>
+                    <optgroup
+                      label="Public"
+                    >
+                      <option
+                        value="public"
+                      >
+                        All public rates (BAR)
+                      </option>
+                    </optgroup>
+                    <optgroup
+                      label="Government"
+                    >
+                      <option
+                        value="government"
+                      >
+                        All government rates
+                      </option>
+                    </optgroup>
+                  </select>
+                  <span
+                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
+                  >
+                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
+                  </span>
+                </div>
+              </div>
               <h4
                 class="text-[13px] font-semibold text-[#475569]"
               >
@@ -6127,12 +6135,12 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                 type="button"
               >
-                Continue to Rate authority
+                Continue to HMS notes
               </button>
             </div>
           </section>
           <section
-            aria-label="Rate authority"
+            aria-label="HMS notes"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-authority"
           >
@@ -6147,13 +6155,13 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
                 >
                   2
                 </span>
-                Rate authority
+                HMS notes
               </h3>
               <span
-                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#eaf4ee] text-[#1a4332]"
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
                 data-testid="quote-step-state"
               >
-                Done
+                Optional
               </span>
             </div>
             <div
@@ -6162,56 +6170,6 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
               <div
                 class="flex flex-col gap-3"
               >
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-rate-plan"
-                    >
-                      <span>
-                        Rate plan
-                      </span>
-                    </label>
-                  </div>
-                  <select
-                    aria-label="Rate plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-rate-plan"
-                  >
-                    <option
-                      value="all"
-                    >
-                      All rates
-                    </option>
-                    <optgroup
-                      label="Public"
-                    >
-                      <option
-                        value="public"
-                      >
-                        All public rates (BAR)
-                      </option>
-                    </optgroup>
-                    <optgroup
-                      label="Government"
-                    >
-                      <option
-                        value="government"
-                      >
-                        All government rates
-                      </option>
-                    </optgroup>
-                  </select>
-                  <span
-                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
-                  >
-                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
-                  </span>
-                </div>
                 <details
                   class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
                 >
@@ -7065,6 +7023,60 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
             <div
               class="flex flex-col gap-3.5 p-3"
             >
+              <div
+                class="flex flex-col gap-3"
+              >
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-rate-plan"
+                    >
+                      <span>
+                        Showing rates for
+                      </span>
+                    </label>
+                  </div>
+                  <select
+                    aria-label="Rate plan"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-rate-plan"
+                  >
+                    <option
+                      value="all"
+                    >
+                      All rates
+                    </option>
+                    <optgroup
+                      label="Public"
+                    >
+                      <option
+                        value="public"
+                      >
+                        All public rates (BAR)
+                      </option>
+                    </optgroup>
+                    <optgroup
+                      label="Government"
+                    >
+                      <option
+                        value="government"
+                      >
+                        All government rates
+                      </option>
+                    </optgroup>
+                  </select>
+                  <span
+                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
+                  >
+                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
+                  </span>
+                </div>
+              </div>
               <h4
                 class="text-[13px] font-semibold text-[#475569]"
               >
@@ -8238,12 +8250,12 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 class="flex h-8 items-center justify-center gap-1.5 rounded-[3px] border border-[#0066cc] bg-white px-3 text-[13px] font-semibold text-[#0066cc] transition-colors hover:bg-[#eff6ff] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc] disabled:cursor-not-allowed disabled:border-[#cbd5e1] disabled:text-[#94a3b8] w-full"
                 type="button"
               >
-                Continue to Rate authority
+                Continue to HMS notes
               </button>
             </div>
           </section>
           <section
-            aria-label="Rate authority"
+            aria-label="HMS notes"
             class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
             id="quote-authority"
           >
@@ -8258,13 +8270,13 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
                 >
                   2
                 </span>
-                Rate authority
+                HMS notes
               </h3>
               <span
-                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#eaf4ee] text-[#1a4332]"
+                class="whitespace-nowrap rounded-full px-2 py-0.5 text-[10.5px] font-semibold bg-[#f1f5f9] text-[#64748b]"
                 data-testid="quote-step-state"
               >
-                Done
+                Optional
               </span>
             </div>
             <div
@@ -8273,56 +8285,6 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
               <div
                 class="flex flex-col gap-3"
               >
-                <div
-                  class="flex flex-col gap-1"
-                >
-                  <div
-                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
-                  >
-                    <label
-                      class="flex items-center gap-1.5"
-                      for="quote-rate-plan"
-                    >
-                      <span>
-                        Rate plan
-                      </span>
-                    </label>
-                  </div>
-                  <select
-                    aria-label="Rate plan"
-                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
-                    id="quote-rate-plan"
-                  >
-                    <option
-                      value="all"
-                    >
-                      All rates
-                    </option>
-                    <optgroup
-                      label="Public"
-                    >
-                      <option
-                        value="public"
-                      >
-                        All public rates (BAR)
-                      </option>
-                    </optgroup>
-                    <optgroup
-                      label="Government"
-                    >
-                      <option
-                        value="government"
-                      >
-                        All government rates
-                      </option>
-                    </optgroup>
-                  </select>
-                  <span
-                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
-                  >
-                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
-                  </span>
-                </div>
                 <details
                   class="group overflow-hidden rounded-[3px] border border-[#e2e8f0]"
                 >
@@ -9176,6 +9138,60 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
             <div
               class="flex flex-col gap-3.5 p-3"
             >
+              <div
+                class="flex flex-col gap-3"
+              >
+                <div
+                  class="flex flex-col gap-1"
+                >
+                  <div
+                    class="flex items-center justify-between text-[13px] font-semibold text-[#475569]"
+                  >
+                    <label
+                      class="flex items-center gap-1.5"
+                      for="quote-rate-plan"
+                    >
+                      <span>
+                        Showing rates for
+                      </span>
+                    </label>
+                  </div>
+                  <select
+                    aria-label="Rate plan"
+                    class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b]"
+                    id="quote-rate-plan"
+                  >
+                    <option
+                      value="all"
+                    >
+                      All rates
+                    </option>
+                    <optgroup
+                      label="Public"
+                    >
+                      <option
+                        value="public"
+                      >
+                        All public rates (BAR)
+                      </option>
+                    </optgroup>
+                    <optgroup
+                      label="Government"
+                    >
+                      <option
+                        value="government"
+                      >
+                        All government rates
+                      </option>
+                    </optgroup>
+                  </select>
+                  <span
+                    class="mt-0.5 block text-[13px] font-normal text-[#64748b]"
+                  >
+                    All rates shows every code HMS returned. Choosing a plan filters the cards below.
+                  </span>
+                </div>
+              </div>
               <h4
                 class="text-[13px] font-semibold text-[#475569]"
               >
