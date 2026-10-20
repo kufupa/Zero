@@ -15,21 +15,45 @@ type FixtureLocator = {
   waitFor: () => Promise<void>;
   press: () => Promise<void>;
   click: () => Promise<void>;
+  evaluate: (fn: (root: BoundlistRoot, want: string) => boolean, want: string) => Promise<boolean>;
+};
+
+type BoundlistRoot = {
+  querySelectorAll: (sel: string) => Array<{
+    offsetParent: object;
+    getClientRects: () => Array<{ width: number }>;
+    childNodes: unknown[];
+    textContent: string;
+    click: () => void;
+  }>;
 };
 
 function fixturePage(options: string[], events: string[]) {
+  const items = options.map((label) => ({
+    offsetParent: {},
+    getClientRects: () => [{ width: 1 }],
+    childNodes: [] as unknown[],
+    textContent: label,
+    click: () => {
+      events.push(`item-click:${label}`);
+    },
+  }));
+  const root: BoundlistRoot = {
+    querySelectorAll: (sel) => (sel.includes('x-boundlist-item') ? items : []),
+  };
   const loc = (sel = ''): FixtureLocator => {
     const node: FixtureLocator = {
       first: () => node,
       last: () => node,
       locator: (next) => loc(`${sel} >> ${next}`),
-      getByText: (label) => loc(`${sel} >> text=${label}`),
+      getByText: (label) => loc(`${sel} >> getByText=${label}`),
       count: async () => 1,
       waitFor: async () => undefined,
       press: async () => undefined,
       click: async () => {
-        events.push(/x-boundlist-item|text=/.test(sel) ? 'option-click' : 'other-click');
+        events.push(sel.includes('getByText') ? 'getByText-click' : 'other-click');
       },
+      evaluate: async (fn, want) => fn(root, want),
     };
     return node;
   };
@@ -141,6 +165,22 @@ describe('reservation booking-state reader', () => {
       .find((row) => row?.phase === 'chooseCombo');
     expect(payload?.options).toEqual(options);
     expect(events.indexOf('log')).toBeGreaterThanOrEqual(0);
-    expect(events.indexOf('log')).toBeLessThan(events.indexOf('option-click'));
+    expect(events.indexOf('log')).toBeLessThan(events.indexOf('item-click:Walk in'));
+  });
+
+  it('clicks the boundlist item when it has no child text node', async () => {
+    const events: string[] = [];
+    const writes: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      writes.push(String(chunk));
+      events.push('log');
+      return true;
+    }) as typeof process.stderr.write);
+
+    await chooseCombo(fixturePage(['Walk in'], events), 'guaranteetype', 'Walk in');
+
+    expect(events).toContain('item-click:Walk in');
+    expect(events).not.toContain('getByText-click');
+    expect(events.indexOf('log')).toBeLessThan(events.indexOf('item-click:Walk in'));
   });
 });

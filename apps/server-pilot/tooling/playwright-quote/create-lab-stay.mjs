@@ -98,8 +98,19 @@ export async function chooseCombo(page, name, label) {
   process.stderr.write(`${JSON.stringify({ phase: 'chooseCombo', name, optionCount: options.length, options })}\n`);
   if (!options.length) throw new Error(`combo_options_missing:${name}`);
   if (!options.includes(label)) throw new Error(`combo_option_missing:${name}`);
-  const option = list.locator('.x-boundlist-item:visible').getByText(label, { exact: true });
-  await option.click({ timeout: 5000 });
+  // Click the item itself. getByText() looks for a descendant; Ext often
+  // puts the label as the item's own text (no child text node).
+  const clicked = await list.evaluate((root, want) => {
+    const visible = (el) => !!(el.offsetParent || el.getClientRects().length);
+    const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const match = [...root.querySelectorAll('.x-boundlist-item')]
+      .filter(visible)
+      .find((el) => norm(el.textContent) === want);
+    if (!match) return false;
+    match.click();
+    return true;
+  }, label);
+  if (!clicked) throw new Error(`combo_option_missing:${name}`);
 }
 
 async function clickTip(page, pattern) {
