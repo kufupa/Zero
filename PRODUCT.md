@@ -97,3 +97,11 @@ _(agents append dated one-liners; owner promotes into the spec above)_
 - 2026-10-14 (owner): DB route tests may use a local disposable Postgres on 127.0.0.1; never pilot RDS.
 - 2026-10-14 (owner, after the client saw the live product): (1) pre-stay self-mail is an existing stay, never New booking (rule promoted to Front door above); (2) webmail panel shows "Access removed — contact Ansh" for centurion@ — diagnose the sync-owner denial and give webmail its own wording; (3) nava-admin "could not load this workflow folder" — error visibility first, then fix; (4) "Prepared by Nava" quotes must show in webmail too (`HMS_QUOTE_PREPARE` on remote-http as well).
 - 2026-10-14 (owner): today's goal — every workflow (quote with price confidence, create, amend, cancel) to high accuracy. Work it one workflow at a time against the pass bars above.
+
+- 2026-10-20 (owner): immediate goal is quote end-to-end in reservationists’ hands, preferably booking/amend/cancel/POP too; current request is deep planning and safe Orca cleanup, not implementation. Chat must contain technical steps, ETA evidence, ROI, alternatives/fallbacks and authority needs. Original asks: OWNER-ASKS.md 139–146.
+- 2026-10-20 (owner): deploy whenever needed; no outside/before staff-hours cap. Existing write authorization and staff-bundle proof still apply.
+- 2026-10-20 (owner): one mail may need multiple workflow actions; POP distinct from voucher; group typically ≥12 guests. Scope/readiness decision pending, not an overnight architecture rewrite approval.
+
+- 2026-10-20 (owner): PDF click acceptable; autonomy means reliable end-to-end connections, not mandatory automatic PDF. Consider prominent Generate PDF + reply then review; editable Excel first-class. Replan technical scope and ETA basis before product execution. Original ask147 in OWNER-ASKS.
+
+- 2026-10-20 (owner): critically review best/elegant pilot product and exact first-release work/elapsed estimate; Grok final review with Sol coordination, not routine expensive Opus. Assessment only, no product execution approval. Original ask148 in OWNER-ASKS.

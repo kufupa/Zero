@@ -2,6 +2,12 @@
 
 Updated 2026-10-19 after the overnight leak-free triage run. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
 
+## Quote-first planning and cleanup — 2026-10-20
+
+- Planning only. Current planner branch starts at main9ad55993e; prod independently1181ca923. Quote queue/preparation enabled; save remains lab on3procs and unsetremote-http. No new product build/deploy/write.
+- Owner147/148: reliable quote chain, click PDF acceptable. [Current plan](../plans/2026-10-20-001-fix-centurion-quote-ready-plan.md) proposes one coherent pending-safe accessible Prepare PDF + reply PR, not two micro-PRs. Grok final review + Greptile, Sol coordination; no routine extra Opus. First browser-proved release90min working estimate includes15baseline/45all-in UI/10deploy/20canary; native/staff waits and price defects excluded, full quote bar unproved. Next rate selector beside existing prices45min guideline, no duplicate display. Planning only.
+- Removed5merged-clean Orca trees with archive branches; preserved3parent untrackeddocs byte-exact and tar-backed. Dirty triage/diskretention, old mainWIP and open handoffPR420 remain. Original owner asks139–146 retained.
+
 ## Party lookup + pane review — 2026-10-19 (B2 party design chat)
 
 - Live at `1181ca923` (#418, deployed 00:28Z 2026-10-20; last-good before `78c29b5ae`, then `1c74f42b5`; env backup `.env.production.bak-20261019-party-hybrid`). `PARTY_MATCH_V3=true` and `PARTY_HISTORY_BIND=on` on http/worker/ai-worker (`/proc` checked); remote-http has no party flags, same as V2. Health 200/200.
@@ -26,6 +32,12 @@ Updated 2026-10-19 after the overnight leak-free triage run. Already imported by
 - Flags (owner-approved in the executing chat): `INBOUND_TRIAGE_CLASSIFIER=off` and `PANE_PRECLASSIFY` unset on http/worker/ai-worker (remote-http never had either); `/proc` checked. Backup `.env.production.bak-20261019-triage-flip`. Channel mail keeps its triage run by design.
 - HMS browser on 19223 now runs as `hms-slot@hrcen` (systemd, enabled; env `/etc/nava/hms-slot-hrcen.env` incl. `PLAYWRIGHT_BROWSERS_PATH=/opt/nava/ms-playwright`). First attempt without that path crash-looped; HMS reads were down ~2 min (04:15–04:17Z, 0 runs in flight).
 - Final live proof at 2026-10-19 10:01Z: 55 successful post-deploy Centurion extractions on `extract-3ccdd9c9966e`, 2 quote-class `read_tool` runs succeeded (09:55Z, 09:58Z), zero dead letters. Acceptance proof complete; no HMS writes or sends. V5 candidate rejected after test macro-F1 and quote/cancel recall regressed; v4 remains live. #118 decided YES (2026-10-19 15:25Z): system_notice + new_booking routes to payments; PR #399 open. Remote workflow tests 33/33, typecheck 0 errors, oxlint clean, Greptile round 1 had 0 comments. Next check: coordinator review/merge; this lane did no deploy, live HMS probe, or DB-backed SQL proof. Other owner decisions open: 180 silver disagreements, Azure content-filter blocks.
+
+## Chat D (triage holdout) — 2026-10-20 (D5 done)
+
+- Live v4 rules (sha `6cf0dbde…`) scored on the untouched Aug 1–Sep 8 thread-disjoint test: 436 silver rows, vision on (28 rows / 53 images), text prompt parity 436/436, prod model/effort/deadline on EC2 `1181ca923`. **Pass 1 94.0% acc / 91.6 macro-F1, pass 2 93.8 / 90.2**; 421/436 rows (96.6%) agree across passes; 0 final failures after retry, but 36/872 first attempts (4.1%) hit the prod 180 s deadline (PRODUCT ≤1% bar ✗ at that deadline; prod's own rate not measured); 0 429s; $3.35 Luna. Report: [held-out v4 score](../research/2026-10-20-chatd-heldout-v4-score.md).
+- On silver, money classes meet the leak-free triage bar on both passes (quote 11/11, new_booking P ≥96 / R ≥97). Outbound-grounded rows are only n=6 (6/6, 4/6). One booking skip on one pass (`e0e0f8dd`, internal staff booking ask); 6 of 8 actionable→no_action misses are internal hotel-staff mail (the v2 rule's "internal staff mail = no_action").
+- Hold / next: no GEPA (no silver money-class gap outside noise; the skip is a policy row). Check prod's extraction timeout rate against 4.1%. Owner rules on internal-staff work mail; if yes, one rule + re-score ×2 on this same held-out set. 41 silver-disagreement test rows unscored, pending owner/adjudicated labels. D0 quote-reply linkage still unresolved; D1/D2 not run.
 
 ## Lane TRI handoff — 2026-10-15
 
