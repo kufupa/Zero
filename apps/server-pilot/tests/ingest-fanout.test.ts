@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
 import {
   attachment,
+  mailIngestQuarantine,
   mailboxTransport,
   message,
 } from '../src/db/schema/mail.js';
@@ -138,6 +140,69 @@ async function persistPrimaryAndCopies(args: {
   return { primary, copies, messageId };
 }
 
+describe('mailbox fan-out copies without ingest db', () => {
+  it('claims the copy UIDL before parse and does not upload when the claim is not held', async () => {
+    type QueryRows = unknown[];
+    type SelectResult = Promise<QueryRows> & {
+      for: () => SelectResult;
+      limit: () => SelectResult;
+      orderBy: () => SelectResult;
+    };
+    function queryResult(rows: QueryRows): SelectResult {
+      const result = Promise.resolve(rows) as SelectResult;
+      result.for = () => queryResult(rows);
+      result.limit = () => queryResult(rows);
+      result.orderBy = () => queryResult(rows);
+      return result;
+    }
+    const db = {
+      select: () => {
+        const query = {
+          from: () => query,
+          where: () => queryResult([]),
+          orderBy: () => queryResult([]),
+          limit: () => queryResult([]),
+          for: () => queryResult([]),
+        };
+        return query;
+      },
+      insert: () => ({
+        values: () => ({
+          onConflictDoUpdate: () => ({
+            returning: async () => [],
+          }),
+        }),
+      }),
+    } as unknown as DB;
+    const storage = new FakeS3Storage('fanout-claim-bucket');
+    const raw = syntheticFanoutEml({
+      from: 'guest@example.test',
+      to: `${CEN_EMAIL}, ${DAV_EMAIL}`,
+      subject: 'claim before parse',
+      withAttachment: true,
+    });
+    const copies = await persistFanoutCopies({
+      db,
+      storage,
+      raw,
+      meta: {
+        ingestMailboxId: INGEST_MAILBOX_ID,
+        pop3Uidl: 'uidl-copy-unclaimed',
+        messageId: candidateMessageIdForPop3Uidl(INGEST_MAILBOX_ID, 'uidl-copy-unclaimed'),
+      },
+      transportIds: [DAV_ID],
+      skipAiEnqueue: true,
+    });
+    expect(copies.results).toHaveLength(1);
+    expect(copies.results[0]?.result.kind).toBe('failed');
+    if (copies.results[0]?.result.kind !== 'failed') return;
+    expect(copies.results[0].result.code).toBe('claim_pending');
+    expect(
+      storage.calls.some((call) => call.op === 'PUT' && call.key.startsWith('attachments/')),
+    ).toBe(false);
+  });
+});
+
 describe.skipIf(!ingestionDbAvailable)('mailbox fan-out copies', () => {
   it('7. copy 2 fails keeps primary, no DELE, re-poll creates only copy 2', async () => {
     const { withIngestionDb } = await import('./helpers/ingestion-db.js');
@@ -251,6 +316,84 @@ describe.skipIf(!ingestionDbAvailable)('mailbox fan-out copies', () => {
       await storage.deleteObject(firstKey!);
       expect(storage.get(firstKey!)).toBeUndefined();
       expect(storage.get(secondKey!)).toBeDefined();
+    });
+  });
+
+  it('copy persist never inserts quarantine when a copy UIDL is already quarantined', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db);
+      const pop3Uidl = 'uidl-copy-existing-quarantine';
+      const copyUidl = fanoutCopyPop3Uidl(pop3Uidl, DAV_ID);
+      await db.insert(mailIngestQuarantine).values({
+        id: randomUUID(),
+        ingestMailboxId: INGEST_MAILBOX_ID,
+        pop3Uidl: copyUidl,
+        rawMimeS3Key: 'raw-mime/copy-existing',
+        reason: 'multi_transport',
+        ownerHeaderValue: null,
+        parsedHeaders: null,
+      });
+      const storage = new FakeS3Storage('fanout-existing-quarantine');
+      const copies = await persistFanoutCopies({
+        db,
+        storage,
+        raw: syntheticFanoutEml({
+          from: 'guest@example.test',
+          to: `${CEN_EMAIL}, ${DAV_EMAIL}`,
+          subject: 'existing copy quarantine',
+        }),
+        meta: {
+          ingestMailboxId: INGEST_MAILBOX_ID,
+          pop3Uidl,
+          messageId: candidateMessageIdForPop3Uidl(INGEST_MAILBOX_ID, pop3Uidl),
+        },
+        transportIds: [DAV_ID],
+        skipAiEnqueue: true,
+      });
+      expect(copies.results[0]?.result.kind).toBe('failed');
+      if (copies.results[0]?.result.kind !== 'failed') return;
+      expect(copies.results[0].result.code).toBe('existing_quarantine');
+      expect(await db.select().from(mailIngestQuarantine)).toHaveLength(1);
+      expect(await db.select().from(message)).toHaveLength(0);
+    });
+  });
+
+  it('failed copy returns cleanup keys after parse', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db);
+      const pop3Uidl = 'uidl-copy-fail-keys';
+      const storage = new FakeS3Storage('fanout-fail-keys');
+      const copies = await persistFanoutCopies({
+        db,
+        storage,
+        raw: syntheticFanoutEml({
+          from: 'guest@example.test',
+          to: `${CEN_EMAIL}, ${DAV_EMAIL}`,
+          subject: 'unresolved copy keys',
+          withAttachment: true,
+        }),
+        meta: {
+          ingestMailboxId: INGEST_MAILBOX_ID,
+          pop3Uidl,
+          messageId: candidateMessageIdForPop3Uidl(INGEST_MAILBOX_ID, pop3Uidl),
+        },
+        transportIds: ['transport-ayanda'],
+        skipAiEnqueue: true,
+      });
+      expect(copies.results[0]?.result.kind).toBe('failed');
+      if (copies.results[0]?.result.kind !== 'failed') return;
+      expect(copies.results[0].result.code).toBe('unresolved_override');
+      expect(copies.results[0].result.uploadedAttachmentKeys.length).toBeGreaterThan(0);
+      const copyUidl = fanoutCopyPop3Uidl(pop3Uidl, 'transport-ayanda');
+      const copyMessageId = candidateMessageIdForPop3Uidl(INGEST_MAILBOX_ID, copyUidl);
+      expect(
+        copies.results[0].result.uploadedAttachmentKeys.every((key) =>
+          key.startsWith(`attachments/${copyMessageId}/`),
+        ),
+      ).toBe(true);
+      expect(await db.select().from(mailIngestQuarantine)).toHaveLength(0);
     });
   });
 });

@@ -2,12 +2,26 @@
  * Persist one extra mailbox copy per named hotel transport.
  *
  * Each copy uses UIDL `<uidl>#t:<transportId>` everywhere (receipt, message
- * row, attachment-key ownership). The raw UIDL is never passed to a copy
- * call. Each copy is its own persist transaction with `fanoutCopy: true`
- * (never quarantines) and `transportOverride` for that hotel transport.
+ * row, attachment-key ownership, UIDL claim, pending-cleanup check). The raw
+ * UIDL is never passed to a copy call. Claim the copy UIDL and skip parse
+ * when cleanup is pending, so attachments are not uploaded under an unclaimed
+ * key. `fanoutCopy: true` never inserts quarantine.
  */
-import { persistInboundMessage, type IngestMeta, type PersistResult } from './store.js';
-import { candidateMessageIdForPop3Uidl, parseRawMessage } from './parse-message.js';
+import {
+  claimIngestUidl,
+  hasPendingCandidateAttachmentCleanup,
+  persistInboundMessage,
+  releaseIngestUidlClaim,
+  type IngestMeta,
+  type PersistFailCode,
+  type PersistFailedResult,
+  type PersistResult,
+} from './store.js';
+import {
+  candidateMessageIdForPop3Uidl,
+  parseRawMessage,
+  uploadedAttachmentsFromParseFailure,
+} from './parse-message.js';
 import type { DB } from '../../db/client.js';
 import type { S3Storage } from '../../storage/s3.js';
 
@@ -30,6 +44,13 @@ export function fanoutCopiesSucceeded(results: FanoutCopyOutcome[]): boolean {
   return results.every((copy) => COPY_SUCCESS.has(copy.result.kind));
 }
 
+function failedCopy(
+  code: PersistFailCode,
+  uploadedAttachmentKeys: string[] = [],
+): PersistFailedResult {
+  return { kind: 'failed', code, uploadedAttachmentKeys: [...new Set(uploadedAttachmentKeys)] };
+}
+
 export async function persistFanoutCopies(args: {
   db: DB;
   storage: S3Storage;
@@ -44,18 +65,45 @@ export async function persistFanoutCopies(args: {
   const rawMimeS3Key = args.meta.rawMimeS3Key;
   for (const transportId of [...args.transportIds].sort()) {
     const copyUidl = fanoutCopyPop3Uidl(args.meta.pop3Uidl, transportId);
-    const messageId = candidateMessageIdForPop3Uidl(args.meta.ingestMailboxId, copyUidl);
-    const copyMeta: IngestMeta = {
+    const copyScope = {
       ingestMailboxId: args.meta.ingestMailboxId,
       pop3Uidl: copyUidl,
+    };
+    const messageId = candidateMessageIdForPop3Uidl(copyScope.ingestMailboxId, copyUidl);
+    const copyMeta: IngestMeta = {
+      ...copyScope,
       messageId,
       rawMimeS3Key,
     };
+    if (await hasPendingCandidateAttachmentCleanup(args.db, copyScope)) {
+      results.push({ transportId, result: failedCopy('pending_cleanup') });
+      continue;
+    }
+    let claimToken: string | null = null;
+    try {
+      claimToken = await claimIngestUidl(args.db, copyScope);
+    } catch {
+      results.push({ transportId, result: failedCopy('claim_pending') });
+      continue;
+    }
+    if (!claimToken) {
+      results.push({ transportId, result: failedCopy('claim_pending') });
+      continue;
+    }
+    if (await hasPendingCandidateAttachmentCleanup(args.db, copyScope)) {
+      await releaseIngestUidlClaim(args.db, copyScope, claimToken).catch(() => undefined);
+      results.push({ transportId, result: failedCopy('pending_cleanup') });
+      continue;
+    }
+    const uploadedAttachmentKeys: string[] = [];
     try {
       const parsed = await parseRawMessage(args.raw, {
         messageId,
         storage: args.storage,
       });
+      uploadedAttachmentKeys.push(
+        ...parsed.attachments.map((attachment) => attachment.s3Key).filter(Boolean),
+      );
       const result = await persistInboundMessage(parsed, args.raw, copyMeta, {
         db: args.db,
         storage: args.storage,
@@ -63,11 +111,30 @@ export async function persistFanoutCopies(args: {
         fanoutCopy: true,
         ingestSource: args.ingestSource,
         skipAiEnqueue: args.skipAiEnqueue,
-        activeIngestUidlClaimToken: args.activeIngestUidlClaimToken,
+        activeIngestUidlClaimToken: claimToken,
       });
-      results.push({ transportId, result });
-    } catch {
-      results.push({ transportId, result: { kind: 'failed' } });
+      if (result.kind === 'failed') {
+        results.push({
+          transportId,
+          result: failedCopy(result.code, [
+            ...result.uploadedAttachmentKeys,
+            ...uploadedAttachmentKeys,
+          ]),
+        });
+      } else {
+        results.push({ transportId, result });
+      }
+    } catch (error) {
+      const uploaded = uploadedAttachmentsFromParseFailure(error);
+      results.push({
+        transportId,
+        result: failedCopy('parse_failure', [
+          ...uploadedAttachmentKeys,
+          ...uploaded.map((attachment) => attachment.s3Key),
+        ]),
+      });
+    } finally {
+      await releaseIngestUidlClaim(args.db, copyScope, claimToken).catch(() => undefined);
     }
   }
   return { results };

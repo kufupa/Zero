@@ -709,6 +709,136 @@ describe('persistInboundMessage fail-closed transport match', () => {
     expect(result.transportId).toBe(HOTEL_B.id);
   });
 
+  it('does not fan out a copy to a hotel named only in Sender', async () => {
+    const cen = {
+      id: 'transport-centurion',
+      email: 'hotel-cen@example.test',
+      sendFromConfig: null,
+    };
+    const fth = {
+      id: 'transport-faith',
+      email: 'hotel-fth@example.test',
+      sendFromConfig: null,
+    };
+    const fake = dbWithActiveTransports([
+      { ...cen, ownerHeaderValue: cen.email },
+      { ...fth, ownerHeaderValue: fth.email },
+    ]);
+    const result = await persistSynthetic(
+      syntheticEml({
+        from: 'guest@example.test',
+        to: cen.email,
+        extraHeaders: [`Sender: ${fth.email}`],
+        subject: 'sender only is not a copy',
+      }),
+      'uidl-sender-only-no-copy',
+      fake.db,
+    );
+    expect(result.kind).toBe('stored');
+    if (result.kind !== 'stored') return;
+    expect(result.transportId).toBe(cen.id);
+    expect(result.fanoutTransportIds ?? []).toEqual([]);
+  });
+
+  it('copy persist never inserts quarantine when the override cannot resolve', async () => {
+    let quarantineInserts = 0;
+    const fake = dbWithActiveTransports([
+      { ...HOTEL_A, ownerHeaderValue: HOTEL_A.email },
+    ]);
+    const db = {
+      ...fake.db,
+      insert: (table: unknown) => ({
+        values: async () => {
+          if (table === mailIngestQuarantine) quarantineInserts += 1;
+          return undefined;
+        },
+      }),
+    } as unknown as DB;
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const raw = syntheticEml({
+      from: 'guest@example.test',
+      to: HOTEL_A.email,
+      subject: 'copy unresolved override',
+    });
+    const messageId = generateMessageId();
+    const parsed = await parseRawMessage(raw, { messageId, storage });
+    const result = await persistInboundMessage(
+      parsed,
+      raw,
+      {
+        ingestMailboxId: 'ingest-nava-legacy',
+        pop3Uidl: 'uidl-copy-no-quarantine',
+        messageId,
+      },
+      {
+        db,
+        storage,
+        skipAiEnqueue: true,
+        fanoutCopy: true,
+        transportOverride: 'transport-missing',
+      },
+    );
+    expect(result.kind).toBe('failed');
+    if (result.kind !== 'failed') return;
+    expect(result.code).toBe('unresolved_override');
+    expect(quarantineInserts).toBe(0);
+  });
+
+  it('failed copy persist returns uploaded attachment keys', async () => {
+    const fake = dbWithActiveTransports([
+      { ...HOTEL_A, ownerHeaderValue: HOTEL_A.email },
+    ]);
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const raw = Buffer.from(
+      [
+        'From: guest@example.test',
+        `To: ${HOTEL_A.email}`,
+        'Subject: copy fail keys',
+        'MIME-Version: 1.0',
+        'Content-Type: multipart/mixed; boundary="b1"',
+        '',
+        '--b1',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        'Synthetic body.',
+        '--b1',
+        'Content-Type: application/octet-stream; name="note.bin"',
+        'Content-Disposition: attachment; filename="note.bin"',
+        'Content-Transfer-Encoding: base64',
+        '',
+        'ZmFuLW91dA==',
+        '--b1--',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const messageId = generateMessageId();
+    const parsed = await parseRawMessage(raw, { messageId, storage });
+    expect(parsed.attachments.length).toBeGreaterThan(0);
+    const result = await persistInboundMessage(
+      parsed,
+      raw,
+      {
+        ingestMailboxId: 'ingest-nava-legacy',
+        pop3Uidl: 'uidl-copy-fail-keys',
+        messageId,
+      },
+      {
+        db: fake.db,
+        storage,
+        skipAiEnqueue: true,
+        fanoutCopy: true,
+        transportOverride: 'transport-missing',
+      },
+    );
+    expect(result.kind).toBe('failed');
+    if (result.kind !== 'failed') return;
+    expect(result.code).toBe('unresolved_override');
+    expect(result.uploadedAttachmentKeys.length).toBeGreaterThan(0);
+    expect(
+      result.uploadedAttachmentKeys.every((key) => key.startsWith(`attachments/${messageId}/`)),
+    ).toBe(true);
+  });
+
   it('keeps fromHeaderAddress on From when Sender differs', async () => {
     const parsed = await parseRawMessage(
       syntheticEml({

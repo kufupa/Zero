@@ -223,8 +223,20 @@ export interface PersistDeferredResult {
   candidateAttachmentCleanupFailureCount: number;
 }
 
+export type PersistFailCode =
+  | 'unresolved_override'
+  | 'pending_cleanup'
+  | 'claim_pending'
+  | 'parse_failure'
+  | 'persist_failure'
+  | 'existing_quarantine'
+  | QuarantineReason;
+
 export interface PersistFailedResult {
   kind: 'failed';
+  /** Stable code only. Never a mail body or address. */
+  code: PersistFailCode;
+  uploadedAttachmentKeys: string[];
 }
 
 export type PersistResult =
@@ -335,9 +347,20 @@ export async function persistInboundMessage(
     );
   }
 
-  const existingQuarantine =
-    opts.promoteQuarantineId || opts.fanoutCopy ? undefined : await findExistingQuarantine(db, meta);
+  const existingQuarantine = opts.promoteQuarantineId
+    ? undefined
+    : await findExistingQuarantine(db, meta);
   if (existingQuarantine) {
+    if (opts.fanoutCopy) {
+      await cleanupCandidateAttachmentTasks({
+        db,
+        storage,
+        attachments: parsed.attachments,
+        meta,
+        activeIngestUidlClaimToken: opts.activeIngestUidlClaimToken,
+      });
+      return failCopyPersist('existing_quarantine', parsed);
+    }
     const candidateAttachmentCleanupFailureCount = await cleanupCandidateAttachmentTasks({
       db,
       storage,
@@ -364,6 +387,7 @@ export async function persistInboundMessage(
     // caller-supplied id or a stale/hard-coded transport address.
     transport = await findActiveTransportById(db, opts.transportOverride);
     if (!transport) {
+      if (opts.fanoutCopy) return failCopyPersist('unresolved_override', parsed);
       return quarantineOrFail(opts, {
         db,
         storage,
@@ -2023,11 +2047,28 @@ async function withFanoutTransportIds<
   };
 }
 
+function uploadedAttachmentKeysFromParsed(parsed: ParsedInboundMessage): string[] {
+  return [
+    ...new Set(parsed.attachments.map((attachment) => attachment.s3Key).filter(Boolean)),
+  ];
+}
+
+function failCopyPersist(
+  code: PersistFailCode,
+  parsed: ParsedInboundMessage,
+): PersistFailedResult {
+  return {
+    kind: 'failed',
+    code,
+    uploadedAttachmentKeys: uploadedAttachmentKeysFromParsed(parsed),
+  };
+}
+
 async function quarantineOrFail(
   opts: PersistOptions,
   args: Parameters<typeof quarantineWithAttachmentCleanup>[0],
 ): Promise<PersistQuarantinedResult | PersistFailedResult> {
-  if (opts.fanoutCopy) return { kind: 'failed' };
+  if (opts.fanoutCopy) return failCopyPersist(args.reason, args.parsed);
   return quarantineWithAttachmentCleanup(args);
 }
 
