@@ -5842,7 +5842,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
         class="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5"
       >
         <section
-          aria-label="Quote contact — printed on the PDF"
+          aria-label="Contact"
           class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           id="quote-contact"
         >
@@ -5852,7 +5852,7 @@ exports[`NavaPane screen states > voucher: a voucher email shows the Find the bo
             <h3
               class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
             >
-              Quote contact — printed on the PDF
+              Contact
             </h3>
           </div>
           <div
@@ -7957,7 +7957,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
         class="nava-pane-scroll flex min-h-0 flex-1 flex-col gap-3.5 overflow-y-auto p-3.5"
       >
         <section
-          aria-label="Quote contact — printed on the PDF"
+          aria-label="Contact"
           class="shrink-0 overflow-hidden rounded-[4px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(0,0,0,0.02)]"
           id="quote-contact"
         >
@@ -7967,7 +7967,7 @@ exports[`NavaPane screen states > voucher: an unreadable PDF keeps the card with
             <h3
               class="flex items-center gap-1.5 text-[13px] font-bold text-[#475569]"
             >
-              Quote contact — printed on the PDF
+              Contact
             </h3>
           </div>
           <div
