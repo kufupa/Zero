@@ -1,4 +1,4 @@
-import { extractPartyMentions, suggestPartyFromSender } from '../src/ai/party-aliases.js';
+import { extractPartyMentions, suggestPartiesFor, suggestPartyFromSender } from '../src/ai/party-aliases.js';
 import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -148,5 +148,47 @@ describe('extractPartyMentions', () => {
     expect(extractPartyMentions('Rooms for all employees please.')).toEqual([]);
     expect(extractPartyMentions('Organization Details:   ')).toEqual([]);
     expect(extractPartyMentions(null)).toEqual([]);
+  });
+});
+
+describe('suggestPartiesFor rank', () => {
+  it('orders body mention, then learned sender history, then domain', () => {
+    replaceLearnedSenderMapForTests([
+      { host: 'renniesbcdtravel.com', kind: 'agency', name: 'Harbor Travel', support: 4 },
+    ]);
+    expect(
+      suggestPartiesFor({
+        sender: 'ops@renniesbcdtravel.com',
+        body: 'Travel Agency Details: Northstar Group',
+      }).map((row) => ({ source: row.source, name: row.name })),
+    ).toEqual([
+      { source: 'body', name: 'Northstar Group' },
+      { source: 'sender', name: 'Harbor Travel' },
+      { source: 'sender', name: 'Rennies Travel' },
+    ]);
+  });
+
+  it('keeps every suggestion unverified, including a domain-only hint', () => {
+    const suggestions = suggestPartiesFor({
+      sender: 'ops@mycwt.co.za',
+      body: '',
+    });
+    expect(suggestions).toEqual([
+      { source: 'sender', kind: 'agency', name: 'CWT JNB', nativeId: null, idStatus: 'unverified' },
+    ]);
+  });
+
+  it('does not repeat a history name that the body already stated', () => {
+    replaceLearnedSenderMapForTests([
+      { host: 'learned-agency.test', kind: 'agency', name: 'Harbor Travel', support: 3 },
+    ]);
+    expect(
+      suggestPartiesFor({
+        sender: 'ops@learned-agency.test',
+        body: 'Travel Agency Details: Harbor Travel',
+      }),
+    ).toEqual([
+      { source: 'body', kind: 'agency', name: 'Harbor Travel', nativeId: null, idStatus: 'unverified' },
+    ]);
   });
 });

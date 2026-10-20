@@ -117,6 +117,19 @@ function searchKey(text: string): string {
     .trim();
 }
 
+/** Body mentions first, then sender history / domain. Domain stays a suggestion only. */
+function rankPartySuggestions(suggestions: PartySuggestion[]): PartySuggestion[] {
+  return [
+    ...suggestions.filter((suggestion) => suggestion.source === 'body'),
+    ...suggestions.filter((suggestion) => suggestion.source !== 'body'),
+  ];
+}
+
+/** Domain and sender-history hints never auto-pick. Only an email-named body mention may. */
+function suggestionMayBind(suggestion: PartySuggestion): boolean {
+  return suggestion.source === 'body';
+}
+
 /** The memo entry for a key. */
 function startAutoSearch(key: string, start: () => Promise<PartyFindReply>): AutoEntry {
   const known = autoMemo.get(key);
@@ -389,7 +402,7 @@ function PartyAlternatives({
  * With autoLookup and the queue off, Nava searches the field's name inline once typing rests. A match is only offered for
  * staff confirmation. With the queue on, only Find starts a pane job; extraction prefetch may still suggest a best row.
  * The HMS list the sweep wrote is searched as staff type, and its matches are a candidate only. Email suggestions also
- * need a deliberate search and staff confirmation.
+ * need a deliberate search and staff confirmation. A domain hint never binds a party.
  */
 export function PartyPicker({
   name,
@@ -695,7 +708,10 @@ export function PartyPicker({
     });
   }, [v2BoundKey, v2DisplayJobView, v2JobScopeKey, onPick, pickedHere, v2BoundForField]);
 
-  const topSuggestion = !pickedHere ? suggestions.find((suggestion) => inScope(suggestion)) : undefined;
+  const rankedSuggestions = rankPartySuggestions(suggestions);
+  const topSuggestion = !pickedHere
+    ? rankedSuggestions.find((suggestion) => inScope(suggestion))
+    : undefined;
 
   useEffect(() => {
     if (pickedHere || v2BoundForField || !onSearchName || !topSuggestion) return;
@@ -781,7 +797,7 @@ export function PartyPicker({
   }, [fieldPresetKey]);
 
   useEffect(() => {
-    if (pickedHere || !topSuggestion) return;
+    if (pickedHere || !topSuggestion || !suggestionMayBind(topSuggestion)) return;
     const candidate = autoBest ?? prefetchedBest;
     if (
       !candidate ||

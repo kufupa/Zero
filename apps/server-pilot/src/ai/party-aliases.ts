@@ -3,7 +3,7 @@
  * suggestion never sets a rate context by itself. No HMS id is carried here. Every suggestion is unverified, and staff
  * find its HMS id with Find in HMS, so a pick is always the one HMS returns live.
  */
-import { lookupLearnedSenderParty } from './party-sender-map.js';
+import { lookupLearnedSenderHistory, lookupLearnedSenderParty } from './party-sender-map.js';
 
 export type PartyKind = 'company' | 'agency';
 
@@ -78,17 +78,33 @@ function senderHost(sender: unknown): string | null {
   return host || null;
 }
 
-/** Suggests the party a sender's domain belongs to. Null when the domain is not in the table. */
-export function suggestPartyFromSender(sender: unknown): PartySuggestion | null {
+function unverifiedSuggestion(kind: PartyKind, name: string): PartySuggestion {
+  return { kind, name, nativeId: null, idStatus: 'unverified' };
+}
+
+function suggestionKey(kind: PartyKind, name: string): string {
+  return `${kind}:${name.toLowerCase()}`;
+}
+
+/** Static domain alias only. Learned sender history is a separate rank. */
+function suggestPartyFromDomain(sender: unknown): PartySuggestion | null {
   const host = senderHost(sender);
   if (!host) return null;
   const alias = SENDER_ALIASES.find((row) =>
     row.domains.some((domain) => host === domain || host.endsWith(`.${domain}`)),
   );
-  if (alias) return { kind: alias.kind, name: alias.name, nativeId: null, idStatus: 'unverified' };
+  return alias ? unverifiedSuggestion(alias.kind, alias.name) : null;
+}
+
+/** Suggests the party a sender's domain belongs to. Null when the domain is not in the table. */
+export function suggestPartyFromSender(sender: unknown): PartySuggestion | null {
+  const fromDomain = suggestPartyFromDomain(sender);
+  if (fromDomain) return fromDomain;
+  const host = senderHost(sender);
+  if (!host) return null;
   const learned = lookupLearnedSenderParty(host);
   if (!learned) return null;
-  return { kind: learned.kind, name: learned.name, nativeId: null, idStatus: 'unverified' };
+  return unverifiedSuggestion(learned.kind, learned.name);
 }
 
 function cleanPartyName(raw: string): string | null {
@@ -138,15 +154,27 @@ export type PartySuggestionView = {
 };
 
 /**
- * Suggestions for the picker: the sender's domain alias, then the names the body states. A name from the body never
- * carries an HMS id, so it is unverified until staff pick it with Find in HMS.
+ * Suggestions for the picker, ranked body mention > learned sender history > domain alias. Domain is a suggestion
+ * only and never carries an HMS id. A name from the body never carries one either; staff confirm it with Find in HMS.
  */
 export function suggestPartiesFor(input: { sender?: string; body?: string }): PartySuggestionView[] {
   const out: PartySuggestionView[] = [];
-  const fromSender = suggestPartyFromSender(input.sender);
-  if (fromSender) out.push({ source: 'sender', ...fromSender });
+  const seen = new Set<string>();
+  const push = (row: PartySuggestionView) => {
+    const key = suggestionKey(row.kind, row.name);
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(row);
+  };
   for (const mention of extractPartyMentions(input.body)) {
-    out.push({ source: 'body', kind: mention.kind, name: mention.name, nativeId: null, idStatus: 'unverified' });
+    push({ source: 'body', ...unverifiedSuggestion(mention.kind, mention.name) });
+  }
+  const host = senderHost(input.sender);
+  if (host) {
+    const history = lookupLearnedSenderHistory(host);
+    if (history) push({ source: 'sender', ...unverifiedSuggestion(history.kind, history.name) });
+    const fromDomain = suggestPartyFromDomain(input.sender);
+    if (fromDomain) push({ source: 'sender', ...fromDomain });
   }
   return out;
 }

@@ -8,6 +8,7 @@ import {
   PARTY_PICKER_HINT,
   PARTY_SEARCH_DEADLINE_MS,
   PartyPicker,
+  resetPartyAutoLookupForTests,
 } from '../components/quote-workflow/party-picker';
 import type { HmsJobTransport, HmsJobView } from '../lib/quote-workflow/amend-find';
 import type { StaffQuoteParties } from '../lib/quote-workflow/types';
@@ -16,10 +17,12 @@ import {
   partyNoCandidateNote,
   type PartyCandidate,
   type PartyFindReply,
+  type PartySuggestion,
 } from '../lib/quote-workflow/party-lookup';
 
 afterEach(() => {
   cleanup();
+  resetPartyAutoLookupForTests();
   vi.useRealTimers();
 });
 
@@ -257,6 +260,72 @@ describe('PartyPicker prefetched party jobs', () => {
     });
     expect(onCompanyPick).not.toHaveBeenCalled();
     expect(onAgencyPick).not.toHaveBeenCalled();
+  });
+
+  it('ranks a body mention ahead of a sender hint when filling an empty field', () => {
+    const onPick = vi.fn();
+    const onSearchName = vi.fn();
+    const bodyHint: PartySuggestion = {
+      source: 'body',
+      kind: 'company',
+      name: 'Northstar Group',
+      nativeId: null,
+      idStatus: 'unverified',
+    };
+    const domainHint: PartySuggestion = {
+      source: 'sender',
+      kind: 'company',
+      name: 'Harbor Travel',
+      nativeId: null,
+      idStatus: 'unverified',
+    };
+    render(
+      <PartyPicker
+        name=""
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        suggestions={[domainHint, bodyHint]}
+        onSearchName={onSearchName}
+        onPick={onPick}
+        onClear={vi.fn()}
+      />,
+    );
+    expect(onSearchName).toHaveBeenCalledWith('Northstar Group', 'company');
+    expect(onSearchName).not.toHaveBeenCalledWith('Harbor Travel', 'company');
+    expect(onPick).not.toHaveBeenCalled();
+  });
+
+  it('never auto-picks an HMS best for a domain suggestion', async () => {
+    const onPick = vi.fn();
+    const domainHint: PartySuggestion = {
+      source: 'sender',
+      kind: 'company',
+      name: 'ABC Travel',
+      nativeId: null,
+      idStatus: 'unverified',
+    };
+    const find = vi.fn(async (): Promise<PartyFindReply> => ({
+      outcome: 'resolved',
+      results: [ABC_TRAVEL],
+      truncated: false,
+      best: ABC_TRAVEL,
+      searchedFor: 'ABC Travel',
+    }));
+    render(
+      <PartyPicker
+        autoLookup
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={find}
+        suggestions={[domainHint]}
+        onPick={onPick}
+        onClear={vi.fn()}
+      />,
+    );
+    expect(await screen.findByRole('button', { name: 'Confirm ABC Travel' })).toBeTruthy();
+    expect(onPick).not.toHaveBeenCalled();
   });
 
   it('reads a prefetched suggestion by thread and kind when the party name is blank', async () => {

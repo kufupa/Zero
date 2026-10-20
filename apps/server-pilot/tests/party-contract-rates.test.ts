@@ -571,9 +571,9 @@ describe('suggestions for the picker', () => {
       body: 'Travel Agency Details: RENNIES TRAVEL (PTY) LTD\nOrganization Details: Tourvest',
     });
     expect(suggestions).toEqual([
-      { source: 'sender', kind: 'agency', name: 'CWT JNB', nativeId: null, idStatus: 'unverified' },
       { source: 'body', kind: 'agency', name: 'RENNIES TRAVEL (PTY) LTD', nativeId: null, idStatus: 'unverified' },
       { source: 'body', kind: 'company', name: 'Tourvest', nativeId: null, idStatus: 'unverified' },
+      { source: 'sender', kind: 'agency', name: 'CWT JNB', nativeId: null, idStatus: 'unverified' },
     ]);
   });
 });

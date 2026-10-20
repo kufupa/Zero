@@ -8,6 +8,7 @@ import {
   panePartyFindResultFromCli,
   panePartyLookupLoaders,
 } from '../src/ai/pane-party-lookup.js';
+import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
 import { quoteRateContextEnabled } from '../src/ai/quote-rate-switch.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import {
@@ -133,6 +134,7 @@ afterEach(() => {
   panePartyLookupLoaders.enabled = null;
   mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
   mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+  replaceLearnedSenderMapForTests(null);
   vi.unstubAllEnvs();
 });
 
@@ -400,6 +402,44 @@ describe('findParty: the 50-row load and the cap', () => {
     expect(merged.outcome).toBe('ambiguous');
     expect(merged.results).toHaveLength(20);
     expect(merged.truncated).toBe(true);
+  });
+});
+
+describe('panePartyLookup.suggest rank', () => {
+  it('returns body mention before learned sender history before domain, and domain stays unverified', async () => {
+    replaceLearnedSenderMapForTests([
+      { host: 'renniesbcdtravel.com', kind: 'agency', name: 'Harbor Travel', support: 4 },
+    ]);
+    await expect(
+      mailboxCaller().panePartyLookup.suggest({
+        sender: 'ops@renniesbcdtravel.com',
+        body: 'Travel Agency Details: Northstar Group',
+      }),
+    ).resolves.toEqual({
+      suggestions: [
+        {
+          source: 'body',
+          kind: 'agency',
+          name: 'Northstar Group',
+          nativeId: null,
+          idStatus: 'unverified',
+        },
+        {
+          source: 'sender',
+          kind: 'agency',
+          name: 'Harbor Travel',
+          nativeId: null,
+          idStatus: 'unverified',
+        },
+        {
+          source: 'sender',
+          kind: 'agency',
+          name: 'Rennies Travel',
+          nativeId: null,
+          idStatus: 'unverified',
+        },
+      ],
+    });
   });
 });
 

@@ -4,6 +4,7 @@ import {
   isOwnedHotelHost,
   lookupLearnedSenderHistory,
   lookupLearnedSenderParty,
+  partyHistoryBindEnabled,
   recordSenderParty,
   replaceLearnedSenderMapForTests,
 } from '../src/ai/party-sender-map.js';
@@ -60,6 +61,26 @@ describe('learned sender history', () => {
     });
     expect(lookupLearnedSenderHistory('person@gmail.com')).toBeNull();
     expect(lookupLearnedSenderHistory('gmail.com')).toBeNull();
+  });
+
+  it('still returns history for ranking when PARTY_HISTORY_BIND is off', () => {
+    vi.stubEnv('PARTY_HISTORY_BIND', 'off');
+    replaceLearnedSenderMapForTests([
+      {
+        host: 'agency.example.test',
+        kind: 'agency',
+        name: 'Harbor Travel',
+        nativeId: 'AG-7',
+        iata: 'CPT',
+        support: 3,
+      },
+    ]);
+    expect(partyHistoryBindEnabled()).toBe(false);
+    expect(lookupLearnedSenderHistory('agency.example.test')).toMatchObject({
+      kind: 'agency',
+      name: 'Harbor Travel',
+      nativeId: 'AG-7',
+    });
   });
 
   it.each([

@@ -204,7 +204,7 @@ describe('PartyPicker scoped to one field of the header', () => {
 });
 
 describe('PartyPicker preselects the top suggestion', () => {
-  it('picks the HMS best for a sender suggestion, and the quote bind carries that party', async () => {
+  it('never binds a domain suggestion when HMS returns a matching best row', async () => {
     const picked: StaffQuoteParty[] = [];
     const agency = { kind: 'agency' as const, nativeId: '290', name: 'CWT JNB' };
     const find = vi.fn(async (): Promise<PartyFindReply> => ({
@@ -233,37 +233,9 @@ describe('PartyPicker preselects the top suggestion', () => {
       );
     }
     render(<PreselectHarness />);
-    const agencyPreset = await screen.findByRole('combobox', { name: 'Agency from HMS' });
-    expect((agencyPreset as unknown as HTMLSelectElement).value).toBe('agency:290');
-    expect(screen.queryByText(/not confirmed in HMS/)).toBeNull();
-    expect(screen.getByRole('button', { name: 'Confirm Agency' })).toBeTruthy();
-    expect(picked).toEqual([agency]);
-    expect(pickedParties({ agency })).toEqual({ agency });
-    const mutate = vi.fn<(input: unknown) => Promise<{ status: 'unavailable' }>>(async () => ({
-      status: 'unavailable' as const,
-    }));
-    await bindExecuteStaffQuote({
-      mutate,
-      source: { messageId: 'm', threadId: 't', sourceHash: 'ab'.repeat(32) },
-      selectionEpoch: 1,
-      inputRevision: 1,
-      groups: [
-        {
-          id: 'g1',
-          arrivalDate: '2026-11-12',
-          departureDate: '2026-11-14',
-          quantity: 1,
-          adults: 1,
-          childrenAges: [] as number[],
-          board: 'bb' as const,
-          specialRequests: [] as string[],
-          fields: {},
-        },
-      ],
-      header: { ...emptyStaffQuoteHeader(), agency: 'CWT JNB', parties: { agency } },
-    });
-    const sent = mutate.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
-    expect(sent?.parties).toEqual({ agency });
+    expect(await screen.findByRole('button', { name: 'Confirm CWT JNB' })).toBeTruthy();
+    expect(picked).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Confirm Agency' })).toBeNull();
   });
 
   it('does not pick an HMS best whose name is not the suggestion', async () => {
