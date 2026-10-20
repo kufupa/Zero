@@ -22,9 +22,12 @@ import {
   isSettled,
   noSearchMatchCopy,
   notHmsNumberNote,
+  pickStayFromFindRows,
   pollHmsJob,
   searchRequestFor,
   searchRunFromJob,
+  stayPickCaption,
+  suspectStayLink,
   type FindStayInput,
   type FindStayReply,
   type GuestSearchInput,
@@ -766,6 +769,7 @@ describe('AmendLookupPanel', () => {
     );
     expect(screen.queryByRole('button', { name: 'Find this booking in HMS' })).toBeNull();
     expect(screen.getByTestId('amend-guest-search')).toBeTruthy();
+    expect(screen.getByTestId('amend-check-banner').textContent).toContain(AMEND_FIND_COPY.checkBanner);
   });
 
   it('names the booking selected from search when that confirmation is not found', async () => {
@@ -807,6 +811,7 @@ describe('AmendLookupPanel', () => {
     );
     expect(screen.queryByRole('button', { name: 'Find this booking in HMS' })).toBeNull();
     expect(screen.getByTestId('amend-guest-search')).toBeTruthy();
+    expect(screen.getByTestId('amend-check-banner').textContent).toContain(AMEND_FIND_COPY.checkBanner);
   });
 
   it('does not look up an agent reference HMS cannot take: the number is named and the find stays disabled', () => {
@@ -823,6 +828,7 @@ describe('AmendLookupPanel', () => {
       ),
     ).toBeTruthy();
     expect(screen.getByText('No HMS booking number found in the email.')).toBeTruthy();
+    expect(screen.getByTestId('amend-check-banner').textContent).toContain(AMEND_FIND_COPY.checkBanner);
     expect((screen.getByRole('button', { name: 'Find this booking in HMS' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: 'Find this booking in HMS' }));
     expect(findStay).not.toHaveBeenCalled();
@@ -837,6 +843,7 @@ describe('AmendLookupPanel', () => {
       screen.getByText("Nava couldn't find a booking number in the email. Find the booking by guest name below."),
     ).toBeTruthy();
     expect(screen.getByText('No HMS booking number found in the email.')).toBeTruthy();
+    expect(screen.getByTestId('amend-check-banner').textContent).toContain(AMEND_FIND_COPY.checkBanner);
     expect(findStay).not.toHaveBeenCalled();
   });
 
@@ -1077,6 +1084,7 @@ describe('AmendLookupPanel guest-name search', () => {
 
   it('prefills the name search from the email, and opens it when the email has no booking number', async () => {
     render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(vi.fn())} />);
+    expect(screen.getByTestId('amend-check-banner').textContent).toContain(AMEND_FIND_COPY.checkBanner);
     expect(screen.getByTestId('amend-guest-search')).toBeTruthy();
     expect((screen.getByLabelText('Guest surname') as HTMLInputElement).value).toBe('Mokoena');
     expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('2026-10-12');
@@ -1087,6 +1095,7 @@ describe('AmendLookupPanel guest-name search', () => {
   it('keeps the name search closed while the email has a usable booking number', () => {
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(vi.fn())} />);
     expect(screen.queryByTestId('amend-guest-search')).toBeNull();
+    expect(screen.queryByTestId('amend-check-banner')).toBeNull();
   });
 
   it('resumes only the matching surname and arrival guest prefetch', async () => {
@@ -1148,7 +1157,10 @@ describe('AmendLookupPanel guest-name search', () => {
     fireEvent.click(within(items[0] as HTMLElement).getByRole('button', { name: 'Show booking in HMS' }));
     await expectFoundBooking();
     expect(findStay).toHaveBeenCalledWith({ confirmation: '46184891-1', arrival: '2026-10-12' });
-    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
+    expect(screen.getByTestId('amend-guest-search')).toBeTruthy();
+    expect(within(list).getAllByRole('button', { name: 'Show booking in HMS' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(3);
+    expect(screen.getByTestId('stay-pick-line').textContent).toContain('Likely stay');
   });
 
   it('caps an ambiguous candidate list at five rows with one copy action per booking', async () => {
@@ -1228,6 +1240,7 @@ describe('AmendLookupPanel guest-name search', () => {
     expect(screen.queryByText('Matched on')).toBeNull();
     expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(1);
     expect(screen.queryByTestId('amend-guest-search')).toBeNull();
+    expect(screen.queryByTestId('amend-check-banner')).toBeNull();
   });
 
   it('shows one confirmation copy action and a supported HMS link after a found result', async () => {
@@ -1277,9 +1290,65 @@ describe('AmendLookupPanel guest-name search', () => {
     expect(warning.textContent).toContain('Email departure 7 Nov 2026; HMS departure 6 Nov 2026');
     expect(screen.queryByTestId('amend-changes')).toBeNull();
   });
+
+  it('reopens the name search when the found guest does not match the email', async () => {
+    const findStay = vi.fn().mockResolvedValue(found({ lastName: 'Mokoena-Dube' }));
+    render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
+    await pressFind();
+    await expectFoundBooking();
+    expect(screen.getByTestId('amend-match-warning').textContent).toContain('Doesn\'t match HMS');
+    expect(screen.getByTestId('amend-check-banner').textContent).toContain(AMEND_FIND_COPY.checkBanner);
+    expect(screen.getByTestId('amend-guest-search')).toBeTruthy();
+  });
 });
 
 describe('guest-name search helpers', () => {
+  it('picks a unique live surname+arrival match and checks conf# when two live stays match', () => {
+    const ask = { lastName: ROW_MOKOENA.lastName, arrival: ROW_MOKOENA.arrival ?? '' };
+    expect(pickStayFromFindRows({ ask, rows: [ROW_MOKOENA, ROW_CANCELLED] })).toEqual({
+      status: 'pick',
+      confirmationNumber: ROW_MOKOENA.confirmation,
+      why: ['exact surname and arrival'],
+    });
+    const twoLive = pickStayFromFindRows({
+      ask,
+      rows: [ROW_MOKOENA, { ...ROW_MOKOENA, confirmation: '46184893-1' }],
+    });
+    expect(twoLive.status).toBe('check_conf');
+    expect(twoLive.confirmationNumber).toBeNull();
+    const missingStated = pickStayFromFindRows({
+      ask: { ...ask, confirmationNumber: CONFIRMATION },
+      rows: [ROW_MOKOENA],
+    });
+    expect(missingStated.status).toBe('check_conf');
+    expect(missingStated.why.some((line) => /stated_conf_not_found/i.test(line))).toBe(true);
+    expect(pickStayFromFindRows({ ask, rows: [] })).toEqual({
+      status: 'none',
+      confirmationNumber: null,
+      why: ['no overlap'],
+    });
+  });
+
+  it('labels a unique match Likely stay and an ambiguous match Check conf#', () => {
+    expect(
+      stayPickCaption(
+        { status: 'pick', confirmationNumber: ROW_MOKOENA.confirmation, why: ['exact surname and arrival'] },
+        ROW_MOKOENA.confirmation,
+      ),
+    ).toBe('Likely stay · exact surname and arrival');
+    expect(
+      stayPickCaption({ status: 'check_conf', confirmationNumber: null, why: ['not a unique live stay'] }),
+    ).toBe('Check conf# · not a unique live stay');
+    expect(stayPickCaption({ status: 'none', confirmationNumber: null, why: [] })).toBeNull();
+  });
+
+  it('treats a found stay as suspect when the email guest disagrees or HMS reported an arrival mismatch', () => {
+    expect(suspectStayLink(AMEND, stayRecord(), false)).toBe(false);
+    expect(suspectStayLink(AMEND, stayRecord({ lastName: 'Mokoena-Dube' }), false)).toBe(true);
+    expect(suspectStayLink(AMEND, stayRecord({ arrival: '2026-11-01' }), false)).toBe(false);
+    expect(suspectStayLink(AMEND, stayRecord(), true)).toBe(true);
+  });
+
   it('takes a dash confirmation as written, and never turns a bare number into one', () => {
     expect(hmsNumberFor('64318608-1')).toBe('64318608-1');
     expect(hmsNumberFor(' 57291630-2 ')).toBe('57291630-2');
@@ -1544,14 +1613,31 @@ describe('AmendLookupPanel cancel from the pane', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  // Search closes once a stay is on screen, so staff cannot pick a second row from the same list.
-  it.skip('does not carry a preview over to another booking picked from the name search', async () => {
+  it('does not carry a preview over to another booking picked from the name search', async () => {
     capabilities.paneSave = true;
     const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [ROW_MOKOENA, ROW_CANCELLED], screenshots: [], runId: null });
     const findStay = vi
       .fn()
-      .mockResolvedValueOnce(found({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []))
-      .mockResolvedValueOnce(found({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []));
+      .mockResolvedValueOnce(
+        found(
+          {
+            confirmation: ROW_MOKOENA.confirmation,
+            arrival: CANCEL_ARRIVAL,
+            departure: CANCEL.departure ?? '',
+          },
+          [],
+        ),
+      )
+      .mockResolvedValueOnce(
+        found(
+          {
+            confirmation: ROW_CANCELLED.confirmation,
+            arrival: CANCEL_ARRIVAL,
+            departure: CANCEL.departure ?? '',
+          },
+          [],
+        ),
+      );
     const preview = vi.fn().mockResolvedValue(PREVIEW_OK);
     const trpc = {
       ...lookupTrpc(findStay, undefined, search),

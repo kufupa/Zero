@@ -35,7 +35,91 @@ export const AMEND_FIND_COPY = {
   searchInvalid: 'Check the surname and dates, then search again.',
   searchFailed: 'Nava could not read the HMS search. Try again in a minute.',
   searchPick: 'Pick a booking to see it in HMS above.',
+  checkBanner: 'Check this booking',
+  checkHint: 'Pick the right confirmation. Nava re-reads that number before any change in HMS.',
 } as const;
+
+/** Salvage of #335: unique live match vs staff must check the confirmation. */
+export type StayPick = {
+  status: 'pick' | 'check_conf' | 'none';
+  confirmationNumber: string | null;
+  why: string[];
+};
+
+/** Staff line. Omits the confirmation when that number is already on the selected row. */
+export function stayPickCaption(pick: StayPick, shownConfirmation?: string | null): string | null {
+  if (pick.status === 'none') return null;
+  const reason = pick.why[0] ?? '';
+  if (pick.status === 'check_conf') return reason ? `Check conf# · ${reason}` : 'Check conf#';
+  const conf = pick.confirmationNumber;
+  if (conf && shownConfirmation === conf) return reason ? `Likely stay · ${reason}` : 'Likely stay';
+  if (conf) return reason ? `Likely stay: ${conf} · ${reason}` : `Likely stay: ${conf}`;
+  return reason ? `Likely stay · ${reason}` : 'Likely stay';
+}
+
+export type StayPickAsk = {
+  lastName: string;
+  arrival: string;
+  departure?: string;
+  confirmationNumber?: string | null;
+};
+
+export type StayPickRow = {
+  confirmation: string;
+  lastName: string;
+  status: string;
+  arrival: string | null;
+};
+
+function liveStayPickRows(rows: StayPickRow[]): StayPickRow[] {
+  return rows.filter((row) => !/\bcancel/i.test(row.status));
+}
+
+function asStayPick(conf: string | null, why: string[], rows: StayPickRow[]): StayPick {
+  const live = liveStayPickRows(rows).filter((row) => row.confirmation === conf);
+  if (!conf || live.length !== 1) {
+    return { status: 'check_conf', confirmationNumber: null, why: why.length ? why : ['not a unique live stay'] };
+  }
+  return { status: 'pick', confirmationNumber: conf, why };
+}
+
+/**
+ * Mail-side CHECK pick from find/search rows already on the card. No extra HMS call.
+ * Unique live surname+arrival (cancelled ignored) → pick. Two live matches, or a stated
+ * confirmation missing from the rows → check_conf. Empty → none.
+ */
+export function pickStayFromFindRows(input: { ask: StayPickAsk; rows: StayPickRow[] }): StayPick {
+  const rows = input.rows.filter((row) => row && typeof row === 'object' && row.confirmation);
+  if (rows.length === 0) return { status: 'none', confirmationNumber: null, why: ['no overlap'] };
+  const stated = hmsNumberFor(input.ask.confirmationNumber ?? null);
+  if (stated) {
+    const inRows = rows.some((row) => row.confirmation === stated);
+    if (!inRows) return { status: 'check_conf', confirmationNumber: null, why: ['stated_conf_not_found'] };
+    return asStayPick(stated, ['stated confirmation'], rows);
+  }
+  const askLast = input.ask.lastName.trim().toLowerCase();
+  const askArrival = sendableArrival(input.ask.arrival);
+  const matches = liveStayPickRows(rows).filter((row) => {
+    const last = row.lastName.trim().toLowerCase();
+    if (!askLast || !last) return false;
+    if (last !== askLast && !nameWords(last).includes(askLast)) return false;
+    return Boolean(askArrival && sendableArrival(row.arrival) === askArrival);
+  });
+  if (matches.length === 1) {
+    return asStayPick(matches[0]!.confirmation, ['exact surname and arrival'], rows);
+  }
+  return { status: 'check_conf', confirmationNumber: null, why: ['not a unique live stay'] };
+}
+
+/** True when a found stay is the wrong guest, or HMS reported an arrival mismatch for that confirmation. */
+export function suspectStayLink(
+  amendment: QuoteAmendment,
+  stay: StayRecordWire,
+  arrivalMismatch: boolean,
+): boolean {
+  if (arrivalMismatch) return true;
+  return Boolean(amendDiffs(amendment, stay).guest);
+}
 
 /**
  * A real HMS confirmation: 6 to 10 digits, a dash, then the stay's 1 or 2 digits (57291630-1). findStay takes no other

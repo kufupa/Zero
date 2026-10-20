@@ -40,17 +40,21 @@ import {
   noSearchMatchCopy,
   notFoundConfirmationCopy,
   notHmsNumberNote,
+  pickStayFromFindRows,
   prefetchedNotFoundConfirmationCopy,
   searchRequestFor,
   searchRunFromJob,
   stayGuest,
+  stayPickCaption,
   stayText,
+  suspectStayLink,
   type AmendDiff,
   type GuestSearchRow,
   type HmsJobView,
   type HmsSearchRun,
   type ScreenshotInput,
   type ScreenshotReply,
+  type StayPick,
   type StayRecordWire,
 } from '@/lib/quote-workflow/amend-find';
 import { amendmentOf } from '@/lib/quote-workflow/session';
@@ -188,8 +192,32 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   const findAmbiguous = findRun?.kind === 'ambiguous';
   const searchedConfirmation = findView?.request?.kind === 'find' ? findView.request.confirmation : null;
   const prefetchedNotFound = Boolean(findView?.prefetch && findNotFound);
-  // The name search opens when there is no usable number, when a find needs a guest-name fallback, or until a booking is chosen.
-  const searchOpen = !stay && (!lookupable || findNotFound || findAmbiguous || searchView !== null || search.queuing);
+  const stayPick: StayPick =
+    searchRun?.kind === 'rows'
+      ? pickStayFromFindRows({
+          ask: {
+            lastName: amendment.guestLastName ?? '',
+            arrival: amendment.arrival ?? '',
+            ...(amendment.departure ? { departure: amendment.departure } : {}),
+            confirmationNumber,
+          },
+          rows: searchRun.rows,
+        })
+      : { status: 'none', confirmationNumber: null, why: [] };
+  const suspectLink = Boolean(stay && suspectStayLink(amendment, stay, Boolean(found?.arrivalMismatch)));
+  // CHECK: missing / not found / ambiguous / suspect, or staff already has a candidate list to reopen.
+  const checkReason = !stay
+    ? !lookupable
+      ? 'missing'
+      : findNotFound
+        ? 'not_found'
+        : findAmbiguous || stayPick.status === 'check_conf'
+          ? 'ambiguous'
+          : null
+    : suspectLink || stayPick.status === 'check_conf'
+      ? 'suspect'
+      : null;
+  const searchOpen = checkReason !== null || searchView !== null || search.queuing;
 
   // pii: the note quotes the guest's booking number.
   let note: { tone: 'info' | 'warn'; text: string; pii?: boolean } | null = null;
@@ -332,6 +360,12 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
       <p data-testid="amend-request-summary" data-pii title="Request from this email" className={valueClass}>
         {requestLine}
       </p>
+      {checkReason ? (
+        <div data-testid="amend-check-banner" className={warnNoteClass}>
+          <p className="font-semibold">{AMEND_FIND_COPY.checkBanner}</p>
+          <p>{AMEND_FIND_COPY.checkHint}</p>
+        </div>
+      ) : null}
       <div className={`grid ${requestedRows.length ? 'grid-cols-2' : 'grid-cols-1'} gap-3`}>
         <div
           data-testid={stay ? 'amend-hms-result-card' : undefined}
@@ -466,6 +500,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           view={searchView}
           statusFailed={search.statusFailed}
           run={searchRun}
+          stayPick={stayPick}
           onRetry={search.retry}
           onSearch={(form) => {
             if (!key) return;
@@ -547,6 +582,7 @@ function GuestSearchSection({
   view,
   statusFailed,
   run,
+  stayPick,
   onRetry,
   onSearch,
   onPick,
@@ -561,6 +597,7 @@ function GuestSearchSection({
   view: HmsJobView | null;
   statusFailed: boolean;
   run: HmsSearchRun | null;
+  stayPick: StayPick;
   onRetry: () => void;
   onSearch: (form: SearchForm) => void;
   onPick: (row: GuestSearchRow) => void;
@@ -627,10 +664,20 @@ function GuestSearchSection({
           onRetry={onRetry}
           statusFailed={statusFailed}
         />
-        {run ? <SearchResult run={run} busy={busy} onPick={onPick} /> : null}
+        {run ? <SearchResult run={run} busy={busy} onPick={onPick} stayPick={stayPick} /> : null}
         {view?.status === 'done' ? <HmsAsOf asOf={view.asOf} /> : null}
       </div>
     </div>
+  );
+}
+
+function StayPickNote({ pick, shownConfirmation }: { pick: StayPick; shownConfirmation?: string | null }) {
+  const text = stayPickCaption(pick, shownConfirmation);
+  if (!text) return null;
+  return (
+    <p data-testid="stay-pick-line" data-pii className={infoNoteClass}>
+      {text}
+    </p>
   );
 }
 
@@ -638,15 +685,19 @@ function SearchResult({
   run,
   busy,
   onPick,
+  stayPick,
 }: {
   run: HmsSearchRun;
   busy: boolean;
   onPick: (row: GuestSearchRow) => void;
+  stayPick: StayPick;
 }) {
   if (run.kind === 'rows') {
     const rows = run.rows.slice(0, 5);
+    const shown = rows.length === 1 ? rows[0]!.confirmation : null;
     return (
       <div className="flex flex-col gap-2">
+        <StayPickNote pick={stayPick} shownConfirmation={shown} />
         <ul aria-label="Bookings found in HMS" className="flex flex-col gap-1.5">
           {rows.map((row) => (
             <li key={row.confirmation}>
