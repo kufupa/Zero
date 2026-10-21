@@ -170,12 +170,11 @@ export function matchTrackRow(rows, want) {
   return { ...match, code };
 }
 
-export function assertTrackReadyForGuarantee({ validation, averageRate }) {
+export function assertTrackReadyForGuarantee({ validation }) {
   if (validation?.invalid) {
     const msg = (validation.messages || []).filter(Boolean).join('; ') || 'invalid';
     throw new Error(`track_invalid:${msg}`);
   }
-  if (!String(averageRate || '').trim()) throw new Error('rate_unresolved');
 }
 
 function normalizeProfileId(value) {

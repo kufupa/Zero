@@ -302,8 +302,7 @@ test('red track validation fails before guarantee opens', () => {
     /track_invalid:Invalid value/,
   );
   assert.equal(guaranteeOpened, false);
-  assert.throws(
-    () => assertTrackReadyForGuarantee({ validation: { invalid: false, messages: [] }, averageRate: '' }),
-    /rate_unresolved/,
+  assert.doesNotThrow(() =>
+    assertTrackReadyForGuarantee({ validation: { invalid: false, messages: [] } }),
   );
 });

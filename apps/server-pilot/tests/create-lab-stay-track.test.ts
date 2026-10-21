@@ -66,6 +66,7 @@ function fixtureTrackPage(opts: {
   rowWaitError?: string;
   maskVisible?: boolean;
   invalidateOnWait?: boolean;
+  keepRateBlank?: boolean;
 }) {
   let maskVisible = opts.maskVisible ?? false;
   let averageRate = opts.averageRate;
@@ -101,7 +102,7 @@ function fixtureTrackPage(opts: {
       if (opts.invalidateOnWait) {
         validation = { invalid: true, messages: ['Invalid value'], value: 'BAR' };
       }
-      if (!averageRate) averageRate = '1250.00';
+      if (!averageRate && !opts.keepRateBlank) averageRate = '1250.00';
     },
     evaluate: async (fn: (...args: unknown[]) => unknown, arg?: unknown) => {
       const src = Function.prototype.toString.call(fn);
@@ -165,6 +166,28 @@ describe('create-lab-stay track lookup', () => {
       messages: [],
       value: 'BAR',
     });
+  });
+
+  it('blank average rate continues without throwing', async () => {
+    const events: string[] = [];
+    const writes: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+
+    await fillTrackBeforeGuarantee(
+      fixtureTrackPage({
+        events,
+        validation: { invalid: false, messages: [], value: 'Best Available' },
+        averageRate: '',
+        rowTexts: [],
+        keepRateBlank: true,
+      }),
+      'BAR',
+    );
+
+    expect(writes.some((chunk) => chunk.includes('"phase":"average_rate"') && chunk.includes('"blank":true'))).toBe(true);
   });
 
   it('does not open a lookup when Track is already valid', async () => {
