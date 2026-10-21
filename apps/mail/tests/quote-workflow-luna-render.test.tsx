@@ -159,7 +159,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.queryByText('Agency & company')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Prepare PDF + reply' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Find this booking' }));
-    expect(onSelectStayKey).toHaveBeenCalledWith('2026-11-01:2026-11-06');
+    expect(onSelectStayKey).toHaveBeenCalledWith('stay-a');
   });
 
   it('shows cancel stay cards on a stored non_quote analysis', () => {
@@ -453,7 +453,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     ).toBeDefined();
   });
 
-  it('shows each stay guest list, action badge, and a split control', () => {
+  it('shows each stay guest list and action badge', () => {
     const session = sessionWithAnalysis({
       intent: 'quote',
       groups: [{ ...g1, stayId: 'stay-a', quantity: 2 }],
@@ -487,55 +487,12 @@ describe('QuoteWorkflowPanel Nava extras', () => {
         ],
       }),
     });
-    const onStayAction = vi.fn();
-    render(<QuoteWorkflowPanel session={session} onStayAction={onStayAction} />);
+    render(<QuoteWorkflowPanel session={session} />);
     expect(screen.getByLabelText('Stay action').textContent).toBe('Quote');
     expect(screen.getByLabelText('Stay guests').textContent).toContain('Ada Example');
     expect(screen.getByLabelText('Stay guests').textContent).toContain('Bea Example');
-    fireEvent.click(screen.getByRole('button', { name: 'Split into separate bookings' }));
-    expect(onStayAction).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'split_stay', stayId: 'stay-a', token: expect.any(String) }),
-    );
-  });
-
-  it('labels the split control Split in HMS when guests do not equal rooms', () => {
-    const session = sessionWithAnalysis({
-      intent: 'quote',
-      groups: [{ ...g1, stayId: 'stay-a', quantity: 1 }],
-      secondaryAsks: [],
-      alternatives: [],
-      luna: lunaWire({
-        workflow: 'quote',
-        groups: [
-          {
-            arrival: '2026-11-12',
-            departure: '2026-11-14',
-            rooms: 1,
-            adultsPerRoom: 1,
-            childAges: [],
-            board: 'bb',
-            roomPreference: null,
-            guestNames: ['Ada Example'],
-            stayId: 'stay-a',
-          },
-          {
-            arrival: '2026-11-12',
-            departure: '2026-11-14',
-            rooms: 1,
-            adultsPerRoom: 1,
-            childAges: [],
-            board: 'bb',
-            roomPreference: null,
-            guestNames: ['Bea Example'],
-            stayId: 'stay-a',
-          },
-        ],
-      }),
-    });
-    render(<QuoteWorkflowPanel session={session} />);
-    const split = screen.getByRole('button', { name: 'Split in HMS' }) as HTMLButtonElement;
-    expect(split.disabled).toBe(true);
     expect(screen.queryByRole('button', { name: 'Split into separate bookings' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Split in HMS' })).toBeNull();
   });
 
   it('hides the tasks line when luna has a single task', () => {

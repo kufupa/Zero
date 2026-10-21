@@ -43,9 +43,10 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
   if (!base) return null;
   const selectedKey = session.selectedStayKey;
   if (!selectedKey) return base;
-  const stay = groupStays(session.groups).find(
-    (item) => item.rows[0] && stayKeyForGroup(item.rows[0]) === selectedKey,
-  );
+  const stays = groupStays(session.groups);
+  const stay =
+    stays.find((item) => item.id === selectedKey) ??
+    stays.find((item) => item.rows[0] && stayKeyForGroup(item.rows[0]) === selectedKey);
   if (!stay) return base;
   const action = stayAskAction(session, stay.id);
   if (action !== 'amend' && action !== 'cancel') return base;
@@ -147,17 +148,13 @@ export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; gue
 
 export type StayAskGuest = { name: string; confirmationNumber: string | null };
 export type StayAskAction = 'quote' | 'booking' | 'amend' | 'cancel' | 'other';
-export type StaySplitKind = 'allocate' | 'hms' | 'none';
-/** Pane-only split: one child stay per named guest. Not a StayEditAction; the panel casts through onStayAction. */
-export type SplitStayAction = { type: 'split_stay'; stayId: string; token: string };
 
 type LunaStayGroup = LunaAnalysisWire['groups'][number] & { confirmationNumber?: string | null };
 
-/** Extra fields a stored read and a pane split already put on a room row. Not on the published StayGroupRequirement type. */
+/** Extra fields a stored read already puts on a room row. Not on the published StayGroupRequirement type. */
 type StayAskRow = StayGroupRequirement & {
   guestNames?: string[];
   confirmationNumber?: string | null;
-  stayAskKind?: StayAskAction;
 };
 
 function lunaStayGroups(session: Pick<QuoteSession, 'analysis'>): LunaStayGroup[] {
@@ -202,8 +199,7 @@ function lunaGroupsMatchingStay(session: QuoteSession, stayId: string): LunaStay
 
 /**
  * Named guests on this stay. A stored read puts names and booking numbers on analysis.groups (the session rows).
- * A live analysis puts names on luna.groups. Split children keep the assignment on the room row so it round-trips
- * with the pane edit.
+ * A live analysis puts names on luna.groups.
  */
 export function stayAskGuests(session: QuoteSession, stayId: string): StayAskGuest[] {
   const rows = stayAskRows(session, stayId);
@@ -226,7 +222,7 @@ function stayAskActionFromTask(kind: LunaAnalysisWire['tasks'][number]['kind']):
   return null;
 }
 
-/** Stay ids a task named, taken from the analysis groups at those indexes so a later split or remove cannot retarget it. */
+/** Stay ids a task named, taken from the analysis groups at those indexes so a later remove cannot retarget it. */
 function taskStayIds(session: QuoteSession, task: LunaAnalysisWire['tasks'][number]): string[] {
   const analysisGroups = session.analysis?.groups ?? [];
   return task.groupIndexes.flatMap((index) => {
@@ -235,10 +231,8 @@ function taskStayIds(session: QuoteSession, task: LunaAnalysisWire['tasks'][numb
   });
 }
 
-/** The action this stay card should show. Tasks bind by stay id; split children inherit that link on the room row. */
+/** The action this stay card should show. Tasks bind by stay id. */
 export function stayAskAction(session: QuoteSession, stayId: string): StayAskAction {
-  const inherited = stayAskRows(session, stayId).find((row) => row.stayAskKind)?.stayAskKind;
-  if (inherited) return inherited;
   const tasks = session.analysis?.luna?.tasks ?? [];
   for (const task of tasks) {
     if (!taskStayIds(session, task).includes(stayId)) continue;
@@ -268,93 +262,6 @@ export function stayAskActionLabel(action: StayAskAction): string | null {
 export function keepNonQuoteStays(analysis: QuoteAnalysis): boolean {
   const kind = analysis.amendment?.kind ?? analysis.luna?.workflow;
   return kind === 'amend' || kind === 'cancel';
-}
-
-/**
- * Room units for a pane split: one child stay per named guest, each with one room of the source type and occupancy.
- * Null when guest count is not the room total (the control then reads Split in HMS).
- */
-export function allocateSplitRooms(
-  rows: StayGroupRequirement[],
-  guestCount: number,
-): StayGroupRequirement[][] | null {
-  if (guestCount < 2) return null;
-  const units: StayGroupRequirement[] = [];
-  for (const row of rows) {
-    const quantity = row.quantity;
-    if (typeof quantity !== 'number' || quantity < 1) return null;
-    for (let i = 0; i < quantity; i += 1) units.push({ ...row, quantity: 1 });
-  }
-  if (units.length !== guestCount) return null;
-  return units.map((unit) => [unit]);
-}
-
-export function staySplitKind(rows: StayGroupRequirement[], guestCount: number): StaySplitKind {
-  if (guestCount < 2) return 'none';
-  return allocateSplitRooms(rows, guestCount) ? 'allocate' : 'hms';
-}
-
-function lunaBoardOf(row: StayGroupRequirement): LunaAnalysisWire['groups'][number]['board'] {
-  if (row.board === 'dinner_bb') return 'dbb';
-  if (row.board === 'unknown') return null;
-  return row.board;
-}
-
-/**
- * Pane-only split: replace the stay with one child stay per named guest, same dates, each keeping its confirmation.
- * Does not re-extract. Null when rooms cannot be allocated (guest count ≠ room total).
- */
-export function splitStayCards(
-  session: QuoteSession,
-  stayId: string,
-  token: string,
-): { groups: StayGroupRequirement[]; lunaGroups: LunaStayGroup[]; pairs: Array<readonly [string, string]> } | null {
-  const rows = session.groups.filter((group) => stayIdOf(group) === stayId);
-  if (!rows.length) return null;
-  const guests = stayAskGuests(session, stayId);
-  const units = allocateSplitRooms(rows, guests.length);
-  if (!units) return null;
-  const askKind = stayAskAction(session, stayId);
-  const childRows: StayAskRow[] = [];
-  const childLuna: LunaStayGroup[] = [];
-  const pairs: Array<readonly [string, string]> = [];
-  guests.forEach((guest, guestIndex) => {
-    const childStayId = `s_${token}_${guestIndex}`;
-    const roomRows = units[guestIndex]!;
-    roomRows.forEach((row, rowIndex) => {
-      const child: StayAskRow = {
-        ...copyRow(row, `r_${token}_${guestIndex}_${rowIndex}`, childStayId),
-        quantity: 1,
-        guestNames: [guest.name],
-        confirmationNumber: guest.confirmationNumber,
-        stayAskKind: askKind,
-      };
-      childRows.push(child);
-      pairs.push([row.id, child.id]);
-    });
-    const first = roomRows[0]!;
-    childLuna.push({
-      arrival: first.arrivalDate ?? null,
-      departure: first.departureDate ?? null,
-      rooms: roomRows.reduce((sum, row) => sum + (row.quantity ?? 0), 0),
-      adultsPerRoom: first.adults ?? null,
-      childAges: [...first.childrenAges],
-      board: lunaBoardOf(first),
-      roomPreference: first.roomPreference ?? null,
-      guestNames: [guest.name],
-      stayId: childStayId,
-      ...(guest.confirmationNumber ? { confirmationNumber: guest.confirmationNumber } : {}),
-    });
-  });
-  const firstIndex = session.groups.findIndex((group) => stayIdOf(group) === stayId);
-  const groups = [
-    ...session.groups.slice(0, firstIndex),
-    ...childRows,
-    ...session.groups.slice(firstIndex).filter((group) => stayIdOf(group) !== stayId),
-  ];
-  const sourceLuna = lunaGroupsMatchingStay(session, stayId);
-  const lunaGroups = [...lunaStayGroups(session).filter((group) => !sourceLuna.includes(group)), ...childLuna];
-  return { groups, lunaGroups, pairs };
 }
 
 /** A random part for the ids of rows and stays that a structural edit creates. The reducer takes it as input. */
@@ -1463,10 +1370,7 @@ export function quoteStayRunIsCurrent(
   );
 }
 
-export function reduceQuoteSession(
-  session: QuoteSession,
-  action: QuoteSessionAction | SplitStayAction,
-): QuoteSession {
+export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAction): QuoteSession {
   if (action.type === 'analysis_ready') {
     const analysis = withFallbackMissingQuoteReplyFields(action.analysis);
     if (analysis !== action.analysis) action = { ...action, analysis };
@@ -1587,7 +1491,7 @@ export function reduceQuoteSession(
           (item) => item.kind === 'document_failure',
         );
         const groups = keepNonQuoteStays(action.analysis) ? action.analysis.groups : [];
-        const keys = requestedQuoteKeys(groups);
+        const stays = groupStays(groups);
         return {
           ...clearDownstream(session),
           phase: 'non_quote',
@@ -1595,9 +1499,11 @@ export function reduceQuoteSession(
           analysis: action.analysis,
           groups,
           selectedStayKey:
-            keys.length === 1 ? keys[0]! : session.selectedStayKey && keys.includes(session.selectedStayKey)
-              ? session.selectedStayKey
-              : null,
+            stays.length === 1
+              ? stays[0]!.id
+              : session.selectedStayKey && groups.some((group) => stayIdOf(group) === session.selectedStayKey)
+                ? session.selectedStayKey
+                : null,
           reviewItems: unreadItems,
           handledReviewItemIds: [],
           staffHeader: prefillStaffHeaderFromLuna(
@@ -1750,17 +1656,21 @@ export function reduceQuoteSession(
       return editStays({ ...session, staffHeader }, session.groups, new Set([action.stayKey]));
     }
     case 'select_stay_key': {
-      if (!session.groups.some((group) => stayKeyForGroup(group) === action.stayKey)) return session;
+      const byStayId = session.groups.some((group) => stayIdOf(group) === action.stayKey);
+      const dateKey = byStayId
+        ? stayKeyForGroup(session.groups.find((group) => stayIdOf(group) === action.stayKey)!)
+        : action.stayKey;
+      if (!byStayId && !session.groups.some((group) => stayKeyForGroup(group) === action.stayKey)) return session;
       if (session.selectedStayKey === action.stayKey) return session;
-      // Every option keeps its result. The newly selected option exposes only its own authority and PDF.
-      const quote = session.staffQuotes[action.stayKey] ?? null;
+      // Date key still looks up the combined quote. Stay id is what CHECK/amend uses when Find this booking fires.
+      const quote = session.staffQuotes[dateKey] ?? null;
       return {
         ...session,
         selectedStayKey: action.stayKey,
         staffQuote: quote,
         selectedOfferIds: quote ? [quote.revisionRef] : [],
         // A combined PDF covers every stay, so it stays when the selection moves between them.
-        pdf: isMultiStay(session) ? session.pdf : (session.stayPdfs[action.stayKey] ?? null),
+        pdf: isMultiStay(session) ? session.pdf : (session.stayPdfs[dateKey] ?? null),
       };
     }
     case 'staff_quote_ready': {
@@ -2057,20 +1967,6 @@ export function reduceQuoteSession(
       if (!rows.length) return session;
       const groups = session.groups.filter((group) => stayIdOf(group) !== action.stayId);
       return editStays(session, groups, dateKeysOf(rows));
-    }
-    case 'split_stay': {
-      const split = splitStayCards(session, action.stayId, action.token);
-      if (!split) return session;
-      const luna = session.analysis?.luna;
-      const next =
-        session.analysis && luna
-          ? {
-              ...session,
-              analysis: { ...session.analysis, luna: { ...luna, groups: split.lunaGroups } },
-            }
-          : session;
-      const sourceRows = session.groups.filter((group) => stayIdOf(group) === action.stayId);
-      return editStays(withDinnerCopies(next, split.pairs), split.groups, dateKeysOf(sourceRows));
     }
     case 'restore_stay': {
       const { removal } = action;

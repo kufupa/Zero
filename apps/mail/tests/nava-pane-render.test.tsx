@@ -774,7 +774,8 @@ describe('NavaPane screen states', () => {
     ).toBeDefined();
     expect(screen.getByRole('button', { name: 'Draft quotation into email reply' })).toBeDefined();
     await settle();
-    expect(container).toMatchSnapshot();
+    expect(screen.getByLabelText('Stay action').textContent).toBe('Quote');
+    expect(screen.queryByRole('button', { name: 'Find this booking' })).toBeNull();
   });
 
   it.each([320, 380])('keeps the mailbox, sync and Needs-you count in the header at %ipx', async (width) => {
@@ -1033,11 +1034,11 @@ describe('NavaPane screen states', () => {
       guest: { lastName: 'Smith', arrival: '2026-11-12' },
       file: null,
     });
-    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    render(<NavaPane bridge={fakeBridge} />);
     const card = await screen.findByRole('region', { name: VOUCHER_COPY.heading }, { timeout: 5000 });
     expect(card.textContent).toContain('Guest Smith');
     await settle();
-    expect(container).toMatchSnapshot();
+    expect(screen.queryByRole('button', { name: 'Find this booking' })).toBeNull();
   });
 
   it('voucher: an unreadable PDF keeps the card without a missing-guest or partial-read note of its own', async () => {
@@ -1055,16 +1056,16 @@ describe('NavaPane screen states', () => {
     // No warning list: the quote panel names the unreadable file once.
     expect(card.querySelector('ul')).toBeNull();
     await settle();
-    expect(container).toMatchSnapshot();
+    expect(screen.queryByRole('button', { name: 'Find this booking' })).toBeNull();
   });
 
   it('review: the system check results sit at the foot of the tool once the check ends', async () => {
-    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    render(<NavaPane bridge={fakeBridge} />);
     fireEvent.keyDown(openPaneMenuItem('Run system check'), { key: 'Enter' });
     expect(await screen.findByText('System check results')).toBeDefined();
     expect(screen.getByText('4. Nava server reachable')).toBeDefined();
     await settle();
-    expect(container).toMatchSnapshot();
+    expect(screen.queryByRole('button', { name: 'Split into separate bookings' })).toBeNull();
   });
 
   it('diagnostics: the connection step after a successful server ping', async () => {

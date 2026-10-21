@@ -18,7 +18,6 @@ import {
   stayAskActionLabel,
   stayAskGuests,
   stayKeyForGroup,
-  staySplitKind,
   staffSourceReady,
   stayTotals,
 } from '@/lib/quote-workflow/session';
@@ -146,59 +145,29 @@ function CorrectionNote({
   );
 }
 
-/** Guests, action badge, split, and Find this booking. Quote stays still use StayCard under this; amend/cancel do not. */
+/** Guests, action badge, and Find this booking. Quote stays still use StayCard under this; amend/cancel do not. */
 function StayAskChrome({
   session,
   stay,
-  onStayAction,
   onSelectStayKey,
 }: {
   session: QuoteSession;
   stay: { id: string; rows: StayGroupRequirement[] };
-  onStayAction?: (action: StayEditAction) => void;
   onSelectStayKey?: (stayKey: string) => void;
 }) {
   const guests = stayAskGuests(session, stay.id);
   const askAction = stayAskAction(session, stay.id);
   const askLabel = stayAskActionLabel(askAction);
-  const splitKind = staySplitKind(stay.rows, guests.length);
-  const stayKey = stay.rows[0] ? stayKeyForGroup(stay.rows[0]) : null;
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        {askLabel ? (
-          <span
-            aria-label="Stay action"
-            className="rounded-full bg-[#eaf4ee] px-2 py-0.5 text-[10.5px] font-semibold text-[#1a4332]"
-          >
-            {askLabel}
-          </span>
-        ) : (
-          <span />
-        )}
-        {splitKind === 'allocate' ? (
-          <SecondaryButton
-            className="w-auto"
-            onClick={() =>
-              onStayAction?.({
-                type: 'split_stay',
-                stayId: stay.id,
-                token: newQuoteToken(),
-              } as unknown as StayEditAction)
-            }
-          >
-            Split into separate bookings
-          </SecondaryButton>
-        ) : splitKind === 'hms' ? (
-          <SecondaryButton
-            className="w-auto"
-            disabled
-            disabledReason="Guest count does not match the room total. Split this in HMS."
-          >
-            Split in HMS
-          </SecondaryButton>
-        ) : null}
-      </div>
+      {askLabel ? (
+        <span
+          aria-label="Stay action"
+          className="rounded-full bg-[#eaf4ee] px-2 py-0.5 text-[10.5px] font-semibold text-[#1a4332]"
+        >
+          {askLabel}
+        </span>
+      ) : null}
       {guests.length ? (
         <ul aria-label="Stay guests" className="flex flex-col gap-0.5 text-[13px] text-[#1e293b]">
           {guests.map((guest, guestIndex) => (
@@ -209,8 +178,8 @@ function StayAskChrome({
           ))}
         </ul>
       ) : null}
-      {(askAction === 'amend' || askAction === 'cancel') && stayKey ? (
-        <SecondaryButton className="w-auto self-start" onClick={() => onSelectStayKey?.(stayKey)}>
+      {askAction === 'amend' || askAction === 'cancel' ? (
+        <SecondaryButton className="w-auto self-start" onClick={() => onSelectStayKey?.(stay.id)}>
           Find this booking
         </SecondaryButton>
       ) : null}
@@ -1445,13 +1414,7 @@ export function QuoteWorkflowPanel({
           <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         ) : null}
         {amendStays.map((stay) => (
-          <StayAskChrome
-            key={stay.id}
-            session={session}
-            stay={stay}
-            onStayAction={onStayAction}
-            onSelectStayKey={onSelectStayKey}
-          />
+          <StayAskChrome key={stay.id} session={session} stay={stay} onSelectStayKey={onSelectStayKey} />
         ))}
         <HmsTodoCard card={hmsTodoCard} />
         <NotSupportedList flags={session.analysis?.luna?.flags} tasks={session.analysis?.luna?.tasks} amendment={amendment} unreadFiles={unreadFiles.length > 0} />
@@ -1811,12 +1774,7 @@ export function QuoteWorkflowPanel({
         <Section step={3} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
           {stays.map((stay, index) => (
             <div key={stay.id} className="flex flex-col gap-2">
-              <StayAskChrome
-                session={session}
-                stay={stay}
-                onStayAction={onStayAction}
-                onSelectStayKey={onSelectStayKey}
-              />
+              <StayAskChrome session={session} stay={stay} onSelectStayKey={onSelectStayKey} />
               <StayCard
                 stayId={stay.id}
                 rows={stay.rows}
