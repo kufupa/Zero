@@ -237,8 +237,7 @@ function letterMatchesCard(
     if (normalizeName(row.guest) !== guest) return false;
     const cardConf = normalizeConf(row.conf);
     if (!requireConfirmation) {
-      if (!cardConf) return true;
-      if (!conf) return false;
+      if (!cardConf || !conf) return true;
       return cardConf === conf;
     }
     return Boolean(conf) && cardConf === conf;

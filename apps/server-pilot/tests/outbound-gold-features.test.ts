@@ -137,6 +137,13 @@ describe('checkLetterCoverage', () => {
     });
     expect(differ.pass).toBe(false);
     expect(differ.lettersUncovered).toBe(1);
+
+    const letterMissing = checkLetterCoverage({
+      letters: [letter({ id: 'letter-a', conf: null })],
+      cards: [card({ id: 'card-1', guests: [{ guest: FIXTURE_GUEST_A, conf: CONF_A }] })],
+      requireConfirmation: false,
+    });
+    expect(letterMissing.pass).toBe(true);
   });
 
   it('requires a distinct card per distinct date set', () => {

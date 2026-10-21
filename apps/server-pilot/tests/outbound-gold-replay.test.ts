@@ -166,19 +166,21 @@ describe('outbound-gold replay runner', () => {
   it('orders a null receivedAt inbound by inboundAt so its reply stays in window', () => {
     const early = {
       messageId: 'inbound-early',
-      receivedAt: null,
+      arrivedAt: null,
+      receivedAt: new Date('2026-10-20T09:00:00.000Z'),
       sentAt: new Date('2026-10-20T09:00:00.000Z'),
       createdAt: new Date('2026-10-10T09:00:00.000Z'),
     };
     const later = {
       messageId: 'inbound-later',
-      receivedAt: new Date('2026-10-12T09:00:00.000Z'),
+      arrivedAt: null,
+      receivedAt: new Date('2026-10-08T09:00:00.000Z'),
       sentAt: null,
       createdAt: new Date('2026-10-12T09:00:00.000Z'),
     };
     const ordered = orderInboundRequests([later, early]);
     expect(ordered.map((row) => row.messageId)).toEqual(['inbound-early', 'inbound-later']);
-    expect(ordered[0]?.until?.getTime()).toBe(later.receivedAt?.getTime());
+    expect(ordered[0]?.until?.getTime()).toBe(later.createdAt.getTime());
     const reply = { id: 'reply-after-early', at: new Date('2026-10-11T09:00:00.000Z') };
     expect(inRequestWindow(reply.at, ordered[0]!.at, ordered[0]!.until)).toBe(true);
   });

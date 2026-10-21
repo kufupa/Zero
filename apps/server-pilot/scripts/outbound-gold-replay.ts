@@ -213,13 +213,9 @@ function jsonl(rows: readonly object[]): string {
   return rows.length ? `${rows.map((row) => JSON.stringify(row)).join('\n')}\n` : '';
 }
 
-/** Mailbox arrival. Never sender Date (`sentAt`). */
-export function inboundAt(row: {
-  arrivedAt?: Date | null;
-  receivedAt: Date | null;
-  createdAt: Date;
-}): Date {
-  return row.arrivedAt ?? row.receivedAt ?? row.createdAt;
+/** Mailbox arrival. Never sender Date (`receivedAt` / `sentAt`). */
+export function inboundAt(row: { arrivedAt?: Date | null; createdAt: Date }): Date {
+  return row.arrivedAt ?? row.createdAt;
 }
 
 export type InboundStamp = {
