@@ -352,6 +352,16 @@ describe('one booking draft and one set of guests per stay', () => {
     expect(overlay.map((group) => group.guestNames)).toEqual([['Ada Example'], ['Bea Example']]);
   });
 
+  it('keeps guest names when staff rows have stayId and analysis rows do not', () => {
+    const luna = {
+      groups: [lunaRow(NOV.arrival, NOV.departure, ['Ada Example'])],
+    } as unknown as LunaAnalysisWire;
+    const overlay = overlayLunaGroupsFromStaff(luna, [
+      stayGroup('stay-a', NOV.arrival, NOV.departure, 'stay-a'),
+    ]);
+    expect(overlay[0]?.guestNames).toEqual(['Ada Example']);
+  });
+
   it('keeps the position fallback for a single stay whose dates the analysis wrote differently', () => {
     const luna = {
       groups: [lunaRow('2027-11-01', '2027-11-03', ['Mr John Smith'])],

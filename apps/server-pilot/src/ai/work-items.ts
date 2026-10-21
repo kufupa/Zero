@@ -385,19 +385,23 @@ export function storedAnalysis(
       });
       continue;
     }
-    for (const [rowIndex, row] of stay.rows.entries()) {
+    let guestAt = 0;
+    for (const row of stay.rows) {
       const at = (field: RowField) => `stays[${stay.id}].rows[${row.id}].${field}`;
-      const rowGuest = guestNames[rowIndex];
+      const rooms = pick(at('count'), row.rooms);
+      const take = typeof rooms === 'number' && rooms > 0 ? rooms : 1;
+      const rowNames = guestNames.slice(guestAt, guestAt + take);
+      guestAt += take;
       order.push({ groupId: row.id, stayId: stay.id, rowId: row.id });
       groups.push({
         ...dates,
         dateEvidence: null,
-        rooms: pick(at('count'), row.rooms),
+        rooms,
         adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
         childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
-        guestNames: rowGuest ? [rowGuest] : [],
+        guestNames: rowNames,
         stayId: stay.id,
       });
     }

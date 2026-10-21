@@ -313,7 +313,8 @@ function matchAnalysisGroup<T>(
   targets: readonly unknown[],
 ): T | undefined {
   const stayId = carriedStayId(target);
-  if (stayId) {
+  const analysisHasStayId = source.some((row) => carriedStayId(row));
+  if (stayId && analysisHasStayId) {
     const ofStay = source.filter((row) => carriedStayId(row) === stayId);
     return ofStay[withinStayIndex(targets, targetIndex, stayId)];
   }

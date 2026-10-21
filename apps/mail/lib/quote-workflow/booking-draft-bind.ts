@@ -141,7 +141,8 @@ function matchLunaGroup(
   groups: StayGroupRequirement[],
 ): LunaAnalysisWire['groups'][number] | undefined {
   const stayId = carriedStayId(group);
-  if (stayId) {
+  const analysisHasStayId = lunaGroups.some((row) => carriedStayId(row));
+  if (stayId && analysisHasStayId) {
     const ofStay = lunaGroups.filter((row) => carriedStayId(row) === stayId);
     return ofStay[withinStayIndex(groups, index, stayId)];
   }

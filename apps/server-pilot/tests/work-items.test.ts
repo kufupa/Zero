@@ -396,6 +396,7 @@ describe('stored read for the pane', () => {
     extracted.stays = [
       {
         ...extracted.stays[0]!,
+        rows: extracted.stays[0]!.rows.map((row) => ({ ...row, rooms: 1 })),
         guests: [
           { name: 'Ada Example', confirmationNumber: null },
           { name: 'Bea Example', confirmationNumber: null },
@@ -406,6 +407,26 @@ describe('stored read for the pane', () => {
       (group) => group.guestNames,
     );
     expect(names).toEqual([['Ada Example'], ['Bea Example']]);
+  });
+
+  it('keeps both named guests on a row with two rooms', () => {
+    const extracted = payload();
+    const row = extracted.stays[0]!.rows[0]!;
+    extracted.stays = [
+      {
+        ...extracted.stays[0]!,
+        totalRooms: 2,
+        rows: [{ ...row, rooms: 2 }],
+        guests: [
+          { name: 'Ada Example', confirmationNumber: null },
+          { name: 'Bea Example', confirmationNumber: null },
+        ],
+      },
+    ];
+    const names = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).analysis.luna.groups.map(
+      (group) => group.guestNames,
+    );
+    expect(names).toEqual([['Ada Example', 'Bea Example']]);
   });
 
   it('keeps one work item for a multi-stay mail', () =>
