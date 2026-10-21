@@ -83,6 +83,31 @@ describe('DocumentReview', () => {
     expect(screen.getByText('Reply and PDF are ready. Next, create the Outlook draft. It is not sent.')).toBeDefined();
   });
 
+  it('keeps the combined multi-date proposal as one Prepare quote action', () => {
+    const fixture = loadQuoteFixture('public-single');
+    const second = {
+      ...fixture.groups[0]!,
+      id: 'stay-b',
+      arrivalDate: '2027-12-01',
+      departureDate: '2027-12-03',
+    };
+    let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: {
+        intent: 'quote',
+        groups: [fixture.groups[0]!, second],
+        secondaryAsks: fixture.secondaryAsks,
+        alternatives: fixture.alternatives,
+      },
+    });
+    session = reduceQuoteSession(session, { type: 'staff_source_ready', source });
+    expect(session.groups).toHaveLength(2);
+    render(<DocumentReview session={{ ...session, pdf: null }} />);
+    expect(screen.getByRole('button', { name: 'Prepare quote' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Prepare PDF' })).toBeNull();
+  });
+
   it('shows the reviewed reply as formatted text, not raw HTML', () => {
     const session = {
       ...readySession(),

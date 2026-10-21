@@ -14,7 +14,11 @@ import {
   quoteRunBlockReason,
   requestedQuoteKeys,
   rowRoomCode,
+  stayAskAction,
+  stayAskActionLabel,
+  stayAskGuests,
   stayKeyForGroup,
+  staySplitKind,
   staffSourceReady,
   stayTotals,
 } from '@/lib/quote-workflow/session';
@@ -1720,23 +1724,80 @@ export function QuoteWorkflowPanel({
       ) : null}
       {showWorkspace ? (
         <Section step={3} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
-          {stays.map((stay, index) => (
-            <StayCard
-              key={stay.id}
-              stayId={stay.id}
-              rows={stay.rows}
-              index={index}
-              stayCount={stays.length}
-              requestedRoomsTotal={session.analysis?.requestedRoomsByStay?.[stay.id]}
-              mealPlan={mealPlanForStay(stay.id, stay.rows)}
-              onMealPlanChange={(value) =>
-                setMealPlanFilters((current) => ({ ...current, [stay.id]: value }))
-              }
-              onPatch={onPatchGroup}
-              onStayAction={onStayAction}
-              evidence={session.analysis?.luna?.evidence}
-            />
-          ))}
+          {stays.map((stay, index) => {
+            const guests = stayAskGuests(session, stay.id);
+            const askAction = stayAskAction(session, stay.id);
+            const askLabel = stayAskActionLabel(askAction);
+            const splitKind = staySplitKind(stay.rows, guests.length);
+            const stayKey = stay.rows[0] ? stayKeyForGroup(stay.rows[0]) : null;
+            return (
+              <div key={stay.id} className="flex flex-col gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  {askLabel ? (
+                    <span
+                      aria-label="Stay action"
+                      className="rounded-full bg-[#eaf4ee] px-2 py-0.5 text-[10.5px] font-semibold text-[#1a4332]"
+                    >
+                      {askLabel}
+                    </span>
+                  ) : (
+                    <span />
+                  )}
+                  {splitKind === 'allocate' ? (
+                    <SecondaryButton
+                      className="w-auto"
+                      onClick={() =>
+                        onStayAction?.({
+                          type: 'split_stay',
+                          stayId: stay.id,
+                          token: newQuoteToken(),
+                        } as StayEditAction)
+                      }
+                    >
+                      Split into separate bookings
+                    </SecondaryButton>
+                  ) : splitKind === 'hms' ? (
+                    <SecondaryButton
+                      className="w-auto"
+                      disabled
+                      disabledReason="Guest count does not match the room total. Split this in HMS."
+                    >
+                      Split in HMS
+                    </SecondaryButton>
+                  ) : null}
+                </div>
+                {guests.length ? (
+                  <ul aria-label="Stay guests" className="flex flex-col gap-0.5 text-[13px] text-[#1e293b]">
+                    {guests.map((guest, guestIndex) => (
+                      <li key={`${stay.id}-guest-${guestIndex}`}>
+                        {guest.name}
+                        {guest.confirmationNumber ? ` · ${guest.confirmationNumber}` : ''}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {(askAction === 'amend' || askAction === 'cancel') && stayKey ? (
+                  <SecondaryButton className="w-auto self-start" onClick={() => onSelectStayKey?.(stayKey)}>
+                    Find this booking
+                  </SecondaryButton>
+                ) : null}
+                <StayCard
+                  stayId={stay.id}
+                  rows={stay.rows}
+                  index={index}
+                  stayCount={stays.length}
+                  requestedRoomsTotal={session.analysis?.requestedRoomsByStay?.[stay.id]}
+                  mealPlan={mealPlanForStay(stay.id, stay.rows)}
+                  onMealPlanChange={(value) =>
+                    setMealPlanFilters((current) => ({ ...current, [stay.id]: value }))
+                  }
+                  onPatch={onPatchGroup}
+                  onStayAction={onStayAction}
+                  evidence={session.analysis?.luna?.evidence}
+                />
+              </div>
+            );
+          })}
           {session.groups.length ? (
             <p className="text-center text-[12.5px] font-semibold text-[#475569]">
               {`${roomTotals.rooms} ${roomTotals.rooms === 1 ? 'room' : 'rooms'} · ${roomTotals.guests} ${roomTotals.guests === 1 ? 'guest' : 'guests'}`}

@@ -1,10 +1,12 @@
 import {
   canCreatePdf,
+  groupStays,
   groupsForQuoteStep,
   initialQuoteSession,
   pdfBlocker,
   ratedStayCount,
   reduceQuoteSession,
+  stayAskGuests,
   stayIdOf,
 } from '../lib/quote-workflow/session';
 import { staffStayExtrasFor } from '../lib/quote-workflow/types';
@@ -446,6 +448,42 @@ describe('one booking draft and one set of guests per stay', () => {
       ['stay-b', DEC.arrival],
       ['stay-a', NOV.arrival],
     ]);
+  });
+});
+
+describe('pane split of a same-date stay', () => {
+  it('keeps one card per guest after a pane split and does not re-extract', () => {
+    let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: BINDING });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: {
+        intent: 'quote',
+        groups: [{ ...stayGroup('stay-a', NOV.arrival, NOV.departure, 'stay-a'), quantity: 2 }],
+        secondaryAsks: [],
+        alternatives: [],
+        luna: {
+          workflow: 'quote',
+          flags: [],
+          groups: [
+            lunaRow(NOV.arrival, NOV.departure, ['Ada Example'], 'stay-a'),
+            { ...lunaRow(NOV.arrival, NOV.departure, ['Bea Example'], 'stay-a'), confirmationNumber: '22222222-1' },
+          ],
+          party: { kind: null, name: null, reference: null },
+          rateClaims: [],
+          missing: [],
+          evidence: [],
+          tasks: [],
+        },
+      },
+    });
+    const split = reduceQuoteSession(session, { type: 'split_stay', stayId: 'stay-a', token: 'split' });
+    expect(groupStays(split.groups).map((stay) => stay.id)).toEqual(['s_split_0', 's_split_1']);
+    expect(stayAskGuests(split, 's_split_0').map((guest) => guest.name)).toEqual(['Ada Example']);
+    expect(stayAskGuests(split, 's_split_1')).toEqual([{ name: 'Bea Example', confirmationNumber: '22222222-1' }]);
+    expect(split.groups.every((group) => group.arrivalDate === NOV.arrival && group.departureDate === NOV.departure)).toBe(
+      true,
+    );
+    expect(split.analysis?.luna?.groups).toHaveLength(2);
   });
 });
 

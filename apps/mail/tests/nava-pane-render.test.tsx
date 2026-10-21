@@ -973,6 +973,7 @@ describe('NavaPane screen states', () => {
     await storedReadLands();
     await settle();
     expect(bridgeMockState.analyseCalls).toBe(0);
+    expect(screen.getByLabelText('Stay action').textContent).toBe('Quote');
   });
 
   it('stored: a human-written amendment extraction renders Find booking without a live read or ApproveCard', async () => {

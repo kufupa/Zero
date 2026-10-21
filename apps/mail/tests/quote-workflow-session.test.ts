@@ -31,6 +31,12 @@ import {
   rowRoomCode,
   stayIdOf,
   stayTotals,
+  amendmentOf,
+  stayAskGuests,
+  stayAskAction,
+  stayAskActionLabel,
+  staySplitKind,
+  allocateSplitRooms,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
 import {
@@ -3796,4 +3802,116 @@ it('a mixed Dinner B&B + B&B mail keeps the session default on BAR', () => {
   };
   const session = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis: mixed });
   expect(session.staffHeader.salesStrategy).toBe('BAR');
+});
+
+describe('multi-ask stay cards: guests, action, split', () => {
+  function twoGuestStay(quantity: number, guests: Array<{ name: string; confirmationNumber?: string | null }>) {
+    const groups = [
+      {
+        ...quoteAnalysis.groups[0]!,
+        stayId: 'stay-a',
+        quantity,
+      },
+    ];
+    return analysisReady({
+      ...quoteAnalysis,
+      groups,
+      luna: {
+        workflow: 'quote',
+        flags: [],
+        groups: guests.map((guest) => ({
+          arrival: '2026-11-12',
+          departure: '2026-11-14',
+          rooms: 1,
+          adultsPerRoom: 1,
+          childAges: [],
+          board: 'bb' as const,
+          roomPreference: 'standard king',
+          guestNames: [guest.name],
+          stayId: 'stay-a',
+          ...(guest.confirmationNumber ? { confirmationNumber: guest.confirmationNumber } : {}),
+        })),
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    });
+  }
+
+  it('lists each named guest on the stay with that guest confirmation', () => {
+    const session = twoGuestStay(2, [
+      { name: 'Ada Example', confirmationNumber: '11111111-1' },
+      { name: 'Bea Example', confirmationNumber: '22222222-1' },
+    ]);
+    expect(stayAskGuests(session, 'stay-a')).toEqual([
+      { name: 'Ada Example', confirmationNumber: '11111111-1' },
+      { name: 'Bea Example', confirmationNumber: '22222222-1' },
+    ]);
+    expect(stayAskAction(session, 'stay-a')).toBe('quote');
+    expect(stayAskActionLabel('quote')).toBe('Quote');
+  });
+
+  it('allocates one source room per guest when guest count equals the room total', () => {
+    const session = twoGuestStay(2, [{ name: 'Ada Example' }, { name: 'Bea Example' }]);
+    const rows = session.groups.filter((group) => stayIdOf(group) === 'stay-a');
+    expect(staySplitKind(rows, 2)).toBe('allocate');
+    const units = allocateSplitRooms(rows, 2);
+    expect(units).toHaveLength(2);
+    expect(units?.every((child) => child.length === 1 && child[0]?.quantity === 1)).toBe(true);
+    expect(units?.reduce((sum, child) => sum + (child[0]?.quantity ?? 0), 0)).toBe(2);
+  });
+
+  it('does not invent rooms when guest count does not equal the room total', () => {
+    const session = twoGuestStay(1, [{ name: 'Ada Example' }, { name: 'Bea Example' }]);
+    const rows = session.groups.filter((group) => stayIdOf(group) === 'stay-a');
+    expect(staySplitKind(rows, 2)).toBe('hms');
+    expect(allocateSplitRooms(rows, 2)).toBeNull();
+  });
+
+  it('splits into one card per guest, same dates, each keeping its confirmation, without a re-extract', () => {
+    const session = twoGuestStay(2, [
+      { name: 'Ada Example', confirmationNumber: '11111111-1' },
+      { name: 'Bea Example', confirmationNumber: '22222222-1' },
+    ]);
+    const split = reduceQuoteSession(session, { type: 'split_stay', stayId: 'stay-a', token: 'abc' });
+    expect(groupStays(split.groups)).toHaveLength(2);
+    expect(split.groups.map((group) => [group.stayId, group.arrivalDate, group.departureDate, group.quantity])).toEqual([
+      ['s_abc_0', '2026-11-12', '2026-11-14', 1],
+      ['s_abc_1', '2026-11-12', '2026-11-14', 1],
+    ]);
+    expect(stayAskGuests(split, 's_abc_0')).toEqual([{ name: 'Ada Example', confirmationNumber: '11111111-1' }]);
+    expect(stayAskGuests(split, 's_abc_1')).toEqual([{ name: 'Bea Example', confirmationNumber: '22222222-1' }]);
+    expect(split.analysis).not.toBe(session.analysis);
+    expect(split.inputRevision).toBe(session.inputRevision);
+  });
+
+  it('leaves the stay unsplit when rooms cannot be allocated', () => {
+    const session = twoGuestStay(1, [{ name: 'Ada Example' }, { name: 'Bea Example' }]);
+    expect(reduceQuoteSession(session, { type: 'split_stay', stayId: 'stay-a', token: 'abc' })).toBe(session);
+  });
+
+  it('opens CHECK on the selected amend stay confirmation', () => {
+    const session = {
+      ...twoGuestStay(1, [{ name: 'Ada Example', confirmationNumber: '11111111-1' }]),
+      selectedStayKey: STAY_A,
+      analysis: {
+        ...twoGuestStay(1, [{ name: 'Ada Example', confirmationNumber: '11111111-1' }]).analysis!,
+        amendment: {
+          kind: 'amend' as const,
+          confirmationNumber: '99999999-1',
+          guestLastName: 'Example',
+          arrival: '2026-11-12',
+          departure: '2026-11-14',
+          requestedChange: null,
+        },
+        luna: {
+          ...twoGuestStay(1, [{ name: 'Ada Example', confirmationNumber: '11111111-1' }]).analysis!.luna!,
+          workflow: 'amend' as const,
+        },
+      },
+    };
+    expect(amendmentOf(session)?.confirmationNumber).toBe('11111111-1');
+  });
 });
