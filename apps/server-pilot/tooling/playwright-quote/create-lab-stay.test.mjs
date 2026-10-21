@@ -188,8 +188,9 @@ test('create-lab-stay validates before browser and keeps shot names', async () =
   assert.equal(source.includes('const LAB'), false);
   assert.equal(source.includes('Nava'), false);
   assert.equal(source.includes('Labcancel'), false);
-  assert.equal(source.includes("fillNamed(page, 'track'"), false);
+  assert.match(source, /fillNamed\(page, 'track', description\)/);
   assert.match(source, /fillTrackBeforeGuarantee\(page, stay\.track\)/);
+  assert.match(source, /ancestor::\*\[contains\(@class,"x-form-item"\) or contains\(@class,"x-field"\)\]\[1\]/);
   assert.match(source, /trackValidation/);
 });
 
