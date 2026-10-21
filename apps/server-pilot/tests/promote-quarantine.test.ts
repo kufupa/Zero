@@ -13,6 +13,8 @@ import {
   DAVINCI_TRANSPORT_ID,
   FAITH_TRANSPORT_EMAIL,
   FAITH_TRANSPORT_ID,
+  TRANSPORT_EMAIL,
+  TRANSPORT_ID,
 } from '../src/db/seed';
 import * as ingestFanout from '../src/mail/ingest/fanout';
 import {
@@ -152,6 +154,51 @@ function unroutablePromoteEml(): Buffer {
   );
 }
 
+function centurionGuestInboundEml(): Buffer {
+  return Buffer.from(
+    [
+      'From: guest@example.test',
+      `To: ${TRANSPORT_EMAIL}`,
+      'Subject: centurion only guest',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Centurion-only inbound for mailbox filter.',
+    ].join('\r\n'),
+    'utf-8',
+  );
+}
+
+function davinciInboundEml(): Buffer {
+  return Buffer.from(
+    [
+      'From: guest@example.test',
+      `To: ${DAVINCI_TRANSPORT_EMAIL}`,
+      'Subject: davinci only guest',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Da Vinci inbound for mailbox filter.',
+    ].join('\r\n'),
+    'utf-8',
+  );
+}
+
+function davinciAndCenturionEml(): Buffer {
+  return Buffer.from(
+    [
+      'From: guest@example.test',
+      `To: ${DAVINCI_TRANSPORT_EMAIL}, ${TRANSPORT_EMAIL}`,
+      'Subject: davinci plus centurion',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Mixed Da Vinci and Centurion inbound.',
+    ].join('\r\n'),
+    'utf-8',
+  );
+}
+
 function dbWithFailedCleanupRegistration(db: DB): DB {
   return new Proxy(db, {
     get(target, property, receiver) {
@@ -173,6 +220,7 @@ async function seedMissingOwnerQuarantine(args: {
   raw: Buffer;
   quarantineId?: string;
   reason?: string;
+  createdAt?: Date;
 }): Promise<{ quarantineId: string; rawMimeS3Key: string }> {
   const ingestMailboxId = 'ingest-nava-legacy';
   const rawMimeS3Key = rawMimeKey({
@@ -193,6 +241,7 @@ async function seedMissingOwnerQuarantine(args: {
     reason: args.reason ?? 'missing_owner_header',
     ownerHeaderValue: null,
     parsedHeaders: { subject: 'promote AE5 inbound' },
+    ...(args.createdAt ? { createdAt: args.createdAt } : {}),
   });
   return { quarantineId, rawMimeS3Key };
 }
@@ -342,13 +391,33 @@ describe('promote-quarantine cli helpers', () => {
       apply: false,
       limit: 5,
       reason: undefined,
+      mailboxes: [],
     });
     expect(parsePromoteCliArgs(['--limit=3'])).toEqual({
       dryRun: false,
       apply: false,
       limit: 3,
       reason: undefined,
+      mailboxes: [],
     });
+  });
+
+  it('parses repeatable --mailbox flags', () => {
+    expect(
+      parsePromoteCliArgs([
+        '--mailbox',
+        'davinci@legacyhotels.co.za',
+        '--mailbox=fkhumalo@legacyhotels.co.za',
+      ]),
+    ).toEqual({
+      dryRun: false,
+      apply: false,
+      limit: undefined,
+      reason: undefined,
+      mailboxes: ['davinci@legacyhotels.co.za', 'fkhumalo@legacyhotels.co.za'],
+    });
+    expect(() => parsePromoteCliArgs(['--mailbox'])).toThrow(/--mailbox requires an email address/);
+    expect(() => parsePromoteCliArgs(['--mailbox='])).toThrow(/--mailbox requires an email address/);
   });
 
   it('defaults the script to dry-run unless --apply is explicit', () => {
@@ -360,6 +429,7 @@ describe('promote-quarantine cli helpers', () => {
       apply: true,
       reason: 'multi_transport',
       limit: undefined,
+      mailboxes: [],
     });
     expect(() => parsePromoteCliArgs(['--apply', '--dry-run'])).toThrow(
       /--apply and --dry-run cannot be combined/,
@@ -389,10 +459,13 @@ describe('promote-quarantine cli helpers', () => {
         quarantined: 0,
         errors: 1,
         skipped: 0,
+        skippedMailboxFilter: 3,
         errorIds: ['q-err'],
         dryRunIds: [],
       }),
-    ).toBe('scanned=2 stored=1 duplicate=0 quarantined=0 errors=1 skipped=0 error_ids=q-err');
+    ).toBe(
+      'scanned=2 stored=1 duplicate=0 quarantined=0 errors=1 skipped=0 skipped_mailbox_filter=3 error_ids=q-err',
+    );
   });
 });
 
@@ -915,6 +988,207 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(outcome.quarantineRows).toHaveLength(1);
         expect(outcome.messages).toHaveLength(0);
         expect(storage.listKeys('attachments/')).toEqual([]);
+      });
+    }, 30000);
+
+    it('mailbox filter skips centurion-only and neither, promotes Da Vinci and mixed fan-out', async () => {
+      const storage = withFakeS3();
+      const prevGate = process.env.AI_WRITE_GATE_ENABLED;
+      process.env.AI_WRITE_GATE_ENABLED = 'true';
+
+      try {
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const outcome = await withSeededTestDb(async (db) => {
+            await seedCenturionAliases(db);
+            const centurion = await seedMissingOwnerQuarantine({
+              db,
+              storage,
+              pop3Uidl: 'uidl-filter-centurion',
+              raw: centurionGuestInboundEml(),
+            });
+            const neither = await seedMissingOwnerQuarantine({
+              db,
+              storage,
+              pop3Uidl: 'uidl-filter-neither',
+              raw: unroutablePromoteEml(),
+            });
+            const davinci = await seedMissingOwnerQuarantine({
+              db,
+              storage,
+              pop3Uidl: 'uidl-filter-davinci',
+              raw: davinciInboundEml(),
+            });
+            const mixed = await seedMissingOwnerQuarantine({
+              db,
+              storage,
+              pop3Uidl: 'uidl-filter-mixed',
+              raw: davinciAndCenturionEml(),
+              reason: 'multi_transport',
+            });
+
+            const result = await promoteMissingOwnerHeaderQuarantine({
+              db,
+              storage,
+              mailboxes: [DAVINCI_TRANSPORT_EMAIL],
+            });
+            const remaining = await db.select().from(mailIngestQuarantine);
+            const messages = await db.select().from(message);
+            const triageRuns = await db.select().from(aiWorkflowRun);
+            return {
+              result,
+              remainingIds: remaining.map((row) => row.id).sort(),
+              kept: [centurion.quarantineId, neither.quarantineId].sort(),
+              promoted: [davinci.quarantineId, mixed.quarantineId],
+              messages,
+              triageRuns,
+            };
+          });
+
+          expect(outcome.result.skippedMailboxFilter).toBe(2);
+          expect(outcome.result.stored).toBe(2);
+          expect(outcome.result.errors).toBe(0);
+          expect(outcome.remainingIds).toEqual(outcome.kept);
+          expect(outcome.messages.map((row) => row.transportId).sort()).toEqual(
+            [DAVINCI_TRANSPORT_ID, DAVINCI_TRANSPORT_ID, TRANSPORT_ID].sort(),
+          );
+          expect(outcome.triageRuns).toHaveLength(0);
+        });
+      } finally {
+        if (prevGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;
+        else process.env.AI_WRITE_GATE_ENABLED = prevGate;
+      }
+    }, 30000);
+
+    it('without --mailbox still promotes centurion-only rows', async () => {
+      const storage = withFakeS3();
+
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          await seedCenturionAliases(db);
+          const { quarantineId } = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-nofilter-centurion',
+            raw: centurionGuestInboundEml(),
+          });
+          const result = await promoteMissingOwnerHeaderQuarantine({ db, storage });
+          const remaining = await db
+            .select()
+            .from(mailIngestQuarantine)
+            .where(eq(mailIngestQuarantine.id, quarantineId));
+          const messages = await db.select().from(message);
+          return { result, remaining, messages };
+        });
+
+        expect(outcome.result.skippedMailboxFilter ?? 0).toBe(0);
+        expect(outcome.result.stored).toBe(1);
+        expect(outcome.remaining).toHaveLength(0);
+        expect(outcome.messages).toHaveLength(1);
+        expect(outcome.messages[0]!.transportId).toBe(TRANSPORT_ID);
+      });
+    }, 30000);
+
+    it('dry-run with --mailbox counts skipped_mailbox_filter and would-land matches', async () => {
+      const storage = withFakeS3();
+
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          await seedCenturionAliases(db);
+          const centurion = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-dry-filter-centurion',
+            raw: centurionGuestInboundEml(),
+          });
+          const davinci = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-dry-filter-davinci',
+            raw: davinciInboundEml(),
+          });
+          const mixed = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-dry-filter-mixed',
+            raw: davinciAndCenturionEml(),
+            reason: 'multi_transport',
+          });
+          const result = await promoteMissingOwnerHeaderQuarantine({
+            db,
+            storage,
+            dryRun: true,
+            mailboxes: [DAVINCI_TRANSPORT_EMAIL],
+          });
+          const remaining = await db.select().from(mailIngestQuarantine);
+          const messages = await db.select().from(message);
+          return {
+            result,
+            remaining,
+            messages,
+            centurionId: centurion.quarantineId,
+            matchIds: [davinci.quarantineId, mixed.quarantineId],
+          };
+        });
+
+        expect(outcome.result.skippedMailboxFilter).toBe(1);
+        expect(outcome.result.stored).toBe(0);
+        expect(outcome.result.dryRunIds.sort()).toEqual(outcome.matchIds.sort());
+        expect(outcome.remaining).toHaveLength(3);
+        expect(outcome.messages).toHaveLength(0);
+        expect(formatPromoteSummary(outcome.result)).toMatch(/skipped_mailbox_filter=1/);
+      });
+    }, 30000);
+
+    it('limit counts matching rows after the mailbox filter', async () => {
+      const storage = withFakeS3();
+
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          await seedCenturionAliases(db);
+          const centurion = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-limit-centurion',
+            raw: centurionGuestInboundEml(),
+            createdAt: new Date('2026-01-01T00:00:00Z'),
+          });
+          const firstDavinci = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-limit-davinci-a',
+            raw: davinciInboundEml(),
+            createdAt: new Date('2026-01-01T00:00:01Z'),
+          });
+          const secondDavinci = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-limit-davinci-b',
+            raw: davinciInboundEml(),
+            createdAt: new Date('2026-01-01T00:00:02Z'),
+          });
+          const result = await promoteMissingOwnerHeaderQuarantine({
+            db,
+            storage,
+            limit: 1,
+            mailboxes: [DAVINCI_TRANSPORT_EMAIL],
+          });
+          const remaining = await db.select().from(mailIngestQuarantine);
+          const messages = await db.select().from(message);
+          return {
+            result,
+            remainingIds: remaining.map((row) => row.id).sort(),
+            kept: [centurion.quarantineId, secondDavinci.quarantineId].sort(),
+            promotedId: firstDavinci.quarantineId,
+            messages,
+          };
+        });
+
+        expect(outcome.result.skippedMailboxFilter).toBe(1);
+        expect(outcome.result.stored).toBe(1);
+        expect(outcome.result.scanned).toBe(2);
+        expect(outcome.remainingIds).toEqual(outcome.kept);
+        expect(outcome.messages).toHaveLength(1);
+        expect(outcome.messages[0]!.transportId).toBe(DAVINCI_TRANSPORT_ID);
       });
     }, 30000);
   },

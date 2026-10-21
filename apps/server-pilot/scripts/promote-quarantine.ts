@@ -8,6 +8,7 @@
  *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts --apply
  *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts --apply --limit 10
  *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts --reason multi_transport
+ *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts --mailbox davinci@legacyhotels.co.za
  */
 import {
   formatPromoteSummary,
@@ -40,6 +41,7 @@ async function main(): Promise<void> {
       dryRun,
       limit: cli.limit,
       reason: cli.reason,
+      mailboxes: cli.mailboxes,
     });
     const summary = formatPromoteSummary(result);
     console.log(

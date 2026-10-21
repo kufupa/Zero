@@ -23,7 +23,7 @@ import {
 } from './store.js';
 import { completeFanoutAfterPrimary } from './fanout.js';
 import { simpleParser, type AddressObject, type EmailAddress } from 'mailparser';
-import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
+import { mailIngestQuarantine, mailboxTransport, message } from '../../db/schema/mail.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
 import { ingestRequireOwnerHeader } from '../../env.js';
 import type { DB } from '../../db/client.js';
@@ -55,6 +55,8 @@ export interface PromoteQuarantineOptions {
   limit?: number;
   dryRun?: boolean;
   reason?: PromoteReason;
+  /** Owner mailbox emails; skip rows whose resolved owners include none of these. */
+  mailboxes?: readonly string[];
 }
 
 export interface PromoteQuarantineCounts {
@@ -64,6 +66,7 @@ export interface PromoteQuarantineCounts {
   quarantined: number;
   errors: number;
   skipped?: number;
+  skippedMailboxFilter?: number;
 }
 
 export interface PromoteQuarantineResult extends PromoteQuarantineCounts {
@@ -144,43 +147,66 @@ export async function promoteMissingOwnerHeaderQuarantine(
 
   const storage = opts.storage ?? getS3Storage();
   const reasons: readonly PromoteReason[] = opts.reason ? [opts.reason] : PROMOTE_REASONS;
-  const rows = await listMissingOwnerHeaderQuarantine(opts.db, opts.limit, reasons);
+  const mailboxFilter = uniqueNormalizedMailboxes(opts.mailboxes);
+  // Limit applies to matching rows after the mailbox filter, so SQL cannot
+  // cap the scan when a filter is set.
+  const rows = await listMissingOwnerHeaderQuarantine(
+    opts.db,
+    mailboxFilter.length > 0 ? undefined : opts.limit,
+    reasons,
+  );
 
   const result: PromoteQuarantineResult = {
-    scanned: rows.length,
+    scanned: 0,
     stored: 0,
     duplicate: 0,
     quarantined: 0,
     errors: 0,
     skipped: 0,
+    skippedMailboxFilter: 0,
     errorIds: [],
     dryRunIds: [],
   };
 
+  let matching = 0;
   for (const row of rows) {
+    if (mailboxFilter.length > 0 && opts.limit !== undefined && matching >= opts.limit) {
+      break;
+    }
     const outcome = await promoteOneQuarantineRow(row, {
       db: opts.db,
       storage,
       dryRun: opts.dryRun ?? false,
+      mailboxes: mailboxFilter,
     });
+    result.scanned += 1;
 
     switch (outcome.kind) {
+      case 'skipped_mailbox_filter':
+        result.skippedMailboxFilter = (result.skippedMailboxFilter ?? 0) + 1;
+        break;
       case 'dry-run':
+        matching += 1;
         result.dryRunIds.push(row.id);
         break;
       case 'skipped':
+        matching += 1;
         result.skipped = (result.skipped ?? 0) + 1;
         break;
       case 'stored':
+        matching += 1;
         result.stored += 1;
         break;
       case 'duplicate':
+        matching += 1;
         result.duplicate += 1;
         break;
       case 'quarantined':
+        matching += 1;
         result.quarantined += 1;
         break;
       case 'error':
+        matching += 1;
         result.errors += 1;
         result.errorIds.push(row.id);
         break;
@@ -193,6 +219,7 @@ export async function promoteMissingOwnerHeaderQuarantine(
 type PromoteOneOutcome =
   | { kind: 'dry-run' }
   | { kind: 'skipped' }
+  | { kind: 'skipped_mailbox_filter' }
   | { kind: 'stored' }
   | { kind: 'duplicate' }
   | { kind: 'quarantined' }
@@ -200,7 +227,7 @@ type PromoteOneOutcome =
 
 async function promoteOneQuarantineRow(
   row: PromoteQuarantineRow,
-  opts: { db: DB; storage: S3Storage; dryRun: boolean },
+  opts: { db: DB; storage: S3Storage; dryRun: boolean; mailboxes: readonly string[] },
 ): Promise<PromoteOneOutcome> {
   const { db, storage } = opts;
   if (!isCenturionIngestMailboxId(row.ingestMailboxId)) {
@@ -225,6 +252,12 @@ async function promoteOneQuarantineRow(
     // through the streaming parser so existing attachment cleanup remains.
     const headerSignals = await parsePromotionSignals(object.body);
     const penny = isPromotableReserveCloudStaff(headerSignals);
+    if (opts.mailboxes.length > 0) {
+      const owners = await resolveOwnerTransports(db, headerSignals, penny);
+      if (!ownerTransportsIncludeMailbox(owners, opts.mailboxes)) {
+        return { kind: 'skipped_mailbox_filter' };
+      }
+    }
     if (penny) {
       if (opts.dryRun) {
         return { kind: 'dry-run' };
@@ -412,6 +445,7 @@ export interface PromoteCliArgs {
   apply: boolean;
   limit?: number;
   reason?: PromoteReason;
+  mailboxes: string[];
 }
 
 /** Script default: dry-run unless `--apply`. Recover keeps using `dryRun` only. */
@@ -424,6 +458,7 @@ export function parsePromoteCliArgs(argv: string[]): PromoteCliArgs {
   let apply = false;
   let limit: number | undefined;
   let reason: PromoteReason | undefined;
+  const mailboxes: string[] = [];
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -465,6 +500,16 @@ export function parsePromoteCliArgs(argv: string[]): PromoteCliArgs {
       reason = parsePromoteReason(arg.slice('--reason='.length));
       continue;
     }
+    if (arg === '--mailbox') {
+      const next = argv[i + 1];
+      mailboxes.push(parseMailboxFlag(next));
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--mailbox=')) {
+      mailboxes.push(parseMailboxFlag(arg.slice('--mailbox='.length)));
+      continue;
+    }
     throw new Error(`unknown argument: ${arg}`);
   }
 
@@ -475,7 +520,7 @@ export function parsePromoteCliArgs(argv: string[]): PromoteCliArgs {
     throw new Error('--limit requires a positive integer');
   }
 
-  return { dryRun, apply, limit, reason };
+  return { dryRun, apply, limit, reason, mailboxes };
 }
 
 function parsePromoteReason(value: string): PromoteReason {
@@ -483,6 +528,104 @@ function parsePromoteReason(value: string): PromoteReason {
     throw new Error('--reason requires missing_owner_header or multi_transport');
   }
   return value as PromoteReason;
+}
+
+function parseMailboxFlag(value: string | undefined): string {
+  if (!value || value.startsWith('--')) {
+    throw new Error('--mailbox requires an email address');
+  }
+  const mailbox = normalizePromotionAddress(value);
+  if (!mailbox) {
+    throw new Error('--mailbox requires an email address');
+  }
+  return mailbox;
+}
+
+function uniqueNormalizedMailboxes(mailboxes: readonly string[] | undefined): string[] {
+  return [
+    ...new Set(
+      (mailboxes ?? []).map(normalizePromotionAddress).filter((value) => value.length > 0),
+    ),
+  ];
+}
+
+type OwnerTransport = { email: string; sendFromConfig: unknown };
+
+async function resolveOwnerTransports(
+  db: DB,
+  signals: PromoteReserveCloudStaffSignals,
+  penny: boolean,
+): Promise<OwnerTransport[]> {
+  if (penny) {
+    const rows = await db
+      .select({
+        email: mailboxTransport.email,
+        sendFromConfig: mailboxTransport.sendFromConfig,
+      })
+      .from(mailboxTransport)
+      .where(
+        and(eq(mailboxTransport.id, CENTURION_TRANSPORT_ID), eq(mailboxTransport.isActive, true)),
+      )
+      .limit(1);
+    return rows;
+  }
+
+  const rows = await db
+    .select({
+      email: mailboxTransport.email,
+      sendFromConfig: mailboxTransport.sendFromConfig,
+    })
+    .from(mailboxTransport)
+    .where(eq(mailboxTransport.isActive, true));
+
+  const addresses = [
+    signals.fromAddress,
+    ...(signals.toAddresses ?? []),
+    ...(signals.ccAddresses ?? []),
+    ...(signals.bccAddresses ?? []),
+  ]
+    .map(normalizePromotionAddress)
+    .filter(Boolean);
+
+  const owners = new Map<string, OwnerTransport>();
+  for (const address of addresses) {
+    const matching = rows.filter((row) =>
+      transportIdentities(row.email, row.sendFromConfig).has(address),
+    );
+    if (matching.length !== 1) continue;
+    const owner = matching[0]!;
+    owners.set(owner.email, owner);
+  }
+  return [...owners.values()];
+}
+
+function ownerTransportsIncludeMailbox(
+  owners: readonly OwnerTransport[],
+  mailboxes: readonly string[],
+): boolean {
+  const wanted = new Set(mailboxes.map(normalizePromotionAddress).filter(Boolean));
+  for (const owner of owners) {
+    const identities = transportIdentities(owner.email, owner.sendFromConfig);
+    for (const mailbox of wanted) {
+      if (identities.has(mailbox)) return true;
+    }
+  }
+  return false;
+}
+
+function transportIdentities(email: string, sendFromConfig: unknown): Set<string> {
+  const identities = new Set<string>();
+  const normalizedEmail = normalizePromotionAddress(email);
+  if (normalizedEmail) identities.add(normalizedEmail);
+  if (!sendFromConfig || typeof sendFromConfig !== 'object') return identities;
+  const aliases = (sendFromConfig as { aliases?: unknown }).aliases;
+  if (!Array.isArray(aliases)) return identities;
+  for (const alias of aliases) {
+    if (typeof alias !== 'string') continue;
+    const normalized = normalizePromotionAddress(alias);
+    if (normalized) identities.add(normalized);
+  }
+  return identities;
 }
 
 export function formatPromoteSummary(result: PromoteQuarantineResult): string {
@@ -495,6 +638,9 @@ export function formatPromoteSummary(result: PromoteQuarantineResult): string {
   ];
   if (result.skipped !== undefined) {
     parts.push(`skipped=${result.skipped}`);
+  }
+  if (result.skippedMailboxFilter !== undefined) {
+    parts.push(`skipped_mailbox_filter=${result.skippedMailboxFilter}`);
   }
   if (result.dryRunIds.length > 0) {
     parts.push(`dry_run_ids=${result.dryRunIds.join(',')}`);
