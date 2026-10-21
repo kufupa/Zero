@@ -276,6 +276,49 @@ describe('quote session', () => {
     expect(s.analysis).toBeNull();
   });
 
+  it('keeps amend stays on a non_quote analysis so each card has its confirmation', () => {
+    const storedGroups = [
+      {
+        ...quoteAnalysis.groups[0]!,
+        id: 'r_1',
+        stayId: 'stay-a',
+        arrivalDate: '2026-11-01',
+        departureDate: '2026-11-06',
+        guestNames: ['Ada Example'],
+        confirmationNumber: '57291630-1',
+      },
+    ];
+    const s = analysisReady({
+      intent: 'other',
+      groups: storedGroups as QuoteAnalysis['groups'],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: {
+        workflow: 'amend',
+        flags: ['amendment_or_cancel'],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+      amendment: {
+        kind: 'amend',
+        confirmationNumber: '99999999-1',
+        guestLastName: 'Example',
+        arrival: '2026-11-01',
+        departure: '2026-11-06',
+        requestedChange: null,
+      },
+    });
+    expect(s.phase).toBe('non_quote');
+    expect(s.groups).toHaveLength(1);
+    expect(stayAskAction(s, 'stay-a')).toBe('amend');
+    expect(stayAskGuests(s, 'stay-a')).toEqual([{ name: 'Ada Example', confirmationNumber: '57291630-1' }]);
+    expect(amendmentOf(s)?.confirmationNumber).toBe('57291630-1');
+  });
+
   it('does not open a quoting workflow for non-quote intent', () => {
     const s = reduceQuoteSession(
       reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() }),

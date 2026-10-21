@@ -264,6 +264,12 @@ export function stayAskActionLabel(action: StayAskAction): string | null {
   return null;
 }
 
+/** Amend and cancel analyses keep their stays so each card can open CHECK. Other non-quote mail still has no stays. */
+export function keepNonQuoteStays(analysis: QuoteAnalysis): boolean {
+  const kind = analysis.amendment?.kind ?? analysis.luna?.workflow;
+  return kind === 'amend' || kind === 'cancel';
+}
+
 /**
  * Room units for a pane split: one child stay per named guest, each with one room of the source type and occupancy.
  * Null when guest count is not the room total (the control then reads Split in HMS).
@@ -1580,12 +1586,18 @@ export function reduceQuoteSession(
         const unreadItems = (action.analysis.reviewItems ?? []).filter(
           (item) => item.kind === 'document_failure',
         );
+        const groups = keepNonQuoteStays(action.analysis) ? action.analysis.groups : [];
+        const keys = requestedQuoteKeys(groups);
         return {
           ...clearDownstream(session),
           phase: 'non_quote',
           analysisStartStayRevision: null,
           analysis: action.analysis,
-          groups: [],
+          groups,
+          selectedStayKey:
+            keys.length === 1 ? keys[0]! : session.selectedStayKey && keys.includes(session.selectedStayKey)
+              ? session.selectedStayKey
+              : null,
           reviewItems: unreadItems,
           handledReviewItemIds: [],
           staffHeader: prefillStaffHeaderFromLuna(
