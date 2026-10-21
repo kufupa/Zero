@@ -123,6 +123,78 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.queryByRole('button', { name: 'This is a quote request' })).toBeNull();
   });
 
+  it('shows amend stay cards on a stored non_quote analysis and Find uses that confirmation', () => {
+    const onSelectStayKey = vi.fn();
+    const storedGroups = [
+      {
+        ...g1,
+        id: 'r_1',
+        stayId: 'stay-a',
+        arrivalDate: '2026-11-01',
+        departureDate: '2026-11-06',
+        guestNames: ['Ada Example'],
+        confirmationNumber: '57291630-1',
+      },
+    ];
+    const session = sessionWithAnalysis({
+      intent: 'other',
+      groups: storedGroups as QuoteAnalysis['groups'],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ workflow: 'amend', flags: ['amendment_or_cancel'] }),
+      amendment: {
+        kind: 'amend',
+        confirmationNumber: '99999999-1',
+        guestLastName: 'Example',
+        arrival: '2026-11-01',
+        departure: '2026-11-06',
+        requestedChange: 'Add the night of 31 Oct',
+      },
+    });
+    render(<QuoteWorkflowPanel session={session} onSelectStayKey={onSelectStayKey} />);
+    expect(session.phase).toBe('non_quote');
+    expect(screen.getByLabelText('Stay action').textContent).toBe('Amendment');
+    expect(screen.getByLabelText('Stay guests').textContent).toContain('Ada Example');
+    expect(screen.getByLabelText('Stay guests').textContent).toContain('57291630-1');
+    expect(screen.queryByText('Agency & company')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Prepare PDF + reply' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Find this booking' }));
+    expect(onSelectStayKey).toHaveBeenCalledWith('stay-a');
+  });
+
+  it('shows cancel stay cards on a stored non_quote analysis', () => {
+    const storedGroups = [
+      {
+        ...g1,
+        id: 'r_1',
+        stayId: 'stay-a',
+        arrivalDate: '2026-11-01',
+        departureDate: '2026-11-06',
+        guestNames: ['Bea Example'],
+        confirmationNumber: '57291630-1',
+      },
+    ];
+    const session = sessionWithAnalysis({
+      intent: 'other',
+      groups: storedGroups as QuoteAnalysis['groups'],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({ workflow: 'cancel', flags: ['amendment_or_cancel'] }),
+      amendment: {
+        kind: 'cancel',
+        confirmationNumber: '57291630-1',
+        guestLastName: 'Example',
+        arrival: '2026-11-01',
+        departure: '2026-11-06',
+        requestedChange: null,
+      },
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByLabelText('Stay action').textContent).toBe('Cancellation');
+    expect(screen.getByRole('button', { name: 'Find this booking' })).toBeDefined();
+    expect(screen.queryByText('Agency & company')).toBeNull();
+  });
+
   it('drops the "not a quote or booking" notice when the change card carries the amendment (AE2)', () => {
     const session = sessionWithAnalysis({
       intent: 'other',
@@ -379,6 +451,48 @@ describe('QuoteWorkflowPanel Nava extras', () => {
         'This email asks for 2 things: a cancellation, a cancellation. This pane handles the first. Do the rest by hand.',
       ),
     ).toBeDefined();
+  });
+
+  it('shows each stay guest list and action badge', () => {
+    const session = sessionWithAnalysis({
+      intent: 'quote',
+      groups: [{ ...g1, stayId: 'stay-a', quantity: 2 }],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: lunaWire({
+        workflow: 'quote',
+        groups: [
+          {
+            arrival: '2026-11-12',
+            departure: '2026-11-14',
+            rooms: 1,
+            adultsPerRoom: 1,
+            childAges: [],
+            board: 'bb',
+            roomPreference: null,
+            guestNames: ['Ada Example'],
+            stayId: 'stay-a',
+          },
+          {
+            arrival: '2026-11-12',
+            departure: '2026-11-14',
+            rooms: 1,
+            adultsPerRoom: 1,
+            childAges: [],
+            board: 'bb',
+            roomPreference: null,
+            guestNames: ['Bea Example'],
+            stayId: 'stay-a',
+          },
+        ],
+      }),
+    });
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByLabelText('Stay action').textContent).toBe('Quote');
+    expect(screen.getByLabelText('Stay guests').textContent).toContain('Ada Example');
+    expect(screen.getByLabelText('Stay guests').textContent).toContain('Bea Example');
+    expect(screen.queryByRole('button', { name: 'Split into separate bookings' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Split in HMS' })).toBeNull();
   });
 
   it('hides the tasks line when luna has a single task', () => {

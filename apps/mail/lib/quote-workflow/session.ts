@@ -1,5 +1,6 @@
 import type {
   ApprovedStayGroup,
+  LunaAnalysisWire,
   PartyLookupRef,
   QuoteAmendment,
   QuoteAnalysis,
@@ -35,9 +36,25 @@ import { rowRoomLabel, rowRoomTypeCode, type RoomTypeCode } from './room-types';
 /**
  * The amendment Luna reported on this email, or null. It lives on the analysis, so it survives every reducer
  * that keeps analysis. The workflow badge takes its kind: amendmentKind={amendmentOf(session)?.kind ?? null}.
+ * Selecting an amend/cancel stay overlays that card's confirmation so CHECK/amend opens on it.
  */
 export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
-  return session.analysis?.amendment ?? null;
+  const base = session.analysis?.amendment ?? null;
+  if (!base) return null;
+  const selectedKey = session.selectedStayKey;
+  if (!selectedKey) return base;
+  const stays = groupStays(session.groups);
+  const stay =
+    stays.find((item) => item.id === selectedKey) ??
+    stays.find((item) => item.rows[0] && stayKeyForGroup(item.rows[0]) === selectedKey);
+  if (!stay) return base;
+  const action = stayAskAction(session, stay.id);
+  if (action !== 'amend' && action !== 'cancel') return base;
+  const confirmation = stayAskGuests(session, stay.id)
+    .map((guest) => guest.confirmationNumber)
+    .find((value) => value);
+  if (!confirmation) return base;
+  return { ...base, confirmationNumber: confirmation };
 }
 
 export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGroup {
@@ -127,6 +144,124 @@ export function stayTotals(groups: StayGroupRequirement[]): { rooms: number; gue
     }),
     { rooms: 0, guests: 0 },
   );
+}
+
+export type StayAskGuest = { name: string; confirmationNumber: string | null };
+export type StayAskAction = 'quote' | 'booking' | 'amend' | 'cancel' | 'other';
+
+type LunaStayGroup = LunaAnalysisWire['groups'][number] & { confirmationNumber?: string | null };
+
+/** Extra fields a stored read already puts on a room row. Not on the published StayGroupRequirement type. */
+type StayAskRow = StayGroupRequirement & {
+  guestNames?: string[];
+  confirmationNumber?: string | null;
+};
+
+function lunaStayGroups(session: Pick<QuoteSession, 'analysis'>): LunaStayGroup[] {
+  return (session.analysis?.luna?.groups ?? []) as LunaStayGroup[];
+}
+
+function stayAskRows(session: QuoteSession, stayId: string): StayAskRow[] {
+  return session.groups.filter((group) => stayIdOf(group) === stayId) as StayAskRow[];
+}
+
+function trimmedConfirmation(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function guestsFromNamed(
+  names: string[],
+  confirmation: string | null,
+): StayAskGuest[] {
+  const cleaned = names.map((name) => name.trim()).filter((name) => name.length > 0);
+  return cleaned.map((name, index) => ({
+    name,
+    confirmationNumber: cleaned.length === 1 || index === 0 ? confirmation : null,
+  }));
+}
+
+function lunaGroupsMatchingStay(session: QuoteSession, stayId: string): LunaStayGroup[] {
+  const rows = stayAskRows(session, stayId);
+  const luna = lunaStayGroups(session);
+  const byId = luna.filter((group) => group.stayId === stayId);
+  if (byId.length) return byId;
+  const first = rows[0];
+  if (!first) return [];
+  const byDates = luna.filter(
+    (group) => group.arrival === (first.arrivalDate ?? null) && group.departure === (first.departureDate ?? null),
+  );
+  if (byDates.length) return byDates;
+  if (groupStays(session.groups).length === 1 && luna.length) return luna;
+  return [];
+}
+
+/**
+ * Named guests on this stay. A stored read puts names and booking numbers on analysis.groups (the session rows).
+ * A live analysis puts names on luna.groups.
+ */
+export function stayAskGuests(session: QuoteSession, stayId: string): StayAskGuest[] {
+  const rows = stayAskRows(session, stayId);
+  const luna = lunaGroupsMatchingStay(session, stayId);
+  const fromRows = rows.flatMap((row) => guestsFromNamed(row.guestNames ?? [], trimmedConfirmation(row.confirmationNumber)));
+  if (fromRows.length) return fromRows;
+  return luna.flatMap((group, index) =>
+    guestsFromNamed(
+      group.guestNames,
+      trimmedConfirmation(group.confirmationNumber) ?? trimmedConfirmation(rows[index]?.confirmationNumber),
+    ),
+  );
+}
+
+function stayAskActionFromTask(kind: LunaAnalysisWire['tasks'][number]['kind']): StayAskAction | null {
+  if (kind === 'quote') return 'quote';
+  if (kind === 'create_booking') return 'booking';
+  if (kind === 'amend') return 'amend';
+  if (kind === 'cancel') return 'cancel';
+  return null;
+}
+
+/** Stay ids a task named, taken from the analysis groups at those indexes so a later remove cannot retarget it. */
+function taskStayIds(session: QuoteSession, task: LunaAnalysisWire['tasks'][number]): string[] {
+  const analysisGroups = session.analysis?.groups ?? [];
+  return task.groupIndexes.flatMap((index) => {
+    const group = analysisGroups[index];
+    return group ? [stayIdOf(group)] : [];
+  });
+}
+
+/** The action this stay card should show. Tasks bind by stay id. */
+export function stayAskAction(session: QuoteSession, stayId: string): StayAskAction {
+  const tasks = session.analysis?.luna?.tasks ?? [];
+  for (const task of tasks) {
+    if (!taskStayIds(session, task).includes(stayId)) continue;
+    const mapped = stayAskActionFromTask(task.kind);
+    if (mapped) return mapped;
+  }
+  const workflow = session.analysis?.luna?.workflow;
+  if (workflow === 'create_booking') return 'booking';
+  if (workflow === 'quote') return 'quote';
+  if (workflow === 'amend') return 'amend';
+  if (workflow === 'cancel') return 'cancel';
+  const amendmentKind = session.analysis?.amendment?.kind;
+  if (amendmentKind === 'amend' || amendmentKind === 'cancel') return amendmentKind;
+  if (session.analysis?.intent === 'quote') return 'quote';
+  return 'other';
+}
+
+export function stayAskActionLabel(action: StayAskAction): string | null {
+  if (action === 'quote') return 'Quote';
+  if (action === 'booking') return 'New booking';
+  if (action === 'amend') return 'Amendment';
+  if (action === 'cancel') return 'Cancellation';
+  return null;
+}
+
+/** Amend and cancel analyses keep their stays so each card can open CHECK. Other non-quote mail still has no stays. */
+export function keepNonQuoteStays(analysis: QuoteAnalysis): boolean {
+  const kind = analysis.amendment?.kind ?? analysis.luna?.workflow;
+  return kind === 'amend' || kind === 'cancel';
 }
 
 /** A random part for the ids of rows and stays that a structural edit creates. The reducer takes it as input. */
@@ -1355,12 +1490,20 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         const unreadItems = (action.analysis.reviewItems ?? []).filter(
           (item) => item.kind === 'document_failure',
         );
+        const groups = keepNonQuoteStays(action.analysis) ? action.analysis.groups : [];
+        const stays = groupStays(groups);
         return {
           ...clearDownstream(session),
           phase: 'non_quote',
           analysisStartStayRevision: null,
           analysis: action.analysis,
-          groups: [],
+          groups,
+          selectedStayKey:
+            stays.length === 1
+              ? stays[0]!.id
+              : session.selectedStayKey && groups.some((group) => stayIdOf(group) === session.selectedStayKey)
+                ? session.selectedStayKey
+                : null,
           reviewItems: unreadItems,
           handledReviewItemIds: [],
           staffHeader: prefillStaffHeaderFromLuna(
@@ -1513,17 +1656,21 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       return editStays({ ...session, staffHeader }, session.groups, new Set([action.stayKey]));
     }
     case 'select_stay_key': {
-      if (!session.groups.some((group) => stayKeyForGroup(group) === action.stayKey)) return session;
+      const byStayId = session.groups.some((group) => stayIdOf(group) === action.stayKey);
+      const dateKey = byStayId
+        ? stayKeyForGroup(session.groups.find((group) => stayIdOf(group) === action.stayKey)!)
+        : action.stayKey;
+      if (!byStayId && !session.groups.some((group) => stayKeyForGroup(group) === action.stayKey)) return session;
       if (session.selectedStayKey === action.stayKey) return session;
-      // Every option keeps its result. The newly selected option exposes only its own authority and PDF.
-      const quote = session.staffQuotes[action.stayKey] ?? null;
+      // Date key still looks up the combined quote. Stay id is what CHECK/amend uses when Find this booking fires.
+      const quote = session.staffQuotes[dateKey] ?? null;
       return {
         ...session,
         selectedStayKey: action.stayKey,
         staffQuote: quote,
         selectedOfferIds: quote ? [quote.revisionRef] : [],
         // A combined PDF covers every stay, so it stays when the selection moves between them.
-        pdf: isMultiStay(session) ? session.pdf : (session.stayPdfs[action.stayKey] ?? null),
+        pdf: isMultiStay(session) ? session.pdf : (session.stayPdfs[dateKey] ?? null),
       };
     }
     case 'staff_quote_ready': {
