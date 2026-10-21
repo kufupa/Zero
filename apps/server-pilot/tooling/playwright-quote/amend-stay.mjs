@@ -36,7 +36,8 @@ function errorText(error) {
 
 function currentFields(stay) {
   return { confirmation: stay.confirmation, lastName: stay.lastName, status: stay.status, arrival: stay.arrival,
-    departure: stay.departure, adults: stay.adults, children: stay.children, roomType: stay.roomType };
+    departure: stay.departure, adults: stay.adults, children: stay.children, roomType: stay.roomType,
+    guaranteeType: stay.guaranteeType, depositReceived: stay.depositReceived };
 }
 
 async function dangerousDialog(page) {

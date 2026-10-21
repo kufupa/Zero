@@ -72,6 +72,43 @@ function setOutcome(result, outcome, reason = null) {
   result.reason = reason;
 }
 
+function paymentBlank(value) {
+  return value == null || String(value).replace(/\s+/g, ' ').trim() === '';
+}
+
+/** Visible input[name=guaranteetype|depositreceived] only. Self-contained for page.evaluate. */
+export function readVisibleNamedPaymentInputs(doc = document) {
+  const skip = /^(hidden|button|submit|reset|image|file|checkbox|radio)$/i;
+  const shown = (el) => {
+    if (!el) return false;
+    if (el.tagName === 'INPUT' && skip.test(el.type || '')) return false;
+    const box = el.getBoundingClientRect?.();
+    return !box || (box.width > 0 && box.height > 0);
+  };
+  const read = (name) => {
+    const nodes = doc.querySelectorAll
+      ? [...doc.querySelectorAll(`input[name="${name}"]`)]
+      : [doc.querySelector(`input[name="${name}"]`)].filter(Boolean);
+    const el = nodes.find(shown);
+    if (!el) return '';
+    return String(el.value ?? '').replace(/\s+/g, ' ').trim();
+  };
+  return { guaranteeType: read('guaranteetype'), depositReceived: read('depositreceived') };
+}
+
+/** Fill only blank stay payment fields. Never invent 0. Never copy balance. */
+export function fillBlankPaymentFields(stay, named = {}) {
+  if (!stay) return stay;
+  const next = { ...stay };
+  if (paymentBlank(next.guaranteeType) && !paymentBlank(named.guaranteeType)) {
+    next.guaranteeType = String(named.guaranteeType).replace(/\s+/g, ' ').trim();
+  }
+  if (paymentBlank(next.depositReceived) && !paymentBlank(named.depositReceived)) {
+    next.depositReceived = String(named.depositReceived).replace(/\s+/g, ' ').trim();
+  }
+  return next;
+}
+
 // The quick panel is ready once its footer shows the Records count and its search ran: before that it shows the
 // history list ("No previous searches.", Records: 0 of 0). Returns {panel, executed}; panel is null when none shows.
 async function waitForPanel(page) {
@@ -142,6 +179,14 @@ export async function findOnOpenGuestStay(ctx, { captureScreenshots = true } = {
     }
     if (!result.stay.guaranteeType && result.commercial?.guaranteeType) {
       result.stay.guaranteeType = result.commercial.guaranteeType;
+    }
+    if (paymentBlank(result.stay.guaranteeType) || paymentBlank(result.stay.depositReceived)) {
+      try {
+        const named = await page.evaluate(readVisibleNamedPaymentInputs);
+        result.stay = fillBlankPaymentFields(result.stay, named);
+      } catch {
+        // Named inputs are optional. A missing control must not fail the find.
+      }
     }
   }
   if (captureScreenshots) await shot(ctx, 'record.png');
