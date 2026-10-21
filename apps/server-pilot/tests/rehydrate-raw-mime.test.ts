@@ -4,9 +4,16 @@ import {
   parseRehydrateCliArgs,
   rehydrateRawMimeFromS3,
 } from '../src/mail/ingest/rehydrate-raw-mime';
+import { candidateMessageIdForPop3Uidl, parseRawMessage } from '../src/mail/ingest/parse-message';
+import { persistInboundMessage } from '../src/mail/ingest/store';
+import { completeFanoutAfterPrimary } from '../src/mail/ingest/fanout';
+import { mailIngestSourceReceipt, mailboxTransport, message } from '../src/db/schema/mail';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
 import { FakeS3Storage, rawMimeKey } from '../src/storage/s3';
 import * as ingestStore from '../src/mail/ingest/store';
+import { claimIngestUidl } from '../src/mail/ingest/store';
+import { fanoutCopyPop3Uidl } from '../src/mail/ingest/fanout';
+import { eq } from 'drizzle-orm';
 import { describe, expect, it, vi } from 'vitest';
 import type { DB } from '../src/db/client';
 
@@ -194,6 +201,439 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('rehydrate raw MIME cleanup re
 
       expect(result.errors).toBe(1);
       expect(storage.listKeys('attachments/')).toEqual([]);
+    } finally {
+      if (previousOwnerHeaderSetting === undefined) {
+        delete process.env.INGEST_REQUIRE_OWNER_HEADER;
+      } else {
+        process.env.INGEST_REQUIRE_OWNER_HEADER = previousOwnerHeaderSetting;
+      }
+    }
+  }, 30000);
+
+  it('does not report stored until every mailbox copy succeeds', async () => {
+    const storage = new FakeS3Storage('rehydrate-fanout-copy');
+    const ingestMailboxId = 'ingest-nava-legacy';
+    const pop3Uidl = `rehydrate-fanout-${crypto.randomUUID()}`;
+    const key = rawMimeKey({ ingestMailboxId, pop3Uidl });
+    const raw = Buffer.from(
+      [
+        'From: guest@example.test',
+        'To: hotel-cen@example.test, hotel-dav@example.test',
+        'Subject: rehydrate copies',
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        'Synthetic body.',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const previousOwnerHeaderSetting = process.env.INGEST_REQUIRE_OWNER_HEADER;
+    process.env.INGEST_REQUIRE_OWNER_HEADER = 'false';
+    try {
+      await storage.putObject({
+        key,
+        body: raw,
+        contentType: 'message/rfc822',
+      });
+      const result = await withSeededTestDb(async (db) => {
+        await db
+          .update(mailboxTransport)
+          .set({
+            email: 'hotel-cen@example.test',
+            ownerHeaderValue: 'hotel-cen@example.test',
+            sendFromConfig: null,
+            isActive: true,
+          })
+          .where(eq(mailboxTransport.id, 'transport-centurion'));
+        await db
+          .insert(mailboxTransport)
+          .values({
+            id: 'transport-davinci',
+            email: 'hotel-dav@example.test',
+            ownerHeaderValue: 'hotel-dav@example.test',
+            mailboxType: 'personal',
+            isActive: true,
+            sendFromConfig: null,
+          })
+          .onConflictDoUpdate({
+            target: mailboxTransport.id,
+            set: {
+              email: 'hotel-dav@example.test',
+              ownerHeaderValue: 'hotel-dav@example.test',
+              isActive: true,
+              sendFromConfig: null,
+            },
+          });
+        const copyUidl = fanoutCopyPop3Uidl(pop3Uidl, 'transport-davinci');
+        expect(
+          await claimIngestUidl(db, { ingestMailboxId, pop3Uidl: copyUidl }),
+        ).toBeTruthy();
+        return rehydrateRawMimeFromS3({
+          db,
+          storage,
+          keys: [{ key, ingestMailboxId, pop3Uidl }],
+        });
+      });
+      expect(result.stored).toBe(0);
+      expect(result.errors).toBe(1);
+      expect(result.errorKeys).toEqual([key]);
+    } finally {
+      if (previousOwnerHeaderSetting === undefined) {
+        delete process.env.INGEST_REQUIRE_OWNER_HEADER;
+      } else {
+        process.env.INGEST_REQUIRE_OWNER_HEADER = previousOwnerHeaderSetting;
+      }
+    }
+  }, 30000);
+
+  it('reuses the stored UIDL when the S3 stem stripped punctuation, and does not insert a second primary or copies', async () => {
+    const storage = new FakeS3Storage('rehydrate-punct-uidl');
+    const ingestMailboxId = 'ingest-nava-legacy';
+    const realUidl = 'uidl+punct/1';
+    const key = rawMimeKey({ ingestMailboxId, pop3Uidl: realUidl });
+    const listed = parseRawMimeKey(key);
+    expect(listed?.pop3Uidl).toBe('uidl_punct_1');
+    const raw = Buffer.from(
+      [
+        'From: guest@example.test',
+        'To: hotel-cen@example.test, hotel-dav@example.test',
+        'Subject: punct uidl',
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        'Synthetic body.',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const previousOwnerHeaderSetting = process.env.INGEST_REQUIRE_OWNER_HEADER;
+    process.env.INGEST_REQUIRE_OWNER_HEADER = 'false';
+    try {
+      await storage.putObject({
+        key,
+        body: raw,
+        contentType: 'message/rfc822',
+      });
+      const result = await withSeededTestDb(async (db) => {
+        await db
+          .update(mailboxTransport)
+          .set({
+            email: 'hotel-cen@example.test',
+            ownerHeaderValue: 'hotel-cen@example.test',
+            sendFromConfig: null,
+            isActive: true,
+          })
+          .where(eq(mailboxTransport.id, 'transport-centurion'));
+        await db
+          .insert(mailboxTransport)
+          .values({
+            id: 'transport-davinci',
+            email: 'hotel-dav@example.test',
+            ownerHeaderValue: 'hotel-dav@example.test',
+            mailboxType: 'personal',
+            isActive: true,
+            sendFromConfig: null,
+          })
+          .onConflictDoUpdate({
+            target: mailboxTransport.id,
+            set: {
+              email: 'hotel-dav@example.test',
+              ownerHeaderValue: 'hotel-dav@example.test',
+              isActive: true,
+              sendFromConfig: null,
+            },
+          });
+        const messageId = candidateMessageIdForPop3Uidl(ingestMailboxId, realUidl);
+        const parsed = await parseRawMessage(raw, { messageId, storage });
+        const persistResult = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId,
+            pop3Uidl: realUidl,
+            messageId,
+            rawMimeS3Key: key,
+          },
+          { db, storage, skipAiEnqueue: true },
+        );
+        expect(persistResult.kind).toBe('stored');
+        await completeFanoutAfterPrimary({
+          db,
+          storage,
+          raw,
+          meta: {
+            ingestMailboxId,
+            pop3Uidl: realUidl,
+            messageId,
+            rawMimeS3Key: key,
+          },
+          persistResult,
+          skipAiEnqueue: true,
+        });
+        const before = await db.select({ pop3Uidl: message.pop3Uidl }).from(message);
+        const retried = await rehydrateRawMimeFromS3({
+          db,
+          storage,
+          keys: [listed!],
+        });
+        const after = await db.select({ pop3Uidl: message.pop3Uidl }).from(message);
+        return { retried, before, after };
+      });
+      expect(result.retried.stored).toBe(0);
+      expect(result.retried.duplicate).toBe(1);
+      expect(result.after).toHaveLength(result.before.length);
+      expect(result.after.map((row) => row.pop3Uidl).sort()).toEqual(
+        result.before.map((row) => row.pop3Uidl).sort(),
+      );
+      expect(result.after.some((row) => row.pop3Uidl === realUidl)).toBe(true);
+      expect(result.after.some((row) => row.pop3Uidl === 'uidl_punct_1')).toBe(false);
+    } finally {
+      if (previousOwnerHeaderSetting === undefined) {
+        delete process.env.INGEST_REQUIRE_OWNER_HEADER;
+      } else {
+        process.env.INGEST_REQUIRE_OWNER_HEADER = previousOwnerHeaderSetting;
+      }
+    }
+  }, 30000);
+
+  it('does not write a copy UIDL as the primary when the raw-mime key has only a copy receipt', async () => {
+    const storage = new FakeS3Storage('rehydrate-copy-only-receipt');
+    const ingestMailboxId = 'ingest-nava-legacy';
+    const pop3Uidl = `rehydrate-copy-only-${crypto.randomUUID()}`;
+    const key = rawMimeKey({ ingestMailboxId, pop3Uidl });
+    const copyUidl = fanoutCopyPop3Uidl(pop3Uidl, 'transport-davinci');
+    const raw = Buffer.from(
+      [
+        'From: guest@example.test',
+        'To: hotel-cen@example.test, hotel-dav@example.test',
+        'Subject: copy-only receipt',
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        'Synthetic body.',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const previousOwnerHeaderSetting = process.env.INGEST_REQUIRE_OWNER_HEADER;
+    process.env.INGEST_REQUIRE_OWNER_HEADER = 'false';
+    try {
+      await storage.putObject({
+        key,
+        body: raw,
+        contentType: 'message/rfc822',
+      });
+      const result = await withSeededTestDb(async (db) => {
+        await db
+          .update(mailboxTransport)
+          .set({
+            email: 'hotel-cen@example.test',
+            ownerHeaderValue: 'hotel-cen@example.test',
+            sendFromConfig: null,
+            isActive: true,
+          })
+          .where(eq(mailboxTransport.id, 'transport-centurion'));
+        await db
+          .insert(mailboxTransport)
+          .values({
+            id: 'transport-davinci',
+            email: 'hotel-dav@example.test',
+            ownerHeaderValue: 'hotel-dav@example.test',
+            mailboxType: 'personal',
+            isActive: true,
+            sendFromConfig: null,
+          })
+          .onConflictDoUpdate({
+            target: mailboxTransport.id,
+            set: {
+              email: 'hotel-dav@example.test',
+              ownerHeaderValue: 'hotel-dav@example.test',
+              isActive: true,
+              sendFromConfig: null,
+            },
+          });
+        const copyMessageId = candidateMessageIdForPop3Uidl(ingestMailboxId, copyUidl);
+        const parsed = await parseRawMessage(raw, { messageId: copyMessageId, storage });
+        const copyPersist = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId,
+            pop3Uidl: copyUidl,
+            messageId: copyMessageId,
+            rawMimeS3Key: key,
+          },
+          {
+            db,
+            storage,
+            skipAiEnqueue: true,
+            fanoutCopy: true,
+            transportOverride: 'transport-davinci',
+          },
+        );
+        expect(copyPersist.kind).toBe('stored');
+        const beforeReceipts = await db
+          .select({
+            pop3Uidl: mailIngestSourceReceipt.pop3Uidl,
+            transportId: mailIngestSourceReceipt.transportId,
+          })
+          .from(mailIngestSourceReceipt);
+        expect(beforeReceipts).toEqual([
+          { pop3Uidl: copyUidl, transportId: 'transport-davinci' },
+        ]);
+        const retried = await rehydrateRawMimeFromS3({
+          db,
+          storage,
+          keys: [{ key, ingestMailboxId, pop3Uidl }],
+        });
+        const afterReceipts = await db
+          .select({
+            pop3Uidl: mailIngestSourceReceipt.pop3Uidl,
+            transportId: mailIngestSourceReceipt.transportId,
+          })
+          .from(mailIngestSourceReceipt);
+        const afterMessages = await db
+          .select({ pop3Uidl: message.pop3Uidl, transportId: message.transportId })
+          .from(message);
+        return { retried, afterReceipts, afterMessages };
+      });
+      expect(result.retried.errors).toBe(0);
+      expect(result.retried.stored).toBe(1);
+      const primaryReceipts = result.afterReceipts.filter(
+        (row) => !row.pop3Uidl.includes('\u001f'),
+      );
+      expect(primaryReceipts.some((row) => row.pop3Uidl === copyUidl)).toBe(false);
+      expect(primaryReceipts).toEqual(
+        expect.arrayContaining([{ pop3Uidl, transportId: 'transport-centurion' }]),
+      );
+      expect(
+        result.afterReceipts.some(
+          (row) => row.pop3Uidl === copyUidl && row.transportId === 'transport-davinci',
+        ),
+      ).toBe(true);
+      expect(
+        result.afterMessages.some(
+          (row) => row.pop3Uidl === pop3Uidl && row.transportId === 'transport-centurion',
+        ),
+      ).toBe(true);
+      expect(
+        result.afterMessages.some(
+          (row) => row.pop3Uidl === copyUidl && row.transportId === 'transport-centurion',
+        ),
+      ).toBe(false);
+    } finally {
+      if (previousOwnerHeaderSetting === undefined) {
+        delete process.env.INGEST_REQUIRE_OWNER_HEADER;
+      } else {
+        process.env.INGEST_REQUIRE_OWNER_HEADER = previousOwnerHeaderSetting;
+      }
+    }
+  }, 30000);
+
+  it('recovers a punctuated original UIDL from a copy-only receipt and a second restore inserts no extra mailbox row', async () => {
+    const storage = new FakeS3Storage('rehydrate-copy-only-punct');
+    const ingestMailboxId = 'ingest-nava-legacy';
+    const realUidl = 'uidl+punct/1';
+    const key = rawMimeKey({ ingestMailboxId, pop3Uidl: realUidl });
+    const listed = parseRawMimeKey(key);
+    expect(listed?.pop3Uidl).toBe('uidl_punct_1');
+    const copyUidl = fanoutCopyPop3Uidl(realUidl, 'transport-davinci');
+    const raw = Buffer.from(
+      [
+        'From: guest@example.test',
+        'To: hotel-cen@example.test, hotel-dav@example.test',
+        'Subject: copy-only punct uidl',
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        'Synthetic body.',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const previousOwnerHeaderSetting = process.env.INGEST_REQUIRE_OWNER_HEADER;
+    process.env.INGEST_REQUIRE_OWNER_HEADER = 'false';
+    try {
+      await storage.putObject({
+        key,
+        body: raw,
+        contentType: 'message/rfc822',
+      });
+      const result = await withSeededTestDb(async (db) => {
+        await db
+          .update(mailboxTransport)
+          .set({
+            email: 'hotel-cen@example.test',
+            ownerHeaderValue: 'hotel-cen@example.test',
+            sendFromConfig: null,
+            isActive: true,
+          })
+          .where(eq(mailboxTransport.id, 'transport-centurion'));
+        await db
+          .insert(mailboxTransport)
+          .values({
+            id: 'transport-davinci',
+            email: 'hotel-dav@example.test',
+            ownerHeaderValue: 'hotel-dav@example.test',
+            mailboxType: 'personal',
+            isActive: true,
+            sendFromConfig: null,
+          })
+          .onConflictDoUpdate({
+            target: mailboxTransport.id,
+            set: {
+              email: 'hotel-dav@example.test',
+              ownerHeaderValue: 'hotel-dav@example.test',
+              isActive: true,
+              sendFromConfig: null,
+            },
+          });
+        const copyMessageId = candidateMessageIdForPop3Uidl(ingestMailboxId, copyUidl);
+        const parsed = await parseRawMessage(raw, { messageId: copyMessageId, storage });
+        const copyPersist = await persistInboundMessage(
+          parsed,
+          raw,
+          {
+            ingestMailboxId,
+            pop3Uidl: copyUidl,
+            messageId: copyMessageId,
+            rawMimeS3Key: key,
+          },
+          {
+            db,
+            storage,
+            skipAiEnqueue: true,
+            fanoutCopy: true,
+            transportOverride: 'transport-davinci',
+          },
+        );
+        expect(copyPersist.kind).toBe('stored');
+        const first = await rehydrateRawMimeFromS3({
+          db,
+          storage,
+          keys: [listed!],
+        });
+        const afterFirst = await db
+          .select({ pop3Uidl: message.pop3Uidl, transportId: message.transportId })
+          .from(message);
+        const second = await rehydrateRawMimeFromS3({
+          db,
+          storage,
+          keys: [listed!],
+        });
+        const afterSecond = await db
+          .select({ pop3Uidl: message.pop3Uidl, transportId: message.transportId })
+          .from(message);
+        return { first, second, afterFirst, afterSecond };
+      });
+      expect(result.first.errors).toBe(0);
+      expect(result.first.stored).toBe(1);
+      expect(result.afterFirst.some((row) => row.pop3Uidl === realUidl)).toBe(true);
+      expect(result.afterFirst.some((row) => row.pop3Uidl === 'uidl_punct_1')).toBe(false);
+      expect(result.afterFirst.some((row) => row.pop3Uidl === copyUidl)).toBe(true);
+      expect(result.second.stored).toBe(0);
+      expect(result.second.duplicate).toBe(1);
+      expect(result.afterSecond).toHaveLength(result.afterFirst.length);
+      expect(result.afterSecond.map((row) => row.pop3Uidl).sort()).toEqual(
+        result.afterFirst.map((row) => row.pop3Uidl).sort(),
+      );
     } finally {
       if (previousOwnerHeaderSetting === undefined) {
         delete process.env.INGEST_REQUIRE_OWNER_HEADER;
