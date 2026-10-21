@@ -199,6 +199,22 @@ function davinciAndCenturionEml(): Buffer {
   );
 }
 
+function davinciSenderCalendarForwardEml(): Buffer {
+  return Buffer.from(
+    [
+      'From: organizer@example.test',
+      `Sender: ${DAVINCI_TRANSPORT_EMAIL}`,
+      'To: guest@example.test',
+      'Subject: outlook calendar forward',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'Organizer in From, hotel box in Sender.',
+    ].join('\r\n'),
+    'utf-8',
+  );
+}
+
 function dbWithFailedCleanupRegistration(db: DB): DB {
   return new Proxy(db, {
     get(target, property, receiver) {
@@ -1189,6 +1205,86 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(outcome.remainingIds).toEqual(outcome.kept);
         expect(outcome.messages).toHaveLength(1);
         expect(outcome.messages[0]!.transportId).toBe(DAVINCI_TRANSPORT_ID);
+      });
+    }, 30000);
+
+    it('mailbox filter uses Sender when it differs from From', async () => {
+      const storage = withFakeS3();
+
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          await seedCenturionAliases(db);
+          const { quarantineId } = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-filter-sender-davinci',
+            raw: davinciSenderCalendarForwardEml(),
+          });
+          const davinci = await promoteMissingOwnerHeaderQuarantine({
+            db,
+            storage,
+            dryRun: true,
+            mailboxes: [DAVINCI_TRANSPORT_EMAIL],
+          });
+          const centurion = await promoteMissingOwnerHeaderQuarantine({
+            db,
+            storage,
+            dryRun: true,
+            mailboxes: [TRANSPORT_EMAIL],
+          });
+          const remaining = await db
+            .select()
+            .from(mailIngestQuarantine)
+            .where(eq(mailIngestQuarantine.id, quarantineId));
+          return { davinci, centurion, remaining, quarantineId };
+        });
+
+        expect(outcome.davinci.dryRunIds).toEqual([outcome.quarantineId]);
+        expect(outcome.davinci.skippedMailboxFilter).toBe(0);
+        expect(outcome.centurion.dryRunIds).toEqual([]);
+        expect(outcome.centurion.skippedMailboxFilter).toBe(1);
+        expect(outcome.remaining).toHaveLength(1);
+      });
+    }, 30000);
+
+    it('pre-filter missing S3 does not consume --limit matching rows', async () => {
+      const storage = withFakeS3();
+
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          await seedCenturionAliases(db);
+          const missingId = randomUUID();
+          await db.insert(mailIngestQuarantine).values({
+            id: missingId,
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl: 'uidl-limit-missing-s3',
+            rawMimeS3Key: 'raw-mime/missing/limit-filter.eml',
+            reason: 'missing_owner_header',
+            ownerHeaderValue: null,
+            parsedHeaders: null,
+            createdAt: new Date('2026-01-01T00:00:00Z'),
+          });
+          const davinci = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-limit-after-missing-s3',
+            raw: davinciInboundEml(),
+            createdAt: new Date('2026-01-01T00:00:01Z'),
+          });
+          const result = await promoteMissingOwnerHeaderQuarantine({
+            db,
+            storage,
+            dryRun: true,
+            limit: 1,
+            mailboxes: [DAVINCI_TRANSPORT_EMAIL],
+          });
+          return { result, missingId, davinciId: davinci.quarantineId };
+        });
+
+        expect(outcome.result.errors).toBe(1);
+        expect(outcome.result.errorIds).toEqual([outcome.missingId]);
+        expect(outcome.result.dryRunIds).toEqual([outcome.davinciId]);
+        expect(outcome.result.skippedMailboxFilter).toBe(0);
       });
     }, 30000);
   },

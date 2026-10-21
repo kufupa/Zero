@@ -89,6 +89,7 @@ export function assertPromoteEnv(input: Record<string, string | undefined> = pro
 
 export interface PromoteReserveCloudStaffSignals {
   fromAddress?: string | null;
+  senderAddress?: string | null;
   toAddresses?: readonly string[] | null;
   ccAddresses?: readonly string[] | null;
   bccAddresses?: readonly string[] | null;
@@ -206,7 +207,7 @@ export async function promoteMissingOwnerHeaderQuarantine(
         result.quarantined += 1;
         break;
       case 'error':
-        matching += 1;
+        if (!outcome.preFilter) matching += 1;
         result.errors += 1;
         result.errorIds.push(row.id);
         break;
@@ -223,7 +224,7 @@ type PromoteOneOutcome =
   | { kind: 'stored' }
   | { kind: 'duplicate' }
   | { kind: 'quarantined' }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string; preFilter?: boolean };
 
 async function promoteOneQuarantineRow(
   row: PromoteQuarantineRow,
@@ -240,11 +241,16 @@ async function promoteOneQuarantineRow(
   const messageId = candidateMessageIdForPop3Uidl(row.ingestMailboxId, row.pop3Uidl);
   let parsed: ParsedInboundMessage | undefined;
   let claimToken: string | null = null;
+  let filterPassed = opts.mailboxes.length === 0;
 
   try {
     const object = await storage.getObject(row.rawMimeS3Key);
     if (!object) {
-      return { kind: 'error', message: `missing s3 object ${row.rawMimeS3Key}` };
+      return {
+        kind: 'error',
+        message: `missing s3 object ${row.rawMimeS3Key}`,
+        preFilter: !filterPassed,
+      };
     }
 
     // Dry-run and duplicate checks must not stream attachments to S3. The
@@ -257,6 +263,7 @@ async function promoteOneQuarantineRow(
       if (!ownerTransportsIncludeMailbox(owners, opts.mailboxes)) {
         return { kind: 'skipped_mailbox_filter' };
       }
+      filterPassed = true;
     }
     if (penny) {
       if (opts.dryRun) {
@@ -415,10 +422,11 @@ async function promoteOneQuarantineRow(
         return {
           kind: 'error',
           message: `${message}; candidate attachment cleanup registration failed: ${cleanupMessage}`,
+          preFilter: !filterPassed,
         };
       }
     }
-    return { kind: 'error', message };
+    return { kind: 'error', message, preFilter: !filterPassed };
   } finally {
     if (claimToken) {
       await releaseIngestUidlClaim(db, meta, claimToken).catch(() => undefined);
@@ -580,6 +588,7 @@ async function resolveOwnerTransports(
 
   const addresses = [
     signals.fromAddress,
+    signals.senderAddress,
     ...(signals.toAddresses ?? []),
     ...(signals.ccAddresses ?? []),
     ...(signals.bccAddresses ?? []),
@@ -660,10 +669,18 @@ async function parsePromotionSignals(raw: Buffer): Promise<PromoteReserveCloudSt
   const parsed = await simpleParser(raw, { skipHtmlToText: true });
   return {
     fromAddress: parsed.from?.value[0]?.address ?? null,
+    senderAddress: headerAddress(parsed.headers.get('sender')),
     toAddresses: addressValues(parsed.to),
     ccAddresses: addressValues(parsed.cc),
     bccAddresses: addressValues(parsed.bcc),
   };
+}
+
+function headerAddress(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (!value) return null;
+  const values = addressValues(value as AddressObject | AddressObject[]);
+  return values[0] ?? null;
 }
 
 function addressValues(value: AddressObject | AddressObject[] | undefined): string[] {
