@@ -17,11 +17,14 @@ import {
 import * as ingestFanout from '../src/mail/ingest/fanout';
 import {
   aiWorkflowRun,
+  mailIngestCandidateAttachmentCleanup,
   mailIngestQuarantine,
+  mailIngestUidlClaim,
   mailThread,
   mailboxTransport,
   message,
 } from '../src/db/schema/mail';
+import { candidateMessageIdForPop3Uidl } from '../src/mail/ingest/parse-message';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
 import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3';
 import * as ingestStore from '../src/mail/ingest/store';
@@ -230,6 +233,8 @@ describe('promote-quarantine cli helpers', () => {
         return query;
       },
     } as unknown as DB;
+    const claimSpy = vi.spyOn(ingestStore, 'claimIngestUidl').mockResolvedValue('claim-u11');
+    const releaseSpy = vi.spyOn(ingestStore, 'releaseIngestUidlClaim').mockResolvedValue();
     const persistSpy = vi
       .spyOn(ingestStore, 'persistInboundMessage')
       .mockImplementation(async (_parsed, _raw, meta, options) => {
@@ -271,10 +276,13 @@ describe('promote-quarantine cli helpers', () => {
           promoteQuarantineId: row.id,
           directionOverride: 'outbound',
           transportOverride: 'transport-centurion',
+          activeIngestUidlClaimToken: 'claim-u11',
         }),
       );
     } finally {
       persistSpy.mockRestore();
+      claimSpy.mockRestore();
+      releaseSpy.mockRestore();
     }
   });
 
@@ -830,6 +838,84 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       } finally {
         copiesSpy.mockRestore();
       }
+    }, 30000);
+
+    it('keeps quarantine when the UIDL claim is already held', async () => {
+      const storage = withFakeS3();
+      const pop3Uidl = 'uidl-promote-claim-held';
+      const raw = twoHotelBoxEml();
+
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          const { quarantineId } = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl,
+            raw,
+            reason: 'multi_transport',
+          });
+          await db.insert(mailIngestUidlClaim).values({
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl,
+            claimToken: randomUUID(),
+            expiresAt: new Date(Date.now() + 60_000),
+          });
+
+          const result = await promoteMissingOwnerHeaderQuarantine({ db, storage });
+          const quarantineRows = await db
+            .select()
+            .from(mailIngestQuarantine)
+            .where(eq(mailIngestQuarantine.id, quarantineId));
+          const messages = await db.select().from(message);
+          return { result, quarantineRows, messages, quarantineId };
+        });
+
+        expect(outcome.result.errors).toBe(1);
+        expect(outcome.result.errorIds).toEqual([outcome.quarantineId]);
+        expect(outcome.result.stored).toBe(0);
+        expect(outcome.quarantineRows).toHaveLength(1);
+        expect(outcome.messages).toHaveLength(0);
+      });
+    }, 30000);
+
+    it('keeps quarantine and skips parse upload when attachment cleanup is pending', async () => {
+      const storage = withFakeS3();
+      const pop3Uidl = 'uidl-promote-cleanup-pending';
+      const raw = centurionInboundWithAttachmentEml();
+
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          await seedCenturionAliases(db);
+          const { quarantineId } = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl,
+            raw,
+          });
+          const messageId = candidateMessageIdForPop3Uidl('ingest-nava-legacy', pop3Uidl);
+          await db.insert(mailIngestCandidateAttachmentCleanup).values({
+            s3Key: `attachments/${messageId}/stale.bin`,
+            candidateMessageId: messageId,
+            ingestMailboxId: 'ingest-nava-legacy',
+            pop3Uidl,
+          });
+
+          const result = await promoteMissingOwnerHeaderQuarantine({ db, storage });
+          const quarantineRows = await db
+            .select()
+            .from(mailIngestQuarantine)
+            .where(eq(mailIngestQuarantine.id, quarantineId));
+          const messages = await db.select().from(message);
+          return { result, quarantineRows, messages, quarantineId };
+        });
+
+        expect(outcome.result.errors).toBe(1);
+        expect(outcome.result.errorIds).toEqual([outcome.quarantineId]);
+        expect(outcome.result.stored).toBe(0);
+        expect(outcome.quarantineRows).toHaveLength(1);
+        expect(outcome.messages).toHaveLength(0);
+        expect(storage.listKeys('attachments/')).toEqual([]);
+      });
     }, 30000);
   },
 );

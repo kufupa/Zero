@@ -14,7 +14,13 @@ import {
   uploadedAttachmentsFromParseFailure,
   type ParsedInboundMessage,
 } from './parse-message.js';
-import { cleanupPartialParseFailureAttachments, persistInboundMessage } from './store.js';
+import {
+  cleanupPartialParseFailureAttachments,
+  claimIngestUidl,
+  hasPendingCandidateAttachmentCleanup,
+  persistInboundMessage,
+  releaseIngestUidlClaim,
+} from './store.js';
 import { completeFanoutAfterPrimary } from './fanout.js';
 import { simpleParser, type AddressObject, type EmailAddress } from 'mailparser';
 import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
@@ -206,6 +212,7 @@ async function promoteOneQuarantineRow(
   };
   const messageId = candidateMessageIdForPop3Uidl(row.ingestMailboxId, row.pop3Uidl);
   let parsed: ParsedInboundMessage | undefined;
+  let claimToken: string | null = null;
 
   try {
     const object = await storage.getObject(row.rawMimeS3Key);
@@ -217,7 +224,8 @@ async function promoteOneQuarantineRow(
     // convenience parser only inspects headers here; promotion parses again
     // through the streaming parser so existing attachment cleanup remains.
     const headerSignals = await parsePromotionSignals(object.body);
-    if (isPromotableReserveCloudStaff(headerSignals)) {
+    const penny = isPromotableReserveCloudStaff(headerSignals);
+    if (penny) {
       if (opts.dryRun) {
         return { kind: 'dry-run' };
       }
@@ -227,12 +235,32 @@ async function promoteOneQuarantineRow(
         await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
         return { kind: 'duplicate' };
       }
+    } else if (opts.dryRun) {
+      return { kind: 'dry-run' };
+    }
 
-      parsed = await parseRawMessage(object.body, {
-        messageId,
-        storage,
-      });
+    if (await hasPendingCandidateAttachmentCleanup(db, meta)) {
+      return { kind: 'error', message: 'candidate_attachment_cleanup_pending' };
+    }
+    try {
+      claimToken = await claimIngestUidl(db, meta);
+    } catch {
+      return { kind: 'error', message: 'ingest_uidl_claim_pending' };
+    }
+    if (!claimToken) {
+      return { kind: 'error', message: 'ingest_uidl_claim_pending' };
+    }
+    const heldClaimToken = claimToken;
+    if (await hasPendingCandidateAttachmentCleanup(db, meta)) {
+      return { kind: 'error', message: 'candidate_attachment_cleanup_pending' };
+    }
 
+    parsed = await parseRawMessage(object.body, {
+      messageId,
+      storage,
+    });
+
+    if (penny) {
       // Re-check parser output before persistence. This keeps the exact sender
       // and recipient gate attached to the bytes being promoted.
       if (!isPromotableReserveCloudStaff(parsed)) {
@@ -246,6 +274,7 @@ async function promoteOneQuarantineRow(
               messageId,
               rawMimeS3Key: row.rawMimeS3Key,
             },
+            activeIngestUidlClaimToken: heldClaimToken,
           });
         }
         return { kind: 'skipped' };
@@ -265,6 +294,7 @@ async function promoteOneQuarantineRow(
           promoteQuarantineId: row.id,
           transportOverride: CENTURION_TRANSPORT_ID,
           directionOverride: 'outbound',
+          activeIngestUidlClaimToken: heldClaimToken,
         },
       );
 
@@ -277,15 +307,6 @@ async function promoteOneQuarantineRow(
       }
       return { kind: 'quarantined' };
     }
-
-    if (opts.dryRun) {
-      return { kind: 'dry-run' };
-    }
-
-    parsed = await parseRawMessage(object.body, {
-      messageId,
-      storage,
-    });
 
     const persistResult = await persistInboundMessage(
       parsed,
@@ -300,6 +321,7 @@ async function promoteOneQuarantineRow(
         storage,
         deferQuarantineDelete: true,
         skipAiEnqueue: true,
+        activeIngestUidlClaimToken: heldClaimToken,
       },
     );
 
@@ -352,6 +374,7 @@ async function promoteOneQuarantineRow(
             messageId,
             rawMimeS3Key: row.rawMimeS3Key,
           },
+          ...(claimToken ? { activeIngestUidlClaimToken: claimToken } : {}),
         });
       } catch (cleanupError) {
         const cleanupMessage =
@@ -363,6 +386,10 @@ async function promoteOneQuarantineRow(
       }
     }
     return { kind: 'error', message };
+  } finally {
+    if (claimToken) {
+      await releaseIngestUidlClaim(db, meta, claimToken).catch(() => undefined);
+    }
   }
 }
 
