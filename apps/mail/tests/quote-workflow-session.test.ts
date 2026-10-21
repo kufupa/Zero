@@ -38,6 +38,7 @@ import {
   staySplitKind,
   allocateSplitRooms,
 } from '../lib/quote-workflow/session';
+import { overlayRememberedGroups } from '../lib/quote-workflow/pane-edits';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
 import {
   defaultStaffStayExtras,
@@ -3914,5 +3915,220 @@ describe('multi-ask stay cards: guests, action, split', () => {
       },
     };
     expect(amendmentOf(session)?.confirmationNumber).toBe('11111111-1');
+  });
+
+  it('reads guest names and booking numbers from the stored analysis.groups shape', () => {
+    const storedGroups = [
+      {
+        ...quoteAnalysis.groups[0]!,
+        id: 'r_1',
+        stayId: 'stay-a',
+        quantity: 1,
+        guestNames: ['Ada Example'],
+        confirmationNumber: '11111111-1',
+      },
+      {
+        ...quoteAnalysis.groups[0]!,
+        id: 'r_2',
+        stayId: 'stay-a',
+        quantity: 1,
+        guestNames: ['Bea Example'],
+        confirmationNumber: '22222222-1',
+      },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis,
+      groups: storedGroups as QuoteAnalysis['groups'],
+      luna: {
+        workflow: 'quote',
+        flags: [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    });
+    expect(stayAskGuests(session, 'stay-a')).toEqual([
+      { name: 'Ada Example', confirmationNumber: '11111111-1' },
+      { name: 'Bea Example', confirmationNumber: '22222222-1' },
+    ]);
+  });
+
+  it('pairs luna names with booking numbers stored on analysis.groups', () => {
+    const storedGroups = [
+      {
+        ...quoteAnalysis.groups[0]!,
+        id: 'r_1',
+        stayId: 'stay-a',
+        quantity: 1,
+        confirmationNumber: '11111111-1',
+      },
+      {
+        ...quoteAnalysis.groups[0]!,
+        id: 'r_2',
+        stayId: 'stay-a',
+        quantity: 1,
+        confirmationNumber: '22222222-1',
+      },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis,
+      groups: storedGroups as QuoteAnalysis['groups'],
+      luna: {
+        workflow: 'quote',
+        flags: [],
+        groups: [
+          {
+            arrival: '2026-11-12',
+            departure: '2026-11-14',
+            rooms: 1,
+            adultsPerRoom: 1,
+            childAges: [],
+            board: 'bb',
+            roomPreference: 'standard king',
+            guestNames: ['Ada Example'],
+            stayId: 'stay-a',
+          },
+          {
+            arrival: '2026-11-12',
+            departure: '2026-11-14',
+            rooms: 1,
+            adultsPerRoom: 1,
+            childAges: [],
+            board: 'bb',
+            roomPreference: 'standard king',
+            guestNames: ['Bea Example'],
+            stayId: 'stay-a',
+          },
+        ],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    });
+    expect(stayAskGuests(session, 'stay-a')).toEqual([
+      { name: 'Ada Example', confirmationNumber: '11111111-1' },
+      { name: 'Bea Example', confirmationNumber: '22222222-1' },
+    ]);
+  });
+
+  it('keeps each split child its guest after a stored rebuild overlays the room edit', () => {
+    const storedGroups = [
+      {
+        ...quoteAnalysis.groups[0]!,
+        id: 'r_1',
+        stayId: 'stay-a',
+        quantity: 1,
+        guestNames: ['Ada Example'],
+        confirmationNumber: '11111111-1',
+      },
+      {
+        ...quoteAnalysis.groups[0]!,
+        id: 'r_2',
+        stayId: 'stay-a',
+        quantity: 1,
+        guestNames: ['Bea Example'],
+        confirmationNumber: '22222222-1',
+      },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis,
+      groups: storedGroups as QuoteAnalysis['groups'],
+      luna: {
+        workflow: 'quote',
+        flags: [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+      },
+    });
+    const split = reduceQuoteSession(session, { type: 'split_stay', stayId: 'stay-a', token: 'abc' });
+    const storedAgain = analysisReady(session.analysis!);
+    const overlaid = { ...storedAgain, groups: overlayRememberedGroups(storedAgain.groups, split.groups) };
+    expect(stayAskGuests(overlaid, 's_abc_0')).toEqual([{ name: 'Ada Example', confirmationNumber: '11111111-1' }]);
+    expect(stayAskGuests(overlaid, 's_abc_1')).toEqual([{ name: 'Bea Example', confirmationNumber: '22222222-1' }]);
+  });
+
+  it('remaps a dinner allowance onto the child room ids on split', () => {
+    const session = {
+      ...twoGuestStay(2, [{ name: 'Ada Example' }, { name: 'Bea Example' }]),
+      staffHeader: {
+        ...twoGuestStay(2, [{ name: 'Ada Example' }, { name: 'Bea Example' }]).staffHeader,
+        dinnerAllowanceRequired: true,
+        dinnerAllowanceGroupIds: ['g1'],
+      },
+    };
+    const split = reduceQuoteSession(session, { type: 'split_stay', stayId: 'stay-a', token: 'abc' });
+    expect(split.staffHeader.dinnerAllowanceGroupIds).toEqual(['g1', 'r_abc_0_0', 'r_abc_1_0']);
+  });
+
+  it('keeps each stay its action after a remove shifts the room order', () => {
+    const session = analysisReady({
+      intent: 'quote',
+      groups: [
+        { ...quoteAnalysis.groups[0]!, id: 'g1', stayId: 'stay-a' },
+        {
+          ...quoteAnalysis.groups[0]!,
+          id: 'g2',
+          stayId: 'stay-b',
+          arrivalDate: '2026-12-01',
+          departureDate: '2026-12-03',
+        },
+      ],
+      secondaryAsks: [],
+      alternatives: [],
+      luna: {
+        workflow: 'quote',
+        flags: [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [
+          { kind: 'quote', groupIndexes: [0], note: '' },
+          { kind: 'amend', groupIndexes: [1], note: '' },
+        ],
+      },
+    });
+    expect(stayAskAction(session, 'stay-a')).toBe('quote');
+    expect(stayAskAction(session, 'stay-b')).toBe('amend');
+    const removed = reduceQuoteSession(session, { type: 'remove_stay', stayId: 'stay-a' });
+    expect(stayAskAction(removed, 'stay-b')).toBe('amend');
+  });
+
+  it('carries the source stay action onto split children', () => {
+    const session = analysisReady({
+      ...quoteAnalysis,
+      groups: [
+        {
+          ...quoteAnalysis.groups[0]!,
+          stayId: 'stay-a',
+          quantity: 2,
+          guestNames: ['Ada Example', 'Bea Example'],
+        },
+      ] as QuoteAnalysis['groups'],
+      luna: {
+        workflow: 'quote',
+        flags: [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }],
+      },
+    });
+    expect(stayAskAction(session, 'stay-a')).toBe('booking');
+    const split = reduceQuoteSession(session, { type: 'split_stay', stayId: 'stay-a', token: 'abc' });
+    expect(stayAskAction(split, 's_abc_0')).toBe('booking');
+    expect(stayAskAction(split, 's_abc_1')).toBe('booking');
   });
 });

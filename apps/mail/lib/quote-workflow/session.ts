@@ -153,12 +153,40 @@ export type SplitStayAction = { type: 'split_stay'; stayId: string; token: strin
 
 type LunaStayGroup = LunaAnalysisWire['groups'][number] & { confirmationNumber?: string | null };
 
+/** Extra fields a stored read and a pane split already put on a room row. Not on the published StayGroupRequirement type. */
+type StayAskRow = StayGroupRequirement & {
+  guestNames?: string[];
+  confirmationNumber?: string | null;
+  stayAskKind?: StayAskAction;
+};
+
 function lunaStayGroups(session: Pick<QuoteSession, 'analysis'>): LunaStayGroup[] {
   return (session.analysis?.luna?.groups ?? []) as LunaStayGroup[];
 }
 
+function stayAskRows(session: QuoteSession, stayId: string): StayAskRow[] {
+  return session.groups.filter((group) => stayIdOf(group) === stayId) as StayAskRow[];
+}
+
+function trimmedConfirmation(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function guestsFromNamed(
+  names: string[],
+  confirmation: string | null,
+): StayAskGuest[] {
+  const cleaned = names.map((name) => name.trim()).filter((name) => name.length > 0);
+  return cleaned.map((name, index) => ({
+    name,
+    confirmationNumber: cleaned.length === 1 || index === 0 ? confirmation : null,
+  }));
+}
+
 function lunaGroupsMatchingStay(session: QuoteSession, stayId: string): LunaStayGroup[] {
-  const rows = session.groups.filter((group) => stayIdOf(group) === stayId);
+  const rows = stayAskRows(session, stayId);
   const luna = lunaStayGroups(session);
   const byId = luna.filter((group) => group.stayId === stayId);
   if (byId.length) return byId;
@@ -172,21 +200,22 @@ function lunaGroupsMatchingStay(session: QuoteSession, stayId: string): LunaStay
   return [];
 }
 
-/** Named guests on this stay, each with the confirmation written for them when the analysis carried it. */
+/**
+ * Named guests on this stay. A stored read puts names and booking numbers on analysis.groups (the session rows).
+ * A live analysis puts names on luna.groups. Split children keep the assignment on the room row so it round-trips
+ * with the pane edit.
+ */
 export function stayAskGuests(session: QuoteSession, stayId: string): StayAskGuest[] {
-  const guests: StayAskGuest[] = [];
-  for (const group of lunaGroupsMatchingStay(session, stayId)) {
-    const names = group.guestNames.filter((name) => name.trim().length > 0);
-    const confirmation = group.confirmationNumber?.trim() || null;
-    if (!names.length) continue;
-    names.forEach((name) => {
-      guests.push({
-        name,
-        confirmationNumber: names.length === 1 ? confirmation : null,
-      });
-    });
-  }
-  return guests;
+  const rows = stayAskRows(session, stayId);
+  const luna = lunaGroupsMatchingStay(session, stayId);
+  const fromRows = rows.flatMap((row) => guestsFromNamed(row.guestNames ?? [], trimmedConfirmation(row.confirmationNumber)));
+  if (fromRows.length) return fromRows;
+  return luna.flatMap((group, index) =>
+    guestsFromNamed(
+      group.guestNames,
+      trimmedConfirmation(group.confirmationNumber) ?? trimmedConfirmation(rows[index]?.confirmationNumber),
+    ),
+  );
 }
 
 function stayAskActionFromTask(kind: LunaAnalysisWire['tasks'][number]['kind']): StayAskAction | null {
@@ -197,12 +226,22 @@ function stayAskActionFromTask(kind: LunaAnalysisWire['tasks'][number]['kind']):
   return null;
 }
 
-/** The action this stay card should show. Tasks for the stay's rows win; otherwise the mail-level workflow. */
+/** Stay ids a task named, taken from the analysis groups at those indexes so a later split or remove cannot retarget it. */
+function taskStayIds(session: QuoteSession, task: LunaAnalysisWire['tasks'][number]): string[] {
+  const analysisGroups = session.analysis?.groups ?? [];
+  return task.groupIndexes.flatMap((index) => {
+    const group = analysisGroups[index];
+    return group ? [stayIdOf(group)] : [];
+  });
+}
+
+/** The action this stay card should show. Tasks bind by stay id; split children inherit that link on the room row. */
 export function stayAskAction(session: QuoteSession, stayId: string): StayAskAction {
-  const indexes = session.groups.flatMap((group, index) => (stayIdOf(group) === stayId ? [index] : []));
+  const inherited = stayAskRows(session, stayId).find((row) => row.stayAskKind)?.stayAskKind;
+  if (inherited) return inherited;
   const tasks = session.analysis?.luna?.tasks ?? [];
   for (const task of tasks) {
-    if (!task.groupIndexes.some((index) => indexes.includes(index))) continue;
+    if (!taskStayIds(session, task).includes(stayId)) continue;
     const mapped = stayAskActionFromTask(task.kind);
     if (mapped) return mapped;
   }
@@ -263,19 +302,29 @@ export function splitStayCards(
   session: QuoteSession,
   stayId: string,
   token: string,
-): { groups: StayGroupRequirement[]; lunaGroups: LunaStayGroup[] } | null {
+): { groups: StayGroupRequirement[]; lunaGroups: LunaStayGroup[]; pairs: Array<readonly [string, string]> } | null {
   const rows = session.groups.filter((group) => stayIdOf(group) === stayId);
   if (!rows.length) return null;
   const guests = stayAskGuests(session, stayId);
   const units = allocateSplitRooms(rows, guests.length);
   if (!units) return null;
-  const childRows: StayGroupRequirement[] = [];
+  const askKind = stayAskAction(session, stayId);
+  const childRows: StayAskRow[] = [];
   const childLuna: LunaStayGroup[] = [];
+  const pairs: Array<readonly [string, string]> = [];
   guests.forEach((guest, guestIndex) => {
     const childStayId = `s_${token}_${guestIndex}`;
     const roomRows = units[guestIndex]!;
     roomRows.forEach((row, rowIndex) => {
-      childRows.push({ ...copyRow(row, `r_${token}_${guestIndex}_${rowIndex}`, childStayId), quantity: 1 });
+      const child: StayAskRow = {
+        ...copyRow(row, `r_${token}_${guestIndex}_${rowIndex}`, childStayId),
+        quantity: 1,
+        guestNames: [guest.name],
+        confirmationNumber: guest.confirmationNumber,
+        stayAskKind: askKind,
+      };
+      childRows.push(child);
+      pairs.push([row.id, child.id]);
     });
     const first = roomRows[0]!;
     childLuna.push({
@@ -299,7 +348,7 @@ export function splitStayCards(
   ];
   const sourceLuna = lunaGroupsMatchingStay(session, stayId);
   const lunaGroups = [...lunaStayGroups(session).filter((group) => !sourceLuna.includes(group)), ...childLuna];
-  return { groups, lunaGroups };
+  return { groups, lunaGroups, pairs };
 }
 
 /** A random part for the ids of rows and stays that a structural edit creates. The reducer takes it as input. */
@@ -2009,7 +2058,7 @@ export function reduceQuoteSession(
             }
           : session;
       const sourceRows = session.groups.filter((group) => stayIdOf(group) === action.stayId);
-      return editStays(next, split.groups, dateKeysOf(sourceRows));
+      return editStays(withDinnerCopies(next, split.pairs), split.groups, dateKeysOf(sourceRows));
     }
     case 'restore_stay': {
       const { removal } = action;
