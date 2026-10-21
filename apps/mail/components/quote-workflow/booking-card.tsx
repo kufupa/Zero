@@ -225,6 +225,7 @@ const PREVIEW_SHOT = 'filled.png';
 const SAVED_SHOT = 'saved.png';
 const CREATE_PROVISIONAL_LABEL = 'Create provisional booking';
 const WRITES_OFF_LABEL = 'Booking writes are off — create in HMS';
+const LAB_WRITE_NOTE = 'This write is test-only. Book a real guest in HMS.';
 const textareaClass =
   'outline-hidden w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
 
@@ -653,6 +654,11 @@ export function BookingCards({
           ? 'Preview each room in HMS first, then book it. Click Copy next to any field to paste it by hand instead.'
           : 'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.'}
       </p>
+      {mode === 'lab' ? (
+        <p role="note" className="text-[11.5px] text-amber-900">
+          {LAB_WRITE_NOTE}
+        </p>
+      ) : null}
       {roomTypeChanged && draft.draft.rateCheck.length > 0 ? (
         <Notice tone="warn">{ROOM_TYPE_CHANGED_COPY}</Notice>
       ) : (

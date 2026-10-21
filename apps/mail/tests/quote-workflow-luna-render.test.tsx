@@ -157,7 +157,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.getByLabelText('Stay guests').textContent).toContain('Ada Example');
     expect(screen.getByLabelText('Stay guests').textContent).toContain('57291630-1');
     expect(screen.queryByText('Agency & company')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Prepare PDF + reply' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Make quote' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Find this booking' }));
     expect(onSelectStayKey).toHaveBeenCalledWith('stay-a');
   });

@@ -927,12 +927,14 @@ describe('booking card save modes and the note fields', () => {
     const lab = paneClient({ mode: () => 'lab' });
     const { unmount } = render(<BookingCards draft={draftReady()} paneSave={lab.client} />);
     expect(screen.getAllByRole('button', { name: 'Create provisional booking' })).toHaveLength(2);
+    expect(screen.getByRole('note').textContent).toBe('This write is test-only. Book a real guest in HMS.');
     expect(screen.queryByRole('button', { name: 'Book (lab test only)' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
     unmount();
     const on = paneClient({ mode: () => 'on' });
     render(<BookingCards draft={draftReady()} paneSave={on.client} />);
     expect(screen.getAllByRole('button', { name: 'Create provisional booking' })).toHaveLength(2);
+    expect(screen.queryByText('This write is test-only. Book a real guest in HMS.')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Book (lab test only)' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
   });
@@ -946,6 +948,7 @@ describe('booking card save modes and the note fields', () => {
     const writesOff = screen.getAllByRole('button', { name: 'Booking writes are off — create in HMS' });
     expect(writesOff).toHaveLength(2);
     expect(writesOff.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    expect(screen.queryByText('This write is test-only. Book a real guest in HMS.')).toBeNull();
     expect(screen.queryByText('Coming soon')).toBeNull();
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
