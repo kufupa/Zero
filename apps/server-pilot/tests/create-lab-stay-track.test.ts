@@ -1,10 +1,51 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { fillTrackBeforeGuarantee } from '../tooling/playwright-quote/create-lab-stay.mjs';
+import * as cheerio from 'cheerio';
+import {
+  fillTrackBeforeGuarantee,
+  inspectFieldValidation,
+  pickTrackLookup,
+} from '../tooling/playwright-quote/create-lab-stay.mjs';
 import {
   assertTrackReadyForGuarantee,
   matchTrackRow,
   parseTrackLookupText,
 } from '../tooling/playwright-quote/create-request.mjs';
+
+type CheerioNode = { type?: string; attribs?: Record<string, string>; parent?: CheerioNode | null };
+
+function elFromCheerio($: cheerio.CheerioAPI, node: CheerioNode | undefined) {
+  if (!node || node.type !== 'tag') return null;
+  const attribs = node.attribs ?? {};
+  const api = {
+    className: attribs.class || '',
+    value: attribs.value || '',
+    style: { cssText: attribs.style || '', display: /display\s*:\s*none/i.test(attribs.style || '') ? 'none' : '' },
+    offsetParent: null as object | null,
+    getClientRects: () => [],
+    getAttribute: (name: string) => (Object.hasOwn(attribs, name) ? attribs[name] : null),
+    hasAttribute: (name: string) => Object.hasOwn(attribs, name),
+    closest: (sel: string) => {
+      const found = $(node as never).closest(sel).get(0) as CheerioNode | undefined;
+      return found ? elFromCheerio($, found) : null;
+    },
+    querySelector: (sel: string) => {
+      const found = $(node as never).find(sel).get(0) as CheerioNode | undefined;
+      return found ? elFromCheerio($, found) : null;
+    },
+    parentElement: node.parent && node.parent.type === 'tag' ? elFromCheerio($, node.parent) : null,
+  };
+  return api;
+}
+
+function documentFromHtml(html: string) {
+  const $ = cheerio.load(html);
+  return {
+    querySelector: (sel: string) => {
+      const found = $(sel).get(0) as CheerioNode | undefined;
+      return found ? elFromCheerio($, found) : null;
+    },
+  };
+}
 
 type FixtureLocator = {
   first: () => FixtureLocator;
@@ -20,6 +61,7 @@ function fixtureTrackPage(opts: {
   validation: { invalid: boolean; messages: string[]; value: string };
   averageRate: string;
   rowTexts: string[];
+  rowWaitError?: string;
 }) {
   const loc = (sel = ''): FixtureLocator => {
     const node: FixtureLocator = {
@@ -27,7 +69,11 @@ function fixtureTrackPage(opts: {
       last: () => node,
       locator: (next) => loc(`${sel} >> ${next}`),
       count: async () => 1,
-      waitFor: async () => undefined,
+      waitFor: async () => {
+        if (opts.rowWaitError && /boundlist-item|x-grid-row/.test(sel)) {
+          throw new Error(opts.rowWaitError);
+        }
+      },
       click: async () => {
         opts.events.push(sel.includes('trigger') ? 'trigger-click' : 'other-click');
       },
@@ -113,5 +159,35 @@ describe('create-lab-stay track lookup', () => {
     expect(events.indexOf('log')).toBeLessThan(events.indexOf('row-click:BAR:Best Available'));
     const validationLog = writes.some((chunk) => chunk.includes('trackValidation') && chunk.includes('Invalid value'));
     expect(validationLog).toBe(true);
+  });
+
+  it('valid field with a hidden invalid icon and empty qtip is not an error', () => {
+    const document = documentFromHtml(`
+      <table class="x-form-item">
+        <tr>
+          <td>
+            <input name="track" class="x-form-text" value="BAR" aria-invalid="false" data-errorqtip="">
+            <div class="x-form-invalid-icon" style="display:none" data-errorqtip="" data-qtip=""></div>
+          </td>
+        </tr>
+      </table>
+    `);
+    expect(inspectFieldValidation('track', document)).toEqual({
+      invalid: false,
+      messages: [],
+      value: 'BAR',
+    });
+  });
+
+  it('throws track_lookup_timeout when no lookup row becomes visible', async () => {
+    const events: string[] = [];
+    const page = fixtureTrackPage({
+      events,
+      validation: { invalid: false, messages: [], value: 'BAR' },
+      averageRate: '1250.00',
+      rowTexts: [],
+      rowWaitError: 'Timeout 5000ms exceeded.',
+    });
+    await expect(pickTrackLookup(page, 'BAR')).rejects.toThrow(/track_lookup_timeout:Timeout 5000ms exceeded/);
   });
 });

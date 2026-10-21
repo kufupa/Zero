@@ -159,26 +159,50 @@ async function clickTrackLookupRow(page, picked) {
   }, picked);
 }
 
+export function inspectFieldValidation(field, document = globalThis.document) {
+  const visible = (el) => {
+    if (!el) return false;
+    const attrStyle = typeof el.getAttribute === 'function' ? el.getAttribute('style') || '' : '';
+    const cssText = el.style ? String(el.style.cssText || '') : '';
+    const display = el.style && el.style.display ? String(el.style.display) : '';
+    const style = `${attrStyle} ${cssText} ${display ? `display:${display}` : ''}`;
+    if (/display\s*:\s*none/i.test(style) || /visibility\s*:\s*hidden/i.test(style)) return false;
+    if (typeof el.hasAttribute === 'function' && el.hasAttribute('hidden')) return false;
+    const cls = String(el.className || '');
+    if (/\bx-hide-display\b|\bx-hide-offsets\b|\bx-hidden\b/.test(cls)) return false;
+    if (el.offsetParent) return true;
+    if (typeof el.getClientRects === 'function') {
+      const rects = el.getClientRects();
+      if (rects && rects.length) return true;
+    }
+    return false;
+  };
+  const input = document.querySelector(`input[name="${field}"]`);
+  if (!input) return { invalid: true, messages: ['missing'], value: '' };
+  const wrap = input.closest('.x-form-item, .x-field, table') || input.parentElement;
+  const icon = wrap?.querySelector?.('.x-form-invalid-icon');
+  const iconVisible = visible(icon);
+  const markedInvalid =
+    input.getAttribute('aria-invalid') === 'true'
+    || /(^|\s)x-form-invalid(\s|$)/.test(String(input.className || ''))
+    || /(^|\s)x-form-invalid(\s|$)/.test(String(wrap?.className || ''));
+  const messages = [
+    input.getAttribute('data-errorqtip'),
+    iconVisible
+      ? icon.getAttribute('data-errorqtip') || icon.getAttribute('data-qtip') || icon.getAttribute('qtip')
+      : '',
+    input.getAttribute('aria-invalid') === 'true' ? 'aria-invalid' : '',
+    markedInvalid ? 'x-form-invalid' : '',
+  ].filter((msg) => msg && String(msg).trim());
+  return {
+    invalid: Boolean(markedInvalid || iconVisible),
+    messages,
+    value: (input.value || '').trim(),
+  };
+}
+
 export async function readFieldValidation(page, name) {
-  return page.evaluate((field) => {
-    const input = document.querySelector(`input[name="${field}"]`);
-    if (!input) return { invalid: true, messages: ['missing'], value: '' };
-    const wrap = input.closest('.x-form-item, .x-field, table') || input.parentElement;
-    const icon = wrap?.querySelector?.('.x-form-invalid-icon, .x-form-invalid');
-    const messages = [
-      input.getAttribute('data-errorqtip'),
-      icon?.getAttribute?.('data-errorqtip') || icon?.getAttribute?.('data-qtip') || icon?.getAttribute?.('qtip'),
-      input.getAttribute('aria-invalid') === 'true' ? 'aria-invalid' : '',
-      /x-form-invalid/.test(input.className || '') || /x-form-invalid/.test(wrap?.className || '') ? 'x-form-invalid' : '',
-    ].filter(Boolean);
-    const invalid = Boolean(
-      input.getAttribute('aria-invalid') === 'true'
-        || /x-form-invalid/.test(input.className || '')
-        || /x-form-invalid/.test(wrap?.className || '')
-        || icon,
-    );
-    return { invalid, messages, value: (input.value || '').trim() };
-  }, name);
+  return page.evaluate(inspectFieldValidation, name);
 }
 
 export async function readAverageRate(page) {
@@ -196,8 +220,16 @@ export async function pickTrackLookup(page, want) {
     .first();
   if (!(await trigger.count())) throw new Error('track_trigger_missing');
   await trigger.click();
-  const list = page.locator('.x-boundlist:visible, .x-window:visible .x-grid-view').last();
-  if (typeof list.waitFor === 'function') await list.waitFor({ timeout: 5000 }).catch(() => {});
+  const row = page
+    .locator(
+      '.x-boundlist:visible .x-boundlist-item:visible, .x-window:visible .x-grid-row:visible, .x-window:visible .x-grid-data-row:visible',
+    )
+    .first();
+  try {
+    await row.waitFor({ timeout: 5000 });
+  } catch (error) {
+    throw new Error(`track_lookup_timeout:${error && error.message ? error.message : error}`);
+  }
   const texts = await listTrackLookupRows(page);
   const rows = texts.map((text) => parseTrackLookupText(text)).filter(Boolean);
   process.stderr.write(`${JSON.stringify({ phase: 'trackLookup', rowCount: rows.length, rows })}\n`);
