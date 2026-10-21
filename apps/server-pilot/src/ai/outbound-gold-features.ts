@@ -61,6 +61,8 @@ export type OutboundGoldFixtureRow = {
   letterId?: string | null;
   quotePdfId?: string | null;
   letter?: Omit<GoldLetterInput, 'id'> | null;
+  /** All letters for this request. Preferred over repeating `letter`+`cards` per letter. */
+  letters?: GoldLetterInput[];
   cards?: GoldCardInput[];
 };
 
@@ -264,14 +266,25 @@ function letterFieldOk(value: unknown): boolean {
   return value === undefined || value === null || isPlainObject(value);
 }
 
-function cardsFieldOk(value: unknown): boolean {
+function objectArrayFieldOk(value: unknown): boolean {
   if (value === undefined) return true;
   if (!Array.isArray(value)) return false;
   return value.every((item) => isPlainObject(item));
 }
 
-function rowArtifactsOk(row: { letter?: unknown; cards?: unknown }): boolean {
-  return letterFieldOk(row.letter) && cardsFieldOk(row.cards);
+function rowArtifactsOk(row: { letter?: unknown; letters?: unknown; cards?: unknown }): boolean {
+  return letterFieldOk(row.letter) && objectArrayFieldOk(row.letters) && objectArrayFieldOk(row.cards);
+}
+
+function lettersForRow(row: OutboundGoldFixtureRow): GoldLetterInput[] {
+  if (row.letters?.length) {
+    return row.letters.map((item, index) => ({
+      ...item,
+      id: text(item.id) ?? `${row.id}:letter:${index}`,
+    }));
+  }
+  if (!row.letter) return [];
+  return [{ id: text(row.letterId) ?? `${row.id}:letter`, ...row.letter }];
 }
 
 export function parseFixtureJsonl(textValue: string): {
@@ -325,11 +338,9 @@ export function scoreOutboundGoldFixture(
     }
     scoredRows += 1;
     if (text(row.replyId)) withReply += 1;
-    if (text(row.letterId) || row.letter) withLetter += 1;
+    const rowLetters = lettersForRow(row);
+    if (text(row.letterId) || row.letter || rowLetters.length) withLetter += 1;
     if (text(row.quotePdfId)) withQuotePdf += 1;
-    const rowLetters: GoldLetterInput[] = row.letter
-      ? [{ id: text(row.letterId) ?? `${row.id}:letter`, ...row.letter }]
-      : [];
     const coverage = checkLetterCoverage({ letters: rowLetters, cards: row.cards ?? [] });
     letters += coverage.letters;
     lettersCovered += coverage.lettersCovered;

@@ -1,14 +1,12 @@
 /**
- * Outbound-gold EC2 replay (U11b). Writes fixture JSONL for outbound-gold-backtest.ts.
+ * Outbound-gold EC2 replay (U11b). Fixture JSONL for outbound-gold-backtest.ts.
  *
- * Prod replay input: readQuoteAttachments → selectionToAgentPrompt.
- * Cards: extractInboundMail on that selection (U5 stays → pane cards).
- * Vision parity is a reported gap. Do not add vision.
- * No --apply. No HMS write. No email send. Stdout is counts only.
+ * Prod input: readQuoteAttachments → extractInboundMail (vision off).
+ * Pair each inbound with the reply and HRCEN letters sent after it and
+ * before the next inbound. Letter before the request is not its letter.
+ * No --apply. No HMS write. No email. CHECK is not_tested. Stdout is counts.
  *
- * 17 core multi-ask thread ids are not in the repo (l1 S1 aggregates;
- * p2-scope-grok46.md:164). Pass --ids (thread ids, one per line). Expected
- * if checked in: docs/research/2026-10-20-arch-lanes/l1-s1-core-multi-ask-thread-ids.txt
+ * 17 core ids are not in the repo. Pass --ids (thread ids, one per line).
  *
  *   pnpm --dir apps/server-pilot exec tsx scripts/outbound-gold-replay.ts \
  *     --ids <thread-ids.txt> --out <fixture.jsonl> --misses <misses.jsonl>
@@ -16,12 +14,10 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { and, desc, eq, sql } from 'drizzle-orm';
-import { selectionToAgentPrompt } from '../src/ai/agent-pane-adapter.js';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { extractInboundMail } from '../src/ai/extraction/extract.js';
 import type { MailExtractionPayload, MailKind } from '../src/ai/extraction/schema.js';
 import {
-  OUTBOUND_GOLD_PROD_INPUT,
   OUTBOUND_GOLD_VISION_PARITY,
   checkLetterCoverage,
   parseLetterFields,
@@ -32,7 +28,6 @@ import {
 } from '../src/ai/outbound-gold-features.js';
 import { resolveAdapter } from '../src/ai/quote-workflow-analyse-selection.js';
 import {
-  THREAD_CONFIRMATION_AMBIGUOUS,
   createArtifactReader,
   loadSyncedQuoteSelectionFromMailbox,
   type QuoteAttachmentRow,
@@ -40,6 +35,9 @@ import {
 } from '../src/ai/quote-workflow-synced-selection.js';
 import { closeDb, getDb, type DB } from '../src/db/client.js';
 import { attachment, mailboxTransport, message } from '../src/db/schema/mail.js';
+
+export const REPLAY_PROD_INPUT = 'readQuoteAttachments → extractInboundMail' as const;
+export const REPLAY_CHECK = 'not_tested' as const;
 
 const THREAD_ID_RE = /^[A-Za-z0-9._:-]+$/;
 const LETTER_FILE_RE = /^HRCEN_Confirmation_Letter_/i;
@@ -57,6 +55,8 @@ export type ReplayTrigger = {
   transportId: string;
   fromAddress: string;
   mailbox: string | null;
+  at: Date;
+  until: Date | null;
 };
 export type ReplayArtifacts = {
   letters: GoldLetterInput[];
@@ -72,31 +72,28 @@ export type ReplayStdout = {
   lettersCovered: number;
   lettersUncovered: number;
   cards: number;
-  checkRows: number;
-  checkPass: boolean;
-  wroteBeforePick: number;
+  check: typeof REPLAY_CHECK;
   quoteThreads: number;
   visionParity: typeof OUTBOUND_GOLD_VISION_PARITY;
-  prodInput: typeof OUTBOUND_GOLD_PROD_INPUT;
+  prodInput: typeof REPLAY_PROD_INPUT;
   scoreKind: 'behaviour_check' | 'rate';
   label: string;
   jsonlErrors: number;
 };
 export type ReplayDeps = {
-  loadTrigger: (threadId: string) => Promise<ReplayTrigger | null>;
+  loadRequests: (threadId: string) => Promise<ReplayTrigger[]>;
   loadSelection: typeof loadSyncedQuoteSelectionFromMailbox;
   loadArtifacts: (trigger: ReplayTrigger) => Promise<ReplayArtifacts>;
   extract: (input: {
     selection: SyncedQuoteSelection;
-    prompt: string;
     messageId: string;
     fromAddress: string;
     mailbox: string | null;
   }) => Promise<ReplayExtractResult>;
-  toAgentPrompt?: typeof selectionToAgentPrompt;
 };
 
 type ReadOnlyDb = Pick<DB, 'transaction'>;
+type TimedRow = { at: Date };
 
 function codedError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code });
@@ -112,6 +109,22 @@ export function isConfirmationLetterFilename(filename: string): boolean {
 
 export function isQuotePdfFilename(filename: string): boolean {
   return /quote/i.test(fileName(filename)) && !isConfirmationLetterFilename(filename);
+}
+
+/** Letter/reply must be after this request and before the next inbound. */
+export function inRequestWindow(eventAt: Date, requestAt: Date, until: Date | null): boolean {
+  const time = eventAt.getTime();
+  if (!(time > requestAt.getTime())) return false;
+  if (until && !(time < until.getTime())) return false;
+  return true;
+}
+
+export function selectRequestOutbound<T extends TimedRow>(
+  rows: readonly T[],
+  requestAt: Date,
+  until: Date | null,
+): T[] {
+  return rows.filter((row) => inRequestWindow(row.at, requestAt, until));
 }
 
 export function parseOutboundGoldReplayArgs(argv: readonly string[]): ReplayCli {
@@ -189,11 +202,18 @@ function jsonl(rows: readonly object[]): string {
   return rows.length ? `${rows.map((row) => JSON.stringify(row)).join('\n')}\n` : '';
 }
 
+function inboundAt(row: { receivedAt: Date | null; sentAt: Date | null; createdAt: Date }): Date {
+  return row.receivedAt ?? row.sentAt ?? row.createdAt;
+}
+
+function outboundAt(row: { sentAt: Date | null; receivedAt: Date | null; createdAt: Date }): Date {
+  return row.sentAt ?? row.receivedAt ?? row.createdAt;
+}
+
 export async function runOutboundGoldReplay(
   threadIds: readonly string[],
   deps: ReplayDeps,
 ): Promise<{ rows: OutboundGoldFixtureRow[]; misses: ReplayMiss[]; summary: ReplayStdout }> {
-  const toAgentPrompt = deps.toAgentPrompt ?? selectionToAgentPrompt;
   const rows: OutboundGoldFixtureRow[] = [];
   const misses: ReplayMiss[] = [];
   let covered = 0;
@@ -202,88 +222,69 @@ export async function runOutboundGoldReplay(
   let lettersCovered = 0;
   let lettersUncovered = 0;
   let cards = 0;
-  let checkRows = 0;
   let quoteThreads = 0;
-  const wroteBeforePick = 0;
+  let units = 0;
 
   for (const threadId of threadIds) {
-    const trigger = await deps.loadTrigger(threadId);
-    if (!trigger) {
+    const requests = await deps.loadRequests(threadId);
+    if (!requests.length) {
+      units += 1;
       misses.push({ id: threadId, reason: 'thread_not_found' });
       continue;
     }
-    const selection = await deps.loadSelection({
-      transportId: trigger.transportId,
-      messageId: trigger.messageId,
-      includeThreadState: true,
-      includeVisionImages: false,
-      trackVisionImages: true,
-    });
-    if (!selection) {
-      misses.push({ id: threadId, reason: 'selection_not_found' });
-      continue;
-    }
-    const prompt = toAgentPrompt(selection);
-    const extracted = await deps.extract({
-      selection,
-      prompt,
-      messageId: trigger.messageId,
-      fromAddress: trigger.fromAddress,
-      mailbox: trigger.mailbox,
-    });
-    if (!extracted.ok) {
-      misses.push({ id: threadId, reason: 'extract_failed' });
-      continue;
-    }
 
-    const threadCards = cardsFromPayload(extracted.payload);
-    const artifacts = await deps.loadArtifacts(trigger);
-    const letters = artifacts.letters.map(letterTruth);
-    if (artifacts.quotePdfId) quoteThreads += 1;
-    const noConf =
-      extracted.payload.confirmationNumbers.length === 0 && !selection.threadConfirmation?.confirmation;
-    const ambiguous = selection.threadConfirmation?.reason === THREAD_CONFIRMATION_AMBIGUOUS;
-    if (extracted.kind === 'amendment' && (noConf || ambiguous)) checkRows += 1;
-
-    const coverage = checkLetterCoverage({ letters, cards: threadCards });
-    distinctDateSets += coverage.distinctDateSets;
-    distinctLetters += coverage.letters;
-    lettersCovered += coverage.lettersCovered;
-    lettersUncovered += coverage.lettersUncovered;
-    cards += coverage.cards;
-
-    if (!letters.length) misses.push({ id: threadId, reason: 'no_letter' });
-    else if (!coverage.pass) {
-      misses.push({
-        id: threadId,
-        reason: coverage.lettersUncovered > 0 ? 'uncovered_letter' : 'duplicate_date_set',
+    for (const trigger of requests) {
+      units += 1;
+      const selection = await deps.loadSelection({
+        transportId: trigger.transportId,
+        messageId: trigger.messageId,
+        includeThreadState: true,
+        includeVisionImages: false,
+        trackVisionImages: true,
       });
-    } else covered += 1;
+      if (!selection) {
+        misses.push({ id: trigger.messageId, reason: 'selection_not_found' });
+        continue;
+      }
+      const extracted = await deps.extract({
+        selection,
+        messageId: trigger.messageId,
+        fromAddress: trigger.fromAddress,
+        mailbox: trigger.mailbox,
+      });
+      if (!extracted.ok) {
+        misses.push({ id: trigger.messageId, reason: 'extract_failed' });
+        continue;
+      }
 
-    if (!letters.length) {
+      const requestCards = cardsFromPayload(extracted.payload);
+      const artifacts = await deps.loadArtifacts(trigger);
+      const letters = artifacts.letters.map(letterTruth);
+      if (artifacts.quotePdfId) quoteThreads += 1;
+
+      const coverage = checkLetterCoverage({ letters, cards: requestCards });
+      distinctDateSets += coverage.distinctDateSets;
+      distinctLetters += coverage.letters;
+      lettersCovered += coverage.lettersCovered;
+      lettersUncovered += coverage.lettersUncovered;
+      cards += coverage.cards;
+
+      if (!letters.length) misses.push({ id: trigger.messageId, reason: 'no_letter' });
+      else if (!coverage.pass) {
+        misses.push({
+          id: trigger.messageId,
+          reason: coverage.lettersUncovered > 0 ? 'uncovered_letter' : 'duplicate_date_set',
+        });
+      } else covered += 1;
+
       rows.push({
-        id: threadId,
+        id: trigger.messageId,
         replyId: artifacts.replyId,
-        letterId: null,
+        letterId: letters[0]?.id ?? null,
         quotePdfId: artifacts.quotePdfId,
         letter: null,
-        cards: threadCards,
-      });
-      continue;
-    }
-    for (const letter of letters) {
-      rows.push({
-        id: `${threadId}:${letter.id}`,
-        replyId: artifacts.replyId,
-        letterId: letter.id,
-        quotePdfId: artifacts.quotePdfId,
-        letter: {
-          guest: letter.guest,
-          conf: letter.conf,
-          arrival: letter.arrival,
-          filename: letter.filename,
-        },
-        cards: threadCards,
+        letters,
+        cards: requestCards,
       });
     }
   }
@@ -293,7 +294,7 @@ export async function runOutboundGoldReplay(
     rows,
     misses,
     summary: {
-      n: threadIds.length,
+      n: units,
       covered,
       missed: misses.length,
       distinctDateSets,
@@ -301,12 +302,10 @@ export async function runOutboundGoldReplay(
       lettersCovered,
       lettersUncovered,
       cards,
-      checkRows,
-      checkPass: wroteBeforePick === 0,
-      wroteBeforePick,
+      check: REPLAY_CHECK,
       quoteThreads,
       visionParity: OUTBOUND_GOLD_VISION_PARITY,
-      prodInput: OUTBOUND_GOLD_PROD_INPUT,
+      prodInput: REPLAY_PROD_INPUT,
       scoreKind: score.scoreKind,
       label: score.label,
       jsonlErrors: 0,
@@ -322,7 +321,7 @@ async function readOnly<T>(db: ReadOnlyDb, run: (tx: DB) => Promise<T>): Promise
   });
 }
 
-export async function loadReplayTrigger(db: ReadOnlyDb, threadId: string): Promise<ReplayTrigger | null> {
+export async function loadReplayRequests(db: ReadOnlyDb, threadId: string): Promise<ReplayTrigger[]> {
   return readOnly(db, async (tx) => {
     const rows = await tx
       .select({
@@ -331,15 +330,29 @@ export async function loadReplayTrigger(db: ReadOnlyDb, threadId: string): Promi
         transportId: message.transportId,
         fromAddress: message.fromAddress,
         mailbox: mailboxTransport.email,
+        receivedAt: message.receivedAt,
+        sentAt: message.sentAt,
+        createdAt: message.createdAt,
       })
       .from(message)
       .leftJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
       .where(and(eq(message.threadId, threadId), eq(message.direction, 'inbound')))
-      .orderBy(desc(message.receivedAt), desc(message.createdAt));
-    const first = rows[0];
-    if (!first) return null;
-    if (new Set(rows.map((row) => row.transportId)).size > 1) return null;
-    return first;
+      .orderBy(asc(message.receivedAt), asc(message.createdAt), asc(message.id));
+    if (!rows.length) return [];
+    if (new Set(rows.map((row) => row.transportId)).size > 1) return [];
+    return rows.map((row, index) => {
+      const at = inboundAt(row);
+      const next = rows[index + 1];
+      return {
+        threadId: row.threadId,
+        messageId: row.messageId,
+        transportId: row.transportId,
+        fromAddress: row.fromAddress,
+        mailbox: row.mailbox,
+        at,
+        until: next ? inboundAt(next) : null,
+      };
+    });
   });
 }
 
@@ -361,6 +374,9 @@ export async function loadReplayArtifacts(
         contentId: attachment.contentId,
         sha256: attachment.sha256,
         subject: message.subject,
+        sentAt: message.sentAt,
+        receivedAt: message.receivedAt,
+        createdAt: message.createdAt,
       })
       .from(attachment)
       .innerJoin(message, eq(attachment.messageId, message.id))
@@ -372,7 +388,12 @@ export async function loadReplayArtifacts(
         ),
       );
     const replies = await tx
-      .select({ id: message.id })
+      .select({
+        id: message.id,
+        sentAt: message.sentAt,
+        receivedAt: message.receivedAt,
+        createdAt: message.createdAt,
+      })
       .from(message)
       .where(
         and(
@@ -381,12 +402,13 @@ export async function loadReplayArtifacts(
           eq(message.direction, 'outbound'),
         ),
       )
-      .orderBy(desc(message.sentAt), desc(message.createdAt))
-      .limit(1);
-    return { files, replyId: replies[0]?.id ?? null };
+      .orderBy(asc(message.sentAt), asc(message.createdAt), asc(message.id));
+    return { files, replies };
   });
 
-  const letterRows = outbound.files.filter((row) => isConfirmationLetterFilename(row.filename));
+  const timedFiles = outbound.files.map((row) => ({ ...row, at: outboundAt(row) }));
+  const windowFiles = selectRequestOutbound(timedFiles, trigger.at, trigger.until);
+  const letterRows = windowFiles.filter((row) => isConfirmationLetterFilename(row.filename));
   const reader = letterRows.length
     ? createArtifactReader(letterRows as QuoteAttachmentRow[], signal, {
         transportId: trigger.transportId,
@@ -402,16 +424,21 @@ export async function loadReplayArtifacts(
       pdfText: read.text ?? undefined,
     });
   }
+  const reply = selectRequestOutbound(
+    outbound.replies.map((row) => ({ ...row, at: outboundAt(row) })),
+    trigger.at,
+    trigger.until,
+  )[0];
   return {
     letters,
-    replyId: outbound.replyId,
-    quotePdfId: outbound.files.find((row) => isQuotePdfFilename(row.filename))?.id ?? null,
+    replyId: reply?.id ?? null,
+    quotePdfId: windowFiles.find((row) => isQuotePdfFilename(row.filename))?.id ?? null,
   };
 }
 
 function liveDeps(db: ReadOnlyDb, adapter: ReturnType<typeof resolveAdapter>['adapter']): ReplayDeps {
   return {
-    loadTrigger: (threadId) => loadReplayTrigger(db, threadId),
+    loadRequests: (threadId) => loadReplayRequests(db, threadId),
     loadSelection: loadSyncedQuoteSelectionFromMailbox,
     loadArtifacts: (trigger) => loadReplayArtifacts(db, trigger, AbortSignal.timeout(120_000)),
     extract: async (input) => {

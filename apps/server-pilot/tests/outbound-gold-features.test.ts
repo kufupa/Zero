@@ -182,6 +182,32 @@ describe('stdout shape is counts', () => {
     expect(JSON.parse(stdout).jsonlErrors).toBe(1);
   });
 
+  it('counts cards once when two letters share one request row', () => {
+    const scored = scoreOutboundGoldFixture([
+      {
+        id: 'ask-1',
+        letters: [
+          letter({ id: 'letter-a' }),
+          letter({ id: 'letter-b', guest: FIXTURE_GUEST_B, conf: CONF_B, arrival: ARRIVAL_B }),
+        ],
+        cards: [
+          card({ id: 'card-1' }),
+          card({
+            id: 'card-2',
+            arrival: ARRIVAL_B,
+            departure: '2027-02-22',
+            guests: [{ guest: FIXTURE_GUEST_B, conf: CONF_B }],
+          }),
+        ],
+      },
+    ]);
+    expect(scored.letters).toBe(2);
+    expect(scored.lettersCovered).toBe(2);
+    expect(scored.cards).toBe(2);
+    expect(scored.distinctDateSets).toBe(2);
+    expect(scored.pass).toBe(true);
+  });
+
   it('fails two swapped rows that would pass if cards were pooled', () => {
     const scored = scoreOutboundGoldFixture([
       {
