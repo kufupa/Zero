@@ -4,7 +4,10 @@ import {
   quarantineArchiveKey,
   resetS3Storage,
 } from '../src/storage/s3.js';
-import { recoverParseFailureQuarantine } from '../src/mail/ingest/recover-parse-failure.js';
+import {
+  parseRecoverCliArgs,
+  recoverParseFailureQuarantine,
+} from '../src/mail/ingest/recover-parse-failure.js';
 import { candidateMessageIdForPop3Uidl } from '../src/mail/ingest/parse-message.js';
 import { claimIngestUidl } from '../src/mail/ingest/store.js';
 import { fanoutCopyPop3Uidl } from '../src/mail/ingest/fanout.js';
@@ -55,6 +58,17 @@ function quarantine(pop3Uidl: string, reason = 'parse_failure') {
 }
 
 afterEach(() => resetS3Storage());
+
+describe('recover-parse-failure cli', () => {
+  it('rejects --mailbox like --reason', () => {
+    expect(() => parseRecoverCliArgs(['--mailbox', 'davinci@legacyhotels.co.za'])).toThrow(
+      'unknown argument: --mailbox',
+    );
+    expect(() => parseRecoverCliArgs(['--mailbox=davinci@legacyhotels.co.za'])).toThrow(
+      'unknown argument: --mailbox',
+    );
+  });
+});
 
 describe('parse-failure recovery through real PostgreSQL persistence', () => {
   it('restores inbound/outbound dates, thread references and attachment objects without AI; retries stay idempotent', async () => {
