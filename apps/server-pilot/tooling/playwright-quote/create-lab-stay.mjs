@@ -7,7 +7,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
-import { assertTrackReadyForGuarantee, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions } from './create-request.mjs';
+import { assertTrackReadyForGuarantee, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
 import { readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
@@ -95,7 +95,7 @@ export async function chooseCombo(page, name, label) {
   const list = page.locator('.x-boundlist:visible').last();
   await list.locator('.x-boundlist-item:visible').first().waitFor({ timeout: 5000 }).catch(() => {});
   const options = await listVisibleComboOptions(page);
-  process.stderr.write(`${JSON.stringify({ phase: 'chooseCombo', name, optionCount: options.length, options })}\n`);
+  process.stderr.write(`${JSON.stringify({ phase: name === 'guaranteetype' ? 'guarantee_options' : 'chooseCombo', name, optionCount: options.length, options })}\n`);
   if (!options.length) throw new Error(`combo_options_missing:${name}`);
   if (!options.includes(label)) throw new Error(`combo_option_missing:${name}`);
   // Click the item itself. getByText() looks for a descendant; Ext often
@@ -186,8 +186,9 @@ export function inspectFieldValidation(field, document = globalThis.document) {
     input.getAttribute('aria-invalid') === 'true'
     || /(^|\s)x-form-invalid(\s|$)/.test(String(input.className || ''))
     || /(^|\s)x-form-invalid(\s|$)/.test(String(wrap?.className || ''));
+  const qtip = (input.getAttribute('data-errorqtip') || '').trim();
   const messages = [
-    input.getAttribute('data-errorqtip'),
+    qtip,
     iconVisible
       ? icon.getAttribute('data-errorqtip') || icon.getAttribute('data-qtip') || icon.getAttribute('qtip')
       : '',
@@ -195,7 +196,7 @@ export function inspectFieldValidation(field, document = globalThis.document) {
     markedInvalid ? 'x-form-invalid' : '',
   ].filter((msg) => msg && String(msg).trim());
   return {
-    invalid: Boolean(markedInvalid || iconVisible),
+    invalid: Boolean(markedInvalid || iconVisible || qtip),
     messages,
     value: (input.value || '').trim(),
   };
@@ -212,10 +213,55 @@ export async function readAverageRate(page) {
   }, 'averagerate');
 }
 
+export function trackFillDescription(want) {
+  if (TRACK_LABELS[want]) return want;
+  const found = Object.entries(TRACK_LABELS).find(([, code]) => code === want);
+  return found ? found[0] : want;
+}
+
+export async function hmsProcessingVisible(page) {
+  return page.evaluate(() => {
+    const visible = (el) => !!(el && (el.offsetParent || (typeof el.getClientRects === 'function' && el.getClientRects().length)));
+    const maskVisible = [...document.querySelectorAll('.x-mask-msg')].some(visible);
+    const processingVisible = [...document.querySelectorAll('.x-mask-msg, .x-mask-msg-text')].some(
+      (el) => visible(el) && /Processing request/i.test(el.textContent || ''),
+    );
+    return maskVisible || processingVisible;
+  });
+}
+
+async function waitUntil(page, check, timeoutMs, errorName) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    if (typeof page.waitForTimeout === 'function') await page.waitForTimeout(200);
+    else break;
+  }
+  if (!(await check())) throw new Error(errorName);
+}
+
+export async function waitHmsMaskCleared(page, timeoutMs = 20_000) {
+  await waitUntil(page, async () => !(await hmsProcessingVisible(page)), timeoutMs, 'mask_timeout');
+}
+
+export async function waitAverageRate(page, timeoutMs = 10_000) {
+  let value = '';
+  await waitUntil(
+    page,
+    async () => {
+      value = await readAverageRate(page);
+      return Boolean(String(value || '').trim());
+    },
+    timeoutMs,
+    'average_rate_timeout',
+  );
+  return value;
+}
+
 export async function pickTrackLookup(page, want) {
   const input = page.locator('input[name="track"]:visible').first();
-  const trigger = input
-    .locator('xpath=ancestor::table[1]')
+  const wrap = input.locator('xpath=ancestor::*[contains(@class,"x-form-item") or contains(@class,"x-field")][1]');
+  const trigger = wrap
     .locator('.x-form-lov-trigger:visible, .x-form-search-trigger:visible, .x-form-trigger:visible')
     .first();
   if (!(await trigger.count())) throw new Error('track_trigger_missing');
@@ -240,21 +286,33 @@ export async function pickTrackLookup(page, want) {
   return picked;
 }
 
+function trackValueValid(validation) {
+  return Boolean(validation?.value) && !validation.invalid;
+}
+
 export async function fillTrackBeforeGuarantee(page, want) {
-  const picked = await pickTrackLookup(page, want);
-  const validation = await readFieldValidation(page, 'track');
-  process.stderr.write(`${JSON.stringify({ phase: 'trackValidation', invalid: validation.invalid, messages: validation.messages })}\n`);
-  let averageRate = await readAverageRate(page);
-  if (!averageRate && typeof page.waitForTimeout === 'function') {
-    const deadline = Date.now() + 3000;
-    while (!averageRate && Date.now() < deadline) {
-      await page.waitForTimeout(200);
-      averageRate = await readAverageRate(page);
-    }
+  const description = trackFillDescription(want);
+  await fillNamed(page, 'track', description);
+  process.stderr.write(`${JSON.stringify({ phase: 'track_typed', description })}\n`);
+  let validation = await readFieldValidation(page, 'track');
+  process.stderr.write(`${JSON.stringify({ phase: 'track_valid', valid: trackValueValid(validation), invalid: validation.invalid })}\n`);
+  let picked = null;
+  if (!trackValueValid(validation)) {
+    picked = await pickTrackLookup(page, want);
+    validation = await readFieldValidation(page, 'track');
   }
-  process.stderr.write(`${JSON.stringify({ phase: 'averageRate', blank: !String(averageRate || '').trim() })}\n`);
+  await waitHmsMaskCleared(page);
+  process.stderr.write(`${JSON.stringify({ phase: 'mask_cleared' })}\n`);
+  validation = await readFieldValidation(page, 'track');
+  if (!trackValueValid(validation)) {
+    picked = await pickTrackLookup(page, want);
+    validation = await readFieldValidation(page, 'track');
+  }
+  const averageRate = await waitAverageRate(page);
+  process.stderr.write(`${JSON.stringify({ phase: 'average_rate', blank: !String(averageRate || '').trim() })}\n`);
+  validation = await readFieldValidation(page, 'track');
   assertTrackReadyForGuarantee({ validation, averageRate });
-  return picked;
+  return picked ?? { code: want === 'Best Available' ? 'BAR' : want, description };
 }
 
 async function clickTip(page, pattern) {

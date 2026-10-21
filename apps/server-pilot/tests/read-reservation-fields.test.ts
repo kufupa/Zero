@@ -162,7 +162,7 @@ describe('reservation booking-state reader', () => {
           return null;
         }
       })
-      .find((row) => row?.phase === 'chooseCombo');
+      .find((row) => row?.phase === 'guarantee_options');
     expect(payload?.options).toEqual(options);
     expect(events.indexOf('log')).toBeGreaterThanOrEqual(0);
     expect(events.indexOf('log')).toBeLessThan(events.indexOf('item-click:Walk in'));

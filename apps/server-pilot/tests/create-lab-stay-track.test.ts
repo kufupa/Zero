@@ -54,6 +54,8 @@ type FixtureLocator = {
   count: () => Promise<number>;
   waitFor: () => Promise<void>;
   click: () => Promise<void>;
+  fill: (value: string) => Promise<void>;
+  press: (key: string) => Promise<void>;
 };
 
 function fixtureTrackPage(opts: {
@@ -62,30 +64,52 @@ function fixtureTrackPage(opts: {
   averageRate: string;
   rowTexts: string[];
   rowWaitError?: string;
+  maskVisible?: boolean;
+  invalidateOnWait?: boolean;
 }) {
+  let maskVisible = opts.maskVisible ?? false;
+  let averageRate = opts.averageRate;
+  let validation = { ...opts.validation };
   const loc = (sel = ''): FixtureLocator => {
     const node: FixtureLocator = {
       first: () => node,
       last: () => node,
       locator: (next) => loc(`${sel} >> ${next}`),
-      count: async () => 1,
+      count: async () => (sel.includes('ancestor::table[1]') ? 0 : 1),
       waitFor: async () => {
         if (opts.rowWaitError && /boundlist-item|x-grid-row/.test(sel)) {
           throw new Error(opts.rowWaitError);
         }
       },
       click: async () => {
-        opts.events.push(sel.includes('trigger') ? 'trigger-click' : 'other-click');
+        opts.events.push(`click:${sel}`);
+      },
+      fill: async (value) => {
+        opts.events.push(`fill:${value}`);
+      },
+      press: async (key) => {
+        opts.events.push(`press:${key}`);
       },
     };
     return node;
   };
   return {
     locator: (sel: string) => loc(sel),
+    waitForTimeout: async () => {
+      opts.events.push('wait');
+      maskVisible = false;
+      if (opts.invalidateOnWait) {
+        validation = { invalid: true, messages: ['Invalid value'], value: 'BAR' };
+      }
+      if (!averageRate) averageRate = '1250.00';
+    },
     evaluate: async (fn: (...args: unknown[]) => unknown, arg?: unknown) => {
       const src = Function.prototype.toString.call(fn);
-      if (src.includes('data-errorqtip')) return opts.validation;
-      if (arg === 'averagerate') return opts.averageRate;
+      if (src.includes('x-mask-msg')) return maskVisible;
+      if (src.includes('data-errorqtip') || src.includes('inspectFieldValidation') || src.includes('aria-invalid')) {
+        return validation;
+      }
+      if (arg === 'averagerate') return averageRate;
       if (arg && typeof arg === 'object' && arg !== null && ('code' in arg || 'description' in arg)) {
         const picked = arg as { code?: string; description?: string };
         opts.events.push(`row-click:${picked.code}:${picked.description}`);
@@ -125,42 +149,6 @@ describe('create-lab-stay track lookup', () => {
     expect(guaranteeOpened).toBe(false);
   });
 
-  it('logs track rows before the lookup click and throws on a red mark', async () => {
-    const events: string[] = [];
-    const writes: string[] = [];
-    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
-      writes.push(String(chunk));
-      events.push('log');
-      return true;
-    }) as typeof process.stderr.write);
-
-    const page = fixtureTrackPage({
-      events,
-      validation: { invalid: true, messages: ['Invalid value'], value: 'BAR' },
-      averageRate: '',
-      rowTexts: ['COR Corporate Rate', 'BAR Best Available'],
-    });
-
-    await expect(fillTrackBeforeGuarantee(page, 'BAR')).rejects.toThrow(/track_invalid/);
-    const lookup = writes
-      .map((chunk) => {
-        try {
-          return JSON.parse(chunk.trim()) as { phase?: string; rows?: Array<{ code: string; description: string }> };
-        } catch {
-          return null;
-        }
-      })
-      .find((row) => row?.phase === 'trackLookup');
-    expect(lookup?.rows).toEqual([
-      { code: 'COR', description: 'Corporate Rate', text: 'COR Corporate Rate' },
-      { code: 'BAR', description: 'Best Available', text: 'BAR Best Available' },
-    ]);
-    expect(events.indexOf('log')).toBeGreaterThanOrEqual(0);
-    expect(events.indexOf('log')).toBeLessThan(events.indexOf('row-click:BAR:Best Available'));
-    const validationLog = writes.some((chunk) => chunk.includes('trackValidation') && chunk.includes('Invalid value'));
-    expect(validationLog).toBe(true);
-  });
-
   it('valid field with a hidden invalid icon and empty qtip is not an error', () => {
     const document = documentFromHtml(`
       <table class="x-form-item">
@@ -177,6 +165,91 @@ describe('create-lab-stay track lookup', () => {
       messages: [],
       value: 'BAR',
     });
+  });
+
+  it('does not open a lookup when Track is already valid', async () => {
+    const events: string[] = [];
+    const writes: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => {
+      writes.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write);
+
+    await fillTrackBeforeGuarantee(
+      fixtureTrackPage({
+        events,
+        validation: { invalid: false, messages: [], value: 'Best Available' },
+        averageRate: '1250.00',
+        rowTexts: ['BAR Best Available'],
+      }),
+      'BAR',
+    );
+
+    expect(events.some((event) => event.startsWith('fill:Best Available'))).toBe(true);
+    expect(events.some((event) => event.includes('trigger') || event.startsWith('row-click'))).toBe(false);
+    expect(writes.some((chunk) => chunk.includes('"phase":"track_typed"'))).toBe(true);
+    expect(writes.some((chunk) => chunk.includes('"phase":"track_valid"') && chunk.includes('"valid":true'))).toBe(true);
+    expect(writes.some((chunk) => chunk.includes('"phase":"mask_cleared"'))).toBe(true);
+    expect(writes.some((chunk) => chunk.includes('"phase":"average_rate"'))).toBe(true);
+  });
+
+  it('waits while the HMS processing mask is visible', async () => {
+    const events: string[] = [];
+    await fillTrackBeforeGuarantee(
+      fixtureTrackPage({
+        events,
+        validation: { invalid: false, messages: [], value: 'Best Available' },
+        averageRate: '',
+        rowTexts: [],
+        maskVisible: true,
+      }),
+      'BAR',
+    );
+    expect(events.filter((event) => event === 'wait').length).toBeGreaterThan(0);
+  });
+
+  it('opens the Track trigger inside its own wrapper, not a table-wide trigger', async () => {
+    const events: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await expect(
+      fillTrackBeforeGuarantee(
+        fixtureTrackPage({
+          events,
+          validation: { invalid: true, messages: ['Invalid value'], value: 'BAR' },
+          averageRate: '1250.00',
+          rowTexts: ['COR Corporate Rate', 'BAR Best Available'],
+        }),
+        'BAR',
+      ),
+    ).rejects.toThrow(/track_invalid/);
+    const triggerClicks = events.filter((event) => event.startsWith('click:') && event.includes('trigger'));
+    expect(triggerClicks.length).toBeGreaterThan(0);
+    expect(triggerClicks.every((event) => event.includes('x-form-item') || event.includes('x-field'))).toBe(true);
+    expect(triggerClicks.some((event) => event.includes('ancestor::table[1]'))).toBe(false);
+  });
+
+  it('re-reads Track after the mask and looks up if it became invalid', async () => {
+    const events: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await expect(
+      fillTrackBeforeGuarantee(
+        fixtureTrackPage({
+          events,
+          validation: { invalid: false, messages: [], value: 'Best Available' },
+          averageRate: '1250.00',
+          rowTexts: ['COR Corporate Rate', 'BAR Best Available'],
+          maskVisible: true,
+          invalidateOnWait: true,
+        }),
+        'BAR',
+      ),
+    ).rejects.toThrow(/track_invalid/);
+    const waitAt = events.indexOf('wait');
+    const triggerAt = events.findIndex((event) => event.startsWith('click:') && event.includes('trigger'));
+    expect(waitAt).toBeGreaterThanOrEqual(0);
+    expect(triggerAt).toBeGreaterThan(waitAt);
+    expect(events[triggerAt]).toMatch(/x-form-item|x-field/);
+    expect(events[triggerAt].includes('ancestor::table[1]')).toBe(false);
   });
 
   it('throws track_lookup_timeout when no lookup row becomes visible', async () => {
