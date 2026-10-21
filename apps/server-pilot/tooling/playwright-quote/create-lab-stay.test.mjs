@@ -191,7 +191,7 @@ test('create-lab-stay validates before browser and keeps shot names', async () =
   assert.match(source, /fillNamed\(page, 'track', description\)/);
   assert.match(source, /fillTrackBeforeGuarantee\(page, stay\.track\)/);
   assert.match(source, /ancestor::\*\[contains\(@class,"x-form-item"\) or contains\(@class,"x-field"\)\]\[1\]/);
-  assert.match(source, /trackValidation/);
+  assert.match(source, /track_valid/);
 });
 
 test('proof mode is guarded before browser work and wires read-only reconciliation', async () => {
