@@ -7,7 +7,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
-import { loadCreateRequest, loadCreateToolSchema, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, refuseRateRowClick, shopResult, stayActions } from './create-request.mjs';
+import { assertTrackReadyForGuarantee, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions } from './create-request.mjs';
 import { readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
@@ -111,6 +111,150 @@ export async function chooseCombo(page, name, label) {
     return true;
   }, label);
   if (!clicked) throw new Error(`combo_option_missing:${name}`);
+}
+
+async function listTrackLookupRows(page) {
+  return page.evaluate(() => {
+    const visible = (el) => !!(el.offsetParent || el.getClientRects().length);
+    const bound = [...document.querySelectorAll('.x-boundlist')].filter(visible).at(-1);
+    if (bound) {
+      return [...bound.querySelectorAll('.x-boundlist-item')]
+        .filter(visible)
+        .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
+        .filter(Boolean);
+    }
+    const grid = [...document.querySelectorAll('.x-window .x-grid-view, .x-window .x-grid')].filter(visible).at(-1);
+    if (!grid) return [];
+    return [...grid.querySelectorAll('.x-grid-row, .x-grid-data-row')]
+      .filter(visible)
+      .map((row) => (row.innerText || '').replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+  });
+}
+
+async function clickTrackLookupRow(page, picked) {
+  return page.evaluate((want) => {
+    const visible = (el) => !!(el.offsetParent || el.getClientRects().length);
+    const norm = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+    const matches = (text) => {
+      const t = norm(text);
+      if (!t) return false;
+      if (want.text && t === want.text) return true;
+      if (want.description && t.includes(want.description) && (!want.code || t.includes(want.code))) return true;
+      return want.code && t === want.code;
+    };
+    const bound = [...document.querySelectorAll('.x-boundlist')].filter(visible).at(-1);
+    if (bound) {
+      const item = [...bound.querySelectorAll('.x-boundlist-item')].filter(visible).find((el) => matches(el.textContent));
+      if (!item) return false;
+      item.click();
+      return true;
+    }
+    const grid = [...document.querySelectorAll('.x-window .x-grid-view, .x-window .x-grid')].filter(visible).at(-1);
+    if (!grid) return false;
+    const row = [...grid.querySelectorAll('.x-grid-row, .x-grid-data-row')].filter(visible).find((el) => matches(el.innerText));
+    if (!row) return false;
+    row.click();
+    return true;
+  }, picked);
+}
+
+export function inspectFieldValidation(field, document = globalThis.document) {
+  const visible = (el) => {
+    if (!el) return false;
+    const attrStyle = typeof el.getAttribute === 'function' ? el.getAttribute('style') || '' : '';
+    const cssText = el.style ? String(el.style.cssText || '') : '';
+    const display = el.style && el.style.display ? String(el.style.display) : '';
+    const style = `${attrStyle} ${cssText} ${display ? `display:${display}` : ''}`;
+    if (/display\s*:\s*none/i.test(style) || /visibility\s*:\s*hidden/i.test(style)) return false;
+    if (typeof el.hasAttribute === 'function' && el.hasAttribute('hidden')) return false;
+    const cls = String(el.className || '');
+    if (/\bx-hide-display\b|\bx-hide-offsets\b|\bx-hidden\b/.test(cls)) return false;
+    if (el.offsetParent) return true;
+    if (typeof el.getClientRects === 'function') {
+      const rects = el.getClientRects();
+      if (rects && rects.length) return true;
+    }
+    return false;
+  };
+  const input = document.querySelector(`input[name="${field}"]`);
+  if (!input) return { invalid: true, messages: ['missing'], value: '' };
+  const wrap = input.closest('.x-form-item, .x-field, table') || input.parentElement;
+  const icon = wrap?.querySelector?.('.x-form-invalid-icon');
+  const iconVisible = visible(icon);
+  const markedInvalid =
+    input.getAttribute('aria-invalid') === 'true'
+    || /(^|\s)x-form-invalid(\s|$)/.test(String(input.className || ''))
+    || /(^|\s)x-form-invalid(\s|$)/.test(String(wrap?.className || ''));
+  const messages = [
+    input.getAttribute('data-errorqtip'),
+    iconVisible
+      ? icon.getAttribute('data-errorqtip') || icon.getAttribute('data-qtip') || icon.getAttribute('qtip')
+      : '',
+    input.getAttribute('aria-invalid') === 'true' ? 'aria-invalid' : '',
+    markedInvalid ? 'x-form-invalid' : '',
+  ].filter((msg) => msg && String(msg).trim());
+  return {
+    invalid: Boolean(markedInvalid || iconVisible),
+    messages,
+    value: (input.value || '').trim(),
+  };
+}
+
+export async function readFieldValidation(page, name) {
+  return page.evaluate(inspectFieldValidation, name);
+}
+
+export async function readAverageRate(page) {
+  return page.evaluate((field) => {
+    const input = document.querySelector(`input[name="${field}"]`);
+    return (input?.value || '').trim();
+  }, 'averagerate');
+}
+
+export async function pickTrackLookup(page, want) {
+  const input = page.locator('input[name="track"]:visible').first();
+  const trigger = input
+    .locator('xpath=ancestor::table[1]')
+    .locator('.x-form-lov-trigger:visible, .x-form-search-trigger:visible, .x-form-trigger:visible')
+    .first();
+  if (!(await trigger.count())) throw new Error('track_trigger_missing');
+  await trigger.click();
+  const row = page
+    .locator(
+      '.x-boundlist:visible .x-boundlist-item:visible, .x-window:visible .x-grid-row:visible, .x-window:visible .x-grid-data-row:visible',
+    )
+    .first();
+  try {
+    await row.waitFor({ timeout: 5000 });
+  } catch (error) {
+    throw new Error(`track_lookup_timeout:${error && error.message ? error.message : error}`);
+  }
+  const texts = await listTrackLookupRows(page);
+  const rows = texts.map((text) => parseTrackLookupText(text)).filter(Boolean);
+  process.stderr.write(`${JSON.stringify({ phase: 'trackLookup', rowCount: rows.length, rows })}\n`);
+  const picked = matchTrackRow(rows, want);
+  if (!picked) throw new Error('track_row_missing');
+  const clicked = await clickTrackLookupRow(page, picked);
+  if (!clicked) throw new Error('track_row_missing');
+  return picked;
+}
+
+export async function fillTrackBeforeGuarantee(page, want) {
+  const picked = await pickTrackLookup(page, want);
+  const validation = await readFieldValidation(page, 'track');
+  process.stderr.write(`${JSON.stringify({ phase: 'trackValidation', invalid: validation.invalid, messages: validation.messages })}\n`);
+  let averageRate = await readAverageRate(page);
+  if (!averageRate && typeof page.waitForTimeout === 'function') {
+    const deadline = Date.now() + 3000;
+    while (!averageRate && Date.now() < deadline) {
+      await page.waitForTimeout(200);
+      averageRate = await readAverageRate(page);
+    }
+  }
+  process.stderr.write(`${JSON.stringify({ phase: 'averageRate', blank: !String(averageRate || '').trim() })}\n`);
+  assertTrackReadyForGuarantee({ validation, averageRate });
+  return picked;
 }
 
 async function clickTip(page, pattern) {
@@ -366,7 +510,6 @@ async function main() {
     await fillNamed(page, 'sourceofbusinessdesc', stay.sourceOfBusiness);
     await fillNamed(page, 'roomtype', stay.roomType);
     await fillNamed(page, 'rateplan', stay.ratePlan);
-    await fillNamed(page, 'track', stay.track);
     if (stop.stopBefore !== 'availability') {
       // Party lookups, Reservation Note and booker fields. Empty values are skipped. LIVE-UNVERIFIED: see create-request.mjs.
       for (const [name, value] of Object.entries(optionalPartyAndNoteFills(stay))) {
@@ -376,6 +519,7 @@ async function main() {
       if (stay.billingReference) await fillNamed(page, 'billingreference', stay.billingReference);
       if (Object.hasOwn(stay, 'profileId')) await fillNamed(page, 'guestid', String(stay.profileId));
     }
+    await fillTrackBeforeGuarantee(page, stay.track);
     await chooseCombo(page, 'guaranteetype', stay.guaranteeType);
     await page.waitForTimeout(1000);
     const blank = await blankRequired(page);

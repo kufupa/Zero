@@ -122,7 +122,7 @@ const ROOM_LABELS = {
   'Deluxe Twin': 'DLXTWN',
 };
 
-const TRACK_LABELS = {
+export const TRACK_LABELS = {
   'Airline Rate': 'AIR',
   'Best Available': 'BAR',
   Complimentary: 'COM',
@@ -145,6 +145,38 @@ const TRACK_LABELS = {
   Specials: 'SPE',
   'STO Rate': 'STO',
 };
+
+export function parseTrackLookupText(text) {
+  const norm = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!norm) return null;
+  const dashed = /^([A-Z][A-Z0-9]{1,7})\s*[-:]\s+(.+)$/.exec(norm);
+  if (dashed) return { code: dashed[1], description: dashed[2], text: norm };
+  const spaced = /^([A-Z][A-Z0-9]{1,7})\s+(.+)$/.exec(norm);
+  if (spaced) return { code: spaced[1], description: spaced[2], text: norm };
+  if (norm === 'BAR' || Object.values(TRACK_LABELS).includes(norm)) {
+    return { code: norm, description: '', text: norm };
+  }
+  return { code: '', description: norm, text: norm };
+}
+
+export function matchTrackRow(rows, want) {
+  const wantBar = want === 'BAR' || want === 'Best Available';
+  const match = (rows || []).find((row) => {
+    if (wantBar) return row.description === 'Best Available' || row.code === 'BAR';
+    return row.code === want || row.description === want;
+  });
+  if (!match) return null;
+  const code = match.code || (match.description === 'Best Available' ? 'BAR' : '');
+  return { ...match, code };
+}
+
+export function assertTrackReadyForGuarantee({ validation, averageRate }) {
+  if (validation?.invalid) {
+    const msg = (validation.messages || []).filter(Boolean).join('; ') || 'invalid';
+    throw new Error(`track_invalid:${msg}`);
+  }
+  if (!String(averageRate || '').trim()) throw new Error('rate_unresolved');
+}
 
 function normalizeProfileId(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
