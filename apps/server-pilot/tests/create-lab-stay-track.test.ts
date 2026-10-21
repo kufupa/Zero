@@ -65,9 +65,11 @@ function fixtureTrackPage(opts: {
   rowTexts: string[];
   rowWaitError?: string;
   maskVisible?: boolean;
+  invalidateOnWait?: boolean;
 }) {
   let maskVisible = opts.maskVisible ?? false;
   let averageRate = opts.averageRate;
+  let validation = { ...opts.validation };
   const loc = (sel = ''): FixtureLocator => {
     const node: FixtureLocator = {
       first: () => node,
@@ -96,13 +98,16 @@ function fixtureTrackPage(opts: {
     waitForTimeout: async () => {
       opts.events.push('wait');
       maskVisible = false;
+      if (opts.invalidateOnWait) {
+        validation = { invalid: true, messages: ['Invalid value'], value: 'BAR' };
+      }
       if (!averageRate) averageRate = '1250.00';
     },
     evaluate: async (fn: (...args: unknown[]) => unknown, arg?: unknown) => {
       const src = Function.prototype.toString.call(fn);
       if (src.includes('x-mask-msg')) return maskVisible;
       if (src.includes('data-errorqtip') || src.includes('inspectFieldValidation') || src.includes('aria-invalid')) {
-        return opts.validation;
+        return validation;
       }
       if (arg === 'averagerate') return averageRate;
       if (arg && typeof arg === 'object' && arg !== null && ('code' in arg || 'description' in arg)) {
@@ -221,6 +226,30 @@ describe('create-lab-stay track lookup', () => {
     expect(triggerClicks.length).toBeGreaterThan(0);
     expect(triggerClicks.every((event) => event.includes('x-form-item') || event.includes('x-field'))).toBe(true);
     expect(triggerClicks.some((event) => event.includes('ancestor::table[1]'))).toBe(false);
+  });
+
+  it('re-reads Track after the mask and looks up if it became invalid', async () => {
+    const events: string[] = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    await expect(
+      fillTrackBeforeGuarantee(
+        fixtureTrackPage({
+          events,
+          validation: { invalid: false, messages: [], value: 'Best Available' },
+          averageRate: '1250.00',
+          rowTexts: ['COR Corporate Rate', 'BAR Best Available'],
+          maskVisible: true,
+          invalidateOnWait: true,
+        }),
+        'BAR',
+      ),
+    ).rejects.toThrow(/track_invalid/);
+    const waitAt = events.indexOf('wait');
+    const triggerAt = events.findIndex((event) => event.startsWith('click:') && event.includes('trigger'));
+    expect(waitAt).toBeGreaterThanOrEqual(0);
+    expect(triggerAt).toBeGreaterThan(waitAt);
+    expect(events[triggerAt]).toMatch(/x-form-item|x-field/);
+    expect(events[triggerAt].includes('ancestor::table[1]')).toBe(false);
   });
 
   it('throws track_lookup_timeout when no lookup row becomes visible', async () => {

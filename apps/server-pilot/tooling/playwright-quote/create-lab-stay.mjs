@@ -286,23 +286,31 @@ export async function pickTrackLookup(page, want) {
   return picked;
 }
 
+function trackValueValid(validation) {
+  return Boolean(validation?.value) && !validation.invalid;
+}
+
 export async function fillTrackBeforeGuarantee(page, want) {
   const description = trackFillDescription(want);
   await fillNamed(page, 'track', description);
   process.stderr.write(`${JSON.stringify({ phase: 'track_typed', description })}\n`);
   let validation = await readFieldValidation(page, 'track');
-  const valid = Boolean(validation.value) && !validation.invalid;
-  process.stderr.write(`${JSON.stringify({ phase: 'track_valid', valid, invalid: validation.invalid })}\n`);
+  process.stderr.write(`${JSON.stringify({ phase: 'track_valid', valid: trackValueValid(validation), invalid: validation.invalid })}\n`);
   let picked = null;
-  if (!valid) {
+  if (!trackValueValid(validation)) {
     picked = await pickTrackLookup(page, want);
     validation = await readFieldValidation(page, 'track');
-    process.stderr.write(`${JSON.stringify({ phase: 'trackValidation', invalid: validation.invalid, messages: validation.messages })}\n`);
   }
   await waitHmsMaskCleared(page);
   process.stderr.write(`${JSON.stringify({ phase: 'mask_cleared' })}\n`);
+  validation = await readFieldValidation(page, 'track');
+  if (!trackValueValid(validation)) {
+    picked = await pickTrackLookup(page, want);
+    validation = await readFieldValidation(page, 'track');
+  }
   const averageRate = await waitAverageRate(page);
   process.stderr.write(`${JSON.stringify({ phase: 'average_rate', blank: !String(averageRate || '').trim() })}\n`);
+  validation = await readFieldValidation(page, 'track');
   assertTrackReadyForGuarantee({ validation, averageRate });
   return picked ?? { code: want === 'Best Available' ? 'BAR' : want, description };
 }
