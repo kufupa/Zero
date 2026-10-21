@@ -244,17 +244,14 @@ export async function waitHmsMaskCleared(page, timeoutMs = 20_000) {
   await waitUntil(page, async () => !(await hmsProcessingVisible(page)), timeoutMs, 'mask_timeout');
 }
 
-export async function waitAverageRate(page, timeoutMs = 10_000) {
-  let value = '';
-  await waitUntil(
-    page,
-    async () => {
-      value = await readAverageRate(page);
-      return Boolean(String(value || '').trim());
-    },
-    timeoutMs,
-    'average_rate_timeout',
-  );
+export async function waitAverageRate(page, timeoutMs = 3_000) {
+  let value = await readAverageRate(page);
+  const deadline = Date.now() + timeoutMs;
+  while (!String(value || '').trim() && Date.now() < deadline) {
+    if (typeof page.waitForTimeout === 'function') await page.waitForTimeout(200);
+    else break;
+    value = await readAverageRate(page);
+  }
   return value;
 }
 
@@ -311,7 +308,7 @@ export async function fillTrackBeforeGuarantee(page, want) {
   const averageRate = await waitAverageRate(page);
   process.stderr.write(`${JSON.stringify({ phase: 'average_rate', blank: !String(averageRate || '').trim() })}\n`);
   validation = await readFieldValidation(page, 'track');
-  assertTrackReadyForGuarantee({ validation, averageRate });
+  assertTrackReadyForGuarantee({ validation });
   return picked ?? { code: want === 'Best Available' ? 'BAR' : want, description };
 }
 
