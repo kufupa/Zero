@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { MailExtractionPayload } from '../src/ai/extraction/schema.js';
 import {
@@ -12,8 +15,10 @@ import {
   formatReplayStdout,
   inRequestWindow,
   isConfirmationLetterFilename,
+  orderInboundRequests,
   parseOutboundGoldReplayArgs,
   readThreadIdList,
+  reserveReplayOutputs,
   runOutboundGoldReplay,
   selectRequestOutbound,
   type ReplayDeps,
@@ -158,6 +163,44 @@ describe('outbound-gold replay runner', () => {
     ]);
   });
 
+  it('orders a null receivedAt inbound by inboundAt so its reply stays in window', () => {
+    const early = {
+      messageId: 'inbound-early',
+      receivedAt: null,
+      sentAt: null,
+      createdAt: new Date('2026-10-10T09:00:00.000Z'),
+    };
+    const later = {
+      messageId: 'inbound-later',
+      receivedAt: new Date('2026-10-12T09:00:00.000Z'),
+      sentAt: null,
+      createdAt: new Date('2026-10-12T09:00:00.000Z'),
+    };
+    const ordered = orderInboundRequests([later, early]);
+    expect(ordered.map((row) => row.messageId)).toEqual(['inbound-early', 'inbound-later']);
+    expect(ordered[0]?.until?.getTime()).toBe(later.receivedAt?.getTime());
+    const reply = { id: 'reply-after-early', at: new Date('2026-10-11T09:00:00.000Z') };
+    expect(inRequestWindow(reply.at, ordered[0]!.at, ordered[0]!.until)).toBe(true);
+  });
+
+  it('refuses existing --out or --misses before extract', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'outbound-gold-reserve-'));
+    const extract = vi.fn();
+    try {
+      const outPath = join(dir, 'fixture.jsonl');
+      const missesPath = join(dir, 'misses.jsonl');
+      writeFileSync(outPath, 'stale\n');
+      expect(() => reserveReplayOutputs(outPath, missesPath)).toThrow('out_exists');
+      expect(extract).not.toHaveBeenCalled();
+      rmSync(outPath);
+      writeFileSync(missesPath, 'stale\n');
+      expect(() => reserveReplayOutputs(outPath, missesPath)).toThrow('out_exists');
+      expect(extract).not.toHaveBeenCalled();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('replays fake thread ids through extractInboundMail and writes one scorer row per request', async () => {
     const source = deps();
     const result = await runOutboundGoldReplay([THREAD_A, THREAD_B], source);
@@ -235,5 +278,28 @@ describe('outbound-gold replay runner', () => {
     expect(scored.cards).toBe(2);
     expect(scored.distinctDateSets).toBe(2);
     expect(scored.pass).toBe(true);
+  });
+
+  it('covers a new booking whose card confirmation is still null', async () => {
+    const payload: MailExtractionPayload = {
+      ...PAYLOAD,
+      confirmationNumbers: [],
+      stays: [
+        {
+          ...PAYLOAD.stays[0]!,
+          guests: [{ name: FIXTURE_GUEST, confirmationNumber: null }],
+        },
+      ],
+    };
+    const result = await runOutboundGoldReplay([THREAD_A], {
+      ...deps({
+        extract: async () => ({ ok: true, kind: 'booking', payload }),
+      }),
+    });
+    expect(result.summary.covered).toBe(1);
+    expect(result.summary.missed).toBe(0);
+    expect(result.rows[0]?.kind).toBe('booking');
+    expect(result.rows[0]?.cards?.[0]?.guests?.[0]?.conf).toBeNull();
+    expect(scoreOutboundGoldFixture(result.rows).pass).toBe(true);
   });
 });

@@ -11,7 +11,7 @@
  *   pnpm --dir apps/server-pilot exec tsx scripts/outbound-gold-replay.ts \
  *     --ids <thread-ids.txt> --out <fixture.jsonl> --misses <misses.jsonl>
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { and, asc, eq, sql } from 'drizzle-orm';
@@ -22,6 +22,7 @@ import {
   checkLetterCoverage,
   parseLetterFields,
   reportScoreKind,
+  requireLetterConfirmation,
   type GoldCardInput,
   type GoldLetterInput,
   type OutboundGoldFixtureRow,
@@ -183,8 +184,16 @@ export function formatReplayStdout(summary: ReplayStdout): string {
   return `${JSON.stringify(summary)}\n`;
 }
 
-function writePrivate(outputPath: string, body: string): void {
-  writeFileSync(path.resolve(outputPath), body, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+export function reserveReplayOutputs(outPath: string, missesPath: string): void {
+  const out = path.resolve(outPath);
+  const misses = path.resolve(missesPath);
+  if (existsSync(out) || existsSync(misses)) throw codedError('out_exists');
+  writeFileSync(out, '', { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+  writeFileSync(misses, '', { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+}
+
+function writeReserved(outputPath: string, body: string): void {
+  writeFileSync(path.resolve(outputPath), body, { encoding: 'utf8', mode: 0o600 });
 }
 
 function letterTruth(letter: GoldLetterInput): GoldLetterInput {
@@ -202,12 +211,39 @@ function jsonl(rows: readonly object[]): string {
   return rows.length ? `${rows.map((row) => JSON.stringify(row)).join('\n')}\n` : '';
 }
 
-function inboundAt(row: { receivedAt: Date | null; sentAt: Date | null; createdAt: Date }): Date {
+export function inboundAt(row: {
+  receivedAt: Date | null;
+  sentAt: Date | null;
+  createdAt: Date;
+}): Date {
   return row.receivedAt ?? row.sentAt ?? row.createdAt;
 }
 
 function outboundAt(row: { sentAt: Date | null; receivedAt: Date | null; createdAt: Date }): Date {
   return row.sentAt ?? row.receivedAt ?? row.createdAt;
+}
+
+export type InboundStamp = {
+  messageId: string;
+  receivedAt: Date | null;
+  sentAt: Date | null;
+  createdAt: Date;
+};
+
+/** Sort by inboundAt, not SQL receivedAt (nulls last). */
+export function orderInboundRequests<T extends InboundStamp>(
+  rows: readonly T[],
+): Array<T & { at: Date; until: Date | null }> {
+  const sorted = [...rows].sort((left, right) => {
+    const delta = inboundAt(left).getTime() - inboundAt(right).getTime();
+    if (delta !== 0) return delta;
+    return left.messageId.localeCompare(right.messageId);
+  });
+  return sorted.map((row, index) => {
+    const at = inboundAt(row);
+    const next = sorted[index + 1];
+    return { ...row, at, until: next ? inboundAt(next) : null };
+  });
 }
 
 export async function runOutboundGoldReplay(
@@ -262,7 +298,11 @@ export async function runOutboundGoldReplay(
       const letters = artifacts.letters.map(letterTruth);
       if (artifacts.quotePdfId) quoteThreads += 1;
 
-      const coverage = checkLetterCoverage({ letters, cards: requestCards });
+      const coverage = checkLetterCoverage({
+        letters,
+        cards: requestCards,
+        requireConfirmation: requireLetterConfirmation(extracted.kind),
+      });
       distinctDateSets += coverage.distinctDateSets;
       distinctLetters += coverage.letters;
       lettersCovered += coverage.lettersCovered;
@@ -285,6 +325,7 @@ export async function runOutboundGoldReplay(
         letter: null,
         letters,
         cards: requestCards,
+        kind: extracted.kind,
       });
     }
   }
@@ -336,23 +377,18 @@ export async function loadReplayRequests(db: ReadOnlyDb, threadId: string): Prom
       })
       .from(message)
       .leftJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
-      .where(and(eq(message.threadId, threadId), eq(message.direction, 'inbound')))
-      .orderBy(asc(message.receivedAt), asc(message.createdAt), asc(message.id));
+      .where(and(eq(message.threadId, threadId), eq(message.direction, 'inbound')));
     if (!rows.length) return [];
     if (new Set(rows.map((row) => row.transportId)).size > 1) return [];
-    return rows.map((row, index) => {
-      const at = inboundAt(row);
-      const next = rows[index + 1];
-      return {
-        threadId: row.threadId,
-        messageId: row.messageId,
-        transportId: row.transportId,
-        fromAddress: row.fromAddress,
-        mailbox: row.mailbox,
-        at,
-        until: next ? inboundAt(next) : null,
-      };
-    });
+    return orderInboundRequests(rows).map((row) => ({
+      threadId: row.threadId,
+      messageId: row.messageId,
+      transportId: row.transportId,
+      fromAddress: row.fromAddress,
+      mailbox: row.mailbox,
+      at: row.at,
+      until: row.until,
+    }));
   });
 }
 
@@ -478,9 +514,10 @@ export async function runOutboundGoldReplayCli(argv: readonly string[]): Promise
   }
 
   try {
+    reserveReplayOutputs(cli.outPath, cli.missesPath);
     const result = await runOutboundGoldReplay(ids, liveDeps(getDb(), resolveAdapter(true, null).adapter));
-    writePrivate(cli.outPath, jsonl(result.rows));
-    writePrivate(cli.missesPath, jsonl(result.misses));
+    writeReserved(cli.outPath, jsonl(result.rows));
+    writeReserved(cli.missesPath, jsonl(result.misses));
     process.stdout.write(formatReplayStdout(result.summary));
     return 0;
   } catch (error) {

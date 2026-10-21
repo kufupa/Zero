@@ -64,6 +64,8 @@ export type OutboundGoldFixtureRow = {
   /** All letters for this request. Preferred over repeating `letter`+`cards` per letter. */
   letters?: GoldLetterInput[];
   cards?: GoldCardInput[];
+  /** Extraction kind. Booking/quote match guest+arrival; amend still needs conf. */
+  kind?: string | null;
 };
 
 export type CoverageResult = {
@@ -217,26 +219,38 @@ function resolveCard(input: GoldCardInput): {
   };
 }
 
+export function requireLetterConfirmation(kind: string | null | undefined): boolean {
+  return kind !== 'booking' && kind !== 'quote';
+}
+
 function letterMatchesCard(
   letter: LetterFields,
   card: { arrival: string | null; guests: GoldGuestConf[] },
+  requireConfirmation: boolean,
 ): boolean {
-  if (!letter.guest || !letter.conf || !letter.arrival) return false;
+  if (!letter.guest || !letter.arrival) return false;
+  if (requireConfirmation && !letter.conf) return false;
   if (letter.arrival !== card.arrival) return false;
   const guest = normalizeName(letter.guest);
   const conf = normalizeConf(letter.conf);
-  return card.guests.some(
-    (row) => normalizeName(row.guest) === guest && normalizeConf(row.conf) === conf,
-  );
+  return card.guests.some((row) => {
+    if (normalizeName(row.guest) !== guest) return false;
+    if (!requireConfirmation) return true;
+    return Boolean(conf) && normalizeConf(row.conf) === conf;
+  });
 }
 
 export function checkLetterCoverage(input: {
   letters: readonly GoldLetterInput[];
   cards: readonly GoldCardInput[];
+  requireConfirmation?: boolean;
 }): CoverageResult {
+  const requireConfirmation = input.requireConfirmation ?? true;
   const letters = input.letters.map(resolveLetter);
   const cards = input.cards.map(resolveCard);
-  const covered = letters.filter((row) => cards.some((card) => letterMatchesCard(row, card))).length;
+  const covered = letters.filter((row) =>
+    cards.some((card) => letterMatchesCard(row, card, requireConfirmation)),
+  ).length;
   const dateSets = new Set(cards.map((card) => dateSetKey(card.arrival, card.departure)));
   const dateSetCardPass = cards.length === dateSets.size;
   const lettersUncovered = letters.length - covered;
@@ -341,7 +355,11 @@ export function scoreOutboundGoldFixture(
     const rowLetters = lettersForRow(row);
     if (text(row.letterId) || row.letter || rowLetters.length) withLetter += 1;
     if (text(row.quotePdfId)) withQuotePdf += 1;
-    const coverage = checkLetterCoverage({ letters: rowLetters, cards: row.cards ?? [] });
+    const coverage = checkLetterCoverage({
+      letters: rowLetters,
+      cards: row.cards ?? [],
+      requireConfirmation: requireLetterConfirmation(row.kind),
+    });
     letters += coverage.letters;
     lettersCovered += coverage.lettersCovered;
     lettersUncovered += coverage.lettersUncovered;

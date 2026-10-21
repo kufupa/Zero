@@ -102,6 +102,26 @@ describe('checkLetterCoverage', () => {
     expect(duplicateDates.cards).toBe(2);
   });
 
+  it('passes a new-booking fixture when the card confirmation is still null', () => {
+    const scored = scoreOutboundGoldFixture([
+      {
+        id: 'ask-new',
+        kind: 'booking',
+        letters: [letter({ id: 'letter-a' })],
+        cards: [card({ id: 'card-1', guests: [{ guest: FIXTURE_GUEST_A, conf: null }] })],
+      },
+    ]);
+    expect(scored.pass).toBe(true);
+    expect(scored.lettersCovered).toBe(1);
+
+    const amend = checkLetterCoverage({
+      letters: [letter({ id: 'letter-a' })],
+      cards: [card({ id: 'card-1', guests: [{ guest: FIXTURE_GUEST_A, conf: null }] })],
+      requireConfirmation: true,
+    });
+    expect(amend.pass).toBe(false);
+  });
+
   it('requires a distinct card per distinct date set', () => {
     const result = checkLetterCoverage({
       letters: [letter({ id: 'letter-a' }), letter({ id: 'letter-b', arrival: ARRIVAL_B, conf: CONF_B })],
