@@ -3936,7 +3936,7 @@ describe('multi-ask stay cards: guests, action, split', () => {
         requestedChange: null,
       },
     };
-    const session = analysisReady(analysis);
+    const session = analysisReady(analysis as QuoteAnalysis);
     expect(session.phase).toBe('non_quote');
     const picked = reduceQuoteSession(session, { type: 'select_stay_key', stayKey: 'stay-b' });
     expect(picked.selectedStayKey).toBe('stay-b');
