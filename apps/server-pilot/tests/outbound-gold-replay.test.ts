@@ -167,7 +167,7 @@ describe('outbound-gold replay runner', () => {
     const early = {
       messageId: 'inbound-early',
       receivedAt: null,
-      sentAt: null,
+      sentAt: new Date('2026-10-20T09:00:00.000Z'),
       createdAt: new Date('2026-10-10T09:00:00.000Z'),
     };
     const later = {
@@ -211,6 +211,7 @@ describe('outbound-gold replay runner', () => {
     expect(result.summary.distinctLetters).toBe(1);
     expect(result.summary.lettersCovered).toBe(1);
     expect(result.summary.distinctDateSets).toBe(1);
+    expect(result.summary.extractFailed).toBe(0);
     expect(result.summary.check).toBe(REPLAY_CHECK);
     expect(result.summary.prodInput).toBe(REPLAY_PROD_INPUT);
     expect(result.summary.prodInput).toBe('readQuoteAttachments → extractInboundMail');
@@ -301,5 +302,18 @@ describe('outbound-gold replay runner', () => {
     expect(result.rows[0]?.kind).toBe('booking');
     expect(result.rows[0]?.cards?.[0]?.guests?.[0]?.conf).toBeNull();
     expect(scoreOutboundGoldFixture(result.rows).pass).toBe(true);
+  });
+
+  it('counts a failed extract in stdout and does not treat it as covered', async () => {
+    const result = await runOutboundGoldReplay([THREAD_A], {
+      ...deps({
+        extract: async () => ({ ok: false }),
+      }),
+    });
+    expect(result.summary.extractFailed).toBe(1);
+    expect(result.summary.covered).toBe(0);
+    expect(result.misses).toEqual([{ id: 'message-fixture-1', reason: 'extract_failed' }]);
+    expect(result.rows).toHaveLength(0);
+    expect(JSON.parse(formatReplayStdout(result.summary)).extractFailed).toBe(1);
   });
 });

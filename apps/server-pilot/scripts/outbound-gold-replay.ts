@@ -34,6 +34,7 @@ import {
   type QuoteAttachmentRow,
   type SyncedQuoteSelection,
 } from '../src/ai/quote-workflow-synced-selection.js';
+import { MESSAGE_ARRIVED_AT } from '../src/ai/message-arrival-time.js';
 import { closeDb, getDb, type DB } from '../src/db/client.js';
 import { attachment, mailboxTransport, message } from '../src/db/schema/mail.js';
 
@@ -73,6 +74,7 @@ export type ReplayStdout = {
   lettersCovered: number;
   lettersUncovered: number;
   cards: number;
+  extractFailed: number;
   check: typeof REPLAY_CHECK;
   quoteThreads: number;
   visionParity: typeof OUTBOUND_GOLD_VISION_PARITY;
@@ -211,26 +213,24 @@ function jsonl(rows: readonly object[]): string {
   return rows.length ? `${rows.map((row) => JSON.stringify(row)).join('\n')}\n` : '';
 }
 
+/** Mailbox arrival. Never sender Date (`sentAt`). */
 export function inboundAt(row: {
+  arrivedAt?: Date | null;
   receivedAt: Date | null;
-  sentAt: Date | null;
   createdAt: Date;
 }): Date {
-  return row.receivedAt ?? row.sentAt ?? row.createdAt;
-}
-
-function outboundAt(row: { sentAt: Date | null; receivedAt: Date | null; createdAt: Date }): Date {
-  return row.sentAt ?? row.receivedAt ?? row.createdAt;
+  return row.arrivedAt ?? row.receivedAt ?? row.createdAt;
 }
 
 export type InboundStamp = {
   messageId: string;
+  arrivedAt?: Date | null;
   receivedAt: Date | null;
   sentAt: Date | null;
   createdAt: Date;
 };
 
-/** Sort by inboundAt, not SQL receivedAt (nulls last). */
+/** Sort by mailbox arrival, not SQL receivedAt (nulls last) and not sender Date. */
 export function orderInboundRequests<T extends InboundStamp>(
   rows: readonly T[],
 ): Array<T & { at: Date; until: Date | null }> {
@@ -258,6 +258,7 @@ export async function runOutboundGoldReplay(
   let lettersCovered = 0;
   let lettersUncovered = 0;
   let cards = 0;
+  let extractFailed = 0;
   let quoteThreads = 0;
   let units = 0;
 
@@ -289,6 +290,7 @@ export async function runOutboundGoldReplay(
         mailbox: trigger.mailbox,
       });
       if (!extracted.ok) {
+        extractFailed += 1;
         misses.push({ id: trigger.messageId, reason: 'extract_failed' });
         continue;
       }
@@ -343,6 +345,7 @@ export async function runOutboundGoldReplay(
       lettersCovered,
       lettersUncovered,
       cards,
+      extractFailed,
       check: REPLAY_CHECK,
       quoteThreads,
       visionParity: OUTBOUND_GOLD_VISION_PARITY,
@@ -371,13 +374,15 @@ export async function loadReplayRequests(db: ReadOnlyDb, threadId: string): Prom
         transportId: message.transportId,
         fromAddress: message.fromAddress,
         mailbox: mailboxTransport.email,
+        arrivedAt: MESSAGE_ARRIVED_AT,
         receivedAt: message.receivedAt,
         sentAt: message.sentAt,
         createdAt: message.createdAt,
       })
       .from(message)
       .leftJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
-      .where(and(eq(message.threadId, threadId), eq(message.direction, 'inbound')));
+      .where(and(eq(message.threadId, threadId), eq(message.direction, 'inbound')))
+      .orderBy(asc(MESSAGE_ARRIVED_AT), asc(message.id));
     if (!rows.length) return [];
     if (new Set(rows.map((row) => row.transportId)).size > 1) return [];
     return orderInboundRequests(rows).map((row) => ({
@@ -410,6 +415,7 @@ export async function loadReplayArtifacts(
         contentId: attachment.contentId,
         sha256: attachment.sha256,
         subject: message.subject,
+        arrivedAt: MESSAGE_ARRIVED_AT,
         sentAt: message.sentAt,
         receivedAt: message.receivedAt,
         createdAt: message.createdAt,
@@ -426,6 +432,7 @@ export async function loadReplayArtifacts(
     const replies = await tx
       .select({
         id: message.id,
+        arrivedAt: MESSAGE_ARRIVED_AT,
         sentAt: message.sentAt,
         receivedAt: message.receivedAt,
         createdAt: message.createdAt,
@@ -438,11 +445,11 @@ export async function loadReplayArtifacts(
           eq(message.direction, 'outbound'),
         ),
       )
-      .orderBy(asc(message.sentAt), asc(message.createdAt), asc(message.id));
+      .orderBy(asc(MESSAGE_ARRIVED_AT), asc(message.id));
     return { files, replies };
   });
 
-  const timedFiles = outbound.files.map((row) => ({ ...row, at: outboundAt(row) }));
+  const timedFiles = outbound.files.map((row) => ({ ...row, at: inboundAt(row) }));
   const windowFiles = selectRequestOutbound(timedFiles, trigger.at, trigger.until);
   const letterRows = windowFiles.filter((row) => isConfirmationLetterFilename(row.filename));
   const reader = letterRows.length
@@ -461,7 +468,7 @@ export async function loadReplayArtifacts(
     });
   }
   const reply = selectRequestOutbound(
-    outbound.replies.map((row) => ({ ...row, at: outboundAt(row) })),
+    outbound.replies.map((row) => ({ ...row, at: inboundAt(row) })),
     trigger.at,
     trigger.until,
   )[0];

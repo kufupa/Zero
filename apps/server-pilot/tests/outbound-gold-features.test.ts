@@ -122,6 +122,23 @@ describe('checkLetterCoverage', () => {
     expect(amend.pass).toBe(false);
   });
 
+  it('waives confirmation only when the card has no number', () => {
+    const noNumber = checkLetterCoverage({
+      letters: [letter({ id: 'letter-a' })],
+      cards: [card({ id: 'card-1', guests: [{ guest: FIXTURE_GUEST_A, conf: null }] })],
+      requireConfirmation: false,
+    });
+    expect(noNumber.pass).toBe(true);
+
+    const differ = checkLetterCoverage({
+      letters: [letter({ id: 'letter-a' })],
+      cards: [card({ id: 'card-1', guests: [{ guest: FIXTURE_GUEST_A, conf: CONF_B }] })],
+      requireConfirmation: false,
+    });
+    expect(differ.pass).toBe(false);
+    expect(differ.lettersUncovered).toBe(1);
+  });
+
   it('requires a distinct card per distinct date set', () => {
     const result = checkLetterCoverage({
       letters: [letter({ id: 'letter-a' }), letter({ id: 'letter-b', arrival: ARRIVAL_B, conf: CONF_B })],
