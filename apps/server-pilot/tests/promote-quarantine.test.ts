@@ -4,9 +4,17 @@ import {
   isCenturionIngestMailboxId,
   isPromotableReserveCloudStaff,
   parsePromoteCliArgs,
+  promoteCliIsDryRun,
   promoteMissingOwnerHeaderQuarantine,
   PromoteEnvError,
 } from '../src/mail/ingest/promote-quarantine';
+import {
+  DAVINCI_TRANSPORT_EMAIL,
+  DAVINCI_TRANSPORT_ID,
+  FAITH_TRANSPORT_EMAIL,
+  FAITH_TRANSPORT_ID,
+} from '../src/db/seed';
+import * as ingestFanout from '../src/mail/ingest/fanout';
 import {
   aiWorkflowRun,
   mailIngestQuarantine,
@@ -111,16 +119,31 @@ function reserveCloudWrapperEml(): Buffer {
   );
 }
 
-function reserveCloudNoreplyEml(): Buffer {
+function twoHotelBoxEml(): Buffer {
   return Buffer.from(
     [
-      'From: noreply@noreply.reservecloud.com',
-      'To: centurion@legacyhotels.co.za, guest@example.com',
-      'Subject: ReserveCloud automated notice',
+      `From: guest@example.test`,
+      `To: ${DAVINCI_TRANSPORT_EMAIL}, ${FAITH_TRANSPORT_EMAIL}`,
+      'Subject: two hotel boxes',
       'MIME-Version: 1.0',
       'Content-Type: text/plain; charset=utf-8',
       '',
-      'Automated notice.',
+      'Promote two mailbox copies.',
+    ].join('\r\n'),
+    'utf-8',
+  );
+}
+
+function unroutablePromoteEml(): Buffer {
+  return Buffer.from(
+    [
+      'From: guest@example.test',
+      'To: guest-copy@example.test',
+      'Subject: no hotel mailbox',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'No hotel identity in To/Cc/Bcc/From.',
     ].join('\r\n'),
     'utf-8',
   );
@@ -308,12 +331,34 @@ describe('promote-quarantine cli helpers', () => {
   it('parses dry-run and limit flags', () => {
     expect(parsePromoteCliArgs(['--dry-run', '--limit', '5'])).toEqual({
       dryRun: true,
+      apply: false,
       limit: 5,
+      reason: undefined,
     });
     expect(parsePromoteCliArgs(['--limit=3'])).toEqual({
       dryRun: false,
+      apply: false,
       limit: 3,
+      reason: undefined,
     });
+  });
+
+  it('defaults the script to dry-run unless --apply is explicit', () => {
+    expect(promoteCliIsDryRun(parsePromoteCliArgs([]))).toBe(true);
+    expect(promoteCliIsDryRun(parsePromoteCliArgs(['--dry-run']))).toBe(true);
+    expect(promoteCliIsDryRun(parsePromoteCliArgs(['--apply', '--limit', '2']))).toBe(false);
+    expect(parsePromoteCliArgs(['--apply', '--reason', 'multi_transport'])).toEqual({
+      dryRun: false,
+      apply: true,
+      reason: 'multi_transport',
+      limit: undefined,
+    });
+    expect(() => parsePromoteCliArgs(['--apply', '--dry-run'])).toThrow(
+      /--apply and --dry-run cannot be combined/,
+    );
+    expect(() => parsePromoteCliArgs(['--reason', 'parse_failure'])).toThrow(
+      /--reason requires missing_owner_header or multi_transport/,
+    );
   });
 
   it('rejects promote when owner-header toggle strict', () => {
@@ -515,7 +560,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
     }, 30000);
 
-    it('skips wrappers, noreply, and rows with another quarantine reason', async () => {
+    it('keeps unroutable rows quarantined and ignores other quarantine reasons', async () => {
       const storage = withFakeS3();
 
       await withIngestOwnerHeaderEnv('false', async () => {
@@ -526,11 +571,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             pop3Uidl: 'uidl-promote-wrapper',
             raw: reserveCloudWrapperEml(),
           });
-          const noreply = await seedMissingOwnerQuarantine({
+          const unroutable = await seedMissingOwnerQuarantine({
             db,
             storage,
-            pop3Uidl: 'uidl-promote-noreply',
-            raw: reserveCloudNoreplyEml(),
+            pop3Uidl: 'uidl-promote-unroutable',
+            raw: unroutablePromoteEml(),
           });
           const otherReason = await seedMissingOwnerQuarantine({
             db,
@@ -550,13 +595,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             result,
             rows,
             messages,
-            ids: [wrapper.quarantineId, noreply.quarantineId, otherReason.quarantineId],
+            ids: [wrapper.quarantineId, unroutable.quarantineId, otherReason.quarantineId],
           };
         });
 
         expect(outcome.result.scanned).toBe(2);
-        expect(outcome.result.skipped).toBe(2);
         expect(outcome.result.stored).toBe(0);
+        expect(outcome.result.quarantined).toBe(2);
         expect(outcome.result.errors).toBe(0);
         expect(outcome.rows.map((row) => row.id)).toEqual(expect.arrayContaining(outcome.ids));
         expect(outcome.messages).toHaveLength(0);
@@ -658,6 +703,133 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(outcome.errors).toBe(1);
         expect(storage.listKeys('attachments/')).toEqual([]);
       });
+    }, 30000);
+
+    it('promotes a two-mailbox row to two messages and enqueues no AI runs', async () => {
+      const storage = withFakeS3();
+      const pop3Uidl = 'uidl-promote-two-boxes';
+      const raw = twoHotelBoxEml();
+      const prevGate = process.env.AI_WRITE_GATE_ENABLED;
+      process.env.AI_WRITE_GATE_ENABLED = 'true';
+
+      try {
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const outcome = await withSeededTestDb(async (db) => {
+            const { quarantineId } = await seedMissingOwnerQuarantine({
+              db,
+              storage,
+              pop3Uidl,
+              raw,
+              reason: 'multi_transport',
+            });
+
+            const result = await promoteMissingOwnerHeaderQuarantine({
+              db,
+              storage,
+            });
+            const quarantineRows = await db
+              .select()
+              .from(mailIngestQuarantine)
+              .where(eq(mailIngestQuarantine.id, quarantineId));
+            const messages = await db.select().from(message);
+            const triageRuns =
+              messages.length > 0
+                ? await db.select().from(aiWorkflowRun)
+                : [];
+
+            return { result, quarantineRows, messages, triageRuns };
+          });
+
+          expect(outcome.result.stored).toBe(1);
+          expect(outcome.result.errors).toBe(0);
+          expect(outcome.quarantineRows).toHaveLength(0);
+          expect(outcome.messages).toHaveLength(2);
+          expect(outcome.messages.map((row) => row.transportId).sort()).toEqual([
+            DAVINCI_TRANSPORT_ID,
+            FAITH_TRANSPORT_ID,
+          ]);
+          expect(outcome.triageRuns).toHaveLength(0);
+        });
+      } finally {
+        if (prevGate === undefined) delete process.env.AI_WRITE_GATE_ENABLED;
+        else process.env.AI_WRITE_GATE_ENABLED = prevGate;
+      }
+    }, 30000);
+
+    it('dry-run of a two-mailbox row writes nothing', async () => {
+      const storage = withFakeS3();
+      const pop3Uidl = 'uidl-promote-two-boxes-dry';
+      const raw = twoHotelBoxEml();
+
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          const { quarantineId } = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl,
+            raw,
+            reason: 'multi_transport',
+          });
+
+          const result = await promoteMissingOwnerHeaderQuarantine({
+            db,
+            storage,
+            dryRun: true,
+          });
+          const quarantineRows = await db
+            .select()
+            .from(mailIngestQuarantine)
+            .where(eq(mailIngestQuarantine.id, quarantineId));
+          const messages = await db.select().from(message);
+
+          return { result, quarantineRows, messages, quarantineId };
+        });
+
+        expect(outcome.result.dryRunIds).toEqual([outcome.quarantineId]);
+        expect(outcome.result.stored).toBe(0);
+        expect(outcome.quarantineRows).toHaveLength(1);
+        expect(outcome.messages).toHaveLength(0);
+      });
+    }, 30000);
+
+    it('keeps the quarantine row when a mailbox copy fails', async () => {
+      const storage = withFakeS3();
+      const pop3Uidl = 'uidl-promote-copy-fail';
+      const raw = twoHotelBoxEml();
+      const copiesSpy = vi.spyOn(ingestFanout, 'completeFanoutAfterPrimary').mockResolvedValue(false);
+
+      try {
+        await withIngestOwnerHeaderEnv('false', async () => {
+          const outcome = await withSeededTestDb(async (db) => {
+            const { quarantineId } = await seedMissingOwnerQuarantine({
+              db,
+              storage,
+              pop3Uidl,
+              raw,
+              reason: 'multi_transport',
+            });
+
+            const result = await promoteMissingOwnerHeaderQuarantine({
+              db,
+              storage,
+            });
+            const quarantineRows = await db
+              .select()
+              .from(mailIngestQuarantine)
+              .where(eq(mailIngestQuarantine.id, quarantineId));
+            const messages = await db.select().from(message);
+
+            return { result, quarantineRows, messages };
+          });
+
+          expect(outcome.result.errors).toBe(1);
+          expect(outcome.result.stored).toBe(0);
+          expect(outcome.quarantineRows).toHaveLength(1);
+          expect(outcome.messages).toHaveLength(1);
+        });
+      } finally {
+        copiesSpy.mockRestore();
+      }
     }, 30000);
   },
 );

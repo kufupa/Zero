@@ -1,10 +1,12 @@
 /**
- * One-shot promote `missing_owner_header` quarantine rows into normal storage.
+ * One-shot promote `missing_owner_header` / `multi_transport` quarantine rows
+ * into normal storage.
  *
  * Requires `INGEST_REQUIRE_OWNER_HEADER=false` in process env. Fetches raw MIME
- * from S3, parses, persists (skipping quarantine short-circuit), deletes
- * quarantine atomically on store. Duplicate UIDL (any direction) clears
- * quarantine without inserting a second message.
+ * from S3, parses, persists. The Penny ReserveCloud staff path keeps the
+ * Centurion override, forced outbound, and in-transaction quarantine delete.
+ * Every other row uses normal routing plus mailbox copies (`skipAiEnqueue`)
+ * and deletes quarantine only after the primary and every copy succeed.
  */
 import {
   candidateMessageIdForPop3Uidl,
@@ -13,6 +15,7 @@ import {
   type ParsedInboundMessage,
 } from './parse-message.js';
 import { cleanupPartialParseFailureAttachments, persistInboundMessage } from './store.js';
+import { completeFanoutAfterPrimary } from './fanout.js';
 import { simpleParser, type AddressObject, type EmailAddress } from 'mailparser';
 import { mailIngestQuarantine, message } from '../../db/schema/mail.js';
 import { getS3Storage, type S3Storage } from '../../storage/s3.js';
@@ -20,7 +23,9 @@ import { ingestRequireOwnerHeader } from '../../env.js';
 import type { DB } from '../../db/client.js';
 import { and, asc, eq, inArray } from 'drizzle-orm';
 
-const PROMOTE_REASON = 'missing_owner_header';
+export const PROMOTE_REASONS = ['missing_owner_header', 'multi_transport'] as const;
+export type PromoteReason = (typeof PROMOTE_REASONS)[number];
+const PROMOTE_REASON_SET: ReadonlySet<string> = new Set(PROMOTE_REASONS);
 const RESERVE_CLOUD_PENNY_EMAIL = 'pmbobo@eu.mail.reservecloud.com';
 const LEGACY_PENNY_EMAIL = 'pmbobo@legacyhotels.co.za';
 export const CENTURION_TRANSPORT_ID = 'transport-centurion';
@@ -43,6 +48,7 @@ export interface PromoteQuarantineOptions {
   storage?: S3Storage;
   limit?: number;
   dryRun?: boolean;
+  reason?: PromoteReason;
 }
 
 export interface PromoteQuarantineCounts {
@@ -101,6 +107,7 @@ export function isPromotableReserveCloudStaff(parsed: PromoteReserveCloudStaffSi
 export async function listMissingOwnerHeaderQuarantine(
   db: DB,
   limit?: number,
+  reasons: readonly PromoteReason[] = PROMOTE_REASONS,
 ): Promise<PromoteQuarantineRow[]> {
   const query = db
     .select({
@@ -112,7 +119,7 @@ export async function listMissingOwnerHeaderQuarantine(
     .from(mailIngestQuarantine)
     .where(
       and(
-        eq(mailIngestQuarantine.reason, PROMOTE_REASON),
+        inArray(mailIngestQuarantine.reason, [...reasons]),
         inArray(mailIngestQuarantine.ingestMailboxId, [...CENTURION_INGEST_MAILBOX_IDS]),
       ),
     )
@@ -130,7 +137,8 @@ export async function promoteMissingOwnerHeaderQuarantine(
   assertPromoteEnv();
 
   const storage = opts.storage ?? getS3Storage();
-  const rows = await listMissingOwnerHeaderQuarantine(opts.db, opts.limit);
+  const reasons: readonly PromoteReason[] = opts.reason ? [opts.reason] : PROMOTE_REASONS;
+  const rows = await listMissingOwnerHeaderQuarantine(opts.db, opts.limit, reasons);
 
   const result: PromoteQuarantineResult = {
     scanned: rows.length,
@@ -209,42 +217,75 @@ async function promoteOneQuarantineRow(
     // convenience parser only inspects headers here; promotion parses again
     // through the streaming parser so existing attachment cleanup remains.
     const headerSignals = await parsePromotionSignals(object.body);
-    if (!isPromotableReserveCloudStaff(headerSignals)) {
-      return { kind: 'skipped' };
+    if (isPromotableReserveCloudStaff(headerSignals)) {
+      if (opts.dryRun) {
+        return { kind: 'dry-run' };
+      }
+
+      const existing = await findExistingMessageAnyDirection(db, meta);
+      if (existing) {
+        await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
+        return { kind: 'duplicate' };
+      }
+
+      parsed = await parseRawMessage(object.body, {
+        messageId,
+        storage,
+      });
+
+      // Re-check parser output before persistence. This keeps the exact sender
+      // and recipient gate attached to the bytes being promoted.
+      if (!isPromotableReserveCloudStaff(parsed)) {
+        if (parsed.attachments.length > 0) {
+          await cleanupPartialParseFailureAttachments({
+            db,
+            storage,
+            attachments: parsed.attachments,
+            meta: {
+              ...meta,
+              messageId,
+              rawMimeS3Key: row.rawMimeS3Key,
+            },
+          });
+        }
+        return { kind: 'skipped' };
+      }
+
+      const persistResult = await persistInboundMessage(
+        parsed,
+        object.body,
+        {
+          ...meta,
+          messageId,
+          rawMimeS3Key: row.rawMimeS3Key,
+        },
+        {
+          db,
+          storage,
+          promoteQuarantineId: row.id,
+          transportOverride: CENTURION_TRANSPORT_ID,
+          directionOverride: 'outbound',
+        },
+      );
+
+      if (persistResult.kind === 'stored') {
+        return { kind: 'stored' };
+      }
+      if (persistResult.kind === 'duplicate') {
+        await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
+        return { kind: 'duplicate' };
+      }
+      return { kind: 'quarantined' };
     }
 
     if (opts.dryRun) {
       return { kind: 'dry-run' };
     }
 
-    const existing = await findExistingMessageAnyDirection(db, meta);
-    if (existing) {
-      await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
-      return { kind: 'duplicate' };
-    }
-
     parsed = await parseRawMessage(object.body, {
       messageId,
       storage,
     });
-
-    // Re-check parser output before persistence. This keeps the exact sender
-    // and recipient gate attached to the bytes being promoted.
-    if (!isPromotableReserveCloudStaff(parsed)) {
-      if (parsed.attachments.length > 0) {
-        await cleanupPartialParseFailureAttachments({
-          db,
-          storage,
-          attachments: parsed.attachments,
-          meta: {
-            ...meta,
-            messageId,
-            rawMimeS3Key: row.rawMimeS3Key,
-          },
-        });
-      }
-      return { kind: 'skipped' };
-    }
 
     const persistResult = await persistInboundMessage(
       parsed,
@@ -257,20 +298,40 @@ async function promoteOneQuarantineRow(
       {
         db,
         storage,
-        promoteQuarantineId: row.id,
-        transportOverride: CENTURION_TRANSPORT_ID,
-        directionOverride: 'outbound',
+        deferQuarantineDelete: true,
+        skipAiEnqueue: true,
       },
     );
 
-    if (persistResult.kind === 'stored') {
-      return { kind: 'stored' };
+    if (persistResult.kind === 'quarantined') {
+      return { kind: 'quarantined' };
     }
-    if (persistResult.kind === 'duplicate') {
-      await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
-      return { kind: 'duplicate' };
+    if (
+      persistResult.kind !== 'stored' &&
+      persistResult.kind !== 'duplicate' &&
+      persistResult.kind !== 'reconciled'
+    ) {
+      return { kind: 'error', message: persistResult.kind };
     }
-    return { kind: 'quarantined' };
+
+    const copiesOk = await completeFanoutAfterPrimary({
+      db,
+      storage,
+      raw: object.body,
+      meta: {
+        ...meta,
+        messageId,
+        rawMimeS3Key: persistResult.rawMimeS3Key,
+      },
+      persistResult,
+      skipAiEnqueue: true,
+    });
+    if (!copiesOk) {
+      return { kind: 'error', message: 'fanout_copy_failed' };
+    }
+
+    await db.delete(mailIngestQuarantine).where(eq(mailIngestQuarantine.id, row.id));
+    return persistResult.kind === 'duplicate' ? { kind: 'duplicate' } : { kind: 'stored' };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const uploadedAttachments = [
@@ -321,17 +382,30 @@ async function findExistingMessageAnyDirection(
 
 export interface PromoteCliArgs {
   dryRun: boolean;
+  apply: boolean;
   limit?: number;
+  reason?: PromoteReason;
+}
+
+/** Script default: dry-run unless `--apply`. Recover keeps using `dryRun` only. */
+export function promoteCliIsDryRun(cli: PromoteCliArgs): boolean {
+  return !cli.apply;
 }
 
 export function parsePromoteCliArgs(argv: string[]): PromoteCliArgs {
   let dryRun = false;
+  let apply = false;
   let limit: number | undefined;
+  let reason: PromoteReason | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--dry-run') {
       dryRun = true;
+      continue;
+    }
+    if (arg === '--apply') {
+      apply = true;
       continue;
     }
     if (arg === '--limit') {
@@ -351,14 +425,37 @@ export function parsePromoteCliArgs(argv: string[]): PromoteCliArgs {
       limit = Number(value);
       continue;
     }
+    if (arg === '--reason') {
+      const next = argv[i + 1];
+      if (!next || next.startsWith('--')) {
+        throw new Error('--reason requires missing_owner_header or multi_transport');
+      }
+      reason = parsePromoteReason(next);
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith('--reason=')) {
+      reason = parsePromoteReason(arg.slice('--reason='.length));
+      continue;
+    }
     throw new Error(`unknown argument: ${arg}`);
   }
 
+  if (apply && dryRun) {
+    throw new Error('--apply and --dry-run cannot be combined');
+  }
   if (limit !== undefined && (!Number.isInteger(limit) || limit < 1)) {
     throw new Error('--limit requires a positive integer');
   }
 
-  return { dryRun, limit };
+  return { dryRun, apply, limit, reason };
+}
+
+function parsePromoteReason(value: string): PromoteReason {
+  if (!PROMOTE_REASON_SET.has(value)) {
+    throw new Error('--reason requires missing_owner_header or multi_transport');
+  }
+  return value as PromoteReason;
 }
 
 export function formatPromoteSummary(result: PromoteQuarantineResult): string {
