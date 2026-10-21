@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { mailboxTransport, message } from '../src/db/schema/mail.js';
+import { eq } from 'drizzle-orm';
+import {
+  mailIngestQuarantine,
+  mailboxTransport,
+  message,
+} from '../src/db/schema/mail.js';
 import type { DB } from '../src/db/client.js';
 import {
   parseRawMessage,
   generateMessageId,
+  candidateMessageIdForPop3Uidl,
   type ParsedInboundMessage,
 } from '../src/mail/ingest/parse-message.js';
 import {
@@ -12,6 +18,10 @@ import {
   resolveTransportMatch,
   type TransportMatchCandidate,
 } from '../src/mail/ingest/store.js';
+import {
+  fanoutCopyPop3Uidl,
+  persistFanoutCopies,
+} from '../src/mail/ingest/fanout.js';
 import { FakeS3Storage } from '../src/storage/s3.js';
 
 type QueryRows = unknown[];
@@ -699,6 +709,173 @@ describe('persistInboundMessage fail-closed transport match', () => {
     expect(result.transportId).toBe(HOTEL_B.id);
   });
 
+  it('does not fan out a copy to a hotel named only in Sender', async () => {
+    const cen = {
+      id: 'transport-centurion',
+      email: 'hotel-cen@example.test',
+      sendFromConfig: null,
+    };
+    const fth = {
+      id: 'transport-faith',
+      email: 'hotel-fth@example.test',
+      sendFromConfig: null,
+    };
+    const fake = dbWithActiveTransports([
+      { ...cen, ownerHeaderValue: cen.email },
+      { ...fth, ownerHeaderValue: fth.email },
+    ]);
+    const result = await persistSynthetic(
+      syntheticEml({
+        from: 'guest@example.test',
+        to: cen.email,
+        extraHeaders: [`Sender: ${fth.email}`],
+        subject: 'sender only is not a copy',
+      }),
+      'uidl-sender-only-no-copy',
+      fake.db,
+    );
+    expect(result.kind).toBe('stored');
+    if (result.kind !== 'stored') return;
+    expect(result.transportId).toBe(cen.id);
+    expect(result.fanoutTransportIds ?? []).toEqual([]);
+  });
+
+  it('does not copy a Cc alias shared by two other hotels', async () => {
+    const cen = {
+      id: 'transport-centurion',
+      email: 'hotel-cen@example.test',
+      sendFromConfig: null,
+    };
+    const dav = {
+      id: 'transport-davinci',
+      email: 'hotel-dav@example.test',
+      sendFromConfig: { aliases: ['shared-desk@example.test'] },
+    };
+    const fth = {
+      id: 'transport-faith',
+      email: 'hotel-fth@example.test',
+      sendFromConfig: { aliases: ['shared-desk@example.test'] },
+    };
+    const fake = dbWithActiveTransports([
+      { ...cen, ownerHeaderValue: cen.email },
+      { ...dav, ownerHeaderValue: dav.email },
+      { ...fth, ownerHeaderValue: fth.email },
+    ]);
+    const result = await persistSynthetic(
+      syntheticEml({
+        from: 'guest@example.test',
+        to: cen.email,
+        cc: 'shared-desk@example.test',
+        subject: 'shared alias is not a copy',
+      }),
+      'uidl-shared-alias-no-copy',
+      fake.db,
+    );
+    expect(result.kind).toBe('stored');
+    if (result.kind !== 'stored') return;
+    expect(result.transportId).toBe(cen.id);
+    expect(result.fanoutTransportIds ?? []).toEqual([]);
+  });
+
+  it('copy persist never inserts quarantine when the override cannot resolve', async () => {
+    let quarantineInserts = 0;
+    const fake = dbWithActiveTransports([
+      { ...HOTEL_A, ownerHeaderValue: HOTEL_A.email },
+    ]);
+    const db = {
+      ...fake.db,
+      insert: (table: unknown) => ({
+        values: async () => {
+          if (table === mailIngestQuarantine) quarantineInserts += 1;
+          return undefined;
+        },
+      }),
+    } as unknown as DB;
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const raw = syntheticEml({
+      from: 'guest@example.test',
+      to: HOTEL_A.email,
+      subject: 'copy unresolved override',
+    });
+    const messageId = generateMessageId();
+    const parsed = await parseRawMessage(raw, { messageId, storage });
+    const result = await persistInboundMessage(
+      parsed,
+      raw,
+      {
+        ingestMailboxId: 'ingest-nava-legacy',
+        pop3Uidl: 'uidl-copy-no-quarantine',
+        messageId,
+      },
+      {
+        db,
+        storage,
+        skipAiEnqueue: true,
+        fanoutCopy: true,
+        transportOverride: 'transport-missing',
+      },
+    );
+    expect(result.kind).toBe('failed');
+    if (result.kind !== 'failed') return;
+    expect(result.code).toBe('unresolved_override');
+    expect(quarantineInserts).toBe(0);
+  });
+
+  it('failed copy persist returns uploaded attachment keys', async () => {
+    const fake = dbWithActiveTransports([
+      { ...HOTEL_A, ownerHeaderValue: HOTEL_A.email },
+    ]);
+    const storage = new FakeS3Storage('test-mail-bucket');
+    const raw = Buffer.from(
+      [
+        'From: guest@example.test',
+        `To: ${HOTEL_A.email}`,
+        'Subject: copy fail keys',
+        'MIME-Version: 1.0',
+        'Content-Type: multipart/mixed; boundary="b1"',
+        '',
+        '--b1',
+        'Content-Type: text/plain; charset=utf-8',
+        '',
+        'Synthetic body.',
+        '--b1',
+        'Content-Type: application/octet-stream; name="note.bin"',
+        'Content-Disposition: attachment; filename="note.bin"',
+        'Content-Transfer-Encoding: base64',
+        '',
+        'ZmFuLW91dA==',
+        '--b1--',
+      ].join('\r\n'),
+      'utf8',
+    );
+    const messageId = generateMessageId();
+    const parsed = await parseRawMessage(raw, { messageId, storage });
+    expect(parsed.attachments.length).toBeGreaterThan(0);
+    const result = await persistInboundMessage(
+      parsed,
+      raw,
+      {
+        ingestMailboxId: 'ingest-nava-legacy',
+        pop3Uidl: 'uidl-copy-fail-keys',
+        messageId,
+      },
+      {
+        db: fake.db,
+        storage,
+        skipAiEnqueue: true,
+        fanoutCopy: true,
+        transportOverride: 'transport-missing',
+      },
+    );
+    expect(result.kind).toBe('failed');
+    if (result.kind !== 'failed') return;
+    expect(result.code).toBe('unresolved_override');
+    expect(result.uploadedAttachmentKeys.length).toBeGreaterThan(0);
+    expect(
+      result.uploadedAttachmentKeys.every((key) => key.startsWith(`attachments/${messageId}/`)),
+    ).toBe(true);
+  });
+
   it('keeps fromHeaderAddress on From when Sender differs', async () => {
     const parsed = await parseRawMessage(
       syntheticEml({
@@ -820,7 +997,7 @@ describe('persistInboundMessage fail-closed transport match', () => {
     expect(result.transportId).toBe(HOTEL_A.id);
   });
 
-  it('quarantines stamp A plus To A and B as multi_transport', async () => {
+  it('stores corroborated stamp A when To names A and B', async () => {
     const fake = dbWithActiveTransports([
       { ...HOTEL_A, ownerHeaderValue: HOTEL_A.email },
       { ...HOTEL_B, ownerHeaderValue: HOTEL_B.email },
@@ -830,14 +1007,14 @@ describe('persistInboundMessage fail-closed transport match', () => {
         from: 'guest@example.test',
         to: `${HOTEL_A.email}, ${HOTEL_B.email}`,
         ownerHeader: HOTEL_A.email,
-        subject: 'stamp cannot beat multi',
+        subject: 'stamp before multi',
       }),
       'uidl-stamp-multi',
       fake.db,
     );
-    expect(result.kind).toBe('quarantined');
-    if (result.kind !== 'quarantined') return;
-    expect(result.reason).toBe('multi_transport');
+    expect(result.kind).toBe('stored');
+    if (result.kind !== 'stored') return;
+    expect(result.transportId).toBe(HOTEL_A.id);
   });
 
   it('routes own outbound echo with stamp to the sending transport', async () => {
@@ -917,5 +1094,332 @@ describe('persistInboundMessage fail-closed transport match', () => {
     expect(result.kind).toBe('quarantined');
     if (result.kind !== 'quarantined') return;
     expect(result.reason).toBe('ambiguous_transport');
+  });
+});
+
+const INGEST_MAILBOX_ID = 'ingest-nava-legacy';
+const CEN_ID = 'transport-centurion';
+const DAV_ID = 'transport-davinci';
+const FTH_ID = 'transport-faith';
+const OTHER_ID = 'transport-other';
+const CEN_EMAIL = 'hotel-cen@example.test';
+const DAV_EMAIL = 'hotel-dav@example.test';
+const FTH_EMAIL = 'hotel-fth@example.test';
+const OTHER_EMAIL = 'hotel-other@example.test';
+
+async function seedFanoutHotels(
+  db: DB,
+  extra?: { other?: boolean; sharedDavOnFaith?: boolean },
+): Promise<void> {
+  await db
+    .update(mailboxTransport)
+    .set({
+      email: CEN_EMAIL,
+      ownerHeaderValue: CEN_EMAIL,
+      sendFromConfig: { aliases: ['hotel-cen-desk@example.test'] },
+      isActive: true,
+    })
+    .where(eq(mailboxTransport.id, CEN_ID));
+  await db
+    .insert(mailboxTransport)
+    .values([
+      {
+        id: DAV_ID,
+        email: DAV_EMAIL,
+        ownerHeaderValue: DAV_EMAIL,
+        mailboxType: 'personal',
+        isActive: true,
+        sendFromConfig: { aliases: ['hotel-dav-desk@example.test'] },
+      },
+      {
+        id: FTH_ID,
+        email: FTH_EMAIL,
+        ownerHeaderValue: FTH_EMAIL,
+        mailboxType: 'personal',
+        isActive: true,
+        sendFromConfig: extra?.sharedDavOnFaith
+          ? { aliases: [DAV_EMAIL] }
+          : { aliases: ['hotel-fth-desk@example.test'] },
+      },
+    ]);
+  if (extra?.other) {
+    await db.insert(mailboxTransport).values({
+      id: OTHER_ID,
+      email: OTHER_EMAIL,
+      ownerHeaderValue: OTHER_EMAIL,
+      mailboxType: 'personal',
+      isActive: true,
+      sendFromConfig: null,
+    });
+  }
+}
+
+async function persistPrimaryAndCopies(args: {
+  db: DB;
+  raw: Buffer;
+  pop3Uidl: string;
+  storage?: FakeS3Storage;
+}) {
+  const storage = args.storage ?? new FakeS3Storage('test-mail-bucket');
+  const messageId = candidateMessageIdForPop3Uidl(INGEST_MAILBOX_ID, args.pop3Uidl);
+  const parsed = await parseRawMessage(args.raw, { messageId, storage });
+  const meta = {
+    ingestMailboxId: INGEST_MAILBOX_ID,
+    pop3Uidl: args.pop3Uidl,
+    messageId,
+  };
+  const primary = await persistInboundMessage(parsed, args.raw, meta, {
+    db: args.db,
+    storage,
+    skipAiEnqueue: true,
+  });
+  let copies: Awaited<ReturnType<typeof persistFanoutCopies>> | undefined;
+  if (
+    primary.kind === 'stored' ||
+    primary.kind === 'duplicate' ||
+    primary.kind === 'reconciled'
+  ) {
+    copies = await persistFanoutCopies({
+      db: args.db,
+      storage,
+      raw: args.raw,
+      meta: { ...meta, rawMimeS3Key: primary.rawMimeS3Key },
+      transportIds: primary.fanoutTransportIds ?? [],
+      skipAiEnqueue: true,
+    });
+  }
+  return { primary, copies, storage, messageId };
+}
+
+describe.skipIf(!ingestionDbAvailable)('mailbox fan-out routing', () => {
+  it('1. stamped hotel mail To three hotel boxes keeps primary id and raw UIDL plus two copies', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db);
+      const pop3Uidl = 'uidl-fanout-stamp-three';
+      const { primary, copies, messageId } = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl,
+        raw: syntheticEml({
+          from: 'guest@example.test',
+          to: `${CEN_EMAIL}, ${DAV_EMAIL}, ${FTH_EMAIL}`,
+          ownerHeader: CEN_EMAIL,
+          subject: 'stamped three hotel boxes',
+        }),
+      });
+      expect(primary.kind).toBe('stored');
+      if (primary.kind !== 'stored') return;
+      expect(primary.transportId).toBe(CEN_ID);
+      expect(primary.messageId).toBe(messageId);
+      expect(primary.messageId).toBe(
+        candidateMessageIdForPop3Uidl(INGEST_MAILBOX_ID, pop3Uidl),
+      );
+      expect(primary.fanoutTransportIds).toEqual([DAV_ID, FTH_ID]);
+      expect(copies?.results.map((row) => row.transportId)).toEqual([DAV_ID, FTH_ID]);
+      expect(copies?.results.every((row) => row.result.kind === 'stored')).toBe(true);
+      const rows = await db.select().from(message);
+      expect(rows).toHaveLength(3);
+      const byTransport = Object.fromEntries(rows.map((row) => [row.transportId, row]));
+      expect(byTransport[CEN_ID]?.id).toBe(messageId);
+      expect(byTransport[CEN_ID]?.pop3Uidl).toBe(pop3Uidl);
+      expect(byTransport[DAV_ID]?.pop3Uidl).toBe(fanoutCopyPop3Uidl(pop3Uidl, DAV_ID));
+      expect(byTransport[FTH_ID]?.pop3Uidl).toBe(fanoutCopyPop3Uidl(pop3Uidl, FTH_ID));
+      expect(await db.select().from(mailIngestQuarantine)).toHaveLength(0);
+    });
+  });
+
+  it('2. unstamped To-unique keeps primary and copies Cc/From hotel boxes', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db);
+      const pop3Uidl = 'uidl-fanout-to-unique';
+      const { primary, copies, messageId } = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl,
+        raw: syntheticEml({
+          from: FTH_EMAIL,
+          to: CEN_EMAIL,
+          cc: DAV_EMAIL,
+          subject: 'to unique plus cc from',
+        }),
+      });
+      expect(primary.kind).toBe('stored');
+      if (primary.kind !== 'stored') return;
+      expect(primary.transportId).toBe(CEN_ID);
+      expect(primary.messageId).toBe(messageId);
+      expect(primary.fanoutTransportIds).toEqual([DAV_ID, FTH_ID]);
+      expect(copies?.results.map((row) => row.transportId)).toEqual([DAV_ID, FTH_ID]);
+      const rows = await db.select().from(message);
+      expect(rows).toHaveLength(3);
+      expect(rows.find((row) => row.transportId === CEN_ID)?.pop3Uidl).toBe(pop3Uidl);
+      expect(await db.select().from(mailIngestQuarantine)).toHaveLength(0);
+    });
+  });
+
+  it('3. To two hotel boxes stores two rows and zero quarantine', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db);
+      const pop3Uidl = 'uidl-fanout-two-hotel';
+      const { primary, copies } = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl,
+        raw: syntheticEml({
+          from: 'guest@example.test',
+          to: `${DAV_EMAIL}, ${FTH_EMAIL}`,
+          subject: 'two hotel boxes',
+        }),
+      });
+      expect(primary.kind).toBe('stored');
+      if (primary.kind !== 'stored') return;
+      expect(primary.transportId).toBe(DAV_ID);
+      expect(primary.fanoutTransportIds).toEqual([FTH_ID]);
+      expect(copies?.results).toHaveLength(1);
+      expect(copies?.results[0]?.transportId).toBe(FTH_ID);
+      expect(copies?.results[0]?.result.kind).toBe('stored');
+      const rows = await db.select().from(message);
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row) => row.transportId).sort()).toEqual([DAV_ID, FTH_ID]);
+      expect(await db.select().from(mailIngestQuarantine)).toHaveLength(0);
+    });
+  });
+
+  it('4. From hotel A To hotel B stores A outbound and B inbound', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db);
+      const pop3Uidl = 'uidl-fanout-from-to';
+      const { primary, copies } = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl,
+        raw: syntheticEml({
+          from: FTH_EMAIL,
+          to: DAV_EMAIL,
+          subject: 'from a to b',
+        }),
+      });
+      expect(primary.kind).toBe('stored');
+      if (primary.kind !== 'stored') return;
+      expect(primary.transportId).toBe(DAV_ID);
+      expect(primary.fanoutTransportIds).toEqual([FTH_ID]);
+      expect(copies?.results[0]?.result.kind).toBe('stored');
+      const rows = await db.select().from(message);
+      expect(rows).toHaveLength(2);
+      const byTransport = Object.fromEntries(rows.map((row) => [row.transportId, row]));
+      expect(byTransport[DAV_ID]?.direction).toBe('inbound');
+      expect(byTransport[FTH_ID]?.direction).toBe('outbound');
+      expect(await db.select().from(mailIngestQuarantine)).toHaveLength(0);
+    });
+  });
+
+  it('a real UIDL equal to the old copy suffix is a new message, not a copy duplicate', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db);
+      const rawUidl = 'uidl-copy-identity';
+      const collidingUidl = `${rawUidl}#t:${DAV_ID}`;
+      const first = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl: rawUidl,
+        raw: syntheticEml({
+          from: 'guest@example.test',
+          to: `${CEN_EMAIL}, ${DAV_EMAIL}`,
+          subject: 'primary then colliding uidl',
+        }),
+      });
+      expect(first.primary.kind).toBe('stored');
+      const copyUidl = fanoutCopyPop3Uidl(rawUidl, DAV_ID);
+      expect(copyUidl).not.toBe(collidingUidl);
+      const second = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl: collidingUidl,
+        raw: syntheticEml({
+          from: 'guest@example.test',
+          to: CEN_EMAIL,
+          subject: 'real uidl that looks like an old copy',
+        }),
+      });
+      expect(second.primary.kind).toBe('stored');
+      if (second.primary.kind !== 'stored') return;
+      expect(second.primary.messageId).not.toBe(first.messageId);
+      const rows = await db.select().from(message);
+      expect(rows.some((row) => row.pop3Uidl === collidingUidl)).toBe(true);
+      expect(rows.some((row) => row.pop3Uidl === copyUidl)).toBe(true);
+    });
+  });
+
+  it('copy direction uses From, not Sender, on a delegated send', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db);
+      const pop3Uidl = 'uidl-fanout-delegated-from';
+      const { primary, copies } = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl,
+        raw: syntheticEml({
+          from: FTH_EMAIL,
+          to: DAV_EMAIL,
+          extraHeaders: ['Sender: assistant@example.test'],
+          subject: 'delegated send',
+        }),
+      });
+      expect(primary.kind).toBe('stored');
+      if (primary.kind !== 'stored') return;
+      expect(primary.transportId).toBe(DAV_ID);
+      expect(primary.fanoutTransportIds).toEqual([FTH_ID]);
+      expect(copies?.results[0]?.result.kind).toBe('stored');
+      const rows = await db.select().from(message);
+      expect(rows).toHaveLength(2);
+      const byTransport = Object.fromEntries(rows.map((row) => [row.transportId, row]));
+      expect(byTransport[DAV_ID]?.direction).toBe('inbound');
+      expect(byTransport[FTH_ID]?.direction).toBe('outbound');
+      expect(byTransport[FTH_ID]?.isRead).toBe(true);
+    });
+  });
+
+  it('5. To one hotel box plus one non-hotel transport quarantines', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db, { other: true });
+      const pop3Uidl = 'uidl-fanout-hotel-plus-other';
+      const { primary, copies } = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl,
+        raw: syntheticEml({
+          from: 'guest@example.test',
+          to: `${DAV_EMAIL}, ${OTHER_EMAIL}`,
+          subject: 'hotel plus other',
+        }),
+      });
+      expect(primary.kind).toBe('quarantined');
+      if (primary.kind !== 'quarantined') return;
+      expect(primary.reason).toBe('multi_transport');
+      expect(copies).toBeUndefined();
+      expect(await db.select().from(message)).toHaveLength(0);
+      expect(await db.select().from(mailIngestQuarantine)).toHaveLength(1);
+    });
+  });
+
+  it('6. one address on two transports is ambiguous_transport', async () => {
+    const { withIngestionDb } = await import('./helpers/ingestion-db.js');
+    await withIngestionDb(async ({ db }) => {
+      await seedFanoutHotels(db, { sharedDavOnFaith: true });
+      const pop3Uidl = 'uidl-fanout-ambiguous';
+      const { primary, copies } = await persistPrimaryAndCopies({
+        db,
+        pop3Uidl,
+        raw: syntheticEml({
+          from: 'guest@example.test',
+          to: DAV_EMAIL,
+          subject: 'shared identity',
+        }),
+      });
+      expect(primary.kind).toBe('quarantined');
+      if (primary.kind !== 'quarantined') return;
+      expect(primary.reason).toBe('ambiguous_transport');
+      expect(copies).toBeUndefined();
+      expect(await db.select().from(message)).toHaveLength(0);
+      expect(await db.select().from(mailIngestQuarantine)).toHaveLength(1);
+    });
   });
 });

@@ -11,8 +11,9 @@
  *           (`attachments/...`) during parse.
  *        d. PG transaction — insert `message` + `attachment` (or quarantine)
  *           and commit.
- *        e. DELE the POP3 message **only after** S3 + PG commit succeed
- *           (or the message is a duplicate / already safely stored).
+ *        e. Persist mailbox copies (each with its own UIDL + transaction).
+ *        f. DELE the POP3 message **only after** S3 + PG commit succeed
+ *           for the primary and every copy (or each is duplicate / reconciled).
  *   4. QUIT — commit pending DELEs and close the session.
  *
  * Safety invariants:
@@ -43,6 +44,7 @@ import {
   sweepCandidateAttachmentCleanupTasks,
   type PersistResult,
 } from './store.js';
+import { completeFanoutAfterPrimary } from './fanout.js';
 import {
   createPop3Client,
   type Pop3Client,
@@ -401,6 +403,28 @@ export async function ingestOnce(opts: IngestOnceOptions = {}): Promise<IngestCy
             ingestMailboxId,
             pop3Uidl: uidl,
           });
+        }
+
+        if (result.kind === 'failed') {
+          items.push({ uidl, result, status: 'deferred' });
+          processed += 1;
+          continue;
+        }
+
+        if (
+          !(await completeFanoutAfterPrimary({
+            db,
+            storage,
+            raw: msg.raw,
+            meta,
+            persistResult: result,
+            ingestSource: 'live-pop3',
+          }))
+        ) {
+          failureCounts.delete(uidl);
+          items.push({ uidl, result, status: 'deferred' });
+          processed += 1;
+          continue;
         }
 
         failureCounts.delete(uidl);
