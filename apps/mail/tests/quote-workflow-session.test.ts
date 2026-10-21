@@ -3813,24 +3813,25 @@ describe('multi-ask stay cards: guests, action, split', () => {
         quantity,
       },
     ];
+    const lunaGroups = guests.map((guest) => ({
+      arrival: '2026-11-12',
+      departure: '2026-11-14',
+      rooms: 1,
+      adultsPerRoom: 1,
+      childAges: [] as number[],
+      board: 'bb' as const,
+      roomPreference: 'standard king',
+      guestNames: [guest.name],
+      stayId: 'stay-a',
+      confirmationNumber: guest.confirmationNumber ?? null,
+    }));
     return analysisReady({
       ...quoteAnalysis,
       groups,
       luna: {
         workflow: 'quote',
         flags: [],
-        groups: guests.map((guest) => ({
-          arrival: '2026-11-12',
-          departure: '2026-11-14',
-          rooms: 1,
-          adultsPerRoom: 1,
-          childAges: [],
-          board: 'bb' as const,
-          roomPreference: 'standard king',
-          guestNames: [guest.name],
-          stayId: 'stay-a',
-          ...(guest.confirmationNumber ? { confirmationNumber: guest.confirmationNumber } : {}),
-        })),
+        groups: lunaGroups,
         party: { kind: null, name: null, reference: null },
         rateClaims: [],
         missing: [],

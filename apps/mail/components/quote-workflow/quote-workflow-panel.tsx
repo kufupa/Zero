@@ -1751,7 +1751,7 @@ export function QuoteWorkflowPanel({
                           type: 'split_stay',
                           stayId: stay.id,
                           token: newQuoteToken(),
-                        } as StayEditAction)
+                        } as unknown as StayEditAction)
                       }
                     >
                       Split into separate bookings

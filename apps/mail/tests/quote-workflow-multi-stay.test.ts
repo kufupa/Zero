@@ -466,7 +466,10 @@ describe('pane split of a same-date stay', () => {
           flags: [],
           groups: [
             lunaRow(NOV.arrival, NOV.departure, ['Ada Example'], 'stay-a'),
-            { ...lunaRow(NOV.arrival, NOV.departure, ['Bea Example'], 'stay-a'), confirmationNumber: '22222222-1' },
+            {
+              ...lunaRow(NOV.arrival, NOV.departure, ['Bea Example'], 'stay-a'),
+              confirmationNumber: '22222222-1',
+            } as ReturnType<typeof lunaRow> & { confirmationNumber: string },
           ],
           party: { kind: null, name: null, reference: null },
           rateClaims: [],
