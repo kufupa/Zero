@@ -121,14 +121,42 @@ export type UsePriorQuoteForBookingReady = BookingDraftReady & {
   onceExtras?: boolean;
 };
 
+function carriedStayId(group: { stayId?: string | null }): string | undefined {
+  const id = typeof group.stayId === 'string' ? group.stayId.trim() : '';
+  return id.length > 0 ? id : undefined;
+}
+
+function withinStayIndex(groups: { stayId?: string | null }[], index: number, stayId: string): number {
+  let count = 0;
+  for (let i = 0; i < index; i++) {
+    if (carriedStayId(groups[i]) === stayId) count += 1;
+  }
+  return count;
+}
+
+function matchLunaGroup(
+  lunaGroups: LunaAnalysisWire['groups'],
+  group: StayGroupRequirement,
+  index: number,
+  groups: StayGroupRequirement[],
+): LunaAnalysisWire['groups'][number] | undefined {
+  const stayId = carriedStayId(group);
+  if (stayId) {
+    const ofStay = lunaGroups.filter((row) => carriedStayId(row) === stayId);
+    return ofStay[withinStayIndex(groups, index, stayId)];
+  }
+  if (lunaGroups.length === groups.length) return lunaGroups[index];
+  return undefined;
+}
+
 export function overlayLunaGroupsFromStaff(
   luna: LunaAnalysisWire,
   groups: StayGroupRequirement[],
 ): LunaAnalysisWire['groups'] {
   if (!groups.length) return luna.groups;
-  // Stay index, not date equality: two stays on the same dates keep their own guests.
   return groups.map((group, index) => {
-    const match = luna.groups[index];
+    const match = matchLunaGroup(luna.groups, group, index, groups);
+    const stayId = carriedStayId(group) ?? carriedStayId(match ?? {});
     return {
       arrival: group.arrivalDate ?? null,
       departure: group.departureDate ?? null,
@@ -143,6 +171,7 @@ export function overlayLunaGroupsFromStaff(
             : group.board,
       roomPreference: group.roomPreference ?? null,
       guestNames: [...(match?.guestNames ?? [])],
+      ...(stayId ? { stayId } : {}),
     };
   });
 }

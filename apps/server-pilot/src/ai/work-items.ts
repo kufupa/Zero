@@ -362,7 +362,7 @@ export function storedAnalysis(
   if (kind === 'amendment' || kind === 'cancellation') flags.push('amendment_or_cancel');
 
   const order: Array<GroupRef & { groupId: string }> = [];
-  const groups: LunaAnalysis['groups'] = [];
+  const groups: Array<LunaAnalysis['groups'][number] & { stayId?: string }> = [];
   for (const stay of stays) {
     const sourceStay = payload.stays.find((item) => item.id === stay.id);
     const guestNames = guestNamesForStay(sourceStay);
@@ -381,11 +381,13 @@ export function storedAnalysis(
         board: null,
         roomPreference: null,
         guestNames,
+        stayId: stay.id,
       });
       continue;
     }
-    for (const row of stay.rows) {
+    for (const [rowIndex, row] of stay.rows.entries()) {
       const at = (field: RowField) => `stays[${stay.id}].rows[${row.id}].${field}`;
+      const rowGuest = guestNames[rowIndex];
       order.push({ groupId: row.id, stayId: stay.id, rowId: row.id });
       groups.push({
         ...dates,
@@ -395,7 +397,8 @@ export function storedAnalysis(
         childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
-        guestNames,
+        guestNames: rowGuest ? [rowGuest] : [],
+        stayId: stay.id,
       });
     }
   }

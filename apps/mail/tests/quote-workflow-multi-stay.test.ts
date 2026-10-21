@@ -47,9 +47,15 @@ const NOV = { key: '2027-11-12:2027-11-14', arrival: '2027-11-12', departure: '2
 const DEC = { key: '2027-12-01:2027-12-03', arrival: '2027-12-01', departure: '2027-12-03' };
 const COMBINED_BYTES = Buffer.from('%PDF-1.4 combined').toString('base64');
 
-function stayGroup(id: string, arrivalDate: string, departureDate: string): StayGroupRequirement {
+function stayGroup(
+  id: string,
+  arrivalDate: string,
+  departureDate: string,
+  stayId?: string,
+): StayGroupRequirement {
   return {
     id,
+    ...(stayId ? { stayId } : {}),
     arrivalDate,
     departureDate,
     quantity: 1,
@@ -190,7 +196,7 @@ function bookingDraftFor(session: QuoteSession, revisionRef: string): BookingDra
   };
 }
 
-function lunaRow(arrival: string, departure: string, guestNames: string[]) {
+function lunaRow(arrival: string, departure: string, guestNames: string[], stayId?: string) {
   return {
     arrival,
     departure,
@@ -200,6 +206,7 @@ function lunaRow(arrival: string, departure: string, guestNames: string[]) {
     board: 'bb' as const,
     roomPreference: null,
     guestNames,
+    ...(stayId ? { stayId } : {}),
   };
 }
 
@@ -355,15 +362,31 @@ describe('one booking draft and one set of guests per stay', () => {
     expect(overlay[0]?.guestNames).toEqual(['Mr John Smith']);
   });
 
-  it('gives the stay left after a removal the guests at that stay index', () => {
+  it('keeps the surviving stay its own guest after the first stay is removed', () => {
     const luna = {
       groups: [
-        lunaRow(NOV.arrival, NOV.departure, ['Ada Example']),
-        lunaRow(DEC.arrival, DEC.departure, ['Bea Example']),
+        lunaRow(NOV.arrival, NOV.departure, ['Ada Example'], 'stay-a'),
+        lunaRow(DEC.arrival, DEC.departure, ['Bea Example'], 'stay-b'),
       ],
     } as unknown as LunaAnalysisWire;
-    const overlay = overlayLunaGroupsFromStaff(luna, [stayGroup('stay-b', '2027-12-05', '2027-12-07')]);
-    expect(overlay[0]?.guestNames).toEqual(['Ada Example']);
+    const overlay = overlayLunaGroupsFromStaff(luna, [
+      stayGroup('stay-b', DEC.arrival, DEC.departure, 'stay-b'),
+    ]);
+    expect(overlay.map((group) => group.guestNames)).toEqual([['Bea Example']]);
+  });
+
+  it('gives each room of one stay its own guest', () => {
+    const luna = {
+      groups: [
+        lunaRow(NOV.arrival, NOV.departure, ['Ada Example'], 'stay-a'),
+        lunaRow(NOV.arrival, NOV.departure, ['Bea Example'], 'stay-a'),
+      ],
+    } as unknown as LunaAnalysisWire;
+    const overlay = overlayLunaGroupsFromStaff(luna, [
+      stayGroup('row-1', NOV.arrival, NOV.departure, 'stay-a'),
+      stayGroup('row-2', NOV.arrival, NOV.departure, 'stay-a'),
+    ]);
+    expect(overlay.map((group) => group.guestNames)).toEqual([['Ada Example'], ['Bea Example']]);
   });
 
   it('re-binds an expired prior quote row to the session row of the same stay', () => {

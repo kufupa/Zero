@@ -375,7 +375,7 @@ describe('stored read for the pane', () => {
     const { analysis, refs } = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {});
     expect(analysis.luna.groups.map((group) => group.guestNames)).toEqual([
       ['Ada Example'],
-      ['Ada Example'],
+      [],
       ['Bea Example'],
     ]);
     expect(analysis.groups.map((group) => group.confirmationNumber)).toEqual([
@@ -389,6 +389,23 @@ describe('stored read for the pane', () => {
     expect(analysis.luna.requestedArrival).toBe('2026-12-10');
     expect(analysis.luna.requestedDeparture).toBe('2026-12-12');
     expect(Object.keys(refs)).toHaveLength(3);
+  });
+
+  it('gives each room row of a stay its own guest once', () => {
+    const extracted = payload();
+    extracted.stays = [
+      {
+        ...extracted.stays[0]!,
+        guests: [
+          { name: 'Ada Example', confirmationNumber: null },
+          { name: 'Bea Example', confirmationNumber: null },
+        ],
+      },
+    ];
+    const names = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).analysis.luna.groups.map(
+      (group) => group.guestNames,
+    );
+    expect(names).toEqual([['Ada Example'], ['Bea Example']]);
   });
 
   it('keeps one work item for a multi-stay mail', () =>

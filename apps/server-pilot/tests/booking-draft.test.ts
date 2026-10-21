@@ -283,6 +283,24 @@ describe('buildBookingDrafts', () => {
     expect(bea[0]!.request).toMatchObject({ firstName: 'Bea', lastName: 'Example' });
   });
 
+  it('gives each room of one stay its own guest', async () => {
+    const revision = await agencyRevision();
+    revision.groups[0]!.quantity = 2;
+    const first = analysis().groups[0]!;
+    const draft = await buildBookingDrafts({
+      analysis: analysis({
+        groups: [{ ...first, guestNames: ['Ada Example', 'Bea Example'] }],
+      }),
+      revision,
+      defaults: COMPLETE_DEFAULTS,
+      messageId: 'message-1',
+      validate: validateCreate,
+    });
+    expect(draft.rooms).toHaveLength(2);
+    expect(draft.rooms[0]!.request).toMatchObject({ firstName: 'Ada', lastName: 'Example' });
+    expect(draft.rooms[1]!.request).toMatchObject({ firstName: 'Bea', lastName: 'Example' });
+  });
+
   it('marks a voucher ceiling below the quoted night as mismatch', async () => {
     const revision = await agencyRevision();
     const draft = await buildBookingDrafts({

@@ -23,7 +23,8 @@ const acceptAll = async () => ({ ok: true, errors: [] as unknown[] });
 function row(
   stay: { arrival: string; departure: string },
   guestNames: string[],
-): LunaAnalysis['groups'][number] {
+  stayId?: string,
+): LunaAnalysis['groups'][number] & { stayId?: string } {
   return {
     arrival: stay.arrival,
     departure: stay.departure,
@@ -33,6 +34,7 @@ function row(
     board: 'room_only',
     roomPreference: null,
     guestNames,
+    ...(stayId ? { stayId } : {}),
   };
 }
 
@@ -102,11 +104,28 @@ describe('booking drafts for a multi-stay quote', () => {
     expect(bea[0]!.request).toMatchObject({ firstName: 'Bea', lastName: 'Example' });
   });
 
-  it('a stay whose dates match no analysis row still takes guests at that stay index', async () => {
-    const revision = await stayRevision({ arrival: '2026-12-05', departure: '2026-12-07' });
-    const draft = await draftFor(revision, [row(NOV, ['Ada Example']), row(DEC, ['Bea Example'])]);
+  it('a removed first stay does not donate guests to the survivor', async () => {
+    const revision = await stayRevision(DEC);
+    Object.assign(revision.groups[0]!, { stayId: 'stay-b' });
+    const draft = await draftFor(revision, [
+      row(NOV, ['Ada Example'], 'stay-a'),
+      row(DEC, ['Bea Example'], 'stay-b'),
+    ]);
 
-    expect(draft.rooms[0]!.request).toMatchObject({ firstName: 'Ada', lastName: 'Example' });
+    expect(draft.rooms[0]!.request).toMatchObject({ firstName: 'Bea', lastName: 'Example' });
+  });
+
+  it('gives each room of one stay its own guest', async () => {
+    const revision = await stayRevision(NOV);
+    revision.groups[0]!.quantity = 1;
+    const second = structuredClone(revision.groups[0]!);
+    second.id = 'g2';
+    revision.groups.push(second);
+    const draft = await draftFor(revision, [row(NOV, ['Ada Example']), row(NOV, ['Bea Example'])]);
+    const ada = draft.rooms.filter((room) => room.groupId === revision.groups[0]!.id);
+    const bea = draft.rooms.filter((room) => room.groupId === 'g2');
+    expect(ada[0]!.request).toMatchObject({ firstName: 'Ada', lastName: 'Example' });
+    expect(bea[0]!.request).toMatchObject({ firstName: 'Bea', lastName: 'Example' });
   });
 
   it('a single stay keeps the position fallback when the analysis wrote its dates differently', async () => {
