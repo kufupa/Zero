@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadCreateRequest, parseOutDir, parseShop, parseStopBefore, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
+import { assertTrackReadyForGuarantee, loadCreateRequest, matchTrackRow, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
 
 function requiredRequest(extra = {}) {
   return {
@@ -188,6 +188,9 @@ test('create-lab-stay validates before browser and keeps shot names', async () =
   assert.equal(source.includes('const LAB'), false);
   assert.equal(source.includes('Nava'), false);
   assert.equal(source.includes('Labcancel'), false);
+  assert.equal(source.includes("fillNamed(page, 'track'"), false);
+  assert.match(source, /fillTrackBeforeGuarantee\(page, stay\.track\)/);
+  assert.match(source, /trackValidation/);
 });
 
 test('proof mode is guarded before browser work and wires read-only reconciliation', async () => {
@@ -270,4 +273,36 @@ test('proof mode captures parsed search rows before Save', async () => {
   assert.match(source, /return \{\s*outcome: found\.outcome,\s*rows: found\.rows,/);
   assert.match(source, /Array\.isArray\(search\.rows\) \? search\.rows : null/);
   assert.match(source, /existingRows\s*,/);
+});
+
+test('Track picker selects Best Available and stores BAR', () => {
+  const rows = [
+    parseTrackLookupText('COR Corporate Rate'),
+    parseTrackLookupText('BAR Best Available'),
+  ];
+  const byDescription = matchTrackRow(rows, 'Best Available');
+  assert.equal(byDescription.description, 'Best Available');
+  assert.equal(byDescription.code, 'BAR');
+  const byCode = matchTrackRow(rows, 'BAR');
+  assert.equal(byCode.description, 'Best Available');
+  assert.equal(byCode.code, 'BAR');
+});
+
+test('red track validation fails before guarantee opens', () => {
+  let guaranteeOpened = false;
+  assert.throws(
+    () => {
+      assertTrackReadyForGuarantee({
+        validation: { invalid: true, messages: ['Invalid value'] },
+        averageRate: '1250.00',
+      });
+      guaranteeOpened = true;
+    },
+    /track_invalid:Invalid value/,
+  );
+  assert.equal(guaranteeOpened, false);
+  assert.throws(
+    () => assertTrackReadyForGuarantee({ validation: { invalid: false, messages: [] }, averageRate: '' }),
+    /rate_unresolved/,
+  );
 });
