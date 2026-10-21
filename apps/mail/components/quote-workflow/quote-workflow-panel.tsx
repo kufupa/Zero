@@ -1728,7 +1728,7 @@ export function QuoteWorkflowPanel({
               }
               onClick={onPreparePdf}
             >
-              {pdfPending ? 'Preparing PDF…' : isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF + reply'}
+              {pdfPending ? 'Preparing PDF…' : isMultiStay(session) ? 'Prepare quote' : 'Make quote'}
             </PrimaryButton>
           ) : null}
         </div>

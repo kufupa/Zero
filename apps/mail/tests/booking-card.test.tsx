@@ -345,15 +345,20 @@ describe('booking cards', () => {
     expect(screen.getByText(/Company rate not applied/)).toBeDefined();
   });
 
-  it('shows copy guidance without a disabled Book in HMS control while pane save is off', () => {
+  it('shows copy guidance and a disabled writes-off create while pane save is off', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
     expect(
       screen.getByText(
         'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.',
       ),
     ).toBeDefined();
+    const writesOff = screen.getAllByRole('button', { name: 'Booking writes are off — create in HMS' });
+    expect(writesOff).toHaveLength(2);
+    expect(writesOff.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
     expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
     expect(screen.queryByText('Coming soon')).toBeNull();
     expect(screen.queryByRole('button', { name: /save draft/i })).toBeNull();
   });
@@ -614,7 +619,7 @@ const COMMIT_OK: PaneStayResult = {
   runId: PANE_SAVE_RUN,
   screenshots: ['filled.png', 'saved.png'],
 };
-const JOHN_SMITH_PREVIEW = `Nava will book John Smith for 2026-11-12 – 2026-11-14, 1 room, rate TAXYZ. Nothing is saved until you press Book in HMS.`;
+const JOHN_SMITH_PREVIEW = `Nava will book John Smith for 2026-11-12 – 2026-11-14, 1 room, rate TAXYZ. Nothing is saved until you press Create provisional booking.`;
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -649,7 +654,7 @@ function previewButton(index: number): HTMLButtonElement {
 }
 
 function bookButton(index: number): HTMLButtonElement {
-  return screen.getAllByRole('button', { name: 'Book in HMS' })[index] as HTMLButtonElement;
+  return screen.getAllByRole('button', { name: 'Create provisional booking' })[index] as HTMLButtonElement;
 }
 
 describe('booking card marks guest details for the preview gate (H6b)', () => {
@@ -667,10 +672,14 @@ describe('booking card marks guest details for the preview gate (H6b)', () => {
 });
 
 describe('booking card pane save', () => {
-  it('keeps Preview and the no-op Book in HMS control out while the server flag is off', () => {
+  it('keeps Preview out while the server flag is off and shows a disabled writes-off create', () => {
     render(<BookingCards draft={draftReady()} />);
     expect(screen.queryAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(0);
     expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
+    const writesOff = screen.getAllByRole('button', { name: 'Booking writes are off — create in HMS' });
+    expect(writesOff).toHaveLength(2);
+    expect(writesOff.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
     expect(screen.queryByText('Coming soon')).toBeNull();
   });
 
@@ -914,23 +923,29 @@ describe('booking card pane save', () => {
 });
 
 describe('booking card save modes and the note fields', () => {
-  it('names the Book action for the mode: lab-only in lab mode, Book in HMS in on mode', () => {
+  it('names the Book action Create provisional booking in lab and on modes', () => {
     const lab = paneClient({ mode: () => 'lab' });
     const { unmount } = render(<BookingCards draft={draftReady()} paneSave={lab.client} />);
-    expect(screen.getAllByRole('button', { name: 'Book (lab test only)' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Create provisional booking' })).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: 'Book (lab test only)' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
     unmount();
     const on = paneClient({ mode: () => 'on' });
     render(<BookingCards draft={draftReady()} paneSave={on.client} />);
-    expect(screen.getAllByRole('button', { name: 'Book in HMS' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Create provisional booking' })).toHaveLength(2);
     expect(screen.queryByRole('button', { name: 'Book (lab test only)' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
   });
 
-  it('shows copy buttons only, including the new fields, when the server mode is off', () => {
+  it('shows copy buttons and a disabled writes-off create when the server mode is off', () => {
     const { client, preview, commit } = paneClient({ mode: () => 'off' });
     render(<BookingCards draft={draftReady()} paneSave={client} />);
     expect(screen.queryAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(0);
     expect(screen.queryByRole('button', { name: 'Book in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
+    const writesOff = screen.getAllByRole('button', { name: 'Booking writes are off — create in HMS' });
+    expect(writesOff).toHaveLength(2);
+    expect(writesOff.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
     expect(screen.queryByText('Coming soon')).toBeNull();
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
