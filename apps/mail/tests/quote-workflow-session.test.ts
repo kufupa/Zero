@@ -4114,7 +4114,7 @@ describe('multi-ask stay cards: guests, action, split', () => {
           quantity: 2,
           guestNames: ['Ada Example', 'Bea Example'],
         },
-      ] as QuoteAnalysis['groups'],
+      ] as unknown as QuoteAnalysis['groups'],
       luna: {
         workflow: 'quote',
         flags: [],
