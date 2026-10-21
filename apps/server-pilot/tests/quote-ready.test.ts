@@ -301,7 +301,7 @@ describe('quote prepare kind gate', () => {
     ).toBe('not_quote');
   });
 
-  it('rejects a multi-stay booking even without a confirmation number', () => {
+  it('admits a multi-stay booking without a confirmation number', () => {
     const first = payload().stays[0]!;
     expect(
       quotePrepareKindReason({
@@ -310,6 +310,29 @@ describe('quote prepare kind gate', () => {
           stays: [first, { ...first, id: 'stay-2', requested: { arrival: '2026-11-01', departure: '2026-11-03' } }],
         }),
         subject: 'Two stays',
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects a booking with no stays', () => {
+    expect(
+      quotePrepareKindReason({
+        kind: 'booking',
+        payload: payload({ stays: [] }),
+        subject: 'New booking',
+      }),
+    ).toBe('not_quote');
+  });
+
+  it('rejects a booking whose stay guests carry a confirmation number', () => {
+    const first = payload().stays[0]!;
+    expect(
+      quotePrepareKindReason({
+        kind: 'booking',
+        payload: payload({
+          stays: [{ ...first, guests: [{ name: 'Ada Example', confirmationNumber: '57291630-1' }] }],
+        }),
+        subject: 'New booking',
       }),
     ).toBe('not_quote');
   });

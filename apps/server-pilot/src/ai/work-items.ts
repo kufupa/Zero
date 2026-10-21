@@ -267,6 +267,46 @@ export type StoredRead = {
 /** Where one pane group's values live: its stay, and its row when it has one. */
 export type GroupRef = { stayId: string; rowId: string | null };
 
+function trimmedConfirmation(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function stayGuestConfirmations(stay: ExtractionStay | undefined): string[] {
+  if (!stay?.guests) return [];
+  return stay.guests.flatMap((guest) => {
+    const confirmation = trimmedConfirmation(guest.confirmationNumber);
+    return confirmation ? [confirmation] : [];
+  });
+}
+
+/** Guest confs first, then top-level. Cards keep every conf; prefetch uses the first. */
+function payloadConfirmationNumbers(payload: MailExtractionPayload): string[] {
+  const fromGuests = payload.stays.flatMap((stay) => stayGuestConfirmations(stay));
+  const fromTop = payload.confirmationNumbers.flatMap((value) => {
+    const confirmation = trimmedConfirmation(value);
+    return confirmation ? [confirmation] : [];
+  });
+  return [...new Set([...fromGuests, ...fromTop])];
+}
+
+function confirmationForStay(stay: ExtractionStay | undefined, payload: MailExtractionPayload): string | null {
+  return stayGuestConfirmations(stay)[0] ?? trimmedConfirmation(payload.confirmationNumbers[0] ?? null);
+}
+
+function guestNamesForStay(stay: ExtractionStay | undefined): string[] {
+  return (stay?.guests ?? []).map((guest) => guest.name).filter((name) => name.trim().length > 0);
+}
+
+function stayOwningConfirmation(
+  payload: MailExtractionPayload,
+  confirmation: string | null,
+): ExtractionStay | undefined {
+  if (!confirmation) return undefined;
+  return payload.stays.find((stay) => stayGuestConfirmations(stay).includes(confirmation));
+}
+
 /**
  * The pane's analysis for a stored read, built by the same mapping a live Luna read uses (mapLlmDecision, the
  * amendment fields, the review items). No model call. A value a person set in `state` wins over the extraction.
@@ -311,12 +351,21 @@ export function storedAnalysis(
       return stay.totalRooms !== null ? [[stay.id, stay.totalRooms]] : [];
     }),
   );
-  if (stays.length > 1) flags.push('multi_date');
+  const dateKeys = new Set(
+    stays.map((stay) => {
+      const arrival = pick(`stays[${stay.id}].requested.arrival`, stay.requested.arrival);
+      const departure = pick(`stays[${stay.id}].requested.departure`, stay.requested.departure);
+      return `${arrival ?? ''}\0${departure ?? ''}`;
+    }),
+  );
+  if (dateKeys.size > 1) flags.push('multi_date');
   if (kind === 'amendment' || kind === 'cancellation') flags.push('amendment_or_cancel');
 
   const order: Array<GroupRef & { groupId: string }> = [];
-  const groups: LunaAnalysis['groups'] = [];
+  const groups: Array<LunaAnalysis['groups'][number] & { stayId?: string }> = [];
   for (const stay of stays) {
+    const sourceStay = payload.stays.find((item) => item.id === stay.id);
+    const guestNames = guestNamesForStay(sourceStay);
     const dates = {
       arrival: pick(`stays[${stay.id}].requested.arrival`, stay.requested.arrival),
       departure: pick(`stays[${stay.id}].requested.departure`, stay.requested.departure),
@@ -331,28 +380,37 @@ export function storedAnalysis(
         childAges: [],
         board: null,
         roomPreference: null,
-        guestNames: [],
+        guestNames,
+        stayId: stay.id,
       });
       continue;
     }
+    let guestAt = 0;
     for (const row of stay.rows) {
       const at = (field: RowField) => `stays[${stay.id}].rows[${row.id}].${field}`;
+      const rooms = pick(at('count'), row.rooms);
+      const take = typeof rooms === 'number' && rooms > 0 ? rooms : 1;
+      const rowNames = guestNames.slice(guestAt, guestAt + take);
+      guestAt += take;
       order.push({ groupId: row.id, stayId: stay.id, rowId: row.id });
       groups.push({
         ...dates,
         dateEvidence: null,
-        rooms: pick(at('count'), row.rooms),
+        rooms,
         adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
         childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
-        guestNames: [],
+        guestNames: rowNames,
+        stayId: stay.id,
       });
     }
   }
-  const booked = payload.stays[0]?.booked;
-  const requested = payload.stays[0]?.requested;
-  const overlaid = overlayHmsConfirmation(payload.confirmationNumbers[0] ?? null, threadConfirmation);
+  const selectedConfirmation = payloadConfirmationNumbers(payload)[0] ?? null;
+  const overlaid = overlayHmsConfirmation(selectedConfirmation, threadConfirmation);
+  const bookedStay = stayOwningConfirmation(payload, overlaid.confirmation) ?? payload.stays[0];
+  const booked = bookedStay?.booked;
+  const requested = bookedStay?.requested;
   const luna: LunaAnalysis = {
     workflow: workflowForStoredRead(read),
     flags,
@@ -418,11 +476,15 @@ export function storedAnalysis(
       // Each group names its stay, so the pane groups rows by the read's stays and logs edits to the stay's id.
       groups: mapped.groups.map((group, index) => {
         const roomType = matchRoomType(group.roomPreference);
+        const stayId = order[index]?.stayId;
+        const sourceStay = stayId ? payload.stays.find((item) => item.id === stayId) : undefined;
+        const confirmationNumber = confirmationForStay(sourceStay, payload);
         return {
           ...group,
           ...(roomType.code ? { roomTypeCode: roomType.code } : {}),
           roomTypeSuggestions: roomType.suggestions,
-          stayId: order[index]?.stayId,
+          stayId,
+          ...(confirmationNumber ? { confirmationNumber } : {}),
         };
       }),
       missingQuoteReplyFields: mapped.missingQuoteReplyFields,
@@ -1291,15 +1353,16 @@ async function readyView(
     item?.extractionId && item.extractionId !== latest.id
       ? ((await succeededRead(db, messageId, item.extractionId)) ?? latest)
       : latest;
+  const confirmationNumbers = payloadConfirmationNumbers(read.payload);
   const existingStayInformation = isSelfSentPreStayInformationMail({
     fromAddress: msg.fromAddress,
     mailboxAddress: msg.mailboxAddress,
     subject: msg.subject,
-    confirmationNumbers: read.payload.confirmationNumbers,
+    confirmationNumbers,
   });
   const paneItem = existingStayInformation ? null : item;
   const state = paneItem?.state ?? {};
-  const selectedConfirmation = read.payload.confirmationNumbers[0]?.trim() ?? '';
+  const selectedConfirmation = confirmationNumbers[0] ?? '';
   const synced = existingStayInformation
     ? null
     : await loadSyncedQuoteSelectionFromMailbox({ transportId, messageId: msg.id });
@@ -1323,7 +1386,7 @@ async function readyView(
     status: 'ready',
     kind: existingStayInformation ? 'other' : read.kind,
     existingStayInformation,
-    confirmationNumbers: read.payload.confirmationNumbers,
+    confirmationNumbers,
     workItemId: paneItem?.id ?? null,
     workItemStatus: paneItem?.status ?? null,
     extractionId: read.id,
@@ -1359,7 +1422,7 @@ export async function storedWorkFor(
     fromAddress: msg.fromAddress,
     mailboxAddress: msg.mailboxAddress,
     subject: msg.subject,
-    confirmationNumbers: latest.payload.confirmationNumbers,
+    confirmationNumbers: payloadConfirmationNumbers(latest.payload),
   });
   if (existingStayInformation) return readyView(db, msg, latest, null, input.transportId);
   const [item] = await db
@@ -1394,7 +1457,7 @@ export async function openStoredWork(
       fromAddress: msg.fromAddress,
       mailboxAddress: msg.mailboxAddress,
       subject: msg.subject,
-      confirmationNumbers: latest.payload.confirmationNumbers,
+      confirmationNumbers: payloadConfirmationNumbers(latest.payload),
     })
   ) {
     return readyView(db, msg, latest, null, input.transportId);

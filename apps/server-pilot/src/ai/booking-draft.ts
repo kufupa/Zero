@@ -292,6 +292,36 @@ export function createRequestFieldOptions(): {
   };
 }
 
+function carriedStayId(group: unknown): string | undefined {
+  if (!group || typeof group !== 'object') return undefined;
+  const stayId = (group as { stayId?: unknown }).stayId;
+  return typeof stayId === 'string' && stayId.trim() ? stayId.trim() : undefined;
+}
+
+function withinStayIndex(groups: readonly unknown[], index: number, stayId: string): number {
+  let count = 0;
+  for (let i = 0; i < index; i++) {
+    if (carriedStayId(groups[i]) === stayId) count += 1;
+  }
+  return count;
+}
+
+function matchAnalysisGroup<T>(
+  source: T[],
+  target: unknown,
+  targetIndex: number,
+  targets: readonly unknown[],
+): T | undefined {
+  const stayId = carriedStayId(target);
+  const analysisHasStayId = source.some((row) => carriedStayId(row));
+  if (stayId && analysisHasStayId) {
+    const ofStay = source.filter((row) => carriedStayId(row) === stayId);
+    return ofStay[withinStayIndex(targets, targetIndex, stayId)];
+  }
+  if (source.length === targets.length) return source[targetIndex];
+  return undefined;
+}
+
 export async function buildBookingDrafts(input: {
   analysis: LunaAnalysis;
   revision: QuoteRevision;
@@ -313,16 +343,15 @@ export async function buildBookingDrafts(input: {
     input.analysis.groups.map((group) => `${group.arrival}:${group.departure}`),
   );
   const stayUnclear = lunaStayKeys.size > 1;
+  const analysisGroups = input.analysis.groups as Array<
+    LunaAnalysis['groups'][number] & { stayId?: string }
+  >;
   for (const [gi, group] of revision.groups.entries()) {
-    // A position only names a row when the analysis has one stay. With several, that row belongs to another stay.
-    const lunaGroup =
-      input.analysis.groups.find(
-        (row) => row.arrival === group.arrivalDate && row.departure === group.departureDate,
-      ) ?? (stayUnclear ? undefined : input.analysis.groups[gi]);
+    const lunaGroup = matchAnalysisGroup(analysisGroups, group, gi, revision.groups);
     const names = lunaGroup?.guestNames ?? [];
     const party = partyFromContext(group.context);
     for (let roomIndex = 1; roomIndex <= group.quantity; roomIndex++) {
-      const guestName = names[roomIndex - 1] ?? (roomIndex === 1 ? names[0] : undefined) ?? null;
+      const guestName = names[roomIndex - 1] ?? null;
       const built = requestFromQuotedRoom({
         arrival: group.arrivalDate,
         departure: group.departureDate,

@@ -27,6 +27,7 @@ import {
   HMS_JOB_PRIORITY_USER,
   prefetchHmsConfirmations,
   prefetchQuoteReadyForExtraction,
+  selectHmsBatchRequest,
   queueUserPartyHmsJob,
   queueUserHmsJob,
   readHmsJobView,
@@ -362,6 +363,30 @@ describe('U23 HMS job queue (pure)', () => {
         input: { ...STAFF_QUOTE_INPUT, customerOverride: true },
       }).success,
     ).toBe(false);
+  });
+
+  it('prefetches one find for the first guest confirmation and leaves later confs on the payload', () => {
+    const payload = {
+      confirmationNumbers: ['2222222-2'],
+      stays: [
+        {
+          guests: [{ name: 'Ada Example', confirmationNumber: '1111111-1' }],
+          booked: { arrival: '2026-11-12' },
+        },
+        {
+          guests: [{ name: 'Bea Example', confirmationNumber: '3333333-3' }],
+          booked: { arrival: '2026-12-01' },
+        },
+      ],
+    };
+    expect(
+      selectHmsBatchRequest({
+        kind: 'amendment',
+        payload,
+        subject: 'Two stays',
+        textBody: null,
+      }),
+    ).toEqual({ request: { kind: 'find', confirmation: '1111111-1' } });
   });
 
   it('uses only a unique, valid arrival from the extraction for guest prefetch', () => {

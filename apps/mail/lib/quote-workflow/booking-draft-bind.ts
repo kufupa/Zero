@@ -121,20 +121,43 @@ export type UsePriorQuoteForBookingReady = BookingDraftReady & {
   onceExtras?: boolean;
 };
 
+function carriedStayId(group: { stayId?: string | null }): string | undefined {
+  const id = typeof group.stayId === 'string' ? group.stayId.trim() : '';
+  return id.length > 0 ? id : undefined;
+}
+
+function withinStayIndex(groups: { stayId?: string | null }[], index: number, stayId: string): number {
+  let count = 0;
+  for (let i = 0; i < index; i++) {
+    if (carriedStayId(groups[i]) === stayId) count += 1;
+  }
+  return count;
+}
+
+function matchLunaGroup(
+  lunaGroups: LunaAnalysisWire['groups'],
+  group: StayGroupRequirement,
+  index: number,
+  groups: StayGroupRequirement[],
+): LunaAnalysisWire['groups'][number] | undefined {
+  const stayId = carriedStayId(group);
+  const analysisHasStayId = lunaGroups.some((row) => carriedStayId(row));
+  if (stayId && analysisHasStayId) {
+    const ofStay = lunaGroups.filter((row) => carriedStayId(row) === stayId);
+    return ofStay[withinStayIndex(groups, index, stayId)];
+  }
+  if (lunaGroups.length === groups.length) return lunaGroups[index];
+  return undefined;
+}
+
 export function overlayLunaGroupsFromStaff(
   luna: LunaAnalysisWire,
   groups: StayGroupRequirement[],
 ): LunaAnalysisWire['groups'] {
   if (!groups.length) return luna.groups;
-  // A position only means a row when the email has one stay and the rows still do. With several in either, another
-  // stay's row must not supply guests (removing one of two stays leaves one row, but the read still has both).
-  const lunaStays = new Set(luna.groups.map((row) => `${row.arrival ?? ''}:${row.departure ?? ''}`));
-  const oneStay = new Set(groups.map(dateKeyOf)).size <= 1 && lunaStays.size <= 1;
   return groups.map((group, index) => {
-    const match =
-      luna.groups.find(
-        (row) => row.arrival === (group.arrivalDate ?? null) && row.departure === (group.departureDate ?? null),
-      ) ?? (oneStay ? luna.groups[index] : undefined);
+    const match = matchLunaGroup(luna.groups, group, index, groups);
+    const stayId = carriedStayId(group) ?? carriedStayId(match ?? {});
     return {
       arrival: group.arrivalDate ?? null,
       departure: group.departureDate ?? null,
@@ -149,6 +172,7 @@ export function overlayLunaGroupsFromStaff(
             : group.board,
       roomPreference: group.roomPreference ?? null,
       guestNames: [...(match?.guestNames ?? [])],
+      ...(stayId ? { stayId } : {}),
     };
   });
 }

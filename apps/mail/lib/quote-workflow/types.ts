@@ -151,6 +151,8 @@ export type LunaAnalysisWire = {
     board: 'room_only' | 'bb' | 'dbb' | 'half_board' | null;
     roomPreference: string | null;
     guestNames: string[];
+    /** Stay this row belongs to. Overlay matches staff rows by this id when present. */
+    stayId?: string;
   }>;
   party: {
     kind: 'agency' | 'organization' | 'government' | 'private' | null;

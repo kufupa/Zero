@@ -356,13 +356,32 @@ function prefetchGuestSurname(
   return personSurnameFromName(objectRecord(record.contact).name);
 }
 
+function confirmationIfHms(value: unknown): string | null {
+  return typeof value === 'string' && HMS_CONFIRMATION.test(value) ? value : null;
+}
+
 function extractionConfirmations(payload: unknown): string[] {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
-  const values = (payload as { confirmationNumbers?: unknown }).confirmationNumbers;
-  if (!Array.isArray(values)) return [];
-  return values.filter(
-    (value): value is string => typeof value === 'string' && HMS_CONFIRMATION.test(value),
-  );
+  const record = payload as { confirmationNumbers?: unknown; stays?: unknown };
+  const fromGuests: string[] = [];
+  if (Array.isArray(record.stays)) {
+    for (const stay of record.stays) {
+      if (!stay || typeof stay !== 'object' || Array.isArray(stay)) continue;
+      const guests = (stay as { guests?: unknown }).guests;
+      if (!Array.isArray(guests)) continue;
+      for (const guest of guests) {
+        if (!guest || typeof guest !== 'object' || Array.isArray(guest)) continue;
+        const confirmation = confirmationIfHms((guest as { confirmationNumber?: unknown }).confirmationNumber);
+        if (confirmation) fromGuests.push(confirmation);
+      }
+    }
+  }
+  const values = record.confirmationNumbers;
+  const fromTop = Array.isArray(values) ? values.flatMap((value) => {
+    const confirmation = confirmationIfHms(value);
+    return confirmation ? [confirmation] : [];
+  }) : [];
+  return [...new Set([...fromGuests, ...fromTop])];
 }
 
 /**
