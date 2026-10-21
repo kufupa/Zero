@@ -21,6 +21,9 @@ function parseRecoverCliArgs(argv: string[]): {
   limit?: number;
   skipAiEnqueue: boolean;
 } {
+  if (argv.some((arg) => arg === '--reason' || arg.startsWith('--reason='))) {
+    throw new Error('unknown argument: --reason');
+  }
   const enqueueAi = argv.includes('--enqueue-ai');
   const rest = argv.filter((arg) => arg !== '--enqueue-ai');
   const parsed = parsePromoteCliArgs(rest);

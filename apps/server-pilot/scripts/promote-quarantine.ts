@@ -1,14 +1,18 @@
 /**
- * Promote `missing_owner_header` quarantine rows into normal message storage.
+ * Promote `missing_owner_header` / `multi_transport` quarantine rows into
+ * normal message storage. Dry-run is the default; pass `--apply` to write.
  *
  * Run (EC2, after INGEST_REQUIRE_OWNER_HEADER=false):
  *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts
  *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts --dry-run
- *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts --limit 10
+ *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts --apply
+ *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts --apply --limit 10
+ *   pnpm --filter @zero/server tsx scripts/promote-quarantine.ts --reason multi_transport
  */
 import {
   formatPromoteSummary,
   parsePromoteCliArgs,
+  promoteCliIsDryRun,
   promoteMissingOwnerHeaderQuarantine,
   PromoteEnvError,
 } from '../src/mail/ingest/promote-quarantine.js';
@@ -30,15 +34,17 @@ async function main(): Promise<void> {
   const db = drizzle(conn, { schema });
 
   try {
+    const dryRun = promoteCliIsDryRun(cli);
     const result = await promoteMissingOwnerHeaderQuarantine({
       db,
-      dryRun: cli.dryRun,
+      dryRun,
       limit: cli.limit,
+      reason: cli.reason,
     });
     const summary = formatPromoteSummary(result);
     console.log(
-      cli.dryRun ? 'promote dry-run:' : 'promote complete:',
-      cli.dryRun ? `promote_candidates=${result.dryRunIds.length} ${summary}` : summary,
+      dryRun ? 'promote dry-run:' : 'promote complete:',
+      dryRun ? `promote_candidates=${result.dryRunIds.length} ${summary}` : summary,
     );
     if (result.errors > 0) {
       process.exitCode = 1;
