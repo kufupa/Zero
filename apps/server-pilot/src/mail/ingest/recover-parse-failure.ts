@@ -9,6 +9,7 @@
 import {
   CENTURION_INGEST_MAILBOX_IDS,
   isCenturionIngestMailboxId,
+  parsePromoteCliArgs,
   type PromoteQuarantineOptions,
   type PromoteQuarantineResult,
   type PromoteQuarantineRow,
@@ -35,6 +36,23 @@ import type { DB } from '../../db/client.js';
 const PARSE_FAILURE_REASON = 'parse_failure';
 /** Same mark as `fanoutCopyPop3Uidl` — unit separator, not a `#t:` suffix. */
 const COPY_UIDL_MARK = '\u001f';
+
+export function parseRecoverCliArgs(argv: string[]): {
+  dryRun: boolean;
+  limit?: number;
+  skipAiEnqueue: boolean;
+} {
+  if (argv.some((arg) => arg === '--reason' || arg.startsWith('--reason='))) {
+    throw new Error('unknown argument: --reason');
+  }
+  if (argv.some((arg) => arg === '--mailbox' || arg.startsWith('--mailbox='))) {
+    throw new Error('unknown argument: --mailbox');
+  }
+  const enqueueAi = argv.includes('--enqueue-ai');
+  const rest = argv.filter((arg) => arg !== '--enqueue-ai');
+  const parsed = parsePromoteCliArgs(rest);
+  return { ...parsed, skipAiEnqueue: !enqueueAi };
+}
 
 function isFanoutCopyPop3Uidl(pop3Uidl: string): boolean {
   return pop3Uidl.includes(COPY_UIDL_MARK);

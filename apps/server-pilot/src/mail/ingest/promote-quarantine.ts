@@ -20,6 +20,9 @@ import {
   hasPendingCandidateAttachmentCleanup,
   persistInboundMessage,
   releaseIngestUidlClaim,
+  resolveTransportMatch,
+  type TransportMatchCandidate,
+  type TransportMatchResult,
 } from './store.js';
 import { completeFanoutAfterPrimary } from './fanout.js';
 import { simpleParser, type AddressObject, type EmailAddress } from 'mailparser';
@@ -557,7 +560,7 @@ function uniqueNormalizedMailboxes(mailboxes: readonly string[] | undefined): st
   ];
 }
 
-type OwnerTransport = { email: string; sendFromConfig: unknown };
+type OwnerTransport = TransportMatchCandidate;
 
 async function resolveOwnerTransports(
   db: DB,
@@ -567,6 +570,7 @@ async function resolveOwnerTransports(
   if (penny) {
     const rows = await db
       .select({
+        id: mailboxTransport.id,
         email: mailboxTransport.email,
         sendFromConfig: mailboxTransport.sendFromConfig,
       })
@@ -580,32 +584,39 @@ async function resolveOwnerTransports(
 
   const rows = await db
     .select({
+      id: mailboxTransport.id,
       email: mailboxTransport.email,
       sendFromConfig: mailboxTransport.sendFromConfig,
     })
     .from(mailboxTransport)
     .where(eq(mailboxTransport.isActive, true));
 
-  const addresses = [
-    signals.fromAddress,
-    signals.senderAddress,
+  const recipients = resolveTransportMatch(rows, [
     ...(signals.toAddresses ?? []),
     ...(signals.ccAddresses ?? []),
     ...(signals.bccAddresses ?? []),
-  ]
-    .map(normalizePromotionAddress)
-    .filter(Boolean);
+  ]);
+  if (recipients.kind !== 'none') return transportsFromMatch(recipients, rows);
+  const sender = effectiveSenderAddress(signals);
+  return transportsFromMatch(resolveTransportMatch(rows, sender ? [sender] : []), rows);
+}
 
-  const owners = new Map<string, OwnerTransport>();
-  for (const address of addresses) {
-    const matching = rows.filter((row) =>
-      transportIdentities(row.email, row.sendFromConfig).has(address),
-    );
-    if (matching.length !== 1) continue;
-    const owner = matching[0]!;
-    owners.set(owner.email, owner);
-  }
-  return [...owners.values()];
+function transportsFromMatch(
+  match: TransportMatchResult<OwnerTransport>,
+  rows: OwnerTransport[],
+): OwnerTransport[] {
+  if (match.kind === 'none') return [];
+  if (match.kind === 'unique') return [match.transport];
+  return match.ids
+    .map((id) => rows.find((row) => row.id === id))
+    .filter((row): row is OwnerTransport => row !== undefined);
+}
+
+function effectiveSenderAddress(signals: PromoteReserveCloudStaffSignals): string | undefined {
+  const from = normalizePromotionAddress(signals.fromAddress);
+  const sender = normalizePromotionAddress(signals.senderAddress);
+  if (sender && from && sender !== from) return sender;
+  return from || undefined;
 }
 
 function ownerTransportsIncludeMailbox(

@@ -8,27 +8,15 @@
  * Default skipAiEnqueue=true so a drifted AI schema cannot re-poison persist.
  * Pass --enqueue-ai only on a host whose persist path matches live schema.
  */
-import { recoverParseFailureQuarantine } from '../src/mail/ingest/recover-parse-failure.js';
-import { parsePromoteCliArgs } from '../src/mail/ingest/promote-quarantine.js';
+import {
+  parseRecoverCliArgs,
+  recoverParseFailureQuarantine,
+} from '../src/mail/ingest/recover-parse-failure.js';
 import { getPostgresSslOptions } from '../src/db/ssl-config.js';
 import * as schema from '../src/db/schema/index.js';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { parseEnv } from '../src/env.js';
 import postgres from 'postgres';
-
-function parseRecoverCliArgs(argv: string[]): {
-  dryRun: boolean;
-  limit?: number;
-  skipAiEnqueue: boolean;
-} {
-  if (argv.some((arg) => arg === '--reason' || arg.startsWith('--reason='))) {
-    throw new Error('unknown argument: --reason');
-  }
-  const enqueueAi = argv.includes('--enqueue-ai');
-  const rest = argv.filter((arg) => arg !== '--enqueue-ai');
-  const parsed = parsePromoteCliArgs(rest);
-  return { ...parsed, skipAiEnqueue: !enqueueAi };
-}
 
 async function main(): Promise<void> {
   const cli = parseRecoverCliArgs(process.argv.slice(2));

@@ -215,6 +215,22 @@ function davinciSenderCalendarForwardEml(): Buffer {
   );
 }
 
+function centurionToDavinciSenderEml(): Buffer {
+  return Buffer.from(
+    [
+      'From: organizer@example.test',
+      `Sender: ${DAVINCI_TRANSPORT_EMAIL}`,
+      `To: ${TRANSPORT_EMAIL}`,
+      'Subject: centurion to davinci sender',
+      'MIME-Version: 1.0',
+      'Content-Type: text/plain; charset=utf-8',
+      '',
+      'To wins over Sender for owner filter.',
+    ].join('\r\n'),
+    'utf-8',
+  );
+}
+
 function dbWithFailedCleanupRegistration(db: DB): DB {
   return new Proxy(db, {
     get(target, property, receiver) {
@@ -1243,6 +1259,37 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(outcome.davinci.skippedMailboxFilter).toBe(0);
         expect(outcome.centurion.dryRunIds).toEqual([]);
         expect(outcome.centurion.skippedMailboxFilter).toBe(1);
+        expect(outcome.remaining).toHaveLength(1);
+      });
+    }, 30000);
+
+    it('mailbox filter skips Sender when To already names a hotel', async () => {
+      const storage = withFakeS3();
+
+      await withIngestOwnerHeaderEnv('false', async () => {
+        const outcome = await withSeededTestDb(async (db) => {
+          await seedCenturionAliases(db);
+          const { quarantineId } = await seedMissingOwnerQuarantine({
+            db,
+            storage,
+            pop3Uidl: 'uidl-filter-to-centurion-sender-davinci',
+            raw: centurionToDavinciSenderEml(),
+          });
+          const result = await promoteMissingOwnerHeaderQuarantine({
+            db,
+            storage,
+            dryRun: true,
+            mailboxes: [DAVINCI_TRANSPORT_EMAIL],
+          });
+          const remaining = await db
+            .select()
+            .from(mailIngestQuarantine)
+            .where(eq(mailIngestQuarantine.id, quarantineId));
+          return { result, remaining, quarantineId };
+        });
+
+        expect(outcome.result.dryRunIds).toEqual([]);
+        expect(outcome.result.skippedMailboxFilter).toBe(1);
         expect(outcome.remaining).toHaveLength(1);
       });
     }, 30000);
