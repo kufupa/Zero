@@ -1104,7 +1104,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(onUndo).toHaveBeenCalledWith('question:how many children, and what ages?');
   });
 
-  it('shows one top PDF + reply primary when rates are ready without letting a secondary ask block it', () => {
+  it('shows one top Make quote primary when rates are ready without letting a secondary ask block it', () => {
     const noisy = sessionFromFixture('public-single');
     noisy.reviewItems = [
       {
@@ -1152,7 +1152,7 @@ describe('QuoteWorkflowPanel', () => {
     };
     const onPreparePdf = vi.fn();
     const { container, rerender } = render(<QuoteWorkflowPanel session={ready} onPreparePdf={onPreparePdf} />);
-    const topPrepare = screen.getByRole('button', { name: 'Prepare PDF + reply' }) as HTMLButtonElement;
+    const topPrepare = screen.getByRole('button', { name: 'Make quote' }) as HTMLButtonElement;
     const documents = container.querySelector('#quote-quote') as HTMLElement;
     const documentPrepare = within(documents).getByRole('button', { name: 'Prepare PDF' }) as HTMLButtonElement;
     expect(topPrepare.disabled).toBe(false);
@@ -1184,7 +1184,7 @@ describe('QuoteWorkflowPanel', () => {
         onPreparePdf={onPreparePdf}
       />,
     );
-    expect(screen.queryByRole('button', { name: 'Prepare PDF + reply' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Make quote' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Review documents' })).toBeDefined();
     expect(screen.getByText('Is an airport shuttle available?')).toBeDefined();
   });

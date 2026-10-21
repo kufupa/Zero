@@ -227,10 +227,10 @@ function topPrimaryButton(label: string): HTMLButtonElement {
   return button as HTMLButtonElement;
 }
 
-/** With every stay rated, one Prepare quote click makes the combined PDF for all of them. */
+/** With every stay rated, one Make quote click makes the combined PDF for all of them. */
 async function prepareCombinedQuote(): Promise<void> {
-  await waitFor(() => expect(topPrimaryButton('Prepare quote').disabled).toBe(false));
-  fireEvent.click(topPrimaryButton('Prepare quote'));
+  await waitFor(() => expect(topPrimaryButton('Make quote').disabled).toBe(false));
+  fireEvent.click(topPrimaryButton('Make quote'));
   await waitFor(() =>
     expect(screen.getByText(/Prepared quote Quote - Standard King\.pdf for all stays/)).toBeDefined(),
   );

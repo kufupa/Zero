@@ -176,7 +176,7 @@ async function startPendingPdf({ doubleClick = false }: { doubleClick?: boolean 
   if (allocation.getAttribute('aria-pressed') !== 'true') fireEvent.click(allocation);
   // A draft needs a reviewed reply as well as a PDF, so a stale PDF would show up as a draft attempt.
   setReviewedReply(AUTHORISED_REPLY_HTML);
-  const prepare = screen.getByRole('button', { name: 'Prepare PDF + reply' }) as HTMLButtonElement;
+  const prepare = screen.getByRole('button', { name: 'Make quote' }) as HTMLButtonElement;
   if (doubleClick) {
     act(() => {
       fireEvent.click(prepare);
