@@ -32,6 +32,18 @@ function isFanoutCopyPop3Uidl(pop3Uidl: string): boolean {
   return pop3Uidl.includes(COPY_UIDL_MARK);
 }
 
+/** Inverse of `fanoutCopyPop3Uidl`: original is the suffix after the third mark. */
+function originalPop3UidlFromFanoutCopy(pop3Uidl: string): string | null {
+  const prefix = `${COPY_UIDL_MARK}copy${COPY_UIDL_MARK}`;
+  if (!pop3Uidl.startsWith(prefix)) return null;
+  const afterPrefix = pop3Uidl.slice(prefix.length);
+  const thirdMarkAt = afterPrefix.indexOf(COPY_UIDL_MARK);
+  if (thirdMarkAt < 0) return null;
+  const original = afterPrefix.slice(thirdMarkAt + 1);
+  if (!original || isFanoutCopyPop3Uidl(original)) return null;
+  return original;
+}
+
 export interface RawMimeObjectRef {
   key: string;
   ingestMailboxId: string;
@@ -226,7 +238,18 @@ async function findExistingUidlByRawMimeS3Key(
   const primaryMessage = messages.find(
     (row) => row.pop3Uidl && !isFanoutCopyPop3Uidl(row.pop3Uidl),
   );
-  return primaryMessage?.pop3Uidl ?? null;
+  if (primaryMessage?.pop3Uidl) return primaryMessage.pop3Uidl;
+
+  for (const row of receipts) {
+    const original = originalPop3UidlFromFanoutCopy(row.pop3Uidl);
+    if (original) return original;
+  }
+  for (const row of messages) {
+    if (!row.pop3Uidl) continue;
+    const original = originalPop3UidlFromFanoutCopy(row.pop3Uidl);
+    if (original) return original;
+  }
+  return null;
 }
 
 async function rehydrateOne(
