@@ -172,6 +172,7 @@ export function compareReadbackStay(expected, actual) {
 
 export async function waitWhileStillProcessing({
   reason,
+  confirmationNumber: priorConfirmation = '',
   timeoutMs = READBACK_WAIT_MS,
   pollMs = READBACK_POLL_MS,
   now = Date.now,
@@ -179,11 +180,13 @@ export async function waitWhileStillProcessing({
   read,
 }) {
   const start = now();
+  let lastSeenConf = knownConfirmation({ confirmationNumber: priorConfirmation });
   for (;;) {
     const snapshot = await read();
     const confirmationNumber = snapshot?.confirmationNumber ?? '';
+    if (knownConfirmation({ confirmationNumber })) lastSeenConf = squashText(confirmationNumber);
     const maskVisible = snapshot?.maskVisible === true;
-    const currentReason = maskVisible ? 'still_processing' : (knownConfirmation({ confirmationNumber }) ? null : 'no_confirmation');
+    const currentReason = maskVisible ? 'still_processing' : (lastSeenConf ? null : 'no_confirmation');
     if (!maskVisible && knownConfirmation({ confirmationNumber })) {
       return {
         confirmed: true,
@@ -196,13 +199,13 @@ export async function waitWhileStillProcessing({
     if (saveStillProcessingDecision({
       reason: currentReason ?? reason,
       maskVisible,
-      confirmationNumber,
+      confirmationNumber: confirmationNumber || lastSeenConf,
       elapsedMs,
       timeoutMs,
     }) === 'stop') {
       return {
         confirmed: false,
-        confirmationNumber: knownConfirmation({ confirmationNumber }) || null,
+        confirmationNumber: knownConfirmation({ confirmationNumber }) || lastSeenConf || null,
         status: snapshot?.status ?? null,
         reason: currentReason ?? reason,
       };
@@ -239,6 +242,50 @@ export function confirmationLookupReady(result) {
 
 export function guestLookupReady(result) {
   return result?.outcome === 'ok' && Array.isArray(result.rows) && result.rows.length > 0;
+}
+
+export function newGuestRowReady(result, existingRows) {
+  if (!guestLookupReady(result)) return false;
+  const existing = new Set(
+    (Array.isArray(existingRows) ? existingRows : [])
+      .map((row) => squashText(row?.confirmation))
+      .filter(Boolean),
+  );
+  return result.rows.some((row) => {
+    const confirmation = squashText(row?.confirmation);
+    return confirmation && !existing.has(confirmation);
+  });
+}
+
+export function activeStayStatus(status) {
+  return ['reserved', 'confirmed'].includes(squashText(status).toLocaleLowerCase());
+}
+
+export function mergeReadbackCompare(proof, expected, lastStay) {
+  if (!lastStay) return proof;
+  if (!activeStayStatus(lastStay.status)) {
+    return {
+      ...proof,
+      readbackMatch: null,
+      unknownOutcome: proof.unknownOutcome ?? 'unresolved',
+    };
+  }
+  const expectedConf = squashText(proof?.confNo);
+  const actualConf = squashText(lastStay.confirmation);
+  if (expectedConf && actualConf && expectedConf !== actualConf) {
+    return {
+      ...proof,
+      readbackMatch: null,
+      unknownOutcome: proof.unknownOutcome ?? 'unresolved',
+    };
+  }
+  const compared = compareReadbackStay(expected, lastStay);
+  return {
+    ...proof,
+    readbackMatch: compared.readbackMatch,
+    mismatches: compared.mismatches,
+    unknownOutcome: compared.readbackMatch === true ? null : (compared.unknownOutcome ?? proof.unknownOutcome),
+  };
 }
 // --- end-create-readback-rules ---
 
@@ -727,25 +774,16 @@ async function runProofReadback(browser, secret, stay, dir, save, savedScreensho
     },
     searchByGuestDates: (expected) => pollReadbackLookup(
       () => searchGuestByDates(browser, secret, dir, expected),
-      { sleep, isReady: guestLookupReady },
+      { sleep, isReady: (result) => newGuestRowReady(result, existingRows) },
     ),
   });
-  if (lastStay) {
-    const compared = compareReadbackStay(stay, lastStay);
-    return {
-      confNo: proof.confNo,
-      readbackMatch: compared.readbackMatch,
-      mismatches: compared.mismatches,
-      screenshot: proof.screenshot ?? savedScreenshot,
-      unknownOutcome: compared.readbackMatch === true ? null : (compared.unknownOutcome ?? proof.unknownOutcome),
-    };
-  }
+  const merged = mergeReadbackCompare(proof, stay, lastStay);
   return {
-    confNo: proof.confNo,
-    readbackMatch: proof.readbackMatch,
-    mismatches: proof.mismatches,
-    screenshot: proof.screenshot ?? savedScreenshot,
-    unknownOutcome: proof.unknownOutcome,
+    confNo: merged.confNo,
+    readbackMatch: merged.readbackMatch,
+    mismatches: merged.mismatches,
+    screenshot: merged.screenshot ?? savedScreenshot,
+    unknownOutcome: merged.unknownOutcome,
   };
 }
 
@@ -953,6 +991,7 @@ async function main() {
       try {
         save = await waitWhileStillProcessing({
           reason: save.reason,
+          confirmationNumber: save.confirmationNumber,
           read: async () => {
             if (await handleVisibleExtMessageBox(page, dir, result, stay) === 'abort') {
               const error = new Error(result.outcome || 'unknown_message_box');

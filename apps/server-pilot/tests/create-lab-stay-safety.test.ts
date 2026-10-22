@@ -75,6 +75,11 @@ describe('create-lab-stay write safety', () => {
       roomType: 'STQN',
       adults: 1,
     })).toEqual({ readbackMatch: true, mismatches: [], unknownOutcome: null });
+    expect(rules.mergeReadbackCompare(
+      { confNo: '66865808-1', readbackMatch: null, mismatches: [], unknownOutcome: 'unresolved' },
+      { lastName: 'Labtest', arrival: '2027-12-08', departure: '2027-12-09', roomType: 'STQN', adults: 1 },
+      { lastName: 'Labtest', arrival: '2027-12-08', departure: '2027-12-09', roomType: 'STQN', adults: 1, status: 'Cancelled' },
+    ).readbackMatch).toBeNull();
     expect(paneCommitOutcome({ readbackMatch: true })).toBe('committed');
     expect(source).toContain('waitWhileStillProcessing(');
     expect(source).toContain('compareReadbackStay(');

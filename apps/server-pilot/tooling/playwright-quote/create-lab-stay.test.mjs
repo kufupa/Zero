@@ -439,6 +439,25 @@ test('readback compare normalizes last name, ISO dates, room code, and adults', 
   }), { readbackMatch: true, mismatches: [], unknownOutcome: null });
 });
 
+test('readback compare never matches a cancelled or inactive stay', async () => {
+  const rules = await loadReadbackRules();
+  const reserved = { ...READBACK_EXPECTED, status: 'Reserved' };
+  const cancelled = { ...READBACK_EXPECTED, status: 'Cancelled' };
+  const matched = rules.mergeReadbackCompare(
+    { confNo: '66865808-1', readbackMatch: null, mismatches: [], unknownOutcome: 'unresolved' },
+    READBACK_EXPECTED,
+    reserved,
+  );
+  assert.equal(matched.readbackMatch, true);
+  const rejected = rules.mergeReadbackCompare(
+    { confNo: '66865808-1', readbackMatch: null, mismatches: [], unknownOutcome: 'unresolved' },
+    READBACK_EXPECTED,
+    cancelled,
+  );
+  assert.equal(rejected.readbackMatch, null);
+  assert.equal(rejected.unknownOutcome, 'unresolved');
+});
+
 test('readback compare reports field mismatches and stays unknown when a compared field is missing', async () => {
   const rules = await loadReadbackRules();
   assert.deepEqual(rules.compareReadbackStay(READBACK_EXPECTED, {
@@ -548,6 +567,12 @@ test('readback finds by confirmation when known, else guest last name + arrival,
   assert.equal(calls.length, 3);
   assert.equal(rules.guestLookupReady({ outcome: 'ok', rows: [{ confirmation: '1' }] }), true);
   assert.equal(rules.guestLookupReady({ outcome: 'ok', rows: [] }), false);
+  assert.equal(rules.newGuestRowReady({
+    outcome: 'ok', rows: [{ confirmation: '61143613-1' }],
+  }, [{ confirmation: '61143613-1' }]), false);
+  assert.equal(rules.newGuestRowReady({
+    outcome: 'ok', rows: [{ confirmation: '66865808-1' }],
+  }, [{ confirmation: '61143613-1' }]), true);
 });
 
 test('pane-commit readback uses normalized compare and known confirmation, never a second Save', async () => {
