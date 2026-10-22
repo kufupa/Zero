@@ -10,7 +10,6 @@ import {
   aiValueAt,
   correctionsCarryTo,
   dismissWorkItem,
-  remapWorkState,
   ensureWorkItem,
   ensureWorkItemForMessage,
   formStays,
@@ -874,7 +873,7 @@ describe('work item upsert', () => {
       expect(row!.extractionId).toBe(newer);
     }));
 
-  it('keeps her arrival edit on the same dates when a re-read swaps stay order and ids', () =>
+  it('keeps her arrival edit on the same stay when a re-read only swaps stay order', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'up3');
       await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
@@ -888,15 +887,7 @@ describe('work item upsert', () => {
         value: '2027-10-25',
       });
       const swapped = payload();
-      const [oct, nov] = swapped.stays;
-      swapped.stays = [
-        { ...nov!, id: 's_nov_new', rows: nov!.rows.map((row) => ({ ...row, id: 'r_nov_new' })) },
-        {
-          ...oct!,
-          id: 's_oct_new',
-          rows: oct!.rows.map((row, index) => ({ ...row, id: `r_oct_new_${index}` })),
-        },
-      ];
+      swapped.stays = [swapped.stays[1]!, swapped.stays[0]!];
       const second = await insertRead(db, messageId, { version: 'extract-v2', payload: swapped });
 
       const after = await readyWork(db, 'up3');
@@ -928,7 +919,14 @@ describe('corrections carry to a re-read', () => {
     expect(correctionsCarryTo(payload(), reRead, state)).toBe(true);
   });
 
-  it('carries an edit onto the same dates when a re-read assigns new stay ids in another order', () => {
+  it('carries an edit when a re-read only swaps stay order under the same ids', () => {
+    const before = payload();
+    const after: MailExtractionPayload = { ...payload(), stays: [payload().stays[1]!, payload().stays[0]!] };
+    const state = { [`stays[${STAY_ONE}].requested.arrival`]: '2027-10-25' };
+    expect(correctionsCarryTo(before, after, state)).toBe(true);
+  });
+
+  it('does not carry an edit onto a new stay id even when the dates uniquely match', () => {
     const before = payload();
     const [oct, nov] = payload().stays;
     const after: MailExtractionPayload = {
@@ -939,10 +937,7 @@ describe('corrections carry to a re-read', () => {
       ],
     };
     const state = { [`stays[${STAY_ONE}].requested.arrival`]: '2027-10-25' };
-    expect(correctionsCarryTo(before, after, state)).toBe(true);
-    expect(remapWorkState(before, after, state)).toEqual({
-      'stays[s_oct_new].requested.arrival': '2027-10-25',
-    });
+    expect(correctionsCarryTo(before, after, state)).toBe(false);
   });
 
   it('does not carry an edit when two stays share dates and cannot be told apart', () => {
