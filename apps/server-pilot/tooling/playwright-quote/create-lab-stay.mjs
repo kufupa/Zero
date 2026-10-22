@@ -11,6 +11,7 @@ import { assertTrackReadyForGuarantee, loadCreateRequest, loadCreateToolSchema, 
 import { readSaveSnapshot, readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { paneCommitOutcome, proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
+import { profileFor } from './property-profile.mjs';
 
 const REQUIRED = [
   'arrivaldate',
@@ -47,6 +48,30 @@ export function extMessageBoxAction(text, stay) {
   return 'unknown';
 }
 // --- end-ext-message-box-rules ---
+
+const CREATE_PROPERTIES = new Set(['HRCEN', 'HRDAV']);
+
+export function parseCreateProperty(argv) {
+  const index = argv.indexOf('--property');
+  if (index === -1) return { ok: true, propertyCode: 'HRCEN' };
+  const value = argv[index + 1];
+  if (!CREATE_PROPERTIES.has(value)) {
+    return { ok: false, exitCode: 2, error: 'PROPERTY_UNKNOWN' };
+  }
+  return { ok: true, propertyCode: value };
+}
+
+export function createRoomTypeMismatch(profile, roomType) {
+  const roomCodes = new Set(Object.keys(profile?.rooms ?? profile?.roomCapacity ?? {}));
+  return roomCodes.has(roomType) ? null : 'ROOM_TYPE_PROPERTY_MISMATCH';
+}
+
+export function createLabtestRefusal(propertyCode, stay, env = process.env) {
+  if (propertyCode !== 'HRDAV' || env.HMS_DAVINCI_CREATE !== 'lab') return null;
+  if (!/^labtest$/i.test(String(stay?.lastName ?? '').trim())) return 'pane_save_labtest_required';
+  if (String(stay?.arrival ?? '') < '2027-01-01') return 'pane_save_arrival_2027_required';
+  return null;
+}
 
 // --- create-readback-rules ---
 export const READBACK_WAIT_MS = 60_000;
@@ -836,6 +861,13 @@ async function main() {
     return;
   }
   const actions = stayActions(stop.stopBefore);
+  const property = parseCreateProperty(argv);
+  if (!property.ok) {
+    process.stderr.write(`${property.error}\n`);
+    process.exitCode = property.exitCode;
+    return;
+  }
+  const propertyCode = property.propertyCode;
   const loaded = await loadCreateRequest(argv);
   if (!loaded.ok) {
     process.stderr.write(`${loaded.error}\n`);
@@ -843,6 +875,24 @@ async function main() {
     return;
   }
   const stay = loaded.request;
+  const profile = profileFor(propertyCode);
+  if (!profile) {
+    process.stderr.write('PROPERTY_PROFILE_REQUIRED\n');
+    process.exitCode = 2;
+    return;
+  }
+  const roomMismatch = createRoomTypeMismatch(profile, stay.roomType);
+  if (roomMismatch) {
+    process.stderr.write(`${roomMismatch}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const labRefusal = createLabtestRefusal(propertyCode, stay, process.env);
+  if (labRefusal) {
+    process.stderr.write(`${labRefusal}\n`);
+    process.exitCode = 2;
+    return;
+  }
   if (proofMode && shopMode) {
     process.stderr.write('proof_incompatible_with_shop\n');
     process.exitCode = 2;
@@ -864,7 +914,9 @@ async function main() {
   }
   if (process.env.HMS_STAGEHAND_BROWSER_OWNERSHIP !== 'borrowed') throw new Error('BORROWED_REQUIRED');
   const secret = await readSecret();
-  if (secret.expectedPropertyCode !== 'HRCEN') throw new Error('PROPERTY_HRCEN_REQUIRED');
+  if (secret.expectedPropertyCode !== propertyCode) {
+    throw new Error(propertyCode === 'HRDAV' ? 'PROPERTY_HRDAV_REQUIRED' : 'PROPERTY_HRCEN_REQUIRED');
+  }
   const browser = await playwright().chromium.connectOverCDP(url.href, { timeout: 20000 });
   const context = await newBorrowedContext(browser, {
     ignoreHTTPSErrors: true,

@@ -168,18 +168,8 @@
         },
         "roomType": {
           "type": "string",
-          "enum": [
-            "STQN",
-            "STWN",
-            "SKNG",
-            "EXKNG",
-            "LUXKNG",
-            "SUITE",
-            "DLXKNG",
-            "DLXQN",
-            "DLXTWN"
-          ],
-          "description": "Native room-type code from the opened Room Type lookup. The code is the value."
+          "minLength": 1,
+          "description": "Native room-type code. Validated against the property profile for --property, not a cross-hotel enum."
         },
         "ratePlan": {
           "type": "string",

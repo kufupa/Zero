@@ -138,7 +138,8 @@ test('enums match new-record.md opened lists', () => {
   assert.equal(lists.sourceOfBusiness.length, 25);
   assert.equal(lists.track.length, 21);
   assert.deepEqual(schema.$defs.request.properties.guaranteeType.enum, lists.guaranteeType);
-  assert.deepEqual(schema.$defs.request.properties.roomType.enum, lists.roomType);
+  assert.equal(schema.$defs.request.properties.roomType.enum, undefined);
+  assert.equal(schema.$defs.request.properties.roomType.minLength, 1);
   assert.deepEqual(schema.$defs.request.properties.sourceOfBusiness.enum, lists.sourceOfBusiness);
   assert.deepEqual(schema.$defs.request.properties.track.enum, lists.track);
   assert.equal(schema.$defs.request.properties.ratePlan.enum, undefined);

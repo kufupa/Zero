@@ -279,6 +279,16 @@ export function hmsDavinciMakeQuoteEnabled(input: NodeJS.Dict<string> = process.
   return input.HMS_DAVINCI_MAKE_QUOTE === 'on';
 }
 
+/**
+ * Da Vinci pane create. Same three values as PANE_WRITE_CREATE: `lab` = Labtest only,
+ * `on` = real guests, unset/`off`/anything else = refuse. Independent of
+ * HMS_DAVINCI_READS and HMS_DAVINCI_MAKE_QUOTE. PANE_WRITE_CREATE still applies.
+ */
+export function hmsDavinciCreateMode(input: NodeJS.Dict<string> = process.env): 'off' | 'lab' | 'on' {
+  const value = input.HMS_DAVINCI_CREATE;
+  return value === 'lab' || value === 'on' ? value : 'off';
+}
+
 /** Check whether catch-up manual mail dump upload is enabled at runtime. */
 export function isCatchupUploadEnabled(input: EnvInput = process.env): boolean {
   const val = input.CATCHUP_UPLOAD_ENABLED;

@@ -91,7 +91,7 @@ import {
   assertHmsQuoteOriginAllowed,
   resolveHmsQuoteJobTarget,
 } from '../../hms/hms-quote-target.js';
-import { hmsReadTargetJobMetrics, isDaVinciTransport } from '../../hms/hms-read-target.js';
+import { hmsReadTargetForTransport, hmsReadTargetJobMetrics, isDaVinciTransport } from '../../hms/hms-read-target.js';
 import { TRPCError } from '@trpc/server';
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
@@ -976,7 +976,7 @@ export const workstationRouter = router({
         return {
           status: 'ready' as const,
           draft,
-          options: createRequestFieldOptions(),
+          options: createRequestFieldOptions(hmsReadTargetForTransport(ctx.activeTransportId).propertyCode),
           messageId: input.messageId,
           selectionEpoch: input.selectionEpoch,
           inputRevision: input.inputRevision,
@@ -992,7 +992,7 @@ export const workstationRouter = router({
     }),
   prepareUnquotedBookingDraft: mailboxProcedure
     .input(prepareUnquotedBookingDraftInput)
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const unavailable = { status: 'unavailable' as const, reason: 'prefill_unavailable' };
       if (!isUnquotedSingleStayNewBooking(input.analysis)) {
         return { status: 'unavailable' as const, reason: 'not_a_single_stay_new_booking' };
@@ -1008,6 +1008,7 @@ export const workstationRouter = router({
       }
       const party = input.analysis.party;
       try {
+        const propertyCode = hmsReadTargetForTransport(ctx.activeTransportId).propertyCode;
         const prefill = await buildCreatePrefill({
           arrival: group.arrival, departure: group.departure ?? null, nights: null,
           rooms: groups.flatMap((row) => Array.from({ length: row.rooms ?? 0 }, (_, i) => ({
@@ -1019,6 +1020,7 @@ export const workstationRouter = router({
           organizationName: party.kind === 'organization' || party.kind === 'government' ? party.name : null,
           voucherNumber: null, bookerName: null, bookerEmail: null, billingReference: party.reference,
           paidBy: null, defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
+          propertyCode,
         });
         if (!prefill.requests.length) return unavailable;
         return {
@@ -1027,7 +1029,7 @@ export const workstationRouter = router({
             requests: prefill.requests, missing: prefill.missing, schemaErrors: prefill.schemaErrors,
             board: prefillBoardFromLuna(group.board),
           }),
-          options: createRequestFieldOptions(),
+          options: createRequestFieldOptions(propertyCode),
           messageId: input.messageId, selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision,
           revisionRef: UNQUOTED_BOOKING_REVISION_REF,
         };
@@ -1141,7 +1143,7 @@ export const workstationRouter = router({
       return {
         status: 'ready' as const,
         draft,
-        options: createRequestFieldOptions(),
+        options: createRequestFieldOptions(hmsReadTargetForTransport(ctx.activeTransportId).propertyCode),
         messageId: input.messageId,
         selectionEpoch: input.selectionEpoch,
         inputRevision: input.inputRevision,

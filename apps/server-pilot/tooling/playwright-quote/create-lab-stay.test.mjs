@@ -4,6 +4,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertTrackReadyForGuarantee, loadCreateRequest, matchTrackRow, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
+import { createLabtestRefusal, createRoomTypeMismatch, parseCreateProperty } from './create-lab-stay.mjs';
+import { profileFor } from './property-profile.mjs';
 
 function requiredRequest(extra = {}) {
   return {
@@ -299,11 +301,47 @@ test('JS dialogs are dismissed and a vanished dialog does not crash', async () =
 test('HRCEN property check runs on every write, not only proof', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
   const secret = source.indexOf('const secret = await readSecret()');
-  const propertyCheck = source.indexOf("secret.expectedPropertyCode !== 'HRCEN'");
-  assert.ok(secret !== -1 && propertyCheck > secret);
+  const propertyCheck = source.indexOf('secret.expectedPropertyCode !== propertyCode');
+  const browserCall = source.indexOf('connectOverCDP');
+  assert.ok(secret !== -1 && propertyCheck > secret && propertyCheck < browserCall);
   assert.equal(source.includes('proofMode && secret.expectedPropertyCode'), false);
   assert.match(source, /PROPERTY_HRCEN_REQUIRED/);
+  assert.match(source, /PROPERTY_HRDAV_REQUIRED/);
   assert.equal(source.includes('PROOF_PROPERTY_HRCEN_REQUIRED'), false);
+});
+
+test('--property defaults to HRCEN, accepts HRDAV, refuses unknown', () => {
+  assert.deepEqual(parseCreateProperty([]), { ok: true, propertyCode: 'HRCEN' });
+  assert.deepEqual(parseCreateProperty(['--property', 'HRDAV']), { ok: true, propertyCode: 'HRDAV' });
+  assert.deepEqual(parseCreateProperty(['--property', 'OTHER']), {
+    ok: false,
+    exitCode: 2,
+    error: 'PROPERTY_UNKNOWN',
+  });
+});
+
+test('HRDAV profile accepts STKNG/JNRSUI and refuses Centurion SUITE/STQN', () => {
+  const hrdav = profileFor('HRDAV');
+  assert.equal(createRoomTypeMismatch(hrdav, 'STKNG'), null);
+  assert.equal(createRoomTypeMismatch(hrdav, 'JNRSUI'), null);
+  assert.equal(createRoomTypeMismatch(hrdav, 'STQN'), 'ROOM_TYPE_PROPERTY_MISMATCH');
+  assert.equal(createRoomTypeMismatch(hrdav, 'SUITE'), 'ROOM_TYPE_PROPERTY_MISMATCH');
+  assert.equal(createRoomTypeMismatch(profileFor('HRCEN'), 'STQN'), null);
+});
+
+test('HRDAV Labtest guard is lab-only', () => {
+  assert.equal(
+    createLabtestRefusal('HRDAV', { lastName: 'Guest', arrival: '2027-09-14' }, { HMS_DAVINCI_CREATE: 'lab' }),
+    'pane_save_labtest_required',
+  );
+  assert.equal(
+    createLabtestRefusal('HRDAV', { lastName: 'Labtest', arrival: '2026-12-31' }, { HMS_DAVINCI_CREATE: 'lab' }),
+    'pane_save_arrival_2027_required',
+  );
+  assert.equal(
+    createLabtestRefusal('HRDAV', { lastName: 'Guest', arrival: '2026-11-12' }, { HMS_DAVINCI_CREATE: 'on' }),
+    null,
+  );
 });
 
 test('pane-commit uses the proof snapshot and reconcile, and never labels a mismatch committed', async () => {

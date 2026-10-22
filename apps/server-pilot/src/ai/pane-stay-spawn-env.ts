@@ -36,6 +36,7 @@ export const PANE_CLI_ENV_ALLOWLIST = [
   'HMS_STAGEHAND_BROWSER_OWNERSHIP',
   'HMS_SLOT_PROFILE_DIR',
   'HMS_SLOT_STORAGE_STATE',
+  'HMS_DAVINCI_CREATE',
 ] as const;
 
 function davinciPaneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget): NodeJS.ProcessEnv {

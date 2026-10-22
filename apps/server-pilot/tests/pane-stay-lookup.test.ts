@@ -18,6 +18,7 @@ import {
   searchGuest,
 } from '../src/ai/pane-stay-lookup.js';
 import { type PaneStayLock, paneStaySaveLoaders } from '../src/ai/pane-stay-save.js';
+import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import {
   CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
@@ -519,6 +520,22 @@ describe('guestDatesDuplicateCheckViaCli', () => {
       lookupResult({ outcome: 'ok', stay: null, rows: [], screenshots: [join(dir, 'panel.png')], runId: 'x', runDir: dir });
     await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('clear');
     await expect(access(dir)).rejects.toThrow();
+  });
+
+  it('passes the HMS target through to spawn so a DV check does not search Centurion', async () => {
+    const targets: unknown[] = [];
+    paneStayLookupLoaders.spawn = async (input, target) => {
+      targets.push(target);
+      return lookupResult({ outcome: 'ok', stay: null, rows: [], screenshots: [] });
+    };
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY, DAVINCI_HMS_READ_TARGET)).resolves.toBe('clear');
+    expect(targets).toEqual([DAVINCI_HMS_READ_TARGET]);
+    targets.length = 0;
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY, CENTURION_HMS_READ_TARGET)).resolves.toBe('clear');
+    expect(targets).toEqual([CENTURION_HMS_READ_TARGET]);
+    targets.length = 0;
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('clear');
+    expect(targets).toEqual([undefined]);
   });
 });
 
