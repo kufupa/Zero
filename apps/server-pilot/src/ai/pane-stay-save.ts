@@ -6,6 +6,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { hmsDavinciCreateMode } from '../env.js';
+import {
+  CENTURION_HMS_READ_TARGET,
+  DAVINCI_HMS_READ_TARGET,
+  hmsReadTargetForTransport,
+  type HmsReadTarget,
+} from '../hms/hms-read-target.js';
 import {
   acquisitionWithin,
   createPostgresPropertyReadLock,
@@ -19,8 +26,8 @@ const execFileAsync = promisify(execFile);
 const CREATE_LAB_STAY = fileURLToPath(
   new URL('../../tooling/playwright-quote/create-lab-stay.mjs', import.meta.url),
 );
-// The hotel this HMS session runs on. The CLI never receives a propertyCode (paneStayRequestBody strips it),
-// so every property lock is keyed on this value, whatever the stay asks for.
+// Default hotel when the mailbox is not Da Vinci. The CLI never receives a propertyCode
+// (paneStayRequestBody strips it). The lock key is the resolved target (HRCEN or HRDAV).
 export const PANE_STAY_PROPERTY_CODE = 'HRCEN';
 // A successful preview can be committed for this long, once, and only for the same stay.
 export const PANE_PREVIEW_TTL_MS = 10 * 60_000;
@@ -126,6 +133,8 @@ export type PaneStaySpawnInput = {
   stay: PaneStay;
   stopBefore: 'save' | null;
   paneCommit: boolean;
+  /** Resolved HMS property/secret/slot. Da Vinci uses the HRDAV CDP and secret. */
+  target?: HmsReadTarget;
 };
 
 export type PaneStaySpawnResult = {
@@ -165,6 +174,7 @@ export const paneStaySaveLoaders: {
         lastName: string;
         arrival: string;
         departure: string;
+        target?: HmsReadTarget;
       }) => Promise<OsressDuplicateStatus>)
     | null;
   mode: (() => PaneSaveMode) | null;
@@ -240,6 +250,57 @@ export function paneStaySaveEnabled(env: NodeJS.Dict<string> = process.env): boo
 export function paneStayRequestBody(stay: PaneStay): Omit<PaneStay, 'propertyCode'> {
   const { propertyCode: _ignored, ...request } = stay;
   return request;
+}
+
+/** owner is `${userId}:${transportId}` on the live quoteWorkflow routes. */
+export function paneStayTransportIdFromOwner(owner: string): string | undefined {
+  const sep = owner.indexOf(':');
+  if (sep < 0) return undefined;
+  const transportId = owner.slice(sep + 1).trim();
+  return transportId || undefined;
+}
+
+/**
+ * Mailbox transport (or an explicit HRDAV propertyCode with no Centurion transport) picks the
+ * HMS slot. Da Vinci needs HMS_DAVINCI_CREATE=lab|on. Centurion stays HRCEN.
+ */
+export function paneStayCreateTarget(input: {
+  transportId?: string;
+  propertyCode?: string;
+  env?: NodeJS.Dict<string>;
+}): { ok: true; target: HmsReadTarget } | { ok: false; reason: string } {
+  const env = input.env ?? process.env;
+  const transportTarget = input.transportId ? hmsReadTargetForTransport(input.transportId) : null;
+  const fromTransport = transportTarget?.browserSlot === 'davinci';
+  const fromProperty = input.propertyCode === DAVINCI_HMS_READ_TARGET.propertyCode;
+  if (fromTransport) {
+    if (hmsDavinciCreateMode(env) === 'off') {
+      return { ok: false, reason: 'pane_save_property_mismatch' };
+    }
+    return { ok: true, target: DAVINCI_HMS_READ_TARGET };
+  }
+  if (fromProperty) {
+    if (transportTarget || hmsDavinciCreateMode(env) === 'off') {
+      return { ok: false, reason: 'pane_save_property_mismatch' };
+    }
+    return { ok: true, target: DAVINCI_HMS_READ_TARGET };
+  }
+  const refusal = paneStayPropertyRefusal(input.propertyCode, env);
+  if (refusal) return { ok: false, reason: refusal };
+  return { ok: true, target: CENTURION_HMS_READ_TARGET };
+}
+
+/** `--property HRDAV` only. Centurion omits the flag (CLI default HRCEN). */
+export function paneStayCreatePropertyArgs(target?: HmsReadTarget | null): string[] {
+  return target?.propertyCode === 'HRDAV' ? ['--property', 'HRDAV'] : [];
+}
+
+/** CDP + secret for create-lab-stay. HRDAV never inherits the Centurion slot. */
+export function paneStayCreateSpawnEnv(
+  target: HmsReadTarget | null | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return paneStaySpawnEnv(env, undefined, target?.browserSlot === 'davinci' ? target : null);
 }
 
 export function assertLabStayGuard(input: {
@@ -371,14 +432,21 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   await mkdir(dir, { mode: 0o700 });
   const requestPath = join(dir, 'request.json');
   await writeFile(requestPath, JSON.stringify(paneStayRequestBody(input.stay)), { mode: 0o600 });
-  const args = [CREATE_LAB_STAY, '--request', requestPath, '--out', dir];
+  const args = [
+    CREATE_LAB_STAY,
+    '--request',
+    requestPath,
+    '--out',
+    dir,
+    ...paneStayCreatePropertyArgs(input.target),
+  ];
   if (input.stopBefore) args.push('--stop-before', input.stopBefore);
   if (input.paneCommit) args.push('--pane-commit');
   let stdout: string;
   try {
     ({ stdout } = await execFileAsync('node', args, {
       timeout: 20 * 60_000,
-      env: paneStaySpawnEnv(),
+      env: paneStayCreateSpawnEnv(input.target),
     }));
   } finally {
     await rm(requestPath, { force: true });
@@ -405,7 +473,7 @@ export function paneStayTenantId(env: NodeJS.Dict<string> = process.env): string
   return configured ?? 'legacy';
 }
 
-// Production lock. Writes omit propertyCode and stay on the session hotel. Reads pass the resolved target.
+// Production lock. Create uses the resolved target's propertyCode (HRCEN or HRDAV).
 export function paneStayPropertyLock(propertyCode?: string): PaneStayLock | null {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) return null;
@@ -419,10 +487,15 @@ export function paneStayPropertyLock(propertyCode?: string): PaneStayLock | null
 
 // An explicit propertyCode must name the session's hotel. Any other value would lock a key the session never
 // uses, so the lock could be bypassed. Such requests are refused before any lock or spawn.
-export function paneStayPropertyRefusal(propertyCode: string | undefined): string | null {
-  return propertyCode === undefined || propertyCode === PANE_STAY_PROPERTY_CODE
-    ? null
-    : 'pane_save_property_mismatch';
+export function paneStayPropertyRefusal(
+  propertyCode: string | undefined,
+  env: NodeJS.Dict<string> = process.env,
+): string | null {
+  if (propertyCode === undefined || propertyCode === PANE_STAY_PROPERTY_CODE) return null;
+  if (propertyCode === DAVINCI_HMS_READ_TARGET.propertyCode) {
+    return hmsDavinciCreateMode(env) === 'off' ? 'pane_save_property_mismatch' : null;
+  }
+  return 'pane_save_property_mismatch';
 }
 
 // Preview: fill, check availability, screenshots, no save. A successful preview returns previewDigest.
@@ -433,6 +506,7 @@ export async function runPaneStay(input: {
   stay: PaneStay;
   owner: string;
   previewDigest?: string;
+  transportId?: string;
 }): Promise<PaneStayResult> {
   // Runs that outlived their retention window are removed here too, not only when a screenshot is read.
   await pruneExpiredPaneRuns(paneStayClock());
@@ -441,9 +515,20 @@ export async function runPaneStay(input: {
   if (modeRefusal) {
     return { status: 'refused', reason: modeRefusal };
   }
-  const propertyRefusal = paneStayPropertyRefusal(input.stay.propertyCode);
-  if (propertyRefusal) {
-    return { status: 'refused', reason: propertyRefusal };
+  const resolved = paneStayCreateTarget({
+    transportId: input.transportId ?? paneStayTransportIdFromOwner(input.owner),
+    propertyCode: input.stay.propertyCode,
+  });
+  if (!resolved.ok) {
+    return { status: 'refused', reason: resolved.reason };
+  }
+  const target = resolved.target;
+  if (target.browserSlot === 'davinci' && hmsDavinciCreateMode() === 'lab') {
+    try {
+      assertLabStayGuard({ lastName: input.stay.lastName, arrival: input.stay.arrival });
+    } catch (error) {
+      return { status: 'refused', reason: (error as Error).message };
+    }
   }
   const digest = paneStayDigest(input.stay);
   if (input.mode === 'commit') {
@@ -457,7 +542,7 @@ export async function runPaneStay(input: {
       return { status: 'refused', reason: 'pane_save_digest_mismatch' };
     }
   }
-  const lock = paneStaySaveLoaders.lock ?? paneStayPropertyLock();
+  const lock = paneStaySaveLoaders.lock ?? paneStayPropertyLock(target.propertyCode);
   if (!lock) {
     return { status: 'refused', reason: 'pane_save_lock_unavailable' };
   }
@@ -474,6 +559,7 @@ export async function runPaneStay(input: {
           lastName: input.stay.lastName,
           arrival: input.stay.arrival,
           departure: input.stay.departure,
+          target,
         });
         if (status === 'parked') return { refusal: 'osress_reader_parked' };
         if (status === 'busy') return { refusal: 'refused_lock_busy' };
@@ -488,6 +574,7 @@ export async function runPaneStay(input: {
           stay: input.stay,
           stopBefore: input.mode === 'preview' ? 'save' : null,
           paneCommit: input.mode === 'commit',
+          target,
         }),
       };
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
@@ -548,6 +635,5 @@ export function paneStayDupCheckMode(env: NodeJS.Dict<string> = process.env): 'c
 // CLI unlocked. A reader that cannot get the lock is reported by the save as refused_lock_busy.
 paneStaySaveLoaders.osressGuestDatesSearch =
   paneStayDupCheckMode() === 'cli'
-    ? (input) =>
-        guestDatesDuplicateCheckViaCli(input)
+    ? (input) => guestDatesDuplicateCheckViaCli(input, input.target ?? null)
     : null;

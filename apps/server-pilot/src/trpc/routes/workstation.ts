@@ -87,8 +87,11 @@ import {
 } from '../../quote-proposal/filename.js';
 import { and, eq, desc, sql } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
-import { assertHmsQuoteOriginAllowed } from '../../hms/hms-quote-target.js';
-import { hmsReadTargetJobMetrics, isDaVinciTransport } from '../../hms/hms-read-target.js';
+import {
+  assertHmsQuoteOriginAllowed,
+  resolveHmsQuoteJobTarget,
+} from '../../hms/hms-quote-target.js';
+import { hmsReadTargetForTransport, hmsReadTargetJobMetrics, isDaVinciTransport } from '../../hms/hms-read-target.js';
 import { TRPCError } from '@trpc/server';
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
@@ -755,7 +758,11 @@ export const workstationRouter = router({
     .query(async ({ input, ctx }) => {
       await awaitPendingStaffQuote(input.runId);
       const [owned] = await getDb()
-        .select({ id: aiWorkflowRun.id })
+        .select({
+          id: aiWorkflowRun.id,
+          threadId: aiWorkflowRun.threadId,
+          triggerMessageId: aiWorkflowRun.triggerMessageId,
+        })
         .from(aiWorkflowRun)
         .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
         .where(
@@ -768,9 +775,17 @@ export const workstationRouter = router({
         .limit(1);
       const unavailable = { status: 'unavailable' as const, reason: 'quote_run_unavailable' };
       if (!owned) return unavailable;
+      const quoteTarget = await resolveHmsQuoteJobTarget({
+        transportId: ctx.activeTransportId,
+        threadId: owned.threadId,
+        messageId: owned.triggerMessageId,
+      });
+      if (!quoteTarget.ok) return unavailable;
       let outputDir: string;
       try {
-        outputDir = readInstalledStaffQuoteConfiguration().outputDir;
+        const config = readInstalledStaffQuoteConfiguration(quoteTarget.target.propertyCode);
+        if (config.owner.propertyCode !== quoteTarget.target.propertyCode) return unavailable;
+        outputDir = config.outputDir;
       } catch {
         return unavailable;
       }
@@ -961,7 +976,7 @@ export const workstationRouter = router({
         return {
           status: 'ready' as const,
           draft,
-          options: createRequestFieldOptions(),
+          options: createRequestFieldOptions(hmsReadTargetForTransport(ctx.activeTransportId).propertyCode),
           messageId: input.messageId,
           selectionEpoch: input.selectionEpoch,
           inputRevision: input.inputRevision,
@@ -977,7 +992,7 @@ export const workstationRouter = router({
     }),
   prepareUnquotedBookingDraft: mailboxProcedure
     .input(prepareUnquotedBookingDraftInput)
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const unavailable = { status: 'unavailable' as const, reason: 'prefill_unavailable' };
       if (!isUnquotedSingleStayNewBooking(input.analysis)) {
         return { status: 'unavailable' as const, reason: 'not_a_single_stay_new_booking' };
@@ -993,6 +1008,7 @@ export const workstationRouter = router({
       }
       const party = input.analysis.party;
       try {
+        const propertyCode = hmsReadTargetForTransport(ctx.activeTransportId).propertyCode;
         const prefill = await buildCreatePrefill({
           arrival: group.arrival, departure: group.departure ?? null, nights: null,
           rooms: groups.flatMap((row) => Array.from({ length: row.rooms ?? 0 }, (_, i) => ({
@@ -1004,6 +1020,7 @@ export const workstationRouter = router({
           organizationName: party.kind === 'organization' || party.kind === 'government' ? party.name : null,
           voucherNumber: null, bookerName: null, bookerEmail: null, billingReference: party.reference,
           paidBy: null, defaults: { track: null, sourceOfBusiness: null, guaranteeType: null },
+          propertyCode,
         });
         if (!prefill.requests.length) return unavailable;
         return {
@@ -1012,7 +1029,7 @@ export const workstationRouter = router({
             requests: prefill.requests, missing: prefill.missing, schemaErrors: prefill.schemaErrors,
             board: prefillBoardFromLuna(group.board),
           }),
-          options: createRequestFieldOptions(),
+          options: createRequestFieldOptions(propertyCode),
           messageId: input.messageId, selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision,
           revisionRef: UNQUOTED_BOOKING_REVISION_REF,
         };
@@ -1126,7 +1143,7 @@ export const workstationRouter = router({
       return {
         status: 'ready' as const,
         draft,
-        options: createRequestFieldOptions(),
+        options: createRequestFieldOptions(hmsReadTargetForTransport(ctx.activeTransportId).propertyCode),
         messageId: input.messageId,
         selectionEpoch: input.selectionEpoch,
         inputRevision: input.inputRevision,
@@ -1164,7 +1181,7 @@ export const workstationRouter = router({
           deviceId: z.string().uuid(),
           paneChallenge: z.string().length(43),
           action: z.string().min(1).max(64),
-          storeId: z.string().min(1).max(512).optional(),
+          storeId: z.string().min(1).max(2048).optional(),
           operationId: z.string().min(1).max(128).optional(),
           resources: z.array(z.string().min(1).max(512)).max(25).optional(),
           sourceFolderId: z.string().min(1).max(512).optional(),

@@ -586,10 +586,25 @@ export async function runStaffQuote(
   if (!mail || mail.direction !== 'inbound')
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
   const systemPrepared = identity.user === undefined;
+  const quoteTarget = await resolveHmsQuoteJobTarget({
+    transportId: identity.transportId,
+    threadId: mail.threadId,
+    messageId: mail.id,
+    env: process.env,
+  });
+  if (!quoteTarget.ok) {
+    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: quoteTarget.message });
+  }
   let config: ReturnType<typeof readInstalledStaffQuoteConfiguration>;
   try {
-    config = readInstalledStaffQuoteConfiguration();
+    config = readInstalledStaffQuoteConfiguration(quoteTarget.target.propertyCode);
   } catch {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Staff quotation installation unavailable',
+    });
+  }
+  if (config.owner.propertyCode !== quoteTarget.target.propertyCode) {
     throw new TRPCError({
       code: 'PRECONDITION_FAILED',
       message: 'Staff quotation installation unavailable',
@@ -625,14 +640,6 @@ export async function runStaffQuote(
   let dinnerFallbackGroupIds: string[] = [];
   if (input.parties) {
     if (quoteRateContextEnabled()) {
-      const quoteTarget = await resolveHmsQuoteJobTarget({
-        transportId: identity.transportId,
-        threadId: mail.threadId,
-        messageId: mail.id,
-      });
-      if (!quoteTarget.ok) {
-        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: quoteTarget.message });
-      }
       quoteInput = { ...input, parties: await verifyStaffParties(input.parties, quoteTarget.target) };
     } else {
       quoteInput = { ...input, parties: undefined };
@@ -742,6 +749,7 @@ export async function runStaffQuote(
                 authorizationId: attempt.authorizationId,
                 authorizeContext: async (c) => c === attempt.context && (await stillCurrent()),
                 signer,
+                propertyCode: quoteTarget.target.propertyCode,
                 onEvidenceDirectory: (directory) => {
                   evidence.directory = directory;
                 },

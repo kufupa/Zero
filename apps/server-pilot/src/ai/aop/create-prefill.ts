@@ -43,6 +43,7 @@ export const buildCreatePrefillInputSchema = z.object({
     sourceOfBusiness: z.string().nullable(),
     guaranteeType: z.string().nullable(),
   }),
+  propertyCode: z.string().min(1).optional(),
 });
 
 export const buildCreatePrefillOutputSchema = z.object({
@@ -155,7 +156,7 @@ export async function buildCreatePrefill(
   input: BuildCreatePrefillInput,
 ): Promise<BuildCreatePrefillOutput> {
   const parsed = buildCreatePrefillInputSchema.parse(input);
-  const options = createRequestFieldOptions();
+  const options = createRequestFieldOptions(parsed.propertyCode);
   const missing: BookingDraftMissing[] = [];
   const arrival = isoDay(parsed.arrival);
   if (!arrival) missing.push({ field: 'arrival', question: 'Arrival date for this booking?' });

@@ -19,10 +19,15 @@ import {
   paneStaySaveLoaders,
   paneWriteMode,
   paneWriteModes,
+  paneStayCreatePropertyArgs,
+  paneStayCreateSpawnEnv,
+  paneStayCreateTarget,
   paneStayTenantId,
   readPaneStayScreenshot,
   runPaneStay,
 } from '../src/ai/pane-stay-save.js';
+import { hmsDavinciCreateMode } from '../src/env.js';
+import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE, propertyReadLockKey } from '../src/hms/property-read-lock.js';
 import {
   PANE_BOOKER_EMAIL_MAX,
@@ -54,9 +59,9 @@ const labStay = {
 
 let ownerSeq = 0;
 // Each test gets its own owner, so grants from one test never satisfy another.
-function freshOwner(): string {
+function freshOwner(transportId = 'transport-1'): string {
   ownerSeq += 1;
-  return `user-${ownerSeq}:transport-1`;
+  return `user-${ownerSeq}:${transportId}`;
 }
 
 function passingLock(seen: string[] = []): PaneStayLock {
@@ -845,6 +850,197 @@ describe('pane stay save modes', () => {
     const body = paneStayRequestBody(full);
     expect(body).not.toHaveProperty('propertyCode');
     expect(validateCreateRequest(body, await loadCreateToolSchema())).toMatchObject({ ok: true });
+  });
+});
+
+describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
+  const davinciStay = { ...labStay, propertyCode: 'HRDAV' as const };
+
+  it('is off unless HMS_DAVINCI_CREATE is lab or on, same as PANE_WRITE_CREATE', () => {
+    expect(hmsDavinciCreateMode({})).toBe('off');
+    expect(hmsDavinciCreateMode({ HMS_DAVINCI_CREATE: 'off' })).toBe('off');
+    expect(hmsDavinciCreateMode({ HMS_DAVINCI_CREATE: 'true' })).toBe('off');
+    expect(hmsDavinciCreateMode({ HMS_DAVINCI_CREATE: '1' })).toBe('off');
+    expect(hmsDavinciCreateMode({ HMS_DAVINCI_MAKE_QUOTE: 'on' })).toBe('off');
+    expect(hmsDavinciCreateMode({ HMS_DAVINCI_READS: 'on' })).toBe('off');
+    expect(hmsDavinciCreateMode({ HMS_DAVINCI_CREATE: 'lab' })).toBe('lab');
+    expect(hmsDavinciCreateMode({ HMS_DAVINCI_CREATE: 'on' })).toBe('on');
+  });
+
+  it('HRDAV + gate off → refused before lock or spawn', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'off');
+    const locked: string[] = [];
+    paneStaySaveLoaders.mode = () => 'lab';
+    paneStaySaveLoaders.lock = passingLock(locked);
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: davinciStay, owner: freshOwner('transport-davinci') }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_property_mismatch' });
+    await expect(
+      runPaneStay({
+        mode: 'preview',
+        stay: labStay,
+        owner: freshOwner('transport-faith'),
+      }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_property_mismatch' });
+    expect(paneStayCreateTarget({ transportId: 'transport-davinci' })).toEqual({
+      ok: false,
+      reason: 'pane_save_property_mismatch',
+    });
+    expect(locked).toEqual([]);
+  });
+
+  it('HRDAV + gate lab + Labtest → spawn env has DV slot/secret and propertyCode HRDAV', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
+    enableSave();
+    const seen: PaneStaySpawnInput[] = [];
+    paneStaySaveLoaders.spawn = async (input) => {
+      seen.push(input);
+      return cliSpawn(input);
+    };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: davinciStay, owner: freshOwner('transport-davinci') }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'previewed' });
+    expect(seen[0]?.target).toEqual(DAVINCI_HMS_READ_TARGET);
+    expect(seen[0]?.target?.propertyCode).toBe('HRDAV');
+    const spawnEnv = paneStayCreateSpawnEnv(seen[0]?.target, {
+      PATH: '/usr/bin',
+      HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
+      HMS_STAGEHAND_CDP_URL_DAVINCI: 'http://127.0.0.1:19225',
+      HMS_READ_SECRET_ARN: 'nava-zero/server-pilot/infor-hms-read',
+    });
+    expect(spawnEnv.HMS_READ_SECRET_ARN).toBe(DAVINCI_HMS_READ_TARGET.secretId);
+    expect(spawnEnv.HMS_STAGEHAND_CDP_URL).toBe('http://127.0.0.1:19225');
+    expect(spawnEnv.HMS_STAGEHAND_BROWSER_OWNERSHIP).toBe('borrowed');
+    expect(paneStayCreateTarget({ transportId: 'transport-kmgidi', env: { HMS_DAVINCI_CREATE: 'on' } })).toEqual({
+      ok: true,
+      target: DAVINCI_HMS_READ_TARGET,
+    });
+    vi.stubEnv('DATABASE_URL', 'postgres://user:secret@127.0.0.1:5432/zero_test');
+    vi.stubEnv('HMS_EXPECTED_TENANT', 'centurion');
+    const lock = paneStayPropertyLock(DAVINCI_HMS_READ_TARGET.propertyCode) as unknown as {
+      key: string;
+    } | null;
+    expect(lock?.key).toBe(propertyReadLockKey('centurion', 'HRDAV'));
+  });
+
+  it('HRDAV + lab + non-Labtest → refused even when PANE_WRITE_CREATE is on', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
+    const locked: string[] = [];
+    paneStaySaveLoaders.mode = () => 'on';
+    paneStaySaveLoaders.lock = passingLock(locked);
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(
+      runPaneStay({
+        mode: 'preview',
+        stay: { ...davinciStay, lastName: 'Guest' },
+        owner: freshOwner('transport-davinci'),
+      }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_labtest_required' });
+    expect(locked).toEqual([]);
+  });
+
+  it('HRDAV + on lets a real guest through when PANE_WRITE_CREATE is on', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
+    enableSave();
+    paneStaySaveLoaders.mode = () => 'on';
+    const seen: PaneStaySpawnInput[] = [];
+    paneStaySaveLoaders.spawn = async (input) => {
+      seen.push(input);
+      return cliSpawn(input);
+    };
+    const guest = { ...davinciStay, lastName: 'Guest', arrival: '2026-11-12', departure: '2026-11-14' };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: guest, owner: freshOwner('transport-davinci') }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'previewed' });
+    expect(seen[0]?.target).toEqual(DAVINCI_HMS_READ_TARGET);
+  });
+
+  it('Centurion create stays on HRCEN when the DV create gate is lab', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
+    enableSave();
+    const seen: PaneStaySpawnInput[] = [];
+    paneStaySaveLoaders.spawn = async (input) => {
+      seen.push(input);
+      return cliSpawn(input);
+    };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: labStay, owner: freshOwner('transport-centurion') }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'previewed' });
+    expect(seen[0]?.target).toEqual(CENTURION_HMS_READ_TARGET);
+    const spawnEnv = paneStayCreateSpawnEnv(seen[0]?.target, {
+      PATH: '/usr/bin',
+      HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
+      HMS_STAGEHAND_CDP_URL_DAVINCI: 'http://127.0.0.1:19225',
+      HMS_READ_SECRET_ARN: 'nava-zero/server-pilot/infor-hms-read',
+    });
+    expect(spawnEnv.HMS_STAGEHAND_CDP_URL).toBe('http://127.0.0.1:19223');
+    expect(spawnEnv.HMS_READ_SECRET_ARN).toBe('nava-zero/server-pilot/infor-hms-read');
+    expect(paneStayCreateTarget({ transportId: 'transport-centurion', env: { HMS_DAVINCI_CREATE: 'lab' } })).toEqual(
+      { ok: true, target: CENTURION_HMS_READ_TARGET },
+    );
+  });
+
+  it('passes --property HRDAV only for the Da Vinci target', () => {
+    expect(paneStayCreatePropertyArgs(DAVINCI_HMS_READ_TARGET)).toEqual(['--property', 'HRDAV']);
+    expect(paneStayCreatePropertyArgs(CENTURION_HMS_READ_TARGET)).toEqual([]);
+    expect(paneStayCreatePropertyArgs(null)).toEqual([]);
+  });
+
+  it('DV commit dup-check runs with the HRDAV target', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
+    enableSave();
+    const seen: unknown[] = [];
+    paneStaySaveLoaders.osressGuestDatesSearch = async (input) => {
+      seen.push(input.target);
+      return 'clear';
+    };
+    const owner = freshOwner('transport-davinci');
+    const preview = await runPaneStay({ mode: 'preview', stay: davinciStay, owner });
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: davinciStay,
+        owner,
+        previewDigest: preview.previewDigest ?? paneStayDigest(davinciStay),
+      }),
+    ).resolves.toMatchObject({ status: 'ok' });
+    expect(seen).toEqual([DAVINCI_HMS_READ_TARGET]);
+  });
+
+  it('Centurion commit dup-check stays on HRCEN', async () => {
+    enableSave();
+    const seen: unknown[] = [];
+    paneStaySaveLoaders.osressGuestDatesSearch = async (input) => {
+      seen.push(input.target);
+      return 'clear';
+    };
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: labStay,
+        owner,
+        previewDigest: preview.previewDigest ?? paneStayDigest(labStay),
+      }),
+    ).resolves.toMatchObject({ status: 'ok' });
+    expect(seen).toEqual([CENTURION_HMS_READ_TARGET]);
+  });
+
+  it('PANE_WRITE_CREATE off still refuses Da Vinci create when the DV gate is lab', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
+    paneStaySaveLoaders.mode = () => 'off';
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: davinciStay, owner: freshOwner('transport-davinci') }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_flag_off' });
   });
 });
 

@@ -260,7 +260,7 @@ async function defaultValidateCreate(
   );
 }
 
-export function createRequestFieldOptions(): {
+export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
   track: string[];
   sourceOfBusiness: string[];
   guaranteeType: string[];
@@ -278,17 +278,25 @@ export function createRequestFieldOptions(): {
           track: { enum: string[] };
           sourceOfBusiness: { enum: string[] };
           guaranteeType: { enum: string[] };
-          roomType: { enum: string[] };
         };
       };
     };
   };
   const props = schema.$defs.request.properties;
+  const code = propertyCode === 'HRDAV' ? 'HRDAV' : 'HRCEN';
+  const profile = JSON.parse(
+    readFileSync(
+      fileURLToPath(
+        new URL(`../../tooling/playwright-quote/property-profiles/${code}.json`, import.meta.url),
+      ),
+      'utf8',
+    ),
+  ) as { roomCapacity?: Record<string, number> };
   return {
     track: props.track.enum,
     sourceOfBusiness: props.sourceOfBusiness.enum,
     guaranteeType: props.guaranteeType.enum,
-    roomType: props.roomType.enum,
+    roomType: Object.keys(profile.roomCapacity ?? {}),
   };
 }
 

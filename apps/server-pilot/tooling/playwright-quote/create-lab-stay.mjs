@@ -11,6 +11,7 @@ import { assertTrackReadyForGuarantee, loadCreateRequest, loadCreateToolSchema, 
 import { readSaveSnapshot, readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { paneCommitOutcome, proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
+import { profileFor } from './property-profile.mjs';
 
 const REQUIRED = [
   'arrivaldate',
@@ -47,6 +48,305 @@ export function extMessageBoxAction(text, stay) {
   return 'unknown';
 }
 // --- end-ext-message-box-rules ---
+
+const CREATE_PROPERTIES = new Set(['HRCEN', 'HRDAV']);
+
+export function parseCreateProperty(argv) {
+  const index = argv.indexOf('--property');
+  if (index === -1) return { ok: true, propertyCode: 'HRCEN' };
+  const value = argv[index + 1];
+  if (!CREATE_PROPERTIES.has(value)) {
+    return { ok: false, exitCode: 2, error: 'PROPERTY_UNKNOWN' };
+  }
+  return { ok: true, propertyCode: value };
+}
+
+export function createRoomTypeMismatch(profile, roomType) {
+  const roomCodes = new Set(Object.keys(profile?.rooms ?? profile?.roomCapacity ?? {}));
+  return roomCodes.has(roomType) ? null : 'ROOM_TYPE_PROPERTY_MISMATCH';
+}
+
+export function createLabtestRefusal(propertyCode, stay, env = process.env) {
+  if (propertyCode !== 'HRDAV' || env.HMS_DAVINCI_CREATE !== 'lab') return null;
+  if (!/^labtest$/i.test(String(stay?.lastName ?? '').trim())) return 'pane_save_labtest_required';
+  if (String(stay?.arrival ?? '') < '2027-01-01') return 'pane_save_arrival_2027_required';
+  return null;
+}
+
+// --- create-readback-rules ---
+export const READBACK_WAIT_MS = 60_000;
+export const READBACK_POLL_MS = 5_000;
+
+const HMS_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+function squashText(value) {
+  return String(value ?? '').normalize('NFKC').replace(/\s+/g, ' ').trim();
+}
+
+export function isoStayDate(value) {
+  const text = squashText(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const date = new Date(`${text}T00:00:00.000Z`);
+    return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === text ? text : null;
+  }
+  const match = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(text);
+  if (!match) return null;
+  const month = HMS_MONTHS.indexOf(match[2].toUpperCase());
+  if (month === -1) return null;
+  const iso = `${match[3]}-${String(month + 1).padStart(2, '0')}-${String(match[1]).padStart(2, '0')}`;
+  const date = new Date(`${iso}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === iso ? iso : null;
+}
+
+export function normalizeLastName(value) {
+  return squashText(value).toLocaleLowerCase();
+}
+
+export function normalizeRoomTypeCode(value) {
+  const match = /^[A-Za-z0-9]+/.exec(squashText(value));
+  return match ? match[0].toUpperCase() : '';
+}
+
+export function normalizeAdults(value) {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return value;
+  const text = squashText(value);
+  if (!/^\d+$/.test(text)) return null;
+  return Number(text);
+}
+
+export function knownConfirmation(save) {
+  return squashText(save?.confirmationNumber);
+}
+
+export function readbackSearchPlan(save) {
+  const confirmation = knownConfirmation(save);
+  if (save?.confirmed === true && confirmation) return { by: 'confirmation', confirmation };
+  return { by: 'guest' };
+}
+
+export function reconcileSaveInput(save) {
+  const confirmation = knownConfirmation(save);
+  if (save?.confirmed === true && confirmation) {
+    return { confirmed: true, confirmationNumber: confirmation };
+  }
+  return {
+    confirmed: false,
+    confirmationNumber: confirmation || null,
+    reason: save?.reason ?? null,
+    status: save?.status ?? null,
+  };
+}
+
+export function saveStillProcessingDecision({
+  reason,
+  maskVisible,
+  confirmationNumber,
+  elapsedMs,
+  timeoutMs = READBACK_WAIT_MS,
+}) {
+  const masked = maskVisible === true || (maskVisible == null && reason === 'still_processing');
+  if (masked) return elapsedMs >= timeoutMs ? 'stop' : 'poll';
+  if (knownConfirmation({ confirmationNumber })) return 'stop';
+  return elapsedMs >= timeoutMs ? 'stop' : 'poll';
+}
+
+export function compareReadbackStay(expected, actual) {
+  if (!actual || typeof actual !== 'object') {
+    return { readbackMatch: null, mismatches: [], unknownOutcome: 'unresolved' };
+  }
+  const rows = [
+    {
+      field: 'firstName',
+      expectedNorm: normalizeLastName(expected?.firstName),
+      actualNorm: normalizeLastName(actual?.firstName),
+      expected: expected?.firstName ?? null,
+      actual: actual?.firstName ?? null,
+      missing: (value) => !value,
+    },
+    {
+      field: 'lastName',
+      expectedNorm: normalizeLastName(expected?.lastName),
+      actualNorm: normalizeLastName(actual?.lastName),
+      expected: expected?.lastName ?? null,
+      actual: actual?.lastName ?? null,
+      missing: (value) => !value,
+    },
+    {
+      field: 'arrival',
+      expectedNorm: isoStayDate(expected?.arrival),
+      actualNorm: isoStayDate(actual?.arrival),
+      expected: expected?.arrival ?? null,
+      actual: actual?.arrival ?? null,
+      missing: (value) => !value,
+    },
+    {
+      field: 'departure',
+      expectedNorm: isoStayDate(expected?.departure),
+      actualNorm: isoStayDate(actual?.departure),
+      expected: expected?.departure ?? null,
+      actual: actual?.departure ?? null,
+      missing: (value) => !value,
+    },
+    {
+      field: 'roomType',
+      expectedNorm: normalizeRoomTypeCode(expected?.roomType),
+      actualNorm: normalizeRoomTypeCode(actual?.roomType),
+      expected: expected?.roomType ?? null,
+      actual: actual?.roomType ?? null,
+      missing: (value) => !value,
+    },
+    {
+      field: 'adults',
+      expectedNorm: normalizeAdults(expected?.adults),
+      actualNorm: normalizeAdults(actual?.adults),
+      expected: expected?.adults ?? null,
+      actual: actual?.adults ?? null,
+      missing: (value) => value == null,
+    },
+  ];
+  const mismatches = [];
+  for (const row of rows) {
+    if (row.missing(row.expectedNorm) || row.missing(row.actualNorm)) {
+      return { readbackMatch: null, mismatches, unknownOutcome: 'unresolved' };
+    }
+    if (row.expectedNorm !== row.actualNorm) {
+      mismatches.push({ field: row.field, expected: row.expected, actual: row.actual });
+    }
+  }
+  return { readbackMatch: mismatches.length === 0, mismatches, unknownOutcome: null };
+}
+
+export async function waitWhileStillProcessing({
+  reason,
+  confirmationNumber: priorConfirmation = '',
+  timeoutMs = READBACK_WAIT_MS,
+  pollMs = READBACK_POLL_MS,
+  now = Date.now,
+  sleep,
+  read,
+}) {
+  const start = now();
+  for (;;) {
+    const snapshot = await read();
+    const confirmationNumber = snapshot?.confirmationNumber ?? '';
+    const maskVisible = snapshot?.maskVisible === true;
+    const currentReason = maskVisible ? 'still_processing' : (knownConfirmation({ confirmationNumber }) ? null : 'no_confirmation');
+    if (!maskVisible && knownConfirmation({ confirmationNumber })) {
+      return {
+        confirmed: true,
+        confirmationNumber: squashText(confirmationNumber),
+        status: snapshot?.status ?? null,
+        reason: null,
+      };
+    }
+    const elapsedMs = now() - start;
+    if (saveStillProcessingDecision({
+      reason: currentReason ?? reason,
+      maskVisible,
+      confirmationNumber,
+      elapsedMs,
+      timeoutMs,
+    }) === 'stop') {
+      return {
+        confirmed: false,
+        confirmationNumber: knownConfirmation({ confirmationNumber }) || null,
+        status: snapshot?.status ?? null,
+        reason: currentReason ?? reason,
+      };
+    }
+    await sleep(Math.min(pollMs, Math.max(0, timeoutMs - elapsedMs)));
+  }
+}
+
+export async function pollReadbackLookup(lookup, {
+  timeoutMs = READBACK_WAIT_MS,
+  pollMs = READBACK_POLL_MS,
+  now = Date.now,
+  sleep,
+  isReady,
+} = {}) {
+  const deadline = now() + timeoutMs;
+  let last = null;
+  for (;;) {
+    try {
+      last = await lookup();
+    } catch {
+      last = { outcome: 'error' };
+    }
+    if (isReady(last)) return last;
+    const remaining = deadline - now();
+    if (remaining <= 0) return last;
+    await sleep(Math.min(pollMs, remaining));
+  }
+}
+
+export function confirmationLookupReady(result, searchedConfirmation) {
+  if (result?.outcome !== 'found' || result.stay == null) return false;
+  const wanted = squashText(searchedConfirmation);
+  const got = squashText(result.stay.confirmation);
+  return Boolean(wanted) && wanted === got;
+}
+
+export function dropUnsearchedStay(found, searchedConfirmation) {
+  if (confirmationLookupReady(found, searchedConfirmation)) return found;
+  return {
+    outcome: found?.outcome === 'found' ? 'not_found' : (found?.outcome ?? 'not_found'),
+    stay: null,
+    screenshot: found?.screenshot ?? null,
+  };
+}
+
+export function guestLookupReady(result) {
+  return result?.outcome === 'ok' && Array.isArray(result.rows) && result.rows.length > 0;
+}
+
+export function newGuestRowReady(result, existingRows) {
+  if (!guestLookupReady(result)) return false;
+  const existing = new Set(
+    (Array.isArray(existingRows) ? existingRows : [])
+      .map((row) => squashText(row?.confirmation))
+      .filter(Boolean),
+  );
+  return result.rows.some((row) => {
+    const confirmation = squashText(row?.confirmation);
+    return confirmation && !existing.has(confirmation);
+  });
+}
+
+export function activeStayStatus(status) {
+  return ['reserved', 'confirmed'].includes(squashText(status).toLocaleLowerCase());
+}
+
+function unresolvedReadback(proof) {
+  return {
+    ...proof,
+    readbackMatch: null,
+    unknownOutcome: 'unresolved',
+  };
+}
+
+export function mergeReadbackCompare(proof, expected, lastStay) {
+  if (!lastStay || !activeStayStatus(lastStay.status)) return unresolvedReadback(proof);
+  const expectedConf = squashText(proof?.confNo);
+  const actualConf = squashText(lastStay.confirmation);
+  if (!actualConf || (expectedConf && expectedConf !== actualConf)) return unresolvedReadback(proof);
+  const compared = compareReadbackStay(expected, lastStay);
+  if (compared.readbackMatch !== true) {
+    return {
+      ...proof,
+      readbackMatch: compared.readbackMatch,
+      mismatches: compared.mismatches,
+      unknownOutcome: compared.unknownOutcome ?? 'unresolved',
+    };
+  }
+  return {
+    ...proof,
+    readbackMatch: true,
+    mismatches: [],
+    unknownOutcome: null,
+  };
+}
+// --- end-create-readback-rules ---
 
 // Shared proof directory for manual runs. The pane passes --out with a per-run directory instead.
 function defaultOutDir() {
@@ -490,41 +790,60 @@ async function searchGuestByDates(browser, secret, dir, expected) {
   });
 }
 
-async function readExistingGuestRows(browser, secret, stay, dir) {
+async function readExistingGuestRows(browser, secret, stay, dir, result) {
   try {
     const search = await searchGuestByDates(browser, secret, dir, stay);
     return search?.outcome === 'ok' && Array.isArray(search.rows) ? search.rows : null;
-  } catch {
+  } catch (error) {
+    const message = String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300);
+    process.stderr.write(`pre_save_search_error ${message}\n`);
+    if (result && typeof result === 'object') result.preSaveSearchError = message;
     return null;
   }
 }
 
+async function findStayByConfirmation(browser, secret, stay, dir, confirmation) {
+  const { findOnOpenGuestStay } = await import('./stay-lookup.mjs');
+  return withReadOnlyGuestStay(browser, secret, dir, {
+    mode: 'find', confirmation, arrival: null, departure: null, lastName: stay.lastName, debugHtml: false,
+  }, async (ctx) => {
+    const found = await findOnOpenGuestStay(ctx, { captureScreenshots: false });
+    return dropUnsearchedStay({
+      outcome: found.outcome,
+      stay: found.stay,
+      screenshot: await shot(ctx.page, dir, 'readback.png').catch(() => null),
+    }, confirmation);
+  });
+}
+
 async function runProofReadback(browser, secret, stay, dir, save, savedScreenshot, existingRows) {
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  let lastStay = null;
   const proof = await reconcileCreateSave({
-    save,
+    save: reconcileSaveInput(save),
     expected: stay,
     existingRows,
     readByConfirmation: async (confirmation) => {
-      const { findOnOpenGuestStay } = await import('./stay-lookup.mjs');
-      return withReadOnlyGuestStay(browser, secret, dir, {
-        mode: 'find', confirmation, arrival: null, departure: null, lastName: stay.lastName, debugHtml: false,
-      }, async (ctx) => {
-        const found = await findOnOpenGuestStay(ctx, { captureScreenshots: false });
-        return {
-          outcome: found.outcome,
-          stay: found.stay,
-          screenshot: await shot(ctx.page, dir, 'readback.png').catch(() => null),
-        };
-      });
+      const found = await pollReadbackLookup(
+        () => findStayByConfirmation(browser, secret, stay, dir, confirmation),
+        { sleep, isReady: (result) => confirmationLookupReady(result, confirmation) },
+      );
+      const searched = dropUnsearchedStay(found, confirmation);
+      lastStay = searched.stay;
+      return searched;
     },
-    searchByGuestDates: (expected) => searchGuestByDates(browser, secret, dir, expected),
+    searchByGuestDates: (expected) => pollReadbackLookup(
+      () => searchGuestByDates(browser, secret, dir, expected),
+      { sleep, isReady: (result) => newGuestRowReady(result, existingRows) },
+    ),
   });
+  const merged = mergeReadbackCompare(proof, stay, lastStay);
   return {
-    confNo: proof.confNo,
-    readbackMatch: proof.readbackMatch,
-    mismatches: proof.mismatches,
-    screenshot: proof.screenshot ?? savedScreenshot,
-    unknownOutcome: proof.unknownOutcome,
+    confNo: merged.confNo,
+    readbackMatch: merged.readbackMatch,
+    mismatches: merged.mismatches,
+    screenshot: merged.screenshot ?? savedScreenshot,
+    unknownOutcome: merged.unknownOutcome,
   };
 }
 
@@ -545,6 +864,13 @@ async function main() {
     return;
   }
   const actions = stayActions(stop.stopBefore);
+  const property = parseCreateProperty(argv);
+  if (!property.ok) {
+    process.stderr.write(`${property.error}\n`);
+    process.exitCode = property.exitCode;
+    return;
+  }
+  const propertyCode = property.propertyCode;
   const loaded = await loadCreateRequest(argv);
   if (!loaded.ok) {
     process.stderr.write(`${loaded.error}\n`);
@@ -552,6 +878,24 @@ async function main() {
     return;
   }
   const stay = loaded.request;
+  const profile = profileFor(propertyCode);
+  if (!profile) {
+    process.stderr.write('PROPERTY_PROFILE_REQUIRED\n');
+    process.exitCode = 2;
+    return;
+  }
+  const roomMismatch = createRoomTypeMismatch(profile, stay.roomType);
+  if (roomMismatch) {
+    process.stderr.write(`${roomMismatch}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const labRefusal = createLabtestRefusal(propertyCode, stay, process.env);
+  if (labRefusal) {
+    process.stderr.write(`${labRefusal}\n`);
+    process.exitCode = 2;
+    return;
+  }
   if (proofMode && shopMode) {
     process.stderr.write('proof_incompatible_with_shop\n');
     process.exitCode = 2;
@@ -573,7 +917,9 @@ async function main() {
   }
   if (process.env.HMS_STAGEHAND_BROWSER_OWNERSHIP !== 'borrowed') throw new Error('BORROWED_REQUIRED');
   const secret = await readSecret();
-  if (secret.expectedPropertyCode !== 'HRCEN') throw new Error('PROPERTY_HRCEN_REQUIRED');
+  if (secret.expectedPropertyCode !== propertyCode) {
+    throw new Error(propertyCode === 'HRDAV' ? 'PROPERTY_HRDAV_REQUIRED' : 'PROPERTY_HRCEN_REQUIRED');
+  }
   const browser = await playwright().chromium.connectOverCDP(url.href, { timeout: 20000 });
   const context = await newBorrowedContext(browser, {
     ignoreHTTPSErrors: true,
@@ -670,7 +1016,7 @@ async function main() {
     }
     const verifySave = proofMode || stop.paneCommit;
     const existingRows = verifySave
-      ? await readExistingGuestRows(browser, secret, stay, dir)
+      ? await readExistingGuestRows(browser, secret, stay, dir, result)
       : null;
     const preSaveRefusal = verifySave ? proofPreSaveSearchRefusal(existingRows) : null;
     if (preSaveRefusal) {
@@ -726,6 +1072,30 @@ async function main() {
         if (!verifySave) throw error;
         result.saveError = String(error.message || error);
         save = { confirmed: false, confirmationNumber: null, reason: 'save_observation_error' };
+      }
+    }
+    if (!save.confirmed) {
+      try {
+        save = await waitWhileStillProcessing({
+          reason: save.reason,
+          confirmationNumber: save.confirmationNumber,
+          read: async () => {
+            if (await handleVisibleExtMessageBox(page, dir, result, stay) === 'abort') {
+              const error = new Error(result.outcome || 'unknown_message_box');
+              error.messageBoxAbort = true;
+              throw error;
+            }
+            return readSaveSnapshot(page);
+          },
+          sleep: (ms) => page.waitForTimeout(ms),
+        });
+      } catch (error) {
+        if (error?.messageBoxAbort) {
+          process.exitCode = 2;
+          return;
+        }
+        if (!verifySave) throw error;
+        result.saveError = String(error.message || error);
       }
     }
     result.confirmationNumber = save.confirmationNumber;
