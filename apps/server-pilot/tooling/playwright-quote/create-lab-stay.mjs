@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { assertTrackReadyForGuarantee, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
-import { readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
+import { readSaveSnapshot, readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { paneCommitOutcome, proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
 
@@ -696,19 +696,33 @@ async function main() {
       result.saveError = String(error.message || error);
       saveClickUnknown = true;
     }
-    if (await handleVisibleExtMessageBox(page, dir, result, stay) === 'abort') {
-      process.exitCode = 2;
-      return;
-    }
     // HMS masks the record while it saves. Read the number only once the mask is gone. A missing number is
     // save_unconfirmed, never a failed save: HMS may already have booked the stay.
+    // Allowlisted no-rooms Ext box: click OK and keep waiting. Money/unknown abort.
     let save;
     if (saveClickUnknown) {
+      if (await handleVisibleExtMessageBox(page, dir, result, stay) === 'abort') {
+        process.exitCode = 2;
+        return;
+      }
       save = { confirmed: false, confirmationNumber: null, reason: 'save_click_unconfirmed' };
     } else {
       try {
-        save = await waitForSaveConfirmation(page);
+        save = await waitForSaveConfirmation(page, {
+          read: async (p) => {
+            if (await handleVisibleExtMessageBox(p, dir, result, stay) === 'abort') {
+              const error = new Error(result.outcome || 'unknown_message_box');
+              error.messageBoxAbort = true;
+              throw error;
+            }
+            return readSaveSnapshot(p);
+          },
+        });
       } catch (error) {
+        if (error?.messageBoxAbort) {
+          process.exitCode = 2;
+          return;
+        }
         if (!verifySave) throw error;
         result.saveError = String(error.message || error);
         save = { confirmed: false, confirmationNumber: null, reason: 'save_observation_error' };

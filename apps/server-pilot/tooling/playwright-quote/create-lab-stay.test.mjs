@@ -390,3 +390,19 @@ test('ext message-box handler is Labtest-only, never accepts JS dialogs, never c
   assert.ok(okClick !== -1 && okClick < saveClick);
   assert.match(source, /shot\(page, dir, 'failure\.png'\)/);
 });
+
+test('after Save, allowlisted Ext box continues waitForSaveConfirmation and proof; money/unknown abort', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const saveClick = source.indexOf("clickTip(page, '^Save'");
+  assert.ok(saveClick !== -1);
+  const afterSave = source.slice(saveClick);
+  const wait = afterSave.indexOf('waitForSaveConfirmation(');
+  const proof = afterSave.indexOf('runProofReadback');
+  assert.ok(wait !== -1 && proof > wait);
+  const waitBlock = afterSave.slice(wait, wait + 900);
+  assert.match(waitBlock, /handleVisibleExtMessageBox/);
+  assert.match(waitBlock, /readSaveSnapshot/);
+  const abortGuard = afterSave.indexOf('messageBoxAbort');
+  const abortExit = afterSave.indexOf('process.exitCode = 2', abortGuard);
+  assert.ok(abortGuard !== -1 && abortExit > abortGuard);
+});
