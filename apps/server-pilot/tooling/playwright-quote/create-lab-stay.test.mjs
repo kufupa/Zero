@@ -308,7 +308,7 @@ test('JS dialogs are dismissed and a vanished dialog does not crash', async () =
   const dialogOn = source.indexOf("page.on('dialog'", writePage);
   assert.ok(writePage !== -1);
   assert.ok(dialogOn > writePage, 'write page must install a dialog listener');
-  const handler = source.slice(dialogOn, dialogOn + 220);
+  const handler = source.slice(dialogOn, source.indexOf('});', dialogOn) + 3);
   assert.match(handler, /dismiss\(\)\.catch\(\(\)\s*=>\s*\{\s*\}\)/);
   assert.doesNotMatch(handler, /\.accept\(/);
   assert.doesNotMatch(source, /dialog\.accept\(/);
