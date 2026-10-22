@@ -216,20 +216,24 @@ function isProvisionalStatus(status: unknown): boolean {
 
 /**
  * R7 unpaid amend: provisional + deposit received 0 + non-paying guarantee.
- * Missing or unreadable field, paid deposit, paying guarantee, or anything else = fail closed.
+ * A confirmed empty string from a visible input is blank (counts as 0 then).
+ * null from an unread or absent field stays unknown.
  */
 export function classifyAmendPayment(stay: AmendPaymentStay | null | undefined): AmendPaymentClass {
   if (!stay) return 'unknown';
-  if (!paymentText(stay.status) || !paymentText(stay.guaranteeType) || !paymentText(stay.depositReceived)) {
-    return 'unknown';
-  }
-  const deposit = parseDepositReceived(stay.depositReceived);
-  if (deposit == null) return 'unknown';
+  if (!paymentText(stay.status) || !paymentText(stay.guaranteeType)) return 'unknown';
   const guarantee = guaranteeKind(stay.guaranteeType);
   if (guarantee === 'missing' || guarantee === 'unknown') return 'unknown';
-  if (deposit > 0) return 'paid';
+  const depositRaw = stay.depositReceived;
+  if (depositRaw == null) return guarantee === 'paying' ? 'guaranteed' : 'unknown';
+  const depositText = paymentText(depositRaw);
+  const confirmedBlank = typeof depositRaw === 'string' && depositText === '';
+  const deposit = depositText ? parseDepositReceived(depositRaw) : null;
+  if (depositText && deposit == null) return 'unknown';
+  if (deposit != null && deposit > 0) return 'paid';
   if (guarantee === 'paying') return 'guaranteed';
-  if (isProvisionalStatus(stay.status) && deposit === 0 && guarantee === 'non_paying') return 'unpaid';
+  const depositIsZero = deposit === 0 || confirmedBlank;
+  if (isProvisionalStatus(stay.status) && depositIsZero && guarantee === 'non_paying') return 'unpaid';
   return 'unknown';
 }
 

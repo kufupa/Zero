@@ -362,9 +362,23 @@ describe('pane HMS write (U26)', () => {
       amendCliRules.classifyAmendPayment({
         status: 'Reserved',
         guaranteeType: 'Non-Guaranteed Individual',
+        depositReceived: '',
+      }),
+    ).toBe('unpaid');
+    expect(
+      amendCliRules.classifyAmendPayment({
+        status: 'Reserved',
+        guaranteeType: 'Non-Guaranteed Individual',
         depositReceived: null,
       }),
     ).toBe('unknown');
+    expect(
+      amendCliRules.classifyAmendPayment({
+        status: 'Reserved',
+        guaranteeType: 'Guaranteed By Agent',
+        depositReceived: null,
+      }),
+    ).not.toBe('unpaid');
     expect(
       amendCliRules.classifyAmendPayment({
         status: 'Reserved',
