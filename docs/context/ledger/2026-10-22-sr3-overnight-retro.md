@@ -38,7 +38,7 @@ Window: 2026-10-22 02:27Z (kickoff) → 09:31Z. Live after: `5851aa930`, last-go
 | M1 stable id | 60 | 21 | 0.35 | Merged with a leftover-pairing bug; #476 open |
 | O1 Government | 85 | cut after 306 | — | Gate data missing; open 02:39→07:45 |
 | **Labtest Save proof** | **35** | **140** to first Save click (04:16 first try → 06:36); **184** to first confirmation number (07:20) | **4.0 / 5.3** | 8 pre-Save failures (§3); the 06:36 click returned no number |
-| Cancel proof | 35 | ~5 | 0.14 | Preview plus commit, first try |
+| Cancel proof | 35 | ~5 | 0.14 | 1/2: 82126330-1 preview + commit first try; 66865808-1 preview failed 08:28Z (confirmation number not visible), left Reserved |
 | Amend proof | 35 | 0/2 | — | Synchronous SSM timed out at 10 min and 15 min |
 
 Code ran at **~0.2–0.8× the plan** (median ~0.4). The plan's 1.44× SR2 inflation was wrong for small, well-scoped units. The proof driver ran **5×** over. The ETA miss is all `proof_driver` + idle; none of it is coding.
