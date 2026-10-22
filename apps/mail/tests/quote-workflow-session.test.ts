@@ -231,6 +231,40 @@ describe('quote session', () => {
     expect(ready.staffHeader.company).toBe('Department X');
   });
 
+  it('defaults an explicit government-rate B&B ask to Government and keeps board B&B', () => {
+    const analysis = {
+      ...quoteAnalysis,
+      luna: {
+        workflow: 'quote' as const,
+        flags: [] as [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+        rateIntent: 'government',
+      },
+    } as QuoteAnalysis;
+    const ready = reduceQuoteSession(initialQuoteSession(), { type: 'analysis_ready', analysis });
+    expect(ready.staffHeader.salesStrategy).toBe('Government');
+    expect(ready.groups[0]?.board).toBe('bb');
+    const patched = ready.groups.reduce(
+      (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: { quantity: 2 } }),
+      ready,
+    );
+    expect(patched.staffHeader.salesStrategy).toBe('Government');
+
+    const staffBar = reduceQuoteSession(initialQuoteSession(), {
+      type: 'patch_staff_header',
+      header: { salesStrategy: 'BAR' },
+    });
+    const preserved = reduceQuoteSession(staffBar, { type: 'analysis_ready', analysis });
+    expect(preserved.staffSalesStrategyEdited).toBe(true);
+    expect(preserved.staffHeader.salesStrategy).toBe('BAR');
+    expect(preserved.groups[0]?.board).toBe('bb');
+  });
+
   it('an unreadable amount blocks the run and the PDF until it is fixed, without clearing results', () => {
     const start = initialQuoteSession();
     const errored = reduceQuoteSession(start, {
@@ -3829,6 +3863,30 @@ describe('autoRunHeader', () => {
     expect(
       autoRunHeader({ staffHeader: header, groups: [{ board: 'dinner_bb' }, { board: 'bb' }] as never }).salesStrategy,
     ).toBe('BAR');
+  });
+
+  it('uses Government for an explicit government-rate B&B ask', () => {
+    const analysis = {
+      ...quoteAnalysis,
+      luna: {
+        workflow: 'quote' as const,
+        flags: [] as [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+        rateIntent: 'government',
+      },
+    } as QuoteAnalysis;
+    expect(
+      autoRunHeader({
+        staffHeader: emptyStaffQuoteHeader(),
+        groups: [{ board: 'bb' }] as never,
+        analysis,
+      }).salesStrategy,
+    ).toBe('Government');
   });
 });
 

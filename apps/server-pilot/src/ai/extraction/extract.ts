@@ -64,6 +64,7 @@ export const EXTRACTION_RULES = `Mail extraction. Return only the JSON object de
 - contact is the sender or booker's name, email and phone, as written.
 - sourceLanguage is the ISO 639-1 code of the main body text, lower case.
 - missing lists facts needed to quote or book that the mail does not state: dates, rooms, adults, guest names. Never ask for rates, room type or board.
+- rateIntent is an optional top-level field used only for quotes: 'government' when the mail explicitly asks for a government rate (for example "government rate" or "gov rate"). Null when it does not. Never set it from dinner/DBB board, from a government party, or from a company/agency name. Keep board as stated: "government rate B&B" is rateIntent=government and board=bb. Leave null for booking, amendment, cancellation and other kinds.
 - Use null for anything not stated. Never guess.`;
 
 /** Generic action classifier. Independent of legacy kind, sender domain, and property-specific workflows. */

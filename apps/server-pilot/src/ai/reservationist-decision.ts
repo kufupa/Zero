@@ -204,5 +204,12 @@ export const lunaAnalysisSchema = z.object({
       'One short plain-English line describing the requested change, at most 300 characters, card numbers masked. Null if none.',
     ),
   todoTarget: z.enum(TODO_TARGET_OPS).nullish(),
+  rateIntent: z
+    .enum(['government'])
+    .nullable()
+    .optional()
+    .describe(
+      'Quote-only. government when the mail explicitly asks for a government rate. Null otherwise. Never set from board or party.',
+    ),
 });
 export type LunaAnalysis = z.infer<typeof lunaAnalysisSchema>;

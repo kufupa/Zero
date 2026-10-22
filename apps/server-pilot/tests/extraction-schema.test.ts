@@ -263,3 +263,71 @@ describe('mail extraction stay guests and action', () => {
     );
   });
 });
+
+describe('mail extraction rateIntent', () => {
+  const quoteOutput = {
+    ...ACTION_OUTPUT,
+    stays: [
+      {
+        ...AE1_OUTPUT.stays[0]!,
+        rows: [{ roomType: 'Standard King', rooms: 1, adultsPerRoom: 2, childAges: [], board: 'bb' as const }],
+      },
+    ],
+  };
+
+  it('exposes optional nullable rateIntent in the JSON schema sent to the model', () => {
+    const jsonSchema = zodToJsonSchema(mailExtractionSchema, { $refStrategy: 'none' }) as {
+      properties?: Record<string, unknown>;
+      required?: string[];
+    };
+    expect(jsonSchema.properties).toHaveProperty('rateIntent');
+    expect(jsonSchema.required ?? []).not.toContain('rateIntent');
+  });
+
+  it('asks for explicit government-rate evidence without rewriting board, party, or classification rules', () => {
+    expect(EXTRACTION_RULES).toContain(
+      "rateIntent is an optional top-level field used only for quotes: 'government' when the mail explicitly asks for a government rate",
+    );
+    expect(EXTRACTION_RULES).toContain(
+      'Never set it from dinner/DBB board, from a government party, or from a company/agency name.',
+    );
+    expect(EXTRACTION_RULES).toContain(
+      '"government rate B&B" is rateIntent=government and board=bb',
+    );
+  });
+
+  it('keeps government rate B&B as rateIntent=government with board bb when the source names a government rate', () => {
+    const parsed = mailExtractionSchema.parse({ ...quoteOutput, rateIntent: 'government' });
+    expect(parsed.rateIntent).toBe('government');
+    expect(parsed.stays[0]!.rows[0]!.board).toBe('bb');
+
+    const { payload } = sanitizeExtraction(parsed, {
+      messageId: 'msg-gov-rate-bb',
+      sourceText: 'Please quote the government rate B&B for one standard king, 20 to 23 October.',
+    });
+    expect(payload.rateIntent).toBe('government');
+    expect(payload.stays[0]!.rows[0]!.board).toBe('bb');
+  });
+
+  it('drops rateIntent without explicit government-rate wording, and keeps omitted payloads compatible', () => {
+    const claimed = mailExtractionSchema.parse({ ...quoteOutput, rateIntent: 'government' });
+    expect(
+      sanitizeExtraction(claimed, {
+        messageId: 'msg-gov-party-only',
+        sourceText: 'Please quote bed and breakfast for the Department of Forestry.',
+      }).payload.rateIntent,
+    ).toBeNull();
+
+    const omitted = mailExtractionSchema.parse(quoteOutput);
+    expect(omitted.rateIntent).toBeUndefined();
+    const { payload } = sanitizeExtraction(omitted, {
+      messageId: 'msg-rate-intent-omitted',
+      sourceText: AE1_TEXT,
+    });
+    expect(payload.rateIntent).toBeNull();
+
+    const legacy: Record<string, unknown> = { ...payload };
+    delete legacy.rateIntent;
+    expect(mailExtractionPayloadSchema.safeParse(legacy).success).toBe(true);
+  });
+});

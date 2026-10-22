@@ -122,6 +122,12 @@ describe('lunaAnalysisSchema', () => {
     ).toBe('create');
   });
 
+  it('keeps optional rateIntent and still parses old payloads without it', () => {
+    expect(lunaAnalysisSchema.parse(analysis()).rateIntent).toBeUndefined();
+    expect(lunaAnalysisSchema.parse(analysis({ rateIntent: 'government' })).rateIntent).toBe('government');
+    expect(lunaAnalysisSchema.parse(analysis({ rateIntent: null })).rateIntent).toBeNull();
+  });
+
   it('accepts amend and cancel workflows, with amendment fields optional for old payloads', () => {
     expect(lunaAnalysisSchema.parse(analysis({ workflow: 'amend' })).workflow).toBe('amend');
     expect(lunaAnalysisSchema.parse(analysis({ workflow: 'cancel' })).workflow).toBe('cancel');
@@ -221,6 +227,18 @@ describe('buildQuoteWorkflowPrompt', () => {
     const prompt = buildQuoteWorkflowPrompt(selection, { treatAs: 'quote' });
     expect(prompt.system).toMatch(/staff override/i);
     expect(prompt.system).toMatch(/treat this mail as a quote/i);
+  });
+
+  it('asks for explicit government-rate intent without mutating board or inferring party', () => {
+    expect(K2_MAPPING).toContain(
+      'rateIntent is government only when the mail explicitly asks for a government rate; otherwise null.',
+    );
+    expect(K2_MAPPING).toContain(
+      'Do not set it from dinner/DBB board or from a government party.',
+    );
+    expect(K2_MAPPING).toContain(
+      '"government rate B&B" is rateIntent=government and board=bb',
+    );
   });
 
   it('asks for amendments and cancellations as amend or cancel, and maps invoice asks onto other in this schema', () => {
@@ -751,6 +769,20 @@ describe('mapLlmDecision', () => {
         }),
       ),
     );
+    expect(mapped.groups[0]?.board).toBe('bb');
+    expect(mapped.groups[0]?.fields.board).toBe('extracted');
+  });
+
+  it('keeps B&B when rateIntent is government', () => {
+    const parsed = lunaAnalysisSchema.parse(
+      analysis({
+        rateIntent: 'government',
+        party: { kind: 'organization', name: 'Acme Mining', reference: null },
+        groups: [{ ...group, board: 'bb' }],
+      }),
+    );
+    expect(parsed.rateIntent).toBe('government');
+    const mapped = mapLlmDecision(parsed);
     expect(mapped.groups[0]?.board).toBe('bb');
     expect(mapped.groups[0]?.fields.board).toBe('extracted');
   });

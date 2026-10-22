@@ -52,6 +52,7 @@ export const K2_MAPPING = [
   '"single room" means 1 adult per room.',
   'A double or twin room with no headcount means 2 adults.',
   'Never ask for room type, board or rate; the hotel defaults those.',
+  'rateIntent is government only when the mail explicitly asks for a government rate; otherwise null. Do not set it from dinner/DBB board or from a government party. Keep groups[].board as stated: "government rate B&B" is rateIntent=government and board=bb.',
   'Emit one task per distinct piece of PMS work, in the order staff would do it.',
   'Different date sets for the same ask become separate quote tasks.',
   'For every group, dateEvidence must be an exact phrase from that stay only; never reuse another stay’s phrase.',

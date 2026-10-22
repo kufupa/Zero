@@ -119,6 +119,13 @@ const mailExtractionObjectSchema = z.object({
       question: z.string(),
     }),
   ),
+  rateIntent: z
+    .enum(['government'])
+    .nullable()
+    .optional()
+    .describe(
+      'Quote-only. government when the mail explicitly asks for a government rate. Null otherwise. Never set from board, party, or a company/agency name.',
+    ),
 });
 
 export const mailExtractionSchema = mailExtractionObjectSchema.superRefine((value, context) => {
@@ -180,6 +187,7 @@ export const mailExtractionPayloadSchema = z.object({
   confirmationNumbers: mailExtractionObjectSchema.shape.confirmationNumbers,
   stays: z.array(storedExtractionStaySchema),
   missing: mailExtractionObjectSchema.shape.missing,
+  rateIntent: z.enum(['government']).nullable().optional(),
 });
 
 /** The stored payload (mail_extraction.payload). Every string is card-masked and capped. */
@@ -202,6 +210,12 @@ const MAX_CONFIRMATIONS = 10;
 const MAX_MISSING = 20;
 const CONFIRMATION_PATTERN = /^\d+-\d+$/;
 const LANGUAGE_PATTERN = /^[a-z]{2}$/;
+/** Explicit government-rate wording only. A government party or DBB board is not evidence. */
+const GOVERNMENT_RATE_EVIDENCE = /\bgovernment\s+rates?\b|\bgov(?:ernment)?[\s-]*rates?\b/i;
+
+function governmentRateIntentOf(value: unknown, sourceText: string): 'government' | null {
+  return value === 'government' && GOVERNMENT_RATE_EVIDENCE.test(sourceText) ? 'government' : null;
+}
 
 /** Digits-dash-digits and present verbatim in the text the model read; otherwise null. */
 function groundedConfirmationNumber(value: string, sourceText: string): string | null {
@@ -344,6 +358,7 @@ export function sanitizeExtraction(
       confirmationNumbers,
       stays,
       missing,
+      rateIntent: governmentRateIntentOf(output.rateIntent, input.sourceText),
     },
   };
 }

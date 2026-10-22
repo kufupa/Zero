@@ -120,6 +120,32 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.inputs.map((input) => input.groups[0]?.board)).toEqual(['dinner_bb', 'bb']);
   });
 
+  it('selects Government for an explicit government-rate B&B ask and leaves board as B&B', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      rateIntent: 'government',
+      stays: [
+        {
+          ...stay,
+          rows: [{ ...stay.rows[0]!, rooms: 1, board: 'bb' }],
+        },
+      ],
+    });
+
+    expect(plan.inputs[0]?.salesStrategy).toBe('Government');
+    expect(plan.inputs[0]?.groups[0]?.board).toBe('bb');
+  });
+
+  it('keeps the existing default when no government rate is named', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{ ...stay, rows: [{ ...stay.rows[0]!, rooms: 1, board: 'bb' }] }],
+    });
+
+    expect(plan.inputs[0]?.salesStrategy).toBe('BAR');
+    expect(plan.inputs[0]?.groups[0]?.board).toBe('bb');
+  });
+
   it.each([
     ['1 x Standard Queen', 'STQN'],
     ['2x Deluxe-Twins!', 'DLXTWN'],

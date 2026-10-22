@@ -72,13 +72,22 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
   };
 }
 
+function explicitGovernmentRateIntent(analysis: QuoteAnalysis | null | undefined): boolean {
+  const luna = analysis?.luna;
+  if (!luna) return false;
+  return (luna as { rateIntent?: unknown }).rateIntent === 'government';
+}
+
 /**
  * The header an automatic (auto-start or read-back) rate run sends. It mirrors the background prepare in
- * quote-ready.ts: Government only when every requested row is Dinner B&B, else BAR, so the prepared run matches.
+ * quote-ready.ts: Government when every requested row is Dinner B&B or the mail names a government rate, else BAR.
  */
-export function autoRunHeader(session: Pick<QuoteSession, 'staffHeader' | 'groups'>): StaffQuoteHeader {
+export function autoRunHeader(
+  session: Pick<QuoteSession, 'staffHeader' | 'groups'> & { analysis?: QuoteAnalysis | null },
+): StaffQuoteHeader {
   const allDinner = session.groups.length > 0 && session.groups.every((group) => group.board === 'dinner_bb');
-  return { ...session.staffHeader, salesStrategy: allDinner ? 'Government' : 'BAR' };
+  const governmentRate = explicitGovernmentRateIntent(session.analysis);
+  return { ...session.staffHeader, salesStrategy: governmentRate || allDinner ? 'Government' : 'BAR' };
 }
 
 export function groupsForQuoteStep(
@@ -914,13 +923,14 @@ function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
   return texts.some((text) => /shuttle|airport/i.test(text));
 }
 
-/** Government for a government party or when every row asks Dinner B&B; otherwise BAR. */
+/** Government for a government party, an explicit government-rate ask, or every row Dinner B&B; otherwise BAR. */
 function automaticSalesStrategy(
   groups: readonly { board: string }[],
   partyKind: string | null | undefined,
+  rateIntent?: unknown,
 ): StaffQuoteHeader['salesStrategy'] {
   const allDinner = groups.length > 0 && groups.every((group) => group.board === 'dinner_bb');
-  return partyKind === 'government' || allDinner ? 'Government' : 'BAR';
+  return partyKind === 'government' || rateIntent === 'government' || allDinner ? 'Government' : 'BAR';
 }
 
 function prefillStaffHeaderFromLuna(
@@ -944,7 +954,14 @@ function prefillStaffHeaderFromLuna(
   }
   // Until staff pick a strategy, each read decides it again, so a corrected read without dinner returns to BAR.
   if (!staffSalesStrategyEdited) {
-    next = { ...next, salesStrategy: automaticSalesStrategy(analysis.groups, party?.kind) };
+    next = {
+      ...next,
+      salesStrategy: automaticSalesStrategy(
+        analysis.groups,
+        party?.kind,
+        (analysis.luna as { rateIntent?: unknown } | null | undefined)?.rateIntent,
+      ),
+    };
   }
   if (!next.shuttleRequested && shuttleRequestedFromAnalysis(analysis)) {
     next = { ...next, shuttleRequested: true };
@@ -1886,7 +1903,11 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       // A board edit can change the automatic strategy; a strategy staff picked stays.
       const salesStrategy = session.staffSalesStrategyEdited
         ? staffHeader.salesStrategy
-        : automaticSalesStrategy(groups, session.analysis?.luna?.party?.kind);
+        : automaticSalesStrategy(
+            groups,
+            session.analysis?.luna?.party?.kind,
+            (session.analysis?.luna as { rateIntent?: unknown } | null | undefined)?.rateIntent,
+          );
       const header = salesStrategy === staffHeader.salesStrategy ? staffHeader : { ...staffHeader, salesStrategy };
       // A rate pick or a row price keeps its own cards on screen while the re-run is pending. Other edits clear them.
       return editStays(
