@@ -24,6 +24,13 @@ describe('create-lab-stay write safety', () => {
     expect(source).not.toContain("result.outcome = 'committed'");
   });
 
+  it('dismisses JS dialogs so a vanished dialog does not crash, and never accepts', async () => {
+    const source = await createLabStaySource();
+    expect(source).toMatch(/page\.on\(['"]dialog['"]/);
+    expect(source).toMatch(/dismiss\(\)\.catch\(\(\)\s*=>\s*\{\s*\}\)/);
+    expect(source).not.toMatch(/dialog\.accept\(/);
+  });
+
   it('never reports committed when readback did not match', () => {
     expect(paneCommitOutcome({ readbackMatch: true })).toBe('committed');
     expect(paneCommitOutcome({ readbackMatch: false })).toBe('committed_unverified');

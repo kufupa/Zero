@@ -284,6 +284,18 @@ test('proof mode captures parsed search rows before Save', async () => {
   assert.match(source, /existingRows\s*,/);
 });
 
+test('JS dialogs are dismissed and a vanished dialog does not crash', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const writePage = source.lastIndexOf('const page = await context.newPage()');
+  const dialogOn = source.indexOf("page.on('dialog'", writePage);
+  assert.ok(writePage !== -1);
+  assert.ok(dialogOn > writePage, 'write page must install a dialog listener');
+  const handler = source.slice(dialogOn, dialogOn + 220);
+  assert.match(handler, /dismiss\(\)\.catch\(\(\)\s*=>\s*\{\s*\}\)/);
+  assert.doesNotMatch(handler, /\.accept\(/);
+  assert.doesNotMatch(source, /dialog\.accept\(/);
+});
+
 test('HRCEN property check runs on every write, not only proof', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
   const secret = source.indexOf('const secret = await readSecret()');
