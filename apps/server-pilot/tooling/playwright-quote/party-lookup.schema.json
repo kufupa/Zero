@@ -9,6 +9,11 @@
       "additionalProperties": false,
       "required": ["kind", "query"],
       "properties": {
+        "propertyCode": {
+          "type": "string",
+          "enum": ["HRCEN", "HRDAV"],
+          "description": "HMS property. Omitted requests stay HRCEN. Unknown codes are an input gap."
+        },
         "kind": {
           "type": "string",
           "enum": ["organization", "bookingAgency", "guest", "arAccount"],
@@ -73,6 +78,11 @@
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/$defs/search" }
+        },
+        "propertyCode": {
+          "type": "string",
+          "enum": ["HRCEN", "HRDAV"],
+          "description": "HMS property. Omitted requests stay HRCEN. Unknown codes are an input gap."
         },
         "stopOnFirstHit": {
           "type": "boolean",

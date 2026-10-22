@@ -179,6 +179,22 @@ function normalizeOneSearch(item) {
   return { kind: item.kind, query, name: String(item.name).trim() };
 }
 
+const PARTY_LOOKUP_PROPERTIES = new Set(['HRCEN', 'HRDAV']);
+
+/** HRCEN when omitted. Null when the code is not a known property — never Centurion fallback. */
+export function partyLookupPropertyCode(request) {
+  if (request == null || typeof request !== 'object' || Array.isArray(request)) return 'HRCEN';
+  if (request.propertyCode == null || String(request.propertyCode).trim() === '') return 'HRCEN';
+  const code = String(request.propertyCode).trim().toUpperCase();
+  return PARTY_LOOKUP_PROPERTIES.has(code) ? code : null;
+}
+
+export function assertPartyLookupAccount(secret, propertyCode) {
+  if (!secret || secret.expectedPropertyCode !== propertyCode) {
+    throw new Error('ACCOUNT_PROPERTY_MISMATCH');
+  }
+}
+
 /** Turns a CLI request into ordered searches. Single `{kind,query}` and `{kind,name}` stay one search. */
 export function normalizePartyLookupRequest(request) {
   if (Array.isArray(request)) {
@@ -1066,6 +1082,13 @@ function overallSearchOutcome(searches) {
 export async function lookupParty({ requestPath, outputDir, env = process.env } = {}) {
   process.umask(0o077);
   const request = JSON.parse(await readFile(requestPath, 'utf8'));
+  const propertyCode = partyLookupPropertyCode(request);
+  if (!propertyCode) {
+    return applyScreenshotContract(resultEnvelope({
+      outcome: 'input_gap',
+      issues: [{ code: 'INPUT_GAP', path: 'propertyCode' }],
+    }));
+  }
   const normalized = normalizePartyLookupRequest(request);
   if (normalized.issues.length) {
     return applyScreenshotContract(resultEnvelope({ outcome: 'input_gap', issues: normalized.issues.map((path) => ({ code: 'INPUT_GAP', path })) }));
@@ -1086,6 +1109,14 @@ export async function lookupParty({ requestPath, outputDir, env = process.env } 
     throw new Error('PRIVATE_CDP_REQUIRED');
   }
   const secret = await readSecret(env);
+  try {
+    assertPartyLookupAccount(secret, propertyCode);
+  } catch {
+    return resultEnvelope({
+      outcome: 'execution_failure',
+      issues: [{ code: 'EXECUTION_FAILURE', path: 'property', reason: 'ACCOUNT_PROPERTY_MISMATCH' }],
+    });
+  }
   let browser;
   let context;
   let page;

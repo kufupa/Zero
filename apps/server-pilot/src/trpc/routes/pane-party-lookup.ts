@@ -1,7 +1,7 @@
 import { findParty } from '../../ai/pane-party-lookup.js';
 import { suggestPartiesFor } from '../../ai/party-aliases.js';
 import { typeaheadPartyIndex } from '../../ai/party-index.js';
-import { assertHmsReadOriginAllowed } from '../../hms/hms-read-target.js';
+import { assertHmsReadOriginAllowed, hmsReadTargetForTransport } from '../../hms/hms-read-target.js';
 import { mailboxProcedure, router } from '../trpc.js';
 import { z } from 'zod';
 
@@ -34,5 +34,10 @@ export const panePartyLookupRouter = router({
   // Read-only. Suggestions come from the sender's domain and the body's names; only HMS-listed ids are ever attached.
   suggest: mailboxProcedure.input(suggestInput).query(({ input }) => ({ suggestions: suggestPartiesFor(input) })),
   // Read-only and local: the HMS list the sweep wrote. It never reaches HMS, and it is empty when there is no list.
-  typeahead: mailboxProcedure.input(typeaheadInput).query(({ input }) => typeaheadPartyIndex(input.query)),
+  // Mailbox transport picks the property file. A Da Vinci inbox never reads the Centurion index.
+  typeahead: mailboxProcedure.input(typeaheadInput).query(({ input, ctx }) =>
+    typeaheadPartyIndex(input.query, {
+      propertyCode: hmsReadTargetForTransport(ctx.activeTransportId).propertyCode,
+    }),
+  ),
 });

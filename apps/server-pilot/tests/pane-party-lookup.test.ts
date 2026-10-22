@@ -15,6 +15,7 @@ import {
   CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
   mailboxHmsOriginBindLoaders,
 } from '../src/hms/mailbox-hms-origin-bind.js';
+import { DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
@@ -637,6 +638,25 @@ describe('panePartyLookup router origin guard', () => {
     });
     expect(panePartyLookupLoaders.spawn).not.toHaveBeenCalled();
   });
+
+  it('searches HRDAV when Da Vinci reads are on, and never the Centurion slot', async () => {
+    vi.stubEnv('HMS_DAVINCI_READS', 'on');
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.invalid',
+      toAddresses: ['davinci@legacyhotels.co.za'],
+    });
+    const spawn = fixtureSpawn();
+    panePartyLookupLoaders.lock = passingLock();
+    panePartyLookupLoaders.spawn = spawn;
+    await expect(
+      mailboxCaller().panePartyLookup.findParty({ name: 'Tourvest', threadId: 'thread-dv' }),
+    ).resolves.toMatchObject({
+      outcome: 'resolved',
+      best: { kind: 'company', nativeId: '206' },
+    });
+    expect(spawn).toHaveBeenCalled();
+    expect(spawn.mock.calls[0]?.[0]).toMatchObject({ target: DAVINCI_HMS_READ_TARGET });
+  });
 });
 
 describe('panePartyLookup router', () => {
@@ -803,6 +823,33 @@ describe('findPartyJob: V2 planned terms in one spawn', () => {
     }));
     expect(seen).toEqual(['lock']);
     expect(found.map((row) => row.best?.nativeId)).toEqual(['206', '113']);
+  });
+});
+
+describe('verifyPartyPick property cache', () => {
+  it('does not bind an HRDAV pick from a remembered HRCEN row', async () => {
+    resetPartyCacheForTests();
+    panePartyLookupLoaders.lock = passingLock();
+    panePartyLookupLoaders.spawn = fixtureSpawn();
+    await findParty({ name: 'Tourvest' });
+    panePartyLookupLoaders.spawn = vi.fn(async () => {
+      throw new Error('HRCEN cache must not satisfy an HRDAV pick');
+    });
+    await expect(
+      verifyPartyPick({
+        kind: 'company',
+        nativeId: '206',
+        name: 'Tourvest Test Profile',
+        target: DAVINCI_HMS_READ_TARGET,
+      }),
+    ).resolves.toEqual({ ok: false, reason: 'unverified' });
+    panePartyLookupLoaders.spawn = fixtureSpawn();
+    await expect(
+      verifyPartyPick({ kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' }),
+    ).resolves.toEqual({
+      ok: true,
+      party: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' },
+    });
   });
 });
 
