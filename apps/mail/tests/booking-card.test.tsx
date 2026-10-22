@@ -32,6 +32,7 @@ import {
   PANE_PREVIEW_FAILED_COPY,
   PANE_SAVE_LAB_GUARD_COPY,
   PANE_SAVE_UNCONFIRMED_REASON,
+  PANE_SAVE_UNVERIFIED_COPY,
   paneStayInputForRoom,
   readPaneSaveFlag,
   type PaneStayClient,
@@ -776,6 +777,50 @@ describe('booking card pane save', () => {
     expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
   });
 
+  it('after a save, shows only the after-save screenshot', async () => {
+    const { client, screenshot } = paneClient({
+      commit: async () => ({
+        status: 'ok',
+        outcome: 'committed',
+        confirmationNumber: '98765-1',
+        runId: PANE_SAVE_RUN,
+        screenshots: ['before.png', 'filled.png', 'saved.png'],
+      }),
+    });
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    await screen.findByText('Booked in HMS – confirmation 98765-1');
+    expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
+    expect(screenshot.mock.calls.filter((call) => call[0] === PANE_SAVE_RUN).map((call) => call[1])).toEqual([
+      'saved.png',
+    ]);
+  });
+
+  it('after an unverified save, says Saved — check in Infor and shows the after-save screenshot', async () => {
+    const { client, screenshot } = paneClient({
+      commit: async () => ({
+        status: 'ok',
+        outcome: 'committed_unverified',
+        confirmationNumber: '98765-1',
+        runId: PANE_SAVE_RUN,
+        screenshots: ['before.png', 'saved.png'],
+      }),
+    });
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    expect(await screen.findByText(PANE_SAVE_UNVERIFIED_COPY)).toBeDefined();
+    expect(screen.queryByText('Booked in HMS – confirmation 98765-1')).toBeNull();
+    expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
+    expect(screenshot).toHaveBeenCalledWith(PANE_SAVE_RUN, 'saved.png');
+    expect(screenshot).not.toHaveBeenCalledWith(PANE_SAVE_RUN, 'before.png');
+  });
+
   it('books with the preview digest and shows the confirmation and readback screenshot', async () => {
     const { client, commit } = paneClient();
     render(<BookingCards draft={draftReady()} paneSave={client} />);
@@ -1023,6 +1068,7 @@ describe('pane save helpers', () => {
       'pane_save_arrival_2027_required',
       'pane_save_property_mismatch',
       'pane_save_children_unsupported',
+      'pane_save_adults_required',
       'osress_reader_parked',
       'osress_duplicate',
       'pane_save_preview_required',
@@ -1074,6 +1120,20 @@ describe('pane save helpers', () => {
     expect(commitOutcome({ status: 'ok', outcome: 'committed', confirmationNumber: '61143613-1' })).toMatchObject({
       ok: true,
       confirmationNumber: '61143613-1',
+    });
+    expect(
+      commitOutcome({
+        status: 'ok',
+        outcome: 'committed_unverified',
+        confirmationNumber: '61143613-1',
+        screenshots: ['before.png', 'saved.png'],
+      }),
+    ).toEqual({
+      ok: true,
+      confirmationNumber: '61143613-1',
+      runId: undefined,
+      screenshots: ['before.png', 'saved.png'],
+      unverified: true,
     });
   });
 

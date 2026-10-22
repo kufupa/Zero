@@ -71,6 +71,14 @@ test('confirmed save reads by confirmation and skips guest/date reconciliation',
   });
 });
 
+test('pane commit is committed only when readback matches', () => {
+  assert.equal(typeof rules.paneCommitOutcome, 'function');
+  assert.equal(rules.paneCommitOutcome({ readbackMatch: true }), 'committed');
+  assert.equal(rules.paneCommitOutcome({ readbackMatch: false, mismatches: [{ field: 'roomType' }] }), 'committed_unverified');
+  assert.equal(rules.paneCommitOutcome({ readbackMatch: null, unknownOutcome: 'unresolved' }), 'committed_unverified');
+  assert.equal(rules.paneCommitOutcome({ readbackMatch: null, unknownOutcome: 'not_found' }), 'committed_unverified');
+});
+
 test('confirmed save retains confirmation when readback throws', async () => {
   const result = await rules.reconcileCreateSave({
     save: { confirmed: true, confirmationNumber: '61143613-1' },

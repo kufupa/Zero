@@ -29,6 +29,8 @@ const REFUSAL_COPY: Record<string, string> = {
   pane_save_labtest_required: PANE_SAVE_LAB_GUARD_COPY,
   pane_save_arrival_2027_required: PANE_SAVE_LAB_GUARD_COPY,
   pane_save_children_unsupported: PANE_CHILDREN_COPY,
+  pane_save_adults_required:
+    'This booking needs at least one adult. Enter it in HMS for now.',
   pane_save_property_mismatch:
     'This booking is for a different hotel than this HMS session. Book it by hand in HMS.',
   osress_reader_parked:
@@ -318,13 +320,24 @@ export function previewOutcome(result: PaneStayResult): PreviewOutcome {
 }
 
 export type CommitOutcome =
-  | { ok: true; confirmationNumber: string; runId?: string; screenshots: string[] }
+  | { ok: true; confirmationNumber: string; runId?: string; screenshots: string[]; unverified?: boolean }
   | { ok: false; message: string; runId?: string; screenshots: string[] };
+
+export const PANE_SAVE_UNVERIFIED_COPY = 'Saved — check in Infor';
 
 export function commitOutcome(result: PaneStayResult, stay?: PaneStayGuest): CommitOutcome {
   const screenshots = result.screenshots ?? [];
   if (result.status === 'refused') {
     return { ok: false, message: paneRefusalMessage(result.reason, stay), runId: result.runId, screenshots };
+  }
+  if (result.outcome === 'committed_unverified') {
+    return {
+      ok: true,
+      confirmationNumber: result.confirmationNumber ?? '',
+      runId: result.runId,
+      screenshots,
+      unverified: true,
+    };
   }
   if (result.outcome === 'committed' && result.confirmationNumber) {
     return { ok: true, confirmationNumber: result.confirmationNumber, runId: result.runId, screenshots };

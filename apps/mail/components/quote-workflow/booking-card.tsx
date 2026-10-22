@@ -22,6 +22,7 @@ import {
   PANE_PARTY_NAME_MAX,
   PANE_PREVIEW_FAILED_COPY,
   PANE_RESERVATION_NOTE_MAX,
+  PANE_SAVE_UNVERIFIED_COPY,
   paneStayInputForRoom,
   paneStayKey,
   previewOutcome,
@@ -236,7 +237,14 @@ type PreviewView =
 
 type CommitView =
   | { status: 'running'; key: string }
-  | { status: 'booked'; key: string; confirmationNumber: string; runId?: string; screenshots: string[] }
+  | {
+      status: 'booked';
+      key: string;
+      confirmationNumber: string;
+      runId?: string;
+      screenshots: string[];
+      unverified?: boolean;
+    }
   | { status: 'refused'; key: string; message: string; runId?: string; screenshots?: string[] };
 
 type RoomSaveState = { preview?: PreviewView; commit?: CommitView };
@@ -351,17 +359,21 @@ function RoomSave({
   const changed = preview?.status === 'ready' && preview.key !== key;
 
   if (commit?.status === 'booked') {
-    const savedShot = pickScreenshot(commit.screenshots, SAVED_SHOT);
+    const savedShot = commit.screenshots.includes(SAVED_SHOT) ? SAVED_SHOT : null;
     return (
       <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
         <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
-          {`Booked in HMS – confirmation ${commit.confirmationNumber}`}
+          {commit.unverified
+            ? PANE_SAVE_UNVERIFIED_COPY
+            : `Booked in HMS – confirmation ${commit.confirmationNumber}`}
         </p>
-        <HmsLinkActions
-          confirmation={commit.confirmationNumber}
-          guestSurname={stay?.lastName}
-          arrival={stay?.arrival}
-        />
+        {commit.confirmationNumber ? (
+          <HmsLinkActions
+            confirmation={commit.confirmationNumber}
+            guestSurname={stay?.lastName}
+            arrival={stay?.arrival}
+          />
+        ) : null}
         {commit.runId && savedShot ? (
           <PaneScreenshot
             caption="See what Nava saved in HMS"
@@ -632,6 +644,7 @@ export function BookingCards({
             confirmationNumber: outcome.confirmationNumber,
             runId: outcome.runId,
             screenshots: outcome.screenshots,
+            ...(outcome.unverified ? { unverified: true } : {}),
           }
         : {
             status: 'refused',

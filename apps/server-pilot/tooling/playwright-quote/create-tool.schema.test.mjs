@@ -144,9 +144,11 @@ test('enums match new-record.md opened lists', () => {
   assert.equal(schema.$defs.request.properties.ratePlan.enum, undefined);
   assert.equal(JSON.stringify(schema).includes('resolveReference'), false);
   assert.match(schema.description, /\{ value, provenance \}/);
+  assert.match(schema.description, /before\.png/);
   assert.match(schema.description, /filled\.png/);
   assert.match(schema.description, /availability\.png/);
   assert.match(schema.description, /saved\.png/);
+  assert.equal(schema.$defs.request.properties.adults.minimum, 1);
 });
 
 test('side catalog copies language, title, VIP, and settlement and they are not request keys', () => {
@@ -210,6 +212,13 @@ test('create request accepts party-lookup nativeId only where the form takes an 
   assert.equal(nonNumeric.ok, false, 'guestid takes a numeric profile id');
   const wrongKind = requestResult(requiredRequest({ profileId: { nativeId: '49', kind: 'organization' } }));
   assert.equal(wrongKind.ok, false, 'profileId takes guest candidates only');
+});
+
+test('adults 0 is refused', () => {
+  const result = requestResult(requiredRequest({ adults: 0 }));
+  assert.equal(result.ok, false);
+  assert.ok(result.errors.some((error) => error.includes('adults')));
+  assert.equal(requestResult(requiredRequest({ adults: 1 })).ok, true);
 });
 
 test('missing guaranteeType fails', () => {
@@ -287,6 +296,7 @@ test('result shape accepts named fields and requires deposit fields unknown', ()
   for (const key of ['confirmationNumber', 'status', 'mealPlan', 'marketSegment', 'totals', 'depositDue', 'depositAmount']) {
     assert.equal(schema.$defs.result.required.includes(key), true);
   }
+  assert.equal(schema.$defs.result.properties.screenshots.properties.before.const, 'before.png');
   assert.equal(schema.$defs.result.properties.screenshots.properties.filled.const, 'filled.png');
   assert.equal(schema.$defs.result.properties.screenshots.properties.availability.const, 'availability.png');
   assert.equal(schema.$defs.result.properties.screenshots.properties.saved.const, 'saved.png');

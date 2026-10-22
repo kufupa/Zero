@@ -10,7 +10,7 @@ import { displayDate, login, newBorrowedContext, playwright, readSecret } from '
 import { assertTrackReadyForGuarantee, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
 import { readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
-import { proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
+import { paneCommitOutcome, proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
 
 const REQUIRED = [
   'arrivaldate',
@@ -521,7 +521,7 @@ async function main() {
   }
   if (process.env.HMS_STAGEHAND_BROWSER_OWNERSHIP !== 'borrowed') throw new Error('BORROWED_REQUIRED');
   const secret = await readSecret();
-  if (proofMode && secret.expectedPropertyCode !== 'HRCEN') throw new Error('PROOF_PROPERTY_HRCEN_REQUIRED');
+  if (secret.expectedPropertyCode !== 'HRCEN') throw new Error('PROPERTY_HRCEN_REQUIRED');
   const browser = await playwright().chromium.connectOverCDP(url.href, { timeout: 20000 });
   const context = await newBorrowedContext(browser, {
     ignoreHTTPSErrors: true,
@@ -535,6 +535,7 @@ async function main() {
     await openGuestStayScreen(page);
     await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
     await page.locator('input[name="lastname"]:visible').waitFor();
+    if (!shopMode) await shot(page, dir, 'before.png');
     if (shopMode) {
       await fillNamed(page, 'arrivaldate', displayDate(stay.arrival));
       await fillNamed(page, 'departuredate', displayDate(stay.departure));
@@ -608,10 +609,11 @@ async function main() {
       process.stdout.write(`${result.outcome}\n`);
       return;
     }
-    const existingRows = proofMode
+    const verifySave = proofMode || stop.paneCommit;
+    const existingRows = verifySave
       ? await readExistingGuestRows(browser, secret, stay, dir)
       : null;
-    const preSaveRefusal = proofMode ? proofPreSaveSearchRefusal(existingRows) : null;
+    const preSaveRefusal = verifySave ? proofPreSaveSearchRefusal(existingRows) : null;
     if (preSaveRefusal) {
       result.outcome = 'refused_save';
       result.refusalReason = preSaveRefusal;
@@ -625,7 +627,7 @@ async function main() {
       await clickTip(page, '^Save');
       result.clickedSave = true;
     } catch (error) {
-      if (!proofMode || !saveClickMayHaveFired(error)) throw error;
+      if (!verifySave || !saveClickMayHaveFired(error)) throw error;
       result.clickedSave = true;
       result.saveError = String(error.message || error);
       saveClickUnknown = true;
@@ -639,7 +641,7 @@ async function main() {
       try {
         save = await waitForSaveConfirmation(page);
       } catch (error) {
-        if (!proofMode) throw error;
+        if (!verifySave) throw error;
         result.saveError = String(error.message || error);
         save = { confirmed: false, confirmationNumber: null, reason: 'save_observation_error' };
       }
@@ -653,35 +655,35 @@ async function main() {
         : await readSettledStatus(page);
     }
     result.message = proofMode ? await readMessage(page).catch(() => null) : await readMessage(page);
-    const savedScreenshot = proofMode
+    const savedScreenshot = verifySave
       ? await shot(page, dir, 'saved.png').catch(() => null)
       : await shot(page, dir, 'saved.png');
-    if (proofMode) {
+    if (verifySave) {
       const proof = await runProofReadback(
         browser, secret, stay, dir, save, savedScreenshot, existingRows,
       );
-      result.confirmationNumber = proof.confNo;
+      result.confirmationNumber = proof.confNo ?? save.confirmationNumber;
       result.saved = proof.confNo ? true : null;
       result.proof = proof;
-      result.outcome = proof.readbackMatch === true ? 'readback_match'
-        : proof.unknownOutcome === 'not_found' ? 'unknown_not_found'
-          : proof.unknownOutcome ? `unknown_${proof.unknownOutcome}` : 'readback_mismatch';
+      if (proofMode) {
+        result.outcome = proof.readbackMatch === true ? 'readback_match'
+          : proof.unknownOutcome === 'not_found' ? 'unknown_not_found'
+            : proof.unknownOutcome ? `unknown_${proof.unknownOutcome}` : 'readback_mismatch';
+        result.cancelled = false;
+        process.stdout.write(`${JSON.stringify(proof)}\n`);
+        if (proof.readbackMatch !== true) process.exitCode = 1;
+        return;
+      }
       result.cancelled = false;
-      process.stdout.write(`${JSON.stringify(proof)}\n`);
-      if (proof.readbackMatch !== true) process.exitCode = 1;
+      result.outcome = paneCommitOutcome(proof);
+      await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
+      process.stdout.write(`${result.outcome}${result.confirmationNumber ? ` ${result.confirmationNumber}` : ''}\n`);
       return;
     }
     if (!result.saved) {
       result.outcome = 'save_unconfirmed';
       await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
       process.stdout.write(`${result.outcome}\n`);
-      return;
-    }
-    if (stop.paneCommit) {
-      result.cancelled = false;
-      result.outcome = 'committed';
-      await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
-      process.stdout.write(`${result.outcome} ${result.confirmationNumber}\n`);
       return;
     }
     let cancelled = false;
