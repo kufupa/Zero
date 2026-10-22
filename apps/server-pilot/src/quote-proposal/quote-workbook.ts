@@ -380,6 +380,31 @@ function stripCenturionHyperlinkRels(rels: string): string {
   return rels.replace(/<Relationship\b[^>]*relationships\/hyperlink[^>]*\/>/g, '');
 }
 
+/** Fork 7 brand on a patched Centurion xlsx (legacy quoteProposalPdf). No-op for HRCEN. */
+export function brandQuoteWorkbookBytes(
+  bytes: Uint8Array,
+  propertyCode: string,
+  extraLineRows = 0,
+): Uint8Array {
+  const identity = quotePropertyIdentity(propertyCode);
+  if (identity.letterhead !== 'none') return bytes;
+  const files = unzipSync(bytes);
+  const below = (row: number) => (row >= SEPARATOR_ROW ? row + extraLineRows : row);
+  const sheetBytes = files[SHEET_PATH];
+  if (sheetBytes) {
+    files[SHEET_PATH] = new TextEncoder().encode(
+      stripCenturionGuestLinks(new TextDecoder().decode(sheetBytes), below),
+    );
+  }
+  brandWorkbookFiles(files, identity);
+  if (files[SHEET_RELS_PATH]) {
+    files[SHEET_RELS_PATH] = new TextEncoder().encode(
+      stripCenturionHyperlinkRels(new TextDecoder().decode(files[SHEET_RELS_PATH])),
+    );
+  }
+  return zipSync(files);
+}
+
 /** Drawing anchors at or below template row 30 move with the rows. The logo above the line block stays put. */
 function shiftDrawingRows(drawingXml: string, count: number): string {
   return drawingXml.replace(/<xdr:row>(\d+)<\/xdr:row>/g, (_all, row: string) => {

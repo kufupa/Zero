@@ -106,9 +106,10 @@ it('prints Da Vinci name and Sandton with no Centurion letterhead or Brunos copy
   const html = renderRevisionProposalHtml(revision, header);
   expect(html).toContain('Da Vinci Hotel and Suites');
   expect(html).toContain('Sandton');
-  expect(html).not.toContain('The Centurion Hotel');
+  expect(html).not.toMatch(/Centurion/i);
   expect(html).not.toContain('data:image/png;base64,');
   expect(html).not.toContain('Brunos');
+  expect(html).not.toContain('piece of paradise');
   expect(html).not.toContain('The Centurion Hotel Website');
   expect(html).toContain('Meals are included only where stated in the line description.');
 });

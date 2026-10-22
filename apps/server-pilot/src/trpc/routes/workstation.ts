@@ -88,7 +88,7 @@ import {
 import { and, eq, desc, sql } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
 import { assertHmsQuoteOriginAllowed } from '../../hms/hms-quote-target.js';
-import { hmsReadTargetJobMetrics } from '../../hms/hms-read-target.js';
+import { hmsReadTargetJobMetrics, isDaVinciTransport } from '../../hms/hms-read-target.js';
 import { TRPCError } from '@trpc/server';
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
@@ -145,6 +145,7 @@ export const quoteProposalPdfInput = z.object({
   clientTelephone: z.string().default(''),
   agency: z.string().min(1),
   dateLabel: z.string().min(1),
+  propertyCode: z.enum(['HRCEN', 'HRDAV']).optional(),
   lines: z.array(quoteProposalLineInput).min(1).max(6),
 });
 
@@ -1613,7 +1614,10 @@ export const workstationRouter = router({
       }
       try {
         const { fileName, pdf } = await buildQuoteProposalPdf(
-          input,
+          {
+            ...input,
+            propertyCode: isDaVinciTransport(ctx.activeTransportId) ? 'HRDAV' : 'HRCEN',
+          },
           { name: ctx.sessionUser.name?.trim() || '', email: ctx.sessionUser.email },
           gotenbergUrl,
         );

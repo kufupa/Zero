@@ -45,23 +45,28 @@ export async function buildQuoteProposalPdf(
   }
   let xlsx: Uint8Array;
   try {
-    xlsx = patchProposalWorkbook(readFileSync(TEMPLATE_PATH), {
-      attention: input.attention,
-      company: input.company,
-      clientEmail: input.clientEmail,
-      clientTelephone: input.clientTelephone,
-      signerName: signer.name,
-      signerEmail: signer.email,
-      signerTelephone: quotePropertyIdentity(input.propertyCode ?? 'HRCEN').telephone ?? '',
-      breakfastIncluded: input.lines.every((line) => line.meal === 'bb' || line.meal === 'dinner_bb'),
-      lines: input.lines.map((line, index) => ({
-        dateLabel: line.dateLabel,
-        qty: line.qty,
-        description: descriptions[index]!,
-        nights: line.nights,
-        rate: line.rate,
-      })),
-    });
+    const propertyCode = input.propertyCode ?? 'HRCEN';
+    const identity = quotePropertyIdentity(propertyCode);
+    xlsx = brandQuoteWorkbookBytes(
+      patchProposalWorkbook(readFileSync(TEMPLATE_PATH), {
+        attention: input.attention,
+        company: input.company,
+        clientEmail: input.clientEmail,
+        clientTelephone: input.clientTelephone,
+        signerName: signer.name,
+        signerEmail: signer.email,
+        signerTelephone: identity.telephone ?? '',
+        breakfastIncluded: input.lines.every((line) => line.meal === 'bb' || line.meal === 'dinner_bb'),
+        lines: input.lines.map((line, index) => ({
+          dateLabel: line.dateLabel,
+          qty: line.qty,
+          description: descriptions[index]!,
+          nights: line.nights,
+          rate: line.rate,
+        })),
+      }),
+      propertyCode,
+    );
   } catch (err) {
     throw new ProposalInputError(err instanceof Error ? err.message : 'invalid proposal input');
   }
@@ -75,7 +80,7 @@ import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, extraDisplayDescription, pricedRoomTotal, type AuthorizedProposalFacts, type RowPrice } from './quote-lines.js';
 import { quoteDigest, exactMinor, type QuoteRevision, type ImportedOffer } from './quote-revision.js';
-import { assertProposalLineLimit, quoteDateLabel, quoteOutputPropertyCode, quoteWorkbookForStays, WorkbookLineLimitError, WorkbookRefusalError, type WorkbookStay } from './quote-workbook.js';
+import { assertProposalLineLimit, brandQuoteWorkbookBytes, quoteDateLabel, quoteOutputPropertyCode, quoteWorkbookForStays, WorkbookLineLimitError, WorkbookRefusalError, type WorkbookStay } from './quote-workbook.js';
 export type RevisionProposalHeader = {attention:string;company:string;clientEmail:string;clientTelephone:string;agency:string;signerName:string;signerEmail:string;/** Unpriced staff note printed under the total. */notes?:string};
 function htmlText(value:string):string {
   return value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -140,8 +145,11 @@ export function renderRevisionProposalHtml(revision: QuoteRevision, header: Revi
     const totalBlock = last
       ? `<p class="subtotal" data-proposal-subtotal="${totalMinor}">subtotal ${moneyMinor(totalMinor, revision.currency)}</p><p class="vat">15% vat <span>Included</span></p><p class="total" data-proposal-total="${totalMinor}">total ${moneyMinor(totalMinor, revision.currency)}</p>${header.notes?.trim() ? `<p class="staff-note"><strong>Note:</strong> ${htmlText(header.notes.trim()).replace(/\n/g, '<br>')}</p>` : ''}${rateBenefits}`
       : '<p>Continued on the following page. Final proposal total appears on the last page.</p>';
+    const clientBlock = `<div class="client"><strong>Attention:</strong> ${htmlText(header.attention)}<br><strong>Company:</strong> ${htmlText(header.company)}<br><strong>Email:</strong> ${htmlText(header.clientEmail)}<br><strong>Telephone:</strong> ${htmlText(header.clientTelephone)}</div>`;
     const headerBlock = start === 0
-      ? `<p>Date: ${htmlText(quoteDateLabel(revision.authoredDate, revision.authoredDate))}</p><p>Valid until: 3 days from date quoted above</p><div class="client"><strong>Attention:</strong> ${htmlText(header.attention)}<br><strong>Company:</strong> ${htmlText(header.company)}<br><strong>Email:</strong> ${htmlText(header.clientEmail)}<br><strong>Telephone:</strong> ${htmlText(header.clientTelephone)}</div><p>${hotel} thanks you for choosing us for your upcoming stay.</p><p>We are delighted to assist in planning your stay and look forward to welcoming you to our piece of paradise.</p><p>Below is the tailored accommodation package we have curated for you.</p>`
+      ? identity.letterhead === 'none'
+        ? `<p>Date: ${htmlText(quoteDateLabel(revision.authoredDate, revision.authoredDate))}</p><p>Valid until: 3 days from date quoted above</p>${clientBlock}`
+        : `<p>Date: ${htmlText(quoteDateLabel(revision.authoredDate, revision.authoredDate))}</p><p>Valid until: 3 days from date quoted above</p>${clientBlock}<p>${hotel} thanks you for choosing us for your upcoming stay.</p><p>We are delighted to assist in planning your stay and look forward to welcoming you to our piece of paradise.</p><p>Below is the tailored accommodation package we have curated for you.</p>`
       : '<p>Continued quotation.</p>';
     pages.push(`<section class="proposal-page">${letterhead}<h1>QUOTATION${start ? ' · CONTINUED' : ''}</h1>${headerBlock}<table><thead><tr><th>DATE</th><th>QTY</th><th>DESCRIPTION</th><th>Nights</th><th>RATE</th><th>LINE TOTAL</th></tr></thead><tbody>${rows}</tbody></table>${totalBlock}<footer>${hotel}</footer></section>`);
   }
