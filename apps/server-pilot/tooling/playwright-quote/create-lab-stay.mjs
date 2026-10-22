@@ -49,6 +49,13 @@ export function extMessageBoxAction(text, stay) {
 }
 // --- end-ext-message-box-rules ---
 
+export function dialogLogEntry(dialog) {
+  return {
+    type: String(dialog?.type?.() ?? ''),
+    message: String(dialog?.message?.() ?? '').replace(/\s+/g, ' ').slice(0, 300),
+  };
+}
+
 const CREATE_PROPERTIES = new Set(['HRCEN', 'HRDAV']);
 
 export function parseCreateProperty(argv) {
@@ -926,11 +933,15 @@ async function main() {
     viewport: { width: 1600, height: 1000 },
   });
   const page = await context.newPage();
+  const result = { guest: stay, held: false, saved: false, cancelled: false };
+  // Never accept a browser dialog; record what it said so a dismissed confirm cannot silently stall a Save.
   page.on('dialog', (dialog) => {
+    const entry = dialogLogEntry(dialog);
+    (result.dialogs ??= []).push(entry);
+    process.stderr.write(`${JSON.stringify({ phase: 'dialog_dismissed', ...entry })}\n`);
     dialog.dismiss().catch(() => {});
   });
   page.setDefaultTimeout(20000);
-  const result = { guest: stay, held: false, saved: false, cancelled: false };
   try {
     await login(page, secret);
     await openGuestStayScreen(page);

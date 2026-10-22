@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertTrackReadyForGuarantee, loadCreateRequest, matchTrackRow, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
-import { createLabtestRefusal, createRoomTypeMismatch, parseCreateProperty } from './create-lab-stay.mjs';
+import { createLabtestRefusal, createRoomTypeMismatch, dialogLogEntry, parseCreateProperty } from './create-lab-stay.mjs';
 import { profileFor } from './property-profile.mjs';
 
 function requiredRequest(extra = {}) {
@@ -308,7 +308,7 @@ test('JS dialogs are dismissed and a vanished dialog does not crash', async () =
   const dialogOn = source.indexOf("page.on('dialog'", writePage);
   assert.ok(writePage !== -1);
   assert.ok(dialogOn > writePage, 'write page must install a dialog listener');
-  const handler = source.slice(dialogOn, dialogOn + 220);
+  const handler = source.slice(dialogOn, source.indexOf('});', dialogOn) + 3);
   assert.match(handler, /dismiss\(\)\.catch\(\(\)\s*=>\s*\{\s*\}\)/);
   assert.doesNotMatch(handler, /\.accept\(/);
   assert.doesNotMatch(source, /dialog\.accept\(/);
@@ -716,4 +716,22 @@ test('pane-commit readback uses normalized compare and known confirmation, never
   assert.match(source, /knownConfirmation\(/);
   const saveClicks = [...source.matchAll(/clickTip\(page, '\^Save'/g)];
   assert.equal(saveClicks.length, 1);
+});
+
+test('dialogLogEntry records type and squashed, capped message', () => {
+  const long = `Continue?\n${'x'.repeat(400)}`;
+  const entry = dialogLogEntry({ type: () => 'confirm', message: () => long });
+  assert.equal(entry.type, 'confirm');
+  assert.equal(entry.message.startsWith('Continue? x'), true);
+  assert.equal(entry.message.length, 300);
+  assert.deepEqual(dialogLogEntry({}), { type: '', message: '' });
+});
+
+test('browser dialogs are logged and only ever dismissed', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf("page.on('dialog'");
+  const block = source.slice(start, source.indexOf('});', start));
+  assert.match(block, /dialogLogEntry\(dialog\)/);
+  assert.match(block, /dialog\.dismiss\(\)/);
+  assert.equal(/dialog\.accept/.test(source), false);
 });
