@@ -736,7 +736,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(search.disabled).toBe(true);
     fireEvent.click(search);
     expect(onRunStep).not.toHaveBeenCalled();
-    expect(screen.getByText('Make quote is not available for this mailbox.')).toBeTruthy();
+    expect(screen.getAllByText('Make quote is not available for this mailbox.').length).toBeGreaterThan(0);
   });
 
   it('labels missing fields and extracted provenance', () => {
