@@ -528,6 +528,9 @@ async function main() {
     viewport: { width: 1600, height: 1000 },
   });
   const page = await context.newPage();
+  page.on('dialog', (dialog) => {
+    dialog.dismiss().catch(() => {});
+  });
   page.setDefaultTimeout(20000);
   const result = { guest: stay, held: false, saved: false, cancelled: false };
   try {
