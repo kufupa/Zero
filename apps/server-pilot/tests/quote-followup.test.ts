@@ -1,8 +1,10 @@
 import {
-  addSaBusinessDays,
+  addQuoteFollowupDelay,
   dismissFollowUpDraft,
   executeQuoteFollowupRun,
   followUpForMessage,
+  quoteReplyStatesHoldWindow,
+  QUOTE_FOLLOWUP_DELAY_MS,
   QUOTE_FOLLOWUP_DRAFT_PREFIX,
   runQuoteFollowupSweep,
   useFollowUpDraft,
@@ -16,7 +18,7 @@ import {
 } from '../src/db/schema/mail.js';
 import { NAVA_USER_EMAIL, NAVA_USER_ID } from '../src/db/seed.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
-import { workEvent, workItem } from '../src/db/schema/work.js';
+import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { refreshThreadWork } from '../src/ai/work-items.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { toAiRunFence } from '../src/ai/run-ledger.js';
@@ -36,42 +38,32 @@ const OFF = { QUOTE_FOLLOWUPS: 'off' } as NodeJS.ProcessEnv;
 const REQUEST_AT = new Date('2026-10-05T07:00:00Z');
 // Fri 2026-10-09 10:00 SAST: the quote is sent.
 const FRI_SEND = new Date('2026-10-09T08:00:00Z');
-// Three SA business days later: Wed 2026-10-14 10:00 SAST.
+/** 66 calendar hours after FRI_SEND: Mon 2026-10-12 04:00 SAST. */
+const HOLD_DUE = new Date(FRI_SEND.getTime() + QUOTE_FOLLOWUP_DELAY_MS);
+// A later sweep instant, still after HOLD_DUE, used as "the clock has run out".
 const WED_DUE = new Date('2026-10-14T08:00:00Z');
+const HOLD_COVER =
+  'Please see attached quotation. Please note that no rooms are currently being held, and bookings will only be confirmed once we have received the signed quotation.';
 
-describe('addSaBusinessDays', () => {
-  it('a Friday send falls due on the Wednesday, skipping the weekend', () => {
-    expect(addSaBusinessDays(FRI_SEND, 3)).toEqual(WED_DUE);
+describe('quoteReplyStatesHoldWindow', () => {
+  it('matches the gold cover and a 72-hour validity line', () => {
+    expect(quoteReplyStatesHoldWindow(HOLD_COVER)).toBe(true);
+    expect(quoteReplyStatesHoldWindow('This quotation is valid for 72 hours.')).toBe(true);
+    expect(quoteReplyStatesHoldWindow('Valid until: 3 days from date quoted above')).toBe(true);
+    expect(quoteReplyStatesHoldWindow('<p>no rooms are currently being held</p>')).toBe(true);
   });
 
-  it('skips a weekday public holiday (Youth Day, Tue 16 June 2026)', () => {
-    expect(addSaBusinessDays(new Date('2026-06-15T08:00:00Z'), 3).toISOString()).toBe(
-      '2026-06-19T08:00:00.000Z',
-    );
+  it('does not match a quote cover with no window', () => {
+    expect(quoteReplyStatesHoldWindow('Please find our quote below.')).toBe(false);
+    expect(quoteReplyStatesHoldWindow('')).toBe(false);
+    expect(quoteReplyStatesHoldWindow(null)).toBe(false);
   });
+});
 
-  it("skips a Sunday holiday and its Monday substitute (Women's Day, 9-10 August 2026)", () => {
-    expect(addSaBusinessDays(new Date('2026-08-07T08:00:00Z'), 3).toISOString()).toBe(
-      '2026-08-13T08:00:00.000Z',
-    );
-  });
-
-  it('skips Easter 2027 (Good Friday 26 March, Family Day 29 March)', () => {
-    expect(addSaBusinessDays(new Date('2027-03-25T08:00:00Z'), 3).toISOString()).toBe(
-      '2027-04-01T08:00:00.000Z',
-    );
-  });
-
-  it('skips Day of Goodwill 2027 (Sunday 26 December) on its Monday substitute', () => {
-    expect(addSaBusinessDays(new Date('2027-12-24T08:00:00Z'), 3).toISOString()).toBe(
-      '2027-12-30T08:00:00.000Z',
-    );
-  });
-
-  it('counts the Johannesburg calendar day, so Fri 23:30 UTC (Sat 01:30 local) starts on a Saturday', () => {
-    expect(addSaBusinessDays(new Date('2026-10-09T23:30:00Z'), 3).toISOString()).toBe(
-      '2026-10-13T23:30:00.000Z',
-    );
+describe('addQuoteFollowupDelay', () => {
+  it('a Friday send falls due 66 calendar hours later, including the weekend', () => {
+    expect(addQuoteFollowupDelay(FRI_SEND)).toEqual(HOLD_DUE);
+    expect(HOLD_DUE.toISOString()).toBe('2026-10-12T02:00:00.000Z');
   });
 });
 
@@ -113,10 +105,10 @@ async function quoteRequest(
   return item.id;
 }
 
-/** Our outbound message. Attached or body-only: the follow-up clock starts either way. */
+/** Our outbound message. Attached or body-only: the follow-up clock starts when the body states a hold window. */
 async function sendReply(
   db: DB,
-  opts: { id: string; threadId: string; sentAt: Date; attach?: boolean },
+  opts: { id: string; threadId: string; sentAt: Date; attach?: boolean; holdWindow?: boolean },
 ) {
   await db.insert(message).values({
     id: opts.id,
@@ -128,7 +120,7 @@ async function sendReply(
     ccAddresses: [],
     bccAddresses: [],
     subject: 'Re: Quote request',
-    textBody: 'Please find our quote below.',
+    textBody: opts.holdWindow === false ? 'Please find our quote below.' : HOLD_COVER,
     ownerHeaderValue: TRANSPORT_EMAIL,
     messageIdHeader: `${opts.id}@example.com`,
     references: [],
@@ -216,7 +208,7 @@ async function runOutcome(db: DB, runId: string) {
 }
 
 describe('quote follow-up drafts', () => {
-  it('a body-only send and a send with the quote attached both fall due on the Wednesday', async () => {
+  it('a body-only send and a send with the quote attached both fall due 66 hours later', async () => {
     await withIngestionDb(async ({ db }) => {
       await seedNavaUser(db);
       const attached = await quoteRequest(db, 'thread-attached', REQUEST_AT);
@@ -239,8 +231,181 @@ describe('quote follow-up drafts', () => {
         const item = await loadItem(db, itemId);
         expect(item.sentMessageId).toBe(sentId);
         expect(item.sentAt).toEqual(FRI_SEND);
-        expect(item.followUpDueAt).toEqual(WED_DUE);
+        expect(item.followUpDueAt).toEqual(HOLD_DUE);
       }
+    });
+  });
+
+  it('a staff reply with no hold or validity window starts no clock', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-no-hold', REQUEST_AT);
+      await sendReply(db, {
+        id: 'out-no-hold',
+        threadId: 'thread-no-hold',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toBeNull();
+      expect((await loadItem(db, itemId)).sentMessageId).toBeNull();
+      expect(await followUpRuns(db, itemId)).toHaveLength(0);
+    });
+  });
+
+  it('a no-window hotel reply is not returned on the next sweep, and a later window reply still links', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const skippedId = await quoteRequest(db, 'thread-skip-window', REQUEST_AT);
+      await sendReply(db, {
+        id: 'out-skip-window',
+        threadId: 'thread-skip-window',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+      });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-skip-window' });
+      expect(await loadItem(db, skippedId)).toMatchObject({
+        status: 'done',
+        sentMessageId: 'out-skip-window',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, skippedId)).followUpDueAt).toEqual(FRI_SEND);
+      expect(await followUpRuns(db, skippedId)).toHaveLength(0);
+      expect(await threadDrafts(db, 'thread-skip-window')).toHaveLength(0);
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, skippedId)).followUpDueAt).toEqual(FRI_SEND);
+
+      const laterId = await quoteRequest(db, 'thread-later-window', REQUEST_AT);
+      await sendReply(db, { id: 'out-later-window', threadId: 'thread-later-window', sentAt: FRI_SEND });
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, laterId)).followUpDueAt).toEqual(HOLD_DUE);
+      expect((await loadItem(db, skippedId)).followUpDueAt).toEqual(FRI_SEND);
+      expect(await followUpRuns(db, skippedId)).toHaveLength(0);
+    });
+  });
+
+  it('a stored quote PDF Valid until 3 days starts the clock when the body has no window', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const withPdf = await quoteRequest(db, 'thread-pdf-window', REQUEST_AT);
+      await sendReply(db, {
+        id: 'out-pdf-window',
+        threadId: 'thread-pdf-window',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+        attach: true,
+      });
+      await db.insert(mailExtraction).values({
+        messageId: 'out-pdf-window',
+        extractorVersion: 'quote-followup-test',
+        status: 'succeeded',
+        kind: 'quote',
+        payload: {},
+        attachments: [
+          {
+            filename: 'quote.pdf',
+            mimeType: 'application/pdf',
+            status: 'read',
+            text: 'Valid until: 3 days from date quoted above',
+          },
+        ],
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, withPdf)).followUpDueAt).toEqual(HOLD_DUE);
+
+      const noPdf = await quoteRequest(db, 'thread-no-pdf-window', REQUEST_AT);
+      await sendReply(db, {
+        id: 'out-no-pdf-window',
+        threadId: 'thread-no-pdf-window',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+      });
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, noPdf)).followUpDueAt).toBeNull();
+      expect((await loadItem(db, noPdf)).sentMessageId).toBeNull();
+    });
+  });
+
+  it('does not queue before 66 hours, then writes one unsent draft and never sends', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-never-send', REQUEST_AT, 'review');
+      await sendReply(db, { id: 'out-never-send', threadId: 'thread-never-send', sentAt: FRI_SEND });
+      await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND });
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
+
+      const justBefore = new Date(HOLD_DUE.getTime() - 1);
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: justBefore })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect(await followUpRuns(db, itemId)).toHaveLength(0);
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: HOLD_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 1,
+        discarded: 0,
+      });
+      const { run, fence } = await claimRun(db, itemId);
+      expect(await executeQuoteFollowupRun({ run, fence, db, env: ON })).toEqual({
+        runId: run.id,
+        state: 'succeeded',
+      });
+
+      const drafts = await threadDrafts(db, 'thread-never-send');
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]).toMatchObject({
+        id: 'quote-followup:out-never-send',
+        status: 'candidate',
+        origin: 'manual',
+        isSent: false,
+        sentMessageId: null,
+        replyToMessageId: 'out-never-send',
+      });
+      expect((await loadItem(db, itemId)).status).toBe('needs_you');
+
+      const outbound = await db
+        .select({ id: message.id })
+        .from(message)
+        .where(and(eq(message.threadId, 'thread-never-send'), eq(message.direction, 'outbound')));
+      expect(outbound.map((row) => row.id)).toEqual(['out-never-send']);
     });
   });
 
@@ -293,6 +458,8 @@ describe('quote follow-up drafts', () => {
         id: 'quote-followup:out-rerun',
         status: 'candidate',
         origin: 'manual',
+        isSent: false,
+        sentMessageId: null,
         createdByUserId: NAVA_USER_ID,
         replyToMessageId: 'out-rerun',
         subject: 'Re: Quote request',
@@ -1102,7 +1269,7 @@ describe('a quote a hotel reply closed (C2) keeps its follow-up clock', () => {
         queued: 0,
         discarded: 0,
       });
-      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
       expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
         linked: 0,
         cancelled: 0,
@@ -1166,7 +1333,7 @@ describe('a quote a hotel reply closed (C2) keeps its follow-up clock', () => {
       await sendReply(db, { id: 'out-c2-reopen', threadId: 'thread-c2-reopen', sentAt: FRI_SEND });
       await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-reopen' });
       await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND });
-      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
 
       await clientReplies(db, 'thread-c2-reopen', 'in-c2-reopen', new Date('2026-10-12T07:00:00Z'));
       await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-reopen' });
@@ -1199,7 +1366,7 @@ describe('a quote a hotel reply closed (C2) keeps its follow-up clock', () => {
         queued: 0,
         discarded: 0,
       });
-      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
     });
   });
 
@@ -1257,7 +1424,7 @@ describe('a quote a hotel reply closed (C2) keeps its follow-up clock', () => {
         queued: 0,
         discarded: 0,
       });
-      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
     });
   });
 
@@ -1334,7 +1501,7 @@ async function hotelCopy(
     ccAddresses: [],
     bccAddresses: [],
     subject: 'Re: Quote request',
-    textBody: 'Please find our quote below.',
+    textBody: HOLD_COVER,
     ownerHeaderValue: TRANSPORT_EMAIL,
     messageIdHeader: `${opts.id}@example.com`,
     pop3Uidl: `uidl-${opts.id}`,
@@ -1370,11 +1537,11 @@ describe('a hotel copy as the reply link (C2b) neither clears nor restarts the f
         queued: 0,
         discarded: 0,
       });
-      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
       expect(
         await runQuoteFollowupSweep({ db, env: ON, now: new Date(FRI_SEND.getTime() + 60 * 60_000) }),
       ).toEqual({ linked: 0, cancelled: 0, queued: 0, discarded: 0 });
-      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(WED_DUE);
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
 
       // When due, the run drafts the reminder replying to the copy (a copy is a sent message, as the hotel's answer).
       expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
