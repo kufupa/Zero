@@ -1824,8 +1824,8 @@ export function QuoteWorkflowPanel({
           {currentAction.kind !== 'search' ? (
             <SecondaryButton
               className="w-full"
-              disabled={nextRateReason !== null}
-              disabledReason={nextRateReason}
+              disabled={Boolean(makeQuoteBlockReason) || nextRateReason !== null}
+              disabledReason={makeQuoteBlockReason ?? nextRateReason}
               onClick={runNextRate}
             >
               Search availability
