@@ -153,8 +153,13 @@ describe('classifyAmendPayment', () => {
     expect(classifyAmendPayment({ ...unpaid, depositReceived: '0.00' })).toBe('unpaid');
     expect(classifyAmendPayment({ ...unpaid, guaranteeType: 'Non-Guaranteed Indi...' })).toBe('unpaid');
     expect(classifyAmendPayment({ ...unpaid, guaranteeType: 'None' })).toBe('unpaid');
-    expect(classifyAmendPayment({ ...unpaid, depositReceived: null })).toBe('unpaid');
     expect(classifyAmendPayment({ ...unpaid, depositReceived: '' })).toBe('unpaid');
+  });
+
+  it('treats a confirmed blank deposit as 0 and an unread null as unknown', () => {
+    expect(classifyAmendPayment({ ...unpaid, depositReceived: '' })).toBe('unpaid');
+    expect(classifyAmendPayment({ ...unpaid, depositReceived: null })).toBe('unknown');
+    expect(classifyAmendPayment({ ...unpaid, depositReceived: undefined })).toBe('unknown');
   });
 
   it('fails closed for paid, guaranteed, and missing fields', () => {
@@ -165,7 +170,7 @@ describe('classifyAmendPayment', () => {
     );
     expect(classifyAmendPayment({ ...unpaid, guaranteeType: null })).toBe('unknown');
     expect(classifyAmendPayment({ ...unpaid, status: 'Confirmed' })).toBe('unknown');
-    expect(classifyAmendPayment({ ...unpaid, status: 'Confirmed', depositReceived: null })).not.toBe('unpaid');
+    expect(classifyAmendPayment({ ...unpaid, status: 'Confirmed', depositReceived: '' })).not.toBe('unpaid');
   });
 });
 

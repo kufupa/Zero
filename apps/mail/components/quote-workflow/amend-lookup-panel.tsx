@@ -550,7 +550,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           offNote={
             unpaidStay
               ? `${AMEND_SAVE_COPY.switchedOff} Open ${foundNumber} in HMS and save the change there.`
-              : AMEND_SAVE_COPY.handleInHms
+              : ''
           }
           rows={amendRows}
           values={requestedValues}
@@ -964,9 +964,9 @@ function AmendSection({
         >
           {currentView.kind === 'ready' || currentView.kind === 'committing' ? AMEND_SAVE_COPY.commit : AMEND_SAVE_COPY.preview}
         </button>
-      ) : (
+      ) : offNote ? (
         <p data-pii className={infoNoteClass}>{offNote}</p>
-      )}
+      ) : null}
       {currentView.kind === 'previewing' ? <p className={infoNoteClass}>{AMEND_SAVE_COPY.previewing}</p> : null}
       {currentView.kind === 'committing' ? <p className={infoNoteClass}>{AMEND_SAVE_COPY.committing}</p> : null}
       {currentView.kind === 'idle' && currentView.note ? <p className={warnNoteClass}>{currentView.note}</p> : null}
