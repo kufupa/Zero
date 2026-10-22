@@ -131,6 +131,14 @@ export function compareReadbackStay(expected, actual) {
   }
   const rows = [
     {
+      field: 'firstName',
+      expectedNorm: normalizeLastName(expected?.firstName),
+      actualNorm: normalizeLastName(actual?.firstName),
+      expected: expected?.firstName ?? null,
+      actual: actual?.firstName ?? null,
+      missing: (value) => !value,
+    },
+    {
       field: 'lastName',
       expectedNorm: normalizeLastName(expected?.lastName),
       actualNorm: normalizeLastName(actual?.lastName),
@@ -247,8 +255,20 @@ export async function pollReadbackLookup(lookup, {
   }
 }
 
-export function confirmationLookupReady(result) {
-  return result?.outcome === 'found' && result.stay != null;
+export function confirmationLookupReady(result, searchedConfirmation) {
+  if (result?.outcome !== 'found' || result.stay == null) return false;
+  const wanted = squashText(searchedConfirmation);
+  const got = squashText(result.stay.confirmation);
+  return Boolean(wanted) && wanted === got;
+}
+
+export function dropUnsearchedStay(found, searchedConfirmation) {
+  if (confirmationLookupReady(found, searchedConfirmation)) return found;
+  return {
+    outcome: found?.outcome === 'found' ? 'not_found' : (found?.outcome ?? 'not_found'),
+    stay: null,
+    screenshot: found?.screenshot ?? null,
+  };
 }
 
 export function guestLookupReady(result) {
@@ -760,11 +780,11 @@ async function findStayByConfirmation(browser, secret, stay, dir, confirmation) 
     mode: 'find', confirmation, arrival: null, departure: null, lastName: stay.lastName, debugHtml: false,
   }, async (ctx) => {
     const found = await findOnOpenGuestStay(ctx, { captureScreenshots: false });
-    return {
+    return dropUnsearchedStay({
       outcome: found.outcome,
       stay: found.stay,
       screenshot: await shot(ctx.page, dir, 'readback.png').catch(() => null),
-    };
+    }, confirmation);
   });
 }
 
@@ -778,10 +798,11 @@ async function runProofReadback(browser, secret, stay, dir, save, savedScreensho
     readByConfirmation: async (confirmation) => {
       const found = await pollReadbackLookup(
         () => findStayByConfirmation(browser, secret, stay, dir, confirmation),
-        { sleep, isReady: confirmationLookupReady },
+        { sleep, isReady: (result) => confirmationLookupReady(result, confirmation) },
       );
-      lastStay = found?.stay ?? null;
-      return found;
+      const searched = dropUnsearchedStay(found, confirmation);
+      lastStay = searched.stay;
+      return searched;
     },
     searchByGuestDates: (expected) => pollReadbackLookup(
       () => searchGuestByDates(browser, secret, dir, expected),

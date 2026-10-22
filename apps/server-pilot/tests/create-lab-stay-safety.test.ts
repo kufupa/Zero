@@ -66,12 +66,14 @@ describe('create-lab-stay write safety', () => {
       confirmation: '66865808-1',
     });
     expect(rules.compareReadbackStay({
+      firstName: 'Proof',
       lastName: 'Labtest',
       arrival: '2027-12-08',
       departure: '2027-12-09',
       roomType: 'STQN',
       adults: 1,
     }, {
+      firstName: 'proof',
       lastName: 'labtest',
       arrival: '08-DEC-2027',
       departure: '2027-12-09',
@@ -79,12 +81,38 @@ describe('create-lab-stay write safety', () => {
       adults: 1,
     })).toEqual({ readbackMatch: true, mismatches: [], unknownOutcome: null });
     const expected = {
+      firstName: 'Proof',
       lastName: 'Labtest',
       arrival: '2027-12-08',
       departure: '2027-12-09',
       roomType: 'STQN',
       adults: 1,
     };
+    const otherLabtest = {
+      ...expected,
+      firstName: 'Ada',
+      confirmation: '66865808-1',
+      status: 'Reserved',
+    };
+    expect(rules.confirmationLookupReady(
+      { outcome: 'found', stay: otherLabtest },
+      '82126330-1',
+    )).toBe(false);
+    expect(rules.confirmationLookupReady(
+      { outcome: 'not_found', stay: otherLabtest },
+      '66865808-1',
+    )).toBe(false);
+    expect(rules.dropUnsearchedStay(
+      { outcome: 'not_found', stay: otherLabtest },
+      '66865808-1',
+    ).stay).toBeNull();
+    expect(rules.compareReadbackStay(expected, otherLabtest).readbackMatch).toBe(false);
+    expect(paneCommitOutcome(rules.mergeReadbackCompare({
+      confNo: '66865808-1',
+      readbackMatch: true,
+      mismatches: [],
+      unknownOutcome: null,
+    }, expected, otherLabtest))).toBe('committed_unverified');
     const alreadyMatched = {
       confNo: '66865808-1',
       readbackMatch: true as const,

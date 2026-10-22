@@ -418,6 +418,7 @@ async function loadReadbackRules() {
 }
 
 const READBACK_EXPECTED = {
+  firstName: 'Proof',
   lastName: 'Labtest',
   arrival: '2027-12-08',
   departure: '2027-12-09',
@@ -431,6 +432,7 @@ test('readback compare normalizes last name, ISO dates, room code, and adults', 
   assert.equal(rules.isoStayDate('2027-12-08'), '2027-12-08');
   assert.equal(rules.normalizeRoomTypeCode('stqn Standard Queen'), 'STQN');
   assert.deepEqual(rules.compareReadbackStay(READBACK_EXPECTED, {
+    firstName: 'PROOF',
     lastName: 'LABTEST',
     arrival: '08-DEC-2027',
     departure: '09-Dec-2027',
@@ -485,6 +487,7 @@ test('inactive, wrong-conf, and error readback cannot stay committed', async () 
 test('readback compare reports field mismatches and stays unknown when a compared field is missing', async () => {
   const rules = await loadReadbackRules();
   assert.deepEqual(rules.compareReadbackStay(READBACK_EXPECTED, {
+    firstName: 'Ada',
     lastName: 'Other',
     arrival: '2027-12-10',
     departure: '2027-12-11',
@@ -493,6 +496,7 @@ test('readback compare reports field mismatches and stays unknown when a compare
   }), {
     readbackMatch: false,
     mismatches: [
+      { field: 'firstName', expected: 'Proof', actual: 'Ada' },
       { field: 'lastName', expected: 'Labtest', actual: 'Other' },
       { field: 'arrival', expected: '2027-12-08', actual: '2027-12-10' },
       { field: 'departure', expected: '2027-12-09', actual: '2027-12-11' },
@@ -502,6 +506,7 @@ test('readback compare reports field mismatches and stays unknown when a compare
     unknownOutcome: null,
   });
   assert.deepEqual(rules.compareReadbackStay(READBACK_EXPECTED, {
+    firstName: 'Proof',
     lastName: 'Labtest',
     arrival: '2027-12-08',
     departure: '2027-12-09',
@@ -602,13 +607,13 @@ test('readback finds by confirmation when known, else guest last name + arrival,
     calls.push(calls.length);
     return calls.length < 3
       ? { outcome: 'not_found', stay: null }
-      : { outcome: 'found', stay: READBACK_EXPECTED };
+      : { outcome: 'found', stay: { ...READBACK_EXPECTED, confirmation: '66865808-1' } };
   }, {
     timeoutMs: 60_000,
     pollMs: 5_000,
     now: () => clock,
     sleep: async (ms) => { clock += ms; },
-    isReady: rules.confirmationLookupReady,
+    isReady: (result) => rules.confirmationLookupReady(result, '66865808-1'),
   });
   assert.equal(found.outcome, 'found');
   assert.equal(calls.length, 3);
@@ -620,6 +625,32 @@ test('readback finds by confirmation when known, else guest last name + arrival,
   assert.equal(rules.newGuestRowReady({
     outcome: 'ok', rows: [{ confirmation: '66865808-1' }],
   }, [{ confirmation: '61143613-1' }]), true);
+});
+
+test('readback is found only for the searched confirmation, not an already-open form', async () => {
+  const rules = await loadReadbackRules();
+  const openForm = {
+    ...READBACK_EXPECTED,
+    firstName: 'Ada',
+    confirmation: '66865808-1',
+    status: 'Reserved',
+  };
+  assert.equal(rules.confirmationLookupReady({ outcome: 'found', stay: openForm }, '82126330-1'), false);
+  assert.equal(rules.confirmationLookupReady({ outcome: 'not_found', stay: openForm }, '66865808-1'), false);
+  assert.equal(rules.dropUnsearchedStay({ outcome: 'not_found', stay: openForm }, '66865808-1').stay, null);
+  assert.equal(rules.dropUnsearchedStay({ outcome: 'found', stay: openForm }, '82126330-1').stay, null);
+  const compared = rules.compareReadbackStay(READBACK_EXPECTED, openForm);
+  assert.equal(compared.readbackMatch, false);
+  assert.equal(compared.mismatches[0].field, 'firstName');
+  const merged = rules.mergeReadbackCompare({
+    confNo: '66865808-1', readbackMatch: true, mismatches: [], unknownOutcome: null,
+  }, READBACK_EXPECTED, openForm);
+  assert.equal(merged.readbackMatch, false);
+  const { paneCommitOutcome } = await import('./create-proof-rules.mjs');
+  assert.equal(paneCommitOutcome(merged), 'committed_unverified');
+  assert.equal(rules.confirmationLookupReady({
+    outcome: 'found', stay: { ...READBACK_EXPECTED, confirmation: '66865808-1' },
+  }, '66865808-1'), true);
 });
 
 test('pane-commit readback uses normalized compare and known confirmation, never a second Save', async () => {
