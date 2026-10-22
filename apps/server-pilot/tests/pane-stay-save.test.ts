@@ -867,6 +867,7 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
   });
 
   it('HRDAV + gate off → refused before lock or spawn', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'off');
     const locked: string[] = [];
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = passingLock(locked);
