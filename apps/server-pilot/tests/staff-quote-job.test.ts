@@ -1192,3 +1192,88 @@ describe('staff_quote HMS job execution', () => {
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
 });
+
+describe('runStaffQuote property installation', () => {
+  function mailFor(transportId: string) {
+    return {
+      id: STAFF_QUOTE_INPUT.messageId,
+      transportId,
+      threadId: 'thread-1',
+      direction: 'inbound',
+      subject: 'Accommodation enquiry',
+      textBody: 'Please quote accommodation for the selected dates.',
+      htmlBody: null,
+      receivedAt: new Date('2026-10-12T08:00:00.000Z'),
+      sentAt: null,
+      createdAt: new Date('2026-10-12T08:00:00.000Z'),
+      fromAddress: 'guest@example.invalid',
+      toAddresses:
+        transportId === 'transport-davinci'
+          ? ['davinci@legacyhotels.co.za']
+          : ['centurion@legacyhotels.co.za'],
+    };
+  }
+
+  async function runOn(transportId: string) {
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
+      '../src/ai/staff-quote-run.js',
+    );
+    const mail = mailFor(transportId);
+    const input = staffQuoteInput.parse({
+      ...STAFF_QUOTE_INPUT,
+      sourceHash: staffQuoteSourceHash(mail),
+    });
+    return actual.runStaffQuote(input, { transportId, user }, staffQuoteRunDb(mail).db);
+  }
+
+  it('uses the HRDAV installation for a Da Vinci transport when the quote flag is on', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    quoteRunMocks.readConfiguration.mockReturnValue({
+      tenantId: 'synthetic-hotel',
+      owner: { propertyCode: 'HRDAV' },
+    });
+    await expect(runOn('transport-davinci')).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Staff quotation database unavailable',
+    });
+    expect(quoteRunMocks.readConfiguration.mock.calls).toEqual([['HRDAV']]);
+  });
+
+  it('refuses a Da Vinci quote when the HRDAV install is missing and does not read Centurion', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    quoteRunMocks.readConfiguration.mockImplementation((propertyCode?: string) => {
+      if (propertyCode === 'HRDAV') throw new Error('staff_quote_installation_unavailable');
+      return { tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRCEN' } };
+    });
+    await expect(runOn('transport-davinci')).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Staff quotation installation unavailable',
+    });
+    expect(quoteRunMocks.readConfiguration.mock.calls).toEqual([['HRDAV']]);
+  });
+
+  it('leaves Centurion quotes on the Centurion installation', async () => {
+    quoteRunMocks.readConfiguration.mockReturnValue({
+      tenantId: 'synthetic-hotel',
+      owner: { propertyCode: 'HRCEN' },
+    });
+    await expect(runOn('transport-centurion')).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Staff quotation database unavailable',
+    });
+    expect(quoteRunMocks.readConfiguration.mock.calls).toEqual([['HRCEN']]);
+  });
+
+  it('refuses when the loaded installation owner.propertyCode does not match the quote target', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    quoteRunMocks.readConfiguration.mockReturnValue({
+      tenantId: 'synthetic-hotel',
+      owner: { propertyCode: 'HRCEN' },
+    });
+    await expect(runOn('transport-davinci')).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: 'Staff quotation installation unavailable',
+    });
+    expect(quoteRunMocks.readConfiguration.mock.calls).toEqual([['HRDAV']]);
+  });
+});

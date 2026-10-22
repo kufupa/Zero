@@ -57,7 +57,7 @@ import {
 import { beginQuoteRun, staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
-import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { quoteTargetForHmsJob, resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
@@ -586,10 +586,29 @@ export async function runStaffQuote(
   if (!mail || mail.direction !== 'inbound')
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
   const systemPrepared = identity.user === undefined;
+  const quoteTarget = quoteTargetForHmsJob({
+    transportId: identity.transportId,
+    origin: {
+      fromAddress: mail.fromAddress,
+      toAddresses: mail.toAddresses,
+      ccAddresses: mail.ccAddresses,
+      ownerHeaderValue: mail.ownerHeaderValue,
+    },
+    env: process.env,
+  });
+  if (!quoteTarget.ok) {
+    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: quoteTarget.message });
+  }
   let config: ReturnType<typeof readInstalledStaffQuoteConfiguration>;
   try {
-    config = readInstalledStaffQuoteConfiguration();
+    config = readInstalledStaffQuoteConfiguration(quoteTarget.target.propertyCode);
   } catch {
+    throw new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Staff quotation installation unavailable',
+    });
+  }
+  if (config.owner.propertyCode !== quoteTarget.target.propertyCode) {
     throw new TRPCError({
       code: 'PRECONDITION_FAILED',
       message: 'Staff quotation installation unavailable',
@@ -742,6 +761,7 @@ export async function runStaffQuote(
                 authorizationId: attempt.authorizationId,
                 authorizeContext: async (c) => c === attempt.context && (await stillCurrent()),
                 signer,
+                propertyCode: quoteTarget.target.propertyCode,
                 onEvidenceDirectory: (directory) => {
                   evidence.directory = directory;
                 },
