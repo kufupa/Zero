@@ -6,6 +6,45 @@ export type FactProvenance = 'extracted' | 'staff_corrected' | 'missing' | 'defa
 
 export type QuoteBoard = 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
 
+export const HRDAV_PROPERTY_CODE = 'HRDAV' as const;
+export const HRCEN_PROPERTY_CODE = 'HRCEN' as const;
+export type HmsQuotePropertyCode = typeof HRCEN_PROPERTY_CODE | typeof HRDAV_PROPERTY_CODE;
+
+/** D0 HRDAV BAR shop room labels. Shared codes DLXKNG and STWN are this property's product. */
+export const HRDAV_ROOM_NAMES = {
+  JNRSUI: 'Junior Suite',
+  EXKNGB: 'Executive King Balcony',
+  EXKNGR: 'Executive King Round',
+  EXKNGS: 'Executive King Square',
+  DLXPAT: 'Deluxe Patio',
+  DLXKNG: 'Deluxe King',
+  ACCES: 'Accessible',
+  STKNG: 'Standard King',
+  STWN: 'Standard Twin',
+} as const;
+
+export type HrdavRoomCode = keyof typeof HRDAV_ROOM_NAMES;
+
+/** Observed HRDAV rate plans. Board is known only when the D0 rows established it. */
+export const HRDAV_RATE_PLANS = {
+  BAR: { name: 'Best Available Rate', board: 'bb' as QuoteBoard },
+  BARRO: { name: 'Room Only BAR', board: 'room_only' as QuoteBoard },
+  BLRB: { name: 'Lifestyle Rewards Programme Rate', board: 'unknown' as QuoteBoard },
+  BARDIS: { name: 'BAR Discount', board: 'unknown' as QuoteBoard },
+  DEF: { name: 'Default', board: 'unknown' as QuoteBoard },
+} as const;
+
+const HRDAV_BB_LABELS = new Set(['bed & breakfast r']);
+
+/** Observed HRDAV summary labels only. Invented BB/DBB codes stay unknown. */
+export function hrdavBoardFromLabel(label: string | null | undefined): QuoteBoard {
+  const key = label?.trim().replace(/\s+/g, ' ').toLowerCase() ?? '';
+  if (!key) return 'unknown';
+  if (HRDAV_BB_LABELS.has(key)) return 'bb';
+  if (key === 'room only' || key === 'room only r' || key === 'room_only') return 'room_only';
+  return 'unknown';
+}
+
 export type QuoteWorkflowPhase =
   | 'idle'
   | 'analysing'

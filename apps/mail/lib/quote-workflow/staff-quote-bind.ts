@@ -26,12 +26,22 @@ import type {
   StayGroupRequirement,
   AvailabilityBoardRow,
 } from './types';
-import { staffHeaderFieldProblem, staffStayExtrasFor } from './types';
+import {
+  HRDAV_PROPERTY_CODE,
+  HRDAV_ROOM_NAMES,
+  staffHeaderFieldProblem,
+  staffStayExtrasFor,
+} from './types';
 import { knownRoomCode, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
 export const KNOWN_NATIVE_ROOM_CODES: ReadonlySet<string> = new Set<string>(ROOM_TYPE_CODES);
+const HRDAV_NATIVE_ROOM_CODES: ReadonlySet<string> = new Set<string>(Object.keys(HRDAV_ROOM_NAMES));
+
+function nativeRoomCodeList(propertyCode?: string): ReadonlySet<string> {
+  return propertyCode === HRDAV_PROPERTY_CODE ? HRDAV_NATIVE_ROOM_CODES : KNOWN_NATIVE_ROOM_CODES;
+}
 
 export type NativeRoomCodeResolution =
   | { status: 'omitted' }
@@ -399,18 +409,30 @@ export function qualifiedPdfFailureReason(error: unknown): string {
   return rejectionReason(error);
 }
 
-function knownNativeCode(raw: string): string | null {
+function hrdavKnownCode(raw: string): string | null {
+  const code = raw.trim().replace(/[^a-z0-9]/gi, '').toUpperCase();
+  if (HRDAV_NATIVE_ROOM_CODES.has(code)) return code;
+  const needle = raw.trim().toLowerCase().replace(/\s+/g, ' ');
+  const matches = (Object.entries(HRDAV_ROOM_NAMES) as Array<[string, string]>).filter(
+    ([, label]) => label.toLowerCase() === needle,
+  );
+  return matches.length === 1 ? matches[0]![0] : null;
+}
+
+function knownNativeCode(raw: string, propertyCode?: string): string | null {
+  if (propertyCode === HRDAV_PROPERTY_CODE) return hrdavKnownCode(raw);
   return knownRoomCode(raw);
 }
 
 export function resolveNativeRoomCodes(input: {
   roomPreference?: string;
   roomCodes?: string[];
+  propertyCode?: string;
 }): NativeRoomCodeResolution {
   if (input.roomCodes?.length) {
     const codes: string[] = [];
     for (const raw of input.roomCodes) {
-      const code = knownNativeCode(raw);
+      const code = knownNativeCode(raw, input.propertyCode);
       if (!code) return { status: 'unresolved', label: raw.trim() || '(empty code)' };
       codes.push(code);
     }
@@ -418,7 +440,8 @@ export function resolveNativeRoomCodes(input: {
   }
   const raw = input.roomPreference?.trim() ?? '';
   if (!raw) return { status: 'omitted' };
-  const code = knownNativeCode(raw) ?? unpickedTwinRoomCode(raw) ?? null;
+  const twin = input.propertyCode === HRDAV_PROPERTY_CODE ? null : unpickedTwinRoomCode(raw);
+  const code = knownNativeCode(raw, input.propertyCode) ?? twin ?? null;
   if (code) return { status: 'codes', codes: [code] };
   return { status: 'unresolved', label: raw };
 }
@@ -442,13 +465,14 @@ export function splitStayGroups(groups: readonly StayGroupRequirement[]): StayGr
 
 export function staffQuoteGroupsFromStay(
   groups: readonly StayGroupRequirement[],
+  propertyCode?: string,
 ): { ok: StaffQuoteGroupInput[] } | { error: string } {
   const out: StaffQuoteGroupInput[] = [];
   for (const group of groups) {
     if (!group.arrivalDate || !group.departureDate) {
       return { error: 'Enter the arrival and departure dates before running the quote.' };
     }
-    if (group.board === 'unknown') {
+    if (group.board === 'unknown' || (propertyCode === HRDAV_PROPERTY_CODE && group.board === 'dinner_bb')) {
       return { error: 'Choose a meal plan for the stay before running the quote.' };
     }
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
@@ -459,11 +483,12 @@ export function staffQuoteGroupsFromStay(
     const rooms = resolveNativeRoomCodes({
       roomPreference: group.roomPreference,
       roomCodes: group.roomCodes?.length ? group.roomCodes : undefined,
+      propertyCode,
     });
     // Ambiguous mail wording stays visible/editable, but its defaulted provenance means any type.
     if (rooms.status === 'unresolved' && group.fields.roomPreference !== 'defaulted') {
       return {
-        error: `Room type "${rooms.label}" is not one HMS knows. Choose one of: ${[...KNOWN_NATIVE_ROOM_CODES].join(', ')}.`,
+        error: `Room type "${rooms.label}" is not one HMS knows. Choose one of: ${[...nativeRoomCodeList(propertyCode)].join(', ')}.`,
       };
     }
     out.push({
@@ -985,6 +1010,8 @@ type StaffQuoteRequestArgs = {
   header: StaffQuoteHeader;
   /** Prefer an explicit stay key when the request is built from a reconstructed stay. */
   stayKey?: string;
+  /** Quote-target property. Absent keeps the Centurion room map. */
+  propertyCode?: string;
 };
 
 type BuiltStaffQuoteRequest = {
@@ -996,7 +1023,7 @@ type BuiltStaffQuoteRequest = {
 function staffQuoteRequest(
   args: StaffQuoteRequestArgs,
 ): BuiltStaffQuoteRequest | { error: string } {
-  const prepared = staffQuoteGroupsFromStay(args.groups);
+  const prepared = staffQuoteGroupsFromStay(args.groups, args.propertyCode);
   if ('error' in prepared) return { error: prepared.error };
   const first = prepared.ok[0];
   const stayKey =
@@ -1088,10 +1115,13 @@ function boundStaffQuoteResult(
   const rateOptions = readRateOptions(result.rateOptions);
   const availabilityBoard = readAvailabilityBoard(result.availabilityBoard);
   const rowRates = readRowRates(result.rowRates);
-  const dinnerFallbackGroupIds = Array.isArray(result.dinnerFallbackGroupIds)
-    ? [...new Set(result.dinnerFallbackGroupIds.filter((id): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id)))].slice(0, 8)
-    : [];
-  const dinnerAddOn = readDinnerAddOn(result.dinnerAddOn);
+  const hrdavQuote = args.propertyCode === HRDAV_PROPERTY_CODE;
+  const dinnerFallbackGroupIds = hrdavQuote
+    ? []
+    : Array.isArray(result.dinnerFallbackGroupIds)
+      ? [...new Set(result.dinnerFallbackGroupIds.filter((id): id is string => typeof id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(id)))].slice(0, 8)
+      : [];
+  const dinnerAddOn = hrdavQuote ? undefined : readDinnerAddOn(result.dinnerAddOn);
   const dinnerFallbackGroupSet = new Set(dinnerFallbackGroupIds);
   const offerGroups = dinnerFallbackGroupSet.size
     ? args.groups.map((group) =>
@@ -1113,7 +1143,7 @@ function boundStaffQuoteResult(
     totalMinor: result.totalMinor,
     currency: result.currency,
     quoteRequestKey: `${result.arrivalDate}:${result.departureDate}`,
-    ...(typeof result.dinnerAddOnRequired === 'boolean'
+    ...(typeof result.dinnerAddOnRequired === 'boolean' && !hrdavQuote
       ? { dinnerAddOnRequired: result.dinnerAddOnRequired }
       : {}),
     ...(dinnerFallbackGroupIds.length ? { dinnerFallbackGroupIds } : {}),

@@ -17,6 +17,27 @@ export type ReservationistBookingPrerequisites=Pick<BookingEvidence,'availabilit
 // The quote contract is an ESM tool outside src. Async callers load it here; the sync joint search takes the profile flag.
 const quoteContract=()=>import(pathToFileURL(fileURLToPath(new URL('../../tooling/playwright-quote/quote-contract.mjs',import.meta.url))).href) as Promise<{normalizeQuoteRequest:(input:unknown)=>{ok:boolean;request:QuoteSourceRecord['request']};profileHolds:(propertyCode:string,groups:unknown[])=>boolean}>;
 function missing(code:string,fields:string[]):never{throw new ReservationistTaskEvidenceUnavailable(code,fields);}
+function hrdavRequestedRoomCodes(text:string):string[]|undefined{
+ if(/\bjunior\s+suite\b/i.test(text))return['JNRSUI'];
+ if(/\baccessible\b/i.test(text))return['ACCES'];
+ if(/\bexecutive\s+king\b/i.test(text))return['EXKNGB','EXKNGR','EXKNGS'];
+ if(/\bdeluxe\s+(?:patio|king|room)\b/i.test(text))return['DLXPAT','DLXKNG'];
+ if(/\bstandard\s+(?:king|twin|room)\b/i.test(text))return['STKNG','STWN'];
+ return undefined;
+}
+function requestedRoomCodes(propertyCode:string,text:string):string[]|undefined{
+ if(propertyCode==='HRDAV')return hrdavRequestedRoomCodes(text);
+ return/\bstandard\s+room\b/i.test(text)?['STWN','STQN','SKNG']:/\bdeluxe\s+(?:room|queen)\b/i.test(text)?['DLXQN']:undefined;
+}
+function mapRequestedBoard(propertyCode:string,raw:string):Board|undefined{
+ const key=norm(raw);
+ if(propertyCode==='HRDAV'){
+  if(['breakfast','bb','b&b','bed & breakfast','bed and breakfast','bed & breakfast r'].includes(key))return'breakfast';
+  if(['ro','room_only','room only','room only r'].includes(key))return'room_only';
+  return undefined;
+ }
+ return boards[key];
+}
 function authored(ctx:Context){const m=ctx.input.messages.find(m=>`message:${m.id}`===ctx.task.source.attachmentId);return m?.text.split(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]??ctx.task.source.quote??'';}
 /** Original authored event scope only; this predicate grants no price or party authority. */
 export function isReservationistConferenceOnlyQuote(ctx:Context):boolean{
@@ -55,8 +76,8 @@ export function deriveReservationistQuoteRequest(ctx:Context):NativeQuoteRequest
  if(!dates.length||new Set(dates.map(f=>f.kind==='dates'?quoteDigest({arrival:f.value.arrival,departure:f.value.departure}):'')).size!==1)missing('business_dates_unavailable',['one source-bound stay date range']);
  const stay=dates[0]!.value as {arrival:string;departure:string};occupiedDates(stay.arrival,stay.departure);
  const roomFacts=[...new Map(facts.filter(f=>f.kind==='room').map(f=>[quoteDigest(f.value),f])).values()];if(!roomFacts.length)missing('business_room_allocation_unavailable',['explicit room quantity and occupancy']);
- const text=authored(ctx),isGovernment=/\bgovernment\s+rate\b|\b(?:government|department|treasury)\b/i.test(text)&&/\bofficial|government\s+rate\b/i.test(text),roomCodes=/\bstandard\s+room\b/i.test(text)?['STWN','STQN','SKNG']:/\bdeluxe\s+(?:room|queen)\b/i.test(text)?['DLXQN']:undefined;
- const rooms=roomFacts.map(f=>{if(f.kind!=='room')throw new Error('business_room_type');if(f.value.quantity===undefined)missing('business_room_quantity_unavailable',['explicit room quantity']);const requestedBoards=facts.filter(b=>b.kind==='board'&&(typeof b.value==='string'||b.value.roomRef===f.value.roomRef)).map(b=>{if(b.kind!=='board')throw new Error('business_board_type');return boards[norm(typeof b.value==='string'?b.value:b.value.board)];});if(!requestedBoards.length&&!sourceLeavesBoardUnspecified(ctx)||requestedBoards.some(b=>!b)||new Set(requestedBoards).size>1)missing('business_board_unavailable',['one supported board for each room allocation']);return{id:f.value.roomRef,quantity:f.value.quantity,adults:f.value.adults,children:f.value.childAges.length,childAges:[...f.value.childAges],required:{...(requestedBoards.length?{boardBases:[requestedBoards[0]!]}:{}),...(roomCodes?{roomCodes}:{} )}};});
+ const text=authored(ctx),isGovernment=/\bgovernment\s+rate\b|\b(?:government|department|treasury)\b/i.test(text)&&/\bofficial|government\s+rate\b/i.test(text),roomCodes=requestedRoomCodes(ctx.input.propertyCode,text);
+ const rooms=roomFacts.map(f=>{if(f.kind!=='room')throw new Error('business_room_type');if(f.value.quantity===undefined)missing('business_room_quantity_unavailable',['explicit room quantity']);const requestedBoards=facts.filter(b=>b.kind==='board'&&(typeof b.value==='string'||b.value.roomRef===f.value.roomRef)).map(b=>{if(b.kind!=='board')throw new Error('business_board_type');return mapRequestedBoard(ctx.input.propertyCode,typeof b.value==='string'?b.value:b.value.board);});if(!requestedBoards.length&&!sourceLeavesBoardUnspecified(ctx)||requestedBoards.some(b=>!b)||new Set(requestedBoards).size>1)missing('business_board_unavailable',['one supported board for each room allocation']);return{id:f.value.roomRef,quantity:f.value.quantity,adults:f.value.adults,children:f.value.childAges.length,childAges:[...f.value.childAges],required:{...(requestedBoards.length?{boardBases:[requestedBoards[0]!]}:{}),...(roomCodes?{roomCodes}:{} )}};});
  if(new Set(rooms.map(r=>r.id)).size!==rooms.length)missing('business_room_allocation_ambiguous',['unique room allocation references']);
  return{propertyCode:ctx.input.propertyCode,arrivalDate:stay.arrival,departureDate:stay.departure,requestedCurrency:'ZAR',rooms,search:{includeRestricted:false,includeAlternatives:false,salesStrategy:isGovernment?'Government':'BAR'},details:'full',maxOptionsPerGroup:50};
 }

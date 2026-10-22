@@ -1,13 +1,18 @@
 import type { ReactNode } from 'react';
 
 import { draftMoney } from '@/lib/quote-workflow/multi-option-draft';
-import type { AvailabilityBoardRow, QuoteBoard, RateOption } from '@/lib/quote-workflow/types';
+import { HRDAV_ROOM_NAMES, type AvailabilityBoardRow, type QuoteBoard, type RateOption } from '@/lib/quote-workflow/types';
 
 /** Shown on GNC3B and GNC4B. The server marks these as event rates; they are never matched, ranked or priced differently. */
 export const CRICKET_RATE_HINT = 'Cricket event rate. Shown for reference: never matched, ranked or priced differently.';
 
 function displayLabel(label: string): string {
   return label.replace(/&amp;/gi, '&').trim();
+}
+
+function hrdavOnlyRoomName(code: string): string {
+  if (code === 'DLXKNG' || code === 'STWN' || !(code in HRDAV_ROOM_NAMES)) return '';
+  return HRDAV_ROOM_NAMES[code as keyof typeof HRDAV_ROOM_NAMES];
 }
 
 /** One read-only BAR cell. Local projection only — not stored on QuoteSession. */
@@ -42,7 +47,7 @@ export function projectBarGrid(options: readonly AvailabilityBoardRow[]): BarGri
     const next: BarGridCell = {
       groupId: option.groupId,
       roomCode: option.roomCode,
-      roomLabel: displayLabel(option.roomLabel) || option.roomCode,
+      roomLabel: displayLabel(option.roomLabel) || hrdavOnlyRoomName(option.roomCode) || option.roomCode,
       rateCode: option.rateCode,
       rateLabel: displayLabel(option.rateLabel) || option.rateCode,
       board: option.board,
@@ -144,7 +149,7 @@ export function RateCards({
         const from = option.priced === 'summary' && !selected ? 'from ' : '';
         const rateLabel = displayLabel(option.rateLabel) || option.rateCode;
         const boardLabel = displayLabel(option.boardLabel);
-        const roomLabel = displayLabel(option.roomLabel);
+        const roomLabel = displayLabel(option.roomLabel) || hrdavOnlyRoomName(option.roomCode);
         const boardRoomLabel = [boardLabel, roomLabel].filter(Boolean).join(' · ');
         return (
           <div
