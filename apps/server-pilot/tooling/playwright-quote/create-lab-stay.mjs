@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { assertTrackReadyForGuarantee, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
-import { readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
+import { readSaveSnapshot, readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { paneCommitOutcome, proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
 
@@ -24,6 +24,29 @@ const REQUIRED = [
   'lastname',
   'guaranteetype',
 ];
+
+// --- ext-message-box-rules ---
+export const INFORMATIONAL_NO_ROOMS_MESSAGE = 'There are no rooms or openings for this process.';
+const MONEY_MESSAGE = /penalty|charge|cancel|deposit|no-show|payment/i;
+
+export function classifyExtMessageBox(text) {
+  const trimmed = String(text ?? '').trim();
+  if (MONEY_MESSAGE.test(trimmed)) return 'refuse';
+  if (trimmed === INFORMATIONAL_NO_ROOMS_MESSAGE) return 'allow';
+  return 'unknown';
+}
+
+export function labtestInformationalOkAllowed(stay) {
+  return /^labtest$/i.test(String(stay?.lastName ?? '')) && String(stay?.arrival ?? '') >= '2027-01-01';
+}
+
+export function extMessageBoxAction(text, stay) {
+  const kind = classifyExtMessageBox(text);
+  if (kind === 'refuse') return 'refuse';
+  if (kind === 'allow' && labtestInformationalOkAllowed(stay)) return 'ok';
+  return 'unknown';
+}
+// --- end-ext-message-box-rules ---
 
 // Shared proof directory for manual runs. The pane passes --out with a per-run directory instead.
 function defaultOutDir() {
@@ -310,6 +333,35 @@ export async function fillTrackBeforeGuarantee(page, want) {
   validation = await readFieldValidation(page, 'track');
   assertTrackReadyForGuarantee({ validation });
   return picked ?? { code: want === 'Best Available' ? 'BAR' : want, description };
+}
+
+const EXT_MESSAGE_BOX = '[data-testid="message-box"], .x-message-box';
+
+async function readVisibleExtMessageBoxText(page) {
+  const box = page.locator(EXT_MESSAGE_BOX).filter({ visible: true }).first();
+  if (await box.count() === 0) return null;
+  const body = box.locator('.x-window-body, .ext-mb-text').first();
+  const node = (await body.count()) ? body : box;
+  const raw = await node.innerText().catch(() => '');
+  return String(raw ?? '').trim().replace(/\s*OK\s*$/i, '').trim();
+}
+
+async function handleVisibleExtMessageBox(page, dir, result, stay) {
+  const text = await readVisibleExtMessageBoxText(page);
+  if (text == null) return 'none';
+  result.messageBoxText = text;
+  const action = extMessageBoxAction(text, stay);
+  if (action === 'ok') {
+    const box = page.locator(EXT_MESSAGE_BOX).filter({ visible: true }).first();
+    await box.locator('a.x-btn:visible, button:visible').filter({ hasText: /^OK$/ }).first().click();
+    result.messageBox = 'dismissed_informational';
+    return 'ok';
+  }
+  await shot(page, dir, 'failure.png').catch(() => {});
+  result.outcome = action === 'refuse' ? 'refused_message_box' : 'unknown_message_box';
+  if (result.clickedSave !== true) result.clickedSave = false;
+  process.stderr.write(`${result.outcome}\n`);
+  return 'abort';
 }
 
 async function clickTip(page, pattern) {
@@ -604,6 +656,10 @@ async function main() {
     result.clickedCheckAvailability = true;
     result.held = false;
     await shot(page, dir, 'availability.png');
+    if (await handleVisibleExtMessageBox(page, dir, result, stay) === 'abort') {
+      process.exitCode = 2;
+      return;
+    }
     if (stop.stopBefore === 'save') {
       result.outcome = 'previewed';
       result.clickedSave = false;
@@ -625,6 +681,11 @@ async function main() {
       process.exitCode = 2;
       return;
     }
+    if (await handleVisibleExtMessageBox(page, dir, result, stay) === 'abort') {
+      result.clickedSave = false;
+      process.exitCode = 2;
+      return;
+    }
     let saveClickUnknown = false;
     try {
       await clickTip(page, '^Save');
@@ -637,13 +698,31 @@ async function main() {
     }
     // HMS masks the record while it saves. Read the number only once the mask is gone. A missing number is
     // save_unconfirmed, never a failed save: HMS may already have booked the stay.
+    // Allowlisted no-rooms Ext box: click OK and keep waiting. Money/unknown abort.
     let save;
     if (saveClickUnknown) {
+      if (await handleVisibleExtMessageBox(page, dir, result, stay) === 'abort') {
+        process.exitCode = 2;
+        return;
+      }
       save = { confirmed: false, confirmationNumber: null, reason: 'save_click_unconfirmed' };
     } else {
       try {
-        save = await waitForSaveConfirmation(page);
+        save = await waitForSaveConfirmation(page, {
+          read: async (p) => {
+            if (await handleVisibleExtMessageBox(p, dir, result, stay) === 'abort') {
+              const error = new Error(result.outcome || 'unknown_message_box');
+              error.messageBoxAbort = true;
+              throw error;
+            }
+            return readSaveSnapshot(p);
+          },
+        });
       } catch (error) {
+        if (error?.messageBoxAbort) {
+          process.exitCode = 2;
+          return;
+        }
         if (!verifySave) throw error;
         result.saveError = String(error.message || error);
         save = { confirmed: false, confirmationNumber: null, reason: 'save_observation_error' };
