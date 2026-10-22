@@ -13,11 +13,13 @@ import {
   REPLAY_PROD_INPUT,
   cardsFromPayload,
   formatReplayStdout,
+  freezeThreadHistoryAt,
   inRequestWindow,
   isConfirmationLetterFilename,
   orderInboundRequests,
   parseOutboundGoldReplayArgs,
   readThreadIdList,
+  replayIoErrorCode,
   reserveReplayOutputs,
   runOutboundGoldReplay,
   selectRequestOutbound,
@@ -315,7 +317,62 @@ describe('outbound-gold replay runner', () => {
     expect(result.summary.extractFailed).toBe(1);
     expect(result.summary.covered).toBe(0);
     expect(result.misses).toEqual([{ id: 'message-fixture-1', reason: 'extract_failed' }]);
-    expect(result.rows).toHaveLength(0);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]?.letters).toEqual([]);
+    expect(scoreOutboundGoldFixture(result.rows).pass).toBe(false);
     expect(JSON.parse(formatReplayStdout(result.summary)).extractFailed).toBe(1);
+  });
+
+  it('drops a later staff reply from the extract prompt at trigger mailbox arrival', async () => {
+    const later = 'Later staff reply must not reach extract';
+    const extract = vi.fn(async (input: { selection: SyncedQuoteSelection }) => {
+      expect(input.selection.threadMessages?.some((message) => message.bodyText === later)).toBe(false);
+      return { ok: true as const, kind: 'booking' as const, payload: PAYLOAD };
+    });
+    await runOutboundGoldReplay([THREAD_A], {
+      ...deps({
+        loadSelection: async () => ({
+          ...SELECTION,
+          threadMessages: [
+            {
+              direction: 'outbound',
+              timestamp: '2026-10-14T08:00:00.000Z',
+              subject: 'earlier',
+              bodyText: 'Earlier staff reply',
+            },
+            {
+              direction: 'outbound',
+              timestamp: '2026-10-14T10:00:00.000Z',
+              subject: 'later',
+              bodyText: later,
+            },
+          ],
+        }),
+        extract,
+      }),
+    });
+    expect(extract).toHaveBeenCalled();
+    const frozen = freezeThreadHistoryAt(
+      {
+        ...SELECTION,
+        threadMessages: [
+          {
+            direction: 'outbound',
+            timestamp: '2026-10-14T10:00:00.000Z',
+            subject: 'later',
+            bodyText: later,
+          },
+        ],
+      },
+      REQUEST_AT,
+    );
+    expect(frozen.threadMessages).toEqual([]);
+  });
+
+  it('prints out_exists for coded out_exists and EEXIST', () => {
+    expect(replayIoErrorCode(Object.assign(new Error('out_exists'), { code: 'out_exists' }))).toBe(
+      'out_exists',
+    );
+    expect(replayIoErrorCode(Object.assign(new Error('EEXIST'), { code: 'EEXIST' }))).toBe('out_exists');
   });
 });

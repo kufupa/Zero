@@ -186,6 +186,28 @@ export function formatReplayStdout(summary: ReplayStdout): string {
   return `${JSON.stringify(summary)}\n`;
 }
 
+export function freezeThreadHistoryAt(
+  selection: SyncedQuoteSelection,
+  triggerAt: Date,
+): SyncedQuoteSelection {
+  if (!selection.threadMessages?.length) return selection;
+  const until = triggerAt.getTime();
+  return {
+    ...selection,
+    threadMessages: selection.threadMessages.filter((message) => {
+      if (!message.timestamp) return true;
+      return new Date(message.timestamp).getTime() < until;
+    }),
+  };
+}
+
+export function replayIoErrorCode(error: unknown): string {
+  const code =
+    error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code) : 'error';
+  if (code === 'EEXIST' || code === 'out_exists') return 'out_exists';
+  return 'error';
+}
+
 export function reserveReplayOutputs(outPath: string, missesPath: string): void {
   const out = path.resolve(outPath);
   const misses = path.resolve(missesPath);
@@ -279,8 +301,9 @@ export async function runOutboundGoldReplay(
         misses.push({ id: trigger.messageId, reason: 'selection_not_found' });
         continue;
       }
+      const frozen = freezeThreadHistoryAt(selection, trigger.at);
       const extracted = await deps.extract({
-        selection,
+        selection: frozen,
         messageId: trigger.messageId,
         fromAddress: trigger.fromAddress,
         mailbox: trigger.mailbox,
@@ -288,6 +311,13 @@ export async function runOutboundGoldReplay(
       if (!extracted.ok) {
         extractFailed += 1;
         misses.push({ id: trigger.messageId, reason: 'extract_failed' });
+        rows.push({
+          id: trigger.messageId,
+          letterId: null,
+          letter: null,
+          letters: [],
+          cards: [],
+        });
         continue;
       }
 
@@ -524,8 +554,7 @@ export async function runOutboundGoldReplayCli(argv: readonly string[]): Promise
     process.stdout.write(formatReplayStdout(result.summary));
     return 0;
   } catch (error) {
-    const code = error instanceof Error && 'code' in error ? String((error as { code?: unknown }).code) : 'error';
-    process.stderr.write(`${JSON.stringify({ error: code === 'EEXIST' ? 'out_exists' : 'error' })}\n`);
+    process.stderr.write(`${JSON.stringify({ error: replayIoErrorCode(error) })}\n`);
     return 1;
   } finally {
     await closeDb().catch(() => undefined);

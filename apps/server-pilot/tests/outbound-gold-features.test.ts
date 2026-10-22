@@ -252,6 +252,26 @@ describe('stdout shape is counts', () => {
     expect(scored.pass).toBe(true);
   });
 
+  it('fails coverage when one request is covered and another has no letter', () => {
+    const scored = scoreOutboundGoldFixture([
+      {
+        id: 'ask-covered',
+        kind: 'booking',
+        letters: [letter({ id: 'letter-a' })],
+        cards: [card({ id: 'card-1' })],
+      },
+      {
+        id: 'ask-no-letter',
+        kind: 'booking',
+        letters: [],
+        cards: [],
+      },
+    ]);
+    expect(scored.pass).toBe(false);
+    expect(scored.lettersCovered).toBe(1);
+    expect(JSON.parse(formatAggregateStdout(scored)).coveragePass).toBe(false);
+  });
+
   it('fails two swapped rows that would pass if cards were pooled', () => {
     const scored = scoreOutboundGoldFixture([
       {

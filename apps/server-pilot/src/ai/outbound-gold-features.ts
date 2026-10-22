@@ -347,6 +347,7 @@ export function scoreOutboundGoldFixture(
   let withLetter = 0;
   let withQuotePdf = 0;
   let scoredRows = 0;
+  let failedRows = 0;
   let errors = jsonlErrors;
 
   for (const row of rows) {
@@ -370,10 +371,11 @@ export function scoreOutboundGoldFixture(
     cards += coverage.cards;
     distinctDateSets += coverage.distinctDateSets;
     if (!coverage.dateSetCardPass) dateSetCardPass = false;
+    if (!coverage.pass) failedRows += 1;
   }
 
   return {
-    pass: lettersUncovered === 0 && dateSetCardPass && letters > 0,
+    pass: failedRows === 0 && lettersUncovered === 0 && dateSetCardPass && letters > 0,
     letters,
     lettersCovered,
     lettersUncovered,
