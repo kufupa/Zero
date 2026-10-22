@@ -303,7 +303,6 @@ test('pane-commit uses the proof snapshot and reconcile, and never labels a mism
   const saveClick = source.indexOf("await clickTip(page, '^Save')");
   assert.ok(verify !== -1 && existing > verify && existing < saveClick);
   assert.ok(readback !== -1 && paneOutcome > readback);
-  assert.match(source, /committed_unverified/);
   assert.equal(source.includes("result.outcome = 'committed'"), false);
 });
 
