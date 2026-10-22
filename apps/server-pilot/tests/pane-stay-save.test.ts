@@ -991,6 +991,47 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
     expect(paneStayCreatePropertyArgs(null)).toEqual([]);
   });
 
+  it('DV commit dup-check runs with the HRDAV target', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
+    enableSave();
+    const seen: unknown[] = [];
+    paneStaySaveLoaders.osressGuestDatesSearch = async (input) => {
+      seen.push(input.target);
+      return 'clear';
+    };
+    const owner = freshOwner('transport-davinci');
+    const preview = await runPaneStay({ mode: 'preview', stay: davinciStay, owner });
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: davinciStay,
+        owner,
+        previewDigest: preview.previewDigest ?? paneStayDigest(davinciStay),
+      }),
+    ).resolves.toMatchObject({ status: 'ok' });
+    expect(seen).toEqual([DAVINCI_HMS_READ_TARGET]);
+  });
+
+  it('Centurion commit dup-check stays on HRCEN', async () => {
+    enableSave();
+    const seen: unknown[] = [];
+    paneStaySaveLoaders.osressGuestDatesSearch = async (input) => {
+      seen.push(input.target);
+      return 'clear';
+    };
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: labStay,
+        owner,
+        previewDigest: preview.previewDigest ?? paneStayDigest(labStay),
+      }),
+    ).resolves.toMatchObject({ status: 'ok' });
+    expect(seen).toEqual([CENTURION_HMS_READ_TARGET]);
+  });
+
   it('PANE_WRITE_CREATE off still refuses Da Vinci create when the DV gate is lab', async () => {
     vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
     paneStaySaveLoaders.mode = () => 'off';

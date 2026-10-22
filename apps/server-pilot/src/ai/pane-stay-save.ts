@@ -174,6 +174,7 @@ export const paneStaySaveLoaders: {
         lastName: string;
         arrival: string;
         departure: string;
+        target?: HmsReadTarget;
       }) => Promise<OsressDuplicateStatus>)
     | null;
   mode: (() => PaneSaveMode) | null;
@@ -558,6 +559,7 @@ export async function runPaneStay(input: {
           lastName: input.stay.lastName,
           arrival: input.stay.arrival,
           departure: input.stay.departure,
+          target,
         });
         if (status === 'parked') return { refusal: 'osress_reader_parked' };
         if (status === 'busy') return { refusal: 'refused_lock_busy' };
@@ -633,6 +635,5 @@ export function paneStayDupCheckMode(env: NodeJS.Dict<string> = process.env): 'c
 // CLI unlocked. A reader that cannot get the lock is reported by the save as refused_lock_busy.
 paneStaySaveLoaders.osressGuestDatesSearch =
   paneStayDupCheckMode() === 'cli'
-    ? (input) =>
-        guestDatesDuplicateCheckViaCli(input)
+    ? (input) => guestDatesDuplicateCheckViaCli(input, input.target ?? null)
     : null;

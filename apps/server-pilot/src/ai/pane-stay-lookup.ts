@@ -151,7 +151,12 @@ export type PaneStayLookupDeps = {
 };
 
 export const paneStayLookupLoaders: {
-  spawn: ((input: PaneStayLookupSpawnInput) => Promise<PaneStayLookupSpawnResult>) | null;
+  spawn:
+    | ((
+        input: PaneStayLookupSpawnInput,
+        target?: HmsReadTarget | null,
+      ) => Promise<PaneStayLookupSpawnResult>)
+    | null;
   lock: PaneStayLock | null;
   enabled: (() => boolean) | null;
 } = {
@@ -554,12 +559,13 @@ export function guestDatesVerdict(rows: PaneStayPanelRow[], query: GuestDatesQue
 // duplicate is clear; a failed or incomplete read is a duplicate, so the save is refused.
 export async function guestDatesDuplicateCheckViaCli(
   input: GuestDatesQuery,
+  target?: HmsReadTarget | null,
 ): Promise<OsressDuplicateStatus> {
   if (!guestDatesQueryComplete(input)) return 'duplicate';
-  const spawn = paneStayLookupLoaders.spawn ?? defaultSpawn;
+  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, target));
   let run: PaneStayLookupSpawnResult | null = null;
   try {
-    run = await spawn({ mode: 'search-guest', ...input });
+    run = await spawn({ mode: 'search-guest', ...input }, target);
     return run.outcome === 'ok' ? guestDatesVerdict(run.rows, input) : 'duplicate';
   } catch {
     return 'duplicate';

@@ -173,6 +173,13 @@ describe('requestFromQuotedRoom', () => {
 describe('createRequestFieldOptions', () => {
   it('lists the room type codes the booking card selects from', () => {
     expect(createRequestFieldOptions().roomType).toEqual(expect.arrayContaining(['STQN', 'DLXKNG']));
+    expect(createRequestFieldOptions('HRCEN').roomType).toEqual(expect.arrayContaining(['STQN', 'DLXKNG']));
+    expect(createRequestFieldOptions('HRCEN').roomType).not.toEqual(expect.arrayContaining(['JNRSUI']));
+  });
+
+  it('lists Da Vinci room codes when the property is HRDAV', () => {
+    expect(createRequestFieldOptions('HRDAV').roomType).toEqual(expect.arrayContaining(['STKNG', 'JNRSUI']));
+    expect(createRequestFieldOptions('HRDAV').roomType).not.toEqual(expect.arrayContaining(['STQN']));
   });
 });
 
