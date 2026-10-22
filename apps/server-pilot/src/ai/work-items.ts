@@ -559,7 +559,8 @@ function contentKeepsId<T extends { id: string }>(
   const key = keyOf(was, before);
   if (key) {
     const hits = after.filter((item) => keyOf(item, after) === key);
-    return hits.length === 1 && hits[0]!.id === id;
+    if (hits.length > 1) return false;
+    if (hits.length === 1) return hits[0]!.id === id;
   }
   return sameSlot(id, before, after, same);
 }
