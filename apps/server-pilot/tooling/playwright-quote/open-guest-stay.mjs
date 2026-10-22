@@ -1,15 +1,27 @@
 // On the EC2 browser (no tunnel latency) a Guest Stay click made while Front Desk is still expanding is dropped and the
 // screen never opens. Click Front Desk once, then click Guest Stay until the Guest Stay toolbar's New Record button is
 // visible (same trap and fix as cancel-stay.mjs openGuestStay).
-// Ext tree nodes can be visible-but-offscreen (HRDAV/HRCEN). Playwright then retries the page's 20 s default.
+// Ext tree nodes can be visible-but-offscreen (HRDAV/HRCEN): Playwright then retries until its 20 s default. Try a short
+// click; only a pure viewport miss (no mask intercepting) gets a DOM click. Anything else falls back to the old full click,
+// so slow menus still get the page default timeout.
 const TREE_CLICK_MS = 2000;
 const VIEWPORT_MISS = /outside of the viewport/i;
+const INTERCEPTED = /intercepts pointer events/i;
+
+export function treeClickFallback(error) {
+  const message = String(error?.message || error);
+  if (VIEWPORT_MISS.test(message) && !INTERCEPTED.test(message)) return 'dom';
+  return 'full';
+}
 
 async function clickTreeNode(locator) {
   try {
     await locator.click({ timeout: TREE_CLICK_MS });
   } catch (error) {
-    if (!VIEWPORT_MISS.test(String(error?.message || error))) throw error;
+    if (treeClickFallback(error) === 'full') {
+      await locator.click();
+      return;
+    }
     await locator.scrollIntoViewIfNeeded({ timeout: TREE_CLICK_MS }).catch(() => {});
     await locator.evaluate((el) => el.click());
   }

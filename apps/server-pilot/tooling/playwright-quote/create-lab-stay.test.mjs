@@ -286,7 +286,9 @@ test('readExistingGuestRows stays fail-closed and logs the swallowed error', asy
   assert.match(fn, /pre_save_search_error/);
   assert.match(fn, /preSaveSearchError/);
   assert.match(fn, /slice\(0,\s*300\)/);
-  assert.match(fn, /return null/);
+  const catchBlock = fn.slice(fn.indexOf('catch (error)'));
+  assert.match(catchBlock, /^catch \(error\) \{[\s\S]*return null;\s*\}\s*\}\s*$/);
+  assert.equal(/return\s*\[/.test(catchBlock), false);
   assert.equal(fn.includes('clickTip(page, \'^Save\')'), false);
 });
 
