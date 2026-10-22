@@ -1,6 +1,15 @@
 # Active context
 
-Updated 2026-10-22 after the SR2 run. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+Updated 2026-10-22 after SR3 overnight (Grok orchestrator). Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+
+## SR3 writes + Da Vinci quote — 2026-10-22 (Grok orchestrator)
+
+- **Live product: `5851aa930`** (M1). last-good rollback **`b11e5ac52`**. Docs-only `#477` `7ac2e5498` is on `origin/main` and **not deployed**. Deploy only from `.worktrees/recover-parse-failure`. Health 200 after last ops-deploy; `PANE_WRITE_*=lab` on http/worker/ai-worker/remote-http (`/proc` 04:10Z). `HMS_DAVINCI_MAKE_QUOTE` **unset** (A5 not run).
+- Merged: W1 #465, W2 #468, W2b #470, W2c #472, W3 #469, W4 #467, D1 #464, D2 #466, D3 #474, D4 #473, M1 #475. O1 #463 **cut** (no `selections.jsonl.gz` for frozen-431 classifier).
+- Proofs: [SR3 proofs](../research/2026-10-22-sr3-proofs.md). Saves 3/3 clicks: **66865808-1 Reserved** (leave it), **82126330-1 Cancelled** (penalty dialog not accepted), 06:36 unverified (search later saw **84701420-1 already Cancelled**; SR3 did not cancel that conf — **who cancelled: unknown**). Amend **0/2**. Cancel **1/2**. D0 HRDAV n=2 `quote`.
+- Next acceptance: one Labtest amend commit; `HMS_DAVINCI_MAKE_QUOTE=on` only after quote path uses davinci CDP; O1 classifier if selections exist. Holds: no switch=on, no real-guest, no penalty-dialog accept.
+
+## SR2 stay-request v2 run — 2026-10-21 (Grok orchestrator) — closed
 
 ## SR2 stay-request v2 run — 2026-10-21 (Grok orchestrator) — closed
 
