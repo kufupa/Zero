@@ -43,6 +43,8 @@ type RunnerSeams = {
   ) => { outcome: string; candidates: unknown[]; truncated: boolean };
   filterNotApplied: () => { outcome: string; candidates: unknown[]; truncated: boolean };
   lookupBusyTimeout: () => { outcome: string; candidates: unknown[]; truncated: boolean };
+  partyLookupPropertyCode: (request: unknown) => string | null;
+  assertPartyLookupAccount: (secret: { expectedPropertyCode?: string }, propertyCode: string) => void;
 };
 const runner = (await import(
   new URL('../tooling/playwright-quote/party-lookup.mjs', import.meta.url).href
@@ -929,5 +931,23 @@ describe('one name normalization for the runner and the server', () => {
       'Societe',
     );
     expect(societe.results.map((row) => row.nativeId)).toEqual(['32']);
+  });
+});
+
+describe('party-lookup CLI property', () => {
+  it('defaults to HRCEN, accepts HRDAV, and never falls back from an unknown code', () => {
+    expect(runner.partyLookupPropertyCode(undefined)).toBe('HRCEN');
+    expect(runner.partyLookupPropertyCode({ kind: 'organization', query: { organizationName: 'ACME' } })).toBe(
+      'HRCEN',
+    );
+    expect(runner.partyLookupPropertyCode({ propertyCode: 'hrdav' })).toBe('HRDAV');
+    expect(runner.partyLookupPropertyCode({ propertyCode: 'HROTH' })).toBeNull();
+  });
+
+  it('refuses a Centurion secret for an HRDAV lookup', () => {
+    expect(() => runner.assertPartyLookupAccount({ expectedPropertyCode: 'HRDAV' }, 'HRDAV')).not.toThrow();
+    expect(() => runner.assertPartyLookupAccount({ expectedPropertyCode: 'HRCEN' }, 'HRDAV')).toThrow(
+      /ACCOUNT_PROPERTY_MISMATCH/,
+    );
   });
 });
