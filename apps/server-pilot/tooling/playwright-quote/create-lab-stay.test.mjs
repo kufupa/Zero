@@ -348,3 +348,45 @@ test('red track validation fails before guarantee opens', () => {
     assertTrackReadyForGuarantee({ validation: { invalid: false, messages: [] } }),
   );
 });
+
+const LAB_STAY = { lastName: 'Labtest', arrival: '2027-06-01' };
+const ALLOWED_BOX = 'There are no rooms or openings for this process.';
+
+async function loadExtMessageBoxRules() {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('// --- ext-message-box-rules ---');
+  const end = source.indexOf('// --- end-ext-message-box-rules ---');
+  assert.ok(start !== -1 && end > start, 'create-lab-stay.mjs must export the ext message-box rules block');
+  return import(`data:text/javascript,${encodeURIComponent(source.slice(start, end))}`);
+}
+
+test('ext message-box allowlist equals the informational text and refuses money words', async () => {
+  const { classifyExtMessageBox, extMessageBoxAction } = await loadExtMessageBoxRules();
+  assert.equal(classifyExtMessageBox(`  ${ALLOWED_BOX}  `), 'allow');
+  assert.equal(extMessageBoxAction(ALLOWED_BOX, LAB_STAY), 'ok');
+  assert.equal(extMessageBoxAction(ALLOWED_BOX, { lastName: 'Smith', arrival: '2027-06-01' }), 'unknown');
+  assert.equal(extMessageBoxAction(ALLOWED_BOX, { lastName: 'Labtest', arrival: '2026-06-01' }), 'unknown');
+  for (const word of ['penalty', 'CHARGE', 'Cancel', 'deposit', 'no-show', 'payment']) {
+    assert.equal(classifyExtMessageBox(`Please confirm ${word} to continue.`), 'refuse');
+    assert.equal(extMessageBoxAction(`Please confirm ${word} to continue.`, LAB_STAY), 'refuse');
+  }
+  assert.equal(classifyExtMessageBox('Session timed out.'), 'unknown');
+  assert.equal(extMessageBoxAction('Session timed out.', LAB_STAY), 'unknown');
+  assert.equal(classifyExtMessageBox(''), 'unknown');
+});
+
+test('ext message-box handler is Labtest-only, never accepts JS dialogs, never clicks Save for the box', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const checkAvail = source.indexOf("clickTip(page, '^Check Availability$'");
+  const handleBox = source.indexOf('handleVisibleExtMessageBox(', checkAvail);
+  const saveClick = source.indexOf("clickTip(page, '^Save'");
+  assert.ok(checkAvail !== -1 && handleBox > checkAvail && saveClick > handleBox);
+  assert.match(source, /data-testid=["']message-box["']/);
+  assert.match(source, /x-message-box/);
+  assert.match(source, /There are no rooms or openings for this process\./);
+  assert.match(source, /penalty\|charge\|cancel\|deposit\|no-show\|payment/);
+  assert.doesNotMatch(source, /dialog\.accept\(/);
+  const okClick = source.indexOf('hasText: /^OK$/');
+  assert.ok(okClick !== -1 && okClick < saveClick);
+  assert.match(source, /shot\(page, dir, 'failure\.png'\)/);
+});
