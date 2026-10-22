@@ -9,12 +9,20 @@
  * run that was not a clean answer (see the log); fix the cause, then resume. 2 configuration error.
  *
  * The sweep reads HMS only, one property-locked runner run at a time, and writes two private files (mode 600) under
- * .private/pms-pipeline/party-index/: the index and its progress. Set PARTY_INDEX_PATH to choose another index file.
+ * .private/pms-pipeline/party-index/: HRCEN keeps party-index.json; HRDAV is party-index-HRDAV.json (`--property`).
+ * PARTY_INDEX_PATH / PARTY_INDEX_PATH_HRDAV choose another file. No Centurion fallback.
  */
 import { readFile, rm } from 'node:fs/promises';
-import { join, dirname } from 'node:path';
 import { panePartyFindResultFromCli, spawnPartyLookup, type PanePartyKind } from '../src/ai/pane-party-lookup.js';
-import { partyIndexPath, writePrivateFile, type PartyIndexFile } from '../src/ai/party-index.js';
+import {
+  parsePartyIndexProperty,
+  partyIndexPath,
+  partyIndexProgressPath,
+  writePrivateFile,
+  type PartyIndexFile,
+  type PartyIndexProperty,
+} from '../src/ai/party-index.js';
+import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import {
   runPartyIndexSweep,
   SweepStopped,
@@ -27,10 +35,11 @@ import {
   PANE_PROPERTY_LOCK_WAIT_MS,
 } from '../src/hms/property-read-lock.js';
 
-const USAGE = `usage: party-index-sweep.ts [--kinds company,agency] [--delay-ms 15000] [--max-runs 150]
-                          [--lock-retries 5] [--lock-retry-ms 60000] [--fresh]`;
+const USAGE = `usage: party-index-sweep.ts [--property HRCEN|HRDAV] [--kinds company,agency] [--delay-ms 15000]
+                          [--max-runs 150] [--lock-retries 5] [--lock-retry-ms 60000] [--fresh]`;
 
 type Args = {
+  property: PartyIndexProperty;
   kinds: PanePartyKind[];
   delayMs: number;
   maxRuns: number;
@@ -42,6 +51,7 @@ type Args = {
 
 function parseArgs(argv: string[]): Args {
   const args: Args = {
+    property: 'HRCEN',
     kinds: ['company', 'agency'],
     delayMs: 15_000,
     maxRuns: 150,
@@ -60,7 +70,12 @@ function parseArgs(argv: string[]): Args {
     const value = argv[i + 1];
     if (flag === '--help') args.help = true;
     else if (flag === '--fresh') args.fresh = true;
-    else if (flag === '--kinds') {
+    else if (flag === '--property') {
+      const property = parsePartyIndexProperty(value);
+      if (!property) throw new Error('--property takes HRCEN or HRDAV');
+      args.property = property;
+      i += 1;
+    } else if (flag === '--kinds') {
       const kinds = (value ?? '').split(',').map((kind) => kind.trim());
       if (!kinds.every((kind) => kind === 'company' || kind === 'agency') || kinds.length === 0) {
         throw new Error('--kinds takes company, agency, or both');
@@ -98,19 +113,20 @@ async function main(): Promise<number> {
     console.log(USAGE);
     return 0;
   }
-  const lock = paneStayPropertyLock();
+  const target = args.property === 'HRDAV' ? DAVINCI_HMS_READ_TARGET : CENTURION_HMS_READ_TARGET;
+  const lock = paneStayPropertyLock(args.property);
   if (!lock) {
     console.error('DATABASE_URL is required: every sweep run takes the property lock.');
     return 2;
   }
 
-  const indexPath = partyIndexPath();
-  const progressPath = join(dirname(indexPath), 'party-index.progress.json');
+  const indexPath = partyIndexPath(process.env, args.property);
+  const progressPath = partyIndexProgressPath(indexPath, args.property);
 
   let runNumber = 0;
   const seams = {
     lookup: async (input: { kind: PanePartyKind; name: string }) => {
-      const raw = await spawnPartyLookup(input);
+      const raw = await spawnPartyLookup({ ...input, target });
       runNumber += 1;
       const result = panePartyFindResultFromCli(input.kind, raw);
       const shape = result.truncated ? ' truncated' : '';

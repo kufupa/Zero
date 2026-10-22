@@ -36,6 +36,26 @@ test('organization name request validates', () => {
   assert.deepEqual(lookup.validateRequest({ kind: 'organization', query: { organizationName: 'ACME' } }), []);
 });
 
+test('partyLookupPropertyCode keeps HRCEN as the default and never falls back from an unknown code', () => {
+  assert.equal(lookup.partyLookupPropertyCode(undefined), 'HRCEN');
+  assert.equal(lookup.partyLookupPropertyCode({ kind: 'organization', query: { organizationName: 'ACME' } }), 'HRCEN');
+  assert.equal(lookup.partyLookupPropertyCode({ propertyCode: 'hrdav' }), 'HRDAV');
+  assert.equal(lookup.partyLookupPropertyCode({ propertyCode: 'HRCEN' }), 'HRCEN');
+  assert.equal(lookup.partyLookupPropertyCode({ propertyCode: 'HROTH' }), null);
+});
+
+test('assertPartyLookupAccount refuses a Centurion secret for HRDAV', () => {
+  lookup.assertPartyLookupAccount({ expectedPropertyCode: 'HRDAV' }, 'HRDAV');
+  assert.throws(
+    () => lookup.assertPartyLookupAccount({ expectedPropertyCode: 'HRCEN' }, 'HRDAV'),
+    /ACCOUNT_PROPERTY_MISMATCH/,
+  );
+  assert.throws(
+    () => lookup.assertPartyLookupAccount({ expectedPropertyCode: 'HRDAV' }, 'HRCEN'),
+    /ACCOUNT_PROPERTY_MISMATCH/,
+  );
+});
+
 test('normalizePartyLookupRequest keeps a single kind+query as one search', () => {
   const got = lookup.normalizePartyLookupRequest({ kind: 'organization', query: { organizationName: 'ACME' } });
   assert.deepEqual(got.issues, []);

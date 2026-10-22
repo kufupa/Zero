@@ -1,4 +1,5 @@
 import { hmsDavinciReadsEnabled, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { parsePartyIndexProperty } from './party-index.js';
 import {
   isDaVinciMailboxOrigin,
   type MailboxHmsOriginFields,
@@ -251,15 +252,21 @@ function plannedSearchesOf(input: PanePartySpawnInput): PanePartySearchInput[] {
   return input.searches?.length ? [...input.searches] : [{ kind: input.kind, name: input.name }];
 }
 
+function spawnPropertyCode(target?: HmsReadTarget | null): string {
+  return parsePartyIndexProperty(target?.propertyCode) ?? 'HRCEN';
+}
+
 function partyLookupRequestBody(input: PanePartySpawnInput): unknown {
   const planned = plannedSearchesOf(input);
+  const propertyCode = spawnPropertyCode(input.target);
   if (planned.length === 1 && !input.stopOnFirstHit) {
     const one = planned[0];
-    return { kind: HMS_KIND[one.kind], query: hmsQueryForKind(one.kind, one.name) };
+    return { kind: HMS_KIND[one.kind], query: hmsQueryForKind(one.kind, one.name), propertyCode };
   }
   return {
     searches: planned.map((item) => ({ kind: HMS_KIND[item.kind], name: item.name })),
     ...(input.stopOnFirstHit ? { stopOnFirstHit: true } : {}),
+    propertyCode,
   };
 }
 
@@ -328,21 +335,27 @@ export const PARTY_ROW_CACHE_TTL_MS = 30 * 60_000;
 // Rows HMS returned, by kind and id. A pick the pane was just shown binds without another HMS run.
 const partyRowCache = new Map<string, { name: string; at: number }>();
 
-function rememberPartyRows(rows: readonly PanePartyCandidate[]): void {
+function rememberPartyRows(
+  rows: readonly PanePartyCandidate[],
+  propertyCode: string = 'HRCEN',
+): void {
   const now = Date.now();
+  const property = parsePartyIndexProperty(propertyCode) ?? 'HRCEN';
   for (const [key, entry] of partyRowCache) {
     if (now - entry.at >= PARTY_ROW_CACHE_TTL_MS) partyRowCache.delete(key);
   }
   for (const row of rows)
-    partyRowCache.set(`${row.kind}:${row.nativeId}`, { name: row.name, at: now });
+    partyRowCache.set(`${property}:${row.kind}:${row.nativeId}`, { name: row.name, at: now });
 }
 
 /** The name HMS gave this id, when it was remembered within the TTL and still matches the name asked for. */
 function rememberedPartyName(
   pick: { kind: PanePartyKind; nativeId: string },
   name: string,
+  propertyCode: string = 'HRCEN',
 ): string | null {
-  const key = `${pick.kind}:${pick.nativeId}`;
+  const property = parsePartyIndexProperty(propertyCode) ?? 'HRCEN';
+  const key = `${property}:${pick.kind}:${pick.nativeId}`;
   const entry = partyRowCache.get(key);
   if (!entry) return null;
   if (Date.now() - entry.at >= PARTY_ROW_CACHE_TTL_MS) {
@@ -473,11 +486,12 @@ function rankedReply(
   core: PanePartyLookupCore,
   searchedFor: string,
   cap: number = PANE_PARTY_RESULT_CAP,
+  propertyCode: string = 'HRCEN',
 ): PanePartyFindResult {
   if (!ANSWERED_OUTCOMES.has(core.outcome)) return replyWithout(core.outcome);
   const ranked = rankRows(name, core.results);
   const results = ranked.slice(0, cap).map(({ row }) => row);
-  rememberPartyRows(results);
+  rememberPartyRows(results, propertyCode);
   const top = ranked[0];
   return {
     outcome: core.outcome,
@@ -555,7 +569,8 @@ async function findPartyOfKind(
     spawn,
     options.acquisition,
   );
-  if (!run.ok) return rankedReply(name, run.core, tries[0], options.resultCap ?? PANE_PARTY_RESULT_CAP);
+  const propertyCode = spawnPropertyCode(options.target);
+  if (!run.ok) return rankedReply(name, run.core, tries[0], options.resultCap ?? PANE_PARTY_RESULT_CAP, propertyCode);
   const cores = panePartyCoresFromSpawn(run.raw, planned);
   let core: PanePartyLookupCore = cores[0] ?? withoutResults('no_match');
   let searchedFor = tries[0];
@@ -564,7 +579,7 @@ async function findPartyOfKind(
     core = cores[index];
     if (!ANSWERED_OUTCOMES.has(core.outcome) || core.results.length) break;
   }
-  return rankedReply(name, core, searchedFor, options.resultCap ?? PANE_PARTY_RESULT_CAP);
+  return rankedReply(name, core, searchedFor, options.resultCap ?? PANE_PARTY_RESULT_CAP, propertyCode);
 }
 
 /**
@@ -613,7 +628,13 @@ export async function findParty(
     ? panePartyCoresFromSpawn(run.raw, planned)
     : [run.core];
   // Both kinds keep their own per-kind cap from the merge, as before. The 5-row cap is for a kind search.
-  return rankedReply(name, mergePartyKindResults(perKind, name), name, Number.POSITIVE_INFINITY);
+  return rankedReply(
+    name,
+    mergePartyKindResults(perKind, name),
+    name,
+    Number.POSITIVE_INFINITY,
+    spawnPropertyCode(options.target),
+  );
 }
 
 /**
@@ -664,10 +685,11 @@ export async function findPartyJob(
     options.acquisition,
   );
   const cap = options.resultCap ?? PANE_PARTY_RESULT_CAP;
-  if (!run.ok) return planned.map((item) => rankedReply(item.name, run.core, item.name, cap));
+  const propertyCode = spawnPropertyCode(options.target);
+  if (!run.ok) return planned.map((item) => rankedReply(item.name, run.core, item.name, cap, propertyCode));
   const cores = panePartyCoresFromSpawn(run.raw, planned);
   return planned.map((item, index) =>
-    rankedReply(item.name, cores[index] ?? withoutResults('execution_failure'), item.name, cap),
+    rankedReply(item.name, cores[index] ?? withoutResults('execution_failure'), item.name, cap, propertyCode),
   );
 }
 
@@ -699,6 +721,7 @@ export async function verifyPartyPick(
     nativeId: string;
     name: string;
     transportId?: string;
+    target?: HmsReadTarget | null;
   },
   db?: DB,
 ): Promise<VerifiedPartyResult> {
@@ -706,8 +729,9 @@ export async function verifyPartyPick(
   if (!enabled()) return { ok: false, reason: 'refused_flag_off' };
   const name = typeof pick.name === 'string' ? pick.name.trim() : '';
   if (!name || name.length > 256 || !pick.nativeId) return { ok: false, reason: 'not_found' };
+  const propertyCode = spawnPropertyCode(pick.target);
   // A row HMS returned within the TTL, with the same name, binds with no HMS run and no lock wait.
-  const remembered = rememberedPartyName(pick, name);
+  const remembered = rememberedPartyName(pick, name, propertyCode);
   if (remembered !== null)
     return { ok: true, party: { kind: pick.kind, nativeId: pick.nativeId, name: remembered } };
   if (pick.transportId) {
@@ -719,13 +743,13 @@ export async function verifyPartyPick(
       // A missed shared cache is not verification; continue through the existing live lookup.
     }
   }
-  const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock();
+  const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock(pick.target?.propertyCode);
   if (!lock) return { ok: false, reason: 'refused_lock_unavailable' };
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
   let raw: unknown;
   try {
     raw = await lock.withLock(
-      () => spawn({ kind: pick.kind, name }),
+      () => spawn({ kind: pick.kind, name, target: pick.target ?? null }),
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {
@@ -734,7 +758,7 @@ export async function verifyPartyPick(
     return { ok: false, reason: 'unverified' };
   }
   const found = panePartyFindResultFromCli(pick.kind, raw);
-  if (ANSWERED_OUTCOMES.has(found.outcome)) rememberPartyRows(found.results);
+  if (ANSWERED_OUTCOMES.has(found.outcome)) rememberPartyRows(found.results, propertyCode);
   const row = found.results.find(
     (candidate) =>
       candidate.kind === pick.kind &&

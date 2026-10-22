@@ -57,6 +57,8 @@ import {
 import { beginQuoteRun, staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
+import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { TRPCError } from '@trpc/server';
@@ -444,7 +446,10 @@ const PARTY_VERIFY_COPY: Record<string, string> = {
  * Re-checks each picked party in HMS and returns the HMS id and name. A pick HMS does not confirm is refused before any
  * rate is bound, so an id the client made up never reaches a quote.
  */
-export async function verifyStaffParties(parties: StaffQuoteParties): Promise<StaffQuoteParties> {
+export async function verifyStaffParties(
+  parties: StaffQuoteParties,
+  target?: HmsReadTarget | null,
+): Promise<StaffQuoteParties> {
   const verified: StaffQuoteParties = {};
   const refuse = (reason: string): never => {
     throw new TRPCError({
@@ -460,6 +465,7 @@ export async function verifyStaffParties(parties: StaffQuoteParties): Promise<St
       kind: 'company',
       nativeId: parties.company.nativeId,
       name: parties.company.name,
+      target: target ?? null,
     });
     if (!result.ok) refuse(result.reason);
     if (result.ok)
@@ -474,6 +480,7 @@ export async function verifyStaffParties(parties: StaffQuoteParties): Promise<St
       kind: 'agency',
       nativeId: parties.agency.nativeId,
       name: parties.agency.name,
+      target: target ?? null,
     });
     if (!result.ok) refuse(result.reason);
     if (result.ok)
@@ -618,7 +625,15 @@ export async function runStaffQuote(
   let dinnerFallbackGroupIds: string[] = [];
   if (input.parties) {
     if (quoteRateContextEnabled()) {
-      quoteInput = { ...input, parties: await verifyStaffParties(input.parties) };
+      const quoteTarget = await resolveHmsQuoteJobTarget({
+        transportId: identity.transportId,
+        threadId: mail.threadId,
+        messageId: mail.id,
+      });
+      if (!quoteTarget.ok) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: quoteTarget.message });
+      }
+      quoteInput = { ...input, parties: await verifyStaffParties(input.parties, quoteTarget.target) };
     } else {
       quoteInput = { ...input, parties: undefined };
       notes.push(PARTY_LOOKUP_OFF_NOTE);

@@ -12,8 +12,17 @@ import { matchKey } from './party-match.js';
 
 export type PartyIndexKind = 'company' | 'agency';
 
+/** The only HMS properties that have a party index. Unknown codes stay unknown. */
+export const PARTY_INDEX_PROPERTIES = ['HRCEN', 'HRDAV'] as const;
+export type PartyIndexProperty = (typeof PARTY_INDEX_PROPERTIES)[number];
+
 /** Results per kind. A broad name shows the best ten of each kind, so one kind cannot crowd out the other. */
 export const PARTY_INDEX_CAP_PER_KIND = 10;
+
+export function parsePartyIndexProperty(code: string | null | undefined): PartyIndexProperty | null {
+  const value = String(code ?? '').trim().toUpperCase();
+  return value === 'HRCEN' || value === 'HRDAV' ? value : null;
+}
 
 const plainNativeId = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/);
 
@@ -36,12 +45,32 @@ export const partyIndexFileSchema = z
 export type PartyIndexFile = z.infer<typeof partyIndexFileSchema>;
 export type PartyIndexEntry = PartyIndexFile['entries'][number];
 
-/** Where the index lives: the private pipeline root, beside the lookup output. PARTY_INDEX_PATH overrides it. */
-export function partyIndexPath(env: NodeJS.ProcessEnv = process.env): string {
-  const override = env.PARTY_INDEX_PATH?.trim();
-  if (override) return override;
+/** Where the index lives: the private pipeline root, beside the lookup output. One file per property. */
+export function partyIndexPath(
+  env: NodeJS.ProcessEnv = process.env,
+  propertyCode: string = 'HRCEN',
+): string {
   const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
-  return join(repoRoot, '.private/pms-pipeline/party-index/party-index.json');
+  const property = parsePartyIndexProperty(propertyCode);
+  if (property === 'HRDAV') {
+    const override = env.PARTY_INDEX_PATH_HRDAV?.trim();
+    if (override) return override;
+    return join(repoRoot, '.private/pms-pipeline/party-index/party-index-HRDAV.json');
+  }
+  if (property === 'HRCEN') {
+    const override = env.PARTY_INDEX_PATH?.trim();
+    if (override) return override;
+    return join(repoRoot, '.private/pms-pipeline/party-index/party-index.json');
+  }
+  return join(repoRoot, '.private/pms-pipeline/party-index/unknown.json');
+}
+
+/** Progress beside the index. HRCEN keeps `party-index.progress.json`; HRDAV uses its own file. */
+export function partyIndexProgressPath(indexPath: string, propertyCode: string = 'HRCEN'): string {
+  if (parsePartyIndexProperty(propertyCode) === 'HRDAV') {
+    return indexPath.replace(/\.json$/i, '.progress.json');
+  }
+  return join(dirname(indexPath), 'party-index.progress.json');
 }
 
 /** A private write: the file appears whole, with mode 600, under a 700 directory. Never a partial file. */
@@ -126,13 +155,28 @@ export type PartyIndexReply = {
   results: PartyIndexEntry[];
 };
 
+const EMPTY_PARTY_INDEX: PartyIndexReply = {
+  source: 'index',
+  available: false,
+  updatedAt: null,
+  ageMs: null,
+  results: [],
+};
+
 /** The typeahead answer for one query. Never reaches HMS: it reads the local file only. */
 export async function typeaheadPartyIndex(
   query: string,
-  options: { path?: string; now?: number } = {},
+  options: { path?: string; now?: number; propertyCode?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<PartyIndexReply> {
-  const index = await loadPartyIndex(options.path);
-  if (!index) return { source: 'index', available: false, updatedAt: null, ageMs: null, results: [] };
+  let index: PartyIndexFile | null;
+  if (options.path) {
+    index = await loadPartyIndex(options.path);
+  } else {
+    const property = parsePartyIndexProperty(options.propertyCode ?? 'HRCEN');
+    if (!property) return EMPTY_PARTY_INDEX;
+    index = await loadPartyIndex(partyIndexPath(options.env ?? process.env, property));
+  }
+  if (!index) return EMPTY_PARTY_INDEX;
   const now = options.now ?? Date.now();
   const updated = Date.parse(index.generatedAt);
   return {

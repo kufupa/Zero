@@ -7,14 +7,17 @@ import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lo
 import {
   indexRank,
   loadPartyIndex,
+  parsePartyIndexProperty,
   partyIndexFileSchema,
   partyIndexPath,
+  partyIndexProgressPath,
   searchPartyIndex,
   typeaheadPartyIndex,
   writePrivateFile,
   type PartyIndexFile,
 } from '../src/ai/party-index.js';
-import { panePartyLookupLoaders } from '../src/ai/pane-party-lookup.js';
+import { panePartyLookupLoaders, resetPartyCacheForTests } from '../src/ai/pane-party-lookup.js';
+import { DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { verifyStaffParties } from '../src/trpc/routes/workstation.js';
 import { appRouter } from '../src/trpc/router.js';
 
@@ -30,6 +33,7 @@ afterEach(async () => {
   panePartyLookupLoaders.spawn = null;
   panePartyLookupLoaders.lock = null;
   panePartyLookupLoaders.enabled = null;
+  resetPartyCacheForTests();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -80,6 +84,58 @@ describe('index load and miss', () => {
   it('PARTY_INDEX_PATH chooses the file; the default sits in the private pipeline root', () => {
     expect(partyIndexPath({ PARTY_INDEX_PATH: '/srv/index.json' })).toBe('/srv/index.json');
     expect(partyIndexPath({})).toMatch(/\.private\/pms-pipeline\/party-index\/party-index\.json$/);
+  });
+
+  it('keeps the HRCEN file and puts HRDAV in a sibling file, with no Centurion fallback', async () => {
+    expect(parsePartyIndexProperty('hrdav')).toBe('HRDAV');
+    expect(parsePartyIndexProperty('HRCEN')).toBe('HRCEN');
+    expect(parsePartyIndexProperty('HROTH')).toBeNull();
+    expect(partyIndexPath({}, 'HRCEN')).toMatch(/\/party-index\.json$/);
+    expect(partyIndexPath({}, 'HRDAV')).toMatch(/\/party-index-HRDAV\.json$/);
+    expect(partyIndexPath({ PARTY_INDEX_PATH: '/srv/index.json' }, 'HRDAV')).toMatch(/\/party-index-HRDAV\.json$/);
+    expect(partyIndexPath({ PARTY_INDEX_PATH_HRDAV: '/srv/dv.json' }, 'HRDAV')).toBe('/srv/dv.json');
+    expect(partyIndexProgressPath('/tmp/party-index.json', 'HRCEN')).toBe('/tmp/party-index.progress.json');
+    expect(partyIndexProgressPath('/tmp/party-index-HRDAV.json', 'HRDAV')).toBe(
+      '/tmp/party-index-HRDAV.progress.json',
+    );
+
+    const hrcen = await writeIndex('hrcen.json', indexFile([tourvest]));
+    const hrdav = await writeIndex('hrdav.json', indexFile([cwt]));
+    const env = { PARTY_INDEX_PATH: hrcen, PARTY_INDEX_PATH_HRDAV: hrdav };
+    await expect(typeaheadPartyIndex('Tour', { propertyCode: 'HRCEN', env, now: NOW })).resolves.toMatchObject({
+      available: true,
+      results: [tourvest],
+    });
+    await expect(typeaheadPartyIndex('cwt', { propertyCode: 'HRDAV', env, now: NOW })).resolves.toMatchObject({
+      available: true,
+      results: [cwt],
+    });
+    await expect(typeaheadPartyIndex('Tour', { propertyCode: 'HRDAV', env, now: NOW })).resolves.toMatchObject({
+      available: true,
+      results: [],
+    });
+    await expect(
+      typeaheadPartyIndex('Tour', {
+        propertyCode: 'HRDAV',
+        env: { PARTY_INDEX_PATH: hrcen },
+        now: NOW,
+      }),
+    ).resolves.toEqual({
+      source: 'index',
+      available: false,
+      updatedAt: null,
+      ageMs: null,
+      results: [],
+    });
+    await expect(
+      typeaheadPartyIndex('Tour', { propertyCode: 'HROTH', env, now: NOW }),
+    ).resolves.toEqual({
+      source: 'index',
+      available: false,
+      updatedAt: null,
+      ageMs: null,
+      results: [],
+    });
   });
 
   it('writes the private file with mode 600, whole, with no temporary file left behind', async () => {
@@ -192,6 +248,33 @@ describe('the typeahead and the index age', () => {
     });
     await expect(caller.panePartyLookup.typeahead({ query: 'x'.repeat(300) } as never)).rejects.toThrow();
   });
+
+  it('a Da Vinci mailbox typeahead reads the HRDAV file and never the HRCEN list', async () => {
+    const caller = appRouter.createCaller({
+      auth: null as never,
+      reqHeaders: new Headers(),
+      sessionUser: { id: 'user-ropperman', email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
+      activeTransportId: 'transport-davinci',
+      transportEmail: 'davinci@legacyhotels.co.za',
+      accessRole: 'owner',
+    } as never);
+    vi.stubEnv('PARTY_INDEX_PATH', await writeIndex('cen-route.json', indexFile([tourvest])));
+    vi.stubEnv('PARTY_INDEX_PATH_HRDAV', join(dir, 'missing-dv.json'));
+    await expect(caller.panePartyLookup.typeahead({ query: 'Tour' })).resolves.toMatchObject({
+      source: 'index',
+      available: false,
+      results: [],
+    });
+    vi.stubEnv('PARTY_INDEX_PATH_HRDAV', await writeIndex('dv-route.json', indexFile([cwt])));
+    await expect(caller.panePartyLookup.typeahead({ query: 'cwt' })).resolves.toMatchObject({
+      available: true,
+      results: [cwt],
+    });
+    await expect(caller.panePartyLookup.typeahead({ query: 'Tour' })).resolves.toMatchObject({
+      available: true,
+      results: [],
+    });
+  });
 });
 
 describe('a pick from the list is still checked live before a rate is bound', () => {
@@ -237,5 +320,24 @@ describe('a pick from the list is still checked live before a rate is bound', ()
     await expect(
       verifyStaffParties({ company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } }),
     ).resolves.toEqual({ company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } });
+  });
+
+  it('re-checks a Da Vinci pick on HRDAV so a valid DV id is not refused', async () => {
+    panePartyLookupLoaders.lock = { withLock: async (fn) => fn() };
+    const spawn = vi.fn(async () => ({
+      outcome: 'resolved',
+      candidates: [{ nativeId: '206', displayName: 'Tourvest Test Profile', kind: 'organization', matchedOn: ['store'] }],
+      truncated: false,
+    }));
+    panePartyLookupLoaders.spawn = spawn;
+    await expect(
+      verifyStaffParties(
+        { company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } },
+        DAVINCI_HMS_READ_TARGET,
+      ),
+    ).resolves.toEqual({ company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } });
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'company', name: 'Tourvest Test Profile', target: DAVINCI_HMS_READ_TARGET }),
+    );
   });
 });
