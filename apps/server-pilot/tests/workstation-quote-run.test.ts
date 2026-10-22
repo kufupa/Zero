@@ -118,7 +118,12 @@ function fakeDb(options: {
   const rowsFor = (table: unknown, fields?: Record<string, unknown>) => {
     if (fields && 'count' in fields) return [{ count: options.otherInFlight ?? 0 }];
     if (table === message) return [mail];
-    if (table === aiWorkflowRun) return (options.ownedRunIds ?? []).map((id) => ({ id }));
+    if (table === aiWorkflowRun)
+      return (options.ownedRunIds ?? []).map((id) => ({
+        id,
+        threadId: mail.threadId,
+        triggerMessageId: mail.id,
+      }));
     if (table === aiDraftGeneration) return lastGenerationId ? [{ id: lastGenerationId }] : [];
     return [];
   };
@@ -188,12 +193,12 @@ function fakeDb(options: {
   return { db, inserted, updated, wheres, selectCalls, executeCalls };
 }
 
-function caller(userId = USER) {
+function caller(userId = USER, transportId = TRANSPORT) {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
     sessionUser: { id: userId, email: 'staff@example.invalid', name: 'Synthetic Staff' },
-    activeTransportId: TRANSPORT,
+    activeTransportId: transportId,
     accessRole: 'owner',
     transportEmail: 'centurion@example.invalid',
   } as never);
@@ -365,6 +370,47 @@ describe('workstation.quoteRunScreenshot', () => {
       sizeBytes: PNG.length,
       dataUrl: `data:image/png;base64,${PNG.toString('base64')}`,
     });
+  });
+
+  it('reads the HRDAV install directory for a Da Vinci mailbox when the quote flag is on', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    await seedRun(['login-complete.png']);
+    hoisted.db = fakeDb({ ownedRunIds: [RUN] }).db;
+    hoisted.configure.mockReturnValue({
+      tenantId: 'synthetic-hotel',
+      owner: {
+        cdpUrl: 'http://127.0.0.1:9222',
+        browserOwnership: 'borrowed',
+        propertyCode: 'HRDAV',
+        secretPath: '/synthetic/secret.json',
+      },
+      outputDir,
+      ratePolicyConfigurationPath: '/synthetic/policy.json',
+    });
+    await expect(
+      caller(USER, 'transport-davinci').workstation.quoteRunScreenshot({
+        runId: RUN,
+        name: 'login-complete.png',
+      }),
+    ).resolves.toMatchObject({ status: 'ready', name: 'login-complete.png' });
+    expect(hoisted.configure.mock.calls).toEqual([['HRDAV']]);
+  });
+
+  it('does not fall back to the Centurion install when the HRDAV screenshot directory is missing', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    await seedRun(['login-complete.png']);
+    hoisted.db = fakeDb({ ownedRunIds: [RUN] }).db;
+    hoisted.configure.mockImplementation((propertyCode?: string) => {
+      if (propertyCode === 'HRDAV') throw new Error('staff_quote_installation_unavailable');
+      return { outputDir, owner: { propertyCode: 'HRCEN' } };
+    });
+    await expect(
+      caller(USER, 'transport-davinci').workstation.quoteRunScreenshot({
+        runId: RUN,
+        name: 'login-complete.png',
+      }),
+    ).resolves.toEqual({ status: 'unavailable', reason: 'quote_run_unavailable' });
+    expect(hoisted.configure.mock.calls).toEqual([['HRDAV']]);
   });
 });
 

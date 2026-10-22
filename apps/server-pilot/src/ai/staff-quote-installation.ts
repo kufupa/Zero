@@ -82,6 +82,8 @@ export type InstalledStaffQuoteServiceOptions = Pick<
   onTraceFinish?: (finished: Promise<void>) => void;
   /** Trigger mailbox origin. Da Vinci identity must not take the Centurion HMS slot. */
   mailboxOrigin?: MailboxHmsOriginFields;
+  /** Selects the HRDAV install when quoting Da Vinci. Omitted keeps Centurion. */
+  propertyCode?: string;
 };
 
 /** Provisional mode: the final result must match the provisional capture the reader accepted. */
@@ -147,9 +149,19 @@ export function validateStaffQuoteInstallationConfiguration(
       }
     : configuration;
 }
+
+/** HRDAV uses its own env; HRCEN and omitted keep the existing Centurion env. */
+function staffQuoteConfigurationEnvName(propertyCode?: string): string {
+  return propertyCode === 'HRDAV'
+    ? 'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV'
+    : 'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION';
+}
+
 /** Reads only the installed descriptor, never credentials or a browser. */
-export function readInstalledStaffQuoteConfiguration(): StaffQuoteInstallationConfiguration {
-  const path = process.env.RESERVATIONIST_STAFF_QUOTE_CONFIGURATION;
+export function readInstalledStaffQuoteConfiguration(
+  propertyCode?: string,
+): StaffQuoteInstallationConfiguration {
+  const path = process.env[staffQuoteConfigurationEnvName(propertyCode)];
   if (!path) throw new Error('staff_quote_installation_unavailable');
   return validateStaffQuoteInstallationConfiguration(
     JSON.parse(checkedPrivateFile(path, 1024 * 1024).toString()),
@@ -552,14 +564,15 @@ export function getInstalledStaffQuoteServices(
   options: InstalledStaffQuoteServiceOptions,
   staffApproval?: Parameters<typeof createReservationistBusinessServices>[1],
 ): ReturnType<typeof createReservationistBusinessServices> {
-  const path = process.env.RESERVATIONIST_STAFF_QUOTE_CONFIGURATION;
+  const envName = staffQuoteConfigurationEnvName(options.propertyCode);
+  const path = process.env[envName];
   if (!path) throw new Error('staff_quote_installation_unavailable');
   const bytes = checkedPrivateFile(path, 1024 * 1024),
     identity = sha(bytes);
   const configuration = validateStaffQuoteInstallationConfiguration(JSON.parse(bytes.toString()));
   const guard = () => {
     if (
-      process.env.RESERVATIONIST_STAFF_QUOTE_CONFIGURATION !== path ||
+      process.env[envName] !== path ||
       sha(checkedPrivateFile(path, 1024 * 1024)) !== identity
     )
       throw new Error('staff_quote_installation_changed');
