@@ -940,6 +940,41 @@ describe('corrections carry to a re-read', () => {
     expect(correctionsCarryTo(before, after, state)).toBe(false);
   });
 
+  it('does not move an October edit onto a leftover December stay after November still matches', () => {
+    const before = payload();
+    const nov = payload().stays[1]!;
+    const after: MailExtractionPayload = {
+      ...payload(),
+      stays: [
+        nov,
+        {
+          id: 's_dec_new',
+          hotel: 'Grand Hotel',
+          requested: { arrival: '2027-12-01', departure: '2027-12-03' },
+          booked: null,
+          totalRooms: null,
+          rows: [{ id: 'r_dec_new', roomType: 'Double/Twin', rooms: 4, adultsPerRoom: 2, childAges: [], board: null }],
+        },
+      ],
+    };
+    const state = { [`stays[${STAY_ONE}].requested.arrival`]: '2027-10-25' };
+    expect(correctionsCarryTo(before, after, state)).toBe(false);
+  });
+
+  it('does not move a Twin-row edit onto a leftover Family row after Single still matches', () => {
+    const before = payload();
+    const after = payload();
+    after.stays[0] = {
+      ...after.stays[0]!,
+      rows: [
+        after.stays[0]!.rows[0]!,
+        { id: 'r_family_new', roomType: 'Family', rooms: 1, adultsPerRoom: 3, childAges: [], board: 'bb' },
+      ],
+    };
+    const state = { [`stays[${STAY_ONE}].rows[${ROW_TWIN}].adults`]: 3 };
+    expect(correctionsCarryTo(before, after, state)).toBe(false);
+  });
+
   it('does not carry an edit when two stays share dates and cannot be told apart', () => {
     const before = payload();
     before.stays[1] = {
