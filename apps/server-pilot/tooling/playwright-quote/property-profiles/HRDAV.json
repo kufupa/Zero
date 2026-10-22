@@ -1,0 +1,62 @@
+{
+  "propertyCode": "HRDAV",
+  "publishedRooms": 148,
+  "building": "none",
+  "currency": "ZAR",
+  "dinnerAddOn": false,
+  "roomCapacity": {
+    "JNRSUI": 5,
+    "EXKNGB": 3,
+    "EXKNGR": 6,
+    "EXKNGS": 5,
+    "DLXPAT": 9,
+    "DLXKNG": 6,
+    "ACCES": 2,
+    "STKNG": 84,
+    "STWN": 28
+  },
+  "rooms": {
+    "JNRSUI": { "label": "Junior Suite" },
+    "EXKNGB": { "label": "Executive King Balcony" },
+    "EXKNGR": { "label": "Executive King Round" },
+    "EXKNGS": { "label": "Executive King Square" },
+    "DLXPAT": { "label": "Deluxe Patio" },
+    "DLXKNG": { "label": "Deluxe King" },
+    "ACCES": { "label": "Accessible" },
+    "STKNG": { "label": "Standard King" },
+    "STWN": { "label": "Standard Twin" }
+  },
+  "ratePlans": {
+    "BAR": { "label": "Best Available Rate", "board": "bb" },
+    "BARRO": { "label": "Room Only BAR", "board": "room_only" },
+    "BLRB": { "label": "Lifestyle Rewards Programme Rate", "board": "unknown" },
+    "BARDIS": { "label": "BAR Discount", "board": "unknown" },
+    "DEF": { "label": "Default", "board": "unknown" }
+  },
+  "boardLabels": ["Bed & Breakfast R", "Bed & Breakfast NR"],
+  "boardCodes": [],
+  "salesStrategies": [
+    { "value": "PROMO", "display": "Promotions" },
+    { "value": "BAR", "display": "BAR" },
+    { "value": "PRESET", "display": "Preset" },
+    { "value": "WS", "display": "Wholesale" },
+    { "value": "NC", "display": "Negoticated Contracted" },
+    { "value": "GOV", "display": "Government" },
+    { "value": "AIR", "display": "Airline Crews" },
+    { "value": "DOML", "display": "Domestic Leisure" },
+    { "value": "OTHER", "display": "Other" }
+  ],
+  "evidence": {
+    "derivation": "max observed nightly inventory per room type on one BAR shop night; not a brochure publishedRooms count",
+    "derivedOn": "2026-10-22",
+    "capturesRead": 2,
+    "sources": [
+      "D0 HRDAV Hotel Availability BAR shop 2026-11-16/17 1 adult (45 options): max nightly inventory per room type sums to 148",
+      "D0 HRDAV Hotel Availability BAR shop 2026-12-08/09 2 adults (45 options): same room codes",
+      "HMS room rows: buildingCode null on sampled quote options",
+      "Observed rate plans: BAR, BARRO, BLRB, BARDIS, DEF",
+      "Observed board labels: Bed & Breakfast R, Bed & Breakfast NR, null on BARRO; board codes not on summary rows",
+      "Shared codes with HRCEN: DLXKNG, STWN — same code, different product"
+    ]
+  }
+}

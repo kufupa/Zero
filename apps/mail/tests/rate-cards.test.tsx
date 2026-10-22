@@ -804,3 +804,44 @@ describe('cricket event rates', () => {
     expect(readRateOptions([BAR])[0]?.hint).toBeUndefined();
   });
 });
+
+describe('HRDAV BAR grid labels', () => {
+  it('keeps observed Da Vinci board labels and does not invent BB or DBB for a blank BARRO row', () => {
+    const board: AvailabilityBoardRow[] = [
+      {
+        groupId: 'g1',
+        roomCode: 'JNRSUI',
+        roomLabel: 'Junior Suite',
+        rateCode: 'BAR',
+        rateLabel: 'Best Available Rate',
+        board: 'bb',
+        boardLabel: 'Bed & Breakfast NR',
+        nightlyPriceMinor: 630_000,
+        roomsLeft: 5,
+      },
+      {
+        groupId: 'g1',
+        roomCode: 'STWN',
+        roomLabel: 'Standard Twin',
+        rateCode: 'BARRO',
+        rateLabel: 'Room Only BAR',
+        board: '',
+        boardLabel: '',
+        nightlyPriceMinor: 528_000,
+        roomsLeft: 28,
+      },
+    ];
+    const cells = projectBarGrid(board);
+    expect(cells[0]).toMatchObject({
+      roomCode: 'JNRSUI',
+      roomLabel: 'Junior Suite',
+      boardLabel: 'Bed & Breakfast NR',
+    });
+    expect(cells[1]).toMatchObject({
+      roomCode: 'STWN',
+      rateCode: 'BARRO',
+      boardLabel: '',
+    });
+    expect(cells.map((cell) => cell.boardLabel).join(' ')).not.toMatch(/\b(?:DBB|BB)\b/);
+  });
+});
