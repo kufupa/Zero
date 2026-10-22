@@ -15,7 +15,6 @@ import type { AttachmentRead } from './extraction/extract.js';
 import {
   rowContentKey,
   stayContentKey,
-  type ExtractionRow,
   type ExtractionStay,
   type MailExtractionPayload,
   type MailKind,
@@ -516,69 +515,19 @@ type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
 export type WorkItemRef = { id: string; status: string; state: WorkState; extractionId: string | null };
 
-function sameDates(a: { arrival: string | null; departure: string | null }, b: typeof a): boolean {
-  return a.arrival === b.arrival && a.departure === b.departure;
-}
-
-/**
- * Whether an entry keeps its meaning under the same id in the next read. Ids come from positions, so a read that drops
- * or reorders entries gives an id to another entry. An entry whose own value is now under another id, or whose id now
- * holds another old entry's value, has moved. Same id with a re-read value (a corrected date) is the same entry.
- */
-function sameSlot<T extends { id: string }>(id: string, before: T[], after: T[], same: (a: T, b: T) => boolean): boolean {
-  const was = before.find((item) => item.id === id);
-  if (!was) return true; // a stay or row she added: its id is hers, not a position
-  const now = after.find((item) => item.id === id);
-  if (!now) return false;
-  const unique = (items: T[], value: T) => items.filter((item) => same(item, value)).length === 1;
-  if (same(was, now)) return unique(before, was) && unique(after, now);
-  if (after.some((item) => item.id !== id && same(item, was))) return false;
-  return !before.some((item) => item.id !== id && same(item, now));
-}
-
-/** Two rows of one type can differ only in occupancy or board, so a row is matched on every value the read gives it. */
-function sameRow(a: ExtractionRow, b: ExtractionRow): boolean {
-  return (
-    a.roomType === b.roomType &&
-    a.rooms === b.rooms &&
-    a.adultsPerRoom === b.adultsPerRoom &&
-    a.board === b.board &&
-    a.childAges.join(',') === b.childAges.join(',')
-  );
-}
-
-function rowIdsOf(item: { id: string }): string[] | null {
-  if (!('rows' in item)) return null;
-  const rows = (item as ExtractionStay).rows;
-  if (!Array.isArray(rows)) return null;
-  return rows.map((row) => row.id);
-}
-
 function contentKeepsId<T extends { id: string }>(
   id: string,
   before: T[],
   after: T[],
   keyOf: (item: T, among: T[]) => string | null,
-  same: (a: T, b: T) => boolean,
 ): boolean {
   const was = before.find((item) => item.id === id);
   if (!was) return true; // staff-added stay: id is hers
-  const now = after.find((item) => item.id === id);
-  if (!now) return false; // extraction stay vanished
+  if (!after.some((item) => item.id === id)) return false; // extraction stay vanished
   const key = keyOf(was, before);
-  if (key) {
-    const hits = after.filter((item) => keyOf(item, after) === key);
-    if (hits.length > 1) return false;
-    if (hits.length === 1) return hits[0]!.id === id;
-    const wasRows = rowIdsOf(was);
-    const nowRows = rowIdsOf(now);
-    // Unique content dropped. Same row ids = date correction (Oct 26 → Oct 30). Else the id was reused.
-    if (wasRows && nowRows && wasRows.join('\0') === nowRows.join('\0')) {
-      return sameSlot(id, before, after, same);
-    }
-    return false;
-  }
-  return sameSlot(id, before, after, same);
+  if (!key) return true;
+  const hits = after.filter((item) => keyOf(item, after) === key);
+  return hits.length === 1 && hits[0]!.id === id;
 }
 
 /**
@@ -595,17 +544,11 @@ export function correctionsCarryTo(
   for (const key of Object.keys(state)) {
     const path = parseFieldPath(key);
     if (!path) continue;
-    if (
-      !contentKeepsId(path.stayId, before.stays, after.stays, stayContentKey, (a, b) =>
-        sameDates(a.requested, b.requested),
-      )
-    ) {
-      return false;
-    }
+    if (!contentKeepsId(path.stayId, before.stays, after.stays, stayContentKey)) return false;
     if (path.rowId === null) continue;
     const rowsBefore = before.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
     const rowsAfter = after.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
-    if (!contentKeepsId(path.rowId, rowsBefore, rowsAfter, rowContentKey, sameRow)) return false;
+    if (!contentKeepsId(path.rowId, rowsBefore, rowsAfter, rowContentKey)) return false;
   }
   return true;
 }
