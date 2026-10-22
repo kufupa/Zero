@@ -9,7 +9,8 @@ import { anchorStayDateRange, type StayDateAnchorContext } from '../stay-date-an
 /**
  * Inbound extraction (mail_extraction). The model fills `mailExtractionSchema`, which is lenient so one bad field
  * does not fail the read. `sanitizeExtraction` then drops invalid values, masks card numbers and assigns stable ids.
- * Ids hash the message id with the stay and row position, so a re-read of the same mail keeps them.
+ * Stay ids hash the message id with the date set (and a guest confirmation or name only when two stays share dates).
+ * Row ids hash the stay id with the room type. Position is a last-resort unique suffix, never a match key.
  */
 
 export type MailKind = (typeof MAIL_KINDS)[number];
@@ -235,6 +236,73 @@ export function stableId(prefix: 's' | 'r', ...parts: string[]): string {
   return `${prefix}_${createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 8)}`;
 }
 
+function dateKey(stay: { requested: DateRange }): string {
+  return `${stay.requested.arrival ?? ''}\0${stay.requested.departure ?? ''}`;
+}
+
+function firstConfirmation(stay: { guests?: ExtractionGuest[] }): string {
+  return stay.guests?.map((guest) => guest.confirmationNumber).find((value): value is string => Boolean(value)) ?? '';
+}
+
+function firstGuestName(stay: { guests?: ExtractionGuest[] }): string {
+  return stay.guests?.[0]?.name ?? '';
+}
+
+/**
+ * Content key for a stay among its siblings. Null when only array position could tell it apart (undated, or
+ * same-date stays with no unique guest confirmation or name).
+ */
+export function stayContentKey(
+  stay: { requested: DateRange; guests?: ExtractionGuest[] },
+  among: Array<{ requested: DateRange; guests?: ExtractionGuest[] }>,
+): string | null {
+  const dates = dateKey(stay);
+  if (dates === '\0') return null;
+  const sameDates = among.filter((item) => dateKey(item) === dates);
+  if (sameDates.length === 1) return dates;
+  const confirmation = firstConfirmation(stay);
+  if (confirmation && sameDates.filter((item) => firstConfirmation(item) === confirmation).length === 1) {
+    return `${dates}\0c\0${confirmation}`;
+  }
+  const name = firstGuestName(stay);
+  if (name && sameDates.filter((item) => firstGuestName(item) === name).length === 1) {
+    return `${dates}\0g\0${name}`;
+  }
+  return null;
+}
+
+/** Room-type key among rows of one stay. Null when the type is missing or duplicated. */
+export function rowContentKey(
+  row: { roomType: string | null },
+  among: Array<{ roomType: string | null }>,
+): string | null {
+  const roomType = row.roomType ?? '';
+  if (!roomType) return null;
+  return among.filter((item) => (item.roomType ?? '') === roomType).length === 1 ? roomType : null;
+}
+
+function stayStableId(
+  messageId: string,
+  stay: { requested: DateRange; guests?: ExtractionGuest[] },
+  among: Array<{ requested: DateRange; guests?: ExtractionGuest[] }>,
+  stayIndex: number,
+): string {
+  const content = stayContentKey(stay, among);
+  if (content) return stableId('s', messageId, content);
+  return stableId('s', messageId, dateKey(stay), 'p', String(stayIndex));
+}
+
+function rowStableId(
+  stayId: string,
+  row: { roomType: string | null },
+  among: Array<{ roomType: string | null }>,
+  rowIndex: number,
+): string {
+  const content = rowContentKey(row, among);
+  if (content) return stableId('r', stayId, content);
+  return stableId('r', stayId, row.roomType ?? '', 'p', String(rowIndex));
+}
+
 /**
  * Validates and grounds the model output. Confirmation numbers must be digits-dash-digits and appear verbatim
  * in the text the model read. The contact email must appear in that text too. Anything else is dropped to null.
@@ -250,8 +318,7 @@ export function sanitizeExtraction(
   ]
     .filter((value) => groundedConfirmationNumber(value, input.sourceText) !== null)
     .slice(0, MAX_CONFIRMATIONS);
-  const stays = output.stays.slice(0, MAX_STAYS).map((stay, stayIndex): ExtractionStay => {
-    const id = stableId('s', input.messageId, String(stayIndex));
+  const prepared = output.stays.slice(0, MAX_STAYS).map((stay) => {
     const dateEvidence = stay.requestedDateEvidence?.trim() ?? '';
     const selectionText = input.dateAnchor?.sourceText ?? '';
     const sourceText = dateEvidence && selectionText.includes(dateEvidence) ? dateEvidence : '';
@@ -265,14 +332,28 @@ export function sanitizeExtraction(
           ? input.dateAnchor?.yearEvidenceText ?? selectionText
           : undefined,
     };
+    const guests =
+      stay.guests === undefined
+        ? undefined
+        : stay.guests.slice(0, MAX_GUESTS).flatMap((guest) => {
+            const name = cleanText(guest.name);
+            if (!name) return [];
+            return [
+              {
+                name,
+                confirmationNumber:
+                  guest.confirmationNumber == null
+                    ? null
+                    : groundedConfirmationNumber(guest.confirmationNumber, input.sourceText),
+              },
+            ];
+          });
     return {
-      id,
       hotel: cleanText(stay.hotel),
       requested: dateRangeOf(anchorStayDateRange(stay.requested, dateAnchor)),
       booked: stay.booked ? dateRangeOf(stay.booked) : null,
       totalRooms: countOf(stay.totalRooms, 1, 999),
-      rows: stay.rows.slice(0, MAX_ROWS).map((row, rowIndex) => ({
-        id: stableId('r', id, String(rowIndex)),
+      rows: stay.rows.slice(0, MAX_ROWS).map((row) => ({
         roomType: cleanText(row.roomType),
         rooms: countOf(row.rooms, 1, 999),
         adultsPerRoom: countOf(row.adultsPerRoom, 1, 9),
@@ -281,23 +362,24 @@ export function sanitizeExtraction(
           .slice(0, 9),
         board: row.board,
       })),
-      ...(stay.guests !== undefined
-        ? {
-            guests: stay.guests.slice(0, MAX_GUESTS).flatMap((guest) => {
-              const name = cleanText(guest.name);
-              if (!name) return [];
-              return [
-                {
-                  name,
-                  confirmationNumber:
-                    guest.confirmationNumber == null
-                      ? null
-                      : groundedConfirmationNumber(guest.confirmationNumber, input.sourceText),
-                },
-              ];
-            }),
-          }
-        : {}),
+      ...(guests !== undefined ? { guests } : {}),
+      ...(stay.action !== undefined ? { action: stay.action } : {}),
+    };
+  });
+  const identityStays = prepared.map((stay) => ({ requested: stay.requested, guests: stay.guests }));
+  const stays = prepared.map((stay, stayIndex): ExtractionStay => {
+    const id = stayStableId(input.messageId, stay, identityStays, stayIndex);
+    return {
+      id,
+      hotel: stay.hotel,
+      requested: stay.requested,
+      booked: stay.booked,
+      totalRooms: stay.totalRooms,
+      rows: stay.rows.map((row, rowIndex) => ({
+        id: rowStableId(id, row, stay.rows, rowIndex),
+        ...row,
+      })),
+      ...(stay.guests !== undefined ? { guests: stay.guests } : {}),
       ...(stay.action !== undefined ? { action: stay.action } : {}),
     };
   });

@@ -12,7 +12,14 @@ import {
   workItem,
 } from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
-import type { ExtractionRow, ExtractionStay, MailExtractionPayload, MailKind } from './extraction/schema.js';
+import {
+  rowContentKey,
+  stayContentKey,
+  type ExtractionRow,
+  type ExtractionStay,
+  type MailExtractionPayload,
+  type MailKind,
+} from './extraction/schema.js';
 import {
   canonicalInternetMessageId,
   currentSourceText,
@@ -523,7 +530,8 @@ function sameSlot<T extends { id: string }>(id: string, before: T[], after: T[],
   if (!was) return true; // a stay or row she added: its id is hers, not a position
   const now = after.find((item) => item.id === id);
   if (!now) return false;
-  if (same(was, now)) return true;
+  const unique = (items: T[], value: T) => items.filter((item) => same(item, value)).length === 1;
+  if (same(was, now)) return unique(before, was) && unique(after, now);
   if (after.some((item) => item.id !== id && same(item, was))) return false;
   return !before.some((item) => item.id !== id && same(item, now));
 }
@@ -539,6 +547,108 @@ function sameRow(a: ExtractionRow, b: ExtractionRow): boolean {
   );
 }
 
+function fieldPathOf(path: FieldPath): string {
+  if (path.rowId === null) {
+    return path.field === 'removed'
+      ? `stays[${path.stayId}].removed`
+      : `stays[${path.stayId}].requested.${path.field}`;
+  }
+  return `stays[${path.stayId}].rows[${path.rowId}].${path.field}`;
+}
+
+function alignByContent<T extends { id: string }>(
+  before: T[],
+  after: T[],
+  keyOf: (item: T, among: T[]) => string | null,
+  same: (a: T, b: T) => boolean,
+): Map<string, string> | null {
+  const map = new Map<string, string>();
+  const usedAfter = new Set<string>();
+  for (const was of before) {
+    const key = keyOf(was, before);
+    if (!key) continue;
+    const hits = after.filter((item) => keyOf(item, after) === key);
+    if (hits.length > 1) return null;
+    if (hits.length === 1) {
+      const now = hits[0]!;
+      if (usedAfter.has(now.id)) return null;
+      map.set(was.id, now.id);
+      usedAfter.add(now.id);
+    }
+  }
+  const unmatchedBefore = before.filter((item) => !map.has(item.id));
+  const unmatchedAfter = after.filter((item) => !usedAfter.has(item.id));
+  if (unmatchedBefore.length === 1 && unmatchedAfter.length === 1) {
+    map.set(unmatchedBefore[0]!.id, unmatchedAfter[0]!.id);
+    return map;
+  }
+  for (const was of unmatchedBefore) {
+    if (!sameSlot(was.id, before, after, same)) continue;
+    const now = after.find((item) => item.id === was.id);
+    if (!now || usedAfter.has(now.id)) continue;
+    map.set(was.id, now.id);
+    usedAfter.add(now.id);
+  }
+  return map;
+}
+
+/**
+ * Rewrite saved stay/row paths onto the next read's ids when each edited stay (and row) has a unique content match.
+ * Null when any edited path would land on another stay or cannot be told apart.
+ */
+export function remapWorkState(
+  before: MailExtractionPayload,
+  after: MailExtractionPayload,
+  state: WorkState,
+): WorkState | null {
+  if (before.stays === after.stays) return { ...state };
+  const stayMap = alignByContent(before.stays, after.stays, stayContentKey, (a, b) =>
+    sameDates(a.requested, b.requested),
+  );
+  if (!stayMap) return null;
+  const rowMaps = new Map<string, Map<string, string>>();
+  for (const was of before.stays) {
+    const afterStayId = stayMap.get(was.id);
+    if (!afterStayId) continue;
+    const now = after.stays.find((stay) => stay.id === afterStayId);
+    if (!now) return null;
+    const rowMap = alignByContent(was.rows, now.rows, rowContentKey, sameRow);
+    if (!rowMap) return null;
+    rowMaps.set(was.id, rowMap);
+  }
+  const next: WorkState = {};
+  for (const key of Object.keys(state)) {
+    const path = parseFieldPath(key);
+    if (!path) {
+      next[key] = state[key];
+      continue;
+    }
+    const wasStay = before.stays.find((stay) => stay.id === path.stayId);
+    if (!wasStay) {
+      next[key] = state[key];
+      continue;
+    }
+    const afterStayId = stayMap.get(path.stayId);
+    if (!afterStayId) return null;
+    let afterRowId = path.rowId;
+    if (path.rowId !== null) {
+      const wasRow = wasStay.rows.find((row) => row.id === path.rowId);
+      if (wasRow) {
+        afterRowId = rowMaps.get(path.stayId)?.get(path.rowId) ?? null;
+        if (!afterRowId) return null;
+      }
+    }
+    const nextPath: FieldPath =
+      path.rowId === null
+        ? { stayId: afterStayId, rowId: null, field: path.field }
+        : { stayId: afterStayId, rowId: afterRowId ?? path.rowId, field: path.field };
+    const nextKey = fieldPathOf(nextPath);
+    if (Object.hasOwn(next, nextKey) && next[nextKey] !== state[key]) return null;
+    next[nextKey] = state[key];
+  }
+  return next;
+}
+
 /**
  * Whether her saved stay and row values still land on the same stays and rows in the next read. When a read drops or
  * reorders entries they would land on another stay, so the work item stays on the read she corrected.
@@ -548,41 +658,38 @@ export function correctionsCarryTo(
   after: MailExtractionPayload,
   state: WorkState,
 ): boolean {
-  for (const key of Object.keys(state)) {
-    const path = parseFieldPath(key);
-    if (!path) continue;
-    if (!sameSlot(path.stayId, before.stays, after.stays, (a, b) => sameDates(a.requested, b.requested))) return false;
-    if (path.rowId === null) continue;
-    const rowsBefore = before.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
-    const rowsAfter = after.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
-    if (!sameSlot(path.rowId, rowsBefore, rowsAfter, sameRow)) return false;
-  }
-  return true;
+  return remapWorkState(before, after, state) !== null;
 }
 
 /**
  * Whether the item moves from its read to `nextId`. Never to an older read (a slow caller can hold an old one), and
- * never when her saved values would land on other stays or rows in the next read.
+ * never when her saved values would land on other stays or rows in the next read. Returns the state to store on the
+ * next read (paths rewritten onto its ids) or null to keep the current read.
  */
-async function shouldRelink(db: WorkTx, fromId: string | null, nextId: string, state: WorkState): Promise<boolean> {
-  if (!fromId) return true;
+async function relinkState(
+  db: WorkTx,
+  fromId: string | null,
+  nextId: string,
+  state: WorkState,
+): Promise<WorkState | null> {
+  if (!fromId) return state;
   const reads = await db
     .select({ id: mailExtraction.id, createdAt: mailExtraction.createdAt, payload: mailExtraction.payload })
     .from(mailExtraction)
     .where(inArray(mailExtraction.id, [fromId, nextId]));
   const from = reads.find((read) => read.id === fromId);
   const next = reads.find((read) => read.id === nextId);
-  if (!next) return false;
-  if (!from) return true;
-  if (next.createdAt < from.createdAt) return false;
-  if (!from.payload || !next.payload) return true;
-  return correctionsCarryTo(from.payload as MailExtractionPayload, next.payload as MailExtractionPayload, state);
+  if (!next) return null;
+  if (!from) return state;
+  if (next.createdAt < from.createdAt) return null;
+  if (!from.payload || !next.payload) return state;
+  return remapWorkState(from.payload as MailExtractionPayload, next.payload as MailExtractionPayload, state);
 }
 
 /**
  * Upserts the work item for (thread, kind, source message) and points it at this extraction when it is newer and her
- * saved values still fit it (see shouldRelink). Only the extraction link moves. `state` is never written here, so a
- * person's values survive a re-read. Returns the read the item is on.
+ * saved values still fit it (see shouldRelink). Stay/row paths are rewritten onto the next read's ids when the match
+ * is unique; `state` values themselves are not changed. Returns the read the item is on.
  */
 export async function ensureWorkItem(
   db: DB,
@@ -630,12 +737,13 @@ export async function ensureWorkItem(
     const [row] = await select(tx).for('update');
     if (!row) throw new Error('work item missing after upsert');
     if (row.extractionId === input.extractionId) return row;
-    if (!(await shouldRelink(tx, row.extractionId, input.extractionId, row.state))) return row;
+    const remapped = await relinkState(tx, row.extractionId, input.extractionId, row.state);
+    if (!remapped) return row;
     await tx
       .update(workItem)
-      .set({ extractionId: input.extractionId, updatedAt: new Date() })
+      .set({ extractionId: input.extractionId, state: remapped, updatedAt: new Date() })
       .where(eq(workItem.id, row.id));
-    return { ...row, extractionId: input.extractionId };
+    return { ...row, extractionId: input.extractionId, state: remapped };
   });
 }
 
