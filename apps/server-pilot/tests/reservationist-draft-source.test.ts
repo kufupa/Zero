@@ -1,5 +1,5 @@
-import {expect,it} from 'vitest';
-import {sealReservationistDraftSource,assertReservationistDraftSource,assertChannelPacketDraftSource} from '../src/ai/reservationist-draft-source.js';
+import {afterEach,expect,it,vi} from 'vitest';
+import {sealReservationistDraftSource,assertReservationistDraftSource,assertChannelPacketDraftSource,reservationistDraftPropertyCode} from '../src/ai/reservationist-draft-source.js';
 import {prepareReservationistChannelBookingSync} from '../src/ai/reservationist-pending-action.js';
 import {validateDocumentPlan} from '../src/ai/reservationist-document-facts.js';
 import {createHash} from 'node:crypto';
@@ -18,4 +18,17 @@ it('binds a genuine canonical channel receipt to the exact original draft source
  const packet=prepareReservationistChannelBookingSync({taskId:'sync',requestId:'trigger',propertyCode:'HRCEN',ownerRef:'owner',threadId:'thread',taskSource:span('Please ensure you UPDATE your system.'),facts,sources:[document],clock:{causalAt:at,sourceAt:at,sourceMode:'current_read'}}),bound={...source,messages:[{...source.messages[0]!,sourceHash}]};
  expect(packet.status).toBe('pending_pms_action');expect(()=>assertChannelPacketDraftSource(packet,bound,new Date(at))).not.toThrow();
  for(const changed of [{...bound,propertyCode:'FOREIGN'},{...bound,transportId:'foreign'},{...bound,threadId:'foreign'},{...bound,triggerMessageId:'foreign'},{...bound,causalAt:'2026-10-05T01:01:00.000Z'},{...bound,messages:[{...bound.messages[0]!,sourceHash:'c'.repeat(64)}]}])expect(()=>assertChannelPacketDraftSource(packet,changed,new Date(at))).toThrow();
+});
+
+afterEach(()=>{vi.unstubAllEnvs();});
+
+it('resolves draft property HRDAV only for Da Vinci transports when HMS_DAVINCI_MAKE_QUOTE is on',()=>{
+ expect(reservationistDraftPropertyCode('owner')).toBe('HRCEN');
+ expect(reservationistDraftPropertyCode('transport-centurion')).toBe('HRCEN');
+ expect(reservationistDraftPropertyCode('transport-davinci')).toBe('HRCEN');
+ expect(reservationistDraftPropertyCode('transport-faith',{HMS_DAVINCI_MAKE_QUOTE:'true'})).toBe('HRCEN');
+ expect(reservationistDraftPropertyCode('transport-davinci',{HMS_DAVINCI_MAKE_QUOTE:'on'})).toBe('HRDAV');
+ expect(reservationistDraftPropertyCode('transport-kmgidi',{HMS_DAVINCI_MAKE_QUOTE:'on'})).toBe('HRDAV');
+ expect(reservationistDraftPropertyCode('transport-centurion',{HMS_DAVINCI_MAKE_QUOTE:'on'})).toBe('HRCEN');
+ expect(()=>sealReservationistDraftSource({...source,transportId:'transport-davinci',propertyCode:'HRDAV'})).not.toThrow();
 });

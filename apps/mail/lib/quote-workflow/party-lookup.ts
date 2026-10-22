@@ -62,6 +62,27 @@ type TrpcPanePartyRoutes = {
  * function-backed proxy (typeof 'function'), so a function is accepted too, as in the other *FromTrpc helpers.
  * Pane searches must pass the active thread so the route can refuse Da Vinci origin before HMS.
  */
+/** Server-backed Make quote capability. Null when the route is missing. */
+export type QuoteMakeCapability = {
+  makeQuote: boolean;
+  propertyCode: string | null;
+};
+
+type TrpcQuoteMakeRoutes = {
+  quoteWorkflow?: {
+    makeQuote?: { query: () => Promise<QuoteMakeCapability> };
+  };
+};
+
+export function quoteMakeCapabilityFromTrpc(
+  trpc: unknown,
+): (() => Promise<QuoteMakeCapability>) | null {
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+  const query = (trpc as TrpcQuoteMakeRoutes).quoteWorkflow?.makeQuote?.query;
+  if (!query) return null;
+  return () => query();
+}
+
 export function partyFinderFromTrpc(trpc: unknown): PartyFinder | null {
   if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
   const find = (trpc as TrpcPanePartyRoutes).panePartyLookup?.findParty;

@@ -1210,6 +1210,7 @@ export function QuoteWorkflowPanel({
   rates,
   rateCatalogue,
   contact,
+  makeQuote = true,
 }: {
   session: QuoteSession;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
@@ -1261,6 +1262,8 @@ export function QuoteWorkflowPanel({
   hmsQueue?: { pending: boolean; status: QueueStatus | null };
   /** Loads one HMS audit screenshot of a completed staff quote run. */
   onLoadRunScreenshot?: LoadRunScreenshot;
+  /** Server-backed Make quote. False disables Search availability / Make quote. Default true. */
+  makeQuote?: boolean;
 }) {
   const currentEmailKey = session.binding?.internetMessageId ?? session.binding?.entryId ?? null;
   const failedRatesNotice = useFailedHmsJobNoticeMessage('quote-rates', currentEmailKey);
@@ -1685,6 +1688,9 @@ export function QuoteWorkflowPanel({
       : { kind: 'search', label: 'Search availability' };
   const canPreparePdfAtTop =
     currentAction.kind === 'documents' && !session.pdf && canCreatePdf(session);
+  const makeQuoteBlockReason = makeQuote
+    ? null
+    : 'Make quote is not available for this mailbox.';
   const runNextRate = () => {
     if (!nextRateStep) return;
     if (nextRateStep.shareKey) onSelectStayKey?.(nextRateStep.shareKey);
@@ -1709,8 +1715,8 @@ export function QuoteWorkflowPanel({
           ) : null}
           {currentAction.kind !== 'documents' ? (
             <PrimaryButton
-              disabled={currentAction.kind === 'search' && nextRateReason !== null}
-              disabledReason={currentAction.kind === 'search' ? nextRateReason : null}
+              disabled={Boolean(makeQuoteBlockReason) || (currentAction.kind === 'search' && nextRateReason !== null)}
+              disabledReason={makeQuoteBlockReason ?? (currentAction.kind === 'search' ? nextRateReason : null)}
               onClick={() => {
                 if (currentAction.kind === 'search') runNextRate();
                 else if (currentAction.kind === 'scroll') scrollToStep(currentAction.targetId);
@@ -1720,11 +1726,12 @@ export function QuoteWorkflowPanel({
             </PrimaryButton>
           ) : canPreparePdfAtTop ? (
             <PrimaryButton
-              disabled={Boolean(pdfPending) || !canCreatePdf(session) || !onPreparePdf}
+              disabled={Boolean(makeQuoteBlockReason) || Boolean(pdfPending) || !canCreatePdf(session) || !onPreparePdf}
               disabledReason={
-                pdfPending
+                makeQuoteBlockReason ??
+                (pdfPending
                   ? 'Preparing PDF…'
-                  : pdfBlockReason(session) ?? (!onPreparePdf ? 'PDF preparation is not available in this view.' : null)
+                  : pdfBlockReason(session) ?? (!onPreparePdf ? 'PDF preparation is not available in this view.' : null))
               }
               onClick={onPreparePdf}
             >
@@ -1817,8 +1824,8 @@ export function QuoteWorkflowPanel({
           {currentAction.kind !== 'search' ? (
             <SecondaryButton
               className="w-full"
-              disabled={nextRateReason !== null}
-              disabledReason={nextRateReason}
+              disabled={Boolean(makeQuoteBlockReason) || nextRateReason !== null}
+              disabledReason={makeQuoteBlockReason ?? nextRateReason}
               onClick={runNextRate}
             >
               Search availability

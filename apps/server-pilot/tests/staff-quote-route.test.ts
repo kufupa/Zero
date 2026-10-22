@@ -995,3 +995,86 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     });
   },
 );
+
+function mailboxCaller(transportId: string) {
+  return appRouter.createCaller({
+    auth: null as never,
+    reqHeaders: new Headers({ 'x-zero-active-transport': transportId }),
+    sessionUser: { id: 'user-ropperman', email: 'staff@example.invalid', name: 'Synthetic Staff' },
+    activeTransportId: transportId,
+    accessRole: 'owner',
+    transportEmail: '',
+  } as never);
+}
+
+describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
+  'Da Vinci quote gate (HMS_DAVINCI_MAKE_QUOTE)',
+  () => {
+    it('blocks manual and queued DV quotes while the flag is off', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        vi.stubEnv('HMS_JOB_QUEUE', 'on');
+        const request = await seedRequest(db, 'transport-davinci');
+        const api = mailboxCaller('transport-davinci');
+        await expect(api.workstation.executeStaffQuote(request.input)).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+          message: 'This mail is for Da Vinci — Centurion HMS not searched',
+        });
+        await expect(api.workstation.queueStaffQuote(request.input)).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED',
+          message: 'This mail is for Da Vinci — Centurion HMS not searched',
+        });
+        expect(nativeRead).not.toHaveBeenCalled();
+      });
+    });
+
+    it('queues all five DV transports to HRDAV when the flag is on and leaves Centurion on HRCEN', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        vi.stubEnv('HMS_JOB_QUEUE', 'on');
+        vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        const { DAVINCI_STAFF_TRANSPORT_IDS, DAVINCI_HMS_READ_TARGET } = await import(
+          '../src/hms/hms-read-target.js'
+        );
+        for (const transportId of DAVINCI_STAFF_TRANSPORT_IDS) {
+          const request = await seedRequest(db, transportId);
+          const queued = await mailboxCaller(transportId).workstation.queueStaffQuote(request.input);
+          expect(queued.runId).toEqual(expect.any(String));
+          const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, queued.runId!));
+          expect(run?.metrics).toMatchObject({ hmsReadTarget: DAVINCI_HMS_READ_TARGET });
+        }
+        const centurion = await seedRequest(db, 'transport-centurion');
+        const queued = await mailboxCaller('transport-centurion').workstation.queueStaffQuote(
+          centurion.input,
+        );
+        const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, queued.runId!));
+        expect(run?.metrics).not.toHaveProperty('hmsReadTarget');
+      });
+    });
+
+    it('exposes server makeQuote for DV only when the flag is on; write preview stays ungated by it', async () => {
+      await withSeededTestDb(async () => {
+        const dv = mailboxCaller('transport-davinci');
+        const cen = mailboxCaller('transport-centurion');
+        await expect(dv.quoteWorkflow.makeQuote()).resolves.toEqual({
+          makeQuote: false,
+          propertyCode: null,
+        });
+        await expect(cen.quoteWorkflow.makeQuote()).resolves.toEqual({
+          makeQuote: true,
+          propertyCode: 'HRCEN',
+        });
+        vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        await expect(dv.quoteWorkflow.makeQuote()).resolves.toEqual({
+          makeQuote: true,
+          propertyCode: 'HRDAV',
+        });
+        await expect(cen.quoteWorkflow.makeQuote()).resolves.toEqual({
+          makeQuote: true,
+          propertyCode: 'HRCEN',
+        });
+        expect(nativeRead).not.toHaveBeenCalled();
+      });
+    });
+  },
+);

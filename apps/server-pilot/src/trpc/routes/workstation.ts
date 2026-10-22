@@ -87,7 +87,8 @@ import {
 } from '../../quote-proposal/filename.js';
 import { and, eq, desc, sql } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
-import { assertCenturionHmsMailboxOrigin } from '../../hms/mailbox-hms-origin-bind.js';
+import { assertHmsQuoteOriginAllowed } from '../../hms/hms-quote-target.js';
+import { hmsReadTargetJobMetrics } from '../../hms/hms-read-target.js';
 import { TRPCError } from '@trpc/server';
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
@@ -823,7 +824,7 @@ export const workstationRouter = router({
         .limit(1);
       if (!mail || mail.direction !== 'inbound')
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
-      await assertCenturionHmsMailboxOrigin({
+      await assertHmsQuoteOriginAllowed({
         transportId: ctx.activeTransportId,
         threadId: mail.threadId,
         messageId: input.messageId,
@@ -854,7 +855,7 @@ export const workstationRouter = router({
         .limit(1);
       if (!mail || mail.direction !== 'inbound')
         throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
-      await assertCenturionHmsMailboxOrigin({
+      const quoteTarget = await assertHmsQuoteOriginAllowed({
         transportId: ctx.activeTransportId,
         threadId: mail.threadId,
         messageId: mail.id,
@@ -872,7 +873,11 @@ export const workstationRouter = router({
         userId: staffQuoteUser.id,
         request: { kind: 'staff_quote' as const, input: quoteInput },
         priority: devEval ? HMS_JOB_PRIORITY_DEV : HMS_JOB_PRIORITY_USER,
-        extraMetrics: { staffQuoteUser, ...(devEval ? { devEval: true } : {}) },
+        extraMetrics: {
+          staffQuoteUser,
+          ...(devEval ? { devEval: true } : {}),
+          ...hmsReadTargetJobMetrics(quoteTarget),
+        },
       };
       const { run } = autoStart
         ? await queueAutoStaffQuoteHmsJob(request, db)

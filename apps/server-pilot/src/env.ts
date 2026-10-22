@@ -270,6 +270,15 @@ export function isScannedPdfVisionEnabled(input: EnvInput = process.env): boolea
   return input.SCANNED_PDF_VISION === 'on';
 }
 
+/**
+ * Da Vinci Make quote. Exact `on` routes the five DV staff mailboxes to HRDAV.
+ * Unset, `off`, or anything else keeps the Centurion-only refuse. Independent of
+ * HMS_DAVINCI_READS and HMS_QUOTE_PREPARE.
+ */
+export function hmsDavinciMakeQuoteEnabled(input: NodeJS.Dict<string> = process.env): boolean {
+  return input.HMS_DAVINCI_MAKE_QUOTE === 'on';
+}
+
 /** Check whether catch-up manual mail dump upload is enabled at runtime. */
 export function isCatchupUploadEnabled(input: EnvInput = process.env): boolean {
   const val = input.CATCHUP_UPLOAD_ENABLED;
