@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { emailsMatch } from '../lib/quote-proposal/identity';
 import { occupancyRoomCode, proposalDescription } from '../lib/quote-proposal/description';
 import { lineTotal, quotePdfFileName } from '../lib/quote-proposal/filename';
-import { HOTEL_TELEPHONE, missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
+import {
+  HOTEL_TELEPHONE,
+  missingQuoteDetailsWrapperHtml,
+  quotePropertyCodeForTransport,
+  quoteWrapperHtml,
+} from '../lib/quote-proposal/copy';
 
 describe('quote proposal helpers', () => {
   it('matches Nava and Outlook emails case-insensitively', () => {
@@ -35,6 +40,20 @@ describe('quote proposal helpers', () => {
   it('builds gold Quote filename and LINE TOTAL', () => {
     expect(quotePdfFileName('CIDB', '15-17 Sep')).toBe('Quote - CIDB 15-17 Sep.pdf');
     expect(lineTotal(2, 2, 2150)).toBe(8600);
+  });
+
+  it('maps Da Vinci staff transports to HRDAV and others to HRCEN', () => {
+    expect(quotePropertyCodeForTransport('transport-davinci')).toBe('HRDAV');
+    expect(quotePropertyCodeForTransport('transport-kmgidi')).toBe('HRDAV');
+    expect(quotePropertyCodeForTransport('transport-centurion')).toBe('HRCEN');
+    expect(quotePropertyCodeForTransport(undefined)).toBe('HRCEN');
+  });
+
+  it('uses Da Vinci name on the cover and never Centurion copy', () => {
+    const html = quoteWrapperHtml('David Miller', 'R Opperman', { propertyCode: 'HRDAV' });
+    expect(html).toContain('Thank you for Choosing Da Vinci Hotel and Suites.');
+    expect(html).toContain('Reservations<br />Da Vinci Hotel and Suites');
+    expect(html).not.toMatch(/Centurion/i);
   });
 
   it('uses gold wrapper copy and hotel telephone', () => {

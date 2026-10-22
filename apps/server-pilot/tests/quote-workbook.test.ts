@@ -108,6 +108,47 @@ describe('quote workbook totals and formulas', () => {
     expect(lineTotals).toBe(pdfTotal);
   });
 
+  it('writes Da Vinci name and Sandton, strips Centurion logos, and omits the Centurion phone', async () => {
+    const revision = structuredClone(await syntheticRevision());
+    revision.propertyCode = 'HRDAV';
+    const { quoteDigest } = await import('../src/quote-proposal/quote-revision.js');
+    const { id: _id, ...data } = revision;
+    revision.id = `quote:${quoteDigest(data)}`;
+    const { bytes } = quoteWorkbookForRevision({ revision, header });
+    const files = unzipSync(bytes);
+    expect(files['xl/media/image1.png']).toBeUndefined();
+    expect(files['xl/media/image2.png']).toBeUndefined();
+    const shared = new TextDecoder().decode(files['xl/sharedStrings.xml']);
+    expect(shared).toContain('Da Vinci Hotel and Suites');
+    expect(shared).toContain('Sandton');
+    expect(shared).not.toContain('The Centurion Hotel');
+    expect(shared).not.toContain('Brunos');
+    expect(sheetOf(bytes)).not.toContain('0126433600');
+    const sheet = sheetOf(bytes);
+    for (const ref of ['A38', 'F37', 'F38', 'F39', 'F40', 'A47']) {
+      expect(cellXml(sheet, ref), ref).not.toMatch(/<v>/);
+    }
+    expect(sheet).not.toContain('display="The Centurion Hotel Website"');
+    expect(sheet).not.toContain('<hyperlinks>');
+    const rels = new TextDecoder().decode(files['xl/worksheets/_rels/sheet1.xml.rels']);
+    expect(rels).not.toContain('centurion-hotel');
+    expect(rels).not.toContain('bakubung-bush-lodge');
+    expect(rels).not.toContain('relationships/hyperlink');
+  });
+
+  it('keeps Centurion wifi, pool, platter and website link on an HRCEN workbook', async () => {
+    const { bytes } = quoteWorkbookForRevision({ revision: await syntheticRevision(), header });
+    const files = unzipSync(bytes);
+    const shared = new TextDecoder().decode(files['xl/sharedStrings.xml']);
+    expect(shared).toContain('*Wi-Fi');
+    expect(shared).toContain('Fitness Centre');
+    expect(shared).toContain('Welcome Platter');
+    expect(shared).toContain('The Centurion Hotel Website');
+    const rels = new TextDecoder().decode(files['xl/worksheets/_rels/sheet1.xml.rels']);
+    expect(rels).toContain('centurion-hotel');
+    expect(sheetOf(bytes)).toContain('<hyperlinks>');
+  });
+
   it('keeps line totals, subtotal and total as formulas with cached values', async () => {
     const { revision, facts } = await staffScenario(fullExtras);
     const sheet = sheetOf(quoteWorkbookForRevision({ revision, facts, header }).bytes);

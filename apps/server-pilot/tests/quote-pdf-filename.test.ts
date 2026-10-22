@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  quoteFollowUpBody,
   quotePdfFileName,
   quotePdfPartyName,
   quotePdfSenderDisplayName,
+  quotePropertyIdentity,
   retargetQuotePdfFileName,
 } from '../src/quote-proposal/filename.js';
+import { proposalDescription } from '../src/quote-proposal/description.js';
 
 describe('quote PDF filename party', () => {
   it('uses agency, then company, then guest, then sender display name', () => {
@@ -43,5 +46,49 @@ describe('quote PDF filename party', () => {
     expect(retargetQuotePdfFileName('Quote - Quote 12 Oct.pdf', 'A $$ $& Co', '')).toBe(
       'Quote - A $$ $& Co 12 Oct.pdf',
     );
+  });
+});
+
+describe('quote property identity', () => {
+  it('keeps Centurion letterhead and phone', () => {
+    expect(quotePropertyIdentity('HRCEN')).toMatchObject({
+      name: 'The Centurion Hotel',
+      telephone: '0126433600',
+      letterhead: 'centurion-template',
+      websiteLabel: 'The Centurion Hotel Website',
+    });
+  });
+
+  it('uses Da Vinci name and Sandton only, with no logo or Centurion phone', () => {
+    const identity = quotePropertyIdentity('HRDAV');
+    expect(identity).toMatchObject({
+      name: 'Da Vinci Hotel and Suites',
+      addressLines: ['Sandton'],
+      telephone: null,
+      websiteLabel: null,
+      letterhead: 'none',
+    });
+    expect(identity.name).not.toMatch(/Centurion/i);
+  });
+
+  it('refuses an unknown property instead of falling back to Centurion', () => {
+    expect(() => quotePropertyIdentity('HRXXX')).toThrow(/unknown_quote_property/);
+  });
+
+  it('names STWN by property so a shared HMS code is not the other hotel product', () => {
+    expect(proposalDescription('STWN', 'bb')).toBe('Twin room Bed & Breakfast');
+    expect(proposalDescription('STWN', 'bb', 'HRDAV')).toBe('Standard Twin room Bed & Breakfast');
+    expect(proposalDescription('STKNG', 'room_only', 'HRDAV')).toBe('Standard King room Room Only');
+    expect(() => proposalDescription('STKNG', 'bb', 'HRCEN')).toThrow(/unknown room code/);
+    expect(() => proposalDescription('STQN', 'bb', 'HRDAV')).toThrow(/unknown room code/);
+  });
+
+  it('puts the sending hotel in the 66h follow-up and never names the other property', () => {
+    const centurion = quoteFollowUpBody('9 October', 'Reservations', 'HRCEN');
+    expect(centurion).toContain('from The Centurion Hotel');
+    expect(centurion).not.toContain('Da Vinci');
+    const davinci = quoteFollowUpBody('9 October', 'Reservations', 'HRDAV');
+    expect(davinci).toContain('from Da Vinci Hotel and Suites');
+    expect(davinci).not.toContain('Centurion');
   });
 });

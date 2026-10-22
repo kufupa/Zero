@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { unzipSync, zipSync } from 'fflate';
-import { HOTEL_TELEPHONE } from './filename.js';
+import { quotePropertyIdentity, type QuotePropertyIdentity } from './filename.js';
 import {
   deriveAuthorizedExtraLines,
   extraDisplayDescription,
@@ -22,6 +22,7 @@ const SEPARATOR_ROW = 30;
 /** One proposal Excel holds at most this many line rows. Larger quotes are refused, never split or collapsed. */
 export const MAX_WORKBOOK_LINES = 63;
 const DRAWING_PATH = 'xl/drawings/drawing1.xml';
+const SHEET_RELS_PATH = 'xl/worksheets/_rels/sheet1.xml.rels';
 /** Drawing anchors are 0-based, so xdr:row 29 is template row 30. */
 const DRAWING_SHIFT_FROM = SEPARATOR_ROW - 1;
 const PRINT_AREA_LAST_ROW = 69;
@@ -64,6 +65,7 @@ export type QuoteWorkbookInput = {
   lines: WorkbookLine[];
   /** Unpriced staff note, printed in the note block. */
   note?: string;
+  propertyCode?: string;
 };
 
 type WorkbookItem = {
@@ -84,8 +86,26 @@ export type WorkbookStay = { revision: QuoteRevision; facts?: AuthorizedProposal
 /** A quote the proposal Excel cannot hold. The message tells staff what to do instead. */
 export class WorkbookRefusalError extends Error {}
 
+/** Combined stays that are not one property. Same-property multi-stay quotes still build. */
+export class MixedPropertyQuoteError extends WorkbookRefusalError {}
+
 /** A quote with more lines than the proposal Excel holds. The message says how to split it. */
 export class WorkbookLineLimitError extends WorkbookRefusalError {}
+
+/** One property for the whole quote, or a staff-facing refusal. Unknown codes stay unknown. */
+export function quoteOutputPropertyCode(stays: WorkbookStay[]): string {
+  if (stays.length < 1) throw new Error('workbook_stays');
+  const codes = new Set(stays.map((stay) => stay.revision.propertyCode));
+  if (codes.size !== 1) {
+    throw new MixedPropertyQuoteError('This quote covers more than one property. Split it into separate quotes.');
+  }
+  const code = [...codes][0]!;
+  try {
+    return quotePropertyIdentity(code).propertyCode;
+  } catch {
+    throw new MixedPropertyQuoteError('This quote is for an unsupported property. Split it into separate quotes.');
+  }
+}
 
 function lineLimitMessage(count: number): string {
   return `Quote has ${count} lines; the proposal Excel holds at most ${MAX_WORKBOOK_LINES}. Split it into separate quotes.`;
@@ -143,6 +163,7 @@ function sumOf(items: WorkbookItem[], key: 'qty' | 'totalMinor'): number {
  */
 export function workbookLinesForStays(stays: WorkbookStay[]): { lines: WorkbookLine[]; totalMinor: number } {
   if (stays.length < 1) throw new Error('workbook_stays');
+  quoteOutputPropertyCode(stays);
   // The template formats every amount in rand, so a quote in any other currency would print the wrong symbol.
   if (stays.some((stay) => stay.revision.currency !== 'ZAR')) {
     throw new WorkbookRefusalError('The proposal Excel prices in rand only. Quote other currencies one stay at a time.');
@@ -311,6 +332,89 @@ function insertLineRows(sheet: string, count: number): string {
   return next;
 }
 
+const EMPTY_DRAWING =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/>';
+const EMPTY_DRAWING_RELS =
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+  '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"/>';
+
+/** Fork 7: no DV letterhead. Strip Centurion drawings and rewrite hotel strings. */
+function brandWorkbookFiles(
+  files: Record<string, Uint8Array | undefined>,
+  identity: QuotePropertyIdentity,
+): void {
+  if (identity.letterhead !== 'none') return;
+  delete files['xl/media/image1.png'];
+  delete files['xl/media/image2.png'];
+  files['xl/drawings/drawing1.xml'] = new TextEncoder().encode(EMPTY_DRAWING);
+  files['xl/drawings/_rels/drawing1.xml.rels'] = new TextEncoder().encode(EMPTY_DRAWING_RELS);
+  const shared = files['xl/sharedStrings.xml'];
+  if (!shared) return;
+  const thanks = `${identity.name}${identity.addressLines.length ? `, ${identity.addressLines.join(', ')}` : ''} thanks you for choosing us for your upcoming stay. \r\n`;
+  files['xl/sharedStrings.xml'] = new TextEncoder().encode(
+    new TextDecoder()
+      .decode(shared)
+      .replaceAll('*Wi-Fi', '')
+      .replaceAll('*Access to the Fitness Centre &amp; Pool', '')
+      .replaceAll('*Arrival/Welcome Platter', '')
+      .replaceAll('The Centurion Hotel Website', '')
+      .replaceAll(
+        '*Breakfast in Brunos Restaurant ',
+        'Meals are included only where stated in the line description.',
+      )
+      .replaceAll('The Centurion Hotel thanks you for choosing us for your upcoming stay. \r\n', thanks),
+  );
+}
+
+/** Template: A38 Brunos, F37-F40 spoils, A39 Wi-Fi, A40 pool, F41 platter, A47 Centurion website. */
+function stripCenturionGuestLinks(sheet: string, below: (row: number) => number): string {
+  let next = sheet;
+  for (const ref of [
+    `A${below(38)}`,
+    `F${below(37)}`,
+    `F${below(38)}`,
+    `F${below(39)}`,
+    `F${below(40)}`,
+    `A${below(39)}`,
+    `A${below(40)}`,
+    `F${below(41)}`,
+    `A${below(47)}`,
+  ]) {
+    next = clearCell(next, ref);
+  }
+  return next.replace(/<hyperlinks>[\s\S]*?<\/hyperlinks>/, '');
+}
+
+function stripCenturionHyperlinkRels(rels: string): string {
+  return rels.replace(/<Relationship\b[^>]*relationships\/hyperlink[^>]*\/>/g, '');
+}
+
+/** Fork 7 brand on a patched Centurion xlsx (legacy quoteProposalPdf). No-op for HRCEN. */
+export function brandQuoteWorkbookBytes(
+  bytes: Uint8Array,
+  propertyCode: string,
+  extraLineRows = 0,
+): Uint8Array {
+  const identity = quotePropertyIdentity(propertyCode);
+  if (identity.letterhead !== 'none') return bytes;
+  const files = unzipSync(bytes);
+  const below = (row: number) => (row >= SEPARATOR_ROW ? row + extraLineRows : row);
+  const sheetBytes = files[SHEET_PATH];
+  if (sheetBytes) {
+    files[SHEET_PATH] = new TextEncoder().encode(
+      stripCenturionGuestLinks(new TextDecoder().decode(sheetBytes), below),
+    );
+  }
+  brandWorkbookFiles(files, identity);
+  if (files[SHEET_RELS_PATH]) {
+    files[SHEET_RELS_PATH] = new TextEncoder().encode(
+      stripCenturionHyperlinkRels(new TextDecoder().decode(files[SHEET_RELS_PATH])),
+    );
+  }
+  return zipSync(files);
+}
+
 /** Drawing anchors at or below template row 30 move with the rows. The logo above the line block stays put. */
 function shiftDrawingRows(drawingXml: string, count: number): string {
   return drawingXml.replace(/<xdr:row>(\d+)<\/xdr:row>/g, (_all, row: string) => {
@@ -413,7 +517,10 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
   if (note) sheet = setNote(sheet, note, NOTE_ROWS.map(below));
   sheet = setText(sheet, `B${below(61)}`, input.header.signerName);
   sheet = setText(sheet, `B${below(62)}`, input.header.signerEmail);
-  sheet = setText(sheet, `B${below(63)}`, HOTEL_TELEPHONE);
+  const identity = quotePropertyIdentity(input.propertyCode ?? 'HRCEN');
+  if (identity.telephone) sheet = setText(sheet, `B${below(63)}`, identity.telephone);
+  else sheet = clearCell(sheet, `B${below(63)}`);
+  if (identity.letterhead === 'none') sheet = stripCenturionGuestLinks(sheet, below);
 
   files[SHEET_PATH] = new TextEncoder().encode(sheet);
   files[DRAWING_PATH] = new TextEncoder().encode(shiftDrawingRows(new TextDecoder().decode(drawingBytes), extra));
@@ -421,6 +528,12 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
     printAreaFor(scrubWorkbook(new TextDecoder().decode(workbookBytes)), extra),
   );
   files['docProps/core.xml'] = new TextEncoder().encode(scrubCore(new TextDecoder().decode(coreBytes)));
+  brandWorkbookFiles(files, identity);
+  if (identity.letterhead === 'none' && files[SHEET_RELS_PATH]) {
+    files[SHEET_RELS_PATH] = new TextEncoder().encode(
+      stripCenturionHyperlinkRels(new TextDecoder().decode(files[SHEET_RELS_PATH])),
+    );
+  }
   // Formulas changed, so the template's calculation chain is stale. Excel rebuilds it on load.
   delete files[CALC_CHAIN_PATH];
   for (const path of ['xl/_rels/workbook.xml.rels', '[Content_Types].xml']) {
@@ -438,6 +551,7 @@ export function quoteWorkbookForStays(args: {
   header: WorkbookHeader;
   note?: string;
 }): { bytes: Uint8Array; totalMinor: number } {
+  const propertyCode = quoteOutputPropertyCode(args.stays);
   const { lines, totalMinor } = workbookLinesForStays(args.stays);
   const bytes = buildQuoteWorkbook({
     // The earliest read sets the date, so no stay is quoted beyond the validity of its own read.
@@ -448,6 +562,7 @@ export function quoteWorkbookForStays(args: {
     header: args.header,
     lines,
     note: args.note,
+    propertyCode,
   });
   return { bytes, totalMinor };
 }

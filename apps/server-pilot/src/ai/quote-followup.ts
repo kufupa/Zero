@@ -46,6 +46,8 @@ import {
   personTouchSql,
 } from './work-items.js';
 import { normalizeEmailAddress } from './never-spam.js';
+import { quoteFollowUpBody } from '../quote-proposal/filename.js';
+import { isDaVinciTransport } from '../hms/hms-read-target.js';
 
 /**
  * Quote follow-ups (R10 / ask 175). When a quote request's thread gets a staff quote reply that states a validity
@@ -575,17 +577,13 @@ export async function runQuoteFollowupSweep(
   return counts;
 }
 
-function followUpText(displayName: string | null, sentAt: Date): string {
+function followUpText(displayName: string | null, sentAt: Date, propertyCode: string): string {
   const sentOn = new Intl.DateTimeFormat('en-ZA', {
     day: 'numeric',
     month: 'long',
     timeZone: 'Africa/Johannesburg',
   }).format(sentAt);
-  return [
-    'Hello,',
-    `I am following up on the quote we sent on ${sentOn}. The quotation is due to expire shortly. Please let us know if you would like to go ahead, or if you need any changes.`,
-    ['Kind regards,', displayName].filter(Boolean).join('\n'),
-  ].join('\n\n');
+  return quoteFollowUpBody(sentOn, displayName, propertyCode);
 }
 
 /** The worker lost its claim on the run before the follow-up committed. Nothing it wrote is kept. */
@@ -630,7 +628,11 @@ async function writeFollowUp(
     .from(mailboxTransport)
     .where(eq(mailboxTransport.id, run.transportId))
     .limit(1);
-  const text = followUpText(transport?.displayName ?? null, new Date(sentTime(sent)));
+  const text = followUpText(
+    transport?.displayName ?? null,
+    new Date(sentTime(sent)),
+    isDaVinciTransport(run.transportId) ? 'HRDAV' : 'HRCEN',
+  );
   const draftId = `${QUOTE_FOLLOWUP_DRAFT_PREFIX}${sent.id}`;
   const now = new Date();
   const fields = {

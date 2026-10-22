@@ -7,6 +7,7 @@ import { TRPCError } from '@trpc/server';
 import { appRouter } from '../src/trpc/router.js';
 import { patchSheetXml } from '../src/quote-proposal/patch-sheet.js';
 import { patchProposalWorkbook } from '../src/quote-proposal/patch-template.js';
+import { brandQuoteWorkbookBytes } from '../src/quote-proposal/quote-workbook.js';
 import { __setDbForTests } from '../src/db/client.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { mailboxAccess } from '../src/db/schema/mail.js';
@@ -74,6 +75,37 @@ describe('quote proposal xlsx patch', () => {
     expect(sheet).toMatch(/<c r="H24"[^>]*><v>8600<\/v><\/c>/);
     expect(sheet).not.toContain('B24*F24*G24');
     expect(sheet).toContain('t="s"><v>1</v>');
+  });
+
+  it('strips Centurion hotel text from a patched DV workbook', () => {
+    const branded = brandQuoteWorkbookBytes(
+      patchProposalWorkbook(TEMPLATE, {
+        attention: 'David Miller',
+        company: 'CIDB',
+        clientEmail: 'guest@example.com',
+        clientTelephone: '',
+        signerName: 'R Opperman',
+        signerEmail: 'ropperman@legacyhotels.co.za',
+        signerTelephone: '',
+        lines: [
+          {
+            dateLabel: '15-17 September 2026',
+            qty: 1,
+            description: 'Standard King room Bed & Breakfast',
+            nights: 1,
+            rate: 2150,
+          },
+        ],
+      }),
+      'HRDAV',
+    );
+    const files = unzipSync(branded);
+    const shared = new TextDecoder().decode(files['xl/sharedStrings.xml']);
+    expect(shared).not.toMatch(/Centurion/i);
+    expect(shared).toContain('Da Vinci Hotel and Suites');
+    expect(new TextDecoder().decode(files['xl/worksheets/_rels/sheet1.xml.rels'])).not.toContain(
+      'centurion-hotel',
+    );
   });
 
   it('keeps VAT cell as Included shared-string', () => {

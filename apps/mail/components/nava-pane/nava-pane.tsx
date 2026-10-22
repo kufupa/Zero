@@ -16,7 +16,12 @@ import {
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import { withContactLines } from '@/lib/quote-workflow/document-contact';
-import { missingQuoteDetailsWrapperHtml, quoteDeclineReplyHtml, quoteWrapperHtml } from '@/lib/quote-proposal/copy';
+import {
+  missingQuoteDetailsWrapperHtml,
+  quoteDeclineReplyHtml,
+  quotePropertyCodeForTransport,
+  quoteWrapperHtml,
+} from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
@@ -793,6 +798,7 @@ export function NavaPane({
         replyGreetingName(documentContact?.name, activeEmail),
         fields,
         staffSignerName,
+        quotePropertyCodeForTransport(quoteSession.binding?.transportId),
       );
       if (
         (!quoteSession.reviewedReplyHtml.trim() && !quoteSession.reviewedReplyEdited) ||
@@ -1867,6 +1873,7 @@ export function NavaPane({
       ? quoteWrapperHtml(greetingName, staffSignerName, {
           ...(quote.dinnerAddOn ? { dinnerAddOn: quote.dinnerAddOn } : {}),
           totalMinor: quote.totalMinor,
+          propertyCode: quotePropertyCodeForTransport(session.binding?.transportId),
         })
       : undefined;
     const staff = staffQuoteFromTrpc(trpcClient);
