@@ -10,11 +10,13 @@ product_contract_source: ce-plan-bootstrap
 
 # SR3 — writes made safe per workflow, Da Vinci Make quote, partly-built → fully built
 
-Run handbook (binding for every Grok agent): `docs/plans/2026-10-20-008-grok-run-handbook.md`, **with the overrides in §8 of this plan**. Scoping evidence: `docs/research/2026-10-22-sr3-scope/S1..S6.md` (6 Luna max read-only lanes, 2026-10-22 ~02:00Z, worktree at `db4abaca4`).
+Run handbook (binding for every Grok agent): `docs/plans/2026-10-20-008-grok-run-handbook.md`, **with the overrides in §8 of this plan**. Scoping evidence: `docs/research/2026-10-22-sr3-scope/S1..S6.md` (6 Luna max read-only lanes, 2026-10-22 ~02:00Z, worktree at `db4abaca4`). Critical review: `docs/research/2026-10-22-sr3-scope/grok-4.7-plan-review.md` (Grok 4.7 high, 4 P0 / 9 P1 / 4 P2) — resolutions in §13.
+
+**Authority order tonight:** PRODUCT.md hard rules > this plan (§8 overrides the 2026-10-20 handbook on orchestrator, coder, reviewer, merger, deployer) > handbook > S-lane files.
 
 ## Goal Capsule
 
-- **Outcome by 10:00 London (09:00Z):** every write workflow has its own switch with Labtest proof; provisional bookings can be cancelled safely (switch stays `lab`); Da Vinci Make quote is built, repriced on past DV asks, and **turned on** if it matches staff; Government/contract shown beside BAR; CHECK blocks cancel; multi-stay advanced as far as it safely goes. One deploy at the end (or earlier only if a live proof needs it).
+- **Outcome by 10:00 London (09:00Z):** every write workflow has its own switch with Labtest proof; provisional bookings can be cancelled safely (switch stays `lab`); Da Vinci Make quote is built and repriced on past DV asks; the flag goes **on only if the PRODUCT.md bar passes (n ≥ 10, every plannable row matches)** — otherwise it stays off and the score is reported; Government/contract shown beside BAR; CHECK blocks cancel; multi-stay advanced as far as it safely goes. One deploy at the end (or earlier only if a live proof needs it).
 - **Owner sleeps.** Orchestrator = Grok 4.6 high in Orca. Planning chat (Claude Opus) wakes every ~55 min and steers only on real problems.
 - **Never tonight:** real-guest write of any kind; create/amend/cancel switch set to `on`; Da Vinci writes; Nava sending mail.
 
@@ -93,30 +95,30 @@ Lane = one Grok 4.6 high coder in its own Orca child worktree (`sr3-<unit>`), br
 
 ### W2. Create safety (R2) — after W1
 - **Files:** `pane-stay-save.ts`, `pane-stay-lookup.ts` (duplicate check), `tooling/playwright-quote/{create-lab-stay.mjs,create-request.mjs,create-proof-rules.mjs}`, `read-reservation-fields.mjs`, `apps/mail/components/quote-workflow/booking-card.tsx`, `apps/mail/lib/quote-workflow/pane-stay-bind.ts`.
-- **Approach:** runner checks HRCEN property on every write (not only `--proof`); adults ≥1; duplicate check fails closed when ambiguous (missing departure, read error); pane commit always snapshots + reads back the saved record and compares supported fields (reuse the `--proof` reconcile path for `--pane-commit`); add `before.png`; outcome `committed` only when readback matches, else `committed_unverified` shown as "Saved — check in Infor"; booking card shows only the after-save screenshot. **No file rename** (S1 suggested `create-stay.mjs`; ponytail: rename churns 6 refs, defer).
-- **Size:** +180–300 product (S1 PR2+PR3 combined, minus rename); tests +200–300. Split if >500. **~80 min**.
+- **Approach:** runner checks HRCEN property on every write (not only `--proof`); adults ≥1; duplicate check fails closed when ambiguous (missing departure, read error); wire `--pane-commit` to the existing `--proof` snapshot + reconcile (`create-lab-stay.mjs:611-671`) so every pane save reads back the saved record and compares supported fields; the HRCEN property check moves out of proof-only (`create-lab-stay.mjs:524`) into every write; adults ≥1 enforced in `create-tool.schema.json` (minimum is 0 today) and the server; add `before.png`; outcome `committed` only when readback matches, else `committed_unverified` shown as "Saved — check in Infor"; booking card shows only the after-save screenshot. **No file rename** (S1 suggested `create-stay.mjs`; ponytail: rename churns 6 refs, defer).
+- **Size:** +180–300 product (S1 PR2+PR3 combined, minus rename); tests +200–300. Split if >500. **~80 min + one fix round (40)** (SR2 Labtest create took 5 rounds).
 - **Tests:** wrong property refuses; adults 0 refuses; ambiguous duplicate refuses; readback mismatch never reports `committed`; screenshot names; card shows saved shot only.
 - **Live proof (orchestrator, after deploy A):** 1 Labtest Save via the pane path (budget 3). Record R5 field values in `docs/infor-hms/labtest-booking-state-fields.md` (guarantee, deposit, company/agency, `send_on_save`: check the Centurion mailbox for an HMS email at Save time, read-only count).
 
 ### W3. Provisional cancel (R3) — after W1 (shares `amend-lookup-panel.tsx` with W4 → W4 first)
 - **Files:** `pane-stay-cancel.ts`, `tooling/playwright-quote/{cancel-stay.mjs,cancel-stay-rules.mjs}`, `apps/mail/components/quote-workflow/amend-lookup-panel.tsx`, `apps/mail/lib/quote-workflow/amend-cancel.ts`, `apps/server-pilot/src/mail/workflow-folders.ts`.
-- **Approach:** server preview stores the lookup snapshot (status, guarantee, deposit) and passes `expectStay` on commit; CLI re-reads right before OK, refuses on drift/unknown/penalty; money state picks `CANCEL_UNPAID` vs `CANCEL_PAID`; real commit requires explicit staff-picked HMS reason (no default text). Pane: preview/commit shown only when found, CHECK-clear, and the resolved switch ≠ off; distinct copy for paid/guaranteed/unknown ("Handle in Infor"). Folder fallback: `system_notice + cancel` → not-for-Nava (owner policy "TMC cancellation notification = no action"); person-authored stays.
+- **Approach (core = review P0-1):** at commit, inside the property lock, a **fresh HMS read** must classify `classifyAmendPayment === 'unpaid'` or the server refuses before any CLI click; digest and `expectStay` include status, guarantee and `depositReceived` (add it to `CANCEL_EXPECT_STAY_KEYS`); `runPaneStayCancel` always passes `expectStay`. Server preview stores the lookup snapshot; CLI re-reads right before OK, refuses on drift/unknown/penalty; money state picks `CANCEL_UNPAID` vs `CANCEL_PAID`; real commit requires explicit staff-picked HMS reason (no default text). Pane: preview/commit shown only when found, CHECK-clear, and the resolved switch ≠ off; distinct copy for paid/guaranteed/unknown ("Handle in Infor"). Folder fallback: `system_notice + cancel` → not-for-Nava (owner policy "TMC cancellation notification = no action"); person-authored stays.
 - **Size:** +150–220 product; tests +220–330. **~70 min**.
-- **Tests:** `cancel-stay-rules.test.mjs` (status/payment matrix incl. #458 blank-deposit, drift refuses, real commit needs reason, penalty = zero OK clicks), `pane-stay-cancel.test.ts` (ineligible snapshot refuses; commit passes expectStay; stale refuses before click), `amend-find-panel.test.tsx`, `amend-cancel-copy.test.ts`, `workflow-folders.test.ts`.
+- **Tests:** server test: paid stay + `CANCEL_UNPAID=lab` → refused, spawn never called with commit; `cancel-stay-rules.test.mjs` (status/payment matrix incl. #458 blank-deposit, drift refuses, real commit needs reason, penalty = zero OK clicks), `pane-stay-cancel.test.ts` (ineligible snapshot refuses; commit passes expectStay; stale refuses before click), `amend-find-panel.test.tsx`, `amend-cancel-copy.test.ts`, `workflow-folders.test.ts`.
 - **Review:** Grok 4.7 high + Greptile apex (write path).
 - **Live proof:** 1 Labtest cancel via pane (budget 2) on a Labtest stay created by W2's proof (provisional, unpaid). Never a stay you did not create tonight.
 
-### W4. CHECK blocks cancel + shared pick (R6) — first on `amend-lookup-panel.tsx`
-- **Files:** `amend-lookup-panel.tsx`, `voucher-find-card.tsx`, new `apps/mail/components/quote-workflow/hms-candidate-picker.tsx`.
-- **Approach:** gate cancel render/preview/commit on `!checkReason`; extract the candidate list + click → exact-find leaf into the new picker; voucher singleton also needs a click.
-- **Size:** +50–90 product; tests +65–105. **~35 min** (U7 CHECK took ~30).
-- **Tests:** `amend-find-panel.test.tsx` (cancel under CHECK hidden + inert), `voucher-find-card.test.tsx` (singleton needs pick; mismatch never matched).
+### W4. CHECK blocks cancel (R6) — first on `amend-lookup-panel.tsx`
+- **Files:** `amend-lookup-panel.tsx` only.
+- **Approach:** gate cancel render/preview/commit on `!checkReason` (review P2-16: shared picker is a second behaviour → deferred).
+- **Size:** +3–10 product; tests +25–35. **~20 min**.
+- **Tests:** `amend-find-panel.test.tsx` (cancel under CHECK hidden; preview/commit calls inert).
 
 ### W5. Amend Labtest proof (R7) — no code expected
-- Orchestrator runs it after deploy A: pane amend on `25526053-1` (Proof Labtest, 2027+), +1 night, budget 2. Steps per S6 §5. Abort on any penalty/charge/rate dialog; no retry on unknown outcome.
+- Orchestrator runs it after deploy A. **First a read-only field dump** of `25526053-1` (`read-reservation-fields.mjs`): proceed only if Labtest, arrival ≥ 2027, and `classifyAmendPayment === 'unpaid'`. Else amend tonight's new W2 Labtest stay instead (created provisional/unpaid), or skip and report. Change: departure +1 night. Abort on any penalty/charge dialog; if a rate dialog appears, screenshot + stop (no blind accept); no retry on unknown outcome. Budget 2.
 
 ### D0. HRDAV read-only probe (R4) — starts at kickoff, orchestrator-run, deterministic scripts only
-- One HMS lock, HRDAV slot, no Save. Use existing read tools: `fetch-quote.mjs` (rate shop for 2 future dates, 1 and 2 adults), `read-reservation-codes.mjs`, `party-lookup.mjs` (one known agency name from DV mail). Output: `docs/research/2026-10-22-hrdav-probe.md` — rate plan codes + labels, board codes, room codes/labels/max occupancy, sales strategies, DOM differences vs HRCEN, screenshots path. **No Labtest writes on HRDAV.**
+- **Browser:** HRDAV has its own slot and secret (`hms-read-target.ts:25` `DAVINCI_HMS_READ_TARGET`: secret `nava-zero/server-pilot/infor-hms-read-davinci`, slot `davinci`). Run the scripts with the Da Vinci CDP URL env the pane HRDAV reads use (find it in `pane-stay-spawn-env.ts` / prod env; never the Centurion CDP) — first command checks the opened property is HRDAV and stops otherwise. The single HMS queue (§9) still serialises it with every other HMS job tonight. No Save. Use existing read tools: `fetch-quote.mjs` (rate shop for 2 future dates, 1 and 2 adults), `read-reservation-codes.mjs`, `party-lookup.mjs` (one known agency name from DV mail). Output: `docs/research/2026-10-22-hrdav-probe.md` — rate plan codes + labels, board codes, room codes/labels/max occupancy, sales strategies, DOM differences vs HRCEN, screenshots path. **No Labtest writes on HRDAV.**
 - Brand assets: search `/home/orca/nava-research/davinci/` (`templates.md`, keyframes) and DV outbound mail attachments (read-only SQL: attachment filenames on DV outbound, counts) for the DV quote letterhead/terms. If none found → DV PDF uses property name + address from HRDAV only, no logo; log as owner follow-up.
 - **~30 min** (U4 probe class: 7–38 min).
 
@@ -128,13 +130,13 @@ Lane = one Grok 4.6 high coder in its own Orca child worktree (`sr3-<unit>`), br
 
 ### D2. DV rates/rooms/board (R4) — after D0 factsheet + D1 merged
 - **Files:** `src/hms/rate-catalogue.ts`, `src/ai/staff-quote-installation.ts`, `src/quote-proposal/description.ts`, `tooling/playwright-quote/{property-registry.mjs,property-profile.mjs,property-profiles/HRDAV.json,fetch-quote.mjs}`, `apps/mail/config/room-types.ts`, `apps/mail/lib/quote-workflow/{staff-quote-bind.ts,types.ts}`.
-- **Size:** +150–250 product. **~70 min**.
+- **Size:** +150–250 product. **~70 min**. **Stop rule:** if D0 returns no rate/room/board codes, D2 and D4 do not merge mappings; DV quote stays off.
 
-### D3. DV party per property (R4) — after D1; parallel with D2 (disjoint files except `staff-quote-installation.ts` → D2 owns it, D3 queues its edit to the end)
+### D3. DV party per property (R4) — after D1 (see §9a)
 - **Files:** `src/ai/{pane-party-lookup.ts,party-index.ts,party-index-sweep.ts}`, `src/trpc/routes/pane-party-lookup.ts`, `tooling/playwright-quote/party-lookup.mjs`, `apps/mail/lib/quote-workflow/party-lookup.ts`.
-- **Size:** +100–170 product. **~55 min**. Party index needs a property key: if this needs a migration, it is a **new nullable column + backfill HRCEN** (`ops-deploy.sh --migrate` at deploy).
+- **Size:** +100–170 product. **~55 min**. Party index is a JSON file (`party-index.ts:20`): key it by property with **one index file per property** (HRCEN keeps its current file). No migration.
 
-### D4. DV branded output (R4) — after D1
+### D4. DV branded output (R4) — after D2 (see §9a)
 - **Files:** `src/ai/reservationist-agent.ts`, `src/quote-proposal/{proposal-pdf.ts,quote-workbook.ts,description.ts,filename.ts}`, `apps/mail/lib/quote-proposal/copy.ts`, HRDAV `.xlsx` template only if found.
 - **Size:** +120–220 product. **~55 min**. Rejects mixed-property output. 66 h expiry draft (#461) made property-aware here if #461 merged (else skipped).
 
@@ -142,17 +144,17 @@ Lane = one Grok 4.6 high coder in its own Orca child worktree (`sr3-<unit>`), br
 - **Files:** `src/ai/extraction/{schema.ts,extract.ts}`, `quote-ready.ts`, `reservationist-decision.ts`, `quote-workflow-llm.ts`, `apps/mail/lib/quote-workflow/{types.ts,session.ts}`, `quote-workflow-panel.tsx`.
 - **Size:** +35–65 product. **~40 min** + classifier gate (extract.ts prompt change → frozen 431 ×1, **no regression >1 pt** vs v4; quote recall ≥85%) **~25 min** on EC2/Luna.
 
-### O2. Side-by-side strategies (R5b) — after O1 (shares panel/session)
+### O2. Side-by-side strategies (R5b) — after O1 and D2 (see §9a)
 - **Files:** `src/ai/{reservationist-business-services.ts,hms-availability.ts,rate-options.ts}`, `apps/mail/lib/quote-workflow/{types.ts,staff-quote-bind.ts}`, `apps/mail/components/quote-workflow/{rate-cards.tsx,quote-workflow-panel.tsx}`.
 - **Size:** +140–240 product. **~75 min**.
 
-### M1. Multi-stay stable identity (R8) → M2 per-stay action → M3 per-stay confirmation
-- M1 `extraction/schema.ts`, `ai/work-items.ts` (+40–80) ~40 min; M2 `work-items.ts`, `session.ts`, `quote-workflow-panel.tsx` (+40–80) ~40 min; M3 + `amend-lookup-panel.tsx` (+50–100) ~45 min. M4 guest↔room assignment, M5 per-guest split: only if time. Multi-room single-booking writer: **held**.
+### M1. Multi-stay stable identity (R8) → M2 per-stay action (M3 per-stay confirmation: cut tonight)
+- M1 `extraction/schema.ts`, `extraction/extract.ts` (only if the id needs a prompt change), `ai/work-items.ts` (+40–80) ~40 min; M2 `work-items.ts`, `session.ts`, `quote-workflow-panel.tsx` (+40–80) ~40 min; M3 + `amend-lookup-panel.tsx` (+50–100) ~45 min. M4 guest↔room assignment, M5 per-guest split: only if time. Multi-room single-booking writer: **held**.
 - Tests per S4 §5 (`extraction-schema.test.ts`, `work-items.test.ts`, `quote-workflow-session.test.ts`, `quote-workflow-panel.test.tsx`, `amend-find-panel.test.tsx`).
 
 ### L1. SR2 leftovers
-- **L1a** Wed maintenance pause: redo #462 against its 5 apex P1s (failureClass not cleared; paused counts settled; party 4-min deadline; TCP probe proves nothing). Fresh lane, same branch reused or new; **~60 min**. Not urgent (next Wed 2026-10-28) — lowest code priority.
-- **L1b** U11b extraction replay, read-only, on EC2 after deploy A: 20–30 threads, ~21 s p50 each → **~15 min**.
+- **L1a** Wed maintenance pause (#462 redo): **cut tonight** (review P2-14; next Wed 2026-10-28). Daytime slice.
+- **L1b** Extraction replay with `apps/server-pilot/scripts/outbound-gold-replay.ts` (the prod-input runner from #451; `outbound-gold-backtest.ts` is fixture-only), read-only on EC2 after deploy A, 20–30 threads, ~21 s p50 each → **~15 min**. Scores extraction coverage only; it does not prove multi-stay identity or prices. No rate claim.
 - **L1c** Price reprice (funnel first, ≥10 truth threads, serial, priority 0, ≤3 queued) **after** Labtest proofs on the HMS lock: ~12 × 138–247 s → **~45 min**.
 
 ## 7. Verification contract (tests on current data)
@@ -164,13 +166,13 @@ Lane = one Grok 4.6 high coder in its own Orca child worktree (`sr3-<unit>`), br
 | Cancel | W3 | 1 Labtest cancel via pane on tonight's Labtest stay; penalty never accepted; status Cancelled on readback | cancelled, 0 penalty clicks |
 | Amend | — | 1 Labtest amend `25526053-1` +1 night; readback departure +1, other fields unchanged | amended |
 | CHECK | W4 | pane render test only | tests green |
-| DV quote | D1–D4 | **Reprice bar:** every distinct DV quote thread since 2026-10-14 promote (history rows included as *truth only*: inbound ask + staff outbound PDF/reply on DV boxes) with a future arrival; run Make quote read-only on HRDAV; compare rate plan + nightly price to staff. **Turn on `HMS_DAVINCI_MAKE_QUOTE=on` only if n ≥ 5 and every plannable row matches (diffs with an HMS-side reason allowed, logged).** n < 5 → stays off, report n. | per Q3 answer (owner: "On if reprice matches") |
-| Overlay | O1, O2 | reprice pool `docs/research/2026-10-20-quote-backtest-pool.md` (n=8 scored): Government 4 rows, contract 1 | gov ≥3/4, contract unchanged or better; n<10 = "improvement", not pass |
+| DV quote | D1–D4 | **Reprice bar (PRODUCT.md:68):** every distinct DV quote thread (inbound ask + staff outbound PDF/priced reply on a DV box), arrival still in the future, deduped by Message-ID; run Make quote read-only on HRDAV; compare rate plan + nightly price to staff. **`HMS_DAVINCI_MAKE_QUOTE=on` only if n ≥ 10 and every row matches exactly.** Any diff = no flip (the orchestrator never judges an "HMS-side reason" itself; log it for the owner). n < 10 → stays off, report n, class, board, room, exact price. | owner Q3 "on if reprice matches"; bar per review P0-2 |
+| Overlay | O1, O2 | reprice pool `docs/research/2026-10-20-quote-backtest-pool.md` filtered to arrivals still in the future first; Government/contract rows counted after the filter. O2's extra live reads run only after the Labtest proofs (HMS queue) | report only (n<10); no pass claim |
 | Classifier (O1) | — | frozen 431 rows, prod prompt parity | no regression >1 pt; quote recall ≥85% |
-| Multi-stay | M1–M3 | replay 9 core multi-case threads (R2 corpus, `docs/research/2026-10-20-arch-lanes/r2-multi-ask-truth.md`) through #451 runner | behaviour check, no rate |
+| Multi-stay | M1–M2 | unit tests only (stable id across reorder, per-stay action); no replay claim tonight | tests green |
 | Quote price | — | L1c ≥10 truth threads | report class+board+room+exact vs 2026-10-20 (5/8, 2/8) |
 
-DV `n`: the bar uses **≥5** (not PRODUCT.md's ≥10) because DV has 8 live asks in 14 h; owner Q3 said "on if reprice matches" — this is my threshold, labelled as inference; report n either way.
+DV `n` is unknown until the funnel runs (8 live asks in 14 h; promoted history may add more). Likely outcome tonight: built, scored, flag off. That is acceptable (owner Q3 conditional).
 
 ## 8. Run contract (overrides the 2026-10-20 handbook)
 
@@ -185,39 +187,64 @@ DV `n`: the bar uses **≥5** (not PRODUCT.md's ≥10) because DV has 8 live ask
 | Parallelism | all units whose files are disjoint start at once (§9). Shared file = queued. |
 | Deploys | A ≈ 05:30Z (after W1–W4 merged) for Labtest + DV; B final 08:45–09:15Z. Owner allowed until 09:30Z (10:30 London). Record last-good SHA first (`b11e5ac52` or whatever is live). **Warn**: staff start 05:00Z — staff are not on the pane (released: no), so deploys are OK per owner. |
 | Labtest budget | **3 Saves, 2 amends, 2 cancels** (owner Q2). HRCEN only. Proof Labtest, arrival ≥ 2027-01-01. |
-| Flags | set the five `PANE_WRITE_*=lab` (same behaviour as today's `SAVE=lab`) at deploy A. `HMS_DAVINCI_MAKE_QUOTE=on` only if §7 DV bar passes (owner Q3). Nothing else. |
+| Flags | set the five `PANE_WRITE_*=lab` at deploy A via the env writer W1 changes (prod `.env.production` for http/worker/ai-worker + the remote-http env file; `pm2.config.cjs` only passes NODE_ENV/PORT). **Refuse deploy A** if any of the five is missing from `/proc/<pid>/environ` on any of the 4 procs. `HMS_DAVINCI_MAKE_QUOTE=on` only if §7 DV bar passes. Nothing else. |
 | Supervision | orchestrator: background watcher per lane (PR head / gate result / terminal idle) — never end a turn with lanes running and nothing armed (retro §4 #1). Planning chat: wakes every ~55 min, reads `/tmp/sr3/state.md` + orchestrator screen, steers only on real problems |
 | State file | `/tmp/sr3/state.md` (append-only). Handoff at ~150k context into it, then `/clear` per AGENTS.md |
 | Decisions | §10 forks have defaults; take them, log, never wait for the owner |
 | Stop | new merges stop 09:00Z; final deploy + live checks by 09:30Z; report in state.md + `docs/context/ACTIVE.md` PR |
 
-## 9. Waves and critical path
+## 9. Waves, file ownership, HMS queue, critical path
 
-| Start | Lane | Owns (summary) | After |
-|---|---|---|---|
-| T0 | W1 switches | write gates, capabilities, deploy env | — |
-| T0 | W4 CHECK | amend-lookup-panel, voucher card, picker | — |
-| T0 | D0 HRDAV probe (orchestrator, HMS lock) | — | — |
-| T0 | D1 DV gate | hms-quote-target, workstation quote routes, hms-jobs quote block | — |
-| T0 | O1 Gov intent | extraction schema/prompt, quote-ready, session | — |
-| T0 | M1 stay identity | extraction schema **(collides O1)** → **queued after O1** | O1 |
-| T0 | L1a Wed pause redo | hms-jobs pause block **(collides D1)** → queued | D1 |
-| W1 merged | W2 create safety | pane-stay-save, create runner, booking-card | W1 |
-| W1+W4 merged | W3 cancel | pane-stay-cancel, cancel runner, amend-lookup-panel | W1, W4 |
-| D0+D1 | D2 rates/rooms | rate-catalogue, property profiles | D0, D1 |
-| D1 | D3 party, D4 output | party index / proposal output | D1 |
-| O1 | O2 side-by-side | business-services, rate-cards, panel | O1 |
-| O2 + M1 | M2 → M3 | work-items, session, panel, amend panel | O2, M1, W3 |
+### 9a. One owner per shared file (review P0-3)
 
-```
-T0 ─ W1 (75) ─ W2 (80) ─┐
-  └─ W4 (35) ─┘─ W3 (70) ─┴─ deploy A (10) ─ Labtest Save→cancel→amend (3×~30) ─ L1c reprice (45)
-T0 ─ D0 probe (30) ─┐
-T0 ─ D1 (55) ───────┴─ D2 (70) ∥ D3 (55) ∥ D4 (55) ─ (deploy A or B) ─ DV reprice (~30) ─ flag on (10)
-T0 ─ O1 (40+25 gate) ─ O2 (75) ─ M1 (40) ─ M2 (40) ─ M3 (45)
-```
+| Shared file | Order (each waits for the previous PR to merge) |
+|---|---|
+| `apps/mail/components/quote-workflow/booking-card.tsx`, `apps/mail/lib/quote-workflow/pane-stay-bind.ts`, `pane-stay-save.ts` | W1 → W2 |
+| `apps/mail/components/quote-workflow/amend-lookup-panel.tsx`, `amend-cancel.ts`, `pane-stay-cancel.ts` | W1 → W4 → W3 |
+| `apps/mail/components/quote-workflow/quote-workflow-panel.tsx` | D1 → O1 → O2 → M2 |
+| `apps/server-pilot/src/trpc/routes/workstation.ts` | D1 → D4 |
+| `apps/mail/lib/quote-workflow/party-lookup.ts` | D1 → D3 |
+| `src/quote-proposal/description.ts`, `src/ai/staff-quote-installation.ts` | D2 → D4 (D3 does not touch them) |
+| `src/ai/extraction/{schema.ts,extract.ts}`, `apps/mail/lib/quote-workflow/session.ts` | O1 → M1 → M2 |
+| `apps/mail/lib/quote-workflow/types.ts`, `staff-quote-bind.ts` | D2 → O2 |
+| `apps/server-pilot/src/ai/hms-jobs.ts` | D1 only tonight |
 
-**ETA (critical path = write chain):** W1 75 → W3 70 (W4 done inside) → review/Greptile per PR ~20 ×2 → deploy A 10 → 3 Labtest proofs ~90 (U4/U8 live p75 38 each, minus probe) → L1c 45 → deploy B 10 = **~340 min from T0**. T0 ≈ 02:50Z → **~08:30Z**. DV chain ~55+70+20+10+30 ≈ 185 + deploy wait → ready for deploy A or B. Multi-stay chain 65+75+125 ≈ 265 → M3 maybe by ~07:30Z if reviews are clean; **cut order if late:** L1a, M3, O2, D4 branding polish, M2. Sources: SR2 retro §2 (coding 1.44× estimates, deploy 5–7 min, Labtest live 34 min, apex ~14 min apart).
+A lane that finds it must edit a file not in its list stops and asks the orchestrator, which queues it by this table.
+
+### 9b. Start order
+
+| Start | Lanes |
+|---|---|
+| T0 | **W1**, **D1**, **O1** coder lanes; **D0** probe (orchestrator, HMS queue slot 1) |
+| W1 merged | **W2** and **W4** (disjoint) |
+| W4 merged | **W3** |
+| D1 merged (+ D0 factsheet) | **D2**, **D3** |
+| D1 + O1 merged | — (O2 waits for D2 because of `types.ts`/`staff-quote-bind.ts`) |
+| D2 merged | **D4**, **O2** |
+| O1 merged | **M1** |
+| O2 + M1 merged | **M2** (M3 cut tonight) |
+
+### 9c. One HMS queue (review P0-4)
+
+Only one HMS job runs at a time, across both properties, all night. Order:
+1. D0 HRDAV probe (T0, read-only).
+2. After deploy A: Labtest Save (W2 proof) → Labtest cancel (W3 proof, on that new stay) → amend field dump + Labtest amend (W5).
+3. L1c Centurion price reprice (≤3 queued, serial).
+4. DV reprice (needs D1–D2 deployed).
+5. O2 live overlay reads.
+L1b extraction replay needs no HMS and runs any time after deploy A.
+
+### 9d. Critical path (review P1-5, with reviews and the HMS queue counted)
+
+| Chain | Parts (min) | Total |
+|---|---|---|
+| Writes | W1 code 75 + review/Greptile apex 40 → W4 20 + 20 → W3 70 + 40 (W2 80 + 40 runs in parallel after W1) → deploy A 10 → Save 35 → cancel 35 → amend 35 | **~380** |
+| Da Vinci | D0 30 ∥ D1 55 + 25 → D2 70 + 25 → D4 55 + 25 → deploy B 10 → DV reprice 30 (after HMS slots 2–3) | **~300** (+ wait for queue) |
+| Overlay + multi-stay | O1 40 + classifier gate 25 + 20 → (wait D2) O2 75 + 25 → M1 40 + 20 → M2 40 + 20 | **~330** |
+
+Sources: SR2 retro §2 (coding ran 1.44× estimate; already folded into the minutes above), apex rounds ~14 min apart, deploy 5–7 min, Labtest live 34 min (U8b), U5b 175 min for a shared-shape unit → W1 budget includes one fix round.
+
+T0 ≈ 03:00Z. Writes chain lands ≈ **09:20Z**, past the 09:00Z merge stop **if every round runs long**. Therefore, **cut list decided now (in order, taken by the orchestrator without asking):** M2 → O2 → D4 → W5 amend proof → L1c reprice. Never cut W1, W3's money guard, or W2's readback. Deploy A moves to "as soon as W1+W2+W3 are merged"; if that's later than 07:30Z, run deploy A anyway with whatever is merged and do the Labtest proofs that are possible.
 
 ## 10. Forks decided now (defaults — take them, log in state, don't wait)
 
@@ -230,9 +257,9 @@ T0 ─ O1 (40+25 gate) ─ O2 (75) ─ M1 (40) ─ M2 (40) ─ M3 (45)
 7. DV brand assets not found → name + address only, no logo; owner follow-up.
 8. DV quote manual only (no background prepare).
 9. A/R on create → not tonight; manual in Infor.
-10. Party-index property key needs migration → nullable column + HRCEN backfill, `--migrate` on deploy.
+10. Party index per property → one JSON index file per property; no migration.
 11. A unit over 500 product lines → split at behaviour boundary; never one big PR.
-12. Any finding that implies a real-guest write path is reachable → stop that unit, log, continue others.
+12. Any commit path that can click OK/Save on a non-Labtest stay, or cancel/amend a stay not classified `unpaid` from a fresh read, under tonight's `lab` flags → stop that unit, write `/tmp/sr3/HOLD.txt`, continue others. A UI-only gate never counts as the guard.
 
 ## 11. Holds (owner only)
 
@@ -244,6 +271,28 @@ T0 ─ O1 (40+25 gate) ─ O2 (75) ─ M1 (40) ─ M2 (40) ─ M3 (45)
 - Final deploy health 200/200, 4 pm2 procs, `/proc` flags as §8, bundle 200.
 - §7 live proofs recorded with n in `/tmp/sr3/state.md` and `docs/research/2026-10-22-sr3-proofs.md`.
 - ACTIVE.md updated (docs PR), ETA rows closed, retro line per unit.
+
+## 13. Critical review resolutions (Grok 4.7 high, 2026-10-22 02:24Z)
+
+| # | Sev | Resolution |
+|---|---|---|
+| 1 | P0 | **Accepted as W3's core**, severity corrected: under `lab` the CLI `identityCheck` runs `labGuard` (last name Labtest + 2027) when `--allow-real-guest` is absent (`cancel-stay-rules.mjs:228`), so a real paid stay can't be cancelled tonight. But no money check exists at commit, so `on` would be unsafe. W3 adds the fresh-read `unpaid` refusal + deposit in digest/expectStay + server test |
+| 2 | P0 | Accepted: DV bar = PRODUCT ≥10, exact match, no self-judged reasons |
+| 3 | P0 | Accepted: §9a one owner per shared file |
+| 4 | P0 | Accepted: §9c single HMS queue; D0 uses the HRDAV slot/secret |
+| 5 | P1 | Accepted: §9d requoted with reviews; cut list fixed before T0 |
+| 6 | P1 | Accepted: flags via env writer; deploy A refused if any missing in `/proc` |
+| 7 | P1 | Accepted: W5 reads first, falls back to tonight's new Labtest stay |
+| 8 | P1 | Accepted: L1b names `outbound-gold-replay.ts`; no multi-stay replay claim |
+| 9 | P1 | Accepted: future-arrival filter; overlay report only; O2 reads after proofs |
+| 10 | P1 | Accepted: fork 12 rewritten with a concrete rule |
+| 11 | P1 | Accepted: W2 wires `--pane-commit` to the proof reconcile; adults test on `create-tool.schema.json`; budget includes a second round |
+| 12 | P1 | Accepted: D2 stop rule on empty factsheet |
+| 13 | P1 | Accepted: party index file per property, no migration |
+| 14 | P2 | Accepted: L1a cut |
+| 15 | P2 | Accepted: W1 = one `paneWriteMode` + call sites; attach unchanged; split UI out if near 500 |
+| 16 | P2 | Accepted: W4 = CHECK guard only |
+| 17 | P2 | Accepted: authority line at top; deploy command spelled out in the kickoff |
 
 ## Sources
 
