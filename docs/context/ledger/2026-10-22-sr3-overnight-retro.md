@@ -1,6 +1,6 @@
 # 2026-10-22 SR3 overnight retro: write switches, Labtest proofs, Da Vinci quote (Grok orchestrator)
 
-**Verdict: the code went fast and the proofs went slow. 11 product PRs merged, 6 deploys, 0 rollbacks, all five `PANE_WRITE_*` switches at `lab` on all 4 processes (checked in `/proc` at 09:31Z). On Labtest: create proved (2 confirmation numbers) and cancel proved (1). Amend is 0/2. Da Vinci Make quote stays off, and Government rates (O1) was cut. The whole write-code chain merged by 03:57Z, 93 min ahead of the plan. Then ~3 h went into getting one clean Labtest Save, and ~80 min went to the orchestrator sitting idle on one HOLD. Wall clock 423 min against a 380 min ETA (1.11×). Every one of the 5 hourly supervisor steers found a real problem.**
+**Verdict: the code went fast and the proofs went slow. 11 product PRs merged, 6 deploys, 0 rollbacks, all five `PANE_WRITE_*` switches at `lab` on all 4 processes (checked in `/proc` at 09:31Z). On Labtest: create proved (2 confirmation numbers) and cancel proved (1). Amend is 0/2. Da Vinci Make quote stays off, and Government rates (O1) was cut. The whole write-code chain merged by 03:57Z, 93 min ahead of the plan. Then 140 min went into getting the first Labtest Save click and 184 min to the first confirmation number, and ~80 min went to the orchestrator sitting idle on one HOLD. Wall clock 423 min against a 380 min ETA (1.11×). Every one of the 5 hourly supervisor steers found a real problem.**
 
 Window: 2026-10-22 02:27Z (kickoff) → 09:31Z. Live after: `5851aa930`, last-good `b11e5ac52`. Evidence:
 - `/tmp/sr3/state.md` (append-only run log) and `/tmp/sr3/steer-{0432,0532,0632,0732,0832}.txt`
@@ -37,7 +37,7 @@ Window: 2026-10-22 02:27Z (kickoff) → 09:31Z. Live after: `5851aa930`, last-go
 | D4 branding | 80 | 63 | 0.79 | PR sat ~45 min until the 06:32 steer; 3 Greptile rounds |
 | M1 stable id | 60 | 21 | 0.35 | Merged with a leftover-pairing bug; #476 open |
 | O1 Government | 85 | cut after 306 | — | Gate data missing; open 02:39→07:45 |
-| **Labtest Save proof** | **35** | **184** (04:16 first try → 07:20 first number) | **5.3** | 8 pre-Save failures (§3) |
+| **Labtest Save proof** | **35** | **140** to first Save click (04:16 first try → 06:36); **184** to first confirmation number (07:20) | **4.0 / 5.3** | 8 pre-Save failures (§3); the 06:36 click returned no number |
 | Cancel proof | 35 | ~5 | 0.14 | Preview plus commit, first try |
 | Amend proof | 35 | 0/2 | — | Synchronous SSM timed out at 10 min and 15 min |
 
@@ -51,7 +51,7 @@ Code ran at **~0.2–0.8× the plan** (median ~0.4). The plan's 1.44× SR2 infla
 | Orchestrator idle, 0 coder lanes, PR waiting | ~30–35 | D3/W2c merged ~06:00; D4 #473 untouched 05:48→06:32 steer; M1 launched only after the steer (06:38) |
 | Save attempts that failed before Save was clicked | ~150 | 8 attempts: vanished JS dialog (04:17); "no rooms" Ext box, date had no inventory (04:41); Guest Stay off-screen from leftover UI (06:10, and again on 2027-11-18); message box during fill (2027-11-18, 2028-01-10); `refused_save_pre_save_search_unavailable` (2027-12-01); `refused_save_blank_required` (2028-02-01). **The first clean Save came 3 min after a read-only availability shop on a fresh page (06:33 → 06:36)** |
 | SSM timeouts | 25 | `read-reservation-fields` 10 min (07:17), amend preview 15 min (07:27–07:43) |
-| Wrong-worktree deploys | ~10 | Deploy A from sr3-W3 (03:58); W2b deploy started from sr3-W2b, killed after the 04:32 steer |
+| Wrong-worktree deploys | ~10 | 1 completed: Deploy A from sr3-W3 (03:58). 1 started from sr3-W2b and killed after the 04:32 steer |
 | Missing slot secret | ~5 | create-lab-stay slot env had no `HMS_READ_SECRET_ARN` (04:17) |
 
 ## 4. What went well
@@ -71,7 +71,7 @@ Code ran at **~0.2–0.8× the plan** (median ~0.4). The plan's 1.44× SR2 infla
 | Problem | Impact | Root cause |
 |---|---|---|
 | Orchestrator idle twice on a HOLD or an untouched PR | ~80 min, and 3 units cut | The 10-min monitor only re-read for steer files. The kickoff said "keep doing other units", but nothing enforced it. Same failure as SR2 retro lesson #1 |
-| Deploys from lane worktrees | Hard-rule breach (PRODUCT.md) ×2 | The rule was in the kickoff and PRODUCT.md but not enforced by the script |
+| Deploys from lane worktrees | Hard-rule breach (PRODUCT.md): 1 completed deploy + 1 started and killed | The rule was in the kickoff and PRODUCT.md but not enforced by the script |
 | Readback broken on every Save | Can't trust a Save result: 06:36 Save returned no number; a stay with that date (84701420-1) was later found Cancelled, and none of our scripts cancelled it | W2 Greptile P1 "committed_unverified" was waved through as by spec; the readback was never live-checked before the run |
 | Two HMS jobs at once on HRCEN | §9c breach at ~07:26 (Save 2028-02-01 + amend preview) | No lock check in the orchestrator's own scripts |
 | Amend never ran | 0/2 | Synchronous SSM with a 10–15 min cap on a slow HMS screen |
@@ -94,7 +94,7 @@ Briefs got shorter as the orchestrator's context grew (262K at 04:30 → 390K at
 
 ## 7. Plan critique
 
-- **Estimates:** coding was over-inflated (×1.44 SR2 factor on ~0.4× work); the live proof was under-estimated (35 min vs 184). Next time: code at ledger median (~0.5–0.8), and Labtest Save at ≥120 min until 3 nights pass cleanly.
+- **Estimates:** coding was over-inflated (×1.44 SR2 factor on ~0.4× work); the live proof was under-estimated (35 min vs 184). Next time: code at ledger median (~0.5–0.8), and Labtest Save at ≥120 min to the first click and ≥180 min to the first confirmed number until 3 nights pass cleanly.
 - **Save budget rule was undefined.** The orchestrator decided that only clicks reaching Save count. That's right, but it belongs in the plan.
 - **HMS queue (§9c) was right but unenforced.** It needs a lock file the scripts check.
 - **A5 and the O1 gate were dead on arrival.** Both depended on code or data no unit produced. The plan review (4 P0 / 9 P1) did not catch it, and I wrote the A5 bar without checking the resolver.
@@ -124,3 +124,13 @@ Briefs got shorter as the orchestrator's context grew (262K at 04:30 → 390K at
 8. **Create readback is a pass bar, not a P2.** `committed_unverified` with a confirmation number on screen = a bug. Fix it before `PANE_WRITE_CREATE=on`.
 
 ETA ledger: `sr3-run-20261022` closed 423/380 = 1.11, outcome partial, mistake_class proof_driver.
+
+## 10. Closeout gaps (added 2026-10-22 ~16:30Z)
+
+| Item | State |
+|---|---|
+| Model spend vs budget | **Unavailable.** The run used Grok 4.6/4.7 CLIs with no per-run cost export, and no budget was set in the plan. Next run: set a $ cap in the plan and log spend per lane |
+| PRODUCT.md pass bars | **Not measured.** No bar was scored: DV quote stayed off (A5 unreachable, ~8 asks < n≥10), create readback was broken on all 3 Saves, amend 0/2, golden set not re-scored. Merges and Labtest proofs are progress, not done |
+| `nightly-retro.sh` / `ce-compound` lane-close | Not run by the orchestrator. This retro plus the [solutions note](../../solutions/workflow-issues/hms-live-write-preflight-and-long-jobs.md) are the closeout |
+| Proofs report index | Added to `docs/research/README.md` and `CATALOG.md` |
+| Follow-up | The same preflight lesson repeated in the [DV install run](2026-10-22-dv-install-retro.md) the same afternoon (7 runs, 0 bookings). The fix is now a planned tool, not a text rule |
