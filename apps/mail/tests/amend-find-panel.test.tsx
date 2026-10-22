@@ -1491,7 +1491,9 @@ type CancelMocks = {
 
 /** Renders a cancel email whose booking HMS finds, with the paneStayCancel routes mocked. */
 async function renderCancel(mocks: CancelMocks) {
-  const findStay = vi.fn().mockResolvedValue(found({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []));
+  const findStay = vi.fn().mockResolvedValue(
+    unpaidFound({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }, []),
+  );
   const preview = mocks.preview ?? vi.fn();
   const commit = mocks.commit ?? vi.fn();
   const shot = mocks.shot ?? vi.fn().mockResolvedValue(NO_SHOT);
@@ -1580,7 +1582,37 @@ describe('AmendLookupPanel cancel while writes are off (U-3)', () => {
     expect(await screen.findByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
     expect(screen.getByText(/Nava can preview the cancellation/)).toBeTruthy();
     expect(screen.queryByText(/^Cancelling from here is switched off/)).toBeNull();
+    expect(screen.queryByTestId('cancel-payment-banner')).toBeNull();
     expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('shows Handle in Infor on a paid cancel stay and still offers preview', async () => {
+    capabilities.paneSave = true;
+    capabilities.paneSaveMode = 'lab';
+    const findStay = vi.fn().mockResolvedValue(
+      found(
+        {
+          arrival: CANCEL_ARRIVAL,
+          departure: CANCEL.departure ?? '',
+          guaranteeType: 'Guaranteed By Agent',
+          depositReceived: '0',
+        },
+        [],
+      ),
+    );
+    const trpc = {
+      ...lookupTrpc(findStay),
+      paneStayCancel: {
+        previewCancel: { mutate: vi.fn() },
+        commitCancel: { mutate: vi.fn() },
+        paneStayScreenshot: { query: vi.fn().mockResolvedValue(NO_SHOT) },
+      },
+    };
+    render(<AmendLookupPanel session={sessionWith(CANCEL)} trpc={trpc} />);
+    await pressFind();
+    expect(await screen.findByTestId('cancel-payment-banner')).toBeTruthy();
+    expect(screen.getByText(AMEND_SAVE_COPY.handleInHms)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
   });
 
   it('create=on does not show cancel when paneWrite cancel switches are off', async () => {

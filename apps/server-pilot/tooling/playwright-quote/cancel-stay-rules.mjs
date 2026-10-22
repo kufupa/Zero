@@ -1,6 +1,7 @@
 // Pure rules for cancel-stay.mjs: argument parsing, the lab identity guard,
 // reason and status matching, penalty text, outcome and exit mapping. No
 // Playwright import, so these run under node --test without a browser.
+import { classifyAmendPayment } from './amend-stay-rules.mjs';
 
 export const DEFAULT_REASON = 'Test Reservations';
 export const LAB_ARRIVAL_FLOOR = '2027-01-01';
@@ -23,6 +24,7 @@ const REFUSED_OUTCOMES = new Set([
   'refused_reason_missing',
   'refused_penalty',
   'refused_stay_changed',
+  'refused_not_unpaid',
 ]);
 const CDP_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
@@ -218,6 +220,12 @@ export function labGuard({ lastName, arrival }) {
   if (!arrivalIso) return { ok: false, reason: 'arrival_unparsed', arrivalIso: null };
   if (arrivalIso < LAB_ARRIVAL_FLOOR) return { ok: false, reason: 'arrival_before_2027', arrivalIso };
   return { ok: true, reason: null, arrivalIso };
+}
+
+/** Commit only: a fresh folio/stay snapshot must classify unpaid or the run stops before Save. Preview never refuses. */
+export function unpaidCommitRefusal(mode, stay) {
+  if (mode !== 'commit') return null;
+  return classifyAmendPayment(stay) === 'unpaid' ? null : 'refused_not_unpaid';
 }
 
 // Full identity check on the opened record. Without --allow-real-guest the lab guard runs first, so a real guest is

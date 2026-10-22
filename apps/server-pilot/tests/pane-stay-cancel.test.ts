@@ -127,6 +127,7 @@ describe('pane stay cancel', () => {
     paneStayCancelLoaders.lock = null;
     paneStayCancelLoaders.mode = null;
     paneStayCancelLoaders.moneyState = null;
+    paneStayCancelLoaders.folio = null;
     paneStaySaveLoaders.now = null;
     vi.unstubAllEnvs();
   });
@@ -326,6 +327,50 @@ describe('pane stay cancel', () => {
       reason: null,
       allowRealGuest: false,
     });
+  });
+
+  const unpaidFolio = {
+    status: 'Reserved',
+    guaranteeType: 'Non-Guaranteed Individual',
+    depositReceived: '0',
+  };
+
+  it('paid folio at commit refuses before spawn, unpaid proceeds, and preview does not call folio', async () => {
+    const folioCalls: string[] = [];
+    const calls = enableCancel();
+    paneStayCancelLoaders.folio = async (input) => {
+      folioCalls.push(input.confirmation);
+      return { ...unpaidFolio, depositReceived: '250.00' };
+    };
+    const preview = await previewCancel({ ...stay, owner });
+    expect(folioCalls).toEqual([]);
+    expect(preview).toMatchObject({ outcome: 'preview_ok', previewDigest: digestOf(stay) });
+    await expect(
+      commitCancel({
+        ...stay,
+        owner,
+        reason: 'Duplicate Booking',
+        previewDigest: preview.previewDigest ?? undefined,
+      }),
+    ).resolves.toMatchObject({
+      outcome: 'refused_not_unpaid',
+      message: 'This change may affect money already paid. Handle in Infor.',
+      previewDigest: null,
+      runId: null,
+    });
+    expect(folioCalls).toEqual([stay.confirmation]);
+    expect(calls.map((call) => call.mode)).toEqual(['preview']);
+    paneStayCancelLoaders.folio = async () => unpaidFolio;
+    const second = await previewCancel({ ...stay, owner });
+    await expect(
+      commitCancel({
+        ...stay,
+        owner,
+        reason: 'Duplicate Booking',
+        previewDigest: second.previewDigest ?? undefined,
+      }),
+    ).resolves.toMatchObject({ outcome: 'cancelled' });
+    expect(calls.map((call) => call.mode)).toEqual(['preview', 'preview', 'commit']);
   });
 
   it('commit needs the preview digest of the same stay, then passes the trimmed reason', async () => {
@@ -697,6 +742,7 @@ describe('pane cancel modes', () => {
     paneStayCancelLoaders.lock = null;
     paneStayCancelLoaders.mode = null;
     paneStayCancelLoaders.moneyState = null;
+    paneStayCancelLoaders.folio = null;
     cliFake.run = null;
     vi.unstubAllEnvs();
   });

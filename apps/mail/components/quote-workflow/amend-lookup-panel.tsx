@@ -370,8 +370,11 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           <p>{AMEND_FIND_COPY.checkHint}</p>
         </div>
       ) : null}
-      {amendment.kind === 'amend' && stay && !unpaidStay ? (
-        <div data-testid="amend-payment-banner" className={warnNoteClass}>
+      {stay && !unpaidStay && (amendment.kind === 'amend' || amendment.kind === 'cancel') ? (
+        <div
+          data-testid={amendment.kind === 'cancel' ? 'cancel-payment-banner' : 'amend-payment-banner'}
+          className={warnNoteClass}
+        >
           {AMEND_SAVE_COPY.handleInHms}
         </div>
       ) : null}
