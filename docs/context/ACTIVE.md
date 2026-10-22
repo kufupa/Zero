@@ -1,6 +1,15 @@
 # Active context
 
-Updated 2026-10-20 after the overnight quote run. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+Updated 2026-10-22 after the SR2 run. Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+
+## SR2 stay-request v2 run — 2026-10-21 (Grok orchestrator) — closed
+
+- **Live: `b11e5ac52`** (deploy #7 10:57Z; last-good `621058d23`). Health 200/200; `RESERVATIONIST_PANE_SAVE=lab` on http/worker/ai-worker (unset remote-http); `HMS_DAVINCI_READS=on`. Pane bundle `nava-pane-CP6dZvHL.js` (built 04:15Z, after the last pane merge) loaded 05:08Z, 07:05Z, 11:06Z.
+- Merged 22 product PRs (#431–#455): pane U1/U2/U6/U7/U9, quote U3/U10, extraction U5a/U5b/U5r, Labtest create U4–U4d (**first pane Save passed, `25526053-1`**), amend U8/U8b (refuses on blank deposit, 0 commits), multi-mailbox ingest UDV-1/2/2b/3 + UH5. H5 promoted 3,363 Da Vinci rows (0 duplicates, AI skipped).
+- Not done: quote replay (#451 U11b draft, 598 LOC) never ran, so the quote bar is unproven (last 5/8, n<10). Amend needs the owner's payment rule.
+- Retro: [SR2 retro](ledger/2026-10-21-sr2-overnight-retro.md). Readiness: [client readiness](../research/2026-10-22-client-readiness.md).
+- **HMS has planned maintenance every Wednesday ~12:00 to 15:00–15:30 SAST** (hotel IT). Failures in that window are expected.
+- Next acceptance: quote score ≥10 threads (D2); one Labtest amend commit (D1); Centurion stay-lookup reliability (66 failed + 66 lock-busy in 7 days outside maintenance); live Da Vinci mail routed. Holds: no flag flips, no real-guest writes.
 
 ## Overnight quote run — 2026-10-20 (Opus orchestrator, ask 150/151)
 
