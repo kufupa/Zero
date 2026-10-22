@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const id = z.string().min(1).max(512);
+const storeId = z.string().min(1).max(2048);
 const instant = z
   .string()
   .datetime({ offset: true })
@@ -41,7 +42,7 @@ export const syncObservationV1 = z
     sourceObservationId: id,
     semanticVersion: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
     semanticReady: z.boolean().default(true),
-    locator: z.object({ storeId: id, rootEntryId: id, folderEntryId: id, entryId: id }).strict(),
+    locator: z.object({ storeId, rootEntryId: id, folderEntryId: id, entryId: id }).strict(),
     availability,
     direction: z.enum(['inbound', 'outbound', 'unknown']),
     timestamps: z
@@ -185,7 +186,7 @@ export const activateInput = z
   .object({
     sourceId: id.optional(),
     deviceId: z.string().uuid(),
-    storeId: id,
+    storeId,
     rootEntryId: id,
     capabilityVersion: version,
     idempotencyKey: z.string().min(16).max(128),
@@ -204,7 +205,7 @@ export const nativeBase = z
     version,
     sourceId: id,
     sourceHandle: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
-    storeId: id,
+    storeId,
     rootEntryId: id,
   })
   .strict();
@@ -217,7 +218,7 @@ export const nativeActivateInput = z
     sourceId: id,
     activationTicket: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
     idempotencyKey: z.string().min(16).max(128),
-    storeId: id,
+    storeId,
     rootEntryId: id,
   })
   .strict();

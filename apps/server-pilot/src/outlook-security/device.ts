@@ -36,7 +36,7 @@ export type StaffMailboxGrant = { userId: string; transportId: string };
 /** Operator-only: caller must supply named staff and transport IDs, never display names. */
 export async function issueEnrollment(db: DB, input: { storeId: string; expiresAt?: Date } & StaffMailboxGrant & { grants?: StaffMailboxGrant[] }): Promise<string> {
   const grants = input.grants ?? [{ userId: input.userId, transportId: input.transportId }];
-  if (!input.storeId || input.storeId.length > 512 || grants.length < 1 || grants.length > 25) throw new Error('Invalid operator approval');
+  if (!input.storeId || input.storeId.length > 2048 || grants.length < 1 || grants.length > 25) throw new Error('Invalid operator approval');
   const code = randomBytes(32).toString('base64url');
   const issuedAt = Date.now();
   const expiry = input.expiresAt ?? new Date(issuedAt + 10 * 60_000);
@@ -61,7 +61,7 @@ export async function issueEnrollment(db: DB, input: { storeId: string; expiresA
 export async function enrollDevice(db: DB, input: { code: string; storeId: string; deviceId: string; version: string; secret: string }, rawKey: string): Promise<{ deviceId: string } | null> {
   const key = wrappingKey(rawKey);
   if (!/^[A-Za-z0-9_-]{43}$/.test(input.code) || !UUID_V4.test(input.deviceId)
-    || !input.storeId || input.storeId.length > 512 || input.version !== '4'
+    || !input.storeId || input.storeId.length > 2048 || input.version !== '4'
     || !/^[A-Za-z0-9+/]{43}=$/.test(input.secret)) return null;
   const secret = Buffer.from(input.secret, 'base64');
   if (secret.length !== 32 || secret.toString('base64') !== input.secret) return null;
@@ -169,8 +169,10 @@ export async function revokeDevice(db: DB, deviceId: string): Promise<boolean> {
 
 export type ReadRootPolicyV1 = { storeId: string; rootEntryId: string; policyVersion: 1; policyGeneration: number };
 export type ReadRootApprovalInput = StaffMailboxGrant & { deviceId: string; storeId: string; rootEntryId: string; policyVersion: 1 };
+const bounded = (value: unknown, max: number) => typeof value === 'string' && value.length > 0 && value.length <= max;
 const validReadRoot = (input: ReadRootApprovalInput) => UUID_V4.test(input.deviceId) && input.policyVersion === 1
-  && [input.userId, input.transportId, input.storeId, input.rootEntryId].every(v => typeof v === 'string' && v.length > 0 && v.length <= 512);
+  && bounded(input.userId, 512) && bounded(input.transportId, 512)
+  && bounded(input.storeId, 2048) && bounded(input.rootEntryId, 512);
 const readRootWhere = (input: ReadRootApprovalInput) => and(eq(outlookDeviceReadRoot.deviceId, input.deviceId),
   eq(outlookDeviceReadRoot.userId, input.userId), eq(outlookDeviceReadRoot.transportId, input.transportId),
   eq(outlookDeviceReadRoot.storeId, input.storeId), eq(outlookDeviceReadRoot.rootEntryId, input.rootEntryId));

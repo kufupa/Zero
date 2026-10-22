@@ -79,6 +79,9 @@ describe('Workstation Bridge Protocol', () => {
     expect(MailboxSyncControlSchema.safeParse({ sourceId: 'source', operation: 'start', window: { from: '2026-10-04T00:00:00Z', to: '2026-10-03T00:00:00Z' } }).success).toBe(false);
     expect(ReadRootPolicyV1Schema.safeParse({ storeId: 'store', rootEntryId: 'root', policyVersion: 1, policyGeneration: 1 }).success).toBe(true);
     expect(ReadRootPolicyV1Schema.safeParse({ storeId: 'store', rootEntryId: 'root', policyVersion: 2, policyGeneration: 1 }).success).toBe(false);
+    expect(ReadRootPolicyV1Schema.safeParse({
+      storeId: 'A'.repeat(600), rootEntryId: 'root', policyVersion: 1, policyGeneration: 1,
+    }).success).toBe(true);
   });
 
   it('requires protocol v4 and retains only authorized native mail actions', () => {
