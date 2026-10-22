@@ -43,12 +43,25 @@ import { amendmentOf, initialQuoteSession, reduceQuoteSession } from '../lib/quo
 import type { QuoteAmendment, QuoteSession } from '../lib/quote-workflow/types';
 
 // brain.getCapabilities answers with this flag. Tests set it before rendering.
-const capabilities = vi.hoisted(() => ({ paneSave: false, paneSaveMode: 'off' as string }));
+const capabilities = vi.hoisted(() => ({
+  paneSave: false,
+  paneSaveMode: 'off' as string,
+  paneWrite: undefined as
+    | {
+        create: string;
+        amendUnpaid: string;
+        amendPaid: string;
+        cancelUnpaid: string;
+        cancelPaid: string;
+      }
+    | undefined,
+}));
 
 afterEach(() => {
   cleanup();
   capabilities.paneSave = false;
   capabilities.paneSaveMode = 'off';
+  capabilities.paneWrite = undefined;
   vi.unstubAllEnvs();
 });
 
@@ -254,7 +267,11 @@ function lookupTrpc(
     },
     brain: {
       getCapabilities: {
-        query: async () => ({ paneSave: capabilities.paneSave, paneSaveMode: capabilities.paneSaveMode }),
+        query: async () => ({
+          paneSave: capabilities.paneSave,
+          paneSaveMode: capabilities.paneSaveMode,
+          paneWrite: capabilities.paneWrite,
+        }),
       },
     },
     jobStatus,
@@ -948,7 +965,11 @@ function syncTrpc(
       panePartyLookup: { findParty: { mutate: findParty } },
       brain: {
         getCapabilities: {
-          query: async () => ({ paneSave: capabilities.paneSave, paneSaveMode: capabilities.paneSaveMode }),
+          query: async () => ({
+          paneSave: capabilities.paneSave,
+          paneSaveMode: capabilities.paneSaveMode,
+          paneWrite: capabilities.paneWrite,
+        }),
         },
       },
     },
@@ -1560,6 +1581,39 @@ describe('AmendLookupPanel cancel while writes are off (U-3)', () => {
     expect(screen.getByText(/Nava can preview the cancellation/)).toBeTruthy();
     expect(screen.queryByText(/^Cancelling from here is switched off/)).toBeNull();
     expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('create=on does not show cancel when paneWrite cancel switches are off', async () => {
+    capabilities.paneSave = true;
+    capabilities.paneSaveMode = 'on';
+    capabilities.paneWrite = {
+      create: 'on',
+      amendUnpaid: 'off',
+      amendPaid: 'off',
+      cancelUnpaid: 'off',
+      cancelPaid: 'off',
+    };
+    await renderCancel({});
+    expect(
+      await screen.findByText(
+        'Cancelling from here is switched off for now. Cancel it in HMS: open 57291630-1, Actions → Cancel Reservation.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
+  });
+
+  it('shows Preview cancellation from paneWrite.cancelUnpaid even when create is off', async () => {
+    capabilities.paneSave = false;
+    capabilities.paneSaveMode = 'off';
+    capabilities.paneWrite = {
+      create: 'off',
+      amendUnpaid: 'off',
+      amendPaid: 'off',
+      cancelUnpaid: 'lab',
+      cancelPaid: 'off',
+    };
+    await renderCancel({});
+    expect(await screen.findByRole('button', { name: 'Preview cancellation' })).toBeTruthy();
   });
 
   it('keeps the look-up footer on cancel mail when the pane save flag is off', async () => {

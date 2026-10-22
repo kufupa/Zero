@@ -4,10 +4,20 @@ import {
 } from './staff-quote-installation.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 
+const PANE_WRITE_ENV_NAMES = [
+  'PANE_WRITE_CREATE',
+  'PANE_WRITE_AMEND_UNPAID',
+  'PANE_WRITE_AMEND_PAID',
+  'PANE_WRITE_CANCEL_UNPAID',
+  'PANE_WRITE_CANCEL_PAID',
+] as const;
+
+const PANE_WRITE_ENV_NAME_SET = new Set<string>(PANE_WRITE_ENV_NAMES);
+
 /**
  * The only variables a pane HMS CLI inherits: process basics, CDP endpoint and ownership, credential source, the
- * slot storageState path used to skip a repeat login, and the shared save gate used by amend-stay.mjs. Everything
- * else is dropped, so one-off lab flags or database URLs do not reach a live HMS run.
+ * slot storageState path used to skip a repeat login, the shared save gate, and the five per-workflow write
+ * switches. Everything else is dropped, so one-off lab flags or database URLs do not reach a live HMS run.
  */
 export const PANE_CLI_ENV_ALLOWLIST = [
   'PATH',
@@ -18,6 +28,7 @@ export const PANE_CLI_ENV_ALLOWLIST = [
   'TMPDIR',
   'PLAYWRIGHT_BROWSERS_PATH',
   'RESERVATIONIST_PANE_SAVE',
+  ...PANE_WRITE_ENV_NAMES,
   'AWS_REGION',
   'HMS_READ_SECRET_ARN',
   'HMS_QUOTE_SECRET_PATH',
@@ -35,6 +46,7 @@ function davinciPaneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget):
       name === 'HMS_QUOTE_SECRET_PATH' ||
       name === 'HMS_READ_SECRET_ARN' ||
       name === 'RESERVATIONIST_PANE_SAVE' ||
+      PANE_WRITE_ENV_NAME_SET.has(name) ||
       name === 'HMS_SLOT_PROFILE_DIR' ||
       name === 'HMS_SLOT_STORAGE_STATE'
     ) {
@@ -56,7 +68,7 @@ function davinciPaneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget):
  * HMS_STAGEHAND_* variables, so the CLIs refuse with CDP_URL_REQUIRED. The installed staff quote configuration names
  * the borrowed browser and the credential file, the same way the staff quote spawner passes them to its CLIs.
  * Variables already set in the environment win, so a local run keeps its own browser.
- * A Da Vinci read target never inherits the Centurion CDP, quote secret file, or save gate.
+ * A Da Vinci read target never inherits the Centurion CDP, quote secret file, or write gates.
  */
 export function paneStaySpawnEnv(
   env: NodeJS.ProcessEnv = process.env,

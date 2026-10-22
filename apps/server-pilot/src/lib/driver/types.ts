@@ -167,10 +167,18 @@ export interface PilotCapabilities {
   hotelCategories: true;
   staleDraftWarning: true;
   catchupUpload: boolean;
-  /** True when RESERVATIONIST_PANE_SAVE is lab or on: the pane may offer Preview and Book. */
+  /** True when create mode is lab or on: the pane may offer Preview and Book. Alias of paneWrite.create !== 'off'. */
   paneSave: boolean;
-  /** The save mode behind paneSave: off (copy-only), lab (Labtest stays only) or on (real guests). */
+  /** The save mode behind paneSave. Alias of paneWrite.create. */
   paneSaveMode: 'off' | 'lab' | 'on';
+  /** Per-workflow write switches. Create never enables attach/amend/cancel. */
+  paneWrite: {
+    create: 'off' | 'lab' | 'on';
+    amendUnpaid: 'off' | 'lab' | 'on';
+    amendPaid: 'off' | 'lab' | 'on';
+    cancelUnpaid: 'off' | 'lab' | 'on';
+    cancelPaid: 'off' | 'lab' | 'on';
+  };
 }
 
 export interface ManagerConfig {

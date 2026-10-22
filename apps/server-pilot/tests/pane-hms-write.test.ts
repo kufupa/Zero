@@ -394,6 +394,8 @@ describe('pane HMS write (U26)', () => {
     expect(paneHmsWriteMode({ RESERVATIONIST_PANE_SAVE: 'lab' })).toBe('lab');
     expect(paneHmsWriteMode({ RESERVATIONIST_PANE_SAVE: 'on' })).toBe('off');
     expect(paneHmsWriteMode({ RESERVATIONIST_PANE_AMEND: 'lab' })).toBe('off');
+    expect(paneHmsWriteMode({ PANE_WRITE_CREATE: 'on' })).toBe('off');
+    expect(paneHmsWriteMode({ PANE_WRITE_AMEND_UNPAID: 'lab' })).toBe('off');
     expect(paneHmsWriteMode({})).toBe('off');
   });
 

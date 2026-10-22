@@ -545,7 +545,7 @@ export function BookingCards({
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
-  /** Set only when the server pane save flag is lab or on. Without it the card stays copy-only. */
+  /** Set only when create mode is lab or on (paneSave alias). Without it the card stays copy-only. */
   paneSave?: PaneStayClient | null;
   /** The stored read's contact. Its name and company fill the HMS notes where the room card has none. */
   contact?: StoredContact | null;

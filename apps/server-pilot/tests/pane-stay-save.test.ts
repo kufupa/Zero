@@ -17,6 +17,8 @@ import {
   paneStayRequestBody,
   paneStaySaveEnabled,
   paneStaySaveLoaders,
+  paneWriteMode,
+  paneWriteModes,
   paneStayTenantId,
   readPaneStayScreenshot,
   runPaneStay,
@@ -113,6 +115,52 @@ describe('pane stay save guards', () => {
     for (const value of ['ON', 'true', '1', ' on', 'lab ']) {
       expect(paneStaySaveMode({ RESERVATIONIST_PANE_SAVE: value })).toBe('off');
     }
+  });
+
+  it('falls back to SAVE only when all five PANE_WRITE_* flags are unset', () => {
+    expect(paneWriteMode('create', 'unpaid', { RESERVATIONIST_PANE_SAVE: 'lab' })).toBe('lab');
+    expect(paneWriteMode('cancel', 'unpaid', { RESERVATIONIST_PANE_SAVE: 'on' })).toBe('on');
+    expect(paneWriteMode('amend', 'unpaid', { RESERVATIONIST_PANE_SAVE: 'on' })).toBe('off');
+    expect(
+      paneWriteMode('create', 'unpaid', {
+        PANE_WRITE_CREATE: 'lab',
+        RESERVATIONIST_PANE_SAVE: 'on',
+      }),
+    ).toBe('lab');
+  });
+
+  it('once any new flag is set, an unset or invalid sibling is off', () => {
+    expect(paneWriteMode('amend', 'unpaid', { PANE_WRITE_CREATE: 'on' })).toBe('off');
+    expect(paneWriteMode('cancel', 'unpaid', { PANE_WRITE_CREATE: 'lab' })).toBe('off');
+    expect(
+      paneWriteMode('create', 'unpaid', {
+        PANE_WRITE_CREATE: 'lab',
+        PANE_WRITE_AMEND_UNPAID: 'nope',
+      }),
+    ).toBe('lab');
+    expect(
+      paneWriteMode('amend', 'unpaid', {
+        PANE_WRITE_CREATE: 'lab',
+        PANE_WRITE_AMEND_UNPAID: 'nope',
+      }),
+    ).toBe('off');
+    expect(paneStaySaveMode({ PANE_WRITE_AMEND_UNPAID: 'lab' })).toBe('off');
+  });
+
+  it('treats *_PAID=on as off and logs it', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(paneWriteMode('amend', 'paid', { PANE_WRITE_AMEND_PAID: 'on' })).toBe('off');
+    expect(paneWriteMode('cancel', 'paid', { PANE_WRITE_CANCEL_PAID: 'on' })).toBe('off');
+    expect(paneWriteMode('amend', 'paid', { PANE_WRITE_AMEND_PAID: 'lab' })).toBe('lab');
+    expect(warn).toHaveBeenCalledWith('pane_write_paid_on_ignored', { env: 'PANE_WRITE_AMEND_PAID' });
+    expect(warn).toHaveBeenCalledWith('pane_write_paid_on_ignored', { env: 'PANE_WRITE_CANCEL_PAID' });
+    expect(paneWriteModes({ PANE_WRITE_CREATE: 'on' })).toEqual({
+      create: 'on',
+      amendUnpaid: 'off',
+      amendPaid: 'off',
+      cancelUnpaid: 'off',
+      cancelPaid: 'off',
+    });
   });
 
   it('requires Labtest last name and arrival in 2027 or later', () => {

@@ -11,8 +11,33 @@ const plainObject = (value) => value !== null && typeof value === 'object' && !A
   [Object.prototype, null].includes(Object.getPrototypeOf(value));
 const refused = (error) => ({ ok: false, exitCode: 2, error });
 
-export function amendCommitAllowed(mode, env = process.env) {
-  return mode !== 'commit' || env.RESERVATIONIST_PANE_SAVE === 'lab';
+const PANE_WRITE_ENV_NAMES = [
+  'PANE_WRITE_CREATE',
+  'PANE_WRITE_AMEND_UNPAID',
+  'PANE_WRITE_AMEND_PAID',
+  'PANE_WRITE_CANCEL_UNPAID',
+  'PANE_WRITE_CANCEL_PAID',
+];
+
+function parseLabOn(value) {
+  return value === 'lab' || value === 'on' ? value : 'off';
+}
+
+function anyPaneWriteEnvSet(env) {
+  return PANE_WRITE_ENV_NAMES.some((name) => env[name] !== undefined);
+}
+
+/** Commit only when the amend switch for this money state is lab or on. Create mode never opens amend. */
+export function amendCommitAllowed(mode, env = process.env, moneyState = 'unpaid') {
+  if (mode !== 'commit') return true;
+  const paid = moneyState !== 'unpaid';
+  if (!anyPaneWriteEnvSet(env)) {
+    return env.RESERVATIONIST_PANE_SAVE === 'lab';
+  }
+  const key = paid ? 'PANE_WRITE_AMEND_PAID' : 'PANE_WRITE_AMEND_UNPAID';
+  const resolved = parseLabOn(env[key]);
+  if (paid && resolved === 'on') return false;
+  return resolved === 'lab' || resolved === 'on';
 }
 
 function paymentText(value) {

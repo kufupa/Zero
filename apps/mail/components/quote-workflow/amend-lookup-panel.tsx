@@ -107,7 +107,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
       .then((capabilities) => {
         if (!live) return;
         setCanPreviewCancel(canPreviewCancelFromCapabilities(capabilities));
-        setCanPreviewAmend(canPreviewAmendFromCapabilities(capabilities));
+        setCanPreviewAmend(canPreviewAmendFromCapabilities(capabilities)); // paneWrite amend/cancel, not create
       })
       .catch(() => {
         if (!live) return;
