@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
 import { compareRateClaim, type RateComparison } from '../quote-proposal/rate-check.js';
 import type { Board, QuoteRevision } from '../quote-proposal/quote-revision.js';
 import type { RowPrice } from '../quote-proposal/quote-lines.js';
@@ -278,7 +279,6 @@ export function createRequestFieldOptions(): {
           track: { enum: string[] };
           sourceOfBusiness: { enum: string[] };
           guaranteeType: { enum: string[] };
-          roomType: { enum: string[] };
         };
       };
     };
@@ -288,7 +288,7 @@ export function createRequestFieldOptions(): {
     track: props.track.enum,
     sourceOfBusiness: props.sourceOfBusiness.enum,
     guaranteeType: props.guaranteeType.enum,
-    roomType: props.roomType.enum,
+    roomType: Object.keys(profileFor('HRCEN')?.rooms ?? {}),
   };
 }
 

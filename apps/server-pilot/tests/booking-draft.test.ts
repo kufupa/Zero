@@ -510,7 +510,7 @@ describe('buildBookingDrafts', () => {
     expect(draft.missing.filter((item) => item.field === 'track')).toHaveLength(1);
   });
 
-  it('names $.roomType when the quoted room code is not in the create schema', async () => {
+  it('does not schema-fail an unknown room code; the CLI checks the property profile', async () => {
     const revision = await agencyRevision({ roomCode: 'XYZ' });
     const draft = await buildBookingDrafts({
       analysis: analysis(),
@@ -519,7 +519,7 @@ describe('buildBookingDrafts', () => {
       messageId: 'message-1',
       validate: validateCreate,
     });
-    expect(draft.rooms[0]!.schemaErrors.some((error) => error.includes('$.roomType'))).toBe(true);
+    expect(draft.rooms[0]!.schemaErrors.some((error) => error.includes('$.roomType'))).toBe(false);
   });
 
   it('flags a government ask whose quote context has no organization', async () => {

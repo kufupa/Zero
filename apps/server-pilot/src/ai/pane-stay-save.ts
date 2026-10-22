@@ -289,6 +289,11 @@ export function paneStayCreateTarget(input: {
   return { ok: true, target: CENTURION_HMS_READ_TARGET };
 }
 
+/** `--property HRDAV` only. Centurion omits the flag (CLI default HRCEN). */
+export function paneStayCreatePropertyArgs(target?: HmsReadTarget | null): string[] {
+  return target?.propertyCode === 'HRDAV' ? ['--property', 'HRDAV'] : [];
+}
+
 /** CDP + secret for create-lab-stay. HRDAV never inherits the Centurion slot. */
 export function paneStayCreateSpawnEnv(
   target: HmsReadTarget | null | undefined,
@@ -426,7 +431,14 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   await mkdir(dir, { mode: 0o700 });
   const requestPath = join(dir, 'request.json');
   await writeFile(requestPath, JSON.stringify(paneStayRequestBody(input.stay)), { mode: 0o600 });
-  const args = [CREATE_LAB_STAY, '--request', requestPath, '--out', dir];
+  const args = [
+    CREATE_LAB_STAY,
+    '--request',
+    requestPath,
+    '--out',
+    dir,
+    ...paneStayCreatePropertyArgs(input.target),
+  ];
   if (input.stopBefore) args.push('--stop-before', input.stopBefore);
   if (input.paneCommit) args.push('--pane-commit');
   let stdout: string;

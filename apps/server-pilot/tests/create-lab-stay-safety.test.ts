@@ -7,10 +7,11 @@ async function createLabStaySource(): Promise<string> {
 }
 
 describe('create-lab-stay write safety', () => {
-  it('checks HRCEN on every write, not only proof', async () => {
+  it('checks the --property code on every write, not only proof', async () => {
     const source = await createLabStaySource();
-    expect(source).toContain("secret.expectedPropertyCode !== 'HRCEN'");
+    expect(source).toContain('secret.expectedPropertyCode !== propertyCode');
     expect(source).toContain('PROPERTY_HRCEN_REQUIRED');
+    expect(source).toContain('PROPERTY_HRDAV_REQUIRED');
     expect(source).not.toContain('proofMode && secret.expectedPropertyCode');
     expect(source).not.toContain('PROOF_PROPERTY_HRCEN_REQUIRED');
   });
@@ -143,5 +144,39 @@ describe('create-lab-stay write safety', () => {
     expect(source).toContain('waitWhileStillProcessing(');
     expect(source).toContain('compareReadbackStay(');
     expect(source.match(/clickTip\(page, '\^Save'/g)?.length).toBe(1);
+  });
+});
+
+describe('create-lab-stay --property HRDAV', () => {
+  it('parses --property, matches profile rooms, and Labtest-guards only in lab', async () => {
+    const cli = await import('../tooling/playwright-quote/create-lab-stay.mjs');
+    const { profileFor } = await import('../tooling/playwright-quote/property-profile.mjs');
+    expect(cli.parseCreateProperty([])).toEqual({ ok: true, propertyCode: 'HRCEN' });
+    expect(cli.parseCreateProperty(['--property', 'HRDAV'])).toEqual({ ok: true, propertyCode: 'HRDAV' });
+    expect(cli.parseCreateProperty(['--property', 'OTHER'])).toEqual({
+      ok: false,
+      exitCode: 2,
+      error: 'PROPERTY_UNKNOWN',
+    });
+    const hrdav = profileFor('HRDAV');
+    const hrcen = profileFor('HRCEN');
+    expect(cli.createRoomTypeMismatch(hrdav, 'STKNG')).toBeNull();
+    expect(cli.createRoomTypeMismatch(hrdav, 'JNRSUI')).toBeNull();
+    expect(cli.createRoomTypeMismatch(hrdav, 'STQN')).toBe('ROOM_TYPE_PROPERTY_MISMATCH');
+    expect(cli.createRoomTypeMismatch(hrdav, 'SUITE')).toBe('ROOM_TYPE_PROPERTY_MISMATCH');
+    expect(cli.createRoomTypeMismatch(hrcen, 'STQN')).toBeNull();
+    expect(cli.createLabtestRefusal('HRDAV', { lastName: 'Guest', arrival: '2027-09-14' }, { HMS_DAVINCI_CREATE: 'lab' })).toBe(
+      'pane_save_labtest_required',
+    );
+    expect(
+      cli.createLabtestRefusal('HRDAV', { lastName: 'Labtest', arrival: '2026-12-31' }, { HMS_DAVINCI_CREATE: 'lab' }),
+    ).toBe('pane_save_arrival_2027_required');
+    expect(
+      cli.createLabtestRefusal('HRDAV', { lastName: 'Guest', arrival: '2026-11-12' }, { HMS_DAVINCI_CREATE: 'on' }),
+    ).toBeNull();
+    expect(cli.labtestInformationalOkAllowed({ lastName: 'Labtest', arrival: '2027-01-01' })).toBe(true);
+    const source = await createLabStaySource();
+    expect(source.indexOf('parseCreateProperty(argv)')).toBeLessThan(source.indexOf('connectOverCDP'));
+    expect(source.indexOf('PROPERTY_HRDAV_REQUIRED')).toBeLessThan(source.indexOf('connectOverCDP'));
   });
 });

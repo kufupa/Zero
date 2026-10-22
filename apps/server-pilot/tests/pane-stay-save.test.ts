@@ -19,6 +19,7 @@ import {
   paneStaySaveLoaders,
   paneWriteMode,
   paneWriteModes,
+  paneStayCreatePropertyArgs,
   paneStayCreateSpawnEnv,
   paneStayCreateTarget,
   paneStayTenantId,
@@ -982,6 +983,12 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
     expect(paneStayCreateTarget({ transportId: 'transport-centurion', env: { HMS_DAVINCI_CREATE: 'lab' } })).toEqual(
       { ok: true, target: CENTURION_HMS_READ_TARGET },
     );
+  });
+
+  it('passes --property HRDAV only for the Da Vinci target', () => {
+    expect(paneStayCreatePropertyArgs(DAVINCI_HMS_READ_TARGET)).toEqual(['--property', 'HRDAV']);
+    expect(paneStayCreatePropertyArgs(CENTURION_HMS_READ_TARGET)).toEqual([]);
+    expect(paneStayCreatePropertyArgs(null)).toEqual([]);
   });
 
   it('PANE_WRITE_CREATE off still refuses Da Vinci create when the DV gate is lab', async () => {

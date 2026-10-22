@@ -171,6 +171,21 @@ describe('paneStaySpawnEnv', () => {
     expect(env.HMS_READ_SECRET_ARN).toBe('nava-zero/server-pilot/infor-hms-read-davinci');
   });
 
+  it('forwards HMS_DAVINCI_CREATE to HRDAV so the CLI can keep the lab guard', () => {
+    expect(PANE_CLI_ENV_ALLOWLIST).toContain('HMS_DAVINCI_CREATE');
+    const env = paneStaySpawnEnv(
+      {
+        PATH: '/usr/bin',
+        HMS_STAGEHAND_CDP_URL_DAVINCI: 'http://127.0.0.1:19225',
+        HMS_DAVINCI_CREATE: 'lab',
+      },
+      () => configuration,
+      DAVINCI_HMS_READ_TARGET,
+    );
+    expect(env.HMS_DAVINCI_CREATE).toBe('lab');
+    expect(env.HMS_STAGEHAND_CDP_URL).toBe('http://127.0.0.1:19225');
+  });
+
   it('Da Vinci never inherits the Centurion slot storageState path', () => {
     const env = paneStaySpawnEnv(
       {
