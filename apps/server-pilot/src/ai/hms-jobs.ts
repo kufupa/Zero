@@ -49,6 +49,7 @@ import {
   type HmsReadTarget,
 } from '../hms/hms-read-target.js';
 import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
+import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -2217,6 +2218,8 @@ export async function prefetchQuoteReadyForExtraction(
     now,
   );
   if (!evaluation.plan?.inputs.length || !evaluation.transportId || !evaluation.threadId) return 0;
+  // Fork 8: DV quote is manual only. Never enqueue background prepare for Da Vinci mailboxes.
+  if (isDaVinciTransport(evaluation.transportId)) return 0;
   const origin = await guardCenturionHmsMailboxOrigin({
     transportId: evaluation.transportId,
     threadId: evaluation.threadId,
@@ -3069,6 +3072,17 @@ export async function executeHmsJob(input: {
         return 'dead_letter';
       }
       davinciReadTarget = hmsReadTargetJobMetrics(resolved.target)?.hmsReadTarget ?? null;
+    } else if (request.kind === 'staff_quote') {
+      const resolved = await resolveHmsQuoteJobTarget({
+        transportId: run.transportId,
+        threadId: run.threadId,
+        messageId: run.triggerMessageId,
+      });
+      if (!resolved.ok) {
+        await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
+        return 'dead_letter';
+      }
+      davinciReadTarget = hmsReadTargetJobMetrics(resolved.target)?.hmsReadTarget ?? null;
     } else {
       const origin = await guardCenturionHmsMailboxOrigin({
         transportId: run.transportId,
@@ -3094,6 +3108,11 @@ export async function executeHmsJob(input: {
     metrics.quotePrepared === true;
   if (systemPreparedQuote && !quotePreparationEnabled()) {
     await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, db);
+    return 'dead_letter';
+  }
+  // Fork 8: a DV prepared-quote job must not run even if the make-quote flag is on.
+  if (systemPreparedQuote && davinciReadTarget) {
+    await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
     return 'dead_letter';
   }
   if (

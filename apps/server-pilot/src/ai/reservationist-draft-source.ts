@@ -1,3 +1,4 @@
+import {quoteTargetForTransport} from '../hms/hms-quote-target.js';
 import {operationalDraftProofSchema,assertOperationalDraftSources,operationalDraftMessages,type OperationalDraftMessageRow} from './reservationist-operational-draft-source.js';
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
@@ -11,6 +12,11 @@ import type {ReservationistPersistedResult} from './drafts.js';
 const hash=z.string().regex(/^[a-f0-9]{64}$/),id=z.string().min(1).max(512);
 /** Existing reservationist worker deployment is scoped to the Centurion property. */
 export const RESERVATIONIST_DRAFT_PROPERTY_CODE='HRCEN' as const;
+/** Quote-only: HRDAV when HMS_DAVINCI_MAKE_QUOTE=on for a Da Vinci mailbox; otherwise HRCEN. */
+export function reservationistDraftPropertyCode(transportId:string,env:NodeJS.Dict<string>=process.env):typeof RESERVATIONIST_DRAFT_PROPERTY_CODE|'HRDAV'{
+ const resolved=quoteTargetForTransport(transportId,env);
+ return resolved.ok&&resolved.target.propertyCode==='HRDAV'?'HRDAV':RESERVATIONIST_DRAFT_PROPERTY_CODE;
+}
 const arrivalSourceSchema=z.object({attachmentId:id,sourceHash:hash,page:z.literal(1),quote:z.string().min(1).max(4096),start:z.number().int().min(0),end:z.number().int().min(1)}).strict();
 const arrivalSchema=z.object({task:z.object({id,kind:z.literal('question'),required:z.literal(true),source:arrivalSourceSchema}).strict(),receipt:z.object({kind:z.literal('requested_arrival_acknowledgement'),authority:z.literal('customer_claim'),hotelPermission:z.literal('unverified'),taskId:id,requestId:id,ownerRef:id,threadId:id,propertyCode:id,triggerMessageId:id,requestedTime:z.string().min(1).max(32),source:z.object({sourceRef:id,sourceHash:hash,quote:z.string().min(1).max(4096),start:z.number().int().min(0),end:z.number().int().min(1),observedAt:z.string().datetime(),disclosure:z.literal('guest')}).strict()}).strict()}).strict();
 const sourceSchema=z.object({version:z.literal(1),runId:id,generationId:id,transportId:id,propertyCode:id,threadId:id,requestedByUserId:id,triggerMessageId:id,causalAt:z.string().datetime(),resultDigest:hash,
@@ -70,7 +76,7 @@ export function assertChannelPacketDraftSource(value:unknown,source:Reservationi
 
 /** Every source-only prepared fact must have a narrow independently recomputed typed receipt. */
 export function assertSourcePreparedDraftFacts(result:ReservationistPersistedResult,source:ReservationistDraftSource,rows:readonly OperationalDraftMessageRow[],signal:AbortSignal):void{
- signal.throwIfAborted();if(source.propertyCode!==RESERVATIONIST_DRAFT_PROPERTY_CODE)throw new Error('operational_draft_property_invalid');const operational=source.operationalAnswers??[],keys=new Set(operational.map(p=>`${p.answer.kind}_${p.task.id}`));
+ signal.throwIfAborted();if(source.propertyCode!==RESERVATIONIST_DRAFT_PROPERTY_CODE&&source.propertyCode!==reservationistDraftPropertyCode(source.transportId))throw new Error('operational_draft_property_invalid');const operational=source.operationalAnswers??[],keys=new Set(operational.map(p=>`${p.answer.kind}_${p.task.id}`));
  const arrivalFacts=(result.preparedFacts??[]).filter(f=>!keys.has(f.key)),operationalFacts=(result.preparedFacts??[]).filter(f=>keys.has(f.key));
  const binding={requestId:source.triggerMessageId,ownerRef:source.transportId,threadId:source.threadId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,triggerMessageId:source.triggerMessageId,causalAt:source.causalAt};
  const messages=operationalDraftMessages(rows,binding);
