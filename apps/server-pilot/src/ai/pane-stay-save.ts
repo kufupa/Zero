@@ -261,7 +261,7 @@ export function paneStayTransportIdFromOwner(owner: string): string | undefined 
 
 /**
  * Mailbox transport (or an explicit HRDAV propertyCode with no Centurion transport) picks the
- * HMS slot. Da Vinci needs HMS_DAVINCI_CREATE=lab (on counts as lab). Centurion stays HRCEN.
+ * HMS slot. Da Vinci needs HMS_DAVINCI_CREATE=lab|on. Centurion stays HRCEN.
  */
 export function paneStayCreateTarget(input: {
   transportId?: string;
@@ -273,13 +273,13 @@ export function paneStayCreateTarget(input: {
   const fromTransport = transportTarget?.browserSlot === 'davinci';
   const fromProperty = input.propertyCode === DAVINCI_HMS_READ_TARGET.propertyCode;
   if (fromTransport) {
-    if (hmsDavinciCreateMode(env) !== 'lab') {
+    if (hmsDavinciCreateMode(env) === 'off') {
       return { ok: false, reason: 'pane_save_property_mismatch' };
     }
     return { ok: true, target: DAVINCI_HMS_READ_TARGET };
   }
   if (fromProperty) {
-    if (transportTarget || hmsDavinciCreateMode(env) !== 'lab') {
+    if (transportTarget || hmsDavinciCreateMode(env) === 'off') {
       return { ok: false, reason: 'pane_save_property_mismatch' };
     }
     return { ok: true, target: DAVINCI_HMS_READ_TARGET };
@@ -480,7 +480,7 @@ export function paneStayPropertyRefusal(
 ): string | null {
   if (propertyCode === undefined || propertyCode === PANE_STAY_PROPERTY_CODE) return null;
   if (propertyCode === DAVINCI_HMS_READ_TARGET.propertyCode) {
-    return hmsDavinciCreateMode(env) === 'lab' ? null : 'pane_save_property_mismatch';
+    return hmsDavinciCreateMode(env) === 'off' ? 'pane_save_property_mismatch' : null;
   }
   return 'pane_save_property_mismatch';
 }
@@ -510,7 +510,7 @@ export async function runPaneStay(input: {
     return { status: 'refused', reason: resolved.reason };
   }
   const target = resolved.target;
-  if (target.browserSlot === 'davinci') {
+  if (target.browserSlot === 'davinci' && hmsDavinciCreateMode() === 'lab') {
     try {
       assertLabStayGuard({ lastName: input.stay.lastName, arrival: input.stay.arrival });
     } catch (error) {

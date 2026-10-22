@@ -855,7 +855,7 @@ describe('pane stay save modes', () => {
 describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
   const davinciStay = { ...labStay, propertyCode: 'HRDAV' as const };
 
-  it('is off unless HMS_DAVINCI_CREATE is lab, and treats on as lab', () => {
+  it('is off unless HMS_DAVINCI_CREATE is lab or on, same as PANE_WRITE_CREATE', () => {
     expect(hmsDavinciCreateMode({})).toBe('off');
     expect(hmsDavinciCreateMode({ HMS_DAVINCI_CREATE: 'off' })).toBe('off');
     expect(hmsDavinciCreateMode({ HMS_DAVINCI_CREATE: 'true' })).toBe('off');
@@ -863,7 +863,7 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
     expect(hmsDavinciCreateMode({ HMS_DAVINCI_MAKE_QUOTE: 'on' })).toBe('off');
     expect(hmsDavinciCreateMode({ HMS_DAVINCI_READS: 'on' })).toBe('off');
     expect(hmsDavinciCreateMode({ HMS_DAVINCI_CREATE: 'lab' })).toBe('lab');
-    expect(hmsDavinciCreateMode({ HMS_DAVINCI_CREATE: 'on' })).toBe('lab');
+    expect(hmsDavinciCreateMode({ HMS_DAVINCI_CREATE: 'on' })).toBe('on');
   });
 
   it('HRDAV + gate off → refused before lock or spawn', async () => {
@@ -925,7 +925,7 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
     expect(lock?.key).toBe(propertyReadLockKey('centurion', 'HRDAV'));
   });
 
-  it('HRDAV + non-Labtest → refused even when PANE_WRITE_CREATE is on', async () => {
+  it('HRDAV + lab + non-Labtest → refused even when PANE_WRITE_CREATE is on', async () => {
     vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
     const locked: string[] = [];
     paneStaySaveLoaders.mode = () => 'on';
@@ -941,6 +941,22 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
       }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_labtest_required' });
     expect(locked).toEqual([]);
+  });
+
+  it('HRDAV + on lets a real guest through when PANE_WRITE_CREATE is on', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'on');
+    enableSave();
+    paneStaySaveLoaders.mode = () => 'on';
+    const seen: PaneStaySpawnInput[] = [];
+    paneStaySaveLoaders.spawn = async (input) => {
+      seen.push(input);
+      return cliSpawn(input);
+    };
+    const guest = { ...davinciStay, lastName: 'Guest', arrival: '2026-11-12', departure: '2026-11-14' };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: guest, owner: freshOwner('transport-davinci') }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'previewed' });
+    expect(seen[0]?.target).toEqual(DAVINCI_HMS_READ_TARGET);
   });
 
   it('Centurion create stays on HRCEN when the DV create gate is lab', async () => {
