@@ -38,4 +38,46 @@ describe('create-lab-stay write safety', () => {
       'committed_unverified',
     );
   });
+
+  it('polls still_processing, finds by conf#, and matches normalized fields', async () => {
+    const source = await createLabStaySource();
+    const start = source.indexOf('// --- create-readback-rules ---');
+    const end = source.indexOf('// --- end-create-readback-rules ---');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const rules = await import(`data:text/javascript,${encodeURIComponent(source.slice(start, end))}`);
+    expect(rules.saveStillProcessingDecision({
+      reason: 'still_processing',
+      maskVisible: true,
+      confirmationNumber: '',
+      elapsedMs: 0,
+    })).toBe('poll');
+    expect(rules.saveStillProcessingDecision({
+      reason: 'still_processing',
+      maskVisible: true,
+      confirmationNumber: '',
+      elapsedMs: 60_000,
+    })).toBe('stop');
+    expect(rules.readbackSearchPlan({ confirmationNumber: '66865808-1' })).toEqual({
+      by: 'confirmation',
+      confirmation: '66865808-1',
+    });
+    expect(rules.compareReadbackStay({
+      lastName: 'Labtest',
+      arrival: '2027-12-08',
+      departure: '2027-12-09',
+      roomType: 'STQN',
+      adults: 1,
+    }, {
+      lastName: 'labtest',
+      arrival: '08-DEC-2027',
+      departure: '2027-12-09',
+      roomType: 'STQN',
+      adults: 1,
+    })).toEqual({ readbackMatch: true, mismatches: [], unknownOutcome: null });
+    expect(paneCommitOutcome({ readbackMatch: true })).toBe('committed');
+    expect(source).toContain('waitWhileStillProcessing(');
+    expect(source).toContain('compareReadbackStay(');
+    expect(source.match(/clickTip\(page, '\^Save'/g)?.length).toBe(1);
+  });
 });

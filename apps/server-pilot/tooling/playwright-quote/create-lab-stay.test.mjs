@@ -397,12 +397,165 @@ test('after Save, allowlisted Ext box continues waitForSaveConfirmation and proo
   assert.ok(saveClick !== -1);
   const afterSave = source.slice(saveClick);
   const wait = afterSave.indexOf('waitForSaveConfirmation(');
+  const extraWait = afterSave.indexOf('waitWhileStillProcessing(');
   const proof = afterSave.indexOf('runProofReadback');
-  assert.ok(wait !== -1 && proof > wait);
+  assert.ok(wait !== -1 && extraWait > wait && proof > extraWait);
   const waitBlock = afterSave.slice(wait, wait + 900);
   assert.match(waitBlock, /handleVisibleExtMessageBox/);
   assert.match(waitBlock, /readSaveSnapshot/);
   const abortGuard = afterSave.indexOf('messageBoxAbort');
   const abortExit = afterSave.indexOf('process.exitCode = 2', abortGuard);
   assert.ok(abortGuard !== -1 && abortExit > abortGuard);
+  assert.equal([...afterSave.matchAll(/clickTip\(page, '\^Save'/g)].length, 1);
+});
+
+async function loadReadbackRules() {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('// --- create-readback-rules ---');
+  const end = source.indexOf('// --- end-create-readback-rules ---');
+  assert.ok(start !== -1 && end > start, 'create-lab-stay.mjs must export the create-readback-rules block');
+  return import(`data:text/javascript,${encodeURIComponent(source.slice(start, end))}`);
+}
+
+const READBACK_EXPECTED = {
+  lastName: 'Labtest',
+  arrival: '2027-12-08',
+  departure: '2027-12-09',
+  roomType: 'STQN',
+  adults: 1,
+};
+
+test('readback compare normalizes last name, ISO dates, room code, and adults', async () => {
+  const rules = await loadReadbackRules();
+  assert.equal(rules.isoStayDate('08-DEC-2027'), '2027-12-08');
+  assert.equal(rules.isoStayDate('2027-12-08'), '2027-12-08');
+  assert.equal(rules.normalizeRoomTypeCode('stqn Standard Queen'), 'STQN');
+  assert.deepEqual(rules.compareReadbackStay(READBACK_EXPECTED, {
+    lastName: 'LABTEST',
+    arrival: '08-DEC-2027',
+    departure: '09-Dec-2027',
+    roomType: 'STQN Standard Queen',
+    adults: '1',
+  }), { readbackMatch: true, mismatches: [], unknownOutcome: null });
+});
+
+test('readback compare reports field mismatches and stays unknown when a compared field is missing', async () => {
+  const rules = await loadReadbackRules();
+  assert.deepEqual(rules.compareReadbackStay(READBACK_EXPECTED, {
+    lastName: 'Other',
+    arrival: '2027-12-10',
+    departure: '2027-12-11',
+    roomType: 'STWN',
+    adults: 2,
+  }), {
+    readbackMatch: false,
+    mismatches: [
+      { field: 'lastName', expected: 'Labtest', actual: 'Other' },
+      { field: 'arrival', expected: '2027-12-08', actual: '2027-12-10' },
+      { field: 'departure', expected: '2027-12-09', actual: '2027-12-11' },
+      { field: 'roomType', expected: 'STQN', actual: 'STWN' },
+      { field: 'adults', expected: 1, actual: 2 },
+    ],
+    unknownOutcome: null,
+  });
+  assert.deepEqual(rules.compareReadbackStay(READBACK_EXPECTED, {
+    lastName: 'Labtest',
+    arrival: '2027-12-08',
+    departure: '2027-12-09',
+    roomType: 'STQN',
+  }), { readbackMatch: null, mismatches: [], unknownOutcome: 'unresolved' });
+  assert.equal(rules.compareReadbackStay(READBACK_EXPECTED, null).readbackMatch, null);
+});
+
+test('still_processing polls until the mask is gone or the 60s bound', async () => {
+  const rules = await loadReadbackRules();
+  assert.equal(rules.READBACK_WAIT_MS, 60_000);
+  assert.equal(rules.saveStillProcessingDecision({
+    reason: 'still_processing', maskVisible: true, confirmationNumber: '', elapsedMs: 0,
+  }), 'poll');
+  assert.equal(rules.saveStillProcessingDecision({
+    reason: 'still_processing', maskVisible: true, confirmationNumber: '66865808-1', elapsedMs: 59_000,
+  }), 'poll');
+  assert.equal(rules.saveStillProcessingDecision({
+    reason: 'still_processing', maskVisible: true, confirmationNumber: '', elapsedMs: 60_000,
+  }), 'stop');
+  assert.equal(rules.saveStillProcessingDecision({
+    maskVisible: false, confirmationNumber: '66865808-1', elapsedMs: 1_000,
+  }), 'stop');
+});
+
+test('still_processing wait reads the form with fakes and never retries Save', async () => {
+  const rules = await loadReadbackRules();
+  const frames = [
+    { maskVisible: true, confirmationNumber: '', status: 'New' },
+    { maskVisible: true, confirmationNumber: '66865808-1', status: 'New' },
+    { maskVisible: false, confirmationNumber: '66865808-1', status: 'Reserved' },
+  ];
+  let clock = 0;
+  let reads = 0;
+  const save = await rules.waitWhileStillProcessing({
+    reason: 'still_processing',
+    timeoutMs: 60_000,
+    pollMs: 5_000,
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    read: async () => frames[Math.min(reads++, frames.length - 1)],
+  });
+  assert.deepEqual(save, {
+    confirmed: true,
+    confirmationNumber: '66865808-1',
+    status: 'Reserved',
+    reason: null,
+  });
+  assert.equal(reads, 3);
+  assert.equal(clock, 10_000);
+
+  let lateClock = 0;
+  const timedOut = await rules.waitWhileStillProcessing({
+    reason: 'still_processing',
+    timeoutMs: 60_000,
+    pollMs: 5_000,
+    now: () => lateClock,
+    sleep: async (ms) => { lateClock += ms; },
+    read: async () => ({ maskVisible: true, confirmationNumber: '', status: 'New' }),
+  });
+  assert.equal(timedOut.confirmed, false);
+  assert.equal(timedOut.reason, 'still_processing');
+  assert.equal(lateClock, 60_000);
+});
+
+test('readback finds by confirmation when known, else guest last name + arrival, and polls not-found', async () => {
+  const rules = await loadReadbackRules();
+  assert.deepEqual(rules.readbackSearchPlan({ confirmationNumber: ' 82126330-1 ' }), {
+    by: 'confirmation', confirmation: '82126330-1',
+  });
+  assert.deepEqual(rules.readbackSearchPlan({ confirmationNumber: '', confirmed: false }), { by: 'guest' });
+  const calls = [];
+  let clock = 0;
+  const found = await rules.pollReadbackLookup(async () => {
+    calls.push(calls.length);
+    return calls.length < 3
+      ? { outcome: 'not_found', stay: null }
+      : { outcome: 'found', stay: READBACK_EXPECTED };
+  }, {
+    timeoutMs: 60_000,
+    pollMs: 5_000,
+    now: () => clock,
+    sleep: async (ms) => { clock += ms; },
+    isReady: rules.confirmationLookupReady,
+  });
+  assert.equal(found.outcome, 'found');
+  assert.equal(calls.length, 3);
+  assert.equal(rules.guestLookupReady({ outcome: 'ok', rows: [{ confirmation: '1' }] }), true);
+  assert.equal(rules.guestLookupReady({ outcome: 'ok', rows: [] }), false);
+});
+
+test('pane-commit readback uses normalized compare and known confirmation, never a second Save', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  assert.match(source, /compareReadbackStay\(/);
+  assert.match(source, /readbackSearchPlan\(/);
+  assert.match(source, /pollReadbackLookup\(/);
+  assert.match(source, /knownConfirmation\(/);
+  const saveClicks = [...source.matchAll(/clickTip\(page, '\^Save'/g)];
+  assert.equal(saveClicks.length, 1);
 });
