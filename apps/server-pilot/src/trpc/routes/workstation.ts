@@ -87,7 +87,10 @@ import {
 } from '../../quote-proposal/filename.js';
 import { and, eq, desc, sql } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
-import { assertHmsQuoteOriginAllowed } from '../../hms/hms-quote-target.js';
+import {
+  assertHmsQuoteOriginAllowed,
+  resolveHmsQuoteJobTarget,
+} from '../../hms/hms-quote-target.js';
 import { hmsReadTargetJobMetrics, isDaVinciTransport } from '../../hms/hms-read-target.js';
 import { TRPCError } from '@trpc/server';
 import { createHash } from 'node:crypto';
@@ -755,7 +758,11 @@ export const workstationRouter = router({
     .query(async ({ input, ctx }) => {
       await awaitPendingStaffQuote(input.runId);
       const [owned] = await getDb()
-        .select({ id: aiWorkflowRun.id })
+        .select({
+          id: aiWorkflowRun.id,
+          threadId: aiWorkflowRun.threadId,
+          triggerMessageId: aiWorkflowRun.triggerMessageId,
+        })
         .from(aiWorkflowRun)
         .innerJoin(aiDraftGeneration, eq(aiWorkflowRun.generationId, aiDraftGeneration.id))
         .where(
@@ -768,9 +775,17 @@ export const workstationRouter = router({
         .limit(1);
       const unavailable = { status: 'unavailable' as const, reason: 'quote_run_unavailable' };
       if (!owned) return unavailable;
+      const quoteTarget = await resolveHmsQuoteJobTarget({
+        transportId: ctx.activeTransportId,
+        threadId: owned.threadId,
+        messageId: owned.triggerMessageId,
+      });
+      if (!quoteTarget.ok) return unavailable;
       let outputDir: string;
       try {
-        outputDir = readInstalledStaffQuoteConfiguration().outputDir;
+        const config = readInstalledStaffQuoteConfiguration(quoteTarget.target.propertyCode);
+        if (config.owner.propertyCode !== quoteTarget.target.propertyCode) return unavailable;
+        outputDir = config.outputDir;
       } catch {
         return unavailable;
       }

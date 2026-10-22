@@ -323,6 +323,7 @@ async function provisionalWorkerQuote(
   onError?: (error: unknown) => void,
   inputOverrides: Partial<StaffQuoteInput> = {},
   prepared = false,
+  transportId = 'transport-1',
 ) {
   const actualRun = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
     '../src/ai/staff-quote-run.js',
@@ -337,7 +338,7 @@ async function provisionalWorkerQuote(
   });
   const mail = {
     id: STAFF_QUOTE_INPUT.messageId,
-    transportId: 'transport-1',
+    transportId,
     threadId: 'thread-1',
     direction: 'inbound',
     subject: 'Accommodation enquiry',
@@ -353,6 +354,7 @@ async function provisionalWorkerQuote(
     sourceHash: staffQuoteSourceHash(mail),
   });
   const { run, fence } = prepared ? preparedFixture() : fixture();
+  run.transportId = transportId;
   run.readRequest = { kind: 'staff_quote', input } as unknown as AiWorkflowRun['readRequest'];
   const quoteDb = staffQuoteRunDb(mail);
   quoteRunMocks.readConfiguration.mockReturnValue({
@@ -1275,5 +1277,49 @@ describe('runStaffQuote property installation', () => {
       message: 'Staff quotation installation unavailable',
     });
     expect(quoteRunMocks.readConfiguration.mock.calls).toEqual([['HRDAV']]);
+  });
+
+  it('reaches HRDAV staff quote services for a Da Vinci transport when the quote flag is on', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
+      '../src/ai/staff-quote-run.js',
+    );
+    const mail = mailFor('transport-davinci');
+    const input = staffQuoteInput.parse({
+      ...STAFF_QUOTE_INPUT,
+      sourceHash: staffQuoteSourceHash(mail),
+    });
+    quoteRunMocks.readConfiguration.mockReturnValue({
+      tenantId: 'synthetic-hotel',
+      owner: { propertyCode: 'HRDAV' },
+      outputDir: '/tmp/synthetic-staff-quote',
+    });
+    quoteRunMocks.snapshotRowPrices.mockResolvedValue([]);
+    quoteRunMocks.createPropertyReadLock.mockReturnValue({
+      withLock: (callback: () => Promise<unknown>) => callback(),
+    });
+    quoteRunMocks.getServices.mockReturnValue({});
+    workflowMocks.executeStaffQuote.mockResolvedValue({
+      id: 'revision-1',
+      authorizationId: 'auth-1',
+      totalMinor: 240_000,
+      currency: 'ZAR',
+      groups: [
+        {
+          arrivalDate: input.groups[0]!.arrivalDate,
+          departureDate: input.groups[0]!.departureDate,
+          context: {},
+        },
+      ],
+    });
+    await actual
+      .runStaffQuote(input, { transportId: 'transport-davinci', user }, staffQuoteRunDb(mail).db)
+      .catch(() => undefined);
+    expect(quoteRunMocks.readConfiguration.mock.calls).toEqual([['HRDAV']]);
+    expect(quoteRunMocks.getServices).toHaveBeenCalledWith(
+      expect.objectContaining({ propertyCode: 'HRDAV' }),
+      expect.anything(),
+    );
   });
 });
