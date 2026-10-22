@@ -1,8 +1,9 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CENTURION_DINNER_ADD_ON,
+  readInstalledStaffQuoteConfiguration,
   validateStaffQuoteInstallationConfiguration,
 } from '../src/ai/staff-quote-installation.js';
 
@@ -66,5 +67,30 @@ describe('staff quote installation defaults', () => {
       label: 'Dinner Allowance',
     });
     expect(CENTURION_DINNER_ADD_ON.amountMinor).toBe(35_000);
+  });
+});
+
+describe('readInstalledStaffQuoteConfiguration property install', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('refuses HRDAV when its install file is missing and never reads Centurion', () => {
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION', '/tmp/centurion-quote.json');
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '');
+    expect(() => readInstalledStaffQuoteConfiguration('HRDAV')).toThrow(
+      'staff_quote_installation_unavailable',
+    );
+  });
+
+  it('keeps HRCEN and an omitted property on the Centurion env', () => {
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION', '');
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-quote.json');
+    expect(() => readInstalledStaffQuoteConfiguration()).toThrow(
+      'staff_quote_installation_unavailable',
+    );
+    expect(() => readInstalledStaffQuoteConfiguration('HRCEN')).toThrow(
+      'staff_quote_installation_unavailable',
+    );
   });
 });
