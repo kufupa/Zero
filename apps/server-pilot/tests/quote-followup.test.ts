@@ -18,7 +18,7 @@ import {
 } from '../src/db/schema/mail.js';
 import { NAVA_USER_EMAIL, NAVA_USER_ID } from '../src/db/seed.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
-import { workEvent, workItem } from '../src/db/schema/work.js';
+import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { refreshThreadWork } from '../src/ai/work-items.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { toAiRunFence } from '../src/ai/run-ledger.js';
@@ -256,6 +256,107 @@ describe('quote follow-up drafts', () => {
       expect((await loadItem(db, itemId)).followUpDueAt).toBeNull();
       expect((await loadItem(db, itemId)).sentMessageId).toBeNull();
       expect(await followUpRuns(db, itemId)).toHaveLength(0);
+    });
+  });
+
+  it('a no-window hotel reply is not returned on the next sweep, and a later window reply still links', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const skippedId = await quoteRequest(db, 'thread-skip-window', REQUEST_AT);
+      await sendReply(db, {
+        id: 'out-skip-window',
+        threadId: 'thread-skip-window',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+      });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-skip-window' });
+      expect(await loadItem(db, skippedId)).toMatchObject({
+        status: 'done',
+        sentMessageId: 'out-skip-window',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, skippedId)).followUpDueAt).toEqual(FRI_SEND);
+      expect(await followUpRuns(db, skippedId)).toHaveLength(0);
+      expect(await threadDrafts(db, 'thread-skip-window')).toHaveLength(0);
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, skippedId)).followUpDueAt).toEqual(FRI_SEND);
+
+      const laterId = await quoteRequest(db, 'thread-later-window', REQUEST_AT);
+      await sendReply(db, { id: 'out-later-window', threadId: 'thread-later-window', sentAt: FRI_SEND });
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, laterId)).followUpDueAt).toEqual(HOLD_DUE);
+      expect((await loadItem(db, skippedId)).followUpDueAt).toEqual(FRI_SEND);
+      expect(await followUpRuns(db, skippedId)).toHaveLength(0);
+    });
+  });
+
+  it('a stored quote PDF Valid until 3 days starts the clock when the body has no window', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const withPdf = await quoteRequest(db, 'thread-pdf-window', REQUEST_AT);
+      await sendReply(db, {
+        id: 'out-pdf-window',
+        threadId: 'thread-pdf-window',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+        attach: true,
+      });
+      await db.insert(mailExtraction).values({
+        messageId: 'out-pdf-window',
+        extractorVersion: 'quote-followup-test',
+        status: 'succeeded',
+        kind: 'quote',
+        payload: {},
+        attachments: [
+          {
+            filename: 'quote.pdf',
+            mimeType: 'application/pdf',
+            status: 'read',
+            text: 'Valid until: 3 days from date quoted above',
+          },
+        ],
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, withPdf)).followUpDueAt).toEqual(HOLD_DUE);
+
+      const noPdf = await quoteRequest(db, 'thread-no-pdf-window', REQUEST_AT);
+      await sendReply(db, {
+        id: 'out-no-pdf-window',
+        threadId: 'thread-no-pdf-window',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+      });
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, noPdf)).followUpDueAt).toBeNull();
+      expect((await loadItem(db, noPdf)).sentMessageId).toBeNull();
     });
   });
 

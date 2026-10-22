@@ -28,7 +28,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import { deriveReplySubject } from './workflows/candidate-draft.js';
-import { FOLLOW_UP_DRAFT_FIELD_PATH, workEvent, workItem } from '../db/schema/work.js';
+import { FOLLOW_UP_DRAFT_FIELD_PATH, mailExtraction, workEvent, workItem } from '../db/schema/work.js';
 import { canonicalInternetMessageId } from './quote-workflow-analyse-selection.js';
 import { textToSafeHtml } from './draft-evidence.js';
 import { getDb, type DB } from '../db/client.js';
@@ -158,8 +158,63 @@ async function threadMessages(db: DB, transportId: string, threadId: string) {
 
 type ThreadMessage = Awaited<ReturnType<typeof threadMessages>>[number];
 
-function messageStatesHoldWindow(m: Pick<ThreadMessage, 'textBody' | 'htmlBody'>): boolean {
-  return quoteReplyStatesHoldWindow(m.textBody) || quoteReplyStatesHoldWindow(m.htmlBody);
+function messageStatesHoldWindow(
+  m: Pick<ThreadMessage, 'textBody' | 'htmlBody'>,
+  extracts: readonly string[] = [],
+): boolean {
+  if (quoteReplyStatesHoldWindow(m.textBody) || quoteReplyStatesHoldWindow(m.htmlBody)) return true;
+  return extracts.some((text) => quoteReplyStatesHoldWindow(text));
+}
+
+/** followUpDueAt === sentAt means we looked, there was no window, and no draft will be written. */
+function isSkippedHoldWindow(dueAt: Date, sentAt: Date): boolean {
+  return dueAt.getTime() === sentAt.getTime();
+}
+
+function textsFromStoredExtract(
+  attachments: Record<string, unknown>[] | null | undefined,
+  payload: Record<string, unknown> | null | undefined,
+): string[] {
+  const texts: string[] = [];
+  for (const row of attachments ?? []) {
+    const text = row?.text;
+    if (typeof text === 'string' && text.length > 0) texts.push(text);
+  }
+  const attachmentText = payload?.attachmentText;
+  if (typeof attachmentText === 'string' && attachmentText.length > 0) texts.push(attachmentText);
+  const attachmentTexts = payload?.attachmentTexts;
+  if (Array.isArray(attachmentTexts)) {
+    for (const text of attachmentTexts) {
+      if (typeof text === 'string' && text.length > 0) texts.push(text);
+    }
+  }
+  return texts;
+}
+
+/** Already-stored attachment extracts only. Never fetches objects. Never logs the text. */
+async function storedPdfExtracts(
+  db: DB,
+  messageIds: readonly string[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  if (messageIds.length === 0) return out;
+  const rows = await db
+    .select({
+      messageId: mailExtraction.messageId,
+      attachments: mailExtraction.attachments,
+      payload: mailExtraction.payload,
+    })
+    .from(mailExtraction)
+    .where(
+      and(inArray(mailExtraction.messageId, [...messageIds]), eq(mailExtraction.status, 'succeeded')),
+    );
+  for (const row of rows) {
+    const texts = textsFromStoredExtract(row.attachments, row.payload);
+    if (texts.length === 0) continue;
+    const prev = out.get(row.messageId) ?? [];
+    out.set(row.messageId, prev.concat(texts));
+  }
+  return out;
 }
 
 /** When an outbound message left: its send time, else when it was stored. A queued send counts as staff activity. */
@@ -355,10 +410,17 @@ export async function runQuoteFollowupSweep(
     if (!item.threadId) continue;
     const requestedAt = item.requestArrivedAt.getTime();
     const firstEligible = Math.max(requestedAt, since.getTime());
-    const sent = (await threadMessages(db, item.transportId, item.threadId))
+    const thread = await threadMessages(db, item.transportId, item.threadId);
+    const extracts = await storedPdfExtracts(
+      db,
+      thread.filter((m) => m.direction === 'outbound').map((m) => m.id),
+    );
+    const sent = thread
       .flatMap((m) => {
         const at = m.direction === 'outbound' ? deliveredTime(m) : null;
-        if (at === null || at < firstEligible || !messageStatesHoldWindow(m)) return [];
+        if (at === null || at < firstEligible || !messageStatesHoldWindow(m, extracts.get(m.id))) {
+          return [];
+        }
         return [{ id: m.id, at }];
       })
       .sort((a, b) => a.at - b.at)[0];
@@ -419,7 +481,21 @@ export async function runQuoteFollowupSweep(
     const sent = (await threadMessages(db, item.transportId, item.threadId)).find(
       (m) => m.id === item.sentMessageId,
     );
-    if (!sent || !messageStatesHoldWindow(sent)) continue;
+    const extracts = sent ? (await storedPdfExtracts(db, [sent.id])).get(sent.id) : undefined;
+    if (!sent || !messageStatesHoldWindow(sent, extracts)) {
+      // Sentinel: due === sent. The row leaves this select (followUpDueAt not null) and never queues a draft.
+      await db
+        .update(workItem)
+        .set({ followUpDueAt: item.sentAt, updatedAt: now })
+        .where(
+          and(
+            eq(workItem.id, item.id),
+            eq(workItem.sentMessageId, item.sentMessageId),
+            isNull(workItem.followUpDueAt),
+          ),
+        );
+      continue;
+    }
     const [linked] = await db
       .update(workItem)
       .set({ followUpDueAt: addQuoteFollowupDelay(item.sentAt), updatedAt: now })
@@ -450,6 +526,8 @@ export async function runQuoteFollowupSweep(
         or(inArray(workItem.status, OPEN_STATUSES), CLOSED_BY_HOTEL_REPLY),
         isNotNull(workItem.sentMessageId),
         isNotNull(workItem.followUpDueAt),
+        // Sentinel (due === sent) is "no window, no draft". Real clocks are always sent + 66h.
+        sql`${workItem.followUpDueAt} > ${workItem.sentAt}`,
         // An item was linked only after the cutoff let it through. Only a configured cutoff moved later drops it; the
         // process-start fallback moves on every restart and would strand items already waiting.
         sinceConfigured ? gte(workItem.sentAt, sinceConfigured) : undefined,
@@ -469,7 +547,9 @@ export async function runQuoteFollowupSweep(
       counts.cancelled++;
       continue;
     }
-    if (followUpDueAt.getTime() > now.getTime()) continue;
+    if (isSkippedHoldWindow(followUpDueAt, sentAt) || followUpDueAt.getTime() > now.getTime()) {
+      continue;
+    }
     await db.transaction(async (tx) => {
       await enqueueAiRun(
         {
