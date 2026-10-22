@@ -179,10 +179,15 @@ test('classifyAmendPayment is unpaid only for provisional + deposit 0 + non-payi
   assert.equal(classifyAmendPayment({ ...CURRENT, guaranteeType: 'Non-Guaranteed Indi...' }), 'unpaid');
   assert.equal(classifyAmendPayment({ ...CURRENT, depositReceived: '250.00' }), 'paid');
   assert.equal(classifyAmendPayment({ ...CURRENT, guaranteeType: 'Guaranteed By Agent' }), 'guaranteed');
-  assert.equal(classifyAmendPayment({ ...CURRENT, depositReceived: '' }), 'unknown');
-  assert.equal(classifyAmendPayment({ ...CURRENT, depositReceived: null }), 'unknown');
+  assert.equal(classifyAmendPayment({ ...CURRENT, depositReceived: '' }), 'unpaid');
+  assert.equal(classifyAmendPayment({ ...CURRENT, depositReceived: null }), 'unpaid');
+  assert.notEqual(
+    classifyAmendPayment({ ...CURRENT, depositReceived: null, guaranteeType: 'Guaranteed By Agent' }),
+    'unpaid',
+  );
   assert.equal(classifyAmendPayment({ ...CURRENT, guaranteeType: null }), 'unknown');
   assert.equal(classifyAmendPayment({ ...CURRENT, status: 'Confirmed' }), 'unknown');
+  assert.notEqual(classifyAmendPayment({ ...CURRENT, status: 'Confirmed', depositReceived: null }), 'unpaid');
 });
 
 test('validateAmendCurrent refuses paid, guaranteed, and missing payment fields', () => {

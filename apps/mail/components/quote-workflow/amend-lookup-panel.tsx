@@ -370,6 +370,11 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           <p>{AMEND_FIND_COPY.checkHint}</p>
         </div>
       ) : null}
+      {amendment.kind === 'amend' && stay && !unpaidStay ? (
+        <div data-testid="amend-payment-banner" className={warnNoteClass}>
+          {AMEND_SAVE_COPY.handleInHms}
+        </div>
+      ) : null}
       <div className={`grid ${requestedRows.length ? 'grid-cols-2' : 'grid-cols-1'} gap-3`}>
         <div
           data-testid={stay ? 'amend-hms-result-card' : undefined}
