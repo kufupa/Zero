@@ -5679,6 +5679,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(allowlist).not.toContain('BETTER_AUTH_');
       expect(allowlist).not.toContain('POP3_');
       expect(keys.filter((key) => key.startsWith('HMS_'))).toEqual([
+        'HMS_DAVINCI_CREATE',
         'HMS_DAVINCI_READS',
         'HMS_JOB_QUEUE',
         'HMS_QUOTE_PREPARE',
@@ -5843,6 +5844,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         "HMS_QUOTE_PREPARE='true'",
         "HMS_QUOTE_PREPARE_PER_HOUR='6'",
         "HMS_DAVINCI_READS='on'",
+        "HMS_DAVINCI_CREATE='lab'",
         "HMS_STAGEHAND_CDP_URL_DAVINCI='http://127.0.0.1:19225'",
         '',
       ].join('\n');
