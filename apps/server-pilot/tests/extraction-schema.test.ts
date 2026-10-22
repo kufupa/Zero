@@ -236,8 +236,8 @@ describe('mail extraction stay guests and action', () => {
     expect(payload.stays[0]!.action).toBe('quote_availability');
     expect(payload.stays[1]!.action).toBe('new_booking');
     expect(payload.action).toBe('quote_availability');
-    expect(payload.stays[0]!.id).toBe(stableId('s', 'msg-stay-guests', '0'));
-    expect(payload.stays[1]!.id).toBe(stableId('s', 'msg-stay-guests', '1'));
+    expect(payload.stays[0]!.id).toBe(stableId('s', 'msg-stay-guests', '2027-10-26\0' + '2027-10-28'));
+    expect(payload.stays[1]!.id).toBe(stableId('s', 'msg-stay-guests', '2027-11-17\0' + '2027-11-19'));
   });
 
   it('keeps stay guests and action optional on a stored payload without them', () => {
@@ -261,5 +261,66 @@ describe('mail extraction stay guests and action', () => {
     expect(EXTRACTION_RULES).toContain(
       'For each stay, action is optional and uses the same enum as top-level action. Top-level kind and action remain a summary of the mail.',
     );
+  });
+});
+
+describe('mail extraction stay identity', () => {
+  const octStay = AE1_OUTPUT.stays[0]!;
+  const novStay = AE1_OUTPUT.stays[1]!;
+
+  function staysOf(stays: typeof AE1_OUTPUT.stays, messageId: string) {
+    return sanitizeExtraction(
+      { ...ACTION_OUTPUT, stays },
+      { messageId, sourceText: AE1_TEXT },
+    ).payload.stays;
+  }
+
+  it('keeps the same stay id when two date sets come back in the other order', () => {
+    const forward = staysOf([octStay, novStay], 'msg-stay-reorder');
+    const reverse = staysOf([novStay, octStay], 'msg-stay-reorder');
+    const octId = forward.find((stay) => stay.requested.arrival === '2027-10-26')!.id;
+    const novId = forward.find((stay) => stay.requested.arrival === '2027-11-17')!.id;
+    expect(octId).not.toBe(novId);
+    expect(reverse.find((stay) => stay.requested.arrival === '2027-10-26')!.id).toBe(octId);
+    expect(reverse.find((stay) => stay.requested.arrival === '2027-11-17')!.id).toBe(novId);
+    expect(reverse[0]!.requested.arrival).toBe('2027-11-17');
+  });
+
+  it('keeps row ids when room types in a stay come back in the other order', () => {
+    const [single, twin] = octStay.rows;
+    const forward = staysOf([{ ...octStay, rows: [single!, twin!] }], 'msg-row-reorder');
+    const reverse = staysOf([{ ...octStay, rows: [twin!, single!] }], 'msg-row-reorder');
+    const stayId = forward[0]!.id;
+    expect(forward[0]!.rows.map((row) => row.roomType)).toEqual(['Single', 'Double/Twin']);
+    expect(reverse[0]!.rows.map((row) => row.roomType)).toEqual(['Double/Twin', 'Single']);
+    expect(reverse[0]!.id).toBe(stayId);
+    expect(reverse[0]!.rows.find((row) => row.roomType === 'Single')!.id).toBe(
+      forward[0]!.rows.find((row) => row.roomType === 'Single')!.id,
+    );
+    expect(reverse[0]!.rows.find((row) => row.roomType === 'Double/Twin')!.id).toBe(
+      forward[0]!.rows.find((row) => row.roomType === 'Double/Twin')!.id,
+    );
+  });
+
+  it('gives same-date stays distinct ids from guest confirmation, stable across reorder', () => {
+    const first = {
+      ...octStay,
+      guests: [{ name: 'Guest One', confirmationNumber: '57291630-1' }],
+    };
+    const second = {
+      ...octStay,
+      guests: [{ name: 'Guest Two', confirmationNumber: '57291630-2' }],
+    };
+    const sourceText = `${AE1_TEXT}\n57291630-1\n57291630-2`;
+    const sanitize = (stays: typeof AE1_OUTPUT.stays) =>
+      sanitizeExtraction({ ...ACTION_OUTPUT, stays }, { messageId: 'msg-same-date', sourceText }).payload
+        .stays;
+    const forward = sanitize([first, second]);
+    const reverse = sanitize([second, first]);
+    const oneId = forward.find((stay) => stay.guests?.[0]?.confirmationNumber === '57291630-1')!.id;
+    const twoId = forward.find((stay) => stay.guests?.[0]?.confirmationNumber === '57291630-2')!.id;
+    expect(oneId).not.toBe(twoId);
+    expect(reverse.find((stay) => stay.guests?.[0]?.confirmationNumber === '57291630-1')!.id).toBe(oneId);
+    expect(reverse.find((stay) => stay.guests?.[0]?.confirmationNumber === '57291630-2')!.id).toBe(twoId);
   });
 });

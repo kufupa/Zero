@@ -10,6 +10,7 @@ import {
   aiValueAt,
   correctionsCarryTo,
   dismissWorkItem,
+  remapWorkState,
   ensureWorkItem,
   ensureWorkItemForMessage,
   formStays,
@@ -873,10 +874,10 @@ describe('work item upsert', () => {
       expect(row!.extractionId).toBe(newer);
     }));
 
-  it('keeps the item on the read she corrected when a re-read puts the stays in another order', () =>
+  it('keeps her arrival edit on the same dates when a re-read swaps stay order and ids', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'up3');
-      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
       const work = await readyWork(db, 'up3');
       await recordFieldEvent(db, {
         transportId: CENTURION,
@@ -886,21 +887,24 @@ describe('work item upsert', () => {
         fieldPath: `stays[${STAY_ONE}].requested.arrival`,
         value: '2027-10-25',
       });
-      // Same mail read again with the stays swapped: positional ids now name the other stay.
       const swapped = payload();
-      const [one, two] = swapped.stays;
+      const [oct, nov] = swapped.stays;
       swapped.stays = [
-        { ...two!, id: STAY_ONE, rows: two!.rows.map((row) => ({ ...row, id: ROW_SINGLE })) },
-        { ...one!, id: STAY_TWO, rows: one!.rows.map((row, index) => ({ ...row, id: [ROW_STAY_TWO, 'r_eeee1111'][index]! })) },
+        { ...nov!, id: 's_nov_new', rows: nov!.rows.map((row) => ({ ...row, id: 'r_nov_new' })) },
+        {
+          ...oct!,
+          id: 's_oct_new',
+          rows: oct!.rows.map((row, index) => ({ ...row, id: `r_oct_new_${index}` })),
+        },
       ];
-      await insertRead(db, messageId, { version: 'extract-v2', payload: swapped });
+      const second = await insertRead(db, messageId, { version: 'extract-v2', payload: swapped });
 
       const after = await readyWork(db, 'up3');
-      expect(after.extractionId).toBe(first);
+      expect(after.extractionId).toBe(second);
       expect(after.analysis.groups.map((group) => [group.roomPreference, group.arrivalDate])).toEqual([
+        ['Double/Twin', '2027-11-17'],
         ['Single', '2027-10-25'],
         ['Double/Twin', '2027-10-25'],
-        ['Double/Twin', '2027-11-17'],
       ]);
     }));
 });
@@ -922,6 +926,40 @@ describe('corrections carry to a re-read', () => {
     const reRead = payload();
     reRead.stays[0]!.rows[1] = { ...reRead.stays[0]!.rows[1]!, adultsPerRoom: 3 };
     expect(correctionsCarryTo(payload(), reRead, state)).toBe(true);
+  });
+
+  it('carries an edit onto the same dates when a re-read assigns new stay ids in another order', () => {
+    const before = payload();
+    const [oct, nov] = payload().stays;
+    const after: MailExtractionPayload = {
+      ...payload(),
+      stays: [
+        { ...nov!, id: 's_nov_new', rows: nov!.rows.map((row) => ({ ...row, id: 'r_nov_new' })) },
+        { ...oct!, id: 's_oct_new', rows: oct!.rows.map((row, index) => ({ ...row, id: `r_oct_new_${index}` })) },
+      ],
+    };
+    const state = { [`stays[${STAY_ONE}].requested.arrival`]: '2027-10-25' };
+    expect(correctionsCarryTo(before, after, state)).toBe(true);
+    expect(remapWorkState(before, after, state)).toEqual({
+      'stays[s_oct_new].requested.arrival': '2027-10-25',
+    });
+  });
+
+  it('does not carry an edit when two stays share dates and cannot be told apart', () => {
+    const before = payload();
+    before.stays[1] = {
+      ...before.stays[1]!,
+      requested: { ...before.stays[0]!.requested },
+    };
+    const after = payload();
+    after.stays[1] = {
+      ...after.stays[1]!,
+      requested: { ...after.stays[0]!.requested },
+    };
+    const [one, two] = after.stays;
+    after.stays = [two!, one!];
+    const state = { [`stays[${STAY_ONE}].requested.arrival`]: '2027-10-25' };
+    expect(correctionsCarryTo(before, after, state)).toBe(false);
   });
 });
 
