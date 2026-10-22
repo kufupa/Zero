@@ -216,8 +216,8 @@ export async function redeemActivation(
         bounds = s.captureStartedAt
           ? {}
           : {
+              // History is [oldest held mail - 1 month, oldest held mail); server sync already holds the rest.
               ...onboardingBounds(await oldestMailOr(t, s.transportId, now), s.timezone),
-              historyTo: now,
               captureStartedAt: now,
               committedThrough: now,
             };

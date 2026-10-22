@@ -12,7 +12,10 @@ describe('outlook history anchors on the oldest mail already held', () => {
   it('starts one month before the oldest server-synced mail', async () => {
     const anchor = await oldestMailOr(fakeDb(new Date('2026-10-08T06:00:00Z')), 't1', now);
     expect(anchor.toISOString()).toBe('2026-10-08T06:00:00.000Z');
-    expect(onboardingBounds(anchor).historyFrom.toISOString()).toBe('2026-09-08T06:00:00.000Z');
+    const bounds = onboardingBounds(anchor);
+    expect(bounds.historyFrom.toISOString()).toBe('2026-09-08T06:00:00.000Z');
+    // Ends at the oldest held mail, so the install never re-uploads what the server already has.
+    expect(bounds.historyTo.toISOString()).toBe('2026-10-08T06:00:00.000Z');
   });
 
   it('falls back to now for an empty mailbox', async () => {
