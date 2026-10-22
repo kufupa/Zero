@@ -16,7 +16,8 @@ import {
   writePrivateFile,
   type PartyIndexFile,
 } from '../src/ai/party-index.js';
-import { panePartyLookupLoaders } from '../src/ai/pane-party-lookup.js';
+import { panePartyLookupLoaders, resetPartyCacheForTests } from '../src/ai/pane-party-lookup.js';
+import { DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { verifyStaffParties } from '../src/trpc/routes/workstation.js';
 import { appRouter } from '../src/trpc/router.js';
 
@@ -32,6 +33,7 @@ afterEach(async () => {
   panePartyLookupLoaders.spawn = null;
   panePartyLookupLoaders.lock = null;
   panePartyLookupLoaders.enabled = null;
+  resetPartyCacheForTests();
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -318,5 +320,24 @@ describe('a pick from the list is still checked live before a rate is bound', ()
     await expect(
       verifyStaffParties({ company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } }),
     ).resolves.toEqual({ company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } });
+  });
+
+  it('re-checks a Da Vinci pick on HRDAV so a valid DV id is not refused', async () => {
+    panePartyLookupLoaders.lock = { withLock: async (fn) => fn() };
+    const spawn = vi.fn(async () => ({
+      outcome: 'resolved',
+      candidates: [{ nativeId: '206', displayName: 'Tourvest Test Profile', kind: 'organization', matchedOn: ['store'] }],
+      truncated: false,
+    }));
+    panePartyLookupLoaders.spawn = spawn;
+    await expect(
+      verifyStaffParties(
+        { company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } },
+        DAVINCI_HMS_READ_TARGET,
+      ),
+    ).resolves.toEqual({ company: { kind: 'company', nativeId: '206', name: 'Tourvest Test Profile' } });
+    expect(spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'company', name: 'Tourvest Test Profile', target: DAVINCI_HMS_READ_TARGET }),
+    );
   });
 });
