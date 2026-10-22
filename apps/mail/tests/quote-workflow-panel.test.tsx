@@ -703,6 +703,42 @@ describe('QuoteWorkflowPanel', () => {
     expect(onRunStep).toHaveBeenCalledWith(base.steps[0]!.id);
   });
 
+  it('disables Search availability when the server makeQuote capability is off', () => {
+    const onRunStep = vi.fn();
+    const base = sessionFromFixture('public-single');
+    const session = withLunaMissing(
+      {
+        ...base,
+        phase: 'requirements',
+        offers: [],
+        rateOptions: [],
+        selectedOfferIds: [],
+        groups: base.groups.map((group) => ({
+          ...group,
+          roomPreference: '',
+          roomTypeCode: undefined,
+          roomCodes: [],
+          quantity: 2,
+          adults: 2,
+          fields: {
+            ...group.fields,
+            roomPreference: 'defaulted',
+            quantity: 'staff_corrected',
+            adults: 'staff_corrected',
+          },
+        })),
+        steps: base.steps.map((step) => ({ ...step, status: 'ready' as const })),
+      },
+      [{ field: 'stay', question: 'Complete the stay details.' }],
+    );
+    render(<QuoteWorkflowPanel session={session} onRunStep={onRunStep} makeQuote={false} />);
+    const search = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
+    expect(search.disabled).toBe(true);
+    fireEvent.click(search);
+    expect(onRunStep).not.toHaveBeenCalled();
+    expect(screen.getByText('Make quote is not available for this mailbox.')).toBeTruthy();
+  });
+
   it('labels missing fields and extracted provenance', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('missing-fields')} />);
     expect(screen.getAllByText('Missing').length).toBeGreaterThan(0);

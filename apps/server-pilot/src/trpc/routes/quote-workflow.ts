@@ -40,6 +40,7 @@ import { workItemIdForMail } from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
 import { mailboxProcedure, privateProcedure, router } from '../trpc.js';
 import { CENTURION_RATE_PLANS } from '../../hms/rate-catalogue.js';
+import { quoteTargetForTransport } from '../../hms/hms-quote-target.js';
 import { z } from 'zod';
 
 export { hashSyncedQuoteSelection } from '../../ai/quote-workflow-analyse-selection.js';
@@ -142,6 +143,14 @@ export const runStepInput = z.object({
 
 export const quoteWorkflowRouter = router({
   rateCatalogue: privateProcedure.query(() => CENTURION_RATE_PLANS),
+  /** Server-backed Make quote: DV mailboxes only when HMS_DAVINCI_MAKE_QUOTE=on. Writes stay ungated here. */
+  makeQuote: mailboxProcedure.query(({ ctx }) => {
+    const resolved = quoteTargetForTransport(ctx.activeTransportId);
+    return {
+      makeQuote: resolved.ok,
+      propertyCode: resolved.ok ? resolved.target.propertyCode : null,
+    };
+  }),
   analyseSelection: mailboxProcedure
     .input(analyseSelectionInput)
     .mutation(async ({ input, ctx }) => {
