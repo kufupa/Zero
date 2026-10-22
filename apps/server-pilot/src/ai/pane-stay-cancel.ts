@@ -244,11 +244,14 @@ async function runPaneStayCancel(
   mode: PaneStayCancelMode,
   input: OwnedInput<PaneStayCancelPreviewInput & { reason?: string; previewDigest?: string }>,
 ): Promise<PaneStayCancelResult> {
-  // Per-workflow cancel switch. --allow-real-guest only when this money state's resolved mode is on.
-  const moneyState = paneStayCancelLoaders.moneyState?.() ?? 'unpaid';
-  const saveMode = paneStayCancelLoaders.mode?.() ?? paneWriteMode('cancel', moneyState);
+  // Unknown money uses the paid switch (fail closed). Prod preview/commit never inject a money
+  // state, so --allow-real-guest waits until money is resolved and that mode is on.
+  const injectedMode = paneStayCancelLoaders.mode?.();
+  const moneyState = paneStayCancelLoaders.moneyState?.() ?? 'unknown';
+  const saveMode = injectedMode ?? paneWriteMode('cancel', moneyState);
   if (saveMode === 'off') return refused('refused_flag_off');
-  const allowRealGuest = saveMode === 'on';
+  const moneyResolved = injectedMode != null || moneyState === 'unpaid' || moneyState === 'paid';
+  const allowRealGuest = moneyResolved && saveMode === 'on';
   const inputRefusal = checkCancelInput(input, { allowRealGuest });
   if (inputRefusal) return refused(inputRefusal);
   const reason = mode === 'commit' ? (input.reason ?? '').replace(/\s+/g, ' ').trim() : null;

@@ -143,6 +143,7 @@ describe('pane stay cancel', () => {
   it('CANCEL_UNPAID=lab never passes allow-real-guest, even when SAVE is on', async () => {
     const calls: PaneStayCancelSpawnInput[] = [];
     paneStayCancelLoaders.lock = passingLock();
+    paneStayCancelLoaders.moneyState = () => 'unpaid';
     paneStayCancelLoaders.spawn = async (input) => {
       calls.push(input);
       return cliResult();
@@ -152,6 +153,23 @@ describe('pane stay cancel', () => {
     await expect(previewCancel({ ...stay, owner })).resolves.toMatchObject({ outcome: 'preview_ok' });
     expect(calls[0]).toMatchObject({ allowRealGuest: false });
     expect(buildCancelStayArgs(calls[0]!, '/tmp/run')).not.toContain('--allow-real-guest');
+  });
+
+  it('unknown money uses the paid switch: CANCEL_UNPAID=on CANCEL_PAID=off refuses with no allow-real-guest', async () => {
+    const calls: PaneStayCancelSpawnInput[] = [];
+    paneStayCancelLoaders.lock = passingLock();
+    paneStayCancelLoaders.spawn = async (input) => {
+      calls.push(input);
+      throw new Error('must not spawn');
+    };
+    vi.stubEnv('PANE_WRITE_CANCEL_UNPAID', 'on');
+    vi.stubEnv('PANE_WRITE_CANCEL_PAID', 'off');
+    await expect(previewCancel({ ...stay, owner })).resolves.toMatchObject({
+      outcome: 'refused_flag_off',
+      previewDigest: null,
+    });
+    expect(paneStayCancelLoaders.moneyState).toBeNull();
+    expect(calls).toEqual([]);
   });
 
   it('paid stay with CANCEL_PAID=off refuses and does not spawn', async () => {
