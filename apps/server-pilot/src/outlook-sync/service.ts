@@ -25,6 +25,7 @@ import {
   outlookSyncScan,
   outlookSyncObservation,
 } from '../db/schema/outlook-sync.js';
+import { message } from '../db/schema/mail.js';
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import { wrappingKey } from '../outlook-security/device.js';
 import { refreshSourceSummary } from './ledger.js';
@@ -43,6 +44,20 @@ function unprotect(value: string, rawKey: string) {
     cipher = createDecipheriv('aes-256-gcm', wrappingKey(rawKey), bytes.subarray(0, 12));
   cipher.setAuthTag(bytes.subarray(12, 28));
   return Buffer.concat([cipher.update(bytes.subarray(28)), cipher.final()]).toString('utf8');
+}
+/** History reaches one month before the oldest mail we already hold for this mailbox, so a late
+ * install adds a new month instead of re-uploading mail the server sync already has. */
+export async function oldestMailOr(
+  t: Pick<DB, 'select'>,
+  transportId: string,
+  now: Date,
+): Promise<Date> {
+  const [row] = await t
+    .select({ oldest: sql<Date | null>`min(${message.receivedAt})` })
+    .from(message)
+    .where(eq(message.transportId, transportId));
+  const oldest = row?.oldest ? new Date(row.oldest) : null;
+  return oldest && oldest.getTime() < now.getTime() ? oldest : now;
 }
 export function onboardingBounds(at: Date, timezone = 'Africa/Johannesburg') {
   // Calendar arithmetic occurs in the hotel timezone, then converts back to UTC; month end clamps.
@@ -200,7 +215,12 @@ export async function redeemActivation(
       const handle = randomBytes(32).toString('base64url'),
         bounds = s.captureStartedAt
           ? {}
-          : { ...onboardingBounds(now, s.timezone), captureStartedAt: now, committedThrough: now };
+          : {
+              ...onboardingBounds(await oldestMailOr(t, s.transportId, now), s.timezone),
+              historyTo: now,
+              captureStartedAt: now,
+              committedThrough: now,
+            };
       [s] = await t
         .update(outlookSyncSource)
         .set({
