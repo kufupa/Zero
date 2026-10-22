@@ -132,7 +132,7 @@ export type MoveEmailResult = z.infer<typeof MoveEmailResultSchema>;
 
 export const BridgeCapabilitiesSchema = z.object({
   mailboxSync: z.number().int().optional(),
-  readRoots: z.array(z.object({storeId:z.string().min(1).max(512),rootEntryId:z.string().min(1).max(512),policyVersion:z.literal(1),policyGeneration:z.number().int().positive()}).strict()).max(25).default([]),
+  readRoots: z.array(z.object({storeId:z.string().min(1).max(2048),rootEntryId:z.string().min(1).max(512),policyVersion:z.literal(1),policyGeneration:z.number().int().positive()}).strict()).max(25).default([]),
   bridgeProtocolVersion: z.number(),
   addinVersion: z.string(),
   outlookVersion: z.string(),
@@ -312,8 +312,9 @@ export function isSelectionChangedEvent(response: BridgeResponse): boolean {
 // These finite DTOs are additive to bridge v4. Unknown sync versions deny only sync.
 export const MAILBOX_SYNC_CAPABILITY_VERSION = 1 as const;
 const SyncIdentitySchema = z.string().min(1).max(512);
+const StoreIdSchema = z.string().min(1).max(2048);
 export const ReadRootPolicyV1Schema = z.object({
-  storeId: SyncIdentitySchema, rootEntryId: SyncIdentitySchema,
+  storeId: StoreIdSchema, rootEntryId: SyncIdentitySchema,
   policyVersion: z.literal(1), policyGeneration: z.number().int().positive().max(2147483647),
 }).strict();
 export type ReadRootPolicyV1 = z.infer<typeof ReadRootPolicyV1Schema>;

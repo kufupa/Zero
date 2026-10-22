@@ -1181,7 +1181,7 @@ export const workstationRouter = router({
           deviceId: z.string().uuid(),
           paneChallenge: z.string().length(43),
           action: z.string().min(1).max(64),
-          storeId: z.string().min(1).max(512).optional(),
+          storeId: z.string().min(1).max(2048).optional(),
           operationId: z.string().min(1).max(128).optional(),
           resources: z.array(z.string().min(1).max(512)).max(25).optional(),
           sourceFolderId: z.string().min(1).max(512).optional(),

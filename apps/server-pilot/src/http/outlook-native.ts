@@ -106,7 +106,7 @@ export function createOutlookNativeHandler(db: DB, key: string) {
     }
     if (typeof values.code !== 'string' || typeof values.deviceId !== 'string' || typeof values.storeId !== 'string'
       || typeof values.version !== 'string' || typeof values.secret !== 'string'
-      || values.code.length > 128 || values.deviceId.length > 128 || values.storeId.length > 512
+      || values.code.length > 128 || values.deviceId.length > 128 || values.storeId.length > 2048
       || values.version.length > 16 || values.secret.length > 128) return new Response(null, { status: 400 });
     const result = await enrollDevice(db, {
       code: values.code, deviceId: values.deviceId, storeId: values.storeId,

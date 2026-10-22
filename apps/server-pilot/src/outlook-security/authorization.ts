@@ -32,6 +32,7 @@ const itemMutationActions = new Set(['UPDATE_DRAFT', 'CREATE_REPLY_DRAFT', 'ADD_
   'SET_EMAIL_CATEGORY', 'SET_FOLLOW_UP_FLAG', 'MARK_EMAIL_READ']);
 const targetedItemActions = new Set([...itemReadActions, ...itemMutationActions]);
 const isToken = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 512;
+const isStoreId = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 2048;
 const isOp = (value: unknown): value is string => {
   if (typeof value !== 'string') return false;
   const match = /^op_(\d{13})_([0-9a-f]{32})$/.exec(value);
@@ -49,7 +50,7 @@ export type NativeScopeInput = { ticket: string; action: string; storeId: string
 
 /** Server-only operator provisioning. Never expose this mutation to tRPC or public HTTP. */
 export async function provisionApprovedFolder(db: DB, input: { storeId: string; transportId: string; folderId: string; kind: 'triage' | 'inbox' | 'spam' | 'drafts' }) {
-  if (![input.storeId, input.transportId, input.folderId].every(isToken)) throw new Error('Invalid folder approval');
+  if (!isStoreId(input.storeId) || !isToken(input.transportId) || !isToken(input.folderId)) throw new Error('Invalid folder approval');
   if (!['triage', 'inbox', 'spam', 'drafts'].includes(input.kind)) throw new Error('Invalid folder kind');
   const [transport] = await db.select({ id: mailboxTransport.id }).from(mailboxTransport)
     .where(and(eq(mailboxTransport.id, input.transportId), eq(mailboxTransport.isActive, true))).limit(1);
@@ -96,7 +97,7 @@ async function liveSession(db: DB, auth: AuthSession, headers: Headers) {
 
 export async function issueBridgeTicket(db: DB, auth: AuthSession, headers: Headers, input: TicketInput): Promise<{ ticket: string; storeId: string; expiresInSeconds: 60 }> {
   const identity = await liveSession(db, auth, headers);
-  if (!identity || !isToken(input.transportId) || input.storeId !== undefined && !isToken(input.storeId)
+  if (!identity || !isToken(input.transportId) || input.storeId !== undefined && !isStoreId(input.storeId)
     || !/^[0-9a-f-]{36}$/i.test(input.deviceId) || !/^[A-Za-z0-9_-]{43}$/.test(input.paneChallenge)
     || !(readActions.has(input.action) || mutationActions.has(input.action))
     || (mutationActions.has(input.action) && !isOp(input.operationId))
@@ -145,7 +146,7 @@ export async function issueBridgeTicket(db: DB, auth: AuthSession, headers: Head
 }
 
 function validResourceScope(input: NativeScopeInput): boolean {
-  if (!isToken(input.storeId) || !isToken(input.transportId) || !readActions.has(input.action) && !mutationActions.has(input.action)) return false;
+  if (!isStoreId(input.storeId) || !isToken(input.transportId) || !readActions.has(input.action) && !mutationActions.has(input.action)) return false;
   if (input.resources !== undefined && (!Array.isArray(input.resources) || input.resources.length > 25
     || input.resources.some((item) => !isToken(item)) || new Set(input.resources).size !== input.resources.length)) return false;
   if (mutationActions.has(input.action) && (!isOp(input.operationId)

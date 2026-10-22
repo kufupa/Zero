@@ -37,6 +37,19 @@ describe.skipIf(!TEST_DB_AVAILABLE)('Outlook device enrollment (disposable Postg
     });
   });
 
+  it('issues and redeems a 600-character StoreID', async () => {
+    await withTestDb(async (db) => {
+      const ids = await fixtures(db);
+      const longStoreId = 'A'.repeat(600);
+      const code = await issueEnrollment(db, { ...ids, storeId: longStoreId });
+      const deviceId = randomUUID();
+      expect(await enrollDevice(db, { code, deviceId, storeId: longStoreId, version: '4', secret }, key)).toEqual({ deviceId });
+      const [saved] = await db.select().from(outlookDevice).where(eq(outlookDevice.deviceId, deviceId));
+      expect(saved.storeId).toBe(longStoreId);
+      expect(await isDeviceAuthorized(db, deviceId, ids.userId, ids.transportId, longStoreId)).toBe(true);
+    });
+  });
+
   it('rejects guessed, expired and incorrect-store pairing without consuming valid code', async () => {
     await withTestDb(async (db) => {
       const ids = await fixtures(db);
