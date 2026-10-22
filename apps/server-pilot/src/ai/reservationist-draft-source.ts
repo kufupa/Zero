@@ -76,9 +76,9 @@ export function assertChannelPacketDraftSource(value:unknown,source:Reservationi
 
 /** Every source-only prepared fact must have a narrow independently recomputed typed receipt. */
 export function assertSourcePreparedDraftFacts(result:ReservationistPersistedResult,source:ReservationistDraftSource,rows:readonly OperationalDraftMessageRow[],signal:AbortSignal):void{
- signal.throwIfAborted();const allowed=source.propertyCode===RESERVATIONIST_DRAFT_PROPERTY_CODE||source.propertyCode===reservationistDraftPropertyCode(source.transportId);if(!allowed)throw new Error('operational_draft_property_invalid');const operational=source.operationalAnswers??[],keys=new Set(operational.map(p=>`${p.answer.kind}_${p.task.id}`));
+ signal.throwIfAborted();if(source.propertyCode!==RESERVATIONIST_DRAFT_PROPERTY_CODE&&source.propertyCode!==reservationistDraftPropertyCode(source.transportId))throw new Error('operational_draft_property_invalid');const operational=source.operationalAnswers??[],keys=new Set(operational.map(p=>`${p.answer.kind}_${p.task.id}`));
  const arrivalFacts=(result.preparedFacts??[]).filter(f=>!keys.has(f.key)),operationalFacts=(result.preparedFacts??[]).filter(f=>keys.has(f.key));
- const binding={requestId:source.triggerMessageId,ownerRef:source.transportId,threadId:source.threadId,propertyCode:source.propertyCode,triggerMessageId:source.triggerMessageId,causalAt:source.causalAt};
+ const binding={requestId:source.triggerMessageId,ownerRef:source.transportId,threadId:source.threadId,propertyCode:RESERVATIONIST_DRAFT_PROPERTY_CODE,triggerMessageId:source.triggerMessageId,causalAt:source.causalAt};
  const messages=operationalDraftMessages(rows,binding);
  assertArrivalDraftSources({...result,preparedFacts:arrivalFacts},source,messages);
  assertOperationalDraftSources({...result,preparedFacts:operationalFacts},operational,binding,rows,signal);
