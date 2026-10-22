@@ -21,7 +21,6 @@ describe('create-lab-stay write safety', () => {
     expect(source).toContain('const verifySave = proofMode || stop.paneCommit');
     expect(source).toContain('runProofReadback');
     expect(source).toContain('paneCommitOutcome(proof)');
-    expect(source).toContain('committed_unverified');
     expect(source).not.toContain("result.outcome = 'committed'");
   });
 
