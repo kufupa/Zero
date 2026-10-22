@@ -57,7 +57,7 @@ import {
 import { beginQuoteRun, staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
-import { quoteTargetForHmsJob, resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
@@ -586,14 +586,10 @@ export async function runStaffQuote(
   if (!mail || mail.direction !== 'inbound')
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
   const systemPrepared = identity.user === undefined;
-  const quoteTarget = quoteTargetForHmsJob({
+  const quoteTarget = await resolveHmsQuoteJobTarget({
     transportId: identity.transportId,
-    origin: {
-      fromAddress: mail.fromAddress,
-      toAddresses: mail.toAddresses,
-      ccAddresses: mail.ccAddresses,
-      ownerHeaderValue: mail.ownerHeaderValue,
-    },
+    threadId: mail.threadId,
+    messageId: mail.id,
     env: process.env,
   });
   if (!quoteTarget.ok) {
@@ -644,14 +640,6 @@ export async function runStaffQuote(
   let dinnerFallbackGroupIds: string[] = [];
   if (input.parties) {
     if (quoteRateContextEnabled()) {
-      const quoteTarget = await resolveHmsQuoteJobTarget({
-        transportId: identity.transportId,
-        threadId: mail.threadId,
-        messageId: mail.id,
-      });
-      if (!quoteTarget.ok) {
-        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: quoteTarget.message });
-      }
       quoteInput = { ...input, parties: await verifyStaffParties(input.parties, quoteTarget.target) };
     } else {
       quoteInput = { ...input, parties: undefined };
