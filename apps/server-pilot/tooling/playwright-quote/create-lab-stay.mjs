@@ -95,8 +95,21 @@ export function knownConfirmation(save) {
 
 export function readbackSearchPlan(save) {
   const confirmation = knownConfirmation(save);
-  if (confirmation) return { by: 'confirmation', confirmation };
+  if (save?.confirmed === true && confirmation) return { by: 'confirmation', confirmation };
   return { by: 'guest' };
+}
+
+export function reconcileSaveInput(save) {
+  const confirmation = knownConfirmation(save);
+  if (save?.confirmed === true && confirmation) {
+    return { confirmed: true, confirmationNumber: confirmation };
+  }
+  return {
+    confirmed: false,
+    confirmationNumber: confirmation || null,
+    reason: save?.reason ?? null,
+    status: save?.status ?? null,
+  };
 }
 
 export function saveStillProcessingDecision({
@@ -107,9 +120,9 @@ export function saveStillProcessingDecision({
   timeoutMs = READBACK_WAIT_MS,
 }) {
   const masked = maskVisible === true || (maskVisible == null && reason === 'still_processing');
-  if (!masked && knownConfirmation({ confirmationNumber })) return 'stop';
-  if (elapsedMs >= timeoutMs) return 'stop';
-  return 'poll';
+  if (masked) return elapsedMs >= timeoutMs ? 'stop' : 'poll';
+  if (knownConfirmation({ confirmationNumber })) return 'stop';
+  return elapsedMs >= timeoutMs ? 'stop' : 'poll';
 }
 
 export function compareReadbackStay(expected, actual) {
@@ -180,13 +193,11 @@ export async function waitWhileStillProcessing({
   read,
 }) {
   const start = now();
-  let lastSeenConf = knownConfirmation({ confirmationNumber: priorConfirmation });
   for (;;) {
     const snapshot = await read();
     const confirmationNumber = snapshot?.confirmationNumber ?? '';
-    if (knownConfirmation({ confirmationNumber })) lastSeenConf = squashText(confirmationNumber);
     const maskVisible = snapshot?.maskVisible === true;
-    const currentReason = maskVisible ? 'still_processing' : (lastSeenConf ? null : 'no_confirmation');
+    const currentReason = maskVisible ? 'still_processing' : (knownConfirmation({ confirmationNumber }) ? null : 'no_confirmation');
     if (!maskVisible && knownConfirmation({ confirmationNumber })) {
       return {
         confirmed: true,
@@ -199,13 +210,13 @@ export async function waitWhileStillProcessing({
     if (saveStillProcessingDecision({
       reason: currentReason ?? reason,
       maskVisible,
-      confirmationNumber: confirmationNumber || lastSeenConf,
+      confirmationNumber,
       elapsedMs,
       timeoutMs,
     }) === 'stop') {
       return {
         confirmed: false,
-        confirmationNumber: knownConfirmation({ confirmationNumber }) || lastSeenConf || null,
+        confirmationNumber: knownConfirmation({ confirmationNumber }) || null,
         status: snapshot?.status ?? null,
         reason: currentReason ?? reason,
       };
@@ -261,30 +272,33 @@ export function activeStayStatus(status) {
   return ['reserved', 'confirmed'].includes(squashText(status).toLocaleLowerCase());
 }
 
-export function mergeReadbackCompare(proof, expected, lastStay) {
-  if (!lastStay) return proof;
-  if (!activeStayStatus(lastStay.status)) {
-    return {
-      ...proof,
-      readbackMatch: null,
-      unknownOutcome: proof.unknownOutcome ?? 'unresolved',
-    };
-  }
-  const expectedConf = squashText(proof?.confNo);
-  const actualConf = squashText(lastStay.confirmation);
-  if (expectedConf && actualConf && expectedConf !== actualConf) {
-    return {
-      ...proof,
-      readbackMatch: null,
-      unknownOutcome: proof.unknownOutcome ?? 'unresolved',
-    };
-  }
-  const compared = compareReadbackStay(expected, lastStay);
+function unresolvedReadback(proof) {
   return {
     ...proof,
-    readbackMatch: compared.readbackMatch,
-    mismatches: compared.mismatches,
-    unknownOutcome: compared.readbackMatch === true ? null : (compared.unknownOutcome ?? proof.unknownOutcome),
+    readbackMatch: null,
+    unknownOutcome: 'unresolved',
+  };
+}
+
+export function mergeReadbackCompare(proof, expected, lastStay) {
+  if (!lastStay || !activeStayStatus(lastStay.status)) return unresolvedReadback(proof);
+  const expectedConf = squashText(proof?.confNo);
+  const actualConf = squashText(lastStay.confirmation);
+  if (!actualConf || (expectedConf && expectedConf !== actualConf)) return unresolvedReadback(proof);
+  const compared = compareReadbackStay(expected, lastStay);
+  if (compared.readbackMatch !== true) {
+    return {
+      ...proof,
+      readbackMatch: compared.readbackMatch,
+      mismatches: compared.mismatches,
+      unknownOutcome: compared.unknownOutcome ?? 'unresolved',
+    };
+  }
+  return {
+    ...proof,
+    readbackMatch: true,
+    mismatches: [],
+    unknownOutcome: null,
   };
 }
 // --- end-create-readback-rules ---
@@ -756,12 +770,9 @@ async function findStayByConfirmation(browser, secret, stay, dir, confirmation) 
 
 async function runProofReadback(browser, secret, stay, dir, save, savedScreenshot, existingRows) {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const plan = readbackSearchPlan(save);
   let lastStay = null;
   const proof = await reconcileCreateSave({
-    save: plan.by === 'confirmation'
-      ? { confirmed: true, confirmationNumber: plan.confirmation }
-      : save,
+    save: reconcileSaveInput(save),
     expected: stay,
     existingRows,
     readByConfirmation: async (confirmation) => {

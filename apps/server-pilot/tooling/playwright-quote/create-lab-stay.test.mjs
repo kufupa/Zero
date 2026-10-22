@@ -441,8 +441,8 @@ test('readback compare normalizes last name, ISO dates, room code, and adults', 
 
 test('readback compare never matches a cancelled or inactive stay', async () => {
   const rules = await loadReadbackRules();
-  const reserved = { ...READBACK_EXPECTED, status: 'Reserved' };
-  const cancelled = { ...READBACK_EXPECTED, status: 'Cancelled' };
+  const reserved = { ...READBACK_EXPECTED, status: 'Reserved', confirmation: '66865808-1' };
+  const cancelled = { ...READBACK_EXPECTED, status: 'Cancelled', confirmation: '66865808-1' };
   const matched = rules.mergeReadbackCompare(
     { confNo: '66865808-1', readbackMatch: null, mismatches: [], unknownOutcome: 'unresolved' },
     READBACK_EXPECTED,
@@ -456,6 +456,30 @@ test('readback compare never matches a cancelled or inactive stay', async () => 
   );
   assert.equal(rejected.readbackMatch, null);
   assert.equal(rejected.unknownOutcome, 'unresolved');
+});
+
+test('inactive, wrong-conf, and error readback cannot stay committed', async () => {
+  const rules = await loadReadbackRules();
+  const alreadyMatched = {
+    confNo: '66865808-1',
+    readbackMatch: true,
+    mismatches: [],
+    unknownOutcome: null,
+  };
+  const expected = READBACK_EXPECTED;
+  const cases = [
+    ['missing lastStay', null],
+    ['cancelled', { ...expected, status: 'Cancelled', confirmation: '66865808-1' }],
+    ['wrong conf', { ...expected, status: 'Reserved', confirmation: '999-1' }],
+    ['missing conf', { ...expected, status: 'Reserved' }],
+  ];
+  for (const [label, lastStay] of cases) {
+    const merged = rules.mergeReadbackCompare(alreadyMatched, expected, lastStay);
+    assert.equal(merged.readbackMatch, null, label);
+    assert.equal(merged.unknownOutcome, 'unresolved', label);
+    const { paneCommitOutcome } = await import('./create-proof-rules.mjs');
+    assert.equal(paneCommitOutcome(merged), 'committed_unverified', label);
+  }
 });
 
 test('readback compare reports field mismatches and stays unknown when a compared field is missing', async () => {
@@ -541,14 +565,37 @@ test('still_processing wait reads the form with fakes and never retries Save', a
   assert.equal(timedOut.confirmed, false);
   assert.equal(timedOut.reason, 'still_processing');
   assert.equal(lateClock, 60_000);
+
+  let maskedClock = 0;
+  const masked = await rules.waitWhileStillProcessing({
+    reason: 'still_processing',
+    confirmationNumber: '66865808-1',
+    timeoutMs: 60_000,
+    pollMs: 5_000,
+    now: () => maskedClock,
+    sleep: async (ms) => { maskedClock += ms; },
+    read: async () => ({ maskVisible: true, confirmationNumber: '66865808-1', status: 'New' }),
+  });
+  assert.equal(masked.confirmed, false);
+  assert.equal(rules.reconcileSaveInput(masked).confirmed, false);
+  assert.equal(maskedClock, 60_000);
 });
 
 test('readback finds by confirmation when known, else guest last name + arrival, and polls not-found', async () => {
   const rules = await loadReadbackRules();
-  assert.deepEqual(rules.readbackSearchPlan({ confirmationNumber: ' 82126330-1 ' }), {
+  assert.deepEqual(rules.readbackSearchPlan({ confirmed: true, confirmationNumber: ' 82126330-1 ' }), {
     by: 'confirmation', confirmation: '82126330-1',
   });
   assert.deepEqual(rules.readbackSearchPlan({ confirmationNumber: '', confirmed: false }), { by: 'guest' });
+  assert.deepEqual(rules.readbackSearchPlan({
+    confirmed: false, confirmationNumber: '66865808-1', reason: 'still_processing',
+  }), { by: 'guest' });
+  assert.equal(rules.reconcileSaveInput({
+    confirmed: false, confirmationNumber: '66865808-1', reason: 'still_processing',
+  }).confirmed, false);
+  assert.deepEqual(rules.reconcileSaveInput({
+    confirmed: true, confirmationNumber: '66865808-1',
+  }), { confirmed: true, confirmationNumber: '66865808-1' });
   const calls = [];
   let clock = 0;
   const found = await rules.pollReadbackLookup(async () => {
@@ -579,6 +626,7 @@ test('pane-commit readback uses normalized compare and known confirmation, never
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
   assert.match(source, /compareReadbackStay\(/);
   assert.match(source, /readbackSearchPlan\(/);
+  assert.match(source, /reconcileSaveInput\(/);
   assert.match(source, /pollReadbackLookup\(/);
   assert.match(source, /knownConfirmation\(/);
   const saveClicks = [...source.matchAll(/clickTip\(page, '\^Save'/g)];

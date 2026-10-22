@@ -58,7 +58,10 @@ describe('create-lab-stay write safety', () => {
       confirmationNumber: '',
       elapsedMs: 60_000,
     })).toBe('stop');
-    expect(rules.readbackSearchPlan({ confirmationNumber: '66865808-1' })).toEqual({
+    expect(rules.readbackSearchPlan({
+      confirmed: true,
+      confirmationNumber: '66865808-1',
+    })).toEqual({
       by: 'confirmation',
       confirmation: '66865808-1',
     });
@@ -75,11 +78,39 @@ describe('create-lab-stay write safety', () => {
       roomType: 'STQN',
       adults: 1,
     })).toEqual({ readbackMatch: true, mismatches: [], unknownOutcome: null });
-    expect(rules.mergeReadbackCompare(
-      { confNo: '66865808-1', readbackMatch: null, mismatches: [], unknownOutcome: 'unresolved' },
-      { lastName: 'Labtest', arrival: '2027-12-08', departure: '2027-12-09', roomType: 'STQN', adults: 1 },
-      { lastName: 'Labtest', arrival: '2027-12-08', departure: '2027-12-09', roomType: 'STQN', adults: 1, status: 'Cancelled' },
-    ).readbackMatch).toBeNull();
+    const expected = {
+      lastName: 'Labtest',
+      arrival: '2027-12-08',
+      departure: '2027-12-09',
+      roomType: 'STQN',
+      adults: 1,
+    };
+    const alreadyMatched = {
+      confNo: '66865808-1',
+      readbackMatch: true as const,
+      mismatches: [] as [],
+      unknownOutcome: null as string | null,
+    };
+    for (const lastStay of [
+      null,
+      { ...expected, status: 'Cancelled', confirmation: '66865808-1' },
+      { ...expected, status: 'Reserved', confirmation: '999-1' },
+    ]) {
+      const merged = rules.mergeReadbackCompare(alreadyMatched, expected, lastStay);
+      expect(merged.readbackMatch).toBeNull();
+      expect(merged.unknownOutcome).toBe('unresolved');
+      expect(paneCommitOutcome(merged)).toBe('committed_unverified');
+    }
+    expect(rules.reconcileSaveInput({
+      confirmed: false,
+      confirmationNumber: '66865808-1',
+      reason: 'still_processing',
+    }).confirmed).toBe(false);
+    expect(rules.readbackSearchPlan({
+      confirmed: false,
+      confirmationNumber: '66865808-1',
+      reason: 'still_processing',
+    })).toEqual({ by: 'guest' });
     expect(paneCommitOutcome({ readbackMatch: true })).toBe('committed');
     expect(source).toContain('waitWhileStillProcessing(');
     expect(source).toContain('compareReadbackStay(');
