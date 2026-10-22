@@ -10,10 +10,9 @@ function displayLabel(label: string): string {
   return label.replace(/&amp;/gi, '&').trim();
 }
 
-function roomDisplayLabel(code: string, label: string): string {
-  const shown = displayLabel(label);
-  if (shown) return shown;
-  return code in HRDAV_ROOM_NAMES ? HRDAV_ROOM_NAMES[code as keyof typeof HRDAV_ROOM_NAMES] : code;
+function hrdavOnlyRoomName(code: string): string {
+  if (code === 'DLXKNG' || code === 'STWN' || !(code in HRDAV_ROOM_NAMES)) return '';
+  return HRDAV_ROOM_NAMES[code as keyof typeof HRDAV_ROOM_NAMES];
 }
 
 /** One read-only BAR cell. Local projection only — not stored on QuoteSession. */
@@ -48,7 +47,7 @@ export function projectBarGrid(options: readonly AvailabilityBoardRow[]): BarGri
     const next: BarGridCell = {
       groupId: option.groupId,
       roomCode: option.roomCode,
-      roomLabel: roomDisplayLabel(option.roomCode, option.roomLabel),
+      roomLabel: displayLabel(option.roomLabel) || hrdavOnlyRoomName(option.roomCode) || option.roomCode,
       rateCode: option.rateCode,
       rateLabel: displayLabel(option.rateLabel) || option.rateCode,
       board: option.board,
@@ -150,7 +149,7 @@ export function RateCards({
         const from = option.priced === 'summary' && !selected ? 'from ' : '';
         const rateLabel = displayLabel(option.rateLabel) || option.rateCode;
         const boardLabel = displayLabel(option.boardLabel);
-        const roomLabel = roomDisplayLabel(option.roomCode, option.roomLabel);
+        const roomLabel = displayLabel(option.roomLabel) || hrdavOnlyRoomName(option.roomCode);
         const boardRoomLabel = [boardLabel, roomLabel].filter(Boolean).join(' · ');
         return (
           <div
