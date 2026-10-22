@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { proposalDescription, type QuoteMeal } from './description.js';
-import { HOTEL_TELEPHONE, quotePdfFileName } from './filename.js';
+import { quotePdfFileName, quotePropertyIdentity } from './filename.js';
 import { convertXlsxWithGotenberg } from './gotenberg.js';
 import { patchProposalWorkbook } from './patch-template.js';
 
@@ -16,6 +16,7 @@ export type ProposalPdfInput = {
   clientTelephone: string;
   agency: string;
   dateLabel: string;
+  propertyCode?: string;
   lines: Array<{
     dateLabel: string;
     qty: number;
@@ -36,7 +37,9 @@ export async function buildQuoteProposalPdf(
   let descriptions: string[];
   try {
     if (input.lines.some((line) => !['bb', 'dinner_bb', 'room_only'].includes(line.meal))) throw new Error('unknown meal plan');
-    descriptions = input.lines.map((line) => proposalDescription(line.roomCode, line.meal));
+    descriptions = input.lines.map((line) =>
+      proposalDescription(line.roomCode, line.meal, input.propertyCode ?? 'HRCEN'),
+    );
   } catch (err) {
     throw new ProposalInputError(err instanceof Error ? err.message : 'unknown room code');
   }
@@ -49,7 +52,7 @@ export async function buildQuoteProposalPdf(
       clientTelephone: input.clientTelephone,
       signerName: signer.name,
       signerEmail: signer.email,
-      signerTelephone: HOTEL_TELEPHONE,
+      signerTelephone: quotePropertyIdentity(input.propertyCode ?? 'HRCEN').telephone ?? '',
       breakfastIncluded: input.lines.every((line) => line.meal === 'bb' || line.meal === 'dinner_bb'),
       lines: input.lines.map((line, index) => ({
         dateLabel: line.dateLabel,
@@ -72,7 +75,7 @@ import { createHash } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, extraDisplayDescription, pricedRoomTotal, type AuthorizedProposalFacts, type RowPrice } from './quote-lines.js';
 import { quoteDigest, exactMinor, type QuoteRevision, type ImportedOffer } from './quote-revision.js';
-import { assertProposalLineLimit, quoteDateLabel, quoteWorkbookForStays, WorkbookLineLimitError, WorkbookRefusalError, type WorkbookStay } from './quote-workbook.js';
+import { assertProposalLineLimit, quoteDateLabel, quoteOutputPropertyCode, quoteWorkbookForStays, WorkbookLineLimitError, WorkbookRefusalError, type WorkbookStay } from './quote-workbook.js';
 export type RevisionProposalHeader = {attention:string;company:string;clientEmail:string;clientTelephone:string;agency:string;signerName:string;signerEmail:string;/** Unpriced staff note printed under the total. */notes?:string};
 function htmlText(value:string):string {
   return value.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -83,7 +86,16 @@ function moneyMinor(value:number,currency:string):string {
   const prefix=currency==='ZAR'?'R':`${currency} `;
   return `${prefix}${Math.floor(value/100).toLocaleString('en-ZA')}.${String(value%100).padStart(2,'0')}`;
 }
+function quotationLetterheadImages(): string[] {
+  const files = unzipSync(readFileSync(TEMPLATE_PATH));
+  return ['xl/media/image1.png', 'xl/media/image2.png'].map((path) => {
+    if (!files[path]) throw new Error('quotation template missing drawings');
+    return `data:image/png;base64,${Buffer.from(files[path]).toString('base64')}`;
+  });
+}
+
 export function renderRevisionProposalHtml(revision: QuoteRevision, header: RevisionProposalHeader, facts?: AuthorizedProposalFacts, rowPrices?: RowPrice[]): string {
+  const identity = quotePropertyIdentity(revision.propertyCode);
   const native = deriveQuoteLines(revision, rowPrices);
   const extras = facts ? deriveAuthorizedExtraLines(revision, facts) : [];
   const lines = [
@@ -97,14 +109,28 @@ export function renderRevisionProposalHtml(revision: QuoteRevision, header: Revi
   ];
   const totalMinor = native.reduce((sum, line) => sum + line.totalMinor, 0) + extras.reduce((sum, line) => sum + line.totalMinor, 0);
   if (!Number.isSafeInteger(totalMinor)) throw new ProposalInputError('money_overflow');
-  const files = unzipSync(readFileSync(TEMPLATE_PATH));
-  const images = ['xl/media/image1.png', 'xl/media/image2.png'].map((path) => {
-    if (!files[path]) throw new Error('quotation template missing drawings');
-    return `data:image/png;base64,${Buffer.from(files[path]).toString('base64')}`;
-  });
+  const images = identity.letterhead === 'centurion-template' ? quotationLetterheadImages() : [];
   const breakfastIncluded = revision.groups.every(
     (group) => group.board === 'breakfast' || group.board === 'dinner_bed_breakfast',
   );
+  const hotel = htmlText(identity.name);
+  const address = identity.addressLines.map((line) => htmlText(line)).join('<br>');
+  const letterhead =
+    identity.letterhead === 'centurion-template'
+      ? `<header><img src="${images[0]}" alt="${hotel}"><img src="${images[1]}" alt="Legacy Hotels"></header>`
+      : `<header class="property-letterhead"><p class="property-name">${hotel}</p>${address ? `<p class="property-address">${address}</p>` : ''}</header>`;
+  const includedMeals =
+    identity.letterhead === 'centurion-template' && breakfastIncluded
+      ? '<li>*Breakfast in Brunos Restaurant</li>'
+      : '<li>Meals are included only where stated in the line description.</li>';
+  const rateBenefits =
+    identity.letterhead === 'centurion-template'
+      ? `<div class="rate-benefits"><div><strong>Included in your rate:</strong><ul><li>*1% Tourism Levy</li>${includedMeals}<li>*Wi-Fi</li><li>*Access to the Fitness Centre &amp; Pool</li><li>*Arrival/Welcome Platter</li></ul></div><div><strong>Optional Spoils (Prices on request)</strong><ul><li>*Birthday Turndown</li><li>*Honeymoon Turndown</li><li>*Breakfast On-The-Go</li><li>*Private Dining</li></ul></div></div>`
+      : `<div class="rate-benefits"><div><strong>Included in your rate:</strong><ul><li>*1% Tourism Levy</li>${includedMeals}</ul></div></div>`;
+  const website = identity.websiteLabel
+    ? `<p><a href="${htmlText(identity.websiteUrl)}">${htmlText(identity.websiteLabel)}</a></p>`
+    : '';
+  const telephone = identity.telephone ? htmlText(identity.telephone) : '';
   const pages = [];
 
   for (let start = 0; start < lines.length; start += 6) {
@@ -112,15 +138,15 @@ export function renderRevisionProposalHtml(revision: QuoteRevision, header: Revi
     const last = start + 6 >= lines.length;
     const rows = page.map((line, index) => `<tr data-line="${start + index}"><td>${htmlText(quoteDateLabel(line.arrivalDate, line.departureDate))}</td><td>${line.quantity}</td><td>${htmlText(line.description)}</td><td>${line.nights}</td><td>${moneyMinor(line.rateMinor, revision.currency)}</td><td>${moneyMinor(line.totalMinor, revision.currency)}</td></tr>`).join('');
     const totalBlock = last
-      ? `<p class="subtotal" data-proposal-subtotal="${totalMinor}">subtotal ${moneyMinor(totalMinor, revision.currency)}</p><p class="vat">15% vat <span>Included</span></p><p class="total" data-proposal-total="${totalMinor}">total ${moneyMinor(totalMinor, revision.currency)}</p>${header.notes?.trim() ? `<p class="staff-note"><strong>Note:</strong> ${htmlText(header.notes.trim()).replace(/\n/g, '<br>')}</p>` : ''}<div class="rate-benefits"><div><strong>Included in your rate:</strong><ul><li>*1% Tourism Levy</li>${breakfastIncluded ? '<li>*Breakfast in Brunos Restaurant</li>' : '<li>Meals are included only where stated in the line description.</li>'}<li>*Wi-Fi</li><li>*Access to the Fitness Centre &amp; Pool</li><li>*Arrival/Welcome Platter</li></ul></div><div><strong>Optional Spoils (Prices on request)</strong><ul><li>*Birthday Turndown</li><li>*Honeymoon Turndown</li><li>*Breakfast On-The-Go</li><li>*Private Dining</li></ul></div></div>`
+      ? `<p class="subtotal" data-proposal-subtotal="${totalMinor}">subtotal ${moneyMinor(totalMinor, revision.currency)}</p><p class="vat">15% vat <span>Included</span></p><p class="total" data-proposal-total="${totalMinor}">total ${moneyMinor(totalMinor, revision.currency)}</p>${header.notes?.trim() ? `<p class="staff-note"><strong>Note:</strong> ${htmlText(header.notes.trim()).replace(/\n/g, '<br>')}</p>` : ''}${rateBenefits}`
       : '<p>Continued on the following page. Final proposal total appears on the last page.</p>';
     const headerBlock = start === 0
-      ? `<p>Date: ${htmlText(quoteDateLabel(revision.authoredDate, revision.authoredDate))}</p><p>Valid until: 3 days from date quoted above</p><div class="client"><strong>Attention:</strong> ${htmlText(header.attention)}<br><strong>Company:</strong> ${htmlText(header.company)}<br><strong>Email:</strong> ${htmlText(header.clientEmail)}<br><strong>Telephone:</strong> ${htmlText(header.clientTelephone)}</div><p>The Centurion Hotel thanks you for choosing us for your upcoming stay.</p><p>We are delighted to assist in planning your stay and look forward to welcoming you to our piece of paradise.</p><p>Below is the tailored accommodation package we have curated for you.</p>`
+      ? `<p>Date: ${htmlText(quoteDateLabel(revision.authoredDate, revision.authoredDate))}</p><p>Valid until: 3 days from date quoted above</p><div class="client"><strong>Attention:</strong> ${htmlText(header.attention)}<br><strong>Company:</strong> ${htmlText(header.company)}<br><strong>Email:</strong> ${htmlText(header.clientEmail)}<br><strong>Telephone:</strong> ${htmlText(header.clientTelephone)}</div><p>${hotel} thanks you for choosing us for your upcoming stay.</p><p>We are delighted to assist in planning your stay and look forward to welcoming you to our piece of paradise.</p><p>Below is the tailored accommodation package we have curated for you.</p>`
       : '<p>Continued quotation.</p>';
-    pages.push(`<section class="proposal-page"><header><img src="${images[0]}" alt="The Centurion Hotel"><img src="${images[1]}" alt="Legacy Hotels"></header><h1>QUOTATION${start ? ' · CONTINUED' : ''}</h1>${headerBlock}<table><thead><tr><th>DATE</th><th>QTY</th><th>DESCRIPTION</th><th>Nights</th><th>RATE</th><th>LINE TOTAL</th></tr></thead><tbody>${rows}</tbody></table>${totalBlock}<footer>The Centurion Hotel</footer></section>`);
+    pages.push(`<section class="proposal-page">${letterhead}<h1>QUOTATION${start ? ' · CONTINUED' : ''}</h1>${headerBlock}<table><thead><tr><th>DATE</th><th>QTY</th><th>DESCRIPTION</th><th>Nights</th><th>RATE</th><th>LINE TOTAL</th></tr></thead><tbody>${rows}</tbody></table>${totalBlock}<footer>${hotel}</footer></section>`);
   }
-  pages.push(`<section class="proposal-page terms-page"><h2>Terms and Conditions:</h2><p>All rates above include 15% VAT</p><p>No booking has been made and is subjected to availability on acceptance of this quotation</p><p>Prices are subject to change without notice</p><p>For full terms and conditions, please click <a href="https://www.legacyhotels.co.za">HERE</a></p><p><a href="https://www.legacyhotels.co.za">The Centurion Hotel Website</a></p><div class="acceptance"><p>Accepted By: ____________________ <span>Date: ______________</span></p><p>Reservations Team:</p><p>Full Name: ${htmlText(header.signerName)}</p><p>Email: ${htmlText(header.signerEmail)}</p><p>Telephone: ${HOTEL_TELEPHONE}</p></div><footer>The Centurion Hotel</footer></section>`);
-  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:A4;margin:14mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#242424;font-size:10px;margin:0}.proposal-page{break-after:page}.proposal-page:last-child{break-after:auto}header{display:flex;justify-content:space-between;align-items:center;height:72px}header img{max-width:43%;max-height:65px;object-fit:contain}h1,h2{font-size:18px;color:#78633a;border-bottom:2px solid #b49c68;padding:12px 0}p{line-height:1.45;margin:7px 0}.client{line-height:1.6;margin:14px 0}table{width:100%;border-collapse:collapse;table-layout:fixed}th{background:#e7dfcb;font-size:9px}th,td{border:1px solid #8d887d;padding:7px 5px;vertical-align:top;overflow-wrap:anywhere}th:nth-child(1){width:17%}th:nth-child(2){width:6%}th:nth-child(3){width:35%}th:nth-child(4){width:8%}th:nth-child(5),th:nth-child(6){width:17%}tr{break-inside:avoid}.subtotal,.total{text-align:right;font-weight:bold;padding:5px}.total{font-size:15px;border-bottom:2px solid #b49c68;padding:10px}.vat{text-align:right}.rate-benefits{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px}.rate-benefits ul{margin:5px 0;padding-left:16px;list-style:none}.acceptance{margin-top:40px}.acceptance span{margin-left:36px}footer{font-size:7px;overflow-wrap:anywhere;border-top:1px solid #b49c68;margin-top:20px;padding-top:7px}</style></head><body>${pages.join('')}</body></html>`;
+  pages.push(`<section class="proposal-page terms-page"><h2>Terms and Conditions:</h2><p>All rates above include 15% VAT</p><p>No booking has been made and is subjected to availability on acceptance of this quotation</p><p>Prices are subject to change without notice</p><p>For full terms and conditions, please click <a href="https://www.legacyhotels.co.za">HERE</a></p>${website}<div class="acceptance"><p>Accepted By: ____________________ <span>Date: ______________</span></p><p>Reservations Team:</p><p>Full Name: ${htmlText(header.signerName)}</p><p>Email: ${htmlText(header.signerEmail)}</p>${telephone ? `<p>Telephone: ${telephone}</p>` : ''}</div><footer>${hotel}</footer></section>`);
+  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:A4;margin:14mm}*{box-sizing:border-box}body{font-family:Arial,sans-serif;color:#242424;font-size:10px;margin:0}.proposal-page{break-after:page}.proposal-page:last-child{break-after:auto}header{display:flex;justify-content:space-between;align-items:center;height:72px}header img{max-width:43%;max-height:65px;object-fit:contain}.property-letterhead{display:block;height:auto;flex-direction:column;align-items:flex-start}.property-name{font-size:16px;font-weight:bold;color:#78633a;margin:0}.property-address{margin:4px 0 0}h1,h2{font-size:18px;color:#78633a;border-bottom:2px solid #b49c68;padding:12px 0}p{line-height:1.45;margin:7px 0}.client{line-height:1.6;margin:14px 0}table{width:100%;border-collapse:collapse;table-layout:fixed}th{background:#e7dfcb;font-size:9px}th,td{border:1px solid #8d887d;padding:7px 5px;vertical-align:top;overflow-wrap:anywhere}th:nth-child(1){width:17%}th:nth-child(2){width:6%}th:nth-child(3){width:35%}th:nth-child(4){width:8%}th:nth-child(5),th:nth-child(6){width:17%}tr{break-inside:avoid}.subtotal,.total{text-align:right;font-weight:bold;padding:5px}.total{font-size:15px;border-bottom:2px solid #b49c68;padding:10px}.vat{text-align:right}.rate-benefits{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px}.rate-benefits ul{margin:5px 0;padding-left:16px;list-style:none}.acceptance{margin-top:40px}.acceptance span{margin-left:36px}footer{font-size:7px;overflow-wrap:anywhere;border-top:1px solid #b49c68;margin-top:20px;padding-top:7px}</style></head><body>${pages.join('')}</body></html>`;
 }
 /** One document per quote: a single stay keeps its revision id, combined stays get a digest of their revision ids. */
 export function documentIdFor(stays: WorkbookStay[]): string {
@@ -174,6 +200,7 @@ export async function buildStaysProposalPdf(
 ): Promise<{ revisionId: string; pdfHash: string; pdf: Uint8Array; fileName: string; totalMinor: number }> {
   const base = opts.url.replace(/\/+$/, '');
   if (!base) throw new Error('GOTENBERG_URL missing');
+  quoteOutputPropertyCode(stays);
   assertProposalLineLimit(stays);
   const fetchImpl = timedFetch(opts.fetchImpl);
   const single = stays.length === 1 ? stays[0]! : undefined;

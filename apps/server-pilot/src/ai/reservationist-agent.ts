@@ -136,9 +136,12 @@ export function createReservationistTools(
     quote_proposal_pdf: createTool({
       id: 'quote_proposal_pdf',
       description:
-        'Render the Centurion quotation PDF from quoted lines. roomCode is the HMS room code; rate is per room per night.',
+        'Render the quotation PDF from quoted lines. roomCode is the HMS room code; rate is per room per night.',
       inputSchema: pdfInput,
-      execute: async (input) => runners.pdf(input),
+      execute: async (input, { requestContext }) => {
+        const rc = requestContext as RequestContext<ReservationistContext>;
+        return runners.pdf({ ...input, propertyCode: rc.get('propertyCode') });
+      },
     }),
     create_reservation_dry_run: createTool({
       id: 'create_reservation_dry_run',
@@ -161,7 +164,7 @@ export function createReservationistAgent(options: {
 }) {
   return new Agent({
     id: 'reservationist',
-    name: 'Centurion reservationist',
+    name: 'Nava reservationist',
     instructions: ({ requestContext }) => {
       const rc = requestContext as RequestContext<ReservationistContext>;
       const sops = Object.values(options.aopSops ?? {})

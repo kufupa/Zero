@@ -10,6 +10,7 @@ import {
   quoteProposalPdfUsesHtml,
 } from '../src/quote-proposal/proposal-pdf.js';
 import {
+  MixedPropertyQuoteError,
   quoteWorkbookForStays,
   workbookLinesForStays,
   WorkbookLineLimitError,
@@ -388,5 +389,38 @@ describe('combined stay approvals', () => {
     expect(
       combinedStayCurrencyProblem({ stay: { generationId: null, span: '2026-10-12/2026-10-14' }, approvals }),
     ).toMatch(/Newer stay inputs/);
+  });
+});
+
+describe('same-property combined quotes', () => {
+  async function stayOnProperty(propertyCode: string, arrival: string, amounts: string[]): Promise<WorkbookStay> {
+    const stay = await stayOn(arrival, amounts);
+    const revision = structuredClone(stay.revision);
+    revision.propertyCode = propertyCode;
+    const { id: _id, ...data } = revision;
+    revision.id = `quote:${quoteDigest(data)}`;
+    return { ...stay, revision };
+  }
+
+  it('keeps two HRCEN stays in one workbook', async () => {
+    const stays = [
+      await stayOnProperty('HRCEN', '2026-10-12', ['100.00']),
+      await stayOnProperty('HRCEN', '2026-11-01', ['110.00']),
+    ];
+    const { totalMinor } = quoteWorkbookForStays({ stays, header });
+    expect(totalMinor).toBe(roomTotalOf(stays));
+  });
+
+  it('refuses a mixed HRCEN + HRDAV quote before writing Excel or PDF', async () => {
+    const stays = [
+      await stayOnProperty('HRCEN', '2026-10-12', ['100.00']),
+      await stayOnProperty('HRDAV', '2026-11-01', ['110.00']),
+    ];
+    expect(() => quoteWorkbookForStays({ stays, header })).toThrow(MixedPropertyQuoteError);
+    expect(() => quoteWorkbookForStays({ stays, header })).toThrow(/more than one property/);
+    expect(() => workbookLinesForStays(stays)).toThrow(MixedPropertyQuoteError);
+    await expect(
+      buildStaysProposalPdf(stays, proposalHeader, { url: GOTENBERG, fetchImpl: gotenberg(), html: true }),
+    ).rejects.toBeInstanceOf(MixedPropertyQuoteError);
   });
 });

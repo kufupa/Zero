@@ -96,3 +96,19 @@ it('matches staff BAR B&B proposal structure in offline HTML fallback', async ()
   expect((html.match(/class="proposal-page(?: terms-page)?"/g) ?? []).length).toBe(2);
   expect((html.match(/data-proposal-total=/g) ?? []).length).toBe(1);
 });
+
+it('prints Da Vinci name and Sandton with no Centurion letterhead or Brunos copy', async () => {
+  const revision = structuredClone(await syntheticRevision(['123.45'], 'Bed & Breakfast R', 'STKNG', undefined, '2026-11-08'));
+  revision.propertyCode = 'HRDAV';
+  const { quoteDigest } = await import('../src/quote-proposal/quote-revision.js');
+  const { id: _id, ...data } = revision;
+  revision.id = `quote:${quoteDigest(data)}`;
+  const html = renderRevisionProposalHtml(revision, header);
+  expect(html).toContain('Da Vinci Hotel and Suites');
+  expect(html).toContain('Sandton');
+  expect(html).not.toContain('The Centurion Hotel');
+  expect(html).not.toContain('data:image/png;base64,');
+  expect(html).not.toContain('Brunos');
+  expect(html).not.toContain('The Centurion Hotel Website');
+  expect(html).toContain('Meals are included only where stated in the line description.');
+});

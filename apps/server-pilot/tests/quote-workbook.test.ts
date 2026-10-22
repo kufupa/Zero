@@ -108,6 +108,24 @@ describe('quote workbook totals and formulas', () => {
     expect(lineTotals).toBe(pdfTotal);
   });
 
+  it('writes Da Vinci name and Sandton, strips Centurion logos, and omits the Centurion phone', async () => {
+    const revision = structuredClone(await syntheticRevision());
+    revision.propertyCode = 'HRDAV';
+    const { quoteDigest } = await import('../src/quote-proposal/quote-revision.js');
+    const { id: _id, ...data } = revision;
+    revision.id = `quote:${quoteDigest(data)}`;
+    const { bytes } = quoteWorkbookForRevision({ revision, header });
+    const files = unzipSync(bytes);
+    expect(files['xl/media/image1.png']).toBeUndefined();
+    expect(files['xl/media/image2.png']).toBeUndefined();
+    const shared = new TextDecoder().decode(files['xl/sharedStrings.xml']);
+    expect(shared).toContain('Da Vinci Hotel and Suites');
+    expect(shared).toContain('Sandton');
+    expect(shared).not.toContain('The Centurion Hotel');
+    expect(shared).not.toContain('Brunos');
+    expect(sheetOf(bytes)).not.toContain('0126433600');
+  });
+
   it('keeps line totals, subtotal and total as formulas with cached values', async () => {
     const { revision, facts } = await staffScenario(fullExtras);
     const sheet = sheetOf(quoteWorkbookForRevision({ revision, facts, header }).bytes);
