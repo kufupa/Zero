@@ -272,7 +272,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
       : null;
 
   const previewCancel = async () => {
-    if (!canPreviewCancel || !cancelScope || !cancelClient || !cancelInput) return;
+    if (checkReason || !canPreviewCancel || !cancelScope || !cancelClient || !cancelInput) return;
     const scope = cancelScope;
     setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'previewing' } }));
     try {
@@ -286,7 +286,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   // The commit must carry the digest of the preview it follows. Without one there is nothing to commit.
   const commitCancel = async (ready: Extract<CancelView, { kind: 'ready' }>) => {
     const previewDigest = ready.run.previewDigest;
-    if (!canPreviewCancel || !cancelScope || !cancelClient || !cancelInput || !ready.reason || !previewDigest) return;
+    if (checkReason || !canPreviewCancel || !cancelScope || !cancelClient || !cancelInput || !ready.reason || !previewDigest) return;
     const scope = cancelScope;
     setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'committing', run: ready.run, reason: ready.reason } }));
     try {
@@ -324,7 +324,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
 
   // Cancel mail the pane can preview says so; otherwise the look-up footer stays.
   const footer =
-    amendment.kind === 'cancel' && stay && foundNumber && canPreviewCancel
+    amendment.kind === 'cancel' && stay && foundNumber && canPreviewCancel && !checkReason
       ? AMEND_CANCEL_COPY.footerPreview
       : AMEND_FIND_COPY.footer;
 
@@ -528,7 +528,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
           }}
         />
       ) : null}
-      {amendment.kind === 'cancel' && stay && foundNumber ? (
+      {amendment.kind === 'cancel' && stay && foundNumber && !checkReason ? (
         <CancelSection
           view={cancelView}
           canPreview={canPreviewCancel}
