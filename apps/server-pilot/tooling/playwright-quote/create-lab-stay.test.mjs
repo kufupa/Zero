@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertTrackReadyForGuarantee, loadCreateRequest, matchTrackRow, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
-import { createLabtestRefusal, createRoomTypeMismatch, parseCreateProperty } from './create-lab-stay.mjs';
+import { createLabtestRefusal, createRoomTypeMismatch, dialogLogEntry, parseCreateProperty } from './create-lab-stay.mjs';
 import { profileFor } from './property-profile.mjs';
 
 function requiredRequest(extra = {}) {
@@ -716,4 +716,22 @@ test('pane-commit readback uses normalized compare and known confirmation, never
   assert.match(source, /knownConfirmation\(/);
   const saveClicks = [...source.matchAll(/clickTip\(page, '\^Save'/g)];
   assert.equal(saveClicks.length, 1);
+});
+
+test('dialogLogEntry records type and squashed, capped message', () => {
+  const long = `Continue?\n${'x'.repeat(400)}`;
+  const entry = dialogLogEntry({ type: () => 'confirm', message: () => long });
+  assert.equal(entry.type, 'confirm');
+  assert.equal(entry.message.startsWith('Continue? x'), true);
+  assert.equal(entry.message.length, 300);
+  assert.deepEqual(dialogLogEntry({}), { type: '', message: '' });
+});
+
+test('browser dialogs are logged and only ever dismissed', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf("page.on('dialog'");
+  const block = source.slice(start, source.indexOf('});', start));
+  assert.match(block, /dialogLogEntry\(dialog\)/);
+  assert.match(block, /dialog\.dismiss\(\)/);
+  assert.equal(/dialog\.accept/.test(source), false);
 });
