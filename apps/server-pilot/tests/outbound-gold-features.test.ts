@@ -102,6 +102,50 @@ describe('checkLetterCoverage', () => {
     expect(duplicateDates.cards).toBe(2);
   });
 
+  it('passes a new-booking fixture when the card confirmation is still null', () => {
+    const scored = scoreOutboundGoldFixture([
+      {
+        id: 'ask-new',
+        kind: 'booking',
+        letters: [letter({ id: 'letter-a' })],
+        cards: [card({ id: 'card-1', guests: [{ guest: FIXTURE_GUEST_A, conf: null }] })],
+      },
+    ]);
+    expect(scored.pass).toBe(true);
+    expect(scored.lettersCovered).toBe(1);
+
+    const amend = checkLetterCoverage({
+      letters: [letter({ id: 'letter-a' })],
+      cards: [card({ id: 'card-1', guests: [{ guest: FIXTURE_GUEST_A, conf: null }] })],
+      requireConfirmation: true,
+    });
+    expect(amend.pass).toBe(false);
+  });
+
+  it('waives confirmation only when the card has no number', () => {
+    const noNumber = checkLetterCoverage({
+      letters: [letter({ id: 'letter-a' })],
+      cards: [card({ id: 'card-1', guests: [{ guest: FIXTURE_GUEST_A, conf: null }] })],
+      requireConfirmation: false,
+    });
+    expect(noNumber.pass).toBe(true);
+
+    const differ = checkLetterCoverage({
+      letters: [letter({ id: 'letter-a' })],
+      cards: [card({ id: 'card-1', guests: [{ guest: FIXTURE_GUEST_A, conf: CONF_B }] })],
+      requireConfirmation: false,
+    });
+    expect(differ.pass).toBe(false);
+    expect(differ.lettersUncovered).toBe(1);
+
+    const letterMissing = checkLetterCoverage({
+      letters: [letter({ id: 'letter-a', conf: null })],
+      cards: [card({ id: 'card-1', guests: [{ guest: FIXTURE_GUEST_A, conf: CONF_A }] })],
+      requireConfirmation: false,
+    });
+    expect(letterMissing.pass).toBe(true);
+  });
+
   it('requires a distinct card per distinct date set', () => {
     const result = checkLetterCoverage({
       letters: [letter({ id: 'letter-a' }), letter({ id: 'letter-b', arrival: ARRIVAL_B, conf: CONF_B })],
@@ -180,6 +224,52 @@ describe('stdout shape is counts', () => {
     const stdout = formatAggregateStdout(scoreOutboundGoldFixture(rows.rows, rows.jsonlErrors));
     expect(stdout).not.toContain('not-json');
     expect(JSON.parse(stdout).jsonlErrors).toBe(1);
+  });
+
+  it('counts cards once when two letters share one request row', () => {
+    const scored = scoreOutboundGoldFixture([
+      {
+        id: 'ask-1',
+        letters: [
+          letter({ id: 'letter-a' }),
+          letter({ id: 'letter-b', guest: FIXTURE_GUEST_B, conf: CONF_B, arrival: ARRIVAL_B }),
+        ],
+        cards: [
+          card({ id: 'card-1' }),
+          card({
+            id: 'card-2',
+            arrival: ARRIVAL_B,
+            departure: '2027-02-22',
+            guests: [{ guest: FIXTURE_GUEST_B, conf: CONF_B }],
+          }),
+        ],
+      },
+    ]);
+    expect(scored.letters).toBe(2);
+    expect(scored.lettersCovered).toBe(2);
+    expect(scored.cards).toBe(2);
+    expect(scored.distinctDateSets).toBe(2);
+    expect(scored.pass).toBe(true);
+  });
+
+  it('fails coverage when one request is covered and another has no letter', () => {
+    const scored = scoreOutboundGoldFixture([
+      {
+        id: 'ask-covered',
+        kind: 'booking',
+        letters: [letter({ id: 'letter-a' })],
+        cards: [card({ id: 'card-1' })],
+      },
+      {
+        id: 'ask-no-letter',
+        kind: 'booking',
+        letters: [],
+        cards: [],
+      },
+    ]);
+    expect(scored.pass).toBe(false);
+    expect(scored.lettersCovered).toBe(1);
+    expect(JSON.parse(formatAggregateStdout(scored)).coveragePass).toBe(false);
   });
 
   it('fails two swapped rows that would pass if cards were pooled', () => {

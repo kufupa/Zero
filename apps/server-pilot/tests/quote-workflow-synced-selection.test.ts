@@ -768,7 +768,14 @@ describe('orderThreadContext', () => {
       arrivedAt: targetAt,
     };
     const result = orderThreadContext(target, [
-      { ...base, id: 'later-outbound', direction: 'outbound', sentAt: new Date('2026-10-13T13:00:00.000Z') },
+      {
+        ...base,
+        id: 'later-outbound',
+        direction: 'outbound',
+        sentAt: new Date('2026-10-13T13:00:00.000Z'),
+        arrivedAt: new Date('2026-10-13T13:00:00.000Z'),
+        createdAt: new Date('2026-10-13T13:00:00.000Z'),
+      },
       target,
       { ...base, id: 'tied-inbound', direction: 'inbound', receivedAt: targetAt },
       { ...base, id: 'earlier-staff', direction: 'outbound', textBody: 'Earlier staff reply', sentAt: new Date('2026-10-13T11:00:00.000Z') },
@@ -778,6 +785,31 @@ describe('orderThreadContext', () => {
     expect(result.map(({ direction, bodyText }) => [direction, bodyText])).toEqual([
       ['outbound', 'Earlier staff reply'],
     ]);
+  });
+
+  it('excludes a later staff reply whose sender Date is before the request but mailbox arrival is after', () => {
+    const targetAt = new Date('2026-10-13T12:00:00.000Z');
+    const target = {
+      id: 'target',
+      direction: 'inbound' as const,
+      receivedAt: new Date('2026-10-13T18:00:00.000Z'),
+      sentAt: null,
+      createdAt: targetAt,
+      arrivedAt: targetAt,
+    };
+    const result = orderThreadContext(target, [
+      {
+        id: 'later-reply',
+        direction: 'outbound',
+        subject: 'Re: request',
+        textBody: 'Later staff reply',
+        receivedAt: null,
+        sentAt: new Date('2026-10-13T11:00:00.000Z'),
+        createdAt: new Date('2026-10-13T12:30:00.000Z'),
+        arrivedAt: new Date('2026-10-13T12:30:00.000Z'),
+      },
+    ]);
+    expect(result).toEqual([]);
   });
 });
 

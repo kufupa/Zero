@@ -540,6 +540,25 @@ export function orderCausalPreceding(
     }));
 }
 
+function mailboxArrivalClock(row: { arrivedAt: Date | null; createdAt: Date }): Date {
+  return row.arrivedAt ?? row.createdAt;
+}
+
+/** Freeze outbound sender stamps to mailbox arrival so orderThreadContext cannot see later replies. */
+export function freezeOutboundToMailboxArrival<
+  T extends {
+    direction: 'inbound' | 'outbound';
+    arrivedAt: Date | null;
+    createdAt: Date;
+    sentAt: Date | null;
+    receivedAt: Date | null;
+  },
+>(row: T): T {
+  if (row.direction !== 'outbound') return row;
+  const at = mailboxArrivalClock(row);
+  return { ...row, sentAt: at, receivedAt: at };
+}
+
 /** Prior thread messages by message time; later-arriving inbound rows and ties are omitted. */
 export function orderThreadContext(
   selected: {
@@ -561,25 +580,30 @@ export function orderThreadContext(
     arrivedAt: Date | null;
   }>,
 ): SyncedThreadMessage[] {
+  const frozenSelected = freezeOutboundToMailboxArrival(selected);
+  const selectedMailbox = mailboxArrivalClock(frozenSelected);
   const selectedAt =
-    selected.direction === 'outbound'
-      ? selected.sentAt ?? selected.receivedAt ?? selected.createdAt
-      : selected.receivedAt ?? selected.sentAt ?? selected.createdAt;
+    frozenSelected.direction === 'outbound'
+      ? frozenSelected.sentAt ?? frozenSelected.receivedAt ?? frozenSelected.createdAt
+      : frozenSelected.receivedAt ?? frozenSelected.sentAt ?? frozenSelected.createdAt;
   return threadRows
     .filter((candidate) => candidate.id !== selected.id)
+    .map((candidate) => freezeOutboundToMailboxArrival(candidate))
     .map((candidate) => ({
       candidate,
+      mailbox: mailboxArrivalClock(candidate),
       timestamp:
         candidate.direction === 'outbound'
-          ? candidate.sentAt ?? candidate.receivedAt ?? candidate.createdAt
+          ? mailboxArrivalClock(candidate)
           : candidate.receivedAt ?? candidate.sentAt ?? candidate.createdAt,
     }))
-    // Sender-authored inbound dates can be backdated; use mailbox arrival time as an additional guard.
+    // Sender-authored inbound dates can be backdated; mailbox arrival is the freeze for outbound.
     .filter(
-      ({ candidate, timestamp }) =>
-        timestamp.getTime() < selectedAt.getTime() &&
-        (candidate.direction !== 'inbound' ||
-          (candidate.arrivedAt !== null &&
+      ({ candidate, mailbox, timestamp }) =>
+        mailbox.getTime() < selectedMailbox.getTime() &&
+        (candidate.direction === 'outbound' ||
+          (timestamp.getTime() < selectedAt.getTime() &&
+            candidate.arrivedAt !== null &&
             selected.arrivedAt !== null &&
             candidate.arrivedAt.getTime() < selected.arrivedAt.getTime())),
     )
@@ -672,7 +696,12 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     .where(and(eq(message.transportId, input.transportId), eq(message.threadId, row.threadId)));
 
   const preceding = orderCausalPreceding(row, threadRows);
-  const threadMessages = input.includeThreadState ? orderThreadContext(row, threadRows) : undefined;
+  const threadMessages = input.includeThreadState
+    ? orderThreadContext(
+        freezeOutboundToMailboxArrival(row),
+        threadRows.map((item) => freezeOutboundToMailboxArrival(item)),
+      )
+    : undefined;
 
   const threadMessageIds = threadRows.map((item) => item.id);
   const threadIdSet = new Set(threadMessageIds);
