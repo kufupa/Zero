@@ -1833,6 +1833,39 @@ describe('AmendLookupPanel cancel from the pane', () => {
 
 });
 
+describe('AmendLookupPanel cancel under CHECK (W4)', () => {
+  it('hides cancel preview while CHECK is open and does not call preview or commit', async () => {
+    capabilities.paneSave = true;
+    capabilities.paneSaveMode = 'lab';
+    const preview = vi.fn();
+    const commit = vi.fn();
+    const findStay = vi.fn().mockResolvedValue(
+      found({ arrival: CANCEL_ARRIVAL, departure: CANCEL.departure ?? '' }),
+    );
+    const trpc = {
+      ...lookupTrpc(findStay),
+      paneStayCancel: {
+        previewCancel: { mutate: preview },
+        commitCancel: { mutate: commit },
+        paneStayScreenshot: { query: vi.fn().mockResolvedValue(NO_SHOT) },
+      },
+    };
+    render(
+      <AmendLookupPanel
+        session={sessionWith({ ...CANCEL, guestLastName: 'Other' })}
+        trpc={trpc}
+      />,
+    );
+    await pressFind();
+    expect(await screen.findByTestId('amend-check-banner')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Preview cancellation' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel booking in HMS' })).toBeNull();
+    expect(screen.queryByText(/Nava can preview the cancellation/)).toBeNull();
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+});
+
 describe('amend find helpers', () => {
   it('shows the origin refusal on a failed find or search queue instead of generic copy', () => {
     const refusal = 'This mail is for Da Vinci — Centurion HMS not searched';
