@@ -367,10 +367,20 @@ function brandWorkbookFiles(
   );
 }
 
-/** Template rows: A39 Wi-Fi, A40 pool, F41 platter, A47 Centurion website (hyperlinks rId1/rId2). */
+/** Template: A38 Brunos, F37-F40 spoils, A39 Wi-Fi, A40 pool, F41 platter, A47 Centurion website. */
 function stripCenturionGuestLinks(sheet: string, below: (row: number) => number): string {
   let next = sheet;
-  for (const ref of [`A${below(39)}`, `A${below(40)}`, `F${below(41)}`, `A${below(47)}`]) {
+  for (const ref of [
+    `A${below(38)}`,
+    `F${below(37)}`,
+    `F${below(38)}`,
+    `F${below(39)}`,
+    `F${below(40)}`,
+    `A${below(39)}`,
+    `A${below(40)}`,
+    `F${below(41)}`,
+    `A${below(47)}`,
+  ]) {
     next = clearCell(next, ref);
   }
   return next.replace(/<hyperlinks>[\s\S]*?<\/hyperlinks>/, '');

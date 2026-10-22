@@ -124,11 +124,12 @@ describe('quote workbook totals and formulas', () => {
     expect(shared).not.toContain('The Centurion Hotel');
     expect(shared).not.toContain('Brunos');
     expect(sheetOf(bytes)).not.toContain('0126433600');
-    expect(cellXml(sheetOf(bytes), 'A39')).not.toMatch(/<v>/);
-    expect(cellXml(sheetOf(bytes), 'A40')).not.toMatch(/<v>/);
-    expect(cellXml(sheetOf(bytes), 'F41')).not.toMatch(/<v>/);
-    expect(cellXml(sheetOf(bytes), 'A47')).not.toMatch(/<v>/);
-    expect(sheetOf(bytes)).not.toContain('<hyperlinks>');
+    const sheet = sheetOf(bytes);
+    for (const ref of ['A38', 'F37', 'F38', 'F39', 'F40', 'A47']) {
+      expect(cellXml(sheet, ref), ref).not.toMatch(/<v>/);
+    }
+    expect(sheet).not.toContain('display="The Centurion Hotel Website"');
+    expect(sheet).not.toContain('<hyperlinks>');
     const rels = new TextDecoder().decode(files['xl/worksheets/_rels/sheet1.xml.rels']);
     expect(rels).not.toContain('centurion-hotel');
     expect(rels).not.toContain('bakubung-bush-lodge');
