@@ -22,6 +22,7 @@ const SEPARATOR_ROW = 30;
 /** One proposal Excel holds at most this many line rows. Larger quotes are refused, never split or collapsed. */
 export const MAX_WORKBOOK_LINES = 63;
 const DRAWING_PATH = 'xl/drawings/drawing1.xml';
+const SHEET_RELS_PATH = 'xl/worksheets/_rels/sheet1.xml.rels';
 /** Drawing anchors are 0-based, so xdr:row 29 is template row 30. */
 const DRAWING_SHIFT_FROM = SEPARATOR_ROW - 1;
 const PRINT_AREA_LAST_ROW = 69;
@@ -354,13 +355,29 @@ function brandWorkbookFiles(
   files['xl/sharedStrings.xml'] = new TextEncoder().encode(
     new TextDecoder()
       .decode(shared)
-      .replaceAll('The Centurion Hotel Website', identity.name)
+      .replaceAll('*Wi-Fi', '')
+      .replaceAll('*Access to the Fitness Centre &amp; Pool', '')
+      .replaceAll('*Arrival/Welcome Platter', '')
+      .replaceAll('The Centurion Hotel Website', '')
       .replaceAll(
         '*Breakfast in Brunos Restaurant ',
         'Meals are included only where stated in the line description.',
       )
       .replaceAll('The Centurion Hotel thanks you for choosing us for your upcoming stay. \r\n', thanks),
   );
+}
+
+/** Template rows: A39 Wi-Fi, A40 pool, F41 platter, A47 Centurion website (hyperlinks rId1/rId2). */
+function stripCenturionGuestLinks(sheet: string, below: (row: number) => number): string {
+  let next = sheet;
+  for (const ref of [`A${below(39)}`, `A${below(40)}`, `F${below(41)}`, `A${below(47)}`]) {
+    next = clearCell(next, ref);
+  }
+  return next.replace(/<hyperlinks>[\s\S]*?<\/hyperlinks>/, '');
+}
+
+function stripCenturionHyperlinkRels(rels: string): string {
+  return rels.replace(/<Relationship\b[^>]*relationships\/hyperlink[^>]*\/>/g, '');
 }
 
 /** Drawing anchors at or below template row 30 move with the rows. The logo above the line block stays put. */
@@ -468,6 +485,7 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
   const identity = quotePropertyIdentity(input.propertyCode ?? 'HRCEN');
   if (identity.telephone) sheet = setText(sheet, `B${below(63)}`, identity.telephone);
   else sheet = clearCell(sheet, `B${below(63)}`);
+  if (identity.letterhead === 'none') sheet = stripCenturionGuestLinks(sheet, below);
 
   files[SHEET_PATH] = new TextEncoder().encode(sheet);
   files[DRAWING_PATH] = new TextEncoder().encode(shiftDrawingRows(new TextDecoder().decode(drawingBytes), extra));
@@ -476,6 +494,11 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
   );
   files['docProps/core.xml'] = new TextEncoder().encode(scrubCore(new TextDecoder().decode(coreBytes)));
   brandWorkbookFiles(files, identity);
+  if (identity.letterhead === 'none' && files[SHEET_RELS_PATH]) {
+    files[SHEET_RELS_PATH] = new TextEncoder().encode(
+      stripCenturionHyperlinkRels(new TextDecoder().decode(files[SHEET_RELS_PATH])),
+    );
+  }
   // Formulas changed, so the template's calculation chain is stale. Excel rebuilds it on load.
   delete files[CALC_CHAIN_PATH];
   for (const path of ['xl/_rels/workbook.xml.rels', '[Content_Types].xml']) {
