@@ -14,6 +14,14 @@ describe('pilot capabilities', () => {
       staleDraftWarning: true,
       catchupUpload: false,
       paneSave: false,
+      paneSaveMode: 'off',
+      paneWrite: {
+        create: 'off',
+        amendUnpaid: 'off',
+        amendPaid: 'off',
+        cancelUnpaid: 'off',
+        cancelPaid: 'off',
+      },
     });
 
     expect(shouldRenderLegacySurface('ai')).toBe(false);

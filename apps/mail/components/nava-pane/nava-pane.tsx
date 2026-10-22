@@ -319,14 +319,18 @@ export function NavaPane({
     [partyJobThreadId, partyJobMessageId],
   );
   const [rateCatalogue, setRateCatalogue] = useState<RatePlanCatalogueEntry[]>([]);
-  // Preview/Book in HMS show only when the server flag is on. Until the read answers, the card stays copy-only.
+  // Preview/Book in HMS show only when create mode is lab or on. Until the read answers, the card stays copy-only.
   const [paneSaveOn, setPaneSaveOn] = useState(false);
+  // Attach stays Labtest-only. Create=on never enables it.
+  const [attachWritesEnabled, setAttachWritesEnabled] = useState(false);
   // Staff's edit of the combined reply. It is used only while the completed options are the same ones.
   const [combinedEdit, setCombinedEdit] = useState<CombinedReplyEdit | null>(null);
   useEffect(() => {
     let alive = true;
     void readPaneSaveFlag(trpcClient).then((on) => {
-      if (alive) setPaneSaveOn(on);
+      if (!alive) return;
+      setPaneSaveOn(on);
+      setAttachWritesEnabled(PANE_STAY_CLIENT.mode?.() === 'lab');
     });
     return () => {
       alive = false;
@@ -2339,7 +2343,7 @@ export function NavaPane({
                   : false
               }
               workItemId={storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null}
-              writesEnabled={paneSaveOn}
+              writesEnabled={attachWritesEnabled}
             />
 
             {/* Non-quote mail keeps its plain reply actions; quote mail's action is inside Step 5. */}

@@ -7,14 +7,14 @@ import {
   PANE_SCREENSHOT_NAME_PATTERN,
   paneStayClock,
   paneStayPropertyLock,
-  paneStaySaveEnabled,
-  paneStaySaveMode,
+  paneWriteMode,
   pruneExpiredPaneRuns,
   recordPanePreview,
   registerPaneRun,
   takePanePreview,
   type PaneSaveMode,
   type PaneStayLock,
+  type PaneWriteMoneyState,
 } from './pane-stay-save.js';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
@@ -117,15 +117,19 @@ export const paneStayCancelLoaders: {
   spawn: ((input: PaneStayCancelSpawnInput) => Promise<PaneStayCancelSpawnResult>) | null;
   lock: PaneStayLock | null;
   mode: (() => PaneSaveMode) | null;
+  moneyState: (() => PaneWriteMoneyState) | null;
 } = {
   spawn: null,
   lock: null,
   mode: null,
+  moneyState: null,
 };
 
-// Same gate as the save path: RESERVATIONIST_PANE_SAVE lab or on. off refuses. The mode decides the guard (below).
+// Cancel uses PANE_WRITE_CANCEL_*; create mode never enables it. Legacy SAVE still opens cancel when all five are unset.
 export function paneStayCancelEnabled(env: NodeJS.Dict<string> = process.env): boolean {
-  return paneStaySaveEnabled(env);
+  return (
+    paneWriteMode('cancel', 'unpaid', env) !== 'off' || paneWriteMode('cancel', 'paid', env) !== 'off'
+  );
 }
 
 function isRealIsoDate(value: string): boolean {
@@ -240,8 +244,9 @@ async function runPaneStayCancel(
   mode: PaneStayCancelMode,
   input: OwnedInput<PaneStayCancelPreviewInput & { reason?: string; previewDigest?: string }>,
 ): Promise<PaneStayCancelResult> {
-  // The save-path mode decides the guard: off refuses, lab keeps the Labtest guard, on allows real guests.
-  const saveMode = paneStayCancelLoaders.mode?.() ?? paneStaySaveMode();
+  // Per-workflow cancel switch. --allow-real-guest only when this money state's resolved mode is on.
+  const moneyState = paneStayCancelLoaders.moneyState?.() ?? 'unpaid';
+  const saveMode = paneStayCancelLoaders.mode?.() ?? paneWriteMode('cancel', moneyState);
   if (saveMode === 'off') return refused('refused_flag_off');
   const allowRealGuest = saveMode === 'on';
   const inputRefusal = checkCancelInput(input, { allowRealGuest });

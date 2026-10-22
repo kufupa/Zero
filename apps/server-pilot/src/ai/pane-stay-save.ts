@@ -68,6 +68,57 @@ export type PaneStayMode = 'preview' | 'commit';
 /** off: copy-only. lab: saves Labtest stays arriving 2027 or later. on: saves real guests. */
 export type PaneSaveMode = 'off' | 'lab' | 'on';
 
+export type PaneWriteWorkflow = 'create' | 'amend' | 'cancel';
+/** unknown and paid both use the *_PAID switch (KTD2). */
+export type PaneWriteMoneyState = 'unpaid' | 'paid' | 'unknown';
+
+export type PaneWriteModes = {
+  create: PaneSaveMode;
+  amendUnpaid: PaneSaveMode;
+  amendPaid: PaneSaveMode;
+  cancelUnpaid: PaneSaveMode;
+  cancelPaid: PaneSaveMode;
+};
+
+export const PANE_WRITE_CREATE = 'PANE_WRITE_CREATE';
+export const PANE_WRITE_AMEND_UNPAID = 'PANE_WRITE_AMEND_UNPAID';
+export const PANE_WRITE_AMEND_PAID = 'PANE_WRITE_AMEND_PAID';
+export const PANE_WRITE_CANCEL_UNPAID = 'PANE_WRITE_CANCEL_UNPAID';
+export const PANE_WRITE_CANCEL_PAID = 'PANE_WRITE_CANCEL_PAID';
+
+export const PANE_WRITE_ENV_NAMES = [
+  PANE_WRITE_CREATE,
+  PANE_WRITE_AMEND_UNPAID,
+  PANE_WRITE_AMEND_PAID,
+  PANE_WRITE_CANCEL_UNPAID,
+  PANE_WRITE_CANCEL_PAID,
+] as const;
+
+const PANE_WRITE_OFF: PaneWriteModes = {
+  create: 'off',
+  amendUnpaid: 'off',
+  amendPaid: 'off',
+  cancelUnpaid: 'off',
+  cancelPaid: 'off',
+};
+
+function parseLabOn(value: string | undefined): PaneSaveMode {
+  return value === 'lab' || value === 'on' ? value : 'off';
+}
+
+function anyPaneWriteEnvSet(env: NodeJS.Dict<string>): boolean {
+  return PANE_WRITE_ENV_NAMES.some((name) => env[name] !== undefined);
+}
+
+function parsePaidWriteFlag(name: string, value: string | undefined): PaneSaveMode {
+  const mode = parseLabOn(value);
+  if (mode === 'on') {
+    console.warn('pane_write_paid_on_ignored', { env: name });
+    return 'off';
+  }
+  return mode;
+}
+
 /** busy: the check could not get the property lock within the pane wait, so nothing was checked. */
 export type OsressDuplicateStatus = 'parked' | 'clear' | 'duplicate' | 'busy';
 
@@ -131,14 +182,57 @@ export function paneStayClock(): number {
   return paneStaySaveLoaders.now?.() ?? Date.now();
 }
 
-// RESERVATIONIST_PANE_SAVE: exactly 'lab' or 'on' opens the save path. Unset, 'off' or any other value is off.
-export function paneStaySaveMode(env: NodeJS.Dict<string> = process.env): PaneSaveMode {
-  const value = env.RESERVATIONIST_PANE_SAVE;
-  return value === 'lab' || value === 'on' ? value : 'off';
+/**
+ * Per-workflow write switch (KTD1). Legacy RESERVATIONIST_PANE_SAVE is used only when all five
+ * PANE_WRITE_* envs are unset. Once any new flag is set, an unset or invalid sibling is off.
+ * Paid flags accept only off|lab; on is treated as off and logged. Create ignores moneyState.
+ */
+export function paneWriteMode(
+  workflow: PaneWriteWorkflow,
+  moneyState: PaneWriteMoneyState = 'unknown',
+  env: NodeJS.Dict<string> = process.env,
+): PaneSaveMode {
+  return paneWriteModes(env)[writeModeKey(workflow, moneyState)];
 }
 
-// The save path is open in lab and on. Cancel uses this same gate. Its own arrival floor and Labtest identity check
-// keep it to lab stays in every mode.
+export function paneWriteModes(env: NodeJS.Dict<string> = process.env): PaneWriteModes {
+  if (anyPaneWriteEnvSet(env)) {
+    return {
+      create: parseLabOn(env[PANE_WRITE_CREATE]),
+      amendUnpaid: parseLabOn(env[PANE_WRITE_AMEND_UNPAID]),
+      amendPaid: parsePaidWriteFlag(PANE_WRITE_AMEND_PAID, env[PANE_WRITE_AMEND_PAID]),
+      cancelUnpaid: parseLabOn(env[PANE_WRITE_CANCEL_UNPAID]),
+      cancelPaid: parsePaidWriteFlag(PANE_WRITE_CANCEL_PAID, env[PANE_WRITE_CANCEL_PAID]),
+    };
+  }
+  const legacy = parseLabOn(env.RESERVATIONIST_PANE_SAVE);
+  if (legacy === 'off') return PANE_WRITE_OFF;
+  return {
+    create: legacy,
+    // Amend stayed Labtest-only on SAVE=lab; SAVE=on never opened it.
+    amendUnpaid: legacy === 'lab' ? 'lab' : 'off',
+    amendPaid: legacy === 'lab' ? 'lab' : 'off',
+    cancelUnpaid: legacy,
+    cancelPaid: legacy === 'on' ? 'off' : legacy,
+  };
+}
+
+function writeModeKey(
+  workflow: PaneWriteWorkflow,
+  moneyState: PaneWriteMoneyState,
+): keyof PaneWriteModes {
+  if (workflow === 'create') return 'create';
+  const paid = moneyState !== 'unpaid';
+  if (workflow === 'amend') return paid ? 'amendPaid' : 'amendUnpaid';
+  return paid ? 'cancelPaid' : 'cancelUnpaid';
+}
+
+/** Alias of create mode. Keep the name: Outlook pane and webmail both call it. */
+export function paneStaySaveMode(env: NodeJS.Dict<string> = process.env): PaneSaveMode {
+  return paneWriteMode('create', 'unpaid', env);
+}
+
+// The save path is open in lab and on. Cancel uses its own PANE_WRITE_CANCEL_* switch.
 export function paneStaySaveEnabled(env: NodeJS.Dict<string> = process.env): boolean {
   return paneStaySaveMode(env) !== 'off';
 }

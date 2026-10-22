@@ -2494,6 +2494,25 @@ describe('deploy config', () => {
     expect(script).toContain('GOTENBERG_URL:-http://127.0.0.1:3000');
   });
 
+  it('write-ec2-env.sh forwards the five PANE_WRITE_* switches with no on default', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    const { dirname, join } = await import('node:path');
+    const here = dirname(fileURLToPath(import.meta.url));
+    const script = readFileSync(join(here, '..', 'deploy', 'write-ec2-env.sh'), 'utf8');
+    for (const name of [
+      'PANE_WRITE_CREATE',
+      'PANE_WRITE_AMEND_UNPAID',
+      'PANE_WRITE_AMEND_PAID',
+      'PANE_WRITE_CANCEL_UNPAID',
+      'PANE_WRITE_CANCEL_PAID',
+    ]) {
+      expect(script).toContain(`append_env ${name} "\${${name}:-}"`);
+      expect(script).not.toContain(`${name}:-lab`);
+      expect(script).not.toContain(`${name}:-on`);
+    }
+  });
+
   it('gotenberg sidecar binds loopback, pins full Chromium/LibreOffice image, and never uses get.docker.com', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
@@ -5666,6 +5685,19 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         'HMS_QUOTE_PREPARE_PER_HOUR',
         'HMS_STAGEHAND_CDP_URL_DAVINCI',
       ]);
+      expect(keys.filter((key) => key.startsWith('PANE_WRITE_'))).toEqual([
+        'PANE_WRITE_CREATE',
+        'PANE_WRITE_AMEND_UNPAID',
+        'PANE_WRITE_AMEND_PAID',
+        'PANE_WRITE_CANCEL_UNPAID',
+        'PANE_WRITE_CANCEL_PAID',
+      ]);
+      const pm2 = readFileSync(join(here, '..', 'deploy', 'pm2.config.cjs'), 'utf8');
+      expect(pm2).toContain("name: 'http'");
+      expect(pm2).toContain("name: 'worker'");
+      expect(pm2).toContain("name: 'ai-worker'");
+      expect(pm2).toContain("name: 'remote-http'");
+      expect(pm2).not.toMatch(/PANE_WRITE_/);
       expect(allowlist).not.toContain('GOOGLE_');
       expect(writer).toContain('const parsed = JSON.parse(data);');
       expect(writer).toContain('process.stdout.write(parsed.BETTER_AUTH_SECRET)');

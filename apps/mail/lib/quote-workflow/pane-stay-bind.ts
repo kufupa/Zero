@@ -125,7 +125,13 @@ type PaneStayTrpc = {
     };
   };
   brain?: {
-    getCapabilities: { query: () => Promise<{ paneSave?: boolean; paneSaveMode?: unknown }> };
+    getCapabilities: {
+      query: () => Promise<{
+        paneSave?: boolean;
+        paneSaveMode?: unknown;
+        paneWrite?: { create?: unknown };
+      }>;
+    };
   };
 };
 
@@ -138,8 +144,17 @@ function isClientKey(value: unknown): value is object {
 }
 
 export function paneSaveModeOf(
-  capabilities: { paneSave?: boolean; paneSaveMode?: unknown } | null | undefined,
+  capabilities:
+    | {
+        paneSave?: boolean;
+        paneSaveMode?: unknown;
+        paneWrite?: { create?: unknown };
+      }
+    | null
+    | undefined,
 ): PaneSaveMode {
+  const create = capabilities?.paneWrite?.create;
+  if (create === 'off' || create === 'lab' || create === 'on') return create;
   if (capabilities?.paneSave !== true) return 'off';
   // A server that does not name the mode predates lab/on. Its only open mode was the Labtest guard, which is lab.
   return capabilities.paneSaveMode === 'on' ? 'on' : 'lab';

@@ -1183,6 +1183,20 @@ describe('pane save helpers', () => {
     expect(paneSaveModeOf({ paneSave: true })).toBe('lab');
     expect(paneSaveModeOf({ paneSave: true, paneSaveMode: 'lab' })).toBe('lab');
     expect(paneSaveModeOf({ paneSave: true, paneSaveMode: 'on' })).toBe('on');
+    expect(
+      paneSaveModeOf({
+        paneSave: true,
+        paneSaveMode: 'on',
+        paneWrite: { create: 'lab' },
+      }),
+    ).toBe('lab');
+    expect(
+      paneSaveModeOf({
+        paneSave: false,
+        paneSaveMode: 'off',
+        paneWrite: { create: 'off' },
+      }),
+    ).toBe('off');
   });
 
   it('remembers the mode on the tRPC client it read the flag through', async () => {

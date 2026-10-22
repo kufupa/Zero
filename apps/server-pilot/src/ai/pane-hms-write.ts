@@ -38,6 +38,7 @@ import {
   type PaneStayCancelSpawnInput,
   type PaneStayCancelSpawnResult,
 } from './pane-stay-cancel.js';
+import { paneStayAmendMode } from './pane-stay-amend.js';
 import {
   assertLabStayGuard,
   PANE_SCREENSHOT_NAME_PATTERN,
@@ -84,7 +85,10 @@ const EVIDENCE_NAMES = ['before.png', 'after.png'] as const;
 /** The caller already holds the property lock, so findStay's own acquisition is passed through. */
 const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 
-/** This runner stays Labtest-only until the shared RESERVATIONIST_PANE_SAVE gate is exactly lab. */
+/**
+ * Attach stays on this existing Labtest-only gate. Create/amend/cancel flags never open it.
+ * SAVE must be exactly lab; SAVE=on and PANE_WRITE_CREATE=on both leave attach off.
+ */
 export function paneHmsWriteMode(env: NodeJS.Dict<string> = process.env): 'off' | 'lab' {
   return env.RESERVATIONIST_PANE_SAVE === 'lab' ? 'lab' : 'off';
 }
@@ -457,10 +461,16 @@ export type PaneAmendResult = {
 const refusedAmend = (outcome: string): PaneAmendResult =>
   ({ outcome, screenshots: [], runId: null, previewDigest: null, changedFieldsReadback: null });
 
-export function checkAmendPaneInput(input: PaneAmendPreviewInput): string | null {
-  const shape = checkCancelInput({ confirmation: input.confirmation, arrival: input.arrival });
+export function checkAmendPaneInput(
+  input: PaneAmendPreviewInput,
+  { allowRealGuest = false }: { allowRealGuest?: boolean } = {},
+): string | null {
+  const shape = checkCancelInput(
+    { confirmation: input.confirmation, arrival: input.arrival },
+    { allowRealGuest },
+  );
   if (shape) return shape;
-  if (!/^labtest$/i.test(input.lastName.trim())) return 'refused_not_lab';
+  if (!allowRealGuest && !/^labtest$/i.test(input.lastName.trim())) return 'refused_not_lab';
   return amendFieldsSchema.safeParse(input.fields).success ? null : 'refused_input_invalid';
 }
 
@@ -468,8 +478,11 @@ async function runPaneAmend(
   mode: 'preview' | 'commit',
   input: PaneAmendPreviewInput & { owner: string; previewDigest?: string },
 ): Promise<PaneAmendResult> {
-  if (paneHmsWriteMode() !== 'lab') return refusedAmend('refused_flag_off');
-  const inputRefusal = checkAmendPaneInput(input);
+  const unpaidMode = paneStayAmendMode('unpaid');
+  const paidMode = paneStayAmendMode('paid');
+  if (unpaidMode === 'off' && paidMode === 'off') return refusedAmend('refused_flag_off');
+  const allowRealGuest = unpaidMode === 'on';
+  const inputRefusal = checkAmendPaneInput(input, { allowRealGuest });
   if (inputRefusal) return refusedAmend(inputRefusal);
   if (mode === 'commit' && !input.previewDigest) return refusedAmend('amend_preview_required');
   const lock = paneHmsWriteLoaders.lock ?? paneStayPropertyLock();
@@ -488,7 +501,12 @@ async function runPaneAmend(
         paymentRefusal = found.outcome === 'found' ? 'refused_payment_unknown' : `read_${found.outcome}`;
         return null;
       }
-      if (classifyAmendPayment(found.stay) !== 'unpaid') {
+      const moneyState = classifyAmendPayment(found.stay) === 'unpaid' ? 'unpaid' : 'paid';
+      if (paneStayAmendMode(moneyState) === 'off') {
+        paymentRefusal = 'refused_flag_off';
+        return null;
+      }
+      if (moneyState !== 'unpaid') {
         paymentRefusal = 'refused_payment_unknown';
         return null;
       }

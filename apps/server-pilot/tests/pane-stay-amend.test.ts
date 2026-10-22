@@ -10,6 +10,7 @@ import {
   type PaneAmendSpawnResult,
 } from '../src/ai/pane-hms-write.js';
 import { paneStayLookupLoaders, type PaneStayFields } from '../src/ai/pane-stay-lookup.js';
+import { paneStayAmendEnabled, paneStayAmendMode } from '../src/ai/pane-stay-amend.js';
 import { paneStaySaveLoaders, type PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
@@ -116,6 +117,18 @@ describe('pane stay amend', () => {
     paneStaySaveLoaders.now = null;
     vi.unstubAllEnvs();
     await Promise.all(leftoverDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {})));
+  });
+
+  it('create=on does not enable amend', async () => {
+    expect(paneStayAmendMode('unpaid', { PANE_WRITE_CREATE: 'on' })).toBe('off');
+    expect(paneStayAmendEnabled('unpaid', { PANE_WRITE_CREATE: 'on' })).toBe(false);
+    vi.stubEnv('PANE_WRITE_CREATE', 'on');
+    const calls = enableAmend();
+    await expect(previewAmend({ ...stay, owner })).resolves.toMatchObject({
+      outcome: 'refused_flag_off',
+      previewDigest: null,
+    });
+    expect(calls).toEqual([]);
   });
 
   it('preview refuses a non-Labtest last name when mode is lab, with no spawn', async () => {

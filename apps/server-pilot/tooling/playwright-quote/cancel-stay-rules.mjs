@@ -10,7 +10,8 @@ const HMS_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP
 // --last-name is optional. With it, a quick search that does not show the confirmation retries by surname.
 // --expect-stay names a JSON file with the stay the approval was checked against. Commit only (pane write runner, U26).
 const VALUE_FLAGS = new Set(['--confirmation', '--arrival', '--mode', '--out', '--reason', '--last-name', '--expect-stay']);
-// Lifts the Labtest guard for one run. Only the server passes it, and only in on mode. It is never read from the environment.
+// Lifts the Labtest guard for one run. Only the server passes it, and only when that cancel
+// workflow's resolved mode is on. PANE_WRITE_* and RESERVATIONIST_PANE_SAVE never lift it.
 export const ALLOW_REAL_GUEST_FLAG = '--allow-real-guest';
 const REQUIRED_FLAGS = ['--confirmation', '--arrival', '--mode', '--out'];
 const MODES = new Set(['preview', 'commit']);

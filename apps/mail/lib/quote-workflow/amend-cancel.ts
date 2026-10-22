@@ -174,18 +174,46 @@ type TrpcPaneStayCancelRoutes = {
   };
 };
 
-export type PaneCapabilitiesReply = { paneSave?: boolean; paneSaveMode?: unknown };
+export type PaneWriteCapabilityReply = {
+  create?: unknown;
+  amendUnpaid?: unknown;
+  amendPaid?: unknown;
+  cancelUnpaid?: unknown;
+  cancelPaid?: unknown;
+};
 
-/** True when brain.getCapabilities.paneSave is on — lab or on. Missing and off stay false. */
+export type PaneCapabilitiesReply = {
+  paneSave?: boolean;
+  paneSaveMode?: unknown;
+  paneWrite?: PaneWriteCapabilityReply;
+};
+
+function writeSwitchOn(value: unknown): boolean {
+  return value === 'lab' || value === 'on';
+}
+
+/** Cancel follows PANE_WRITE_CANCEL_*. Create mode never enables it. Old servers without paneWrite still use paneSave. */
 export function canPreviewCancelFromCapabilities(
   capabilities: PaneCapabilitiesReply | null | undefined,
 ): boolean {
+  if (capabilities?.paneWrite) {
+    return (
+      writeSwitchOn(capabilities.paneWrite.cancelUnpaid) ||
+      writeSwitchOn(capabilities.paneWrite.cancelPaid)
+    );
+  }
   return capabilities?.paneSave === true;
 }
 
+/** Amend follows PANE_WRITE_AMEND_*. Create mode never enables it. Old servers without paneWrite still need paneSave lab. */
 export function canPreviewAmendFromCapabilities(
   capabilities: PaneCapabilitiesReply | null | undefined,
 ): boolean {
+  if (capabilities?.paneWrite) {
+    return (
+      writeSwitchOn(capabilities.paneWrite.amendUnpaid) || writeSwitchOn(capabilities.paneWrite.amendPaid)
+    );
+  }
   return capabilities?.paneSave === true && capabilities.paneSaveMode === 'lab';
 }
 

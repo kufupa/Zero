@@ -77,7 +77,49 @@ describe('paneStaySpawnEnv', () => {
   it('passes only the shared save gate, not ad-hoc lab or cancel flags', () => {
     expect(PANE_CLI_ENV_ALLOWLIST).toContain('RESERVATIONIST_PANE_SAVE');
     expect(PANE_CLI_ENV_ALLOWLIST).not.toContain('LAB_CANCEL_CONFIRMATION');
-    expect(PANE_CLI_ENV_ALLOWLIST.filter((name) => /CANCEL|CONFIRM|WRITE|LAB|DATABASE/.test(name))).toEqual([]);
+    expect(
+      PANE_CLI_ENV_ALLOWLIST.filter(
+        (name) => /CANCEL|CONFIRM|LAB|DATABASE/.test(name) && !name.startsWith('PANE_WRITE_'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('forwards all five PANE_WRITE_* flags to HRCEN and strips them for HRDAV', () => {
+    const PANE_WRITE_ENV_NAMES = [
+      'PANE_WRITE_CREATE',
+      'PANE_WRITE_AMEND_UNPAID',
+      'PANE_WRITE_AMEND_PAID',
+      'PANE_WRITE_CANCEL_UNPAID',
+      'PANE_WRITE_CANCEL_PAID',
+    ] as const;
+    for (const name of PANE_WRITE_ENV_NAMES) {
+      expect(PANE_CLI_ENV_ALLOWLIST).toContain(name);
+    }
+    const flags = Object.fromEntries(PANE_WRITE_ENV_NAMES.map((name) => [name, 'lab']));
+    const hrcen = paneStaySpawnEnv(
+      {
+        PATH: '/usr/bin',
+        HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
+        HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
+        ...flags,
+      },
+      () => configuration,
+    );
+    for (const name of PANE_WRITE_ENV_NAMES) {
+      expect(hrcen[name]).toBe('lab');
+    }
+    const hrdav = paneStaySpawnEnv(
+      {
+        PATH: '/usr/bin',
+        HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
+        ...flags,
+      },
+      () => configuration,
+      DAVINCI_HMS_READ_TARGET,
+    );
+    for (const name of PANE_WRITE_ENV_NAMES) {
+      expect(hrdav[name]).toBeUndefined();
+    }
   });
 
   it('forwards the slot storageState path so pane CLIs can skip a repeat login', () => {

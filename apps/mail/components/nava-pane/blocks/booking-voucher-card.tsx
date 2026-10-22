@@ -35,7 +35,7 @@ export function BookingVoucherCard({
   readAs?: NavaReadAs | null;
   /** The stored work item for the selected mail. The write attaches to it. */
   workItemId?: string | null;
-  /** The pane save flag. Off hides HMS write controls; read-only lookup and Copy actions remain available. */
+  /** Attach/approve writes. Labtest-only; create mode never turns this on. Lookup stays available when off. */
   writesEnabled?: boolean;
   senderEmail?: string | null;
   subject?: string | null;
