@@ -208,6 +208,25 @@ export function resolveToolRunRecorder(
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,120}$/;
 const REFUSAL_CODES = new Set(['PRECONDITION_FAILED', 'BAD_REQUEST', 'NOT_FOUND', 'FORBIDDEN']);
 
+/** Short operator text for a failed tool run. Never copied from Error.message, HMS HTML, or guest fields. */
+const FAILED_TOOL_MESSAGES: Record<string, string> = {
+  execution_failure: 'HMS lookup failed',
+  classify_failed: 'Could not record the HMS result',
+};
+
+/** Catalog message for a failed-run code. Unknown codes get a generic line. Never the thrown text. */
+export function toolErrorMessage(code: string): string {
+  return FAILED_TOOL_MESSAGES[code] ?? 'HMS run failed';
+}
+
+function failedToolFields(code: string): ToolRunFields {
+  return {
+    status: 'failed',
+    errorCode: code,
+    result: { code, message: toolErrorMessage(code) },
+  };
+}
+
 /** The identifier a thrown error carries, or "unknown". Never the message. */
 export function toolErrorCode(error: unknown): string {
   const raw = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
@@ -217,6 +236,11 @@ export function toolErrorCode(error: unknown): string {
 /** A thrown tool error is a refusal when it is a request problem the staff can fix; otherwise a failure. */
 export function toolErrorStatus(error: unknown): 'refused' | 'failed' {
   return REFUSAL_CODES.has(toolErrorCode(error)) ? 'refused' : 'failed';
+}
+
+function classifyThrownError(error: unknown): ToolRunFields {
+  const errorCode = toolErrorCode(error);
+  return toolErrorStatus(error) === 'failed' ? failedToolFields(errorCode) : { status: 'refused', errorCode };
 }
 
 /** A tool's own answer, reduced to what the ledger keeps. */
@@ -274,10 +298,7 @@ export async function recordedToolRun<T>(
   spec: ToolRunSpec,
   run: () => Promise<T>,
   classify: (value: T) => ToolRunFields,
-  classifyError: (error: unknown) => ToolRunFields = (error) => ({
-    status: toolErrorStatus(error),
-    errorCode: toolErrorCode(error),
-  }),
+  classifyError: (error: unknown) => ToolRunFields = classifyThrownError,
   options: { recorder?: ToolRunRecorder | null; now?: () => number; capMs?: number } = {},
 ): Promise<T> {
   // The flag gates every path, including an injected recorder: with it off the tool runs and nothing is written.
@@ -302,7 +323,7 @@ export async function recordedToolRun<T>(
   try {
     fields = classify(value);
   } catch {
-    fields = { status: 'failed', errorCode: 'classify_failed' };
+    fields = failedToolFields('classify_failed');
   }
   await write(fields);
   return value;
@@ -348,15 +369,14 @@ function thrownOf(error: unknown): unknown {
 }
 
 function failureFields(error: unknown): ToolRunFields {
-  const thrown = thrownOf(error);
-  return { status: toolErrorStatus(thrown), errorCode: toolErrorCode(thrown) };
+  return classifyThrownError(thrownOf(error));
 }
 
 function classifyOrFail<T>(classify: (value: T) => ToolRunFields, value: T): ToolRunFields {
   try {
     return classify(value);
   } catch {
-    return { status: 'failed', errorCode: 'classify_failed' };
+    return failedToolFields('classify_failed');
   }
 }
 
@@ -391,7 +411,7 @@ function safeClassifyError(
   try {
     return classifyError(error);
   } catch {
-    return { status: 'failed', errorCode: 'classify_failed' };
+    return failedToolFields('classify_failed');
   }
 }
 
@@ -541,7 +561,7 @@ export function classifyFind(value: PaneStayFindResult): ToolRunFields {
     return { status: 'ok', result: { outcome: value.outcome } };
   }
   if (value.outcome === 'execution_failure') {
-    return { status: 'failed', errorCode: 'execution_failure' };
+    return failedToolFields('execution_failure');
   }
   return { status: 'refused', errorCode: identifierOr(value.outcome, 'refused') };
 }
@@ -552,7 +572,7 @@ export function classifySearch(value: PaneStayGuestSearchResult): ToolRunFields 
     return { status: 'ok', result: { outcome: value.outcome, rowCount: value.rows.length } };
   }
   if (value.outcome === 'execution_failure') {
-    return { status: 'failed', errorCode: 'execution_failure' };
+    return failedToolFields('execution_failure');
   }
   return { status: 'refused', errorCode: identifierOr(value.outcome, 'refused') };
 }
