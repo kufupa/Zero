@@ -207,12 +207,16 @@ describe('source-derived booking composition through the real packet validator',
 });
 describe('HRDAV rate room and board mappings',()=>{
  it('maps a Da Vinci standard-room ask to HRDAV codes and refuses a dinner board',()=>{
-  const c=ctx();c.input.propertyCode='HRDAV';c.input.messages[0].text=c.input.messages[0].text.replace('dinner, bed & breakfast','bed and breakfast');c.facts=c.facts.map((f:any)=>f.kind==='board'?{...f,value:'Bed & Breakfast NR'}:f);
+  const c=ctx();c.input.propertyCode='HRDAV';c.input.messages[0].text=c.input.messages[0].text.replace('dinner, bed & breakfast','bed and breakfast');c.facts=c.facts.map((f:any)=>f.kind==='board'?{...f,value:'Bed & Breakfast R'}:f);
   expect(deriveReservationistQuoteRequest(c).rooms[0].required).toEqual({boardBases:['breakfast'],roomCodes:['STKNG','STWN']});
   const dinner=ctx();dinner.input.propertyCode='HRDAV';
   expect(()=>deriveReservationistQuoteRequest(dinner)).toThrow('business_board_unavailable');
  });
- it('prices HRDAV BARRO rows with a blank board as room only and keeps NR breakfast sellable',async()=>{
+ it('leaves Bed & Breakfast NR unknown instead of rewriting it to R',()=>{
+  const c=ctx();c.input.propertyCode='HRDAV';c.input.messages[0].text=c.input.messages[0].text.replace('dinner, bed & breakfast','bed and breakfast');c.facts=c.facts.map((f:any)=>f.kind==='board'?{...f,value:'Bed & Breakfast NR'}:f);
+  expect(()=>deriveReservationistQuoteRequest(c)).toThrow('business_board_unavailable');
+ });
+ it('leaves a blank BARRO board and NR breakfast unknown instead of rewriting them',async()=>{
   const {profileFor}=await import('../tooling/playwright-quote/property-profile.mjs' as string);
   const profile=profileFor('HRDAV');
   expect(profile.propertyCode).toBe('HRDAV');
@@ -222,9 +226,9 @@ describe('HRDAV rate room and board mappings',()=>{
   expect(profile.dinnerAddOn).toBe(false);
   const request:any={propertyCode:'HRDAV',arrivalDate:'2026-11-16',departureDate:'2026-11-17',requestedCurrency:'ZAR',rooms:[{id:'1',quantity:1,adults:1,children:0,childAges:[],required:{boardBases:['room_only']}}]};
   const source={ref:'native:hrdav',sha256:'a'.repeat(64),toolVersion:'test',observedAt:'2026-10-22T02:39:34.190Z',request,result:{outcome:'quote',propertyCode:'HRDAV',groups:[{id:'1',request:request.rooms[0],completeness:{search:'complete',requiredFacts:'complete'},options:[{id:'HRDAV:STKNG:BARRO',room:{code:'STKNG',label:'Standard King',buildingCode:null},rate:{code:'BARRO',label:'Room Only BAR'},board:null,rateScope:'public',appliedContext:{},held:false,eligibility:'verified',availability:'available',matchStatus:'match',totals:{taxInclusive:true},nightly:[{date:'2026-11-16',inventory:84,price:{amount:'5280.00',currency:'ZAR'}}]},{id:'HRDAV:STKNG:BAR',room:{code:'STKNG',label:'Standard King',buildingCode:null},rate:{code:'BAR',label:'Best Available Rate'},board:'Bed & Breakfast NR',rateScope:'public',appliedContext:{},held:false,eligibility:'verified',availability:'available',matchStatus:'match',totals:{taxInclusive:true},nightly:[{date:'2026-11-16',inventory:84,price:{amount:'6300.00',currency:'ZAR'}}]}]}]}} as any;
-  expect(selectReservationistQuoteOptions(source,true)).toEqual([{sourceRef:'native:hrdav',groupId:'1',optionId:'HRDAV:STKNG:BARRO'}]);
+  expect(()=>selectReservationistQuoteOptions(source,true)).toThrow('business_selected_price_unavailable');
   const bbRequest={...request,rooms:[{...request.rooms[0],required:{boardBases:['breakfast']}}]};
   const bbSource={...source,request:bbRequest,result:{...source.result,groups:[{...source.result.groups[0],request:bbRequest.rooms[0]}]}};
-  expect(selectReservationistQuoteOptions(bbSource,true)).toEqual([{sourceRef:'native:hrdav',groupId:'1',optionId:'HRDAV:STKNG:BAR'}]);
+  expect(()=>selectReservationistQuoteOptions(bbSource,true)).toThrow('business_selected_price_unavailable');
  });
 });

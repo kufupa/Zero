@@ -68,7 +68,6 @@ describe('HRDAV native room and board maps', () => {
 
   it('maps observed HRDAV board labels and leaves dinner and invented codes unknown', () => {
     expect(hrdavBoardFromLabel('Bed & Breakfast R')).toBe('bb');
-    expect(hrdavBoardFromLabel('Bed & Breakfast NR')).toBe('bb');
     expect(hrdavBoardFromLabel(null)).toBe('unknown');
     expect(hrdavBoardFromLabel('')).toBe('unknown');
     expect(hrdavBoardFromLabel('DBB')).toBe('unknown');
@@ -82,6 +81,27 @@ describe('HRDAV native room and board maps', () => {
       staffQuoteGroupsFromStay([stay({ board: 'dinner_bb', roomPreference: 'STKNG' })], HRDAV_PROPERTY_CODE),
     ).toEqual({
       error: expect.stringMatching(/meal plan/i),
+    });
+  });
+
+  it('leaves Bed & Breakfast NR unknown instead of rewriting it to R', () => {
+    expect(hrdavBoardFromLabel('Bed & Breakfast NR')).toBe('unknown');
+    expect(hrdavBoardFromLabel('bed & breakfast nr')).toBe('unknown');
+  });
+
+  it('leaves a blank BARRO board unknown instead of rewriting it to room only', () => {
+    expect(hrdavBoardFromLabel(null)).toBe('unknown');
+    expect(hrdavBoardFromLabel('')).toBe('unknown');
+  });
+
+  it('leaves an unqualified twin unknown instead of mapping it to STWN', () => {
+    expect(resolveNativeRoomCodes({ roomPreference: 'twin', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'unresolved',
+      label: 'twin',
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Standard Twin', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['STWN'],
     });
   });
 });

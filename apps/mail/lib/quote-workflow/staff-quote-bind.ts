@@ -440,12 +440,7 @@ export function resolveNativeRoomCodes(input: {
   }
   const raw = input.roomPreference?.trim() ?? '';
   if (!raw) return { status: 'omitted' };
-  const twin =
-    input.propertyCode === HRDAV_PROPERTY_CODE
-      ? /\btwin\b/i.test(raw)
-        ? 'STWN'
-        : null
-      : unpickedTwinRoomCode(raw);
+  const twin = input.propertyCode === HRDAV_PROPERTY_CODE ? null : unpickedTwinRoomCode(raw);
   const code = knownNativeCode(raw, input.propertyCode) ?? twin ?? null;
   if (code) return { status: 'codes', codes: [code] };
   return { status: 'unresolved', label: raw };

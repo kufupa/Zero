@@ -32,22 +32,11 @@ function requestedRoomCodes(propertyCode:string,text:string):string[]|undefined{
 function mapRequestedBoard(propertyCode:string,raw:string):Board|undefined{
  const key=norm(raw);
  if(propertyCode==='HRDAV'){
-  if(['breakfast','bb','b&b','bed & breakfast','bed and breakfast','bed & breakfast r','bed & breakfast nr'].includes(key))return'breakfast';
+  if(['breakfast','bb','b&b','bed & breakfast','bed and breakfast','bed & breakfast r'].includes(key))return'breakfast';
   if(['ro','room_only','room only','room only r'].includes(key))return'room_only';
   return undefined;
  }
  return boards[key];
-}
-function nativeOptionForProperty<T extends {board?:string|null;rate:{code:string}}>(propertyCode:string|undefined,option:T):T{
- if(propertyCode!=='HRDAV')return option;
- const n=norm(option.board??'');
- if(!n&&option.rate.code==='BARRO')return{...option,board:'room only'};
- if(n==='bed & breakfast nr')return{...option,board:'bed & breakfast r'};
- return option;
-}
-function nativeSourceForProperty(source:QuoteSourceRecord):QuoteSourceRecord{
- if(source.request.propertyCode!=='HRDAV')return source;
- return{...source,result:{...source.result,groups:source.result.groups.map(group=>({...group,options:group.options.map(option=>nativeOptionForProperty('HRDAV',option))}))}};
 }
 function authored(ctx:Context){const m=ctx.input.messages.find(m=>`message:${m.id}`===ctx.task.source.attachmentId);return m?.text.split(/^(?:From:\s|Sent:\s|Subject:\s|On .{1,250}wrote:|Begin forwarded message:|-{2,}\s*(?:Original Message|Forwarded message))/im)[0]??ctx.task.source.quote??'';}
 /** Original authored event scope only; this predicate grants no price or party authority. */
@@ -131,7 +120,7 @@ export function selectReservationistQuoteOptions(source:QuoteSourceRecord,verifi
 }
 function quoteOptionCandidates(source:QuoteSourceRecord){
  if(!source.request.rooms.length||source.request.rooms.length>64||new Set(source.request.rooms.map(r=>r.id)).size!==source.request.rooms.length||source.result.groups.length!==source.request.rooms.length||new Set(source.result.groups.map(g=>g.id)).size!==source.result.groups.length)missing('business_selected_scope_unavailable',['all requested room groups']);
- const candidates=source.request.rooms.map(request=>{const group=source.result.groups.find(g=>g.id===request.id);if(!group||group.options.length>200||quoteDigest(group.request)!==quoteDigest(request)||group.completeness.search!=='complete'||group.completeness.requiredFacts!=='complete')missing('business_selected_scope_unavailable',['complete bounded native room source']);const qualified=partyContractChoice(source.request.rateContext,group.options.filter(o=>{const row=nativeOptionForProperty(source.request.propertyCode,o);return o.matchStatus==='match'&&requestMatches(request,row)&&sellable(source,request.quantity,row);}));
+ const candidates=source.request.rooms.map(request=>{const group=source.result.groups.find(g=>g.id===request.id);if(!group||group.options.length>200||quoteDigest(group.request)!==quoteDigest(request)||group.completeness.search!=='complete'||group.completeness.requiredFacts!=='complete')missing('business_selected_scope_unavailable',['complete bounded native room source']);const qualified=partyContractChoice(source.request.rateContext,group.options.filter(o=>o.matchStatus==='match'&&requestMatches(request,o)&&sellable(source,request.quantity,o)));
  const totals=qualified.map(o=>({o,total:o.nightly.reduce((sum,n)=>sum+exactMinor(n.price.amount),0)*request.quantity})).filter(v=>Number.isSafeInteger(v.total)&&v.total>0).sort((a,b)=>a.total-b.total||a.o.id.localeCompare(b.o.id));if(!totals.length)missing('business_selected_price_unavailable',['qualified available option covering every requested room-night']);return{request,totals};});
  return candidates;
 }
@@ -228,7 +217,7 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  results.push({propertyCode:ctx.input.propertyCode,authoredDate:sourceAt.slice(0,10),selections,resolveSource:async(ref:string)=>{await guard(ctx);if(ref!==source.ref)throw new Error('business_quote_source_unknown');return source;},resolvePolicy:async(property:string,rate:string,board:Board)=>{await guard(ctx);const policy=options.resolveSelectedPolicy?await options.resolveSelectedPolicy(ctx,source,selections,property,rate,board):await options.resolvePolicy(property,rate,board);await guard(ctx);if(policy===null)throw new ReservationistTaskEvidenceUnavailable('business_quote_policy_unavailable',['source-backed VAT and tourism levy inclusions'],['tax_inclusion']);return policy;},admission:{authorizationId:options.authorizationId,sourceEvaluationAt:sourceAt,maxSourceAgeMs:maxAge,expectedRequests:{[source.ref]:expected},authorizeSource:async(ref:string,id:string)=>{await guard(ctx);return ref===source.ref&&id===options.authorizationId;}}});
  }
  // ponytail: the option cards are optional. A failure building them must never fail a quote that already priced.
- if(staffApproval){try{staffApproval.onRateOptions?.(buildRateOptions(nativeSourceForProperty(summary.source),selectionSets[0]!));}catch{/* cards stay empty */}try{staffApproval.onAvailabilityBoard?.(availabilityBoardOf(summary.source.result as QuoteEnvelope));}catch{/* grid stays empty */}}
+ if(staffApproval){try{staffApproval.onRateOptions?.(buildRateOptions(summary.source,selectionSets[0]!));}catch{/* cards stay empty */}try{staffApproval.onAvailabilityBoard?.(availabilityBoardOf(summary.source.result as QuoteEnvelope));}catch{/* grid stays empty */}}
  return{...results[0]!,...(alternativeRequest?{alternatives:results.slice(1)}:{})};},
  resolveProposalHeader:async(ctx)=>{await guard(ctx);return deriveReservationistProposalHeader(ctx,options.signer);},
  authorizeGuestProposal:async(ctx,revision:QuoteRevision,facts)=>{await guard(ctx);return facts===null&&revision.authorizationId===options.authorizationId&&revision.held===false&&revision.groups.every(g=>revisions.get(ctx.task.id)?.has(g.sourceHash)===true);}

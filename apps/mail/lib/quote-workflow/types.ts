@@ -34,7 +34,7 @@ export const HRDAV_RATE_PLANS = {
   DEF: { name: 'Default', board: 'unknown' as QuoteBoard },
 } as const;
 
-const HRDAV_BB_LABELS = new Set(['bed & breakfast r', 'bed & breakfast nr']);
+const HRDAV_BB_LABELS = new Set(['bed & breakfast r']);
 
 /** Observed HRDAV summary labels only. Invented BB/DBB codes stay unknown. */
 export function hrdavBoardFromLabel(label: string | null | undefined): QuoteBoard {

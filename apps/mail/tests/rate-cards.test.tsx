@@ -840,8 +840,11 @@ describe('HRDAV BAR grid labels', () => {
     expect(cells[1]).toMatchObject({
       roomCode: 'STWN',
       rateCode: 'BARRO',
+      board: '',
       boardLabel: '',
     });
+    expect(cells[1]?.board).not.toBe('room_only');
+    expect(cells[1]?.boardLabel).not.toMatch(/room only/i);
     expect(cells.map((cell) => cell.boardLabel).join(' ')).not.toMatch(/\b(?:DBB|BB)\b/);
   });
 });
