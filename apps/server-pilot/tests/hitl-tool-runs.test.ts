@@ -251,6 +251,10 @@ describe('tool-run ledger: one run', () => {
       ['failed', 'INTERNAL_SERVER_ERROR'],
       ['failed', 'unknown'],
     ]);
+    for (const row of sink.rows) {
+      expect(typeof row.result?.message).toBe('string');
+      expect(row.result?.message).not.toBe('');
+    }
   });
 
   it('records classify_failed when the classifier throws, and still returns the value', async () => {
@@ -265,7 +269,12 @@ describe('tool-run ledger: one run', () => {
       { recorder: sink.recorder },
     );
     expect(value).toBe('v');
-    expect(sink.rows[0]).toMatchObject({ status: 'failed', errorCode: 'classify_failed' });
+    expect(sink.rows[0]).toMatchObject({
+      status: 'failed',
+      errorCode: 'classify_failed',
+      result: { code: 'classify_failed', message: expect.any(String) },
+    });
+    expect(sink.rows[0]?.result?.message).not.toBe('');
   });
 });
 
@@ -388,6 +397,13 @@ describe('tool-run ledger: classifiers by site', () => {
     expect(classifyFind({ outcome: 'execution_failure' } as never)).toEqual({
       status: 'failed',
       errorCode: 'execution_failure',
+      result: { code: 'execution_failure', message: expect.any(String) },
+    });
+    expect(classifyFind({ outcome: 'execution_failure' } as never).result?.message).not.toBe('');
+    expect(classifySearch({ outcome: 'execution_failure', rows: [] } as never)).toMatchObject({
+      status: 'failed',
+      errorCode: 'execution_failure',
+      result: { code: 'execution_failure', message: expect.any(String) },
     });
     expect(classifyFind({ outcome: 'refused_bad_hotel' } as never)).toMatchObject({
       status: 'refused',
@@ -397,7 +413,6 @@ describe('tool-run ledger: classifiers by site', () => {
       status: 'ok',
       result: { outcome: 'ambiguous_capped', rowCount: 3 },
     });
-    expect(classifySearch({ outcome: 'execution_failure', rows: [] } as never)).toMatchObject({ status: 'failed' });
   });
 
   it('staff quote: ready is ok and moves the episode to quoted; anything else is refused with its status', () => {
@@ -777,6 +792,29 @@ describe('tool-run ledger: middleware outcome', () => {
     expect(JSON.stringify(sink.rows)).not.toContain('Jane');
   });
 
+  it('a failed quote row has a non-empty message and never copies error text', async () => {
+    const sink = memorySink();
+    toolRunLoaders.recorder = sink.recorder;
+    const outcome = {
+      ok: false as const,
+      error: Object.assign(new Error('<html>Guest Jane Doe password=hunter2</html>'), {
+        code: 'QUOTE_RUN_FAILED',
+      }),
+    };
+    await expect(recordToolOutcome(quoteSpec, classifyStaffQuote, async () => outcome)).resolves.toBe(outcome);
+    expect(sink.rows[0]).toMatchObject({
+      kind: 'quote',
+      status: 'failed',
+      errorCode: 'QUOTE_RUN_FAILED',
+      result: { code: 'QUOTE_RUN_FAILED', message: expect.any(String) },
+    });
+    expect(sink.rows[0]?.result?.message).not.toBe('');
+    const dumped = JSON.stringify(sink.rows);
+    expect(dumped).not.toContain('Jane');
+    expect(dumped).not.toContain('hunter2');
+    expect(dumped).not.toContain('<html>');
+  });
+
   it('a ledger failure never changes the outcome', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     toolRunLoaders.recorder = memorySink('throws').recorder;
@@ -872,6 +910,56 @@ describe('tool-run ledger: route sites', () => {
         inputDigest: paneCancelDigest(commit),
       }),
     ]);
+  });
+
+  it('a failed lookup row has a non-empty message', async () => {
+    const sink = memorySink();
+    toolRunLoaders.recorder = sink.recorder;
+    mocks.findStay.mockResolvedValue({ outcome: 'execution_failure' });
+    await caller().paneStayLookup.findStay({ confirmation: '57291630-1' });
+    expect(sink.rows[0]).toMatchObject({
+      kind: 'stay_lookup',
+      status: 'failed',
+      errorCode: 'execution_failure',
+      result: { code: 'execution_failure', message: expect.any(String) },
+    });
+    expect(sink.rows[0]?.result?.message).not.toBe('');
+    expect(JSON.stringify(sink.rows)).not.toContain('57291630');
+  });
+
+  it('a failed guest search row has a non-empty message', async () => {
+    const sink = memorySink();
+    toolRunLoaders.recorder = sink.recorder;
+    mocks.searchGuest.mockResolvedValue({ outcome: 'execution_failure', rows: [] });
+    await caller().paneStayLookup.searchGuest({ lastName: 'Doe', arrival: '2027-09-14' });
+    expect(sink.rows[0]).toMatchObject({
+      kind: 'guest_search',
+      status: 'failed',
+      errorCode: 'execution_failure',
+      result: { code: 'execution_failure', message: expect.any(String) },
+    });
+    expect(sink.rows[0]?.result?.message).not.toBe('');
+    expect(JSON.stringify(sink.rows)).not.toContain('Doe');
+  });
+
+  it('a failed lookup does not store guest names, secrets, or HMS HTML', async () => {
+    const sink = memorySink();
+    toolRunLoaders.recorder = sink.recorder;
+    mocks.findStay.mockRejectedValue(
+      Object.assign(new Error('<html>Guest Jane Doe password=hunter2</html>'), { code: 'HMS_NAV_FAILED' }),
+    );
+    await expect(caller().paneStayLookup.findStay({ confirmation: '57291630-1' })).rejects.toThrow();
+    expect(sink.rows[0]).toMatchObject({
+      kind: 'stay_lookup',
+      status: 'failed',
+      errorCode: 'HMS_NAV_FAILED',
+    });
+    expect(typeof sink.rows[0]?.result?.message).toBe('string');
+    expect(sink.rows[0]?.result?.message).not.toBe('');
+    const dumped = JSON.stringify(sink.rows);
+    expect(dumped).not.toContain('Jane');
+    expect(dumped).not.toContain('hunter2');
+    expect(dumped).not.toContain('<html>');
   });
 
   it('paneStayLookup.findStay records the request as a digest only', async () => {
