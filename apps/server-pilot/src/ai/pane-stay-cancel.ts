@@ -23,6 +23,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { classifyAmendPayment, type AmendPaymentStay } from './pane-stay-lookup.js';
 import { tmpdir } from 'node:os';
 
 const execFileAsync = promisify(execFile);
@@ -73,6 +74,7 @@ export const PANE_CANCEL_MESSAGES: ReadonlyMap<string, string> = new Map([
     'cancel_penalty_pending',
     'A cancellation penalty is pending on this booking. Check HMS before anything else.',
   ],
+  ['refused_not_unpaid', 'This change may affect money already paid. Handle in Infor.'],
 ]);
 
 export function paneCancelMessage(outcome: string): string | null {
@@ -118,11 +120,14 @@ export const paneStayCancelLoaders: {
   lock: PaneStayLock | null;
   mode: (() => PaneSaveMode) | null;
   moneyState: (() => PaneWriteMoneyState) | null;
+  /** Commit only. Tests inject a folio snapshot; production leaves this null and the CLI re-reads. */
+  folio: ((input: PaneStayCancelPreviewInput) => Promise<AmendPaymentStay | null>) | null;
 } = {
   spawn: null,
   lock: null,
   mode: null,
   moneyState: null,
+  folio: null,
 };
 
 // Cancel uses PANE_WRITE_CANCEL_*; create mode never enables it. Legacy SAVE still opens cancel when all five are unset.
@@ -280,11 +285,16 @@ async function runPaneStayCancel(
       async () => {
         // The grant is taken under the lock, so two concurrent commits cannot both spawn.
         if (mode === 'commit' && !takePanePreview(input.owner, digest, paneStayClock())) return null;
+        if (mode === 'commit' && paneStayCancelLoaders.folio) {
+          const folioStay = await paneStayCancelLoaders.folio(input);
+          if (classifyAmendPayment(folioStay) !== 'unpaid') return { unpaidRefusal: true as const };
+        }
         return spawn(request);
       },
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
     if (spawned === null) return refused('cancel_preview_required');
+    if ('unpaidRefusal' in spawned) return refused('refused_not_unpaid');
     // HMS refused the reason before it clicked cancel, so nothing was cancelled: the grant stays usable for another reason.
     if (mode === 'commit' && spawned.outcome === 'refused_reason_missing') {
       recordPanePreview(input.owner, digest, paneStayClock());

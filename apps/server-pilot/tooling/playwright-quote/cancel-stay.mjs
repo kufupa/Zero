@@ -8,8 +8,9 @@
 // already_cancelled. If the dropdown window does not cover arrival, its calendar icon moves it first; the grid
 // window picker is the fallback.
 // Preview reads the reason list and dismisses the dialog unconfirmed.
-// Commit picks --reason and clicks its OK once. A cancellation penalty dialog, open before preview or commit
-// clicks OK, refuses the run (refused_penalty). It is recorded and left open; nothing is clicked on it.
+// Commit re-reads payment on the open record and refuses (refused_not_unpaid) unless unpaid, then picks --reason
+// and clicks its OK once. A cancellation penalty dialog, open before preview or commit clicks OK, refuses the
+// run (refused_penalty). It is recorded and left open; nothing is clicked on it.
 // --allow-real-guest lifts the Labtest guard for one run (on mode). The server passes it; it is never read from the env.
 // Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"] [--last-name Labtest] [--allow-real-guest]
 // --last-name is optional: when the confirmation does not show in the header quick search, the surname is typed and the row with the exact confirmation is used.
@@ -24,7 +25,7 @@ import {
   arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, formPairsFromSnapshot, hmsDateToIso, identityCheck,
   isCancelledStatus, normalizeReasons, outcomeAfterFailure, parseBalanceValue, parseCancelArgs, parseDateWindowLabel,
   parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, runCancelDialog, settleCancel, squash,
-  stayChanges, stayFromFormPairs,
+  stayChanges, stayFromFormPairs, unpaidCommitRefusal,
 } from './cancel-stay-rules.mjs';
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
 import { snapshotRecordForm } from './stay-lookup-dom.mjs';
@@ -101,6 +102,25 @@ export async function readRecord(page) {
       arrival: value('arrivaldate'),
       status: value('status'),
     };
+  });
+}
+
+/** Visible named payment inputs. Missing control is null (unread), not a blank that would count as unpaid. */
+export async function readPaymentFields(page) {
+  return page.evaluate(() => {
+    const skip = /^(hidden|button|submit|reset|image|file|checkbox|radio)$/i;
+    const shown = (el) => {
+      if (!el) return false;
+      if (el.tagName === 'INPUT' && skip.test(el.type || '')) return false;
+      const box = el.getBoundingClientRect();
+      return box.width > 0 && box.height > 0;
+    };
+    const read = (name) => {
+      const el = [...document.querySelectorAll(`input[name="${name}"]`)].find(shown);
+      if (!el) return null;
+      return String(el.value ?? '').replace(/\s+/g, ' ').trim();
+    };
+    return { guaranteeType: read('guaranteetype'), depositReceived: read('depositreceived') };
   });
 }
 
@@ -679,6 +699,22 @@ async function run(ctx) {
     result.statusAfter = squash(record.status);
     result.outcome = resolveOutcome({ mode: args.mode, statusBefore: record.status, statusAfter: record.status });
     return;
+  }
+
+  // Commit only: a fresh payment read on the open record. Paid/unknown never reach the cancel dialog. Preview skips it.
+  if (args.mode === 'commit') {
+    const stay = await readStayFields(ctx);
+    const named = await readPaymentFields(page);
+    const unpaidRefusal = unpaidCommitRefusal(args.mode, {
+      status: stay.status ?? record.status,
+      guaranteeType: stay.guaranteeType ?? named.guaranteeType,
+      depositReceived: stay.depositReceived ?? named.depositReceived,
+    });
+    if (unpaidRefusal) {
+      result.outcome = unpaidRefusal;
+      result.refusal = 'not_unpaid';
+      return;
+    }
   }
 
   // The pane write runner (U26) passes the stay its approval was checked against. This session opened the record on its

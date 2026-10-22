@@ -79,6 +79,14 @@ describe('cancel outcome copy', () => {
     expect(cancelOutcomeNote('refused_not_lab', CONFIRMATION)).toBe(AMEND_CANCEL_COPY.testOnly);
   });
 
+  it('a paid stay refused at commit tells staff to handle it in Infor', () => {
+    expect(cancelOutcomeNote('refused_not_unpaid', CONFIRMATION)).toBe(AMEND_SAVE_COPY.handleInHms);
+    expect(viewAfterCommit(run({ outcome: 'refused_not_unpaid', previewDigest: null }), run(), CONFIRMATION)).toEqual({
+      kind: 'idle',
+      note: AMEND_SAVE_COPY.handleInHms,
+    });
+  });
+
   it('a refused reason asks for another reason, and a clean preview offers the commit', () => {
     expect(
       viewAfterCommit(run({ outcome: 'refused_reason_missing', previewDigest: null }), run(), CONFIRMATION),

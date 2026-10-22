@@ -85,6 +85,8 @@ export function cancelOutcomeNote(
       return cancellationChargeCopy(penaltyText);
     case 'refused_not_lab':
       return AMEND_CANCEL_COPY.testOnly;
+    case 'refused_not_unpaid':
+      return AMEND_SAVE_COPY.handleInHms;
     case 'refused_lock_busy':
       return AMEND_FIND_COPY.busy;
     case 'refused_lock_unavailable':

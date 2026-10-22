@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  cancelNoteFor, penaltyRefusal, runCancelDialog,
+  cancelNoteFor, penaltyRefusal, runCancelDialog, unpaidCommitRefusal,
   chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, formPairsFromSnapshot, hmsDateToIso,
   arrivalReport, identityCheck, isCancelledStatus, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
   parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty,
@@ -150,7 +150,9 @@ test('resolveOutcome: preview must leave status unchanged; commit needs Cancelle
 
 test('exitCodeFor maps ok to 0, refused to 2, everything else to 1', () => {
   for (const outcome of ['preview_ok', 'cancelled', 'already_cancelled']) assert.equal(exitCodeFor(outcome), 0, outcome);
-  for (const outcome of ['refused_not_lab', 'refused_identity_mismatch', 'refused_reason_missing']) assert.equal(exitCodeFor(outcome), 2, outcome);
+  for (const outcome of ['refused_not_lab', 'refused_identity_mismatch', 'refused_reason_missing', 'refused_not_unpaid']) {
+    assert.equal(exitCodeFor(outcome), 2, outcome);
+  }
   for (const outcome of ['execution_failure', 'not_found', 'cancel_unconfirmed']) assert.equal(exitCodeFor(outcome), 1, outcome);
 });
 
@@ -256,6 +258,37 @@ test('checkCdpEnv allows only a local borrowed browser with no credentials', () 
   assert.equal(checkCdpEnv({ HMS_STAGEHAND_CDP_URL: 'http://u:p@127.0.0.1:19223', HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed' }).error, 'PRIVATE_CDP_REQUIRED');
   assert.equal(checkCdpEnv({ HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223', HMS_STAGEHAND_BROWSER_OWNERSHIP: 'owned' }).error, 'BORROWED_REQUIRED');
   assert.equal(checkCdpEnv({}).error, 'CDP_URL_REQUIRED');
+});
+
+const UNPAID_FOLIO = {
+  status: 'Reserved',
+  guaranteeType: 'Non-Guaranteed Individual',
+  depositReceived: '0',
+};
+
+test('commit refuses a paid or unknown folio and lets unpaid through; preview never refuses', () => {
+  assert.equal(unpaidCommitRefusal('preview', { ...UNPAID_FOLIO, depositReceived: '250.00' }), null);
+  assert.equal(unpaidCommitRefusal('preview', null), null);
+  assert.equal(unpaidCommitRefusal('commit', UNPAID_FOLIO), null);
+  assert.equal(unpaidCommitRefusal('commit', { ...UNPAID_FOLIO, depositReceived: '0.00' }), null);
+  assert.equal(unpaidCommitRefusal('commit', { ...UNPAID_FOLIO, depositReceived: '' }), null);
+  assert.equal(unpaidCommitRefusal('commit', { ...UNPAID_FOLIO, depositReceived: '250.00' }), 'refused_not_unpaid');
+  assert.equal(
+    unpaidCommitRefusal('commit', { ...UNPAID_FOLIO, guaranteeType: 'Guaranteed By Agent' }),
+    'refused_not_unpaid',
+  );
+  assert.equal(unpaidCommitRefusal('commit', { ...UNPAID_FOLIO, depositReceived: null }), 'refused_not_unpaid');
+  assert.equal(unpaidCommitRefusal('commit', { ...UNPAID_FOLIO, status: 'Confirmed' }), 'refused_not_unpaid');
+  assert.equal(unpaidCommitRefusal('commit', null), 'refused_not_unpaid');
+});
+
+test('cancel-stay.mjs checks unpaid only on commit, before the cancel dialog', async () => {
+  const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
+  assert.match(source, /unpaidCommitRefusal/);
+  const unpaidAt = source.indexOf('unpaidCommitRefusal');
+  const dialogAt = source.indexOf('openCancelDialog');
+  assert.ok(unpaidAt > 0 && dialogAt > unpaidAt, 'unpaid check must run before the cancel dialog');
+  assert.match(source, /mode === 'commit'[\s\S]{0,400}unpaidCommitRefusal/s);
 });
 
 test('cancel-stay.mjs never closes the browser, clicks OK only in the reason window, and guards main()', async () => {
