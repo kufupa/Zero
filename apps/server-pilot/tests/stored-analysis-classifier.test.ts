@@ -66,3 +66,24 @@ describe('storedAnalysis classifier overlay', () => {
     expect(voucher.luna.workflow).toBe('payment_ack');
   });
 });
+
+describe('storedAnalysis rateIntent', () => {
+  it('copies payload.rateIntent onto luna when it is government, and leaves B&B board', () => {
+    const governmentBb: MailExtractionPayload = {
+      ...payload,
+      rateIntent: 'government',
+      stays: [
+        {
+          ...payload.stays[0]!,
+          rows: payload.stays[0]!.rows.map((row) => ({ ...row, board: 'bb' })),
+        },
+      ],
+    };
+    const analysis = storedAnalysis({ kind: 'quote', payload: governmentBb, attachments: [] }, {}).analysis;
+    expect(analysis.luna.rateIntent).toBe('government');
+    expect(analysis.groups.map((group) => group.board)).toEqual(['bb']);
+
+    const omitted = storedAnalysis({ kind: 'quote', payload, attachments: [] }, {}).analysis;
+    expect(omitted.luna.rateIntent).toBeUndefined();
+  });
+});

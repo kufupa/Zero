@@ -435,6 +435,7 @@ export function storedAnalysis(
     requestedArrival: validIsoDate(requested?.arrival ?? null) ?? null,
     requestedDeparture: validIsoDate(requested?.departure ?? null) ?? null,
     requestedChange: null,
+    ...(payload.rateIntent === 'government' ? { rateIntent: 'government' as const } : {}),
   };
   const mapped = mapLlmDecision(luna, {
     channel: aopQuoteChannelFromSender({
