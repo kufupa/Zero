@@ -279,6 +279,17 @@ export function hmsDavinciMakeQuoteEnabled(input: NodeJS.Dict<string> = process.
   return input.HMS_DAVINCI_MAKE_QUOTE === 'on';
 }
 
+/**
+ * Da Vinci pane create. `lab` opens HRDAV Labtest creates. `on` is treated as lab
+ * (real-guest DV create needs owner later). Unset, `off`, or anything else keeps the
+ * HRCEN-only refuse. Independent of HMS_DAVINCI_READS and HMS_DAVINCI_MAKE_QUOTE.
+ * PANE_WRITE_CREATE still applies.
+ */
+export function hmsDavinciCreateMode(input: NodeJS.Dict<string> = process.env): 'off' | 'lab' {
+  const value = input.HMS_DAVINCI_CREATE;
+  return value === 'lab' || value === 'on' ? 'lab' : 'off';
+}
+
 /** Check whether catch-up manual mail dump upload is enabled at runtime. */
 export function isCatchupUploadEnabled(input: EnvInput = process.env): boolean {
   const val = input.CATCHUP_UPLOAD_ENABLED;
