@@ -1710,7 +1710,12 @@ describe('AmendLookupPanel cancel from the pane', () => {
         paneStayScreenshot: { query: vi.fn().mockResolvedValue(NO_SHOT) },
       },
     };
-    render(<AmendLookupPanel session={sessionWith({ ...CANCEL, confirmationNumber: null })} trpc={trpc} />);
+    render(
+      <AmendLookupPanel
+        session={sessionWith({ ...CANCEL, confirmationNumber: null, arrival: ROW_MOKOENA.arrival })}
+        trpc={trpc}
+      />,
+    );
     await pressSearch();
     const bookings = () =>
       within(screen.getByRole('list', { name: 'Bookings found in HMS' })).getAllByRole('button', {
