@@ -48,21 +48,19 @@ import {
 import { normalizeEmailAddress } from './never-spam.js';
 
 /**
- * Quote follow-ups (R10). When a quote request's thread gets an outbound message (with or without the quote attached),
- * the first one sent after the request arrived starts a 3-business-day clock. If no client reply arrives before it runs
- * out, one `quote_followup` run writes a candidate draft for her review and moves the item to needs_you. Nothing is
- * sent. Off unless QUOTE_FOLLOWUPS=on. The sweep (server timer) links, cancels and queues; the ai-worker writes drafts.
+ * Quote follow-ups (R10 / ask 175). When a quote request's thread gets a staff quote reply that states a validity
+ * or hold window, that send starts a 66-hour clock. If no client reply arrives before it runs out, one
+ * `quote_followup` run writes a candidate draft for staff review and moves the item to needs_you. Nothing is sent.
+ * Off unless QUOTE_FOLLOWUPS=on. The sweep (server timer) links, cancels and queues; the ai-worker writes drafts.
  */
 
 export const QUOTE_FOLLOWUP_PROMPT_VERSION = 'quote-followup/1';
 /** Every follow-up draft id starts with this. With the system author and origin manual, it marks the sweep's drafts. */
 export const QUOTE_FOLLOWUP_DRAFT_PREFIX = 'quote-followup:';
-const FOLLOW_UP_BUSINESS_DAYS = 3;
+/** 66 calendar hours: six hours before the gold 3-day / 72 h quote window ends. */
+export const QUOTE_FOLLOWUP_DELAY_MS = 66 * 60 * 60 * 1000;
 const SWEEP_BATCH = 200;
 const DEFER_MS = 5 * 60 * 1000;
-const DAY_MS = 24 * 60 * 60 * 1000;
-// Africa/Johannesburg is UTC+2 all year (no daylight saving), so local wall-clock time is a fixed offset.
-const SA_OFFSET_MS = 2 * 60 * 60 * 1000;
 // Open items get follow-ups, and so does a quote a hotel reply closed (below). A dismissed item, or a done one a person
 // touched, was closed by a person.
 const OPEN_STATUSES = ['needs_you', 'review'] as const;
@@ -85,36 +83,22 @@ const IS_FOLLOW_UP_DRAFT = and(
   like(mailDraft.id, `${QUOTE_FOLLOWUP_DRAFT_PREFIX}%`),
 );
 
-// ponytail: static South African public holidays for 2026-2027, including Sunday-observed Monday substitutes. Extend it
-// each December. One-off proclamations (for example an election day) are not in the list, so a due day can land on one.
-const ZA_NON_BUSINESS_DAYS = new Set([
-  '2026-01-01',
-  '2026-03-21',
-  '2026-04-03',
-  '2026-04-06',
-  '2026-04-27',
-  '2026-05-01',
-  '2026-06-16',
-  '2026-08-09',
-  '2026-08-10',
-  '2026-09-24',
-  '2026-12-16',
-  '2026-12-25',
-  '2027-01-01',
-  '2027-03-21',
-  '2027-03-22',
-  '2027-03-26',
-  '2027-03-29',
-  '2027-04-27',
-  '2027-05-01',
-  '2027-06-16',
-  '2027-08-09',
-  '2027-09-24',
-  '2027-12-16',
-  '2027-12-25',
-  '2027-12-26',
-  '2027-12-27',
-]);
+/**
+ * Staff quote replies that state a validity or hold window. Gold cover: "no rooms are currently being held" plus
+ * PDF "Valid until: 3 days". An inventory hold is almost never claimed; the window language is the trigger.
+ */
+const HOLD_OR_VALIDITY_WINDOW =
+  /no\s+rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|(?:rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|hold(?:ing)?\s+(?:the\s+)?rooms?)|valid(?:ity)?\s*(?:until|till|for|:)|(?:\b72\s*-?\s*(?:hours?|hrs?)\b)/i;
+
+export function quoteReplyStatesHoldWindow(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return HOLD_OR_VALIDITY_WINDOW.test(text.replace(/<[^>]+>/g, ' '));
+}
+
+/** The instant 66 calendar hours after `from`. Weekends and holidays count. */
+export function addQuoteFollowupDelay(from: Date): Date {
+  return new Date(from.getTime() + QUOTE_FOLLOWUP_DELAY_MS);
+}
 
 export function quoteFollowupsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.QUOTE_FOLLOWUPS === 'on';
@@ -146,24 +130,6 @@ export function quoteFollowupsSince(env: NodeJS.ProcessEnv = process.env): Date 
   return PROCESS_STARTED_AT;
 }
 
-function isSaBusinessDay(at: Date): boolean {
-  const local = new Date(at.getTime() + SA_OFFSET_MS);
-  const weekday = local.getUTCDay();
-  return (
-    weekday !== 0 && weekday !== 6 && !ZA_NON_BUSINESS_DAYS.has(local.toISOString().slice(0, 10))
-  );
-}
-
-/** The instant `days` South African business days after `from`, at the same local time of day. */
-export function addSaBusinessDays(from: Date, days: number): Date {
-  let at = from.getTime();
-  for (let counted = 0; counted < days; ) {
-    at += DAY_MS;
-    if (isSaBusinessDay(new Date(at))) counted++;
-  }
-  return new Date(at);
-}
-
 async function threadMessages(db: DB, transportId: string, threadId: string) {
   return db
     .select({
@@ -175,6 +141,8 @@ async function threadMessages(db: DB, transportId: string, threadId: string) {
       subject: message.subject,
       toAddresses: message.toAddresses,
       ccAddresses: message.ccAddresses,
+      textBody: message.textBody,
+      htmlBody: message.htmlBody,
       sentAt: message.sentAt,
       receivedAt: message.receivedAt,
       deliveredAt: MESSAGE_DELIVERED_AT,
@@ -189,6 +157,10 @@ async function threadMessages(db: DB, transportId: string, threadId: string) {
 }
 
 type ThreadMessage = Awaited<ReturnType<typeof threadMessages>>[number];
+
+function messageStatesHoldWindow(m: Pick<ThreadMessage, 'textBody' | 'htmlBody'>): boolean {
+  return quoteReplyStatesHoldWindow(m.textBody) || quoteReplyStatesHoldWindow(m.htmlBody);
+}
 
 /** When an outbound message left: its send time, else when it was stored. A queued send counts as staff activity. */
 function sentTime(m: ThreadMessage): number {
@@ -386,7 +358,8 @@ export async function runQuoteFollowupSweep(
     const sent = (await threadMessages(db, item.transportId, item.threadId))
       .flatMap((m) => {
         const at = m.direction === 'outbound' ? deliveredTime(m) : null;
-        return at !== null && at >= firstEligible ? [{ id: m.id, at }] : [];
+        if (at === null || at < firstEligible || !messageStatesHoldWindow(m)) return [];
+        return [{ id: m.id, at }];
       })
       .sort((a, b) => a.at - b.at)[0];
     if (!sent) continue;
@@ -396,7 +369,7 @@ export async function runQuoteFollowupSweep(
       .set({
         sentMessageId: sent.id,
         sentAt,
-        followUpDueAt: addSaBusinessDays(sentAt, FOLLOW_UP_BUSINESS_DAYS),
+        followUpDueAt: addQuoteFollowupDelay(sentAt),
         updatedAt: now,
       })
       .where(and(eq(workItem.id, item.id), isNull(workItem.sentMessageId)))
@@ -407,7 +380,13 @@ export async function runQuoteFollowupSweep(
   // A hotel reply closes the request and keeps its reply link (C2), so the select above never sees it. Its clock starts
   // from that link, the same way, and once per link: a run already queued for the link keeps it from starting again.
   const closedByReply = await db
-    .select({ id: workItem.id, sentMessageId: workItem.sentMessageId, sentAt: workItem.sentAt })
+    .select({
+      id: workItem.id,
+      transportId: workItem.transportId,
+      threadId: workItem.threadId,
+      sentMessageId: workItem.sentMessageId,
+      sentAt: workItem.sentAt,
+    })
     .from(workItem)
     .where(
       and(
@@ -436,10 +415,14 @@ export async function runQuoteFollowupSweep(
     )
     .limit(SWEEP_BATCH);
   for (const item of closedByReply) {
-    if (!item.sentMessageId || !item.sentAt) continue;
+    if (!item.sentMessageId || !item.sentAt || !item.threadId) continue;
+    const sent = (await threadMessages(db, item.transportId, item.threadId)).find(
+      (m) => m.id === item.sentMessageId,
+    );
+    if (!sent || !messageStatesHoldWindow(sent)) continue;
     const [linked] = await db
       .update(workItem)
-      .set({ followUpDueAt: addSaBusinessDays(item.sentAt, FOLLOW_UP_BUSINESS_DAYS), updatedAt: now })
+      .set({ followUpDueAt: addQuoteFollowupDelay(item.sentAt), updatedAt: now })
       .where(
         and(
           eq(workItem.id, item.id),
@@ -520,7 +503,7 @@ function followUpText(displayName: string | null, sentAt: Date): string {
   }).format(sentAt);
   return [
     'Hello,',
-    `I am following up on the quote we sent on ${sentOn}. Please let us know if you would like to go ahead, or if you need any changes.`,
+    `I am following up on the quote we sent on ${sentOn}. The quotation is due to expire shortly. Please let us know if you would like to go ahead, or if you need any changes.`,
     ['Kind regards,', displayName].filter(Boolean).join('\n'),
   ].join('\n\n');
 }
