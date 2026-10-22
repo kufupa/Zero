@@ -357,6 +357,12 @@ describe('outbound-gold replay runner', () => {
         ...SELECTION,
         threadMessages: [
           {
+            direction: 'inbound',
+            timestamp: '2026-10-14T10:00:00.000Z',
+            subject: 'earlier ask',
+            bodyText: 'Earlier inbound with a sender Date ahead of mailbox arrival',
+          },
+          {
             direction: 'outbound',
             timestamp: '2026-10-14T10:00:00.000Z',
             subject: 'later',
@@ -366,7 +372,34 @@ describe('outbound-gold replay runner', () => {
       },
       REQUEST_AT,
     );
-    expect(frozen.threadMessages).toEqual([]);
+    expect(frozen.threadMessages?.map((message) => message.direction)).toEqual(['inbound']);
+  });
+
+  it('does not fail coverage on a thank-you inbound with no letter', async () => {
+    const result = await runOutboundGoldReplay([THREAD_A], {
+      ...deps({
+        extract: async () => ({ ok: true, kind: 'other', payload: { ...PAYLOAD, stays: [] } }),
+        loadArtifacts: async () => ({ letters: [], replyId: null, quotePdfId: null }),
+      }),
+    });
+    expect(result.summary.covered).toBe(0);
+    expect(result.misses).toEqual([]);
+    expect(result.rows).toHaveLength(0);
+    expect(scoreOutboundGoldFixture(result.rows).pass).toBe(false);
+  });
+
+  it('keeps booked arrival when an amendment does not restate dates', () => {
+    const cards = cardsFromPayload({
+      ...PAYLOAD,
+      stays: [
+        {
+          ...PAYLOAD.stays[0]!,
+          requested: { arrival: null, departure: null },
+          booked: { arrival: ARRIVAL, departure: '2027-01-17' },
+        },
+      ],
+    });
+    expect(cards[0]?.arrival).toBe(ARRIVAL);
   });
 
   it('prints out_exists for coded out_exists and EEXIST', () => {

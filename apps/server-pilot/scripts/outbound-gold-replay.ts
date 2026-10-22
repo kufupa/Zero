@@ -173,13 +173,17 @@ export function readThreadIdList(textValue: string): string[] {
 export function cardsFromPayload(payload: MailExtractionPayload): GoldCardInput[] {
   return payload.stays.map((stay) => ({
     id: stay.id,
-    arrival: stay.requested.arrival,
-    departure: stay.requested.departure,
+    arrival: stay.requested.arrival ?? stay.booked?.arrival ?? null,
+    departure: stay.requested.departure ?? stay.booked?.departure ?? null,
     guests: (stay.guests ?? []).map((guest) => ({
       guest: guest.name,
       conf: guest.confirmationNumber,
     })),
   }));
+}
+
+function isStayRequestKind(kind: MailKind): boolean {
+  return kind === 'booking' || kind === 'quote' || kind === 'amendment' || kind === 'cancellation';
 }
 
 export function formatReplayStdout(summary: ReplayStdout): string {
@@ -195,7 +199,7 @@ export function freezeThreadHistoryAt(
   return {
     ...selection,
     threadMessages: selection.threadMessages.filter((message) => {
-      if (!message.timestamp) return true;
+      if (message.direction !== 'outbound' || !message.timestamp) return true;
       return new Date(message.timestamp).getTime() < until;
     }),
   };
@@ -337,8 +341,13 @@ export async function runOutboundGoldReplay(
       lettersUncovered += coverage.lettersUncovered;
       cards += coverage.cards;
 
-      if (!letters.length) misses.push({ id: trigger.messageId, reason: 'no_letter' });
-      else if (!coverage.pass) {
+      if (!letters.length) {
+        if (isStayRequestKind(extracted.kind)) {
+          misses.push({ id: trigger.messageId, reason: 'no_letter' });
+        } else {
+          continue;
+        }
+      } else if (!coverage.pass) {
         misses.push({
           id: trigger.messageId,
           reason: coverage.lettersUncovered > 0 ? 'uncovered_letter' : 'duplicate_date_set',
