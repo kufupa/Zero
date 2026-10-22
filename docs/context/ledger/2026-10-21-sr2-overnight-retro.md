@@ -12,7 +12,7 @@ Window: 2026-10-20 20:30Z (kickoff) → 2026-10-21 11:37Z (H5 done). Live after:
 
 | Area | PRs | Live state |
 |---|---|---|
-| Pane | U1 Contact label #431, U2 BAR grid before room pick #439, U7 CHECK screen #437, U6 one card per stay #448, U9 Make quote / Create booking labels #450 | Live; bundle `nava-pane-CP6dZvHL.js` built 04:15Z, after the last pane merge (#450 03:39Z). Loaded 05:08Z, 07:05Z and 11:06Z (who loaded it not checked) |
+| Pane | U1 Contact label #431, U2 BAR grid before room pick #439, U7 CHECK screen #437, U6 one card per stay #448, U9 Make quote / Create booking labels #450 | Live; bundle `nava-pane-CP6dZvHL.js` built 04:15Z, after the last pane merge (#450 03:39Z). Loaded 05:08Z, 07:05Z and 11:06Z by the owner/testing; staff are not using the pane yet (not released) |
 | Quote | U10 BAR tagged public/government/contract #441, U3 email-named party ranks over history #436 | Live |
 | Extraction | U5a per-stay guests and action #435, U5b multi-stay consume #444, U5r internal-staff stay asks #445 | Live; classifier gate 431 rows ×2 runs, within noise of v4; quote recall 11/11 |
 | Labtest create | U4 #433, U4b #449, U4c #452, U4d #453 | First pane Save in Labtest passed (`25526053-1`); nothing cancelled |
@@ -97,5 +97,11 @@ Cost, for the record: Grok $335 across 21 sessions (orchestrator $120, lanes $21
 
 1. Quote score on ≥10 real threads (U11b decision D2, option A: frozen truth file plus a slim runner).
 2. One Labtest amend commit after the owner's payment rule (D1).
-3. Centurion stay-lookup reliability: 66 failures (22 distinct bookings) and 66 lock-busy refusals in 7 days, outside maintenance.
+3. Stay-lookup reliability on the current build only (since deploy #7), with error text stored on failures. The earlier 7-day numbers mixed in pre-rewrite code (10-16 to 10-18 bursts) and are not evidence about this build.
 4. A live Da Vinci mail routed to its transport and visible in the pane.
+
+## 8. Retro of the retro (2026-10-22)
+
+- I first judged stay lookup on a 7-day window. Most failures were bursts on 10-16 to 10-18, before the code this run rewrote, so the "about half of lookups fail" claim did not describe the current build. **Rule:** judge a build only on runs since its deploy (here, since `b11e5ac52` at 10:58Z), outside the Wednesday maintenance window, and say n.
+- I said "staff are on the new pane" from 3 bundle loads. The pane is not released to staff; those loads were the owner or testing.
+- I quoted ~170 min for U11b and the replay without showing the parts. The replay ETA assumed HMS pricing, but U11b replays extraction only (~21 s per mail). **Rule:** every ETA leads with its parts and their measured source (one line of arrows is enough), then the total.
