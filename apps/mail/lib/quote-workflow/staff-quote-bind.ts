@@ -6,6 +6,10 @@ import type {
   UsePriorQuoteForBookingReady,
 } from './booking-draft-bind';
 import { HMS_JOB_MAX_MISSES, HMS_JOB_POLL_MS } from './amend-find';
+import {
+  HMS_MAINTENANCE_FAILURE_CLASS,
+  HMS_WEEKLY_MAINTENANCE_COPY,
+} from './hms-weekly-maintenance';
 import { getMailCacheScope, inMailbox } from '../mail/mail-cache-scope';
 import type {
   QueueStatus,
@@ -1169,7 +1173,11 @@ function readDinnerAddOn(value: unknown): StaffQuoteAllocation['dinnerAddOn'] | 
 }
 
 function settledStaffQuoteJob(view: StaffQuoteJobView): boolean {
-  return view.status === 'done' || view.status === 'failed';
+  return (
+    view.status === 'done' ||
+    view.status === 'failed' ||
+    view.failureClass === HMS_MAINTENANCE_FAILURE_CLASS
+  );
 }
 
 const STAFF_QUOTE_POLL_MAX_MS = 9 * 60_000;
@@ -1234,9 +1242,9 @@ async function pollStaffQuoteJob(
   };
   try {
     const result = await Promise.race([poll(), timeout]);
-    return result.kind === 'timeout'
-      ? { ...view, status: 'failed', failureClass: 'POLL_LOST' }
-      : result.view;
+    if (result.kind !== 'timeout') return result.view;
+    if (view.failureClass === HMS_MAINTENANCE_FAILURE_CLASS) return view;
+    return { ...view, status: 'failed', failureClass: 'POLL_LOST' };
   } finally {
     clearTimeout(timer);
     signal?.removeEventListener('abort', abort);
@@ -1264,6 +1272,9 @@ function boundStaffQuoteJob(
       ...(message.startsWith(NATIVE_NO_MATCHING_RATE_PREFIX) ? { noMatchingRate: true } : {}),
       ...(alternatives.length ? { alternatives } : {}),
     };
+  }
+  if (view.failureClass === HMS_MAINTENANCE_FAILURE_CLASS) {
+    return { status: 'unavailable', reason: HMS_WEEKLY_MAINTENANCE_COPY };
   }
   if (view.status === 'failed') {
     if (view.failureClass === 'POLL_LOST') {

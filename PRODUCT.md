@@ -106,3 +106,4 @@ _(agents append dated one-liners; owner promotes into the spec above)_
 
 - 2026-10-20 (owner, D19): quote recall bar ≥85% (was 95%, arbitrary) on ≥100 independent outbound-grounded quote rows, not n=26.
 - 2026-10-20 (owner): critically review best/elegant pilot product and exact first-release work/elapsed estimate; Grok final review with Sol coordination, not routine expensive Opus. Assessment only, no product execution approval. Original ask148 in OWNER-ASKS.
+- 2026-10-22 (owner, ask 176): Wednesday HMS maintenance ~12:00–15:30 SAST (10:00–13:30 UTC). When HMS is unreachable in that window, HMS jobs stay queued, do not dead-letter, do not burn attempts, and resume on a cheap reachability probe. Outside the window, failures stay failures. Pane (Outlook and webmail) shows "HMS weekly maintenance, back about 15:30" instead of a failure.

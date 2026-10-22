@@ -247,6 +247,7 @@ export type AiFailureClass =
   | 'ARTIFACT_TRANSIENT'
   | 'AUDIT_CAPTURE'
   | 'HMS_LOCK_BUSY'
+  | 'HMS_MAINTENANCE'
   | 'STAFF_QUOTE_ACTIVE'
   | 'WORKER_SHUTDOWN'
   | 'UNKNOWN';

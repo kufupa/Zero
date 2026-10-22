@@ -372,6 +372,7 @@ describe('staff quote HMS job binding', () => {
     ['HMS_LOCK_BUSY', 'HMS is busy with another quote or lookup. Try again in a minute.'],
     ['TRANSIENT_NETWORK', "HMS didn't answer in time."],
     ['SCHEMA_DRIFT', 'The background quote could not be completed. Try again.'],
+    ['HMS_MAINTENANCE', 'HMS weekly maintenance, back about 15:30'],
   ])('does not fall back inline for the %s worker failure', async (failureClass, reason) => {
     const mutate = vi.fn();
     const result = await bindExecuteStaffQuote({

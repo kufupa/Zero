@@ -50,6 +50,11 @@ import {
 } from '../hms/hms-read-target.js';
 import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
 import {
+  HMS_MAINTENANCE_FAILURE_CLASS,
+  HMS_WEEKLY_MAINTENANCE_LAST_ERROR,
+  shouldPauseHmsJobsForWeeklyMaintenance,
+} from '../hms/hms-weekly-maintenance.js';
+import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
   PANE_PROPERTY_LOCK_WAIT_MS,
@@ -2579,6 +2584,20 @@ async function executePartyMatchV2(input: {
   };
 }
 
+async function holdIfWeeklyMaintenance(
+  db: DB,
+  mark: Mark,
+  run: AiWorkflowRun,
+): Promise<'retry_wait' | null> {
+  if (!(await shouldPauseHmsJobsForWeeklyMaintenance())) return null;
+  return requeueRun(db, mark, {
+    attempts: run.attempts,
+    delayMs: JOB_YIELD_MS,
+    failureClass: HMS_MAINTENANCE_FAILURE_CLASS,
+    lastError: preparedQuoteYieldLastError(run, HMS_WEEKLY_MAINTENANCE_LAST_ERROR),
+  });
+}
+
 async function requeueRun(
   db: DB,
   mark: Mark,
@@ -3096,6 +3115,8 @@ export async function executeHmsJob(input: {
     await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, db);
     return 'dead_letter';
   }
+  const maintenanceHold = await holdIfWeeklyMaintenance(db, mark, run);
+  if (maintenanceHold) return maintenanceHold;
   if (
     systemPreparedQuote &&
     run.attempts > 0 &&
@@ -3238,6 +3259,8 @@ export async function executeHmsJob(input: {
         );
       }
       if (staffQuoteTransientFailure(error)) {
+        const hold = await holdIfWeeklyMaintenance(db, mark, run);
+        if (hold) return hold;
         const attachFailed = staffQuoteFailurePhase(error) === 'attach';
         return retryOrFail(
           db,
@@ -3333,6 +3356,8 @@ export async function executeHmsJob(input: {
     return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'property lock busy');
   }
   if (outcome === 'execution_failure') {
+    const hold = await holdIfWeeklyMaintenance(db, mark, run);
+    if (hold) return hold;
     return retryOrFail(db, run, mark, 'TRANSIENT_NETWORK', 'lookup execution failed');
   }
   if (outcome.startsWith('refused_')) {

@@ -26,6 +26,10 @@ import {
   type HmsJobTransport,
   type HmsJobView,
 } from '../lib/quote-workflow/amend-find';
+import {
+  HMS_MAINTENANCE_FAILURE_CLASS,
+  HMS_WEEKLY_MAINTENANCE_COPY,
+} from '../lib/quote-workflow/hms-weekly-maintenance';
 import { useHmsJob } from '../lib/quote-workflow/use-hms-job';
 import { useHmsJobNoticeReporter } from '../lib/quote-workflow/hms-job-notice-context';
 
@@ -191,6 +195,16 @@ describe('the job label, shared by both surfaces', () => {
     expect(hmsJobLabel(view({ runId: 'r', status: 'running' }), false)).toBe('Running');
     expect(hmsJobLabel(view({ runId: 'r', status: 'retrying' }), false)).toBe('Retrying');
     expect(hmsJobLabel(view({ runId: 'r', status: 'failed' }), false)).toBe('Failed');
+    expect(
+      hmsJobLabel(
+        view({
+          runId: 'r',
+          status: 'retrying',
+          failureClass: HMS_MAINTENANCE_FAILURE_CLASS,
+        }),
+        false,
+      ),
+    ).toBe(HMS_WEEKLY_MAINTENANCE_COPY);
     expect(hmsJobLabel(view({ runId: 'r', status: 'done', asOf: AS_OF }), false)).toBeNull();
     expect(hmsJobLabel(null, false)).toBeNull();
   });
@@ -261,6 +275,26 @@ describe('the status line', () => {
     );
     expect(screen.getByText('Nava is getting rates from HMS — you can keep working')).toBeTruthy();
     expect(screen.getByText('Still working — you can keep going')).toBeTruthy();
+  });
+
+  it('shows HMS weekly maintenance instead of a failure on Outlook and webmail', () => {
+    render(
+      <HmsJobStatusLine
+        view={view({
+          runId: 'r',
+          status: 'retrying',
+          failureClass: HMS_MAINTENANCE_FAILURE_CLASS,
+        })}
+        queuing={false}
+        detail={DETAIL}
+        onRetry={vi.fn()}
+      />,
+    );
+    const status = screen.getByTestId('hms-job-status');
+    expect(status.getAttribute('data-state')).toBe('maintenance');
+    expect(status.textContent).toBe(HMS_WEEKLY_MAINTENANCE_COPY);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 
   it('shows Failed as an alert, and Retry calls onRetry', () => {

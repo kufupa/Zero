@@ -1,5 +1,9 @@
 import type { PartyFindReply } from './party-lookup';
 import type { QuoteAmendment } from './types';
+import {
+  HMS_MAINTENANCE_FAILURE_CLASS,
+  HMS_WEEKLY_MAINTENANCE_COPY,
+} from './hms-weekly-maintenance';
 
 /**
  * Shared HMS read helpers for quote, amend and cancel mail.
@@ -536,6 +540,7 @@ export function isSettled(view: HmsJobView): boolean {
 
 /** The copy for a failed job, from its failure class. The raw error is never shown. */
 function failedCopy(failureClass: string | null, kind: HmsJobKind): string {
+  if (failureClass === HMS_MAINTENANCE_FAILURE_CLASS) return HMS_WEEKLY_MAINTENANCE_COPY;
   if (failureClass === 'HMS_LOCK_BUSY') return AMEND_FIND_COPY.busy;
   if (failureClass === 'POLICY_BLOCK') return AMEND_FIND_COPY.unavailable;
   if (failureClass === 'SCHEMA_DRIFT') {

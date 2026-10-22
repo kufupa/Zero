@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react';
 import type { HmsJobView } from '@/lib/quote-workflow/amend-find';
+import {
+  HMS_MAINTENANCE_FAILURE_CLASS,
+  HMS_WEEKLY_MAINTENANCE_COPY,
+} from '@/lib/quote-workflow/hms-weekly-maintenance';
 import type { QueueStatus } from '@/lib/quote-workflow/types';
 
 /** "45 s" under a minute, then "1 min 20 s". */
@@ -102,6 +106,7 @@ export function HmsQueueStatusLine({
 export function hmsJobLabel(view: HmsJobView | null, queuing: boolean): string | null {
   if (queuing) return 'Running';
   if (!view) return null;
+  if (view.failureClass === HMS_MAINTENANCE_FAILURE_CLASS) return HMS_WEEKLY_MAINTENANCE_COPY;
   switch (view.status) {
     case 'queued':
       return view.position ? `Queued (position ${view.position})` : 'Queued';
@@ -160,6 +165,18 @@ export function HmsJobStatusLine({
 }) {
   const label = hmsJobLabel(view, queuing);
   const elapsedMs = usePendingElapsed(Boolean(label && label !== 'Failed'), view?.createdAt);
+  if (view?.failureClass === HMS_MAINTENANCE_FAILURE_CLASS) {
+    return (
+      <p
+        role="status"
+        data-testid="hms-job-status"
+        data-state="maintenance"
+        className="rounded-xs border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#475569]"
+      >
+        <span className="font-semibold text-[#1e293b]">{HMS_WEEKLY_MAINTENANCE_COPY}</span>
+      </p>
+    );
+  }
   if (statusFailed || queueFailed) {
     return (
       <div

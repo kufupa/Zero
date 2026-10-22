@@ -23,6 +23,10 @@ import {
   type HmsJobTransport,
   type HmsJobView,
 } from '@/lib/quote-workflow/amend-find';
+import {
+  HMS_MAINTENANCE_FAILURE_CLASS,
+  HMS_WEEKLY_MAINTENANCE_COPY,
+} from '@/lib/quote-workflow/hms-weekly-maintenance';
 
 type TrackedJob = {
   observerId: string;
@@ -101,6 +105,8 @@ function completedMessage(request: HmsJobRequest): string {
 
 function failureReason(failureClass: string | null): string {
   switch (failureClass) {
+    case HMS_MAINTENANCE_FAILURE_CLASS:
+      return HMS_WEEKLY_MAINTENANCE_COPY;
     case 'QUEUE_FAILED':
       return 'Nava could not queue the lookup. Try again.';
     case 'AUTH':
@@ -195,9 +201,11 @@ export function HmsJobNoticeProvider({
           message:
             status === 'done'
               ? completedMessage(request)
-              : String(requestRecord(request).kind ?? '') === 'staff_quote'
-                ? `Rates failed: ${safeReason}`
-                : `HMS lookup failed: ${safeReason}`,
+              : view.failureClass === HMS_MAINTENANCE_FAILURE_CLASS
+                ? HMS_WEEKLY_MAINTENANCE_COPY
+                : String(requestRecord(request).kind ?? '') === 'staff_quote'
+                  ? `Rates failed: ${safeReason}`
+                  : `HMS lookup failed: ${safeReason}`,
         },
       ];
       publish();
