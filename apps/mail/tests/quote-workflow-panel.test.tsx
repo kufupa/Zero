@@ -1982,6 +1982,38 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(onPatch).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
   });
 
+  it('All rates returns to Government for an explicit government-rate B&B ask without changing board', () => {
+    const onPatch = vi.fn();
+    const base = headerSession({ salesStrategy: 'BAR' });
+    const analysis = {
+      ...base.analysis!,
+      groups: base.groups.map((group) => ({ ...group, board: 'bb' as const })),
+      luna: {
+        workflow: 'quote' as const,
+        flags: [] as [],
+        groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [],
+        missing: [],
+        evidence: [],
+        tasks: [],
+        rateIntent: 'government',
+      },
+    };
+    const ready = reduceQuoteSession(base, { type: 'analysis_ready', analysis: analysis as never });
+    expect(ready.staffHeader.salesStrategy).toBe('Government');
+    expect(ready.groups.map((group) => group.board)).toEqual(ready.groups.map(() => 'bb'));
+
+    render(<RatePlanGate initial={ready} onPatch={onPatch} />);
+    const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    expect(planSelect.value).toBe('government');
+    fireEvent.change(planSelect, { target: { value: 'public' } });
+    expect(onPatch).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
+    fireEvent.change(planSelect, { target: { value: 'all' } });
+    expect(onPatch).toHaveBeenLastCalledWith({ salesStrategy: 'Government' });
+    expect(onPatch.mock.calls.every((call) => !('board' in (call[0] ?? {})))).toBe(true);
+  });
+
   // Search, pick, chip and Clear for each field are covered in party-contract-picks.test.tsx.
   it('runs one HMS lookup per party and gives each party one retry control', async () => {
     resetPartyAutoLookupForTests();
