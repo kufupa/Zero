@@ -450,6 +450,12 @@ describe('guestDatesVerdict', () => {
   it('treats a row whose departure is not shown as a duplicate, since it cannot be ruled out', () => {
     expect(guestDatesVerdict([row({ departure: null })], DUP_QUERY)).toBe('duplicate');
   });
+
+  it('fails closed when the query departure is missing, even with no rows', () => {
+    expect(guestDatesVerdict([row()], { ...DUP_QUERY, departure: '' })).toBe('duplicate');
+    expect(guestDatesVerdict([], { ...DUP_QUERY, departure: '' })).toBe('duplicate');
+    expect(guestDatesVerdict([], { ...DUP_QUERY, arrival: '' })).toBe('duplicate');
+  });
 });
 
 describe('guestDatesDuplicateCheckViaCli', () => {
@@ -485,6 +491,13 @@ describe('guestDatesDuplicateCheckViaCli', () => {
     };
     await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('clear');
     expect(calls).toHaveLength(1);
+  });
+
+  it('fails closed to duplicate when the query departure is missing, without spawning', async () => {
+    paneStayLookupLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(guestDatesDuplicateCheckViaCli({ ...DUP_QUERY, departure: '' })).resolves.toBe('duplicate');
   });
 
   it('fails closed to duplicate on an incomplete or failed read', async () => {

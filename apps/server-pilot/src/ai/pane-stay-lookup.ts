@@ -531,7 +531,16 @@ function isCancelledStatus(status: string): boolean {
 
 // A non-cancelled row with the same surname, arrival and departure is a duplicate. A row whose departure is not
 // shown cannot be ruled out, so it counts as a duplicate too.
+function guestDatesQueryComplete(query: {
+  lastName?: string;
+  arrival?: string | null;
+  departure?: string | null;
+}): boolean {
+  return Boolean(String(query.lastName ?? '').trim() && query.arrival && query.departure);
+}
+
 export function guestDatesVerdict(rows: PaneStayPanelRow[], query: GuestDatesQuery): OsressDuplicateStatus {
+  if (!guestDatesQueryComplete(query)) return 'duplicate';
   const surname = normalizeSurname(query.lastName);
   const duplicate = rows.some((row) => normalizeSurname(row.lastName) === surname
     && row.arrival === query.arrival
@@ -546,6 +555,7 @@ export function guestDatesVerdict(rows: PaneStayPanelRow[], query: GuestDatesQue
 export async function guestDatesDuplicateCheckViaCli(
   input: GuestDatesQuery,
 ): Promise<OsressDuplicateStatus> {
+  if (!guestDatesQueryComplete(input)) return 'duplicate';
   const spawn = paneStayLookupLoaders.spawn ?? defaultSpawn;
   let run: PaneStayLookupSpawnResult | null = null;
   try {

@@ -256,10 +256,11 @@ export function assertLabStayGuard(input: {
   }
 }
 
-// Refusals decided before the lock, in order: the mode, the Labtest guard in lab mode, and children, which are
-// entered by hand in HMS for now.
+// Refusals decided before the lock, in order: the mode, adults ≥1, children (copy-only for now), then the
+// Labtest guard in lab mode.
 export function paneStayModeRefusal(mode: PaneSaveMode, stay: PaneStay): string | null {
   if (mode === 'off') return 'pane_save_flag_off';
+  if (!Number.isInteger(stay.adults) || stay.adults < 1) return 'pane_save_adults_required';
   if (stay.childAges?.length) return 'pane_save_children_unsupported';
   if (mode === 'lab') {
     try {

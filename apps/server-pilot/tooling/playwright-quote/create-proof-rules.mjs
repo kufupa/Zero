@@ -44,6 +44,10 @@ export function saveClickMayHaveFired(error) {
   return !/^control_missing:/.test(String(error?.message || error));
 }
 
+export function paneCommitOutcome(proof) {
+  return proof?.readbackMatch === true ? 'committed' : 'committed_unverified';
+}
+
 export function compareCreatedStay(expected, actual) {
   const mismatches = [];
   for (const field of ['arrival', 'departure', 'roomType']) {

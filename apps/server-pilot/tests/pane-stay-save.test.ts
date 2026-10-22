@@ -220,6 +220,21 @@ describe('pane stay save guards', () => {
     ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy' });
   });
 
+  it('refuses adults 0 before any write lock or spawn', async () => {
+    const locked: string[] = [];
+    paneStaySaveLoaders.mode = () => 'lab';
+    paneStaySaveLoaders.lock = passingLock(locked);
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: { ...labStay, adults: 0 }, owner: freshOwner() }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_adults_required' });
+    expect(paneStayModeRefusal('lab', { ...labStay, adults: 0 })).toBe('pane_save_adults_required');
+    expect(paneStayModeRefusal('on', { ...labStay, adults: 1 })).toBeNull();
+    expect(locked).toEqual([]);
+  });
+
   it('refuses an explicit HRDAV propertyCode before any write lock or spawn', async () => {
     const locked: string[] = [];
     paneStaySaveLoaders.mode = () => 'lab';
@@ -459,6 +474,29 @@ describe('pane stay preview digest and commit', () => {
     await expect(
       runPaneStay({ mode: 'commit', stay: labStay, owner, previewDigest }),
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
+  });
+
+  it('never reports committed when the runner readback did not match', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    paneStaySaveLoaders.spawn = async () => ({
+      outcome: 'committed_unverified',
+      clickedSave: true,
+      confirmationNumber: '46184891-1',
+    });
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: labStay,
+        owner,
+        previewDigest: preview.previewDigest ?? undefined,
+      }),
+    ).resolves.toMatchObject({
+      status: 'ok',
+      outcome: 'committed_unverified',
+      confirmationNumber: '46184891-1',
+    });
   });
 
   it('commit spawns a fresh fill under lock after its preview and returns the confirmation', async () => {
@@ -823,6 +861,13 @@ describe('create request schema for the pane fields', () => {
     lastName: 'Smith',
     guaranteeType: 'Awaiting Voucher',
   };
+
+  it('refuses adults 0 in the create request schema', async () => {
+    const schema = await loadCreateToolSchema();
+    expect(schema.$defs.request.properties.adults.minimum).toBe(1);
+    expect(validateCreateRequest({ ...base, adults: 0 }, schema).ok).toBe(false);
+    expect(validateCreateRequest({ ...base, adults: 1 }, schema).ok).toBe(true);
+  });
 
   it('keeps the schema caps equal to the server caps', async () => {
     const schema = await loadCreateToolSchema();

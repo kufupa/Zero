@@ -37,6 +37,13 @@ test('offline create request test does not opt into pilot RDS', () => {
   assert.equal(/nava-zero-mail-pilot/i.test(process.env.DATABASE_URL || ''), false);
 });
 
+test('adults 0 fails before any browser work', async () => {
+  const loaded = await withRequest(requiredRequest({ adults: 0 }), (path) => loadCreateRequest(['--request', path]));
+  assert.equal(loaded.ok, false);
+  assert.notEqual(loaded.exitCode, 0);
+  assert.match(loaded.error, /adults/);
+});
+
 test('valid required request passes', async () => {
   const request = requiredRequest();
   const loaded = await withRequest(request, (path) => loadCreateRequest(['--request', path]));
@@ -166,6 +173,7 @@ test('create-lab-stay validates before browser and keeps shot names', async () =
   const loadCall = source.indexOf('await loadCreateRequest');
   const browserCall = source.indexOf('connectOverCDP');
   assert.ok(loadCall !== -1 && browserCall !== -1 && loadCall < browserCall);
+  assert.match(source, /before\.png/);
   assert.match(source, /filled\.png/);
   assert.match(source, /availability\.png/);
   assert.match(source, /saved\.png/);
@@ -183,7 +191,8 @@ test('create-lab-stay validates before browser and keeps shot names', async () =
   assert.ok(checkAvail !== -1 && saveStop !== -1 && checkAvail < saveStop && saveStop < saveClick);
   assert.ok(paneCommit !== -1 && cancelClick !== -1 && paneCommit < cancelClick);
   assert.match(source, /outcome = 'previewed'/);
-  assert.match(source, /outcome = .committed./);
+  assert.match(source, /paneCommitOutcome\(proof\)/);
+  assert.match(source, /committed_unverified/);
   assert.equal(source.includes('x-tree-expander'), false);
   assert.equal(source.includes('const LAB'), false);
   assert.equal(source.includes('Nava'), false);
@@ -201,7 +210,7 @@ test('proof mode is guarded before browser work and wires read-only reconciliati
   const browserCall = source.indexOf('connectOverCDP');
   assert.ok(proofGuard !== -1 && proofGuard < createDir && createDir < browserCall);
   assert.match(source, /argv\.includes\('--proof'\)/);
-  assert.match(source, /PROOF_PROPERTY_HRCEN_REQUIRED/);
+  assert.match(source, /PROPERTY_HRCEN_REQUIRED/);
   assert.match(source, /installReadOnlyGuard/);
   assert.match(source, /await import\('\.\/stay-lookup\.mjs'\)/);
   assert.doesNotMatch(source, /import \{ findOnOpenGuestStay, searchGuestOnOpenGuestStay \} from '\.\/stay-lookup\.mjs'/);
@@ -258,7 +267,7 @@ test('create CLI exits after cleanup and both output streams have flushed', asyn
 
 test('proof mode refuses Save when the pre-save guest search is unavailable', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
-  const preSaveSearch = source.indexOf('const existingRows = proofMode');
+  const preSaveSearch = source.indexOf('const existingRows = verifySave');
   const refusal = source.indexOf('proofPreSaveSearchRefusal(existingRows)');
   const saveClick = source.indexOf("await clickTip(page, '^Save')");
   assert.ok(preSaveSearch !== -1 && refusal > preSaveSearch && saveClick > refusal);
@@ -268,12 +277,35 @@ test('proof mode refuses Save when the pre-save guest search is unavailable', as
 
 test('proof mode captures parsed search rows before Save', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
-  const baseline = source.indexOf('const existingRows = proofMode');
+  const baseline = source.indexOf('const existingRows = verifySave');
   const saveClick = source.indexOf("await clickTip(page, '^Save')");
   assert.ok(baseline !== -1 && saveClick > baseline);
   assert.match(source, /return \{\s*outcome: found\.outcome,\s*rows: found\.rows,/);
   assert.match(source, /Array\.isArray\(search\.rows\) \? search\.rows : null/);
   assert.match(source, /existingRows\s*,/);
+});
+
+test('HRCEN property check runs on every write, not only proof', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const secret = source.indexOf('const secret = await readSecret()');
+  const propertyCheck = source.indexOf("secret.expectedPropertyCode !== 'HRCEN'");
+  assert.ok(secret !== -1 && propertyCheck > secret);
+  assert.equal(source.includes('proofMode && secret.expectedPropertyCode'), false);
+  assert.match(source, /PROPERTY_HRCEN_REQUIRED/);
+  assert.equal(source.includes('PROOF_PROPERTY_HRCEN_REQUIRED'), false);
+});
+
+test('pane-commit uses the proof snapshot and reconcile, and never labels a mismatch committed', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const verify = source.indexOf('const verifySave = proofMode || stop.paneCommit');
+  const existing = source.indexOf('const existingRows = verifySave');
+  const readback = source.indexOf('runProofReadback');
+  const paneOutcome = source.indexOf('paneCommitOutcome(proof)');
+  const saveClick = source.indexOf("await clickTip(page, '^Save')");
+  assert.ok(verify !== -1 && existing > verify && existing < saveClick);
+  assert.ok(readback !== -1 && paneOutcome > readback);
+  assert.match(source, /committed_unverified/);
+  assert.equal(source.includes("result.outcome = 'committed'"), false);
 });
 
 test('Track picker selects Best Available and stores BAR', () => {
