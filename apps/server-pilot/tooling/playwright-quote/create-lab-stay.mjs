@@ -790,11 +790,14 @@ async function searchGuestByDates(browser, secret, dir, expected) {
   });
 }
 
-async function readExistingGuestRows(browser, secret, stay, dir) {
+async function readExistingGuestRows(browser, secret, stay, dir, result) {
   try {
     const search = await searchGuestByDates(browser, secret, dir, stay);
     return search?.outcome === 'ok' && Array.isArray(search.rows) ? search.rows : null;
-  } catch {
+  } catch (error) {
+    const message = String(error?.message || error).replace(/\s+/g, ' ').slice(0, 300);
+    process.stderr.write(`pre_save_search_error ${message}\n`);
+    if (result && typeof result === 'object') result.preSaveSearchError = message;
     return null;
   }
 }
@@ -1013,7 +1016,7 @@ async function main() {
     }
     const verifySave = proofMode || stop.paneCommit;
     const existingRows = verifySave
-      ? await readExistingGuestRows(browser, secret, stay, dir)
+      ? await readExistingGuestRows(browser, secret, stay, dir, result)
       : null;
     const preSaveRefusal = verifySave ? proofPreSaveSearchRefusal(existingRows) : null;
     if (preSaveRefusal) {

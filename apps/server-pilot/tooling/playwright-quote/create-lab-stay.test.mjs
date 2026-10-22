@@ -276,6 +276,22 @@ test('proof mode refuses Save when the pre-save guest search is unavailable', as
   assert.match(source, /result\.clickedSave = false/);
 });
 
+test('readExistingGuestRows stays fail-closed and logs the swallowed error', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const start = source.indexOf('async function readExistingGuestRows');
+  const end = source.indexOf('async function findStayByConfirmation');
+  assert.ok(start !== -1 && end > start);
+  const fn = source.slice(start, end);
+  assert.match(fn, /catch \(error\)/);
+  assert.match(fn, /pre_save_search_error/);
+  assert.match(fn, /preSaveSearchError/);
+  assert.match(fn, /slice\(0,\s*300\)/);
+  const catchBlock = fn.slice(fn.indexOf('catch (error)'));
+  assert.match(catchBlock, /^catch \(error\) \{[\s\S]*return null;\s*\}\s*\}\s*$/);
+  assert.equal(/return\s*\[/.test(catchBlock), false);
+  assert.equal(fn.includes('clickTip(page, \'^Save\')'), false);
+});
+
 test('proof mode captures parsed search rows before Save', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
   const baseline = source.indexOf('const existingRows = verifySave');
