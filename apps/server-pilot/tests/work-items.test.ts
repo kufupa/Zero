@@ -991,6 +991,51 @@ describe('corrections carry to a re-read', () => {
     const state = { [`stays[${STAY_ONE}].requested.arrival`]: '2027-10-25' };
     expect(correctionsCarryTo(before, after, state)).toBe(false);
   });
+
+  it('does not move an October edit onto a stay that reused the dropped October id', () =>
+    withDb(async (db) => {
+      const before = payload();
+      const after: MailExtractionPayload = {
+        ...payload(),
+        stays: [
+          payload().stays[1]!,
+          {
+            id: STAY_ONE,
+            hotel: 'Grand Hotel',
+            requested: { arrival: '2027-12-01', departure: '2027-12-03' },
+            booked: null,
+            totalRooms: null,
+            rows: [
+              { id: 'r_dec_reused', roomType: 'Double/Twin', rooms: 4, adultsPerRoom: 2, childAges: [], board: null },
+            ],
+          },
+        ],
+      };
+      const state = { [`stays[${STAY_ONE}].requested.arrival`]: '2027-10-25' };
+      expect(correctionsCarryTo(before, after, state)).toBe(false);
+
+      const messageId = await seedMail(db, 'up4');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: before });
+      const work = await readyWork(db, 'up4');
+      await recordFieldEvent(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        type: 'field.edit',
+        fieldPath: `stays[${STAY_ONE}].requested.arrival`,
+        value: '2027-10-25',
+      });
+      const second = await insertRead(db, messageId, { version: 'extract-v2', payload: after });
+      const moved = await ensureWorkItem(db, {
+        transportId: CENTURION,
+        threadId: 'thread-up4',
+        messageId,
+        kind: 'quote',
+        extractionId: second,
+      });
+      expect(moved.extractionId).toBe(first);
+      expect(second).not.toBe(first);
+    }));
 });
 
 describe('field events', () => {

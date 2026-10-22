@@ -547,6 +547,13 @@ function sameRow(a: ExtractionRow, b: ExtractionRow): boolean {
   );
 }
 
+function rowIdsOf(item: { id: string }): string[] | null {
+  if (!('rows' in item)) return null;
+  const rows = (item as ExtractionStay).rows;
+  if (!Array.isArray(rows)) return null;
+  return rows.map((row) => row.id);
+}
+
 function contentKeepsId<T extends { id: string }>(
   id: string,
   before: T[],
@@ -555,12 +562,21 @@ function contentKeepsId<T extends { id: string }>(
   same: (a: T, b: T) => boolean,
 ): boolean {
   const was = before.find((item) => item.id === id);
-  if (!was) return true;
+  if (!was) return true; // staff-added stay: id is hers
+  const now = after.find((item) => item.id === id);
+  if (!now) return false; // extraction stay vanished
   const key = keyOf(was, before);
   if (key) {
     const hits = after.filter((item) => keyOf(item, after) === key);
     if (hits.length > 1) return false;
     if (hits.length === 1) return hits[0]!.id === id;
+    const wasRows = rowIdsOf(was);
+    const nowRows = rowIdsOf(now);
+    // Unique content dropped. Same row ids = date correction (Oct 26 → Oct 30). Else the id was reused.
+    if (wasRows && nowRows && wasRows.join('\0') === nowRows.join('\0')) {
+      return sameSlot(id, before, after, same);
+    }
+    return false;
   }
   return sameSlot(id, before, after, same);
 }
