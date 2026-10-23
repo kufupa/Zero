@@ -25,6 +25,7 @@ import {
   PANE_SAVE_UNVERIFIED_COPY,
   paneStayInputForRoom,
   paneStayKey,
+  paneUnconfirmedMessage,
   previewOutcome,
   type PaneSaveMode,
   type PaneStayClient,
@@ -248,6 +249,64 @@ type CommitView =
   | { status: 'refused'; key: string; message: string; runId?: string; screenshots?: string[] };
 
 type RoomSaveState = { preview?: PreviewView; commit?: CommitView };
+
+export type SavedStayCommit = {
+  confirmationNumber: string | null;
+  status: 'booked' | 'unknown';
+  screenshotRef: { runId: string; name: string } | null;
+};
+
+function stayIdForRoom(room: { groupId: string }, groups: StayGroupRequirement[]): string {
+  const group =
+    groups.find((item) => item.id === room.groupId) ??
+    groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
+  return group?.stayId ?? room.groupId;
+}
+
+function commitViewFromSaved(
+  saved: SavedStayCommit,
+  stay: { firstName?: string; lastName?: string; arrival?: string; departure?: string },
+): CommitView {
+  const runId = saved.screenshotRef?.runId;
+  const screenshots = saved.screenshotRef ? [saved.screenshotRef.name] : [];
+  if (saved.confirmationNumber) {
+    return {
+      status: 'booked',
+      key: '',
+      confirmationNumber: saved.confirmationNumber,
+      runId,
+      screenshots,
+      ...(saved.status === 'unknown' ? { unverified: true } : {}),
+    };
+  }
+  return {
+    status: 'refused',
+    key: '',
+    message: paneUnconfirmedMessage({
+      firstName: textValue(stay.firstName) || 'this guest',
+      lastName: textValue(stay.lastName),
+      arrival: textValue(stay.arrival),
+      departure: textValue(stay.departure),
+    }),
+    runId,
+    screenshots,
+  };
+}
+
+function savesFromSavedStays(
+  draft: BookingDraftReady,
+  groups: StayGroupRequirement[],
+  savedStays: Record<string, SavedStayCommit> | undefined,
+): Record<string, RoomSaveState> {
+  if (!savedStays) return {};
+  const saves: Record<string, RoomSaveState> = {};
+  for (const room of draft.draft.rooms) {
+    const saved = savedStays[stayIdForRoom(room, groups)];
+    if (!saved) continue;
+    saves[`${room.groupId}:${room.roomIndex}`] = { commit: commitViewFromSaved(saved, room.request) };
+  }
+  return saves;
+}
 
 function pickScreenshot(names: string[], preferred: string): string | null {
   if (names.includes(preferred)) return preferred;
@@ -554,6 +613,8 @@ export function BookingCards({
   paneSave = null,
   parties,
   contact = null,
+  workItemId,
+  savedStays,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -563,6 +624,10 @@ export function BookingCards({
   contact?: StoredContact | null;
   /** The company and agency picked for this quote. They fill only the fields the draft leaves empty. */
   parties?: StaffQuoteParties;
+  /** Work item this mail opened. Sent with Book so the confirmation is stored on that stay. */
+  workItemId?: string;
+  /** Last HMS commit per stay, read back on mount so a reload still shows the confirmation. */
+  savedStays?: Record<string, SavedStayCommit>;
 }) {
   const client = paneSave;
   // off keeps the card copy-only. A client whose mode is not read yet is labelled as lab, the narrower mode.
@@ -605,7 +670,9 @@ export function BookingCards({
       ),
   );
 
-  const [saves, setSaves] = useState<Record<string, RoomSaveState>>({});
+  const [saves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
+    savesFromSavedStays(draft, groups, savedStays),
+  );
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const choice = choices[`${room.groupId}:${room.roomIndex}`];
@@ -636,7 +703,15 @@ export function BookingCards({
     patchSave(roomKey, { commit: { status: 'running', key } });
     let commit: CommitView;
     try {
-      const outcome = commitOutcome(await pane.commit(stay, previewDigest), stay);
+      const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
+      const persist =
+        workItemId && room
+          ? { stayId: stayIdForRoom(room, groups), workItemId }
+          : {};
+      const outcome = commitOutcome(
+        await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest),
+        stay,
+      );
       commit = outcome.ok
         ? {
             status: 'booked',

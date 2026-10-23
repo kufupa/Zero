@@ -965,6 +965,82 @@ describe('booking card pane save', () => {
     fireEvent.click(bookButton(0));
     expect(await screen.findByText(PANE_COMMIT_UNREACHABLE_COPY)).toBeDefined();
   });
+
+  it('shows a saved confirmation on mount without booking again', async () => {
+    const { client, commit, screenshot } = paneClient();
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    render(
+      <BookingCards
+        draft={draft}
+        groups={[{ ...g1, stayId: 's_aaaa1111' }]}
+        paneSave={client}
+        workItemId="11111111-1111-1111-1111-111111111111"
+        savedStays={{
+          s_aaaa1111: {
+            confirmationNumber: '98765-1',
+            status: 'booked',
+            screenshotRef: { runId: PANE_SAVE_RUN, name: 'saved.png' },
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
+    expect(commit).not.toHaveBeenCalled();
+    expect(screenshot).toHaveBeenCalledWith(PANE_SAVE_RUN, 'saved.png');
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+  });
+
+  it('on mount, an unknown save tells staff to check HMS before booking again', async () => {
+    const { client, commit } = paneClient();
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    render(
+      <BookingCards
+        draft={draft}
+        groups={[{ ...g1, stayId: 's_aaaa1111' }]}
+        paneSave={client}
+        savedStays={{
+          s_aaaa1111: {
+            confirmationNumber: null,
+            status: 'unknown',
+            screenshotRef: { runId: PANE_SAVE_RUN, name: 'saved.png' },
+          },
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(
+        'HMS may have saved this booking. Check HMS for John Smith 2026-11-12 – 2026-11-14 before trying again.',
+      ),
+    ).toBeDefined();
+    expect(commit).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Booked in HMS/)).toBeNull();
+  });
+
+  it('sends stayId and workItemId with Book so the server can persist the confirmation', async () => {
+    const { client, commit } = paneClient();
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    render(
+      <BookingCards
+        draft={draft}
+        groups={[{ ...g1, stayId: 's_aaaa1111' }]}
+        paneSave={client}
+        workItemId="11111111-1111-1111-1111-111111111111"
+      />,
+    );
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    await screen.findByText('Booked in HMS – confirmation 98765-1');
+    expect(commit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stayId: 's_aaaa1111',
+        workItemId: '11111111-1111-1111-1111-111111111111',
+      }),
+      PANE_DIGEST,
+    );
+  });
 });
 
 describe('booking card save modes and the note fields', () => {

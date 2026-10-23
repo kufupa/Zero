@@ -31,12 +31,19 @@ import {
   PANE_PARTY_NAME_MAX,
   PANE_PARTY_NATIVE_ID_MAX,
   PANE_RESERVATION_NOTE_MAX,
+  PANE_SAVE_UNCONFIRMED,
   runPaneStay,
   type PaneStayResult,
 } from '../../ai/pane-stay-save.js';
 import { isNoReplyAddress } from '../../mail/conversation-signals.js';
 import { recordStaffNote } from '../../ai/work-events.js';
-import { workItemIdForMail } from '../../ai/work-items.js';
+import {
+  loadStayCommit,
+  recordStayCommit,
+  stayCommitGuard,
+  workItemIdForMail,
+  type StayCommitRecord,
+} from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
 import { mailboxProcedure, privateProcedure, router } from '../trpc.js';
 import { CENTURION_RATE_PLANS } from '../../hms/rate-catalogue.js';
@@ -77,7 +84,39 @@ const paneStayInput = z.object({
   reservationNote: paneOptionalText(PANE_RESERVATION_NOTE_MAX),
   bookerName: paneOptionalText(PANE_BOOKER_NAME_MAX),
   bookerEmail: paneOptionalText(PANE_BOOKER_EMAIL_MAX),
+  stayId: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,40}$/)
+    .optional(),
+  workItemId: z.string().uuid().optional(),
 });
+
+function screenshotRefFrom(result: PaneStayResult): StayCommitRecord['screenshotRef'] {
+  const runId = result.runId;
+  if (!runId) return null;
+  const names = result.screenshots ?? [];
+  const name = names.includes('saved.png') ? 'saved.png' : names.at(-1);
+  return name ? { runId, name } : null;
+}
+
+function stayCommitFromResult(result: PaneStayResult): StayCommitRecord | null {
+  const screenshotRef = screenshotRefFrom(result);
+  if (result.status === 'ok' && result.confirmationNumber) {
+    return {
+      confirmationNumber: result.confirmationNumber,
+      status: result.outcome === 'committed_unverified' ? 'unknown' : 'booked',
+      screenshotRef,
+    };
+  }
+  if (result.reason === PANE_SAVE_UNCONFIRMED) {
+    return {
+      confirmationNumber: result.confirmationNumber ?? null,
+      status: 'unknown',
+      screenshotRef,
+    };
+  }
+  return null;
+}
 
 export type LoadSyncedSelection = (input: {
   transportId: string;
@@ -257,9 +296,10 @@ export const quoteWorkflowRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
+    const { stayId: _stayId, workItemId: _workItemId, ...stay } = input;
     return runPaneStay({
       mode: 'preview',
-      stay: input,
+      stay,
       owner: `${ctx.sessionUser.id}:${ctx.activeTransportId}`,
     });
   }),
@@ -278,12 +318,36 @@ export const quoteWorkflowRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-      const { previewDigest, ...stay } = input;
-      return runPaneStay({
+      const { previewDigest, stayId, workItemId, ...stay } = input;
+      const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
+      if (workItemId && stayId) {
+        const existing = await loadStayCommit(getDb(), {
+          transportId: ctx.activeTransportId,
+          workItemId,
+          stayId,
+        });
+        const guard = stayCommitGuard(existing);
+        if (guard.action === 'refuse') {
+          return { status: 'refused' as const, reason: guard.reason };
+        }
+      }
+      const result = await runPaneStay({
         mode: 'commit',
         stay,
         previewDigest,
-        owner: `${ctx.sessionUser.id}:${ctx.activeTransportId}`,
+        owner,
       });
+      if (workItemId && stayId) {
+        const record = stayCommitFromResult(result);
+        if (record) {
+          await recordStayCommit(getDb(), {
+            transportId: ctx.activeTransportId,
+            workItemId,
+            stayId,
+            record,
+          });
+        }
+      }
+      return result;
     }),
 });

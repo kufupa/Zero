@@ -88,6 +88,76 @@ export function parseFieldPath(path: string): FieldPath | null {
   return { stayId, rowId: rowId ?? '', field: rowField as RowField | 'removed' };
 }
 
+/** Nested `state.stays[stayId]` holds the last HMS commit for that stay. Field-path keys stay siblings. */
+export const STAY_COMMITS_KEY = 'stays';
+export const PANE_STAY_ALREADY_BOOKED = 'pane_stay_already_booked';
+const STAY_ID_PATTERN = new RegExp(`^${ID}$`);
+const STAY_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const STAY_SHOT_NAME = /^[a-z][a-z0-9-]{0,40}\.png$/;
+
+export type StayCommitStatus = 'booked' | 'unknown';
+export type StayCommitScreenshotRef = { runId: string; name: string };
+export type StayCommitRecord = {
+  confirmationNumber: string | null;
+  status: StayCommitStatus;
+  screenshotRef: StayCommitScreenshotRef | null;
+};
+export type StayCommitGuard =
+  | { action: 'commit' }
+  | { action: 'refuse'; reason: typeof PANE_STAY_ALREADY_BOOKED }
+  | { action: 'read_hms' };
+
+function parseStayCommit(value: unknown): StayCommitRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const status = row.status === 'booked' || row.status === 'unknown' ? row.status : null;
+  if (!status) return null;
+  const confirmation =
+    typeof row.confirmationNumber === 'string' && row.confirmationNumber.trim()
+      ? row.confirmationNumber.trim()
+      : null;
+  const shot = row.screenshotRef;
+  let screenshotRef: StayCommitScreenshotRef | null = null;
+  if (shot && typeof shot === 'object' && !Array.isArray(shot)) {
+    const ref = shot as Record<string, unknown>;
+    if (
+      typeof ref.runId === 'string' &&
+      STAY_RUN_ID.test(ref.runId) &&
+      typeof ref.name === 'string' &&
+      STAY_SHOT_NAME.test(ref.name)
+    ) {
+      screenshotRef = { runId: ref.runId, name: ref.name };
+    }
+  }
+  return { confirmationNumber: confirmation, status, screenshotRef };
+}
+
+export function stayCommitsOf(state: WorkState): Record<string, StayCommitRecord> {
+  const raw = state[STAY_COMMITS_KEY];
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: Record<string, StayCommitRecord> = {};
+  for (const [stayId, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!STAY_ID_PATTERN.test(stayId)) continue;
+    const parsed = parseStayCommit(value);
+    if (parsed) out[stayId] = parsed;
+  }
+  return out;
+}
+
+export function stayCommitOf(state: WorkState, stayId: string): StayCommitRecord | undefined {
+  return stayCommitsOf(state)[stayId];
+}
+
+export function withStayCommit(state: WorkState, stayId: string, record: StayCommitRecord): WorkState {
+  return { ...state, [STAY_COMMITS_KEY]: { ...stayCommitsOf(state), [stayId]: record } };
+}
+
+export function stayCommitGuard(record: StayCommitRecord | undefined): StayCommitGuard {
+  if (record?.confirmationNumber) return { action: 'refuse', reason: PANE_STAY_ALREADY_BOOKED };
+  if (record?.status === 'unknown') return { action: 'read_hms' };
+  return { action: 'commit' };
+}
+
 /**
  * The contact block's fields (U16). Paths are `contact.<field>`. `company` is the sender's organisation, which the
  * extraction calls the agency, so its AI value is `agency`.
@@ -1285,6 +1355,8 @@ export type StoredWork =
         hmsTodoCard: Awaited<ReturnType<typeof hmsTodoCardFromLuna>>;
       };
       contact: StoredContact;
+      /** Last HMS commit per stay, keyed by extraction stay id. Empty until a stay is booked. */
+      stays: Record<string, StayCommitRecord>;
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
       translation: StoredTranslation;
@@ -1393,6 +1465,7 @@ async function readyView(
         : await hmsTodoCardFromLuna(stored.analysis.luna, synced?.attachments ?? [], sourceText),
     },
     contact: storedContact(read.payload, state),
+    stays: stayCommitsOf(state),
     language: read.language,
     translation: storedTranslation(read.translation),
   };
@@ -1533,6 +1606,50 @@ export async function recordFieldEvent(
     await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
     return { status: 'recorded' as const, aiValue, value };
   });
+}
+
+export type StayCommitWriteResult = { status: 'recorded' } | { status: 'already_booked' } | { status: 'not_found' };
+
+/**
+ * Writes one stay's HMS commit into `state.stays[stayId]`. A stay that already has a confirmation number is left
+ * as it is (the commit path refuses before a second save). An unknown outcome can later be replaced by a number.
+ */
+export async function recordStayCommit(
+  db: DB,
+  input: {
+    transportId: string;
+    workItemId: string;
+    stayId: string;
+    record: StayCommitRecord;
+  },
+): Promise<StayCommitWriteResult> {
+  if (!STAY_ID_PATTERN.test(input.stayId)) return { status: 'not_found' };
+  return db.transaction(async (tx) => {
+    const [item] = await tx
+      .select({ state: workItem.state })
+      .from(workItem)
+      .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
+      .limit(1)
+      .for('update');
+    if (!item) return { status: 'not_found' as const };
+    const existing = stayCommitOf(item.state, input.stayId);
+    if (existing?.confirmationNumber) return { status: 'already_booked' as const };
+    const state = withStayCommit(item.state, input.stayId, input.record);
+    await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+    return { status: 'recorded' as const };
+  });
+}
+
+export async function loadStayCommit(
+  db: DB,
+  input: { transportId: string; workItemId: string; stayId: string },
+): Promise<StayCommitRecord | undefined> {
+  const [item] = await db
+    .select({ state: workItem.state })
+    .from(workItem)
+    .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
+    .limit(1);
+  return item ? stayCommitOf(item.state, input.stayId) : undefined;
 }
 
 /**
