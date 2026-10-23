@@ -2,6 +2,7 @@ import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  buildAmendStayArgs,
   checkAmendPaneInput,
   commitAmend,
   paneHmsWriteLoaders,
@@ -9,6 +10,7 @@ import {
   type PaneAmendSpawnInput,
   type PaneAmendSpawnResult,
 } from '../src/ai/pane-hms-write.js';
+import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { paneStayLookupLoaders, type PaneStayFields } from '../src/ai/pane-stay-lookup.js';
 import { paneStayAmendEnabled, paneStayAmendMode } from '../src/ai/pane-stay-amend.js';
 import { paneStaySaveLoaders, type PaneStayLock } from '../src/ai/pane-stay-save.js';
@@ -108,6 +110,49 @@ function mailboxCaller() {
 
 describe('pane stay amend', () => {
   const leftoverDirs: string[] = [];
+
+  it('HRDAV amend spawn includes --property HRDAV', () => {
+    const hrdav = buildAmendStayArgs(
+      {
+        confirmation: stay.confirmation,
+        currentArrival: stay.arrival,
+        expectedLastName: stay.lastName,
+        fields: stay.fields,
+        mode: 'preview',
+        target: DAVINCI_HMS_READ_TARGET,
+      },
+      '/tmp/run',
+      '/tmp/run/request.json',
+    );
+    expect(hrdav[hrdav.indexOf('--property') + 1]).toBe('HRDAV');
+    const hrcen = buildAmendStayArgs(
+      {
+        confirmation: stay.confirmation,
+        currentArrival: stay.arrival,
+        expectedLastName: stay.lastName,
+        fields: stay.fields,
+        mode: 'commit',
+        previewDigest: DIGEST,
+        target: CENTURION_HMS_READ_TARGET,
+      },
+      '/tmp/run',
+      '/tmp/run/request.json',
+    );
+    expect(hrcen[hrcen.indexOf('--property') + 1]).toBe('HRCEN');
+    expect(
+      buildAmendStayArgs(
+        {
+          confirmation: stay.confirmation,
+          currentArrival: stay.arrival,
+          expectedLastName: stay.lastName,
+          fields: stay.fields,
+          mode: 'preview',
+        },
+        '/tmp/run',
+        '/tmp/run/request.json',
+      ),
+    ).not.toContain('--property');
+  });
 
   afterEach(async () => {
     paneHmsWriteLoaders.spawnAmend = null;

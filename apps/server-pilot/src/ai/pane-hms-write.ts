@@ -538,16 +538,22 @@ export async function spawnAttachDocument(input: PaneAttachSpawnInput): Promise<
 
 const AMEND_TIMEOUT_MS = 10 * 60_000;
 
+export function buildAmendStayArgs(input: PaneAmendSpawnInput, outDir: string, requestPath: string): string[] {
+  const mode = input.mode ?? 'commit';
+  const args =
+    mode === 'commit'
+      ? [AMEND_STAY, '--request', requestPath, '--mode', 'commit', '--digest', input.previewDigest ?? '', '--out', outDir]
+      : [AMEND_STAY, '--request', requestPath, '--mode', 'preview', '--out', outDir];
+  if (input.target) args.push('--property', input.target.propertyCode);
+  return args;
+}
+
 /** Runs amend-stay.mjs. Its result is read even after a nonzero exit so a post-Save uncertainty stays explicit. */
 export async function spawnAmendStay(input: PaneAmendSpawnInput): Promise<PaneAmendSpawnResult> {
   const dir = await mkdtemp(join(tmpdir(), 'pane-amend-'));
   const requestPath = join(dir, 'request.json');
   await writeFile(requestPath, `${JSON.stringify({ confirmation: input.confirmation, currentArrival: input.currentArrival, expectedLastName: input.expectedLastName, fields: input.fields })}\n`, { mode: 0o600 });
-  const mode = input.mode ?? 'commit';
-  const args =
-    mode === 'commit'
-      ? [AMEND_STAY, '--request', requestPath, '--mode', 'commit', '--digest', input.previewDigest ?? '', '--out', dir]
-      : [AMEND_STAY, '--request', requestPath, '--mode', 'preview', '--out', dir];
+  const args = buildAmendStayArgs(input, dir, requestPath);
   let runError: unknown = null;
   try {
     if (!input.target) throw new Error('pane_stay_target_required');

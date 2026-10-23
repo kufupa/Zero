@@ -282,6 +282,17 @@ test('commit refuses a paid or unknown folio and lets unpaid through; preview ne
   assert.equal(unpaidCommitRefusal('commit', null), 'refused_not_unpaid');
 });
 
+test('cancel-stay.mjs run() closes leftover cancel dialog before findStay', async () => {
+  const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
+  const run = source.slice(source.indexOf('async function run(ctx)'), source.indexOf('async function drive(ctx)'));
+  const openAt = run.indexOf('await openGuestStay(');
+  const findAt = run.indexOf('findStay');
+  const closeAt = run.search(/dismissLeftoverCancelWindows|closeCancelDialog/);
+  assert.ok(openAt >= 0 && findAt > openAt, 'run() opens Guest Stay then finds');
+  assert.ok(closeAt > openAt && closeAt < findAt, 'leftover cancel dialog must close before findStay');
+  assert.equal(/clickReasonOk|clickPenaltyButton/.test(run.slice(openAt, findAt)), false);
+});
+
 test('cancel-stay.mjs checks unpaid only on commit, before the cancel dialog', async () => {
   const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
   assert.match(source, /unpaidCommitRefusal/);
