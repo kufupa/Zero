@@ -1051,12 +1051,45 @@ describe('staff_quote HMS job execution', () => {
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      'missing party',
+      new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'HMS did not confirm the picked company or agency. Search again and pick it.',
+        cause: { reason: 'not_found' },
+      }),
+    ],
+    [
+      'invalid extras',
+      new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'The extras on this quote are not valid. Check the amounts and counts, then run the quote again.',
+        cause: { reason: 'invalid_extras' },
+      }),
+    ],
+  ])('stores a catalog refusal with a wrapped cause as a successful job: %s', async (_label, error) => {
+    const { run, fence } = fixture();
+    jobMocks.runStaffQuote.mockRejectedValue(error);
+
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('succeeded');
+
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        readResult: expect.objectContaining({ ok: false, code: error.code }),
+      }),
+      db,
+    );
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
+
   it('retries an unavailable party verification instead of caching it as a refusal', async () => {
     const { run, fence } = fixture();
     jobMocks.runStaffQuote.mockRejectedValue(
       new TRPCError({
         code: 'PRECONDITION_FAILED',
         message: "Nava couldn't check the picked company or agency in HMS. Try again.",
+        cause: { reason: 'unverified' },
       }),
     );
 
