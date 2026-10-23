@@ -328,3 +328,20 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 182 | Full product status per workflow (Excel quotes, provisional create, amends, POP / TA-prepaid, amending paid, cancellations + when to charge, government rates); 12-hour ROI plan for tomorrow, parallelism, scale testing; “stuff that i should have asked” | 🟡 | High-level in chat 2026-10-22; deep plan after owner picks |
 | 183 | Clean up merged Orca worktrees/branches: “honestly you can automatically get rid of these right now” | ✅ | 31 worktrees + 162 branches removed; restore map `~/.claude/cleanup-2026-10-10-deleted.tsv` |
 | 184 | Greptile Apex abundant until 2026-11-21 (then 500 credits ever); Plus for small PRs, Apex for big; prefer small PRs | ✅ | Memory `feedback-greptile-plus-vs-apex` |
+
+## 13. Autonomous both-hotel run plan (2026-10-23)
+
+| # | Original ask | Status | Evidence / next step |
+|---|---|---|---|
+| 185 | Deep autonomous ~7.5 h run plan: evidence-backed ETAs from LOC + ledger, full parallelism, Grok 4.7 xhigh review, push back, what fits in 7.5 h; last deploy at end | 🟡 | [plan](../plans/2026-10-23-001-feat-workflow-property-grid-run-plan.md) |
+| 186 | “anything previous runs / stuff we ran before the architecture.md im really not that interested in trusting … we can just test where not clear” | ✅ | Memory `feedback-evidence-cutoff-architecture`; plan KTD11 |
+| 187 | Make all HMS tools property-agnostic: “ofc lets go with B i.e Make the target required and property settings in config” | 🟡 | [plan](../plans/2026-10-23-001-feat-workflow-property-grid-run-plan.md) U1, U2a |
+| 188 | “when shit breaks … research find the best and elegant solutions … and then to actually implement that autonomously overnight too”; Opus watchdog, others continue autonomously | 🟡 | [plan](../plans/2026-10-23-001-feat-workflow-property-grid-run-plan.md) §6a |
+| 189 | Labtest only: OK to accept or waive the cancellation-penalty dialog; “you can delete them” (Labtest bookings after proof) | 🟡 | [plan](../plans/2026-10-23-001-feat-workflow-property-grid-run-plan.md) KTD7, U14 |
+| 190 | Cancel unpaid provisional = quote release, no penalty; paid cancel/amend deferred to human-in-the-loop with questions noted | 🟡 | [plan](../plans/2026-10-23-001-feat-workflow-property-grid-run-plan.md) KTD9, U7 |
+| 191 | Staff go live tomorrow: Faith (DV, fkhumalo@) and Bongi (centurion@) | 🟡 | [plan](../plans/2026-10-23-001-feat-workflow-property-grid-run-plan.md) §2, D2 |
+| 192 | Multi-stay (one inbound → several HMS bookings): “very very important” | 🟡 | [plan](../plans/2026-10-23-001-feat-workflow-property-grid-run-plan.md) U8 |
+| 193 | POP/prepaid: conf# → HMS lookup → attach PDF to the HMS record; Folio access?; Codex Sol computer use for DOM discovery | 🟡 | [plan](../plans/2026-10-23-001-feat-workflow-property-grid-run-plan.md) U9, KTD8, D5 |
+| 194 | Inbound ↔ outbound ↔ HMS confirmation linking (±20–30 min, conf# in PDF) = context dataset, not gold; 66 h follow-up for provisionals too | 🟡 | [plan](../plans/2026-10-23-001-feat-workflow-property-grid-run-plan.md) U10, U11 |
+| 195 | DV Make quote flag ON (approved); score Centurion + DV on most recent threads; party retest only if code changed (it did: 486723640, 2b11db6f7) | 🟡 | [plan](../plans/2026-10-23-001-feat-workflow-property-grid-run-plan.md) KTD12, U12, P8 |
+| 196 | Multi-mailbox lowest priority / deferred (“no way 340 minutes”); groups deferred | ⏸ | [plan](../plans/2026-10-23-001-feat-workflow-property-grid-run-plan.md) §10 |
