@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   BookingDraftReady,
   BookingRateCheck,
@@ -681,6 +681,10 @@ export function BookingCards({
     savesFromSavedStays(draft, groups, savedStays),
   );
   const [stayBooking, setStayBooking] = useState(false);
+  const stayBookingRef = useRef(false);
+  useEffect(() => () => {
+    stayBookingRef.current = false;
+  }, []);
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const choice = choices[`${room.groupId}:${room.roomIndex}`];
@@ -738,13 +742,15 @@ export function BookingCards({
         return ready ? { roomKey: roomKeyOf(room), stay: ready.stay, digest: ready.digest } : null;
       });
     if (snapshot.some((item) => item == null)) return;
+    stayBookingRef.current = true;
     setStayBooking(true);
     try {
       for (const item of snapshot) {
-        if (!item) return;
+        if (!item || !stayBookingRef.current) return;
         await bookRoom(item.roomKey, pane, item.stay, item.digest);
       }
     } finally {
+      stayBookingRef.current = false;
       setStayBooking(false);
     }
   }

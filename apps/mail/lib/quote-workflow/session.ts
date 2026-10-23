@@ -129,8 +129,11 @@ export function groupStays(groups: StayGroupRequirement[]): Array<{ id: string; 
   const byKey = new Map<string, StayGroupRequirement[]>();
   for (const group of groups) {
     const dateKey = stayKeyForGroup(group);
-    const id =
-      !group.arrivalDate || !group.departureDate || dateKey === 'unknown:unknown' ? stayIdOf(group) : dateKey;
+    const id = group.arrivalDate && group.departureDate
+      ? dateKey
+      : group.arrivalDate
+        ? `a:${group.arrivalDate}`
+        : stayIdOf(group);
     byKey.set(id, [...(byKey.get(id) ?? []), group]);
   }
   return [...byKey].map(([id, rows]) => ({ id, rows }));
