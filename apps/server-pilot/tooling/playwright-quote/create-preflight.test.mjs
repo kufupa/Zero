@@ -109,7 +109,7 @@ test('guard blocks any write request', async () => {
   });
   assert.equal(result.clickedSave, false);
   const route = (method, url) => ({
-    request: () => ({ method, url }),
+    request: () => ({ method: () => method, url: () => url }),
     abort: async () => { aborted.push(`${method} abort`); },
     continue: async () => { aborted.push(`${method} continue`); },
   });

@@ -203,8 +203,8 @@ export async function writePreflightArtifacts(outDir, result, { html = '', page 
   await mkdir(outDir, { recursive: true, mode: 0o700 });
   const dumpPath = join(outDir, 'dump.html');
   await writeFile(dumpPath, sanitizeDom(html));
-  let screenshot = null;
-  if (page?.screenshot) {
+  let screenshot = result.screenshot ?? null;
+  if (!screenshot && page?.screenshot) {
     screenshot = join(outDir, 'preflight.png');
     await page.screenshot({ path: screenshot, fullPage: true }).catch(() => { screenshot = null; });
   }
@@ -258,6 +258,11 @@ async function captureSnapshot(page, { stay, propertyCode, profile, searchGuest 
     .filter((el) => el.offsetParent || el.getClientRects?.().length)
     .map((el) => (el.innerText || '').replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 8)).catch(() => []);
   const html = await page.content().catch(() => '');
+  let screenshot = null;
+  if (dir && page?.screenshot) {
+    screenshot = join(dir, 'preflight.png');
+    await page.screenshot({ path: screenshot, fullPage: true }).catch(() => { screenshot = null; });
+  }
   let duplicateSearch = null;
   try {
     await page.keyboard.press('Escape').catch(() => {});
@@ -275,7 +280,7 @@ async function captureSnapshot(page, { stay, propertyCode, profile, searchGuest 
   const mergedNav = [...nav, ...navAfter].filter((node, i, all) => all.findIndex((other) => other.name === node.name && other.inViewport === node.inViewport) === i);
   return {
     propertyCode, profile, arrival: stay.arrival, departure: stay.departure, fields, availability, messages,
-    nav: mergedNav, duplicateSearch, dump: html, captureError: errors.length ? errors.join(',') : null,
+    nav: mergedNav, duplicateSearch, dump: html, screenshot, captureError: errors.length ? errors.join(',') : null,
   };
 }
 

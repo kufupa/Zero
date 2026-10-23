@@ -145,7 +145,10 @@ describe('create preflight', () => {
     });
     expect(result.clickedSave).toBe(false);
     const route = (method: string, url: string) => ({
-      request: () => ({ method, url }),
+      request: () => ({
+        method: () => method,
+        url: () => url,
+      }),
       abort: async () => {
         aborted.push(`${method} abort`);
       },
