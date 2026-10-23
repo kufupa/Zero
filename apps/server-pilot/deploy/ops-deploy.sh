@@ -28,6 +28,40 @@ for arg in "$@"; do
   esac
 done
 
+# Text rule failed twice (SR3 lane deploys). Refuse unless cwd AND this
+# script's checkout are the recover-parse-failure worktree. Copied-script
+# unit tests set REMOTE_TEST_REPO (deploy-sandbox) or run outside a Zero
+# checkout; skip those.
+ops_deploy_is_recover() {
+  case "$1" in
+    */.worktrees/recover-parse-failure | */.worktrees/recover-parse-failure/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+ops_deploy_worktree_guard() {
+  if [ -n "${REMOTE_TEST_REPO:-}" ]; then
+    return 0
+  fi
+  local cwd toplevel script_tree check
+  cwd="$(pwd)"
+  toplevel="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  script_tree="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+  check="${toplevel:-$cwd}"
+  if ops_deploy_is_recover "$cwd" || ops_deploy_is_recover "$check"; then
+    if [ -n "$script_tree" ] && ! ops_deploy_is_recover "$script_tree"; then
+      echo "ops-deploy: refuse: script checkout must be .worktrees/recover-parse-failure (got ${script_tree})" >&2
+      exit 2
+    fi
+    return 0
+  fi
+  if [ -z "$toplevel" ] || [ ! -e "${toplevel}/apps/server-pilot/deploy/ops-deploy.sh" ]; then
+    return 0
+  fi
+  echo "ops-deploy: refuse: cwd must be .worktrees/recover-parse-failure (got ${check})" >&2
+  exit 2
+}
+ops_deploy_worktree_guard
+
 echo "== ops-deploy: sync bundle (prints shipping SHA and EC2 SHA) =="
 if [ "$ALLOW_ROLLBACK" -eq 1 ]; then
   bash "${SCRIPT_DIR}/sync-ec2-git-bundle.sh" --allow-rollback
