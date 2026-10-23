@@ -1090,7 +1090,7 @@ function StayBookBar({
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       {numbers.length > 0 ? (
-        <p className="text-[12.5px] font-semibold text-emerald-800">{`Booked this stay – ${numbers.join(', ')}`}</p>
+        <p data-pii className="text-[12.5px] font-semibold text-emerald-800">{`Booked this stay – ${numbers.join(', ')}`}</p>
       ) : null}
       {pending.length > 0 ? (
         <PrimaryButton
