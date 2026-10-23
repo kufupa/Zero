@@ -1027,6 +1027,128 @@ describe('quote follow-up drafts', () => {
     });
   });
 
+  it('a confirmation letter on a separate thread still starts the booking clock', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-book-ask', REQUEST_AT, 'review', {
+        kind: 'booking',
+      });
+      await db.insert(mailExtraction).values({
+        messageId: 'thread-book-ask-request',
+        extractorVersion: 'quote-followup-test',
+        status: 'succeeded',
+        kind: 'booking',
+        payload: { confirmationNumbers: ['12345678'], stays: [] },
+      });
+      await seedInboxThread(db, {
+        threadId: 'thread-letter',
+        transportId: TRANSPORT,
+        transportEmail: TRANSPORT_EMAIL,
+        messageId: 'thread-letter-copy',
+        fromAddress: TRANSPORT_EMAIL,
+        subject: 'Confirmation letter',
+        textBody: 'Please find the confirmation attached.',
+        messageIdHeader: 'thread-letter-copy@example.com',
+      });
+      await sendReply(db, {
+        id: 'out-cross-letter',
+        threadId: 'thread-letter',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+        subject: 'Confirmation letter',
+        attach: 'HRCEN_Confirmation_Letter_12345678.pdf',
+        textBody: 'Please find the confirmation attached.',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).sentMessageId).toBe('out-cross-letter');
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: HOLD_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 1,
+        discarded: 0,
+      });
+      const { run, fence } = await claimRun(db, itemId);
+      expect(await executeQuoteFollowupRun({ run, fence, db, env: ON })).toEqual({
+        runId: run.id,
+        state: 'succeeded',
+      });
+      const drafts = await threadDrafts(db, 'thread-book-ask');
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]).toMatchObject({
+        status: 'candidate',
+        isSent: false,
+        replyToMessageId: 'out-cross-letter',
+      });
+      expect((await loadItem(db, itemId)).status).toBe('needs_you');
+    });
+  });
+
+  it('a paid voucher or guaranteed booking does not get a go-ahead draft', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const voucherId = await quoteRequest(db, 'thread-voucher-book', REQUEST_AT, 'review', {
+        kind: 'booking',
+      });
+      await sendReply(db, {
+        id: 'out-voucher-book',
+        threadId: 'thread-voucher-book',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+        subject: 'Confirmation letter',
+        attach: 'HRCEN_Confirmation_Letter_12345678.pdf',
+        textBody: 'Please find the confirmation attached.',
+      });
+      await db.insert(workItem).values({
+        transportId: TRANSPORT,
+        threadId: 'thread-voucher-book',
+        sourceMessageId: 'thread-voucher-book-request',
+        kind: 'voucher_pop',
+        status: 'done',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, voucherId)).followUpDueAt).toEqual(FRI_SEND);
+      expect(await followUpRuns(db, voucherId)).toHaveLength(0);
+      expect(await threadDrafts(db, 'thread-voucher-book')).toHaveLength(0);
+
+      const guaranteedId = await quoteRequest(db, 'thread-guaranteed-book', REQUEST_AT, 'review', {
+        kind: 'booking',
+      });
+      await sendReply(db, {
+        id: 'out-guaranteed-book',
+        threadId: 'thread-guaranteed-book',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+        subject: 'Confirmation letter',
+        attach: 'HRCEN_Confirmation_Letter_87654321.pdf',
+        textBody: 'This reservation is guaranteed.',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, guaranteedId)).followUpDueAt).toEqual(FRI_SEND);
+      expect(await followUpRuns(db, guaranteedId)).toHaveLength(0);
+      expect(await threadDrafts(db, 'thread-guaranteed-book')).toHaveLength(0);
+    });
+  });
+
   it('a done quote is not followed up', async () => {
     await withIngestionDb(async ({ db }) => {
       await seedNavaUser(db);

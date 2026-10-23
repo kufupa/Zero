@@ -394,6 +394,18 @@ const WORKFLOW_BY_KIND: Partial<Record<MailKind, LunaAnalysis['workflow']>> = {
 // or a file name make it payment_ack; a voucher alone stays other.
 const PAYMENT_WORDS = /\bremittance\b|proof of payment|\bpayment (?:advice|confirmation|notification)\b/i;
 const POP_CAPS = /\bPOP\b/;
+const VOUCHER_WORD = /\bvouchers?\b/i;
+const GUARANTEED_WORD = /\bguaranteed\b/i;
+const NOT_SETTLED = /\bnon[-\s]?guaranteed\b|\bprovisional\b/i;
+
+/** Paid, voucher, or guaranteed mail. Provisional / non-guaranteed wording is not settled. */
+export function mailLooksPaidVoucherOrGuaranteed(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const plain = text.replace(/<[^>]+>/g, ' ');
+  if (PAYMENT_WORDS.test(plain) || POP_CAPS.test(plain) || VOUCHER_WORD.test(plain)) return true;
+  if (NOT_SETTLED.test(plain)) return false;
+  return GUARANTEED_WORD.test(plain);
+}
 
 function storedWorkflow(read: StoredRead): LunaAnalysis['workflow'] {
   if (read.kind !== 'voucher_pop') return WORKFLOW_BY_KIND[read.kind] ?? 'other';

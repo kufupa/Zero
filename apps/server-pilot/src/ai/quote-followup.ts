@@ -41,15 +41,19 @@ import {
   FOLLOW_UP_WORK_KINDS,
   isStaffSender,
   knownSenders,
+  mailLooksPaidVoucherOrGuaranteed,
   messageArrivedAt,
   MESSAGE_ARRIVED_AT,
   MESSAGE_DELIVERED_AT,
   OUTLOOK_SYNCED,
   personTouchSql,
+  stayCommitsOf,
+  type WorkState,
 } from './work-items.js';
 import { normalizeEmailAddress } from './never-spam.js';
 import { quoteFollowUpBody, quotePropertyIdentity } from '../quote-proposal/filename.js';
 import { isDaVinciTransport } from '../hms/hms-read-target.js';
+import { confirmationBase } from '../hms/confirmation-match.js';
 
 /**
  * Quote and provisional-booking follow-ups (R10 / ask 175). A quote clock starts from a staff send that states a
@@ -96,7 +100,8 @@ const IS_FOLLOW_UP_DRAFT = and(
 const HOLD_OR_VALIDITY_WINDOW =
   /no\s+rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|(?:rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|hold(?:ing)?\s+(?:the\s+)?rooms?)|valid(?:ity)?\s*(?:until|till|for|:)/i;
 /** HMS confirmation letter file, e.g. HRCEN_Confirmation_Letter_12345678.pdf. */
-const CONFIRMATION_LETTER_FILE = /^[A-Z]{3,8}_Confirmation_Letter_\d{8}(?:\b|\.|$)/i;
+const CONFIRMATION_LETTER_FILE = /^([A-Z]{3,8})_Confirmation_Letter_(\d{8})(?:\b|\.|$)/i;
+const CONFIRMATION_LETTER_SQL = '^[A-Za-z]{3,8}_Confirmation_Letter_[0-9]{8}';
 
 export function quoteReplyStatesHoldWindow(text: string | null | undefined): boolean {
   if (!text) return false;
@@ -111,6 +116,21 @@ function attachmentBasename(filename: string): string {
 /** A Nava/staff HMS confirmation send: the Confirmation_Letter attachment, not a Re: subject. */
 export function messageStatesConfirmationLetter(filenames: readonly string[] = []): boolean {
   return filenames.some((name) => CONFIRMATION_LETTER_FILE.test(attachmentBasename(name)));
+}
+
+export function confirmationLetterConf(filename: string): string | null {
+  const match = CONFIRMATION_LETTER_FILE.exec(attachmentBasename(filename));
+  return match?.[2] ?? null;
+}
+
+function confBasesFrom(values: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    out.add(confirmationBase(trimmed));
+  }
+  return out;
 }
 
 /** The instant 66 calendar hours after `from`. Weekends and holidays count. */
@@ -148,30 +168,42 @@ export function quoteFollowupsSince(env: NodeJS.ProcessEnv = process.env): Date 
   return PROCESS_STARTED_AT;
 }
 
+const MESSAGE_SELECT = {
+  id: message.id,
+  threadId: message.threadId,
+  direction: message.direction,
+  fromAddress: message.fromAddress,
+  // The transport's own address: with its domain it tells the hotel's own copies from a guest's mail (isStaffSender).
+  mailboxEmail: mailboxTransport.email,
+  subject: message.subject,
+  toAddresses: message.toAddresses,
+  ccAddresses: message.ccAddresses,
+  textBody: message.textBody,
+  htmlBody: message.htmlBody,
+  sentAt: message.sentAt,
+  receivedAt: message.receivedAt,
+  deliveredAt: MESSAGE_DELIVERED_AT,
+  createdAt: message.createdAt,
+  historyOnly: message.historyOnly,
+  pop3Uidl: message.pop3Uidl,
+  outlookSynced: OUTLOOK_SYNCED,
+};
+
 async function threadMessages(db: DB, transportId: string, threadId: string) {
   return db
-    .select({
-      id: message.id,
-      direction: message.direction,
-      fromAddress: message.fromAddress,
-      // The transport's own address: with its domain it tells the hotel's own copies from a guest's mail (isStaffSender).
-      mailboxEmail: mailboxTransport.email,
-      subject: message.subject,
-      toAddresses: message.toAddresses,
-      ccAddresses: message.ccAddresses,
-      textBody: message.textBody,
-      htmlBody: message.htmlBody,
-      sentAt: message.sentAt,
-      receivedAt: message.receivedAt,
-      deliveredAt: MESSAGE_DELIVERED_AT,
-      createdAt: message.createdAt,
-      historyOnly: message.historyOnly,
-      pop3Uidl: message.pop3Uidl,
-      outlookSynced: OUTLOOK_SYNCED,
-    })
+    .select(MESSAGE_SELECT)
     .from(message)
     .innerJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
     .where(and(eq(message.transportId, transportId), eq(message.threadId, threadId)));
+}
+
+async function messagesByIds(db: DB, transportId: string, ids: readonly string[]) {
+  if (ids.length === 0) return [];
+  return db
+    .select(MESSAGE_SELECT)
+    .from(message)
+    .innerJoin(mailboxTransport, eq(mailboxTransport.id, message.transportId))
+    .where(and(eq(message.transportId, transportId), inArray(message.id, [...ids])));
 }
 
 type ThreadMessage = Awaited<ReturnType<typeof threadMessages>>[number];
@@ -309,6 +341,23 @@ function arrivedTime(m: ThreadMessage): number {
   return messageArrivedAt(m).getTime();
 }
 
+/** Clock start for a confirmation letter: outbound send time, else when the hotel copy arrived. */
+function confirmationClockMs(m: ThreadMessage): number | null {
+  if (m.direction === 'outbound') return deliveredTime(m);
+  const at = arrivedTime(m);
+  return Number.isFinite(at) ? at : null;
+}
+
+function messageLooksSettled(m: Pick<ThreadMessage, 'subject' | 'textBody' | 'htmlBody'>): boolean {
+  return mailLooksPaidVoucherOrGuaranteed([m.subject ?? '', m.textBody ?? '', m.htmlBody ?? ''].join('\n'));
+}
+
+function addressedToGuest(m: ThreadMessage, guestEmail: string): boolean {
+  const guest = normalizeEmailAddress(guestEmail);
+  if (!guest) return false;
+  return [...m.toAddresses, ...m.ccAddresses].some((address) => normalizeEmailAddress(address) === guest);
+}
+
 /** The hotel's own domain or address on the mailbox (isStaffSender). Its mail is never a guest's. */
 function ownMail(m: ThreadMessage): boolean {
   return isStaffSender(m.fromAddress, m.mailboxEmail ?? '');
@@ -349,10 +398,192 @@ function clientRepliedAfter(thread: ThreadMessage[], sentAtMs: number): boolean 
 function staffRepliedAfter(thread: ThreadMessage[], sent: ThreadMessage, sentFrom: ReadonlySet<string>): boolean {
   const sentAtMs = sentTime(sent);
   return thread.some((m) => {
+    if (m.id === sent.id) return false;
     if (m.direction === 'outbound') return sentTime(m) > sentAtMs;
     const at = deliveredTime(m);
     return at !== null && at > sentAtMs && isHotelCopy(m, sentFrom);
   });
+}
+
+async function clientRepliedOnThreads(
+  db: DB,
+  transportId: string,
+  threadIds: readonly string[],
+  sentAtMs: number,
+): Promise<boolean> {
+  const ids = [...new Set(threadIds.filter(Boolean))];
+  for (const threadId of ids) {
+    const thread = await threadMessages(db, transportId, threadId);
+    if (clientRepliedAfter(thread, sentAtMs)) return true;
+  }
+  return false;
+}
+
+function confsFromExtractionPayload(payload: Record<string, unknown> | null | undefined): string[] {
+  if (!payload) return [];
+  const out: string[] = [];
+  const top = payload.confirmationNumbers;
+  if (Array.isArray(top)) {
+    for (const value of top) if (typeof value === 'string' && value.trim()) out.push(value.trim());
+  }
+  const stays = payload.stays;
+  if (Array.isArray(stays)) {
+    for (const stay of stays) {
+      if (!stay || typeof stay !== 'object') continue;
+      const guests = (stay as { guests?: unknown }).guests;
+      if (!Array.isArray(guests)) continue;
+      for (const guest of guests) {
+        if (!guest || typeof guest !== 'object') continue;
+        const conf = (guest as { confirmationNumber?: unknown }).confirmationNumber;
+        if (typeof conf === 'string' && conf.trim()) out.push(conf.trim());
+      }
+    }
+  }
+  return out;
+}
+
+async function bookingConfBases(
+  db: DB,
+  item: { sourceMessageId: string; state: unknown },
+): Promise<Set<string>> {
+  const values: string[] = [];
+  const state = item.state && typeof item.state === 'object' ? (item.state as WorkState) : {};
+  for (const record of Object.values(stayCommitsOf(state))) {
+    if (record.confirmationNumber) values.push(record.confirmationNumber);
+  }
+  const extracts = await db
+    .select({ payload: mailExtraction.payload })
+    .from(mailExtraction)
+    .where(
+      and(eq(mailExtraction.messageId, item.sourceMessageId), eq(mailExtraction.status, 'succeeded')),
+    );
+  for (const row of extracts) values.push(...confsFromExtractionPayload(row.payload));
+  return confBasesFrom(values);
+}
+
+async function loadConfirmationLetters(
+  db: DB,
+  transportId: string,
+  firstEligible: Date,
+): Promise<ThreadMessage[]> {
+  const attached = await db
+    .select({ id: message.id })
+    .from(message)
+    .innerJoin(attachment, eq(attachment.messageId, message.id))
+    .where(
+      and(
+        eq(message.transportId, transportId),
+        sql`${attachment.filename} ~* ${CONFIRMATION_LETTER_SQL}`,
+        sql`coalesce(${DELIVERED_AT}, ${MESSAGE_ARRIVED_AT}) >= ${firstEligible}`,
+      ),
+    );
+  const drafted = await db
+    .select({ id: mailDraft.sentMessageId })
+    .from(mailDraft)
+    .innerJoin(message, eq(message.id, mailDraft.sentMessageId))
+    .where(
+      and(
+        eq(message.transportId, transportId),
+        isNotNull(mailDraft.sentMessageId),
+        sql`coalesce(${DELIVERED_AT}, ${MESSAGE_ARRIVED_AT}) >= ${firstEligible}`,
+      ),
+    );
+  const ids = [
+    ...new Set(
+      [...attached.map((row) => row.id), ...drafted.map((row) => row.id)].filter(
+        (id): id is string => Boolean(id),
+      ),
+    ),
+  ];
+  const rows = await messagesByIds(db, transportId, ids);
+  const filenames = await storedAttachmentNames(db, ids);
+  return rows.filter((m) => messageStatesConfirmationLetter(filenames.get(m.id)));
+}
+
+async function findLinkedBookingConfirmation(
+  db: DB,
+  item: {
+    transportId: string;
+    threadId: string;
+    sourceMessageId: string;
+    state: unknown;
+  },
+  firstEligibleMs: number,
+  letters: ThreadMessage[],
+): Promise<ThreadMessage | null> {
+  const filenames = await storedAttachmentNames(
+    db,
+    letters.map((m) => m.id),
+  );
+  const timed = letters.flatMap((m) => {
+    const at = confirmationClockMs(m);
+    if (at === null || at < firstEligibleMs) return [];
+    return [{ m, at, names: filenames.get(m.id) ?? [] }];
+  });
+  if (timed.length === 0) return null;
+  const confs = await bookingConfBases(db, item);
+  const matched = timed.filter((row) => {
+    const letterConf = row.names.map(confirmationLetterConf).find((value) => value);
+    if (confs.size > 0) return letterConf !== undefined && confs.has(confirmationBase(letterConf));
+    return false;
+  });
+  if (matched.length > 0) {
+    matched.sort((a, b) => {
+      const sameA = a.m.threadId === item.threadId ? 0 : 1;
+      const sameB = b.m.threadId === item.threadId ? 0 : 1;
+      if (sameA !== sameB) return sameA - sameB;
+      return a.at - b.at;
+    });
+    return matched[0]!.m;
+  }
+  const [source] = await messagesByIds(db, item.transportId, [item.sourceMessageId]);
+  const guest = source?.fromAddress ?? '';
+  const toGuest = timed.filter((row) => addressedToGuest(row.m, guest));
+  if (toGuest.length !== 1) return null;
+  return toGuest[0]!.m;
+}
+
+async function bookingFollowUpSettled(
+  db: DB,
+  transportId: string,
+  threadIds: readonly string[],
+  extra: ThreadMessage[],
+): Promise<boolean> {
+  const ids = [...new Set(threadIds.filter(Boolean))];
+  if (ids.length === 0 && extra.length === 0) return false;
+  if (ids.length > 0) {
+    const [pop] = await db
+      .select({ id: workItem.id })
+      .from(workItem)
+      .where(
+        and(
+          eq(workItem.transportId, transportId),
+          inArray(workItem.threadId, ids),
+          eq(workItem.kind, 'voucher_pop'),
+        ),
+      )
+      .limit(1);
+    if (pop) return true;
+    const [extract] = await db
+      .select({ id: mailExtraction.messageId })
+      .from(mailExtraction)
+      .innerJoin(message, eq(message.id, mailExtraction.messageId))
+      .where(
+        and(
+          eq(message.transportId, transportId),
+          inArray(message.threadId, ids),
+          eq(mailExtraction.status, 'succeeded'),
+          eq(mailExtraction.kind, 'voucher_pop'),
+        ),
+      )
+      .limit(1);
+    if (extract) return true;
+  }
+  for (const threadId of ids) {
+    const thread = await threadMessages(db, transportId, threadId);
+    if (thread.some(messageLooksSettled)) return true;
+  }
+  return extra.some(messageLooksSettled);
 }
 
 /**
@@ -455,6 +686,14 @@ export async function runQuoteFollowupSweep(
   // Open quotes/bookings with an outbound after the cutoff still fill this select when that outbound has no window
   // (or no confirmation letter), so page past SWEEP_BATCH or a later qualifying item never links.
   const firstEligibleAt = sql`greatest(${since.toISOString()}::timestamp, ${requestArrivedAt})`;
+  const lettersByTransport = new Map<string, ThreadMessage[]>();
+  const lettersFor = async (transportId: string) => {
+    const cached = lettersByTransport.get(transportId);
+    if (cached) return cached;
+    const rows = await loadConfirmationLetters(db, transportId, since);
+    lettersByTransport.set(transportId, rows);
+    return rows;
+  };
   let afterUnlinked: string | null = null;
   for (;;) {
     const unlinked = await db
@@ -463,6 +702,8 @@ export async function runQuoteFollowupSweep(
         kind: workItem.kind,
         transportId: workItem.transportId,
         threadId: workItem.threadId,
+        sourceMessageId: workItem.sourceMessageId,
+        state: workItem.state,
         requestArrivedAt: sql`${requestArrivedAt}`.mapWith(message.createdAt),
       })
       .from(workItem)
@@ -475,8 +716,18 @@ export async function runQuoteFollowupSweep(
           isNotNull(workItem.threadId),
           afterUnlinked ? gt(workItem.id, afterUnlinked) : undefined,
           sql`exists (select 1 from ${message} where ${message.transportId} = ${workItem.transportId}
-            and ${message.threadId} = ${workItem.threadId} and ${message.direction} = 'outbound'
-            and ${DELIVERED_AT} >= ${firstEligibleAt})`,
+            and (
+              (${workItem.kind} = 'quote' and ${message.threadId} = ${workItem.threadId}
+                and ${message.direction} = 'outbound' and ${DELIVERED_AT} >= ${firstEligibleAt})
+              or (${workItem.kind} = 'booking' and (
+                (${message.threadId} = ${workItem.threadId} and ${message.direction} = 'outbound'
+                  and ${DELIVERED_AT} >= ${firstEligibleAt})
+                or (exists (
+                  select 1 from ${attachment} a where a.message_id = ${message}.id
+                    and a.filename ~* ${CONFIRMATION_LETTER_SQL}
+                ) and coalesce(${DELIVERED_AT}, ${MESSAGE_ARRIVED_AT}) >= ${firstEligibleAt})
+              ))
+            ))`,
         ),
       )
       .orderBy(asc(workItem.id))
@@ -485,6 +736,41 @@ export async function runQuoteFollowupSweep(
       if (!item.threadId) continue;
       const requestedAt = item.requestArrivedAt.getTime();
       const firstEligible = Math.max(requestedAt, since.getTime());
+      if (item.kind === 'booking') {
+        const letter = await findLinkedBookingConfirmation(
+          db,
+          {
+            transportId: item.transportId,
+            threadId: item.threadId,
+            sourceMessageId: item.sourceMessageId,
+            state: item.state,
+          },
+          firstEligible,
+          await lettersFor(item.transportId),
+        );
+        if (!letter) continue;
+        const letterAt = confirmationClockMs(letter);
+        if (letterAt === null) continue;
+        const sentAt = new Date(letterAt);
+        const settled = await bookingFollowUpSettled(
+          db,
+          item.transportId,
+          [item.threadId, letter.threadId],
+          [letter],
+        );
+        const [linked] = await db
+          .update(workItem)
+          .set({
+            sentMessageId: letter.id,
+            sentAt,
+            followUpDueAt: settled ? sentAt : addQuoteFollowupDelay(sentAt),
+            updatedAt: now,
+          })
+          .where(and(eq(workItem.id, item.id), isNull(workItem.sentMessageId)))
+          .returning({ id: workItem.id });
+        if (linked && !settled) counts.linked++;
+        continue;
+      }
       const thread = await threadMessages(db, item.transportId, item.threadId);
       const outboundIds = thread.filter((m) => m.direction === 'outbound').map((m) => m.id);
       const extracts = await storedPdfExtracts(db, outboundIds);
@@ -529,6 +815,8 @@ export async function runQuoteFollowupSweep(
       kind: workItem.kind,
       transportId: workItem.transportId,
       threadId: workItem.threadId,
+      sourceMessageId: workItem.sourceMessageId,
+      state: workItem.state,
       sentMessageId: workItem.sentMessageId,
       sentAt: workItem.sentAt,
     })
@@ -561,6 +849,71 @@ export async function runQuoteFollowupSweep(
     .limit(SWEEP_BATCH);
   for (const item of closedByReply) {
     if (!item.sentMessageId || !item.sentAt || !item.threadId) continue;
+    if (item.kind === 'booking') {
+      if (!item.sourceMessageId) {
+        await db
+          .update(workItem)
+          .set({ followUpDueAt: item.sentAt, updatedAt: now })
+          .where(
+            and(
+              eq(workItem.id, item.id),
+              eq(workItem.sentMessageId, item.sentMessageId),
+              isNull(workItem.followUpDueAt),
+            ),
+          );
+        continue;
+      }
+      const letter = await findLinkedBookingConfirmation(
+        db,
+        {
+          transportId: item.transportId,
+          threadId: item.threadId,
+          sourceMessageId: item.sourceMessageId,
+          state: item.state,
+        },
+        since.getTime(),
+        await lettersFor(item.transportId),
+      );
+      const letterAt = letter ? confirmationClockMs(letter) : null;
+      if (!letter || letterAt === null) {
+        await db
+          .update(workItem)
+          .set({ followUpDueAt: item.sentAt, updatedAt: now })
+          .where(
+            and(
+              eq(workItem.id, item.id),
+              eq(workItem.sentMessageId, item.sentMessageId),
+              isNull(workItem.followUpDueAt),
+            ),
+          );
+        continue;
+      }
+      const sentAt = new Date(letterAt);
+      const settled = await bookingFollowUpSettled(
+        db,
+        item.transportId,
+        [item.threadId, letter.threadId],
+        [letter],
+      );
+      const [linked] = await db
+        .update(workItem)
+        .set({
+          sentMessageId: letter.id,
+          sentAt,
+          followUpDueAt: settled ? sentAt : addQuoteFollowupDelay(sentAt),
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(workItem.id, item.id),
+            eq(workItem.sentMessageId, item.sentMessageId),
+            isNull(workItem.followUpDueAt),
+          ),
+        )
+        .returning({ id: workItem.id });
+      if (linked && !settled) counts.linked++;
+      continue;
+    }
     const sent = (await threadMessages(db, item.transportId, item.threadId)).find(
       (m) => m.id === item.sentMessageId,
     );
@@ -597,6 +950,7 @@ export async function runQuoteFollowupSweep(
   const linkedItems = await db
     .select({
       id: workItem.id,
+      kind: workItem.kind,
       transportId: workItem.transportId,
       threadId: workItem.threadId,
       sentMessageId: workItem.sentMessageId,
@@ -620,10 +974,24 @@ export async function runQuoteFollowupSweep(
     .orderBy(asc(workItem.followUpDueAt))
     .limit(SWEEP_BATCH);
   for (const item of linkedItems) {
-    const { id, transportId, threadId, sentMessageId, sentAt, followUpDueAt } = item;
+    const { id, kind, transportId, threadId, sentMessageId, sentAt, followUpDueAt } = item;
     if (!threadId || !sentMessageId || !sentAt || !followUpDueAt) continue;
-    const thread = await threadMessages(db, transportId, threadId);
-    if (clientRepliedAfter(thread, sentAt.getTime())) {
+    const sentRows = await messagesByIds(db, transportId, [sentMessageId]);
+    const sent = sentRows[0];
+    const watchThreads = [...new Set([threadId, sent?.threadId].filter((value): value is string => Boolean(value)))];
+    if (await clientRepliedOnThreads(db, transportId, watchThreads, sentAt.getTime())) {
+      await db
+        .update(workItem)
+        .set({ followUpDueAt: null, updatedAt: now })
+        .where(eq(workItem.id, id));
+      counts.cancelled++;
+      continue;
+    }
+    if (
+      kind === 'booking' &&
+      sent &&
+      (await bookingFollowUpSettled(db, transportId, watchThreads, [sent]))
+    ) {
       await db
         .update(workItem)
         .set({ followUpDueAt: null, updatedAt: now })
@@ -709,15 +1077,37 @@ async function writeFollowUp(
   if (item.status !== 'needs_you' && item.status !== 'review' && !item.closedByReply) return 'closed';
   if (item.sentMessageId !== run.triggerMessageId) return 'superseded';
   const thread = await threadMessages(db, run.transportId, item.threadId);
-  // The quote the follow-up is for: our send, or the hotel's own copy of its answer when the reply link is that copy.
-  const sentFrom = await knownSenders(db, run.transportId, ownDomainAddresses(thread));
-  const sent = thread.find(
-    (m) => m.id === run.triggerMessageId && (m.direction === 'outbound' || isHotelCopy(m, sentFrom)),
-  );
+  const triggerRows = await messagesByIds(db, run.transportId, [run.triggerMessageId]);
+  const trigger = triggerRows[0];
+  const letterThread =
+    trigger?.threadId && trigger.threadId !== item.threadId
+      ? await threadMessages(db, run.transportId, trigger.threadId)
+      : thread;
+  const watch = trigger?.threadId && trigger.threadId !== item.threadId ? [...thread, ...letterThread] : thread;
+  const sentFrom = await knownSenders(db, run.transportId, ownDomainAddresses(watch));
+  const sent =
+    item.kind === 'booking'
+      ? trigger
+      : watch.find(
+          (m) => m.id === run.triggerMessageId && (m.direction === 'outbound' || isHotelCopy(m, sentFrom)),
+        );
   if (!sent) return 'no_sent_message';
-  if (deliveredTime(sent) === null) return 'not_sent';
-  if (clientRepliedAfter(thread, sentTime(sent))) return 'client_replied';
-  if (staffRepliedAfter(thread, sent, sentFrom)) return 'staff_replied';
+  if (item.kind === 'booking') {
+    const names = (await storedAttachmentNames(db, [sent.id])).get(sent.id);
+    if (!messageStatesConfirmationLetter(names)) return 'no_sent_message';
+    if (confirmationClockMs(sent) === null) return 'not_sent';
+  } else if (deliveredTime(sent) === null) {
+    return 'not_sent';
+  }
+  const clockMs = item.kind === 'booking' ? (confirmationClockMs(sent) ?? sentTime(sent)) : sentTime(sent);
+  if (clientRepliedAfter(watch, clockMs)) return 'client_replied';
+  if (staffRepliedAfter(watch, sent, sentFrom)) return 'staff_replied';
+  if (
+    item.kind === 'booking' &&
+    (await bookingFollowUpSettled(db, run.transportId, [item.threadId, sent.threadId], [sent]))
+  ) {
+    return 'settled';
+  }
 
   const [transport] = await db
     .select({ displayName: mailboxTransport.displayName })
