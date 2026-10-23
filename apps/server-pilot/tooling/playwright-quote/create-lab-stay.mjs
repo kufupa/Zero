@@ -133,6 +133,18 @@ export function readbackSearchPlan(save) {
   return { by: 'guest' };
 }
 
+/** Guest Stay find args. Arrival is the 60-day window hint; confirmation is the match. */
+export function confirmationFindLookupArgs(stay, confirmation) {
+  return {
+    mode: 'find',
+    confirmation,
+    arrival: stay?.arrival ?? null,
+    departure: stay?.departure ?? null,
+    lastName: stay?.lastName ?? null,
+    debugHtml: false,
+  };
+}
+
 export function reconcileSaveInput(save) {
   const confirmation = knownConfirmation(save);
   if (save?.confirmed === true && confirmation) {
@@ -813,9 +825,7 @@ async function readExistingGuestRows(browser, secret, stay, dir, result) {
 
 async function findStayByConfirmation(browser, secret, stay, dir, confirmation) {
   const { findOnOpenGuestStay } = await import('./stay-lookup.mjs');
-  return withReadOnlyGuestStay(browser, secret, dir, {
-    mode: 'find', confirmation, arrival: null, departure: null, lastName: stay.lastName, debugHtml: false,
-  }, async (ctx) => {
+  return withReadOnlyGuestStay(browser, secret, dir, confirmationFindLookupArgs(stay, confirmation), async (ctx) => {
     const found = await findOnOpenGuestStay(ctx, { captureScreenshots: false });
     return dropUnsearchedStay({
       outcome: found.outcome,

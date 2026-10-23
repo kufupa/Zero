@@ -659,6 +659,30 @@ test('still_processing wait reads the form with fakes and never retries Save', a
   assert.equal(maskedClock, 60_000);
 });
 
+test('confirmation find passes expected arrival so HMS can move the 60-day window', async () => {
+  const rules = await loadReadbackRules();
+  assert.deepEqual(rules.confirmationFindLookupArgs({
+    lastName: 'Labtest',
+    arrival: '2027-12-08',
+    departure: '2027-12-09',
+  }, '66865808-1'), {
+    mode: 'find',
+    confirmation: '66865808-1',
+    arrival: '2027-12-08',
+    departure: '2027-12-09',
+    lastName: 'Labtest',
+    debugHtml: false,
+  });
+  assert.equal(rules.confirmationFindLookupArgs({ lastName: 'Labtest' }, '66865808-1').arrival, null);
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const fn = source.slice(
+    source.indexOf('async function findStayByConfirmation'),
+    source.indexOf('async function runProofReadback'),
+  );
+  assert.match(fn, /confirmationFindLookupArgs\(stay, confirmation\)/);
+  assert.equal(fn.includes('arrival: null'), false);
+});
+
 test('readback finds by confirmation when known, else guest last name + arrival, and polls not-found', async () => {
   const rules = await loadReadbackRules();
   assert.deepEqual(rules.readbackSearchPlan({ confirmed: true, confirmationNumber: ' 82126330-1 ' }), {
