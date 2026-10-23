@@ -83,12 +83,62 @@ const penaltyClass =
 const selectClass =
   'h-8 rounded-sm border border-[#cbd5e1] bg-white px-2 py-1.5 text-[12px] text-[#1e293b] disabled:text-[#94a3b8]';
 
+export type AmendSavedStay = {
+  confirmationNumber: string | null;
+  status: 'booked' | 'unknown';
+  screenshotRef?: { runId: string; name: string } | null;
+};
+
+const SAVED_STAY_COPY = {
+  heading: 'Bookings on this request',
+};
+
+function savedStayPicksFrom(
+  savedStays: Record<string, AmendSavedStay> | undefined,
+): Array<{ stayId: string; confirmationNumber: string }> {
+  if (!savedStays) return [];
+  const picks: Array<{ stayId: string; confirmationNumber: string }> = [];
+  for (const [stayId, record] of Object.entries(savedStays)) {
+    const confirmation = record.confirmationNumber?.trim();
+    if (confirmation) picks.push({ stayId, confirmationNumber: confirmation });
+  }
+  return picks;
+}
+
+function resolvedSavedStayId(
+  picks: Array<{ stayId: string; confirmationNumber: string }>,
+  stayId: string | null,
+  emailConfirmation: string | null,
+): string | null {
+  if (stayId && picks.some((pick) => pick.stayId === stayId)) return stayId;
+  if (picks.length === 1) return picks[0]!.stayId;
+  if (emailConfirmation) {
+    const match = picks.find((pick) => pick.confirmationNumber === emailConfirmation);
+    if (match) return match.stayId;
+  }
+  return null;
+}
+
 /**
  * Amend and cancel mail: shows what the guest asked beside the booking HMS returns for the email's booking number.
  * With no usable number, staff find the booking by surname and arrival instead. Renders nothing unless the analysis
  * carries an amendment. Lookups are persisted HMS jobs: the panel shows the job's state and its dated snapshot.
  */
-export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trpc: unknown }) {
+export function AmendLookupPanel({
+  session,
+  trpc,
+  savedStays,
+  onStayActionResult,
+}: {
+  session: QuoteSession;
+  trpc: unknown;
+  savedStays?: Record<string, AmendSavedStay>;
+  onStayActionResult?: (input: {
+    stayId: string;
+    confirmationNumber: string;
+    kind: 'amend' | 'cancel';
+  }) => void;
+}) {
   const amendment = amendmentOf(session);
   const client = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
   const cancelClient = useMemo(() => amendCancelClientFromTrpc(trpc), [trpc]);
@@ -126,7 +176,13 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
   );
   const epoch = session.binding?.selectionEpoch ?? null;
   const key = threadId && epoch !== null ? `${threadId}:${epoch}` : null;
-  const confirmationNumber = amendment?.confirmationNumber?.trim() || null;
+  const savedPicks = useMemo(() => savedStayPicksFrom(savedStays), [savedStays]);
+  const [pickedStayId, setPickedStayId] = useState<string | null>(null);
+  const emailConfirmation = amendment?.confirmationNumber?.trim() || null;
+  const resolvedStayId = resolvedSavedStayId(savedPicks, pickedStayId, emailConfirmation);
+  const pickedConfirmation =
+    savedPicks.find((pick) => pick.stayId === resolvedStayId)?.confirmationNumber ?? null;
+  const confirmationNumber = pickedConfirmation ?? (savedPicks.length > 0 ? null : emailConfirmation);
   // Only a dash confirmation (57291630-1) is an HMS number. A bare number may be a billing or voucher reference, so it is not one.
   const hmsNumber = hmsNumberFor(confirmationNumber);
   const lookupable = hmsNumber !== null;
@@ -207,18 +263,21 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
         })
       : { status: 'none', confirmationNumber: null, why: [] };
   const suspectLink = Boolean(stay && suspectStayLink(amendment, stay, Boolean(found?.arrivalMismatch)));
+  const waitingForSavedPick = savedPicks.length > 0 && !lookupable;
   // CHECK: missing / not found / ambiguous / suspect, or staff already has a candidate list to reopen.
-  const checkReason = !stay
-    ? !lookupable
-      ? 'missing'
-      : findNotFound
-        ? 'not_found'
-        : findAmbiguous || stayPick.status === 'check_conf'
-          ? 'ambiguous'
-          : null
-    : suspectLink || stayPick.status === 'check_conf'
-      ? 'suspect'
-      : null;
+  const checkReason = waitingForSavedPick
+    ? null
+    : !stay
+      ? !lookupable
+        ? 'missing'
+        : findNotFound
+          ? 'not_found'
+          : findAmbiguous || stayPick.status === 'check_conf'
+            ? 'ambiguous'
+            : null
+      : suspectLink || stayPick.status === 'check_conf'
+        ? 'suspect'
+        : null;
   const searchOpen = checkReason !== null || searchView !== null || search.queuing;
 
   // pii: the note quotes the guest's booking number.
@@ -235,8 +294,8 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     };
   }
   else if (findRun?.kind === 'ambiguous') note = { tone: 'warn', text: AMEND_FIND_COPY.ambiguous };
-  else if (!confirmationNumber) note = { tone: 'info', text: AMEND_FIND_COPY.noNumber };
-  else if (!lookupable) note = { tone: 'warn', text: notHmsNumberNote(confirmationNumber), pii: true };
+  else if (!confirmationNumber && !waitingForSavedPick) note = { tone: 'info', text: AMEND_FIND_COPY.noNumber };
+  else if (!lookupable && confirmationNumber) note = { tone: 'warn', text: notHmsNumberNote(confirmationNumber), pii: true };
   else if (!threadId) note = { tone: 'info', text: AMEND_FIND_COPY.waitingThread };
 
   const searchHint = !client ? AMEND_FIND_COPY.unavailable : !key ? AMEND_FIND_COPY.waitingThread : null;
@@ -271,6 +330,18 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
       ? { confirmation: foundNumber, arrival: cancelArrival, lastName: amendLastName, fields: amendFields }
       : null;
 
+  const chooseSavedStay = (stayId: string, confirmation: string) => {
+    setPickedStayId(stayId);
+    if (!key) return;
+    const next = findRequestFor(confirmation, findArrival);
+    if ('request' in next) find.start(next.request);
+  };
+
+  const reportStayAction = (kind: 'amend' | 'cancel', confirmation: string) => {
+    if (!resolvedStayId) return;
+    onStayActionResult?.({ stayId: resolvedStayId, confirmationNumber: confirmation, kind });
+  };
+
   const previewCancel = async () => {
     if (checkReason || !canPreviewCancel || !cancelScope || !cancelClient || !cancelInput) return;
     const scope = cancelScope;
@@ -291,7 +362,9 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'committing', run: ready.run, reason: ready.reason } }));
     try {
       const run = await cancelClient.commitCancel({ ...cancelInput, reason: ready.reason, previewDigest });
-      setCancelViews((prev) => ({ ...prev, [scope]: viewAfterCommit(run, ready.run, cancelInput.confirmation) }));
+      const view = viewAfterCommit(run, ready.run, cancelInput.confirmation);
+      setCancelViews((prev) => ({ ...prev, [scope]: view }));
+      if (view.kind === 'done') reportStayAction('cancel', cancelInput.confirmation);
     } catch {
       setCancelViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_CANCEL_COPY.failed } }));
     }
@@ -316,7 +389,9 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
     setAmendViews((prev) => ({ ...prev, [scope]: { kind: 'committing', run: ready.run } }));
     try {
       const run = await amendClient.commitAmend({ ...amendInput, previewDigest });
-      setAmendViews((prev) => ({ ...prev, [scope]: viewAfterAmendCommit(run, amendInput.confirmation) }));
+      const view = viewAfterAmendCommit(run, amendInput.confirmation);
+      setAmendViews((prev) => ({ ...prev, [scope]: view }));
+      if (view.kind === 'done') reportStayAction('amend', amendInput.confirmation);
     } catch {
       setAmendViews((prev) => ({ ...prev, [scope]: { kind: 'idle', note: AMEND_SAVE_COPY.failed } }));
     }
@@ -364,6 +439,27 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
       <p data-testid="amend-request-summary" data-pii title="Request from this email" className={valueClass}>
         {requestLine}
       </p>
+      {savedPicks.length ? (
+        <div data-testid="amend-saved-stays" className="flex flex-col gap-2">
+          <p className={headingClass}>{SAVED_STAY_COPY.heading}</p>
+          <ul className="flex flex-col gap-1.5">
+            {savedPicks.map((pick) => (
+              <li key={pick.stayId}>
+                <button
+                  type="button"
+                  data-testid="amend-saved-stay"
+                  aria-pressed={pick.stayId === resolvedStayId}
+                  data-pii
+                  className={buttonClass}
+                  onClick={() => chooseSavedStay(pick.stayId, pick.confirmationNumber)}
+                >
+                  {pick.confirmationNumber}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {checkReason ? (
         <div data-testid="amend-check-banner" className={warnNoteClass}>
           <p className="font-semibold">{AMEND_FIND_COPY.checkBanner}</p>
@@ -458,7 +554,7 @@ export function AmendLookupPanel({ session, trpc }: { session: QuoteSession; trp
         </p>
       ) : null}
       <div className="flex flex-col gap-2">
-        {found || (findNotFound && !prefetchedNotFound) || findAmbiguous ? null : (
+        {found || (findNotFound && !prefetchedNotFound) || findAmbiguous || waitingForSavedPick ? null : (
           <>
             <button
               type="button"
