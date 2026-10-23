@@ -37,14 +37,15 @@ const PANE_WRITE_ENV_NAMES = [
   'PANE_WRITE_AMEND_PAID',
   'PANE_WRITE_CANCEL_UNPAID',
   'PANE_WRITE_CANCEL_PAID',
+  'PANE_WRITE_ATTACH',
 ] as const;
 
 const PANE_WRITE_ENV_NAME_SET = new Set<string>(PANE_WRITE_ENV_NAMES);
 
 /**
  * The only variables a pane HMS CLI inherits: process basics, CDP endpoint and ownership, credential source, the
- * slot storageState path used to skip a repeat login, the shared save gate, and the five per-workflow write
- * switches. Everything else is dropped, so one-off lab flags or database URLs do not reach a live HMS run.
+ * slot storageState path used to skip a repeat login, the shared save gate, and the per-workflow write
+ * switches including attach. Everything else is dropped, so one-off lab flags or database URLs do not reach a live HMS run.
  */
 export const PANE_CLI_ENV_ALLOWLIST = [
   'PATH',

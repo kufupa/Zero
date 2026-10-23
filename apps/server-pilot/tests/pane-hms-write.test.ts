@@ -394,7 +394,7 @@ describe('pane HMS write (U26)', () => {
     ).toBe('unknown');
   });
 
-  it('pins attach cap and keeps all pane HMS writes behind SAVE=lab', () => {
+  it('pins attach cap and keeps attach behind PANE_WRITE_ATTACH, falling back to SAVE=lab', () => {
     expect(attachCli.ATTACH_MAX_BYTES).toBe(ARTIFACT_MAX_INPUT_BYTES);
     expect(PANE_ATTACH_MAX_BYTES).toBe(ARTIFACT_MAX_INPUT_BYTES);
     expect(paneHmsWriteMode({ RESERVATIONIST_PANE_SAVE: 'lab' })).toBe('lab');
@@ -403,6 +403,55 @@ describe('pane HMS write (U26)', () => {
     expect(paneHmsWriteMode({ PANE_WRITE_CREATE: 'on' })).toBe('off');
     expect(paneHmsWriteMode({ PANE_WRITE_AMEND_UNPAID: 'lab' })).toBe('off');
     expect(paneHmsWriteMode({})).toBe('off');
+    expect(paneHmsWriteMode({ PANE_WRITE_ATTACH: 'on' })).toBe('on');
+    expect(paneHmsWriteMode({ PANE_WRITE_ATTACH: 'lab' })).toBe('lab');
+    expect(paneHmsWriteMode({ PANE_WRITE_ATTACH: 'off' })).toBe('off');
+    expect(paneHmsWriteMode({ PANE_WRITE_ATTACH: 'lab', RESERVATIONIST_PANE_SAVE: 'on' })).toBe('lab');
+  });
+
+  it('PANE_WRITE_ATTACH=on lets a real-guest stay through attach', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const guestStay: PaneStayFields = { ...LAB_STAY, lastName: 'Smith', firstName: 'Pat' };
+      hmsStay = guestStay;
+      const workItemId = await seedWriteItem(db, {
+        state: { ...ATTACH_FORM, lastName: 'Smith' },
+      });
+      await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
+      const env = { PANE_WRITE_ATTACH: 'on' };
+      const prepared = await prepareHmsWriteSnapshot({
+        db,
+        transportId: TRANSPORT_ID,
+        workItemId,
+        confirmation: CONFIRMATION,
+        arrival: ARRIVAL,
+        env,
+      });
+      expect(prepared.status).toBe('stored');
+      await approve(db, workItemId);
+      const run = await claimWrite(db);
+      expect(await runPaneHmsWriteOnce({ ...run, db, env })).toMatchObject({
+        status: 'succeeded',
+        action: 'attach_document',
+        outcome: 'attached',
+      });
+      expect(attachCalls).toHaveLength(1);
+    });
+  });
+
+  it('PANE_WRITE_ATTACH=lab refuses a real-guest attach before consume', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedWriteItem(db, { state: { ...ATTACH_FORM, lastName: 'Smith' } });
+      await storeHmsSnapshot({ db, transportId: TRANSPORT_ID, workItemId, readHmsState: async () => hmsStay });
+      await approve(db, workItemId);
+      const run = await claimWrite(db);
+      expect(await runPaneHmsWriteOnce({ ...run, db, env: { PANE_WRITE_ATTACH: 'lab' } })).toEqual({
+        status: 'ended',
+        failureClass: 'POLICY_BLOCK',
+        reason: 'refused_not_lab',
+      });
+      expect(attachCalls).toHaveLength(0);
+      expect(await eventsOf(db, workItemId, 'approval.consumed')).toHaveLength(0);
+    });
   });
 
   it('the H2 ops entry takes prepare and run with named flags only', () => {
