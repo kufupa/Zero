@@ -70,3 +70,9 @@ export function parseStayProperty(argv) {
   if (!PROFILE_FILES.has(value)) return { ok: false, exitCode: 2, error: 'PROPERTY_UNKNOWN' };
   return { ok: true, propertyCode: value, rest: argv.slice(0, index).concat(argv.slice(index + 2)) };
 }
+
+/** Same hotel check create-lab-stay uses: requested --property must match the borrowed secret. */
+export function propertySecretRefusal(secret, propertyCode) {
+  if (secret?.expectedPropertyCode === propertyCode) return null;
+  return propertyCode === 'HRDAV' ? 'PROPERTY_HRDAV_REQUIRED' : 'PROPERTY_HRCEN_REQUIRED';
+}

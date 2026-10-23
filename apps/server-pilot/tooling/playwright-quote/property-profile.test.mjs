@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { amendRoomTypes, parseStayProperty, profileFor, validateProfile } from './property-profile.mjs';
+import { amendRoomTypes, parseStayProperty, profileFor, propertySecretRefusal, validateProfile } from './property-profile.mjs';
 
 const hrcenUrl = new URL('./property-profiles/HRCEN.json', import.meta.url);
 const hrcenRaw = async () => JSON.parse(await readFile(hrcenUrl, 'utf8'));
@@ -38,6 +38,12 @@ test('HRDAV profile lists EXKNGB and requires reservationnote; HRCEN does not', 
   assert.ok(amendRoomTypes('HRDAV').includes('EXKNGB'));
   assert.ok(amendRoomTypes('HRCEN').includes('STQN'));
   assert.equal(amendRoomTypes('HRDAV').includes('STQN'), false);
+});
+
+test('propertySecretRefusal refuses a secret for the other hotel before login', () => {
+  assert.equal(propertySecretRefusal({ expectedPropertyCode: 'HRDAV' }, 'HRDAV'), null);
+  assert.equal(propertySecretRefusal({ expectedPropertyCode: 'HRCEN' }, 'HRDAV'), 'PROPERTY_HRDAV_REQUIRED');
+  assert.equal(propertySecretRefusal({ expectedPropertyCode: 'HRDAV' }, 'HRCEN'), 'PROPERTY_HRCEN_REQUIRED');
 });
 
 test('parseStayProperty defaults HRCEN, accepts HRDAV, strips the flag, refuses unknown', () => {

@@ -29,7 +29,7 @@ import {
 } from './cancel-stay-rules.mjs';
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
 import { snapshotRecordForm } from './stay-lookup-dom.mjs';
-import { parseStayProperty } from './property-profile.mjs';
+import { parseStayProperty, propertySecretRefusal } from './property-profile.mjs';
 
 const MAX_PICKER_CLICKS = 60;
 const QUICK_WAIT_MS = 8000;
@@ -745,6 +745,8 @@ async function drive(ctx) {
     const cdp = checkCdpEnv(process.env);
     if (!cdp.ok) throw new Error(cdp.error);
     ctx.secret = await readSecret();
+    const hotelMismatch = propertySecretRefusal(ctx.secret, ctx.args.property);
+    if (hotelMismatch) throw new Error(hotelMismatch);
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
     context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
     ctx.page = await context.newPage();

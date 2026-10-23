@@ -18,6 +18,7 @@ import {
   validateAmendCurrent,
   validateAmendRequest,
 } from './amend-stay-rules.mjs';
+import { propertySecretRefusal } from './property-profile.mjs';
 
 // Source-backed New Record names. Existing-record writability remains TODO-LIVE-PROBE; unavailable controls refuse.
 const SELECTOR_BY_FIELD = {
@@ -161,6 +162,8 @@ async function run(ctx, request) {
     const cdp = checkCdpEnv(process.env);
     if (!cdp.ok) throw new Error(cdp.error);
     const secret = await readSecret();
+    const hotelMismatch = propertySecretRefusal(secret, ctx.args.property);
+    if (hotelMismatch) throw new Error(hotelMismatch);
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
     context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
     ctx.page = await context.newPage();
