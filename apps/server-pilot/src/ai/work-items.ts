@@ -158,6 +158,48 @@ export function stayCommitGuard(record: StayCommitRecord | undefined): StayCommi
   return { action: 'commit' };
 }
 
+function screenshotRefFromPane(result: {
+  runId?: string;
+  screenshots?: string[];
+}): StayCommitScreenshotRef | null {
+  const runId = result.runId;
+  if (!runId || !STAY_RUN_ID.test(runId)) return null;
+  const names = result.screenshots ?? [];
+  const name = names.includes('saved.png') ? 'saved.png' : names.at(-1);
+  return name && STAY_SHOT_NAME.test(name) ? { runId, name } : null;
+}
+
+/** Maps a pane commit/preview result onto a stay record. Unverified or unconfirmed saves are unknown. */
+export function stayCommitFromPaneResult(result: {
+  status: string;
+  reason?: string;
+  outcome?: string;
+  confirmationNumber?: string;
+  runId?: string;
+  screenshots?: string[];
+}): StayCommitRecord | null {
+  const screenshotRef = screenshotRefFromPane(result);
+  const confirmationNumber =
+    typeof result.confirmationNumber === 'string' && result.confirmationNumber.trim()
+      ? result.confirmationNumber.trim()
+      : null;
+  if (result.status === 'ok' && confirmationNumber) {
+    return {
+      confirmationNumber,
+      status: result.outcome === 'committed_unverified' ? 'unknown' : 'booked',
+      screenshotRef,
+    };
+  }
+  if (result.reason === 'pane_save_unconfirmed' || result.outcome === 'committed_unverified') {
+    return { confirmationNumber, status: 'unknown', screenshotRef };
+  }
+  return null;
+}
+
+function stayIdFromCommitKey(key: string): string {
+  return key.replace(/_\d+$/, '');
+}
+
 /**
  * The contact block's fields (U16). Paths are `contact.<field>`. `company` is the sender's organisation, which the
  * extraction calls the agency, so its AI value is `agency`.
@@ -619,6 +661,9 @@ export function correctionsCarryTo(
     const rowsBefore = before.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
     const rowsAfter = after.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
     if (!contentKeepsId(path.rowId, rowsBefore, rowsAfter, rowContentKey)) return false;
+  }
+  for (const key of Object.keys(stayCommitsOf(state))) {
+    if (!contentKeepsId(stayIdFromCommitKey(key), before.stays, after.stays, stayContentKey)) return false;
   }
   return true;
 }

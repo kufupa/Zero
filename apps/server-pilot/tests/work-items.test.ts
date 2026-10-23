@@ -22,6 +22,7 @@ import {
   refreshThreadWork,
   stayCommitGuard,
   storedAnalysis,
+  withStayCommit,
   storedTranslation,
   storedWorkFor,
   validFieldValue,
@@ -908,6 +909,17 @@ describe('corrections carry to a re-read', () => {
     const before = payload();
     const after: MailExtractionPayload = { ...payload(), stays: [payload().stays[1]!, payload().stays[0]!] };
     const state = { [`stays[${STAY_ONE}].requested.arrival`]: '2027-10-25' };
+    expect(correctionsCarryTo(before, after, state)).toBe(true);
+  });
+
+  it('keeps a stay commit attached when a re-read only swaps stay order', () => {
+    const before = payload();
+    const after: MailExtractionPayload = { ...payload(), stays: [payload().stays[1]!, payload().stays[0]!] };
+    const state = withStayCommit({}, `${STAY_ONE}_1`, {
+      confirmationNumber: '46184891-1',
+      status: 'booked',
+      screenshotRef: null,
+    });
     expect(correctionsCarryTo(before, after, state)).toBe(true);
   });
 

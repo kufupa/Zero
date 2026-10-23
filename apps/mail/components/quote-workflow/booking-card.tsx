@@ -256,11 +256,15 @@ export type SavedStayCommit = {
   screenshotRef: { runId: string; name: string } | null;
 };
 
-function stayIdForRoom(room: { groupId: string }, groups: StayGroupRequirement[]): string {
+function stayIdForRoom(
+  room: { groupId: string; roomIndex: number },
+  groups: StayGroupRequirement[],
+): string {
   const group =
     groups.find((item) => item.id === room.groupId) ??
     groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
-  return group?.stayId ?? room.groupId;
+  const stay = group?.stayId ?? room.groupId;
+  return `${stay}_${room.roomIndex}`;
 }
 
 function commitViewFromSaved(

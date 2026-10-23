@@ -976,7 +976,7 @@ describe('booking card pane save', () => {
         paneSave={client}
         workItemId="11111111-1111-1111-1111-111111111111"
         savedStays={{
-          s_aaaa1111: {
+          s_aaaa1111_1: {
             confirmationNumber: '98765-1',
             status: 'booked',
             screenshotRef: { runId: PANE_SAVE_RUN, name: 'saved.png' },
@@ -1000,7 +1000,7 @@ describe('booking card pane save', () => {
         groups={[{ ...g1, stayId: 's_aaaa1111' }]}
         paneSave={client}
         savedStays={{
-          s_aaaa1111: {
+          s_aaaa1111_1: {
             confirmationNumber: null,
             status: 'unknown',
             screenshotRef: { runId: PANE_SAVE_RUN, name: 'saved.png' },
@@ -1035,7 +1035,7 @@ describe('booking card pane save', () => {
     await screen.findByText('Booked in HMS – confirmation 98765-1');
     expect(commit).toHaveBeenCalledWith(
       expect.objectContaining({
-        stayId: 's_aaaa1111',
+        stayId: 's_aaaa1111_1',
         workItemId: '11111111-1111-1111-1111-111111111111',
       }),
       PANE_DIGEST,

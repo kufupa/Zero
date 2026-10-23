@@ -31,7 +31,6 @@ import {
   PANE_PARTY_NAME_MAX,
   PANE_PARTY_NATIVE_ID_MAX,
   PANE_RESERVATION_NOTE_MAX,
-  PANE_SAVE_UNCONFIRMED,
   runPaneStay,
   type PaneStayResult,
 } from '../../ai/pane-stay-save.js';
@@ -40,9 +39,9 @@ import { recordStaffNote } from '../../ai/work-events.js';
 import {
   loadStayCommit,
   recordStayCommit,
+  stayCommitFromPaneResult,
   stayCommitGuard,
   workItemIdForMail,
-  type StayCommitRecord,
 } from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
 import { mailboxProcedure, privateProcedure, router } from '../trpc.js';
@@ -90,33 +89,6 @@ const paneStayInput = z.object({
     .optional(),
   workItemId: z.string().uuid().optional(),
 });
-
-function screenshotRefFrom(result: PaneStayResult): StayCommitRecord['screenshotRef'] {
-  const runId = result.runId;
-  if (!runId) return null;
-  const names = result.screenshots ?? [];
-  const name = names.includes('saved.png') ? 'saved.png' : names.at(-1);
-  return name ? { runId, name } : null;
-}
-
-function stayCommitFromResult(result: PaneStayResult): StayCommitRecord | null {
-  const screenshotRef = screenshotRefFrom(result);
-  if (result.status === 'ok' && result.confirmationNumber) {
-    return {
-      confirmationNumber: result.confirmationNumber,
-      status: result.outcome === 'committed_unverified' ? 'unknown' : 'booked',
-      screenshotRef,
-    };
-  }
-  if (result.reason === PANE_SAVE_UNCONFIRMED) {
-    return {
-      confirmationNumber: result.confirmationNumber ?? null,
-      status: 'unknown',
-      screenshotRef,
-    };
-  }
-  return null;
-}
 
 export type LoadSyncedSelection = (input: {
   transportId: string;
@@ -338,14 +310,18 @@ export const quoteWorkflowRouter = router({
         owner,
       });
       if (workItemId && stayId) {
-        const record = stayCommitFromResult(result);
+        const record = stayCommitFromPaneResult(result);
         if (record) {
-          await recordStayCommit(getDb(), {
-            transportId: ctx.activeTransportId,
-            workItemId,
-            stayId,
-            record,
-          });
+          try {
+            await recordStayCommit(getDb(), {
+              transportId: ctx.activeTransportId,
+              workItemId,
+              stayId,
+              record,
+            });
+          } catch (error) {
+            console.warn('stay_commit_persist_failed', { stayId, workItemId, error });
+          }
         }
       }
       return result;
