@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { paneStayHmsTargetForTransport, paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
-import { classifyAmendPayment, type AmendPaymentStay } from './pane-stay-lookup.js';
+import { classifyAmendPayment, findStay, type AmendPaymentStay } from './pane-stay-lookup.js';
 import { tmpdir } from 'node:os';
 
 const execFileAsync = promisify(execFile);
@@ -35,6 +35,8 @@ const CANCEL_STAY = fileURLToPath(
 const LAB_ARRIVAL_FLOOR = '2027-01-01';
 const ALLOW_REAL_GUEST_FLAG = '--allow-real-guest';
 const CANCEL_TIMEOUT_MS = 20 * 60_000;
+/** Caller already holds the property lock, so findStay must not acquire again. */
+const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 
 export type PaneStayCancelMode = 'preview' | 'commit';
 
@@ -262,16 +264,22 @@ async function runPaneStayCancel(
   mode: PaneStayCancelMode,
   input: OwnedInput<PaneStayCancelPreviewInput & { reason?: string; previewDigest?: string }>,
 ): Promise<PaneStayCancelResult> {
-  // Unknown money uses the paid switch (fail closed). Prod preview/commit never inject a money
-  // state, so --allow-real-guest waits until money is resolved and that mode is on.
+  // Tests inject mode and/or moneyState. Prod injects neither: money comes from the open
+  // record via classifyAmendPayment (unpaid only when that returns unpaid), never the request.
   const injectedMode = paneStayCancelLoaders.mode?.();
-  const moneyState = paneStayCancelLoaders.moneyState?.() ?? 'unknown';
-  const saveMode = injectedMode ?? paneWriteMode('cancel', moneyState);
-  if (saveMode === 'off') return refused('refused_flag_off');
-  const moneyResolved = injectedMode != null || moneyState === 'unpaid' || moneyState === 'paid';
-  const allowRealGuest = moneyResolved && saveMode === 'on';
-  const inputRefusal = checkCancelInput(input, { allowRealGuest });
-  if (inputRefusal) return refused(inputRefusal);
+  const injectedMoney = paneStayCancelLoaders.moneyState?.() ?? null;
+  let allowRealGuest = false;
+  if (injectedMode != null || injectedMoney != null) {
+    const moneyState = injectedMoney ?? 'unknown';
+    const saveMode = injectedMode ?? paneWriteMode('cancel', moneyState);
+    if (saveMode === 'off') return refused('refused_flag_off');
+    const moneyResolved = injectedMode != null || moneyState === 'unpaid' || moneyState === 'paid';
+    allowRealGuest = moneyResolved && saveMode === 'on';
+    const inputRefusal = checkCancelInput(input, { allowRealGuest });
+    if (inputRefusal) return refused(inputRefusal);
+  } else if (!/^\d+-\d+$/.test(input.confirmation) || !isRealIsoDate(input.arrival)) {
+    return refused('refused_input_invalid');
+  }
   const reason = mode === 'commit' ? (input.reason ?? '').replace(/\s+/g, ' ').trim() : null;
   if (mode === 'commit' && (!reason || reason.startsWith('-')))
     return refused('refused_reason_missing');
@@ -300,18 +308,53 @@ async function runPaneStayCancel(
   };
   try {
     await pruneExpiredPaneRuns(paneStayClock());
+    let flagRefusal: string | null = null;
     const spawned = await lock.withLock(
       async () => {
+        let guest = allowRealGuest;
+        if (injectedMode == null && injectedMoney == null) {
+          const lookupDirs: string[] = [];
+          const found = await findStay(
+            { confirmation: input.confirmation, arrival: input.arrival },
+            {
+              lock: () => HELD_LOCK,
+              target,
+              onRun: ({ dir }) => lookupDirs.push(dir),
+            },
+          ).finally(() =>
+            Promise.all(lookupDirs.map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {}))),
+          );
+          if (found.outcome !== 'found' || !found.stay) {
+            flagRefusal =
+              found.outcome === 'found' ? 'refused_payment_unknown' : `read_${found.outcome}`;
+            return null;
+          }
+          const classified = classifyAmendPayment(found.stay);
+          const moneyState =
+            classified === 'unpaid' ? 'unpaid' : classified === 'paid' ? 'paid' : 'unknown';
+          const saveMode = paneWriteMode('cancel', moneyState);
+          if (saveMode === 'off') {
+            flagRefusal = 'refused_flag_off';
+            return null;
+          }
+          const moneyResolved = moneyState === 'unpaid' || moneyState === 'paid';
+          guest = moneyResolved && saveMode === 'on';
+          if (!guest && input.arrival < LAB_ARRIVAL_FLOOR) {
+            flagRefusal = 'refused_not_lab';
+            return null;
+          }
+        }
         // The grant is taken under the lock, so two concurrent commits cannot both spawn.
         if (mode === 'commit' && !takePanePreview(input.owner, digest, paneStayClock())) return null;
         if (mode === 'commit' && paneStayCancelLoaders.folio) {
           const folioStay = await paneStayCancelLoaders.folio(input);
           if (classifyAmendPayment(folioStay) !== 'unpaid') return { unpaidRefusal: true as const };
         }
-        return spawn(request);
+        return spawn({ ...request, allowRealGuest: guest });
       },
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
+    if (flagRefusal) return refused(flagRefusal);
     if (spawned === null) return refused('cancel_preview_required');
     if ('unpaidRefusal' in spawned) return refused('refused_not_unpaid');
     // HMS refused the reason before it clicked cancel, so nothing was cancelled: the grant stays usable for another reason.

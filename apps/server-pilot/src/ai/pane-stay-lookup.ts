@@ -305,7 +305,11 @@ function toFindOutcome(raw: string): PaneStayFindOutcome {
 function toPaneStayFields(raw: Partial<PaneStayFields> | null | undefined): PaneStayFields | null {
   if (!raw) return null;
   const text = (value: unknown): string | null =>
-    typeof value === 'string' && value.trim() !== '' ? value : null;
+    typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
+  // Confirmed blank deposit is '', not null. toPaneStayFields used to collapse '' → null
+  // and classifyAmendPayment then returned unknown (unread).
+  const deposit =
+    typeof raw.depositReceived === 'string' ? raw.depositReceived.replace(/\s+/g, ' ').trim() : null;
   const count = (value: unknown): number | null =>
     typeof value === 'number' && Number.isInteger(value) ? value : null;
   return {
@@ -326,7 +330,7 @@ function toPaneStayFields(raw: Partial<PaneStayFields> | null | undefined): Pane
     balance: text(raw.balance),
     sourceOfBusiness: text(raw.sourceOfBusiness),
     guaranteeType: text(raw.guaranteeType),
-    depositReceived: text(raw.depositReceived),
+    depositReceived: deposit,
     bookingAgency: text(raw.bookingAgency),
     organization: text(raw.organization),
   };

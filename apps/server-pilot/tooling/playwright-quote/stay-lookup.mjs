@@ -90,7 +90,7 @@ export function readVisibleNamedPaymentInputs(doc = document) {
       ? [...doc.querySelectorAll(`input[name="${name}"]`)]
       : [doc.querySelector(`input[name="${name}"]`)].filter(Boolean);
     const el = nodes.find(shown);
-    if (!el) return '';
+    if (!el) return null;
     return String(el.value ?? '').replace(/\s+/g, ' ').trim();
   };
   return { guaranteeType: read('guaranteetype'), depositReceived: read('depositreceived') };
@@ -100,10 +100,10 @@ export function readVisibleNamedPaymentInputs(doc = document) {
 export function fillBlankPaymentFields(stay, named = {}) {
   if (!stay) return stay;
   const next = { ...stay };
-  if (paymentBlank(next.guaranteeType) && !paymentBlank(named.guaranteeType)) {
+  if (next.guaranteeType == null && named.guaranteeType != null) {
     next.guaranteeType = String(named.guaranteeType).replace(/\s+/g, ' ').trim();
   }
-  if (paymentBlank(next.depositReceived) && !paymentBlank(named.depositReceived)) {
+  if (next.depositReceived == null && named.depositReceived != null) {
     next.depositReceived = String(named.depositReceived).replace(/\s+/g, ' ').trim();
   }
   return next;
