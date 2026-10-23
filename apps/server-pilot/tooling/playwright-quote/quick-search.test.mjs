@@ -162,6 +162,7 @@ test('when no window shows the confirmation, the surname is searched after the w
     'drive:61143613-1:any',
     `moveWindow:${ON}`,
     'drive:61143613-1:any',
+    'drive:61143613-1:any',
     'drive:Labtest:row',
   ]);
   assert.equal(outcome.method, 'quick_surname');
@@ -240,13 +241,13 @@ test('a panel whose search ran without the row stops the nudges: they cannot cha
 });
 
 test('the surname is searched once, after both windows around arrival have missed the confirmation', async () => {
-  const { io, calls } = fakeIo({ answers: { '61143613-1': [NOTHING, NOTHING, NOTHING], Labtest: ROW } });
+  const { io, calls } = fakeIo({ answers: { '61143613-1': NOTHING, Labtest: ROW } });
   const outcome = await runConfirmationSearch(io, { ...SEARCH, lastName: 'Labtest' });
   assert.deepEqual(calls, [
-    'drive:61143613-1:any',
     `moveWindow:${BEFORE}`,
     'drive:61143613-1:any',
     `moveWindow:${ON}`,
+    'drive:61143613-1:any',
     'drive:61143613-1:any',
     'drive:Labtest:row',
   ]);

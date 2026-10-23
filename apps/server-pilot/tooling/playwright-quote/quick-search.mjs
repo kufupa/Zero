@@ -43,10 +43,10 @@ export function windowStartsAround(arrival, days = 60) {
 // The whole confirmation search (cancel-stay.mjs find, preview and commit). io.drive(term, {needRow, done}) runs one
 // term through the header search with driveQuickSearch. io.panelShown() says whether a panel is showing, and
 // io.moveWindow(startIso) moves the panel's date window to start on that day. The order:
-//   1. the confirmation in the default window;
-//   2. when it is not there and arrival is known, the confirmation in each window of windowStartsAround(arrival);
-//   3. when it is still not there and the surname is known, the surname, where the row with the exact confirmation
-//      is taken.
+//   1. when arrival is known and a panel is showing, each window of windowStartsAround(arrival);
+//   2. otherwise the confirmation in the default window, then those arrival windows if a panel appears;
+//   3. the confirmation in the original window again (arrival is only a hint);
+//   4. when it is still not there and the surname is known, the surname.
 // The arrival is only a hint for the windows. The match is on the confirmation number alone. An open record for the
 // confirmation is used as it stands and never moves the window.
 export async function runConfirmationSearch(io, { confirmation, lastName = null, arrival = null, allowOpenRecord = true }) {
@@ -80,10 +80,15 @@ export async function runConfirmationSearch(io, { confirmation, lastName = null,
       }
     }
   }
+  if (arrival) {
+    const original = await drive(confirmation, 'original', found);
+    if (original.done) return { probe: original.result, method: 'quick', stages };
+    probe = original.result;
+  }
   if (lastName) {
-    run = await drive(lastName, 'surname', hasRow);
-    if (run.done) return { probe: run.result, method: 'quick_surname', stages };
-    probe = run.result;
+    const surnameRun = await drive(lastName, 'surname', hasRow);
+    if (surnameRun.done) return { probe: surnameRun.result, method: 'quick_surname', stages };
+    probe = surnameRun.result;
   }
   return { probe, method: 'quick', stages };
 }
