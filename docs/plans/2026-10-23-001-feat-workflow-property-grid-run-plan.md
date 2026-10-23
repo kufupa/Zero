@@ -124,6 +124,32 @@ Inbound mail over the last 14 days, latest succeeded extraction per message.
 
 ## 4. Implementation units
 
+### 4a. Lane time basis — corrected 2026-10-23 02:55 UK (owner: "260 lines in 60 min is bullshit")
+
+The owner is right. My per-unit "lane min" padded the SR3 medians by ~1.5×. Measured SR3 lane start → merge (retro table; PR sizes from `gh pr view`):
+
+| SR3 unit | PR | Product + test lines | Lane min | Greptile rounds |
+|---|---|---:|---:|---|
+| W4 | #467 | +43 | 22 | 1 |
+| W3 | #469 | +186 | 19 | 1 (apex) |
+| W2 | — | ~328 | 25 | 1 |
+| M1 | #475 | +348 | 21 | 1 |
+| D3 | #474 | +371 | 27 | 1 |
+| D1 | — | — | 32 | 1 |
+| W1 | — | — | 42 | 2 (apex) |
+| D2 | — | — | 43 | 2 |
+| D4 | #473 | +507 | 63 | 3 |
+
+**Lane time does not track size:** 43 lines and 371 lines both took ~20–27 min. Review rounds drive it. Median **25 min** (n = 9).
+
+**Rule this run, overrides every unit's "lane min" below:**
+- **25 min** default
+- **40 min** for write/lock paths (Greptile apex, often 2 rounds)
+- **+20 min** per extra Greptile round
+
+At 25 min, the code critical path to the first deploy is U1 40 → deploy 10 ≈ **T+55**. U0, U3 and U6 run alongside U1: U0 starts on the U1 branch, U3 and U6 are disjoint. HMS proof time is unchanged. That's where the hours really are.
+
+
 Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan1023`, summarised in §12). **Lane min** = lane start → merged, including Grok review + Greptile. Basis is SR3 measured unit times (W1 42, D1 32, W4 22, W2 25, D2 43, W3 19, D3 27, D4 63, M1 21; median 27 min for 48–330 lines), padded by ~1.5× for the DV-day gate overhead (#488 19 min of gate tooling). Rule of thumb: S ≤ 80 lines = 30 min, M 80–200 = 45, L 200–350 = 70.
 
 ### U0. Pane-path proof runner (Grok #1, #5)
@@ -187,7 +213,8 @@ Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan102
   - Only runs U0 (no raw `.mjs`).
   - Logs to `/var/log/nava/hms-jobs/<id>/`.
   - `ops-deploy.sh` refuses unless cwd is `.worktrees/recover-parse-failure`.
-- **Size:** 50–90 + 40–70 → **M, 40 min**. **Starts at T0; everything live depends on U0 + U6.**
+- **Reuse first:** `.worktrees/ops-run.sh` already does `sudo -n systemd-run --uid=ubuntu … bash -c` with `.env.production` sourced. Its bugs: `D=` points at a stale worktree (Grok #1), and `--wait` blocks inside SSM. U6 = the same pattern checked into `apps/server-pilot/deploy/hms-job.sh`, with `--unit hms-job-<id>`, no `--wait`, stdout to `/var/log/nava/hms-jobs/<id>.log`, and `poll <id>` = `systemctl is-active` + the result file.
+- **Size:** 40–80 + 30–60 → **25 min**. **Starts at T0; everything live depends on U0 + U6.**
 - **Tests:** two starts on the same property → the second waits; HRCEN + HRDAV run together only when `HMS_LOCK_SCOPE=property`; a tool outside the allowed dir is refused; poll on an unknown id returns `unknown`.
 
 ### U7. Cancel: Labtest penalty handling + pane result
@@ -224,25 +251,24 @@ Research: Luna max lane, 2026-10-23 ~02:00Z, read-only, file:line in each row. C
 - Same React pane for Outlook and webmail.
 - Uncertain identity → ask staff, never guess by array position.
 
-**Read-only HMS probe first (MS-P, T+15, HRCEN slot, ~15 min):** can one HMS reservation hold several room types under one confirmation? Capture the New Record room-row controls (U3 dump mode). **Fork, decided by the probe:**
-- **yes** → `rooms[]` in one create (MS3 as written).
-- **no** → one HMS booking per room row, grouped under the date-set stay card. MS3 shrinks to looping the existing single-room create under one digest. Staff see one card and N confirmations.
+**Read-only HMS probe first (MS-P, T+15, HRCEN slot, ~15 min):** can one HMS reservation hold several room types under one confirmation (U3 dump of the New Record room rows)? **Default if unclear: one HMS booking per room row, shown under one date-set card.** That needs no change to the create tool. `rooms[]` in one create is the upgrade, only if the probe shows HMS does it cleanly.
 
-| Slice | Behaviour | Product files | Tests | Product LOC (guess) | Test LOC (guess) | Depends on | Lane min |
-|---|---|---|---|---:|---:|---|---:|
-| MS1 | Stable date-set stay identity across re-extraction | `extraction/schema.ts`, `work-items.ts` | `tests/extraction-schema.test.ts`, `tests/work-items.test.ts` | 160–260 | 100–180 | — | 60 |
-| MS2 | Pane: one card per date set, room/guest rows; combined quote/reply covers every row | `session.ts`, `quote-workflow-panel.tsx`, `multi-option-draft.ts` | `apps/mail/tests/quote-workflow-multi-stay.test.ts`, `quote-workflow-panel.test.tsx` | 140–240 | 120–200 | MS1 | 55 |
-| MS3 | Server create takes a whole stay (all rooms), one preview digest, one duplicate check | `create-tool.schema.json`, `create-request.mjs`, `create-lab-stay.mjs`, `pane-stay-save.ts`, `trpc/routes/quote-workflow.ts` | `create-lab-stay.test.mjs`, `tests/create-lab-stay-safety.test.ts`, `tests/pane-stay-save.test.ts`, `tests/quote-workflow-router.test.ts` | 220–400 (≈ 80–150 if probe = no) | 160–260 | MS1, MS-P, U1, U4 | 70 |
-| MS4 | Pane books the whole stay | `pane-stay-bind.ts`, `booking-card.tsx`, `quote-workflow-panel.tsx` | `booking-card.test.tsx`, `quote-workflow-panel.test.tsx` | 150–250 | 120–220 | MS2, MS3 | 55 |
-| MS5 | Per-stay result persisted; reload restores; retry of a confirmed stay refused; unknown outcome → read HMS first | `work-items.ts`, `trpc/routes/quote-workflow.ts`, `booking-card.tsx` | `tests/work-items.test.ts`, `tests/pane-stay-save.test.ts`, `booking-card.test.tsx` | 180–300 | 140–240 | MS4 | 60 |
-| MS6 | Later amend/cancel picks one saved stay confirmation; outcome stored per stay; other stays untouched | `amend-lookup-panel.tsx`, amend/cancel routes, `work-items.ts` | `amend-find-panel.test.tsx`, `tests/pane-stay-amend.test.ts`, `tests/pane-stay-cancel.test.ts` | 180–350 | 130–220 | MS5, U7 | 60 |
-| MS7 | Needs-you + follow-up per stay under one email parent (**absorbs U10-F2**, same files) | `quote-followup.ts`, `work-items.ts`, `trpc/routes/work-items.ts`, `screens/needs-you.tsx` | `tests/quote-followup.test.ts`, `tests/work-items.test.ts`, `needs-you.test.tsx` | 180–320 | 130–220 | MS5, MS6, U10-F1 | 60 |
+**Ship-first cut (owner, "ship ship ship, no plumbing"):** 4 PRs, not 7.
+- Dropped: MS1 (stable ids; #475 already did this) and MS7 (per-stay Needs-you; deferred, one email row still closes when every stay has a number).
+- MS3 (multi-room create tool) only if the probe says yes.
 
-**Totals:** 1,210–2,120 product + 900–1,540 test lines (guesses), 7 PRs, each ≤ 500. **Code chain:** MS1 60 → MS3 70 → MS4 55 → MS5 60 → MS6 60 → MS7 60 = **~365 min** (MS2 runs alongside MS3). Starts at T0, so the chain lands ≈ T+365, inside the coding window.
+| Slice | Behaviour | Product files | Tests | Product LOC (guess) | Lane min | Depends on |
+|---|---|---|---|---:|---:|---|
+| MS-A | **Book each stay; confirmation survives reload.** Commit result (conf, status, screenshot ref) saved into `work_item.state.stays[stayId]`; card reads it back on mount; commit refuses a stay that already has a number; unknown outcome → read HMS before retry | `trpc/routes/quote-workflow.ts`, `src/ai/work-items.ts`, `booking-card.tsx` | `tests/work-items.test.ts`, `tests/pane-stay-save.test.ts`, `apps/mail/tests/booking-card.test.tsx` | 150–250 | 40 | U1 |
+| MS-B | **One card per date set.** Pane groups same-date stays (owner ask 168) into one card with N room rows; "Book this stay" runs one commit per room row (default) and shows N numbers; combined quote/reply lists every room row | `session.ts`, `quote-workflow-panel.tsx`, `booking-card.tsx`, `multi-option-draft.ts` | `apps/mail/tests/quote-workflow-multi-stay.test.ts`, `quote-workflow-panel.test.tsx`, `booking-card.test.tsx` | 150–250 | 25 | MS-A (shares `booking-card.tsx`) |
+| MS-C | **Later amend/cancel picks a saved stay.** The amend/cancel panel lists the thread's saved confirmations; the chosen one goes in; the result is stored on that stay; other stays untouched | `amend-lookup-panel.tsx`, `src/ai/work-items.ts` | `amend-find-panel.test.tsx`, `tests/pane-stay-cancel.test.ts` | 100–180 | 25 | MS-A, U7 |
+| MS3 | (only if probe = yes) create takes `rooms[]` | `create-tool.schema.json`, `create-request.mjs`, `create-lab-stay.mjs`, `pane-stay-save.ts` | `create-lab-stay.test.mjs`, `tests/pane-stay-save.test.ts` | 150–300 | 40 | MS-P, U4 |
 
-**Proof (HRCEN then HRDAV):** one Labtest mail with 2 date sets, one of them with 2 room types → combined quote → book both stays → N confirmations → reload keeps them → amend one stay, check the other is unchanged → cancel both → Needs-you closes each stay. HRCEN 60 min; HRDAV 30 min after.
+**Chain:** MS-A 40 → MS-B 25 → MS-C 25 = **~90 min** of code, done ≈ T+150.
 
-**Done in staff terms:** one email shows N date-set stays with their rooms; one quote covers everything; each stay gets its HMS confirmation, still there after reload; a later change touches only the chosen stay; Needs-you ticks off each stay.
+**Proof (HRCEN then HRDAV):** one Labtest request with 2 date sets, one with 2 room types → combined quote → book both stays → N numbers → reload keeps them → amend one stay, check the other is unchanged → cancel all. HRCEN 60 min, HRDAV 30 min.
+
+**Done for staff:** one email shows each date set once with its rooms; one quote covers everything; each stay gets its HMS number, still there after reload; a later change touches only the chosen stay.
 
 ### U9. POP/voucher attach bridge (Centurion)
 - **Files:** `src/ai/voucher-find.ts`, `apps/mail/components/quote-workflow/voucher-find-card.tsx`, `apps/mail/components/nava-pane/blocks/booking-voucher-card.tsx`, `src/ai/hms-approval.ts`, `src/ai/pane-hms-write.ts`; tests `apps/mail/tests/voucher-find-card.test.tsx`, `tests/hms-approval.test.ts`, `tests/pane-hms-write.test.ts`.
@@ -286,7 +312,7 @@ Research: Luna max lane, 2026-10-23 ~02:00Z, read-only, file:line in each row. C
 - A read-only find of `66865808-1`, `25526053-1` and any `Labtest` 2027–2028 stays.
 - Then cancel each through the U7/U6 path. A delete probe is part of the P1 dump (owner: "delete them"; no delete action exists in the code). Report the final inventory.
 
-**Totals:** 23 PRs (multi-stay now 7 slices), **~2,700–4,800 product lines** + ~1,500–2,500 test lines. Lane minutes ≈ 790 (sum of the above). Largest unit L ≤ 350 lines, under the 500-line PR cap.
+**Totals:** ~20 PRs, **~2,000–3,500 product lines** + ~1,500–2,500 test lines. Lane minutes ≈ 790 (sum of the above). Largest unit L ≤ 350 lines, under the 500-line PR cap.
 
 ---
 
@@ -296,17 +322,17 @@ Research: Luna max lane, 2026-10-23 ~02:00Z, read-only, file:line in each row. C
 |---|---|
 | `src/ai/pane-hms-write.ts` | U1 → U9 (U0 imports only) |
 | `src/ai/pane-stay-cancel.ts`, `amend-lookup-panel.tsx`, `amend-cancel.ts` | U1 → U7 |
-| `src/ai/pane-stay-save.ts` | U1 → U4 → MS3 → MS5 |
-| `booking-card.tsx`, `quote-workflow-panel.tsx`, `trpc/routes/quote-workflow.ts` | MS2 → MS4 → MS5 |
-| `amend-lookup-panel.tsx` | U7 → MS6 |
+| `src/ai/pane-stay-save.ts` | U1 → U4 → MS3 |
+| `booking-card.tsx`, `quote-workflow-panel.tsx`, `trpc/routes/quote-workflow.ts` | MS-A → MS-B |
+| `amend-lookup-panel.tsx` | U7 → MS-C |
 | `src/ai/pane-stay-lookup.ts`, `stay-lookup.mjs` | U1 → U5 |
 | `create-lab-stay.mjs` | U2a → U4 (U3 only imports it) |
 | `property-profile.mjs`, `property-profiles/*.json` | U2a → U2b |
 | `src/ai/staff-quote-run.ts` | U13 → U2b |
-| `quote-followup.ts` | U10-F1 → MS7 (U10-F2 merged into MS7) |
-| `work-items.ts` | MS1 → MS5 → MS6 → MS7 |
+| `quote-followup.ts` | U10-F1 → U10-F2 |
+| `work-items.ts` | MS-A → MS-C → U10-F2 |
 
-Disjoint at T0: **U1, U2a, U3, U6, U10-F1, U11, U13, MS1** (8 lanes). U0 and U9 are queued behind U1 (`pane-hms-write.ts`, spawn signatures).
+Disjoint at T0: **U1, U2a, U3, U6, U10-F1, U11, U13** (7 lanes); U0 stacked on the U1 branch (8th). U0 and U9 are queued behind U1 (`pane-hms-write.ts`, spawn signatures).
 
 ---
 
@@ -433,14 +459,14 @@ The HMS slots sit idle until D-A (T+130). Work that needs **no new code** runs i
 | Path | Min | Clock |
 |---|---:|---|
 | Pre-D-A on idle slots: U5-E 30 + party 20 + P1 dump 15 | (65, off the critical path) | T+15 → T+80 |
-| Code → D-A | 130 | T+130 |
-| HRCEN create | 90 | T+220 |
-| HRCEN cancel | 60 | T+280 |
-| HRCEN amend (new write type) | 180 | **T+460** |
-| HRCEN quote score | 25 | T+485 |
-| HRCEN multi-stay | 60 | T+545 |
-| HRCEN POP attach (new write type) | 180 | **T+725** |
-| **Whole grid** | | **~725 min ≈ 12 h** |
+| Code → D-A (U1 40 ‖ U0 stacked ‖ U3 ‖ U6 ‖ U4 from read-only evidence; §4a basis) | 70 | T+70 |
+| HRCEN create | 90 | T+160 |
+| HRCEN cancel | 60 | T+220 |
+| HRCEN amend (new write type) | 180 | **T+400** |
+| HRCEN quote score | 25 | T+425 |
+| HRCEN multi-stay | 60 | T+485 |
+| HRCEN POP attach (new write type) | 180 | **T+665** |
+| **Whole grid** | | **~665 min ≈ 11 h** |
 | DV slot (create 45+55, cancel 20, amend 30, quote 20, multi 30, POP 30, deposit 10) | ~240 | each lands ~25–55 min after its HRCEN twin; never critical |
 
 Two never-completed write types (HRCEN amend + POP) are 360 of those minutes. If preflight halves them, the grid lands at ≈ 9 h.
@@ -475,16 +501,16 @@ Two never-completed write types (HRCEN amend + POP) are 360 of those minutes. If
 
 **Switch rule:** a workflow goes `lab → on` (`PANE_WRITE_CREATE`, `PANE_WRITE_CANCEL_UNPAID`, `PANE_WRITE_AMEND_UNPAID`; `*_PAID` stay off) for one hotel as soon as its Labtest cell passes on the **live** SHA. It doesn't wait for 7.5 h or the full grid. A later deploy that touches the workflow → ~10 min re-proof. Opus flips it in the executing chat, then checks `/proc` on all 4 procs. "On" still means staff click and review the screenshot.
 
-T0 ≈ 02:50 UK:
+T0 ≈ 03:15 UK (code basis §4a):
 
-| Workflow | Centurion on | Da Vinci on | Why that long |
-|---|---|---|---|
-| Quote PDF/Excel + Find | already live | ≈ 06:30 (U2b deploy + 3-thread check) | U2b 60 min + gates |
-| Create provisional | **≈ 06:00** | ≈ 06:15–07:10 | code to first deploy ≈ 100 min (U1 → U0 stacked, U3 preflight, U4 readback), then 90 min HRCEN proof |
-| Cancel unpaid | ≈ 07:00 | ≈ 07:20 | 60 min after create (pane path + penalty states) |
-| Amend unpaid | ≈ 10:00 | ≈ 10:30 | never committed before: 180 min; only if U5-E passes |
-| Multi-stay | ≈ 11:25 | ≈ 11:55 | |
-| POP attach | ≈ 14:25 | later | never confirmed before: 180 min |
+| Workflow | Centurion on (UK) | Da Vinci on (UK) |
+|---|---|---|
+| Quote PDF/Excel + Find | already live | ≈ 05:30 (U2b + 3-thread check) |
+| Create provisional | **≈ 05:55** | ≈ 06:10–07:05 |
+| Cancel unpaid | ≈ 06:55 | ≈ 07:15 |
+| Amend unpaid | ≈ 09:55 (only if U5-E passes) | ≈ 10:25 |
+| Multi-stay | ≈ 11:20 | ≈ 11:50 |
+| POP attach | ≈ 14:20 | later |
 
 **At 09:30 UK when staff start:** quote + find (both hotels), create (both), cancel (both) are on. Amend lands ~30 min later, then multi-stay and POP during the day.
 
