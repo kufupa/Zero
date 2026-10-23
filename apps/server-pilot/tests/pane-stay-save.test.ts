@@ -43,6 +43,13 @@ import {
   optionalPartyAndNoteFills,
   validateCreateRequest,
 } from '../tooling/playwright-quote/create-request.mjs';
+import {
+  PANE_STAY_ALREADY_BOOKED,
+  stayCommitFromPaneResult,
+  stayCommitGuard,
+  stayCommitOf,
+  withStayCommit,
+} from '../src/ai/work-items.js';
 
 const labStay = {
   firstName: 'Pat',
@@ -1122,6 +1129,59 @@ describe('create request schema for the pane fields', () => {
       reservationnote: '',
       caller: '',
       udfchar06: '',
+    });
+  });
+});
+
+describe('stay commit persist/reload', () => {
+  const booked = {
+    confirmationNumber: '46184891-1',
+    status: 'booked' as const,
+    screenshotRef: { runId: '11111111-2222-3333-4444-555555555555', name: 'saved.png' },
+  };
+
+  it('reload reads the confirmation saved on the stay', () => {
+    const state = withStayCommit({}, 's_1', booked);
+    expect(stayCommitOf(state, 's_1')).toEqual(booked);
+  });
+
+  it('commit refuses a stay that already has a number', () => {
+    expect(stayCommitGuard(booked)).toEqual({ action: 'refuse', reason: PANE_STAY_ALREADY_BOOKED });
+    expect(stayCommitGuard({ confirmationNumber: '46184891-1', status: 'unknown', screenshotRef: null })).toEqual({
+      action: 'refuse',
+      reason: PANE_STAY_ALREADY_BOOKED,
+    });
+  });
+
+  it('unknown outcome requires an HMS read before retry', () => {
+    expect(stayCommitGuard({ confirmationNumber: null, status: 'unknown', screenshotRef: booked.screenshotRef })).toEqual(
+      { action: 'read_hms' },
+    );
+  });
+
+  it('keeps field-path edits next to the nested stays map', () => {
+    const state = withStayCommit({ 'stays[s_1].requested.arrival': '2027-10-25' }, 's_1', booked);
+    expect(state['stays[s_1].requested.arrival']).toBe('2027-10-25');
+    expect(stayCommitOf(state, 's_1')).toEqual(booked);
+  });
+
+  it('records an unverified save without a number as unknown', () => {
+    expect(stayCommitFromPaneResult({ status: 'ok', outcome: 'committed_unverified' })).toEqual({
+      confirmationNumber: null,
+      status: 'unknown',
+      screenshotRef: null,
+    });
+    expect(
+      stayCommitFromPaneResult({
+        status: 'refused',
+        reason: 'pane_save_unconfirmed',
+        runId: booked.screenshotRef.runId,
+        screenshots: ['saved.png'],
+      }),
+    ).toEqual({
+      confirmationNumber: null,
+      status: 'unknown',
+      screenshotRef: booked.screenshotRef,
     });
   });
 });

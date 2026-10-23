@@ -36,7 +36,13 @@ import {
 } from '../../ai/pane-stay-save.js';
 import { isNoReplyAddress } from '../../mail/conversation-signals.js';
 import { recordStaffNote } from '../../ai/work-events.js';
-import { workItemIdForMail } from '../../ai/work-items.js';
+import {
+  loadStayCommit,
+  recordStayCommit,
+  stayCommitFromPaneResult,
+  stayCommitGuard,
+  workItemIdForMail,
+} from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
 import { mailboxProcedure, privateProcedure, router } from '../trpc.js';
 import { CENTURION_RATE_PLANS } from '../../hms/rate-catalogue.js';
@@ -77,6 +83,11 @@ const paneStayInput = z.object({
   reservationNote: paneOptionalText(PANE_RESERVATION_NOTE_MAX),
   bookerName: paneOptionalText(PANE_BOOKER_NAME_MAX),
   bookerEmail: paneOptionalText(PANE_BOOKER_EMAIL_MAX),
+  stayId: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,40}$/)
+    .optional(),
+  workItemId: z.string().uuid().optional(),
 });
 
 export type LoadSyncedSelection = (input: {
@@ -257,9 +268,10 @@ export const quoteWorkflowRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
+    const { stayId: _stayId, workItemId: _workItemId, ...stay } = input;
     return runPaneStay({
       mode: 'preview',
-      stay: input,
+      stay,
       owner: `${ctx.sessionUser.id}:${ctx.activeTransportId}`,
     });
   }),
@@ -278,12 +290,40 @@ export const quoteWorkflowRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-      const { previewDigest, ...stay } = input;
-      return runPaneStay({
+      const { previewDigest, stayId, workItemId, ...stay } = input;
+      const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
+      if (workItemId && stayId) {
+        const existing = await loadStayCommit(getDb(), {
+          transportId: ctx.activeTransportId,
+          workItemId,
+          stayId,
+        });
+        const guard = stayCommitGuard(existing);
+        if (guard.action === 'refuse') {
+          return { status: 'refused' as const, reason: guard.reason };
+        }
+      }
+      const result = await runPaneStay({
         mode: 'commit',
         stay,
         previewDigest,
-        owner: `${ctx.sessionUser.id}:${ctx.activeTransportId}`,
+        owner,
       });
+      if (workItemId && stayId) {
+        const record = stayCommitFromPaneResult(result);
+        if (record) {
+          try {
+            await recordStayCommit(getDb(), {
+              transportId: ctx.activeTransportId,
+              workItemId,
+              stayId,
+              record,
+            });
+          } catch (error) {
+            console.warn('stay_commit_persist_failed', { stayId, workItemId, error });
+          }
+        }
+      }
+      return result;
     }),
 });

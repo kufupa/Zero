@@ -16,9 +16,13 @@ import {
   listWorkItems,
   openStoredWork,
   parseFieldPath,
+  PANE_STAY_ALREADY_BOOKED,
   recordFieldEvent,
+  recordStayCommit,
   refreshThreadWork,
+  stayCommitGuard,
   storedAnalysis,
+  withStayCommit,
   storedTranslation,
   storedWorkFor,
   validFieldValue,
@@ -905,6 +909,17 @@ describe('corrections carry to a re-read', () => {
     const before = payload();
     const after: MailExtractionPayload = { ...payload(), stays: [payload().stays[1]!, payload().stays[0]!] };
     const state = { [`stays[${STAY_ONE}].requested.arrival`]: '2027-10-25' };
+    expect(correctionsCarryTo(before, after, state)).toBe(true);
+  });
+
+  it('keeps a stay commit attached when a re-read only swaps stay order', () => {
+    const before = payload();
+    const after: MailExtractionPayload = { ...payload(), stays: [payload().stays[1]!, payload().stays[0]!] };
+    const state = withStayCommit({}, `${STAY_ONE}_1`, {
+      confirmationNumber: '46184891-1',
+      status: 'booked',
+      screenshotRef: null,
+    });
     expect(correctionsCarryTo(before, after, state)).toBe(true);
   });
 
@@ -3490,5 +3505,111 @@ describe('trusted POP3 delivery clock (KTD-1)', () => {
       expect(await refreshThread(db, threadId)).toEqual([]);
       expect(await refreshThread(db, threadId)).toEqual([]);
       expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+});
+
+describe('stay commit records on the work item', () => {
+  const shot = { runId: '11111111-2222-3333-4444-555555555555', name: 'saved.png' };
+
+  it('saves the confirmation into state.stays and reads it back on reopen', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'stay-commit-1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'stay-commit-1');
+      expect(work.stays).toEqual({});
+      expect(
+        await recordStayCommit(db, {
+          transportId: CENTURION,
+          workItemId: work.workItemId,
+          stayId: STAY_ONE,
+          record: { confirmationNumber: '46184891-1', status: 'booked', screenshotRef: shot },
+        }),
+      ).toEqual({ status: 'recorded' });
+      const reopened = await readyWork(db, 'stay-commit-1');
+      expect(reopened.stays[STAY_ONE]).toEqual({
+        confirmationNumber: '46184891-1',
+        status: 'booked',
+        screenshotRef: shot,
+      });
+      expect(stayCommitGuard(reopened.stays[STAY_ONE])).toEqual({
+        action: 'refuse',
+        reason: PANE_STAY_ALREADY_BOOKED,
+      });
+      const [row] = await db.select({ state: workItem.state }).from(workItem).where(eq(workItem.id, work.workItemId));
+      expect((row!.state as { stays?: unknown }).stays).toEqual({
+        [STAY_ONE]: { confirmationNumber: '46184891-1', status: 'booked', screenshotRef: shot },
+      });
+    }));
+
+  it('refuses to replace a stay that already has a confirmation number', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'stay-commit-2');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'stay-commit-2');
+      await recordStayCommit(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        stayId: STAY_ONE,
+        record: { confirmationNumber: '46184891-1', status: 'booked', screenshotRef: shot },
+      });
+      expect(
+        await recordStayCommit(db, {
+          transportId: CENTURION,
+          workItemId: work.workItemId,
+          stayId: STAY_ONE,
+          record: { confirmationNumber: '99999999-1', status: 'booked', screenshotRef: null },
+        }),
+      ).toEqual({ status: 'already_booked' });
+      const reopened = await readyWork(db, 'stay-commit-2');
+      expect(reopened.stays[STAY_ONE]?.confirmationNumber).toBe('46184891-1');
+    }));
+
+  it('an unknown outcome is stored so the next commit reads HMS first', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'stay-commit-3');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'stay-commit-3');
+      await recordStayCommit(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        stayId: STAY_ONE,
+        record: { confirmationNumber: null, status: 'unknown', screenshotRef: shot },
+      });
+      const reopened = await readyWork(db, 'stay-commit-3');
+      expect(reopened.stays[STAY_ONE]?.status).toBe('unknown');
+      expect(stayCommitGuard(reopened.stays[STAY_ONE])).toEqual({ action: 'read_hms' });
+      expect(
+        await recordStayCommit(db, {
+          transportId: CENTURION,
+          workItemId: work.workItemId,
+          stayId: STAY_ONE,
+          record: { confirmationNumber: '46184891-1', status: 'booked', screenshotRef: shot },
+        }),
+      ).toEqual({ status: 'recorded' });
+      expect((await readyWork(db, 'stay-commit-3')).stays[STAY_ONE]?.confirmationNumber).toBe('46184891-1');
+    }));
+
+  it('keeps a field edit when a stay commit is saved next to it', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'stay-commit-4');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'stay-commit-4');
+      await recordFieldEvent(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        type: 'field.edit',
+        fieldPath: `stays[${STAY_ONE}].requested.arrival`,
+        value: '2027-10-25',
+      });
+      await recordStayCommit(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        stayId: STAY_ONE,
+        record: { confirmationNumber: '46184891-1', status: 'booked', screenshotRef: shot },
+      });
+      const reopened = await readyWork(db, 'stay-commit-4');
+      expect(reopened.stays[STAY_ONE]?.confirmationNumber).toBe('46184891-1');
+      expect(reopened.analysis.groups.find((group) => group.stayId === STAY_ONE)?.arrivalDate).toBe('2027-10-25');
     }));
 });
