@@ -205,6 +205,20 @@ describe('linkMailContext', () => {
     expect(links).toHaveLength(1);
     expect(links[0]!.fields_match).toBe(false);
   });
+
+  it('tries a later staff reply when the first reply has no letter in the window', () => {
+    const bookingReplyId = 'reply-fixture-booking';
+    const links = linkMailContext([
+      ask(),
+      reply({ id: 'reply-fixture-ack' }),
+      reply({ id: bookingReplyId, at: atOffset(60) }),
+      letter({ at: atOffset(68) }),
+    ]);
+    expect(links).toHaveLength(1);
+    expect(links[0]!.conf).toBe(CONF);
+    expect(links[0]!.reply_id).toBe(maskContextId(bookingReplyId));
+    expect(links[0]!.window_ms).toBe(8 * 60 * 1000);
+  });
 });
 
 describe('runMailContextLinker', () => {

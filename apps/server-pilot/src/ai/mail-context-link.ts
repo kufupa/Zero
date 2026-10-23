@@ -181,19 +181,22 @@ function sameDomain(a: MailContextEvent, b: MailContextEvent): boolean {
   return Boolean(left && right && left === right);
 }
 
-export function linkMailContext(events: readonly MailContextEvent[]): ContextLink[] {
-  const asks = events.filter((event) => event.role === 'ask');
-  const replies = events.filter((event) => event.role === 'staff_reply');
-  const letters = events.filter((event) => event.role === 'hms_letter');
-  const links: ContextLink[] = [];
+type LetterCandidate = {
+  letter: MailContextEvent;
+  identity: { conf: string; property: PropertyCode | null };
+  delta: number;
+  threadOk: boolean;
+  domainOk: boolean;
+};
 
-  for (const askEvent of asks) {
-    const replyEvent = replies
-      .filter((row) => row.threadId === askEvent.threadId && msAt(row.at) >= msAt(askEvent.at))
-      .sort((a, b) => msAt(a.at) - msAt(b.at))[0];
-    if (!replyEvent) continue;
-    const replyMs = msAt(replyEvent.at);
-    const candidate = letters
+function letterForReply(
+  replyEvent: MailContextEvent,
+  askEvent: MailContextEvent,
+  letters: readonly MailContextEvent[],
+): LetterCandidate | null {
+  const replyMs = msAt(replyEvent.at);
+  return (
+    letters
       .map((letter) => {
         const identity = letterIdentity(letter);
         if (!identity) return null;
@@ -204,12 +207,34 @@ export function linkMailContext(events: readonly MailContextEvent[]): ContextLin
         if (!threadOk && !domainOk) return null;
         return { letter, identity, delta, threadOk, domainOk };
       })
-      .filter((row): row is NonNullable<typeof row> => Boolean(row))
+      .filter((row): row is LetterCandidate => Boolean(row))
       .sort((a, b) => {
         if (a.threadOk !== b.threadOk) return a.threadOk ? -1 : 1;
         return a.delta - b.delta;
-      })[0];
-    if (!candidate) continue;
+      })[0] ?? null
+  );
+}
+
+export function linkMailContext(events: readonly MailContextEvent[]): ContextLink[] {
+  const asks = events.filter((event) => event.role === 'ask');
+  const replies = events.filter((event) => event.role === 'staff_reply');
+  const letters = events.filter((event) => event.role === 'hms_letter');
+  const links: ContextLink[] = [];
+
+  for (const askEvent of asks) {
+    const laterReplies = replies
+      .filter((row) => row.threadId === askEvent.threadId && msAt(row.at) >= msAt(askEvent.at))
+      .sort((a, b) => msAt(a.at) - msAt(b.at));
+    let replyEvent: MailContextEvent | undefined;
+    let candidate: LetterCandidate | null = null;
+    for (const reply of laterReplies) {
+      candidate = letterForReply(reply, askEvent, letters);
+      if (candidate) {
+        replyEvent = reply;
+        break;
+      }
+    }
+    if (!replyEvent || !candidate) continue;
     const compared = compareStayFacts(askEvent.facts, candidate.letter.facts);
     links.push({
       label: CONTEXT_DATASET_LABEL,
