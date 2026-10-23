@@ -1,6 +1,13 @@
 # Active context
 
-Updated 2026-10-22 after SR3 overnight (Grok orchestrator). Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+Updated 2026-10-22 after the DV install run (paused for retro). Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+
+## DV install run — 2026-10-22 day (Opus) — paused for retro
+
+- **Live `e5231310a`** (deploy 3 at 14:37Z; last-good `e4d74f6fb`). Health 200/200, 4 procs. Flags on all 4 procs (`/proc` 15:47Z): every `PANE_WRITE_*=lab`, `HMS_DAVINCI_CREATE=lab`, `HMS_DAVINCI_READS=on`. Centurion real-guest create was `on` 12:07–15:47Z, then back to `lab` (owner: testing only, ask 181).
+- Merged today: #476, #479 (SR3 retro closeout), #480–#487, #489. Open: #488 (dialog logging; gates incomplete), #462, #463.
+- DV create: **not proven** (7 runs, 2 Saves, 0 bookings). DV requires Reservation Note; Save 2 hung on the mask. DV quote: blocked on Centurion-only rate-policy source and 6/10 truth threads.
+- Next acceptance: one read-only DV create preflight reporting every blocker, then one Labtest Save with dialog logging (#488). Holds: no real-guest writes; no Faith pairing code until the multi-mailbox design (ask 179) is approved. [Retro](ledger/2026-10-22-dv-install-retro.md) · [Stagehand decision](../research/2026-10-22-stagehand-hms-decision.md).
 
 ## SR3 writes + Da Vinci quote — 2026-10-22 (Grok orchestrator)
 
@@ -130,6 +137,7 @@ At handoff: update this short file with verified state, next acceptance check an
 
 ## Other open items and navigation
 
+- Outlook multi-mailbox (ask 179): one Outlook workstation with several mailboxes and one Nava login. [Handoff](HANDOFF-2026-10-22-outlook-multi-mailbox.md); design only, no pairing code issued.
 - Host tooling audit (not Zero product work): all four CLIs currently use separate registrations for the same Exa endpoint/key; the hosted tool surface lacks Dynamic Highlights. No client settings changed. Plan: [Exa Dynamic Highlights across four agent CLIs](../plans/2026-10-19-001-exa-dynamic-highlights-plan.md). Next acceptance check: owner explicitly authorizes execution; then test the local stdio canary before any config swap. Hold: implementation and client changes are not authorized by this planning-only request.
 - Webmail sync/access wording and the earlier workflow-folder load error: current live status not reverified. All core-workflow accuracy and final staff-bundle proof remain open. Historical overnight statuses are in the dated assessment, not silently claimed complete.
 - Current source exemptions preserve human Profitroom enquiries and non-notice H-Pay finance mail. RateTiger had no host evidence in the handoff. If broad vendor-skip wording means something different, clarify the policy before changing revenue-mail handling.
