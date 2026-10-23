@@ -1,11 +1,12 @@
 import { paneStayLookupLoaders } from '../src/ai/pane-stay-lookup.js';
 import { paneStaySaveLoaders, paneStayTenantId, type PaneStayLock } from '../src/ai/pane-stay-save.js';
-import { paneStayCancelLoaders } from '../src/ai/pane-stay-cancel.js';
+import { paneStayCancelLoaders, paneCancelDigest } from '../src/ai/pane-stay-cancel.js';
 import { paneHmsWriteLoaders } from '../src/ai/pane-hms-write.js';
 import { propertyReadLockKey } from '../src/hms/property-read-lock.js';
 import { hmsProofRun, parseProofRunArgs, stayFromProofRequest } from '../src/ops/hms-proof-run.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -68,6 +69,7 @@ afterEach(() => {
   paneStaySaveLoaders.lock = null;
   paneStayCancelLoaders.spawn = null;
   paneStayCancelLoaders.lock = null;
+  paneStayCancelLoaders.mode = null;
   paneHmsWriteLoaders.spawnAmend = null;
   paneHmsWriteLoaders.spawnAttach = null;
   paneHmsWriteLoaders.lock = null;
@@ -213,6 +215,38 @@ describe('hms-proof-run refusals', () => {
     ).rejects.toThrow(/attach_preview_unsupported$/);
     expect(createLock).not.toHaveBeenCalled();
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('consumes an expired preview grant and refuses commit before spawn', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn();
+    paneStayCancelLoaders.spawn = spawn;
+    paneStayCancelLoaders.mode = () => 'lab';
+    const outDir = await mkdtemp(join(tmpdir(), 'hms-proof-grant-'));
+    const digest = paneCancelDigest({ confirmation: LAB.confirmation, arrival: LAB.arrival });
+    await writeFile(
+      join(outDir, 'preview-grant.json'),
+      `${JSON.stringify({
+        owner: 'proof:transport-centurion',
+        digest,
+        expiresAt: Date.now() - 1,
+      })}\n`,
+    );
+    try {
+      const line = await hmsProofRun(
+        parseProofRunArgs(
+          argv('cancel', { ...LAB, reason: 'lab', previewDigest: digest }, { mode: 'commit', out: outDir }),
+        ),
+        WRITE_LAB,
+        createLock,
+      );
+      expect(line).toMatchObject({ outcome: 'cancel_preview_required' });
+      expect(spawn).not.toHaveBeenCalled();
+      expect(existsSync(join(outDir, 'preview-grant.json'))).toBe(false);
+    } finally {
+      paneStayCancelLoaders.mode = null;
+      await rm(outDir, { recursive: true, force: true });
+    }
   });
 
   it('create stay omits CLI-only fields so the preview digest still matches', () => {

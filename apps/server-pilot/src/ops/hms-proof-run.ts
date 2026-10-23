@@ -17,6 +17,7 @@ import {
   paneStaySaveLoaders,
   paneStayTenantId,
   paneWriteModes,
+  PANE_PREVIEW_TTL_MS,
   readPaneStayScreenshot,
   recordPanePreview,
   registerPaneRun,
@@ -36,7 +37,7 @@ import { findStay, paneStayLookupLoaders } from '../ai/pane-stay-lookup.js';
 import { createPostgresPropertyReadLock } from '../hms/property-read-lock.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -237,16 +238,24 @@ async function copyScreenshots(input: {
 
 function restorePreviewGrant(outDir: string, owner: string, digest: string | undefined): void {
   if (!digest) return;
+  const path = join(outDir, GRANT_FILE);
   try {
-    const raw = JSON.parse(readFileSync(join(outDir, GRANT_FILE), 'utf8')) as {
+    const raw = JSON.parse(readFileSync(path, 'utf8')) as {
       owner?: unknown;
       digest?: unknown;
+      expiresAt?: unknown;
     };
-    if (raw.owner === owner && raw.digest === digest) {
-      recordPanePreview(owner, digest, Date.now());
-    }
+    const expiresAt = raw.expiresAt;
+    const valid =
+      raw.owner === owner &&
+      raw.digest === digest &&
+      typeof expiresAt === 'number' &&
+      expiresAt > Date.now();
+    unlinkSync(path);
+    if (!valid) return;
+    recordPanePreview(owner, digest, expiresAt - PANE_PREVIEW_TTL_MS);
   } catch {
-    // Missing grant: the pane commit path refuses. Fail closed.
+    // Missing or expired grant: the pane commit path refuses. Fail closed.
   }
 }
 
@@ -260,9 +269,8 @@ async function persistPreviewGrant(
       ? (result as { previewDigest?: unknown }).previewDigest
       : undefined;
   if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) return;
-  await writeFile(join(outDir, GRANT_FILE), `${JSON.stringify({ owner, digest })}\n`, {
-    mode: 0o600,
-  });
+  const grant = { owner, digest, expiresAt: Date.now() + PANE_PREVIEW_TTL_MS };
+  await writeFile(join(outDir, GRANT_FILE), `${JSON.stringify(grant)}\n`, { mode: 0o600 });
 }
 
 function defaultCreateLock(input: {
