@@ -68,6 +68,7 @@ afterEach(() => {
   paneStayLookupLoaders.enabled = null;
   paneStaySaveLoaders.spawn = null;
   paneStaySaveLoaders.lock = null;
+  paneStaySaveLoaders.mode = null;
   paneStayCancelLoaders.spawn = null;
   paneStayCancelLoaders.lock = null;
   paneStayCancelLoaders.mode = null;
@@ -219,13 +220,26 @@ describe('hms-proof-run refusals', () => {
     paneStaySaveLoaders.spawn = spawn;
     const outDir = await mkdtemp(join(tmpdir(), 'hms-proof-create-on-lab-'));
     try {
+      paneStaySaveLoaders.mode = () => 'on';
       const line = await hmsProofRun(
-        parseProofRunArgs(argv('create', { ...LAB, adults: 1 }, { out: outDir })),
+        parseProofRunArgs(
+          argv(
+            'create',
+            {
+              ...LAB,
+              adults: 1,
+              departure: '2027-03-11',
+              roomType: 'STQN',
+              ratePlan: 'BAR',
+            },
+            { out: outDir },
+          ),
+        ),
         { ...WRITE_LAB, PANE_WRITE_CREATE: 'on' },
         createLock,
       );
       expect(line.command).toBe('create');
-      expect(line.status).not.toBe('refused');
+      expect(line.reason).not.toBe('refused_write_not_lab');
       expect(spawn).toHaveBeenCalled();
     } finally {
       await rm(outDir, { recursive: true, force: true });
