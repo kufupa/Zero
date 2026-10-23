@@ -237,7 +237,9 @@ test('checkAvailability clicks the Check Availability control after closing the 
   assert.match(body, /closeAppDrawer\(page\)/);
   assert.match(body, /data-qtip="Check Availability"/);
   assert.match(body, /\.click\(/);
+  assert.ok(body.indexOf('closeAppDrawer(page)') < body.indexOf('.click('));
   assert.equal(/el\.click\(\)/.test(body), false);
+  assert.match(body, /return false;/);
 });
 
 test('amend-stay closes the app drawer before filling changed fields', async () => {

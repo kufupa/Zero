@@ -91,7 +91,11 @@ async function checkAvailability(page) {
   const fallback = page.getByRole('button', { name: /^Check Availability$/i }).first();
   const target = (await btn.count()) > 0 ? btn : fallback;
   if ((await target.count()) === 0) return false;
-  await target.click({ timeout: 5000 }).catch(() => {});
+  try {
+    await target.click({ timeout: 5000 });
+  } catch {
+    return false;
+  }
   await page.waitForTimeout(2000);
   const deadline = Date.now() + SAVE_WAIT_MS;
   while ((await readSaveSnapshot(page)).maskVisible && Date.now() < deadline) await page.waitForTimeout(SAVE_POLL_MS);
