@@ -13,6 +13,16 @@ type RatePolicyDocumentIdentity={
 export type ReservationistRatePolicyDocument=RatePolicyDocumentIdentity&({kind?:'family_invoice';authoredDate:string;rateCode:string;board:Board;publicationAt?:never}|{kind:'hotel_rate_terms';publicationAt:string;authoredDate?:never;rateCode?:never;board?:never});
 const sha=(body:Uint8Array)=>createHash('sha256').update(body).digest('hex');
 const boards:Record<string,Board>={'Room Only R':'room_only','Bed & Breakfast R':'breakfast','Dinner Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed, Breakfast & Beverage R':'dinner_bed_breakfast'};
+const HRCEN_HOTEL=/The Centurion Hotel/;
+const HRCEN_CONFIRMATION=/We have pleasure in confirming your reservation at The Centurion Hotel, Centurion/;
+// Placeholder until the DV confirmation-letter probe writes /tmp/g1023/dv-letter-identity.txt.
+const HRDAV_HOTEL=/Da Vinci Hotel and Suites/;
+const HRDAV_CONFIRMATION=/We have pleasure in confirming your reservation at Da Vinci Hotel and Suites/;
+function letterIdentity(propertyCode:string):{hotel:RegExp;confirmation:RegExp}|null{
+ if(propertyCode==='HRCEN')return{hotel:HRCEN_HOTEL,confirmation:HRCEN_CONFIRMATION};
+ if(propertyCode==='HRDAV')return{hotel:HRDAV_HOTEL,confirmation:HRDAV_CONFIRMATION};
+ return null;
+}
 
 function validateOriginalDocument(ctx:Context,d:ReservationistRatePolicyDocument,propertyCode:string){
  const terms=d.kind==='hotel_rate_terms';
@@ -45,7 +55,8 @@ export function createReservationistQuoteTermsAnswerResolver(options:{
    const d:ReservationistRatePolicyDocument=terms[0]!;validateOriginalDocument(ctx,d,ctx.input.propertyCode);
    const text=d.pages.join('\n'),flat=text.replace(/\s+/g,' ').trim(),v=flat.match(vat)?.[0],l=flat.match(levy)?.[0];
    const taxConflict=/\b(?:VAT|Value Added Tax|Tourism Levy|taxes|levies)[^.\n]{0,100}\bexclud(?:e|ed|es|ing)\b|\bexclud(?:e|ed|es|ing)\b[^.\n]{0,100}\b(?:VAT|Value Added Tax|Tourism Levy|taxes|levies)\b/i.test(text);
-   if(!/We have pleasure in confirming your reservation at The Centurion Hotel, Centurion/.test(flat)||!v||!l||taxConflict)throw new Error('quote_terms_evidence_unavailable');
+   const letter=letterIdentity(ctx.input.propertyCode);
+   if(!letter||!letter.confirmation.test(flat)||!v||!l||taxConflict)throw new Error('quote_terms_evidence_unavailable');
    let value=v+' '+l;
    if(cancel){
     const starts=d.pages.flatMap(page=>page.split('\n').filter(line=>/\b8\. A No-show/.test(line)));
@@ -87,18 +98,20 @@ export function createReservationistSelectedRatePolicyResolver(options:{
   if(matched.some(({option})=>!option.nightly.length||option.nightly.some(n=>{const row=n as typeof n&{restricted?:boolean;rateAvailable?:boolean};return row.restricted!==false||row.rateAvailable!==true;})))return null;
   const documents=await read(ctx,{propertyCode,rateCode,board}),documentsIdentity=quoteDigest(documents);await guard();
   if(!Array.isArray(documents)||documents.length>64)throw new Error('rate_policy_document_inventory_invalid');
+  const letter=letterIdentity(propertyCode);
   const usable=documents.filter(d=>{
    const terms=d.kind==='hotel_rate_terms';if(!terms&&(d.rateCode!==rateCode||d.board!==board))return false;
    validateOriginalDocument(ctx,d,propertyCode);
    const text=d.pages.join('\n'),flat=text.replace(/\s+/g,' ');
+   if(!letter)return false;
    if(terms){
     if(!['room_only','breakfast'].includes(board)||matched.some(({option})=>option.nightly.some(n=>n.price?.currency!=='ZAR')))return false;
     const vat=/\b1\. All rates are quoted in ZAR and include Value Added Tax \(VAT\) at the prevailing rate\./.test(flat),levy=/\b2\. Average Rate per night includes the 1% Tourism Levy per room per night\./.test(flat);
     const conflict=/\b(?:VAT|Value Added Tax|Tourism Levy|taxes|levies)[^.\n]{0,100}\bexclud(?:e|ed|es|ing)\b|\bexclud(?:e|ed|es|ing)\b[^.\n]{0,100}\b(?:VAT|Value Added Tax|Tourism Levy|taxes|levies)\b/i.test(text);
-    return /The Centurion Hotel/.test(text)&&/We have pleasure in confirming your reservation at The Centurion Hotel, Centurion/.test(flat)&&vat&&levy&&!conflict;
+    return letter.hotel.test(text)&&letter.confirmation.test(flat)&&vat&&levy&&!conflict;
    }
    const printedCodes=[...text.matchAll(/\bRate Plan\s+([A-Z][A-Z0-9]*)\b/g)].map(m=>m[1]);
-   if(!/The Centurion Hotel/.test(text)||!/^\s*Tax Invoice\b/m.test(text)||!printedCodes.length||printedCodes.some(c=>c!==rateCode)||!/^\s*Tourism Levy Included\s+\d[\d,.]*\s*$/m.test(text)||!/^\s*VAT 15%\s+15\.00%\s+\d[\d,.]*\s+\d[\d,.]*\s+\d[\d,.]*\s*$/m.test(text))return false;
+   if(!letter.hotel.test(text)||!/^\s*Tax Invoice\b/m.test(text)||!printedCodes.length||printedCodes.some(c=>c!==rateCode)||!/^\s*Tourism Levy Included\s+\d[\d,.]*\s*$/m.test(text)||!/^\s*VAT 15%\s+15\.00%\s+\d[\d,.]*\s+\d[\d,.]*\s+\d[\d,.]*\s*$/m.test(text))return false;
    const printedDate=text.match(/Invoice Date\s+(\d{2})-([A-Z]{3})-(\d{4})\b/),months=['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
    if(!printedDate||`${printedDate[3]}-${String(months.indexOf(printedDate[2]!)+1).padStart(2,'0')}-${printedDate[1]}`!==d.authoredDate)return false;
    return board==='dinner_bed_breakfast'?/Package Dinner \+ Bed n(?: Breakfast|[^\n]*\n\s*Breakfast)/.test(text):board==='breakfast'?/Package B&B|Package Bed (?:&|and) Breakfast|Breakfast Adult Inclusive/.test(flat)||/Package Bed n(?:[ \t]+Breakfast Rewardable\b|[ \t\d,.%]*\n[ \t]+Breakfast (?:Rewardable|Non-[ \t]*\n[ \t]+Rewardable)[; \t]*$)/m.test(text):false;

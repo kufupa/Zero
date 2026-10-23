@@ -1,6 +1,7 @@
 import {
   CENTURION_HOTEL_RULES,
   HOLDING_MOVE_WORKFLOWS,
+  hotelRulesForProperty,
   isHoldingMoveWorkflow,
   lunaAnalysisSchema,
   type LunaAnalysis,
@@ -213,7 +214,7 @@ export function partyNotGuest(analysis: Pick<LunaAnalysis, 'party' | 'groups'>):
 
 export function buildQuoteWorkflowPrompt(
   selection: SyncedQuoteSelection,
-  options?: { treatAs?: QuoteTreatAs; staffNote?: string },
+  options?: { treatAs?: QuoteTreatAs; staffNote?: string; propertyCode?: string },
 ): {
   system: string;
   user: string;
@@ -275,7 +276,7 @@ export function buildQuoteWorkflowPrompt(
     ? 'The staff note is a first-class evidence source. rateClaims and evidence quotes may be exact contiguous substrings of the staff note.'
     : '';
   return {
-    system: `${CENTURION_HOTEL_RULES}\n${K2_MAPPING}\n${aopQuoteInstructions()}${treatAsLine ? `\n${treatAsLine}` : ''}${staffNoteLine ? `\n${staffNoteLine}` : ''}`,
+    system: `${hotelRulesForProperty(options?.propertyCode)}\n${K2_MAPPING}\n${aopQuoteInstructions()}${treatAsLine ? `\n${treatAsLine}` : ''}${staffNoteLine ? `\n${staffNoteLine}` : ''}`,
     user: parts.join('\n\n'),
     files,
   };
@@ -638,6 +639,7 @@ export async function analyseQuoteSelection(input: {
   deadlineMs?: number;
   treatAs?: QuoteTreatAs;
   staffNote?: string;
+  propertyCode?: string;
 }): Promise<AnalyseQuoteSelectionResult> {
   const started = Date.now();
   if (!input.enabled || !input.adapter) {
@@ -653,6 +655,7 @@ export async function analyseQuoteSelection(input: {
   const prompt = buildQuoteWorkflowPrompt(input.selection, {
     treatAs: input.treatAs,
     staffNote: input.staffNote,
+    propertyCode: input.propertyCode,
   });
   const responseSchema = zodToJsonSchema(lunaAnalysisSchema, { $refStrategy: 'none' }) as Record<
     string,

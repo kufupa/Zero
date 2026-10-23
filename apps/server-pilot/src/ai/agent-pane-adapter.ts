@@ -7,7 +7,6 @@ import { lunaProviderOptions } from './bedrock/luna.js';
 import type { QuoteTreatAs, QuoteWorkflowTelemetry } from './quote-workflow-llm.js';
 import type { SyncedQuoteSelection } from './quote-workflow-synced-selection.js';
 import {
-  CENTURION_HOTEL_RULES,
   createReservationistAgent,
   createReservationistTools,
   reservationistDecisionSchema,
@@ -15,7 +14,7 @@ import {
   type ReservationistDecision,
   type ReservationistRunners,
 } from './reservationist-agent.js';
-import type { LunaAnalysis } from './reservationist-decision.js';
+import { hotelRulesForProperty, type LunaAnalysis } from './reservationist-decision.js';
 import {
   classifyWorkflow,
   classifierInputFromSelection,
@@ -197,6 +196,8 @@ export async function analyseSelectionWithAgent(input: {
   deadlineMs?: number;
   treatAs?: QuoteTreatAs;
   staffNote?: string;
+  /** HMS property for hotel rules. Omitted and unknown stay HRCEN. */
+  propertyCode?: string;
   classify?: (input: ReturnType<typeof classifierInputFromSelection>) => Promise<ClassifierResult | null>;
 }): Promise<AnalyseSelectionWithAgentResult> {
   const started = Date.now();
@@ -222,9 +223,10 @@ export async function analyseSelectionWithAgent(input: {
       tools: input.runners ? paneAnalysisTools(input.runners) : {},
       aopSops: PANE_AOP_SOPS,
     });
+    const propertyCode = input.propertyCode === 'HRDAV' ? 'HRDAV' : 'HRCEN';
     const requestContext = new RequestContext<ReservationistContext>([
-      ['propertyCode', 'HRCEN'],
-      ['hotelRules', CENTURION_HOTEL_RULES],
+      ['propertyCode', propertyCode],
+      ['hotelRules', hotelRulesForProperty(propertyCode)],
       ['liveQuoteOk', true],
     ]);
     const generatePromise = agent.generate(

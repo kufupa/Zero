@@ -38,6 +38,7 @@ describe('staff quote installation defaults', () => {
 
   it('leaves generic installations unpriced and preserves an explicit hotel price', () => {
     const generic = validateStaffQuoteInstallationConfiguration(configuration('OTHER'));
+    const davinci = validateStaffQuoteInstallationConfiguration(configuration('HRDAV'));
     const explicit = validateStaffQuoteInstallationConfiguration(
       configuration('HRCEN', {
         amountMinor: 40_000,
@@ -47,6 +48,7 @@ describe('staff quote installation defaults', () => {
     );
 
     expect(generic.dinnerAddOn).toBeUndefined();
+    expect(davinci.dinnerAddOn).toBeUndefined();
     expect(explicit.dinnerAddOn).toEqual({
       amountMinor: 40_000,
       unit: 'per_person',
