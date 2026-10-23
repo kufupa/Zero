@@ -28,6 +28,7 @@ import {
 } from '../src/ai/hms-availability.js';
 import { paneStayLookupLoaders } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
+import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
@@ -638,7 +639,7 @@ describe('U10 availability probe (pure)', () => {
     const spawn = vi.fn(async () => NIGHTLY_QUOTE_RESULT);
     availabilityProbeLoaders.spawn = spawn;
     const passThrough = { withLock: async (fn: () => Promise<unknown>) => fn() } as unknown as PaneStayLock;
-    const probeRead = await probeAvailability(NIGHTLY_REQUEST, { lock: () => passThrough, acquisition });
+    const probeRead = await probeAvailability(NIGHTLY_REQUEST, { lock: () => passThrough, acquisition, target: CENTURION_HMS_READ_TARGET });
     expect(probeRead).toMatchObject({
       outcome: 'read',
       searchOutcome: 'partial',
@@ -658,22 +659,22 @@ describe('U10 availability probe (pure)', () => {
       expect.objectContaining({ propertyCode: 'HRCEN', arrivalDate: '2026-09-24', departureDate: '2026-09-27' }),
     );
 
-    expect(await probeAvailability(request!, { lock: () => null, acquisition })).toEqual({
+    expect(await probeAvailability(request!, { lock: () => null, acquisition, target: CENTURION_HMS_READ_TARGET })).toEqual({
       outcome: 'refused_lock_unavailable',
     });
     const busy = {
       withLock: async () => Promise.reject(new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE)),
     } as unknown as PaneStayLock;
-    expect(await probeAvailability(request!, { lock: () => busy, acquisition })).toEqual({ outcome: 'refused_lock_busy' });
+    expect(await probeAvailability(request!, { lock: () => busy, acquisition, target: CENTURION_HMS_READ_TARGET })).toEqual({ outcome: 'refused_lock_busy' });
 
     availabilityProbeLoaders.spawn = async () => ({ outcome: 'input_gap' });
-    expect(await probeAvailability(request!, { lock: () => passThrough, acquisition })).toEqual({
+    expect(await probeAvailability(request!, { lock: () => passThrough, acquisition, target: CENTURION_HMS_READ_TARGET })).toEqual({
       outcome: 'refused_input_invalid',
     });
     availabilityProbeLoaders.spawn = async () => {
       throw new Error('login failed');
     };
-    expect(await probeAvailability(request!, { lock: () => passThrough, acquisition })).toEqual({
+    expect(await probeAvailability(request!, { lock: () => passThrough, acquisition, target: CENTURION_HMS_READ_TARGET })).toEqual({
       outcome: 'execution_failure',
     });
   });

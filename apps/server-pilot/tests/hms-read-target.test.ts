@@ -196,6 +196,7 @@ describe('worker secret resolution by target', () => {
         outputDir: '/repo/.private/playwright-quote/out',
         ratePolicyConfigurationPath: '/repo/.private/rate-policy.json',
       }),
+      CENTURION_HMS_READ_TARGET,
     );
     expect(env).toMatchObject({
       HMS_READ_SECRET_ARN: 'nava-zero/server-pilot/infor-hms-read',

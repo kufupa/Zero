@@ -45,6 +45,7 @@ import { ARTIFACT_MAX_INPUT_BYTES } from '../src/mail/artifacts/read-artifact.js
 import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
+import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 
 // The attach CLI's cap is pinned to the read path's cap. The CLI is plain .mjs, so it is imported as the rules tests do.
 const attachCli = (await import('../tooling/playwright-quote/attach-document.mjs' as string)) as {
@@ -880,5 +881,61 @@ describe('pane HMS write (U26)', () => {
         __setDbForTests(null);
       }
     });
+  });
+});
+
+describe('pane HMS write property target', () => {
+  it('amend-prepare on a Da Vinci transport finds on HRDAV and ignores a caller-supplied hotel', async () => {
+    const seen: unknown[] = [];
+    paneStayLookupLoaders.spawn = async (_input, target) => {
+      seen.push(target);
+      return { outcome: 'not_found', reason: null, stay: null, rows: [], screenshots: [] };
+    };
+    await expect(
+      prepareHmsWriteSnapshot({
+        transportId: 'transport-davinci',
+        workItemId: 'wi-dv',
+        confirmation: CONFIRMATION,
+        arrival: ARRIVAL,
+        env: ENV,
+      }),
+    ).resolves.toEqual({ status: 'refused', reason: 'not_found' });
+    expect(seen).toEqual([DAVINCI_HMS_READ_TARGET]);
+  });
+
+  it('amend-prepare on a Centurion transport finds on HRCEN', async () => {
+    const seen: unknown[] = [];
+    paneStayLookupLoaders.spawn = async (_input, target) => {
+      seen.push(target);
+      return { outcome: 'not_found', reason: null, stay: null, rows: [], screenshots: [] };
+    };
+    await expect(
+      prepareHmsWriteSnapshot({
+        transportId: 'transport-centurion',
+        workItemId: 'wi-cen',
+        confirmation: CONFIRMATION,
+        arrival: ARRIVAL,
+        env: ENV,
+      }),
+    ).resolves.toEqual({ status: 'refused', reason: 'not_found' });
+    expect(seen).toEqual([CENTURION_HMS_READ_TARGET]);
+  });
+
+  it('an unknown transport is refused before any spawn', async () => {
+    let spawned = false;
+    paneStayLookupLoaders.spawn = async () => {
+      spawned = true;
+      return { outcome: 'found', reason: null, stay: { ...hmsStay }, rows: [], screenshots: [] };
+    };
+    await expect(
+      prepareHmsWriteSnapshot({
+        transportId: 'transport-unknown',
+        workItemId: 'wi-x',
+        confirmation: CONFIRMATION,
+        arrival: ARRIVAL,
+        env: ENV,
+      }),
+    ).resolves.toEqual({ status: 'refused', reason: 'refused_unknown_transport' });
+    expect(spawned).toBe(false);
   });
 });

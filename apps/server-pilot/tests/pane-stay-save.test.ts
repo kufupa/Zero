@@ -271,7 +271,7 @@ describe('pane stay save guards', () => {
     vi.stubEnv('DATABASE_URL', 'postgres://user:secret@127.0.0.1:5432/zero_test');
     vi.stubEnv('PANE_STAY_TENANT_ID', '');
     vi.stubEnv('HMS_EXPECTED_TENANT', 'centurion');
-    const lock = paneStayPropertyLock() as unknown as { key: string } | null;
+    const lock = paneStayPropertyLock(CENTURION_HMS_READ_TARGET) as unknown as { key: string } | null;
     expect(lock?.key).toBe(propertyReadLockKey('centurion', 'HRCEN'));
     expect(lock?.key).not.toBe(propertyReadLockKey('centurion', 'OTHER'));
   });
@@ -279,8 +279,8 @@ describe('pane stay save guards', () => {
   it('read locks for HRCEN and HRDAV use distinct keys', () => {
     vi.stubEnv('DATABASE_URL', 'postgres://user:secret@127.0.0.1:5432/zero_test');
     vi.stubEnv('HMS_EXPECTED_TENANT', 'centurion');
-    const hrcen = paneStayPropertyLock('HRCEN') as unknown as { key: string } | null;
-    const hrdav = paneStayPropertyLock('HRDAV') as unknown as { key: string } | null;
+    const hrcen = paneStayPropertyLock(CENTURION_HMS_READ_TARGET) as unknown as { key: string } | null;
+    const hrdav = paneStayPropertyLock(DAVINCI_HMS_READ_TARGET) as unknown as { key: string } | null;
     expect(hrcen?.key).toBe(propertyReadLockKey('centurion', 'HRCEN'));
     expect(hrdav?.key).toBe(propertyReadLockKey('centurion', 'HRDAV'));
     expect(hrcen?.key).not.toBe(hrdav?.key);
@@ -299,7 +299,7 @@ describe('pane stay save guards', () => {
 
   it('has no production lock without DATABASE_URL', () => {
     vi.stubEnv('DATABASE_URL', '');
-    expect(paneStayPropertyLock()).toBeNull();
+    expect(paneStayPropertyLock(CENTURION_HMS_READ_TARGET)).toBeNull();
   });
 
   it('omits propertyCode from the CLI request body', () => {
@@ -905,7 +905,7 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
     ).resolves.toMatchObject({ status: 'ok', outcome: 'previewed' });
     expect(seen[0]?.target).toEqual(DAVINCI_HMS_READ_TARGET);
     expect(seen[0]?.target?.propertyCode).toBe('HRDAV');
-    const spawnEnv = paneStayCreateSpawnEnv(seen[0]?.target, {
+    const spawnEnv = paneStayCreateSpawnEnv(DAVINCI_HMS_READ_TARGET, {
       PATH: '/usr/bin',
       HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
       HMS_STAGEHAND_CDP_URL_DAVINCI: 'http://127.0.0.1:19225',
@@ -920,7 +920,7 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
     });
     vi.stubEnv('DATABASE_URL', 'postgres://user:secret@127.0.0.1:5432/zero_test');
     vi.stubEnv('HMS_EXPECTED_TENANT', 'centurion');
-    const lock = paneStayPropertyLock(DAVINCI_HMS_READ_TARGET.propertyCode) as unknown as {
+    const lock = paneStayPropertyLock(DAVINCI_HMS_READ_TARGET) as unknown as {
       key: string;
     } | null;
     expect(lock?.key).toBe(propertyReadLockKey('centurion', 'HRDAV'));
@@ -972,7 +972,7 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
       runPaneStay({ mode: 'preview', stay: labStay, owner: freshOwner('transport-centurion') }),
     ).resolves.toMatchObject({ status: 'ok', outcome: 'previewed' });
     expect(seen[0]?.target).toEqual(CENTURION_HMS_READ_TARGET);
-    const spawnEnv = paneStayCreateSpawnEnv(seen[0]?.target, {
+    const spawnEnv = paneStayCreateSpawnEnv(CENTURION_HMS_READ_TARGET, {
       PATH: '/usr/bin',
       HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
       HMS_STAGEHAND_CDP_URL_DAVINCI: 'http://127.0.0.1:19225',

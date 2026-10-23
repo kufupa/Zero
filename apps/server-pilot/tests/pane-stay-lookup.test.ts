@@ -101,7 +101,7 @@ function lookupResult(overrides: Partial<PaneStayLookupSpawnResult> = {}): PaneS
   };
 }
 
-function mailboxCaller() {
+function mailboxCaller(activeTransportId = 'transport-centurion') {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
@@ -110,7 +110,7 @@ function mailboxCaller() {
       email: 'ropperman@legacyhotels.co.za',
       name: 'R Opperman',
     },
-    activeTransportId: 'transport-1',
+    activeTransportId,
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);
@@ -536,6 +536,17 @@ describe('guestDatesDuplicateCheckViaCli', () => {
     targets.length = 0;
     await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('clear');
     expect(targets).toEqual([undefined]);
+    targets.length = 0;
+    paneStayLookupLoaders.spawn = null;
+    await expect(guestDatesDuplicateCheckViaCli(DUP_QUERY)).resolves.toBe('duplicate');
+  });
+
+  it('unknown transport findStay without a spawn seam refuses before defaultSpawn', async () => {
+    paneStayLookupLoaders.spawn = null;
+    paneStayLookupLoaders.enabled = () => true;
+    await expect(
+      findStay({ confirmation: '57291630-1' }, { lock: () => passingLock() }),
+    ).resolves.toMatchObject({ outcome: 'refused_unknown_transport', stay: null });
   });
 });
 
@@ -815,7 +826,7 @@ describe('paneStayLookup router origin guard', () => {
     expect(jobMocks.enqueueHmsBatch).toHaveBeenCalledWith(
       expect.objectContaining({
         batchId,
-        transportId: 'transport-1',
+        transportId: 'transport-centurion',
         userId: 'user-ropperman',
         workItemIds: [dvItem, cenItem],
         originRefusedWorkItemIds: [dvItem],
@@ -873,7 +884,7 @@ describe('paneStayLookup router', () => {
     await expect(mailboxCaller().paneStayLookup.jobStatus({ runId })).resolves.toBeNull();
 
     expect(jobMocks.readHmsJobView).toHaveBeenCalledWith({
-      transportId: 'transport-1',
+      transportId: 'transport-centurion',
       runId,
       staffQuoteOwnerId: 'user-ropperman',
     });
@@ -939,6 +950,24 @@ describe('paneStayLookup router', () => {
       }),
     ).resolves.toBeNull();
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('a Da Vinci mailbox findStay passes HRDAV; an unknown mailbox is refused before spawn', async () => {
+    const seen: unknown[] = [];
+    paneStayLookupLoaders.lock = passingLock();
+    paneStayLookupLoaders.spawn = async (_input, target) => {
+      seen.push(target);
+      return lookupResult({ runId: undefined, runDir: undefined });
+    };
+    await expect(
+      mailboxCaller('transport-davinci').paneStayLookup.findStay({ confirmation: '57291630-1' }),
+    ).resolves.toMatchObject({ outcome: 'found' });
+    expect(seen).toEqual([DAVINCI_HMS_READ_TARGET]);
+    seen.length = 0;
+    await expect(
+      mailboxCaller('transport-unknown').paneStayLookup.findStay({ confirmation: '57291630-1' }),
+    ).rejects.toThrow(/Unknown mailbox cannot use HMS/);
+    expect(seen).toEqual([]);
   });
 
   it('findStay is registered as a read-only mutation with a strict input and returns the find shape', async () => {

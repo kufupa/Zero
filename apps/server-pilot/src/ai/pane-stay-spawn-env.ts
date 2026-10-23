@@ -2,7 +2,34 @@ import {
   readInstalledStaffQuoteConfiguration,
   type StaffQuoteInstallationConfiguration,
 } from './staff-quote-installation.js';
-import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import {
+  CENTURION_HMS_READ_TARGET,
+  DAVINCI_HMS_READ_TARGET,
+  isDaVinciTransport,
+  type HmsReadTarget,
+} from '../hms/hms-read-target.js';
+
+/** Centurion staff mailbox. Unknown ids fail closed; they never fall through to HRCEN. */
+const CENTURION_PANE_TRANSPORT_IDS: ReadonlySet<string> = new Set(['transport-centurion']);
+
+export type PaneStayHmsTargetResolution =
+  | { ok: true; target: HmsReadTarget }
+  | { ok: false; reason: 'unknown_transport' };
+
+/**
+ * Mailbox transport → HMS slot/secret/lock. Callers never supply the property: a second
+ * argument is ignored so a DV mailbox cannot be steered onto HRCEN.
+ */
+export function paneStayHmsTargetForTransport(
+  transportId: string | null | undefined,
+  _callerProperty?: string | null,
+): PaneStayHmsTargetResolution {
+  const id = typeof transportId === 'string' ? transportId.trim() : '';
+  if (!id) return { ok: false, reason: 'unknown_transport' };
+  if (isDaVinciTransport(id)) return { ok: true, target: DAVINCI_HMS_READ_TARGET };
+  if (CENTURION_PANE_TRANSPORT_IDS.has(id)) return { ok: true, target: CENTURION_HMS_READ_TARGET };
+  return { ok: false, reason: 'unknown_transport' };
+}
 
 const PANE_WRITE_ENV_NAMES = [
   'PANE_WRITE_CREATE',
@@ -74,9 +101,9 @@ function davinciPaneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget):
 export function paneStaySpawnEnv(
   env: NodeJS.ProcessEnv = process.env,
   readConfiguration: () => StaffQuoteInstallationConfiguration = readInstalledStaffQuoteConfiguration,
-  target: HmsReadTarget | null = null,
+  target: HmsReadTarget,
 ): NodeJS.ProcessEnv {
-  if (target?.browserSlot === 'davinci') return davinciPaneStaySpawnEnv(env, target);
+  if (target.browserSlot === 'davinci') return davinciPaneStaySpawnEnv(env, target);
   const out: NodeJS.ProcessEnv = {};
   for (const name of PANE_CLI_ENV_ALLOWLIST) {
     if (env[name] !== undefined) out[name] = env[name];

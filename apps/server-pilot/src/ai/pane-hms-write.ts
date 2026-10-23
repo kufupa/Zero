@@ -44,6 +44,7 @@ import {
   PANE_SCREENSHOT_NAME_PATTERN,
   paneStayClock,
   paneStayPropertyLock,
+  paneStayTransportIdFromOwner,
   pruneExpiredPaneRuns,
   recordPanePreview,
   registerPaneRun,
@@ -51,7 +52,8 @@ import {
   type PaneStayLock,
 } from './pane-stay-save.js';
 import { classifyAmendPayment, findStay, type PaneStayFields } from './pane-stay-lookup.js';
-import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { paneStayHmsTargetForTransport, paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import {
   heartbeatAiRun,
   markAiRunRunning,
@@ -237,13 +239,17 @@ export async function prepareHmsWriteSnapshot(input: {
   if (paneHmsWriteMode(input.env) === 'off') return { status: 'refused', reason: 'refused_flag_off' };
   const shape = checkCancelInput({ confirmation: input.confirmation, arrival: input.arrival });
   if (shape) return { status: 'refused', reason: shape };
+  const resolved = paneStayHmsTargetForTransport(input.transportId);
+  if (!resolved.ok) return { status: 'refused', reason: 'refused_unknown_transport' };
+  const target = resolved.target;
   const readAt = new Date();
   const lookupDirs: string[] = [];
   const found = await findStay(
     { confirmation: input.confirmation, arrival: input.arrival },
     {
-      lock: () => paneHmsWriteLoaders.lock ?? paneStayPropertyLock(),
+      lock: () => paneHmsWriteLoaders.lock ?? paneStayPropertyLock(target),
       onRun: ({ dir }) => lookupDirs.push(dir),
+      target,
     },
   ).finally(() => removeDirs(lookupDirs));
   if (found.outcome !== 'found' || !found.stay) return { status: 'refused', reason: found.outcome };
@@ -308,6 +314,7 @@ export type PaneAttachSpawnInput = {
   arrival: string;
   file: string;
   documentName: string;
+  target?: HmsReadTarget;
 };
 
 export type PaneAttachSpawnResult = {
@@ -328,6 +335,7 @@ export type PaneAmendSpawnInput = {
   fields: AmendRequest;
   previewDigest?: string;
   mode?: 'preview' | 'commit';
+  target?: HmsReadTarget;
 };
 
 export type PaneAmendSpawnResult = {
@@ -379,8 +387,8 @@ function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: string): s
  * The pane CLI env, plus ATTACH_VERIFIED=true only when this process has it. The worker never sets it. The U28-H2 ops
  * run sets it for its own process, which arms the driver for that one run.
  */
-function attachSpawnEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const out = paneStaySpawnEnv(env);
+function attachSpawnEnv(target: HmsReadTarget, env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const out = paneStaySpawnEnv(env, undefined, target);
   if (env.ATTACH_VERIFIED === 'true') out.ATTACH_VERIFIED = 'true';
   return out;
 }
@@ -390,9 +398,10 @@ export async function spawnAttachDocument(input: PaneAttachSpawnInput): Promise<
   const dir = await mkdtemp(join(tmpdir(), 'pane-attach-'));
   let runError: unknown = null;
   try {
+    if (!input.target) throw new Error('pane_stay_target_required');
     await execFileAsync('node', buildAttachDocumentArgs(input, dir), {
       timeout: ATTACH_TIMEOUT_MS,
-      env: attachSpawnEnv(),
+      env: attachSpawnEnv(input.target),
     });
   } catch (error) {
     runError = error;
@@ -437,7 +446,8 @@ export async function spawnAmendStay(input: PaneAmendSpawnInput): Promise<PaneAm
       : [AMEND_STAY, '--request', requestPath, '--mode', 'preview', '--out', dir];
   let runError: unknown = null;
   try {
-    await execFileAsync('node', args, { timeout: AMEND_TIMEOUT_MS, env: paneStaySpawnEnv() });
+    if (!input.target) throw new Error('pane_stay_target_required');
+    await execFileAsync('node', args, { timeout: AMEND_TIMEOUT_MS, env: paneStaySpawnEnv(process.env, undefined, input.target) });
   } catch (error) { runError = error; }
   let result: { outcome?: string; saveAttempted?: boolean; screenshots?: string[]; previewDigest?: string | null; changedFieldsReadback?: Record<string, unknown> | null };
   try { result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as typeof result; }
@@ -476,7 +486,7 @@ export function checkAmendPaneInput(
 
 async function runPaneAmend(
   mode: 'preview' | 'commit',
-  input: PaneAmendPreviewInput & { owner: string; previewDigest?: string },
+  input: PaneAmendPreviewInput & { owner: string; previewDigest?: string; transportId?: string },
 ): Promise<PaneAmendResult> {
   const unpaidMode = paneStayAmendMode('unpaid');
   const paidMode = paneStayAmendMode('paid');
@@ -485,7 +495,12 @@ async function runPaneAmend(
   const inputRefusal = checkAmendPaneInput(input, { allowRealGuest });
   if (inputRefusal) return refusedAmend(inputRefusal);
   if (mode === 'commit' && !input.previewDigest) return refusedAmend('amend_preview_required');
-  const lock = paneHmsWriteLoaders.lock ?? paneStayPropertyLock();
+  const resolved = paneStayHmsTargetForTransport(
+    input.transportId ?? paneStayTransportIdFromOwner(input.owner),
+  );
+  if (!resolved.ok) return refusedAmend('refused_unknown_transport');
+  const target = resolved.target;
+  const lock = paneHmsWriteLoaders.lock ?? paneStayPropertyLock(target);
   if (!lock) return refusedAmend('refused_lock_unavailable');
   const spawn = paneHmsWriteLoaders.spawnAmend ?? spawnAmendStay;
   try {
@@ -495,7 +510,7 @@ async function runPaneAmend(
       const lookupDirs: string[] = [];
       const found = await findStay(
         { confirmation: input.confirmation, arrival: input.arrival },
-        { lock: () => HELD_LOCK, onRun: ({ dir }) => lookupDirs.push(dir) },
+        { lock: () => HELD_LOCK, onRun: ({ dir }) => lookupDirs.push(dir), target },
       ).finally(() => removeDirs(lookupDirs));
       if (found.outcome !== 'found' || !found.stay) {
         paymentRefusal = found.outcome === 'found' ? 'refused_payment_unknown' : `read_${found.outcome}`;
@@ -517,6 +532,7 @@ async function runPaneAmend(
         expectedLastName: input.lastName.trim(),
         fields: input.fields,
         mode,
+        target,
         ...(mode === 'commit' ? { previewDigest: input.previewDigest } : {}),
       });
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
@@ -588,7 +604,11 @@ export function cancelExpectStay(stay: PaneStayFields): Record<string, unknown> 
 }
 
 /** `approvedStay` is the read that matched the approval's HMS digest. The cancel CLI refuses if its own read differs. */
-async function saveCancel(form: CancelForm, approvedStay: PaneStayFields): Promise<SaveOutcome> {
+async function saveCancel(
+  form: CancelForm,
+  approvedStay: PaneStayFields,
+  target: HmsReadTarget,
+): Promise<SaveOutcome> {
   const spawn = paneStayCancelLoaders.spawn ?? spawnPaneStayCancel;
   const request: PaneStayCancelSpawnInput = {
     mode: 'commit',
@@ -597,6 +617,7 @@ async function saveCancel(form: CancelForm, approvedStay: PaneStayFields): Promi
     reason: squash(form.reason),
     allowRealGuest: false,
     expectStay: cancelExpectStay(approvedStay),
+    target,
   };
   const result: PaneStayCancelSpawnResult = await spawn(request);
   return {
@@ -610,7 +631,7 @@ async function saveCancel(form: CancelForm, approvedStay: PaneStayFields): Promi
 
 const amendRefusal = (outcome: string): SaveOutcome => ({ outcome, clickedOk: false, uploadSent: false, saveAttempted: false, screenshots: [] });
 
-async function saveAmend(form: AmendForm, stay: PaneStayFields): Promise<SaveOutcome> {
+async function saveAmend(form: AmendForm, stay: PaneStayFields, target: HmsReadTarget): Promise<SaveOutcome> {
   if (stay.status !== 'Reserved' && stay.status !== 'Confirmed') return amendRefusal('refused_status_unsupported');
   if (classifyAmendPayment(stay) !== 'unpaid') return amendRefusal('refused_payment_unknown');
   const fields = Object.fromEntries(AMEND_FIELDS.filter((field) => form.fields[field] !== undefined &&
@@ -620,12 +641,13 @@ async function saveAmend(form: AmendForm, stay: PaneStayFields): Promise<SaveOut
   if (previewDigest !== form.previewDigest) return amendRefusal('refused_digest_mismatch');
   const result = await (paneHmsWriteLoaders.spawnAmend ?? spawnAmendStay)({
     confirmation: form.confirmation, currentArrival: form.arrival, expectedLastName: form.lastName, fields, previewDigest,
+    target,
   });
   return { outcome: result.outcome, clickedOk: false, uploadSent: false, saveAttempted: result.saveAttempted,
     screenshots: result.screenshots, runDir: result.runDir };
 }
 
-async function saveAttach(form: AttachForm, file: string | null): Promise<SaveOutcome> {
+async function saveAttach(form: AttachForm, file: string | null, target: HmsReadTarget): Promise<SaveOutcome> {
   if (!file) throw new Error('attach_file_missing');
   const spawn = paneHmsWriteLoaders.spawnAttach ?? spawnAttachDocument;
   const result = await spawn({
@@ -633,6 +655,7 @@ async function saveAttach(form: AttachForm, file: string | null): Promise<SaveOu
     arrival: form.arrival,
     file,
     documentName: form.documentName,
+    target,
   });
   return {
     outcome: result.outcome,
@@ -716,6 +739,9 @@ type ExecuteInput = {
 /** The consume, the reads and the Save, all under the property lock the caller holds. */
 async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult> {
   const { db, fence, form } = input;
+  const resolved = paneStayHmsTargetForTransport(input.transportId);
+  if (!resolved.ok) return endRun(db, fence, 'POLICY_BLOCK', 'refused_unknown_transport');
+  const target = resolved.target;
   let consumed: Awaited<ReturnType<typeof consumeHmsWriteApproval>>;
   try {
     consumed = await consumeHmsWriteApproval({ db, runId: fence.runId, fence });
@@ -732,7 +758,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   }
   const found = await findStay(
     { confirmation: approved.confirmation, arrival: approved.arrival },
-    { lock: () => HELD_LOCK, onRun: ({ dir }) => input.runDirs.push(dir) },
+    { lock: () => HELD_LOCK, onRun: ({ dir }) => input.runDirs.push(dir), target },
   );
   if (found.outcome !== 'found' || !found.stay) {
     return endRun(db, fence, 'NEEDS_CHECK', `read_${found.outcome}`);
@@ -761,8 +787,8 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   }, HEARTBEAT_MS);
   let saved: SaveOutcome;
   try {
-    saved = approved.action === 'cancel' ? await saveCancel(approved, stay)
-      : approved.action === 'amend' ? await saveAmend(approved, stay) : await saveAttach(approved, input.file);
+    saved = approved.action === 'cancel' ? await saveCancel(approved, stay, target)
+      : approved.action === 'amend' ? await saveAmend(approved, stay, target) : await saveAttach(approved, input.file, target);
   } catch (error) {
     clearInterval(beat);
     // The CLI may have reached Save before it failed, so the outcome is unknown until the booking is read back.
@@ -835,7 +861,10 @@ async function runClaimed(
     await writeFile(file, pdf, { mode: 0o600 });
   }
 
-  const lock = paneHmsWriteLoaders.lock ?? paneStayPropertyLock();
+  const resolved = paneStayHmsTargetForTransport(transportId);
+  if (!resolved.ok) return endRun(db, fence, 'POLICY_BLOCK', 'refused_unknown_transport');
+  const target = resolved.target;
+  const lock = paneHmsWriteLoaders.lock ?? paneStayPropertyLock(target);
   if (!lock) return endRun(db, fence, 'POLICY_BLOCK', 'refused_lock_unavailable');
   try {
     return await lock.withLock(

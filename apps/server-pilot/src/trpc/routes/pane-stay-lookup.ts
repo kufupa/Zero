@@ -19,6 +19,7 @@ import {
   readPaneStayScreenshot,
   registerPaneRun,
 } from '../../ai/pane-stay-save.js';
+import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
 import {
   findStay,
   GUEST_SURNAME_PATTERN,
@@ -172,6 +173,10 @@ export const paneStayLookupRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
+      const fromTransport = paneStayHmsTargetForTransport(ctx.activeTransportId);
+      if (!fromTransport.ok) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Unknown mailbox cannot use HMS.' });
+      }
       const target = input.threadId
         ? await assertHmsReadOriginAllowed(
             originGuardInput(
@@ -179,15 +184,15 @@ export const paneStayLookupRouter = router({
               ctx.activeTransportId,
             ),
           )
-        : undefined;
+        : fromTransport.target;
       return findStay(
         input.arrival
           ? { confirmation: input.confirmation, arrival: input.arrival }
           : { confirmation: input.confirmation },
         {
-          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target?.propertyCode),
+          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target),
           onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
-          ...(target ? { target } : {}),
+          target,
         },
       );
     }),
@@ -208,6 +213,10 @@ export const paneStayLookupRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
+      const fromTransport = paneStayHmsTargetForTransport(ctx.activeTransportId);
+      if (!fromTransport.ok) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Unknown mailbox cannot use HMS.' });
+      }
       const target = input.threadId
         ? await assertHmsReadOriginAllowed(
             originGuardInput(
@@ -215,15 +224,15 @@ export const paneStayLookupRouter = router({
               ctx.activeTransportId,
             ),
           )
-        : undefined;
+        : fromTransport.target;
       return searchGuest(
         input.departure
           ? { lastName: input.lastName, arrival: input.arrival, departure: input.departure }
           : { lastName: input.lastName, arrival: input.arrival },
         {
-          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target?.propertyCode),
+          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target),
           onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
-          ...(target ? { target } : {}),
+          target,
         },
       );
     }),

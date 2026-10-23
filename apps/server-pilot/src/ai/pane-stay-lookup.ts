@@ -86,7 +86,8 @@ export type PaneStayFindResult = {
     | 'refused_flag_off'
     | 'refused_input_invalid'
     | 'refused_lock_unavailable'
-    | 'refused_lock_busy';
+    | 'refused_lock_busy'
+    | 'refused_unknown_transport';
   reason: string | null;
   stay: PaneStayFields | null;
   commercial?: PaneStayCommercial;
@@ -116,7 +117,8 @@ export type PaneStayGuestSearchResult = {
     | 'refused_flag_off'
     | 'refused_input_invalid'
     | 'refused_lock_unavailable'
-    | 'refused_lock_busy';
+    | 'refused_lock_busy'
+    | 'refused_unknown_transport';
   /** Complete only for an ok read. A capped or failed read reports no rows, so nothing can be picked from a partial list. */
   rows: PaneStayPanelRow[];
   /** File names only. The files stay in the lookup run directory. */
@@ -146,7 +148,7 @@ export type PaneStayLookupDeps = {
   acquisition?: PropertyReadLockAcquisitionOptions;
   /** Called for each run that wrote a directory, so the caller can register its screenshots for reads. */
   onRun?: (run: { runId: string; dir: string }) => void;
-  /** Explicit HMS property/slot for the CLI env. Writes omit this and stay Centurion. */
+  /** HMS property/slot for the CLI env. Production callers pass the transport-resolved target. */
   target?: HmsReadTarget | null;
 };
 
@@ -366,7 +368,7 @@ function toPaneStayCommercial(raw: unknown): PaneStayCommercial | undefined {
 
 async function defaultSpawn(
   input: PaneStayLookupSpawnInput,
-  target?: HmsReadTarget | null,
+  target: HmsReadTarget,
 ): Promise<PaneStayLookupSpawnResult> {
   const runId = randomUUID();
   const dir = join(tmpdir(), `pane-lookup-${runId}`);
@@ -375,7 +377,7 @@ async function defaultSpawn(
   try {
     await execFileAsync('node', buildStayLookupArgs(input, dir), {
       timeout: LOOKUP_TIMEOUT_MS,
-      env: paneStaySpawnEnv(process.env, undefined, target ?? null),
+      env: paneStaySpawnEnv(process.env, undefined, target),
     });
   } catch (error) {
     // The CLI exits 1 or 2 on failures and refusals but still writes result.json. Read that first.
@@ -416,7 +418,8 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
   if (input.arrival !== undefined && !isRealIsoDate(input.arrival)) return refused('refused_input_invalid');
   const lock = deps.lock();
   if (!lock) return refused('refused_lock_unavailable');
-  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target));
+  if (!deps.target && !paneStayLookupLoaders.spawn) return refused('refused_unknown_transport');
+  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target!));
   let run: PaneStayLookupSpawnResult;
   try {
     run = await lock.withLock(
@@ -498,7 +501,8 @@ export async function searchGuest(
   }
   const lock = deps.lock();
   if (!lock) return refusedSearch('refused_lock_unavailable');
-  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target));
+  if (!deps.target && !paneStayLookupLoaders.spawn) return refusedSearch('refused_unknown_transport');
+  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, deps.target!));
   let run: PaneStayLookupSpawnResult;
   try {
     run = await lock.withLock(
@@ -562,7 +566,9 @@ export async function guestDatesDuplicateCheckViaCli(
   target?: HmsReadTarget | null,
 ): Promise<OsressDuplicateStatus> {
   if (!guestDatesQueryComplete(input)) return 'duplicate';
-  const spawn = paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, target));
+  if (!target && !paneStayLookupLoaders.spawn) return 'duplicate';
+  const spawn =
+    paneStayLookupLoaders.spawn ?? ((spawnInput) => defaultSpawn(spawnInput, target!));
   let run: PaneStayLookupSpawnResult | null = null;
   try {
     run = await spawn({ mode: 'search-guest', ...input }, target);

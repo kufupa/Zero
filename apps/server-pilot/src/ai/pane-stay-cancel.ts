@@ -7,6 +7,7 @@ import {
   PANE_SCREENSHOT_NAME_PATTERN,
   paneStayClock,
   paneStayPropertyLock,
+  paneStayTransportIdFromOwner,
   paneWriteMode,
   pruneExpiredPaneRuns,
   recordPanePreview,
@@ -22,7 +23,8 @@ import { execFile } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { paneStayHmsTargetForTransport, paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { classifyAmendPayment, type AmendPaymentStay } from './pane-stay-lookup.js';
 import { tmpdir } from 'node:os';
 
@@ -43,7 +45,8 @@ export type PaneStayCancelCommitInput = PaneStayCancelPreviewInput & {
   previewDigest?: string;
 };
 // Owner scope of runs and grants: `${userId}:${transportId}`, the same string the save path uses.
-type OwnedInput<T> = T & { owner: string };
+// transportId from the route wins; a caller-supplied property never selects the hotel.
+type OwnedInput<T> = T & { owner: string; transportId?: string };
 
 export type PaneStayCancelResult = {
   outcome: string;
@@ -93,6 +96,8 @@ export type PaneStayCancelSpawnInput = {
    * (refused_stay_changed, nothing clicked) when any of these fields differ.
    */
   expectStay?: Record<string, unknown>;
+  /** Required on the production spawn; tests that inject spawn may omit it. */
+  target?: HmsReadTarget;
 };
 
 /** The expected-stay file a commit run reads, inside its own output directory. */
@@ -207,9 +212,10 @@ export async function spawnPaneStayCancel(input: PaneStayCancelSpawnInput): Prom
     if (input.mode === 'commit' && input.expectStay) {
       await writeFile(join(dir, EXPECT_STAY_FILE), JSON.stringify(input.expectStay), { mode: 0o600 });
     }
+    if (!input.target) throw new Error('pane_stay_target_required');
     await execFileAsync('node', buildCancelStayArgs(input, dir), {
       timeout: CANCEL_TIMEOUT_MS,
-      env: paneStaySpawnEnv(),
+      env: paneStaySpawnEnv(process.env, undefined, input.target),
     });
   } catch (error) {
     // The CLI exits 1 or 2 on failures and refusals but still writes result.json. Read that first.
@@ -268,8 +274,13 @@ async function runPaneStayCancel(
     if (input.previewDigest === undefined) return refused('cancel_preview_required');
     if (input.previewDigest !== digest) return refused('cancel_digest_mismatch');
   }
-  // The lock key is the session hotel. The input carries no propertyCode, so no caller can change the key.
-  const lock = paneStayCancelLoaders.lock ?? paneStayPropertyLock();
+  const resolved = paneStayHmsTargetForTransport(
+    input.transportId ?? paneStayTransportIdFromOwner(input.owner),
+  );
+  if (!resolved.ok) return refused('refused_unknown_transport');
+  const target = resolved.target;
+  // The lock key is the session hotel. A caller-supplied property never selects it.
+  const lock = paneStayCancelLoaders.lock ?? paneStayPropertyLock(target);
   if (!lock) return refused('refused_lock_unavailable');
   const spawn = paneStayCancelLoaders.spawn ?? spawnPaneStayCancel;
   const request: PaneStayCancelSpawnInput = {
@@ -278,6 +289,7 @@ async function runPaneStayCancel(
     arrival: input.arrival,
     reason,
     allowRealGuest,
+    target,
   };
   try {
     await pruneExpiredPaneRuns(paneStayClock());

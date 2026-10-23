@@ -3275,7 +3275,8 @@ export async function executeHmsJob(input: {
   const screenshotDir: { value: string | null } = { value: null };
   const deps = {
     lock: () =>
-      paneStayLookupLoaders.lock ?? paneStayPropertyLock(davinciReadTarget?.propertyCode),
+      paneStayLookupLoaders.lock ??
+      paneStayPropertyLock(davinciReadTarget ?? CENTURION_HMS_READ_TARGET),
     acquisition: background ? { tryOnce: true } : acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     onRun: ({ runId, dir }: { runId: string; dir: string }) => {
       screenshotDir.value = dir;
@@ -3290,7 +3291,11 @@ export async function executeHmsJob(input: {
     inputDigest: toolInputDigest(request as Record<string, unknown>),
   };
   const result = await (request.kind === 'availability'
-    ? probeAvailability(request, { lock: deps.lock, acquisition: deps.acquisition })
+    ? probeAvailability(request, {
+        lock: deps.lock,
+        acquisition: deps.acquisition,
+        target: davinciReadTarget ?? CENTURION_HMS_READ_TARGET,
+      })
     : request.kind === 'find'
       ? recordedToolRun(
           { kind: 'stay_lookup', ...audit },

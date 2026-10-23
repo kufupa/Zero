@@ -297,10 +297,10 @@ export function paneStayCreatePropertyArgs(target?: HmsReadTarget | null): strin
 
 /** CDP + secret for create-lab-stay. HRDAV never inherits the Centurion slot. */
 export function paneStayCreateSpawnEnv(
-  target: HmsReadTarget | null | undefined,
+  target: HmsReadTarget,
   env: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  return paneStaySpawnEnv(env, undefined, target?.browserSlot === 'davinci' ? target : null);
+  return paneStaySpawnEnv(env, undefined, target);
 }
 
 export function assertLabStayGuard(input: {
@@ -427,6 +427,8 @@ export async function readPaneStayScreenshot(input: {
 }
 
 async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnResult> {
+  if (!input.target) throw new Error('pane_stay_target_required');
+  const target = input.target;
   const runId = randomUUID();
   const dir = join(tmpdir(), `pane-stay-${runId}`);
   await mkdir(dir, { mode: 0o700 });
@@ -438,7 +440,7 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
     requestPath,
     '--out',
     dir,
-    ...paneStayCreatePropertyArgs(input.target),
+    ...paneStayCreatePropertyArgs(target),
   ];
   if (input.stopBefore) args.push('--stop-before', input.stopBefore);
   if (input.paneCommit) args.push('--pane-commit');
@@ -446,7 +448,7 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   try {
     ({ stdout } = await execFileAsync('node', args, {
       timeout: 20 * 60_000,
-      env: paneStayCreateSpawnEnv(input.target),
+      env: paneStayCreateSpawnEnv(target),
     }));
   } finally {
     await rm(requestPath, { force: true });
@@ -473,11 +475,12 @@ export function paneStayTenantId(env: NodeJS.Dict<string> = process.env): string
   return configured ?? 'legacy';
 }
 
-// Production lock. Create uses the resolved target's propertyCode (HRCEN or HRDAV).
-export function paneStayPropertyLock(propertyCode?: string): PaneStayLock | null {
+// Production lock. The target is required: no HRCEN default, so a missing hotel cannot share Centurion's key.
+export function paneStayPropertyLock(target: HmsReadTarget): PaneStayLock | null {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) return null;
-  const code = propertyCode && propertyCode.trim() !== '' ? propertyCode : PANE_STAY_PROPERTY_CODE;
+  const code = target.propertyCode.trim();
+  if (!code) return null;
   return createPostgresPropertyReadLock({
     tenantId: paneStayTenantId(),
     propertyCode: code,
@@ -542,7 +545,7 @@ export async function runPaneStay(input: {
       return { status: 'refused', reason: 'pane_save_digest_mismatch' };
     }
   }
-  const lock = paneStaySaveLoaders.lock ?? paneStayPropertyLock(target.propertyCode);
+  const lock = paneStaySaveLoaders.lock ?? paneStayPropertyLock(target);
   if (!lock) {
     return { status: 'refused', reason: 'pane_save_lock_unavailable' };
   }

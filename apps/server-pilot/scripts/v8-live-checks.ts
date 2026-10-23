@@ -2,7 +2,7 @@
  * v8 read-only live-check pack. One JSON line per check, PII redacted.
  *
  * Every check takes the session hotel's property lock the way the pane routes do, and runs its HMS CLI with
- * paneStaySpawnEnv(). Nothing is saved, booked, cancelled or clicked. Only the operator runs it, on EC2.
+ * paneStaySpawnEnv. Nothing is saved, booked, cancelled or clicked. Only the operator runs it, on EC2.
  *
  *   party <name> [--kind company|agency|both]            party-lookup.mjs (organization / bookingAgency search)
  *   deeplink --conf <labtest conf> [--stay-id <id>]      hms-deeplink-probe.mjs (GET navigations, new tabs)
@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 import { buildStayLookupArgs, paneStayLookupEnabled } from '../src/ai/pane-stay-lookup.js';
 import { PANE_STAY_PROPERTY_CODE, paneStayPropertyLock, type PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { paneStaySpawnEnv } from '../src/ai/pane-stay-spawn-env.js';
+import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import {
   getInstalledStaffQuoteServices,
   readInstalledStaffQuoteConfiguration,
@@ -1026,8 +1027,8 @@ function defaultDeps(overrides: Partial<LiveCheckDeps>): LiveCheckDeps {
     env,
     today: () => new Date().toISOString().slice(0, 10),
     writeLine: (line) => console.log(line),
-    lock: () => paneStayPropertyLock(),
-    spawnEnv: () => paneStaySpawnEnv(env),
+    lock: () => paneStayPropertyLock(CENTURION_HMS_READ_TARGET),
+    spawnEnv: () => paneStaySpawnEnv(env, undefined, CENTURION_HMS_READ_TARGET),
     runCli: runNodeCli,
     newRunId: () => `${new Date().toISOString().replace(/[:.]/g, '-')}-${randomUUID().slice(0, 8)}`,
     ...overrides,

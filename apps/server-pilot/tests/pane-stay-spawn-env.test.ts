@@ -3,10 +3,14 @@ import { fileURLToPath } from 'node:url';
 import type { StaffQuoteInstallationConfiguration } from '../src/ai/staff-quote-installation.js';
 import {
   PANE_CLI_ENV_ALLOWLIST,
+  paneStayHmsTargetForTransport,
   paneStaySpawnEnv,
   warnPaneStaySpawnFailed,
 } from '../src/ai/pane-stay-spawn-env.js';
-import { DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { paneStayPropertyLock } from '../src/ai/pane-stay-save.js';
+import { quoteRequestFor } from '../src/ai/hms-availability.js';
+import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { propertyReadLockKey } from '../src/hms/property-read-lock.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const configuration = {
@@ -21,13 +25,17 @@ const configuration = {
   ratePolicyConfigurationPath: '/repo/.private/rate-policy.json',
 } as StaffQuoteInstallationConfiguration;
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+});
 
 describe('paneStaySpawnEnv', () => {
   it('passes the installed borrowed browser and credential file, like the staff quote spawner', () => {
     const env = paneStaySpawnEnv(
       { PATH: '/usr/bin', HMS_READ_SECRET_ARN: 'arn', RESERVATIONIST_PANE_SAVE: 'lab' },
       () => configuration,
+      CENTURION_HMS_READ_TARGET,
     );
     expect(env).toMatchObject({
       PATH: '/usr/bin',
@@ -47,6 +55,7 @@ describe('paneStaySpawnEnv', () => {
         HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
       },
       read,
+      CENTURION_HMS_READ_TARGET,
     );
     expect(env.HMS_STAGEHAND_CDP_URL).toBe('http://127.0.0.1:9222');
     expect(env.HMS_QUOTE_SECRET_PATH).toBeUndefined();
@@ -62,6 +71,7 @@ describe('paneStaySpawnEnv', () => {
         OPENAI_API_KEY: 'sk-test',
       },
       () => configuration,
+      CENTURION_HMS_READ_TARGET,
     );
     expect(env).not.toHaveProperty('LAB_CANCEL_CONFIRMATION');
     expect(env).not.toHaveProperty('DATABASE_URL');
@@ -104,6 +114,7 @@ describe('paneStaySpawnEnv', () => {
         ...flags,
       },
       () => configuration,
+      CENTURION_HMS_READ_TARGET,
     );
     for (const name of PANE_WRITE_ENV_NAMES) {
       expect(hrcen[name]).toBe('lab');
@@ -133,6 +144,7 @@ describe('paneStaySpawnEnv', () => {
         HMS_SLOT_PROFILE_DIR: '/var/lib/nava/hms-slot/hrcen/profile',
       },
       () => configuration,
+      CENTURION_HMS_READ_TARGET,
     );
     expect(env.HMS_SLOT_PROFILE_DIR).toBe('/var/lib/nava/hms-slot/hrcen/profile');
   });
@@ -140,7 +152,7 @@ describe('paneStaySpawnEnv', () => {
   it('leaves the environment alone when no installation is configured', () => {
     const env = paneStaySpawnEnv({ PATH: '/usr/bin' }, () => {
       throw new Error('staff_quote_installation_unavailable');
-    });
+    }, CENTURION_HMS_READ_TARGET);
     expect(env).toEqual({ PATH: '/usr/bin' });
   });
 
@@ -199,6 +211,72 @@ describe('paneStaySpawnEnv', () => {
     );
     expect(env.HMS_SLOT_PROFILE_DIR).toBeUndefined();
     expect(env.HMS_SLOT_STORAGE_STATE).toBeUndefined();
+  });
+});
+
+describe('paneStayHmsTargetForTransport', () => {
+  it('maps a Da Vinci transport to the HRDAV slot and secret, ignoring a caller-supplied property', () => {
+    expect(paneStayHmsTargetForTransport('transport-davinci')).toEqual({
+      ok: true,
+      target: DAVINCI_HMS_READ_TARGET,
+    });
+    expect(paneStayHmsTargetForTransport('transport-davinci', 'HRCEN')).toEqual({
+      ok: true,
+      target: DAVINCI_HMS_READ_TARGET,
+    });
+    expect(paneStayHmsTargetForTransport('transport-faith', 'HRCEN')).toEqual({
+      ok: true,
+      target: DAVINCI_HMS_READ_TARGET,
+    });
+  });
+
+  it('maps a Centurion transport to HRCEN, ignoring a caller-supplied HRDAV property', () => {
+    expect(paneStayHmsTargetForTransport('transport-centurion')).toEqual({
+      ok: true,
+      target: CENTURION_HMS_READ_TARGET,
+    });
+    expect(paneStayHmsTargetForTransport('transport-centurion', 'HRDAV')).toEqual({
+      ok: true,
+      target: CENTURION_HMS_READ_TARGET,
+    });
+  });
+
+  it('refuses an unknown or blank transport before any spawn', () => {
+    expect(paneStayHmsTargetForTransport('transport-unknown')).toEqual({
+      ok: false,
+      reason: 'unknown_transport',
+    });
+    expect(paneStayHmsTargetForTransport('')).toEqual({ ok: false, reason: 'unknown_transport' });
+    expect(paneStayHmsTargetForTransport(undefined)).toEqual({
+      ok: false,
+      reason: 'unknown_transport',
+    });
+  });
+});
+
+describe('availability quote request property', () => {
+  const request = {
+    kind: 'availability' as const,
+    arrival: '2027-09-14',
+    departure: '2027-09-16',
+    rooms: [{ roomType: 'STQN', quantity: 1, adults: 1, childAges: [] }],
+  };
+
+  it('a DV target writes HRDAV; a Centurion target writes HRCEN', () => {
+    expect(quoteRequestFor(request, DAVINCI_HMS_READ_TARGET).propertyCode).toBe('HRDAV');
+    expect(quoteRequestFor(request, CENTURION_HMS_READ_TARGET).propertyCode).toBe('HRCEN');
+  });
+});
+
+describe('paneStayPropertyLock target keys', () => {
+  it('keys HRCEN and HRDAV locks separately and never defaults a missing hotel onto HRCEN', () => {
+    vi.stubEnv('DATABASE_URL', 'postgres://user:secret@127.0.0.1:5432/zero_test');
+    vi.stubEnv('HMS_EXPECTED_TENANT', 'centurion');
+    const hrcen = paneStayPropertyLock(CENTURION_HMS_READ_TARGET) as unknown as { key: string } | null;
+    const hrdav = paneStayPropertyLock(DAVINCI_HMS_READ_TARGET) as unknown as { key: string } | null;
+    expect(hrcen?.key).toBe(propertyReadLockKey('centurion', 'HRCEN'));
+    expect(hrdav?.key).toBe(propertyReadLockKey('centurion', 'HRDAV'));
+    expect(hrcen?.key).not.toBe(hrdav?.key);
   });
 });
 
