@@ -274,18 +274,27 @@ export function VoucherFindCard({
   useEffect(() => {
     if (!attachClient?.writeState || !workItemId) return;
     let live = true;
-    attachClient.writeState({ workItemId }).then(
-      (view) => {
-        if (live) setAttachWrite(view);
-      },
-      () => {
-        if (live) setAttachWrite(null);
-      },
+    const read = () => {
+      attachClient.writeState!({ workItemId }).then(
+        (view) => {
+          if (live) setAttachWrite(view);
+        },
+        () => {
+          if (live) setAttachWrite(null);
+        },
+      );
+    };
+    read();
+    const moving = ['queued', 'claimed', 'running', 'retry_wait'].includes(
+      attachWrite?.run?.state ?? '',
     );
+    const ms = moving || attach === 'bound' || attach === 'binding' ? 4000 : 30_000;
+    const timer = setInterval(read, ms);
     return () => {
       live = false;
+      clearInterval(timer);
     };
-  }, [attachClient, workItemId, attach]);
+  }, [attachClient, workItemId, attach, attachWrite?.run?.state]);
 
   if (!reply) return null;
   if (reply.status === 'unsynced') {
@@ -339,8 +348,10 @@ export function VoucherFindCard({
   };
   const unconfirmedAttach = attachWrite?.run?.lastError === 'upload_unconfirmed';
   const attachSucceeded = attachWrite?.run?.state === 'succeeded';
+  const attachPdf =
+    file !== null && (file.mimeType === 'application/pdf' || /\.pdf$/i.test(file.filename));
   const canAttach = Boolean(
-    singleMatch && file && workItemId && writesEnabled && !unconfirmedAttach && !attachSucceeded,
+    singleMatch && attachPdf && workItemId && writesEnabled && !unconfirmedAttach && !attachSucceeded,
   );
   const bindAttach = async () => {
     if (!singleMatch || !file || !workItemId || !attachClient?.bind || attach === 'binding') return;

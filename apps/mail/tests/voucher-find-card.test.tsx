@@ -696,6 +696,26 @@ describe('voucher find card: saving the file', () => {
 describe('voucher find card: attach to HMS', () => {
   const WORK_ITEM = '3f8a2c1e-9b7d-4e6f-8a1b-2c3d4e5f6a7b';
 
+  it('hides Attach when the voucher file is not a PDF', async () => {
+    const { trpc } = fakeTrpc({
+      reply: {
+        ...VOUCHER,
+        file: { id: 'att-1', filename: 'Smith_VCH.png', mimeType: 'image/png', sizeBytes: 100 },
+      },
+    });
+    render(
+      <VoucherFindCard
+        internetMessageId="abc@host"
+        trpc={trpc}
+        download={vi.fn()}
+        workItemId={WORK_ITEM}
+        writesEnabled
+      />,
+    );
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
+  });
+
   it('offers Attach to HMS booking when Find matches exactly one stay and the email has a PDF', async () => {
     const { trpc } = fakeTrpc({ reply: VOUCHER });
     render(
