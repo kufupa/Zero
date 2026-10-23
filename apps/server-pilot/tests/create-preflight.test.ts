@@ -55,6 +55,22 @@ describe('create preflight', () => {
     expect(/nava-zero-mail-pilot/i.test(process.env.DATABASE_URL || '')).toBe(false);
   });
 
+  it('mask_timeout snapshot still writes preflight.json', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'create-preflight-mask-'));
+    dirs.push(dir);
+    const result = await runCreatePreflight({
+      stay: { arrival: '2027-10-12', departure: '2027-10-13', lastName: 'Labtest' },
+      propertyCode: 'HRDAV',
+      snapshot: clearSnapshot({ propertyCode: 'HRDAV', captureError: 'mask_timeout' }),
+      outDir: dir,
+    });
+    expect(result.clickedSave).toBe(false);
+    expect(result.captureError).toBe('mask_timeout');
+    const written = JSON.parse(await readFile(join(dir, 'preflight.json'), 'utf8'));
+    expect(written.captureError).toBe('mask_timeout');
+    expect(written.clickedSave).toBe(false);
+  });
+
   it('all-clear reports no blockers and exits 0', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'create-preflight-'));
     dirs.push(dir);

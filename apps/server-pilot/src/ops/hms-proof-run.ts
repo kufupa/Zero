@@ -152,9 +152,6 @@ function assertLabRequest(request: Record<string, unknown>): void {
 function assertWriteFlagsLab(command: ProofRunCommand, env: NodeJS.Dict<string>): void {
   if (command === 'find') return;
   const modes = paneWriteModes(env);
-  if (Object.values(modes).some((mode) => mode === 'on')) {
-    throw new Error('refused_write_not_lab');
-  }
   const needed =
     command === 'create'
       ? modes.create

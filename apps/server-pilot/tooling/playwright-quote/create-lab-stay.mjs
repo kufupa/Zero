@@ -566,7 +566,7 @@ export function trackFillDescription(want) {
 export async function hmsProcessingVisible(page) {
   return page.evaluate(() => {
     const visible = (el) => !!(el && (el.offsetParent || (typeof el.getClientRects === 'function' && el.getClientRects().length)));
-    const maskVisible = [...document.querySelectorAll('.x-mask-msg')].some(visible);
+    const maskVisible = [...document.querySelectorAll('.x-mask, .x-mask-msg, .x-loadmask')].some(visible);
     const processingVisible = [...document.querySelectorAll('.x-mask-msg, .x-mask-msg-text')].some(
       (el) => visible(el) && /Processing request/i.test(el.textContent || ''),
     );
@@ -953,6 +953,7 @@ async function main() {
   try {
     await login(page, secret);
     await openGuestStayScreen(page);
+    await waitHmsMaskCleared(page);
     await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
     await page.locator('input[name="lastname"]:visible').waitFor();
     if (!shopMode) await shot(page, dir, 'before.png');

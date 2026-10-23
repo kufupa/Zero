@@ -184,6 +184,30 @@ describe('hms-proof-run refusals', () => {
     }
   });
 
+  it('cancel stays lab when create is on', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn(async () => ({
+      outcome: 'previewed',
+      clickedOk: false,
+      screenshots: [],
+    }));
+    paneStayCancelLoaders.spawn = spawn;
+    paneStayCancelLoaders.mode = () => 'lab';
+    const outDir = await mkdtemp(join(tmpdir(), 'hms-proof-create-on-'));
+    try {
+      const line = await hmsProofRun(
+        parseProofRunArgs(argv('cancel', LAB, { out: outDir })),
+        { ...WRITE_LAB, PANE_WRITE_CREATE: 'on' },
+        createLock,
+      );
+      expect(line).toMatchObject({ command: 'cancel', propertyCode: 'HRCEN' });
+      expect(spawn).toHaveBeenCalled();
+    } finally {
+      paneStayCancelLoaders.mode = null;
+      await rm(outDir, { recursive: true, force: true });
+    }
+  });
+
   it('refuses commit without a preview digest before any lock or spawn', async () => {
     const { createLock } = createLockSpy();
     const spawn = vi.fn();

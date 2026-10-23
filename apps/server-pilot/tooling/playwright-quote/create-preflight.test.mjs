@@ -37,6 +37,25 @@ test('offline preflight test does not opt into pilot RDS', () => {
   assert.equal(/nava-zero-mail-pilot/i.test(process.env.DATABASE_URL || ''), false);
 });
 
+test('mask_timeout snapshot still writes preflight.json', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'create-preflight-mask-'));
+  try {
+    const result = await runCreatePreflight({
+      stay: { arrival: '2027-10-12', departure: '2027-10-13', lastName: 'Labtest' },
+      propertyCode: 'HRDAV',
+      snapshot: clearSnapshot({ propertyCode: 'HRDAV', captureError: 'mask_timeout' }),
+      outDir: dir,
+    });
+    assert.equal(result.clickedSave, false);
+    assert.equal(result.captureError, 'mask_timeout');
+    const written = JSON.parse(await readFile(join(dir, 'preflight.json'), 'utf8'));
+    assert.equal(written.captureError, 'mask_timeout');
+    assert.equal(written.clickedSave, false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('all-clear reports no blockers and exits 0', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'create-preflight-'));
   try {
