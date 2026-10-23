@@ -11,6 +11,7 @@ import {
 } from '../src/ai/quote-workflow-llm.js';
 import {
   CENTURION_HOTEL_RULES,
+  DAVINCI_HOTEL_RULES,
   lunaAnalysisSchema,
   reservationistDecisionSchema,
 } from '../src/ai/reservationist-decision.js';
@@ -231,6 +232,23 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.system).toMatch(/workflow=send_document/);
     expect(prompt.system).toMatch(/"forward_to_partner", "send_document"/);
     expect(prompt.system).not.toMatch(/Cancellations, amendments, invoices/);
+  });
+
+  it('uses Da Vinci hotel rules for an HRDAV quote and never names Centurion', () => {
+    const prompt = buildQuoteWorkflowPrompt(selection, { propertyCode: 'HRDAV' });
+    expect(prompt.system).toContain(DAVINCI_HOTEL_RULES);
+    expect(prompt.system).toMatch(/Da Vinci Hotel and Suites/);
+    expect(prompt.system).toMatch(/HRDAV/);
+    expect(prompt.system).not.toMatch(/Centurion/);
+    expect(prompt.system).not.toMatch(/partner \(Da Vinci/);
+    expect(prompt.system).not.toContain(CENTURION_HOTEL_RULES);
+  });
+
+  it('keeps Centurion hotel rules when the property is omitted or HRCEN', () => {
+    expect(buildQuoteWorkflowPrompt(selection).system).toContain(CENTURION_HOTEL_RULES);
+    expect(buildQuoteWorkflowPrompt(selection, { propertyCode: 'HRCEN' }).system).toContain(
+      CENTURION_HOTEL_RULES,
+    );
   });
 });
 

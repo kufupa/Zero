@@ -5680,6 +5680,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
       expect(allowlist).not.toContain('POP3_');
       expect(keys.filter((key) => key.startsWith('HMS_'))).toEqual([
         'HMS_DAVINCI_CREATE',
+        'HMS_DAVINCI_MAKE_QUOTE',
         'HMS_DAVINCI_READS',
         'HMS_JOB_QUEUE',
         'HMS_QUOTE_PREPARE',

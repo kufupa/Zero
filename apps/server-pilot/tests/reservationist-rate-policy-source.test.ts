@@ -37,4 +37,22 @@ describe('explicit original hotel rate terms',()=>{
  it.each(['future','missing_publication','different_publication','invented_authored_date','owner','hash','inbound'])('rejects dishonest %s provenance',async key=>{const s=hotelTermsSetup();if(key==='future')s.d.messageAt=s.d.publicationAt='2026-10-02T00:00:00Z';if(key==='missing_publication')delete s.d.publicationAt;if(key==='different_publication')s.d.publicationAt='2026-09-10T00:00:00Z';if(key==='invented_authored_date')s.d.authoredDate='2026-09-09';if(key==='owner')s.d.ownerRef='foreign';if(key==='hash')s.d.body[0]^=1;if(key==='inbound')s.d.direction='inbound';await expect(s.invoke()).rejects.toThrow('rate_policy_document_identity_invalid');});
  it('does not borrow general taxes to infer a dinner package',async()=>{const s=hotelTermsSetup();s.source.result.groups[0].options[0].board='Dinner Bed & Breakfast R';expect(await s.resolver(s.ctx,s.source,s.selections,'HRCEN','BAR','dinner_bed_breakfast')).toBeNull();});
  it('does not promote native conditional loyalty eligibility',async()=>{const s=hotelTermsSetup();s.source.result.groups[0].options[0].rate.code='BLRB';s.source.result.groups[0].options[0].eligibility='conditional';await expect(s.resolver(s.ctx,s.source,s.selections,'HRCEN','BLRB','breakfast')).rejects.toThrow('rate_policy_selected_scope_invalid');expect(s.read).not.toHaveBeenCalled();});
+ it('qualifies a Da Vinci letter against Da Vinci terms',async()=>{
+  const s=hotelTermsSetup();
+  s.ctx.input.propertyCode='HRDAV';
+  s.source.request.propertyCode='HRDAV';
+  s.source.result.propertyCode='HRDAV';
+  s.d.propertyCode='HRDAV';
+  s.d.pages[0]='Da Vinci Hotel and Suites\nWe have pleasure in confirming your reservation at Da Vinci Hotel and Suites for the following guest.';
+  const p=await s.resolver(s.ctx,s.source,s.selections,'HRDAV','BAR','breakfast');
+  expect(p).toMatchObject({propertyCode:'HRDAV',families:[{rateCode:'BAR',board:'breakfast'}],vat:'included',levy:'included'});
+ });
+ it('does not qualify a Centurion letter for Da Vinci terms',async()=>{
+  const s=hotelTermsSetup();
+  s.ctx.input.propertyCode='HRDAV';
+  s.source.request.propertyCode='HRDAV';
+  s.source.result.propertyCode='HRDAV';
+  s.d.propertyCode='HRDAV';
+  expect(await s.resolver(s.ctx,s.source,s.selections,'HRDAV','BAR','breakfast')).toBeNull();
+ });
 });
