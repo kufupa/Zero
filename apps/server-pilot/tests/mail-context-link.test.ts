@@ -6,7 +6,9 @@ import {
   CONTEXT_DATASET_LABEL,
   LETTER_WINDOW_MS,
   linkMailContext,
+  maskContextId,
   parseConfirmationLetterFilename,
+  parseConfirmationLetterSubjectConf,
   parseMailContextLinkerCli,
   runMailContextLinker,
   type MailContextEvent,
@@ -96,6 +98,18 @@ describe('parseConfirmationLetterFilename', () => {
     });
     expect(parseConfirmationLetterFilename('offer.pdf')).toBeNull();
   });
+
+  it('does not shorten a longer subject number into an 8-digit conf', () => {
+    expect(parseConfirmationLetterSubjectConf(`Hotel_Confirmation Letter_${GUEST} (n°${CONF})`)).toBe(
+      CONF,
+    );
+    expect(
+      parseConfirmationLetterSubjectConf(`Hotel_Confirmation Letter_${GUEST} (n°${CONF}-1)`),
+    ).toBe(CONF);
+    expect(
+      parseConfirmationLetterSubjectConf(`Hotel_Confirmation Letter_${GUEST} (n°123456789-1)`),
+    ).toBeNull();
+  });
 });
 
 describe('linkMailContext', () => {
@@ -162,6 +176,34 @@ describe('linkMailContext', () => {
       adults: false,
     });
     expect(links[0]!.label).toBe('context');
+  });
+
+  it('prefers a same-thread letter over an earlier domain-only letter', () => {
+    const links = linkMailContext([
+      ask(),
+      reply(),
+      letter({
+        id: 'letter-other-thread',
+        threadId: 'thread-fixture-other',
+        at: atOffset(2),
+        filename: `HRCEN_Confirmation_Letter_${CONF_B}.pdf`,
+        subject: `Hotel_Confirmation Letter_${GUEST} (n°${CONF_B})`,
+      }),
+      letter({ at: atOffset(8) }),
+    ]);
+    expect(links).toHaveLength(1);
+    expect(links[0]!.conf).toBe(CONF);
+    expect(links[0]!.letter_id).toBe(maskContextId(LETTER_ID));
+  });
+
+  it('sets fields_match false when no stay facts are present to compare', () => {
+    const links = linkMailContext([
+      ask({ facts: null }),
+      reply(),
+      letter({ facts: null }),
+    ]);
+    expect(links).toHaveLength(1);
+    expect(links[0]!.fields_match).toBe(false);
   });
 });
 

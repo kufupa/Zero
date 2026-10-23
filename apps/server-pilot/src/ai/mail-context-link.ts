@@ -11,7 +11,7 @@ export const LETTER_WINDOW_MS = 30 * 60 * 1000;
 export const DEFAULT_CONTEXT_OUT = '.private/mail-context/context.jsonl';
 
 const LETTER_FILE_RE = /^([A-Z]{3,8})_Confirmation_Letter_(\d{8})(?:\b|\.|$)/i;
-const LETTER_SUBJECT_CONF_RE = /Confirmation Letter_.*?\(n[°ºo]\s*(\d{8})/i;
+const LETTER_SUBJECT_CONF_RE = /Confirmation Letter_.*?\(n[°ºo]\s*(\d{8})(?!\d)/i;
 const FORBIDDEN_OUTPUT_KEYS = new Set([
   'textBody',
   'htmlBody',
@@ -152,7 +152,8 @@ export function compareStayFacts(
     room: compareField(askFacts?.room, letterFacts?.room),
     adults: compareField(askFacts?.adults, letterFacts?.adults),
   };
-  const fields_match = !Object.values(field_flags).some((flag) => flag === false);
+  const flags = Object.values(field_flags);
+  const fields_match = flags.some((flag) => flag === true) && !flags.some((flag) => flag === false);
   return { fields_match, field_flags };
 }
 
@@ -204,7 +205,10 @@ export function linkMailContext(events: readonly MailContextEvent[]): ContextLin
         return { letter, identity, delta, threadOk, domainOk };
       })
       .filter((row): row is NonNullable<typeof row> => Boolean(row))
-      .sort((a, b) => a.delta - b.delta)[0];
+      .sort((a, b) => {
+        if (a.threadOk !== b.threadOk) return a.threadOk ? -1 : 1;
+        return a.delta - b.delta;
+      })[0];
     if (!candidate) continue;
     const compared = compareStayFacts(askEvent.facts, candidate.letter.facts);
     links.push({
@@ -308,22 +312,18 @@ export function parseMailContextLinkerCli(
   };
 }
 
-function assertNoForbiddenOutput(value: unknown, trail: string): void {
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => assertNoForbiddenOutput(item, `${trail}[${index}]`));
-    return;
-  }
-  if (!value || typeof value !== 'object') return;
-  for (const [key, child] of Object.entries(value)) {
-    if (FORBIDDEN_OUTPUT_KEYS.has(key)) {
-      throw new Error(`mail-context output forbids ${key} at ${trail}`);
+function assertNoForbiddenOutput(links: readonly ContextLink[]): void {
+  for (const [index, row] of links.entries()) {
+    for (const key of Object.keys(row)) {
+      if (FORBIDDEN_OUTPUT_KEYS.has(key)) {
+        throw new Error(`mail-context output forbids ${key} at out[${index}]`);
+      }
     }
-    assertNoForbiddenOutput(child, `${trail}.${key}`);
   }
 }
 
 export function writeContextJsonl(outPath: string, links: readonly ContextLink[]): void {
-  assertNoForbiddenOutput(links, 'out');
+  assertNoForbiddenOutput(links);
   mkdirSync(path.dirname(outPath), { recursive: true });
   const tmpPath = `${outPath}.tmp`;
   const body = links.length === 0 ? '' : `${links.map((row) => JSON.stringify(row)).join('\n')}\n`;
