@@ -825,6 +825,32 @@ describe('pane cancel modes', () => {
     expect(calls.map((call) => call.mode)).toEqual(['preview', 'commit']);
   });
 
+  it('a penalty refusal still returns the penalty screenshot for the pane', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'pane-cancel-penalty-'));
+    try {
+      await writeFile(join(dir, 'penalty.png'), Buffer.from('penalty-png'));
+      const fresh = 'user-penalty-shot:transport-centurion';
+      enableCancel({
+        preview: {
+          outcome: 'refused_penalty',
+          penaltyText: CHARGE,
+          screenshots: [join(dir, 'penalty.png')],
+          runDir: dir,
+        },
+      });
+      const preview = await previewCancel({ ...stay, owner: fresh });
+      expect(preview).toMatchObject({
+        outcome: 'refused_penalty',
+        penaltyText: CHARGE,
+        screenshots: ['penalty.png'],
+        previewDigest: null,
+      });
+      expect(preview.runId).toMatch(PANE_RUN_ID_PATTERN);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('a penalty dialog at preview refuses the preview, so no commit grant is issued', async () => {
     // A fresh owner: grants from earlier tests for this stay must not satisfy this commit.
     const fresh = 'user-penalty-preview:transport-centurion';

@@ -257,6 +257,80 @@ export function penaltyRefusal(penalty) {
   return penalty ? 'refused_penalty' : null;
 }
 
+// The Waive control on the charge window. "penalty" in the sentence is not a waive.
+export function penaltyHasWaive(texts) {
+  return (texts ?? []).some((text) => /\bwaive\b/i.test(squash(text)));
+}
+
+export function isStaleScreenError(error) {
+  const name = String(error?.name ?? '');
+  const text = squash(error?.message || error);
+  return name === 'TimeoutError' || /timeout \d+ms/i.test(text) || /timeout .*exceeded/i.test(text);
+}
+
+// One return to Guest Stay, then one more attempt. A second timeout is STALE_SCREEN, not another wait.
+export async function withStaleRecovery(io, result) {
+  try {
+    return await io.attempt();
+  } catch (error) {
+    if (!isStaleScreenError(error)) throw error;
+    result.recovered = true;
+    try {
+      await io.recover();
+    } catch {
+      result.outcome = 'execution_failure';
+      result.refusal = 'stale_screen';
+      result.error = 'STALE_SCREEN';
+      return null;
+    }
+    try {
+      return await io.attempt();
+    } catch {
+      result.outcome = 'execution_failure';
+      result.refusal = 'stale_screen';
+      result.error = 'STALE_SCREEN';
+      return null;
+    }
+  }
+}
+
+// Labtest identity is the open HMS record (surname Labtest + arrival ≥ 2027), never CLI args.
+// Commit: Waive if that button is showing, else OK. Preview and real guests leave the dialog.
+async function applyPenaltyPolicy({ args, result, io, penalty, windows, afterOk = false }) {
+  if (!penalty) return 'continue';
+  recordPenalty(result, penalty);
+  await io.shot('penalty.png');
+  if (!afterOk && args.mode !== 'commit') {
+    result.refusal = 'penalty_dialog_open';
+    result.outcome = 'refused_penalty';
+    return 'stop';
+  }
+  const live = await io.readRecord();
+  if (!labGuard(live).ok) {
+    if (afterOk) {
+      result.penaltyPending = true;
+      return 'stop';
+    }
+    result.refusal = 'penalty_dialog_open';
+    result.outcome = 'refused_penalty';
+    return 'stop';
+  }
+  const click = penaltyHasWaive(windows) ? 'waive' : 'ok';
+  const clicked = await io.clickPenalty(click);
+  if (!clicked) {
+    if (afterOk) {
+      result.penaltyPending = true;
+      return 'stop';
+    }
+    result.refusal = 'penalty_dialog_open';
+    result.outcome = 'refused_penalty';
+    return 'stop';
+  }
+  result.penaltyClick = click;
+  if (afterOk) result.penaltyPending = false;
+  return 'continue';
+}
+
 // Writes the charge text and amount onto the run result.
 export function recordPenalty(result, penalty) {
   result.penaltyText = penalty.text;
@@ -264,20 +338,20 @@ export function recordPenalty(result, penalty) {
 }
 
 // The cancel dialog, from the first look to the readback. Every page action goes through io, so these decisions run the
-// same way on the real page (cancel-stay.mjs dialogIo) and on a scripted dialog in the tests. A charge on screen refuses
-// before a reason is picked or OK is clicked: it is recorded and left open, and nothing is clicked on it. Exactly one OK
-// is clicked, and only after a last look finds no charge. io: windowTexts, shot, mark, fillNote, readReasons,
-// pickReason, readRecord, close, clickOk, waitAfterOk, settle.
+// same way on the real page (cancel-stay.mjs dialogIo) and on a scripted dialog in the tests. A charge on a real guest
+// or at preview is recorded and left open. On a Labtest commit (HMS re-read), Waive is clicked if present, else OK.
+// Exactly one reason OK is clicked, and only after a last look finds no unhandled charge. io: windowTexts, shot, mark,
+// fillNote, readReasons, pickReason, readRecord, close, clickOk, clickPenalty, waitAfterOk, settle, readBalance.
 export async function runCancelDialog({ args, record, result, io }) {
-  const penaltyBefore = parsePenalty(await io.windowTexts());
-  const refusedBefore = penaltyRefusal(penaltyBefore);
-  if (refusedBefore) {
-    recordPenalty(result, penaltyBefore);
-    await io.shot('penalty.png');
-    result.refusal = 'penalty_dialog_open';
-    result.outcome = refusedBefore;
-    return result;
-  }
+  const windowsBefore = await io.windowTexts();
+  const before = await applyPenaltyPolicy({
+    args,
+    result,
+    io,
+    penalty: parsePenalty(windowsBefore),
+    windows: windowsBefore,
+  });
+  if (before === 'stop') return result;
   if (args.mode === 'commit') await io.fillNote(cancelNoteFor(args));
   const list = await io.readReasons();
   result.reasons = list.reasons;
@@ -302,16 +376,16 @@ export async function runCancelDialog({ args, record, result, io }) {
   const again = await io.readRecord();
   if (!identityCheck(args, again).ok) throw new Error('IDENTITY_CHANGED_BEFORE_OK');
   await io.pickReason(list, index);
-  // Last look before the one OK: a charge that appeared since the first check refuses the run, with no OK click.
-  const penaltyNow = parsePenalty(await io.windowTexts());
-  const refusedNow = penaltyRefusal(penaltyNow);
-  if (refusedNow) {
-    recordPenalty(result, penaltyNow);
-    await io.shot('penalty.png');
-    result.refusal = 'penalty_dialog_open';
-    result.outcome = refusedNow;
-    return result;
-  }
+  // Last look before the one OK: a leftover real-guest charge refuses with no OK click. Labtest clicks Waive/OK.
+  const windowsNow = await io.windowTexts();
+  const lastLook = await applyPenaltyPolicy({
+    args,
+    result,
+    io,
+    penalty: parsePenalty(windowsNow),
+    windows: windowsNow,
+  });
+  if (lastLook === 'stop') return result;
   let clicked;
   try {
     clicked = await io.clickOk();
@@ -331,18 +405,21 @@ export async function runCancelDialog({ args, record, result, io }) {
   const windows = await io.windowTexts();
   result.followUps = windows.filter((text) => text && !/Cancellation Reason/.test(text)).map((text) => text.slice(0, 240));
   result.reasonStillOpen = windows.some((text) => /Cancellation Reason/.test(text));
-  const penaltyAfter = parsePenalty(windows);
-  if (penaltyAfter) {
-    recordPenalty(result, penaltyAfter);
-    result.penaltyPending = true;
-    await io.shot('penalty.png');
-  }
+  await applyPenaltyPolicy({
+    args,
+    result,
+    io,
+    penalty: parsePenalty(windows),
+    windows,
+    afterOk: true,
+  });
+  if (typeof io.readBalance === 'function') result.balance = await io.readBalance();
   result.statusAfter = settled.statusAfter;
   result.settle = settled;
   result.readbackMethod = 'settle';
   await io.shot('readback.png');
   io.mark('readback');
-  // A charge that opened after the OK is a pending penalty. It needs a person even when HMS reads Cancelled.
+  // A charge left unclicked after the OK is pending. Labtest Waive/OK clears it even when HMS reads Cancelled.
   result.outcome = result.penaltyPending
     ? 'cancel_penalty_pending'
     : resolveOutcome({ mode: 'commit', statusBefore: record.status, statusAfter: result.statusAfter });

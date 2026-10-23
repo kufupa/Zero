@@ -4,9 +4,9 @@ import { readFile } from 'node:fs/promises';
 import {
   cancelNoteFor, penaltyRefusal, runCancelDialog, unpaidCommitRefusal,
   chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, formPairsFromSnapshot, hmsDateToIso,
-  arrivalReport, identityCheck, isCancelledStatus, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
-  parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty,
-  outcomeAfterFailure, pollUntil, SETTLE_BUDGET_MS, SETTLE_INTERVAL_MS, settleCancel,
+  arrivalReport, identityCheck, isCancelledStatus, isStaleScreenError, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
+  parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty, penaltyHasWaive,
+  outcomeAfterFailure, pollUntil, SETTLE_BUDGET_MS, SETTLE_INTERVAL_MS, settleCancel, withStaleRecovery,
   parseQuickSearchRow, parseRecordsFooter, pickerMonthSteps, preflight, resolveOutcome, sameStayRows,
   searchGuestOutcome, stayChanges, stayFromFormPairs, stayIdentityVerdict, windowCovers,
 } from './cancel-stay-rules.mjs';
@@ -810,14 +810,22 @@ test('a penalty dialog refuses the run as refused_penalty, exit 2, and nothing e
 // Each test runs the real runCancelDialog. The scripted dialog answers the windows read and records every action, so a
 // test can prove what was and was not clicked. Nothing here touches a browser or HMS.
 const CHARGE = 'Cancellation Penalty of 2060.00 may be added to account.';
+const WAIVE_CHARGE = `${CHARGE} Waive OK Cancel`;
 const REASON_WINDOW = 'Cancellation Reason Test Reservations Duplicate Booking OK Cancel';
 const PREVIEW_ARGS = { confirmation: '57291630-1', arrival: '2027-09-14', mode: 'preview', reason: 'Test Reservations', allowRealGuest: false };
 const COMMIT_ARGS = { ...PREVIEW_ARGS, mode: 'commit', reason: 'Duplicate Booking' };
 const RECORD = { confirmation: '57291630-1', lastName: 'Labtest', arrival: '14-SEP-2027', status: 'Reserved' };
+const REAL_GUEST = { confirmation: '57291630-1', lastName: 'Smith', arrival: '14-SEP-2027', status: 'Reserved' };
 const SETTLED = { statusAfter: 'Cancelled', cancelled: true, maskCleared: true, maskMs: 0, statusPolls: 1, statusMs: 0 };
 
 // windows[n] is what the n-th read of the open windows sees; the last snapshot repeats.
-function scriptedDialog({ windows, reasons = ['Test Reservations', 'Duplicate Booking'], record = RECORD }) {
+function scriptedDialog({
+  windows,
+  reasons = ['Test Reservations', 'Duplicate Booking'],
+  record = RECORD,
+  clickPenalty = true,
+  balance = '0.00',
+}) {
   const calls = [];
   let reads = 0;
   const io = {
@@ -852,12 +860,20 @@ function scriptedDialog({ windows, reasons = ['Test Reservations', 'Duplicate Bo
       calls.push('clickOk');
       return true;
     },
+    clickPenalty: async (label) => {
+      calls.push(`clickPenalty:${label}`);
+      return clickPenalty;
+    },
     waitAfterOk: async () => {
       calls.push('waitAfterOk');
     },
     settle: async () => {
       calls.push('settle');
       return SETTLED;
+    },
+    readBalance: async () => {
+      calls.push('readBalance');
+      return balance;
     },
   };
   return { io, calls };
@@ -870,6 +886,12 @@ async function runDialog(args, windows, options = {}) {
   return { result, calls: dialog.calls };
 }
 
+test('penaltyHasWaive is the Waive button, not the word penalty', () => {
+  assert.equal(penaltyHasWaive([WAIVE_CHARGE]), true);
+  assert.equal(penaltyHasWaive([CHARGE, 'OK Cancel']), false);
+  assert.equal(penaltyHasWaive(['Cancellation Penalty of 2060.00 may be added to account.']), false);
+});
+
 test('a charge on the dialog at preview refuses the run: nothing is read, picked, closed or clicked', async () => {
   const { result, calls } = await runDialog(PREVIEW_ARGS, [[REASON_WINDOW, CHARGE]]);
   assert.equal(result.outcome, 'refused_penalty');
@@ -879,34 +901,72 @@ test('a charge on the dialog at preview refuses the run: nothing is read, picked
   assert.deepEqual(calls, ['windows', 'shot:penalty.png']);
 });
 
-test('a charge already open when the commit starts refuses it: no note typed, no reason picked, OK never clicked', async () => {
-  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, CHARGE]]);
+test('a real guest with a charge already open refuses the commit: dialog left, nothing clicked', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, CHARGE]], { record: REAL_GUEST });
   assert.equal(result.outcome, 'refused_penalty');
   assert.equal(result.penaltyText, CHARGE);
-  assert.deepEqual(calls, ['windows', 'shot:penalty.png']);
+  assert.deepEqual(calls, ['windows', 'shot:penalty.png', 'readRecord']);
+  assert.equal(calls.some((call) => call.startsWith('clickPenalty')), false);
   assert.equal(calls.includes('clickOk'), false);
 });
 
-test('a charge that appears between the reason pick and the OK refuses it, and no OK is clicked', async () => {
-  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW, CHARGE]]);
+test('a real guest charge between the reason pick and the OK refuses it, and no OK is clicked', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW, CHARGE]], { record: REAL_GUEST });
   assert.equal(result.outcome, 'refused_penalty');
   assert.equal(result.penaltyText, CHARGE);
   assert.ok(calls.includes('pick:1'));
   assert.equal(calls.includes('clickOk'), false);
   assert.equal(calls.includes('settle'), false);
-  // The note goes in before the reason is read, as the live flow always did. Only the OK is withheld here.
+  assert.equal(calls.some((call) => call.startsWith('clickPenalty')), false);
   assert.deepEqual(calls.filter((call) => call.startsWith('fillNote')), ['fillNote:Lab proof cancel']);
 });
 
-test('a charge that opens after the OK is recorded with its text, and nothing is clicked after the OK', async () => {
-  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW], [CHARGE]]);
+test('a real guest charge after the OK is pending: dialog left, nothing clicked after the OK', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW], [CHARGE]], { record: REAL_GUEST });
   assert.equal(result.outcome, 'cancel_penalty_pending');
   assert.equal(exitCodeFor(result.outcome), 1);
   assert.equal(result.clickedOk, true);
   assert.equal(result.penaltyPending, true);
   assert.equal(result.penaltyText, CHARGE);
   const afterOk = calls.slice(calls.indexOf('clickOk') + 1);
-  assert.deepEqual(afterOk.filter((call) => /^(pick|clickOk|fillNote|close|readRecord)/.test(call)), []);
+  assert.equal(afterOk.some((call) => call.startsWith('clickPenalty')), false);
+  assert.deepEqual(afterOk.filter((call) => /^(pick|clickOk|fillNote|close)/.test(call)), []);
+});
+
+test('Labtest + penalty with Waive clicks Waive, status Cancelled, balance 0', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, WAIVE_CHARGE], [REASON_WINDOW]]);
+  assert.equal(result.outcome, 'cancelled');
+  assert.equal(result.statusAfter, 'Cancelled');
+  assert.equal(result.balance, '0.00');
+  assert.equal(result.penaltyPending, false);
+  assert.ok(calls.includes('clickPenalty:waive'));
+  assert.equal(calls.includes('clickPenalty:ok'), false);
+  assert.equal(calls.filter((call) => call === 'clickOk').length, 1);
+  assert.ok(calls.includes('readBalance'));
+});
+
+test('Labtest + penalty with no Waive clicks OK on the charge', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, `${CHARGE} OK Cancel`], [REASON_WINDOW]]);
+  assert.equal(result.outcome, 'cancelled');
+  assert.ok(calls.includes('clickPenalty:ok'));
+  assert.equal(calls.includes('clickPenalty:waive'), false);
+  assert.equal(calls.filter((call) => call === 'clickOk').length, 1);
+});
+
+test('penalty Labtest identity is the open HMS record, not the args record', async () => {
+  const liveGuest = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, WAIVE_CHARGE]], { record: REAL_GUEST });
+  assert.equal(liveGuest.result.outcome, 'refused_penalty');
+  assert.equal(liveGuest.calls.some((call) => call.startsWith('clickPenalty')), false);
+  const liveLab = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, WAIVE_CHARGE], [REASON_WINDOW]], { record: RECORD });
+  assert.equal(liveLab.result.outcome, 'cancelled');
+  assert.ok(liveLab.calls.includes('clickPenalty:waive'));
+});
+
+test('an unpaid Labtest with no penalty dialog never invents a Waive click', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW]]);
+  assert.equal(result.outcome, 'cancelled');
+  assert.equal(result.penaltyText, null);
+  assert.equal(calls.some((call) => call.startsWith('clickPenalty')), false);
 });
 
 test('a commit with no charge types the lab note, picks the reason, clicks one OK and settles to cancelled', async () => {
@@ -915,6 +975,53 @@ test('a commit with no charge types the lab note, picks the reason, clicks one O
   assert.equal(result.penaltyText, null);
   assert.equal(calls.filter((call) => call === 'clickOk').length, 1);
   assert.deepEqual(calls.filter((call) => call.startsWith('fillNote')), ['fillNote:Lab proof cancel']);
+});
+
+test('isStaleScreenError is a Playwright timeout, not an identity miss', () => {
+  assert.equal(isStaleScreenError(new Error('locator.waitFor: Timeout 20000ms exceeded.')), true);
+  assert.equal(isStaleScreenError({ name: 'TimeoutError', message: 'Timeout' }), true);
+  assert.equal(isStaleScreenError(new Error('IDENTITY_CHANGED_BEFORE_OK')), false);
+  assert.equal(isStaleScreenError(new Error('AMBIGUOUS_CONFIRMATION_ROW')), false);
+});
+
+test('stale screen recovers once then fails with STALE_SCREEN, not a timeout', async () => {
+  const calls = [];
+  let attempts = 0;
+  const result = { outcome: null, error: null, recovered: false, refusal: null };
+  const found = await withStaleRecovery({
+    attempt: async () => {
+      attempts += 1;
+      calls.push(`attempt:${attempts}`);
+      throw new Error('locator.waitFor: Timeout 20000ms exceeded.');
+    },
+    recover: async () => {
+      calls.push('recover');
+    },
+  }, result);
+  assert.equal(found, null);
+  assert.equal(attempts, 2);
+  assert.deepEqual(calls, ['attempt:1', 'recover', 'attempt:2']);
+  assert.equal(result.outcome, 'execution_failure');
+  assert.equal(result.error, 'STALE_SCREEN');
+  assert.equal(result.refusal, 'stale_screen');
+  assert.equal(result.recovered, true);
+});
+
+test('stale screen that recovers then finds does not fail', async () => {
+  let attempts = 0;
+  const result = { outcome: null, error: null, recovered: false };
+  const found = await withStaleRecovery({
+    attempt: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error('page.waitForSelector: Timeout 20000ms exceeded.');
+      return { method: 'row' };
+    },
+    recover: async () => {},
+  }, result);
+  assert.deepEqual(found, { method: 'row' });
+  assert.equal(result.outcome, null);
+  assert.equal(result.error, null);
+  assert.equal(result.recovered, true);
 });
 
 test('stayChanges names each approved field the reopened record shows differently, and nothing else', () => {
