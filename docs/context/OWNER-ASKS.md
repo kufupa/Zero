@@ -317,3 +317,14 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 176 | 2026-10-22 ~00:10Z: "HMS weekly maintenance … make sure we do the relevant routine in the backend too that would just delay all of the AI processing and queue up for later like pause it … and resume once we know it's up" | Logged. Pane says "HMS weekly maintenance"; HMS queue pauses in the Wednesday window and resumes on a health probe |
 | 177 | 2026-10-22 ~00:10Z: "use the new names instead of quote and create" (Make quote / Create provisional booking, from the architecture) in reports and UI | Applying in chat |
 | 178 | 2026-10-22 ~00:10Z: D2 = B, "fix it, use Greptile apex … if it's this simple and I've left you to run overnight … you should have just continued"; D1 = blank deposit on a quote-stage provisional is normal, paid amend → flag at top "this affects money", Folio read tomorrow | Steer sent to the orchestrator (/tmp/sr2/owner-go-20261022.txt) |
+
+## 12. DV install pause, retro and multi-mailbox (2026-10-22)
+
+| # | Original ask | Status | Evidence / next step |
+|---|---|---|---|
+| 179 | (handoff from another LLM) “one user with one Outlook workstation that has multiple inboxes”; Ayanda + Da Vinci in one Outlook; pairing pop-up may need multi-select for the one-month ingest; “one single login for our Nav application needs to be able to process different side panes”; estimate the build | 🟡 design | [Handoff](HANDOFF-2026-10-22-outlook-multi-mailbox.md); design scoping in chat; no implementation or pairing code until owner approves |
+| 180 | “let’s pause it and do a retro … there’s no way a tiny 10 line PR took you 60 minutes … do you think we need to use stagehand instead” | ✅ | [DV install retro](ledger/2026-10-22-dv-install-retro.md); [Stagehand decision](../research/2026-10-22-stagehand-hms-decision.md) |
+| 181 | “We’re back to testing now, so we shouldn’t be automatically doing any real data bookings” | ✅ | `PANE_WRITE_CREATE` on→lab 15:47Z, all 4 procs `/proc` checked |
+| 182 | Full product status per workflow (Excel quotes, provisional create, amends, POP / TA-prepaid, amending paid, cancellations + when to charge, government rates); 12-hour ROI plan for tomorrow, parallelism, scale testing; “stuff that i should have asked” | 🟡 | High-level in chat 2026-10-22; deep plan after owner picks |
+| 183 | Clean up merged Orca worktrees/branches: “honestly you can automatically get rid of these right now” | ✅ | 31 worktrees + 162 branches removed; restore map `~/.claude/cleanup-2026-10-10-deleted.tsv` |
+| 184 | Greptile Apex abundant until 2026-11-21 (then 500 credits ever); Plus for small PRs, Apex for big; prefer small PRs | ✅ | Memory `feedback-greptile-plus-vs-apex` |

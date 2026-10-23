@@ -107,3 +107,5 @@ _(agents append dated one-liners; owner promotes into the spec above)_
 - 2026-10-20 (owner, D19): quote recall bar ≥85% (was 95%, arbitrary) on ≥100 independent outbound-grounded quote rows, not n=26.
 - 2026-10-22 (owner, ask 175, client): ~66 h after a staff quote that states a validity/hold window, Nava drafts a follow-up in-thread for staff review. Never sends. Needs-you item.
 - 2026-10-20 (owner): critically review best/elegant pilot product and exact first-release work/elapsed estimate; Grok final review with Sol coordination, not routine expensive Opus. Assessment only, no product execution approval. Original ask148 in OWNER-ASKS.
+- 2026-10-22 (owner): one Outlook workstation with several mailboxes (e.g. Ayanda + Da Vinci); one Nava login across them; pairing may need multi-select for the one-month ingest. Design first. Ask 179, [handoff](docs/context/HANDOFF-2026-10-22-outlook-multi-mailbox.md).
+- 2026-10-22 (owner): back to testing — no automatic real-guest bookings; `PANE_WRITE_CREATE=lab`. Ask 181.
