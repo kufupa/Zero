@@ -1091,6 +1091,67 @@ describe('quote follow-up drafts', () => {
     });
   });
 
+  it('a hotel ack before the off-thread letter still clocks once the letter arrives', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-ack-then-letter', REQUEST_AT, 'needs_you', {
+        kind: 'booking',
+      });
+      await db.insert(mailExtraction).values({
+        messageId: 'thread-ack-then-letter-request',
+        extractorVersion: 'quote-followup-test',
+        status: 'succeeded',
+        kind: 'booking',
+        payload: { confirmationNumbers: ['12345678'], stays: [] },
+      });
+      await sendReply(db, {
+        id: 'out-ack-only',
+        threadId: 'thread-ack-then-letter',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+        textBody: 'We are looking into this booking.',
+      });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-ack-then-letter' });
+      expect((await loadItem(db, itemId)).status).toBe('done');
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toBeNull();
+
+      await seedInboxThread(db, {
+        threadId: 'thread-late-letter',
+        transportId: TRANSPORT,
+        transportEmail: TRANSPORT_EMAIL,
+        messageId: 'thread-late-letter-copy',
+        fromAddress: TRANSPORT_EMAIL,
+        subject: 'Confirmation letter',
+        textBody: 'Please find the confirmation attached.',
+        messageIdHeader: 'thread-late-letter-copy@example.com',
+      });
+      await sendReply(db, {
+        id: 'out-late-letter',
+        threadId: 'thread-late-letter',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+        subject: 'Confirmation letter',
+        attach: 'HRCEN_Confirmation_Letter_12345678.pdf',
+        textBody: 'Please find the confirmation attached.',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).sentMessageId).toBe('out-late-letter');
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
+    });
+  });
+
   it('a paid voucher or guaranteed booking does not get a go-ahead draft', async () => {
     await withIngestionDb(async ({ db }) => {
       await seedNavaUser(db);

@@ -886,19 +886,7 @@ export async function runQuoteFollowupSweep(
         await lettersFor(item.transportId),
       );
       const letterAt = letter ? confirmationClockMs(letter) : null;
-      if (!letter || letterAt === null) {
-        await db
-          .update(workItem)
-          .set({ followUpDueAt: item.sentAt, updatedAt: now })
-          .where(
-            and(
-              eq(workItem.id, item.id),
-              eq(workItem.sentMessageId, item.sentMessageId),
-              isNull(workItem.followUpDueAt),
-            ),
-          );
-        continue;
-      }
+      if (!letter || letterAt === null) continue;
       const sentAt = new Date(letterAt);
       const settled = await bookingFollowUpSettled(
         db,
