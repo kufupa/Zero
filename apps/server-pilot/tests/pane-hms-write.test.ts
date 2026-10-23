@@ -156,6 +156,10 @@ beforeAll(() => {
     previousEnv.set(key, process.env[key]);
     process.env[key] = value;
   }
+  if (!process.env.DATABASE_URL && process.env.TEST_DATABASE_URL) {
+    previousEnv.set('DATABASE_URL', process.env.DATABASE_URL);
+    process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
+  }
 });
 
 afterAll(() => {
