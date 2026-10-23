@@ -74,6 +74,15 @@ job_dir() {
   printf '%s\n' "${LOG_ROOT}/$1"
 }
 
+wait_for_seq() {
+  local dir="$1" i
+  for i in $(seq 1 200); do
+    [ -f "${dir}/seq" ] && return 0
+    sleep 0.05
+  done
+  return 1
+}
+
 wait_for_earlier_jobs() {
   local id="$1" property="$2" my_seq other other_seq other_prop
   my_seq="$(cat "$(job_dir "$id")/seq")"
@@ -151,6 +160,7 @@ cmd_start() {
     echo "hms-job: refuse: --args-file not a file: ${args_file}" >&2
     exit 2
   }
+  args_file="$(realpath "$args_file")"
   resolve_tool "$tool" >/dev/null
 
   local id
@@ -168,8 +178,6 @@ cmd_start() {
   mkdir -p "$dir"
   printf '%s\n' "$property" >"${dir}/property"
   printf '%s\n' "$args_file" >"${dir}/args-file"
-  # GNU date %N: earlier start() wins the slot even if _run races.
-  date +%s%N >"${dir}/seq"
   : >"$log"
 
   if ! run_systemd \
@@ -192,6 +200,8 @@ cmd_start() {
     exit 1
   fi
 
+  # Seq after submit so waiters never treat an in-flight start as abandoned.
+  date +%s%N >"${dir}/seq"
   printf '%s\n' "$id"
 }
 
@@ -242,6 +252,10 @@ cmd_run() {
   args_file="$(cat "${dir}/args-file")"
   mkdir -p "$dir"
   exec >>"$log" 2>&1
+  if ! wait_for_seq "$dir"; then
+    printf '%s\n' '{"ok":false,"error":"seq_missing"}' >"${dir}/result.json"
+    exit 1
+  fi
   if [ -s "${NVM_DIR:-/home/ubuntu/.nvm}/nvm.sh" ]; then
     # shellcheck disable=SC1090,SC1091
     . "${NVM_DIR:-/home/ubuntu/.nvm}/nvm.sh"

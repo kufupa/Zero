@@ -130,7 +130,7 @@ function makeHarness() {
       'sleep "${HMS_JOB_U0_SLEEP:-0.4}"',
       'mkdir -p "$out"',
       'echo "end $prop $(date +%s%N)" >> "$HMS_JOB_U0_LOG"',
-      'echo "{\"ok\":true,\"property\":\"$prop\"}" > "$out/result.json"',
+      'printf \'{"ok":true,"property":"%s"}\\n\' "$prop" > "$out/result.json"',
       '',
     ].join('\n'),
     { mode: 0o755 },
@@ -170,7 +170,9 @@ function waitForResult(logRoot: string, id: string, timeoutMs = 8_000) {
   const path = join(logRoot, id, 'result.json');
   while (Date.now() - started < timeoutMs) {
     try {
-      return readFileSync(path, 'utf8');
+      const text = readFileSync(path, 'utf8');
+      JSON.parse(text);
+      return text;
     } catch {
       spawnSync('sleep', ['0.05']);
     }
