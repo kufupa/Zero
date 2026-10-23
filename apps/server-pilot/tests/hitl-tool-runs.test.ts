@@ -226,6 +226,35 @@ describe('tool-run ledger: one run', () => {
     expect(JSON.stringify(sink.rows)).not.toContain('Jane');
   });
 
+  it('stores a closed catalog reason on a quote refusal, never thrown text or guest fields', async () => {
+    const sink = memorySink();
+    const error = new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'HMS has no rate for Jane Doe at 555 0100',
+      cause: { reason: 'native_quote_no_matching_rate', code: 'native_quote_no_matching_rate' },
+    });
+    await expect(
+      recordedToolRun(
+        spec({ kind: 'quote' }),
+        async () => {
+          throw error;
+        },
+        ok,
+        undefined,
+        { recorder: sink.recorder },
+      ),
+    ).rejects.toBe(error);
+    expect(sink.rows[0]).toMatchObject({
+      status: 'refused',
+      errorCode: 'PRECONDITION_FAILED',
+      result: { reason: 'native_quote_no_matching_rate' },
+    });
+    const dumped = JSON.stringify(sink.rows);
+    expect(dumped).not.toContain('Jane');
+    expect(dumped).not.toContain('555');
+    expect(dumped).not.toContain('HMS has no rate');
+  });
+
   it('records a failure for a server error code, and "unknown" for a code that is not an identifier', async () => {
     const sink = memorySink();
     const server = Object.assign(new Error('boom'), { code: 'INTERNAL_SERVER_ERROR' });
@@ -472,35 +501,6 @@ describe('tool-run ledger: classifiers by site', () => {
     expect(toolErrorCode({ code: 'two words' })).toBe('unknown');
   });
 
-  it('stores a closed catalog reason on a quote refusal, never thrown text or guest fields', async () => {
-    const sink = memorySink();
-    const error = new TRPCError({
-      code: 'PRECONDITION_FAILED',
-      message: 'HMS has no rate for Jane Doe at 555 0100',
-      cause: { reason: 'native_quote_no_matching_rate', code: 'native_quote_no_matching_rate' },
-    });
-    await expect(
-      recordedToolRun(
-        spec({ kind: 'quote' }),
-        async () => {
-          throw error;
-        },
-        ok,
-        undefined,
-        { recorder: sink.recorder },
-      ),
-    ).rejects.toBe(error);
-    expect(sink.rows[0]).toMatchObject({
-      status: 'refused',
-      errorCode: 'PRECONDITION_FAILED',
-      result: { reason: 'native_quote_no_matching_rate' },
-    });
-    const dumped = JSON.stringify(sink.rows);
-    expect(dumped).not.toContain('Jane');
-    expect(dumped).not.toContain('555');
-    expect(dumped).not.toContain('HMS has no rate');
-  });
-
   it('collapses unknown or guest-shaped identifiers to refused', () => {
     expect(
       quoteRefusalReason({
@@ -514,6 +514,12 @@ describe('tool-run ledger: classifiers by site', () => {
         cause: { code: 'HMS_LOCK_BUSY' },
       }),
     ).toBe('refused_lock_busy');
+    expect(
+      quoteRefusalReason({
+        code: 'PRECONDITION_FAILED',
+        cause: { reason: 'business_selected_scope_unavailable' },
+      }),
+    ).toBe('business_selected_scope_unavailable');
     expect(quoteRefusalReason({ code: 'BAD_REQUEST', message: 'lastName Jane is not valid' })).toBe(
       'refused',
     );
