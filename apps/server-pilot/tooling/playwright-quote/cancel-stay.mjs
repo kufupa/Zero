@@ -504,6 +504,13 @@ async function findRow(page, confirmation) {
   return hits.length === 1 ? rows.nth(hits[0]) : null;
 }
 
+export async function closeAppDrawer(page) {
+  const frontDesk = page.locator('span.x-tree-node-text:visible').filter({ hasText: /^Front Desk$/ });
+  if ((await frontDesk.count()) === 0) return;
+  await page.locator('a.app-menu-trigger:visible').first().click().catch(() => {});
+  await frontDesk.first().waitFor({ state: 'hidden', timeout: 2000 }).catch(() => {});
+}
+
 export async function openRecord(page, row) {
   // stay-lookup / read-reservation-codes: ExtJS opens the form on dblclick of
   // tr.x-grid-row. force-click on the confirmation text node does not.
@@ -512,14 +519,7 @@ export async function openRecord(page, row) {
   );
   if ((await gridRow.count()) > 0) await gridRow.first().dblclick();
   else await row.dblclick();
-  // Recovery openGuestStay toggles a.app-menu-trigger; the drawer covers the
-  // left column (confirmationnumber). Close it before reading. lastname lives
-  // on the uncovered Guest column and is the snapshotRecordForm signal.
-  const frontDesk = page.locator('span.x-tree-node-text:visible').filter({ hasText: /^Front Desk$/ });
-  if ((await frontDesk.count()) > 0) {
-    await page.locator('a.app-menu-trigger:visible').first().click().catch(() => {});
-    await frontDesk.first().waitFor({ state: 'hidden', timeout: 2000 }).catch(() => {});
-  }
+  await closeAppDrawer(page);
   await page.waitForFunction(() => {
     const shown = (el) => {
       const box = el.getBoundingClientRect();

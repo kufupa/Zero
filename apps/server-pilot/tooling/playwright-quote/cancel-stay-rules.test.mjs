@@ -577,7 +577,7 @@ test('stay-lookup.mjs is read-only: no Enter, no Save, Actions, Cancel or OK cli
 
 test('cancel-stay.mjs exports the helpers stay-lookup.mjs imports, and its cancel flow is unchanged', async () => {
   const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
-  for (const name of ['shot', 'readRecord', 'readBalance', 'openGuestStay', 'searchConfirmation', 'typeHeaderSearch', 'clickHeaderRun', 'pressArrowDown', 'clickInsideSearch', 'quickActions', 'readWindow', 'setQuickWindow', 'quickPanel', 'openRecord', 'findStay']) {
+  for (const name of ['shot', 'readRecord', 'readBalance', 'openGuestStay', 'searchConfirmation', 'typeHeaderSearch', 'clickHeaderRun', 'pressArrowDown', 'clickInsideSearch', 'quickActions', 'readWindow', 'setQuickWindow', 'quickPanel', 'closeAppDrawer', 'openRecord', 'findStay']) {
     assert.match(source, new RegExp(`export (async )?function ${name}\\(`), name);
   }
   assert.match(source, /runConfirmationSearch\(io, \{/);
@@ -595,7 +595,7 @@ test('openRecord opens the ExtJS grid row with dblclick, matching stay-lookup/re
   assert.match(body, /gridRow\.first\(\)\.dblclick\(/);
   assert.match(body, /else await row\.dblclick\(/);
   assert.equal(/click\(\s*\{\s*force:\s*true/.test(body), false);
-  assert.match(body, /a\.app-menu-trigger:visible/);
+  assert.match(body, /closeAppDrawer\(page\)/);
   assert.match(body, /lastname/);
   assert.match(body, /undefined,\s*\{\s*timeout:\s*20000\s*\}/);
   assert.equal(/timeout:\s*8000/.test(body), false);
