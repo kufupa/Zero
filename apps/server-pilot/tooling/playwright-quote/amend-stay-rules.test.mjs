@@ -49,14 +49,19 @@ test('parseAmendArgs accepts preview and digest-bound commit', () => {
   assert.deepEqual(parseAmendArgs(args()), {
     ok: true,
     exitCode: 0,
-    args: { request: '/tmp/amend-request.json', mode: 'preview', out: '/tmp/amend-proof', digest: null },
+    args: { request: '/tmp/amend-request.json', mode: 'preview', out: '/tmp/amend-proof', digest: null, property: 'HRCEN' },
   });
   const digest = 'a'.repeat(64);
   assert.deepEqual(parseAmendArgs(args('commit', digest)), {
     ok: true,
     exitCode: 0,
-    args: { request: '/tmp/amend-request.json', mode: 'commit', out: '/tmp/amend-proof', digest },
+    args: { request: '/tmp/amend-request.json', mode: 'commit', out: '/tmp/amend-proof', digest, property: 'HRCEN' },
   });
+});
+
+test('parseAmendArgs accepts --property HRDAV and refuses an unknown code', () => {
+  assert.equal(parseAmendArgs([...args(), '--property', 'HRDAV']).args.property, 'HRDAV');
+  assert.match(parseAmendArgs([...args(), '--property', 'OTHER']).error, /PROPERTY_UNKNOWN/);
 });
 
 test('parseAmendArgs requires a valid digest only for commit', () => {
@@ -97,6 +102,13 @@ test('validateAmendRequest strictly validates field names, values, and date orde
   assert.equal(validateAmendRequest({ ...REQUEST, fields: { adults: 0 } }).reason, 'count_invalid');
   assert.equal(validateAmendRequest({ ...REQUEST, fields: { children: 17 } }).reason, 'count_invalid');
   assert.equal(validateAmendRequest({ ...REQUEST, fields: { roomType: 'NOT-A-ROOM' } }).reason, 'room_type_invalid');
+});
+
+test('amend room types follow the property profile: HRDAV EXKNGB, HRCEN STQN, not the other hotel', () => {
+  assert.equal(validateAmendRequest({ ...REQUEST, fields: { roomType: 'EXKNGB' } }, 'HRDAV').ok, true);
+  assert.equal(validateAmendRequest({ ...REQUEST, fields: { roomType: 'EXKNGB' } }, 'HRCEN').reason, 'room_type_invalid');
+  assert.equal(validateAmendRequest({ ...REQUEST, fields: { roomType: 'STQN' } }, 'HRCEN').ok, true);
+  assert.equal(validateAmendRequest({ ...REQUEST, fields: { roomType: 'STQN' } }, 'HRDAV').reason, 'room_type_invalid');
 });
 
 test('validateAmendCurrent guards exact confirmation, lab surname, status, and current and target dates', () => {

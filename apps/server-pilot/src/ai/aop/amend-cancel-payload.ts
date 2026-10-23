@@ -2,17 +2,7 @@ import { z } from 'zod';
 
 /** CLI flag names only. Never import, require, spawn or call the Playwright scripts. */
 export const AMEND_FIELDS = ['arrival', 'departure', 'adults', 'children', 'roomType'] as const;
-export const AMEND_ROOM_TYPES = [
-  'STQN',
-  'STWN',
-  'SKNG',
-  'EXKNG',
-  'LUXKNG',
-  'SUITE',
-  'DLXKNG',
-  'DLXQN',
-  'DLXTWN',
-] as const;
+const ROOM_TYPE_CODE = /^[A-Z0-9_-]+$/;
 export const CONFIRMATION_NUMBER = /^\d{6,10}-\d{1,2}$/;
 export const AMEND_REQUEST_PATH = 'amend-request.json';
 export const AMEND_OUT_DIR = 'amend-out';
@@ -22,7 +12,6 @@ export const LAB_ARRIVAL_FLOOR = '2027-01-01';
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const AMEND_FIELD_SET = new Set<string>(AMEND_FIELDS);
-const ROOM_TYPE_SET = new Set<string>(AMEND_ROOM_TYPES);
 
 const changeSchema = z.object({
   field: z.string(),
@@ -145,7 +134,7 @@ function amendRefusals(changes: AmendCancelPayloadInput['changes']): string[] {
       else departure = value;
     } else if (row.field === 'adults' || row.field === 'children') {
       if (!occupancy(row.to, row.field)) refusals.push('count_invalid');
-    } else if (row.field === 'roomType' && !ROOM_TYPE_SET.has(value)) {
+    } else if (row.field === 'roomType' && !ROOM_TYPE_CODE.test(value)) {
       refusals.push('room_type_invalid');
     }
   }

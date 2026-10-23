@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertTrackReadyForGuarantee, loadCreateRequest, matchTrackRow, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
-import { createLabtestRefusal, createRoomTypeMismatch, parseCreateProperty } from './create-lab-stay.mjs';
+import { blankRequiredCreateFields, createLabtestRefusal, createRoomTypeMismatch, parseCreateProperty } from './create-lab-stay.mjs';
 import { profileFor } from './property-profile.mjs';
 
 function requiredRequest(extra = {}) {
@@ -343,6 +343,25 @@ test('HRDAV profile accepts STKNG/JNRSUI and refuses Centurion SUITE/STQN', () =
   assert.equal(createRoomTypeMismatch(hrdav, 'STQN'), 'ROOM_TYPE_PROPERTY_MISMATCH');
   assert.equal(createRoomTypeMismatch(hrdav, 'SUITE'), 'ROOM_TYPE_PROPERTY_MISMATCH');
   assert.equal(createRoomTypeMismatch(profileFor('HRCEN'), 'STQN'), null);
+});
+
+test('HRDAV create with a blank reservation note is refused before Save; HRCEN allows it', () => {
+  const filled = {
+    arrivaldate: '01-JAN-2027',
+    departuredate: '02-JAN-2027',
+    adults: '1',
+    sourceofbusinessdesc: 'Walk in',
+    roomtype: 'STKNG',
+    rateplan: 'BAR',
+    track: 'BAR',
+    firstname: 'Proof',
+    lastname: 'Labtest',
+    guaranteetype: 'Non-Guaranteed Individual',
+  };
+  assert.deepEqual(blankRequiredCreateFields(profileFor('HRDAV'), filled), ['reservationnote']);
+  assert.deepEqual(blankRequiredCreateFields(profileFor('HRDAV'), { ...filled, reservationnote: '   ' }), ['reservationnote']);
+  assert.deepEqual(blankRequiredCreateFields(profileFor('HRDAV'), { ...filled, reservationnote: 'late arrival' }), []);
+  assert.deepEqual(blankRequiredCreateFields(profileFor('HRCEN'), { ...filled, reservationnote: '' }), []);
 });
 
 test('HRDAV Labtest guard is lab-only', () => {

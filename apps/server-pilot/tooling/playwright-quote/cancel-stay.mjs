@@ -12,7 +12,7 @@
 // and clicks its OK once. A cancellation penalty dialog, open before preview or commit clicks OK, refuses the
 // run (refused_penalty). It is recorded and left open; nothing is clicked on it.
 // --allow-real-guest lifts the Labtest guard for one run (on mode). The server passes it; it is never read from the env.
-// Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"] [--last-name Labtest] [--allow-real-guest]
+// Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--property HRCEN|HRDAV] [--reason "Test Reservations"] [--last-name Labtest] [--allow-real-guest]
 // --last-name is optional: when the confirmation does not show in the header quick search, the surname is typed and the row with the exact confirmation is used.
 // Exit: 0 preview_ok|cancelled|already_cancelled; 2 refused_* or usage; 1 other outcome (also writes failure.png).
 // Read-only lookups (find, search-guest) live in stay-lookup.mjs, which imports the helpers exported here.
@@ -29,6 +29,7 @@ import {
 } from './cancel-stay-rules.mjs';
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
 import { snapshotRecordForm } from './stay-lookup-dom.mjs';
+import { parseStayProperty, propertySecretRefusal } from './property-profile.mjs';
 
 const MAX_PICKER_CLICKS = 60;
 const QUICK_WAIT_MS = 8000;
@@ -744,6 +745,8 @@ async function drive(ctx) {
     const cdp = checkCdpEnv(process.env);
     if (!cdp.ok) throw new Error(cdp.error);
     ctx.secret = await readSecret();
+    const hotelMismatch = propertySecretRefusal(ctx.secret, ctx.args.property);
+    if (hotelMismatch) throw new Error(hotelMismatch);
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
     context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
     ctx.page = await context.newPage();
@@ -763,12 +766,18 @@ async function drive(ctx) {
 }
 
 async function main() {
-  const parsed = parseCancelArgs(process.argv.slice(2));
+  const property = parseStayProperty(process.argv.slice(2));
+  if (!property.ok) {
+    process.stderr.write(`${property.error}\n`);
+    return property.exitCode;
+  }
+  const parsed = parseCancelArgs(property.rest);
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
     return parsed.exitCode;
   }
   const { args } = parsed;
+  args.property = property.propertyCode;
   const ctx = { args, dir: resolve(args.out), result: newResult(args), started: Date.now(), page: null, secret: null };
   await mkdir(ctx.dir, { recursive: true, mode: 0o700 });
   const early = preflight(args);
