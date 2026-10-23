@@ -25,10 +25,7 @@ const configuration = {
   ratePolicyConfigurationPath: '/repo/.private/rate-policy.json',
 } as StaffQuoteInstallationConfiguration;
 
-afterEach(() => {
-  vi.restoreAllMocks();
-  vi.unstubAllEnvs();
-});
+afterEach(() => vi.restoreAllMocks());
 
 describe('paneStaySpawnEnv', () => {
   it('passes the installed borrowed browser and credential file, like the staff quote spawner', () => {

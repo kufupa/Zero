@@ -327,6 +327,7 @@ describe('pane stay cancel', () => {
       arrival: '2027-09-14',
       reason: null,
       allowRealGuest: false,
+      target: CENTURION_HMS_READ_TARGET,
     });
   });
 
