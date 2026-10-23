@@ -936,12 +936,14 @@ describe('staff_quote HMS job execution', () => {
         name: 'Error',
         code: 'synthetic_native_reader_reached',
         message: 'Staff quote execution failed.',
+        reason: 'synthetic_native_reader_reached',
       },
     });
     expect(Object.keys((thrown as Error & { cause: Record<string, unknown> }).cause)).toEqual([
       'name',
       'code',
       'message',
+      'reason',
     ]);
     expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
     expect(jobMocks.markRetry).toHaveBeenCalledWith(
@@ -1051,12 +1053,45 @@ describe('staff_quote HMS job execution', () => {
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [
+      'missing party',
+      new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'HMS did not confirm the picked company or agency. Search again and pick it.',
+        cause: { reason: 'not_found' },
+      }),
+    ],
+    [
+      'invalid extras',
+      new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'The extras on this quote are not valid. Check the amounts and counts, then run the quote again.',
+        cause: { reason: 'invalid_extras' },
+      }),
+    ],
+  ])('stores a catalog refusal with a wrapped cause as a successful job: %s', async (_label, error) => {
+    const { run, fence } = fixture();
+    jobMocks.runStaffQuote.mockRejectedValue(error);
+
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('succeeded');
+
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        readResult: expect.objectContaining({ ok: false, code: error.code }),
+      }),
+      db,
+    );
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
+
   it('retries an unavailable party verification instead of caching it as a refusal', async () => {
     const { run, fence } = fixture();
     jobMocks.runStaffQuote.mockRejectedValue(
       new TRPCError({
         code: 'PRECONDITION_FAILED',
         message: "Nava couldn't check the picked company or agency in HMS. Try again.",
+        cause: { reason: 'unverified' },
       }),
     );
 
@@ -1132,6 +1167,11 @@ describe('staff_quote HMS job execution', () => {
     })],
     ['unknown error', new Error('unexpected_native_quote_error')],
     ['internal tRPC error', new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Internal failure.' })],
+    ['unexpected EIO copied onto reason', new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Staff quote execution failed.',
+      cause: { name: 'Error', code: 'EIO', reason: 'EIO', message: 'Staff quote execution failed.' },
+    })],
   ])('retries transient staff quote failures: %s', async (_label, error) => {
     const { run, fence } = fixture();
     jobMocks.runStaffQuote.mockRejectedValue(error);

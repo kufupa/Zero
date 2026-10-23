@@ -101,11 +101,11 @@ export function staffExtrasOrBadRequest(
       : 0;
     return { proposal, extraTotal };
   } catch {
-    throw new TRPCError({
-      code: 'BAD_REQUEST',
-      message:
-        'The extras on this quote are not valid. Check the amounts and counts, then run the quote again.',
-    });
+    refuseQuote(
+      'invalid_extras',
+      'The extras on this quote are not valid. Check the amounts and counts, then run the quote again.',
+      { code: 'BAD_REQUEST' },
+    );
   }
 }
 
@@ -442,6 +442,18 @@ const PARTY_VERIFY_COPY: Record<string, string> = {
   refused_flag_off: PARTY_LOOKUP_OFF_NOTE,
 };
 
+function refuseQuote(
+  reason: string,
+  message: string,
+  options: { code?: TRPCError['code']; cause?: object } = {},
+): never {
+  throw new TRPCError({
+    code: options.code ?? 'PRECONDITION_FAILED',
+    message,
+    cause: options.cause ? Object.assign(options.cause, { reason }) : { reason },
+  });
+}
+
 /**
  * Re-checks each picked party in HMS and returns the HMS id and name. A pick HMS does not confirm is refused before any
  * rate is bound, so an id the client made up never reaches a quote.
@@ -452,13 +464,16 @@ export async function verifyStaffParties(
 ): Promise<StaffQuoteParties> {
   const verified: StaffQuoteParties = {};
   const refuse = (reason: string): never => {
-    throw new TRPCError({
-      code: 'PRECONDITION_FAILED',
-      message: PARTY_VERIFY_COPY[reason] ?? PARTY_VERIFY_COPY.unverified!,
-      ...(reason === 'refused_lock_busy'
+    const catalog = Object.prototype.hasOwnProperty.call(PARTY_VERIFY_COPY, reason)
+      ? reason
+      : 'unverified';
+    refuseQuote(
+      catalog,
+      PARTY_VERIFY_COPY[catalog]!,
+      reason === 'refused_lock_busy'
         ? { cause: Object.assign(new Error('HMS party verification lock busy'), { code: 'HMS_LOCK_BUSY' }) }
-        : {}),
-    });
+        : {},
+    );
   };
   if (parties.company) {
     const result = await verifyPartyPick({
@@ -584,7 +599,7 @@ export async function runStaffQuote(
     .where(and(eq(message.id, input.messageId), eq(message.transportId, identity.transportId)))
     .limit(1);
   if (!mail || mail.direction !== 'inbound')
-    throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
+    refuseQuote('mail_not_found', 'Selected inbound email not found', { code: 'NOT_FOUND' });
   const systemPrepared = identity.user === undefined;
   const quoteTarget = await resolveHmsQuoteJobTarget({
     transportId: identity.transportId,
@@ -593,22 +608,18 @@ export async function runStaffQuote(
     env: process.env,
   });
   if (!quoteTarget.ok) {
-    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: quoteTarget.message });
+    refuseQuote('quote_davinci_disabled', quoteTarget.message, {
+      cause: { code: quoteTarget.code },
+    });
   }
   let config: ReturnType<typeof readInstalledStaffQuoteConfiguration>;
   try {
     config = readInstalledStaffQuoteConfiguration(quoteTarget.target.propertyCode);
   } catch {
-    throw new TRPCError({
-      code: 'PRECONDITION_FAILED',
-      message: 'Staff quotation installation unavailable',
-    });
+    refuseQuote('installation_unavailable', 'Staff quotation installation unavailable');
   }
   if (config.owner.propertyCode !== quoteTarget.target.propertyCode) {
-    throw new TRPCError({
-      code: 'PRECONDITION_FAILED',
-      message: 'Staff quotation installation unavailable',
-    });
+    refuseQuote('installation_unavailable', 'Staff quotation installation unavailable');
   }
   const scope = {
     transportId: identity.transportId,
@@ -655,10 +666,10 @@ export async function runStaffQuote(
   try {
     prepared = prepare();
   } catch {
-    throw new TRPCError({
-      code: 'PRECONDITION_FAILED',
-      message: 'Selected email changed or stay inputs are incomplete; review and retry',
-    });
+    refuseQuote(
+      'inputs_incomplete',
+      'Selected email changed or stay inputs are incomplete; review and retry',
+    );
   }
   const generationId = randomUUID();
   const workflowRunId = options.preparedRunId ?? randomUUID();
@@ -708,10 +719,7 @@ export async function runStaffQuote(
   };
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl)
-    throw new TRPCError({
-      code: 'PRECONDITION_FAILED',
-      message: 'Staff quotation database unavailable',
-    });
+    refuseQuote('database_unavailable', 'Staff quotation database unavailable');
   const evidence: { directory?: string } = {};
   const queued = systemPrepared
     ? { setPhase: (_index: number) => undefined, end: () => undefined }
@@ -884,14 +892,15 @@ export async function runStaffQuote(
           .set({ status: 'failed', errorMessage: 'staff_quote_not_qualified' })
           .where(eq(aiDraftGeneration.id, generationId));
       }
-      throw new TRPCError({
-        code: 'PRECONDITION_FAILED',
-        message: staffQuoteFailureMessage(error, {
+      const cause = staffQuoteCauseSummary(error);
+      refuseQuote(
+        cause.code,
+        staffQuoteFailureMessage(error, {
           salesStrategy: input.salesStrategy,
           dinnerRequested: input.groups.some((group) => group.board === 'dinner_bb'),
         }),
-        cause: staffQuoteCauseSummary(error),
-      });
+        { cause },
+      );
     }
     queued.setPhase(3);
     // Any failure after pricing must not leave this generation 'running'.
@@ -922,10 +931,7 @@ export async function runStaffQuote(
         });
       }
       if (!(await stillCurrent()))
-        throw new TRPCError({
-          code: 'PRECONDITION_FAILED',
-          message: 'Selected email changed while pricing',
-        });
+        refuseQuote('source_changed', 'Selected email changed while pricing');
     } catch (error) {
       await markGenerationFailed('staff_quote_post_pricing_failed');
       throw error;
