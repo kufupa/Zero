@@ -400,6 +400,28 @@ Two never-completed write types (HRCEN amend + POP) are 360 of those minutes. If
 | T+435 | merge stop | | |
 | T+450 | **Final deploy** | amend finishes ~T+460 → quote → multi-stay → POP (D6) | multi-stay → POP |
 
+## 9a. Go-live switch schedule (owner ask 200)
+
+**The switches are per workflow** (`PANE_WRITE_CREATE`, `PANE_WRITE_AMEND_UNPAID`, `PANE_WRITE_CANCEL_UNPAID`; the `*_PAID` ones stay off). "On" still means staff click Book/Amend/Cancel and review the screenshot; Nava never writes on its own.
+
+**Rule:** a workflow switches `lab → on` for one hotel as soon as its Labtest cell passes on the **currently deployed** SHA. It doesn't wait for the 7.5 h mark or the whole grid. A later deploy that touches that workflow's files triggers a ~10 min re-proof before the switch stays on. The flip is done by Opus in the executing chat (the approval stays in that chat), with a `/proc` check on all 4 procs.
+
+Clock assumes T0 = 01:45Z (staff start 05:00Z = T+195):
+
+| Workflow | Centurion on (≈ UTC / SAST) | Da Vinci on | Notes |
+|---|---|---|---|
+| Quote PDF/Excel + Find booking | **already live** | DV quote after D-B + a 3-thread check ≈ 05:45Z / 07:45 | quote price bar not passed (score runs later); staff review every quote |
+| Create provisional | ≈ 05:25Z / 07:25 | ≈ 05:50–06:45Z | DV +55 min if preflight finds a new blocker |
+| Cancel unpaid | ≈ 06:25Z / 08:25 | ≈ 06:45Z | |
+| Amend unpaid | ≈ 09:25Z / 11:25 | ≈ 09:55Z | only if U5-E deposit check passes; otherwise it stays lab and the pane says "Amend in Infor" |
+| Multi-stay | ≈ 10:50Z / 12:50 | ≈ 11:20Z | uses the create switch; per-stay UI ships in D-B/D-C |
+| POP attach | ≈ 13:50Z / 15:50 | after the DV Documents probe | until then the pane says "Download to this computer" |
+
+**Staff impact during the run:**
+- Deploys D-B (≈ 05:25Z), D-C (≈ 07:25Z) and the final one (≈ 09:15Z) land in staff hours. Each causes a ~1 min restart; the pane picks up the new bundle on reload.
+- Proof jobs share the hotel's HMS browser with staff. U0 takes the property lock **per job, not per cell**, so a staff lookup waits at most one proof job (~1–3 min; commit p50 35 s, lookup p50 18 s).
+- If staff waits exceed 2 min, the orchestrator pauses the proof queue for that hotel.
+
 ## 10. Scope boundaries
 
 **In:** the units above; ask rows 185–195.
@@ -430,7 +452,7 @@ Two never-completed write types (HRCEN amend + POP) are 360 of those minutes. If
 | D2 | Write switches at go-live for Faith/Bongi | Keep `lab` until each cell passes on the final SHA; owner flips per workflow in the morning | `lab` |
 | D3 | Watchdog cadence | **Decided: 50 min** (owner) | — |
 | D4 | Orchestrator + coding pipeline | **Decided:** Grok 4.6 high drives and codes → smart PRs → Greptile Plus/Apex → 4.6 fixes → repeat; re-strategise after 3 loops (owner) | — |
-| D6 | Proofs continue after the final deploy (no more deploys; failures → open PR for the morning) | **Yes**: grid needs ~13 h, coding ~5.5 h | Stop at T+480 with partial grid |
+| D6 | Proofs continue after the final deploy | **Decided yes** (owner 2026-10-23 01:30Z) | — |
 | D5 | Codex Sol computer-use | Offline only: Sol reads the saved dumps/screenshots to design selectors. Driving live HMS, even Labtest, needs an explicit rule change | Offline only |
 
 ---
