@@ -68,6 +68,7 @@ afterEach(() => {
   paneStayLookupLoaders.enabled = null;
   paneStaySaveLoaders.spawn = null;
   paneStaySaveLoaders.lock = null;
+  paneStaySaveLoaders.mode = null;
   paneStayCancelLoaders.spawn = null;
   paneStayCancelLoaders.lock = null;
   paneStayCancelLoaders.mode = null;
@@ -206,6 +207,79 @@ describe('hms-proof-run refusals', () => {
       paneStayCancelLoaders.mode = null;
       await rm(outDir, { recursive: true, force: true });
     }
+  });
+
+  it('create with PANE_WRITE_CREATE=on allows a Labtest request', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn(async () => ({
+      outcome: 'previewed',
+      clickedSave: false,
+      screenshots: [],
+      previewDigest: 'a'.repeat(64),
+    }));
+    paneStaySaveLoaders.spawn = spawn;
+    const outDir = await mkdtemp(join(tmpdir(), 'hms-proof-create-on-lab-'));
+    try {
+      paneStaySaveLoaders.mode = () => 'on';
+      const line = await hmsProofRun(
+        parseProofRunArgs(
+          argv(
+            'create',
+            {
+              ...LAB,
+              adults: 1,
+              departure: '2027-03-11',
+              roomType: 'STQN',
+              ratePlan: 'BAR',
+            },
+            { out: outDir },
+          ),
+        ),
+        { ...WRITE_LAB, PANE_WRITE_CREATE: 'on' },
+        createLock,
+      );
+      expect(line.command).toBe('create');
+      expect(line.reason).not.toBe('refused_write_not_lab');
+      expect(spawn).toHaveBeenCalled();
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it('create with PANE_WRITE_CREATE=on still refuses a non-Labtest request', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn();
+    paneStaySaveLoaders.spawn = spawn;
+    await expect(
+      hmsProofRun(
+        parseProofRunArgs(argv('create', { ...LAB, lastName: 'Smith' })),
+        { ...WRITE_LAB, PANE_WRITE_CREATE: 'on' },
+        createLock,
+      ),
+    ).rejects.toThrow(/refused_not_lab$/);
+    expect(createLock).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('create with PANE_WRITE_CREATE=on refuses nested non-Labtest stay fields', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn();
+    paneStaySaveLoaders.spawn = spawn;
+    await expect(
+      hmsProofRun(
+        parseProofRunArgs(
+          argv('create', {
+            lastName: 'Labtest',
+            arrival: '2027-03-10',
+            stay: { lastName: 'Smith', arrival: '2027-03-10', adults: 1 },
+          }),
+        ),
+        { ...WRITE_LAB, PANE_WRITE_CREATE: 'on' },
+        createLock,
+      ),
+    ).rejects.toThrow(/refused_not_lab$/);
+    expect(createLock).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it('refuses commit without a preview digest before any lock or spawn', async () => {

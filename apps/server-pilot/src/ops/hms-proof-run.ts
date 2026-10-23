@@ -142,8 +142,15 @@ function textField(request: Record<string, unknown>, key: string): string {
 }
 
 function assertLabRequest(request: Record<string, unknown>): void {
-  const lastName = textField(request, 'lastName');
-  const arrival = textField(request, 'arrival');
+  const stay = stayFromProofRequest(request);
+  const lastName =
+    typeof stay.lastName === 'string' && stay.lastName.trim() !== ''
+      ? stay.lastName.trim()
+      : textField(request, 'lastName');
+  const arrival =
+    typeof stay.arrival === 'string' && stay.arrival.trim() !== ''
+      ? stay.arrival.trim()
+      : textField(request, 'arrival');
   if (!LABTEST.test(lastName) || arrival < LAB_ARRIVAL_FLOOR) {
     throw new Error('refused_not_lab');
   }
@@ -160,7 +167,7 @@ function assertWriteFlagsLab(command: ProofRunCommand, env: NodeJS.Dict<string>)
         : command === 'cancel'
           ? modes.cancelUnpaid
           : paneHmsWriteMode(env);
-  if (needed !== 'lab') throw new Error('refused_write_not_lab');
+  if (needed === 'off') throw new Error('refused_write_not_lab');
 }
 
 function previewDigestOf(request: Record<string, unknown>): string | undefined {
