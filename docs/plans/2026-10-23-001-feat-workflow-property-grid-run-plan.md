@@ -67,6 +67,22 @@ Most workflows have code, and some have tests. Almost none are proven end to end
 
 ---
 
+## 1a. Why Centurion still takes hours when most code exists (owner question, 2026-10-23)
+
+**Most code exists. Time goes to the first confirmed result on live HMS, not to typing.** Per workflow, what exists, what is new, and where the minutes go (scoping reports 2026-10-23, file refs in §4):
+
+| Workflow | Already built | New code (product lines) | Why the proof is slow | HRCEN min |
+|---|---|---|---|---:|
+| Create | Pane Book → preview → commit; `create-lab-stay.mjs`; Labtest guard; Reservation Note editor (`booking-card.tsx:872`) | preflight 120–220, readback fix 30–80 | 3 SR3 Saves all returned `committed_unverified`: the booking was made but **reading it back failed**. Root cause not captured, so 1 evidence read + fix + re-Save | 90 |
+| Cancel | Pane preview → reason → digest commit → screenshot; unpaid re-check at commit | penalty states 70–120, stale-screen recovery 15–30 | 1/2 worked from the CLI; the other hit a leftover penalty dialog. **The pane path itself has never run once** | 60 |
+| Amend | Preview diff, digest commit, unpaid gate, staff fallback copy | blank-deposit keep 20–40, room list 25–45 | **0 commits ever**: both SR3 tries died on 10/15-min SSM timeouts before Save. U6 removes that cause, but the first commit is still a first | 180 |
+| POP attach | `attach-document.mjs`, `hms-attach-once.ts`, Find booking card | pane → attach-form bridge 120–220 | #143 upload made a Documents row but the tool said `upload_unconfirmed`; the matcher was fixed and **never re-run**. The bridge is new | 180 |
+
+- **Why 180 for amend and POP:** it's measured, not padding. The only first-time write we have timed end to end (SR3 create) took 184 min to its first confirmed number. DV create took 73 min and still produced 0 bookings.
+- **What should beat it:** preflight (U3) + U6 job runner remove both known causes (blind Saves, SSM timeouts). If they work, amend and POP land nearer 90.
+- The run reports the actual and closes the ETA-ledger row, so the next estimate is better.
+- **What the run tests (per workflow and hotel):** unit tests on every PR + remote typecheck + Greptile, then one Labtest action through the pane's own server path (U0) → HMS readback of every changed field → screenshot. Pass = readback matches, on the live build.
+
 ## 2. Value gate (read-only prod SQL, 2026-10-23 00:30Z)
 
 Inbound mail over the last 14 days, latest succeeded extraction per message.
@@ -185,17 +201,48 @@ Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan102
 - **Size:** 85–150 + 100–170 → **M, 50 min**.
 - **Tests:** Labtest + penalty with waive → waive clicked, status Cancelled, balance 0; Labtest + penalty with no waive → OK; real guest + penalty → refused, dialog left, nothing clicked; stale screen → one recovery then a clear failure.
 
-### U8. Multi-stay M2 + M3
-- **M2 files:** `src/ai/work-items.ts` (480–495), `apps/mail/lib/quote-workflow/session.ts`, `apps/mail/components/quote-workflow/quote-workflow-panel.tsx`; tests `tests/work-items.test.ts`, `apps/mail/tests/quote-workflow-multi-stay.test.ts`. **35–65 → S, 30 min.**
-- **M3 files:** `src/ai/pane-stay-save.ts`, `src/trpc/routes/quote-workflow.ts` (266–287), `apps/mail/lib/quote-workflow/pane-stay-bind.ts`, `apps/mail/components/quote-workflow/booking-card.tsx`; tests `tests/pane-stay-save.test.ts`, `apps/mail/tests/quote-workflow-multi-stay.test.ts`. **90–150 → M, 50 min.** Depends on M2.
-- **Approach:**
-  - Each stay card has its own action and its own Preview → Commit.
-  - The result (confirmation, status, screenshot) is stored against the stable stay id, so it survives a reload.
-  - Commit refuses a stay that already has a confirmed number.
-  - After an unknown outcome it reads HMS before allowing a retry.
-  - Rooms on the same dates stay one stay; a mixed-room single booking is held (owner ask 168; pane says "Book each room in Infor").
-  - More than 8 stays → visible refusal, not truncation (`schema.ts:199,321`).
-- **Tests:** 2 stays → 2 commits → 2 numbers mapped right after reload; second commit fails → first kept, second retryable after a read; a retry of a confirmed stay is refused; 9 stays → visible error.
+### U8. Multi-stay end to end — one email/thread → N HMS bookings (owner ask 202)
+
+Research: Luna max lane, 2026-10-23 ~02:00Z, read-only, file:line in each row. Case mix: 1.8% CEN / 4.9% DV-side inbound (14 d) carry > 1 stay. Historical 6.7% of quote/booking/amend mails have > 1 date set (undercounted).
+
+**Today:**
+
+| Step | State | Evidence | Gap |
+|---|---|---|---|
+| Extraction | partial | `src/ai/extraction/schema.ts:199-203, 251-303` | ≤ 8 stays; ids hash message id + dates; same-date siblings fall back to array position |
+| Pane shows N stays | partial | `work-items.ts:371-412`, `session.ts:118-130`, `quote-workflow-panel.tsx:1781-1811` | Cards group by extracted stay id, so same-date room types split (owner ask 168: same dates = one booking) |
+| Combined quote PDF/Excel/reply | yes, with limits | `quote-workbook-download.ts:68-105`, `proposal-pdf.ts:199-262`, `reply-body.tsx:69-73` | One offer row per date option; check that every room type shows |
+| Create | partial | `create-tool.schema.json:97-113`, `booking-card.tsx:696-708` | One `roomType` per request; the UI commits each room row separately |
+| Confirmation after reload | **no** | `booking-card.tsx:238-250, 608-660`, `quote-workflow.ts:266-288` | Result lives in React `useState` and is lost on reload |
+| Later amend/cancel of one stay | partial | `amend-lookup-panel.tsx:151-165, 244-252` | Confirmations aren't saved against stays, so a later mail can't link to them |
+| Needs-you / follow-up per stay | **no** | `db/schema/work.ts:132-165`, `quote-followup.ts:52-56` | One status + one `followUpDueAt` per email |
+
+**Target design:**
+- One booking per unique date set, with its room rows and guests under it.
+- Results go in the existing `work_item.state` JSONB, keyed by a stable stay id. **No migration.**
+- Saved HMS confirmation numbers link later mails in the thread to the right stay.
+- Same React pane for Outlook and webmail.
+- Uncertain identity → ask staff, never guess by array position.
+
+**Read-only HMS probe first (MS-P, T+15, HRCEN slot, ~15 min):** can one HMS reservation hold several room types under one confirmation? Capture the New Record room-row controls (U3 dump mode). **Fork, decided by the probe:**
+- **yes** → `rooms[]` in one create (MS3 as written).
+- **no** → one HMS booking per room row, grouped under the date-set stay card. MS3 shrinks to looping the existing single-room create under one digest. Staff see one card and N confirmations.
+
+| Slice | Behaviour | Product files | Tests | Product LOC (guess) | Test LOC (guess) | Depends on | Lane min |
+|---|---|---|---|---:|---:|---|---:|
+| MS1 | Stable date-set stay identity across re-extraction | `extraction/schema.ts`, `work-items.ts` | `tests/extraction-schema.test.ts`, `tests/work-items.test.ts` | 160–260 | 100–180 | — | 60 |
+| MS2 | Pane: one card per date set, room/guest rows; combined quote/reply covers every row | `session.ts`, `quote-workflow-panel.tsx`, `multi-option-draft.ts` | `apps/mail/tests/quote-workflow-multi-stay.test.ts`, `quote-workflow-panel.test.tsx` | 140–240 | 120–200 | MS1 | 55 |
+| MS3 | Server create takes a whole stay (all rooms), one preview digest, one duplicate check | `create-tool.schema.json`, `create-request.mjs`, `create-lab-stay.mjs`, `pane-stay-save.ts`, `trpc/routes/quote-workflow.ts` | `create-lab-stay.test.mjs`, `tests/create-lab-stay-safety.test.ts`, `tests/pane-stay-save.test.ts`, `tests/quote-workflow-router.test.ts` | 220–400 (≈ 80–150 if probe = no) | 160–260 | MS1, MS-P, U1, U4 | 70 |
+| MS4 | Pane books the whole stay | `pane-stay-bind.ts`, `booking-card.tsx`, `quote-workflow-panel.tsx` | `booking-card.test.tsx`, `quote-workflow-panel.test.tsx` | 150–250 | 120–220 | MS2, MS3 | 55 |
+| MS5 | Per-stay result persisted; reload restores; retry of a confirmed stay refused; unknown outcome → read HMS first | `work-items.ts`, `trpc/routes/quote-workflow.ts`, `booking-card.tsx` | `tests/work-items.test.ts`, `tests/pane-stay-save.test.ts`, `booking-card.test.tsx` | 180–300 | 140–240 | MS4 | 60 |
+| MS6 | Later amend/cancel picks one saved stay confirmation; outcome stored per stay; other stays untouched | `amend-lookup-panel.tsx`, amend/cancel routes, `work-items.ts` | `amend-find-panel.test.tsx`, `tests/pane-stay-amend.test.ts`, `tests/pane-stay-cancel.test.ts` | 180–350 | 130–220 | MS5, U7 | 60 |
+| MS7 | Needs-you + follow-up per stay under one email parent (**absorbs U10-F2**, same files) | `quote-followup.ts`, `work-items.ts`, `trpc/routes/work-items.ts`, `screens/needs-you.tsx` | `tests/quote-followup.test.ts`, `tests/work-items.test.ts`, `needs-you.test.tsx` | 180–320 | 130–220 | MS5, MS6, U10-F1 | 60 |
+
+**Totals:** 1,210–2,120 product + 900–1,540 test lines (guesses), 7 PRs, each ≤ 500. **Code chain:** MS1 60 → MS3 70 → MS4 55 → MS5 60 → MS6 60 → MS7 60 = **~365 min** (MS2 runs alongside MS3). Starts at T0, so the chain lands ≈ T+365, inside the coding window.
+
+**Proof (HRCEN then HRDAV):** one Labtest mail with 2 date sets, one of them with 2 room types → combined quote → book both stays → N confirmations → reload keeps them → amend one stay, check the other is unchanged → cancel both → Needs-you closes each stay. HRCEN 60 min; HRDAV 30 min after.
+
+**Done in staff terms:** one email shows N date-set stays with their rooms; one quote covers everything; each stay gets its HMS confirmation, still there after reload; a later change touches only the chosen stay; Needs-you ticks off each stay.
 
 ### U9. POP/voucher attach bridge (Centurion)
 - **Files:** `src/ai/voucher-find.ts`, `apps/mail/components/quote-workflow/voucher-find-card.tsx`, `apps/mail/components/nava-pane/blocks/booking-voucher-card.tsx`, `src/ai/hms-approval.ts`, `src/ai/pane-hms-write.ts`; tests `apps/mail/tests/voucher-find-card.test.tsx`, `tests/hms-approval.test.ts`, `tests/pane-hms-write.test.ts`.
@@ -239,7 +286,7 @@ Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan102
 - A read-only find of `66865808-1`, `25526053-1` and any `Labtest` 2027–2028 stays.
 - Then cancel each through the U7/U6 path. A delete probe is part of the P1 dump (owner: "delete them"; no delete action exists in the code). Report the final inventory.
 
-**Totals:** 18 PRs, **~1,600–2,800 product lines** + ~1,500–2,500 test lines. Lane minutes ≈ 790 (sum of the above). Largest unit L ≤ 350 lines, under the 500-line PR cap.
+**Totals:** 23 PRs (multi-stay now 7 slices), **~2,700–4,800 product lines** + ~1,500–2,500 test lines. Lane minutes ≈ 790 (sum of the above). Largest unit L ≤ 350 lines, under the 500-line PR cap.
 
 ---
 
@@ -249,15 +296,17 @@ Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan102
 |---|---|
 | `src/ai/pane-hms-write.ts` | U1 → U9 (U0 imports only) |
 | `src/ai/pane-stay-cancel.ts`, `amend-lookup-panel.tsx`, `amend-cancel.ts` | U1 → U7 |
-| `src/ai/pane-stay-save.ts` | U1 → U8-M3 |
+| `src/ai/pane-stay-save.ts` | U1 → U4 → MS3 → MS5 |
+| `booking-card.tsx`, `quote-workflow-panel.tsx`, `trpc/routes/quote-workflow.ts` | MS2 → MS4 → MS5 |
+| `amend-lookup-panel.tsx` | U7 → MS6 |
 | `src/ai/pane-stay-lookup.ts`, `stay-lookup.mjs` | U1 → U5 |
 | `create-lab-stay.mjs` | U2a → U4 (U3 only imports it) |
 | `property-profile.mjs`, `property-profiles/*.json` | U2a → U2b |
 | `src/ai/staff-quote-run.ts` | U13 → U2b |
-| `quote-followup.ts` | U10-F1 → U10-F2 |
-| `work-items.ts` | U8-M2 → U10-F2 |
+| `quote-followup.ts` | U10-F1 → MS7 (U10-F2 merged into MS7) |
+| `work-items.ts` | MS1 → MS5 → MS6 → MS7 |
 
-Disjoint at T0: **U1, U2a, U3, U6, U10-F1, U11, U13** (7 lanes). U0 and U9 are queued behind U1 (`pane-hms-write.ts`, spawn signatures).
+Disjoint at T0: **U1, U2a, U3, U6, U10-F1, U11, U13, MS1** (8 lanes). U0 and U9 are queued behind U1 (`pane-hms-write.ts`, spawn signatures).
 
 ---
 
@@ -281,7 +330,7 @@ Disjoint at T0: **U1, U2a, U3, U6, U10-F1, U11, U13** (7 lanes). U0 and U9 are q
 | Role | Model (effort) | Count at once | Evidence for the choice |
 |---|---|---:|---|
 | Orchestrator (merges, deploys, HMS queue, switch flips in its chat) | Grok 4.6 high, Orca `g-orch` | 1 | owner 2026-10-23 (D4); SR3 ran with it, failures were idle ticks + wrong-tree deploy, now guarded (§6 tick rule, U6 guard) |
-| Coders, one per unit | Grok 4.6 high, Orca child worktree + terminal, `--no-subagents` | **7 at T0**, then up to 9 | file ownership §5: 7 disjoint units at T0; AGENTS.md "unbounded writers iff disjoint files" |
+| Coders, one per unit | Grok 4.6 high, Orca child worktree + terminal, `--no-subagents` | **8 at T0**, then up to 10 | file ownership §5: 7 disjoint units at T0; AGENTS.md "unbounded writers iff disjoint files" |
 | PR review | Greptile Plus; Apex for U0, U1, U7, U9 or > 500 lines | 1 per PR | memory `feedback-greptile-plus-vs-apex` |
 | Review-comment fixes | the same Grok 4.6 coder | — | owner pipeline §6 Gates |
 | Scoping / research (U2b probe, U5-E write-up, U11 corpus) | Luna max via the Sonnet slot | ≤ 3 | cheap cache reads; AGENTS.md research limits |
@@ -404,12 +453,13 @@ Two never-completed write types (HRCEN amend + POP) are 360 of those minutes. If
 
 | Time | Lanes start | HRCEN slot | DV slot |
 |---|---|---|---|
-| T0 | U1, U6, U2a, U3, U13, U10-F1, U11 | kickoff checks, live SHA | kickoff checks |
-| T+15 | U2b probe (SQL) | **U5-E** paid-vs-unpaid (read-only) → party retest → P1 dump | U5-E DV (after the HRCEN table) |
+| T0 | U1, U6, U2a, U3, U13, U10-F1, U11, **MS1** | kickoff checks, live SHA | kickoff checks |
+| T+15 | U2b probe (SQL) | **MS-P** multi-room probe (read-only) → **U5-E** paid-vs-unpaid (read-only) → party retest → P1 dump | U5-E DV (after the HRCEN table) |
 | T+60 | U0 (on U1 branch), U5 (only if U5-E passed), U2b, U4 | | |
-| T+90 | U7 (from P1 dump), U8-M2, U12 | | |
+| T+60 | MS2 (after MS1), MS3 (after MS-P) | | |
+| T+90 | U7 (from P1 dump), U12 | | |
 | T+130 | **D-A** | create | preflight → create |
-| T+150 | U9, U8-M3, U10-F2 | | |
+| T+150 | U9, MS4 → MS5 → MS6 → MS7 (chain ends ≈ T+365) | | |
 | T+220 | **D-B** (U2b U7 U8 U9 + fixes); DV quote flag on | cancel | cancel |
 | T+280 | fix lanes per 6a | amend | amend after HRCEN passes |
 | T+340 | **D-C** | | quote score |
