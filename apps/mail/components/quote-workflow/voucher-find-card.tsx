@@ -26,13 +26,58 @@ import {
 import { downloadAttachmentViaBlob, type AttachmentAccessInput } from '@/lib/attachment-access';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Notice, SecondaryButton, Section } from '@/components/nava-pane/pane-ui';
+import { Notice, PrimaryButton, SecondaryButton, Section } from '@/components/nava-pane/pane-ui';
 import { HmsLinkActions } from './hms-link-actions';
 import { HmsAsOf, HmsJobStatusLine } from './hms-queue-status';
 
 const captionClass = 'text-[11px] text-[#64748b]';
 const valueClass = 'text-[12.5px] font-semibold text-[#1e293b]';
 const infoNoteClass = 'text-[11.5px] text-[#334155]';
+
+export const VOUCHER_ATTACH_COPY = {
+  attach: 'Attach to HMS booking',
+  attaching: 'Preparing attach…',
+  checkInInfor: 'Check in Infor',
+  documentsRow: 'Documents row in HMS',
+} as const;
+
+export type VoucherAttachBindInput = {
+  workItemId: string;
+  confirmation: string;
+  arrival: string;
+  lastName: string;
+  attachmentId: string;
+};
+
+type VoucherAttachBindReply =
+  | { status: 'bound'; form?: { confirmation?: string; pdfSha256?: string; attachmentId?: string } }
+  | { status: 'refused'; reason: string };
+
+type VoucherAttachWriteView = {
+  run: { state: string; lastError: string | null; evidence: { name: string }[] } | null;
+};
+
+type VoucherAttachClient = {
+  bind?: (input: VoucherAttachBindInput) => Promise<VoucherAttachBindReply>;
+  writeState?: (input: { workItemId: string }) => Promise<VoucherAttachWriteView | null>;
+};
+
+type TrpcAttachRoutes = {
+  quoteWorkflow?: { bindVoucherAttach?: { mutate: NonNullable<VoucherAttachClient['bind']> } };
+  hmsApproval?: {
+    bindAttach?: { mutate: NonNullable<VoucherAttachClient['bind']> };
+    writeState?: { query: NonNullable<VoucherAttachClient['writeState']> };
+  };
+};
+
+function voucherAttachClientFromTrpc(trpc: unknown): VoucherAttachClient | null {
+  if (!trpc || (typeof trpc !== 'object' && typeof trpc !== 'function')) return null;
+  const routes = trpc as TrpcAttachRoutes;
+  const bind = routes.quoteWorkflow?.bindVoucherAttach?.mutate ?? routes.hmsApproval?.bindAttach?.mutate;
+  const writeState = routes.hmsApproval?.writeState?.query;
+  if (!bind && !writeState) return null;
+  return { ...(bind ? { bind } : {}), ...(writeState ? { writeState } : {}) };
+}
 
 function normalizedSurname(value: string): string {
   return value.trim().replace(/\s+/g, ' ').toLowerCase();
@@ -50,6 +95,8 @@ export function VoucherFindCard({
   download = downloadAttachmentViaBlob,
   syncCommitted = null,
   syncPending = false,
+  workItemId = null,
+  writesEnabled = false,
 }: {
   internetMessageId: string | null;
   trpc: unknown;
@@ -59,11 +106,18 @@ export function VoucherFindCard({
   syncCommitted?: number | null;
   /** True while the mailbox sync still has mail to store. Only then does an unstored email show the waiting note. */
   syncPending?: boolean;
+  /** Stored work item the attach form is written onto. */
+  workItemId?: string | null;
+  /** Attach is a write. Hidden when the pane has writes off. */
+  writesEnabled?: boolean;
 }) {
   const findClient = useMemo(() => voucherFindClientFromTrpc(trpc), [trpc]);
   const jobClient = useMemo(() => amendFindClientFromTrpc(trpc), [trpc]);
+  const attachClient = useMemo(() => voucherAttachClientFromTrpc(trpc), [trpc]);
   const [reply, setReply] = useState<VoucherFindReply | null>(null);
   const [save, setSave] = useState<SaveStatus>('idle');
+  const [attach, setAttach] = useState<'idle' | 'binding' | 'bound' | 'refused'>('idle');
+  const [attachWrite, setAttachWrite] = useState<VoucherAttachWriteView | null>(null);
   const [detailsRequested, setDetailsRequested] = useState(false);
   const detailsStartedFor = useRef<string | null>(null);
   const mounted = useRef(false);
@@ -176,6 +230,8 @@ export function VoucherFindCard({
       checkedFor.current = internetMessageId;
       setReply(null);
       setSave('idle');
+      setAttach('idle');
+      setAttachWrite(null);
       setDetailsRequested(false);
       detailsStartedFor.current = null;
     }
@@ -214,6 +270,22 @@ export function VoucherFindCard({
     committedSeen.current = syncCommitted;
     if (showingUnsynced.current) setCheckRound((round) => round + 1);
   }, [syncCommitted]);
+
+  useEffect(() => {
+    if (!attachClient?.writeState || !workItemId) return;
+    let live = true;
+    attachClient.writeState({ workItemId }).then(
+      (view) => {
+        if (live) setAttachWrite(view);
+      },
+      () => {
+        if (live) setAttachWrite(null);
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [attachClient, workItemId, attach]);
 
   if (!reply) return null;
   if (reply.status === 'unsynced') {
@@ -265,6 +337,28 @@ export function VoucherFindCard({
       if (mounted.current) setSave('failed');
     }
   };
+  const unconfirmedAttach = attachWrite?.run?.lastError === 'upload_unconfirmed';
+  const attachSucceeded = attachWrite?.run?.state === 'succeeded';
+  const canAttach = Boolean(
+    singleMatch && file && workItemId && writesEnabled && !unconfirmedAttach && !attachSucceeded,
+  );
+  const bindAttach = async () => {
+    if (!singleMatch || !file || !workItemId || !attachClient?.bind || attach === 'binding') return;
+    setAttach('binding');
+    try {
+      const result = await attachClient.bind({
+        workItemId,
+        confirmation: singleMatch.confirmation,
+        arrival: singleMatch.arrival ?? voucherGuest?.arrival ?? '',
+        lastName: singleMatch.lastName,
+        attachmentId: file.id,
+      });
+      if (!mounted.current) return;
+      setAttach(result.status === 'bound' ? 'bound' : 'refused');
+    } catch {
+      if (mounted.current) setAttach('refused');
+    }
+  };
 
   // The id is the preview gate's sign that a voucher-only pane has settled (VOUCHER_CARD_SELECTOR in nava-preview-run.ts).
   return (
@@ -310,7 +404,7 @@ export function VoucherFindCard({
             <span data-pii className={captionClass}>
               {file.filename}
             </span>
-            {save === 'saved' ? (
+            {save === 'saved' && !unconfirmedAttach ? (
               <span role="status" className={infoNoteClass}>
                 {VOUCHER_COPY.saved}
               </span>
@@ -347,6 +441,11 @@ export function VoucherFindCard({
               }
             }}
             onRetryDetails={detailsJob.retry}
+            canAttach={canAttach}
+            attaching={attach === 'binding'}
+            unconfirmedAttach={unconfirmedAttach}
+            documentsSeen={attachSucceeded && (attachWrite?.run?.evidence.length ?? 0) > 0}
+            onAttach={() => void bindAttach()}
           />
         ) : null}
       </div>
@@ -402,6 +501,11 @@ function MatchedBooking({
   showReadDetails,
   onReadDetails,
   onRetryDetails,
+  canAttach,
+  attaching,
+  unconfirmedAttach,
+  documentsSeen,
+  onAttach,
 }: {
   row: GuestSearchRow;
   detailRun: HmsFindRun | null;
@@ -414,6 +518,11 @@ function MatchedBooking({
   showReadDetails: boolean;
   onReadDetails: () => void;
   onRetryDetails: () => void;
+  canAttach: boolean;
+  attaching: boolean;
+  unconfirmedAttach: boolean;
+  documentsSeen: boolean;
+  onAttach: () => void;
 }) {
   const guest = [row.firstName, row.lastName].filter(Boolean).join(' ') || 'Name not shown';
   const dates = row.arrival
@@ -446,6 +555,21 @@ function MatchedBooking({
         queueFailureMessage={detailQueueFailureMessage ?? AMEND_FIND_COPY.lookupFailed}
       />
       <HmsLinkActions confirmation={row.confirmation} guestSurname={row.lastName} arrival={row.arrival} />
+      {unconfirmedAttach ? (
+        <Notice tone="warn" role="status">
+          {VOUCHER_ATTACH_COPY.checkInInfor}
+        </Notice>
+      ) : null}
+      {documentsSeen && !unconfirmedAttach ? (
+        <p role="status" className={infoNoteClass}>
+          {VOUCHER_ATTACH_COPY.documentsRow}
+        </p>
+      ) : null}
+      {canAttach ? (
+        <PrimaryButton disabled={attaching} onClick={onAttach}>
+          {attaching ? VOUCHER_ATTACH_COPY.attaching : VOUCHER_ATTACH_COPY.attach}
+        </PrimaryButton>
+      ) : null}
     </div>
   );
 }

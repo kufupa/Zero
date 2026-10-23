@@ -27,6 +27,7 @@ import {
 } from '../src/ai/pane-stay-lookup.js';
 import {
   PANE_ATTACH_MAX_BYTES,
+  bindAttachDocumentForm,
   cancelExpectStay,
   paneHmsWriteLoaders,
   paneHmsWriteMode,
@@ -943,5 +944,87 @@ describe('pane HMS write property target', () => {
       }),
     ).resolves.toEqual({ status: 'refused', reason: 'refused_unknown_transport' });
     expect(spawned).toBe(false);
+  });
+});
+
+describe('pane HMS attach bridge (U9)', () => {
+  it('binds the attach form to the matched stay and the PDF hash', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedWriteItem(db, { state: {} });
+      await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
+      const bound = await bindAttachDocumentForm({
+        db,
+        transportId: TRANSPORT_ID,
+        workItemId,
+        confirmation: CONFIRMATION,
+        arrival: ARRIVAL,
+        lastName: 'Labtest',
+        attachmentId: 'att-1',
+      });
+      expect(bound).toEqual({
+        status: 'bound',
+        form: {
+          action: 'attach_document',
+          confirmation: CONFIRMATION,
+          arrival: ARRIVAL,
+          lastName: 'Labtest',
+          attachmentId: 'att-1',
+          documentName: 'Confirmation.pdf',
+          pdfSha256: sha256(PDF_BYTES),
+        },
+      });
+      expect(await stateOf(db, workItemId)).toMatchObject(
+        bound.status === 'bound' ? bound.form : {},
+      );
+    });
+  });
+
+  it('refuses the run when the PDF hash no longer matches the approved form, with no upload', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const pdfSha256 = sha256(PDF_BYTES);
+      const workItemId = await seedWriteItem(db, {
+        state: { ...ATTACH_FORM, pdfSha256 },
+      });
+      const other = Buffer.from('%PDF-1.7\n%other document\n');
+      await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: other });
+      await prepare(db, workItemId);
+      await approve(db, workItemId);
+      const run = await claimWrite(db);
+      expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
+        status: 'ended',
+        failureClass: 'POLICY_BLOCK',
+        reason: 'attachment_hash_changed',
+      });
+      expect(attachCalls).toHaveLength(0);
+      expect(await eventsOf(db, workItemId, 'approval.consumed')).toHaveLength(0);
+    });
+  });
+
+  it('upload_unconfirmed is not a success and blocks a second attach', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedWriteItem(db, { state: ATTACH_FORM });
+      await seedPdf(db, storage, { id: 'att-1', messageId: 'msg-1', body: PDF_BYTES });
+      await prepare(db, workItemId);
+      await approve(db, workItemId);
+      onAttach = async () => {
+        const runDir = await runDirWithPngs(['before.png', 'after.png']);
+        return {
+          outcome: 'upload_unconfirmed',
+          uploadSent: true,
+          listed: false,
+          screenshots: ['before.png', 'after.png'],
+          runDir,
+        };
+      };
+      const run = await claimWrite(db);
+      expect(await runPaneHmsWriteOnce({ ...run, db, env: ENV })).toEqual({
+        status: 'ended',
+        failureClass: 'UNKNOWN',
+        reason: 'upload_unconfirmed',
+      });
+      expect(attachCalls).toHaveLength(1);
+      expect((await runRow(db, run.runId)).state).not.toBe('succeeded');
+      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'needs_check_open' });
+    });
   });
 });

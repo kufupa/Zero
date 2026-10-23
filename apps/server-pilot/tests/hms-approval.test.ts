@@ -1320,3 +1320,47 @@ describe('HMS write review and write state', () => {
     });
   });
 });
+
+describe('HMS attach form digest and unconfirmed upload (U9)', () => {
+  const ATTACH_HASH = 'a'.repeat(64);
+  const ATTACH_FORM = {
+    action: 'attach_document',
+    confirmation: '57291630-1',
+    arrival: '2027-09-14',
+    lastName: 'Labtest',
+    attachmentId: 'att-1',
+    documentName: 'Confirmation.pdf',
+    pdfSha256: ATTACH_HASH,
+  };
+
+  it('the attach form digest covers the PDF hash, so a changed hash is a different approval', () => {
+    expect(formDigest(ATTACH_FORM)).not.toBe(
+      formDigest({ ...ATTACH_FORM, pdfSha256: 'b'.repeat(64) }),
+    );
+    expect(formDigest(ATTACH_FORM)).toBe(formDigest({ ...ATTACH_FORM }));
+  });
+
+  it('upload_unconfirmed leaves needs-check open and refuses another approval', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const workItemId = await seedItem(db, { form: ATTACH_FORM });
+      await approve(db, workItemId);
+      const claim = await claimWrite(db);
+      await consumeHmsWriteApproval({ db, runId: claim.runId, fence: claim.fence, now: NOW });
+      expect(
+        await endHmsWriteRun({
+          db,
+          fence: claim.fence,
+          failureClass: 'UNKNOWN',
+          reason: 'upload_unconfirmed',
+        }),
+      ).toBe(true);
+      const view = await hmsWriteStateOf({ db, transportId: TRANSPORT_ID, workItemId, now: NOW });
+      expect(view).toMatchObject({
+        needsCheck: true,
+        form: ATTACH_FORM,
+        run: { lastError: 'upload_unconfirmed' },
+      });
+      await expect(approve(db, workItemId)).rejects.toMatchObject({ refusal: 'needs_check_open' });
+    });
+  });
+});

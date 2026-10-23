@@ -80,6 +80,8 @@ export function BookingVoucherCard({
           trpc={trpcClient}
           syncCommitted={syncCommitted}
           syncPending={syncPending}
+          workItemId={workItemId}
+          writesEnabled={writesEnabled}
         />
       ) : null}
     </>

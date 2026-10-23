@@ -106,6 +106,8 @@ function isPdfDocumentName(name: string): boolean {
   return [...name].every((char) => char.charCodeAt(0) >= 0x20);
 }
 
+const PDF_SHA256 = /^[a-f0-9]{64}$/;
+
 const attachFormSchema = z.object({
   action: z.literal('attach_document'),
   confirmation: z.string().regex(CONFIRMATION),
@@ -113,6 +115,8 @@ const attachFormSchema = z.object({
   lastName: z.string().trim().min(1).max(100),
   attachmentId: z.string().min(1).max(200),
   documentName: z.string().max(120).refine(isPdfDocumentName),
+  /** Digest of the PDF staff approved. A later change of the stored bytes is refused before upload. */
+  pdfSha256: z.string().regex(PDF_SHA256).optional(),
 });
 
 const cancelFormSchema = z.object({
@@ -220,6 +224,84 @@ function pdfRefusal(body: Buffer): string | null {
   return body.subarray(0, PDF_MAGIC.length).equals(PDF_MAGIC) ? null : 'attachment_not_pdf';
 }
 
+function pdfBytesHash(body: Buffer): string {
+  return createHash('sha256').update(body).digest('hex');
+}
+
+function attachDocumentName(filename: string): string | null {
+  const base = filename.split(/[\\/]/).pop()?.trim() ?? '';
+  return isPdfDocumentName(base) ? base : null;
+}
+
+export type BindAttachDocumentResult =
+  | { status: 'bound'; form: AttachForm }
+  | { status: 'refused'; reason: string };
+
+/**
+ * Stores the existing attach form on the work item, bound to one stay and the PDF's sha256. Approval and the
+ * hms-attach-once runner then use that form. Nothing is uploaded here.
+ */
+export async function bindAttachDocumentForm(input: {
+  db?: DB;
+  transportId: string;
+  workItemId: string;
+  confirmation: string;
+  arrival: string;
+  lastName: string;
+  attachmentId: string;
+}): Promise<BindAttachDocumentResult> {
+  const db = input.db ?? getDb();
+  const [item] = await db
+    .select({
+      id: workItem.id,
+      state: workItem.state,
+      status: workItem.status,
+      sourceMessageId: workItem.sourceMessageId,
+    })
+    .from(workItem)
+    .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
+    .limit(1);
+  if (!item) return { status: 'refused', reason: 'not_found' };
+  if (item.status === 'done' || item.status === 'dismissed') return { status: 'refused', reason: 'not_open' };
+  if (!item.sourceMessageId) return { status: 'refused', reason: 'source_mail_missing' };
+  const [row] = await db
+    .select({
+      messageId: attachment.messageId,
+      filename: attachment.filename,
+      mimeType: attachment.mimeType,
+      sha256: attachment.sha256,
+    })
+    .from(attachment)
+    .innerJoin(message, eq(message.id, attachment.messageId))
+    .where(and(eq(attachment.id, input.attachmentId), eq(message.transportId, input.transportId)))
+    .limit(1);
+  if (!row || row.messageId !== item.sourceMessageId) return { status: 'refused', reason: 'attachment_not_found' };
+  const namedPdf = row.mimeType === 'application/pdf' || /\.pdf$/i.test(row.filename);
+  if (!namedPdf) return { status: 'refused', reason: 'attachment_not_pdf' };
+  const pdfSha256 = row.sha256?.toLowerCase() ?? '';
+  if (!PDF_SHA256.test(pdfSha256)) return { status: 'refused', reason: 'attachment_hash_missing' };
+  const documentName = attachDocumentName(row.filename);
+  if (!documentName) return { status: 'refused', reason: 'form_invalid' };
+  const candidate = {
+    action: 'attach_document' as const,
+    confirmation: input.confirmation,
+    arrival: input.arrival,
+    lastName: squash(input.lastName),
+    attachmentId: input.attachmentId,
+    documentName,
+    pdfSha256,
+  };
+  const parsed = attachFormSchema.safeParse(candidate);
+  if (!parsed.success) return { status: 'refused', reason: 'form_invalid' };
+  const refusal = formRefusal(parsed.data);
+  if (refusal) return { status: 'refused', reason: refusal };
+  const snapshot = item.state.hmsSnapshot;
+  const state: Record<string, unknown> = { ...parsed.data };
+  if (snapshot !== undefined) state.hmsSnapshot = snapshot;
+  await db.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, item.id));
+  return { status: 'bound', form: parsed.data };
+}
+
 export type PaneHmsPrepareResult =
   | { status: 'stored'; readAt: string; stay: PaneStayFields }
   | { status: 'refused'; reason: string };
@@ -321,6 +403,8 @@ export type PaneAttachSpawnResult = {
   outcome: string;
   /** True once the upload request left the browser. A failure after that leaves the upload unconfirmed. */
   uploadSent: boolean;
+  /** True when the Documents tab listed the uploaded file. */
+  listed?: boolean;
   /** PNG names or absolute paths, as the CLI reports them. */
   screenshots: string[];
   /** Absolute directory the CLI wrote result.json and the PNGs to. */
@@ -409,6 +493,7 @@ export async function spawnAttachDocument(input: PaneAttachSpawnInput): Promise<
   let result: {
     outcome?: string;
     uploadSent?: boolean;
+    listed?: boolean;
     screenshots?: string[];
     blocked?: { method: string; path: string; code: string }[];
   };
@@ -427,6 +512,7 @@ export async function spawnAttachDocument(input: PaneAttachSpawnInput): Promise<
   return {
     outcome,
     uploadSent: result.uploadSent === true,
+    listed: result.listed === true,
     screenshots: result.screenshots ?? [],
     runDir: dir,
   };
@@ -565,6 +651,7 @@ type SaveOutcome = {
   clickedOk: boolean;
   uploadSent: boolean;
   saveAttempted?: boolean;
+  listed?: boolean;
   screenshots: string[];
   runDir?: string;
 };
@@ -661,6 +748,7 @@ async function saveAttach(form: AttachForm, file: string | null, target: HmsRead
     outcome: result.outcome,
     clickedOk: false,
     uploadSent: result.uploadSent,
+    listed: result.listed === true,
     screenshots: result.screenshots,
     runDir: result.runDir,
   };
@@ -811,7 +899,11 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
       claimOwner: fence.claimOwner,
       claimToken: fence.claimToken,
       expectedStates: ['claimed', 'running'],
-      metrics: { action: approved.action, outcome: verdict.outcome },
+      metrics: {
+        action: approved.action,
+        outcome: verdict.outcome,
+        ...(approved.action === 'attach_document' ? { listed: saved.listed === true } : {}),
+      },
     },
     db,
   );
@@ -855,6 +947,9 @@ async function runClaimed(
     if (typeof pdf === 'string') return endRun(db, fence, 'POLICY_BLOCK', pdf);
     const notPdf = pdfRefusal(pdf);
     if (notPdf) return endRun(db, fence, 'POLICY_BLOCK', notPdf);
+    if (form.pdfSha256 && pdfBytesHash(pdf) !== form.pdfSha256) {
+      return endRun(db, fence, 'POLICY_BLOCK', 'attachment_hash_changed');
+    }
     const work = await mkdtemp(join(tmpdir(), 'pane-hms-write-'));
     runDirs.push(work);
     file = join(work, 'upload.pdf');

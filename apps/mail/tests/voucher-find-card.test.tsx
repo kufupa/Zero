@@ -545,13 +545,22 @@ describe('voucher find card: the existing search', () => {
       reply: VOUCHER,
       search: { outcome: 'ok', rows: [SMITH_ROW, secondRow], screenshots: [], runId: null },
     });
-    render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
+    render(
+      <VoucherFindCard
+        internetMessageId="abc@host"
+        trpc={trpc}
+        download={vi.fn()}
+        workItemId="wi-1"
+        writesEnabled
+      />,
+    );
 
     expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
     expect(screen.getByText('James Smith · 57291630-2')).toBeTruthy();
     expect(screen.getByText(VOUCHER_COPY.pickRow)).toBeTruthy();
     expect(screen.queryByTestId('voucher-matched-booking')).toBeNull();
     expect(screen.getAllByRole('button', { name: 'Copy confirmation' })).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
   });
 
   it('reads a booking number only from HMS rows, never from the voucher text', async () => {
@@ -681,6 +690,98 @@ describe('voucher find card: saving the file', () => {
     render(<VoucherFindCard internetMessageId="abc@host" trpc={trpc} download={vi.fn()} />);
     expect(await screen.findByText(VOUCHER_COPY.noFile)).toBeTruthy();
     expect(screen.queryByRole('button', { name: VOUCHER_COPY.save })).toBeNull();
+  });
+});
+
+describe('voucher find card: attach to HMS', () => {
+  const WORK_ITEM = '3f8a2c1e-9b7d-4e6f-8a1b-2c3d4e5f6a7b';
+
+  it('offers Attach to HMS booking when Find matches exactly one stay and the email has a PDF', async () => {
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    render(
+      <VoucherFindCard
+        internetMessageId="abc@host"
+        trpc={trpc}
+        download={vi.fn()}
+        workItemId={WORK_ITEM}
+        writesEnabled
+      />,
+    );
+    expect(await screen.findByText('John Smith · 57291630-1')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Attach to HMS booking' })).toBeTruthy();
+  });
+
+  it('binds the attach form to the matched stay and the voucher PDF', async () => {
+    const bind = vi.fn(async () => ({
+      status: 'bound' as const,
+      form: {
+        confirmation: SMITH_ROW.confirmation,
+        pdfSha256: 'a'.repeat(64),
+        attachmentId: 'att-1',
+      },
+    }));
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { quoteWorkflow: Record<string, unknown> }).quoteWorkflow.bindVoucherAttach = {
+      mutate: bind,
+    };
+    render(
+      <VoucherFindCard
+        internetMessageId="abc@host"
+        trpc={trpc}
+        download={vi.fn()}
+        workItemId={WORK_ITEM}
+        writesEnabled
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: 'Attach to HMS booking' }));
+    await waitFor(() =>
+      expect(bind).toHaveBeenCalledWith({
+        workItemId: WORK_ITEM,
+        confirmation: SMITH_ROW.confirmation,
+        arrival: SMITH_ROW.arrival,
+        lastName: SMITH_ROW.lastName,
+        attachmentId: 'att-1',
+      }),
+    );
+  });
+
+  it('shows Check in Infor and no success copy when the attach run is upload_unconfirmed', async () => {
+    const { trpc } = fakeTrpc({ reply: VOUCHER });
+    (trpc as { hmsApproval?: unknown }).hmsApproval = {
+      writeState: {
+        query: async () => ({
+          status: 'needs_you',
+          form: { action: 'attach_document' },
+          formDigest: 'd'.repeat(64),
+          before: null,
+          snapshot: null,
+          grant: null,
+          run: {
+            runId: 'run-1',
+            state: 'dead_letter',
+            failureClass: 'UNKNOWN',
+            lastError: 'upload_unconfirmed',
+            evidence: [{ eventId: 'ev-1', name: 'after.png', expired: false }],
+            reviewed: null,
+          },
+          needsCheck: true,
+        }),
+      },
+    };
+    render(
+      <VoucherFindCard
+        internetMessageId="abc@host"
+        trpc={trpc}
+        download={vi.fn()}
+        workItemId={WORK_ITEM}
+        writesEnabled
+      />,
+    );
+    expect(await screen.findByText('Check in Infor')).toBeTruthy();
+    expect(screen.queryByText(/attached/i)).toBeNull();
+    expect(screen.queryByText(VOUCHER_COPY.saved)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Attach to HMS booking' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 });
 
