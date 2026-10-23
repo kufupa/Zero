@@ -235,7 +235,8 @@ test('checkAvailability clicks the Check Availability control after closing the 
   assert.ok(at > 0);
   const body = source.slice(at, source.indexOf('async function fillChangedFields'));
   assert.match(body, /closeAppDrawer\(page\)/);
-  assert.match(body, /data-qtip="Check Availability"/);
+  assert.match(body, /x-btn:visible/);
+  assert.match(body, /Check Availability/);
   assert.match(body, /\.click\(/);
   assert.ok(body.indexOf('closeAppDrawer(page)') < body.indexOf('.click('));
   assert.equal(/el\.click\(\)/.test(body), false);
