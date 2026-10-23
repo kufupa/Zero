@@ -936,12 +936,14 @@ describe('staff_quote HMS job execution', () => {
         name: 'Error',
         code: 'synthetic_native_reader_reached',
         message: 'Staff quote execution failed.',
+        reason: 'synthetic_native_reader_reached',
       },
     });
     expect(Object.keys((thrown as Error & { cause: Record<string, unknown> }).cause)).toEqual([
       'name',
       'code',
       'message',
+      'reason',
     ]);
     expect(jobMocks.markSucceeded).not.toHaveBeenCalled();
     expect(jobMocks.markRetry).toHaveBeenCalledWith(
