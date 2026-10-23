@@ -1,5 +1,6 @@
 import {
   canCreatePdf,
+  groupStays,
   groupsForQuoteStep,
   initialQuoteSession,
   pdfBlocker,
@@ -298,6 +299,72 @@ describe('the combined PDF and its binding', () => {
       expectedTotalMinor: request.expectedTotalMinor,
     });
     expect(firstOnly.status).toBe('unavailable');
+  });
+});
+
+describe('one card per date set', () => {
+  it('groups extracted stays that share dates into one stay with a row per room', () => {
+    const session = reduceQuoteSession(initialQuoteSession(), {
+      type: 'analysis_ready',
+      analysis: {
+        intent: 'quote',
+        groups: [
+          stayGroup('row-twin', NOV.arrival, NOV.departure, 'stay-a'),
+          stayGroup('row-queen', NOV.arrival, NOV.departure, 'stay-b'),
+          stayGroup('row-dec', DEC.arrival, DEC.departure, 'stay-c'),
+        ],
+        secondaryAsks: [],
+        alternatives: [],
+      },
+    });
+    expect(groupStays(session.groups).map((stay) => [stay.id, stay.rows.map((row) => row.id)])).toEqual([
+      [NOV.key, ['row-twin', 'row-queen']],
+      [DEC.key, ['row-dec']],
+    ]);
+  });
+
+  it('lists every room row of a date option in the combined reply', () => {
+    let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: BINDING });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: {
+        intent: 'quote',
+        groups: [
+          { ...stayGroup('stay-a', NOV.arrival, NOV.departure, 's1'), roomPreference: 'Standard Twin', quantity: 1 },
+          { ...stayGroup('stay-a2', NOV.arrival, NOV.departure, 's2'), roomPreference: 'Standard Queen', quantity: 2 },
+          stayGroup('stay-b', DEC.arrival, DEC.departure, 's3'),
+        ],
+        secondaryAsks: [],
+        alternatives: [],
+      },
+    });
+    session = reduceQuoteSession(session, {
+      type: 'staff_source_ready',
+      source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: SOURCE_HASH },
+    });
+    session = quoteStay(session, { revisionRef: 'rev-a', key: NOV.key, totalMinor: 272000 });
+    session = quoteStay(session, { revisionRef: 'rev-b', key: DEC.key, totalMinor: 136000 });
+    const twinOffer = session.offers.find((offer) => offer.id === 'rev-a');
+    session = {
+      ...session,
+      offers: [
+        ...(twinOffer
+          ? [{ ...twinOffer, roomLabel: 'Standard Twin', coversGroupIds: ['stay-a'], quantity: 1 }]
+          : []),
+        {
+          ...allocation('rev-a-queen', NOV.key, 566000),
+          roomLabel: 'Standard Queen',
+          coversGroupIds: ['stay-a2'],
+          quantity: 2,
+        },
+        ...session.offers.filter((offer) => offer.id !== 'rev-a'),
+      ],
+    };
+    const html = requireMultiOptionDraft(withCombinedPdf(session))?.html ?? '';
+    expect(html).toContain('<td>Standard Twin · Bed &amp; breakfast</td>');
+    expect(html).toContain('<td>Standard Queen · Bed &amp; breakfast</td>');
+    expect(html).toMatch(/<td>1<\/td>\s*<td>Standard Twin/);
+    expect(html).toMatch(/<td>2<\/td>\s*<td>Standard Queen/);
   });
 });
 

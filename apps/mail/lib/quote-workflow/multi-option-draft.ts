@@ -1,18 +1,25 @@
 import { FIXTURE_PDF } from './fixtures';
-import { canCreatePdf, currentStayRun, isMultiStay, optionLetter, requestedQuoteKeys } from './session';
-import type { QuoteOffer, QuoteSession, StaffQuoteAllocation } from './types';
+import { canCreatePdf, currentStayRun, isMultiStay, optionLetter, requestedQuoteKeys, stayKeyForGroup } from './session';
+import type { QuoteOffer, QuoteSession, StaffQuoteAllocation, StayGroupRequirement } from './types';
 import { withStaffNote } from './native-draft';
 
 /**
  * The one unsent reply for a multi-stay quote. Every stay is quoted in one combined PDF, so this module checks that the
- * PDF is still the one the current stay runs make, and writes the body that lists every stay.
+ * PDF is still the one the current stay runs make, and writes the body that lists every room row.
  */
+
+export type CompletedDateRoom = {
+  quantity: number;
+  description: string;
+  lineTotalMinor: number;
+};
 
 export type CompletedDateOption = {
   key: string;
   letter: string;
   quote: StaffQuoteAllocation;
   offer: QuoteOffer;
+  rooms: CompletedDateRoom[];
 };
 
 export type MultiOptionDraft = {
@@ -32,6 +39,46 @@ const DINNER_UNIT_LABELS = {
 const INTRO = 'Please see the quote below for each date option. One quotation PDF covers all of them.';
 const CLOSING = 'The options are quotes only and are not bookings.';
 
+function roomDescription(offer: QuoteOffer, group?: StayGroupRequirement): string {
+  const label = offer.roomLabel || group?.roomPreference?.trim() || '';
+  const board = BOARD_LABELS[offer.board] ?? (group?.board ? BOARD_LABELS[group.board] : undefined);
+  return [label, board].filter(Boolean).join(' · ');
+}
+
+function roomsForDateOption(
+  session: QuoteSession,
+  key: string,
+  offer: QuoteOffer,
+  quote: StaffQuoteAllocation,
+): CompletedDateRoom[] {
+  const dinnerTotal = quote.dinnerAddOn?.totalMinor ?? 0;
+  const groups = session.groups.filter((group) => stayKeyForGroup(group) === key);
+  const allocations = session.offers.filter((item) => item.kind === 'allocation' && item.quoteRequestKey === key);
+  if (groups.length <= 1) {
+    return [
+      {
+        quantity: offer.quantity ?? groups[0]?.quantity ?? 1,
+        description: roomDescription(offer, groups[0]),
+        lineTotalMinor: quote.totalMinor - dinnerTotal,
+      },
+    ];
+  }
+  return groups.map((group) => {
+    const covered = allocations.find(
+      (item) => item.coversGroupIds.length === 1 && item.coversGroupIds[0] === group.id,
+    );
+    return {
+      quantity: group.quantity ?? covered?.quantity ?? 1,
+      description: roomDescription(covered ?? offer, group),
+      lineTotalMinor: covered
+        ? covered.id === offer.id
+          ? quote.totalMinor - dinnerTotal
+          : covered.stayTotalMinor
+        : 0,
+    };
+  });
+}
+
 /** Every date option in email date order whose staff run still matches the session, with its allocation. */
 export function completedDateOptions(session: QuoteSession): CompletedDateOption[] {
   return requestedQuoteKeys(session.groups).flatMap((key, index) => {
@@ -39,7 +86,9 @@ export function completedDateOptions(session: QuoteSession): CompletedDateOption
     const offer = quote
       ? session.offers.find((item) => item.id === quote.revisionRef && item.kind === 'allocation')
       : undefined;
-    return quote && offer ? [{ key, letter: optionLetter(index), quote, offer }] : [];
+    return quote && offer
+      ? [{ key, letter: optionLetter(index), quote, offer, rooms: roomsForDateOption(session, key, offer, quote) }]
+      : [];
   });
 }
 
@@ -89,27 +138,39 @@ export function multiOptionDraftHtml(options: readonly CompletedDateOption[]): s
   const sections = options.map((option) => {
     const [arrival = '', departure = ''] = option.key.split(':');
     const dinner = option.quote.dinnerAddOn;
-    const dinnerTotal = dinner?.totalMinor ?? 0;
-    const amount = draftMoney(option.quote.totalMinor - dinnerTotal);
     const optionTotal = draftMoney(option.quote.totalMinor);
     const dinnerLine = dinner
       ? `<p><strong>${escapeHtml(dinner.label)}</strong>: ${escapeHtml(draftMoney(dinner.amountMinor))} ${DINNER_UNIT_LABELS[dinner.unit]}; add-on total ${escapeHtml(draftMoney(dinner.totalMinor))}.</p>`
       : '';
-    const description = [option.offer.roomLabel, BOARD_LABELS[option.offer.board]]
-      .filter(Boolean)
-      .join(' · ');
+    const dinnerTotal = dinner?.totalMinor ?? 0;
+    const rooms = option.rooms?.length
+      ? option.rooms.length === 1
+        ? [{ ...option.rooms[0]!, lineTotalMinor: option.quote.totalMinor - dinnerTotal }]
+        : option.rooms
+      : [
+          {
+            quantity: option.offer.quantity ?? 1,
+            description: roomDescription(option.offer),
+            lineTotalMinor: option.quote.totalMinor - dinnerTotal,
+          },
+        ];
+    const rows = rooms.map((room) =>
+      [
+        '<tr>',
+        `<td>${escapeHtml(formatDate(arrival))} to ${escapeHtml(formatDate(departure))}</td>`,
+        `<td>${escapeHtml(String(room.quantity))}</td>`,
+        `<td>${escapeHtml(room.description)}</td>`,
+        `<td>${escapeHtml(nightsBetween(arrival, departure))}</td>`,
+        `<td align="right">${room.lineTotalMinor > 0 ? escapeHtml(draftMoney(room.lineTotalMinor)) : ''}</td>`,
+        '</tr>',
+      ].join(''),
+    );
     return [
       `<h3>Option ${option.letter}: ${escapeHtml(formatStayRange(arrival, departure))}</h3>`,
       '<table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;width:100%">',
       '<thead><tr><th align="left">DATE</th><th align="left">QTY</th><th align="left">DESCRIPTION</th>',
       '<th align="left">NIGHTS</th><th align="right">LINE TOTAL</th></tr></thead>',
-      '<tbody><tr>',
-      `<td>${escapeHtml(formatDate(arrival))} to ${escapeHtml(formatDate(departure))}</td>`,
-      `<td>${escapeHtml(String(option.offer.quantity ?? ''))}</td>`,
-      `<td>${escapeHtml(description)}</td>`,
-      `<td>${escapeHtml(nightsBetween(arrival, departure))}</td>`,
-      `<td align="right">${escapeHtml(amount)}</td>`,
-      '</tr></tbody></table>',
+      `<tbody>${rows.join('')}</tbody></table>`,
       dinnerLine,
       `<p><strong>Option ${option.letter} total: ${escapeHtml(optionTotal)}</strong></p>`,
     ].join('');

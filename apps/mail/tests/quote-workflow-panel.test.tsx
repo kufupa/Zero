@@ -271,6 +271,22 @@ describe('QuoteWorkflowPanel', () => {
     expect(onPatchGroup).toHaveBeenCalledWith('g-single', expect.objectContaining({ adults: 2 }));
   });
 
+  it('keeps one stay card when same-date rooms arrived as two extracted stay ids', () => {
+    const base = sessionFromFixture('mixed-same-dates');
+    const session = {
+      ...base,
+      groups: base.groups.map((group, index) => ({
+        ...group,
+        stayId: index === 0 ? 'stay-twin' : 'stay-queen',
+      })),
+    };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByRole('heading', { name: /Stay 1 of 1/ })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /Stay 2 of 2/ })).toBeNull();
+    expect(screen.getAllByRole('group', { name: /^Rooms for stay 1, room \d$/ })).toHaveLength(2);
+    expect(screen.getAllByLabelText(/Arrival/i)).toHaveLength(1);
+  });
+
   it('adds another independent date range after extracted same-date rooms remain together', () => {
     render(<EditableStayPanel initial={sessionFromFixture('mixed-same-dates')} />);
     expect(screen.getAllByRole('heading', { name: /Stay 1 of 1/ })).toHaveLength(1);
@@ -1431,13 +1447,15 @@ describe('QuoteWorkflowPanel', () => {
     expect(onRunStep).toHaveBeenCalledWith(quoted.steps[1]!.id);
   });
 
-  it('two stays on the same dates show their shared total once, on the first of them', () => {
+  it('two extracted stays on the same dates render as one card with both room rows', () => {
     const quoted = staggeredDatesWithOptionA();
     const row = quoted.groups[0]!;
     const sameDates = { ...quoted, groups: [row, { ...row, id: `${row.id}-copy`, stayId: 'stay-copy' }] };
     render(<QuoteWorkflowPanel session={sameDates} />);
-    expect(screen.getByText('Counted in Stay 1')).toBeDefined();
-    expect(screen.getByText(/for Stays 1, 2/)).toBeDefined();
+    expect(screen.getByRole('heading', { name: /Stay 1 of 1/ })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /Stay 2 of 2/ })).toBeNull();
+    expect(screen.getAllByRole('group', { name: /^Rooms for stay 1, room \d$/ })).toHaveLength(2);
+    expect(screen.queryByText('Counted in Stay 1')).toBeNull();
   });
 
   it('a government default still lists the returned rates when the catalogue query failed', () => {

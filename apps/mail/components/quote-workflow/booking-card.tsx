@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   BookingDraftReady,
   BookingRateCheck,
@@ -226,6 +226,7 @@ function CopyRow({
 const PREVIEW_SHOT = 'filled.png';
 const SAVED_SHOT = 'saved.png';
 const CREATE_PROVISIONAL_LABEL = 'Create provisional booking';
+const BOOK_THIS_STAY_LABEL = 'Book this stay';
 const WRITES_OFF_LABEL = 'Booking writes are off — create in HMS';
 const LAB_WRITE_NOTE = 'This write is test-only. Book a real guest in HMS.';
 const textareaClass =
@@ -404,6 +405,7 @@ function RoomSave({
   save,
   screenshot,
   bookLabel,
+  frozen = false,
   onPreview,
   onBook,
 }: {
@@ -412,12 +414,13 @@ function RoomSave({
   save: RoomSaveState;
   screenshot: PaneStayClient['screenshot'];
   bookLabel: string;
+  frozen?: boolean;
   onPreview: (stay: PaneStayInput) => void;
   onBook: (stay: PaneStayInput, previewDigest: string) => void;
 }) {
   const { preview, commit } = save;
   const key = stay ? paneStayKey(stay) : null;
-  const busy = preview?.status === 'running' || commit?.status === 'running';
+  const busy = frozen || preview?.status === 'running' || commit?.status === 'running';
   const fresh = stay && preview?.status === 'ready' && preview.key === key ? preview : null;
   const changed = preview?.status === 'ready' && preview.key !== key;
 
@@ -677,6 +680,11 @@ export function BookingCards({
   const [saves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
     savesFromSavedStays(draft, groups, savedStays),
   );
+  const [stayBooking, setStayBooking] = useState(false);
+  const stayBookingRef = useRef(false);
+  useEffect(() => () => {
+    stayBookingRef.current = false;
+  }, []);
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const choice = choices[`${room.groupId}:${room.roomIndex}`];
@@ -700,6 +708,51 @@ export function BookingCards({
       preview = { status: 'refused', key, message: PANE_PREVIEW_FAILED_COPY };
     }
     patchSave(roomKey, { preview });
+  }
+
+  function roomKeyOf(room: BookingDraftReady['draft']['rooms'][number]): string {
+    return `${room.groupId}:${room.roomIndex}`;
+  }
+
+  function bookableRooms() {
+    return draft.draft.rooms.filter((room) => {
+      const childCount = Array.isArray(room.request.childAges) ? room.request.childAges.length : 0;
+      return childCount === 0;
+    });
+  }
+
+  function roomBuilt(room: BookingDraftReady['draft']['rooms'][number]) {
+    return paneStayInputForRoom(room.request, choices[roomKeyOf(room)] ?? NO_CHOICE);
+  }
+
+  function roomPreviewReady(room: BookingDraftReady['draft']['rooms'][number]): { stay: PaneStayInput; digest: string } | null {
+    const built = roomBuilt(room);
+    if (!built.stay) return null;
+    const preview = saves[roomKeyOf(room)]?.preview;
+    return preview?.status === 'ready' && preview.key === paneStayKey(built.stay)
+      ? { stay: built.stay, digest: preview.digest }
+      : null;
+  }
+
+  async function bookThisStay(pane: PaneStayClient) {
+    const snapshot = bookableRooms()
+      .filter((room) => saves[roomKeyOf(room)]?.commit?.status !== 'booked')
+      .map((room) => {
+        const ready = roomPreviewReady(room);
+        return ready ? { roomKey: roomKeyOf(room), stay: ready.stay, digest: ready.digest } : null;
+      });
+    if (snapshot.some((item) => item == null)) return;
+    stayBookingRef.current = true;
+    setStayBooking(true);
+    try {
+      for (const item of snapshot) {
+        if (!item || !stayBookingRef.current) return;
+        await bookRoom(item.roomKey, pane, item.stay, item.digest);
+      }
+    } finally {
+      stayBookingRef.current = false;
+      setStayBooking(false);
+    }
   }
 
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
@@ -782,7 +835,7 @@ export function BookingCards({
           }));
         // Once Book in HMS is running or has booked this room, its choices are frozen so the card cannot show a new value beside the saved one.
         const commitStatus = saves[key]?.commit?.status;
-        const locked = commitStatus === 'running' || commitStatus === 'booked';
+        const locked = stayBooking || commitStatus === 'running' || commitStatus === 'booked';
         const request = room.request;
         const built = paneStayInputForRoom(request, choice);
         const group =
@@ -1007,6 +1060,7 @@ export function BookingCards({
                 save={saves[key] ?? {}}
                 screenshot={client.screenshot}
                 bookLabel={CREATE_PROVISIONAL_LABEL}
+                frozen={stayBooking}
                 onPreview={(stay) => void previewRoom(key, client, stay)}
                 onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
               />
@@ -1018,6 +1072,72 @@ export function BookingCards({
           </article>
         );
       })}
+      {client && savesOn ? (
+        <StayBookBar
+          rooms={draft.draft.rooms}
+          saves={saves}
+          choices={choices}
+          pane={client}
+          stayBooking={stayBooking}
+          onBookStay={bookThisStay}
+        />
+      ) : null}
     </Section>
+  );
+}
+
+function StayBookBar({
+  rooms,
+  saves,
+  choices,
+  pane,
+  stayBooking,
+  onBookStay,
+}: {
+  rooms: BookingDraftReady['draft']['rooms'];
+  saves: Record<string, RoomSaveState>;
+  choices: Record<string, RoomChoice>;
+  pane: PaneStayClient;
+  stayBooking: boolean;
+  onBookStay: (pane: PaneStayClient) => Promise<void>;
+}) {
+  const bookable = rooms.filter((room) => !(Array.isArray(room.request.childAges) && room.request.childAges.length > 0));
+  if (!bookable.length) return null;
+  const numbers = bookable.flatMap((room) => {
+    const commit = saves[`${room.groupId}:${room.roomIndex}`]?.commit;
+    return commit?.status === 'booked' && commit.confirmationNumber ? [commit.confirmationNumber] : [];
+  });
+  const pending = bookable.filter((room) => saves[`${room.groupId}:${room.roomIndex}`]?.commit?.status !== 'booked');
+  const busy =
+    stayBooking ||
+    bookable.some((room) => {
+      const save = saves[`${room.groupId}:${room.roomIndex}`];
+      return save?.preview?.status === 'running' || save?.commit?.status === 'running';
+    });
+  const allPreviewed = pending.every((room) => {
+    const key = `${room.groupId}:${room.roomIndex}`;
+    const built = paneStayInputForRoom(room.request, choices[key] ?? NO_CHOICE);
+    const preview = saves[key]?.preview;
+    return Boolean(built.stay && preview?.status === 'ready' && preview.key === paneStayKey(built.stay));
+  });
+  return (
+    <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+      {numbers.length > 0 ? (
+        <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
+          {numbers.length === bookable.length
+            ? `Booked this stay – ${numbers.join(', ')}`
+            : `Booked ${numbers.length} of ${bookable.length} – ${numbers.join(', ')}`}
+        </p>
+      ) : null}
+      {pending.length > 0 ? (
+        <PrimaryButton
+          disabled={!allPreviewed || busy}
+          disabledReason={!allPreviewed && !busy ? 'Preview in HMS first' : null}
+          onClick={() => void onBookStay(pane)}
+        >
+          {BOOK_THIS_STAY_LABEL}
+        </PrimaryButton>
+      ) : null}
+    </div>
   );
 }

@@ -3339,7 +3339,7 @@ describe('stay edits: rows, stays and their rates', () => {
     const copies = dup.groups.slice(2, 4);
     expect(copies.every((group) => group.stayId === 's_t1')).toBe(true);
     expect(copies.map((group) => group.roomPreference)).toEqual(['STWN', 'DLXQN']);
-    expect(groupStays(dup.groups).map((stay) => stay.rows.length)).toEqual([2, 2, 1]);
+    expect(groupStays(dup.groups).map((stay) => stay.rows.length)).toEqual([4, 1]);
     // The copies share their dates with stay 1, so that date option's rates go; stay 2 keeps its own.
     expect(dup.offers.map((offer) => offer.id)).toEqual(['ob']);
   });
