@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { profileFor, validateProfile } from './property-profile.mjs';
+import { amendRoomTypes, parseStayProperty, profileFor, propertySecretRefusal, validateProfile } from './property-profile.mjs';
 
 const hrcenUrl = new URL('./property-profiles/HRCEN.json', import.meta.url);
 const hrcenRaw = async () => JSON.parse(await readFile(hrcenUrl, 'utf8'));
@@ -26,6 +26,48 @@ test('capacities summing to 161 against 160 published rooms are rejected', async
 test('an unknown property has no profile', () => {
   assert.equal(profileFor('NOTAPROP'), null);
   assert.equal(profileFor(undefined), null);
+});
+
+test('HRDAV profile lists EXKNGB and requires reservationnote; HRCEN does not', () => {
+  const hrdav = profileFor('HRDAV');
+  const hrcen = profileFor('HRCEN');
+  assert.ok(Object.hasOwn(hrdav.roomCapacity, 'EXKNGB'));
+  assert.deepEqual(hrdav.requiredCreateFields, ['reservationnote']);
+  assert.deepEqual(hrcen.requiredCreateFields, []);
+  assert.ok(!Object.hasOwn(hrcen.roomCapacity, 'EXKNGB'));
+  assert.ok(amendRoomTypes('HRDAV').includes('EXKNGB'));
+  assert.ok(amendRoomTypes('HRCEN').includes('STQN'));
+  assert.equal(amendRoomTypes('HRDAV').includes('STQN'), false);
+});
+
+test('propertySecretRefusal refuses a secret for the other hotel before login', () => {
+  assert.equal(propertySecretRefusal({ expectedPropertyCode: 'HRDAV' }, 'HRDAV'), null);
+  assert.equal(propertySecretRefusal({ expectedPropertyCode: 'HRCEN' }, 'HRDAV'), 'PROPERTY_HRDAV_REQUIRED');
+  assert.equal(propertySecretRefusal({ expectedPropertyCode: 'HRDAV' }, 'HRCEN'), 'PROPERTY_HRCEN_REQUIRED');
+});
+
+test('parseStayProperty defaults HRCEN, accepts HRDAV, strips the flag, refuses unknown', () => {
+  assert.deepEqual(parseStayProperty(['--mode', 'preview']), {
+    ok: true,
+    propertyCode: 'HRCEN',
+    rest: ['--mode', 'preview'],
+  });
+  assert.deepEqual(parseStayProperty(['--property', 'HRDAV', '--mode', 'preview']), {
+    ok: true,
+    propertyCode: 'HRDAV',
+    rest: ['--mode', 'preview'],
+  });
+  assert.deepEqual(parseStayProperty(['--property', 'OTHER']), {
+    ok: false,
+    exitCode: 2,
+    error: 'PROPERTY_UNKNOWN',
+  });
+});
+
+test('a profile without requiredCreateFields is rejected', async () => {
+  const raw = await hrcenRaw();
+  delete raw.requiredCreateFields;
+  assert.throws(() => validateProfile(raw, 'HRCEN'), /requiredCreateFields must list HMS field names/);
 });
 
 test('a non-integer capacity is rejected', async () => {
