@@ -129,8 +129,8 @@ function makeHarness() {
       'echo "start $prop $(date +%s%N)" >> "$HMS_JOB_U0_LOG"',
       'sleep "${HMS_JOB_U0_SLEEP:-0.4}"',
       'mkdir -p "$out"',
-      'echo "{\"ok\":true,\"property\":\"$prop\"}" > "$out/result.json"',
       'echo "end $prop $(date +%s%N)" >> "$HMS_JOB_U0_LOG"',
+      'echo "{\"ok\":true,\"property\":\"$prop\"}" > "$out/result.json"',
       '',
     ].join('\n'),
     { mode: 0o755 },
@@ -230,6 +230,38 @@ describe('hms-job.sh shell contract', () => {
     const result = runJob(harness, ['poll', 'no-such-job']);
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('state=unknown');
+  });
+
+  it('poll reports done from result.json when the unit is unloaded', () => {
+    const harness = makeHarness();
+    const started = runJob(harness, [
+      'start',
+      '--property',
+      'HRCEN',
+      '--tool',
+      'src/ops/hms-proof-run.ts',
+      '--args-file',
+      harness.argsFile,
+    ]);
+    expect(started.status, started.stderr).toBe(0);
+    const id = started.stdout.trim();
+    waitForResult(harness.logRoot, id);
+    writeFileSync(
+      join(harness.bin, 'systemctl-gone'),
+      [
+        '#!/usr/bin/env bash',
+        'echo not-found',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    const polled = runJob(harness, ['poll', id], {
+      HMS_JOB_SYSTEMCTL: join(harness.bin, 'systemctl-gone'),
+    });
+    expect(polled.status, polled.stderr).toBe(0);
+    expect(polled.stdout).toMatch(/^state=done$/m);
+    expect(polled.stdout).toMatch(/result=/);
   });
 
   it('two starts on the same property: the second waits', () => {
@@ -356,5 +388,28 @@ describe('ops-deploy.sh worktree guard', () => {
     const allowed = runGuard('recover-parse-failure');
     expect(allowed.stderr).not.toMatch(/refuse: cwd must be/);
     expect(allowed.stdout).toMatch(/sync bundle/);
+  });
+
+  it('refuses a lane script even when cwd is recover-parse-failure', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ops-deploy-guard-'));
+    harnesses.push(root);
+    const recover = join(root, '.worktrees', 'recover-parse-failure');
+    const lane = join(root, '.worktrees', 'lane-U6');
+    for (const wt of [recover, lane]) {
+      mkdirSync(join(wt, 'apps/server-pilot/deploy'), { recursive: true });
+      execFileSync('git', ['init', '-q', wt]);
+      copyFileSync(opsScript, join(wt, 'apps/server-pilot/deploy/ops-deploy.sh'));
+    }
+    const refused = spawnSync('bash', [join(lane, 'apps/server-pilot/deploy/ops-deploy.sh')], {
+      cwd: recover,
+      encoding: 'utf8',
+      timeout: 10_000,
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        HOME: root,
+      },
+    });
+    expect(refused.status).toBe(2);
+    expect(refused.stderr).toMatch(/script checkout must be/);
   });
 });

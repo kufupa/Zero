@@ -30,6 +30,15 @@ run_systemd() {
   sudo -n systemd-run "$@"
 }
 
+# ubuntu cannot always mkdir /var/log/nava. sudo -n matches ops-run.sh.
+ensure_log_root() {
+  if mkdir -p "$LOG_ROOT" 2>/dev/null && [ -w "$LOG_ROOT" ]; then
+    return 0
+  fi
+  sudo -n mkdir -p "$LOG_ROOT"
+  sudo -n chown ubuntu:ubuntu "$LOG_ROOT"
+}
+
 safe_id() {
   [[ "$1" =~ ^[A-Za-z0-9:_-]+$ ]]
 }
@@ -82,7 +91,11 @@ wait_for_earlier_jobs() {
       if [ "${HMS_LOCK_SCOPE:-}" = property ] && [ "$other_prop" != "$property" ]; then
         continue
       fi
-      if [ ! -f "$(job_dir "$other")/result.json" ]; then
+      # Abandoned/killed jobs (no unit, no result) must not block the queue.
+      if [ -f "$(job_dir "$other")/result.json" ]; then
+        continue
+      fi
+      if "$SYSTEMCTL" is-active --quiet "hms-job-${other}"; then
         blocked=1
         break
       fi
@@ -151,6 +164,7 @@ cmd_start() {
   local dir log
   dir="$(job_dir "$id")"
   log="${LOG_ROOT}/${id}.log"
+  ensure_log_root
   mkdir -p "$dir"
   printf '%s\n' "$property" >"${dir}/property"
   printf '%s\n' "$args_file" >"${dir}/args-file"
@@ -158,7 +172,7 @@ cmd_start() {
   date +%s%N >"${dir}/seq"
   : >"$log"
 
-  run_systemd \
+  if ! run_systemd \
     --uid ubuntu \
     --gid ubuntu \
     --unit "hms-job-${id}" \
@@ -166,8 +180,17 @@ cmd_start() {
     -p TimeoutStopSec=30 \
     -E HOME=/home/ubuntu \
     -E "HMS_LOCK_SCOPE=${HMS_LOCK_SCOPE:-}" \
+    -E "HMS_JOB_LOG_ROOT=${LOG_ROOT}" \
+    -E "HMS_JOB_SERVER_PILOT=${SERVER_PILOT}" \
+    -E "HMS_JOB_WAIT_SECS=${WAIT_SECS}" \
+    -E "HMS_JOB_SYSTEMCTL=${SYSTEMCTL}" \
+    -E "HMS_JOB_PROOF_CMD=${HMS_JOB_PROOF_CMD:-}" \
     --working-directory "$SERVER_PILOT" \
-    bash "${SCRIPT_DIR}/hms-job.sh" _run "$id"
+    bash "${SCRIPT_DIR}/hms-job.sh" _run "$id"; then
+    printf '%s\n' '{"ok":false,"error":"systemd_run_failed"}' >"${dir}/result.json"
+    echo "hms-job: systemd-run failed" >&2
+    exit 1
+  fi
 
   printf '%s\n' "$id"
 }
@@ -175,6 +198,14 @@ cmd_start() {
 cmd_poll() {
   local id="${1:-}"
   [ -n "$id" ] && safe_id "$id" || usage
+  local result
+  result="$(job_dir "$id")/result.json"
+  # Transient units unload after exit (no RemainAfterExit). Result file is source of truth.
+  if [ -f "$result" ]; then
+    echo "state=done"
+    echo "result=${result}"
+    return 0
+  fi
   local unit="hms-job-${id}"
   local load
   load="$("$SYSTEMCTL" show -p LoadState --value "$unit" 2>/dev/null || echo not-found)"
@@ -182,19 +213,14 @@ cmd_poll() {
     echo "state=unknown"
     return 0
   fi
-  local active result
+  local active
   active="$("$SYSTEMCTL" show -p ActiveState --value "$unit" 2>/dev/null || echo inactive)"
-  result="$(job_dir "$id")/result.json"
   case "$active" in
     active | activating) echo "state=running" ;;
     failed) echo "state=failed" ;;
     *)
-      if [ -f "$result" ]; then
-        echo "state=done"
-      else
-        echo "state=unknown"
-        return 0
-      fi
+      echo "state=unknown"
+      return 0
       ;;
   esac
   echo "result=${result}"
