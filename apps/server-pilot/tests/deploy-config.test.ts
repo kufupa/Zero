@@ -2494,7 +2494,7 @@ describe('deploy config', () => {
     expect(script).toContain('GOTENBERG_URL:-http://127.0.0.1:3000');
   });
 
-  it('write-ec2-env.sh forwards the five PANE_WRITE_* switches with no on default', async () => {
+  it('write-ec2-env.sh forwards the PANE_WRITE_* switches with no on default', async () => {
     const { readFileSync } = await import('node:fs');
     const { fileURLToPath } = await import('node:url');
     const { dirname, join } = await import('node:path');
@@ -2506,6 +2506,7 @@ describe('deploy config', () => {
       'PANE_WRITE_AMEND_PAID',
       'PANE_WRITE_CANCEL_UNPAID',
       'PANE_WRITE_CANCEL_PAID',
+      'PANE_WRITE_ATTACH',
     ]) {
       expect(script).toContain(`append_env ${name} "\${${name}:-}"`);
       expect(script).not.toContain(`${name}:-lab`);
@@ -5693,6 +5694,7 @@ printf '%s' "$FAKE_AWS_SECRET_JSON"
         'PANE_WRITE_AMEND_PAID',
         'PANE_WRITE_CANCEL_UNPAID',
         'PANE_WRITE_CANCEL_PAID',
+        'PANE_WRITE_ATTACH',
       ]);
       const pm2 = readFileSync(join(here, '..', 'deploy', 'pm2.config.cjs'), 'utf8');
       expect(pm2).toContain("name: 'http'");

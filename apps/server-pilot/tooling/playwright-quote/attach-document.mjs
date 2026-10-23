@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Attach one PDF to a lab Guest Stay (Labtest, arrival on or after 2027-01-01). The flow finds the stay, checks identity
-// on the open record, opens Documents, uploads through Create/Upload Document, and reads the document list back.
-// Usage: node attach-document.mjs --confirmation 57291630-1 --arrival 2027-09-14 --file <path.pdf> --document-name <name>.pdf --out <dir>
+// Attach one PDF to a Guest Stay. Lab mode (default) requires Labtest with arrival on or after 2027-01-01.
+// --allow-real-guest lifts the Labtest guard for one run (on mode). The server passes it; it is never read from the env.
+// The flow finds the stay, checks identity on the open record, opens Documents, uploads through Create/Upload Document,
+// and reads the document list back.
+// Usage: node attach-document.mjs --confirmation 57291630-1 --arrival 2027-09-14 --file <path.pdf> --document-name <name>.pdf --out <dir> [--allow-real-guest]
 // Exit: 0 attached; 2 refused_* or not_found or usage; 1 any other outcome.
 // ATTACH_VERIFIED=true in the environment arms the driver. It is unset everywhere until U28-H2 captures the Documents
 // flow on a live Labtest stay, and H2 sets it for its own run only. While it is unset the driver refuses before any
@@ -15,7 +17,14 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { findStay, openGuestStay, openRecord, readRecord, shot } from './cancel-stay.mjs';
-import { checkCdpEnv, identityCheck, parseIsoDate, preflight, squash } from './cancel-stay-rules.mjs';
+import {
+  ALLOW_REAL_GUEST_FLAG,
+  checkCdpEnv,
+  identityCheck,
+  parseIsoDate,
+  preflight,
+  squash,
+} from './cancel-stay-rules.mjs';
 
 // The read path's cap (ARTIFACT_MAX_INPUT_BYTES in src/mail/artifacts/read-artifact.ts). A TS test pins the equality.
 export const ATTACH_MAX_BYTES = 20 * 1024 * 1024;
@@ -78,13 +87,22 @@ function refuse(error) {
 
 export function parseAttachArgs(argv) {
   const values = new Map();
-  for (let index = 0; index < argv.length; index += 2) {
+  let allowRealGuest = false;
+  for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
+    if (flag === ALLOW_REAL_GUEST_FLAG) {
+      if (allowRealGuest) return refuse(`Repeated argument: ${flag}`);
+      allowRealGuest = true;
+      continue;
+    }
     if (!FLAGS.has(flag)) return refuse(`Unknown argument: ${flag}`);
     const value = argv[index + 1];
-    if (value === undefined || FLAGS.has(value)) return refuse(`Missing value for ${flag}`);
+    if (value === undefined || FLAGS.has(value) || value === ALLOW_REAL_GUEST_FLAG) {
+      return refuse(`Missing value for ${flag}`);
+    }
     if (values.has(flag)) return refuse(`Repeated argument: ${flag}`);
     values.set(flag, value);
+    index += 1;
   }
   const missing = [...FLAGS].find((flag) => !values.has(flag));
   if (missing) return refuse(`Required: ${missing}`);
@@ -97,7 +115,14 @@ export function parseAttachArgs(argv) {
   return {
     ok: true,
     exitCode: 0,
-    args: { confirmation, arrival, file: values.get('--file'), documentName, out: values.get('--out') },
+    args: {
+      confirmation,
+      arrival,
+      file: values.get('--file'),
+      documentName,
+      out: values.get('--out'),
+      allowRealGuest,
+    },
   };
 }
 
@@ -428,8 +453,8 @@ async function attachLive(args, dir) {
   };
 }
 
-// Runs one attach. Nothing is read or opened unless ATTACH_VERIFIED=true, the arrival is a 2027+ lab arrival and the
-// file is a PDF under the cap.
+// Runs one attach. Nothing is read or opened unless ATTACH_VERIFIED=true, the file is a PDF under the cap, and either
+// the arrival is a 2027+ lab stay or --allow-real-guest was passed.
 export async function attachDocument(args, dir, env = process.env) {
   if (!attachVerified(env)) return refusedResult('refused_unverified');
   const lab = preflight(args);

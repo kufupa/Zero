@@ -42,13 +42,16 @@ import { paneStayAmendMode } from './pane-stay-amend.js';
 import {
   assertLabStayGuard,
   PANE_SCREENSHOT_NAME_PATTERN,
+  PANE_WRITE_ATTACH,
   paneStayClock,
   paneStayPropertyLock,
   paneStayTransportIdFromOwner,
+  parseLabOn,
   pruneExpiredPaneRuns,
   recordPanePreview,
   registerPaneRun,
   takePanePreview,
+  type PaneSaveMode,
   type PaneStayLock,
 } from './pane-stay-save.js';
 import { classifyAmendPayment, findStay, type PaneStayFields } from './pane-stay-lookup.js';
@@ -88,10 +91,11 @@ const EVIDENCE_NAMES = ['before.png', 'after.png'] as const;
 const HELD_LOCK: PaneStayLock = { withLock: (fn) => fn() };
 
 /**
- * Attach stays on this existing Labtest-only gate. Create/amend/cancel flags never open it.
- * SAVE must be exactly lab; SAVE=on and PANE_WRITE_CREATE=on both leave attach off.
+ * Attach go-live switch. PANE_WRITE_ATTACH is off|lab|on via parseLabOn.
+ * Unset keeps the old SAVE=lab-only gate (SAVE=on and the other PANE_WRITE_* flags never open attach).
  */
-export function paneHmsWriteMode(env: NodeJS.Dict<string> = process.env): 'off' | 'lab' {
+export function paneHmsWriteMode(env: NodeJS.Dict<string> = process.env): PaneSaveMode {
+  if (env[PANE_WRITE_ATTACH] !== undefined) return parseLabOn(env[PANE_WRITE_ATTACH]);
   return env.RESERVATIONIST_PANE_SAVE === 'lab' ? 'lab' : 'off';
 }
 
@@ -157,10 +161,16 @@ function squash(value: string): string {
 }
 
 /** Policy before any consume or HMS read: the input shape and arrival floor, Labtest, a reason for cancel. */
-function formRefusal(form: HmsWriteForm): string | null {
-  const shape = checkCancelInput({ confirmation: form.confirmation, arrival: form.arrival });
+function formRefusal(
+  form: HmsWriteForm,
+  { allowRealGuest = false }: { allowRealGuest?: boolean } = {},
+): string | null {
+  const shape = checkCancelInput(
+    { confirmation: form.confirmation, arrival: form.arrival },
+    { allowRealGuest },
+  );
   if (shape) return shape;
-  if (!/^labtest$/i.test(form.lastName)) return 'refused_not_lab';
+  if (!allowRealGuest && !/^labtest$/i.test(form.lastName)) return 'refused_not_lab';
   if (form.action === 'attach_document') return null;
   if (form.action === 'amend') return form.fields.arrival && form.fields.arrival < '2027-01-01' ? 'refused_not_lab' : null;
   const reason = squash(form.reason);
@@ -168,9 +178,14 @@ function formRefusal(form: HmsWriteForm): string | null {
 }
 
 /** The stay HMS shows must be the one the form names, with the same arrival, and must pass the Labtest guard. */
-function stayRefusal(stay: PaneStayFields, form: { confirmation: string; arrival: string }): string | null {
+function stayRefusal(
+  stay: PaneStayFields,
+  form: { confirmation: string; arrival: string },
+  { allowRealGuest = false }: { allowRealGuest?: boolean } = {},
+): string | null {
   if (stay.confirmation?.trim() !== form.confirmation) return 'identity_mismatch';
   if (stay.arrival !== form.arrival) return 'arrival_mismatch';
+  if (allowRealGuest) return null;
   try {
     assertLabStayGuard({ lastName: stay.lastName ?? '', arrival: stay.arrival ?? '' });
     return null;
@@ -249,6 +264,7 @@ export async function bindAttachDocumentForm(input: {
   arrival: string;
   lastName: string;
   attachmentId: string;
+  env?: NodeJS.Dict<string>;
 }): Promise<BindAttachDocumentResult> {
   const db = input.db ?? getDb();
   const writeKeys = [
@@ -310,7 +326,9 @@ export async function bindAttachDocumentForm(input: {
       pdfSha256,
     });
     if (!parsed.success) return { status: 'refused' as const, reason: 'form_invalid' };
-    const refusal = formRefusal(parsed.data);
+    const refusal = formRefusal(parsed.data, {
+      allowRealGuest: paneHmsWriteMode(input.env ?? process.env) === 'on',
+    });
     if (refusal) return { status: 'refused' as const, reason: refusal };
     const state: Record<string, unknown> = { ...item.state };
     for (const key of writeKeys) delete state[key];
@@ -336,8 +354,15 @@ export async function prepareHmsWriteSnapshot(input: {
   arrival: string;
   env?: NodeJS.Dict<string>;
 }): Promise<PaneHmsPrepareResult> {
-  if (paneHmsWriteMode(input.env) === 'off') return { status: 'refused', reason: 'refused_flag_off' };
-  const shape = checkCancelInput({ confirmation: input.confirmation, arrival: input.arrival });
+  const env = input.env ?? process.env;
+  const attachMode = paneHmsWriteMode(env);
+  if (attachMode === 'off' && env.RESERVATIONIST_PANE_SAVE !== 'lab') {
+    return { status: 'refused', reason: 'refused_flag_off' };
+  }
+  const shape = checkCancelInput(
+    { confirmation: input.confirmation, arrival: input.arrival },
+    { allowRealGuest: attachMode === 'on' },
+  );
   if (shape) return { status: 'refused', reason: shape };
   const resolved = paneStayHmsTargetForTransport(input.transportId);
   if (!resolved.ok) return { status: 'refused', reason: 'refused_unknown_transport' };
@@ -353,7 +378,7 @@ export async function prepareHmsWriteSnapshot(input: {
     },
   ).finally(() => removeDirs(lookupDirs));
   if (found.outcome !== 'found' || !found.stay) return { status: 'refused', reason: found.outcome };
-  const refusal = stayRefusal(found.stay, input);
+  const refusal = stayRefusal(found.stay, input, { allowRealGuest: attachMode === 'on' });
   if (refusal) return { status: 'refused', reason: refusal };
   const stay = found.stay;
   await storeHmsSnapshot({
@@ -414,6 +439,8 @@ export type PaneAttachSpawnInput = {
   arrival: string;
   file: string;
   documentName: string;
+  /** On-mode only. The CLI never reads this from the environment. */
+  allowRealGuest?: boolean;
   target?: HmsReadTarget;
 };
 
@@ -469,8 +496,10 @@ async function removeDirs(dirs: string[]): Promise<void> {
   await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {})));
 }
 
-function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: string): string[] {
-  return [
+const ALLOW_REAL_GUEST_FLAG = '--allow-real-guest';
+
+export function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: string): string[] {
+  const args = [
     ATTACH_DOCUMENT,
     '--confirmation',
     input.confirmation,
@@ -483,6 +512,8 @@ function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: string): s
     '--out',
     outDir,
   ];
+  if (input.allowRealGuest) args.push(ALLOW_REAL_GUEST_FLAG);
+  return args;
 }
 
 /**
@@ -758,7 +789,12 @@ async function saveAmend(form: AmendForm, stay: PaneStayFields, target: HmsReadT
     screenshots: result.screenshots, runDir: result.runDir };
 }
 
-async function saveAttach(form: AttachForm, file: string | null, target: HmsReadTarget): Promise<SaveOutcome> {
+async function saveAttach(
+  form: AttachForm,
+  file: string | null,
+  target: HmsReadTarget,
+  allowRealGuest: boolean,
+): Promise<SaveOutcome> {
   if (!file) throw new Error('attach_file_missing');
   const spawn = paneHmsWriteLoaders.spawnAttach ?? spawnAttachDocument;
   const result = await spawn({
@@ -766,6 +802,7 @@ async function saveAttach(form: AttachForm, file: string | null, target: HmsRead
     arrival: form.arrival,
     file,
     documentName: form.documentName,
+    allowRealGuest,
     target,
   });
   return {
@@ -846,6 +883,7 @@ type ExecuteInput = {
   form: HmsWriteForm;
   file: string | null;
   runDirs: string[];
+  allowRealGuest: boolean;
 };
 
 /** The consume, the reads and the Save, all under the property lock the caller holds. */
@@ -876,7 +914,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
     return endRun(db, fence, 'NEEDS_CHECK', `read_${found.outcome}`);
   }
   const stay = found.stay;
-  const identity = stayRefusal(stay, approved);
+  const identity = stayRefusal(stay, approved, { allowRealGuest: input.allowRealGuest });
   if (identity) return endRun(db, fence, 'NEEDS_CHECK', identity);
   let pre: HmsPreSaveOutcome;
   try {
@@ -900,7 +938,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   let saved: SaveOutcome;
   try {
     saved = approved.action === 'cancel' ? await saveCancel(approved, stay, target)
-      : approved.action === 'amend' ? await saveAmend(approved, stay, target) : await saveAttach(approved, input.file, target);
+      : approved.action === 'amend' ? await saveAmend(approved, stay, target) : await saveAttach(approved, input.file, target, input.allowRealGuest);
   } catch (error) {
     clearInterval(beat);
     // The CLI may have reached Save before it failed, so the outcome is unknown until the booking is read back.
@@ -943,7 +981,9 @@ async function runClaimed(
   runDirs: string[],
 ): Promise<PaneHmsWriteResult> {
   if (runId !== fence.runId) return { status: 'lease_lost' };
-  if (paneHmsWriteMode(env) === 'off') return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
+  const attachMode = paneHmsWriteMode(env);
+  const legacyLab = env.RESERVATIONIST_PANE_SAVE === 'lab';
+  if (attachMode === 'off' && !legacyLab) return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
   const [run] = await db
     .select({ workItemId: aiWorkflowRun.workItemId, transportId: aiWorkflowRun.transportId })
     .from(aiWorkflowRun)
@@ -959,8 +999,15 @@ async function runClaimed(
     .where(eq(workItem.id, workItemId))
     .limit(1);
   const form = item ? parseHmsWriteForm(item.state) : null;
-  const refusal = form ? formRefusal(form) : 'form_invalid';
-  if (!form || refusal) return endRun(db, fence, 'POLICY_BLOCK', refusal ?? 'form_invalid');
+  if (!form) return endRun(db, fence, 'POLICY_BLOCK', 'form_invalid');
+  if (form.action === 'attach_document') {
+    if (attachMode === 'off') return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
+  } else if (!legacyLab) {
+    return endRun(db, fence, 'POLICY_BLOCK', 'refused_flag_off');
+  }
+  const allowRealGuest = form.action === 'attach_document' && attachMode === 'on';
+  const refusal = formRefusal(form, { allowRealGuest });
+  if (refusal) return endRun(db, fence, 'POLICY_BLOCK', refusal);
 
   // Read before consume: a refused read ends the run with nothing consumed.
   let file: string | null = null;
@@ -987,7 +1034,7 @@ async function runClaimed(
   if (!lock) return endRun(db, fence, 'POLICY_BLOCK', 'refused_lock_unavailable');
   try {
     return await lock.withLock(
-      () => executeUnderLock({ db, fence, transportId, workItemId, form, file, runDirs }),
+      () => executeUnderLock({ db, fence, transportId, workItemId, form, file, runDirs, allowRealGuest }),
       acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {

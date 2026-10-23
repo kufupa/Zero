@@ -92,6 +92,7 @@ export const PANE_WRITE_AMEND_UNPAID = 'PANE_WRITE_AMEND_UNPAID';
 export const PANE_WRITE_AMEND_PAID = 'PANE_WRITE_AMEND_PAID';
 export const PANE_WRITE_CANCEL_UNPAID = 'PANE_WRITE_CANCEL_UNPAID';
 export const PANE_WRITE_CANCEL_PAID = 'PANE_WRITE_CANCEL_PAID';
+export const PANE_WRITE_ATTACH = 'PANE_WRITE_ATTACH';
 
 export const PANE_WRITE_ENV_NAMES = [
   PANE_WRITE_CREATE,
@@ -109,7 +110,7 @@ const PANE_WRITE_OFF: PaneWriteModes = {
   cancelPaid: 'off',
 };
 
-function parseLabOn(value: string | undefined): PaneSaveMode {
+export function parseLabOn(value: string | undefined): PaneSaveMode {
   return value === 'lab' || value === 'on' ? value : 'off';
 }
 
