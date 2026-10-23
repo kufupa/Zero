@@ -395,16 +395,20 @@ const WORKFLOW_BY_KIND: Partial<Record<MailKind, LunaAnalysis['workflow']>> = {
 const PAYMENT_WORDS = /\bremittance\b|proof of payment|\bpayment (?:advice|confirmation|notification)\b/i;
 const POP_CAPS = /\bPOP\b/;
 const VOUCHER_WORD = /\bvouchers?\b/i;
-const GUARANTEED_WORD = /\bguaranteed\b/i;
 const NOT_SETTLED = /\bnon[-\s]?guaranteed\b|\bprovisional\b/i;
 
-/** Paid, voucher, or guaranteed mail. Provisional / non-guaranteed wording is not settled. */
+const ASK_FOR_PAYMENT =
+  /\b(?:please|kindly)\s+(?:send|provide|attach|forward)\b[\s\S]{0,40}\b(?:proof of payment|POP|voucher|remittance)\b/i;
+const GUARANTEED_STATE = /\bis guaranteed\b|\bguaranteed reservation\b/i;
+
+/** Paid, voucher, or guaranteed evidence. A request for payment proof is not settled. */
 export function mailLooksPaidVoucherOrGuaranteed(text: string | null | undefined): boolean {
   if (!text) return false;
   const plain = text.replace(/<[^>]+>/g, ' ');
+  if (ASK_FOR_PAYMENT.test(plain)) return false;
   if (PAYMENT_WORDS.test(plain) || POP_CAPS.test(plain) || VOUCHER_WORD.test(plain)) return true;
   if (NOT_SETTLED.test(plain)) return false;
-  return GUARANTEED_WORD.test(plain);
+  return GUARANTEED_STATE.test(plain);
 }
 
 function storedWorkflow(read: StoredRead): LunaAnalysis['workflow'] {

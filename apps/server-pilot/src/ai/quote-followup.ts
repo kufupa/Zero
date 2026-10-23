@@ -474,7 +474,7 @@ async function loadConfirmationLetters(
       and(
         eq(message.transportId, transportId),
         sql`${attachment.filename} ~* ${CONFIRMATION_LETTER_SQL}`,
-        sql`coalesce(${DELIVERED_AT}, ${MESSAGE_ARRIVED_AT}) >= ${firstEligible}`,
+        sql`coalesce(${DELIVERED_AT}, ${MESSAGE_ARRIVED_AT}) >= ${firstEligible.toISOString()}::timestamp`,
       ),
     );
   const drafted = await db
@@ -485,7 +485,7 @@ async function loadConfirmationLetters(
       and(
         eq(message.transportId, transportId),
         isNotNull(mailDraft.sentMessageId),
-        sql`coalesce(${DELIVERED_AT}, ${MESSAGE_ARRIVED_AT}) >= ${firstEligible}`,
+        sql`coalesce(${DELIVERED_AT}, ${MESSAGE_ARRIVED_AT}) >= ${firstEligible.toISOString()}::timestamp`,
       ),
     );
   const ids = [
@@ -522,10 +522,11 @@ async function findLinkedBookingConfirmation(
   });
   if (timed.length === 0) return null;
   const confs = await bookingConfBases(db, item);
-  const matched = timed.filter((row) => {
-    const letterConf = row.names.map(confirmationLetterConf).find((value) => value);
-    if (confs.size > 0) return letterConf !== undefined && confs.has(confirmationBase(letterConf));
-    return false;
+  const hotelLetters = timed.filter((row) => row.m.direction === 'outbound' || ownMail(row.m));
+  const matched = hotelLetters.filter((row) => {
+    const letterConf = row.names.map(confirmationLetterConf).find((value): value is string => Boolean(value));
+    if (confs.size === 0 || !letterConf) return false;
+    return confs.has(confirmationBase(letterConf));
   });
   if (matched.length > 0) {
     matched.sort((a, b) => {
@@ -536,9 +537,10 @@ async function findLinkedBookingConfirmation(
     });
     return matched[0]!.m;
   }
+  if (confs.size > 0) return null;
   const [source] = await messagesByIds(db, item.transportId, [item.sourceMessageId]);
   const guest = source?.fromAddress ?? '';
-  const toGuest = timed.filter((row) => addressedToGuest(row.m, guest));
+  const toGuest = hotelLetters.filter((row) => addressedToGuest(row.m, guest));
   if (toGuest.length !== 1) return null;
   return toGuest[0]!.m;
 }
@@ -578,10 +580,6 @@ async function bookingFollowUpSettled(
       )
       .limit(1);
     if (extract) return true;
-  }
-  for (const threadId of ids) {
-    const thread = await threadMessages(db, transportId, threadId);
-    if (thread.some(messageLooksSettled)) return true;
   }
   return extra.some(messageLooksSettled);
 }
@@ -644,10 +642,17 @@ async function discardOvertakenFollowUps(db: DB, now: Date): Promise<number> {
     for (const draft of candidates) {
       if (!draft.threadId || !draft.replyToMessageId) continue;
       const thread = await threadMessages(db, draft.transportId, draft.threadId);
-      const sent = thread.find((m) => m.id === draft.replyToMessageId);
+      const sent =
+        thread.find((m) => m.id === draft.replyToMessageId) ??
+        (await messagesByIds(db, draft.transportId, [draft.replyToMessageId]))[0];
       if (!sent) continue;
-      const sentFrom = await knownSenders(db, draft.transportId, ownDomainAddresses(thread));
-      if (!overtaken(thread, sent, sentFrom)) continue;
+      const letterThread =
+        sent.threadId && sent.threadId !== draft.threadId
+          ? await threadMessages(db, draft.transportId, sent.threadId)
+          : [];
+      const watch = [...thread, ...letterThread];
+      const sentFrom = await knownSenders(db, draft.transportId, ownDomainAddresses(watch));
+      if (!overtaken(watch, sent, sentFrom)) continue;
       const [row] = await db
         .update(mailDraft)
         .set({ status: 'discarded', updatedAt: now })
@@ -737,6 +742,7 @@ export async function runQuoteFollowupSweep(
       const requestedAt = item.requestArrivedAt.getTime();
       const firstEligible = Math.max(requestedAt, since.getTime());
       if (item.kind === 'booking') {
+        if (!item.threadId || !item.sourceMessageId) continue;
         const letter = await findLinkedBookingConfirmation(
           db,
           {
@@ -1095,6 +1101,7 @@ async function writeFollowUp(
   if (item.kind === 'booking') {
     const names = (await storedAttachmentNames(db, [sent.id])).get(sent.id);
     if (!messageStatesConfirmationLetter(names)) return 'no_sent_message';
+    if (sent.direction !== 'outbound' && !ownMail(sent)) return 'no_sent_message';
     if (confirmationClockMs(sent) === null) return 'not_sent';
   } else if (deliveredTime(sent) === null) {
     return 'not_sent';
@@ -1301,9 +1308,13 @@ export async function followUpForMessage(
     .where(
       and(
         eq(mailDraft.transportId, input.transportId),
-        eq(mailDraft.threadId, threadId),
         inArray(mailDraft.status, ['candidate', 'active']),
         IS_FOLLOW_UP_DRAFT,
+        or(
+          eq(mailDraft.threadId, threadId),
+          sql`${mailDraft.replyToMessageId} in (select m.id from ${message} as m
+            where m.transport_id = ${input.transportId} and m.thread_id = ${threadId})`,
+        ),
       ),
     )
     .orderBy(desc(mailDraft.updatedAt), desc(mailDraft.id))
@@ -1349,10 +1360,19 @@ export async function useFollowUpDraft(
       if (!workItemId) return { status: 'not_found' as const };
       // A reply since the quote overtakes the suggestion even before the sweep discards it.
       const thread = await threadMessages(tx as unknown as DB, draft.transportId, draft.threadId);
-      const sent = thread.find((m) => m.id === draft.replyToMessageId);
+      const sent =
+        thread.find((m) => m.id === draft.replyToMessageId) ??
+        (draft.replyToMessageId
+          ? (await messagesByIds(tx as unknown as DB, draft.transportId, [draft.replyToMessageId]))[0]
+          : undefined);
       if (!sent) return { status: 'not_found' as const };
-      const sentFrom = await knownSenders(tx as unknown as DB, draft.transportId, ownDomainAddresses(thread));
-      if (overtaken(thread, sent, sentFrom)) return { status: 'not_found' as const };
+      const letterThread =
+        sent.threadId && sent.threadId !== draft.threadId
+          ? await threadMessages(tx as unknown as DB, draft.transportId, sent.threadId)
+          : [];
+      const watch = [...thread, ...letterThread];
+      const sentFrom = await knownSenders(tx as unknown as DB, draft.transportId, ownDomainAddresses(watch));
+      if (overtaken(watch, sent, sentFrom)) return { status: 'not_found' as const };
       const [active] = await tx
         .select({ id: mailDraft.id })
         .from(mailDraft)
