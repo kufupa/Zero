@@ -525,7 +525,7 @@ export async function openRecord(page, row) {
     return ['lastname', 'confirmationnumber', 'status', 'arrivaldate'].some((name) =>
       [...document.querySelectorAll(`input[name="${name}"]`)].some(shown),
     );
-  }, { timeout: 20000 });
+  }, undefined, { timeout: 20000 });
   await page.waitForTimeout(1000);
 }
 
