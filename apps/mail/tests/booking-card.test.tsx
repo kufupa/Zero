@@ -1028,7 +1028,9 @@ describe('booking card pane save', () => {
     fireEvent.click(previewButton(0));
     fireEvent.click(previewButton(1));
     await screen.findAllByText(/Nothing is saved until you press Create provisional booking/);
-    fireEvent.click(screen.getByRole('button', { name: 'Book this stay' }));
+    const bookStay = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
+    await waitFor(() => expect(bookStay.disabled).toBe(false));
+    fireEvent.click(bookStay);
     await screen.findByText('Booked this stay – 11111-1, 22222-1');
     expect(commit).toHaveBeenCalledTimes(2);
     expect(screen.getByText('Booked in HMS – confirmation 11111-1')).toBeDefined();

@@ -46,11 +46,15 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
   const stays = groupStays(session.groups);
   const stay =
     stays.find((item) => item.id === selectedKey) ??
-    stays.find((item) => item.rows[0] && stayKeyForGroup(item.rows[0]) === selectedKey);
+    stays.find(
+      (item) =>
+        item.rows.some((row) => stayIdOf(row) === selectedKey) ||
+        Boolean(item.rows[0] && stayKeyForGroup(item.rows[0]) === selectedKey),
+    );
   if (!stay) return base;
-  const action = stayAskAction(session, stay.id);
+  const action = stayAskAction(session, selectedKey);
   if (action !== 'amend' && action !== 'cancel') return base;
-  const confirmation = stayAskGuests(session, stay.id)
+  const confirmation = stayAskGuests(session, selectedKey)
     .map((guest) => guest.confirmationNumber)
     .find((value) => value);
   if (!confirmation) return base;

@@ -342,32 +342,24 @@ describe('one card per date set', () => {
       type: 'staff_source_ready',
       source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: SOURCE_HASH },
     });
-    const twin = allocation('rev-a', NOV.key, 272000);
-    session = reduceQuoteSession(session, {
-      type: 'staff_quote_ready',
-      offer: {
-        ...twin,
-        roomLabel: 'Standard Twin',
-        coversGroupIds: ['stay-a'],
-        quantity: 1,
-      },
-      staffQuote: staffRun(session, 'rev-a', NOV.key, 272000),
-      selectionEpoch: 1,
-      inputRevision: session.inputRevision,
-    });
+    session = quoteStay(session, { revisionRef: 'rev-a', key: NOV.key, totalMinor: 272000 });
+    session = quoteStay(session, { revisionRef: 'rev-b', key: DEC.key, totalMinor: 136000 });
+    const twinOffer = session.offers.find((offer) => offer.id === 'rev-a');
     session = {
       ...session,
       offers: [
-        ...session.offers,
+        ...(twinOffer
+          ? [{ ...twinOffer, roomLabel: 'Standard Twin', coversGroupIds: ['stay-a'], quantity: 1 }]
+          : []),
         {
           ...allocation('rev-a-queen', NOV.key, 566000),
           roomLabel: 'Standard Queen',
           coversGroupIds: ['stay-a2'],
           quantity: 2,
         },
+        ...session.offers.filter((offer) => offer.id !== 'rev-a'),
       ],
     };
-    session = quoteStay(session, { revisionRef: 'rev-b', key: DEC.key, totalMinor: 136000 });
     const html = requireMultiOptionDraft(withCombinedPdf(session))?.html ?? '';
     expect(html).toContain('<td>Standard Twin · Bed &amp; breakfast</td>');
     expect(html).toContain('<td>Standard Queen · Bed &amp; breakfast</td>');

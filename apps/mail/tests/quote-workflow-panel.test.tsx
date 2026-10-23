@@ -1447,13 +1447,15 @@ describe('QuoteWorkflowPanel', () => {
     expect(onRunStep).toHaveBeenCalledWith(quoted.steps[1]!.id);
   });
 
-  it('two stays on the same dates show their shared total once, on the first of them', () => {
+  it('two extracted stays on the same dates render as one card with both room rows', () => {
     const quoted = staggeredDatesWithOptionA();
     const row = quoted.groups[0]!;
     const sameDates = { ...quoted, groups: [row, { ...row, id: `${row.id}-copy`, stayId: 'stay-copy' }] };
     render(<QuoteWorkflowPanel session={sameDates} />);
-    expect(screen.getByText('Counted in Stay 1')).toBeDefined();
-    expect(screen.getByText(/for Stays 1, 2/)).toBeDefined();
+    expect(screen.getByRole('heading', { name: /Stay 1 of 1/ })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /Stay 2 of 2/ })).toBeNull();
+    expect(screen.getAllByRole('group', { name: /^Rooms for stay 1, room \d$/ })).toHaveLength(2);
+    expect(screen.queryByText('Counted in Stay 1')).toBeNull();
   });
 
   it('a government default still lists the returned rates when the catalogue query failed', () => {
