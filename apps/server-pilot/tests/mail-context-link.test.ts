@@ -235,6 +235,23 @@ describe('linkMailContext', () => {
     expect(links[0]!.reply_id).toBe(maskContextId(laterReplyId));
     expect(links[0]!.conf).toBe(CONF);
   });
+
+  it('reserves a same-thread letter before a shared-domain ask can take it', () => {
+    const otherAskId = 'ask-fixture-other';
+    const otherReplyId = 'reply-fixture-other';
+    const otherThread = 'thread-fixture-other';
+    const links = linkMailContext([
+      ask({ id: otherAskId, threadId: otherThread, at: atOffset(-30) }),
+      reply({ id: otherReplyId, threadId: otherThread }),
+      ask(),
+      reply(),
+      letter({ at: atOffset(8) }),
+    ]);
+    expect(links).toHaveLength(1);
+    expect(links[0]!.ask_id).toBe(maskContextId(ASK_ID));
+    expect(links[0]!.letter_id).toBe(maskContextId(LETTER_ID));
+    expect(links[0]!.conf).toBe(CONF);
+  });
 });
 
 describe('runMailContextLinker', () => {

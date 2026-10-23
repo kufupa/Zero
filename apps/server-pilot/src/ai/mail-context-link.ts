@@ -194,6 +194,7 @@ function letterForReply(
   askEvent: MailContextEvent,
   letters: readonly MailContextEvent[],
   claimedLetters: ReadonlySet<string>,
+  sameThreadOnly: boolean,
 ): LetterCandidate | null {
   const replyMs = msAt(replyEvent.at);
   return (
@@ -206,14 +207,15 @@ function letterForReply(
         if (delta < 0 || delta > LETTER_WINDOW_MS) return null;
         const threadOk = letter.threadId === replyEvent.threadId;
         const domainOk = sameDomain(letter, replyEvent) || sameDomain(letter, askEvent);
-        if (!threadOk && !domainOk) return null;
+        if (sameThreadOnly) {
+          if (!threadOk) return null;
+        } else if (!domainOk || threadOk) {
+          return null;
+        }
         return { letter, identity, delta, threadOk, domainOk };
       })
       .filter((row): row is LetterCandidate => Boolean(row))
-      .sort((a, b) => {
-        if (a.threadOk !== b.threadOk) return a.threadOk ? -1 : 1;
-        return a.delta - b.delta;
-      })[0] ?? null
+      .sort((a, b) => a.delta - b.delta)[0] ?? null
   );
 }
 
@@ -233,49 +235,56 @@ export function linkMailContext(events: readonly MailContextEvent[]): ContextLin
   const links: ContextLink[] = [];
   const claimedLetters = new Set<string>();
   const claimedReplies = new Set<string>();
+  const linkedAsks = new Set<string>();
 
-  for (const askEvent of asks) {
-    const until = nextAskMs(askEvent, asks);
-    const laterReplies = replies
-      .filter(
-        (row) =>
-          row.threadId === askEvent.threadId &&
-          msAt(row.at) >= msAt(askEvent.at) &&
-          msAt(row.at) < until &&
-          !claimedReplies.has(row.id),
-      )
-      .sort((a, b) => msAt(a.at) - msAt(b.at));
-    let replyEvent: MailContextEvent | undefined;
-    let candidate: LetterCandidate | null = null;
-    for (const reply of laterReplies) {
-      candidate = letterForReply(reply, askEvent, letters, claimedLetters);
-      if (candidate) {
-        replyEvent = reply;
-        break;
+  const assignPass = (sameThreadOnly: boolean) => {
+    for (const askEvent of asks) {
+      if (linkedAsks.has(askEvent.id)) continue;
+      const until = nextAskMs(askEvent, asks);
+      const laterReplies = replies
+        .filter(
+          (row) =>
+            row.threadId === askEvent.threadId &&
+            msAt(row.at) >= msAt(askEvent.at) &&
+            msAt(row.at) < until &&
+            !claimedReplies.has(row.id),
+        )
+        .sort((a, b) => msAt(a.at) - msAt(b.at));
+      let replyEvent: MailContextEvent | undefined;
+      let candidate: LetterCandidate | null = null;
+      for (const reply of laterReplies) {
+        candidate = letterForReply(reply, askEvent, letters, claimedLetters, sameThreadOnly);
+        if (candidate) {
+          replyEvent = reply;
+          break;
+        }
       }
+      if (!replyEvent || !candidate) continue;
+      linkedAsks.add(askEvent.id);
+      claimedLetters.add(candidate.letter.id);
+      claimedReplies.add(replyEvent.id);
+      const compared = compareStayFacts(askEvent.facts, candidate.letter.facts);
+      links.push({
+        label: CONTEXT_DATASET_LABEL,
+        link_confidence: linkConfidence({
+          sameThread: candidate.threadOk,
+          sameDomain: candidate.domainOk,
+          fieldsMatch: compared.fields_match,
+        }),
+        fields_match: compared.fields_match,
+        field_flags: compared.field_flags,
+        ask_id: maskContextId(askEvent.id),
+        reply_id: maskContextId(replyEvent.id),
+        letter_id: maskContextId(candidate.letter.id),
+        conf: candidate.identity.conf,
+        property: candidate.identity.property,
+        window_ms: candidate.delta,
+      });
     }
-    if (!replyEvent || !candidate) continue;
-    claimedLetters.add(candidate.letter.id);
-    claimedReplies.add(replyEvent.id);
-    const compared = compareStayFacts(askEvent.facts, candidate.letter.facts);
-    links.push({
-      label: CONTEXT_DATASET_LABEL,
-      link_confidence: linkConfidence({
-        sameThread: candidate.threadOk,
-        sameDomain: candidate.domainOk,
-        fieldsMatch: compared.fields_match,
-      }),
-      fields_match: compared.fields_match,
-      field_flags: compared.field_flags,
-      ask_id: maskContextId(askEvent.id),
-      reply_id: maskContextId(replyEvent.id),
-      letter_id: maskContextId(candidate.letter.id),
-      conf: candidate.identity.conf,
-      property: candidate.identity.property,
-      window_ms: candidate.delta,
-    });
-  }
+  };
 
+  assignPass(true);
+  assignPass(false);
   return links;
 }
 
