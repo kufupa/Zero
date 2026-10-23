@@ -820,45 +820,50 @@ export async function runQuoteFollowupSweep(
 
   // A hotel reply closes the request and keeps its reply link (C2), so the select above never sees it. Its clock starts
   // from that link, the same way, and once per link: a run already queued for the link keeps it from starting again.
-  const closedByReply = await db
-    .select({
-      id: workItem.id,
-      kind: workItem.kind,
-      transportId: workItem.transportId,
-      threadId: workItem.threadId,
-      sourceMessageId: workItem.sourceMessageId,
-      state: workItem.state,
-      sentMessageId: workItem.sentMessageId,
-      sentAt: workItem.sentAt,
-    })
-    .from(workItem)
-    .where(
-      and(
-        inArray(workItem.kind, FOLLOW_UP_WORK_KINDS),
-        CLOSED_BY_HOTEL_REPLY,
-        isNull(workItem.followUpDueAt),
-        gte(workItem.sentAt, since),
-        // The reminder itself, once a person sends it, is the hotel's newest mail, so C2 closes the quote on it. It is
-        // not a reply to the quote, so it starts no second clock (which would send another reminder).
-        sql`not exists (select 1 from ${mailDraft} as sf where sf.sent_message_id = ${workItem}.sent_message_id
-          and sf.created_by_user_id = ${NAVA_USER_ID} and sf.origin = 'manual'
-          and sf.id like ${`${QUOTE_FOLLOWUP_DRAFT_PREFIX}%`})`,
-        notExists(
-          db
-            .select({ one: sql`1` })
-            .from(aiWorkflowRun)
-            .where(
-              and(
-                eq(aiWorkflowRun.workItemId, workItem.id),
-                eq(aiWorkflowRun.runKind, 'quote_followup'),
-                eq(aiWorkflowRun.triggerMessageId, workItem.sentMessageId),
+  let afterClosed: string | null = null;
+  for (;;) {
+    const closedByReply = await db
+      .select({
+        id: workItem.id,
+        kind: workItem.kind,
+        transportId: workItem.transportId,
+        threadId: workItem.threadId,
+        sourceMessageId: workItem.sourceMessageId,
+        state: workItem.state,
+        sentMessageId: workItem.sentMessageId,
+        sentAt: workItem.sentAt,
+        requestArrivedAt: sql`${requestArrivedAt}`.mapWith(message.createdAt),
+      })
+      .from(workItem)
+      .where(
+        and(
+          inArray(workItem.kind, FOLLOW_UP_WORK_KINDS),
+          CLOSED_BY_HOTEL_REPLY,
+          isNull(workItem.followUpDueAt),
+          gte(workItem.sentAt, since),
+          afterClosed ? gt(workItem.id, afterClosed) : undefined,
+          // The reminder itself, once a person sends it, is the hotel's newest mail, so C2 closes the quote on it. It is
+          // not a reply to the quote, so it starts no second clock (which would send another reminder).
+          sql`not exists (select 1 from ${mailDraft} as sf where sf.sent_message_id = ${workItem}.sent_message_id
+            and sf.created_by_user_id = ${NAVA_USER_ID} and sf.origin = 'manual'
+            and sf.id like ${`${QUOTE_FOLLOWUP_DRAFT_PREFIX}%`})`,
+          notExists(
+            db
+              .select({ one: sql`1` })
+              .from(aiWorkflowRun)
+              .where(
+                and(
+                  eq(aiWorkflowRun.workItemId, workItem.id),
+                  eq(aiWorkflowRun.runKind, 'quote_followup'),
+                  eq(aiWorkflowRun.triggerMessageId, workItem.sentMessageId),
+                ),
               ),
-            ),
+          ),
         ),
-      ),
-    )
-    .limit(SWEEP_BATCH);
-  for (const item of closedByReply) {
+      )
+      .orderBy(asc(workItem.id))
+      .limit(SWEEP_BATCH);
+    for (const item of closedByReply) {
     if (!item.sentMessageId || !item.sentAt || !item.threadId) continue;
     if (item.kind === 'booking') {
       if (!item.sourceMessageId) {
@@ -882,7 +887,7 @@ export async function runQuoteFollowupSweep(
           sourceMessageId: item.sourceMessageId,
           state: item.state,
         },
-        since.getTime(),
+        Math.max(item.requestArrivedAt.getTime(), since.getTime()),
         await lettersFor(item.transportId),
       );
       const letterAt = letter ? confirmationClockMs(letter) : null;
@@ -944,6 +949,10 @@ export async function runQuoteFollowupSweep(
       )
       .returning({ id: workItem.id });
     if (linked) counts.linked++;
+    }
+    const lastClosed = closedByReply.at(-1);
+    if (closedByReply.length < SWEEP_BATCH || !lastClosed) break;
+    afterClosed = lastClosed.id;
   }
 
   const linkedItems = await db
