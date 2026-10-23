@@ -219,22 +219,45 @@ function textsFromStoredExtract(
   return texts;
 }
 
-/** Filenames already on the message. Never fetches objects. */
+function jsonAttachmentNames(
+  value: { filename?: string }[] | null | undefined,
+): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((row) => (typeof row?.filename === 'string' && row.filename ? [row.filename] : []));
+}
+
+function pushFilenames(out: Map<string, string[]>, messageId: string | null, names: readonly string[]) {
+  if (!messageId || names.length === 0) return;
+  const prev = out.get(messageId) ?? [];
+  for (const name of names) {
+    if (!prev.includes(name)) prev.push(name);
+  }
+  out.set(messageId, prev);
+}
+
+/** Filenames already on the message, plus Nava send metadata (draft/revision) when ingest has not written attachment rows. */
 async function storedAttachmentNames(
   db: DB,
   messageIds: readonly string[],
 ): Promise<Map<string, string[]>> {
   const out = new Map<string, string[]>();
   if (messageIds.length === 0) return out;
+  const ids = [...messageIds];
   const rows = await db
     .select({ messageId: attachment.messageId, filename: attachment.filename })
     .from(attachment)
-    .where(inArray(attachment.messageId, [...messageIds]));
-  for (const row of rows) {
-    const prev = out.get(row.messageId) ?? [];
-    prev.push(row.filename);
-    out.set(row.messageId, prev);
-  }
+    .where(inArray(attachment.messageId, ids));
+  for (const row of rows) pushFilenames(out, row.messageId, [row.filename]);
+  const drafts = await db
+    .select({ messageId: mailDraft.sentMessageId, attachments: mailDraft.attachments })
+    .from(mailDraft)
+    .where(and(inArray(mailDraft.sentMessageId, ids), isNotNull(mailDraft.sentMessageId)));
+  for (const row of drafts) pushFilenames(out, row.messageId, jsonAttachmentNames(row.attachments));
+  const revisions = await db
+    .select({ messageId: mailDraftRevision.sentMessageId, attachments: mailDraftRevision.attachments })
+    .from(mailDraftRevision)
+    .where(and(inArray(mailDraftRevision.sentMessageId, ids), isNotNull(mailDraftRevision.sentMessageId)));
+  for (const row of revisions) pushFilenames(out, row.messageId, jsonAttachmentNames(row.attachments));
   return out;
 }
 

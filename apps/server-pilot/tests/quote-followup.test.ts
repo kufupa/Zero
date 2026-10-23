@@ -981,6 +981,52 @@ describe('quote follow-up drafts', () => {
     });
   });
 
+  it('a Nava-sent confirmation still clocks when ingest has not written attachment rows', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-nava-conf', REQUEST_AT, 'review', {
+        kind: 'booking',
+      });
+      await sendReply(db, {
+        id: 'out-nava-conf',
+        threadId: 'thread-nava-conf',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+        subject: 'Confirmation letter',
+        textBody: 'Please find the confirmation attached.',
+      });
+      await db.insert(mailDraft).values({
+        id: 'nava-conf-draft',
+        transportId: TRANSPORT,
+        threadId: 'thread-nava-conf',
+        createdByUserId: NAVA_USER_ID,
+        subject: 'Confirmation letter',
+        textBody: 'Please find the confirmation attached.',
+        status: 'sent',
+        origin: 'manual',
+        isSent: true,
+        sentMessageId: 'out-nava-conf',
+        attachments: [
+          {
+            filename: 'HRCEN_Confirmation_Letter_12345678.pdf',
+            mimeType: 'application/pdf',
+            sizeBytes: 2048,
+            s3Key: 'test/out-nava-conf.pdf',
+          },
+        ],
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
+      expect((await loadItem(db, itemId)).sentMessageId).toBe('out-nava-conf');
+    });
+  });
+
   it('a done quote is not followed up', async () => {
     await withIngestionDb(async ({ db }) => {
       await seedNavaUser(db);
