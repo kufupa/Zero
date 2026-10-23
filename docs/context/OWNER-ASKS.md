@@ -339,3 +339,9 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 207 | Standardize owner workflows into skills; owner barely uses skills (only ce-plan) | 🟡 | 4 front-door skills proposed (retro §10); build after owner picks |
 | 208 | Model routing: Grok 4.6 high everywhere burns credits; use Luna more for coding, Grok to review | 🟡 | Data: orchestrator 61% of Grok spend; A/B proposal retro §9 |
 | 209 | Orchestrator keeps going idle/breaking, esp. after new plans; now using Orca CLI | 🟡 | No true idle; steer latency from 300–390K context; retro §5 |
+| 210 | Make Nava hotel-agnostic (≥3 more hotels, many users per hotel: Faith + Ayanda on DV, whole reservations team); DV missing wholesale, no Standard Queen at DV | 🟡 | Retro §11; A1 inventory + 9-slice target |
+| 211 | 10/10 product = Infor workflow fields copied into pane, pre-filled from email, vague fields suggested from corpus, staff click yes; propose architecture rewrites, not patches | 🟡 | Next shaping session |
+| 212 | Get DV rates from data + HMS, not from staff | 🟡 | 1,687 DV outbound + WS/NC/GOV read-only shops |
+| 213 | Orchestrator: no 150K hard handoff; self-handoff ~250K then compact, ~300K ceiling, compaction ledger; steers inject immediately | ✅ policy | Memory feedback-orchestrator-context-policy; Grok follow_up_behavior=steer |
+| 214 | Skills: don't build night-run; conversational front door that forces our failure modes + evidence + architecture pushback; keep closeout; teach wayfinder | 🟡 | Proposal in chat |
+| 215 | Run routing A/B now in developer hours (Luna codes, Grok reviews); split daytime (iterate with customers) vs overnight autonomy | 🟡 | Proposal in chat |
