@@ -1789,8 +1789,8 @@ export function QuoteWorkflowPanel({
                 index={index}
                 stayCount={stays.length}
                 requestedRoomsTotal={
-                  stay.rows.reduce(
-                    (total, row) => total + (session.analysis?.requestedRoomsByStay?.[stayIdOf(row)] ?? 0),
+                  [...new Set(stay.rows.map(stayIdOf))].reduce(
+                    (total, id) => total + (session.analysis?.requestedRoomsByStay?.[id] ?? 0),
                     0,
                   ) || session.analysis?.requestedRoomsByStay?.[stay.id]
                 }

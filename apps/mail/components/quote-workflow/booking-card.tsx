@@ -405,6 +405,7 @@ function RoomSave({
   save,
   screenshot,
   bookLabel,
+  frozen = false,
   onPreview,
   onBook,
 }: {
@@ -413,12 +414,13 @@ function RoomSave({
   save: RoomSaveState;
   screenshot: PaneStayClient['screenshot'];
   bookLabel: string;
+  frozen?: boolean;
   onPreview: (stay: PaneStayInput) => void;
   onBook: (stay: PaneStayInput, previewDigest: string) => void;
 }) {
   const { preview, commit } = save;
   const key = stay ? paneStayKey(stay) : null;
-  const busy = preview?.status === 'running' || commit?.status === 'running';
+  const busy = frozen || preview?.status === 'running' || commit?.status === 'running';
   const fresh = stay && preview?.status === 'ready' && preview.key === key ? preview : null;
   const changed = preview?.status === 'ready' && preview.key !== key;
 
@@ -1052,6 +1054,7 @@ export function BookingCards({
                 save={saves[key] ?? {}}
                 screenshot={client.screenshot}
                 bookLabel={CREATE_PROVISIONAL_LABEL}
+                frozen={stayBooking}
                 onPreview={(stay) => void previewRoom(key, client, stay)}
                 onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
               />

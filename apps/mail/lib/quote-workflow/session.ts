@@ -126,12 +126,14 @@ export function stayIdOf(group: StayGroupRequirement): string {
 
 /** The rows grouped into stays, in the order each stay's first row appears. Same dates are one stay. */
 export function groupStays(groups: StayGroupRequirement[]): Array<{ id: string; rows: StayGroupRequirement[] }> {
-  const byDate = new Map<string, StayGroupRequirement[]>();
+  const byKey = new Map<string, StayGroupRequirement[]>();
   for (const group of groups) {
-    const id = stayKeyForGroup(group);
-    byDate.set(id, [...(byDate.get(id) ?? []), group]);
+    const dateKey = stayKeyForGroup(group);
+    const id =
+      !group.arrivalDate || !group.departureDate || dateKey === 'unknown:unknown' ? stayIdOf(group) : dateKey;
+    byKey.set(id, [...(byKey.get(id) ?? []), group]);
   }
-  return [...byDate].map(([id, rows]) => ({ id, rows }));
+  return [...byKey].map(([id, rows]) => ({ id, rows }));
 }
 
 /** Rows a stay action names: an extracted stay id, or the date-set id the pane card uses. */
