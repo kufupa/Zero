@@ -240,6 +240,7 @@ describe('buildQuoteWorkflowPrompt', () => {
     expect(prompt.system).toMatch(/Da Vinci Hotel and Suites/);
     expect(prompt.system).toMatch(/HRDAV/);
     expect(prompt.system).not.toMatch(/Centurion/);
+    expect(prompt.system).not.toMatch(/partner \(Da Vinci/);
     expect(prompt.system).not.toContain(CENTURION_HOTEL_RULES);
   });
 

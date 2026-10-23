@@ -70,7 +70,10 @@ ${MOVE_CATALOG_RULES}
 
 export const CENTURION_HOTEL_RULES = `Property: Centurion Hotel (HMS property code HRCEN), ${HOTEL_OPERATING_RULES}`;
 
-export const DAVINCI_HOTEL_RULES = `Property: Da Vinci Hotel and Suites (HMS property code HRDAV), ${HOTEL_OPERATING_RULES}`;
+export const DAVINCI_HOTEL_RULES = `Property: Da Vinci Hotel and Suites (HMS property code HRDAV), ${HOTEL_OPERATING_RULES.replace(
+  'property or partner (Da Vinci, events/conference team, accounts, another hotel)',
+  'property or partner (another Legacy hotel, events/conference team, accounts)',
+)}`;
 
 /** Quote prompts pick hotel identity from the HMS property. Unknown codes stay HRCEN. */
 export function hotelRulesForProperty(propertyCode?: string | null): string {
