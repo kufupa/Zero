@@ -1328,7 +1328,7 @@ export async function planThreadWork(
 
 async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Promise<void> {
   const now = new Date();
-  // A changed reply link clears the quote follow-up clock: the sweep (quote-followup) starts it again from the new link.
+  // A changed reply link clears the follow-up clock: the sweep (quote-followup) starts it again from the new link.
   if ('repoint' in change) {
     await tx
       .update(workItem)
@@ -1339,7 +1339,7 @@ async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Prom
         updatedAt: now,
       })
       .where(eq(workItem.id, change.workItemId));
-    // The quote clock keys on a recorded hotel_replied close (CLOSED_BY_HOTEL_REPLY). A done item closed before the reply
+    // The follow-up clock keys on a recorded hotel_replied close (CLOSED_BY_HOTEL_REPLY). A done item closed before the reply
     // link existed has none, so its link records one, as the other close does. A link that moves on a close already
     // recorded needs no second event.
     const [recorded] = await tx
@@ -1901,6 +1901,9 @@ export const NEEDS_YOU_KINDS = [
   'cancellation',
   'voucher_pop',
 ] as const;
+
+/** Kinds the 66h follow-up sweep considers. Quote clocks from a validity window; booking from an HMS confirmation send. */
+export const FOLLOW_UP_WORK_KINDS = ['quote', 'booking'] as const;
 
 /** The chips on a Needs-you row (KTD14), in list order: the list sorts by this index, then by age. */
 export const NEEDS_YOU_CHIPS = ['needs_you', 'review', 'queued', 'in_hms'] as const;

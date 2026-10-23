@@ -7,6 +7,7 @@ import {
 } from './run-ledger.js';
 import {
   aiWorkflowRun,
+  attachment,
   mailboxTransport,
   mailDraft,
   mailDraftRevision,
@@ -37,6 +38,7 @@ import { alias } from 'drizzle-orm/pg-core';
 import { appendWorkEvent } from './work-events.js';
 import { randomUUID } from 'node:crypto';
 import {
+  FOLLOW_UP_WORK_KINDS,
   isStaffSender,
   knownSenders,
   messageArrivedAt,
@@ -46,14 +48,15 @@ import {
   personTouchSql,
 } from './work-items.js';
 import { normalizeEmailAddress } from './never-spam.js';
-import { quoteFollowUpBody } from '../quote-proposal/filename.js';
+import { quoteFollowUpBody, quotePropertyIdentity } from '../quote-proposal/filename.js';
 import { isDaVinciTransport } from '../hms/hms-read-target.js';
 
 /**
- * Quote follow-ups (R10 / ask 175). When a quote request's thread gets a staff quote reply that states a validity
- * or hold window, that send starts a 66-hour clock. If no client reply arrives before it runs out, one
- * `quote_followup` run writes a candidate draft for staff review and moves the item to needs_you. Nothing is sent.
- * Off unless QUOTE_FOLLOWUPS=on. The sweep (server timer) links, cancels and queues; the ai-worker writes drafts.
+ * Quote and provisional-booking follow-ups (R10 / ask 175). A quote clock starts from a staff send that states a
+ * validity or hold window. A booking clock starts from a Nava/staff HMS confirmation send. If no client reply arrives
+ * before 66 hours, one `quote_followup` run writes a candidate draft for staff review and moves the item to needs_you.
+ * Nothing is sent. Off unless QUOTE_FOLLOWUPS=on. The sweep (server timer) links, cancels and queues; the ai-worker
+ * writes drafts.
  */
 
 export const QUOTE_FOLLOWUP_PROMPT_VERSION = 'quote-followup/1';
@@ -92,10 +95,27 @@ const IS_FOLLOW_UP_DRAFT = and(
  */
 const HOLD_OR_VALIDITY_WINDOW =
   /no\s+rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|(?:rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|hold(?:ing)?\s+(?:the\s+)?rooms?)|valid(?:ity)?\s*(?:until|till|for|:)/i;
+/** HMS confirmation letter file, e.g. HRCEN_Confirmation_Letter_12345678.pdf. */
+const CONFIRMATION_LETTER_FILE = /^[A-Z]{3,8}_Confirmation_Letter_\d{8}(?:\b|\.|$)/i;
+const CONFIRMATION_LETTER_SUBJECT = /confirmation\s+letter/i;
 
 export function quoteReplyStatesHoldWindow(text: string | null | undefined): boolean {
   if (!text) return false;
   return HOLD_OR_VALIDITY_WINDOW.test(text.replace(/<[^>]+>/g, ' '));
+}
+
+function attachmentBasename(filename: string): string {
+  const parts = filename.replace(/\\/g, '/').split('/');
+  return parts[parts.length - 1] || filename;
+}
+
+/** A Nava/staff HMS confirmation send: letter in the subject or the Confirmation_Letter attachment. */
+export function messageStatesConfirmationLetter(
+  m: { subject?: string | null },
+  filenames: readonly string[] = [],
+): boolean {
+  if (CONFIRMATION_LETTER_SUBJECT.test(m.subject ?? '')) return true;
+  return filenames.some((name) => CONFIRMATION_LETTER_FILE.test(attachmentBasename(name)));
 }
 
 /** The instant 66 calendar hours after `from`. Weekends and holidays count. */
@@ -169,6 +189,16 @@ function messageStatesHoldWindow(
   return extracts.some((text) => quoteReplyStatesHoldWindow(text));
 }
 
+function sendStartsFollowUpClock(
+  kind: string,
+  m: Pick<ThreadMessage, 'subject' | 'textBody' | 'htmlBody'>,
+  extracts: readonly string[] = [],
+  filenames: readonly string[] = [],
+): boolean {
+  if (kind === 'booking') return messageStatesConfirmationLetter(m, filenames);
+  return messageStatesHoldWindow(m, extracts);
+}
+
 /** followUpDueAt === sentAt means we looked, there was no window, and no draft will be written. */
 function isSkippedHoldWindow(dueAt: Date, sentAt: Date): boolean {
   return dueAt.getTime() === sentAt.getTime();
@@ -192,6 +222,25 @@ function textsFromStoredExtract(
     }
   }
   return texts;
+}
+
+/** Filenames already on the message. Never fetches objects. */
+async function storedAttachmentNames(
+  db: DB,
+  messageIds: readonly string[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  if (messageIds.length === 0) return out;
+  const rows = await db
+    .select({ messageId: attachment.messageId, filename: attachment.filename })
+    .from(attachment)
+    .where(inArray(attachment.messageId, [...messageIds]));
+  for (const row of rows) {
+    const prev = out.get(row.messageId) ?? [];
+    prev.push(row.filename);
+    out.set(row.messageId, prev);
+  }
+  return out;
 }
 
 /** Already-stored attachment extracts only. Never fetches objects. Never logs the text. */
@@ -385,14 +434,15 @@ export async function runQuoteFollowupSweep(
   // The request's arrival as the planner counts it (MESSAGE_ARRIVED_AT), from its own row: the select and the prefilter
   // share it, so a POP3 request is not dated by the sender's Date header.
   const requestArrivedAt = sql`(select ${MESSAGE_ARRIVED_AT} from ${message} where ${message.id} = ${workItem.sourceMessageId})`;
-  // Open quotes with an outbound after the cutoff still fill this select when that outbound has no window, so page
-  // past SWEEP_BATCH or a later qualifying quote never links.
+  // Open quotes/bookings with an outbound after the cutoff still fill this select when that outbound has no window
+  // (or no confirmation letter), so page past SWEEP_BATCH or a later qualifying item never links.
   const firstEligibleAt = sql`greatest(${since.toISOString()}::timestamp, ${requestArrivedAt})`;
   let afterUnlinked: string | null = null;
   for (;;) {
     const unlinked = await db
       .select({
         id: workItem.id,
+        kind: workItem.kind,
         transportId: workItem.transportId,
         threadId: workItem.threadId,
         requestArrivedAt: sql`${requestArrivedAt}`.mapWith(message.createdAt),
@@ -401,7 +451,7 @@ export async function runQuoteFollowupSweep(
       .innerJoin(source, eq(source.id, workItem.sourceMessageId))
       .where(
         and(
-          eq(workItem.kind, 'quote'),
+          inArray(workItem.kind, FOLLOW_UP_WORK_KINDS),
           inArray(workItem.status, OPEN_STATUSES),
           isNull(workItem.sentMessageId),
           isNotNull(workItem.threadId),
@@ -418,14 +468,17 @@ export async function runQuoteFollowupSweep(
       const requestedAt = item.requestArrivedAt.getTime();
       const firstEligible = Math.max(requestedAt, since.getTime());
       const thread = await threadMessages(db, item.transportId, item.threadId);
-      const extracts = await storedPdfExtracts(
-        db,
-        thread.filter((m) => m.direction === 'outbound').map((m) => m.id),
-      );
+      const outboundIds = thread.filter((m) => m.direction === 'outbound').map((m) => m.id);
+      const extracts = await storedPdfExtracts(db, outboundIds);
+      const filenames = await storedAttachmentNames(db, outboundIds);
       const sent = thread
         .flatMap((m) => {
           const at = m.direction === 'outbound' ? deliveredTime(m) : null;
-          if (at === null || at < firstEligible || !messageStatesHoldWindow(m, extracts.get(m.id))) {
+          if (
+            at === null ||
+            at < firstEligible ||
+            !sendStartsFollowUpClock(item.kind, m, extracts.get(m.id), filenames.get(m.id))
+          ) {
             return [];
           }
           return [{ id: m.id, at }];
@@ -455,6 +508,7 @@ export async function runQuoteFollowupSweep(
   const closedByReply = await db
     .select({
       id: workItem.id,
+      kind: workItem.kind,
       transportId: workItem.transportId,
       threadId: workItem.threadId,
       sentMessageId: workItem.sentMessageId,
@@ -463,7 +517,7 @@ export async function runQuoteFollowupSweep(
     .from(workItem)
     .where(
       and(
-        eq(workItem.kind, 'quote'),
+        inArray(workItem.kind, FOLLOW_UP_WORK_KINDS),
         CLOSED_BY_HOTEL_REPLY,
         isNull(workItem.followUpDueAt),
         gte(workItem.sentAt, since),
@@ -493,7 +547,8 @@ export async function runQuoteFollowupSweep(
       (m) => m.id === item.sentMessageId,
     );
     const extracts = sent ? (await storedPdfExtracts(db, [sent.id])).get(sent.id) : undefined;
-    if (!sent || !messageStatesHoldWindow(sent, extracts)) {
+    const filenames = sent ? (await storedAttachmentNames(db, [sent.id])).get(sent.id) : undefined;
+    if (!sent || !sendStartsFollowUpClock(item.kind, sent, extracts, filenames)) {
       // Sentinel: due === sent. The row leaves this select (followUpDueAt not null) and never queues a draft.
       await db
         .update(workItem)
@@ -533,7 +588,7 @@ export async function runQuoteFollowupSweep(
     .from(workItem)
     .where(
       and(
-        eq(workItem.kind, 'quote'),
+        inArray(workItem.kind, FOLLOW_UP_WORK_KINDS),
         or(inArray(workItem.status, OPEN_STATUSES), CLOSED_BY_HOTEL_REPLY),
         isNotNull(workItem.sentMessageId),
         isNotNull(workItem.followUpDueAt),
@@ -586,12 +641,25 @@ export async function runQuoteFollowupSweep(
   return counts;
 }
 
-function followUpText(displayName: string | null, sentAt: Date, propertyCode: string): string {
+function followUpText(
+  displayName: string | null,
+  sentAt: Date,
+  propertyCode: string,
+  kind: string,
+): string {
   const sentOn = new Intl.DateTimeFormat('en-ZA', {
     day: 'numeric',
     month: 'long',
     timeZone: 'Africa/Johannesburg',
   }).format(sentAt);
+  if (kind === 'booking') {
+    const hotel = quotePropertyIdentity(propertyCode).name;
+    return [
+      'Hello,',
+      `I am following up on the confirmation we sent on ${sentOn} from ${hotel}. Please let us know if you would like to go ahead, or if you need any changes.`,
+      ['Kind regards,', displayName].filter(Boolean).join('\n'),
+    ].join('\n\n');
+  }
   return quoteFollowUpBody(sentOn, displayName, propertyCode);
 }
 
@@ -607,6 +675,7 @@ async function writeFollowUp(
   const [item] = await db
     .select({
       id: workItem.id,
+      kind: workItem.kind,
       status: workItem.status,
       threadId: workItem.threadId,
       sentMessageId: workItem.sentMessageId,
@@ -641,6 +710,7 @@ async function writeFollowUp(
     transport?.displayName ?? null,
     new Date(sentTime(sent)),
     isDaVinciTransport(run.transportId) ? 'HRDAV' : 'HRCEN',
+    item.kind,
   );
   const draftId = `${QUOTE_FOLLOWUP_DRAFT_PREFIX}${sent.id}`;
   const now = new Date();
@@ -761,7 +831,7 @@ function isUniqueViolation(error: unknown): boolean {
   return isUniqueViolation((error as { cause?: unknown }).cause);
 }
 
-/** The quote work item a follow-up belongs to: the one whose first outbound the draft replies to. */
+/** The quote or booking work item a follow-up belongs to: the one whose first outbound the draft replies to. */
 async function followUpWorkItemId(db: DB, draft: FollowUpDraft): Promise<string | null> {
   if (!draft.threadId || !draft.replyToMessageId) return null;
   const [row] = await db
@@ -771,7 +841,7 @@ async function followUpWorkItemId(db: DB, draft: FollowUpDraft): Promise<string 
       and(
         eq(workItem.transportId, draft.transportId),
         eq(workItem.threadId, draft.threadId),
-        eq(workItem.kind, 'quote'),
+        inArray(workItem.kind, FOLLOW_UP_WORK_KINDS),
         eq(workItem.sentMessageId, draft.replyToMessageId),
       ),
     )

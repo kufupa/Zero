@@ -3,6 +3,7 @@ import {
   dismissFollowUpDraft,
   executeQuoteFollowupRun,
   followUpForMessage,
+  messageStatesConfirmationLetter,
   quoteReplyStatesHoldWindow,
   QUOTE_FOLLOWUP_DELAY_MS,
   QUOTE_FOLLOWUP_DRAFT_PREFIX,
@@ -68,6 +69,22 @@ describe('quoteReplyStatesHoldWindow', () => {
   });
 });
 
+describe('messageStatesConfirmationLetter', () => {
+  it('matches an HMS confirmation letter subject or filename', () => {
+    expect(messageStatesConfirmationLetter({ subject: 'Confirmation Letter (n°12345678)' })).toBe(true);
+    expect(
+      messageStatesConfirmationLetter({ subject: 'Re: Quote request' }, [
+        'HRCEN_Confirmation_Letter_12345678.pdf',
+      ]),
+    ).toBe(true);
+  });
+
+  it('does not match a quote send with no confirmation letter', () => {
+    expect(messageStatesConfirmationLetter({ subject: 'Re: Quote request' })).toBe(false);
+    expect(messageStatesConfirmationLetter({ subject: 'Re: Quote request' }, ['quote.pdf'])).toBe(false);
+  });
+});
+
 describe('addQuoteFollowupDelay', () => {
   it('a Friday send falls due 66 calendar hours later, including the weekend', () => {
     expect(addQuoteFollowupDelay(FRI_SEND)).toEqual(HOLD_DUE);
@@ -88,19 +105,31 @@ async function quoteRequest(
   threadId: string,
   requestAt: Date,
   status: 'needs_you' | 'review' | 'done' = 'needs_you',
-  opts: { transportId?: string; transportEmail?: string; itemId?: string } = {},
+  opts: {
+    transportId?: string;
+    transportEmail?: string;
+    itemId?: string;
+    kind?: 'quote' | 'booking';
+    subject?: string;
+    textBody?: string;
+  } = {},
 ): Promise<string> {
   const requestId = `${threadId}-request`;
   const transportId = opts.transportId ?? TRANSPORT;
   const transportEmail = opts.transportEmail ?? TRANSPORT_EMAIL;
+  const kind = opts.kind ?? 'quote';
   await seedInboxThread(db, {
     threadId,
     transportId,
     transportEmail,
     messageId: requestId,
     fromAddress: 'guest@example.com',
-    subject: 'Quote request',
-    textBody: 'Could you quote 2 rooms for 3 nights?',
+    subject: opts.subject ?? (kind === 'booking' ? 'Booking request' : 'Quote request'),
+    textBody:
+      opts.textBody ??
+      (kind === 'booking'
+        ? 'Please book 2 rooms for 3 nights.'
+        : 'Could you quote 2 rooms for 3 nights?'),
     messageIdHeader: `${requestId}@example.com`,
   });
   // Live mail: stored when it arrived.
@@ -115,7 +144,7 @@ async function quoteRequest(
       transportId,
       threadId,
       sourceMessageId: requestId,
-      kind: 'quote',
+      kind,
       status,
     })
     .returning({ id: workItem.id });
@@ -130,9 +159,10 @@ async function sendReply(
     id: string;
     threadId: string;
     sentAt: Date;
-    attach?: boolean;
+    attach?: boolean | string;
     holdWindow?: boolean;
     textBody?: string;
+    subject?: string;
     transportId?: string;
     fromAddress?: string;
   },
@@ -148,7 +178,7 @@ async function sendReply(
     toAddresses: ['guest@example.com'],
     ccAddresses: [],
     bccAddresses: [],
-    subject: 'Re: Quote request',
+    subject: opts.subject ?? 'Re: Quote request',
     textBody:
       opts.textBody ?? (opts.holdWindow === false ? 'Please find our quote below.' : HOLD_COVER),
     ownerHeaderValue: fromAddress,
@@ -159,10 +189,11 @@ async function sendReply(
     sentAt: opts.sentAt,
   });
   if (opts.attach) {
+    const filename = typeof opts.attach === 'string' ? opts.attach : 'quote.pdf';
     await db.insert(attachment).values({
       id: `${opts.id}-quote`,
       messageId: opts.id,
-      filename: 'quote.pdf',
+      filename,
       mimeType: 'application/pdf',
       sizeBytes: 2048,
       s3Key: `test/${opts.id}.pdf`,
@@ -861,6 +892,94 @@ describe('quote follow-up drafts', () => {
       expect(drafts[0]?.textBody).toContain('from Da Vinci Hotel and Suites');
       expect(drafts[0]?.textBody).not.toContain('Centurion');
       expect((await loadItem(db, itemId)).status).toBe('needs_you');
+    });
+  });
+
+  it('a provisional booking with no reply 66 h after the confirmation writes Needs-you and a draft', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-prov-book', REQUEST_AT, 'review', {
+        kind: 'booking',
+      });
+      await sendReply(db, {
+        id: 'out-prov-book',
+        threadId: 'thread-prov-book',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+        subject: 'Confirmation letter',
+        attach: 'HRCEN_Confirmation_Letter_12345678.pdf',
+        textBody: 'Please find the confirmation attached.',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
+      expect((await loadItem(db, itemId)).sentMessageId).toBe('out-prov-book');
+
+      const justBefore = new Date(HOLD_DUE.getTime() - 1);
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: justBefore })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect(await followUpRuns(db, itemId)).toHaveLength(0);
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: HOLD_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 1,
+        discarded: 0,
+      });
+      const { run, fence } = await claimRun(db, itemId);
+      expect(await executeQuoteFollowupRun({ run, fence, db, env: ON })).toEqual({
+        runId: run.id,
+        state: 'succeeded',
+      });
+
+      const drafts = await threadDrafts(db, 'thread-prov-book');
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]).toMatchObject({
+        id: 'quote-followup:out-prov-book',
+        status: 'candidate',
+        origin: 'manual',
+        isSent: false,
+        sentMessageId: null,
+        replyToMessageId: 'out-prov-book',
+      });
+      expect(drafts[0]?.textBody).toContain('the confirmation we sent on 9 October');
+      expect(drafts[0]?.textBody).not.toContain('quote we sent');
+      expect((await loadItem(db, itemId)).status).toBe('needs_you');
+      expect(await runOutcome(db, run.id)).toBe('drafted');
+    });
+  });
+
+  it('a booking staff send with no confirmation letter starts no clock', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-book-ack', REQUEST_AT, 'needs_you', {
+        kind: 'booking',
+      });
+      await sendReply(db, {
+        id: 'out-book-ack',
+        threadId: 'thread-book-ack',
+        sentAt: FRI_SEND,
+        holdWindow: false,
+        textBody: 'We are looking into this booking.',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toBeNull();
+      expect((await loadItem(db, itemId)).sentMessageId).toBeNull();
     });
   });
 
