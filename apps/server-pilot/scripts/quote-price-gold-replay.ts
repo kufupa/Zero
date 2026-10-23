@@ -50,6 +50,9 @@ export type QuoteAskFixture = {
   staffTruth?: StaffQuoteTruth;
   plannable?: boolean;
   excludeReason?: string;
+  subject?: string;
+  bodyText?: string;
+  preceding?: Array<{ bodyText: string; direction?: 'inbound' | 'outbound' }>;
   attachments?: QuoteAskAttachment[];
   nava?: QuoteQueueResult;
 };
@@ -94,6 +97,8 @@ export type QuotePriceCli = { fixturePath: string; outPath: string };
 
 const USAGE = 'quote-price-gold-replay.ts --fixture <asks.jsonl> --out <scores.jsonl>';
 const HOTELS: HotelCode[] = ['HRCEN', 'HRDAV'];
+const BUSINESS_REFUSAL = /\b(?:fully booked|no rooms?(?: are)? available|sold out|no availability)\b/i;
+const NOT_BUSINESS_REFUSAL = /\b(?:timed?\s*out|timeout|error|crash|failed|failure)\b/i;
 
 function codedError(code: string): Error & { code: string } {
   return Object.assign(new Error(code), { code });
@@ -109,9 +114,16 @@ function hasStaffSent(ask: QuoteAskFixture): boolean {
   return Boolean(ask.staffSent.pdf || ask.staffSent.excel || ask.staffSent.reply);
 }
 
-function askedAtMs(ask: QuoteAskFixture): number {
-  const time = Date.parse(ask.askedAt);
-  return Number.isFinite(time) ? time : 0;
+function askedAtMs(value: string): number | null {
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : null;
+}
+
+/** Fully booked / no rooms. Timeouts and generic errors stay failures. */
+export function isQuotePriceNamedRefusal(outcome: string | null | undefined): boolean {
+  if (!isNamedRefusal(outcome)) return false;
+  const reason = /^refused:\s*(.+)$/i.exec(outcome?.trim() ?? '')?.[1] ?? '';
+  return BUSINESS_REFUSAL.test(reason) && !NOT_BUSINESS_REFUSAL.test(reason);
 }
 
 /** Most recent staff-answered quote asks per hotel since the cut-off. */
@@ -123,9 +135,12 @@ export function selectRecentQuoteAsks(
   const picked: QuoteAskFixture[] = [];
   for (const hotel of HOTELS) {
     const candidates = asks
-      .filter((row) => row.hotel === hotel && hasStaffSent(row) && askedAtMs(row) >= cutoffMs)
+      .filter((row) => {
+        const at = askedAtMs(row.askedAt);
+        return row.hotel === hotel && hasStaffSent(row) && at !== null && at >= cutoffMs;
+      })
       .slice()
-      .sort((a, b) => askedAtMs(b) - askedAtMs(a) || a.id.localeCompare(b.id));
+      .sort((a, b) => (askedAtMs(b.askedAt) ?? 0) - (askedAtMs(a.askedAt) ?? 0) || a.id.localeCompare(b.id));
     picked.push(...candidates);
   }
   return picked;
@@ -141,7 +156,7 @@ export function scoreQuotePriceRow(input: { staff: StaffQuoteTruth; nava: QuoteQ
 } {
   const { staff, nava } = input;
   if (nava.status === 'refused') {
-    return isNamedRefusal(nava.outcome)
+    return isQuotePriceNamedRefusal(nava.outcome)
       ? { verdict: 'pass', reason: 'named_hms_refusal' }
       : { verdict: 'fail', reason: 'unnamed_refusal' };
   }
@@ -150,7 +165,7 @@ export function scoreQuotePriceRow(input: { staff: StaffQuoteTruth; nava: QuoteQ
       normPlan(nava.ratePlan) === normPlan(staff.ratePlan) &&
       nava.pricePerNightMinor === staff.pricePerNightMinor;
     if (match) return { verdict: 'pass', reason: 'exact_match' };
-    if (nava.hmsReason && isNamedRefusal(`refused: ${nava.hmsReason}`)) {
+    if (nava.hmsReason && isQuotePriceNamedRefusal(`refused: ${nava.hmsReason}`)) {
       return { verdict: 'pass', reason: 'hms_explained' };
     }
     return { verdict: 'fail', reason: 'price_mismatch' };
@@ -184,10 +199,10 @@ async function prodPromptForAsk(
     text: texts.get(row.id) ?? null,
   }));
   const selection: SyncedQuoteSelection = {
-    subject: 'Synthetic quote ask',
-    bodyText: 'Please quote one room.',
+    subject: ask.subject ?? 'Synthetic quote ask',
+    bodyText: ask.bodyText ?? 'Please quote one room.',
     receivedAt: ask.askedAt,
-    preceding: [],
+    preceding: ask.preceding ?? [],
     attachments,
     messageId: ask.id,
     threadId: ask.id,
@@ -306,7 +321,11 @@ function parseFixtureJsonl(text: string): QuoteAskFixture[] {
   if (!lines.length) throw codedError('fixture_empty');
   return lines.map((line) => {
     const row = JSON.parse(line) as QuoteAskFixture;
-    if (!row?.id || (row.hotel !== 'HRCEN' && row.hotel !== 'HRDAV') || !row.askedAt) {
+    if (
+      !row?.id ||
+      (row.hotel !== 'HRCEN' && row.hotel !== 'HRDAV') ||
+      askedAtMs(row.askedAt ?? '') === null
+    ) {
       throw codedError('invalid_fixture');
     }
     return row;

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import {
   parseQuotePriceGoldReplayArgs,
   quotePriceProdInput,
   runQuotePriceGoldReplay,
+  runQuotePriceGoldReplayCli,
   scoreQuotePriceRow,
   selectRecentQuoteAsks,
   type QuoteAskFixture,
@@ -79,6 +80,22 @@ describe('quote price gold replay', () => {
     ).toEqual({ verdict: 'pass', reason: 'named_hms_refusal' });
   });
 
+  it('fails a timeout or generic HMS error even when it looks named', () => {
+    const staff = { ratePlan: 'BAR', pricePerNightMinor: 194_000 };
+    expect(
+      scoreQuotePriceRow({
+        staff,
+        nava: priced({ pricePerNightMinor: 198_000, hmsReason: 'HMS request timed out' }),
+      }),
+    ).toEqual({ verdict: 'fail', reason: 'price_mismatch' });
+    expect(
+      scoreQuotePriceRow({
+        staff,
+        nava: { status: 'refused', outcome: 'refused: HMS request timed out' },
+      }),
+    ).toEqual({ verdict: 'fail', reason: 'unnamed_refusal' });
+  });
+
   it('excludes a non-plannable ask with a reason', async () => {
     const result = await runQuotePriceGoldReplay(
       [
@@ -126,12 +143,18 @@ describe('quote price gold replay', () => {
     const seen: string[] = [];
     const result = await runQuotePriceGoldReplay(
       [
-        ask({ id: 'ask-hrcen-1' }),
+        ask({
+          id: 'ask-hrcen-1',
+          subject: 'Quote 21 Oct',
+          bodyText: 'Need one single 21-23 Oct B&B.',
+        }),
         ask({
           id: 'ask-hrdav-1',
           hotel: 'HRDAV',
           askedAt: '2026-10-21T10:00:00.000Z',
           staffTruth: { ratePlan: 'BAR', pricePerNightMinor: 210_000 },
+          subject: 'Quote 21 Oct',
+          bodyText: 'Need one single 21-23 Oct B&B.',
         }),
       ],
       {
@@ -140,6 +163,7 @@ describe('quote price gold replay', () => {
           maxInFlight = Math.max(maxInFlight, inFlight);
           seen.push(job.id);
           expect(job.promptPath).toBe('readQuoteAttachments → buildQuoteWorkflowPrompt');
+          expect(job.prompt).toContain('Need one single 21-23 Oct B&B.');
           expect(job.prompt).toContain('Synthetic quote request for one single B&B.');
           await Promise.resolve();
           inFlight -= 1;
@@ -185,6 +209,7 @@ describe('quote price gold replay', () => {
     const dir = mkdtempSync(join(tmpdir(), 'quote-price-gold-'));
     try {
       const fixturePath = join(dir, 'fixture.jsonl');
+      const outPath = join(dir, 'out.jsonl');
       writeFileSync(
         fixturePath,
         `${JSON.stringify({
@@ -192,10 +217,18 @@ describe('quote price gold replay', () => {
           nava: priced(),
         })}\n`,
       );
-      expect(parseQuotePriceGoldReplayArgs(['--fixture', fixturePath, '--out', join(dir, 'out.jsonl')])).toEqual({
+      expect(parseQuotePriceGoldReplayArgs(['--fixture', fixturePath, '--out', outPath])).toEqual({
         fixturePath,
-        outPath: join(dir, 'out.jsonl'),
+        outPath,
       });
+      expect(await runQuotePriceGoldReplayCli(['--fixture', fixturePath, '--out', outPath])).toBe(0);
+      expect(JSON.parse(readFileSync(outPath, 'utf8').trim())).toEqual({
+        id: 'ask-hrcen-2',
+        hotel: 'HRCEN',
+        verdict: 'pass',
+        reason: 'exact_match',
+      });
+      expect(await runQuotePriceGoldReplayCli(['--fixture', fixturePath, '--out', outPath])).toBe(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
