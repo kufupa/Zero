@@ -13,13 +13,36 @@ origin: owner voice asks 2026-10-23 00:10–01:00Z (OWNER-ASKS 185–195)
 
 ## Goal Capsule
 
-- **Outcome:** for each cell (workflow × hotel) the run passes one proof on the **current build**: pane-equivalent server path → HMS → readback → screenshot. Quote cells pass on a price score instead.
+- **Outcome:** for each cell (workflow × hotel) the run passes one proof on the **current build**: U0 pane-path runner → HMS → readback → screenshot. Quote cells pass on a price score instead.
 - **Hotels:** Centurion (HRCEN, slot 19223) and Da Vinci (HRDAV, slot 19225).
 - **Workflows in scope:** quote PDF/Excel, create provisional, amend unpaid provisional, cancel unpaid provisional (quote release), multi-stay (one mail → N bookings), POP/voucher attach (Centurion).
 - **No-HMS lanes:** 66 h follow-up and the context-dataset linker.
-- **Coding window:** 7.5 h from T0. The final deploy lands at T0+450 min; re-proofs run after it.
+- **Coding window:** 7.5 h from T0. The final deploy lands at T0+450 min. The whole grid needs ~12.5 h (D1 = yes) or ~20 h (serial), so proofs continue after the final deploy (D6).
 - **Writes:** Labtest only (`Proof Labtest`, arrival ≥ 2027-01-01). Every `PANE_WRITE_*` stays `lab`. No real-guest write.
 - **Done** = the proof grid in §7 is green on the final SHA. Anything not green is reported with its evidence and its next fix. Merged code is progress, not done.
+
+---
+
+## 0. Grok 4.7 xhigh review — integrated (14 findings, 2026-10-23)
+
+Verdict before fixes: "autonomous run **no**". Each P0/P1 was checked against the code; resolution below.
+
+| # | Sev | Finding | Resolution |
+|---|---|---|---|
+| 1 | P0 | No invocable pane-equivalent proof path; `hms-job.sh` doesn't exist; a raw `.mjs` skips target, lock and digest | **New U0** (§4): `src/ops/hms-proof-run.ts`, modelled on `src/ops/hms-job-proof.ts` (AE5: queues via the pane's `queueUserHmsJob`, reads via `readHmsJobView`). Pass cells must go through U0, never a raw `.mjs` |
+| 2 | P0 | P1 would cancel `66865808-1` before U7 exists; penalty "else OK"; Labtest identity taken from args | P1 = **read-only**: find + open the cancel dialog, dump, close, no OK. Penalty clicks (owner-approved, ask 189) only after an **HMS re-read** shows surname Labtest + arrival ≥ 2027, and only in U7 code. Grok wanted "no OK ever"; the owner approved accept on Labtest, so OK stays, behind the re-read |
+| 3 | P0 | `HMS_DAVINCI_MAKE_QUOTE` not in the `write-ec2-remote-env.sh` allowlist → webmail DV quote stays off | U2b adds the key to the allowlist + `deploy-config.test.ts`; flip after D-B; `/proc` on all 4 |
+| 4 | P0 | ETA ignores the solution doc's ≥ 180 min to the first confirmed number per new write type; proofs scheduled before their code is deployed | §8 recomputed with 180 min per **new** write type; §9 proofs only after the deploy that holds their code. Result: grid-green ≫ 7.5 h; cut line moved |
+| 5 | P1 | Shell `flock` / raw key won't match the app's `sha256(tenant\0property)` advisory key | U0/U6 call `createPostgresPropertyReadLock({tenantId: paneStayTenantId(), propertyCode})`, so there's one lock. No `flock` |
+| 6 | P1 | Ownership holes: `pane-hms-write.ts:440` (amend spawn) also needs a target; U2b misses other `CENTURION_HOTEL_RULES` callers | U1 owns every spawn in `pane-hms-write.ts` (attach 383, amend 440). U2b's first step is a CodeGraph sweep of every `CENTURION_HOTEL_RULES` / Centurion-rate-text caller (Grok named `reservationist-draft-source.ts`, `extract.ts`, `inbound-run.ts`, `reservationist-agent.ts`) |
+| 7 | P1 | Stale citations | Fixed inline: refusal reason = `errorCode` only (`hitl-tool-run.ts:241-243`); `runProofReadback` ≈ 819; blank loss in `toPaneStayFields` (`pane-stay-lookup.ts:305-306`); `hmsReadTargetForTransport` maps unknown → HRCEN, so fail-closed lives in the **new** resolver, not that helper |
+| 8 | P1 | `amend-stay.mjs` / `cancel-stay.mjs` take no `--property`; `AMEND_ROOM_TYPES` also in `src/ai/aop/amend-cancel-payload.ts:5` | U2a adds `--property` to both CLIs and replaces **both** allow-list copies |
+| 9 | P1 | The blank-deposit fix belongs in the mapper | U5 = keep `''` through `toPaneStayFields`; `null` still refuses (test) |
+| 10 | P1 | No worktree guard in `ops-deploy.sh`; ACTIVE cites two live SHAs (`e5231310a`, `5851aa930`) | T0 reads the live SHA from EC2 and records it as last-good. U6 adds a guard: refuse unless cwd = `.worktrees/recover-parse-failure` |
+| 11 | P1 | 66 h: regex claim false; copy lives in `follow-up.ts:73` | U10 corrected; the regex is untouched |
+| 12 | P1 | D1 silent → global lock, but the waves assumed parallel | Default **serial**; parallel only after a written D1 = yes in the executing chat |
+| 13 | P2 | Quote bar unlikely in one loop (5/8 plan, 2/8 price); keep P8 | Quote = score and report, doesn't block the grid; P8 stays (party code changed) |
+| 14 | P2 | U4 needs evidence before a new Save; no delete CLI | U4's evidence comes from a **read-only** readback of existing `66865808-1` (SR3 Save, `committed_unverified`). Cleanup cancels only Labtest rows confirmed by HMS re-read; "delete" = cancel |
 
 ---
 
@@ -37,7 +60,7 @@ Most workflows have code, and some have tests. Almost none are proven end to end
 | Cancel | ✅ pane UI | HRCEN 1/2 via CLI; HRDAV never | No HRDAV target (`pane-stay-cancel.ts:212,272`). Penalty dialog is left open |
 | Multi-stay | Extraction + combined PDF ✅ | none | Per-stay action (M2) and per-stay durable results (M3) not built (`work-items.ts:480-495`, `pane-stay-save.ts:53-71`) |
 | POP attach | `attach-document.mjs` ✅ | #143 upload showed a row but returned `upload_unconfirmed`; no rerun after the fix | No pane → attach-form bridge |
-| 66 h follow-up | ✅ #461 merged, flag off | n/a | Quotes only. The 72 h regex also matches deposit wording. Starvation past 200 rows |
+| 66 h follow-up | ✅ #461 merged, flag off | n/a | Quotes only. Starvation past 200 rows (`SWEEP_BATCH`) |
 | Mail linking | pieces | n/a | No context dataset (owner: "context, not gold") |
 
 **Root pattern:** the server code that calls the HMS tools treats the property as optional and falls back to HRCEN. Each fix so far added routing to one more call site. Cancel, amend-prepare, attach and availability were missed (§3 audit).
@@ -87,6 +110,12 @@ Inbound mail over the last 14 days, latest succeeded extraction per message.
 
 Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan1023`, summarised in §12). **Lane min** = lane start → merged, including Grok review + Greptile. Basis is SR3 measured unit times (W1 42, D1 32, W4 22, W2 25, D2 43, W3 19, D3 27, D4 63, M1 21; median 27 min for 48–330 lines), padded by ~1.5× for the DV-day gate overhead (#488 19 min of gate tooling). Rule of thumb: S ≤ 80 lines = 30 min, M 80–200 = 45, L 200–350 = 70.
 
+### U0. Pane-path proof runner (Grok #1, #5)
+- **Files:** new `apps/server-pilot/src/ops/hms-proof-run.ts` + `tests/hms-proof-run.test.ts`; pattern from `src/ops/hms-job-proof.ts` + `tests/hms-job-proof.test.ts`.
+- **Approach:** subcommands `create|amend|cancel|attach|find --transport <id> --request <json> --mode preview|commit --out <dir>`. It resolves the target with the U1 resolver, takes `createPostgresPropertyReadLock`, and calls the **same** server functions the tRPC routes call (`runPaneStay`, `spawnPaneStayCancel`/`commitCancel`, `prepareAmend`/`spawnAmendStay`, `runPaneHmsWriteOnce`). It refuses unless the request is Labtest + arrival ≥ 2027 and `PANE_WRITE_*=lab`. Output is one JSON line plus screenshots. If the `queueUserHmsJob` path supports the write kind, use the queue (truer to the pane); otherwise call directly. The lane decides from the code.
+- **Size:** 120–200 + 80–140 → **M, 50 min**. Depends on the U1 signature (it starts against the U1 branch).
+- **Tests:** a non-Labtest request is refused before any spawn; an unknown transport is refused; a DV transport gets the HRDAV lock key; `commit` without a preview digest is refused.
+
 ### U1. Property target required everywhere (KTD1)
 - **Files:** `apps/server-pilot/src/ai/pane-stay-spawn-env.ts`, `pane-stay-save.ts` (`paneStayPropertyLock`), `pane-stay-cancel.ts`, `pane-hms-write.ts`, `hms-availability.ts`, `pane-stay-lookup.ts`, `pane-party-lookup.ts`, `src/trpc/routes/pane-stay-cancel.ts`. Tests: `tests/pane-stay-cancel.test.ts`, `tests/pane-hms-write.test.ts`, `tests/pane-stay-spawn-env.test.ts` (new if absent), `tests/pane-stay-lookup.test.ts`.
 - **Approach:** the target becomes non-optional, so the compiler (remote typecheck) lists every caller. Each route derives the target from the message's transport on the server. An unknown transport is refused (fail closed). Remove the `'HRCEN'` defaults in the spawn, lock and lookup paths. Keep `create` as the pattern.
@@ -96,14 +125,15 @@ Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan102
 
 ### U2a. Property profiles carry room codes + required create fields (KTD2)
 - **Files:** `tooling/playwright-quote/property-profile.mjs`, `property-profiles/HRCEN.json`, `HRDAV.json`, `amend-stay-rules.mjs`, `create-lab-stay.mjs` (required-field check), tests `property-profile.test.mjs`, `amend-stay-rules.test.mjs`, `create-lab-stay.test.mjs`.
-- **Approach:** the amend allow-list = `Object.keys(profile.roomCapacity)`, and `AMEND_ROOM_TYPES` is deleted. Add `requiredCreateFields` to the profiles (HRDAV: `reservationnote`), validated by `property-profile.mjs`. The create static blank-check reads it and also checks textareas. Pane validation follows (`apps/mail/lib/quote-workflow/pane-stay-bind.ts` already maps the note).
+- **Approach:** the amend allow-list = `Object.keys(profile.roomCapacity)`, and both `AMEND_ROOM_TYPES` copies are deleted (`amend-stay-rules.mjs:4`, `src/ai/aop/amend-cancel-payload.ts:5`). Add `--property` to `amend-stay.mjs` and `cancel-stay.mjs`. Add `requiredCreateFields` to the profiles (HRDAV: `reservationnote`), validated by `property-profile.mjs`. The create static blank-check reads it and also checks textareas. Pane validation follows (`apps/mail/lib/quote-workflow/pane-stay-bind.ts` already maps the note).
 - **Size:** 40–80 + 40–70 → **S, 30 min**.
 - **Tests:** HRDAV `EXKNGB` is accepted for amend and HRCEN `EXKNGB` refused; HRCEN `STQN` accepted; an HRDAV create with a blank note is refused before Save; HRCEN with a blank note is allowed.
 
 ### U2b. Quote is property-aware (hotel rules + rate-policy source)
 - **Files:** `src/ai/reservationist-decision.ts` (`CENTURION_HOTEL_RULES` → per-profile text), `src/ai/quote-workflow-llm.ts`, `src/ai/agent-pane-adapter.ts` (hard-coded `HRCEN`), `src/ai/reservationist-rate-policy-source.ts` (Centurion letter regex → profile pattern), `src/ai/staff-quote-installation.ts`. Tests `quote-workflow-llm.test.ts`, `reservationist-rate-policy-source.test.ts`, `staff-quote-installation.test.ts`.
 - **Prereq probe (no HMS, ~15 min, orchestrator):** read-only SQL to pull the first 400 chars of 3 DV confirmation-letter PDF texts from `fkhumalo@`/`davinci@` outbound, with guest names redacted, to get the identity sentence.
-- **Size:** 70–150 + 120–220 → **M, 50 min** (after the probe).
+- **Also:** add `HMS_DAVINCI_MAKE_QUOTE` to the `deploy/write-ec2-remote-env.sh` allowlist + `deploy-config.test.ts` (Grok #3). The first step is a CodeGraph sweep for every Centurion hotel-rule / rate-text caller.
+- **Size:** 90–180 + 130–240 → **M, 60 min** (after the probe).
 - **Tests:** a DV quote prompt contains Da Vinci rules and no "Centurion"; a DV letter qualifies DV terms; a Centurion letter does not qualify DV terms (no fallback); HRCEN output is unchanged.
 
 ### U3. Create preflight + dump mode (KTD3)
@@ -114,31 +144,31 @@ Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan102
 
 ### U4. Create readback fix (KTD6) — after first evidence
 - **Files:** `tooling/playwright-quote/create-lab-stay.mjs` (`runProofReadback`, lines ~283–348, 819–847), `create-proof-rules.mjs`, maybe `stay-lookup.mjs`. Tests `create-proof-rules.test.mjs`, `create-lab-stay.test.mjs`.
-- **Approach:** the first Labtest Save of the run (P2 in §7) keeps the `proof.unknownOutcome`, the mismatch fields and the readback screenshot. The lane fixes the real mismatch at its root, in the reader not the rule.
+- **Approach:** evidence first, **read-only**: run the readback reader against the existing SR3 Save `66865808-1` (`committed_unverified`) and capture the mismatch fields + screenshot. Fix the real mismatch in the reader, not the rule, **before** P2's new Save (Grok #14). Lands in D-A if the evidence is in by T+60, otherwise D-B.
 - **Size:** 30–80 + 30–60 → **S, 35 min**, conditional on the evidence.
 
 ### U5. Amend keeps "present but blank" (KTD8)
 - **Files:** `tooling/playwright-quote/stay-lookup.mjs` (lines 88–107, `fillBlankPaymentFields`), `src/ai/pane-stay-lookup.ts` (302–327), tests `stay-lookup.test.mjs`, `tests/pane-stay-lookup.test.ts`, `amend-stay-rules.test.mjs`.
-- **Approach:** the lookup returns `{present:true,value:''}` vs `{present:false}`. The pane keeps the distinction through to `classifyAmendPayment`.
+- **Approach:** keep `''` through `toPaneStayFields` (`pane-stay-lookup.ts:305-306` turns it into null today); `stay-lookup.mjs` `fillBlankPaymentFields` (99–108) reports a present-but-blank field. `amend-stay-rules.mjs:92-98` already treats `''` as unpaid.
 - **Size:** 20–40 + 25–50 → **S, 30 min**.
 - **Tests:** present + blank + Reserved + non-paying guarantee → unpaid → amend allowed; field absent → unknown → refuse; `0.00` → unpaid; `500.00` → paid → refuse.
 
 ### U6. EC2 HMS job runner (KTD4, KTD5)
-- **Files:** new `apps/server-pilot/deploy/hms-job.sh` (start/poll/result), new `apps/server-pilot/tests/hms-job-runner.test.ts` (shell contract), docs line in `docs/solutions/workflow-issues/hms-live-write-preflight-and-long-jobs.md`.
+- **Files:** new `apps/server-pilot/deploy/hms-job.sh` (start/poll/result; runs **U0** under `systemd-run`) + an `ops-deploy.sh` worktree guard, new `apps/server-pilot/tests/hms-job-runner.test.ts` (shell contract), docs line in `docs/solutions/workflow-issues/hms-live-write-preflight-and-long-jobs.md`.
 - **Approach:**
-  - `hms-job.sh start --property HRCEN|HRDAV --tool <mjs> --args-file f` → `systemd-run --unit hms-job-<id>` under `flock /run/nava/hms-<PROPERTY>.lock` (or the global lock if D1 = serial). Prints the job id.
+  - `hms-job.sh start --property HRCEN|HRDAV --tool <mjs> --args-file f` → `systemd-run --unit hms-job-<id>` (the lock is taken inside U0 via `createPostgresPropertyReadLock`, no shell `flock`). Prints the job id.
   - `poll <id>` → state + `result.json` path.
-  - Refuses if the tool is not under `tooling/playwright-quote/`.
+  - Only runs U0 (no raw `.mjs`).
   - Logs to `/var/log/nava/hms-jobs/<id>/`.
-  - It works with the app's Postgres advisory lock: the runner takes the same per-property advisory key, so pane jobs and proof jobs never overlap.
-- **Size:** 60–120 + 40–80 → **M, 45 min**. **Starts at T0; everything live depends on it.**
+  - `ops-deploy.sh` refuses unless cwd is `.worktrees/recover-parse-failure`.
+- **Size:** 50–90 + 40–70 → **M, 40 min**. **Starts at T0; everything live depends on U0 + U6.**
 - **Tests:** two starts on the same property → the second waits; HRCEN + HRDAV run together only when `HMS_LOCK_SCOPE=property`; a tool outside the allowed dir is refused; poll on an unknown id returns `unknown`.
 
 ### U7. Cancel: Labtest penalty handling + pane result
 - **Files:** `tooling/playwright-quote/cancel-stay-rules.mjs` (254–349, `parsePenalty` 380), `cancel-stay.mjs` (502–505 recovery), `src/ai/pane-stay-cancel.ts`, `apps/mail/lib/quote-workflow/amend-cancel.ts`, `apps/mail/components/quote-workflow/amend-lookup-panel.tsx`. Tests `cancel-stay-rules.test.mjs`, `tests/pane-stay-cancel.test.ts`, `apps/mail/tests/amend-cancel-copy.test.ts`.
 - **Prereq:** the dialog DOM from P1 (cleanup cancel of `66865808-1`).
 - **Approach:**
-  - Labtest identity (re-read from HMS at commit) → pick the waive option if present, else OK.
+  - Labtest identity **re-read from the open HMS record** (surname Labtest + arrival ≥ 2027), not from args → pick the waive option if present, else OK (owner, ask 189).
   - Non-Labtest → unchanged `refused_penalty` / `cancel_penalty_pending`.
   - Pane shows the result + screenshot in every state, including the penalty states.
   - Stale screen: return to a known page and re-find once (no longer timeout).
@@ -164,7 +194,7 @@ Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan102
 - **Tests:** one match + PDF → form bound to that stay + hash; two matches → no attach button; a changed PDF hash → refused; `upload_unconfirmed` → no success copy.
 
 ### U10. 66 h follow-up: harden + provisional bookings
-- **F1 files:** `src/ai/quote-followup.ts`, `apps/mail/components/nava-pane/blocks/follow-up-card.tsx` (copy says "3 business days" → "66 hours"); tests `tests/quote-followup.test.ts`, `apps/mail/tests/follow-up-card.test.tsx`. **60–110 → M, 40 min.**
+- **F1 files:** `src/ai/quote-followup.ts`, copy "3 business days" in `follow-up.ts:73` (Grok #11); tests `tests/quote-followup.test.ts`, `apps/mail/tests/follow-up-card.test.tsx`. **60–110 → M, 40 min.**
 - **F2:** provisional-booking eligibility (anchor = Nava/staff HMS confirmation sent); same files + work-item query. **110–190 → M, 50 min.** Depends on F1.
 - **Tests:** "deposit within 72 hours" alone → no trigger; "valid for 3 days" quote → trigger at 66 h; client reply at 65 h → cancelled; 250 non-qualifying open quotes + 1 qualifying → the qualifying one still fires; a provisional booking with no reply 66 h after the confirmation → Needs-you + draft; an HRDAV transport fires too.
 - **Flag:** stays off (owner flips at go-live). No HMS.
@@ -199,7 +229,7 @@ Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan102
 - A read-only find of `66865808-1`, `25526053-1` and any `Labtest` 2027–2028 stays.
 - Then cancel each through the U7/U6 path. A delete probe is part of the P1 dump (owner: "delete them"; no delete action exists in the code). Report the final inventory.
 
-**Totals:** 17 PRs, **~1,460–2,555 product lines** + ~1,500–2,500 test lines. Lane minutes ≈ 790 (sum of the above). Largest unit L ≤ 350 lines, under the 500-line PR cap.
+**Totals:** 18 PRs, **~1,600–2,800 product lines** + ~1,500–2,500 test lines. Lane minutes ≈ 790 (sum of the above). Largest unit L ≤ 350 lines, under the 500-line PR cap.
 
 ---
 
@@ -207,7 +237,7 @@ Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan102
 
 | Shared file | Order |
 |---|---|
-| `src/ai/pane-hms-write.ts` | U1 → U9 |
+| `src/ai/pane-hms-write.ts` | U1 → U9 (U0 imports only) |
 | `src/ai/pane-stay-cancel.ts`, `amend-lookup-panel.tsx`, `amend-cancel.ts` | U1 → U7 |
 | `src/ai/pane-stay-save.ts` | U1 → U8-M3 |
 | `src/ai/pane-stay-lookup.ts`, `stay-lookup.mjs` | U1 → U5 |
@@ -217,7 +247,7 @@ Size = product lines (tests separate), from the 8 scoping reports (`/tmp/plan102
 | `quote-followup.ts` | U10-F1 → U10-F2 |
 | `work-items.ts` | U8-M2 → U10-F2 |
 
-Disjoint at T0: **U1, U2a, U3, U6, U10-F1, U11, U13** (7 lanes).
+Disjoint at T0: **U1, U2a, U3, U6, U10-F1, U11, U13** (7 lanes). U0 and U9 are queued behind U1 (`pane-hms-write.ts`, spawn signatures).
 
 ---
 
@@ -229,12 +259,12 @@ Disjoint at T0: **U1, U2a, U3, U6, U10-F1, U11, U13** (7 lanes).
 | Watchdog | Every **30 min** (SR3: 5/5 hourly steers found a real problem; idle stretches of 51 and 35 min). It reads `/tmp/g1023/state.md` + the orchestrator screen and steers by writing `/tmp/g1023/steer-HHMM.txt` |
 | Monitor tick = act | Every orchestrator tick counts lanes running, PRs untouched > 15 min, and units left. **0 lanes + units left → launch the next unit in that turn.** "check-in continues" with 0 lanes is banned (SR2/SR3 lesson) |
 | Gates | push → `remote-typecheck.sh` (ships the SHA) → remote tests on **that** SHA → `greptile review --branch origin/main` → Grok 4.7 xhigh. Run them in parallel after the push. 2 Greptile rounds max; a 3rd fresh P1 on the same design → split/strip |
-| Deploys | Only from `.worktrees/recover-parse-failure` via `ops-deploy.sh`. Record last-good first (`e5231310a`). Planned: **D-A ≈ T+80** (U1 U2a U3 U5 U6 U13), **D-B ≈ T+200** (U2b U4 U7 U8 U9), **D-C ≈ T+320** (U10 U12 + fixes), **Final ≈ T+450**. Extra deploys only to unblock a proof cell. After each: health, 4 procs, `/proc` flags |
+| Deploys | Only from `.worktrees/recover-parse-failure` via `ops-deploy.sh`. Record the live SHA read from EC2 at T0 as last-good. Planned (§9): **D-A ≈ T+130**, **D-B ≈ T+220**, **D-C ≈ T+340**, **Final ≈ T+450**. Proofs run only on a deploy that contains their code. Extra deploys only to unblock a proof cell. After each: health, 4 procs, `/proc` flags |
 | Flags | `PANE_WRITE_*` = `lab` on all 4 procs, unchanged. `HMS_DAVINCI_CREATE=lab`, `HMS_DAVINCI_READS=on`. `HMS_DAVINCI_MAKE_QUOTE=on` after D-B (KTD12). Flip procedure: back up both env files → `write-ec2-remote-env.sh --validate` → `ops-restart.sh` → `/proc` on http, worker, ai-worker, remote-http |
 | HMS | Only via `hms-job.sh`. Lock scope per D1. **No LLM drives HMS.** Labtest only. Every first write on a cell runs U3 preflight first. Pre-Save failures don't count against the budget |
 | Budget | Per cell: up to 3 Save/commit clicks; up to 2 fix loops (fix lane + deploy + rerun). Then **park the cell** with evidence and take the next item. Never end the run early while units or cells remain |
 | State | `/tmp/g1023/state.md`, append-only, timestamp on every phase change. Hand off at ~150k context |
-| Stop | New merges stop T+435. Final deploy T+450. Re-proof of the grid T+450–480. Report into ACTIVE.md + the run retro |
+| Stop | New merges stop T+435. Final deploy T+450. Proof queue continues per D6. Report into ACTIVE.md + the run retro |
 
 ### 6a. Break → fix protocol (in every lane brief verbatim; owner ask 188)
 
@@ -259,7 +289,7 @@ Each cell: U3 preflight → one action via the **pane-equivalent server path** (
 
 | Cell | HRCEN | HRDAV |
 |---|---|---|
-| P1 cleanup + penalty dump | cancel `66865808-1` (dump dialog), `25526053-1` | — |
+| P1 inventory + penalty dump (**read-only**) | find `66865808-1`, `25526053-1` + any Labtest 2027–28; open the cancel dialog on one, dump, close, **no OK** | — |
 | P2 create provisional | 1 Labtest, readback `committed` | 1 Labtest (Reservation Note filled), readback `committed` |
 | P3 amend unpaid | +1 night on the P2 stay, readback | same |
 | P4 cancel unpaid (release) | cancel the P2 stay, no penalty clicked on non-Labtest logic, readback Cancelled | same |
@@ -293,57 +323,67 @@ Each cell: U3 preflight → one action via the **pane-equivalent server path** (
 
 The actions themselves take seconds to minutes. **The time sink was discovery + fix loops** (SR3 184 min to the first number; DV 73 min, 0 bookings). A fix loop = lane 35 + deploy 10 + rerun 10 = **55 min** (DV retro: #487 merged 10 min after open, deploy ~9, rerun ~10).
 
-### 8b. Slot-busy minutes (preflight + action + readback; fix loops counted separately)
+### 8b. Per-cell HMS budget (Grok #4: a **new** write type = 180 min to the first confirmed number, per the solution doc / SR3 184 min / DV 73 min with 0 bookings)
 
-| Property | Cells | Busy min |
+| Cell | New write type? | Budget min | Basis |
+|---|---|---:|---|
+| Create HRCEN | no (SR3 Save `66865808-1` exists; readback gap only) | 90 | U4 readback fix + 1 Save + readback |
+| Cancel HRCEN | no (1/2 via CLI) | 60 | pane path + penalty states |
+| Amend HRCEN | **yes** (0 commits ever) | 180 | rule |
+| Multi-stay HRCEN | no (= create ×2 once create passes) | 60 | 2 Saves + reload + 2 cancels |
+| POP attach HRCEN | **yes** (#143 `upload_unconfirmed`) | 180 | rule |
+| Quote score HRCEN (≥ 10) | read | 25 | quote p50 133 s |
+| Party retest (42) | read | 20 | p50 29 s |
+| Create HRDAV | **yes** (0 bookings) | 180 | rule |
+| Cancel HRDAV | same tool, new property | 120 | ⅔ rule |
+| Amend HRDAV | same tool after HRCEN | 120 | ⅔ rule |
+| Quote score HRDAV | read | 20 | |
+| **HRCEN slot** | | **615** | |
+| **HRDAV slot** | | **440** | |
+
+Code before the first proof: U1 60 → U0 50 (on the U1 branch) + U6 in parallel → D-A ≈ **T+130**.
+
+### 8c. Totals
+
+| | One global lock (default) | Per-property locks (D1 = yes) |
+|---|---:|---:|
+| Coding (all units, 7 lanes) | ~T+330 (fits) | same |
+| Whole grid green | 130 + 615 + 440 = **~1,185 min (~20 h)** | 130 + 615 = **~745 min (~12.5 h)** |
+| Best case (no new type needs its full 180) | ~12 h | ~8 h |
+
+Ledger: live-hms median 0.88 (n=33) would shave ~10%, but the 180-min rule *is* the measured value, so it is not scaled. Orchestration 1.25 is not stacked on top: the per-cell budgets already include fix loops.
+
+**Answer: everything ≈ 12.5 h (parallel) or ≈ 20 h (serial). It does not fit in 7.5 h.** Coding fits easily (~5.5 h incl. reviews). HMS proof time is the whole gap. That is yesterday's lesson: the code is cheap, and the first confirmed number per new write type is expensive.
+
+### 8d. What fits in 7.5 h (T+130 → T+450 = 320 HMS-min per slot)
+
+| Slot | In order | Cum min |
 |---|---|---:|
-| HRCEN | P1 15, P2 25, P3 20, P4 15, P5 30, P6 20, P7 10×2.2 = 25, P8 42×0.5 = 20, cleanup 10 | **180** |
-| HRDAV | P2 30, P3 20, P4 15, P5 30, P7 ~8×2.2 = 20 | **115** |
+| HRCEN | create 90 → cancel 60 → quote score 25 → party 20 → amend (starts, 125 of 180) | 320 |
+| HRDAV (D1 = yes) | create 180 → cancel 120 → quote 20 | 320 |
+| HRDAV (D1 = serial) | nothing in the window; DV create starts after HRCEN amend | — |
 
-### 8c. Totals (T0 = kickoff)
+**In 7.5 h with D1 = yes:** create ✅✅, cancel ✅✅, quote scored on both, party retested, HRCEN amend probably finishes ~T+505. **Out of the window:** POP proof, multi-stay proof, DV amend. Their **code** merges and is deployed in the final deploy; the proofs run after it.
 
-| Scenario | Fix loops | D1 = per-property locks | D1 = one global lock |
-|---|---:|---:|---:|
-| Best (preflight catches everything) | 0 | kickoff 20 + D-A 80 + HRCEN 180 + final deploy/re-proof 40 = **~320 min (5.3 h)** | 80 + 180 + 115 + 40 = **~415 min (6.9 h)** |
-| Expected (one loop per new cell: create HRCEN readback, create HRDAV, amend, cancel penalty, POP = 5 × 55, two run on the other slot) | 5 | 320 + 3×55 = **~485 min (8.1 h)** | 415 + 5×55 = **~690 min (11.5 h)** |
-| Ledger-scaled expected (orchestration median 1.25, n=23) | | **~605 min (10 h)** | **~860 min (14 h)** |
-| Bad (DV repeats yesterday: 2 loops on each DV write cell) | 8+ | **≥ 12 h** | **≥ 15 h** |
+**Proposal (decision D6):** coding and deploys stop at T+450 as asked, and the **read-and-prove queue keeps running** after the final deploy until empty (≈ +5 h with D1 = yes). It needs no code, only Labtest writes that are already approved. A failure after T+450 gets a fix PR left **open for the morning**, not deployed.
 
-**Answer: "everything" is ~10 h expected (ledger-scaled) with per-property locks, ~14 h with one global lock. In 7.5 h, everything does not finish; best case 5.3 h, expected 8–10 h.** Code alone fits easily: ~790 lane-minutes across 7 parallel lanes ≈ 2–3 h of wall clock. HMS proofs are the critical path.
-
-### 8d. Cut order for the 7.5 h window (taken automatically, no asking)
-
-Never cut: U1, U2a, U3, U5, U6, U13; create both hotels (P2); cancel both (P4); amend HRCEN (P3); DV quote score (P7 HRDAV).
-
-Cut in this order when T + remaining cells > 450:
-1. P5 HRDAV multi-stay proof (the code still merges)
-2. P6 POP attach proof (code merges; the pane keeps the download fallback)
-3. P8 party retest
-4. P3 HRDAV amend
-5. P7 HRCEN quote rescore beyond 10 threads
-6. U10-F2 provisional follow-up (its code lane can still merge if reviewed by T+435)
-7. U11 linker (no HMS; cut only if orchestrator attention is the bottleneck)
-
----
+Never cut (code): U0, U1, U2a, U3, U5, U6, U13, U7, U8, U9. Cut order for proofs if the queue is still behind at go-live: DV amend → POP → multi-stay HRDAV → party.
 
 ## 9. Waves
 
-| Time | Lanes start | HMS (slot) |
+| Time | Lanes start | HMS |
 |---|---|---|
-| T0 | U1, U2a, U3, U6, U13, U10-F1, U11 | Kickoff checks (orchestrator): live SHA, `/proc` flags, both slots healthy, Labtest inventory read-only (existing `stay-lookup.mjs` via SSM, short) |
-| T+15 | U2b probe (SQL, no HMS) | — |
-| T+30 | U2b (after probe), U5 (after U1 merges stay-lookup?) → **U5 waits U1** | — |
-| T+80 | **D-A** | P1 cleanup + penalty dump (HRCEN); HRDAV preflight |
-| T+90 | U7 (from the P1 dump), U8-M2, U9 (after U1), U12 | P2 create HRCEN + HRDAV (parallel if D1) |
-| T+110 | U4 (from P2 evidence) | P3 amend HRCEN; HRDAV create fix loop if needed |
-| T+140 | U8-M3, U10-F2 | P8 party (HRCEN) |
-| T+200 | **D-B** | P4 cancel both; flip DV quote flag; P7 quote both |
-| T+260 | fix lanes per 6a | P5 multi-stay HRCEN; P6 POP; P3 HRDAV |
-| T+320 | **D-C** | re-run parked cells |
-| T+435 | merge stop | — |
-| T+450 | **Final deploy** | T+450–480 re-proof grid on the final SHA |
-
----
+| T0 | U1, U6, U2a, U3, U13, U10-F1, U11, **U4-evidence (read-only readback of `66865808-1` via existing lab tooling, orchestrator)** | kickoff checks + live SHA |
+| T+15 | U2b probe (SQL) | P1 inventory + penalty dump (read-only) |
+| T+60 | U0 (on U1 branch), U5 (after U1), U2b, U4 | — |
+| T+90 | U7 (from P1 dump), U8-M2, U12 | P8 party (read) |
+| T+130 | **D-A** (U0 U1 U2a U3 U4? U5 U6 U13) | P2 create HRCEN; HRDAV preflight → create (if D1) |
+| T+150 | U9 (after U1), U8-M3, U10-F2 | |
+| T+220 | **D-B** (U2b U7 U8 U9 + fixes) | DV quote flag on; P4 cancel both; P7 quote both |
+| T+260 | fix lanes per 6a | P3 amend HRCEN |
+| T+340 | **D-C** (U10 U11 U12 + fixes) | |
+| T+435 | merge stop | |
+| T+450 | **Final deploy** | queue continues (D6): amend, multi-stay, POP, DV amend; re-run of any cell whose code changed in the final deploy |
 
 ## 10. Scope boundaries
 
@@ -371,10 +411,11 @@ Cut in this order when T + remaining cells > 450:
 
 | # | Decision | Recommend | If no answer |
 |---|---|---|---|
-| D1 | One HMS lock per **property** (two browsers, two logins) instead of one global lock | **Per property**: saves ~3.5 h on the expected path (§8c) | Global, serial |
+| D1 | One HMS lock per **property** (two browsers, two logins) instead of one global lock | **Per property**: saves ~2–3 h on the expected path (§8c) | **Serial** (the run starts serial; parallel only after a written yes) |
 | D2 | Write switches at go-live for Faith/Bongi | Keep `lab` until each cell passes on the final SHA; owner flips per workflow in the morning | `lab` |
 | D3 | Watchdog cadence | **30 min** (evidence §6) | 30 |
 | D4 | Orchestrator model | Grok 4.6 high (SR3: code 0.4× plan; failures were idle + wrong-tree deploys, now guarded by the tick rule + D-A check) | Grok 4.6 high |
+| D6 | Proofs continue after the final deploy (no more deploys; failures → open PR for the morning) | **Yes**: grid needs ~12.5 h, coding ~5.5 h | Stop at T+480 with partial grid |
 | D5 | Codex Sol computer-use | Offline only: Sol reads the saved dumps/screenshots to design selectors. Driving live HMS, even Labtest, needs an explicit rule change | Offline only |
 
 ---
