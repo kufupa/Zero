@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  CLEANUP_CANCEL_REASON,
   LAB_ARRIVAL_FLOOR,
   PROOF_RUN_REL,
   buildProofCancelCall,
@@ -34,8 +35,8 @@ function collectCalls() {
   const calls: ProofCancelCall[] = [];
   const cancel = async (call: ProofCancelCall) => {
     calls.push(call);
-    if (call.mode === 'preview') return { previewDigest: DIGEST, outcome: 'previewed' };
-    return { outcome: 'committed' };
+    if (call.mode === 'preview') return { previewDigest: DIGEST, outcome: 'preview_ok' };
+    return { outcome: 'cancelled' };
   };
   return { calls, cancel };
 }
@@ -133,7 +134,22 @@ describe('labtest cleanup run', () => {
       [PROOF_RUN_REL, 'cancel', 'commit', 'transport-davinci'],
     ]);
     expect(calls[1]?.request.previewDigest).toBe(DIGEST);
+    expect(calls[1]?.request.reason).toBe(CLEANUP_CANCEL_REASON);
+    expect(calls[0]?.outDir).toBe('/tmp/labtest-cleanup-work/stay-0');
+    expect(calls[2]?.outDir).toBe('/tmp/labtest-cleanup-work/stay-1');
     expect(JSON.stringify(calls)).not.toMatch(/cancel-stay/);
+  });
+
+  it('trims property codes so a padded HRDAV stay cancels on Da Vinci', async () => {
+    const { calls, cancel } = collectCalls();
+    await runLabtestCleanup([stay({ propertyCode: ' HRDAV ', confirmation: '10000002-1' })], {
+      apply: true,
+      cancel,
+    });
+    expect(calls.map((call) => call.transportId)).toEqual([
+      'transport-davinci',
+      'transport-davinci',
+    ]);
   });
 
   it('does not commit when preview has no digest', async () => {
@@ -148,6 +164,19 @@ describe('labtest cleanup run', () => {
     expect(calls.map((call) => call.mode)).toEqual(['preview']);
     expect(result.stays[0]?.action).toBe('skipped');
     expect(result.stays[0]?.reason).toBe('preview_digest_missing');
+    expect(result.byHotel.HRCEN.cancelled).toBe(0);
+  });
+
+  it('does not mark cancel_unconfirmed as cancelled', async () => {
+    const result = await runLabtestCleanup([stay()], {
+      apply: true,
+      cancel: async (call) =>
+        call.mode === 'preview'
+          ? { previewDigest: DIGEST, outcome: 'preview_ok' }
+          : { outcome: 'cancel_unconfirmed' },
+    });
+    expect(result.stays[0]?.action).toBe('skipped');
+    expect(result.stays[0]?.reason).toBe('commit_failed');
     expect(result.byHotel.HRCEN.cancelled).toBe(0);
   });
 });
@@ -168,6 +197,12 @@ describe('labtest cleanup masking', () => {
     expect(call.command).toBe('cancel');
     expect(call.argv[0]).toBe('cancel');
     expect(call.argv.join(' ')).not.toMatch(/cancel-stay/);
+    const commit = buildProofCancelCall(stay({ propertyCode: ' HRDAV ' }), 'commit', {
+      workDir: '/tmp/x',
+      previewDigest: DIGEST,
+    });
+    expect(commit.transportId).toBe('transport-davinci');
+    expect(commit.request.reason).toBe(CLEANUP_CANCEL_REASON);
   });
 });
 

@@ -13,6 +13,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const LAB_ARRIVAL_FLOOR = '2027-01-01';
 export const PROOF_RUN_REL = 'src/ops/hms-proof-run.ts';
+export const CLEANUP_CANCEL_REASON = 'Test Reservations';
+const COMMIT_OK = new Set(['cancelled', 'already_cancelled']);
 
 export type HotelCode = 'HRCEN' | 'HRDAV';
 export type CleanupAction = 'would_cancel' | 'cancelled' | 'skipped';
@@ -199,13 +201,17 @@ export function buildProofCancelCall(
   mode: 'preview' | 'commit',
   extra: { workDir: string; previewDigest?: string },
 ): ProofCancelCall {
-  const hotel = asHotel(String(stay.propertyCode)) ?? 'HRCEN';
+  const hotel = asHotel(String(stay.propertyCode ?? '').trim());
+  if (!hotel) throw codedError('unknown_property');
   const request: Record<string, unknown> = {
     confirmation: stay.confirmation.trim(),
     arrival: arrivalDay(stay.arrival) ?? stay.arrival.trim(),
     lastName: stay.lastName.trim(),
   };
-  if (mode === 'commit' && extra.previewDigest) request.previewDigest = extra.previewDigest;
+  if (mode === 'commit') {
+    request.reason = CLEANUP_CANCEL_REASON;
+    if (extra.previewDigest) request.previewDigest = extra.previewDigest;
+  }
   const transportId = TRANSPORT[hotel];
   const argv = [
     'cancel',
@@ -304,15 +310,22 @@ export async function runLabtestCleanup(
       continue;
     }
     let failed: CleanupReason = 'preview_failed';
+    const stayDir = path.join(workDir, `stay-${index}`);
     try {
-      const preview = await options.cancel(buildProofCancelCall(stay, 'preview', { workDir }));
+      const preview = await options.cancel(buildProofCancelCall(stay, 'preview', { workDir: stayDir }));
       const previewDigest = digestOf(preview);
       if (!previewDigest) {
         rows.push({ ...row, action: 'skipped', reason: 'preview_digest_missing' });
         continue;
       }
       failed = 'commit_failed';
-      await options.cancel(buildProofCancelCall(stay, 'commit', { workDir, previewDigest }));
+      const committed = await options.cancel(
+        buildProofCancelCall(stay, 'commit', { workDir: stayDir, previewDigest }),
+      );
+      if (!COMMIT_OK.has(committed.outcome ?? '')) {
+        rows.push({ ...row, action: 'skipped', reason: 'commit_failed' });
+        continue;
+      }
       rows.push({ ...row, action: 'cancelled', reason: null });
     } catch {
       rows.push({ ...row, action: 'skipped', reason: failed });
