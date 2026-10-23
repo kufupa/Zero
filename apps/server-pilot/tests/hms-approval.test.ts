@@ -1340,6 +1340,15 @@ describe('HMS attach form digest and unconfirmed upload (U9)', () => {
     expect(formDigest(ATTACH_FORM)).toBe(formDigest({ ...ATTACH_FORM }));
   });
 
+  it('does not card-mask a PDF hash that contains a long digit run', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const pdfSha256 = `${'a'.repeat(5)}${'1'.repeat(16)}${'b'.repeat(43)}`;
+      const workItemId = await seedItem(db, { form: { ...ATTACH_FORM, pdfSha256 } });
+      const view = await hmsWriteStateOf({ db, transportId: TRANSPORT_ID, workItemId, now: NOW });
+      expect(view?.form.pdfSha256).toBe(pdfSha256);
+    });
+  });
+
   it('upload_unconfirmed leaves needs-check open and refuses another approval', async () => {
     await withIngestionDb(async ({ db }) => {
       const workItemId = await seedItem(db, { form: ATTACH_FORM });

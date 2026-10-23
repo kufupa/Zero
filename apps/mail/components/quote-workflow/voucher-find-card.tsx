@@ -39,6 +39,7 @@ export const VOUCHER_ATTACH_COPY = {
   attaching: 'Preparing attach…',
   checkInInfor: 'Check in Infor',
   documentsRow: 'Documents row in HMS',
+  refused: 'Nava could not prepare the attach. Check in Infor.',
 } as const;
 
 export type VoucherAttachBindInput = {
@@ -456,6 +457,7 @@ export function VoucherFindCard({
             attaching={attach === 'binding'}
             unconfirmedAttach={unconfirmedAttach}
             documentsSeen={attachSucceeded && (attachWrite?.run?.evidence.length ?? 0) > 0}
+            attachRefused={attach === 'refused'}
             onAttach={() => void bindAttach()}
           />
         ) : null}
@@ -516,6 +518,7 @@ function MatchedBooking({
   attaching,
   unconfirmedAttach,
   documentsSeen,
+  attachRefused,
   onAttach,
 }: {
   row: GuestSearchRow;
@@ -533,6 +536,7 @@ function MatchedBooking({
   attaching: boolean;
   unconfirmedAttach: boolean;
   documentsSeen: boolean;
+  attachRefused: boolean;
   onAttach: () => void;
 }) {
   const guest = [row.firstName, row.lastName].filter(Boolean).join(' ') || 'Name not shown';
@@ -569,6 +573,11 @@ function MatchedBooking({
       {unconfirmedAttach ? (
         <Notice tone="warn" role="status">
           {VOUCHER_ATTACH_COPY.checkInInfor}
+        </Notice>
+      ) : null}
+      {attachRefused && !unconfirmedAttach ? (
+        <Notice tone="warn" role="status">
+          {VOUCHER_ATTACH_COPY.refused}
         </Notice>
       ) : null}
       {documentsSeen && !unconfirmedAttach ? (

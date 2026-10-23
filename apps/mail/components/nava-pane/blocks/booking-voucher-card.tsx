@@ -81,7 +81,7 @@ export function BookingVoucherCard({
           syncCommitted={syncCommitted}
           syncPending={syncPending}
           workItemId={workItemId}
-          writesEnabled={writesEnabled}
+          writesEnabled={writesEnabled && !amendment}
         />
       ) : null}
     </>
