@@ -70,18 +70,15 @@ describe('quoteReplyStatesHoldWindow', () => {
 });
 
 describe('messageStatesConfirmationLetter', () => {
-  it('matches an HMS confirmation letter subject or filename', () => {
-    expect(messageStatesConfirmationLetter({ subject: 'Confirmation Letter (n°12345678)' })).toBe(true);
-    expect(
-      messageStatesConfirmationLetter({ subject: 'Re: Quote request' }, [
-        'HRCEN_Confirmation_Letter_12345678.pdf',
-      ]),
-    ).toBe(true);
+  it('matches an HMS confirmation letter filename', () => {
+    expect(messageStatesConfirmationLetter(['HRCEN_Confirmation_Letter_12345678.pdf'])).toBe(true);
+    expect(messageStatesConfirmationLetter(['HRDAV_Confirmation_Letter_87654321.pdf'])).toBe(true);
   });
 
-  it('does not match a quote send with no confirmation letter', () => {
-    expect(messageStatesConfirmationLetter({ subject: 'Re: Quote request' })).toBe(false);
-    expect(messageStatesConfirmationLetter({ subject: 'Re: Quote request' }, ['quote.pdf'])).toBe(false);
+  it('does not match a quote send or a Re: confirmation subject with no letter file', () => {
+    expect(messageStatesConfirmationLetter([])).toBe(false);
+    expect(messageStatesConfirmationLetter(['quote.pdf'])).toBe(false);
+    expect(messageStatesConfirmationLetter(['Re: Confirmation Letter.pdf'])).toBe(false);
   });
 });
 
@@ -969,6 +966,7 @@ describe('quote follow-up drafts', () => {
         threadId: 'thread-book-ack',
         sentAt: FRI_SEND,
         holdWindow: false,
+        subject: 'Re: Confirmation letter',
         textBody: 'We are looking into this booking.',
       });
 

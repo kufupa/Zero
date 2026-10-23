@@ -97,7 +97,6 @@ const HOLD_OR_VALIDITY_WINDOW =
   /no\s+rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|(?:rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|hold(?:ing)?\s+(?:the\s+)?rooms?)|valid(?:ity)?\s*(?:until|till|for|:)/i;
 /** HMS confirmation letter file, e.g. HRCEN_Confirmation_Letter_12345678.pdf. */
 const CONFIRMATION_LETTER_FILE = /^[A-Z]{3,8}_Confirmation_Letter_\d{8}(?:\b|\.|$)/i;
-const CONFIRMATION_LETTER_SUBJECT = /confirmation\s+letter/i;
 
 export function quoteReplyStatesHoldWindow(text: string | null | undefined): boolean {
   if (!text) return false;
@@ -109,12 +108,8 @@ function attachmentBasename(filename: string): string {
   return parts[parts.length - 1] || filename;
 }
 
-/** A Nava/staff HMS confirmation send: letter in the subject or the Confirmation_Letter attachment. */
-export function messageStatesConfirmationLetter(
-  m: { subject?: string | null },
-  filenames: readonly string[] = [],
-): boolean {
-  if (CONFIRMATION_LETTER_SUBJECT.test(m.subject ?? '')) return true;
+/** A Nava/staff HMS confirmation send: the Confirmation_Letter attachment, not a Re: subject. */
+export function messageStatesConfirmationLetter(filenames: readonly string[] = []): boolean {
   return filenames.some((name) => CONFIRMATION_LETTER_FILE.test(attachmentBasename(name)));
 }
 
@@ -195,7 +190,7 @@ function sendStartsFollowUpClock(
   extracts: readonly string[] = [],
   filenames: readonly string[] = [],
 ): boolean {
-  if (kind === 'booking') return messageStatesConfirmationLetter(m, filenames);
+  if (kind === 'booking') return messageStatesConfirmationLetter(filenames);
   return messageStatesHoldWindow(m, extracts);
 }
 
