@@ -328,3 +328,20 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 182 | Full product status per workflow (Excel quotes, provisional create, amends, POP / TA-prepaid, amending paid, cancellations + when to charge, government rates); 12-hour ROI plan for tomorrow, parallelism, scale testing; “stuff that i should have asked” | 🟡 | High-level in chat 2026-10-22; deep plan after owner picks |
 | 183 | Clean up merged Orca worktrees/branches: “honestly you can automatically get rid of these right now” | ✅ | 31 worktrees + 162 branches removed; restore map `~/.claude/cleanup-2026-10-10-deleted.tsv` |
 | 184 | Greptile Apex abundant until 2026-11-21 (then 500 credits ever); Plus for small PRs, Apex for big; prefer small PRs | ✅ | Memory `feedback-greptile-plus-vs-apex` |
+
+## 13. g1023 pause, retro, Da Vinci pilot (2026-10-23)
+
+| # | Original ask | Status | Evidence / next step |
+|---|---|---|---|
+| 204 | “pause eeverything diagnose why this isn't working!!” (Faith DV pane: Rates failed, installation unavailable) | ✅ diagnosed | HOLD 12:20Z; root cause HRDAV quote installation missing; [retro §2](ledger/2026-10-23-g1023-retro.md) |
+| 205 | Full retro of last night + past 1–2 weeks: ETAs, good/bad, repeat problems, features done/not done; read agent/mistake/context/research; scoped Luna subagents | ✅ | [g1023 retro](ledger/2026-10-23-g1023-retro.md) |
+| 206 | Faith feedback: UI not clear; liked room extraction; agency extracted but not pre-run; rates missing (revenue); rate lookup confusing — “surely we can pre-run all of it” | 🟡 | Rates/agency = DV setup + Centurion-only prefetch (retro §2); UI iteration next plan |
+| 207 | Standardize owner workflows into skills; owner barely uses skills (only ce-plan) | 🟡 | 4 front-door skills proposed (retro §10); build after owner picks |
+| 208 | Model routing: Grok 4.6 high everywhere burns credits; use Luna more for coding, Grok to review | 🟡 | Data: orchestrator 61% of Grok spend; A/B proposal retro §9 |
+| 209 | Orchestrator keeps going idle/breaking, esp. after new plans; now using Orca CLI | 🟡 | No true idle; steer latency from 300–390K context; retro §5 |
+| 210 | Make Nava hotel-agnostic (≥3 more hotels, many users per hotel: Faith + Ayanda on DV, whole reservations team); DV missing wholesale, no Standard Queen at DV | 🟡 | Retro §11; A1 inventory + 9-slice target |
+| 211 | 10/10 product = Infor workflow fields copied into pane, pre-filled from email, vague fields suggested from corpus, staff click yes; propose architecture rewrites, not patches | 🟡 | Next shaping session |
+| 212 | Get DV rates from data + HMS, not from staff | 🟡 | 1,687 DV outbound + WS/NC/GOV read-only shops |
+| 213 | Orchestrator: no 150K hard handoff; self-handoff ~250K then compact, ~300K ceiling, compaction ledger; steers inject immediately | ✅ policy | Memory feedback-orchestrator-context-policy; Grok follow_up_behavior=steer |
+| 214 | Skills: don't build night-run; conversational front door that forces our failure modes + evidence + architecture pushback; keep closeout; teach wayfinder | 🟡 | Proposal in chat |
+| 215 | Run routing A/B now in developer hours (Luna codes, Grok reviews); split daytime (iterate with customers) vs overnight autonomy | 🟡 | Proposal in chat |
