@@ -188,7 +188,10 @@ export function buildCancelStayArgs(input: PaneStayCancelSpawnInput, outDir: str
   // Only an on-mode run passes the switch. Nothing else in the environment can lift the lab guard.
   if (input.allowRealGuest) args.push(ALLOW_REAL_GUEST_FLAG);
   if (input.target) args.push('--property', input.target.propertyCode);
-  if (input.lastName) args.push('--last-name', input.lastName);
+  const lastName =
+    input.lastName
+    ?? (typeof input.expectStay?.lastName === 'string' ? input.expectStay.lastName : undefined);
+  if (lastName) args.push('--last-name', lastName);
   return args;
 }
 

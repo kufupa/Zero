@@ -665,6 +665,19 @@ describe('pane stay cancel', () => {
     );
     expect(hrcen[hrcen.indexOf('--property') + 1]).toBe('HRCEN');
     expect(hrcen).not.toContain('--last-name');
+    const fromExpect = buildCancelStayArgs(
+      {
+        mode: 'commit',
+        confirmation: '57291630-1',
+        arrival: '2027-09-14',
+        reason: 'Duplicate Booking',
+        allowRealGuest: false,
+        expectStay: { confirmation: '57291630-1', lastName: 'Labtest' },
+        target: DAVINCI_HMS_READ_TARGET,
+      },
+      '/tmp/run',
+    );
+    expect(fromExpect[fromExpect.indexOf('--last-name') + 1]).toBe('Labtest');
   });
 
   it('dismissLeftoverCancelWindows Escapes leftover windows and never clicks OK or Waive', async () => {
@@ -711,6 +724,32 @@ describe('pane stay cancel', () => {
       waitForTimeout: async () => {},
     });
     expect(actions).toEqual([]);
+    leftover = 1;
+    actions.length = 0;
+    await dismissLeftoverCancelWindows({
+      locator: () => ({ filter: () => leftoverLocator }),
+      keyboard: { press: async (key: string) => { actions.push(`press:${key}`); } },
+      waitForTimeout: async () => {},
+    });
+    expect(actions).toContain('press:Escape');
+    expect(actions.some((action) => action.startsWith('click:'))).toBe(true);
+    expect(actions.join(' ')).not.toMatch(/ok|waive/i);
+    leftover = 1;
+    await expect(
+      dismissLeftoverCancelWindows({
+        locator: () => ({
+          filter: () => ({
+            count: async () => leftover,
+            locator: () => ({
+              count: async () => 0,
+              first: () => ({ click: async () => { actions.push('click'); } }),
+            }),
+          }),
+        }),
+        keyboard: { press: async (key: string) => { actions.push(`press:${key}`); } },
+        waitForTimeout: async () => {},
+      }),
+    ).rejects.toThrow(/CANCEL_DIALOG_CLOSE_MISSING/);
   });
 
   it('cancel-stay run() closes leftover cancel dialog before findStay', async () => {
