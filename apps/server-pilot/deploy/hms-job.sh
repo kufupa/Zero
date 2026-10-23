@@ -77,7 +77,7 @@ job_dir() {
 wait_for_seq() {
   local dir="$1" i
   for i in $(seq 1 200); do
-    [ -f "${dir}/seq" ] && return 0
+    [ -s "${dir}/seq" ] && return 0
     sleep 0.05
   done
   return 1
@@ -201,7 +201,9 @@ cmd_start() {
   fi
 
   # Seq after submit so waiters never treat an in-flight start as abandoned.
-  date +%s%N >"${dir}/seq"
+  # Write then rename so wait_for_seq never observes an empty file.
+  date +%s%N >"${dir}/seq.tmp"
+  mv "${dir}/seq.tmp" "${dir}/seq"
   printf '%s\n' "$id"
 }
 
