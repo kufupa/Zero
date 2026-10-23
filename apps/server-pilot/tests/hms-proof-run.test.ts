@@ -220,7 +220,7 @@ describe('hms-proof-run refusals', () => {
     const outDir = await mkdtemp(join(tmpdir(), 'hms-proof-create-on-lab-'));
     try {
       const line = await hmsProofRun(
-        parseProofRunArgs(argv('create', LAB, { out: outDir })),
+        parseProofRunArgs(argv('create', { ...LAB, adults: 1 }, { out: outDir })),
         { ...WRITE_LAB, PANE_WRITE_CREATE: 'on' },
         createLock,
       );
