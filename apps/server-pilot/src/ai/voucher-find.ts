@@ -4,6 +4,7 @@ import {
   type QuoteAttachmentRow,
   type SyncedQuoteAttachment,
 } from './quote-workflow-synced-selection.js';
+export { bindAttachDocumentForm } from './pane-hms-write.js';
 import { attachment, message } from '../db/schema/mail.js';
 import { isGuestSurname } from './pane-stay-lookup.js';
 import { and, asc, eq } from 'drizzle-orm';

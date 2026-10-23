@@ -1080,13 +1080,18 @@ export type HmsWriteStateView = {
   needsCheck: boolean;
 };
 
+const HEX_SHA256 = /^[a-f0-9]{64}$/;
+
 /** KTD13: every string the cards show passes the card mask, whoever wrote the value. */
-function maskedStrings<T>(value: T): T {
-  if (typeof value === 'string') return maskCardNumbers(value) as T;
-  if (Array.isArray(value)) return value.map(maskedStrings) as T;
+function maskedStrings<T>(value: T, key?: string): T {
+  if (typeof value === 'string') {
+    if (key === 'pdfSha256' || HEX_SHA256.test(value)) return value;
+    return maskCardNumbers(value) as T;
+  }
+  if (Array.isArray(value)) return value.map((child) => maskedStrings(child, key)) as T;
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
-      Object.entries(value).map(([key, child]) => [key, maskedStrings(child)]),
+      Object.entries(value).map(([childKey, child]) => [childKey, maskedStrings(child, childKey)]),
     ) as T;
   }
   return value;
