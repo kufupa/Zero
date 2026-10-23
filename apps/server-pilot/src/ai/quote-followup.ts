@@ -524,9 +524,11 @@ async function findLinkedBookingConfirmation(
   const confs = await bookingConfBases(db, item);
   const hotelLetters = timed.filter((row) => row.m.direction === 'outbound' || ownMail(row.m));
   const matched = hotelLetters.filter((row) => {
-    const letterConf = row.names.map(confirmationLetterConf).find((value): value is string => Boolean(value));
-    if (confs.size === 0 || !letterConf) return false;
-    return confs.has(confirmationBase(letterConf));
+    if (confs.size === 0) return false;
+    return row.names.some((name) => {
+      const letterConf = confirmationLetterConf(name);
+      return Boolean(letterConf) && confs.has(confirmationBase(letterConf!));
+    });
   });
   if (matched.length > 0) {
     matched.sort((a, b) => {
@@ -538,9 +540,12 @@ async function findLinkedBookingConfirmation(
     return matched[0]!.m;
   }
   if (confs.size > 0) return null;
+  const sameThread = hotelLetters.filter((row) => row.m.threadId === item.threadId);
+  if (sameThread.length === 1) return sameThread[0]!.m;
   const [source] = await messagesByIds(db, item.transportId, [item.sourceMessageId]);
   const guest = source?.fromAddress ?? '';
-  const toGuest = hotelLetters.filter((row) => addressedToGuest(row.m, guest));
+  const pool = sameThread.length > 1 ? sameThread : hotelLetters;
+  const toGuest = pool.filter((row) => addressedToGuest(row.m, guest));
   if (toGuest.length !== 1) return null;
   return toGuest[0]!.m;
 }
