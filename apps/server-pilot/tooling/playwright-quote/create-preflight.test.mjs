@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { profileFor } from './property-profile.mjs';
 import {
-  collectBlockers, formatBlocker, preflightExitCode, runCreatePreflight, sanitizeDom, shouldAbortReadOnlyRequest,
+  buildPreflightResult, collectBlockers, formatBlocker, preflightExitCode, requestedAvailability, runCreatePreflight,
+  sanitizeDom, shouldAbortReadOnlyRequest,
 } from './create-preflight.mjs';
 
 function clearSnapshot(extra = {}) {
@@ -66,6 +67,16 @@ test('restricted date is blocker:availability', () => {
   })).map(formatBlocker);
   assert.deepEqual(labels, ['blocker:availability']);
   assert.equal(preflightExitCode({ blockers: collectBlockers(clearSnapshot({ availability: { restricted: true } })) }), 2);
+  const shop = requestedAvailability([
+    { roomType: 'STWN', code: 'BAR', restricted: true, inventory: 0 },
+    { roomType: 'STQN', code: 'BAR', restricted: false, inventory: 4 },
+  ], { roomType: 'STQN', ratePlan: 'BAR' });
+  assert.equal(shop.restricted, false);
+  assert.equal(shop.inventory, 4);
+  assert.deepEqual(collectBlockers(clearSnapshot({ availability: { error: 'timeout', searched: false, rows: [] } })).map(formatBlocker), [
+    'blocker:availability',
+  ]);
+  assert.equal(preflightExitCode(buildPreflightResult(clearSnapshot({ captureError: 'fields' }))), 2);
 });
 
 test('DV note blank is blocker:required_field reservationnote', () => {

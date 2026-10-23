@@ -5,7 +5,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseCreateProperty, INFORMATIONAL_NO_ROOMS_MESSAGE } from './create-lab-stay.mjs';
-import { loadCreateRequest, parseOutDir, shopResult } from './create-request.mjs';
+import { loadCreateRequest, optionalPartyAndNoteFills, parseOutDir, shopResult } from './create-request.mjs';
 import { profileFor } from './property-profile.mjs';
 import { searchGuestOnOpenGuestStay } from './stay-lookup.mjs';
 import { openGuestStayScreen } from './open-guest-stay.mjs';
@@ -24,7 +24,9 @@ export function formatBlocker(blocker) {
 }
 
 export function preflightExitCode(result) {
-  return (result?.blockers?.length ?? 0) === 0 ? 0 : 2;
+  if ((result?.blockers?.length ?? 0) > 0) return 2;
+  if (result?.captureError) return 2;
+  return 0;
 }
 
 export function sanitizeDom(html) {
@@ -43,6 +45,7 @@ function nightClosed(night) {
 
 export function availabilityBlockers(availability = {}, messages = []) {
   const text = [...(messages ?? []), availability.messageBox].filter(Boolean).join('\n');
+  if (availability.error) return [{ kind: 'availability', detail: 'unread' }];
   if (text.includes(INFORMATIONAL_NO_ROOMS_MESSAGE)) return [{ kind: 'availability', detail: 'no_rooms' }];
   if (availability.restricted === true || availability.rateAvailable === false || availability.inventory === 0) {
     return [{ kind: 'availability', detail: 'restricted' }];
@@ -111,9 +114,52 @@ export function buildPreflightResult(snapshot) {
     messages: snapshot.messages ?? [],
     duplicateSearch: snapshot.duplicateSearch ?? null,
     clickedSave: false,
+    captureError: snapshot.captureError ?? null,
     dump: snapshot.dump ?? null,
     screenshot: snapshot.screenshot ?? null,
   };
+}
+
+export function requestedAvailability(records, stay) {
+  const wantRoom = String(stay?.roomType || '').toUpperCase();
+  const wantRate = String(stay?.ratePlan || '').toUpperCase();
+  const rows = (records ?? []).filter((row) => {
+    const room = String(row.roomType || '').toUpperCase();
+    const code = String(row.code || '').toUpperCase();
+    if (wantRoom && room !== wantRoom) return false;
+    if (wantRate && code !== wantRate) return false;
+    return true;
+  });
+  return {
+    searched: true,
+    rows,
+    restricted: rows.some((row) => row.restricted === true || nightClosed(row)),
+    inventory: rows.reduce((sum, row) => sum + (Number(row.inventory) || 0), 0),
+    nights: rows.flatMap((row) => row.nights ?? []),
+  };
+}
+
+async function fillNamed(page, name, value) {
+  if (value == null || String(value).trim() === '') return;
+  const input = page.locator(`input[name="${name}"]:visible, textarea[name="${name}"]:visible`).first();
+  await input.click();
+  await input.fill(String(value));
+  await input.press('Tab');
+}
+
+async function fillCreateForm(page, stay) {
+  if (stay.arrival) await fillNamed(page, 'arrivaldate', displayDate(stay.arrival));
+  if (stay.departure) await fillNamed(page, 'departuredate', displayDate(stay.departure));
+  if (stay.adults != null) await fillNamed(page, 'adults', String(stay.adults));
+  await fillNamed(page, 'firstname', stay.firstName);
+  await fillNamed(page, 'lastname', stay.lastName);
+  await fillNamed(page, 'sourceofbusinessdesc', stay.sourceOfBusiness);
+  await fillNamed(page, 'roomtype', stay.roomType);
+  await fillNamed(page, 'rateplan', stay.ratePlan);
+  await fillNamed(page, 'track', stay.track);
+  for (const [name, value] of Object.entries(optionalPartyAndNoteFills(stay))) {
+    if (value) await fillNamed(page, name, value);
+  }
 }
 
 export function inspectCreateFields(document = globalThis.document) {
@@ -190,26 +236,24 @@ async function shopAvailability(page, stay) {
       .map((row) => (row.innerText || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
     return { records, lines };
   });
-  const rows = shopResult(read.records, read.lines).rows;
-  return {
-    searched: true,
-    rows,
-    restricted: read.records.some((row) => row.restricted === true),
-    inventory: read.records.reduce((sum, row) => sum + (Number(row.inventory) || 0), 0),
-    nights: [],
-  };
+  shopResult(read.records, read.lines);
+  return requestedAvailability(read.records, stay);
 }
 
-async function captureSnapshot(page, { stay, propertyCode, profile, searchGuest = searchGuestOnOpenGuestStay }) {
+async function captureSnapshot(page, { stay, propertyCode, profile, searchGuest = searchGuestOnOpenGuestStay, dir }) {
+  const errors = [];
   const nav = await inspectNavNodes(page).catch(() => []);
   let availability = { searched: false, rows: [] };
   try { availability = await shopAvailability(page, stay); } catch (error) {
     availability = { searched: false, rows: [], error: String(error?.message || error).slice(0, 300) };
+    errors.push('availability');
   }
   await openGuestStayScreen(page);
   await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
   await page.locator('input[name="lastname"]:visible, textarea[name="reservationnote"]:visible').first().waitFor().catch(() => {});
-  const fields = await page.evaluate(inspectCreateFields).catch(() => []);
+  await fillCreateForm(page, stay).catch(() => {});
+  let fields = await page.evaluate(inspectCreateFields).catch(() => null);
+  if (!fields) { errors.push('fields'); fields = []; }
   const messages = await page.evaluate(() => [...document.querySelectorAll('[data-testid="message-box"], .x-message-box')]
     .filter((el) => el.offsetParent || el.getClientRects?.().length)
     .map((el) => (el.innerText || '').replace(/\s+/g, ' ').trim()).filter(Boolean).slice(0, 8)).catch(() => []);
@@ -219,21 +263,27 @@ async function captureSnapshot(page, { stay, propertyCode, profile, searchGuest 
     await page.keyboard.press('Escape').catch(() => {});
     duplicateSearch = await searchGuest({
       page,
+      dir,
+      started: Date.now(),
       args: { mode: 'search-guest', confirmation: null, lastName: stay.lastName, arrival: stay.arrival, departure: stay.departure, debugHtml: false },
-      result: { screenshots: [] },
+      result: { screenshots: [], timings: {}, quickStages: [] },
     });
   } catch (error) {
     duplicateSearch = { outcome: 'execution_failure', error: String(error?.message || error).slice(0, 300) };
   }
   const navAfter = await inspectNavNodes(page).catch(() => []);
   const mergedNav = [...nav, ...navAfter].filter((node, i, all) => all.findIndex((other) => other.name === node.name && other.inViewport === node.inViewport) === i);
-  return { propertyCode, profile, arrival: stay.arrival, departure: stay.departure, fields, availability, messages, nav: mergedNav, duplicateSearch, dump: html };
+  return {
+    propertyCode, profile, arrival: stay.arrival, departure: stay.departure, fields, availability, messages,
+    nav: mergedNav, duplicateSearch, dump: html, captureError: errors.length ? errors.join(',') : null,
+  };
 }
 
 export async function runCreatePreflight({ context, page, stay, propertyCode, profile, outDir, snapshot, searchGuest } = {}) {
   if (context) await installPreflightGuard(context);
+  if (outDir) await mkdir(outDir, { recursive: true, mode: 0o700 });
   const resolvedProfile = profile ?? profileFor(propertyCode);
-  const snap = snapshot ?? await captureSnapshot(page, { stay, propertyCode, profile: resolvedProfile, searchGuest });
+  const snap = snapshot ?? await captureSnapshot(page, { stay, propertyCode, profile: resolvedProfile, searchGuest, dir: outDir });
   if (!snap.profile) snap.profile = resolvedProfile;
   const result = buildPreflightResult(snap);
   return outDir ? writePreflightArtifacts(outDir, result, { html: snap.dump ?? '', page }) : result;
