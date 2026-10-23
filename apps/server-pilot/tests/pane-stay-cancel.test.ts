@@ -391,6 +391,7 @@ describe('pane stay cancel', () => {
       arrival: '2027-09-14',
       reason: 'Duplicate Booking',
       allowRealGuest: false,
+      target: CENTURION_HMS_READ_TARGET,
     });
     expect(result).toMatchObject({
       outcome: 'cancelled',

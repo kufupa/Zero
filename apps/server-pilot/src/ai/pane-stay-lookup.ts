@@ -423,7 +423,11 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
   let run: PaneStayLookupSpawnResult;
   try {
     run = await lock.withLock(
-      () => spawn({ mode: 'find', confirmation: input.confirmation, arrival: input.arrival ?? null }),
+      () =>
+        spawn(
+          { mode: 'find', confirmation: input.confirmation, arrival: input.arrival ?? null },
+          deps.target,
+        ),
       deps.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {
@@ -507,12 +511,15 @@ export async function searchGuest(
   try {
     run = await lock.withLock(
       () =>
-        spawn({
-          mode: 'search-guest',
-          lastName: input.lastName,
-          arrival: input.arrival,
-          ...(input.departure !== undefined ? { departure: input.departure } : {}),
-        }),
+        spawn(
+          {
+            mode: 'search-guest',
+            lastName: input.lastName,
+            arrival: input.arrival,
+            ...(input.departure !== undefined ? { departure: input.departure } : {}),
+          },
+          deps.target,
+        ),
       deps.acquisition ?? acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     );
   } catch (error) {

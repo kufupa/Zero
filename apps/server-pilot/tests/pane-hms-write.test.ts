@@ -677,6 +677,7 @@ describe('pane HMS write (U26)', () => {
           allowRealGuest: false,
           // The read that matched the approval: the cancel CLI compares its own read of the record with it before OK.
           expectStay: cancelExpectStay(LAB_STAY),
+          target: CENTURION_HMS_READ_TARGET,
         },
       ]);
       expect(cancelCalls[0]?.expectStay).not.toHaveProperty('depositReceived');
@@ -802,6 +803,7 @@ describe('pane HMS write (U26)', () => {
           expectedLastName: 'Labtest',
           fields: AMEND_FIELDS,
           previewDigest: AMEND_FORM.previewDigest,
+          target: CENTURION_HMS_READ_TARGET,
         },
       ]);
       expect(attachCalls).toHaveLength(0);
