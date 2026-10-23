@@ -1007,6 +1007,22 @@ test('stale screen recovers once then fails with STALE_SCREEN, not a timeout', a
   assert.equal(result.recovered, true);
 });
 
+test('stale recovery rethrows a non-timeout on the second attempt', async () => {
+  const result = { outcome: null, error: null, recovered: false };
+  await assert.rejects(
+    () => withStaleRecovery({
+      attempt: async () => {
+        if (!result.recovered) throw new Error('locator.waitFor: Timeout 20000ms exceeded.');
+        throw new Error('AMBIGUOUS_CONFIRMATION_ROW');
+      },
+      recover: async () => {},
+    }, result),
+    /AMBIGUOUS_CONFIRMATION_ROW/,
+  );
+  assert.equal(result.recovered, true);
+  assert.equal(result.error, null);
+});
+
 test('stale screen that recovers then finds does not fail', async () => {
   let attempts = 0;
   const result = { outcome: null, error: null, recovered: false };

@@ -277,7 +277,8 @@ export async function withStaleRecovery(io, result) {
     result.recovered = true;
     try {
       await io.recover();
-    } catch {
+    } catch (error) {
+      if (!isStaleScreenError(error)) throw error;
       result.outcome = 'execution_failure';
       result.refusal = 'stale_screen';
       result.error = 'STALE_SCREEN';
@@ -285,7 +286,8 @@ export async function withStaleRecovery(io, result) {
     }
     try {
       return await io.attempt();
-    } catch {
+    } catch (error) {
+      if (!isStaleScreenError(error)) throw error;
       result.outcome = 'execution_failure';
       result.refusal = 'stale_screen';
       result.error = 'STALE_SCREEN';
@@ -327,6 +329,16 @@ async function applyPenaltyPolicy({ args, result, io, penalty, windows, afterOk 
     return 'stop';
   }
   result.penaltyClick = click;
+  const afterClick = await io.windowTexts();
+  if (parsePenalty(afterClick)) {
+    if (afterOk) {
+      result.penaltyPending = true;
+      return 'stop';
+    }
+    result.refusal = 'penalty_dialog_open';
+    result.outcome = 'refused_penalty';
+    return 'stop';
+  }
   if (afterOk) result.penaltyPending = false;
   return 'continue';
 }
