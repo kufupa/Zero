@@ -98,6 +98,8 @@ export type PaneStayCancelSpawnInput = {
   expectStay?: Record<string, unknown>;
   /** Required on the production spawn; tests that inject spawn may omit it. */
   target?: HmsReadTarget;
+  /** Optional surname for the CLI header-search retry (`--last-name`). */
+  lastName?: string;
 };
 
 /** The expected-stay file a commit run reads, inside its own output directory. */
@@ -185,6 +187,8 @@ export function buildCancelStayArgs(input: PaneStayCancelSpawnInput, outDir: str
   if (input.mode === 'commit' && input.expectStay) args.push('--expect-stay', join(outDir, EXPECT_STAY_FILE));
   // Only an on-mode run passes the switch. Nothing else in the environment can lift the lab guard.
   if (input.allowRealGuest) args.push(ALLOW_REAL_GUEST_FLAG);
+  if (input.target) args.push('--property', input.target.propertyCode);
+  if (input.lastName) args.push('--last-name', input.lastName);
   return args;
 }
 

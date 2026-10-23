@@ -282,6 +282,52 @@ test('commit refuses a paid or unknown folio and lets unpaid through; preview ne
   assert.equal(unpaidCommitRefusal('commit', null), 'refused_not_unpaid');
 });
 
+test('dismissLeftoverCancelWindows Escapes leftover windows and never clicks OK or Waive', async () => {
+  const { dismissLeftoverCancelWindows } = await import('./cancel-stay.mjs');
+  const actions = [];
+  let leftover = 1;
+  const leftoverLocator = {
+    count: async () => leftover,
+    locator: (sel) => ({
+      count: async () => leftover,
+      first: () => ({
+        click: async () => {
+          actions.push(`click:${sel}`);
+          leftover = 0;
+        },
+      }),
+    }),
+  };
+  const page = {
+    locator: () => ({ filter: () => leftoverLocator }),
+    keyboard: {
+      press: async (key) => {
+        actions.push(`press:${key}`);
+        leftover = 0;
+      },
+    },
+    waitForTimeout: async () => {},
+  };
+  await dismissLeftoverCancelWindows(page);
+  assert.ok(actions.includes('press:Escape'));
+  assert.equal(/ok|waive/i.test(actions.join(' ')), false);
+  leftover = 0;
+  actions.length = 0;
+  await dismissLeftoverCancelWindows(page);
+  assert.deepEqual(actions, []);
+});
+
+test('cancel-stay.mjs run() closes leftover cancel dialog before findStay', async () => {
+  const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
+  const run = source.slice(source.indexOf('async function run(ctx)'), source.indexOf('async function drive(ctx)'));
+  const openAt = run.indexOf('await openGuestStay(');
+  const findAt = run.indexOf('findStay');
+  const closeAt = run.search(/dismissLeftoverCancelWindows|closeCancelDialog/);
+  assert.ok(openAt >= 0 && findAt > openAt, 'run() opens Guest Stay then finds');
+  assert.ok(closeAt > openAt && closeAt < findAt, 'leftover cancel dialog must close before findStay');
+  assert.equal(/clickReasonOk|clickPenaltyButton/.test(run.slice(openAt, findAt)), false);
+});
+
 test('cancel-stay.mjs checks unpaid only on commit, before the cancel dialog', async () => {
   const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
   assert.match(source, /unpaidCommitRefusal/);

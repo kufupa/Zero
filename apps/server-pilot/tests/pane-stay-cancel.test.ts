@@ -17,7 +17,7 @@ import {
   paneStaySaveLoaders,
 } from '../src/ai/pane-stay-save.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { appRouter } from '../src/trpc/router.js';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
@@ -635,6 +635,103 @@ describe('pane stay cancel', () => {
     ).not.toContain('--expect-stay');
     expect(commit).toContain('--mode');
     expect(commit[commit.indexOf('--mode') + 1]).toBe('commit');
+  });
+
+  it('HRDAV transport spawn includes --property HRDAV and optional --last-name', () => {
+    const hrdav = buildCancelStayArgs(
+      {
+        mode: 'preview',
+        confirmation: '57291630-1',
+        arrival: '2027-09-14',
+        reason: null,
+        allowRealGuest: false,
+        target: DAVINCI_HMS_READ_TARGET,
+        lastName: 'Labtest',
+      },
+      '/tmp/run',
+    );
+    expect(hrdav[hrdav.indexOf('--property') + 1]).toBe('HRDAV');
+    expect(hrdav[hrdav.indexOf('--last-name') + 1]).toBe('Labtest');
+    const hrcen = buildCancelStayArgs(
+      {
+        mode: 'preview',
+        confirmation: '57291630-1',
+        arrival: '2027-09-14',
+        reason: null,
+        allowRealGuest: false,
+        target: CENTURION_HMS_READ_TARGET,
+      },
+      '/tmp/run',
+    );
+    expect(hrcen[hrcen.indexOf('--property') + 1]).toBe('HRCEN');
+    expect(hrcen).not.toContain('--last-name');
+  });
+
+  it('dismissLeftoverCancelWindows Escapes leftover windows and never clicks OK or Waive', async () => {
+    const { dismissLeftoverCancelWindows } = (await import(
+      '../tooling/playwright-quote/cancel-stay.mjs' as string
+    )) as {
+      dismissLeftoverCancelWindows: (page: {
+        locator: (sel: string) => unknown;
+        keyboard: { press: (key: string) => Promise<void> };
+        waitForTimeout: (ms: number) => Promise<void>;
+      }) => Promise<void>;
+    };
+    const actions: string[] = [];
+    let leftover = 1;
+    const leftoverLocator = {
+      count: async () => leftover,
+      locator: (sel: string) => ({
+        count: async () => leftover,
+        first: () => ({
+          click: async () => {
+            actions.push(`click:${sel}`);
+            leftover = 0;
+          },
+        }),
+      }),
+    };
+    await dismissLeftoverCancelWindows({
+      locator: () => ({ filter: () => leftoverLocator }),
+      keyboard: {
+        press: async (key: string) => {
+          actions.push(`press:${key}`);
+          leftover = 0;
+        },
+      },
+      waitForTimeout: async () => {},
+    });
+    expect(actions).toContain('press:Escape');
+    expect(actions.join(' ')).not.toMatch(/ok|waive/i);
+    leftover = 0;
+    actions.length = 0;
+    await dismissLeftoverCancelWindows({
+      locator: () => ({ filter: () => leftoverLocator }),
+      keyboard: { press: async (key: string) => { actions.push(`press:${key}`); } },
+      waitForTimeout: async () => {},
+    });
+    expect(actions).toEqual([]);
+  });
+
+  it('cancel-stay run() closes leftover cancel dialog before findStay', async () => {
+    const source = await readFile(
+      new URL('../tooling/playwright-quote/cancel-stay.mjs', import.meta.url),
+      'utf8',
+    );
+    const runStart = source.indexOf('async function run(ctx)');
+    const driveStart = source.indexOf('async function drive(ctx)');
+    expect(runStart).toBeGreaterThan(0);
+    expect(driveStart).toBeGreaterThan(runStart);
+    const run = source.slice(runStart, driveStart);
+    const openAt = run.indexOf('await openGuestStay(');
+    const findAt = run.indexOf('findStay');
+    const closeAt = run.search(/dismissLeftoverCancelWindows|closeCancelDialog/);
+    expect(openAt).toBeGreaterThanOrEqual(0);
+    expect(findAt).toBeGreaterThan(openAt);
+    expect(closeAt).toBeGreaterThan(openAt);
+    expect(closeAt).toBeLessThan(findAt);
+    const beforeFind = run.slice(openAt, findAt);
+    expect(beforeFind).not.toMatch(/clickReasonOk|clickPenaltyButton/);
   });
 
   it('an approved cancel with lookup depositReceived 0 is not refused when the cancel read omits that key', async () => {

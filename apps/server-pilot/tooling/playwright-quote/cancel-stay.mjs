@@ -581,6 +581,16 @@ async function closeCancelDialog(page, dialog) {
   await page.waitForTimeout(400);
 }
 
+// Preview on a borrowed CDP can leave the reason/penalty window open. Commit then finds that dialog
+// instead of the Guest Stay list. Escape / the window close tool only — never OK, never Waive.
+export async function dismissLeftoverCancelWindows(page) {
+  const leftover = page.locator('.x-window:visible').filter({
+    hasText: /Cancellation Reason|cancellation penalty/i,
+  });
+  if ((await leftover.count()) === 0) return;
+  await closeCancelDialog(page, leftover);
+}
+
 // Clicks Waive or OK on the single visible cancellation-penalty window. Never the reason-dialog OK.
 async function clickPenaltyButton(page, label) {
   const wanted = squash(label).toLowerCase();
@@ -680,11 +690,13 @@ async function run(ctx) {
   mark(ctx, 'login');
   await openGuestStay(page);
   await page.waitForTimeout(1500);
+  await dismissLeftoverCancelWindows(page);
   const found = await withStaleRecovery({
     attempt: () => findStay(ctx, { evidence: true }),
     recover: async () => {
       await openGuestStay(page);
       await page.waitForTimeout(1500);
+      await dismissLeftoverCancelWindows(page);
     },
   }, result);
   mark(ctx, 'search');
@@ -727,6 +739,7 @@ async function run(ctx) {
       recover: async () => {
         await openGuestStay(page);
         await page.waitForTimeout(1500);
+        await dismissLeftoverCancelWindows(page);
         const again = await findStay(ctx, { evidence: true });
         found.method = again?.method ?? found.method;
         found.locator = again?.locator ?? null;
