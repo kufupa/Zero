@@ -261,6 +261,27 @@ describe('hms-proof-run refusals', () => {
     expect(spawn).not.toHaveBeenCalled();
   });
 
+  it('create with PANE_WRITE_CREATE=on refuses nested non-Labtest stay fields', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn();
+    paneStaySaveLoaders.spawn = spawn;
+    await expect(
+      hmsProofRun(
+        parseProofRunArgs(
+          argv('create', {
+            lastName: 'Labtest',
+            arrival: '2027-03-10',
+            stay: { lastName: 'Smith', arrival: '2027-03-10', adults: 1 },
+          }),
+        ),
+        { ...WRITE_LAB, PANE_WRITE_CREATE: 'on' },
+        createLock,
+      ),
+    ).rejects.toThrow(/refused_not_lab$/);
+    expect(createLock).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it('refuses commit without a preview digest before any lock or spawn', async () => {
     const { createLock } = createLockSpy();
     const spawn = vi.fn();
