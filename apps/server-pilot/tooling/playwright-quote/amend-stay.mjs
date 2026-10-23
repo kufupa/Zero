@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { checkCdpEnv } from './cancel-stay-rules.mjs';
-import { openGuestStay, shot } from './cancel-stay.mjs';
+import { closeAppDrawer, openGuestStay, shot } from './cancel-stay.mjs';
 import { login, newBorrowedContext, playwright, readSecret, displayDate } from './fetch-quote.mjs';
 import { findOnOpenGuestStay } from './stay-lookup.mjs';
 import { readSaveSnapshot, SAVE_POLL_MS, SAVE_WAIT_MS } from './save-wait.mjs';
@@ -102,10 +102,11 @@ async function checkAvailability(page) {
 }
 
 async function fillChangedFields(page, fields) {
+  await closeAppDrawer(page);
   for (const [field, value] of Object.entries(fields)) {
     const input = page.locator(`input[name="${SELECTOR_BY_FIELD[field]}"]:visible`);
     const shown = field === 'arrival' || field === 'departure' ? displayDate(value) : String(value);
-    await input.click();
+    await input.scrollIntoViewIfNeeded().catch(() => {});
     await input.fill(shown);
     await input.press('Tab');
     if (await input.inputValue() !== shown) return field;

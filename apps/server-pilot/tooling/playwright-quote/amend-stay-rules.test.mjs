@@ -229,6 +229,16 @@ test('pane save gate allows preview but permits commit only in lab mode', () => 
   assert.equal(amendCommitAllowed('commit', { RESERVATIONIST_PANE_SAVE: 'lab' }), true);
 });
 
+test('amend-stay closes the app drawer before filling changed fields', async () => {
+  const source = await readFile(new URL('./amend-stay.mjs', import.meta.url), 'utf8');
+  const fillAt = source.indexOf('async function fillChangedFields');
+  assert.ok(fillAt > 0);
+  const fill = source.slice(fillAt, source.indexOf('async function waitForSaveToSettle'));
+  assert.match(fill, /closeAppDrawer\(page\)/);
+  assert.ok(fill.indexOf('closeAppDrawer') < fill.indexOf('.fill('));
+  assert.equal(/input\.click\(/.test(fill), false);
+});
+
 test('amend CLI refuses commit before HMS access when pane save gate is off', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'amend-gate-test-'));
   const requestPath = join(dir, 'request.json');
