@@ -67,6 +67,10 @@ beforeAll(() => {
     previousEnv.set(key, process.env[key]);
     process.env[key] = value;
   }
+  if (!process.env.DATABASE_URL && process.env.TEST_DATABASE_URL) {
+    previousEnv.set('DATABASE_URL', process.env.DATABASE_URL);
+    process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
+  }
 });
 
 afterAll(() => {
@@ -1342,7 +1346,7 @@ describe('HMS attach form digest and unconfirmed upload (U9)', () => {
 
   it('does not card-mask a PDF hash that contains a long digit run', async () => {
     await withIngestionDb(async ({ db }) => {
-      const pdfSha256 = `${'a'.repeat(5)}${'1'.repeat(16)}${'b'.repeat(43)}`;
+      const pdfSha256 = `${'a'.repeat(5)}4111111111111111${'b'.repeat(43)}`;
       const workItemId = await seedItem(db, { form: { ...ATTACH_FORM, pdfSha256 } });
       const view = await hmsWriteStateOf({ db, transportId: TRANSPORT_ID, workItemId, now: NOW });
       expect(view?.form.pdfSha256).toBe(pdfSha256);
