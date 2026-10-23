@@ -208,6 +208,44 @@ describe('hms-proof-run refusals', () => {
     }
   });
 
+  it('create with PANE_WRITE_CREATE=on allows a Labtest request', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn(async () => ({
+      outcome: 'previewed',
+      clickedSave: false,
+      screenshots: [],
+      previewDigest: 'a'.repeat(64),
+    }));
+    paneStaySaveLoaders.spawn = spawn;
+    const outDir = await mkdtemp(join(tmpdir(), 'hms-proof-create-on-lab-'));
+    try {
+      const line = await hmsProofRun(
+        parseProofRunArgs(argv('create', LAB, { out: outDir })),
+        { ...WRITE_LAB, PANE_WRITE_CREATE: 'on' },
+        createLock,
+      );
+      expect(line).toMatchObject({ command: 'create', outcome: 'previewed' });
+      expect(spawn).toHaveBeenCalled();
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it('create with PANE_WRITE_CREATE=on still refuses a non-Labtest request', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn();
+    paneStaySaveLoaders.spawn = spawn;
+    await expect(
+      hmsProofRun(
+        parseProofRunArgs(argv('create', { ...LAB, lastName: 'Smith' })),
+        { ...WRITE_LAB, PANE_WRITE_CREATE: 'on' },
+        createLock,
+      ),
+    ).rejects.toThrow(/refused_not_lab$/);
+    expect(createLock).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it('refuses commit without a preview digest before any lock or spawn', async () => {
     const { createLock } = createLockSpy();
     const spawn = vi.fn();
