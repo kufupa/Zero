@@ -17,6 +17,7 @@ import {
   stayAskAction,
   stayAskActionLabel,
   stayAskGuests,
+  stayIdOf,
   stayKeyForGroup,
   staffSourceReady,
   stayTotals,
@@ -1780,14 +1781,19 @@ export function QuoteWorkflowPanel({
       {showWorkspace ? (
         <Section step={3} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
           {stays.map((stay, index) => (
-            <div key={stay.id} className="flex flex-col gap-2">
+            <div key={stay.rows[0]?.id ?? stay.id} className="flex flex-col gap-2">
               <StayAskChrome session={session} stay={stay} onSelectStayKey={onSelectStayKey} />
               <StayCard
                 stayId={stay.id}
                 rows={stay.rows}
                 index={index}
                 stayCount={stays.length}
-                requestedRoomsTotal={session.analysis?.requestedRoomsByStay?.[stay.id]}
+                requestedRoomsTotal={
+                  stay.rows.reduce(
+                    (total, row) => total + (session.analysis?.requestedRoomsByStay?.[stayIdOf(row)] ?? 0),
+                    0,
+                  ) || session.analysis?.requestedRoomsByStay?.[stay.id]
+                }
                 mealPlan={mealPlanForStay(stay.id, stay.rows)}
                 onMealPlanChange={(value) =>
                   setMealPlanFilters((current) => ({ ...current, [stay.id]: value }))

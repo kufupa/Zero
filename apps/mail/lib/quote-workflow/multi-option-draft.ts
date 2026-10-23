@@ -63,13 +63,18 @@ function roomsForDateOption(
       },
     ];
   }
-  return groups.map((group, index) => {
-    const covered =
-      allocations.find((item) => item.coversGroupIds.includes(group.id)) ?? allocations[index] ?? offer;
+  return groups.map((group) => {
+    const covered = allocations.find(
+      (item) => item.coversGroupIds.length === 1 && item.coversGroupIds[0] === group.id,
+    );
     return {
-      quantity: covered.quantity ?? group.quantity ?? 1,
-      description: roomDescription(covered, group),
-      lineTotalMinor: covered.id === offer.id ? quote.totalMinor - dinnerTotal : covered.stayTotalMinor,
+      quantity: group.quantity ?? covered?.quantity ?? 1,
+      description: roomDescription(covered ?? offer, group),
+      lineTotalMinor: covered
+        ? covered.id === offer.id
+          ? quote.totalMinor - dinnerTotal
+          : covered.stayTotalMinor
+        : 0,
     };
   });
 }
@@ -156,7 +161,7 @@ export function multiOptionDraftHtml(options: readonly CompletedDateOption[]): s
         `<td>${escapeHtml(String(room.quantity))}</td>`,
         `<td>${escapeHtml(room.description)}</td>`,
         `<td>${escapeHtml(nightsBetween(arrival, departure))}</td>`,
-        `<td align="right">${escapeHtml(draftMoney(room.lineTotalMinor))}</td>`,
+        `<td align="right">${room.lineTotalMinor > 0 ? escapeHtml(draftMoney(room.lineTotalMinor)) : ''}</td>`,
         '</tr>',
       ].join(''),
     );

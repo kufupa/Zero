@@ -678,6 +678,7 @@ export function BookingCards({
   const [saves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
     savesFromSavedStays(draft, groups, savedStays),
   );
+  const [stayBooking, setStayBooking] = useState(false);
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const choice = choices[`${room.groupId}:${room.roomIndex}`];
@@ -728,11 +729,21 @@ export function BookingCards({
   }
 
   async function bookThisStay(pane: PaneStayClient) {
-    const pending = bookableRooms().filter((room) => saves[roomKeyOf(room)]?.commit?.status !== 'booked');
-    for (const room of pending) {
-      const ready = roomPreviewReady(room);
-      if (!ready) return;
-      await bookRoom(roomKeyOf(room), pane, ready.stay, ready.digest);
+    const snapshot = bookableRooms()
+      .filter((room) => saves[roomKeyOf(room)]?.commit?.status !== 'booked')
+      .map((room) => {
+        const ready = roomPreviewReady(room);
+        return ready ? { roomKey: roomKeyOf(room), stay: ready.stay, digest: ready.digest } : null;
+      });
+    if (snapshot.some((item) => item == null)) return;
+    setStayBooking(true);
+    try {
+      for (const item of snapshot) {
+        if (!item) return;
+        await bookRoom(item.roomKey, pane, item.stay, item.digest);
+      }
+    } finally {
+      setStayBooking(false);
     }
   }
 
@@ -816,7 +827,7 @@ export function BookingCards({
           }));
         // Once Book in HMS is running or has booked this room, its choices are frozen so the card cannot show a new value beside the saved one.
         const commitStatus = saves[key]?.commit?.status;
-        const locked = commitStatus === 'running' || commitStatus === 'booked';
+        const locked = stayBooking || commitStatus === 'running' || commitStatus === 'booked';
         const request = room.request;
         const built = paneStayInputForRoom(request, choice);
         const group =
@@ -1052,7 +1063,16 @@ export function BookingCards({
           </article>
         );
       })}
-      {client && savesOn ? <StayBookBar rooms={draft.draft.rooms} saves={saves} choices={choices} pane={client} onBookStay={bookThisStay} /> : null}
+      {client && savesOn ? (
+        <StayBookBar
+          rooms={draft.draft.rooms}
+          saves={saves}
+          choices={choices}
+          pane={client}
+          stayBooking={stayBooking}
+          onBookStay={bookThisStay}
+        />
+      ) : null}
     </Section>
   );
 }
@@ -1062,12 +1082,14 @@ function StayBookBar({
   saves,
   choices,
   pane,
+  stayBooking,
   onBookStay,
 }: {
   rooms: BookingDraftReady['draft']['rooms'];
   saves: Record<string, RoomSaveState>;
   choices: Record<string, RoomChoice>;
   pane: PaneStayClient;
+  stayBooking: boolean;
   onBookStay: (pane: PaneStayClient) => Promise<void>;
 }) {
   const bookable = rooms.filter((room) => !(Array.isArray(room.request.childAges) && room.request.childAges.length > 0));
@@ -1077,10 +1099,12 @@ function StayBookBar({
     return commit?.status === 'booked' && commit.confirmationNumber ? [commit.confirmationNumber] : [];
   });
   const pending = bookable.filter((room) => saves[`${room.groupId}:${room.roomIndex}`]?.commit?.status !== 'booked');
-  const busy = bookable.some((room) => {
-    const save = saves[`${room.groupId}:${room.roomIndex}`];
-    return save?.preview?.status === 'running' || save?.commit?.status === 'running';
-  });
+  const busy =
+    stayBooking ||
+    bookable.some((room) => {
+      const save = saves[`${room.groupId}:${room.roomIndex}`];
+      return save?.preview?.status === 'running' || save?.commit?.status === 'running';
+    });
   const allPreviewed = pending.every((room) => {
     const key = `${room.groupId}:${room.roomIndex}`;
     const built = paneStayInputForRoom(room.request, choices[key] ?? NO_CHOICE);
@@ -1090,7 +1114,11 @@ function StayBookBar({
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       {numbers.length > 0 ? (
-        <p data-pii className="text-[12.5px] font-semibold text-emerald-800">{`Booked this stay – ${numbers.join(', ')}`}</p>
+        <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
+          {numbers.length === bookable.length
+            ? `Booked this stay – ${numbers.join(', ')}`
+            : `Booked ${numbers.length} of ${bookable.length} – ${numbers.join(', ')}`}
+        </p>
       ) : null}
       {pending.length > 0 ? (
         <PrimaryButton

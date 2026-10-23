@@ -1266,7 +1266,7 @@ function editStays(
 
 /** What Undo needs to put a stay back: its rows, where they sat, and the rates of its date options. Null if no row has it. */
 export function removedStayFor(session: QuoteSession, stayId: string): RemovedStay | null {
-  const rows = session.groups.filter((group) => stayIdOf(group) === stayId);
+  const rows = groupsForStayAction(session.groups, stayId);
   if (!rows.length) return null;
   const keys = dateKeysOf(rows);
   const groupIds = new Set(session.groups.filter((group) => keys.has(stayKeyForGroup(group))).map((group) => group.id));
@@ -1964,8 +1964,8 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       const source = session.groups.find((group) => group.id === action.groupId);
       if (!source) return session;
       const stayId = stayIdOf(source);
-      // A stay keeps at least one row. Its last row goes with the whole stay, which Undo can bring back.
-      if (session.groups.filter((group) => stayIdOf(group) === stayId).length < 2) return session;
+      // A date-set card keeps at least one row. Its last row goes with the whole stay, which Undo can bring back.
+      if (groupsForStayAction(session.groups, stayKeyForGroup(source)).length < 2) return session;
       const groups = syncTotalRoomsForStay(
         session,
         pinStay(session.groups, stayId).filter((group) => group.id !== action.groupId),
