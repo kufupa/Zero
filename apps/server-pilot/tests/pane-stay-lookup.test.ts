@@ -265,6 +265,21 @@ describe('findStay', () => {
     });
   });
 
+  it('keeps a confirmed-blank depositReceived as empty string so unpaid classifies', async () => {
+    paneStayLookupLoaders.spawn = async () =>
+      lookupResult({
+        stay: {
+          ...STAY,
+          status: 'Reserved',
+          guaranteeType: 'Non-Guaranteed Individual',
+          depositReceived: '',
+        },
+      });
+    const result = await findStay({ confirmation: '57291630-1' }, { lock: () => passingLock() });
+    expect(result.stay?.depositReceived).toBe('');
+    expect(classifyAmendPayment(result.stay)).toBe('unpaid');
+  });
+
   it('keeps depositReceived and guaranteeType on the found stay and commercial allow-list', async () => {
     paneStayLookupLoaders.spawn = async () =>
       lookupResult({

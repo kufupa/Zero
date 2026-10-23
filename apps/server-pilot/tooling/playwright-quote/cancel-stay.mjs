@@ -145,6 +145,9 @@ export async function readStayFields(ctx) {
     if (stay[field] === null && value && !conflicts.includes(field)) stay[field] = value;
   }
   if (stay.balance === null && !conflicts.includes('balance')) stay.balance = await readBalance(page);
+  const payment = await readPaymentFields(page);
+  if (stay.guaranteeType == null && payment.guaranteeType != null) stay.guaranteeType = payment.guaranteeType;
+  if (stay.depositReceived == null && payment.depositReceived != null) stay.depositReceived = payment.depositReceived;
   result.conflicts = conflicts;
   return stay;
 }

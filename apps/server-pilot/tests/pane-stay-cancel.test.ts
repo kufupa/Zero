@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
+import { paneStayLookupLoaders } from '../src/ai/pane-stay-lookup.js';
 import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 
 const stay = { confirmation: '57291630-1', arrival: '2027-09-14' };
@@ -129,6 +130,8 @@ describe('pane stay cancel', () => {
     paneStayCancelLoaders.mode = null;
     paneStayCancelLoaders.moneyState = null;
     paneStayCancelLoaders.folio = null;
+    paneStayLookupLoaders.spawn = null;
+    paneStayLookupLoaders.enabled = null;
     paneStaySaveLoaders.now = null;
     vi.unstubAllEnvs();
   });
@@ -164,6 +167,35 @@ describe('pane stay cancel', () => {
       calls.push(input);
       throw new Error('must not spawn');
     };
+    paneStayLookupLoaders.enabled = () => true;
+    paneStayLookupLoaders.spawn = async () => ({
+      outcome: 'found',
+      reason: null,
+      stay: {
+        status: 'Reserved',
+        confirmation: stay.confirmation,
+        lastName: 'Labtest',
+        firstName: 'Nava',
+        arrival: stay.arrival,
+        departure: null,
+        nights: null,
+        adults: null,
+        children: null,
+        roomType: null,
+        ratePlan: null,
+        mealPlan: null,
+        averageRate: null,
+        grandTotal: null,
+        balance: '0.00',
+        sourceOfBusiness: null,
+        guaranteeType: 'Non-Guaranteed Individual',
+        depositReceived: null,
+        bookingAgency: null,
+        organization: null,
+      },
+      rows: [],
+      screenshots: [],
+    });
     vi.stubEnv('PANE_WRITE_CANCEL_UNPAID', 'on');
     vi.stubEnv('PANE_WRITE_CANCEL_PAID', 'off');
     await expect(previewCancel({ ...stay, owner })).resolves.toMatchObject({
@@ -172,6 +204,49 @@ describe('pane stay cancel', () => {
     });
     expect(paneStayCancelLoaders.moneyState).toBeNull();
     expect(calls).toEqual([]);
+  });
+
+  it('unpaid open-form read with CANCEL_UNPAID=on passes allow-real-guest', async () => {
+    const calls: PaneStayCancelSpawnInput[] = [];
+    paneStayCancelLoaders.lock = passingLock();
+    paneStayCancelLoaders.spawn = async (input) => {
+      calls.push(input);
+      return cliResult();
+    };
+    paneStayLookupLoaders.enabled = () => true;
+    paneStayLookupLoaders.spawn = async () => ({
+      outcome: 'found',
+      reason: null,
+      stay: {
+        status: 'Reserved',
+        confirmation: stay.confirmation,
+        lastName: 'Labtest',
+        firstName: 'Nava',
+        arrival: stay.arrival,
+        departure: null,
+        nights: null,
+        adults: null,
+        children: null,
+        roomType: null,
+        ratePlan: null,
+        mealPlan: null,
+        averageRate: null,
+        grandTotal: null,
+        balance: '0.00',
+        sourceOfBusiness: null,
+        guaranteeType: 'Non-Guaranteed Individual',
+        depositReceived: '',
+        bookingAgency: null,
+        organization: null,
+      },
+      rows: [],
+      screenshots: [],
+    });
+    vi.stubEnv('PANE_WRITE_CANCEL_UNPAID', 'on');
+    vi.stubEnv('PANE_WRITE_CANCEL_PAID', 'off');
+    await expect(previewCancel({ ...stay, owner })).resolves.toMatchObject({ outcome: 'preview_ok' });
+    expect(calls[0]).toMatchObject({ allowRealGuest: true });
+    expect(buildCancelStayArgs(calls[0]!, '/tmp/run')).toContain('--allow-real-guest');
   });
 
   it('paid stay with CANCEL_PAID=off refuses and does not spawn', async () => {

@@ -45,12 +45,26 @@ test('visible named inputs fill blank stay payment fields without commercial; un
   assert.equal(classifyAmendPayment(stay), 'unpaid');
 });
 
-test('blank named inputs leave stay payment fields blank; classifier stays unknown', () => {
+test('blank visible deposit is confirmed blank and unpaid with a non-paying guarantee', () => {
   const named = readVisibleNamedPaymentInputs(
-    visibleInputDoc({ guaranteetype: '', depositreceived: '   ' }),
+    visibleInputDoc({
+      guaranteetype: 'Non-Guaranteed Individual',
+      depositreceived: '   ',
+    }),
   );
   const stay = fillBlankPaymentFields(blankStay, named);
-  assert.equal(stay.guaranteeType, null);
+  assert.equal(stay.guaranteeType, 'Non-Guaranteed Individual');
+  assert.equal(stay.depositReceived, '');
+  assert.equal(stay.balance, '0.00');
+  assert.equal(classifyAmendPayment(stay), 'unpaid');
+});
+
+test('missing deposit control stays null and unknown', () => {
+  const named = readVisibleNamedPaymentInputs(
+    visibleInputDoc({ guaranteetype: 'Non-Guaranteed Individual' }),
+  );
+  const stay = fillBlankPaymentFields(blankStay, named);
+  assert.equal(stay.guaranteeType, 'Non-Guaranteed Individual');
   assert.equal(stay.depositReceived, null);
   assert.equal(stay.balance, '0.00');
   assert.equal(classifyAmendPayment(stay), 'unknown');
