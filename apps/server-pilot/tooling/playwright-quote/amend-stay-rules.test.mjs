@@ -229,6 +229,20 @@ test('pane save gate allows preview but permits commit only in lab mode', () => 
   assert.equal(amendCommitAllowed('commit', { RESERVATIONIST_PANE_SAVE: 'lab' }), true);
 });
 
+test('checkAvailability clicks the Check Availability control after closing the drawer', async () => {
+  const source = await readFile(new URL('./amend-stay.mjs', import.meta.url), 'utf8');
+  const at = source.indexOf('async function checkAvailability');
+  assert.ok(at > 0);
+  const body = source.slice(at, source.indexOf('async function fillChangedFields'));
+  assert.match(body, /closeAppDrawer\(page\)/);
+  assert.match(body, /x-btn:visible/);
+  assert.match(body, /Check Availability/);
+  assert.match(body, /\.click\(/);
+  assert.ok(body.indexOf('closeAppDrawer(page)') < body.indexOf('.click('));
+  assert.equal(/el\.click\(\)/.test(body), false);
+  assert.match(body, /return false;/);
+});
+
 test('amend-stay closes the app drawer before filling changed fields', async () => {
   const source = await readFile(new URL('./amend-stay.mjs', import.meta.url), 'utf8');
   const fillAt = source.indexOf('async function fillChangedFields');

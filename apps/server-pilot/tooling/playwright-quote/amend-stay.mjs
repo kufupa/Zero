@@ -86,18 +86,21 @@ async function clickSave(page) {
 
 // HMS keeps a changed date only after Check Availability has re-rated the stay; Save before that is discarded.
 async function checkAvailability(page) {
-  const clicked = await page.evaluate(() => {
-    const nodes = [...document.querySelectorAll('[data-qtip], button, .x-btn')];
-    const el = nodes.find((node) => /^Check Availability$/i.test(node.getAttribute('data-qtip') || node.textContent || ''));
-    if (!el) return false;
-    el.click();
-    return true;
-  });
-  if (!clicked) return false;
+  await closeAppDrawer(page);
+  const btn = page.locator('.x-btn:visible').filter({ hasText: /^Check Availability$/i }).first();
+  const qtip = page.locator('[data-qtip="Check Availability"]:visible').first();
+  const target = (await btn.count()) > 0 ? btn : qtip;
+  if ((await target.count()) === 0) return false;
+  try {
+    await target.click({ timeout: 5000 });
+  } catch {
+    return false;
+  }
   await page.waitForTimeout(2000);
   const deadline = Date.now() + SAVE_WAIT_MS;
   while ((await readSaveSnapshot(page)).maskVisible && Date.now() < deadline) await page.waitForTimeout(SAVE_POLL_MS);
   await page.waitForTimeout(1500);
+  await closeAppDrawer(page);
   return true;
 }
 
