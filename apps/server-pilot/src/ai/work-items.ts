@@ -394,6 +394,22 @@ const WORKFLOW_BY_KIND: Partial<Record<MailKind, LunaAnalysis['workflow']>> = {
 // or a file name make it payment_ack; a voucher alone stays other.
 const PAYMENT_WORDS = /\bremittance\b|proof of payment|\bpayment (?:advice|confirmation|notification)\b/i;
 const POP_CAPS = /\bPOP\b/;
+const VOUCHER_WORD = /\bvouchers?\b/i;
+const NOT_SETTLED = /\bnon[-\s]?guaranteed\b|\bprovisional\b/i;
+
+const ASK_FOR_PAYMENT =
+  /\b(?:please|kindly)\s+(?:send|provide|attach|forward)\b[\s\S]{0,40}\b(?:proof of payment|POP|voucher|remittance)\b/i;
+const GUARANTEED_STATE = /\bis guaranteed\b|\bguaranteed reservation\b/i;
+
+/** Paid, voucher, or guaranteed evidence. A request for payment proof is not settled. */
+export function mailLooksPaidVoucherOrGuaranteed(text: string | null | undefined): boolean {
+  if (!text) return false;
+  const plain = text.replace(/<[^>]+>/g, ' ');
+  if (ASK_FOR_PAYMENT.test(plain)) return false;
+  if (PAYMENT_WORDS.test(plain) || POP_CAPS.test(plain) || VOUCHER_WORD.test(plain)) return true;
+  if (NOT_SETTLED.test(plain)) return false;
+  return GUARANTEED_STATE.test(plain);
+}
 
 function storedWorkflow(read: StoredRead): LunaAnalysis['workflow'] {
   if (read.kind !== 'voucher_pop') return WORKFLOW_BY_KIND[read.kind] ?? 'other';
@@ -1328,7 +1344,7 @@ export async function planThreadWork(
 
 async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Promise<void> {
   const now = new Date();
-  // A changed reply link clears the quote follow-up clock: the sweep (quote-followup) starts it again from the new link.
+  // A changed reply link clears the follow-up clock: the sweep (quote-followup) starts it again from the new link.
   if ('repoint' in change) {
     await tx
       .update(workItem)
@@ -1339,7 +1355,7 @@ async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Prom
         updatedAt: now,
       })
       .where(eq(workItem.id, change.workItemId));
-    // The quote clock keys on a recorded hotel_replied close (CLOSED_BY_HOTEL_REPLY). A done item closed before the reply
+    // The follow-up clock keys on a recorded hotel_replied close (CLOSED_BY_HOTEL_REPLY). A done item closed before the reply
     // link existed has none, so its link records one, as the other close does. A link that moves on a close already
     // recorded needs no second event.
     const [recorded] = await tx
@@ -1901,6 +1917,9 @@ export const NEEDS_YOU_KINDS = [
   'cancellation',
   'voucher_pop',
 ] as const;
+
+/** Kinds the 66h follow-up sweep considers. Quote clocks from a validity window; booking from an HMS confirmation send. */
+export const FOLLOW_UP_WORK_KINDS = ['quote', 'booking'] as const;
 
 /** The chips on a Needs-you row (KTD14), in list order: the list sorts by this index, then by age. */
 export const NEEDS_YOU_CHIPS = ['needs_you', 'review', 'queued', 'in_hms'] as const;
