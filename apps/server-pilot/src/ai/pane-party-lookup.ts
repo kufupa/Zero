@@ -253,7 +253,7 @@ function plannedSearchesOf(input: PanePartySpawnInput): PanePartySearchInput[] {
 }
 
 function spawnPropertyCode(target?: HmsReadTarget | null): string {
-  return parsePartyIndexProperty(target?.propertyCode) ?? 'HRCEN';
+  return parsePartyIndexProperty(target?.propertyCode) ?? target?.propertyCode ?? '';
 }
 
 function partyLookupRequestBody(input: PanePartySpawnInput): unknown {
@@ -291,6 +291,8 @@ export function panePartyCoresFromSpawn(
 
 /** One runner run for one kind and name. The sweep and the pane both call it, so both use the fail-closed runner. */
 export async function spawnPartyLookup(input: PanePartySpawnInput): Promise<unknown> {
+  if (!input.target) throw new Error('pane_stay_target_required');
+  const target = input.target;
   // mkdtemp makes the directory 0700. The request holds only the typed name, and the directory goes after the run.
   const dir = await mkdtemp(join(tmpdir(), 'pane-party-'));
   try {
@@ -309,7 +311,7 @@ export async function spawnPartyLookup(input: PanePartySpawnInput): Promise<unkn
         {
           timeout: spawnTimeoutMs(plannedSearchesOf(input).length),
           killSignal: 'SIGKILL',
-          env: paneStaySpawnEnv(process.env, undefined, input.target ?? null),
+          env: paneStaySpawnEnv(process.env, undefined, target),
           maxBuffer: 1024 * 1024,
         },
       ));
@@ -613,7 +615,7 @@ export async function findParty(
     return replyWithout('refused_origin_mismatch');
   }
   const lock =
-    panePartyLookupLoaders.lock ?? paneStayPropertyLock(options.target?.propertyCode);
+    panePartyLookupLoaders.lock ?? (options.target ? paneStayPropertyLock(options.target) : null);
   if (!lock) return replyWithout('refused_lock_unavailable');
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
   if (input.kind) return findPartyOfKind(input.kind, name, lock, spawn, options);
@@ -670,7 +672,7 @@ export async function findPartyJob(
     return planned.map(() => replyWithout('refused_origin_mismatch'));
   }
   const lock =
-    panePartyLookupLoaders.lock ?? paneStayPropertyLock(options.target?.propertyCode);
+    panePartyLookupLoaders.lock ?? (options.target ? paneStayPropertyLock(options.target) : null);
   if (!lock) return planned.map(() => replyWithout('refused_lock_unavailable'));
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
   const run = await spawnUnderOneLock(
@@ -743,7 +745,7 @@ export async function verifyPartyPick(
       // A missed shared cache is not verification; continue through the existing live lookup.
     }
   }
-  const lock = panePartyLookupLoaders.lock ?? paneStayPropertyLock(pick.target?.propertyCode);
+  const lock = panePartyLookupLoaders.lock ?? (pick.target ? paneStayPropertyLock(pick.target) : null);
   if (!lock) return { ok: false, reason: 'refused_lock_unavailable' };
   const spawn = panePartyLookupLoaders.spawn ?? spawnPartyLookup;
   let raw: unknown;

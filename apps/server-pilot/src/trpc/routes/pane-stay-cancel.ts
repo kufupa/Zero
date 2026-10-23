@@ -52,7 +52,7 @@ export const paneStayCancelRouter = router({
     .mutation(({ input, ctx }) =>
       recordedToolRun(
         { kind: 'cancel_preview', transportId: ctx.activeTransportId, messageId: null, userId: ctx.sessionUser.id, inputDigest: paneCancelDigest(input) },
-        () => previewCancel({ ...input, owner: paneOwner(ctx) }),
+        () => previewCancel({ ...input, owner: paneOwner(ctx), transportId: ctx.activeTransportId }),
         (value) => classifyCancelPreview(value, paneCancelDigest(input)),
       ),
     ),
@@ -61,7 +61,7 @@ export const paneStayCancelRouter = router({
     .mutation(({ input, ctx }) =>
       recordedToolRun(
         { kind: 'cancel_commit', transportId: ctx.activeTransportId, messageId: null, userId: ctx.sessionUser.id, inputDigest: paneCancelDigest(input) },
-        () => commitCancel({ ...input, owner: paneOwner(ctx) }),
+        () => commitCancel({ ...input, owner: paneOwner(ctx), transportId: ctx.activeTransportId }),
         (value) => classifyCancelCommit(value, input.confirmation, paneCancelDigest(input)),
       ),
     ),

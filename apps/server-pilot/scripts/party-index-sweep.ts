@@ -114,7 +114,7 @@ async function main(): Promise<number> {
     return 0;
   }
   const target = args.property === 'HRDAV' ? DAVINCI_HMS_READ_TARGET : CENTURION_HMS_READ_TARGET;
-  const lock = paneStayPropertyLock(args.property);
+  const lock = paneStayPropertyLock(target);
   if (!lock) {
     console.error('DATABASE_URL is required: every sweep run takes the property lock.');
     return 2;

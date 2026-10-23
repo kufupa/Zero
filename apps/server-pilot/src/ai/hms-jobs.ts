@@ -3273,15 +3273,15 @@ export async function executeHmsJob(input: {
   }
   const ownerKey = metrics.owner ?? `hms-job-prefetch:${run.transportId}`;
   const screenshotDir: { value: string | null } = { value: null };
+  const target = davinciReadTarget ?? CENTURION_HMS_READ_TARGET;
   const deps = {
-    lock: () =>
-      paneStayLookupLoaders.lock ?? paneStayPropertyLock(davinciReadTarget?.propertyCode),
+    lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target),
     acquisition: background ? { tryOnce: true } : acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
     onRun: ({ runId, dir }: { runId: string; dir: string }) => {
       screenshotDir.value = dir;
       registerPaneRun({ runId, dir, owner: ownerKey, now: Date.now() });
     },
-    target: davinciReadTarget,
+    target,
   };
   const audit = {
     transportId: run.transportId,
@@ -3290,7 +3290,11 @@ export async function executeHmsJob(input: {
     inputDigest: toolInputDigest(request as Record<string, unknown>),
   };
   const result = await (request.kind === 'availability'
-    ? probeAvailability(request, { lock: deps.lock, acquisition: deps.acquisition })
+    ? probeAvailability(request, {
+        lock: deps.lock,
+        acquisition: deps.acquisition,
+        target,
+      })
     : request.kind === 'find'
       ? recordedToolRun(
           { kind: 'stay_lookup', ...audit },
@@ -3318,7 +3322,7 @@ export async function executeHmsJob(input: {
         : request.kind === 'party'
         ? findParty(
             { name: request.name, ...(request.partyKind ? { kind: request.partyKind } : {}) },
-            { acquisition: deps.acquisition, target: davinciReadTarget },
+            { acquisition: deps.acquisition, target },
           )
         : recordedToolRun(
             { kind: 'guest_search', ...audit },

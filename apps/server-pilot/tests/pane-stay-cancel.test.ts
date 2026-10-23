@@ -24,9 +24,10 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
+import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 
 const stay = { confirmation: '57291630-1', arrival: '2027-09-14' };
-const owner = 'user-ropperman:transport-1';
+const owner = 'user-ropperman:transport-centurion';
 
 // Replaces the cancel CLI process for the real defaultSpawn. Null keeps the real execFile.
 const cliFake = vi.hoisted(() => ({
@@ -71,7 +72,7 @@ function mailboxCallerAs(userId: string) {
       email: 'ropperman@legacyhotels.co.za',
       name: 'R Opperman',
     },
-    activeTransportId: 'transport-1',
+    activeTransportId: 'transport-centurion',
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);
@@ -326,6 +327,7 @@ describe('pane stay cancel', () => {
       arrival: '2027-09-14',
       reason: null,
       allowRealGuest: false,
+      target: CENTURION_HMS_READ_TARGET,
     });
   });
 
@@ -390,6 +392,7 @@ describe('pane stay cancel', () => {
       arrival: '2027-09-14',
       reason: 'Duplicate Booking',
       allowRealGuest: false,
+      target: CENTURION_HMS_READ_TARGET,
     });
     expect(result).toMatchObject({
       outcome: 'cancelled',
@@ -448,7 +451,7 @@ describe('pane stay cancel', () => {
     await expect(
       commitCancel({
         ...stay,
-        owner: 'user-other:transport-1',
+        owner: 'user-other:transport-centurion',
         reason: 'Duplicate Booking',
         previewDigest: digest,
       }),
@@ -824,7 +827,7 @@ describe('pane cancel modes', () => {
 
   it('a penalty dialog at preview refuses the preview, so no commit grant is issued', async () => {
     // A fresh owner: grants from earlier tests for this stay must not satisfy this commit.
-    const fresh = 'user-penalty-preview:transport-1';
+    const fresh = 'user-penalty-preview:transport-centurion';
     const calls = enableCancel({ preview: { outcome: 'refused_penalty', penaltyText: CHARGE } });
     await expect(previewCancel({ ...stay, owner: fresh })).resolves.toMatchObject({
       outcome: 'refused_penalty',
@@ -925,5 +928,55 @@ describe('paneStayCancel.paneStayScreenshot', () => {
         name: 'filled.png',
       }),
     ).resolves.toEqual({ status: 'unavailable', reason: 'screenshot_unavailable' });
+  });
+});
+
+describe('pane stay cancel HMS target', () => {
+  afterEach(() => {
+    paneStayCancelLoaders.spawn = null;
+    paneStayCancelLoaders.lock = null;
+    paneStayCancelLoaders.mode = null;
+    paneStayCancelLoaders.moneyState = null;
+    paneStayCancelLoaders.folio = null;
+  });
+
+  it('a Da Vinci transport cancel gets the HRDAV target before spawn', async () => {
+    const calls = enableCancel();
+    await expect(
+      previewCancel({
+        ...stay,
+        owner: 'user-ropperman:transport-centurion',
+        transportId: 'transport-davinci',
+      }),
+    ).resolves.toMatchObject({ outcome: 'preview_ok' });
+    expect(calls[0]?.target).toEqual(DAVINCI_HMS_READ_TARGET);
+  });
+
+  it('a Centurion transport cancel gets the HRCEN target before spawn', async () => {
+    const calls = enableCancel();
+    await expect(previewCancel({ ...stay, owner, transportId: 'transport-centurion' })).resolves.toMatchObject({
+      outcome: 'preview_ok',
+    });
+    expect(calls[0]?.target).toEqual(CENTURION_HMS_READ_TARGET);
+  });
+
+  it('an unknown transport is refused before any spawn', async () => {
+    const calls = enableCancel();
+    await expect(
+      previewCancel({ ...stay, owner: 'user-ropperman:nope', transportId: 'transport-unknown' }),
+    ).resolves.toMatchObject({ outcome: 'refused_unknown_transport', runId: null, previewDigest: null });
+    expect(calls).toEqual([]);
+  });
+
+  it('route transport wins over the owner string, so a caller-supplied hotel cannot steer the slot', async () => {
+    const calls = enableCancel();
+    await expect(
+      previewCancel({
+        ...stay,
+        owner: 'user-ropperman:transport-centurion',
+        transportId: 'transport-davinci',
+      }),
+    ).resolves.toMatchObject({ outcome: 'preview_ok' });
+    expect(calls[0]?.target).toEqual(DAVINCI_HMS_READ_TARGET);
   });
 });

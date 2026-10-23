@@ -19,6 +19,7 @@ import {
   readPaneStayScreenshot,
   registerPaneRun,
 } from '../../ai/pane-stay-save.js';
+import { paneStayHmsTargetForTransport } from '../../ai/pane-stay-spawn-env.js';
 import {
   findStay,
   GUEST_SURNAME_PATTERN,
@@ -34,6 +35,8 @@ import {
 import { availabilityRequestSchema } from '../../ai/hms-availability.js';
 import {
   assertHmsReadOriginAllowed,
+  DAVINCI_ORIGIN_REFUSED_MESSAGE,
+  hmsDavinciReadsEnabled,
   hmsReadTargetJobMetrics,
 } from '../../hms/hms-read-target.js';
 import {
@@ -153,6 +156,17 @@ const paneStayLookupScreenshotInput = z
   })
   .strict();
 
+function paneStayRouteTarget(transportId: string) {
+  const fromTransport = paneStayHmsTargetForTransport(transportId);
+  if (!fromTransport.ok) {
+    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Unknown mailbox cannot use HMS.' });
+  }
+  if (fromTransport.target.browserSlot === 'davinci' && !hmsDavinciReadsEnabled()) {
+    throw new TRPCError({ code: 'PRECONDITION_FAILED', message: DAVINCI_ORIGIN_REFUSED_MESSAGE });
+  }
+  return fromTransport.target;
+}
+
 export const paneStayLookupRouter = router({
   jobQueueEnabled: mailboxProcedure.query(() => hmsJobQueueEnabled()),
   findStay: mailboxProcedure
@@ -179,15 +193,15 @@ export const paneStayLookupRouter = router({
               ctx.activeTransportId,
             ),
           )
-        : undefined;
+        : paneStayRouteTarget(ctx.activeTransportId);
       return findStay(
         input.arrival
           ? { confirmation: input.confirmation, arrival: input.arrival }
           : { confirmation: input.confirmation },
         {
-          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target?.propertyCode),
+          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target),
           onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
-          ...(target ? { target } : {}),
+          target,
         },
       );
     }),
@@ -215,15 +229,15 @@ export const paneStayLookupRouter = router({
               ctx.activeTransportId,
             ),
           )
-        : undefined;
+        : paneStayRouteTarget(ctx.activeTransportId);
       return searchGuest(
         input.departure
           ? { lastName: input.lastName, arrival: input.arrival, departure: input.departure }
           : { lastName: input.lastName, arrival: input.arrival },
         {
-          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target?.propertyCode),
+          lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target),
           onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
-          ...(target ? { target } : {}),
+          target,
         },
       );
     }),

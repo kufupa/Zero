@@ -19,7 +19,8 @@ import {
 } from '../hms/property-read-lock.js';
 import type { ExtractionRow, ExtractionStay } from './extraction/schema.js';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
-import { PANE_STAY_PROPERTY_CODE, type PaneStayLock } from './pane-stay-save.js';
+import { type PaneStayLock } from './pane-stay-save.js';
+import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
 
 const execFileAsync = promisify(execFile);
 const QUOTE_TOOL = fileURLToPath(new URL('../../tooling/playwright-quote/fetch-quote.mjs', import.meta.url));
@@ -103,10 +104,13 @@ export function availabilityRequestsFor(payload: unknown): AvailabilityRequest[]
 export const AVAILABILITY_MAX_OPTIONS_PER_GROUP = 200;
 
 /** The quote tool's v2 request for one probe. Groups carry no room or rate codes, so every room type is read. */
-export function quoteRequestFor(request: AvailabilityRequest): Record<string, unknown> {
+export function quoteRequestFor(
+  request: AvailabilityRequest,
+  target: HmsReadTarget = CENTURION_HMS_READ_TARGET,
+): Record<string, unknown> {
   return {
     schemaVersion: 2,
-    propertyCode: PANE_STAY_PROPERTY_CODE,
+    propertyCode: target.propertyCode,
     arrivalDate: request.arrival,
     departureDate: request.departure,
     details: 'summary',
@@ -544,7 +548,10 @@ export const availabilityProbeLoaders: {
 
 // Runs fetch-quote.mjs on one request file and reads its run folder. The folder is removed after the snapshot is read
 // (a run folder is ~24 MB with its trace, and the snapshot is what the job keeps).
-async function defaultQuoteSpawn(quote: Record<string, unknown>): Promise<QuoteEnvelope> {
+async function defaultQuoteSpawn(
+  quote: Record<string, unknown>,
+  target: HmsReadTarget,
+): Promise<QuoteEnvelope> {
   const runId = randomUUID();
   const requestDir = join(QUOTE_ROOT, 'availability-requests');
   const outputDir = join(QUOTE_ROOT, 'availability-runs');
@@ -557,7 +564,7 @@ async function defaultQuoteSpawn(quote: Record<string, unknown>): Promise<QuoteE
     // The tool exits non-zero on refusals and failures but still prints its Evidence line when it wrote a result.
     const run = await execFileAsync(process.execPath, [QUOTE_TOOL, '--request', requestPath, '--output', outputDir], {
       timeout: PROBE_TIMEOUT_MS,
-      env: paneStaySpawnEnv(),
+      env: paneStaySpawnEnv(process.env, undefined, target),
     }).catch((error: unknown) => error as { stdout?: string });
     stdout = typeof run.stdout === 'string' ? run.stdout : '';
   } finally {
@@ -580,6 +587,7 @@ export type AvailabilityProbeDeps = {
   /** The session hotel's property lock. Null means no lock can be made, so the probe is refused. */
   lock: () => PaneStayLock | null;
   acquisition: PropertyReadLockAcquisitionOptions;
+  target: HmsReadTarget;
 };
 
 /**
@@ -592,10 +600,10 @@ export async function probeAvailability(
 ): Promise<AvailabilityProbeResult> {
   const lock = deps.lock();
   if (!lock) return { outcome: 'refused_lock_unavailable' };
-  const spawn = availabilityProbeLoaders.spawn ?? defaultQuoteSpawn;
+  const spawn = availabilityProbeLoaders.spawn ?? ((quote) => defaultQuoteSpawn(quote, deps.target));
   let result: QuoteEnvelope;
   try {
-    result = await lock.withLock(() => spawn(quoteRequestFor(request)), deps.acquisition);
+    result = await lock.withLock(() => spawn(quoteRequestFor(request, deps.target)), deps.acquisition);
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { outcome: 'refused_lock_busy' };
     warnPaneStaySpawnFailed('availability', error);
