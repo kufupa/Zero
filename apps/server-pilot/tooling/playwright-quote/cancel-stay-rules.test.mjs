@@ -814,6 +814,7 @@ const WAIVE_CHARGE = `${CHARGE} Waive OK Cancel`;
 const REASON_WINDOW = 'Cancellation Reason Test Reservations Duplicate Booking OK Cancel';
 const PREVIEW_ARGS = { confirmation: '57291630-1', arrival: '2027-09-14', mode: 'preview', reason: 'Test Reservations', allowRealGuest: false };
 const COMMIT_ARGS = { ...PREVIEW_ARGS, mode: 'commit', reason: 'Duplicate Booking' };
+const ON_COMMIT_ARGS = { ...COMMIT_ARGS, allowRealGuest: true };
 const RECORD = { confirmation: '57291630-1', lastName: 'Labtest', arrival: '14-SEP-2027', status: 'Reserved' };
 const REAL_GUEST = { confirmation: '57291630-1', lastName: 'Smith', arrival: '14-SEP-2027', status: 'Reserved' };
 const SETTLED = { statusAfter: 'Cancelled', cancelled: true, maskCleared: true, maskMs: 0, statusPolls: 1, statusMs: 0 };
@@ -911,18 +912,18 @@ test('a real guest with a charge already open refuses the commit: dialog left, n
 });
 
 test('a real guest charge between the reason pick and the OK refuses it, and no OK is clicked', async () => {
-  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW, CHARGE]], { record: REAL_GUEST });
+  const { result, calls } = await runDialog(ON_COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW, CHARGE]], { record: REAL_GUEST });
   assert.equal(result.outcome, 'refused_penalty');
   assert.equal(result.penaltyText, CHARGE);
   assert.ok(calls.includes('pick:1'));
   assert.equal(calls.includes('clickOk'), false);
   assert.equal(calls.includes('settle'), false);
   assert.equal(calls.some((call) => call.startsWith('clickPenalty')), false);
-  assert.deepEqual(calls.filter((call) => call.startsWith('fillNote')), ['fillNote:Lab proof cancel']);
+  assert.deepEqual(calls.filter((call) => call.startsWith('fillNote')), ['fillNote:Duplicate Booking']);
 });
 
 test('a real guest charge after the OK is pending: dialog left, nothing clicked after the OK', async () => {
-  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW], [CHARGE]], { record: REAL_GUEST });
+  const { result, calls } = await runDialog(ON_COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW], [CHARGE]], { record: REAL_GUEST });
   assert.equal(result.outcome, 'cancel_penalty_pending');
   assert.equal(exitCodeFor(result.outcome), 1);
   assert.equal(result.clickedOk, true);

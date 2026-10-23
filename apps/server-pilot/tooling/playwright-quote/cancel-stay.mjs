@@ -728,11 +728,13 @@ async function run(ctx) {
         await openGuestStay(page);
         await page.waitForTimeout(1500);
         const again = await findStay(ctx, { evidence: true });
-        if (!again) return;
-        found.method = again.method;
-        found.locator = again.locator;
-        found.row = again.row ?? found.row;
-        found.open = again.open;
+        found.method = again?.method ?? found.method;
+        found.locator = again?.locator ?? null;
+        found.row = again?.row ?? null;
+        found.open = again?.open ?? null;
+        if (!again) {
+          throw Object.assign(new Error('Timeout 8000ms exceeded.'), { name: 'TimeoutError' });
+        }
       },
     }, result);
     if (result.error === 'STALE_SCREEN' || !opened) return;
