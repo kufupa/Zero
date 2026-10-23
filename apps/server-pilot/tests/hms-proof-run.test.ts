@@ -23,6 +23,7 @@ const WRITE_LAB: NodeJS.Dict<string> = {
   PANE_WRITE_AMEND_PAID: 'lab',
   PANE_WRITE_CANCEL_UNPAID: 'lab',
   PANE_WRITE_CANCEL_PAID: 'lab',
+  RESERVATIONIST_PANE_SAVE: 'lab',
   HMS_EXPECTED_TENANT: 'centurion',
   DATABASE_URL: 'postgres://proof-lock/unused',
 };
@@ -196,6 +197,27 @@ describe('hms-proof-run refusals', () => {
         createLock,
       ),
     ).rejects.toThrow(/preview_digest_required$/);
+    expect(createLock).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses attach when the attach save gate is not lab', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn();
+    paneHmsWriteLoaders.spawnAttach = spawn;
+    await expect(
+      hmsProofRun(
+        parseProofRunArgs(
+          argv(
+            'attach',
+            { ...LAB, file: '/tmp/lab.pdf', documentName: 'lab.pdf' },
+            { mode: 'commit' },
+          ),
+        ),
+        { ...WRITE_LAB, RESERVATIONIST_PANE_SAVE: 'off' },
+        createLock,
+      ),
+    ).rejects.toThrow(/refused_write_not_lab$/);
     expect(createLock).not.toHaveBeenCalled();
     expect(spawn).not.toHaveBeenCalled();
   });

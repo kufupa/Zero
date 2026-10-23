@@ -30,11 +30,16 @@ import {
   paneHmsWriteLoaders,
   previewAmend,
   commitAmend,
+  paneHmsWriteMode,
   spawnAttachDocument,
   type AmendRequest,
 } from '../ai/pane-hms-write.js';
 import { findStay, paneStayLookupLoaders } from '../ai/pane-stay-lookup.js';
-import { createPostgresPropertyReadLock } from '../hms/property-read-lock.js';
+import {
+  acquisitionWithin,
+  createPostgresPropertyReadLock,
+  PANE_PROPERTY_LOCK_WAIT_MS,
+} from '../hms/property-read-lock.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { readFileSync, unlinkSync } from 'node:fs';
@@ -157,7 +162,7 @@ function assertWriteFlagsLab(command: ProofRunCommand, env: NodeJS.Dict<string>)
         ? modes.amendUnpaid
         : command === 'cancel'
           ? modes.cancelUnpaid
-          : modes.create;
+          : paneHmsWriteMode(env);
   if (needed !== 'lab') throw new Error('refused_write_not_lab');
 }
 
@@ -408,8 +413,9 @@ async function runCommand(
   const file = textField(args.request, 'file');
   const documentName = textField(args.request, 'documentName') || 'proof.pdf';
   if (!file) throw new Error('required: request.file');
-  return lock.withLock(() =>
-    spawnAttachDocument({ confirmation, arrival, file, documentName, target }),
+  return lock.withLock(
+    () => spawnAttachDocument({ confirmation, arrival, file, documentName, target }),
+    acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
   );
 }
 
