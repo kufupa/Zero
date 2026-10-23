@@ -13,6 +13,7 @@ import {
   isPdfDocumentName,
   parseAttachArgs,
 } from './attach-document.mjs';
+import { identityCheck } from './cancel-stay-rules.mjs';
 
 const ORIGIN = 'https://hms.example.invalid';
 const VALID_ARGV = [
@@ -32,7 +33,23 @@ test('parseAttachArgs accepts a full set and normalizes the confirmation and arr
     file: '/tmp/attach-document-test/upload.pdf',
     documentName: 'Confirmation.pdf',
     out: '/tmp/attach-document-test/out',
+    allowRealGuest: false,
   });
+});
+
+test('--allow-real-guest skips Labtest identity; without it a real guest is refused', () => {
+  const guest = { confirmation: '57291630-1', lastName: 'Smith', arrival: '14-SEP-2027' };
+  const lab = { confirmation: '57291630-1', lastName: 'Labtest', arrival: '14-SEP-2027' };
+  const off = parseAttachArgs(VALID_ARGV).args;
+  assert.equal(off.allowRealGuest, false);
+  assert.equal(identityCheck(off, guest).outcome, 'refused_not_lab');
+  assert.deepEqual(identityCheck(off, lab), { ok: true, outcome: null, reason: null });
+  const on = parseAttachArgs([...VALID_ARGV, '--allow-real-guest']);
+  assert.equal(on.ok, true);
+  assert.equal(on.args.allowRealGuest, true);
+  assert.deepEqual(identityCheck(on.args, guest), { ok: true, outcome: null, reason: null });
+  assert.equal(identityCheck(on.args, { ...guest, confirmation: '11110906-1' }).outcome, 'refused_identity_mismatch');
+  assert.equal(parseAttachArgs([...VALID_ARGV, '--allow-real-guest', '--allow-real-guest']).ok, false);
 });
 
 test('parseAttachArgs refuses a missing flag, an unknown flag, a repeated flag, and a bad arrival or name', () => {

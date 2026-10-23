@@ -439,6 +439,8 @@ export type PaneAttachSpawnInput = {
   arrival: string;
   file: string;
   documentName: string;
+  /** On-mode only. The CLI never reads this from the environment. */
+  allowRealGuest?: boolean;
   target?: HmsReadTarget;
 };
 
@@ -494,8 +496,10 @@ async function removeDirs(dirs: string[]): Promise<void> {
   await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }).catch(() => {})));
 }
 
-function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: string): string[] {
-  return [
+const ALLOW_REAL_GUEST_FLAG = '--allow-real-guest';
+
+export function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: string): string[] {
+  const args = [
     ATTACH_DOCUMENT,
     '--confirmation',
     input.confirmation,
@@ -508,6 +512,8 @@ function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: string): s
     '--out',
     outDir,
   ];
+  if (input.allowRealGuest) args.push(ALLOW_REAL_GUEST_FLAG);
+  return args;
 }
 
 /**
@@ -783,7 +789,12 @@ async function saveAmend(form: AmendForm, stay: PaneStayFields, target: HmsReadT
     screenshots: result.screenshots, runDir: result.runDir };
 }
 
-async function saveAttach(form: AttachForm, file: string | null, target: HmsReadTarget): Promise<SaveOutcome> {
+async function saveAttach(
+  form: AttachForm,
+  file: string | null,
+  target: HmsReadTarget,
+  allowRealGuest: boolean,
+): Promise<SaveOutcome> {
   if (!file) throw new Error('attach_file_missing');
   const spawn = paneHmsWriteLoaders.spawnAttach ?? spawnAttachDocument;
   const result = await spawn({
@@ -791,6 +802,7 @@ async function saveAttach(form: AttachForm, file: string | null, target: HmsRead
     arrival: form.arrival,
     file,
     documentName: form.documentName,
+    allowRealGuest,
     target,
   });
   return {
@@ -926,7 +938,7 @@ async function executeUnderLock(input: ExecuteInput): Promise<PaneHmsWriteResult
   let saved: SaveOutcome;
   try {
     saved = approved.action === 'cancel' ? await saveCancel(approved, stay, target)
-      : approved.action === 'amend' ? await saveAmend(approved, stay, target) : await saveAttach(approved, input.file, target);
+      : approved.action === 'amend' ? await saveAmend(approved, stay, target) : await saveAttach(approved, input.file, target, input.allowRealGuest);
   } catch (error) {
     clearInterval(beat);
     // The CLI may have reached Save before it failed, so the outcome is unknown until the booking is read back.
