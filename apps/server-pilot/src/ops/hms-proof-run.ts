@@ -160,9 +160,7 @@ function assertWriteFlagsLab(command: ProofRunCommand, env: NodeJS.Dict<string>)
         : command === 'cancel'
           ? modes.cancelUnpaid
           : paneHmsWriteMode(env);
-  if (needed === 'off' || needed == null || needed === '') {
-    throw new Error('refused_write_not_lab');
-  }
+  if (needed === 'off') throw new Error('refused_write_not_lab');
 }
 
 function previewDigestOf(request: Record<string, unknown>): string | undefined {

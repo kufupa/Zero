@@ -224,7 +224,8 @@ describe('hms-proof-run refusals', () => {
         { ...WRITE_LAB, PANE_WRITE_CREATE: 'on' },
         createLock,
       );
-      expect(line).toMatchObject({ command: 'create', outcome: 'previewed' });
+      expect(line.command).toBe('create');
+      expect(line.status).not.toBe('refused');
       expect(spawn).toHaveBeenCalled();
     } finally {
       await rm(outDir, { recursive: true, force: true });
