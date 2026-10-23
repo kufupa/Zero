@@ -104,12 +104,24 @@ async function checkAvailability(page) {
 async function fillChangedFields(page, fields) {
   await closeAppDrawer(page);
   for (const [field, value] of Object.entries(fields)) {
-    const input = page.locator(`input[name="${SELECTOR_BY_FIELD[field]}"]:visible`);
+    const input = page.locator(`input[name="${SELECTOR_BY_FIELD[field]}"]:visible`).first();
     const shown = field === 'arrival' || field === 'departure' ? displayDate(value) : String(value);
     await input.scrollIntoViewIfNeeded().catch(() => {});
-    await input.fill(shown);
-    await input.press('Tab');
-    if (await input.inputValue() !== shown) return field;
+    // Playwright fill updates the DOM but ExtJS Guest Stay discards it on Save.
+    // party-lookup: setValue on Ext.getCmp(inputEl id).
+    const ok = await input.evaluate((el, v) => {
+      const id = el.id?.replace(/-inputEl$/, '');
+      const cmp = typeof Ext !== 'undefined' && id ? Ext.getCmp(id) : null;
+      if (cmp?.setValue) {
+        cmp.setValue(v);
+        return String(cmp.getValue?.() ?? '') === String(v);
+      }
+      el.value = v;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return el.value === v;
+    }, shown);
+    if (!ok) return field;
   }
   return null;
 }
