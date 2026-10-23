@@ -14,6 +14,8 @@ import {
   attachment,
   mailDraft,
   mailDraftRevision,
+  mailboxTransport,
+  mailThread,
   message,
 } from '../src/db/schema/mail.js';
 import { NAVA_USER_EMAIL, NAVA_USER_ID } from '../src/db/seed.js';
@@ -58,6 +60,12 @@ describe('quoteReplyStatesHoldWindow', () => {
     expect(quoteReplyStatesHoldWindow('')).toBe(false);
     expect(quoteReplyStatesHoldWindow(null)).toBe(false);
   });
+
+  it('a deposit or payment deadline of 72 hours is not a quote validity window', () => {
+    expect(quoteReplyStatesHoldWindow('deposit within 72 hours')).toBe(false);
+    expect(quoteReplyStatesHoldWindow('Please send the deposit within 72 hours.')).toBe(false);
+    expect(quoteReplyStatesHoldWindow('Payment is due in 72 hrs.')).toBe(false);
+  });
 });
 
 describe('addQuoteFollowupDelay', () => {
@@ -80,12 +88,15 @@ async function quoteRequest(
   threadId: string,
   requestAt: Date,
   status: 'needs_you' | 'review' | 'done' = 'needs_you',
+  opts: { transportId?: string; transportEmail?: string; itemId?: string } = {},
 ): Promise<string> {
   const requestId = `${threadId}-request`;
+  const transportId = opts.transportId ?? TRANSPORT;
+  const transportEmail = opts.transportEmail ?? TRANSPORT_EMAIL;
   await seedInboxThread(db, {
     threadId,
-    transportId: TRANSPORT,
-    transportEmail: TRANSPORT_EMAIL,
+    transportId,
+    transportEmail,
     messageId: requestId,
     fromAddress: 'guest@example.com',
     subject: 'Quote request',
@@ -99,7 +110,14 @@ async function quoteRequest(
     .where(eq(message.id, requestId));
   const [item] = await db
     .insert(workItem)
-    .values({ transportId: TRANSPORT, threadId, sourceMessageId: requestId, kind: 'quote', status })
+    .values({
+      ...(opts.itemId ? { id: opts.itemId } : {}),
+      transportId,
+      threadId,
+      sourceMessageId: requestId,
+      kind: 'quote',
+      status,
+    })
     .returning({ id: workItem.id });
   if (!item) throw new Error('work item not created');
   return item.id;
@@ -108,20 +126,32 @@ async function quoteRequest(
 /** Our outbound message. Attached or body-only: the follow-up clock starts when the body states a hold window. */
 async function sendReply(
   db: DB,
-  opts: { id: string; threadId: string; sentAt: Date; attach?: boolean; holdWindow?: boolean },
+  opts: {
+    id: string;
+    threadId: string;
+    sentAt: Date;
+    attach?: boolean;
+    holdWindow?: boolean;
+    textBody?: string;
+    transportId?: string;
+    fromAddress?: string;
+  },
 ) {
+  const transportId = opts.transportId ?? TRANSPORT;
+  const fromAddress = opts.fromAddress ?? TRANSPORT_EMAIL;
   await db.insert(message).values({
     id: opts.id,
-    transportId: TRANSPORT,
+    transportId,
     threadId: opts.threadId,
     direction: 'outbound',
-    fromAddress: TRANSPORT_EMAIL,
+    fromAddress,
     toAddresses: ['guest@example.com'],
     ccAddresses: [],
     bccAddresses: [],
     subject: 'Re: Quote request',
-    textBody: opts.holdWindow === false ? 'Please find our quote below.' : HOLD_COVER,
-    ownerHeaderValue: TRANSPORT_EMAIL,
+    textBody:
+      opts.textBody ?? (opts.holdWindow === false ? 'Please find our quote below.' : HOLD_COVER),
+    ownerHeaderValue: fromAddress,
     messageIdHeader: `${opts.id}@example.com`,
     references: [],
     isRead: true,
@@ -614,6 +644,223 @@ describe('quote follow-up drafts', () => {
       expect(await threadDrafts(db, 'thread-dismissed')).toHaveLength(0);
       expect(await runOutcome(db, run.id)).toBe('closed');
       expect((await loadItem(db, itemId)).status).toBe('dismissed');
+    });
+  });
+
+  it('deposit within 72 hours alone starts no clock', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-deposit-72h', REQUEST_AT);
+      await sendReply(db, {
+        id: 'out-deposit-72h',
+        threadId: 'thread-deposit-72h',
+        sentAt: FRI_SEND,
+        textBody: 'Please send the deposit within 72 hours.',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toBeNull();
+      expect((await loadItem(db, itemId)).sentMessageId).toBeNull();
+    });
+  });
+
+  it('a quote valid for 3 days falls due 66 hours later', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-valid-3-days', REQUEST_AT);
+      await sendReply(db, {
+        id: 'out-valid-3-days',
+        threadId: 'thread-valid-3-days',
+        sentAt: FRI_SEND,
+        textBody: 'This quotation is valid for 3 days.',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toEqual(HOLD_DUE);
+
+      const justBefore = new Date(HOLD_DUE.getTime() - 1);
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: justBefore })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect(await followUpRuns(db, itemId)).toHaveLength(0);
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: HOLD_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 1,
+        discarded: 0,
+      });
+      expect(await followUpRuns(db, itemId)).toHaveLength(1);
+    });
+  });
+
+  it('a client reply at 65 hours cancels the follow-up before it fires', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-reply-65h', REQUEST_AT);
+      await sendReply(db, { id: 'out-reply-65h', threadId: 'thread-reply-65h', sentAt: FRI_SEND });
+      await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND });
+      const at65h = new Date(FRI_SEND.getTime() + 65 * 60 * 60 * 1000);
+      await clientReplies(db, 'thread-reply-65h', 'in-reply-65h', at65h);
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: HOLD_DUE })).toEqual({
+        linked: 0,
+        cancelled: 1,
+        queued: 0,
+        discarded: 0,
+      });
+      expect((await loadItem(db, itemId)).followUpDueAt).toBeNull();
+      expect(await followUpRuns(db, itemId)).toHaveLength(0);
+    });
+  });
+
+  it('250 open quotes with no window do not starve one qualifying quote', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const starved = Array.from({ length: 250 }, (_, i) => {
+        const n = String(i).padStart(3, '0');
+        return {
+          threadId: `thread-starve-${n}`,
+          requestId: `thread-starve-${n}-request`,
+          outId: `out-starve-${n}`,
+          itemId: `00000000-0000-4000-8000-${i.toString(16).padStart(12, '0')}`,
+        };
+      });
+      await db.insert(mailThread).values(
+        starved.map((row) => ({
+          id: row.threadId,
+          transportId: TRANSPORT,
+          threadRootId: `root-${row.threadId}`,
+          subject: 'Quote request',
+          snippet: 'Quote request',
+          isArchived: false,
+          isStarred: false,
+          isRead: false,
+          labelIds: [],
+        })),
+      );
+      await db.insert(message).values(
+        starved.flatMap((row) => [
+          {
+            id: row.requestId,
+            transportId: TRANSPORT,
+            threadId: row.threadId,
+            direction: 'inbound' as const,
+            fromAddress: 'guest@example.com',
+            toAddresses: [TRANSPORT_EMAIL],
+            ccAddresses: [],
+            bccAddresses: [],
+            subject: 'Quote request',
+            textBody: 'Could you quote 2 rooms for 3 nights?',
+            ownerHeaderValue: TRANSPORT_EMAIL,
+            messageIdHeader: `${row.requestId}@example.com`,
+            references: [],
+            isRead: false,
+            isStarred: false,
+            receivedAt: REQUEST_AT,
+            createdAt: REQUEST_AT,
+          },
+          {
+            id: row.outId,
+            transportId: TRANSPORT,
+            threadId: row.threadId,
+            direction: 'outbound' as const,
+            fromAddress: TRANSPORT_EMAIL,
+            toAddresses: ['guest@example.com'],
+            ccAddresses: [],
+            bccAddresses: [],
+            subject: 'Re: Quote request',
+            textBody: 'Please find our quote below.',
+            ownerHeaderValue: TRANSPORT_EMAIL,
+            messageIdHeader: `${row.outId}@example.com`,
+            references: [],
+            isRead: true,
+            isStarred: false,
+            sentAt: FRI_SEND,
+          },
+        ]),
+      );
+      await db.insert(workItem).values(
+        starved.map((row) => ({
+          id: row.itemId,
+          transportId: TRANSPORT,
+          threadId: row.threadId,
+          sourceMessageId: row.requestId,
+          kind: 'quote' as const,
+          status: 'needs_you' as const,
+        })),
+      );
+      const qualifyingId = await quoteRequest(db, 'thread-starve-qual', REQUEST_AT, 'needs_you', {
+        itemId: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      });
+      await sendReply(db, {
+        id: 'out-starve-qual',
+        threadId: 'thread-starve-qual',
+        sentAt: FRI_SEND,
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 1,
+        discarded: 0,
+      });
+      expect(await followUpRuns(db, qualifyingId)).toHaveLength(1);
+      expect((await loadItem(db, qualifyingId)).sentMessageId).toBe('out-starve-qual');
+    });
+  });
+
+  it('an HRDAV quote with a validity window still fires', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      await db.insert(mailboxTransport).values({
+        id: 'transport-davinci',
+        email: 'davinci@legacyhotels.co.za',
+        ownerHeaderValue: 'davinci@legacyhotels.co.za',
+        mailboxType: 'personal',
+        displayName: 'Da Vinci Hotel Reservations',
+      });
+      const itemId = await quoteRequest(db, 'thread-hrdav', REQUEST_AT, 'review', {
+        transportId: 'transport-davinci',
+        transportEmail: 'davinci@legacyhotels.co.za',
+      });
+      await sendReply(db, {
+        id: 'out-hrdav',
+        threadId: 'thread-hrdav',
+        sentAt: FRI_SEND,
+        transportId: 'transport-davinci',
+        fromAddress: 'davinci@legacyhotels.co.za',
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 1,
+        discarded: 0,
+      });
+      const { run, fence } = await claimRun(db, itemId);
+      expect(await executeQuoteFollowupRun({ run, fence, db, env: ON })).toEqual({
+        runId: run.id,
+        state: 'succeeded',
+      });
+      const drafts = await threadDrafts(db, 'thread-hrdav');
+      expect(drafts).toHaveLength(1);
+      expect(drafts[0]?.textBody).toContain('from Da Vinci Hotel and Suites');
+      expect(drafts[0]?.textBody).not.toContain('Centurion');
+      expect((await loadItem(db, itemId)).status).toBe('needs_you');
     });
   });
 

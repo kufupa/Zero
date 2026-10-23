@@ -88,9 +88,10 @@ const IS_FOLLOW_UP_DRAFT = and(
 /**
  * Staff quote replies that state a validity or hold window. Gold cover: "no rooms are currently being held" plus
  * PDF "Valid until: 3 days". An inventory hold is almost never claimed; the window language is the trigger.
+ * A deposit or payment deadline of 72 hours is not a window.
  */
 const HOLD_OR_VALIDITY_WINDOW =
-  /no\s+rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|(?:rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|hold(?:ing)?\s+(?:the\s+)?rooms?)|valid(?:ity)?\s*(?:until|till|for|:)|(?:\b72\s*-?\s*(?:hours?|hrs?)\b)/i;
+  /no\s+rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|(?:rooms?\s+(?:are\s+)?(?:currently\s+)?(?:being\s+)?held|hold(?:ing)?\s+(?:the\s+)?rooms?)|valid(?:ity)?\s*(?:until|till|for|:)/i;
 
 export function quoteReplyStatesHoldWindow(text: string | null | undefined): boolean {
   if (!text) return false;
@@ -384,61 +385,69 @@ export async function runQuoteFollowupSweep(
   // The request's arrival as the planner counts it (MESSAGE_ARRIVED_AT), from its own row: the select and the prefilter
   // share it, so a POP3 request is not dated by the sender's Date header.
   const requestArrivedAt = sql`(select ${MESSAGE_ARRIVED_AT} from ${message} where ${message.id} = ${workItem.sourceMessageId})`;
-  // Only items with an outbound sent after both the request and the cutoff, so items that never qualify do not fill
-  // the batch on every pass.
+  // Open quotes with an outbound after the cutoff still fill this select when that outbound has no window, so page
+  // past SWEEP_BATCH or a later qualifying quote never links.
   const firstEligibleAt = sql`greatest(${since.toISOString()}::timestamp, ${requestArrivedAt})`;
-  const unlinked = await db
-    .select({
-      id: workItem.id,
-      transportId: workItem.transportId,
-      threadId: workItem.threadId,
-      requestArrivedAt: sql`${requestArrivedAt}`.mapWith(message.createdAt),
-    })
-    .from(workItem)
-    .innerJoin(source, eq(source.id, workItem.sourceMessageId))
-    .where(
-      and(
-        eq(workItem.kind, 'quote'),
-        inArray(workItem.status, OPEN_STATUSES),
-        isNull(workItem.sentMessageId),
-        isNotNull(workItem.threadId),
-        sql`exists (select 1 from ${message} where ${message.transportId} = ${workItem.transportId}
-          and ${message.threadId} = ${workItem.threadId} and ${message.direction} = 'outbound'
-          and ${DELIVERED_AT} >= ${firstEligibleAt})`,
-      ),
-    )
-    .limit(SWEEP_BATCH);
-  for (const item of unlinked) {
-    if (!item.threadId) continue;
-    const requestedAt = item.requestArrivedAt.getTime();
-    const firstEligible = Math.max(requestedAt, since.getTime());
-    const thread = await threadMessages(db, item.transportId, item.threadId);
-    const extracts = await storedPdfExtracts(
-      db,
-      thread.filter((m) => m.direction === 'outbound').map((m) => m.id),
-    );
-    const sent = thread
-      .flatMap((m) => {
-        const at = m.direction === 'outbound' ? deliveredTime(m) : null;
-        if (at === null || at < firstEligible || !messageStatesHoldWindow(m, extracts.get(m.id))) {
-          return [];
-        }
-        return [{ id: m.id, at }];
+  let afterUnlinked: string | null = null;
+  for (;;) {
+    const unlinked = await db
+      .select({
+        id: workItem.id,
+        transportId: workItem.transportId,
+        threadId: workItem.threadId,
+        requestArrivedAt: sql`${requestArrivedAt}`.mapWith(message.createdAt),
       })
-      .sort((a, b) => a.at - b.at)[0];
-    if (!sent) continue;
-    const sentAt = new Date(sent.at);
-    const [linked] = await db
-      .update(workItem)
-      .set({
-        sentMessageId: sent.id,
-        sentAt,
-        followUpDueAt: addQuoteFollowupDelay(sentAt),
-        updatedAt: now,
-      })
-      .where(and(eq(workItem.id, item.id), isNull(workItem.sentMessageId)))
-      .returning({ id: workItem.id });
-    if (linked) counts.linked++;
+      .from(workItem)
+      .innerJoin(source, eq(source.id, workItem.sourceMessageId))
+      .where(
+        and(
+          eq(workItem.kind, 'quote'),
+          inArray(workItem.status, OPEN_STATUSES),
+          isNull(workItem.sentMessageId),
+          isNotNull(workItem.threadId),
+          afterUnlinked ? gt(workItem.id, afterUnlinked) : undefined,
+          sql`exists (select 1 from ${message} where ${message.transportId} = ${workItem.transportId}
+            and ${message.threadId} = ${workItem.threadId} and ${message.direction} = 'outbound'
+            and ${DELIVERED_AT} >= ${firstEligibleAt})`,
+        ),
+      )
+      .orderBy(asc(workItem.id))
+      .limit(SWEEP_BATCH);
+    for (const item of unlinked) {
+      if (!item.threadId) continue;
+      const requestedAt = item.requestArrivedAt.getTime();
+      const firstEligible = Math.max(requestedAt, since.getTime());
+      const thread = await threadMessages(db, item.transportId, item.threadId);
+      const extracts = await storedPdfExtracts(
+        db,
+        thread.filter((m) => m.direction === 'outbound').map((m) => m.id),
+      );
+      const sent = thread
+        .flatMap((m) => {
+          const at = m.direction === 'outbound' ? deliveredTime(m) : null;
+          if (at === null || at < firstEligible || !messageStatesHoldWindow(m, extracts.get(m.id))) {
+            return [];
+          }
+          return [{ id: m.id, at }];
+        })
+        .sort((a, b) => a.at - b.at)[0];
+      if (!sent) continue;
+      const sentAt = new Date(sent.at);
+      const [linked] = await db
+        .update(workItem)
+        .set({
+          sentMessageId: sent.id,
+          sentAt,
+          followUpDueAt: addQuoteFollowupDelay(sentAt),
+          updatedAt: now,
+        })
+        .where(and(eq(workItem.id, item.id), isNull(workItem.sentMessageId)))
+        .returning({ id: workItem.id });
+      if (linked) counts.linked++;
+    }
+    const lastUnlinked = unlinked.at(-1);
+    if (unlinked.length < SWEEP_BATCH || !lastUnlinked) break;
+    afterUnlinked = lastUnlinked.id;
   }
 
   // A hotel reply closes the request and keeps its reply link (C2), so the select above never sees it. Its clock starts
