@@ -112,32 +112,39 @@ const BEFORE = '2027-08-13';
 const ON = '2027-10-12';
 
 test('a confirmation in the default window is used: no window move and no surname retry', async () => {
-  const { io, calls } = fakeIo({ answers: { '61143613-1': ROW } });
+  const { io, calls } = fakeIo({ answers: { '61143613-1': ROW }, panel: false });
   const outcome = await runConfirmationSearch(io, { ...SEARCH, lastName: 'Labtest' });
   assert.deepEqual(calls, ['drive:61143613-1:any']);
   assert.equal(outcome.method, 'quick');
   assert.deepEqual(outcome.probe, ROW);
 });
 
-test('a confirmation the default window misses is searched in the two windows around arrival, in order', async () => {
-  const { io, calls } = fakeIo({ answers: { '61143613-1': [NOTHING, NOTHING, ROW] } });
+test('when arrival is known the window is moved before the confirmation is typed', async () => {
+  const { io, calls } = fakeIo({ answers: { '61143613-1': ROW } });
+  const outcome = await runConfirmationSearch(io, SEARCH);
+  assert.deepEqual(calls, [`moveWindow:${BEFORE}`, 'drive:61143613-1:any']);
+  assert.equal(outcome.method, 'quick');
+  assert.deepEqual(outcome.probe, ROW);
+});
+
+test('a confirmation the first arrival window misses is searched in the second, in order', async () => {
+  const { io, calls } = fakeIo({ answers: { '61143613-1': [NOTHING, ROW] } });
   const outcome = await runConfirmationSearch(io, SEARCH);
   assert.deepEqual(calls, [
-    'drive:61143613-1:any',
     `moveWindow:${BEFORE}`,
     'drive:61143613-1:any',
     `moveWindow:${ON}`,
     'drive:61143613-1:any',
   ]);
-  assert.equal(outcome.method, 'quick_calendar');
-  assert.deepEqual(outcome.stages, ['typed', `window.${BEFORE}.typed`, `window.${ON}.typed`]);
+  assert.equal(outcome.method, 'quick');
+  assert.deepEqual(outcome.stages, [`window.${BEFORE}.typed`, `window.${ON}.typed`]);
 });
 
 test('the window walk stops at the first window that shows the confirmation', async () => {
-  const { io, calls } = fakeIo({ answers: { '61143613-1': [NOTHING, ROW] } });
+  const { io, calls } = fakeIo({ answers: { '61143613-1': ROW } });
   const outcome = await runConfirmationSearch(io, SEARCH);
-  assert.deepEqual(calls, ['drive:61143613-1:any', `moveWindow:${BEFORE}`, 'drive:61143613-1:any']);
-  assert.equal(outcome.method, 'quick_calendar');
+  assert.deepEqual(calls, [`moveWindow:${BEFORE}`, 'drive:61143613-1:any']);
+  assert.equal(outcome.method, 'quick');
 });
 
 test('the window moves even when the default window already covers arrival, since the booking may arrive on another date', async () => {
@@ -151,7 +158,6 @@ test('when no window shows the confirmation, the surname is searched after the w
   const { io, calls } = fakeIo({ answers: { '61143613-1': NOTHING, Labtest: ROW } });
   const outcome = await runConfirmationSearch(io, { ...SEARCH, lastName: 'Labtest' });
   assert.deepEqual(calls, [
-    'drive:61143613-1:any',
     `moveWindow:${BEFORE}`,
     'drive:61143613-1:any',
     `moveWindow:${ON}`,
@@ -175,17 +181,17 @@ test('without a panel there are no window moves, even with an arrival', async ()
   assert.equal(calls.some((call) => call.startsWith('moveWindow')), false);
 });
 
-test('an open record for the confirmation is used as it stands, with no window move', async () => {
+test('an open record for the confirmation is used after the arrival window is set', async () => {
   const { io, calls } = fakeIo({ answers: { '61143613-1': OPEN } });
   const outcome = await runConfirmationSearch(io, { ...SEARCH, lastName: 'Labtest' });
-  assert.deepEqual(calls, ['drive:61143613-1:any']);
+  assert.deepEqual(calls, [`moveWindow:${BEFORE}`, 'drive:61143613-1:any']);
   assert.deepEqual(outcome.probe, OPEN);
 });
 
 test('with allowOpenRecord false (read-back), the search needs a row, not an open record', async () => {
   const { io, calls } = fakeIo({ answers: { '61143613-1': ROW } });
   await runConfirmationSearch(io, { ...SEARCH, allowOpenRecord: false });
-  assert.deepEqual(calls, ['drive:61143613-1:row']);
+  assert.deepEqual(calls, [`moveWindow:${BEFORE}`, 'drive:61143613-1:row']);
 });
 
 test('a confirmation no window shows is not found, and the arrival never turns a miss into a match', async () => {

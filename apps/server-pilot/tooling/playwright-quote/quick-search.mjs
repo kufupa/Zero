@@ -56,15 +56,28 @@ export async function runConfirmationSearch(io, { confirmation, lastName = null,
     stages.push(...run.stages.map((stage) => (prefix ? `${prefix}.${stage}` : stage)));
     return run;
   };
-  let run = await drive(confirmation, '', found);
-  if (run.done) return { probe: run.result, method: 'quick', stages };
-  let probe = run.result;
+  let probe = { open: null, row: null, executed: false };
+  // Arrival-known searches move the 60-day window first (U4). Confirmation-only
+  // search in the default (today) window misses 2028 stays and then opens the
+  // calendar row, which times out (STALE_SCREEN, findMethod=quick_calendar).
   if (arrival && (await io.panelShown())) {
     for (const start of windowStartsAround(arrival)) {
       await io.moveWindow(start);
-      run = await drive(confirmation, `window.${start}`, found);
-      if (run.done) return { probe: run.result, method: 'quick_calendar', stages };
+      const run = await drive(confirmation, `window.${start}`, found);
+      if (run.done) return { probe: run.result, method: 'quick', stages };
       probe = run.result;
+    }
+  } else {
+    const run = await drive(confirmation, '', found);
+    if (run.done) return { probe: run.result, method: 'quick', stages };
+    probe = run.result;
+    if (arrival && (await io.panelShown())) {
+      for (const start of windowStartsAround(arrival)) {
+        await io.moveWindow(start);
+        const again = await drive(confirmation, `window.${start}`, found);
+        if (again.done) return { probe: again.result, method: 'quick', stages };
+        probe = again.result;
+      }
     }
   }
   if (lastName) {
