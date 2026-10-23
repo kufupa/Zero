@@ -502,7 +502,13 @@ async function findRow(page, confirmation) {
 }
 
 export async function openRecord(page, row) {
-  await row.click({ force: true });
+  // stay-lookup / read-reservation-codes: ExtJS opens the form on dblclick of
+  // tr.x-grid-row. force-click on the confirmation text node does not.
+  const gridRow = row.locator(
+    'xpath=ancestor-or-self::*[contains(@class,"x-grid-row") or contains(@class,"x-grid3-row")][1]',
+  );
+  if ((await gridRow.count()) > 0) await gridRow.first().dblclick();
+  else await row.dblclick();
   await page.locator('input[name="confirmationnumber"]:visible').first().waitFor({ timeout: 8000 });
   await page.waitForTimeout(1000);
 }

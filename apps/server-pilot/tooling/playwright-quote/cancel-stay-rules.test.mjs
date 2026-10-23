@@ -586,6 +586,17 @@ test('cancel-stay.mjs exports the helpers stay-lookup.mjs imports, and its cance
   assert.match(source, /if \(!args\.arrival\) return null;/);
 });
 
+test('openRecord opens the ExtJS grid row with dblclick, matching stay-lookup/read-reservation-codes', async () => {
+  const source = await readFile(new URL('./cancel-stay.mjs', import.meta.url), 'utf8');
+  const fn = source.match(/export async function openRecord[\s\S]*?(?=\n(?:export |async function |function ))/);
+  assert.ok(fn, 'openRecord function');
+  const body = fn[0];
+  assert.match(body, /x-grid-row/);
+  assert.match(body, /gridRow\.first\(\)\.dblclick\(/);
+  assert.match(body, /else await row\.dblclick\(/);
+  assert.equal(/click\(\s*\{\s*force:\s*true/.test(body), false);
+});
+
 // ---- Snapshot pairing and panel parsing (pure: the DOM is covered by stay-lookup-dom.test.mjs) ----
 
 const label = (text, rows, forId = '') => ({ kind: 'label', text, forId, rows });
