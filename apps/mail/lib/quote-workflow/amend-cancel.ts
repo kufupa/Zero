@@ -24,6 +24,7 @@ export const AMEND_CANCEL_COPY = {
   reasonRefused: 'HMS did not accept that reason. Pick another and try again.',
   previewAgain: 'Preview the cancellation again first.',
   unconfirmed: 'HMS may have cancelled this booking. Check HMS before trying again.',
+  penaltyPending: 'A cancellation penalty is pending on this booking. Check HMS before anything else.',
   failed: "Nava couldn't finish in HMS. Check HMS yourself.",
 } as const;
 
@@ -93,6 +94,9 @@ export function cancelOutcomeNote(
       return AMEND_FIND_COPY.unreachable;
     case 'cancel_unconfirmed':
       return AMEND_CANCEL_COPY.unconfirmed;
+    case 'cancel_penalty_pending':
+      if (!penaltyText) return AMEND_CANCEL_COPY.penaltyPending;
+      return `A cancellation penalty is pending on this booking: ${chargeText(penaltyText)}. Check HMS before anything else.`;
     default:
       return AMEND_CANCEL_COPY.failed;
   }
@@ -122,7 +126,7 @@ export type CancelRun = {
 };
 
 export type CancelView =
-  | { kind: 'idle'; note: string | null }
+  | { kind: 'idle'; note: string | null; run?: CancelRun }
   | { kind: 'previewing' }
   | { kind: 'ready'; run: CancelRun; reason: string; note: string | null }
   | { kind: 'committing'; run: CancelRun; reason: string }
@@ -132,11 +136,11 @@ export function viewAfterPreview(run: CancelRun, confirmation: string): CancelVi
   switch (run.outcome) {
     case 'preview_ok':
       if (run.previewDigest) return { kind: 'ready', run, reason: '', note: null };
-      return { kind: 'idle', note: AMEND_CANCEL_COPY.failed };
+      return { kind: 'idle', note: AMEND_CANCEL_COPY.failed, run };
     case 'already_cancelled':
       return { kind: 'done', run, text: AMEND_CANCEL_COPY.alreadyCancelled };
     default:
-      return { kind: 'idle', note: cancelOutcomeNote(run.outcome, confirmation, run.penaltyText) };
+      return { kind: 'idle', note: cancelOutcomeNote(run.outcome, confirmation, run.penaltyText), run };
   }
 }
 
@@ -150,13 +154,15 @@ export function viewAfterCommit(
       return { kind: 'done', run, text: cancelledText(run.statusAfter, run.penaltyText) };
     case 'already_cancelled':
       return { kind: 'done', run, text: AMEND_CANCEL_COPY.alreadyCancelled };
+    case 'cancel_penalty_pending':
+      return { kind: 'done', run, text: cancelOutcomeNote(run.outcome, confirmation, run.penaltyText) };
     case 'refused_reason_missing':
       return { kind: 'ready', run: preview, reason: '', note: AMEND_CANCEL_COPY.reasonRefused };
     case 'cancel_preview_required':
     case 'cancel_digest_mismatch':
       return { kind: 'idle', note: AMEND_CANCEL_COPY.previewAgain };
     default:
-      return { kind: 'idle', note: cancelOutcomeNote(run.outcome, confirmation, run.penaltyText) };
+      return { kind: 'idle', note: cancelOutcomeNote(run.outcome, confirmation, run.penaltyText), run };
   }
 }
 

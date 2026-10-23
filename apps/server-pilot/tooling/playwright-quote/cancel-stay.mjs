@@ -9,8 +9,9 @@
 // window picker is the fallback.
 // Preview reads the reason list and dismisses the dialog unconfirmed.
 // Commit re-reads payment on the open record and refuses (refused_not_unpaid) unless unpaid, then picks --reason
-// and clicks its OK once. A cancellation penalty dialog, open before preview or commit clicks OK, refuses the
-// run (refused_penalty). It is recorded and left open; nothing is clicked on it.
+// and clicks its OK once. A cancellation penalty dialog on a real guest or at preview refuses the run
+// (refused_penalty): it is recorded and left open; nothing is clicked on it. On a Labtest commit the open HMS
+// record is re-read (surname Labtest + arrival ≥ 2027); Waive is clicked if present, else OK.
 // --allow-real-guest lifts the Labtest guard for one run (on mode). The server passes it; it is never read from the env.
 // Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--property HRCEN|HRDAV] [--reason "Test Reservations"] [--last-name Labtest] [--allow-real-guest]
 // --last-name is optional: when the confirmation does not show in the header quick search, the surname is typed and the row with the exact confirmation is used.
@@ -25,7 +26,7 @@ import {
   arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, formPairsFromSnapshot, hmsDateToIso, identityCheck,
   isCancelledStatus, normalizeReasons, outcomeAfterFailure, parseBalanceValue, parseCancelArgs, parseDateWindowLabel,
   parseQuickSearchRow, pickerMonthSteps, preflight, resolveOutcome, runCancelDialog, settleCancel, squash,
-  stayChanges, stayFromFormPairs, unpaidCommitRefusal,
+  stayChanges, stayFromFormPairs, unpaidCommitRefusal, withStaleRecovery,
 } from './cancel-stay-rules.mjs';
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
 import { snapshotRecordForm } from './stay-lookup-dom.mjs';
@@ -502,7 +503,7 @@ async function findRow(page, confirmation) {
 
 export async function openRecord(page, row) {
   await row.click({ force: true });
-  await page.locator('input[name="confirmationnumber"]:visible').first().waitFor({ timeout: 20000 });
+  await page.locator('input[name="confirmationnumber"]:visible').first().waitFor({ timeout: 8000 });
   await page.waitForTimeout(1000);
 }
 
@@ -580,6 +581,28 @@ async function closeCancelDialog(page, dialog) {
   await page.waitForTimeout(400);
 }
 
+// Clicks Waive or OK on the single visible cancellation-penalty window. Never the reason-dialog OK.
+async function clickPenaltyButton(page, label) {
+  const wanted = squash(label).toLowerCase();
+  if (wanted !== 'waive' && wanted !== 'ok') return false;
+  const clicked = await page.evaluate((target) => {
+    const shown = (node) => {
+      const box = node.getBoundingClientRect();
+      return box.width > 0 && box.height > 0;
+    };
+    const windows = [...document.querySelectorAll('.x-window')]
+      .filter((node) => shown(node) && /cancellation penalty/i.test(node.innerText || ''));
+    if (windows.length !== 1) return false;
+    const buttons = [...windows[0].querySelectorAll('.x-btn')]
+      .filter((node) => shown(node) && (node.innerText || '').trim().toLowerCase() === target);
+    if (buttons.length !== 1) return false;
+    buttons[0].click();
+    return true;
+  }, wanted);
+  if (clicked) await page.waitForTimeout(400);
+  return clicked;
+}
+
 // Clicks the OK paired with Cancel inside the single visible Cancellation Reason window.
 async function clickReasonOk(page) {
   return page.evaluate(() => {
@@ -644,8 +667,10 @@ function dialogIo(ctx, dialog) {
     readRecord: () => readRecord(page),
     close: () => closeCancelDialog(page, dialog),
     clickOk: () => clickReasonOk(page),
+    clickPenalty: (label) => clickPenaltyButton(page, label),
     waitAfterOk: () => page.waitForTimeout(1500),
     settle: () => settleCancel(settleIo(ctx), { now: () => Date.now(), sleep: (ms) => delay(ms) }),
+    readBalance: () => readBalance(page),
   };
 }
 
@@ -655,8 +680,15 @@ async function run(ctx) {
   mark(ctx, 'login');
   await openGuestStay(page);
   await page.waitForTimeout(1500);
-  const found = await findStay(ctx, { evidence: true });
+  const found = await withStaleRecovery({
+    attempt: () => findStay(ctx, { evidence: true }),
+    recover: async () => {
+      await openGuestStay(page);
+      await page.waitForTimeout(1500);
+    },
+  }, result);
   mark(ctx, 'search');
+  if (result.error === 'STALE_SCREEN') return;
   if (!found) {
     result.outcome = 'not_found';
     return;
@@ -681,7 +713,32 @@ async function run(ctx) {
     }
   }
   // An open record for this confirmation needs no click; a row or grid cell is opened here.
-  if (found.locator) await openRecord(page, found.locator);
+  // A stale screen (timeout) returns to Guest Stay and re-finds once instead of waiting 20s.
+  if (found.locator) {
+    const opened = await withStaleRecovery({
+      attempt: async () => {
+        if (!found.locator) {
+          if (found.open) return true;
+          throw Object.assign(new Error('Timeout 8000ms exceeded.'), { name: 'TimeoutError' });
+        }
+        await openRecord(page, found.locator);
+        return true;
+      },
+      recover: async () => {
+        await openGuestStay(page);
+        await page.waitForTimeout(1500);
+        const again = await findStay(ctx, { evidence: true });
+        found.method = again?.method ?? found.method;
+        found.locator = again?.locator ?? null;
+        found.row = again?.row ?? null;
+        found.open = again?.open ?? null;
+        if (!again) {
+          throw Object.assign(new Error('Timeout 8000ms exceeded.'), { name: 'TimeoutError' });
+        }
+      },
+    }, result);
+    if (result.error === 'STALE_SCREEN' || !opened) return;
+  }
   const record = await readRecord(page);
   result.balance = await readBalance(page);
   if (!found.row) result.statusBefore = squash(record.status);

@@ -45,15 +45,39 @@ describe('cancellation charge copy', () => {
   });
 
   it('a penalty refusal gives that copy, not the generic failure, and offers no commit', () => {
-    const refused = run({ outcome: 'refused_penalty', penaltyText: CHARGE, previewDigest: null });
+    const refused = run({
+      outcome: 'refused_penalty',
+      penaltyText: CHARGE,
+      previewDigest: null,
+      screenshots: ['penalty.png'],
+      runId: 'run-penalty',
+    });
     expect(cancelOutcomeNote('refused_penalty', CONFIRMATION, CHARGE)).toBe(cancellationChargeCopy(CHARGE));
     expect(viewAfterPreview(refused, CONFIRMATION)).toEqual({
       kind: 'idle',
       note: cancellationChargeCopy(CHARGE),
+      run: refused,
     });
     expect(viewAfterCommit(refused, run(), CONFIRMATION)).toEqual({
       kind: 'idle',
       note: cancellationChargeCopy(CHARGE),
+      run: refused,
+    });
+  });
+
+  it('a pending penalty after OK is a done result that keeps the screenshot run', () => {
+    const pending = run({
+      outcome: 'cancel_penalty_pending',
+      statusAfter: 'Cancelled',
+      penaltyText: CHARGE,
+      previewDigest: null,
+      screenshots: ['penalty.png'],
+      runId: 'run-penalty',
+    });
+    expect(viewAfterCommit(pending, run(), CONFIRMATION)).toEqual({
+      kind: 'done',
+      run: pending,
+      text: 'A cancellation penalty is pending on this booking: Cancellation Penalty of 2060.00 may be added to account. Check HMS before anything else.',
     });
   });
 
@@ -80,10 +104,12 @@ describe('cancel outcome copy', () => {
   });
 
   it('a paid stay refused at commit tells staff to handle it in Infor', () => {
+    const unpaid = run({ outcome: 'refused_not_unpaid', previewDigest: null });
     expect(cancelOutcomeNote('refused_not_unpaid', CONFIRMATION)).toBe(AMEND_SAVE_COPY.handleInHms);
-    expect(viewAfterCommit(run({ outcome: 'refused_not_unpaid', previewDigest: null }), run(), CONFIRMATION)).toEqual({
+    expect(viewAfterCommit(unpaid, run(), CONFIRMATION)).toEqual({
       kind: 'idle',
       note: AMEND_SAVE_COPY.handleInHms,
+      run: unpaid,
     });
   });
 

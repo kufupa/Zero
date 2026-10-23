@@ -1085,6 +1085,7 @@ function CancelSection({
       )}
       {previewing ? <p className={infoNoteClass}>{AMEND_CANCEL_COPY.previewing}</p> : null}
       {current.kind === 'idle' && current.note ? <p className={warnNoteClass}>{current.note}</p> : null}
+      {current.kind === 'idle' && current.run ? <CancelScreenshot client={client} run={current.run} /> : null}
     </div>
   );
 }
