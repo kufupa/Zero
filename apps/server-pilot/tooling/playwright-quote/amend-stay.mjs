@@ -114,7 +114,11 @@ async function fillChangedFields(page, fields) {
       const cmp = typeof Ext !== 'undefined' && id ? Ext.getCmp(id) : null;
       if (cmp?.setValue) {
         cmp.setValue(v);
-        return String(cmp.getValue?.() ?? '') === String(v);
+        const got = cmp.getValue?.();
+        if (got == null || got === '') return false;
+        // Date fields return a Date; adults can return a number.
+        if (got instanceof Date) return !Number.isNaN(got.getTime());
+        return String(got) === String(v);
       }
       el.value = v;
       el.dispatchEvent(new Event('input', { bubbles: true }));

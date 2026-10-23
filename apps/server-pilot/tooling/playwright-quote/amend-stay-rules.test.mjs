@@ -237,6 +237,7 @@ test('amend-stay closes the app drawer before filling changed fields', async () 
   assert.match(fill, /closeAppDrawer\(page\)/);
   assert.match(fill, /Ext\.getCmp\(id\)/);
   assert.match(fill, /setValue/);
+  assert.match(fill, /got instanceof Date/);
   assert.ok(fill.indexOf('closeAppDrawer') < fill.indexOf('setValue'));
   assert.equal(/input\.click\(/.test(fill), false);
 });
