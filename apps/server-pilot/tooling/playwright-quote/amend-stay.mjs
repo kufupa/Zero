@@ -296,7 +296,7 @@ async function main() {
   const ctx = { args, dir: args.out, result, page: null };
   await mkdir(ctx.dir, { recursive: true, mode: 0o700 });
   try {
-    const validated = validateAmendRequest(JSON.parse(await readFile(args.request, 'utf8')));
+    const validated = validateAmendRequest(JSON.parse(await readFile(args.request, 'utf8')), args.property);
     if (!validated.ok) {
       result.outcome = `refused_${validated.reason}`;
       result.reason = validated.reason;

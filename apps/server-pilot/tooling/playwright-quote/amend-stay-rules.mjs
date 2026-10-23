@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
+import { amendRoomTypes } from './property-profile.mjs';
 
 export const AMEND_FIELDS = ['arrival', 'departure', 'adults', 'children', 'roomType'];
-export const AMEND_ROOM_TYPES = ['STQN', 'STWN', 'SKNG', 'EXKNG', 'LUXKNG', 'SUITE', 'DLXKNG', 'DLXQN', 'DLXTWN'];
 export const LAB_ARRIVAL_FLOOR = '2027-01-01';
-const FLAGS = new Set(['--request', '--mode', '--out', '--digest']);
+const FLAGS = new Set(['--request', '--mode', '--out', '--digest', '--property']);
 const SHA256 = /^[a-f0-9]{64}$/;
 const CONFIRMATION = /^\d+-\d+$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
@@ -116,7 +116,13 @@ export function parseAmendArgs(argv) {
   if (mode === 'commit' ? !SHA256.test(digest ?? '') : digest !== null) {
     return refused(mode === 'commit' ? '--digest must be a preview SHA-256 digest' : '--digest is only accepted with commit mode');
   }
-  return { ok: true, exitCode: 0, args: { request: values.get('--request'), mode, out: values.get('--out'), digest } };
+  const property = values.get('--property') ?? 'HRCEN';
+  if (!amendRoomTypes(property).length) return refused('PROPERTY_UNKNOWN');
+  return {
+    ok: true,
+    exitCode: 0,
+    args: { request: values.get('--request'), mode, out: values.get('--out'), digest, property },
+  };
 }
 
 function realDate(value) {
@@ -125,7 +131,7 @@ function realDate(value) {
 }
 const count = (value) => Number.isInteger(value) && value >= 0 && value <= 16;
 
-export function validateAmendRequest(value) {
+export function validateAmendRequest(value, propertyCode = 'HRCEN') {
   const keys = Object.keys(value ?? {}).filter((key) => key !== 'currentArrival').sort().join(',');
   if (!plainObject(value) || keys !== 'confirmation,expectedLastName,fields') return { ok: false, reason: 'request_fields_invalid' };
   // currentArrival moves the HMS calendar window to the stay; without it find only sees the current window.
@@ -136,11 +142,12 @@ export function validateAmendRequest(value) {
   if (!Object.keys(value.fields).length) return { ok: false, reason: 'fields_required' };
   const entries = Object.entries(value.fields);
   if (entries.some(([field]) => !AMEND_FIELDS.includes(field))) return { ok: false, reason: 'unsupported_field' };
+  const allowedRooms = amendRoomTypes(propertyCode);
   for (const [field, target] of entries) {
     if ((field === 'arrival' || field === 'departure') && !realDate(target)) return { ok: false, reason: 'date_invalid' };
     if (field === 'arrival' && target < LAB_ARRIVAL_FLOOR) return { ok: false, reason: 'target_arrival_before_2027' };
     if ((field === 'adults' || field === 'children') && (!count(target) || (field === 'adults' && target < 1))) return { ok: false, reason: 'count_invalid' };
-    if (field === 'roomType' && (typeof target !== 'string' || !AMEND_ROOM_TYPES.includes(target))) return { ok: false, reason: 'room_type_invalid' };
+    if (field === 'roomType' && (typeof target !== 'string' || !allowedRooms.includes(target))) return { ok: false, reason: 'room_type_invalid' };
   }
   if (value.fields.arrival && value.fields.departure && value.fields.departure <= value.fields.arrival) return { ok: false, reason: 'departure_not_after_arrival' };
   return { ok: true, request: value };

@@ -13,6 +13,7 @@
     "STWN": 69,
     "SUITE": 2
   },
+  "requiredCreateFields": [],
   "evidence": {
     "derivation": "max observed nightly inventory per room type across 95 captures",
     "derivedOn": "2026-10-10",

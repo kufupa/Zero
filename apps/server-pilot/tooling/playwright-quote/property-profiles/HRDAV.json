@@ -15,6 +15,7 @@
     "STKNG": 84,
     "STWN": 28
   },
+  "requiredCreateFields": ["reservationnote"],
   "rooms": {
     "JNRSUI": { "label": "Junior Suite" },
     "EXKNGB": { "label": "Executive King Balcony" },

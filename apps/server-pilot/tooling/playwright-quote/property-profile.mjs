@@ -7,6 +7,7 @@ const PROFILE_FILES = new Map([
   ['HRDAV', new URL('./property-profiles/HRDAV.json', import.meta.url)],
 ]);
 const ROOM_CODE = /^[A-Z0-9_-]+$/;
+const FIELD_NAME = /^[a-z][a-z0-9]*$/;
 
 function invalid(reason) {
   throw new Error(`property_profile_invalid: ${reason}`);
@@ -29,6 +30,14 @@ export function validateProfile(raw, propertyCode) {
     total += capacity[code];
   }
   if (total !== raw.publishedRooms) invalid(`capacities sum to ${total} but the property publishes ${raw.publishedRooms} rooms`);
+  const requiredFields = raw.requiredCreateFields;
+  if (!Array.isArray(requiredFields)) invalid('requiredCreateFields must list HMS field names');
+  const seenFields = new Set();
+  for (const name of requiredFields) {
+    if (typeof name !== 'string' || !FIELD_NAME.test(name)) invalid(`required field ${name} is not an HMS field name`);
+    if (seenFields.has(name)) invalid(`requiredCreateFields repeats ${name}`);
+    seenFields.add(name);
+  }
   if (!Array.isArray(raw.evidence?.sources) || !raw.evidence.sources.length) invalid('evidence sources are required');
   // The digest covers room facts only, so editing the evidence wording does not invalidate recorded allocations.
   const identity = JSON.stringify({
@@ -45,4 +54,19 @@ export function profileFor(propertyCode) {
   const file = typeof propertyCode === 'string' ? PROFILE_FILES.get(propertyCode) : undefined;
   if (!file) return null;
   return validateProfile(JSON.parse(readFileSync(file, 'utf8')), propertyCode);
+}
+
+/** Amend allow-list: room type codes this property actually sells. */
+export function amendRoomTypes(propertyCode) {
+  const profile = profileFor(propertyCode);
+  return profile ? Object.keys(profile.roomCapacity) : [];
+}
+
+/** Optional `--property CODE`. Defaults HRCEN. Strips the flag so other parsers never see it. */
+export function parseStayProperty(argv) {
+  const index = argv.indexOf('--property');
+  if (index === -1) return { ok: true, propertyCode: 'HRCEN', rest: argv };
+  const value = argv[index + 1];
+  if (!PROFILE_FILES.has(value)) return { ok: false, exitCode: 2, error: 'PROPERTY_UNKNOWN' };
+  return { ok: true, propertyCode: value, rest: argv.slice(0, index).concat(argv.slice(index + 2)) };
 }

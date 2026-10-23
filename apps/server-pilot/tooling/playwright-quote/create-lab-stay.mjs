@@ -66,6 +66,15 @@ export function createRoomTypeMismatch(profile, roomType) {
   return roomCodes.has(roomType) ? null : 'ROOM_TYPE_PROPERTY_MISMATCH';
 }
 
+export function createRequiredFieldNames(profile) {
+  return [...REQUIRED, ...(profile?.requiredCreateFields ?? [])];
+}
+
+/** Static blank-check: missing or whitespace-only named fields. Used before Save; tests call it without a page. */
+export function blankRequiredCreateFields(profile, values) {
+  return createRequiredFieldNames(profile).filter((name) => !String(values?.[name] ?? '').trim());
+}
+
 export function createLabtestRefusal(propertyCode, stay, env = process.env) {
   if (propertyCode !== 'HRDAV' || env.HMS_DAVINCI_CREATE !== 'lab') return null;
   if (!/^labtest$/i.test(String(stay?.lastName ?? '').trim())) return 'pane_save_labtest_required';
@@ -369,11 +378,11 @@ async function fillNamed(page, name, value) {
   await input.press('Tab');
 }
 
-async function blankRequired(page) {
-  return page.evaluate((names) => {
+async function blankRequired(page, names) {
+  return page.evaluate((fieldNames) => {
     const blank = [];
-    for (const name of names) {
-      const input = document.querySelector(`input[name="${name}"]`);
+    for (const name of fieldNames) {
+      const input = document.querySelector(`input[name="${name}"], textarea[name="${name}"]`);
       if (!input) {
         blank.push(name);
         continue;
@@ -382,7 +391,7 @@ async function blankRequired(page) {
       if (!value) blank.push(name);
     }
     return blank;
-  }, REQUIRED);
+  }, names);
 }
 
 async function readMessage(page) {
@@ -979,7 +988,7 @@ async function main() {
     await fillTrackBeforeGuarantee(page, stay.track);
     await chooseCombo(page, 'guaranteetype', stay.guaranteeType);
     await page.waitForTimeout(1000);
-    const blank = await blankRequired(page);
+    const blank = await blankRequired(page, createRequiredFieldNames(profile));
     result.blankRequired = blank;
     await shot(page, dir, 'filled.png');
     if (stop.stopBefore === 'availability') {
