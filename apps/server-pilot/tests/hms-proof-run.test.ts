@@ -3,7 +3,7 @@ import { paneStaySaveLoaders, paneStayTenantId, type PaneStayLock } from '../src
 import { paneStayCancelLoaders } from '../src/ai/pane-stay-cancel.js';
 import { paneHmsWriteLoaders } from '../src/ai/pane-hms-write.js';
 import { propertyReadLockKey } from '../src/hms/property-read-lock.js';
-import { hmsProofRun, parseProofRunArgs } from '../src/ops/hms-proof-run.js';
+import { hmsProofRun, parseProofRunArgs, stayFromProofRequest } from '../src/ops/hms-proof-run.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -196,5 +196,40 @@ describe('hms-proof-run refusals', () => {
     ).rejects.toThrow(/preview_digest_required$/);
     expect(createLock).not.toHaveBeenCalled();
     expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('refuses attach preview before any lock or spawn', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn();
+    paneHmsWriteLoaders.spawnAttach = spawn;
+    await expect(
+      hmsProofRun(
+        parseProofRunArgs(
+          argv('attach', { ...LAB, file: '/tmp/lab.pdf', documentName: 'lab.pdf' }),
+        ),
+        WRITE_LAB,
+        createLock,
+      ),
+    ).rejects.toThrow(/attach_preview_unsupported$/);
+    expect(createLock).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it('create stay omits CLI-only fields so the preview digest still matches', () => {
+    const stay = stayFromProofRequest({
+      ...LAB,
+      adults: 1,
+      sourceOfBusiness: 'Email',
+      roomType: 'STQN',
+      ratePlan: 'BAR',
+      track: 'Walk in',
+      guaranteeType: 'Non-Guaranteed Individual',
+      previewDigest: 'a'.repeat(64),
+      confirmation: LAB.confirmation,
+    });
+    expect(stay).not.toHaveProperty('previewDigest');
+    expect(stay).not.toHaveProperty('confirmation');
+    expect(stay.lastName).toBe('Labtest');
+    expect(stay.arrival).toBe('2027-03-10');
   });
 });

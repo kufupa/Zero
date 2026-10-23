@@ -17,6 +17,9 @@ import {
   paneStaySaveLoaders,
   paneStayTenantId,
   paneWriteModes,
+  readPaneStayScreenshot,
+  recordPanePreview,
+  registerPaneRun,
   runPaneStay,
   type PaneStay,
   type PaneStayLock,
@@ -32,7 +35,7 @@ import {
 import { findStay, paneStayLookupLoaders } from '../ai/pane-stay-lookup.js';
 import { createPostgresPropertyReadLock } from '../hms/property-read-lock.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,6 +46,25 @@ const MODES = new Set(['preview', 'commit']);
 const LABTEST = /^labtest$/i;
 const LAB_ARRIVAL_FLOOR = '2027-01-01';
 const OWNER_PREFIX = 'proof:';
+const GRANT_FILE = 'preview-grant.json';
+const STAY_KEYS = [
+  'firstName',
+  'lastName',
+  'arrival',
+  'departure',
+  'adults',
+  'sourceOfBusiness',
+  'roomType',
+  'ratePlan',
+  'track',
+  'guaranteeType',
+  'childAges',
+  'bookingAgency',
+  'organization',
+  'reservationNote',
+  'bookerName',
+  'bookerEmail',
+] as const;
 
 export type ProofRunCommand = 'create' | 'amend' | 'cancel' | 'attach' | 'find';
 export type ProofRunMode = 'preview' | 'commit';
@@ -143,8 +165,16 @@ function previewDigestOf(request: Record<string, unknown>): string | undefined {
   return typeof digest === 'string' && digest.trim() !== '' ? digest.trim() : undefined;
 }
 
-function asStay(request: Record<string, unknown>): PaneStay {
-  return request as unknown as PaneStay;
+export function stayFromProofRequest(request: Record<string, unknown>): PaneStay {
+  const nested =
+    request.stay && typeof request.stay === 'object' && !Array.isArray(request.stay)
+      ? (request.stay as Record<string, unknown>)
+      : request;
+  const stay: Record<string, unknown> = {};
+  for (const key of STAY_KEYS) {
+    if (nested[key] !== undefined) stay[key] = nested[key];
+  }
+  return stay as PaneStay;
 }
 
 function asAmendFields(request: Record<string, unknown>): AmendRequest {
@@ -165,25 +195,74 @@ function stripGuest(value: unknown): unknown {
   return out;
 }
 
-async function copyScreenshots(
-  outDir: string,
-  screenshots: unknown,
-  runDir: unknown,
-): Promise<string[]> {
-  const names = Array.isArray(screenshots)
-    ? screenshots.filter((name): name is string => typeof name === 'string')
-    : [];
-  const dir = typeof runDir === 'string' ? runDir : '';
+function screenshotNames(screenshots: unknown): string[] {
+  if (!Array.isArray(screenshots)) return [];
+  return screenshots
+    .filter((name): name is string => typeof name === 'string')
+    .map((name) => basename(name));
+}
+
+async function copyScreenshots(input: {
+  outDir: string;
+  screenshots: unknown;
+  runDir: unknown;
+  runId: unknown;
+  owner: string;
+}): Promise<string[]> {
+  const names = screenshotNames(input.screenshots);
   const copied: string[] = [];
-  for (const shot of names) {
-    const file = basename(shot);
-    if (!file || file !== shot.replace(/^.*[/\\]/, '')) continue;
-    const from = isAbsolute(shot) ? shot : dir ? join(dir, file) : '';
-    if (!from) continue;
-    await copyFile(from, join(outDir, file)).catch(() => undefined);
-    copied.push(file);
+  for (const file of names) {
+    const dest = join(input.outDir, file);
+    if (typeof input.runDir === 'string') {
+      const from = isAbsolute(file) ? file : join(input.runDir, file);
+      await copyFile(from, dest);
+      copied.push(file);
+      continue;
+    }
+    if (typeof input.runId === 'string') {
+      const shot = await readPaneStayScreenshot({
+        runId: input.runId,
+        name: file,
+        owner: input.owner,
+      });
+      if (shot.status !== 'ok') throw new Error('screenshot_copy_failed');
+      const bytes = Buffer.from(shot.dataUrl.replace(/^data:image\/png;base64,/, ''), 'base64');
+      await writeFile(dest, bytes);
+      copied.push(file);
+    }
   }
+  if (copied.length !== names.length) throw new Error('screenshot_copy_failed');
   return copied;
+}
+
+function restorePreviewGrant(outDir: string, owner: string, digest: string | undefined): void {
+  if (!digest) return;
+  try {
+    const raw = JSON.parse(readFileSync(join(outDir, GRANT_FILE), 'utf8')) as {
+      owner?: unknown;
+      digest?: unknown;
+    };
+    if (raw.owner === owner && raw.digest === digest) {
+      recordPanePreview(owner, digest, Date.now());
+    }
+  } catch {
+    // Missing grant: the pane commit path refuses. Fail closed.
+  }
+}
+
+async function persistPreviewGrant(
+  outDir: string,
+  owner: string,
+  result: unknown,
+): Promise<void> {
+  const digest =
+    result && typeof result === 'object'
+      ? (result as { previewDigest?: unknown }).previewDigest
+      : undefined;
+  if (typeof digest !== 'string' || !/^[0-9a-f]{64}$/.test(digest)) return;
+  await writeFile(join(outDir, GRANT_FILE), `${JSON.stringify({ owner, digest })}\n`, {
+    mode: 0o600,
+  });
 }
 
 function defaultCreateLock(input: {
@@ -207,7 +286,15 @@ export async function hmsProofRun(
   if (!resolved.ok) throw new Error('unknown_transport');
   assertLabRequest(args.request);
   assertWriteFlagsLab(args.command, env);
-  if (args.command !== 'find' && args.mode === 'commit' && !previewDigestOf(args.request)) {
+  if (args.command === 'attach' && args.mode !== 'commit') {
+    throw new Error('attach_preview_unsupported');
+  }
+  if (
+    args.command !== 'find' &&
+    args.command !== 'attach' &&
+    args.mode === 'commit' &&
+    !previewDigestOf(args.request)
+  ) {
     throw new Error('preview_digest_required');
   }
   const databaseUrl = env.DATABASE_URL;
@@ -229,10 +316,20 @@ export async function hmsProofRun(
   paneHmsWriteLoaders.lock = lock;
   paneStayLookupLoaders.lock = lock;
   try {
+    if (args.mode === 'commit' && args.command !== 'find' && args.command !== 'attach') {
+      restorePreviewGrant(args.outDir, owner, previewDigestOf(args.request));
+    }
     const result = await runCommand(args, resolved.target, lock, owner);
     await mkdir(args.outDir, { recursive: true });
+    if (args.mode === 'preview') await persistPreviewGrant(args.outDir, owner, result);
     const record = result as Record<string, unknown>;
-    const screenshots = await copyScreenshots(args.outDir, record.screenshots, record.runDir);
+    const screenshots = await copyScreenshots({
+      outDir: args.outDir,
+      screenshots: record.screenshots,
+      runDir: record.runDir,
+      runId: record.runId,
+      owner,
+    });
     const line = {
       command: args.command,
       propertyCode: resolved.target.propertyCode,
@@ -260,12 +357,19 @@ async function runCommand(
   const lastName = textField(args.request, 'lastName');
   const digest = previewDigestOf(args.request);
   if (args.command === 'find') {
-    return findStay({ confirmation, arrival }, { lock: () => lock, target });
+    return findStay(
+      { confirmation, arrival },
+      {
+        lock: () => lock,
+        target,
+        onRun: ({ runId, dir }) => registerPaneRun({ runId, dir, owner, now: Date.now() }),
+      },
+    );
   }
   if (args.command === 'create') {
     return runPaneStay({
       mode: args.mode,
-      stay: asStay(args.request),
+      stay: stayFromProofRequest(args.request),
       owner,
       previewDigest: digest,
       transportId: args.transportId,
@@ -301,13 +405,20 @@ async function runCommand(
   );
 }
 
+function proofExitCode(result: Record<string, unknown>): number {
+  if (result.status === 'refused') return 2;
+  const outcome = result.outcome;
+  if (typeof outcome === 'string' && /refus|fail|execution_failure/.test(outcome)) return 2;
+  return 0;
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
   Promise.resolve()
     .then(() => hmsProofRun(parseProofRunArgs(process.argv.slice(2))))
     .then(
       (result) => {
         process.stdout.write(`${JSON.stringify(result)}\n`);
-        process.exit(0);
+        process.exit(proofExitCode(result));
       },
       (error: unknown) => {
         process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
