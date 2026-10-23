@@ -120,14 +120,21 @@ export function stayIdOf(group: StayGroupRequirement): string {
   return group.stayId ?? `d:${stayKeyForGroup(group)}`;
 }
 
-/** The rows grouped into stays, in the order each stay's first row appears. */
+/** The rows grouped into stays, in the order each stay's first row appears. Same dates are one stay. */
 export function groupStays(groups: StayGroupRequirement[]): Array<{ id: string; rows: StayGroupRequirement[] }> {
-  const byId = new Map<string, StayGroupRequirement[]>();
+  const byDate = new Map<string, StayGroupRequirement[]>();
   for (const group of groups) {
-    const id = stayIdOf(group);
-    byId.set(id, [...(byId.get(id) ?? []), group]);
+    const id = stayKeyForGroup(group);
+    byDate.set(id, [...(byDate.get(id) ?? []), group]);
   }
-  return [...byId].map(([id, rows]) => ({ id, rows }));
+  return [...byDate].map(([id, rows]) => ({ id, rows }));
+}
+
+/** Rows a stay action names: an extracted stay id, or the date-set id the pane card uses. */
+function groupsForStayAction(groups: StayGroupRequirement[], stayId: string): StayGroupRequirement[] {
+  const byId = groups.filter((group) => stayIdOf(group) === stayId);
+  if (byId.length) return byId;
+  return groups.filter((group) => stayKeyForGroup(group) === stayId);
 }
 
 /** The room a row quotes: staff picks first, the server's projected roomTypeCode last. See rowRoomTypeCode. */
@@ -162,7 +169,7 @@ function lunaStayGroups(session: Pick<QuoteSession, 'analysis'>): LunaStayGroup[
 }
 
 function stayAskRows(session: QuoteSession, stayId: string): StayAskRow[] {
-  return session.groups.filter((group) => stayIdOf(group) === stayId) as StayAskRow[];
+  return groupsForStayAction(session.groups, stayId) as StayAskRow[];
 }
 
 function trimmedConfirmation(value: unknown): string | null {
@@ -231,11 +238,13 @@ function taskStayIds(session: QuoteSession, task: LunaAnalysisWire['tasks'][numb
   });
 }
 
-/** The action this stay card should show. Tasks bind by stay id. */
+/** The action this stay card should show. Tasks bind by stay id; a date-set card matches every row on those dates. */
 export function stayAskAction(session: QuoteSession, stayId: string): StayAskAction {
   const tasks = session.analysis?.luna?.tasks ?? [];
+  const ids = new Set(stayAskRows(session, stayId).map((row) => stayIdOf(row)));
+  ids.add(stayId);
   for (const task of tasks) {
-    if (!taskStayIds(session, task).includes(stayId)) continue;
+    if (!taskStayIds(session, task).some((id) => ids.has(id))) continue;
     const mapped = stayAskActionFromTask(task.kind);
     if (mapped) return mapped;
   }
@@ -1501,7 +1510,12 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           selectedStayKey:
             stays.length === 1
               ? stays[0]!.id
-              : session.selectedStayKey && groups.some((group) => stayIdOf(group) === session.selectedStayKey)
+              : session.selectedStayKey &&
+                  groups.some(
+                    (group) =>
+                      stayIdOf(group) === session.selectedStayKey ||
+                      stayKeyForGroup(group) === session.selectedStayKey,
+                  )
                 ? session.selectedStayKey
                 : null,
           reviewItems: unreadItems,
@@ -1901,17 +1915,19 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       return editStays(session, [...session.groups, row], new Set([stayKeyForGroup(row)]));
     }
     case 'add_row': {
-      const template = session.groups.find((group) => stayIdOf(group) === action.stayId);
+      const matching = groupsForStayAction(session.groups, action.stayId);
+      const template = matching[matching.length - 1];
       if (!template) return session;
-      const row = blankRow(`r_${action.token}`, action.stayId, {
+      const stayId = stayIdOf(template);
+      const row = blankRow(`r_${action.token}`, stayId, {
         arrivalDate: template.arrivalDate,
         departureDate: template.departureDate,
         board: template.board,
       });
       const groups = syncTotalRoomsForStay(
         session,
-        insertAfterStay(pinStay(session.groups, action.stayId), action.stayId, [row]),
-        action.stayId,
+        insertAfterStay(pinStay(session.groups, stayId), stayId, [row]),
+        stayId,
       );
       return editStays(session, groups, new Set([stayKeyForGroup(template)]));
     }
@@ -1954,18 +1970,21 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       return editStays(session, groups, new Set([stayKeyForGroup(source)]));
     }
     case 'duplicate_stay': {
-      const rows = session.groups.filter((group) => stayIdOf(group) === action.stayId);
+      const rows = groupsForStayAction(session.groups, action.stayId);
       if (!rows.length) return session;
       const stayId = `s_${action.token}`;
       const copies = rows.map((row, index) => copyRow(row, `r_${action.token}_${index}`, stayId));
-      const groups = insertAfterStay(pinStay(session.groups, action.stayId), action.stayId, copies);
+      const ids = new Set(rows.map((row) => row.id));
+      const last = session.groups.reduce((found, group, index) => (ids.has(group.id) ? index : found), -1);
+      const groups = [...session.groups.slice(0, last + 1), ...copies, ...session.groups.slice(last + 1)];
       const pairs = rows.map((row, index) => [row.id, copies[index]!.id] as const);
       return editStays(withDinnerCopies(session, pairs), groups, dateKeysOf(rows));
     }
     case 'remove_stay': {
-      const rows = session.groups.filter((group) => stayIdOf(group) === action.stayId);
+      const rows = groupsForStayAction(session.groups, action.stayId);
       if (!rows.length) return session;
-      const groups = session.groups.filter((group) => stayIdOf(group) !== action.stayId);
+      const ids = new Set(rows.map((row) => stayIdOf(row)));
+      const groups = session.groups.filter((group) => !ids.has(stayIdOf(group)));
       return editStays(session, groups, dateKeysOf(rows));
     }
     case 'restore_stay': {

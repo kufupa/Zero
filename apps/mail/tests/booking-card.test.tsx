@@ -1017,6 +1017,24 @@ describe('booking card pane save', () => {
     expect(screen.queryByText(/Booked in HMS/)).toBeNull();
   });
 
+  it('Book this stay commits each room row and shows both confirmation numbers', async () => {
+    const { client, commit } = paneClient();
+    commit
+      .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '11111-1' })
+      .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '22222-1' });
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    pickRoomChoices(0);
+    pickRoomChoices(1);
+    fireEvent.click(previewButton(0));
+    fireEvent.click(previewButton(1));
+    await screen.findAllByText(/Nothing is saved until you press Create provisional booking/);
+    fireEvent.click(screen.getByRole('button', { name: 'Book this stay' }));
+    await screen.findByText('Booked this stay – 11111-1, 22222-1');
+    expect(commit).toHaveBeenCalledTimes(2);
+    expect(screen.getByText('Booked in HMS – confirmation 11111-1')).toBeDefined();
+    expect(screen.getByText('Booked in HMS – confirmation 22222-1')).toBeDefined();
+  });
+
   it('sends stayId and workItemId with Book so the server can persist the confirmation', async () => {
     const { client, commit } = paneClient();
     const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });

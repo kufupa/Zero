@@ -226,6 +226,7 @@ function CopyRow({
 const PREVIEW_SHOT = 'filled.png';
 const SAVED_SHOT = 'saved.png';
 const CREATE_PROVISIONAL_LABEL = 'Create provisional booking';
+const BOOK_THIS_STAY_LABEL = 'Book this stay';
 const WRITES_OFF_LABEL = 'Booking writes are off — create in HMS';
 const LAB_WRITE_NOTE = 'This write is test-only. Book a real guest in HMS.';
 const textareaClass =
@@ -702,6 +703,39 @@ export function BookingCards({
     patchSave(roomKey, { preview });
   }
 
+  function roomKeyOf(room: BookingDraftReady['draft']['rooms'][number]): string {
+    return `${room.groupId}:${room.roomIndex}`;
+  }
+
+  function bookableRooms() {
+    return draft.draft.rooms.filter((room) => {
+      const childCount = Array.isArray(room.request.childAges) ? room.request.childAges.length : 0;
+      return childCount === 0;
+    });
+  }
+
+  function roomBuilt(room: BookingDraftReady['draft']['rooms'][number]) {
+    return paneStayInputForRoom(room.request, choices[roomKeyOf(room)] ?? NO_CHOICE);
+  }
+
+  function roomPreviewReady(room: BookingDraftReady['draft']['rooms'][number]): { stay: PaneStayInput; digest: string } | null {
+    const built = roomBuilt(room);
+    if (!built.stay) return null;
+    const preview = saves[roomKeyOf(room)]?.preview;
+    return preview?.status === 'ready' && preview.key === paneStayKey(built.stay)
+      ? { stay: built.stay, digest: preview.digest }
+      : null;
+  }
+
+  async function bookThisStay(pane: PaneStayClient) {
+    const pending = bookableRooms().filter((room) => saves[roomKeyOf(room)]?.commit?.status !== 'booked');
+    for (const room of pending) {
+      const ready = roomPreviewReady(room);
+      if (!ready) return;
+      await bookRoom(roomKeyOf(room), pane, ready.stay, ready.digest);
+    }
+  }
+
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
     const key = paneStayKey(stay);
     patchSave(roomKey, { commit: { status: 'running', key } });
@@ -1018,6 +1052,55 @@ export function BookingCards({
           </article>
         );
       })}
+      {client && savesOn ? <StayBookBar rooms={draft.draft.rooms} saves={saves} choices={choices} pane={client} onBookStay={bookThisStay} /> : null}
     </Section>
+  );
+}
+
+function StayBookBar({
+  rooms,
+  saves,
+  choices,
+  pane,
+  onBookStay,
+}: {
+  rooms: BookingDraftReady['draft']['rooms'];
+  saves: Record<string, RoomSaveState>;
+  choices: Record<string, RoomChoice>;
+  pane: PaneStayClient;
+  onBookStay: (pane: PaneStayClient) => Promise<void>;
+}) {
+  const bookable = rooms.filter((room) => !(Array.isArray(room.request.childAges) && room.request.childAges.length > 0));
+  if (!bookable.length) return null;
+  const numbers = bookable.flatMap((room) => {
+    const commit = saves[`${room.groupId}:${room.roomIndex}`]?.commit;
+    return commit?.status === 'booked' && commit.confirmationNumber ? [commit.confirmationNumber] : [];
+  });
+  const pending = bookable.filter((room) => saves[`${room.groupId}:${room.roomIndex}`]?.commit?.status !== 'booked');
+  const busy = bookable.some((room) => {
+    const save = saves[`${room.groupId}:${room.roomIndex}`];
+    return save?.preview?.status === 'running' || save?.commit?.status === 'running';
+  });
+  const allPreviewed = pending.every((room) => {
+    const key = `${room.groupId}:${room.roomIndex}`;
+    const built = paneStayInputForRoom(room.request, choices[key] ?? NO_CHOICE);
+    const preview = saves[key]?.preview;
+    return Boolean(built.stay && preview?.status === 'ready' && preview.key === paneStayKey(built.stay));
+  });
+  return (
+    <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+      {numbers.length > 0 ? (
+        <p className="text-[12.5px] font-semibold text-emerald-800">{`Booked this stay – ${numbers.join(', ')}`}</p>
+      ) : null}
+      {pending.length > 0 ? (
+        <PrimaryButton
+          disabled={!allPreviewed || busy}
+          disabledReason={!allPreviewed && !busy ? 'Preview in HMS first' : null}
+          onClick={() => void onBookStay(pane)}
+        >
+          {BOOK_THIS_STAY_LABEL}
+        </PrimaryButton>
+      ) : null}
+    </div>
   );
 }

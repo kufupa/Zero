@@ -271,6 +271,22 @@ describe('QuoteWorkflowPanel', () => {
     expect(onPatchGroup).toHaveBeenCalledWith('g-single', expect.objectContaining({ adults: 2 }));
   });
 
+  it('keeps one stay card when same-date rooms arrived as two extracted stay ids', () => {
+    const base = sessionFromFixture('mixed-same-dates');
+    const session = {
+      ...base,
+      groups: base.groups.map((group, index) => ({
+        ...group,
+        stayId: index === 0 ? 'stay-twin' : 'stay-queen',
+      })),
+    };
+    render(<QuoteWorkflowPanel session={session} />);
+    expect(screen.getByRole('heading', { name: /Stay 1 of 1/ })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /Stay 2 of 2/ })).toBeNull();
+    expect(screen.getAllByRole('group', { name: /^Rooms for stay 1, room \d$/ })).toHaveLength(2);
+    expect(screen.getAllByLabelText(/Arrival/i)).toHaveLength(1);
+  });
+
   it('adds another independent date range after extracted same-date rooms remain together', () => {
     render(<EditableStayPanel initial={sessionFromFixture('mixed-same-dates')} />);
     expect(screen.getAllByRole('heading', { name: /Stay 1 of 1/ })).toHaveLength(1);
