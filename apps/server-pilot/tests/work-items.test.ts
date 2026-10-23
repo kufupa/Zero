@@ -17,11 +17,16 @@ import {
   openStoredWork,
   parseFieldPath,
   PANE_STAY_ALREADY_BOOKED,
+  pickSavedStay,
   recordFieldEvent,
+  recordStayActionResult,
   recordStayCommit,
   refreshThreadWork,
+  savedStayPicksOf,
   stayCommitGuard,
+  stayCommitOf,
   storedAnalysis,
+  withStayActionResult,
   withStayCommit,
   storedTranslation,
   storedWorkFor,
@@ -3611,5 +3616,99 @@ describe('stay commit records on the work item', () => {
       const reopened = await readyWork(db, 'stay-commit-4');
       expect(reopened.stays[STAY_ONE]?.confirmationNumber).toBe('46184891-1');
       expect(reopened.analysis.groups.find((group) => group.stayId === STAY_ONE)?.arrivalDate).toBe('2027-10-25');
+    }));
+});
+
+describe('saved stay picks for later amend/cancel', () => {
+  const shot = { runId: '11111111-2222-3333-4444-555555555555', name: 'saved.png' };
+  const bookedOne = {
+    confirmationNumber: '46184891-1',
+    status: 'booked' as const,
+    screenshotRef: shot,
+  };
+  const bookedTwo = {
+    confirmationNumber: '57291630-1',
+    status: 'booked' as const,
+    screenshotRef: null,
+  };
+
+  it('lists only stays that already have a confirmation number', () => {
+    const state = withStayCommit(
+      withStayCommit({}, STAY_ONE, bookedOne),
+      STAY_TWO,
+      { confirmationNumber: null, status: 'unknown', screenshotRef: shot },
+    );
+    expect(savedStayPicksOf(state)).toEqual([
+      { stayId: STAY_ONE, confirmationNumber: '46184891-1', status: 'booked' },
+    ]);
+  });
+
+  it('picks the named stay, the only saved confirmation, or nothing until staff choose', () => {
+    const one = savedStayPicksOf(withStayCommit({}, STAY_ONE, bookedOne));
+    const two = savedStayPicksOf(
+      withStayCommit(withStayCommit({}, STAY_ONE, bookedOne), STAY_TWO, bookedTwo),
+    );
+    expect(pickSavedStay(one, null)).toEqual({
+      stayId: STAY_ONE,
+      confirmationNumber: '46184891-1',
+      status: 'booked',
+    });
+    expect(pickSavedStay(two, null)).toBeNull();
+    expect(pickSavedStay(two, STAY_TWO)).toEqual({
+      stayId: STAY_TWO,
+      confirmationNumber: '57291630-1',
+      status: 'booked',
+    });
+    expect(pickSavedStay(two, 's_missing1')).toBeNull();
+    expect(pickSavedStay([], STAY_ONE)).toBeNull();
+  });
+
+  it('stores an amend/cancel result on the chosen stay and leaves the other stay as it is', () => {
+    const before = withStayCommit(withStayCommit({}, STAY_ONE, bookedOne), STAY_TWO, bookedTwo);
+    const after = withStayActionResult(before, STAY_TWO, {
+      confirmationNumber: '57291630-1',
+      screenshotRef: shot,
+    });
+    expect(stayCommitOf(after, STAY_ONE)).toEqual(bookedOne);
+    expect(stayCommitOf(after, STAY_TWO)).toEqual({
+      confirmationNumber: '57291630-1',
+      status: 'booked',
+      screenshotRef: shot,
+    });
+  });
+
+  it('writes the action onto a stay that already has a confirmation, without touching the sibling', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'stay-action-1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'stay-action-1');
+      await recordStayCommit(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        stayId: STAY_ONE,
+        record: bookedOne,
+      });
+      await recordStayCommit(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        stayId: STAY_TWO,
+        record: bookedTwo,
+      });
+      expect(
+        await recordStayActionResult(db, {
+          transportId: CENTURION,
+          workItemId: work.workItemId,
+          stayId: STAY_TWO,
+          confirmationNumber: '57291630-1',
+          screenshotRef: shot,
+        }),
+      ).toEqual({ status: 'recorded' });
+      const reopened = await readyWork(db, 'stay-action-1');
+      expect(reopened.stays[STAY_ONE]).toEqual(bookedOne);
+      expect(reopened.stays[STAY_TWO]).toEqual({
+        confirmationNumber: '57291630-1',
+        status: 'booked',
+        screenshotRef: shot,
+      });
     }));
 });

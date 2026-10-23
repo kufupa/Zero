@@ -158,6 +158,54 @@ export function stayCommitGuard(record: StayCommitRecord | undefined): StayCommi
   return { action: 'commit' };
 }
 
+export type SavedStayPick = {
+  stayId: string;
+  confirmationNumber: string;
+  status: StayCommitStatus;
+};
+
+/** Stays that already have an HMS confirmation. Amend/cancel picks from this list. */
+export function savedStayPicksOf(state: WorkState): SavedStayPick[] {
+  const picks: SavedStayPick[] = [];
+  for (const [stayId, record] of Object.entries(stayCommitsOf(state))) {
+    if (!record.confirmationNumber) continue;
+    picks.push({
+      stayId,
+      confirmationNumber: record.confirmationNumber,
+      status: record.status,
+    });
+  }
+  return picks;
+}
+
+/** Named stay, the only saved confirmation, or null until staff choose among several. */
+export function pickSavedStay(
+  picks: readonly SavedStayPick[],
+  stayId: string | null | undefined,
+): SavedStayPick | null {
+  if (picks.length === 0) return null;
+  if (stayId) return picks.find((pick) => pick.stayId === stayId) ?? null;
+  return picks.length === 1 ? picks[0]! : null;
+}
+
+/** Writes an amend/cancel outcome onto one stay. Other stays are left as they are. */
+export function withStayActionResult(
+  state: WorkState,
+  stayId: string,
+  result: {
+    confirmationNumber: string;
+    screenshotRef: StayCommitScreenshotRef | null;
+  },
+): WorkState {
+  if (!STAY_ID_PATTERN.test(stayId)) return state;
+  const existing = stayCommitOf(state, stayId);
+  return withStayCommit(state, stayId, {
+    confirmationNumber: result.confirmationNumber,
+    status: existing?.status ?? 'booked',
+    screenshotRef: result.screenshotRef,
+  });
+}
+
 function screenshotRefFromPane(result: {
   runId?: string;
   screenshots?: string[];
@@ -1680,6 +1728,34 @@ export async function recordStayCommit(
     const existing = stayCommitOf(item.state, input.stayId);
     if (existing?.confirmationNumber) return { status: 'already_booked' as const };
     const state = withStayCommit(item.state, input.stayId, input.record);
+    await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+    return { status: 'recorded' as const };
+  });
+}
+
+export async function recordStayActionResult(
+  db: DB,
+  input: {
+    transportId: string;
+    workItemId: string;
+    stayId: string;
+    confirmationNumber: string;
+    screenshotRef: StayCommitScreenshotRef | null;
+  },
+): Promise<{ status: 'recorded' } | { status: 'not_found' }> {
+  if (!STAY_ID_PATTERN.test(input.stayId)) return { status: 'not_found' };
+  return db.transaction(async (tx) => {
+    const [item] = await tx
+      .select({ state: workItem.state })
+      .from(workItem)
+      .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
+      .limit(1)
+      .for('update');
+    if (!item) return { status: 'not_found' as const };
+    const state = withStayActionResult(item.state, input.stayId, {
+      confirmationNumber: input.confirmationNumber,
+      screenshotRef: input.screenshotRef,
+    });
     await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
     return { status: 'recorded' as const };
   });
