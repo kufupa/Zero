@@ -21,7 +21,7 @@ const stay = {
   lastName: 'Labtest',
   fields: { arrival: '2027-09-15' as const },
 };
-const owner = 'user-ropperman:transport-1';
+const owner = 'user-ropperman:transport-centurion';
 const DIGEST = 'ab'.repeat(32);
 
 function passingLock(): PaneStayLock {
@@ -100,7 +100,7 @@ function mailboxCaller() {
     auth: null as never,
     reqHeaders: new Headers(),
     sessionUser: { id: 'user-ropperman', email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
-    activeTransportId: 'transport-1',
+    activeTransportId: 'transport-centurion',
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);

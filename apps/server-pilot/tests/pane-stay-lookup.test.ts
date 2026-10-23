@@ -953,6 +953,7 @@ describe('paneStayLookup router', () => {
   });
 
   it('a Da Vinci mailbox findStay passes HRDAV; an unknown mailbox is refused before spawn', async () => {
+    vi.stubEnv('HMS_DAVINCI_READS', 'on');
     const seen: unknown[] = [];
     paneStayLookupLoaders.lock = passingLock();
     paneStayLookupLoaders.spawn = async (_input, target) => {
