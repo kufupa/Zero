@@ -208,6 +208,67 @@ export function resolveToolRunRecorder(
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,120}$/;
 const REFUSAL_CODES = new Set(['PRECONDITION_FAILED', 'BAD_REQUEST', 'NOT_FOUND', 'FORBIDDEN']);
 
+/** Closed quote-refusal catalog. Never thrown text, never guest fields. Unknown codes collapse to "refused". */
+const QUOTE_REFUSAL_REASONS = new Set([
+  'refused',
+  'not_found',
+  'unverified',
+  'refused_lock_busy',
+  'refused_lock_unavailable',
+  'refused_flag_off',
+  'invalid_extras',
+  'mail_not_found',
+  'quote_davinci_disabled',
+  'installation_unavailable',
+  'inputs_incomplete',
+  'database_unavailable',
+  'source_changed',
+  'not_ready',
+  'needs_input',
+  'native_quote_no_matching_rate',
+  'business_quote_policy_unavailable',
+  'business_party_identity_unavailable',
+  'business_party_lookup_unavailable',
+  'staff_quote_party_unavailable',
+  'staff_quote_party_invalid',
+  'staff_quote_party_changed',
+  'business_selected_joint_inventory_unavailable',
+  'business_selected_price_unavailable',
+  'business_quote_source_expired',
+  'native_quote_business_evidence_unavailable',
+  'native_quote_insufficient_inventory',
+  'native_quote_restricted_nights',
+  'native_quote_capture_scope_or_completeness_invalid',
+  'native_quote_capture_oversized',
+  'staff_quote_source_changed',
+]);
+
+const QUOTE_REFUSAL_ALIASES: Record<string, string> = {
+  HMS_LOCK_BUSY: 'refused_lock_busy',
+  QUOTE_DAVINCI_DISABLED: 'quote_davinci_disabled',
+};
+
+function catalogQuoteRefusalReason(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  if (QUOTE_REFUSAL_REASONS.has(value)) return value;
+  const aliased = QUOTE_REFUSAL_ALIASES[value];
+  return aliased && QUOTE_REFUSAL_REASONS.has(aliased) ? aliased : null;
+}
+
+/** Catalog reason for a thrown quote refusal. Never Error.message. Unknown identifiers become "refused". */
+export function quoteRefusalReason(error: unknown): string {
+  if (!error || typeof error !== 'object') return 'refused';
+  const cause =
+    'cause' in error && error.cause && typeof error.cause === 'object' ? error.cause : null;
+  if (cause) {
+    const fromReason = catalogQuoteRefusalReason((cause as { reason?: unknown }).reason);
+    if (fromReason) return fromReason;
+    const fromCode = catalogQuoteRefusalReason((cause as { code?: unknown }).code);
+    if (fromCode) return fromCode;
+  }
+  return 'refused';
+}
+
 /** Short operator text for a failed tool run. Never copied from Error.message, HMS HTML, or guest fields. */
 const FAILED_TOOL_MESSAGES: Record<string, string> = {
   execution_failure: 'HMS lookup failed',
@@ -227,6 +288,14 @@ function failedToolFields(code: string): ToolRunFields {
   };
 }
 
+function refusedToolFields(errorCode: string, error: unknown): ToolRunFields {
+  return {
+    status: 'refused',
+    errorCode,
+    result: { reason: quoteRefusalReason(error) },
+  };
+}
+
 /** The identifier a thrown error carries, or "unknown". Never the message. */
 export function toolErrorCode(error: unknown): string {
   const raw = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
@@ -240,7 +309,9 @@ export function toolErrorStatus(error: unknown): 'refused' | 'failed' {
 
 function classifyThrownError(error: unknown): ToolRunFields {
   const errorCode = toolErrorCode(error);
-  return toolErrorStatus(error) === 'failed' ? failedToolFields(errorCode) : { status: 'refused', errorCode };
+  return toolErrorStatus(error) === 'failed'
+    ? failedToolFields(errorCode)
+    : refusedToolFields(errorCode, error);
 }
 
 /** A tool's own answer, reduced to what the ledger keeps. */
@@ -585,7 +656,14 @@ export function classifyStaffQuote(value: {
   totalMinor?: number;
   currency?: string;
 }): ToolRunFields {
-  if (value.status !== 'ready') return { status: 'refused', errorCode: identifierOr(value.status, 'not_ready') };
+  if (value.status !== 'ready') {
+    const status = identifierOr(value.status, 'not_ready');
+    return {
+      status: 'refused',
+      errorCode: status,
+      result: { reason: catalogQuoteRefusalReason(status) ?? 'not_ready' },
+    };
+  }
   return {
     status: 'ok',
     workflowRunId: identifierOrNull(value.workflowRunId),
