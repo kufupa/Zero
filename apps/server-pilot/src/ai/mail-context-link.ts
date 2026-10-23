@@ -193,11 +193,13 @@ function letterForReply(
   replyEvent: MailContextEvent,
   askEvent: MailContextEvent,
   letters: readonly MailContextEvent[],
+  claimedLetters: ReadonlySet<string>,
 ): LetterCandidate | null {
   const replyMs = msAt(replyEvent.at);
   return (
     letters
       .map((letter) => {
+        if (claimedLetters.has(letter.id)) return null;
         const identity = letterIdentity(letter);
         if (!identity) return null;
         const delta = msAt(letter.at) - replyMs;
@@ -215,26 +217,46 @@ function letterForReply(
   );
 }
 
+function nextAskMs(askEvent: MailContextEvent, asks: readonly MailContextEvent[]): number {
+  const later = asks
+    .filter((row) => row.threadId === askEvent.threadId && msAt(row.at) > msAt(askEvent.at))
+    .sort((a, b) => msAt(a.at) - msAt(b.at))[0];
+  return later ? msAt(later.at) : Number.POSITIVE_INFINITY;
+}
+
 export function linkMailContext(events: readonly MailContextEvent[]): ContextLink[] {
-  const asks = events.filter((event) => event.role === 'ask');
+  const asks = events
+    .filter((event) => event.role === 'ask')
+    .sort((a, b) => msAt(a.at) - msAt(b.at));
   const replies = events.filter((event) => event.role === 'staff_reply');
   const letters = events.filter((event) => event.role === 'hms_letter');
   const links: ContextLink[] = [];
+  const claimedLetters = new Set<string>();
+  const claimedReplies = new Set<string>();
 
   for (const askEvent of asks) {
+    const until = nextAskMs(askEvent, asks);
     const laterReplies = replies
-      .filter((row) => row.threadId === askEvent.threadId && msAt(row.at) >= msAt(askEvent.at))
+      .filter(
+        (row) =>
+          row.threadId === askEvent.threadId &&
+          msAt(row.at) >= msAt(askEvent.at) &&
+          msAt(row.at) < until &&
+          !claimedReplies.has(row.id),
+      )
       .sort((a, b) => msAt(a.at) - msAt(b.at));
     let replyEvent: MailContextEvent | undefined;
     let candidate: LetterCandidate | null = null;
     for (const reply of laterReplies) {
-      candidate = letterForReply(reply, askEvent, letters);
+      candidate = letterForReply(reply, askEvent, letters, claimedLetters);
       if (candidate) {
         replyEvent = reply;
         break;
       }
     }
     if (!replyEvent || !candidate) continue;
+    claimedLetters.add(candidate.letter.id);
+    claimedReplies.add(replyEvent.id);
     const compared = compareStayFacts(askEvent.facts, candidate.letter.facts);
     links.push({
       label: CONTEXT_DATASET_LABEL,

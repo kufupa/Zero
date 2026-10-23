@@ -219,6 +219,22 @@ describe('linkMailContext', () => {
     expect(links[0]!.reply_id).toBe(maskContextId(bookingReplyId));
     expect(links[0]!.window_ms).toBe(8 * 60 * 1000);
   });
+
+  it('does not let an earlier ask claim a later ask confirmation letter', () => {
+    const laterAskId = 'ask-fixture-bravo';
+    const laterReplyId = 'reply-fixture-bravo';
+    const links = linkMailContext([
+      ask(),
+      reply({ id: 'reply-fixture-ack' }),
+      ask({ id: laterAskId, at: atOffset(40) }),
+      reply({ id: laterReplyId, at: atOffset(60) }),
+      letter({ at: atOffset(68) }),
+    ]);
+    expect(links).toHaveLength(1);
+    expect(links[0]!.ask_id).toBe(maskContextId(laterAskId));
+    expect(links[0]!.reply_id).toBe(maskContextId(laterReplyId));
+    expect(links[0]!.conf).toBe(CONF);
+  });
 });
 
 describe('runMailContextLinker', () => {
