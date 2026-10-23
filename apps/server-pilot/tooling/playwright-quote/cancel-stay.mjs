@@ -583,7 +583,7 @@ async function closeCancelDialog(page, dialog) {
 
 // Preview on a borrowed CDP can leave the reason/penalty window open. Commit then finds that dialog
 // instead of the Guest Stay list. Escape / the window close tool only — never OK, never Waive.
-async function dismissLeftoverCancelWindows(page) {
+export async function dismissLeftoverCancelWindows(page) {
   const leftover = page.locator('.x-window:visible').filter({
     hasText: /Cancellation Reason|cancellation penalty/i,
   });
