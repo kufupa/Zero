@@ -5,7 +5,7 @@ Updated 2026-10-22 after the DV install run (paused for retro). Already imported
 ## DV install run — 2026-10-22 day (Opus) — paused for retro
 
 - **Live `e5231310a`** (deploy 3 at 14:37Z; last-good `e4d74f6fb`). Health 200/200, 4 procs. Flags on all 4 procs (`/proc` 15:47Z): every `PANE_WRITE_*=lab`, `HMS_DAVINCI_CREATE=lab`, `HMS_DAVINCI_READS=on`. Centurion real-guest create was `on` 12:07–15:47Z, then back to `lab` (owner: testing only, ask 181).
-- Merged today: #476, #480–#487. Open: #488 (dialog logging; gates incomplete), #479 (SR3 retro; needs timing fix, solutions note, spend line), #462, #463.
+- Merged today: #476, #479 (SR3 retro closeout), #480–#487, #489. Open: #488 (dialog logging; gates incomplete), #462, #463.
 - DV create: **not proven** (7 runs, 2 Saves, 0 bookings). DV requires Reservation Note; Save 2 hung on the mask. DV quote: blocked on Centurion-only rate-policy source and 6/10 truth threads.
 - Next acceptance: one read-only DV create preflight reporting every blocker, then one Labtest Save with dialog logging (#488). Holds: no real-guest writes; no Faith pairing code until the multi-mailbox design (ask 179) is approved. [Retro](ledger/2026-10-22-dv-install-retro.md) · [Stagehand decision](../research/2026-10-22-stagehand-hms-decision.md).
 
