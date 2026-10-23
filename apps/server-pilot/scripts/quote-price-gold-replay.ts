@@ -319,15 +319,18 @@ export function parseQuotePriceGoldReplayArgs(argv: readonly string[]): QuotePri
 function parseFixtureJsonl(text: string): QuoteAskFixture[] {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (!lines.length) throw codedError('fixture_empty');
+  const seen = new Set<string>();
   return lines.map((line) => {
     const row = JSON.parse(line) as QuoteAskFixture;
     if (
       !row?.id ||
+      seen.has(row.id) ||
       (row.hotel !== 'HRCEN' && row.hotel !== 'HRDAV') ||
       askedAtMs(row.askedAt ?? '') === null
     ) {
       throw codedError('invalid_fixture');
     }
+    seen.add(row.id);
     return row;
   });
 }
