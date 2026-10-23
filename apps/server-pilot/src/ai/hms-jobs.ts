@@ -62,6 +62,7 @@ import {
   type AvailabilityRequest,
 } from './hms-availability.js';
 import {
+  catalogQuoteRefusalReason,
   classifyFind,
   classifySearch,
   classifyStaffQuote,
@@ -2702,13 +2703,13 @@ function staffQuoteTransientFailure(error: unknown): boolean {
       }
       if (typeof code === 'string' && STAFF_QUOTE_TRANSIENT_CODES.has(code)) return true;
       if (current instanceof TRPCError && current.code === 'INTERNAL_SERVER_ERROR') return true;
-      // Refusal detail (tRPC wraps a plain { alternatives } or { reason } cause in an Error) is not
-      // an unknown failure. Catalog `reason` is a permanent refusal, not a retry.
+      // Refusal detail (tRPC wraps a plain { alternatives } or catalog { reason } cause in an Error)
+      // is not an unknown failure. Unexpected codes on `reason` stay retryable.
       if (
         depth > 0 &&
         current instanceof Error &&
         !('alternatives' in current) &&
-        typeof (current as { reason?: unknown }).reason !== 'string' &&
+        catalogQuoteRefusalReason((current as { reason?: unknown }).reason) == null &&
         !(current instanceof TRPCError) &&
         !STAFF_QUOTE_BUSINESS_CODES.has(staffQuoteErrorCode(current))
       ) {

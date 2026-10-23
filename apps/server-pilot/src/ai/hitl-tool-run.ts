@@ -263,7 +263,7 @@ const QUOTE_REFUSAL_ALIASES: Record<string, string> = {
   QUOTE_DAVINCI_DISABLED: 'quote_davinci_disabled',
 };
 
-function catalogQuoteRefusalReason(value: unknown): string | null {
+export function catalogQuoteRefusalReason(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   if (QUOTE_REFUSAL_REASONS.has(value)) return value;
   const aliased = QUOTE_REFUSAL_ALIASES[value];

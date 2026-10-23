@@ -1165,6 +1165,11 @@ describe('staff_quote HMS job execution', () => {
     })],
     ['unknown error', new Error('unexpected_native_quote_error')],
     ['internal tRPC error', new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Internal failure.' })],
+    ['unexpected EIO copied onto reason', new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'Staff quote execution failed.',
+      cause: { name: 'Error', code: 'EIO', reason: 'EIO', message: 'Staff quote execution failed.' },
+    })],
   ])('retries transient staff quote failures: %s', async (_label, error) => {
     const { run, fence } = fixture();
     jobMocks.runStaffQuote.mockRejectedValue(error);
