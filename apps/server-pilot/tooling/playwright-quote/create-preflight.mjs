@@ -4,7 +4,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseCreateProperty, INFORMATIONAL_NO_ROOMS_MESSAGE } from './create-lab-stay.mjs';
+import { parseCreateProperty, INFORMATIONAL_NO_ROOMS_MESSAGE, waitHmsMaskCleared } from './create-lab-stay.mjs';
 import { loadCreateRequest, optionalPartyAndNoteFills, parseOutDir, shopResult } from './create-request.mjs';
 import { profileFor } from './property-profile.mjs';
 import { searchGuestOnOpenGuestStay } from './stay-lookup.mjs';
@@ -249,7 +249,14 @@ async function captureSnapshot(page, { stay, propertyCode, profile, searchGuest 
     errors.push('availability');
   }
   await openGuestStayScreen(page);
-  await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
+  await waitHmsMaskCleared(page).catch((error) => {
+    errors.push(`mask:${String(error?.message || error).slice(0, 80)}`);
+  });
+  try {
+    await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
+  } catch (error) {
+    errors.push(`nav:${String(error?.message || error).slice(0, 80)}`);
+  }
   await page.locator('input[name="lastname"]:visible, textarea[name="reservationnote"]:visible').first().waitFor().catch(() => {});
   await fillCreateForm(page, stay).catch(() => {});
   let fields = await page.evaluate(inspectCreateFields).catch(() => null);
@@ -326,6 +333,17 @@ async function main(argv = process.argv.slice(2)) {
     const result = await runCreatePreflight({ context, page, stay: loaded.request, propertyCode, profile, outDir: dir });
     process.stdout.write(`${JSON.stringify({ blockers: result.blockerLabels, clickedSave: false })}\n`);
     process.exitCode = preflightExitCode(result);
+  } catch (error) {
+    const payload = {
+      propertyCode,
+      blockers: [{ kind: 'nav', field: 'New Record' }],
+      blockerLabels: ['blocker:nav'],
+      clickedSave: false,
+      captureError: String(error?.message || error).slice(0, 300),
+    };
+    await writeFile(join(dir, 'preflight.json'), JSON.stringify(payload, null, 2)).catch(() => {});
+    process.stderr.write(`${error?.message || error}\n`);
+    process.exitCode = 1;
   } finally {
     await context.close().catch(() => {});
   }
