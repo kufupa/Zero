@@ -276,6 +276,22 @@ Disjoint at T0: **U1, U2a, U3, U6, U10-F1, U11, U13** (7 lanes). U0 and U9 are q
 | State | `/tmp/g1023/state.md`, append-only, timestamp on every phase change. Hand off at ~150k context |
 | Stop | New merges stop T+435. Final deploy T+450. Proof queue continues per D6. Report into ACTIVE.md + the run retro |
 
+### 6c. Orchestration, models and parallelism
+
+| Role | Model (effort) | Count at once | Evidence for the choice |
+|---|---|---:|---|
+| Orchestrator (merges, deploys, HMS queue, switch flips in its chat) | Grok 4.6 high, Orca `g-orch` | 1 | owner 2026-10-23 (D4); SR3 ran with it, failures were idle ticks + wrong-tree deploy, now guarded (§6 tick rule, U6 guard) |
+| Coders, one per unit | Grok 4.6 high, Orca child worktree + terminal, `--no-subagents` | **7 at T0**, then up to 9 | file ownership §5: 7 disjoint units at T0; AGENTS.md "unbounded writers iff disjoint files" |
+| PR review | Greptile Plus; Apex for U0, U1, U7, U9 or > 500 lines | 1 per PR | memory `feedback-greptile-plus-vs-apex` |
+| Review-comment fixes | the same Grok 4.6 coder | — | owner pipeline §6 Gates |
+| Scoping / research (U2b probe, U5-E write-up, U11 corpus) | Luna max via the Sonnet slot | ≤ 3 | cheap cache reads; AGENTS.md research limits |
+| Selector design from saved dumps | Codex GPT-6.1 Sol, offline only (D5) | on demand | PRODUCT: no LLM drives HMS |
+| Watchdog + hold backstop | Opus 5.5 (this chat) | every 50 min | owner (D3) |
+| Live HMS | deterministic U0 runner only | 2 (one per hotel slot) | D1; per-property advisory lock |
+| Remote checks | `remote-typecheck.sh`, EC2 tests | queued per PR, run in parallel with Greptile | AGENTS.md gates rule |
+
+**Cost:** no measured Grok $ per run is on file (Codeburn later, owner). Opus watchdog ≈ 13 ticks × ~60k cached context ≈ 13 × ~$0.30 ≈ **$4** (cache read $0.20/M + ~3k output); ballpark, not measured.
+
 ### 6a. Break → fix protocol (in every lane brief verbatim; owner ask 188)
 
 > When something breaks, the job is to find and ship the best, cleanest fix, not to stop or report "blocked".
@@ -400,27 +416,27 @@ Two never-completed write types (HRCEN amend + POP) are 360 of those minutes. If
 | T+435 | merge stop | | |
 | T+450 | **Final deploy** | amend finishes ~T+460 → quote → multi-stay → POP (D6) | multi-stay → POP |
 
-## 9a. Go-live switch schedule (owner ask 200)
+## 9a. Go-live switch schedule (owner asks 200, 201) — times in **UK** (BST = UTC+1)
 
-**The switches are per workflow** (`PANE_WRITE_CREATE`, `PANE_WRITE_AMEND_UNPAID`, `PANE_WRITE_CANCEL_UNPAID`; the `*_PAID` ones stay off). "On" still means staff click Book/Amend/Cancel and review the screenshot; Nava never writes on its own.
+**Owner 2026-10-23 02:30 UK:** nobody uses the app before **09:30 UK** (08:30Z). So:
+- **Deploy on every green merge** until 09:30 UK; no batching into D-A/D-B/D-C. Batching only existed to protect staff, and there are none.
+- After 09:30 UK: batch deploys, and pause proofs for a hotel when staff HMS waits exceed 2 min.
+- U0 starts at T0 **stacked on the U1 branch** (not after U1 merges), which moves the first deploy from T+130 to **≈ T+100**.
 
-**Rule:** a workflow switches `lab → on` for one hotel as soon as its Labtest cell passes on the **currently deployed** SHA. It doesn't wait for the 7.5 h mark or the whole grid. A later deploy that touches that workflow's files triggers a ~10 min re-proof before the switch stays on. The flip is done by Opus in the executing chat (the approval stays in that chat), with a `/proc` check on all 4 procs.
+**Switch rule:** a workflow goes `lab → on` (`PANE_WRITE_CREATE`, `PANE_WRITE_CANCEL_UNPAID`, `PANE_WRITE_AMEND_UNPAID`; `*_PAID` stay off) for one hotel as soon as its Labtest cell passes on the **live** SHA. It doesn't wait for 7.5 h or the full grid. A later deploy that touches the workflow → ~10 min re-proof. Opus flips it in the executing chat, then checks `/proc` on all 4 procs. "On" still means staff click and review the screenshot.
 
-Clock assumes T0 = 01:45Z (staff start 05:00Z = T+195):
+T0 ≈ 02:50 UK:
 
-| Workflow | Centurion on (≈ UTC / SAST) | Da Vinci on | Notes |
+| Workflow | Centurion on | Da Vinci on | Why that long |
 |---|---|---|---|
-| Quote PDF/Excel + Find booking | **already live** | DV quote after D-B + a 3-thread check ≈ 05:45Z / 07:45 | quote price bar not passed (score runs later); staff review every quote |
-| Create provisional | ≈ 05:25Z / 07:25 | ≈ 05:50–06:45Z | DV +55 min if preflight finds a new blocker |
-| Cancel unpaid | ≈ 06:25Z / 08:25 | ≈ 06:45Z | |
-| Amend unpaid | ≈ 09:25Z / 11:25 | ≈ 09:55Z | only if U5-E deposit check passes; otherwise it stays lab and the pane says "Amend in Infor" |
-| Multi-stay | ≈ 10:50Z / 12:50 | ≈ 11:20Z | uses the create switch; per-stay UI ships in D-B/D-C |
-| POP attach | ≈ 13:50Z / 15:50 | after the DV Documents probe | until then the pane says "Download to this computer" |
+| Quote PDF/Excel + Find | already live | ≈ 06:30 (U2b deploy + 3-thread check) | U2b 60 min + gates |
+| Create provisional | **≈ 06:00** | ≈ 06:15–07:10 | code to first deploy ≈ 100 min (U1 → U0 stacked, U3 preflight, U4 readback), then 90 min HRCEN proof |
+| Cancel unpaid | ≈ 07:00 | ≈ 07:20 | 60 min after create (pane path + penalty states) |
+| Amend unpaid | ≈ 10:00 | ≈ 10:30 | never committed before: 180 min; only if U5-E passes |
+| Multi-stay | ≈ 11:25 | ≈ 11:55 | |
+| POP attach | ≈ 14:25 | later | never confirmed before: 180 min |
 
-**Staff impact during the run:**
-- Deploys D-B (≈ 05:25Z), D-C (≈ 07:25Z) and the final one (≈ 09:15Z) land in staff hours. Each causes a ~1 min restart; the pane picks up the new bundle on reload.
-- Proof jobs share the hotel's HMS browser with staff. U0 takes the property lock **per job, not per cell**, so a staff lookup waits at most one proof job (~1–3 min; commit p50 35 s, lookup p50 18 s).
-- If staff waits exceed 2 min, the orchestrator pauses the proof queue for that hotel.
+**At 09:30 UK when staff start:** quote + find (both hotels), create (both), cancel (both) are on. Amend lands ~30 min later, then multi-stay and POP during the day.
 
 ## 10. Scope boundaries
 
