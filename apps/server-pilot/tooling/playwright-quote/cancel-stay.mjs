@@ -509,7 +509,23 @@ export async function openRecord(page, row) {
   );
   if ((await gridRow.count()) > 0) await gridRow.first().dblclick();
   else await row.dblclick();
-  await page.locator('input[name="confirmationnumber"]:visible').first().waitFor({ timeout: 8000 });
+  // Recovery openGuestStay toggles a.app-menu-trigger; the drawer covers the
+  // left column (confirmationnumber). Close it before reading. lastname lives
+  // on the uncovered Guest column and is the snapshotRecordForm signal.
+  const frontDesk = page.locator('span.x-tree-node-text:visible').filter({ hasText: /^Front Desk$/ });
+  if ((await frontDesk.count()) > 0) {
+    await page.locator('a.app-menu-trigger:visible').first().click().catch(() => {});
+    await frontDesk.first().waitFor({ state: 'hidden', timeout: 2000 }).catch(() => {});
+  }
+  await page.waitForFunction(() => {
+    const shown = (el) => {
+      const box = el.getBoundingClientRect();
+      return box.width > 0 && box.height > 0;
+    };
+    return ['lastname', 'confirmationnumber', 'status', 'arrivaldate'].some((name) =>
+      [...document.querySelectorAll(`input[name="${name}"]`)].some(shown),
+    );
+  }, { timeout: 20000 });
   await page.waitForTimeout(1000);
 }
 

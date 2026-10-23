@@ -595,6 +595,10 @@ test('openRecord opens the ExtJS grid row with dblclick, matching stay-lookup/re
   assert.match(body, /gridRow\.first\(\)\.dblclick\(/);
   assert.match(body, /else await row\.dblclick\(/);
   assert.equal(/click\(\s*\{\s*force:\s*true/.test(body), false);
+  assert.match(body, /app-menu-trigger/);
+  assert.match(body, /lastname/);
+  assert.match(body, /timeout:\s*20000/);
+  assert.equal(/timeout:\s*8000/.test(body), false);
 });
 
 // ---- Snapshot pairing and panel parsing (pure: the DOM is covered by stay-lookup-dom.test.mjs) ----
