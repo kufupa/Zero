@@ -42,7 +42,7 @@ The code was not the problem. Each attempt found the next blocker, because no st
    - nav node visible in the viewport
 
    SR3: the first clean Save came 3 min after a fresh page + availability shop (06:33 → 06:36Z).
-2. **Long HMS jobs never run through synchronous SSM.** Start them with `systemd-run` on EC2 and poll a result file.
+2. **Long HMS jobs never run through synchronous SSM.** Start them with `apps/server-pilot/deploy/hms-job.sh` (`systemd-run --unit hms-job-<id>`, no `--wait`; lock is U0's `createPostgresPropertyReadLock`; `poll <id>` reads `systemctl` + `/var/log/nava/hms-jobs/<id>/result.json`).
 3. **Deploy only from `.worktrees/recover-parse-failure`.** SR3 completed one deploy from a lane tree and started a second. A text rule failed twice, so a code guard in `ops-deploy.sh` is the fix.
 4. **Readback is a pass bar.** `committed_unverified` with a number on screen is a bug, not a by-spec result.
 5. **Budget from measured proof times**, not code medians: ≥120 min to first click and ≥180 min to first confirmed number for a new property or write type, until 3 clean nights.
