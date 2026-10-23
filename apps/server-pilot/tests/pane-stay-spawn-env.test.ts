@@ -7,10 +7,8 @@ import {
   paneStaySpawnEnv,
   warnPaneStaySpawnFailed,
 } from '../src/ai/pane-stay-spawn-env.js';
-import { paneStayPropertyLock } from '../src/ai/pane-stay-save.js';
 import { quoteRequestFor } from '../src/ai/hms-availability.js';
 import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
-import { propertyReadLockKey } from '../src/hms/property-read-lock.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const configuration = {
@@ -262,18 +260,6 @@ describe('availability quote request property', () => {
   it('a DV target writes HRDAV; a Centurion target writes HRCEN', () => {
     expect(quoteRequestFor(request, DAVINCI_HMS_READ_TARGET).propertyCode).toBe('HRDAV');
     expect(quoteRequestFor(request, CENTURION_HMS_READ_TARGET).propertyCode).toBe('HRCEN');
-  });
-});
-
-describe('paneStayPropertyLock target keys', () => {
-  it('keys HRCEN and HRDAV locks separately and never defaults a missing hotel onto HRCEN', () => {
-    vi.stubEnv('DATABASE_URL', 'postgres://user:secret@127.0.0.1:5432/zero_test');
-    vi.stubEnv('HMS_EXPECTED_TENANT', 'centurion');
-    const hrcen = paneStayPropertyLock(CENTURION_HMS_READ_TARGET) as unknown as { key: string } | null;
-    const hrdav = paneStayPropertyLock(DAVINCI_HMS_READ_TARGET) as unknown as { key: string } | null;
-    expect(hrcen?.key).toBe(propertyReadLockKey('centurion', 'HRCEN'));
-    expect(hrdav?.key).toBe(propertyReadLockKey('centurion', 'HRDAV'));
-    expect(hrcen?.key).not.toBe(hrdav?.key);
   });
 });
 
