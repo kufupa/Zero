@@ -1,6 +1,6 @@
 # S2 — Da Vinci quote-rate answer key
 **Answer:** Prod DB has 1,931 DV staff outbound messages. It has no extracted outbound PDF/Excel text. So actual rate/room/board/nightly-price answer key and agency→strategy map stay unverified. Body scan found 15 crude full-field candidates; zero validated rows.
-- Required context read; `origin/main` `1656bca50`. `copy.ts` has no DV aliases; actual list: [`mailbox-hms-origin-bind.ts`](/home/ubuntu/projects/zero/.worktrees/oct18-c1-classify/apps/server-pilot/src/hms/mailbox-hms-origin-bind.ts#L7-L44).
+- Required context read; `origin/main` `1656bca50`. `copy.ts` has no DV aliases; actual list: [`mailbox-hms-origin-bind.ts`](../../apps/server-pilot/src/hms/mailbox-hms-origin-bind.ts#L7-L44).
 - No guest names, emails, phone numbers, raw message text, or S3 keys included.
 ---
 
