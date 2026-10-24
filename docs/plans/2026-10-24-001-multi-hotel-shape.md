@@ -86,16 +86,17 @@ One property registry replaces two-hotel branches. Every mailbox maps to one hot
 
 | Decision | Why | Evidence |
 |---|---|---|
-| Registry = new workspace package `packages/property-registry` (JSON + small ESM resolver + `.d.mts`) | Must be read by server TS, server `.mjs` HMS tooling and `apps/mail`; a TS-only server module serves one of three | P1 §2 |
+| Registry = extend `apps/server-pilot/tooling/playwright-quote/property-registry.mjs` (+ `.d.mts` types); no new package. `apps/mail` gets the property from the server (pane-config read), never its own transport map | Server TS and `.mjs` tooling can both import it; mail imports nothing from server-pilot today, so a package is plumbing (Grok #9) | P1 §2, Grok review #9 |
 | Registry holds identifiers + secret/env *names*, never secrets | Secrets stay in Secrets Manager/env | P1 §2 |
 | Existing property profiles (`tooling/playwright-quote/property-profiles/*.json`) stay as the rooms/rates/fields data; registry points at them | Avoid moving data twice; profiles already hold HRDAV rooms/strategies/required fields | A1 §2, P2 §3 |
+| One refuse helper; every `'HRCEN'` default in `apps/server-pilot/src` (45 today) is either removed or on a reviewed allowlist (CLI dev defaults only); U10 asserts the count | Grok found 12 silent fallbacks outside the U1/U3 file lists (Grok #1) | Grok #1 |
 | Pane gets one `mailboxProcedure` "pane config" read resolved from `ctx.activeTransportId` server-side | Caller never chooses the hotel; both surfaces share `NavaPane` | P2 §2 |
 | No property-grant table | Owner Q3: per-mailbox grants | owner 2026-10-24 |
-| Strategy shops run serially in **one** job, one login, one property lock | One browser per hotel; N jobs would N× logins | P3 S6 |
+| BAR is shopped in the staff quote job; every other allowed strategy is its **own** queued job (one shop each), serial on the hotel's one browser slot | Staff quote claim budget is 7 min (`run-ledger.ts`); 6 shops in one job would blow it (Grok #2) | P3 S6, Grok #2 |
 | Allowed strategies per hotel are registry data confirmed by a read-only HMS DOM read, not the dropdown list | HRDAV dropdown has 9 values, STO absent; dropdown ≠ entitlement | P3 S6, P2 §4 |
 | Dedupe key = property + normalized Message-ID header + read kind; null header stays per copy | Different read kinds do different work; null headers must not collide | P3 S5 |
-| Reply trust widens to exact addresses any same-hotel mailbox sent from; never whole-domain | Keeps forged-From protection | `work-items.ts` knownSenders, P3 S5(c) |
-| Party sender map gets `property_code`, backfill HRCEN, PK `(property_code, host)` | Host-only key merges an agency across hotels | P3 S7 |
+| Reply trust widens to exact addresses any same-hotel mailbox sent from; **exact equality**, not today's substring match; never across hotels | `knownSenders` uses `strpos`, so faith@ matches notfaith@ (Grok #5) | `work-items.ts` knownSenders, Grok #5 |
+| Party sender map gets `property_code`, PK `(property_code, host)`; backfill HRCEN only after a read-only count proves every row was CEN-written, else abort | Host-only key merges an agency across hotels; "all rows are CEN" is an assumption (Grok #7) | P3 S7, Grok #7 |
 | CLI-only default `--property HRCEN` in tooling stays; it is never a mailbox fallback | Dev ergonomics; not a staff path | P1 §1 |
 
 ### High-Level Technical Design
@@ -142,15 +143,15 @@ LOC = product lines (tests excluded), from sizing lanes P1–P3 (`docs/research/
 
 #### U1. Property registry package + mailbox resolver (unknown refuses)
 
-**Goal:** One source of truth for property ↔ transports ↔ HMS identifiers. **Requirements:** R1. **Dependencies:** none. **Coder:** Luna. **LOC:** 180–260. **Files:** new `packages/property-registry/{package.json,registry.json,index.mjs,index.d.mts}`; modify `apps/server-pilot/src/hms/{hms-read-target,hms-quote-target,mailbox-hms-origin-bind}.ts`, `apps/server-pilot/src/ai/{pane-stay-spawn-env,pane-stay-save}.ts`, `apps/server-pilot/tooling/playwright-quote/{property-registry,property-profile}.mjs`, `apps/mail/lib/quote-proposal/copy.ts`, both `package.json`, `pnpm-lock.yaml`. Tests: `apps/server-pilot/tests/{hms-read-target,hms-quote-target,hms-property-registry,mailbox-hms-origin-bind,pane-stay-spawn-env,pane-stay-save}.test.ts`, `apps/server-pilot/tooling/playwright-quote/property-profile.test.mjs`, `apps/mail/tests/quote-proposal.test.ts`. **Approach:** registry maps all 5 DV transports + davinci@ to HRDAV, centurion@ to HRCEN; `transport-nava` explicitly mapped (owner check: HRCEN today). Resolver returns property or a typed refusal. **Patterns:** existing fail-closed tooling registry (`property-registry.mjs` throws `hms_property_unknown`). **Test scenarios:** each of the 7 live transports resolves to the expected code; unknown transport → refusal, no HRCEN; inactive example transports → refusal; `quotePropertyCodeForTransport('')` → refusal not HRCEN; registry JSON schema rejects duplicate transport across two properties. **Verification:** grep finds no remaining "else HRCEN" in the resolvers listed.
+**Goal:** One source of truth for property ↔ transports ↔ HMS identifiers. **Requirements:** R1. **Dependencies:** none. **Coder:** Luna. **LOC:** 120–200. **Files:** new `apps/server-pilot/tooling/playwright-quote/property-registry.d.mts`, new `apps/server-pilot/src/hms/property-refusal.ts` (one refuse helper + cause class); modify `apps/server-pilot/src/hms/{hms-read-target,hms-quote-target,mailbox-hms-origin-bind}.ts`, `apps/server-pilot/src/ai/{pane-stay-spawn-env,pane-stay-save}.ts`, `apps/server-pilot/tooling/playwright-quote/{property-registry,property-profile}.mjs`, `apps/mail/lib/quote-proposal/copy.ts` (stop defaulting to HRCEN; full removal of its map in U8). Tests: `apps/server-pilot/tests/{hms-read-target,hms-quote-target,hms-property-registry,mailbox-hms-origin-bind,pane-stay-spawn-env,pane-stay-save}.test.ts`, `apps/server-pilot/tooling/playwright-quote/property-profile.test.mjs`, `apps/mail/tests/quote-proposal.test.ts`. **Approach:** registry maps all 5 DV transports + davinci@ to HRDAV, centurion@ to HRCEN; `transport-nava` explicitly mapped (owner check: HRCEN today). Resolver returns property or a typed refusal. **Patterns:** existing fail-closed tooling registry (`property-registry.mjs` throws `hms_property_unknown`). **Test scenarios:** each of the 7 live transports resolves to the expected code; unknown transport → refusal, no HRCEN; inactive example transports → refusal; `quotePropertyCodeForTransport('')` → refusal not HRCEN; registry JSON schema rejects duplicate transport across two properties. **Verification:** the 45 `'HRCEN'` defaults are listed in the PR with an owner unit for each (U3a/U3b/U4b/U8); none left unowned.
 
 #### U2. Seed the prod-only DV mailbox grants
 
-**Goal:** Re-seed can't wipe DV access. **Requirements:** R5. **Dependencies:** none. **Coder:** Grok 4.6 (auth). **LOC:** 20–45. **Files:** `apps/server-pilot/src/db/seed.ts`; test `apps/server-pilot/tests/seed-contract.test.ts`. **Approach:** first a read-only prod query listing the 6 extra grants (user id, transport, role, default) without passwords; add them and any missing user to `PILOT_USERS`/`applyPilotMailboxAccess`. **Test scenarios:** seed contract lists all 13 grants; Faith and Ayanda each have their own mailbox + davinci@; no user pruned. **Verification:** seed-contract green; **no `seed:prod` run** (hold; `provision:prod` additive only if owner asks).
+**Goal:** Re-seed can't wipe DV access. **Requirements:** R5. **Dependencies:** none. **Coder:** Grok 4.6 (auth). **LOC:** 20–45. **Files:** `apps/server-pilot/src/db/seed.ts`; test `apps/server-pilot/tests/seed-contract.test.ts`. **Approach:** first a read-only prod query listing the 6 extra grants (user id, transport, role, default) without passwords; add them and any missing user to `PILOT_USERS`/`applyPilotMailboxAccess`. **Test scenarios:** seed contract lists all 13 grants; Faith and Ayanda each have their own mailbox + davinci@; no user pruned. **Verification:** seed-contract green. Prod apply only via `provision:prod --apply` (insert-only), owner hold; **never `seed:prod`** (it prunes users not in `PILOT_USERS`, `seed.ts:416`).
 
-#### U3. HMS target, slot, installation and job guards from registry
+#### U3. HMS target, slot, installation and job guards from registry (two PRs: U3a target/runtime/env/worker/installation; U3b `hms-jobs.ts` guards + quote-followup + agent-pane-adapter)
 
-**Goal:** Remove two-hotel unions and CEN-only guards. **Requirements:** R1, R8, R9. **Dependencies:** U1. **Coder:** Grok 4.6. **LOC:** 300–450 (split into U3a target/runtime/installation and U3b `hms-jobs.ts` guards if diff > 500). **Files:** `apps/server-pilot/src/hms/{hms-read-target,hms-quote-target,production-runtime,browser-artifacts}.ts`, `apps/server-pilot/src/ai/{staff-quote-installation,pane-stay-spawn-env,pane-stay-save,hms-jobs}.ts`; call sites in P1 §3. Tests: `apps/server-pilot/tests/{hms-read-target,hms-quote-target,hms-jobs,hms-runtime,staff-quote-installation,pane-stay-spawn-env,pane-stay-save,hms-property-read-lock}.test.ts`, `hms-slot-hrdav-install.test.mjs`. **Approach:** target = registry entry's origin, secret ref, slot, installation; readiness check refuses a flag `on` for a property missing any of them (G3); refusal carries cause class (R9). **Test scenarios:** HRDAV quote job uses the HRDAV slot + installation; HRCEN unchanged; property missing installation → `not_set_up` refusal before HMS; lock keys differ per property; a DV-origin guard no longer blocks a DV job. **Verification:** remote typecheck + tests; one read-only canary per hotel after deploy (G2).
+**Goal:** Remove two-hotel unions and CEN-only guards. **Requirements:** R1, R8, R9. **Dependencies:** U1. **Coder:** Grok 4.6. **LOC:** U3a 160–240, U3b 150–220. **Files:** `apps/server-pilot/src/hms/{hms-read-target,hms-quote-target,production-runtime,browser-artifacts}.ts`, `apps/server-pilot/src/ai/{staff-quote-installation,pane-stay-spawn-env,pane-stay-save,hms-jobs,quote-followup,agent-pane-adapter}.ts`, `apps/server-pilot/src/{env,worker}.ts` (boot today throws unless `HMS_EXPECTED_PROPERTY_CODE=HRCEN`); call sites in P1 §3 + Grok review #1. Tests: `apps/server-pilot/tests/{hms-read-target,hms-quote-target,hms-jobs,hms-runtime,staff-quote-installation,pane-stay-spawn-env,pane-stay-save,hms-property-read-lock}.test.ts`, `hms-slot-hrdav-install.test.mjs`. **Approach:** target = registry entry's origin, secret ref, slot, installation; readiness check refuses a flag `on` for a property missing any of them (G3); refusal carries cause class (R9). **Test scenarios:** HRDAV quote job uses the HRDAV slot + installation; HRCEN unchanged; property missing installation → `not_set_up` refusal before HMS; lock keys differ per property; a DV-origin guard no longer blocks a DV job. **Verification:** remote typecheck + tests; one read-only canary per hotel after deploy (G2).
 
 #### U4a. Pane quote config from registry
 
@@ -162,15 +163,15 @@ LOC = product lines (tests excluded), from sizing lanes P1–P3 (`docs/research/
 
 #### U5. Jobs carry property; one read per mail; cross-mailbox reply close
 
-**Goal:** No 5× HMS reads for one DV email; reply-all closes every copy's to-do. **Requirements:** R4. **Dependencies:** U3. **Coder:** Luna. **LOC:** 130–220. **Files:** `apps/server-pilot/src/ai/{hms-jobs,quote-ready,work-items}.ts`. Tests: `apps/server-pilot/tests/{hms-jobs,quote-ready,work-items,work-items-hms-todo}.test.ts`. **Approach:** before enqueueing, look up an existing read result for (property, Message-ID, kind) across that hotel's transports via the existing `(transport_id, message_id_header)` index; reuse it. `knownSenders` checks outbound From across same-hotel transports. **Test scenarios:** same Message-ID in 3 DV mailboxes → 1 run, 3 to-dos with the result; null Message-ID → per copy; different hotels, same Message-ID → separate runs; Faith reply-all copy in davinci@ closes davinci@'s to-do; forged own-domain From not sent by any DV mailbox stays open; later guest mail reopens. **Verification:** tests + read-only prod count after deploy: DV runs per distinct Message-ID ≈ 1.
+**Goal:** No 5× HMS reads for one DV email; reply-all closes every copy's to-do. **Requirements:** R4. **Dependencies:** U3. **Coder:** Luna. **LOC:** 130–220. **Files:** `apps/server-pilot/src/ai/{hms-jobs,quote-ready,work-items}.ts`. Tests: `apps/server-pilot/tests/{hms-jobs,quote-ready,work-items,work-items-hms-todo}.test.ts`. **Approach:** before enqueueing, look up an existing read result for (property, Message-ID, kind) across that hotel's transports via the existing `(transport_id, message_id_header)` index; reuse it. `knownSenders` checks outbound From across same-hotel transports. **Test scenarios:** same Message-ID in 3 DV mailboxes → 1 run, 3 to-dos with the result; null Message-ID → per copy; different hotels, same Message-ID → separate runs; Faith reply-all copy in davinci@ closes davinci@'s to-do; forged own-domain From not sent by any DV mailbox stays open; `notfaith@` does not match `faith@` (exact equality); a CEN mailbox reply never closes a DV to-do; later guest mail reopens. **Verification:** tests + read-only prod count after deploy: DV runs per distinct Message-ID ≈ 1.
 
-#### U6. Quote shops every allowed strategy
+#### U6. Quote shops every allowed strategy (two PRs: U6a per-strategy shop jobs; U6b pane strategy rows)
 
-**Goal:** Faith sees wholesale (and STO/contract/GOV/AIR) with HMS prices. **Requirements:** R3. **Dependencies:** U4a, U0. **Coder:** Grok 4.6 (Playwright). **LOC:** 250–400. **Files:** `apps/server-pilot/src/ai/{staff-quote-workflow,quote-ready}.ts`, `apps/server-pilot/tooling/playwright-quote/{fetch-quote.mjs,quote-tool.schema.json}`, `apps/mail/lib/quote-workflow/{types,session}.ts`, `apps/mail/components/nava-pane/quote-workflow/quote-workflow-panel.tsx`. Tests: `apps/server-pilot/tooling/playwright-quote/{fetch-quote,fetch-quote-phases}.test.mjs`, `apps/server-pilot/tests/{staff-quote-job,quote-ready}.test.ts`, `apps/mail/tests/quote-workflow-panel.test.tsx`. **Approach:** one job, one login, loop strategies from registry serially; per-strategy result row (code, label, room, board, nightly, total, or "not offered for these dates"); prepared quote shows BAR first; staff can switch. Measure shop time per strategy; if N×T breaks the staff-quote TTL, prepare BAR first and the rest in the same job afterwards (still one login). No auto-pick. **Test scenarios:** 6 strategies configured → 6 rows; one strategy returns no rooms → row says not offered, others still shown; HRCEN config (BAR/GOV) unchanged; strategy missing from registry never shopped. **Verification:** live read-only canary (G9): 3 future S4 stays on HRDAV, every allowed strategy shows a price matching HMS's own grid; BAR matches S4 staff price.
+**Goal:** Faith sees wholesale (and STO/contract/GOV/AIR) with HMS prices. **Requirements:** R3. **Dependencies:** U4a, U0. **Coder:** Grok 4.6 (Playwright). **LOC:** 250–400. **Files:** `apps/server-pilot/src/ai/{staff-quote-workflow,quote-ready}.ts`, `apps/server-pilot/tooling/playwright-quote/{fetch-quote.mjs,quote-tool.schema.json}`, `apps/mail/lib/quote-workflow/{types,session}.ts`, `apps/mail/components/nava-pane/quote-workflow/quote-workflow-panel.tsx`. Tests: `apps/server-pilot/tooling/playwright-quote/{fetch-quote,fetch-quote-phases}.test.mjs`, `apps/server-pilot/tests/{staff-quote-job,quote-ready}.test.ts`, `apps/mail/tests/quote-workflow-panel.test.tsx`. **Approach:** U6a: the staff quote job shops BAR as today; each other allowed strategy is enqueued as its own read job (one shop, fits the 7 min claim), queued on the hotel's slot behind staff work. U6b: pane shows one row per strategy as results arrive (code, label, room, board, nightly, total, or "not offered for these dates"), BAR first; staff pick. U0 measures one shop's time; if per-shop login dominates, add session reuse as a follow-up. No auto-pick. **LOC:** U6a 140–220, U6b 120–200. **Test scenarios:** 6 strategies configured → 6 rows; one strategy returns no rooms → row says not offered, others still shown; HRCEN config (BAR/GOV) unchanged; strategy missing from registry never shopped. **Verification:** live read-only canary (G9): 3 future S4 stays on HRDAV, every allowed strategy shows a price matching HMS's own grid; BAR matches S4 staff price.
 
 #### U7. Party history per hotel
 
-**Goal:** Agency history learned at one hotel never binds at another. **Requirements:** R6. **Dependencies:** U3. **Coder:** Grok 4.6 (migration). **LOC:** 120–200. **Files:** `apps/server-pilot/src/ai/{party-index,party-index-sweep,party-sender-map,party-aliases,party-match-v2,hms-jobs}.ts`, `apps/server-pilot/src/db/schema/party-sender-map.ts`, new `apps/server-pilot/drizzle/0NNN_party_sender_property.sql`. Tests: `apps/server-pilot/tests/{party-index,party-index-sweep,party-sender-map,party-aliases,party-match-v2,hms-jobs}.test.ts`. **Test scenarios:** migration backfills existing rows to HRCEN; same host at HRCEN and HRDAV → two rows; DV lookup never returns an HRCEN history row; CEN-only history gate removed. **Verification:** DB tests on local disposable Postgres only; migration reviewed by Grok 4.7.
+**Goal:** Agency history learned at one hotel never binds at another. **Requirements:** R6. **Dependencies:** U3. **Coder:** Grok 4.6 (migration). **LOC:** 120–200. **Files:** `apps/server-pilot/src/ai/{party-index,party-index-sweep,party-sender-map,party-aliases,party-match-v2,hms-jobs}.ts`, `apps/server-pilot/src/db/schema/party-sender-map.ts`, new `apps/server-pilot/drizzle/0NNN_party_sender_property.sql`. Tests: `apps/server-pilot/tests/{party-index,party-index-sweep,party-sender-map,party-aliases,party-match-v2,hms-jobs}.test.ts`. **Execution note:** read-only prod count of sender-map rows by writer/transport before writing the migration; abort if any row is not CEN-written. **Test scenarios:** migration backfills CEN rows to HRCEN; same host at HRCEN and HRDAV → two rows; DV lookup never returns an HRCEN history row; CEN-only history gate removed. **Verification:** DB tests on local disposable Postgres only; migration reviewed by Grok 4.7.
 
 #### U8. Branding, PDF, workbook, reply copy per hotel
 
@@ -184,28 +185,29 @@ LOC = product lines (tests excluded), from sizing lanes P1–P3 (`docs/research/
 
 **Goal:** Lock in "no silent Centurion fallback". **Requirements:** R1. **Dependencies:** U1–U9. **Coder:** Luna. **LOC:** 0–20 product, 60–120 total. **Files:** new `apps/server-pilot/tests/property-registry-contract.test.ts`, fixture `apps/server-pilot/tests/fixtures/property-registry-hrfake.json`. **Test scenarios:** HRFAKE mailbox resolves to HRFAKE target/slot/lists; unknown mailbox refuses before HMS; no HRCEN constant appears in HRFAKE pane config, target, PDF or job args. **Verification:** green in remote tests.
 
-### Sequencing, model and ETA
+### Sequencing, model and ETA (revised after Grok review)
 
-| Wave | Units (parallel) | Coder | Product LOC | Raw min (code + gates) |
-|---|---|---|---:|---|
-| 0 | U0 DOM read ‖ U1 ‖ U2 | Sol (U0), Luna, Grok | 200–305 | U1 ~45, U2 ~25, U0 ~40 live |
-| 1 | U3 | Grok | 300–450 | ~75 (two PRs) |
-| 2 | U4a ‖ U5 ‖ U7 ‖ U9 | Luna, Luna, Grok, Grok | 590–990 | ~60 each, parallel |
-| 3 | U4b ‖ U6 ‖ U8 | Luna, Grok, Luna | 480–770 | U6 ~75 |
-| 4 | U10 + deploy + live canaries | Luna, orchestrator | 60–120 | deploy 6–12; canaries below |
+Shared-file owners (serialize, never parallel): `hms-jobs.ts` U3b → U5 → U7; `quote-ready.ts` U5 → U6a; `nava-pane.tsx` + `workstation.ts` U4a → U4b → U8; `pane-stay-save.ts` U3a → U9.
 
-Total product LOC **1,630–2,640** across 11 PRs (each ≤ 500 lines; U3 split if needed).
+| Wave | Units (parallel) | Coder |
+|---|---|---|
+| 0 | U0 (live, read-only) ‖ U1 ‖ U2 | Sol, Luna, Grok |
+| 1 | U3a → U3b | Grok |
+| 2 | U4a ‖ U5 ‖ U9 | Luna, Luna, Grok |
+| 3 | U4b ‖ U6a ‖ U7 | Luna, Grok, Grok |
+| 4 | U6b ‖ U8 | Luna, Luna |
+| 5 | U10, deploy, canaries | Luna, orchestrator |
 
-**ETA basis** (ledger, actual minutes per unit: code-server p50 39 / p75 75, n=169; code-ui p50 41 / p75 90, n=80; review p50 17 / p75 27, n=23; deploy p50 6 / p75 12, n=56; live-hms p50 22 / p75 79, n=47; orchestration ratio 1.2):
+13 PRs, product LOC **1,550–2,480**, each ≤ 500.
 
-| Chain | Calc | Minutes |
-|---|---|---:|
-| Critical path code | U1 (45) → U3 (75) → U4a (60) → U6 (75) → U10 (40) = 295 raw × 0.85 | ~250 |
-| Review rounds on chain | 5 PRs × Apex + triage ≈ review p50 17 × 2 rounds | ~170 |
-| Deploys | 2 (after wave 2, after wave 4) × p75 12 | ~25 |
-| Live canaries | quote CEN + DV (U6 strategy shop 3 stays) + create/cancel CEN + DV + attach DV = 6 cells; p50 22 / p75 79 | 130–475 |
-| Orchestration overhead | × 1.2 on coordinator-dependent steps | +~90 |
-| **Total to "DV quote passes on prod"** | | **~11 h p50, ~17 h p75** (wall clock; parallel waves hide the non-critical units) |
+**ETA basis** (ledger actual minutes: code-server p50 39 / p75 75 (n=169); review p50 17 / p75 27 (n=23), ×2 rounds per PR (Apex, triage, Apex); deploy p50 6 / p75 12; live-hms p50 22 / p75 79 (n=47); orchestration ×1.2 p50, retro p80 3.18× so p75 uses ×1.5). Per PR ≈ 73 min p50 / 129 p75.
+
+| Milestone | Chain | p50 | p75 |
+|---|---|---:|---:|
+| **A. Faith sees DV rooms, BAR and wholesale with HMS prices** (U1 → U3a → U3b → U4a → U6a → U6b, 6 PRs) + 1 deploy + DV quote canary + strategy shop on 3 stays (2 live cells) | 6×73+6+44 = 488 ×1.2 / 6×129+12+158 = 944 ×1.5 | **~10 h** | **~24 h** |
+| B. Everything (longest chain 7 PRs + 2 deploys + 8 live cells over 2 hotel slots in parallel) | 7×73+12+88 = 611 ×1.2 / 7×129+24+316 = 1,243 ×1.5 | ~12 h | ~31 h |
+
+Live tail is the swing: retro L4 live-hms median 1.75×, p80 5.31× (last 4 days). Wednesday HMS maintenance (~11:59–15:30 SAST) blocks live cells.
 
 ### Live-test table (canary per workflow × hotel, on the deployed SHA after the last workflow-changing deploy)
 
@@ -228,10 +230,10 @@ Total product LOC **1,630–2,640** across 11 PRs (each ≤ 500 lines; U3 split 
 
 ## Definition of Done
 
-1. DV quote on prod: BAR room + board + price match staff on ≥10 of the 27 S4 facts (future stays re-shopped live).
-2. Every allowed DV strategy shows an HMS price on 3 future stays, matching HMS's own grid.
+1. On the deployed SHA, in **Faith's mailbox** pane: DV room list (no Standard Queen), a **wholesale row with an HMS price**, and every other U0-confirmed strategy with its HMS price on 3 future S4 stays, each matching HMS's own grid.
+2. DV BAR room + board + price match staff on ≥10 of the 27 S4 facts (future stays re-shopped live).
 3. HRFAKE contract green; unknown mailbox refuses.
-4. CEN quote score not lower on the same rows.
+4. CEN quote score not lower on the 8 rows of `docs/research/2026-10-20-quote-backtest-pool.md` (re-scored on old and new build).
 5. Labtest create + cancel pass on both hotels on the deployed SHA.
 6. Staff bundle load seen in nginx after the last deploy.
 
@@ -245,6 +247,10 @@ Real-guest writes; any flag to `on`; `seed:prod`; Da Vinci brand assets; HRBAK/H
 - DV extraction coverage 25.6% vs CEN 56.8% (F7).
 - Classifier/front-door rules per hotel (A1 row 12).
 - Third hotel onboarding (data + canaries only).
+
+## Review log
+
+- 2026-10-24 Grok 4.7 xhigh round 1: 3 P0, 5 P1, 2 P2, all folded in ([review](../research/2026-10-24-multihotel-plan-grok-review.md)). Changes: refuse helper + 45-default audit; `env.ts`/`worker.ts` in U3a; per-strategy jobs (7 min claim); exact-address reply trust; seed via provision only; sender-map pre-count; DoD in Faith's pane with wholesale; U3/U6 split; no new package; ETA requoted with live-hms tail.
 
 ## Owner decisions (round 1, 2026-10-24)
 
