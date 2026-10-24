@@ -30,7 +30,8 @@ asks: [210, 211, 212, 217]
 | DV extraction coverage | 26% of inbound copies have an action vs CEN 57% | S3 |
 | DV duplicate copies | 1,121 inbound copies of the same Message-ID across DV mailboxes | S3 |
 | DV rate words in outbound quote bodies (148 msgs) | STO/net 18, contract 17, BAR 16, airline 8, GOV 7, promo 7, wholesale **1**; Standard Queen 0 | S2 (`docs/research/2026-10-24-multihotel-shape-S2-dv-rates.md`) |
-| DV answer key | 0 validated rows from bodies; PDFs/XLSX not yet read (S4 running) | S2 |
+| DV answer key | **27 distinct validated BAR B&B facts** (38 PDF rows; Standard King/Suite/Deluxe King; ZAR 2,700–22,813/night, median 4,071). 0 validated non-BAR rows; 10 XLSX mix Contract/NC + STO/net without a row binding | S4 (`docs/research/2026-10-24-multihotel-shape-S4-dv-answer-key.md`) |
+| DV quote format | 93% PDF, 7% XLSX; letterheads vary (Da Vinci 88, Legacy 56) | S4 |
 | Live-HMS proof time | p50 22 min, p75 85 min (n=43) | ETA ledger |
 
 ## Gate G1–G10
@@ -45,7 +46,7 @@ asks: [210, 211, 212, 217]
 | G6 freshness | CANARY PASS line carries the live SHA; flip script refuses older SHA |
 | G7 error copy | Cause class shown: not set up for this hotel / HMS down / busy / not found |
 | G8 patch vs rewrite | **Rewrite.** A 3rd hotel would add a 3rd branch to ~70 files. Registry + PropertyContext instead |
-| G9 done | DV quote: plan + room + board + price match staff on ≥10 DV threads (answer key from S4); HRFAKE contract test green; CEN quote score not lower on the same rows |
+| G9 done | DV quote: BAR room + board + price match staff on ≥10 of the 27 S4 facts (future-dated stays re-shopped live); non-BAR strategies proven by live shop, not answer key; HRFAKE contract test green; CEN quote score not lower on the same rows |
 | G10 holds | Real-guest writes, flag flips to `on`, seeding prod grants, onboarding a 3rd hotel's HMS login |
 
 ## Patch-vs-rewrite verdict
