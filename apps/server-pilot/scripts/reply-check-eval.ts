@@ -2,15 +2,19 @@
  * U11a private, offline reply-recheck evaluation.
  * `freeze` derives truth from the first linked post-reply action before any prediction;
  * `score` receives only the pre-reply work-item source and staff reply.
- * Never connects to a database. PII outputs must stay outside Git and mode 0600.
+ * Never connects to a database or hosted model. LLM calls require the approved local judge route;
+ * PII outputs must stay outside Git and mode 0600.
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { open, readFile, unlink } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-import { createAzureLunaModel, lunaCallBudget, LunaModelAdapter } from '../src/ai/bedrock/luna.js';
+import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
+import { createApprovedLocalModelAdapter } from '../src/ai/bedrock/factory.js';
+import type { LocalModelRouteEvidence, LocalModelTransport } from '../src/ai/bedrock/local.js';
+import { lunaCallBudget } from '../src/ai/bedrock/luna.js';
 
 const LABELS = ['handled', 'waiting_on_guest', 'needs_more_action'] as const;
 type Outcome = (typeof LABELS)[number];
@@ -29,12 +33,14 @@ type Case = {
   threadId: string; replyMessageId: string; gold: Outcome; input: Input;
 };
 type AmbiguousCase = { row: RawRow; input: Input };
+type JudgeRouteEvidence = LocalModelRouteEvidence & { purpose: 'judge' };
+type JudgeRouteConfig = { route: JudgeRouteEvidence; transport: LocalModelTransport };
+type JudgeRouteDescriptor = { module: string; route: JudgeRouteEvidence };
 
 const MIN_N = 100;
 const BODY_MAX_BYTES = 8_000;
 const MODEL_MAX_INPUT_BYTES = 26_000;
 const MODEL_MAX_OUTPUT_TOKENS = 4_096;
-const CODEX_CONFIG = path.join(process.env.HOME ?? '', '.codex/config.toml');
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '../../..');
 const RESPONSE_SCHEMA = {
@@ -48,10 +54,44 @@ function asOutcome(value: unknown): value is Outcome {
   return typeof value === 'string' && LABELS.includes(value as Outcome);
 }
 
+function stripHtmlBlockquotes(raw: string): string {
+  const tags = /<\/?blockquote\b[^>]*>/gi;
+  let output = '';
+  let cursor = 0;
+  let depth = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tags.exec(raw)) !== null) {
+    const tag = match[0];
+    const closing = /^<\//.test(tag);
+    const selfClosing = !closing && /\/\s*>$/.test(tag);
+    if (depth === 0) {
+      output += raw.slice(cursor, match.index);
+      if (closing || selfClosing) {
+        output += ' ';
+        cursor = tags.lastIndex;
+      } else {
+        depth = 1;
+        cursor = tags.lastIndex;
+      }
+    } else if (closing) {
+      depth--;
+      if (depth === 0) {
+        output += ' ';
+        cursor = tags.lastIndex;
+      }
+    } else if (!selfClosing) {
+      depth++;
+    }
+  }
+  if (depth === 0) output += raw.slice(cursor);
+  return output;
+}
+
 function stripQuotedAndSignature(raw: string): string {
-  const plain = raw
+  const withoutNonTextBlocks = raw
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ');
+  const plain = stripHtmlBlockquotes(withoutNonTextBlocks)
     .replace(/<br\s*\/?>|<\/p\s*>|<\/div\s*>/gi, '\n')
     .replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
@@ -81,6 +121,52 @@ function clipUtf8(raw: string, maxBytes: number): { text: string; clipped: boole
     bytes += size;
   }
   return { text: `${text}\n[truncated]`, clipped: true };
+}
+
+function maxJsonStringBytes(value: unknown): number {
+  if (typeof value === 'string') return Buffer.byteLength(value);
+  if (Array.isArray(value)) return Math.max(0, ...value.map(maxJsonStringBytes));
+  if (value && typeof value === 'object') return Math.max(0, ...Object.values(value).map(maxJsonStringBytes));
+  return 0;
+}
+
+function clipJsonStrings(value: unknown, maxBytes: number): unknown {
+  if (typeof value === 'string') return clipUtf8(value, maxBytes).text;
+  if (Array.isArray(value)) return value.map((item) => clipJsonStrings(item, maxBytes));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clipJsonStrings(item, maxBytes)]));
+  }
+  return value;
+}
+
+function modelRequestBytes(systemPrompt: string, userPrompt: string): number {
+  return Buffer.byteLength(systemPrompt) + Buffer.byteLength(userPrompt) +
+    Buffer.byteLength(JSON.stringify(RESPONSE_SCHEMA));
+}
+
+function fitJsonPromptToLimit(
+  systemPrompt: string,
+  userPrompt: string,
+  maxBytes: number,
+): { userPrompt: string; clipped: boolean } {
+  if (modelRequestBytes(systemPrompt, userPrompt) <= maxBytes) return { userPrompt, clipped: false };
+  let parsed: unknown;
+  try { parsed = JSON.parse(userPrompt); } catch { throw new Error('model_input_limit_exceeded'); }
+  let low = 16;
+  let high = maxJsonStringBytes(parsed);
+  let best: string | undefined;
+  while (low <= high) {
+    const maxStringBytes = Math.floor((low + high) / 2);
+    const candidate = JSON.stringify(clipJsonStrings(parsed, maxStringBytes));
+    if (modelRequestBytes(systemPrompt, candidate) <= maxBytes) {
+      best = candidate;
+      high = maxStringBytes - 1;
+    } else {
+      low = maxStringBytes + 1;
+    }
+  }
+  if (best === undefined) throw new Error('model_input_limit_exceeded');
+  return { userPrompt: best, clipped: true };
 }
 
 function makeInput(row: RawRow): Input | null {
@@ -207,12 +293,25 @@ function score(gold: Outcome[], predictions: Outcome[]) {
   return { n: gold.length, correct, accuracy: correct / gold.length, balancedAccuracy, supportedClasses: supported.length, perClass, confusion };
 }
 
-function readAzureBaseUrl(): string | undefined {
-  try {
-    const section = readFileSync(CODEX_CONFIG, 'utf8').split(/(?=^\[)/m)
-      .find((part) => part.startsWith('[model_providers.azure]'));
-    return section?.match(/^\s*base_url\s*=\s*["']([^"']+)["']/m)?.[1];
-  } catch { return undefined; }
+function validateScoredCases(cases: Case[]): void {
+  if (cases.length < MIN_N) throw new Error('truth_input_invalid');
+  const first = cases[0];
+  if (!first.asOf || !Number.isSafeInteger(first.cohortN) || first.cohortN < cases.length) {
+    throw new Error('truth_input_invalid');
+  }
+  const pairs = new Set<string>();
+  const ordinals = new Set<number>();
+  for (const item of cases) {
+    if (!asOutcome(item.gold) || !Number.isSafeInteger(item.sampleOrdinal) || item.sampleOrdinal < 1 ||
+        !item.workItemId || !item.sourceMessageId || !item.replyMessageId || !item.threadId ||
+        item.asOf !== first.asOf || item.cohortN !== first.cohortN) {
+      throw new Error('truth_input_invalid');
+    }
+    const pair = JSON.stringify([item.workItemId, item.replyMessageId]);
+    if (pairs.has(pair) || ordinals.has(item.sampleOrdinal)) throw new Error('truth_input_invalid');
+    pairs.add(pair);
+    ordinals.add(item.sampleOrdinal);
+  }
 }
 
 function assertPrivatePath(filename: string): string {
@@ -277,7 +376,7 @@ function safeModelFailure(error: unknown): string {
   if (status === 400) return 'model_request_rejected';
   if (status >= 500) return 'model_provider_error';
   const message = details?.message ?? '';
-  if (['model_input_limit_exceeded', 'model_outcome_invalid', 'model_cost_cap_exceeded'].includes(message)) {
+  if (['approved_local_luna_unavailable', 'model_input_limit_exceeded', 'model_outcome_invalid', 'model_cost_cap_exceeded'].includes(message)) {
     return message === 'model_outcome_invalid' ? 'model_output_invalid' : message;
   }
   const incomplete = message.match(/^model_response_incomplete:(stop|length|content-filter|tool-calls|error)$/i);
@@ -289,26 +388,74 @@ function safeModelFailure(error: unknown): string {
   return 'model_call_failed';
 }
 
-function createAdapter(): LunaModelAdapter {
-  if (!process.env.AZURE_OPENAI_BASE_URL) {
-    const baseUrl = readAzureBaseUrl();
-    if (baseUrl) process.env.AZURE_OPENAI_BASE_URL = baseUrl;
-  }
+type ConfiguredJudgeRouteModule = {
+  default?: unknown;
+  createReplyCheckJudgeRoute?: () => unknown;
+};
+
+function isJudgeRouteEvidence(value: unknown): value is JudgeRouteEvidence {
+  if (typeof value !== 'object' || value === null) return false;
+  const route = value as Partial<LocalModelRouteEvidence>;
+  return typeof route.routeId === 'string' && route.routeId.trim().length > 0 &&
+    route.purpose === 'judge' && route.protocol === 'in_process' && route.access === 'current_app' &&
+    route.egress === 'none' && route.retention === 'bounded' && route.usage === 'reported' &&
+    route.modelId === 'gpt-6-luna';
+}
+
+function parseJudgeRouteDescriptor(): JudgeRouteDescriptor {
+  const raw = process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG?.trim();
+  if (!raw) throw new Error('approved_local_luna_unavailable');
   try {
-    return new LunaModelAdapter({ model: createAzureLunaModel(), reasoningEffort: 'medium',
-      routeId: 'reply_check_eval', modelId: 'gpt-6-luna', protocol: 'azure-openai-responses' });
+    const parsed = JSON.parse(raw) as { module?: unknown; route?: unknown };
+    if (typeof parsed !== 'object' || parsed === null || typeof parsed.module !== 'string' ||
+        parsed.module.trim().length === 0 || !isJudgeRouteEvidence(parsed.route)) {
+      throw new Error('approved_local_luna_unavailable');
+    }
+    return { module: parsed.module.trim(), route: parsed.route };
   } catch {
-    throw new Error('azure_luna_unavailable');
+    throw new Error('approved_local_luna_unavailable');
   }
 }
 
-async function invokeOutcome(adapter: LunaModelAdapter, systemPrompt: string, userPrompt: string, maxOutputTokens = MODEL_MAX_OUTPUT_TOKENS) {
+function sameJudgeRoute(left: JudgeRouteEvidence, right: JudgeRouteEvidence): boolean {
+  return left.routeId === right.routeId && left.purpose === right.purpose &&
+    left.protocol === right.protocol && left.access === right.access && left.egress === right.egress &&
+    left.retention === right.retention && left.usage === right.usage && left.modelId === right.modelId;
+}
+
+function isJudgeRouteConfig(value: unknown): value is JudgeRouteConfig {
+  if (typeof value !== 'object' || value === null) return false;
+  const config = value as Partial<JudgeRouteConfig>;
+  return isJudgeRouteEvidence(config.route) && typeof config.transport === 'function';
+}
+
+function createAdapter(): ModelAdapter {
+  try {
+    if (process.env.AI_MODEL_ROUTE !== 'approved-local') throw new Error('route_not_approved');
+    const descriptor = parseJudgeRouteDescriptor();
+    const loaded = createRequire(import.meta.url)(descriptor.module) as ConfiguredJudgeRouteModule;
+    const configured = loaded.createReplyCheckJudgeRoute
+      ? loaded.createReplyCheckJudgeRoute()
+      : (loaded.default ?? loaded);
+    if (!isJudgeRouteConfig(configured) || !sameJudgeRoute(configured.route, descriptor.route)) {
+      throw new Error('configured_route_mismatch');
+    }
+    return createApprovedLocalModelAdapter({
+      purpose: 'judge', route: descriptor.route, transport: configured.transport,
+    });
+  } catch {
+    throw new Error('approved_local_luna_unavailable');
+  }
+}
+
+async function invokeOutcome(adapter: ModelAdapter, systemPrompt: string, userPrompt: string, maxOutputTokens = MODEL_MAX_OUTPUT_TOKENS) {
+  const fittedPrompt = fitJsonPromptToLimit(systemPrompt, userPrompt, MODEL_MAX_INPUT_BYTES);
   const result = await adapter.invoke({ modelId: 'gpt-6-luna', maxOutputTokens,
-    maxInputBytes: MODEL_MAX_INPUT_BYTES, systemPrompt, userPrompt, responseSchema: RESPONSE_SCHEMA,
+    maxInputBytes: MODEL_MAX_INPUT_BYTES, systemPrompt, userPrompt: fittedPrompt.userPrompt, responseSchema: RESPONSE_SCHEMA,
     deadlineAt: modelDeadlineAt() });
   if (!asOutcome(result.output.outcome)) throw new Error('model_outcome_invalid');
   return { outcome: result.output.outcome, cost: result.usage.estimatedCostUsd,
-    inputTokens: result.usage.inputTokens };
+    inputTokens: result.usage.inputTokens, promptClipped: fittedPrompt.clipped };
 }
 
 async function forEachConcurrent(count: number, limit: number, run: (index: number) => Promise<void>): Promise<void> {
@@ -324,13 +471,16 @@ async function forEachConcurrent(count: number, limit: number, run: (index: numb
 }
 
 async function labelAmbiguous(rows: AmbiguousCase[], concurrency: number, costCap: number) {
-  if (!rows.length) return { outcomes: [] as Outcome[], agreement: 0, cost: 0, inputTokens: 0, clippedRows: 0 };
+  if (!rows.length) return { outcomes: [] as Outcome[], agreement: 0, cost: 0, inputTokens: 0,
+    clippedRows: 0, clippedPromptCalls: 0, rowsWithClippedPrompt: 0 };
   const adapter = createAdapter();
   const outcomes: Outcome[] = new Array(rows.length);
+  const clippedPromptRows = new Set<number>();
   let cost = 0;
   let inputTokens = 0;
   let agreement = 0;
   let clippedRows = 0;
+  let clippedPromptCalls = 0;
   try {
     await forEachConcurrent(rows.length, concurrency, async (index) => {
       const { row, input } = rows[index];
@@ -347,6 +497,12 @@ async function labelAmbiguous(rows: AmbiguousCase[], concurrency: number, costCa
         'Adjudicate this draft label using evidence only. You are blind to both predictor outputs and Nava work-item status; retain or change it as warranted. ' +
         'handled means completed; waiting_on_guest means an external participant owns the next move; needs_more_action means staff still own follow-up. Return only the schema outcome.',
         JSON.stringify({ evidence, draftOutcome: draft.outcome }), MODEL_MAX_OUTPUT_TOKENS);
+      for (const call of [draft, adjudication]) {
+        if (call.promptClipped) {
+          clippedPromptCalls++;
+          clippedPromptRows.add(index);
+        }
+      }
       outcomes[index] = adjudication.outcome;
       if (draft.outcome === adjudication.outcome) agreement++;
       cost += draft.cost + adjudication.cost;
@@ -355,10 +511,11 @@ async function labelAmbiguous(rows: AmbiguousCase[], concurrency: number, costCa
       if (outcomes.filter(Boolean).length % 20 === 0) process.stderr.write(`reply_check_label_progress: ${outcomes.filter(Boolean).length}/${rows.length}\n`);
     });
   } catch (error) { throw new Error(safeModelFailure(error)); }
-  return { outcomes, agreement, cost, inputTokens, clippedRows };
+  return { outcomes, agreement, cost, inputTokens, clippedRows, clippedPromptCalls,
+    rowsWithClippedPrompt: clippedPromptRows.size };
 }
 
-function selfTest(): void {
+async function selfTest(): Promise<void> {
   const input = (replyText: string): Input => ({
     kind: 'quote', sourceSubject: '', sourceText: 'Please quote two rooms.',
     replySubject: '', replyText, clipped: false,
@@ -368,16 +525,81 @@ function selfTest(): void {
   assert.equal(ruleBaseline(input('We will revert.')), 'waiting_on_guest');
   assert.equal(ruleBaseline(input('We are still checking availability.')), 'needs_more_action');
   assert.equal(ruleBaseline(input('Your booking is confirmed.')), 'handled');
+  const htmlReply = '<p>Your booking is confirmed.</p><blockquote>Can you quote?</blockquote>';
+  const htmlReplyText = stripQuotedAndSignature(htmlReply);
+  assert.equal(htmlReplyText, 'Your booking is confirmed.');
+  assert.equal(ruleBaseline(input(htmlReplyText)), 'handled');
+  assert.equal(stripQuotedAndSignature(
+    '<p>Done.</p><blockquote>Outer <blockquote>Inner</blockquote> tail</blockquote>',
+  ), 'Done.');
   assert.equal(ruleBaseline(input(stripQuotedAndSignature('Thanks,\n\nCould you confirm your dates?'))), 'waiting_on_guest');
   assert.equal(stripQuotedAndSignature('Rates attached.\n\nOn Tuesday, the guest wrote:\nCan you quote?'), 'Rates attached.');
   const metrics = score(['waiting_on_guest', 'needs_more_action'], ['waiting_on_guest', 'waiting_on_guest']);
   assert.equal(metrics.n, 2);
   assert.equal(metrics.correct, 1);
   assert.equal(score(['needs_more_action'], ['handled']).perClass.needs_more_action.precision, null);
+  const frozenCases = Array.from({ length: MIN_N }, (_, index): Case => ({
+    sampleOrdinal: index + 1, cohortN: MIN_N + 2, asOf: '2026-10-25T01:00:00Z',
+    workItemId: `work-${index + 1}`, sourceMessageId: `source-${index + 1}`,
+    replyMessageId: `reply-${index + 1}`, threadId: `thread-${index + 1}`, gold: 'handled',
+    input: input('Your booking is confirmed.'),
+  }));
+  assert.doesNotThrow(() => validateScoredCases(frozenCases), 'cohortN may include freeze exclusions');
+  const duplicatePairCases = frozenCases.map((item) => ({ ...item }));
+  duplicatePairCases[1] = { ...duplicatePairCases[1], workItemId: duplicatePairCases[0].workItemId,
+    replyMessageId: duplicatePairCases[0].replyMessageId };
+  assert.throws(() => validateScoredCases(duplicatePairCases), /truth_input_invalid/);
+  const duplicateOrdinalCases = frozenCases.map((item) => ({ ...item }));
+  duplicateOrdinalCases[1] = { ...duplicateOrdinalCases[1], sampleOrdinal: duplicateOrdinalCases[0].sampleOrdinal };
+  assert.throws(() => validateScoredCases(duplicateOrdinalCases), /truth_input_invalid/);
+  const mixedSnapshotCases = frozenCases.map((item) => ({ ...item }));
+  mixedSnapshotCases[1] = { ...mixedSnapshotCases[1], asOf: '2026-10-24T01:00:00Z' };
+  assert.throws(() => validateScoredCases(mixedSnapshotCases), /truth_input_invalid/);
+  const mixedCohortCases = frozenCases.map((item) => ({ ...item }));
+  mixedCohortCases[1] = { ...mixedCohortCases[1], cohortN: MIN_N + 3 };
+  assert.throws(() => validateScoredCases(mixedCohortCases), /truth_input_invalid/);
   assert.throws(() => privateOutputPaths(['/tmp/reply-check-output.json', '/tmp/reply-check-output.json']),
     /output_paths_must_differ/);
   assert.equal(modelDeadlineAt(100), 100 + lunaCallBudget('medium').deadlineMs);
   assert.equal(MODEL_MAX_OUTPUT_TOKENS, 4_096);
+  const previousRoute = process.env.AI_MODEL_ROUTE;
+  const previousJudgeConfig = process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG;
+  delete process.env.AI_MODEL_ROUTE;
+  delete process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG;
+  try {
+    assert.throws(() => createAdapter(), /approved_local_luna_unavailable/);
+    const judgeRoute = { routeId: 'self-test', purpose: 'judge', protocol: 'in_process',
+      access: 'current_app', egress: 'none', retention: 'bounded', usage: 'reported',
+      modelId: 'gpt-6-luna' } as const;
+    assert.equal(isJudgeRouteEvidence(judgeRoute), true);
+    assert.equal(isJudgeRouteEvidence({ ...judgeRoute, egress: 'azure-foundry' }), false);
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG = JSON.stringify({
+      module: 'must-not-load', route: { ...judgeRoute, egress: 'azure-foundry' },
+    });
+    assert.throws(() => createAdapter(), /approved_local_luna_unavailable/);
+  } finally {
+    if (previousRoute === undefined) delete process.env.AI_MODEL_ROUTE;
+    else process.env.AI_MODEL_ROUTE = previousRoute;
+    if (previousJudgeConfig === undefined) delete process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG;
+    else process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG = previousJudgeConfig;
+  }
+  const longBody = '"\n'.repeat(3_995);
+  const longUserPrompt = JSON.stringify({
+    request: { body: longBody }, reply: { body: longBody }, nextEvent: { text: 'x'.repeat(6_992) },
+  });
+  let boundedUserPrompt = '';
+  const captureAdapter = {
+    invoke: async (request: { userPrompt: string }) => {
+      boundedUserPrompt = request.userPrompt;
+      return { output: { outcome: 'handled' }, usage: { estimatedCostUsd: 0, inputTokens: 0 } };
+    },
+  } as unknown as ModelAdapter;
+  const fitted = await invokeOutcome(captureAdapter, 'Classify this evidence.', longUserPrompt);
+  assert.ok(Buffer.byteLength('Classify this evidence.') + Buffer.byteLength(boundedUserPrompt) +
+    Buffer.byteLength(JSON.stringify(RESPONSE_SCHEMA)) <= MODEL_MAX_INPUT_BYTES);
+  assert.doesNotThrow(() => JSON.parse(boundedUserPrompt));
+  assert.equal(fitted.promptClipped, true);
   const raw = (direction: string, sameSourceSender: boolean): RawRow => ({
     sampleOrdinal: 1, cohortN: 1, asOf: '2026-10-25T01:00:00Z', workItemId: 'work-1',
     threadId: 'thread-1', sourceMessageId: 'source-1', replyMessageId: 'reply-1',
@@ -418,7 +640,8 @@ async function freeze(inputPath: string, outputPath: string, concurrency: number
       classes: classCounts, labelsDerivedBeforePrediction: true,
       blindLabeling: { deterministicRows: built.cases.length, ambiguousRows: built.ambiguous.length,
         lunaDraftAdjudicatorAgreement: { matches: labels.agreement, n: built.ambiguous.length },
-        clippedNextEvents: labels.clippedRows,
+        clippedNextEvents: labels.clippedRows, clippedPromptCalls: labels.clippedPromptCalls,
+        rowsWithClippedPrompt: labels.rowsWithClippedPrompt,
         estimatedCostUsd: labels.cost, inputTokens: labels.inputTokens },
     }) + '\n');
   });
@@ -427,7 +650,7 @@ async function freeze(inputPath: string, outputPath: string, concurrency: number
 async function scoreCases(inputPath: string, outputPath: string, aggregatePath: string | undefined, concurrency: number, costCap: number): Promise<void> {
   assertNoDatabaseEnvironment();
   const cases = (await readFile(inputPath, 'utf8')).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as Case);
-  if (cases.length < MIN_N || cases.some((item) => !asOutcome(item.gold))) throw new Error('truth_input_invalid');
+  validateScoredCases(cases);
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('concurrency_invalid');
   if (!Number.isFinite(costCap) || costCap <= 0) throw new Error('cost_cap_invalid');
   const rules1 = cases.map((item) => ruleBaseline(item.input));
@@ -438,8 +661,10 @@ async function scoreCases(inputPath: string, outputPath: string, aggregatePath: 
     const adapter = createAdapter();
     const predictions: Outcome[] = new Array(cases.length);
     const inputTokens: number[] = new Array(cases.length).fill(0);
+    const rowsWithClippedPrompt = new Set<number>();
     let totalCost = 0;
     let completed = 0;
+    let clippedPromptCalls = 0;
     try {
       await forEachConcurrent(cases.length, concurrency, async (index) => {
         const item = cases[index];
@@ -454,6 +679,10 @@ async function scoreCases(inputPath: string, outputPath: string, aggregatePath: 
           'needs_more_action means staff follow-up or unfinished work remains. Ignore quoted history and do not infer later events, mailbox status, or labels. ' +
           'Return only the schema outcome.', userPrompt);
         predictions[index] = result.outcome;
+        if (result.promptClipped) {
+          clippedPromptCalls++;
+          rowsWithClippedPrompt.add(index);
+        }
         inputTokens[index] = result.inputTokens;
         totalCost += result.cost;
         if (totalCost > costCap) throw new Error('model_cost_cap_exceeded');
@@ -481,9 +710,11 @@ async function scoreCases(inputPath: string, outputPath: string, aggregatePath: 
       ruleBaseline: rule, ruleRepeatAgreement: { matches: ruleRepeatMatches, n: cases.length },
       llm: { model: 'gpt-6-luna', reasoningEffort: 'medium', ...llm },
       input: { preReplyOnly: true, futureEventSentToModel: false,
-        clippedRows: cases.filter((item) => item.input.clipped).length, maxBodyBytesPerField: BODY_MAX_BYTES },
+        clippedRows: cases.filter((item) => item.input.clipped).length,
+        clippedPromptCalls, rowsWithClippedPrompt: rowsWithClippedPrompt.size,
+        maxBodyBytesPerField: BODY_MAX_BYTES, maxRequestBytes: MODEL_MAX_INPUT_BYTES },
       usage: { totalInputTokens: inputTokens.reduce((sum, value) => sum + value, 0),
-        estimatedCostUsd: totalCost, routeId: 'reply_check_eval' },
+        estimatedCostUsd: totalCost, routeId: 'approved_local_judge' },
     };
     await aggregateFile.writeFile(JSON.stringify(aggregate, null, 2) + '\n', 'utf8');
     process.stdout.write(JSON.stringify(aggregate) + '\n');
@@ -512,7 +743,7 @@ main().catch((error: unknown) => {
     process.exitCode = 1;
     return;
   }
-  const allowed = /^(source_[a-z_]+|truth_rows_below_minimum|output_must_be_outside_repo_or_in_private_directory|output_(?:paths_must_differ|reservation_failed)|database_environment_must_be_unset|usage: freeze\|score --input=PRIVATE\.jsonl --out=PRIVATE\.jsonl|truth_input_invalid|concurrency_invalid|cost_cap_invalid|azure_luna_unavailable|unknown_command|model_(?:auth_failed|rate_limited|request_rejected|provider_error|input_limit_exceeded|output_invalid|cost_cap_exceeded|network_error|invalid_url|response_incomplete_(?:stop|length|content_filter|tool_calls|error)|response_parse_error|aborted|call_failed))$/;
+  const allowed = /^(source_[a-z_]+|truth_rows_below_minimum|output_must_be_outside_repo_or_in_private_directory|output_(?:paths_must_differ|reservation_failed)|database_environment_must_be_unset|usage: freeze\|score --input=PRIVATE\.jsonl --out=PRIVATE\.jsonl|truth_input_invalid|concurrency_invalid|cost_cap_invalid|approved_local_luna_unavailable|unknown_command|model_(?:auth_failed|rate_limited|request_rejected|provider_error|input_limit_exceeded|output_invalid|cost_cap_exceeded|network_error|invalid_url|response_incomplete_(?:stop|length|content_filter|tool_calls|error)|response_parse_error|aborted|call_failed))$/;
   process.stderr.write(`${allowed.test(message) ? message : 'reply_check_eval_failed'}\n`);
   process.exitCode = 1;
 });

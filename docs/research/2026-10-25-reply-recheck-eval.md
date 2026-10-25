@@ -5,6 +5,14 @@ On this selected cohort GPT-6 Luna scores higher than the rule baseline, but the
 model-adjudicated rather than independent human gold, and the candidate input omits production
 attachment/thread context. This result is not sufficient to ship or shadow the LLM.
 
+**Review correction (2026-10-25):** The original label/scoring run used Azure Foundry with raw
+production message text in model prompts (potentially containing PII), contrary to the repository's
+no-PII-to-hosted-prompts rule. This report preserves those historical aggregates, but they must be
+re-run before use in a product decision. The evaluator now fails closed unless
+`AI_MODEL_ROUTE=approved-local` and an explicitly configured `judge` route reports `egress=none`;
+the current shell has no such route configured. No production message text was sent during this
+review.
+
 ## Source and reproducible cohort recipe
 
 Read-only production SQL ran through `apps/server-pilot/deploy/ssm-run-command.sh` under
@@ -68,11 +76,11 @@ clustered, not independent.
 ## Predictor input and scoring
 
 Both candidates scored the same 114 frozen rows by production pair ID. Their pre-reply inputs were
-work-item kind, source inbound subject/text, and staff-reply subject/text after quoted history and
-signature stripping. Each body was capped at 8 KB; **0/114** rows were clipped. The rule consumes
-the reply text. GPT-6 Luna received only those pre-reply fields—no next event, booking evidence,
-IDs, labels, or work-item status. Attachment text and earlier thread messages were unavailable, so
-this is not input parity with a future production thread reader.
+work-item kind, source inbound subject/text, and staff-reply subject/text after plain-text and HTML
+blockquote history plus signature stripping. Each body was capped at 8 KB; **0/114** rows were
+clipped. The rule consumes the reply text. GPT-6 Luna received only those pre-reply fields—no next
+event, booking evidence, IDs, labels, or work-item status. Attachment text and earlier thread
+messages were unavailable, so this is not input parity with a future production thread reader.
 
 The deterministic baseline ran twice with identical output on **114/114** rows. It maps a direct
 guest-directed request to `waiting_on_guest`; a concrete staff follow-up promise, check, pending,
@@ -80,9 +88,12 @@ or partial answer to `needs_more_action`; a bare “we'll revert” cue to `wait
 `handled`. The specific staff-promise rule preserves the plan example (“come back with rates” →
 more staff work).
 
-GPT-6 Luna medium reasoning via Azure Foundry (`store:false`) ran once per row. All rates below use
-the same **n=114** event-resolved production source above; accuracy is correct/114 and balanced
-accuracy is mean recall across the three supported labels.
+The historical GPT-6 Luna medium-reasoning run used Azure Foundry (`store:false`) once per row;
+the current evaluator no longer permits that hosted route. All rates below use the same **n=114**
+event-resolved production source above; accuracy is correct/114 and balanced accuracy is mean recall
+across the three supported labels. The current runner budgets the fully serialized prompt plus
+system text and schema to 26 KB, clips only JSON string fields when needed, and records clipping;
+the historical run predates that guard.
 
 | Predictor | Accuracy (n=114, this production source) | Balanced accuracy (n=114, same source) |
 |---|---:|---:|
@@ -124,6 +135,9 @@ its billable partial usage was not captured in the aggregate and is excluded fro
 - Luna beats this rule run on accuracy and balanced accuracy but is correct on only 59/114 rows.
   A single predictor run gives no run-to-run variance estimate. The comparison is additionally
   limited by the missing attachments/full thread context.
+- `score` now rejects duplicate `(workItemId, replyMessageId)` pairs or ordinals and mixed
+  `asOf`/`cohortN` snapshots before calling a model. `cohortN` can exceed retained `n` because
+  freeze excludes rows.
 
 **Decision:** keep the LLM offline; do not ship or shadow it from these rates. Reconsider only
 with independently adjudicated next-action labels, verified guest/staff actors, handled examples,
