@@ -1716,7 +1716,7 @@ export function QuoteWorkflowPanel({
           : missingQuestionPriority(firstMissingAnswer.field) === 3
             ? { kind: 'search', label: 'Search availability' }
             : missingQuestionPriority(firstMissingAnswer.field) === 4
-              ? { kind: 'scroll', targetId: 'quote-extras', label: 'Review extras & alternatives' }
+              ? { kind: 'scroll', targetId: 'quote-stay', label: 'Review extras in Stay' }
               : { kind: 'scroll', targetId: 'quote-quote', label: 'Review documents' }
     : ratesReady
       ? session.pdf
@@ -1841,6 +1841,14 @@ export function QuoteWorkflowPanel({
                 onStayAction={onStayAction}
                 evidence={session.analysis?.luna?.evidence}
               />
+              {stay.rows[0] ? (
+                <StayExtrasFields
+                  header={header}
+                  stayKey={stayKeyForGroup(stay.rows[0])}
+                  stayNumber={index + 1}
+                  onPatch={onPatchStayExtras}
+                />
+              ) : null}
             </div>
           ))}
           {session.groups.length ? (
@@ -2073,6 +2081,8 @@ export function QuoteWorkflowPanel({
                     {stay.rows.map((group) => {
                       const rateGroup = rateGroups.find((item) => item.group.id === group.id);
                       const rowStep = stepFor(group);
+                      const alternatives = rowStep?.roomAlternatives?.filter((alternative) => alternative.groupId === group.id) ?? [];
+                      const rowPinRunning = pinRun?.stepId === rowStep?.id;
                       const rowRate = session.staffQuotes[stayKeyForGroup(group)]?.rowRates?.find(
                         (item) => item.groupId === group.id,
                       );
@@ -2127,6 +2137,37 @@ export function QuoteWorkflowPanel({
                             ) ? (
                             <p className="text-[13px] text-[#64748b]">No rates match this filter. Choose All rates to show every HMS code.</p>
                           ) : null}
+                          {alternatives.map((alternative) => (
+                            <div
+                              key={`${alternative.roomCode}:${alternative.quantity}`}
+                              role="group"
+                              aria-label={`Alternative room for ${rowLabels.get(group.id) ?? 'room type needed'}`}
+                              className="flex flex-wrap items-center justify-between gap-2 border-t border-[#e2e8f0] pt-2"
+                            >
+                              <p className="text-[13px] text-[#334155]">
+                                Not available — instead: {alternative.roomLabel} × {alternative.quantity}
+                              </p>
+                              <SecondaryButton
+                                className="min-h-11 w-auto"
+                                disabled={loadingThisStay || rowPinRunning || !onPatchGroup}
+                                onClick={() => {
+                                  if (!onPatchGroup || !rowStep) return;
+                                  const check = {
+                                    roomCodes: [alternative.roomCode],
+                                    roomPreference: alternative.roomLabel,
+                                    roomTypeSuggestions: [],
+                                    quantity: alternative.quantity,
+                                    ...(group.rateCode ? { rateCode: group.rateCode } : {}),
+                                    rowPrice: undefined,
+                                  } satisfies Partial<StayGroupRequirement>;
+                                  onPatchGroup(group.id, check);
+                                  setPinRun({ stepId: rowStep.id, changes: [{ groupId: group.id, check }] });
+                                }}
+                              >
+                                Use this
+                              </SecondaryButton>
+                            </div>
+                          ))}
                           {rowControlsHostedBelow ? rowControls : null}
                         </div>
                       );
@@ -2212,65 +2253,7 @@ export function QuoteWorkflowPanel({
         </Section>
       ) : null}
       {showWorkspace ? (
-        <Section step={5} title="Extras & alternatives" id="quote-extras" action={<StepState state="Optional" />}>
-          {stays.map((stay, stayIndex) => {
-            const first = stay.rows[0];
-            if (!first) return null;
-            const stayKey = stayKeyForGroup(first);
-            const loadingThisStay = running && stayKey === runningStayKey;
-            return (
-              <article key={`${stay.id}-extras`} className="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3">
-                <h4 className="text-[13px] font-semibold text-[#475569]">{`Stay ${stayIndex + 1}`}</h4>
-                <StayExtrasFields
-                  header={header}
-                  stayKey={stayKey}
-                  stayNumber={stayIndex + 1}
-                  onPatch={onPatchStayExtras}
-                />
-                {stay.rows.map((group) => {
-                  const rowStep = stepFor(group);
-                  const alternatives = rowStep?.roomAlternatives?.filter((alternative) => alternative.groupId === group.id) ?? [];
-                  if (!alternatives.length) return null;
-                  const rowPinRunning = pinRun?.stepId === rowStep?.id;
-                  return (
-                    <div key={`${group.id}-alternatives`} className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5">
-                      <h5 className="text-[13px] font-semibold text-[#475569]">{`${rowLabels.get(group.id) ?? 'Room type needed'} alternatives`}</h5>
-                      {alternatives.map((alternative) => (
-                        <div key={`${alternative.roomCode}:${alternative.quantity}`} className="flex flex-col gap-2 rounded-[4px] border border-[#cbd5e1] bg-[#f8fafc] p-2.5">
-                          <p className="text-[13px] text-[#334155]">
-                            Requested type not available — available instead: {alternative.roomLabel} × {alternative.quantity}
-                          </p>
-                          <SecondaryButton
-                            className="w-full"
-                            disabled={loadingThisStay || rowPinRunning || !onPatchGroup}
-                            onClick={() => {
-                              if (!onPatchGroup || !rowStep) return;
-                              const check = {
-                                roomCodes: [alternative.roomCode],
-                                roomPreference: alternative.roomLabel,
-                                roomTypeSuggestions: [],
-                                quantity: alternative.quantity,
-                                ...(group.rateCode ? { rateCode: group.rateCode } : {}),
-                                rowPrice: undefined,
-                              } satisfies Partial<StayGroupRequirement>;
-                              onPatchGroup(group.id, check);
-                              setPinRun({ stepId: rowStep.id, changes: [{ groupId: group.id, check }] });
-                            }}
-                          >
-                            Use this
-                          </SecondaryButton>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })}
-              </article>
-            );
-          })}
-        </Section>
-      ) : null}
-      {showWorkspace ? (
-        <Section step={6} title="Documents" id="quote-quote" action={<StepState state={quoteState} />}>
+        <Section step={5} title="Documents" id="quote-quote" action={<StepState state={quoteState} />}>
           <p className="text-[12px] font-semibold text-[#64748b]">Reply text · PDF · Excel</p>
           {showReply ? (
             <DocumentReview
