@@ -219,9 +219,11 @@ test('BAR grid Walk-in Rate stays in options with existing BAR rows',()=>{
       assert.equal(option.room.code,'STKNG');
       assert.deepEqual(option.nightly.map(n=>n.price.amount),Array(4).fill(amount));
     }
-    assert.equal(result.options.find(o=>o.rate.code==='WAL').rate.label,'Walk-in Rate');
-    assert.equal(result.options.find(o=>o.rate.code==='WAL').board,'Bed & Breakfast NR');
+    const wal=result.options.find(o=>o.rate.code==='WAL');
+    assert.equal(wal.rate.label,'Walk-in Rate');
+    assert.equal(wal.board,'Bed & Breakfast NR');
     assert.equal(result.options.filter(o=>o.rate.code==='WAL').length,1);
+    if (!includeNativeWal) assert.notEqual(wal.availability,'available');
   }
 });
 test('return limit hides only quote-eligible matches without claiming unseen matches',()=>{

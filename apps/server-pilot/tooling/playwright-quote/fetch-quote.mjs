@@ -520,15 +520,15 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
         if (calendar.options.filter(o=>o.room.code===nativeRoom.code&&o.rate.startsWith(`${parsed[1]}: `)).length!==1) continue;
         const columns={};
         let priced=true;
-        for (let i=0;i<(row.prices??[]).length;i++) {
-          const price=normalizePrice(row.prices[i],property.currency);
+        for (const date of wanted) {
+          const idx=dates.indexOf(date);
+          if (idx<0) continue;
+          const price=normalizePrice(row.prices?.[idx],property.currency);
           if (!price) {priced=false;break;}
-          columns[`col${i+1}`]={value:Number(price.amount),israteavailable:true,restricted:false,combClosed:false,
-            combClosedToArrival:false,combClosedToDeparture:false,combMinLOSToArrival:0,combMinLOSToDeparture:0,
-            combMaxLOSToArrival:null,combMaxLOSToDeparture:null,combMinLOSToThrough:null,combMaxLOSToThrough:null};
+          columns[`col${idx+1}`]={value:Number(price.amount)};
         }
         if (!priced) continue;
-        rates.push({code:parsed[1],desc:parsed[2].trim(),currency:property.currency,isNegotiatedRate:false,restricted:false,columns});
+        rates.push({code:parsed[1],desc:parsed[2].trim(),currency:property.currency,columns});
         seenCodes.add(parsed[1]);
       }
       for (const rate of rates) {
