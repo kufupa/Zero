@@ -43,6 +43,7 @@ import type {
   StaffExtraField,
   StaffQuoteOtherUnit,
   StaffStayExtras,
+  QuoteSalesStrategyCode,
   DinnerAddOnUnit,
   StayEditAction,
   StayGroupRequirement,
@@ -1205,6 +1206,7 @@ export function QuoteWorkflowPanel({
   partyJobTransport,
   onPartyLookupPending,
   onSelectStayKey,
+  onSelectQuoteStrategy,
   onStaffNote,
   staffNoteDraft,
   onStaffNoteDraftChange,
@@ -1263,6 +1265,8 @@ export function QuoteWorkflowPanel({
   /** Tells the pane whether a company or agency search still decides its pick. A rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
   onSelectStayKey?: (stayKey: string) => void;
+  /** Staff explicitly chooses one completed strategy row to use for the quote. */
+  onSelectQuoteStrategy?: (stayKey: string, strategyCode: QuoteSalesStrategyCode) => void;
   onStaffNote?: (note: string) => void;
   /** A retained staff correction, owned by the pane so it survives a trip off the tool screen. */
   staffNoteDraft?: string;
@@ -1473,6 +1477,9 @@ export function QuoteWorkflowPanel({
   const ratePlans = ratePlanChoices(rateCatalogue ?? [], session.rateOptions ?? []);
   const paneRoomTypes = paneConfig === undefined ? undefined : paneConfig?.roomTypes ?? [];
   const paneBoards = paneConfig === undefined ? undefined : paneConfig?.boards ?? [];
+  const salesStrategies = [...(paneConfig?.salesStrategies ?? [])].sort(
+    (left, right) => Number(right.code === 'BAR') - Number(left.code === 'BAR'),
+  );
   const overrideRateCodes = paneConfig === undefined ? undefined : paneConfig?.overrideRateCodes ?? [];
   const eventRateCodes = paneConfig === undefined ? undefined : paneConfig?.eventRateCodes ?? [];
   const ratePlan =
@@ -1547,7 +1554,21 @@ export function QuoteWorkflowPanel({
   const ratesReady =
     session.offers.length > 0 ||
     (rateKeys.length > 0 && rateKeys.every((key) => Boolean(session.staffQuotes[key] ?? (session.selectedStayKey === key ? session.staffQuote : null))));
-  const ratesState = running ? 'Looking up' : ratesReady ? 'Done' : 'Pending';
+  const strategyRowsForKey = rateKeys.map((key) => Object.values(session.quoteStrategyRows?.[key] ?? {}));
+  const strategyComparisonsComplete =
+    strategyRowsForKey.length > 0 &&
+    strategyRowsForKey.every((rows) => rows.length > 0 && rows.every((row) =>
+      row.status === 'ready' || row.status === 'not_offered' || row.status === 'failed',
+    ));
+  const strategyPickNeeded = rateKeys.some((key) =>
+    !session.staffQuotes[key] &&
+    Object.values(session.quoteStrategyRows?.[key] ?? {}).some((row) => row.status === 'ready'),
+  );
+  const ratesState = running
+    ? 'Looking up'
+    : ratesReady || strategyComparisonsComplete
+      ? 'Done'
+      : 'Pending';
   const quoteState = session.pdf || session.reviewedReplyHtml.trim() ? 'Done' : 'Pending';
   const showRates = session.phase !== 'failed' && session.phase !== 'missing_source';
   /** The stay step a row belongs to. A re-run of that step prices the row. */
@@ -1707,7 +1728,11 @@ export function QuoteWorkflowPanel({
             : missingQuestionPriority(firstMissingAnswer.field) === 4
               ? { kind: 'scroll', targetId: 'quote-extras', label: 'Review extras & alternatives' }
               : { kind: 'scroll', targetId: 'quote-quote', label: 'Review documents' }
-    : ratesReady
+    : strategyPickNeeded
+      ? { kind: 'scroll', targetId: 'quote-rates', label: 'Choose a rate strategy' }
+      : strategyComparisonsComplete && !ratesReady
+        ? { kind: 'scroll', targetId: 'quote-rates', label: 'Review strategy results' }
+        : ratesReady
       ? session.pdf
         ? { kind: 'scroll', targetId: 'quote-quote', label: 'Review documents' }
         : { kind: 'documents', label: isMultiStay(session) ? 'Prepare quote' : 'Prepare PDF' }
@@ -1899,6 +1924,25 @@ export function QuoteWorkflowPanel({
                   : null;
                 const stayBoard = stayQuote?.availabilityBoard ?? [];
                 const contractChecked = confirmedPartyRead(header, stayFound);
+                const comparisonRows = salesStrategies.map((strategy) => {
+                  const candidate = session.quoteStrategyRows?.[stayKey]?.[strategy.code];
+                  const row = candidate?.strategy.requestValue === strategy.requestValue ? candidate : undefined;
+                  const selectedRates = row?.staffQuote?.rateOptions?.filter((option) => option.selected) ?? [];
+                  const unique = (values: string[]) => [...new Set(values.filter(Boolean))].join(', ') || '—';
+                  const room = unique(selectedRates.map((option) => option.roomLabel));
+                  const board = unique(selectedRates.map((option) => option.boardLabel));
+                  const nightly = unique(selectedRates.map((option) => money(option.perNightMinor)));
+                  const status = row?.status === 'ready'
+                    ? 'Rates found'
+                    : row?.status === 'not_offered'
+                      ? 'Not offered for these dates'
+                      : row?.status === 'failed'
+                        ? 'Search failed'
+                        : row?.status === 'pending'
+                          ? 'Searching…'
+                          : 'Not checked';
+                  return { strategy, row, room, board, nightly, status };
+                });
                 return (
                   <article key={`${stay.id}-search`} className="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3">
                     {stayQuote?.preparedByNava ? (
@@ -1982,6 +2026,47 @@ export function QuoteWorkflowPanel({
                           />
                         </div>
                       </details>
+                    ) : null}
+                    {comparisonRows.length ? (
+                      <div className="overflow-x-auto">
+                        <table className="w-full border-collapse text-[12px]" aria-label="Quote strategy comparison">
+                          <thead>
+                            <tr className="border-b border-[#e2e8f0] text-left text-[#475569]">
+                              <th scope="col" className="p-1.5">Code</th>
+                              <th scope="col" className="p-1.5">Strategy</th>
+                              <th scope="col" className="p-1.5">Room</th>
+                              <th scope="col" className="p-1.5">Board</th>
+                              <th scope="col" className="p-1.5">Nightly</th>
+                              <th scope="col" className="p-1.5">Total</th>
+                              <th scope="col" className="p-1.5">Status</th>
+                              <th scope="col" className="p-1.5">Staff choice</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {comparisonRows.map(({ strategy, row, room, board, nightly, status }) => (
+                              <tr key={strategy.code} className="border-b border-[#e2e8f0] align-top">
+                                <td className="p-1.5 font-semibold">{strategy.code}</td>
+                                <td className="p-1.5">{strategy.label}</td>
+                                <td className="p-1.5">{row?.status === 'ready' ? room === '—' ? row.offer?.roomLabel ?? room : room : '—'}</td>
+                                <td className="p-1.5">{board}</td>
+                                <td className="p-1.5">{nightly}</td>
+                                <td className="p-1.5">{row?.status === 'ready' && row.staffQuote ? money(row.staffQuote.totalMinor) : '—'}</td>
+                                <td className="p-1.5" title={row?.message}>{status}</td>
+                                <td className="p-1.5">
+                                  {row?.status === 'ready' ? (
+                                    <SecondaryButton
+                                      className="w-auto"
+                                      onClick={() => onSelectQuoteStrategy?.(stayKey, strategy.code)}
+                                    >
+                                      {`Use ${strategy.label} (${strategy.code}) rates`}
+                                    </SecondaryButton>
+                                  ) : '—'}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     ) : null}
                     {stayQuote?.availabilityTruncated === true ? (
                       <p className="text-[12px] text-[#64748b]">More room options exist than this grid shows.</p>

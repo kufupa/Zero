@@ -11,15 +11,19 @@ import { resetPartyAutoLookupForTests } from '../components/quote-workflow/party
 import type { HmsJobRequest, HmsJobView } from '../lib/quote-workflow/amend-find';
 import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
 import { useHmsJobNoticeReporter } from '../lib/quote-workflow/hms-job-notice-context';
-import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
+import { initialQuoteSession, reduceQuoteSession, stayKeyForGroup } from '../lib/quote-workflow/session';
 import type {
   LunaAnalysisWire,
+  QuoteOffer,
+  QuotePaneConfig,
   QuoteRoomAlternative,
+  QuoteSalesStrategy,
   QuoteSession,
   RateOption,
   RatePlanCatalogueEntry,
+  StaffQuoteAllocation,
 } from '../lib/quote-workflow/types';
-import { defaultStaffStayExtras } from '../lib/quote-workflow/types';
+import { defaultStaffStayExtras, HRDAV_PROPERTY_CODE } from '../lib/quote-workflow/types';
 import { CENTURION_RATE_PLANS } from '../../server-pilot/src/hms/rate-catalogue';
 
 vi.mock('sonner', () => ({ toast: { warning: vi.fn(), success: vi.fn(), error: vi.fn() } }));
@@ -2213,5 +2217,117 @@ describe('an unread document is a needs-review row, never a stop', () => {
     expect(screen.getByText("Nava can't read rooming.docx yet — open it if it has booking details.")).toBeDefined();
     expect(screen.getByText('Needs review. Nava did not read this file.')).toBeDefined();
     expect(screen.queryByText(/Blocks the quote/)).toBeNull();
+  });
+});
+
+describe('quote strategy comparison', () => {
+  it('renders every configured strategy BAR first, keeps no-room results visible, and waits for a staff pick', () => {
+    const base = sessionFromFixture('public-single');
+    const group = base.groups[0]!;
+    const stayKey = stayKeyForGroup(group);
+    const strategies: QuoteSalesStrategy[] = [
+      { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
+      { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+      { code: 'PRESET', label: 'Preset', requestValue: 'PRESET' },
+      { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
+      { code: 'NC', label: 'Negoticated Contracted', requestValue: 'NC' },
+      { code: 'GOV', label: 'Government', requestValue: 'Government' },
+    ];
+    const offer: QuoteOffer = {
+      id: 'rev-ws',
+      kind: 'allocation',
+      roomCode: '',
+      roomLabel: 'Selected room option',
+      board: 'bb',
+      rateCode: '',
+      currency: 'ZAR',
+      nightly: [],
+      stayTotalMinor: 160000,
+      observedAt: '',
+      sourceRef: 'rev-ws',
+      restrictions: [],
+      combinable: true,
+      quoteRequestKey: stayKey,
+      coversGroupIds: [group.id],
+      quantity: 1,
+    };
+    const staffQuote: StaffQuoteAllocation = {
+      workflowRunId: 'run-ws',
+      revisionRef: offer.id,
+      factRefs: [],
+      messageId: 'mail-1',
+      threadId: 'thread-1',
+      sourceHash: 'a'.repeat(64),
+      selectionEpoch: 1,
+      inputRevision: base.inputRevision,
+      inputDigest: 'b'.repeat(64),
+      totalMinor: offer.stayTotalMinor,
+      currency: 'ZAR',
+      quoteRequestKey: stayKey,
+      approvedHeader: {
+        salesStrategy: 'WS',
+        company: '',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+      rateOptions: [{
+        id: 'ws-stkng',
+        groupId: group.id,
+        board: 'bb',
+        boardLabel: 'Bed & Breakfast',
+        rateCode: 'BAR',
+        rateLabel: 'Best Available Rate',
+        roomCode: 'STKNG',
+        roomLabel: 'Standard King',
+        contract: false,
+        onlyContract: false,
+        matchesRequest: true,
+        perNightMinor: 80000,
+        totalMinor: 160000,
+        currency: 'ZAR',
+        priced: 'full',
+        selected: true,
+      }],
+    };
+    const session: QuoteSession = {
+      ...base,
+      offers: [],
+      selectedOfferIds: [],
+      staffQuote: null,
+      staffQuotes: {},
+      quoteStrategyRows: {
+        [stayKey]: {
+          WS: { strategy: strategies[3]!, status: 'ready', offer, staffQuote, extrasReviewItems: [] },
+          GOV: { strategy: strategies[5]!, status: 'not_offered', message: 'No rooms for these dates.' },
+        },
+      },
+    };
+    const paneConfig: QuotePaneConfig = {
+      transportId: 't1',
+      propertyCode: HRDAV_PROPERTY_CODE,
+      roomTypes: [],
+      ratePlans: [],
+      boards: ['bb'],
+      salesStrategies: strategies,
+      overrideRateCodes: [],
+      eventRateCodes: [],
+    };
+    const onSelectQuoteStrategy = vi.fn();
+
+    render(<QuoteWorkflowPanel session={session} paneConfig={paneConfig} onSelectQuoteStrategy={onSelectQuoteStrategy} />);
+
+    const table = screen.getByRole('table', { name: /quote strategy comparison/i });
+    const rows = within(table).getAllByRole('row');
+    expect(rows).toHaveLength(7);
+    expect(rows[1]?.textContent).toContain('BAR');
+    expect(within(table).getByText('Not offered for these dates')).toBeDefined();
+    expect(within(table).getByText('Standard King')).toBeDefined();
+    expect(within(table).getByText('R800,00')).toBeDefined();
+    expect(within(table).getByText(/R1\s600,00/)).toBeDefined();
+    expect(session.selectedOfferIds).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: /use wholesale \(WS\) rates/i }));
+    expect(onSelectQuoteStrategy).toHaveBeenCalledWith(stayKey, 'WS');
   });
 });

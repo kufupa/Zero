@@ -54,6 +54,21 @@ test('ambiguous applied stay or occupancy fails, never becomes unavailable',()=>
   for(const delta of [{startDate:null},{adultCount:2},{childAges:[12]},{shopByDay:true},{groupID:'stale'}])
     assert.throws(()=>quote.assertApplied(request,request.rooms[0],{...applied,...delta}));
 });
+test('assertApplied binds Da Vinci strategy codes and Government alias to the selected picker value',()=>{
+  const room=request.rooms[0];
+  for(const salesStrategy of ['PROMO','BAR','PRESET','WS','NC','GOV','AIR','DOML','OTHER']){
+    const hrdav={...request,propertyCode:'HRDAV',search:{salesStrategy}};
+    const applied={propertyCodes:'HRDAV',startDate:'2026-09-24T00:00:00',adultCount:1,childCount:0,
+      salesStrategy,lengthOfStay:'DY',shopByDay:false,roomTypeCodes:'',ratePlanCodes:'',groupID:'',organizationID:'',travelAgencyID:'',
+      convertFromPropertyCurrency:false,currency:null};
+    assert.doesNotThrow(()=>quote.assertApplied(hrdav,room,applied));
+  }
+  const government={...request,propertyCode:'HRDAV',search:{salesStrategy:'Government'}};
+  const applied={propertyCodes:'HRDAV',startDate:'2026-09-24T00:00:00',adultCount:1,childCount:0,
+    salesStrategy:'GOV',lengthOfStay:'DY',shopByDay:false,roomTypeCodes:'',ratePlanCodes:'',groupID:'',organizationID:'',travelAgencyID:'',
+    convertFromPropertyCurrency:false,currency:null};
+  assert.doesNotThrow(()=>quote.assertApplied(government,room,applied));
+});
 test('criteria evidence excludes session tokens',()=>{
   assert.deepEqual(quote.projectCriteria({adultCount:1,bookingSessionID:'private-token',password:'private'}),{adultCount:1});
 });

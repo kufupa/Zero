@@ -154,6 +154,30 @@ async function fixture(confirmed = input()) {
 }
 afterEach(() => vi.useRealTimers());
 describe('staff-approved quotation beneath native guards', () => {
+  it('allows a configured Da Vinci strategy but refuses it for Centurion before any HMS read', () => {
+    const hrdavInput = staffQuoteInput.parse({
+      ...input(),
+      salesStrategy: 'WS',
+      groups: [{ ...input().groups[0]!, roomCodes: ['STKNG'] }],
+    });
+    const prepared = prepareStaffQuote(
+      hrdavInput,
+      { ...scope, propertyCode: 'HRDAV' },
+      { signerName: 'Staff', signerEmail: 'staff@example.test' },
+      new AbortController().signal,
+    );
+    expect(prepared.request.search.salesStrategy).toBe('WS');
+    expect(prepared.request.propertyCode).toBe('HRDAV');
+
+    expect(() => prepareStaffQuote(
+      hrdavInput,
+      scope,
+      { signerName: 'Staff', signerEmail: 'staff@example.test' },
+      new AbortController().signal,
+    )).toThrow('staff_quote_sales_strategy_not_allowed');
+    expect(staffQuoteInput.safeParse({ ...input(), salesStrategy: 'STO' }).success).toBe(false);
+  });
+
   it('retries dinner boards as B&B without changing any other quote input', () => {
     const source = input();
     source.groups[0]!.board = 'dinner_bb';

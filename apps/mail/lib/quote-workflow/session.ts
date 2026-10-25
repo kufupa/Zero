@@ -863,6 +863,7 @@ function clearDownstream(session: QuoteSession): QuoteSession {
     partyLookup: null,
     staffQuote: null,
     staffQuotes: {},
+    quoteStrategyRows: {},
     stayPdfs: {},
     rateOptions: [],
     bookingDrafts: {},
@@ -1240,6 +1241,7 @@ function editStays(
     return { ...cleared, rateOptions: (session.rateOptions ?? []).filter((option) => option.groupId === keepRatesOf) };
   }
   const staffQuotes = keepKeys(session.staffQuotes, affected, false);
+  const quoteStrategyRows = keepKeys(session.quoteStrategyRows ?? {}, affected, false);
   const offers = session.offers.filter((offer) => !affected.has(offer.quoteRequestKey));
   const affectedGroupIds = new Set(
     [...session.groups, ...groups].filter((group) => affected.has(stayKeyForGroup(group))).map((group) => group.id),
@@ -1253,6 +1255,7 @@ function editStays(
     phase: !hasResults && resultsPhase ? 'requirements' : session.phase,
     steps: rePlanSteps(session, groups, staffQuotes, affected),
     staffQuotes,
+    quoteStrategyRows,
     stayPdfs: keepKeys(session.stayPdfs, affected, false),
     offers,
     selectedOfferIds: session.selectedOfferIds.filter((id) => offers.some((offer) => offer.id === id)),
@@ -1283,6 +1286,7 @@ export function removedStayFor(session: QuoteSession, stayId: string): RemovedSt
     inputRevision: session.inputRevision,
     sharedRows: session.groups.filter((group) => stayIdOf(group) !== stayId && keys.has(stayKeyForGroup(group))),
     staffQuotes: keepKeys(session.staffQuotes, keys, true),
+    quoteStrategyRows: keepKeys(session.quoteStrategyRows ?? {}, keys, true),
     stayPdfs: keepKeys(session.stayPdfs, keys, true),
     offers: session.offers.filter((offer) => keys.has(offer.quoteRequestKey)),
     rateOptions: (session.rateOptions ?? []).filter((option) => groupIds.has(option.groupId)),
@@ -1380,11 +1384,17 @@ export function quoteStayRunIsCurrent(
     (item) => item.id === run.stepId && item.kind === 'quote_stay' && item.shareKey === run.stayKey,
   );
   const currentGroups = session.groups.filter((group) => stayKeyForGroup(group) === run.stayKey);
+  const runRelevantGroups = (groups: readonly StayGroupRequirement[]) => groups.map((group) => {
+    const comparable = { ...group };
+    delete comparable.quotedRateCode;
+    delete comparable.quotedAmountMinor;
+    return comparable;
+  });
   return (
     (session.binding?.selectionEpoch ?? 0) === run.selectionEpoch &&
     session.inputRevision === run.inputRevision &&
     Boolean(step) &&
-    JSON.stringify(currentGroups) === JSON.stringify(run.groups)
+    JSON.stringify(runRelevantGroups(currentGroups)) === JSON.stringify(runRelevantGroups(run.groups))
   );
 }
 
@@ -1695,6 +1705,154 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         // A combined PDF covers every stay, so it stays when the selection moves between them.
         pdf: isMultiStay(session) ? session.pdf : (session.stayPdfs[dateKey] ?? null),
       };
+    }
+    case 'quote_strategy_rows_started': {
+      if (
+        !requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision) ||
+        action.stayRevision !== session.stayRevision ||
+        !requestedQuoteKeys(session.groups).includes(action.stayKey)
+      ) return session;
+      const seen = new Set<string>();
+      const strategies = action.strategies
+        .filter((strategy) => {
+          if (
+            !/^[A-Z0-9_-]{1,16}$/.test(strategy.code) ||
+            !strategy.label.trim() ||
+            !strategy.requestValue ||
+            seen.has(strategy.code)
+          ) return false;
+          seen.add(strategy.code);
+          return true;
+        })
+        .sort((left, right) => Number(right.code === 'BAR') - Number(left.code === 'BAR'));
+      if (!strategies.length) return session;
+      const rows = Object.fromEntries(strategies.map((strategy) => [strategy.code, {
+        strategy,
+        status: 'pending' as const,
+        selectionEpoch: action.selectionEpoch,
+        inputRevision: action.inputRevision,
+        stayRevision: action.stayRevision,
+      }]));
+      return {
+        ...session,
+        quoteStrategyRows: { ...(session.quoteStrategyRows ?? {}), [action.stayKey]: rows },
+      };
+    }
+    case 'quote_strategy_result': {
+      if (
+        !requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision) ||
+        action.stayRevision !== session.stayRevision
+      ) return session;
+      const rows = session.quoteStrategyRows?.[action.stayKey];
+      const prior = rows?.[action.strategy.code];
+      if (
+        !rows ||
+        !prior ||
+        prior.status !== 'pending' ||
+        prior.strategy.requestValue !== action.strategy.requestValue ||
+        prior.selectionEpoch !== action.selectionEpoch ||
+        prior.inputRevision !== action.inputRevision ||
+        prior.stayRevision !== action.stayRevision
+      ) return session;
+
+      let row: NonNullable<typeof prior>;
+      if (action.outcome.status === 'ready') {
+        const source = session.staffSource;
+        const expectedGroupIds = session.groups
+          .filter((group) => stayKeyForGroup(group) === action.stayKey)
+          .map((group) => group.id)
+          .sort();
+        const returnedGroupIds = [...action.outcome.offer.coversGroupIds].sort();
+        const valid = Boolean(
+          source &&
+          action.outcome.offer.kind === 'allocation' &&
+          action.outcome.offer.id === action.outcome.staffQuote.revisionRef &&
+          action.outcome.offer.quoteRequestKey === action.stayKey &&
+          action.outcome.staffQuote.quoteRequestKey === action.stayKey &&
+          action.outcome.staffQuote.sourceHash === source.sourceHash &&
+          action.outcome.staffQuote.messageId === source.messageId &&
+          action.outcome.staffQuote.selectionEpoch === action.selectionEpoch &&
+          action.outcome.staffQuote.inputRevision === action.inputRevision &&
+          action.outcome.staffQuote.approvedHeader.salesStrategy === action.strategy.requestValue &&
+          expectedGroupIds.length > 0 &&
+          expectedGroupIds.join('|') === returnedGroupIds.join('|') &&
+          action.outcome.offer.nightly.length === 0 &&
+          action.outcome.staffQuote.totalMinor > 0 &&
+          action.outcome.offer.stayTotalMinor === action.outcome.staffQuote.totalMinor
+        );
+        row = valid
+          ? {
+              ...prior,
+              status: 'ready',
+              offer: action.outcome.offer,
+              staffQuote: { ...action.outcome.staffQuote, quoteRequestKey: action.stayKey },
+              extrasReviewItems: [...action.outcome.extrasReviewItems],
+              ...(action.outcome.approvedHeader ? { approvedHeader: action.outcome.approvedHeader } : {}),
+            }
+          : {
+              ...prior,
+              status: 'failed',
+              message: 'HMS returned a result that does not match this strategy and stay. Search again.',
+            };
+      } else {
+        row = {
+          ...prior,
+          status: action.outcome.status,
+          message: action.outcome.message.trim() ||
+            (action.outcome.status === 'not_offered'
+              ? 'No rate is offered for these dates.'
+              : 'HMS could not complete this strategy search.'),
+        };
+      }
+      const nextRows = { ...rows, [action.strategy.code]: row };
+      const complete = Object.values(nextRows).every((item) =>
+        item.status === 'ready' || item.status === 'not_offered' || item.status === 'failed',
+      );
+      const steps = complete
+        ? session.steps.map((step) => step.shareKey === action.stayKey
+            ? { ...step, status: 'succeeded' as const, retryGuidance: undefined, errorDetail: undefined }
+            : step)
+        : session.steps;
+      return {
+        ...session,
+        quoteStrategyRows: { ...(session.quoteStrategyRows ?? {}), [action.stayKey]: nextRows },
+        ...(complete
+          ? {
+              phase: requestedQuoteKeys(session.groups).length > 1 ? 'tools' as const : 'results' as const,
+              runningStepId: session.steps.find((step) => step.id === session.runningStepId)?.shareKey === action.stayKey
+                ? null
+                : session.runningStepId,
+              errorMessage: null,
+              steps,
+            }
+          : {}),
+      };
+    }
+    case 'select_quote_strategy': {
+      const row = session.quoteStrategyRows?.[action.stayKey]?.[action.strategyCode];
+      if (
+        !row ||
+        row.status !== 'ready' ||
+        !row.offer ||
+        !row.staffQuote ||
+        row.selectionEpoch !== undefined && row.selectionEpoch !== (session.binding?.selectionEpoch ?? -1) ||
+        row.inputRevision !== undefined && row.inputRevision !== session.inputRevision ||
+        row.stayRevision !== undefined && row.stayRevision !== session.stayRevision
+      ) return session;
+      const selected = reduceQuoteSession(session, {
+        type: 'staff_quote_ready',
+        offer: row.offer,
+        staffQuote: row.staffQuote,
+        selectionEpoch: row.selectionEpoch ?? session.binding?.selectionEpoch ?? 0,
+        inputRevision: row.inputRevision ?? session.inputRevision,
+        extrasReviewItems: row.extrasReviewItems,
+        approvedHeader: row.approvedHeader ?? {
+          ...session.staffHeader,
+          salesStrategy: row.strategy.requestValue,
+        },
+        stayRevision: row.stayRevision,
+      });
+      return selected === session ? session : { ...selected, staffSalesStrategyEdited: true };
     }
     case 'staff_quote_ready': {
       if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) return session;
@@ -2020,6 +2178,10 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         return restored;
       }
       const staffQuotes = { ...restored.staffQuotes, ...removal.staffQuotes };
+      const quoteStrategyRows = {
+        ...(restored.quoteStrategyRows ?? {}),
+        ...(removal.quoteStrategyRows ?? {}),
+      };
       const offers = [
         ...restored.offers,
         ...removal.offers.filter((offer) => !restored.offers.some((item) => item.id === offer.id)),
@@ -2043,6 +2205,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
             }
           : {}),
         staffQuotes,
+        quoteStrategyRows,
         stayPdfs: { ...restored.stayPdfs, ...removal.stayPdfs },
         offers,
         rateOptions,

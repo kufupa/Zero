@@ -53,6 +53,7 @@ import type {
   QuoteOffer,
   QuotePdf,
   QuoteReviewItem,
+  QuoteSalesStrategy,
   QuoteSelectionBinding,
   QuoteSession,
   QuoteSessionAction,
@@ -1123,6 +1124,79 @@ describe('quote session', () => {
         },
       ],
     });
+  });
+});
+
+describe('quote strategy comparison rows', () => {
+  it('stores results without selecting one until staff explicitly picks it', () => {
+    const strategy = (code: QuoteSalesStrategy['code']): QuoteSalesStrategy => ({ code, label: code, requestValue: code });
+    let session = reduceQuoteSession(analysisReady(), {
+      type: 'staff_source_ready',
+      source: staffSource(),
+    });
+    const stayKey = STAY_A;
+    const strategies = [strategy('BAR'), strategy('WS'), strategy('GOV')];
+    session = reduceQuoteSession(session, {
+      type: 'quote_strategy_rows_started',
+      stayKey,
+      strategies,
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+      stayRevision: session.stayRevision,
+    });
+    const offer: QuoteOffer = {
+      ...authorisedOffer,
+      id: 'rev-ws',
+      sourceRef: 'rev-ws',
+      quoteRequestKey: stayKey,
+      nightly: [],
+    };
+    const staffQuote: StaffQuoteAllocation = {
+      workflowRunId: 'run-ws',
+      revisionRef: offer.id,
+      factRefs: [],
+      messageId: 'mail-1',
+      threadId: 'thread-1',
+      sourceHash: STAFF_HASH,
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+      inputDigest: 'cd'.repeat(32),
+      totalMinor: offer.stayTotalMinor,
+      currency: 'ZAR',
+      quoteRequestKey: stayKey,
+      approvedHeader: { ...emptyHeader(), salesStrategy: 'WS' },
+    };
+    session = reduceQuoteSession(session, {
+      type: 'quote_strategy_result',
+      stayKey,
+      strategy: strategies[1]!,
+      outcome: { status: 'ready', offer, staffQuote, extrasReviewItems: [] },
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+      stayRevision: session.stayRevision,
+    });
+    session = reduceQuoteSession(session, {
+      type: 'quote_strategy_result',
+      stayKey,
+      strategy: strategies[2]!,
+      outcome: { status: 'not_offered', message: 'No rooms for these dates.' },
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+      stayRevision: session.stayRevision,
+    });
+
+    expect(session.quoteStrategyRows?.[stayKey]?.WS?.status).toBe('ready');
+    expect(session.quoteStrategyRows?.[stayKey]?.GOV?.status).toBe('not_offered');
+    expect(session.selectedOfferIds).toEqual([]);
+    expect(session.staffQuote).toBeNull();
+
+    const selected = reduceQuoteSession(session, {
+      type: 'select_quote_strategy',
+      stayKey,
+      strategyCode: 'WS',
+    });
+    expect(selected.selectedOfferIds).toEqual([offer.id]);
+    expect(selected.staffQuote?.revisionRef).toBe(offer.id);
   });
 });
 

@@ -75,6 +75,7 @@ import { amendFindClientFromTrpc, hmsJobTransport, type HmsJobRequest, type HmsJ
 import {
   bindAutoStartStaffQuote,
   bindExecuteStaffQuote,
+  bindStaffQuoteStrategyRows,
   bindHmsQueueStatus,
   bindReadBackStaffQuote,
   bindQuoteRunScreenshot,
@@ -847,9 +848,9 @@ export function NavaPane({
     if ((!isBooking && !isQuote) || !source || !binding || waiting.length === 0) {
       return;
     }
-    if (isQuote && !isBooking && staffQuoteQueueMode !== 'on') {
-      return;
-    }
+    // Quote comparisons are read back by queueing every registry-approved strategy below. The legacy single-result
+    // read-back would otherwise silently select the first BAR/Government allocation before staff chose a row.
+    if (isQuote && !isBooking) return;
     const generation = ++staffQuoteReadBackGeneration.current;
     staffQuoteReadBackInFlight.current = true;
     const staff = staffQuoteFromTrpc(trpcClient);
@@ -1130,7 +1131,14 @@ export function NavaPane({
         staffQuoteReadBackInFlight.current = false;
       }
     };
-  }, [priorQuoteKey, isNonActionableMessage, staffQuoteQueueMode, activePaneConfig?.transportId]);
+  }, [
+    priorQuoteKey,
+    isNonActionableMessage,
+    staffQuoteQueueMode,
+    activePaneConfig?.transportId,
+    activePaneConfig?.propertyCode,
+    activePaneConfig?.salesStrategies,
+  ]);
 
   useEffect(() => {
     if (staffQuoteQueueMode !== 'on') return;
@@ -1145,6 +1153,8 @@ export function NavaPane({
     requiresRelogin,
     isNonActionableMessage,
     activePaneConfig?.transportId,
+    activePaneConfig?.propertyCode,
+    activePaneConfig?.salesStrategies,
   ]);
 
   // Onboarding & Screen State
@@ -1562,6 +1572,71 @@ export function NavaPane({
     const runHeader = autoStart || readBack ? autoRunHeader(quoteSession) : quoteSession.staffHeader;
     // Get rates is where she proceeds with the read as shown, so unedited AI fields are accepted (v5 B2).
     if (!autoStart && !readBack && !storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
+    const quoteStrategyComparison =
+      step.kind === 'quote_stay' &&
+      quoteSession.analysis?.intent === 'quote' &&
+      quoteSession.analysis.luna?.workflow !== 'create_booking';
+    if (quoteStrategyComparison) {
+      const stayKey = step.shareKey;
+      const strategies = activePaneConfig?.salesStrategies ?? [];
+      if (!stayKey || !strategies.length) {
+        dispatchQuote({
+          type: 'results_unavailable',
+          stepId: step.id,
+          reason: 'No sales strategies are configured for this mailbox. Refresh the pane before searching.',
+          selectionEpoch,
+          inputRevision,
+        });
+        return;
+      }
+      dispatchQuote({
+        type: 'quote_strategy_rows_started',
+        stayKey,
+        strategies,
+        selectionEpoch,
+        inputRevision,
+        stayRevision: quoteSession.stayRevision,
+      });
+      const isCurrent = () => quoteStayRunIsCurrent(quoteSessionRef.current, {
+        selectionEpoch,
+        inputRevision,
+        stepId: step.id,
+        stayKey,
+        groups: stayGroups,
+      });
+      const fanout = bindStaffQuoteStrategyRows({
+        mode: autoStart ? 'auto' : 'staff',
+        queue: staff.workstation.queueStaffQuote?.mutate,
+        staffQuoteJob: observedStaffQuoteJob,
+        source,
+        selectionEpoch,
+        inputRevision,
+        groups: stayGroups,
+        header: runHeader,
+        propertyCode: activePaneConfig?.propertyCode,
+        stayKey,
+        strategies,
+        onResult: ({ strategy, outcome }) => {
+          if (!isCurrent()) return;
+          dispatchQuote({
+            type: 'quote_strategy_result',
+            stayKey,
+            strategy,
+            outcome,
+            selectionEpoch,
+            inputRevision,
+            stayRevision: quoteSession.stayRevision,
+          });
+        },
+      });
+      void trackStaffQuoteRun(fanout).then(() => {
+        if (!isCurrent()) {
+          dispatchQuote({ type: 'step_stale', stepId: step.id, selectionEpoch, inputRevision });
+          toast.warning('Details changed while HMS was searching — search availability again.');
+        }
+      });
+      return;
+    }
     const run = readBack
       ? bindReadBackStaffQuote({
           query: observedStaffQuoteJob,
@@ -2295,6 +2370,9 @@ export function NavaPane({
                 dispatchQuote({ type: 'patch_staff_stay_extras', stayKey, extras });
               }}
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
+              onSelectQuoteStrategy={(stayKey, strategyCode) =>
+                dispatchQuote({ type: 'select_quote_strategy', stayKey, strategyCode })
+              }
               onStaffNote={(staffNote) => {
                 suppressAutoStaffQuoteForCurrentEmail();
                 setStaffNoteSent(staffNote);

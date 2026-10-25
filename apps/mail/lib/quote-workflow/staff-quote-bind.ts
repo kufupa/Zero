@@ -16,6 +16,9 @@ import type {
   StaffQuoteAllocation,
   StaffQuoteHeader,
   StaffQuoteParties,
+  QuoteSalesStrategy,
+  QuoteSalesStrategyValue,
+  QuoteStrategyRowOutcome,
   StaffQuoteOtherUnit,
   StaffQuoteParty,
   StaffQuoteSource,
@@ -84,7 +87,7 @@ export type ExecuteStaffQuoteInput = {
   selectionEpoch: number;
   inputRevision: number;
   groups: StaffQuoteGroupInput[];
-  salesStrategy: 'BAR' | 'Government';
+  salesStrategy: QuoteSalesStrategyValue;
   company: string;
   agency: string;
   attention: string;
@@ -211,6 +214,15 @@ export type StaffQuoteJobQueue = (
   input: ExecuteStaffQuoteInput & { autoStart?: true },
   options?: StaffQuoteCallOptions,
 ) => Promise<{ runId: string | null }>;
+
+const STAFF_QUOTE_STRATEGY_VALUES: ReadonlySet<QuoteSalesStrategyValue> = new Set([
+  'BAR', 'Government', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER',
+]);
+
+function staffQuoteStrategyAllowed(propertyCode: string | undefined, salesStrategy: string): boolean {
+  if (propertyCode === HRCEN_PROPERTY_CODE) return salesStrategy === 'BAR' || salesStrategy === 'Government';
+  return propertyCode === HRDAV_PROPERTY_CODE && STAFF_QUOTE_STRATEGY_VALUES.has(salesStrategy as QuoteSalesStrategyValue);
+}
 
 function isExecuteStaffQuoteResult(
   value: Record<string, unknown>,
@@ -886,9 +898,9 @@ export function approvedExecuteHeader(
   | 'other'
   | 'notes'
 > {
-  const salesStrategy = header.salesStrategy === 'Government' ? 'Government' : header.salesStrategy === 'BAR' ? 'BAR' : null;
+  const salesStrategy = STAFF_QUOTE_STRATEGY_VALUES.has(header.salesStrategy) ? header.salesStrategy : null;
   if (!salesStrategy) {
-    throw new Error('Choose the rate type (BAR or Government) before running the quote.');
+    throw new Error('Choose a supported sales strategy before running the quote.');
   }
   const dinnerGroupIds = dinnerAllowanceGroupIdsFor(header, quoteGroupIds);
   return {
@@ -1026,6 +1038,9 @@ function staffQuoteRequest(
 ): BuiltStaffQuoteRequest | { error: string } {
   if (args.propertyCode !== HRCEN_PROPERTY_CODE && args.propertyCode !== HRDAV_PROPERTY_CODE) {
     return { error: 'Could not identify the hotel for this mailbox. Refresh the pane before running the quote.' };
+  }
+  if (!staffQuoteStrategyAllowed(args.propertyCode, args.header.salesStrategy)) {
+    return { error: 'This mailbox does not offer the selected sales strategy. Refresh the pane before searching.' };
   }
   const prepared = staffQuoteGroupsFromStay(args.groups, args.propertyCode);
   if ('error' in prepared) return { error: prepared.error };
@@ -1393,12 +1408,17 @@ export async function bindAutoStartStaffQuote(
   args: StaffQuoteRequestArgs & {
     queue?: StaffQuoteJobQueue;
     staffQuoteJob?: StaffQuoteJobQuery;
+    signal?: AbortSignal;
   },
 ): Promise<BoundExecuteStaffQuote | null> {
   const built = staffQuoteRequest(args);
-  if ('error' in built || !args.queue) return null;
+  if ('error' in built || !args.queue || args.signal?.aborted) return null;
   try {
-    const queued = await args.queue({ ...built.input, autoStart: true });
+    const queued = await args.queue(
+      { ...built.input, autoStart: true },
+      args.signal ? { signal: args.signal } : undefined,
+    );
+    if (args.signal?.aborted) return null;
     if (queued?.runId === null) return null;
     if (typeof queued?.runId !== 'string' || !queued.runId.trim()) {
       return { status: 'unavailable', reason: 'Nava did not return a queued quote. Try again.' };
@@ -1409,18 +1429,24 @@ export async function bindAutoStartStaffQuote(
         reason: 'The queued quote status is not connected to this pane. Refresh the pane and try again.',
       };
     }
-    const first = await args.staffQuoteJob({ runId: queued.runId });
-    if (!first) {
+    const first = await args.staffQuoteJob(
+      { runId: queued.runId },
+      args.signal ? { signal: args.signal } : undefined,
+    );
+    if (!first || args.signal?.aborted) {
       return { status: 'unavailable', reason: 'Nava could not read the queued quote. Try again in a minute.' };
     }
-    const settled = await pollStaffQuoteJob(args.staffQuoteJob, first);
+    const settled = await pollStaffQuoteJob(args.staffQuoteJob, first, args.signal);
+    if (args.signal?.aborted) return null;
     // The queue route returns a prepared run only after its server-side price-shape match. Its extracted display header
     // can legitimately differ from the pane's edited header, so rebase counters for that same source as well.
     const preparedForSource =
       settled.prefetch &&
       settled.request?.kind === 'staff_quote' &&
       settled.request.input.messageId === built.input.messageId &&
-      settled.request.input.sourceHash === built.input.sourceHash;
+      settled.request.input.sourceHash === built.input.sourceHash &&
+      settled.request.input.salesStrategy === built.input.salesStrategy &&
+      staffQuoteStayTermsMatch(settled.request, built.input);
     const rebased = (preparedForSource || staffQuoteRequestMatches(settled.request, built.input)) && settled.result
       ? {
           ...settled,
@@ -1435,6 +1461,76 @@ export async function bindAutoStartStaffQuote(
   } catch (error) {
     return { status: 'unavailable', ...searchFailure(error) };
   }
+}
+
+export type BoundStaffQuoteStrategyRow = {
+  strategy: QuoteSalesStrategy;
+  outcome: QuoteStrategyRowOutcome;
+};
+
+/** Queue and read each mailbox-configured strategy independently; callbacks publish rows as soon as they settle. */
+export async function bindStaffQuoteStrategyRows(
+  args: StaffQuoteRequestArgs & {
+    mode: 'auto' | 'staff';
+    strategies: readonly QuoteSalesStrategy[];
+    queue?: StaffQuoteJobQueue;
+    staffQuoteJob?: StaffQuoteJobQuery;
+    signal?: AbortSignal;
+    onResult?: (row: BoundStaffQuoteStrategyRow) => void;
+  },
+): Promise<BoundStaffQuoteStrategyRow[]> {
+  const seen = new Set<string>();
+  const strategies = args.strategies
+    .filter((strategy) => {
+      if (
+        !/^[A-Z0-9_-]{1,16}$/.test(strategy.code) ||
+        !strategy.label.trim() ||
+        seen.has(strategy.code)
+      ) return false;
+      seen.add(strategy.code);
+      return true;
+    })
+    .sort((left, right) => Number(right.code === 'BAR') - Number(left.code === 'BAR'));
+  return Promise.all(strategies.map(async (strategy) => {
+    const header = { ...args.header, salesStrategy: strategy.requestValue };
+    const request = {
+      source: args.source,
+      selectionEpoch: args.selectionEpoch,
+      inputRevision: args.inputRevision,
+      groups: args.groups,
+      header,
+      stayKey: args.stayKey,
+      propertyCode: args.propertyCode,
+    };
+    const result = args.mode === 'auto'
+      ? await bindAutoStartStaffQuote({
+          ...request,
+          queue: args.queue,
+          staffQuoteJob: args.staffQuoteJob,
+          signal: args.signal,
+        })
+      : await bindExecuteStaffQuote({
+          ...request,
+          queue: args.queue,
+          staffQuoteJob: args.staffQuoteJob,
+        });
+    const outcome: QuoteStrategyRowOutcome = result === null
+      ? { status: 'failed', message: 'The strategy search did not start. Try again.' }
+      : result.status === 'ok'
+        ? {
+            status: 'ready',
+            offer: result.offer,
+            staffQuote: result.staffQuote,
+            extrasReviewItems: result.extrasReviewItems,
+            approvedHeader: header,
+          }
+        : result.noMatchingRate
+          ? { status: 'not_offered', message: result.reason }
+          : { status: 'failed', message: result.reason };
+    const row = { strategy, outcome };
+    args.onResult?.(row);
+    return row;
+  }));
 }
 
 /** Finds the latest persisted quote for the same semantic request after a pane remount, then polls it if still running. */
@@ -1633,7 +1729,7 @@ type StaffQuoteClient = {
           status: 'ready';
           payload: {
             groups: StaffQuoteGroupInput[];
-            salesStrategy: 'BAR' | 'Government';
+            salesStrategy: QuoteSalesStrategyValue;
             company: string;
             agency: string;
           };

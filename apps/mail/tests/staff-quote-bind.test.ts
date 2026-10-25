@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   bindExecuteStaffQuote,
+  bindStaffQuoteStrategyRows,
   resolveNativeRoomCodes,
   staffQuoteGroupsFromStay,
 } from '../lib/quote-workflow/staff-quote-bind';
@@ -10,6 +11,8 @@ import {
   HRDAV_RATE_PLANS,
   HRDAV_ROOM_NAMES,
   hrdavBoardFromLabel,
+  emptyStaffQuoteHeader,
+  type QuoteSalesStrategy,
   type StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 
@@ -136,5 +139,43 @@ describe('HRDAV native room and board maps', () => {
     });
     expect(result).toMatchObject({ status: 'unavailable', reason: expect.stringMatching(reason) });
     expect(mutate).not.toHaveBeenCalled();
+  });
+});
+
+describe('staff quote strategy jobs', () => {
+  it('queues one independent shop per configured strategy, BAR first, without adding missing registry rows', async () => {
+    const queued: string[] = [];
+    const strategies: QuoteSalesStrategy[] = [
+      { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
+      { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+      { code: 'PRESET', label: 'Preset', requestValue: 'PRESET' },
+      { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
+      { code: 'GOV', label: 'Government', requestValue: 'Government' },
+      { code: 'AIR', label: 'Airline Crews', requestValue: 'AIR' },
+    ];
+    const queue = vi.fn(async (input: { salesStrategy: string; autoStart?: true }) => {
+      queued.push(input.salesStrategy);
+      return { runId: null };
+    });
+    const onResult = vi.fn();
+    const rows = await bindStaffQuoteStrategyRows({
+      mode: 'auto',
+      source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'a'.repeat(64) },
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [stay({ roomCodes: ['STKNG'] })],
+      header: emptyStaffQuoteHeader(),
+      propertyCode: HRDAV_PROPERTY_CODE,
+      stayKey: '2026-11-16:2026-11-17',
+      strategies,
+      queue,
+      onResult,
+    });
+    expect(rows).toHaveLength(6);
+    expect(queued).toEqual(['BAR', 'PROMO', 'PRESET', 'WS', 'Government', 'AIR']);
+    expect(queued).not.toContain('NC');
+    expect(queue).toHaveBeenCalledTimes(6);
+    expect(queue.mock.calls.every(([input]) => input.autoStart === true)).toBe(true);
+    expect(onResult).toHaveBeenCalledTimes(6);
   });
 });

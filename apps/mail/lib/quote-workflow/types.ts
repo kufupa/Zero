@@ -278,6 +278,15 @@ export type RatePlanCatalogueEntry = {
 export type QuotePaneRoomType = { code: string; label: string };
 export type QuotePaneBoard = Exclude<QuoteBoard, 'unknown'>;
 
+export type QuoteSalesStrategyCode = 'BAR' | 'PROMO' | 'PRESET' | 'WS' | 'NC' | 'GOV' | 'AIR' | 'DOML' | 'OTHER';
+export type QuoteSalesStrategyValue = QuoteSalesStrategyCode | 'Government';
+export type QuoteSalesStrategy = {
+  code: QuoteSalesStrategyCode;
+  label: string;
+  /** Request value is a native code, except legacy Government which shares the canonical prefetched quote. */
+  requestValue: QuoteSalesStrategyValue;
+};
+
 /** Mailbox-selected, registry-backed choices for the quote pane. */
 export type QuotePaneConfig = {
   transportId: string;
@@ -285,6 +294,7 @@ export type QuotePaneConfig = {
   roomTypes: QuotePaneRoomType[];
   ratePlans: RatePlanCatalogueEntry[];
   boards: QuotePaneBoard[];
+  salesStrategies: QuoteSalesStrategy[];
   overrideRateCodes: string[];
   eventRateCodes: string[];
 };
@@ -378,7 +388,7 @@ export type StaffQuoteAllocation = {
     totalMinor: number;
   };
   approvedHeader: {
-    salesStrategy: 'BAR' | 'Government';
+    salesStrategy: QuoteSalesStrategyValue;
     company: string;
     agency: string;
     attention: string;
@@ -416,7 +426,7 @@ export type StaffQuoteParties = {
 };
 
 export type StaffQuoteHeader = {
-  salesStrategy: 'BAR' | 'Government';
+  salesStrategy: QuoteSalesStrategyValue;
   company: string;
   agency: string;
   attention: string;
@@ -623,6 +633,32 @@ export type QuoteOffer = {
   screenshot?: QuoteScreenshot;
 };
 
+export type QuoteStrategyRowOutcome =
+  | {
+      status: 'ready';
+      offer: QuoteOffer;
+      staffQuote: StaffQuoteAllocation;
+      extrasReviewItems: string[];
+      approvedHeader?: StaffQuoteHeader;
+      groups?: StayGroupRequirement[];
+    }
+  | { status: 'not_offered'; message: string }
+  | { status: 'failed'; message: string };
+
+export type QuoteStrategyRow = {
+  strategy: QuoteSalesStrategy;
+  status: 'idle' | 'pending' | 'ready' | 'not_offered' | 'failed';
+  offer?: QuoteOffer;
+  staffQuote?: StaffQuoteAllocation;
+  extrasReviewItems?: string[];
+  approvedHeader?: StaffQuoteHeader;
+  groups?: StayGroupRequirement[];
+  message?: string;
+  selectionEpoch?: number;
+  inputRevision?: number;
+  stayRevision?: number;
+};
+
 export type QuoteMailboxStatus = 'unsynced' | 'missing_source' | 'ready' | 'unavailable';
 
 export type QuoteEvidenceKind = 'authorised' | 'fixture';
@@ -766,6 +802,8 @@ export type QuoteSession = {
   staffQuote: StaffQuoteAllocation | null;
   /** Per-date authentic execute revisions. Combined PDF must not sum these. */
   staffQuotes: Record<string, StaffQuoteAllocation>;
+  /** Registry-scoped strategy comparisons. Rows do not become a selected quote until staff explicitly chooses one. */
+  quoteStrategyRows?: Record<string, Record<string, QuoteStrategyRow>>;
   /** Per-date PDF bytes. Each option keeps its own PDF; the server issues one only for that option's latest run. */
   stayPdfs: Record<string, QuotePdf>;
   staffHeader: StaffQuoteHeader;
@@ -809,6 +847,7 @@ export type RemovedStay = {
   /** The other stays' rows on the same dates when it was removed. Their rates come back only if these are unchanged. */
   sharedRows: StayGroupRequirement[];
   staffQuotes: Record<string, StaffQuoteAllocation>;
+  quoteStrategyRows?: Record<string, Record<string, QuoteStrategyRow>>;
   stayPdfs: Record<string, QuotePdf>;
   offers: QuoteOffer[];
   rateOptions: RateOption[];
@@ -847,6 +886,24 @@ export type QuoteSessionAction =
   | { type: 'patch_staff_stay_extras'; stayKey: string; extras: Partial<StaffStayExtras> }
   | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }
   | { type: 'select_stay_key'; stayKey: string }
+  | {
+      type: 'quote_strategy_rows_started';
+      stayKey: string;
+      strategies: QuoteSalesStrategy[];
+      selectionEpoch: number;
+      inputRevision: number;
+      stayRevision: number;
+    }
+  | {
+      type: 'quote_strategy_result';
+      stayKey: string;
+      strategy: QuoteSalesStrategy;
+      outcome: QuoteStrategyRowOutcome;
+      selectionEpoch: number;
+      inputRevision: number;
+      stayRevision: number;
+    }
+  | { type: 'select_quote_strategy'; stayKey: string; strategyCode: QuoteSalesStrategyCode }
   | {
       type: 'staff_quote_ready';
       offer: QuoteOffer;
