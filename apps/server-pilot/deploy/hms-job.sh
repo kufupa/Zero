@@ -203,6 +203,7 @@ cmd_start() {
     -E "HMS_JOB_WAIT_SECS=${WAIT_SECS}" \
     -E "HMS_JOB_SYSTEMCTL=${SYSTEMCTL}" \
     -E "HMS_JOB_PROOF_CMD=${HMS_JOB_PROOF_CMD:-}" \
+    -E "NAVA_RUN_HOLD_FILE=${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}" \
     --working-directory "$SERVER_PILOT" \
     bash "${SCRIPT_DIR}/hms-job.sh" _run "$id"; then
     printf '%s\n' '{"ok":false,"error":"systemd_run_failed"}' >"${dir}/result.json"

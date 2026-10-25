@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -76,6 +77,63 @@ describe('HOLD file stops hms-job.sh before systemd-run', () => {
     expect(result.status).toBe(2);
     expect(result.stderr).toMatch(/HOLD file present/);
     expect(existsSync(units)).toBe(false);
+  });
+
+  it('forwards NAVA_RUN_HOLD_FILE into the detached unit', () => {
+    const root = scratch('u12-hms-hold-env-');
+    const hold = join(root, 'custom-HOLD.txt');
+    const envLog = join(root, 'env.log');
+    mkdirSync(join(root, 'server-pilot', 'src', 'ops'), { recursive: true });
+    mkdirSync(join(root, 'hms-jobs'));
+    writeFileSync(join(root, 'server-pilot', 'src', 'ops', 'hms-proof-run.ts'), '// stub\n');
+    writeFileSync(join(root, 'args.json'), '{"mode":"preview"}\n');
+    writeFileSync(
+      join(root, 'systemd-run'),
+      [
+        '#!/usr/bin/env bash',
+        'set -euo pipefail',
+        'while [ $# -gt 0 ]; do',
+        '  case "$1" in',
+        '    -E) printf "%s\\n" "$2" >> "$HMS_JOB_STUB_ENV"; shift 2 ;;',
+        '    --unit|--uid|--gid|-p|--working-directory) shift 2 ;;',
+        '    --quiet) shift ;;',
+        '    *) break ;;',
+        '  esac',
+        'done',
+        'exit 0',
+        '',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    chmodSync(join(root, 'systemd-run'), 0o755);
+    const result = spawnSync(
+      'bash',
+      [
+        jobScript,
+        'start',
+        '--property',
+        'HRCEN',
+        '--tool',
+        'src/ops/hms-proof-run.ts',
+        '--args-file',
+        join(root, 'args.json'),
+      ],
+      {
+        encoding: 'utf8',
+        timeout: 10_000,
+        env: {
+          PATH: process.env.PATH ?? '/usr/bin:/bin',
+          HOME: root,
+          NAVA_RUN_HOLD_FILE: hold,
+          HMS_JOB_LOG_ROOT: join(root, 'hms-jobs'),
+          HMS_JOB_SERVER_PILOT: join(root, 'server-pilot'),
+          HMS_JOB_SYSTEMD_RUN: join(root, 'systemd-run'),
+          HMS_JOB_STUB_ENV: envLog,
+        },
+      },
+    );
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(envLog, 'utf8')).toMatch(new RegExp(`^NAVA_RUN_HOLD_FILE=${hold}$`, 'm'));
   });
 });
 
