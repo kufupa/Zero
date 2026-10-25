@@ -3,7 +3,8 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 import * as hmsJobs from '../src/ai/hms-jobs.js';
-import { staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
+import { quoteShopStrategyLoaders } from '../src/ai/quote-ready.js';
+import { staffQuoteInput, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import {
   canClaimReadToolRun,
   claimNextAiRun,
@@ -107,6 +108,7 @@ afterEach(() => {
   paneStayLookupLoaders.spawn = null;
   mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
   mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+  quoteShopStrategyLoaders.forProperty = null;
   staffQuoteRunner.run.mockReset();
   vi.unstubAllEnvs();
 });
@@ -372,6 +374,13 @@ describe('U23 HMS job queue (pure)', () => {
       }).success,
     ).toBe(false);
     expect(hmsJobRequestSchema.safeParse({ kind: 'staff_quote', input: STAFF_QUOTE_INPUT }).success).toBe(true);
+    expect(
+      hmsJobRequestSchema.safeParse({
+        kind: 'staff_quote',
+        input: STAFF_QUOTE_INPUT,
+        shopStrategy: 'Wholesale',
+      }).success,
+    ).toBe(true);
     expect(
       hmsJobRequestSchema.safeParse({
         kind: 'staff_quote',
@@ -717,6 +726,91 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         expect(reused.run.id).not.toBe(prepared?.id);
         expect(reused.run.priority).toBe(HMS_JOB_PRIORITY_USER);
       }
+    }));
+
+  it('enqueues one prepared staff_quote per configured strategy and skips names missing from the registry', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      quoteShopStrategyLoaders.forProperty = () => [
+        'BAR',
+        'Wholesale',
+        'Negotiated Contracted',
+        'Government',
+        'Airline Crews',
+        'STO',
+        'Corporate',
+      ];
+      const { messageId, run } = await seedQuoteExtraction(db);
+
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(6);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(0);
+      const rows = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.triggerMessageId, messageId))
+        .orderBy(aiWorkflowRun.createdAt, aiWorkflowRun.id);
+      expect(rows).toHaveLength(6);
+      expect(
+        rows.map((row) => {
+          const request = row.readRequest as {
+            kind?: string;
+            shopStrategy?: string;
+            input?: { salesStrategy?: string };
+          };
+          return {
+            kind: request.kind,
+            shop: request.shopStrategy ?? request.input?.salesStrategy,
+            priority: row.priority,
+            prepared: (row.metrics as { quotePrepared?: boolean } | null)?.quotePrepared,
+          };
+        }),
+      ).toEqual([
+        { kind: 'staff_quote', shop: 'BAR', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
+        { kind: 'staff_quote', shop: 'Wholesale', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
+        { kind: 'staff_quote', shop: 'Negotiated Contracted', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
+        { kind: 'staff_quote', shop: 'Government', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
+        { kind: 'staff_quote', shop: 'Airline Crews', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
+        { kind: 'staff_quote', shop: 'STO', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
+      ]);
+      expect(rows.some((row) => JSON.stringify(row.readRequest).includes('Corporate'))).toBe(false);
+      expect(rows[0]?.readRequest).toMatchObject({ kind: 'staff_quote', input: { salesStrategy: 'BAR' } });
+      expect(rows[0]?.readRequest).not.toHaveProperty('shopStrategy');
+    }));
+
+  it('keeps HRCEN BAR and Government as a single prepared job', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const bar = await seedQuoteExtraction(db);
+      expect(await prefetchQuoteReadyForExtraction(bar.run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      const [barJob] = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.triggerMessageId, bar.messageId));
+      expect(barJob?.readRequest).toMatchObject({ kind: 'staff_quote', input: { salesStrategy: 'BAR' } });
+      expect(barJob?.readRequest).not.toHaveProperty('shopStrategy');
+
+      const barPayload = quoteExtractionPayload();
+      const government = await seedQuoteExtraction(db, {
+        payload: {
+          ...barPayload,
+          stays: barPayload.stays.map((stay) => ({
+            ...stay,
+            rows: stay.rows.map((row) => ({ ...row, board: 'dbb' })),
+          })),
+        },
+      });
+      expect(await prefetchQuoteReadyForExtraction(government.run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      const [govJob] = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.triggerMessageId, government.messageId));
+      expect(govJob?.readRequest).toMatchObject({
+        kind: 'staff_quote',
+        input: { salesStrategy: 'Government' },
+      });
+      expect(govJob?.readRequest).not.toHaveProperty('shopStrategy');
     }));
 
   it('does not reuse a queued dev-eval quote for a later staff quote', () =>

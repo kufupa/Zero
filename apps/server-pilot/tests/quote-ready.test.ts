@@ -1,9 +1,13 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildPreparedStaffQuotePlan,
+  configuredQuoteShopStrategies,
   confidentPartyFromV2Result,
   quotePrepareKindReason,
+  quoteShopJobsForPlan,
+  quoteShopStrategyLoaders,
+  selectQuoteShopStrategies,
   staffQuoteInputsPriceEquivalent,
 } from '../src/ai/quote-ready.js';
 import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
@@ -574,5 +578,74 @@ describe('prepared quote reuse price fields', () => {
     ['sales strategy', { salesStrategy: 'Government' as const }],
   ])('requires the same %s for reuse', (_label, changes) => {
     expect(staffQuoteInputsPriceEquivalent(base, { ...base, ...changes })).toBe(false);
+  });
+});
+
+const SIX_QUOTE_SHOP_STRATEGIES = [
+  'BAR',
+  'Wholesale',
+  'Negotiated Contracted',
+  'Government',
+  'Airline Crews',
+  'STO',
+] as const;
+
+describe('per-strategy quote shop jobs', () => {
+  afterEach(() => {
+    quoteShopStrategyLoaders.forProperty = null;
+  });
+
+  it('keeps six configured strategies and drops a name missing from the registry', () => {
+    expect(selectQuoteShopStrategies({ configured: SIX_QUOTE_SHOP_STRATEGIES })).toEqual([
+      ...SIX_QUOTE_SHOP_STRATEGIES,
+    ]);
+    expect(
+      selectQuoteShopStrategies({ configured: [...SIX_QUOTE_SHOP_STRATEGIES, 'Corporate'] }),
+    ).toEqual([...SIX_QUOTE_SHOP_STRATEGIES]);
+  });
+
+  it('expands one BAR stay into six shop jobs when six strategies are configured', () => {
+    const jobs = quoteShopJobsForPlan(build(), SIX_QUOTE_SHOP_STRATEGIES);
+
+    expect(jobs).toHaveLength(6);
+    expect(jobs[0]).toEqual({ input: expect.objectContaining({ salesStrategy: 'BAR' }) });
+    expect(jobs.map((job) => job.shopStrategy ?? job.input.salesStrategy)).toEqual([
+      ...SIX_QUOTE_SHOP_STRATEGIES,
+    ]);
+    expect(jobs.filter((job) => job.shopStrategy).map((job) => job.shopStrategy)).toEqual([
+      'Wholesale',
+      'Negotiated Contracted',
+      'Airline Crews',
+      'STO',
+    ]);
+  });
+
+  it('leaves HRCEN BAR and Government as the single shop for that mail', () => {
+    expect(configuredQuoteShopStrategies('HRCEN')).toEqual([]);
+    expect(quoteShopJobsForPlan(build(), configuredQuoteShopStrategies('HRCEN'))).toEqual([
+      { input: expect.objectContaining({ salesStrategy: 'BAR' }) },
+    ]);
+
+    const government = build({
+      stays: [
+        {
+          id: 'stay-1',
+          hotel: null,
+          requested: { arrival: '2026-10-20', departure: '2026-10-23' },
+          booked: null,
+          totalRooms: 1,
+          rows: [{
+            id: 'row-1', roomType: 'SKNG', rooms: 1, adultsPerRoom: 2, childAges: [], board: 'dbb',
+          }],
+        },
+      ],
+    });
+    expect(quoteShopJobsForPlan(government, configuredQuoteShopStrategies('HRCEN'))).toEqual([
+      { input: expect.objectContaining({ salesStrategy: 'Government' }) },
+    ]);
+  });
+
+  it('uses the Da Vinci allow-list of six shoppable strategies', () => {
+    expect(configuredQuoteShopStrategies('HRDAV')).toEqual([...SIX_QUOTE_SHOP_STRATEGIES]);
   });
 });

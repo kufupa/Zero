@@ -17,6 +17,80 @@ export type PreparedStaffQuotePlan = {
   partyBound: boolean;
 };
 
+/** HMS Hotel Availability labels (plus STO) a background shop may enqueue. */
+export const QUOTE_SHOP_STRATEGY_REGISTRY: ReadonlySet<string> = new Set([
+  'BAR',
+  'Wholesale',
+  'Negotiated Contracted',
+  'Government',
+  'Airline Crews',
+  'STO',
+  'Promotions',
+  'Preset',
+  'Group & Convention',
+  'Comp / House Use',
+  'Other',
+]);
+
+/** Extra shops besides the staff BAR/Government job. Empty means HRCEN's one-strategy mail. */
+export const PROPERTY_QUOTE_SHOP_STRATEGIES: Readonly<Record<string, readonly string[]>> = {
+  HRDAV: ['BAR', 'Wholesale', 'Negotiated Contracted', 'Government', 'Airline Crews', 'STO'],
+};
+
+export const quoteShopStrategyLoaders: {
+  forProperty: ((propertyCode: string) => readonly string[] | null) | null;
+} = { forProperty: null };
+
+export type QuoteShopJob = {
+  input: StaffQuoteInput;
+  shopStrategy?: string;
+};
+
+export function selectQuoteShopStrategies(input: {
+  configured?: readonly string[] | null;
+  registry?: ReadonlySet<string>;
+}): string[] {
+  const registry = input.registry ?? QUOTE_SHOP_STRATEGY_REGISTRY;
+  const seen = new Set<string>();
+  const selected: string[] = [];
+  for (const raw of input.configured ?? []) {
+    const name = raw.trim();
+    if (!name || !registry.has(name) || seen.has(name)) continue;
+    seen.add(name);
+    selected.push(name);
+  }
+  return selected;
+}
+
+export function configuredQuoteShopStrategies(propertyCode: string): string[] {
+  const loaded = quoteShopStrategyLoaders.forProperty?.(propertyCode);
+  const configured =
+    loaded === undefined || loaded === null
+      ? PROPERTY_QUOTE_SHOP_STRATEGIES[propertyCode] ?? []
+      : loaded;
+  return selectQuoteShopStrategies({ configured });
+}
+
+/** One job per stay as today, plus one shop per other allowed strategy. */
+export function quoteShopJobsForPlan(
+  plan: PreparedStaffQuotePlan,
+  allowed: readonly string[],
+): QuoteShopJob[] {
+  const jobs: QuoteShopJob[] = [];
+  for (const input of plan.inputs) {
+    jobs.push({ input });
+    for (const strategy of allowed) {
+      if (strategy === input.salesStrategy) continue;
+      if (strategy === 'BAR' || strategy === 'Government') {
+        jobs.push({ input: { ...input, salesStrategy: strategy } });
+      } else {
+        jobs.push({ input, shopStrategy: strategy });
+      }
+    }
+  }
+  return jobs;
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
