@@ -8,12 +8,19 @@ const DAVINCI_STAFF_TRANSPORT_IDS = new Set([
   'transport-kmgidi',
 ]);
 
-export function quotePropertyCodeForTransport(transportId: string | null | undefined): 'HRCEN' | 'HRDAV' {
-  return transportId && DAVINCI_STAFF_TRANSPORT_IDS.has(transportId) ? 'HRDAV' : 'HRCEN';
+export function quotePropertyCodeForTransport(
+  transportId: string | null | undefined,
+): 'HRCEN' | 'HRDAV' | null {
+  const id = transportId?.trim();
+  if (id && DAVINCI_STAFF_TRANSPORT_IDS.has(id)) return 'HRDAV';
+  if (id === 'transport-centurion') return 'HRCEN';
+  return null;
 }
 
 export function quoteHotelName(propertyCode: string | null | undefined): string {
-  return propertyCode === 'HRDAV' ? 'Da Vinci Hotel and Suites' : 'The Centurion Hotel';
+  if (propertyCode === 'HRDAV') return 'Da Vinci Hotel and Suites';
+  if (propertyCode === 'HRCEN') return 'The Centurion Hotel';
+  return 'the hotel';
 }
 
 export type DinnerAddOnReplyLine = {
@@ -26,7 +33,7 @@ export type DinnerAddOnReplyLine = {
 export function quoteWrapperHtml(
   guestName: string,
   signerName = '',
-  options?: { dinnerAddOn?: DinnerAddOnReplyLine; totalMinor?: number; propertyCode?: string },
+  options?: { dinnerAddOn?: DinnerAddOnReplyLine; totalMinor?: number; propertyCode?: string | null },
 ): string {
   const name = escapeHtml(guestName.trim() || 'Guest');
   const signer = signerName.trim() ? `${escapeHtml(signerName.trim())}<br />` : '';
@@ -56,7 +63,7 @@ export function missingQuoteDetailsWrapperHtml(
   guestName: string,
   fields: readonly string[],
   signerName = '',
-  propertyCode?: string,
+  propertyCode?: string | null,
 ): string {
   const name = escapeHtml(guestName.trim() || 'Guest');
   const signer = signerName.trim() ? `${escapeHtml(signerName.trim())}<br />` : '';

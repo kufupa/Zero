@@ -1,10 +1,9 @@
 import { TRPCError } from '@trpc/server';
 import { hmsDavinciMakeQuoteEnabled } from '../env.js';
 import {
-  CENTURION_HMS_READ_TARGET,
   DAVINCI_HMS_READ_TARGET,
   DAVINCI_ORIGIN_REFUSED_MESSAGE,
-  isDaVinciTransport,
+  hmsReadTargetForTransport,
   type HmsReadTarget,
 } from './hms-read-target.js';
 import {
@@ -40,9 +39,8 @@ export function quoteTargetForTransport(
   transportId: string,
   env: NodeJS.Dict<string> = process.env,
 ): HmsQuoteJobTargetResult {
-  if (!isDaVinciTransport(transportId)) {
-    return { ok: true, target: CENTURION_HMS_READ_TARGET };
-  }
+  const target = hmsReadTargetForTransport(transportId);
+  if (target.browserSlot !== 'davinci') return { ok: true, target };
   return davinciQuoteOrRefuse(env);
 }
 
@@ -52,9 +50,10 @@ export function quoteTargetForHmsJob(input: {
   origin?: MailboxHmsOriginFields | null;
   env?: NodeJS.Dict<string>;
 }): HmsQuoteJobTargetResult {
-  const daVinci =
-    isDaVinciTransport(input.transportId) || isDaVinciMailboxOrigin(input.origin ?? {});
-  if (!daVinci) return { ok: true, target: CENTURION_HMS_READ_TARGET };
+  const target = hmsReadTargetForTransport(input.transportId);
+  if (target.browserSlot !== 'davinci' && !isDaVinciMailboxOrigin(input.origin ?? {})) {
+    return { ok: true, target };
+  }
   return davinciQuoteOrRefuse(input.env);
 }
 
@@ -65,9 +64,10 @@ export function quoteTargetForHmsJob(input: {
 export async function resolveHmsQuoteJobTarget(
   input: MailboxHmsOriginLoadInput & { env?: NodeJS.Dict<string> },
 ): Promise<HmsQuoteJobTargetResult> {
-  if (isDaVinciTransport(input.transportId)) return davinciQuoteOrRefuse(input.env);
+  const target = hmsReadTargetForTransport(input.transportId);
+  if (target.browserSlot === 'davinci') return davinciQuoteOrRefuse(input.env);
   const guard = await guardCenturionHmsMailboxOrigin(input);
-  if (guard.ok) return { ok: true, target: CENTURION_HMS_READ_TARGET };
+  if (guard.ok) return { ok: true, target };
   return davinciQuoteOrRefuse(input.env);
 }
 

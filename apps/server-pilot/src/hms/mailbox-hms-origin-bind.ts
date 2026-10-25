@@ -2,8 +2,15 @@ import { normalizeEmailAddress } from '../ai/never-spam.js';
 import { getDb } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
 import { workItem } from '../db/schema/work.js';
+import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
 import { TRPCError } from '@trpc/server';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+
+export const CENTURION_MAILBOX_IDENTITIES = [
+  'centurion@legacyhotels.co.za',
+  'centurion@legacyhotels.com',
+  'centurion@legacyhotel.com',
+] as const;
 
 export const DAVINCI_MAILBOX_IDENTITIES = [
   'davinci@legacyhotels.co.za',
@@ -44,6 +51,7 @@ export const DAVINCI_STAFF_MAILBOX_IDENTITIES = [
   ...KMGIDI_MAILBOX_IDENTITIES,
 ] as const;
 
+const CENTURION_MAILBOX_IDENTITY_SET: ReadonlySet<string> = new Set(CENTURION_MAILBOX_IDENTITIES);
 const DAVINCI_STAFF_MAILBOX_IDENTITY_SET: ReadonlySet<string> = new Set(
   DAVINCI_STAFF_MAILBOX_IDENTITIES,
 );
@@ -69,7 +77,10 @@ export type MailboxHmsOriginScan = {
 
 export type BindCenturionHmsMailboxPropertyResult =
   | { ok: true; propertyCode: string }
-  | { ok: false; code: 'READ_DAVINCI_ORIGIN_REFUSED' | 'READ_PROPERTY_CODE_REQUIRED' };
+  | {
+      ok: false;
+      code: 'READ_DAVINCI_ORIGIN_REFUSED' | 'READ_PROPERTY_CODE_REQUIRED' | 'READ_PROPERTY_UNKNOWN';
+    };
 
 export type GuardCenturionHmsMailboxOriginResult =
   | { ok: true }
@@ -117,6 +128,10 @@ export function isDaVinciMailboxOrigin(origin: MailboxHmsOriginFields): boolean 
   );
 }
 
+export function isCenturionMailboxOrigin(origin: MailboxHmsOriginFields): boolean {
+  return collectNormalizedAddresses(origin).some((email) => CENTURION_MAILBOX_IDENTITY_SET.has(email));
+}
+
 export function bindCenturionHmsMailboxProperty(input: {
   propertyCode?: string | null;
   origin: MailboxHmsOriginFields;
@@ -128,7 +143,11 @@ export function bindCenturionHmsMailboxProperty(input: {
   if (!propertyCode) {
     return { ok: false, code: 'READ_PROPERTY_CODE_REQUIRED' };
   }
-  return { ok: true, propertyCode };
+  const property = getPropertyRegistration(propertyCode);
+  if (!property?.active || property.propertyCode !== 'HRCEN') {
+    return { ok: false, code: 'READ_PROPERTY_UNKNOWN' };
+  }
+  return { ok: true, propertyCode: property.propertyCode };
 }
 
 function originFields(row: {

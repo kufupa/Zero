@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { PROPERTY_REGISTRY } from './property-registry.mjs';
 
 // Verified room profiles keyed by HMS property code. A property without an entry has no profile, so its quotes stay unknown.
-const PROFILE_FILES = new Map([
-  ['HRCEN', new URL('./property-profiles/HRCEN.json', import.meta.url)],
-  ['HRDAV', new URL('./property-profiles/HRDAV.json', import.meta.url)],
-]);
+const PROFILE_FILES = new Map(
+  PROPERTY_REGISTRY.properties
+    .filter((property) => property.active && property.profileFile)
+    .map((property) => [property.propertyCode, new URL(`./${property.profileFile}`, import.meta.url)]),
+);
 const ROOM_CODE = /^[A-Z0-9_-]+$/;
 const FIELD_NAME = /^[a-z][a-z0-9]*$/;
 

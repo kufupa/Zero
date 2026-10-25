@@ -66,7 +66,7 @@ const labStay = {
 
 let ownerSeq = 0;
 // Each test gets its own owner, so grants from one test never satisfy another.
-function freshOwner(transportId = 'transport-1'): string {
+function freshOwner(transportId = 'transport-centurion'): string {
   ownerSeq += 1;
   return `user-${ownerSeq}:${transportId}`;
 }

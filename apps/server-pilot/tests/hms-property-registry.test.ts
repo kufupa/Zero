@@ -54,7 +54,12 @@ describe('read-only HMS property registry', () => {
     const centurion = PROPERTY_REGISTRY.properties.find((property) => property.propertyCode === 'HRCEN')!;
     const davinci = PROPERTY_REGISTRY.properties.find((property) => property.propertyCode === 'HRDAV')!;
     const inactiveRegistry = {
-      properties: [{ ...centurion, active: false, transportIds: ['transport-retired'] }],
+      properties: [{
+        ...centurion,
+        active: false,
+        transportIds: ['transport-retired'],
+        mailboxTransportId: 'transport-retired',
+      }],
       collectorTransportIds: [],
     };
     expect(resolvePropertyTransport('transport-retired', inactiveRegistry)).toMatchObject({
@@ -64,8 +69,8 @@ describe('read-only HMS property registry', () => {
 
     const duplicateRegistry = {
       properties: [
-        { ...centurion, transportIds: ['transport-shared'] },
-        { ...davinci, transportIds: ['transport-shared'] },
+        { ...centurion, transportIds: ['transport-shared'], mailboxTransportId: 'transport-shared' },
+        { ...davinci, transportIds: ['transport-shared'], mailboxTransportId: 'transport-shared' },
       ],
       collectorTransportIds: [],
     };

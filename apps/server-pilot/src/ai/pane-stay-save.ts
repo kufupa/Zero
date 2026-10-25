@@ -13,6 +13,7 @@ import {
   hmsReadTargetForTransport,
   type HmsReadTarget,
 } from '../hms/hms-read-target.js';
+import { getPropertyRegistration, resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 import {
   acquisitionWithin,
   createPostgresPropertyReadLock,
@@ -26,9 +27,8 @@ const execFileAsync = promisify(execFile);
 const CREATE_LAB_STAY = fileURLToPath(
   new URL('../../tooling/playwright-quote/create-lab-stay.mjs', import.meta.url),
 );
-// Default hotel when the mailbox is not Da Vinci. The CLI never receives a propertyCode
-// (paneStayRequestBody strips it). The lock key is the resolved target (HRCEN or HRDAV).
-export const PANE_STAY_PROPERTY_CODE = 'HRCEN';
+// Compatibility name for the registered Centurion property code; target selection requires a mailbox or explicit code.
+export const PANE_STAY_PROPERTY_CODE = CENTURION_HMS_READ_TARGET.propertyCode;
 // A successful preview can be committed for this long, once, and only for the same stay.
 export const PANE_PREVIEW_TTL_MS = 10 * 60_000;
 // A run's screenshots stay fetchable for this long, then its directory is removed.
@@ -262,8 +262,8 @@ export function paneStayTransportIdFromOwner(owner: string): string | undefined 
 }
 
 /**
- * Mailbox transport (or an explicit HRDAV propertyCode with no Centurion transport) picks the
- * HMS slot. Da Vinci needs HMS_DAVINCI_CREATE=lab|on. Centurion stays HRCEN.
+ * A registered mailbox transport (or explicit property code) picks the HMS slot. No mailbox/property means refuse.
+ * Da Vinci needs HMS_DAVINCI_CREATE=lab|on.
  */
 export function paneStayCreateTarget(input: {
   transportId?: string;
@@ -271,24 +271,26 @@ export function paneStayCreateTarget(input: {
   env?: NodeJS.Dict<string>;
 }): { ok: true; target: HmsReadTarget } | { ok: false; reason: string } {
   const env = input.env ?? process.env;
-  const transportTarget = input.transportId ? hmsReadTargetForTransport(input.transportId) : null;
-  const fromTransport = transportTarget?.browserSlot === 'davinci';
-  const fromProperty = input.propertyCode === DAVINCI_HMS_READ_TARGET.propertyCode;
-  if (fromTransport) {
-    if (hmsDavinciCreateMode(env) === 'off') {
+  let target: HmsReadTarget;
+  if (input.transportId !== undefined) {
+    const resolved = resolvePropertyTransport(input.transportId);
+    if (resolved.kind === 'refusal') return { ok: false, reason: resolved.code };
+    if (resolved.kind === 'collector') return { ok: false, reason: 'collector_no_hotel' };
+    target = hmsReadTargetForTransport(input.transportId);
+    if (input.propertyCode !== undefined && input.propertyCode !== target.propertyCode) {
       return { ok: false, reason: 'pane_save_property_mismatch' };
     }
-    return { ok: true, target: DAVINCI_HMS_READ_TARGET };
+  } else {
+    if (!input.propertyCode) return { ok: false, reason: 'property_required' };
+    const property = getPropertyRegistration(input.propertyCode);
+    if (!property) return { ok: false, reason: 'property_unknown' };
+    if (!property.active) return { ok: false, reason: 'property_inactive' };
+    target = hmsReadTargetForTransport(property.mailboxTransportId);
   }
-  if (fromProperty) {
-    if (transportTarget || hmsDavinciCreateMode(env) === 'off') {
-      return { ok: false, reason: 'pane_save_property_mismatch' };
-    }
-    return { ok: true, target: DAVINCI_HMS_READ_TARGET };
+  if (target.browserSlot === 'davinci' && hmsDavinciCreateMode(env) === 'off') {
+    return { ok: false, reason: 'pane_save_property_mismatch' };
   }
-  const refusal = paneStayPropertyRefusal(input.propertyCode, env);
-  if (refusal) return { ok: false, reason: refusal };
-  return { ok: true, target: CENTURION_HMS_READ_TARGET };
+  return { ok: true, target };
 }
 
 /** `--property HRDAV` only. Centurion omits the flag (CLI default HRCEN). */
