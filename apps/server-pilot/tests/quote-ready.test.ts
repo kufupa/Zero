@@ -1,13 +1,9 @@
 import { readFileSync } from 'node:fs';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   buildPreparedStaffQuotePlan,
-  configuredQuoteShopStrategies,
   confidentPartyFromV2Result,
   quotePrepareKindReason,
-  quoteShopJobsForPlan,
-  quoteShopStrategyLoaders,
-  selectQuoteShopStrategies,
   staffQuoteInputsPriceEquivalent,
 } from '../src/ai/quote-ready.js';
 import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
@@ -581,108 +577,22 @@ describe('prepared quote reuse price fields', () => {
   });
 });
 
-const SIX_QUOTE_SHOP_STRATEGIES = [
-  'BAR',
-  'Wholesale',
-  'Negotiated Contracted',
-  'Government',
-  'Airline Crews',
-  'STO',
-] as const;
-
-function twoStayPlan() {
-  const second = payload().stays[0]!;
-  return build({
-    stays: [
-      payload().stays[0]!,
-      {
-        ...second,
-        id: 'stay-2',
-        requested: { arrival: '2026-10-24', departure: '2026-10-27' },
-        rows: second.rows.map((row) => ({ ...row, id: 'row-2' })),
-      },
-    ],
-  });
-}
-
-describe('per-strategy quote shop jobs', () => {
-  afterEach(() => {
-    quoteShopStrategyLoaders.forProperty = null;
-  });
-
-  it('keeps six configured strategies and drops a name missing from the registry', () => {
-    expect(selectQuoteShopStrategies({ configured: SIX_QUOTE_SHOP_STRATEGIES })).toEqual([
-      ...SIX_QUOTE_SHOP_STRATEGIES,
-    ]);
-    expect(
-      selectQuoteShopStrategies({ configured: [...SIX_QUOTE_SHOP_STRATEGIES, 'Corporate'] }),
-    ).toEqual([...SIX_QUOTE_SHOP_STRATEGIES]);
-  });
-
-  it('expands one BAR stay into six shop jobs when six strategies are configured', () => {
-    const jobs = quoteShopJobsForPlan(build(), SIX_QUOTE_SHOP_STRATEGIES);
-
-    expect(jobs).toHaveLength(6);
-    expect(jobs[0]).toEqual({ input: expect.objectContaining({ salesStrategy: 'BAR' }) });
-    expect(jobs.map((job) => job.shopStrategy ?? job.input.salesStrategy)).toEqual([
-      ...SIX_QUOTE_SHOP_STRATEGIES,
-    ]);
-    expect(jobs.filter((job) => job.shopStrategy).map((job) => job.shopStrategy)).toEqual([
-      'Wholesale',
-      'Negotiated Contracted',
-      'Airline Crews',
-      'STO',
-    ]);
-  });
-
-  it('leaves HRCEN BAR and Government as the single shop for that mail', () => {
-    expect(configuredQuoteShopStrategies('HRCEN')).toEqual([]);
-    expect(quoteShopJobsForPlan(build(), configuredQuoteShopStrategies('HRCEN'))).toEqual([
-      { input: expect.objectContaining({ salesStrategy: 'BAR' }) },
-    ]);
-
-    const government = build({
+describe('one primary shop per stay', () => {
+  it('builds one BAR shop per stay and never extra strategies', () => {
+    const second = payload().stays[0]!;
+    const plan = build({
       stays: [
+        payload().stays[0]!,
         {
-          id: 'stay-1',
-          hotel: null,
-          requested: { arrival: '2026-10-20', departure: '2026-10-23' },
-          booked: null,
-          totalRooms: 1,
-          rows: [{
-            id: 'row-1', roomType: 'SKNG', rooms: 1, adultsPerRoom: 2, childAges: [], board: 'dbb',
-          }],
+          ...second,
+          id: 'stay-2',
+          requested: { arrival: '2026-10-24', departure: '2026-10-27' },
+          rows: second.rows.map((row) => ({ ...row, id: 'row-2' })),
         },
       ],
     });
-    expect(quoteShopJobsForPlan(government, configuredQuoteShopStrategies('HRCEN'))).toEqual([
-      { input: expect.objectContaining({ salesStrategy: 'Government' }) },
-    ]);
-  });
-
-  it('uses the Da Vinci allow-list of six shoppable strategies', () => {
-    expect(configuredQuoteShopStrategies('HRDAV')).toEqual([...SIX_QUOTE_SHOP_STRATEGIES]);
-  });
-
-  it('queues every stay primary before extra strategy shops', () => {
-    const jobs = quoteShopJobsForPlan(twoStayPlan(), SIX_QUOTE_SHOP_STRATEGIES);
-    expect(jobs).toHaveLength(12);
-    expect(jobs.slice(0, 2).map((job) => job.shopStrategy ?? job.input.salesStrategy)).toEqual([
-      'BAR',
-      'BAR',
-    ]);
-    expect(jobs.slice(0, 2).every((job) => !job.shopStrategy)).toBe(true);
-  });
-
-  it('keeps every stay BAR inside the default six-job hour cap', () => {
-    const jobs = quoteShopJobsForPlan(twoStayPlan(), SIX_QUOTE_SHOP_STRATEGIES);
-    const queued = jobs.slice(0, 6);
-    const primaryBars = queued.filter(
-      (job) => !job.shopStrategy && job.input.salesStrategy === 'BAR',
-    );
-    expect(primaryBars).toHaveLength(2);
-    expect(new Set(primaryBars.map((job) => job.input.groups[0]?.id))).toEqual(
-      new Set(['row-1', 'row-2']),
-    );
+    expect(plan.inputs).toHaveLength(2);
+    expect(plan.inputs.map((input) => input.salesStrategy)).toEqual(['BAR', 'BAR']);
+    expect(plan.inputs.map((input) => input.groups[0]?.id)).toEqual(['row-1', 'row-2']);
   });
 });

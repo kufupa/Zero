@@ -3,7 +3,6 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 import * as hmsJobs from '../src/ai/hms-jobs.js';
-import { quoteShopStrategyLoaders } from '../src/ai/quote-ready.js';
 import { staffQuoteInput, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import {
   canClaimReadToolRun,
@@ -108,7 +107,6 @@ afterEach(() => {
   paneStayLookupLoaders.spawn = null;
   mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
   mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
-  quoteShopStrategyLoaders.forProperty = null;
   staffQuoteRunner.run.mockReset();
   vi.unstubAllEnvs();
 });
@@ -380,7 +378,7 @@ describe('U23 HMS job queue (pure)', () => {
         input: STAFF_QUOTE_INPUT,
         shopStrategy: 'Wholesale',
       }).success,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       hmsJobRequestSchema.safeParse({
         kind: 'staff_quote',
@@ -728,72 +726,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       }
     }));
 
-  it('enqueues one prepared staff_quote per configured strategy and skips names missing from the registry', () =>
+  it('enqueues one primary shop per stay under the default hour cap', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
-      quoteShopStrategyLoaders.forProperty = () => [
-        'BAR',
-        'Wholesale',
-        'Negotiated Contracted',
-        'Government',
-        'Airline Crews',
-        'STO',
-        'Corporate',
-      ];
-      const { messageId, run } = await seedQuoteExtraction(db);
-
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(6);
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(0);
-      const rows = await db
-        .select()
-        .from(aiWorkflowRun)
-        .where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      expect(rows).toHaveLength(6);
-      const shops = rows.map((row) => {
-        const request = row.readRequest as {
-          kind?: string;
-          shopStrategy?: string;
-          input?: { salesStrategy?: string };
-        };
-        return {
-          kind: request.kind,
-          shop: request.shopStrategy ?? request.input?.salesStrategy,
-          shopStrategy: request.shopStrategy,
-          priority: row.priority,
-          prepared: (row.metrics as { quotePrepared?: boolean } | null)?.quotePrepared,
-        };
-      });
-      expect(shops.map((row) => row.shop).sort()).toEqual([
-        'Airline Crews',
-        'BAR',
-        'Government',
-        'Negotiated Contracted',
-        'STO',
-        'Wholesale',
-      ]);
-      expect(shops.every((row) => row.kind === 'staff_quote' && row.priority === HMS_JOB_PRIORITY_PREFETCH && row.prepared === true)).toBe(true);
-      expect(shops.some((row) => row.shop === 'Corporate' || row.shopStrategy === 'Corporate')).toBe(false);
-      const bar = rows.find((row) => {
-        const request = row.readRequest as { shopStrategy?: string; input?: { salesStrategy?: string } };
-        return !request.shopStrategy && request.input?.salesStrategy === 'BAR';
-      });
-      expect(bar?.readRequest).toMatchObject({ kind: 'staff_quote', input: { salesStrategy: 'BAR' } });
-      expect(bar?.readRequest).not.toHaveProperty('shopStrategy');
-    }));
-
-  it('queues a BAR job for every stay before extra shops under the default hour cap', () =>
-    withSeededTestDb(async (db) => {
-      vi.stubEnv('HMS_JOB_QUEUE', 'on');
-      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
-      quoteShopStrategyLoaders.forProperty = () => [
-        'BAR',
-        'Wholesale',
-        'Negotiated Contracted',
-        'Government',
-        'Airline Crews',
-        'STO',
-      ];
       const first = quoteExtractionPayload();
       const stay = first.stays[0]!;
       const { messageId, run } = await seedQuoteExtraction(db, {
@@ -811,23 +747,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         },
       });
 
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(6);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(2);
       const rows = await db
         .select()
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      expect(rows).toHaveLength(6);
-      const primaryBars = rows.filter((row) => {
-        const request = row.readRequest as {
-          shopStrategy?: string;
-          input?: { salesStrategy?: string; groups?: Array<{ id?: string; arrivalDate?: string }> };
-        };
-        return !request.shopStrategy && request.input?.salesStrategy === 'BAR';
-      });
-      expect(primaryBars).toHaveLength(2);
+      expect(rows).toHaveLength(2);
+      expect(
+        rows.map(
+          (row) =>
+            (row.readRequest as { input?: { salesStrategy?: string } }).input?.salesStrategy,
+        ),
+      ).toEqual(['BAR', 'BAR']);
       expect(
         new Set(
-          primaryBars.map(
+          rows.map(
             (row) =>
               (row.readRequest as { input?: { groups?: Array<{ arrivalDate?: string }> } }).input
                 ?.groups?.[0]?.arrivalDate,
@@ -847,7 +781,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.triggerMessageId, bar.messageId));
       expect(barJob?.readRequest).toMatchObject({ kind: 'staff_quote', input: { salesStrategy: 'BAR' } });
-      expect(barJob?.readRequest).not.toHaveProperty('shopStrategy');
 
       const barPayload = quoteExtractionPayload();
       const government = await seedQuoteExtraction(db, {
@@ -868,7 +801,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         kind: 'staff_quote',
         input: { salesStrategy: 'Government' },
       });
-      expect(govJob?.readRequest).not.toHaveProperty('shopStrategy');
     }));
 
   it('does not reuse a queued dev-eval quote for a later staff quote', () =>

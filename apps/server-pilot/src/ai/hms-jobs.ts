@@ -109,10 +109,8 @@ import {
 } from './staff-quote-workflow.js';
 import {
   buildPreparedStaffQuotePlan,
-  configuredQuoteShopStrategies,
   confidentPartyFromV2Result,
   quotePrepareKindReason,
-  quoteShopJobsForPlan,
   staffQuoteInputsPriceEquivalent,
   type PreparedStaffQuotePlan,
 } from './quote-ready.js';
@@ -235,7 +233,6 @@ export const hmsJobRequestSchema = z.discriminatedUnion('kind', [
     .object({
       kind: z.literal('staff_quote'),
       input: staffQuoteInput,
-      shopStrategy: z.string().min(1).max(64).optional(),
     })
     .strict(),
   availabilityRequestSchema,
@@ -1152,15 +1149,6 @@ function runPropertyCode(run: { metrics?: unknown }): string {
   );
 }
 
-function staffQuoteShopLabel(request: Extract<HmsJobRequest, { kind: 'staff_quote' }>): string {
-  return request.shopStrategy ?? request.input.salesStrategy;
-}
-
-function staffQuoteRunnerCanShop(request: Extract<HmsJobRequest, { kind: 'staff_quote' }>): boolean {
-  const shop = staffQuoteShopLabel(request);
-  return shop === 'BAR' || shop === 'Government';
-}
-
 function hmsRequestKey(request: HmsJobRequest): string {
   if (request.kind === 'find') {
     return JSON.stringify({
@@ -1178,11 +1166,7 @@ function hmsRequestKey(request: HmsJobRequest): string {
     });
   }
   if (request.kind === 'staff_quote') {
-    return JSON.stringify({
-      kind: request.kind,
-      input: stableStaffQuoteInput(request.input),
-      ...(request.shopStrategy ? { shopStrategy: request.shopStrategy } : {}),
-    });
+    return JSON.stringify({ kind: request.kind, input: stableStaffQuoteInput(request.input) });
   }
   return JSON.stringify(request);
 }
@@ -2298,7 +2282,7 @@ export async function evaluateQuoteReadyForMessage(
   };
 }
 
-/** Creates one userless, low-priority staff-quote read per stay, plus one shop per other allowed strategy. */
+/** Creates one userless, low-priority staff-quote read for each complete future stay. */
 export async function prefetchQuoteReadyForExtraction(
   run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
   db: DB = getDb(),
@@ -2324,15 +2308,9 @@ export async function prefetchQuoteReadyForExtraction(
   if (!target.ok) return 0;
   const workItemId = await latestWorkItemId(db, evaluation.transportId, evaluation.threadId);
   const perHour = quotePreparationPerHour(env);
-  const shops = quoteShopJobsForPlan(
-    evaluation.plan,
-    configuredQuoteShopStrategies(target.target.propertyCode),
-  );
   let created = 0;
-  for (const shop of shops) {
-    const digest = createHash('sha256')
-      .update(JSON.stringify({ ...shop.input, ...(shop.shopStrategy ? { shopStrategy: shop.shopStrategy } : {}) }))
-      .digest('hex');
+  for (const quoteInput of evaluation.plan.inputs) {
+    const digest = createHash('sha256').update(JSON.stringify(quoteInput)).digest('hex');
     const queued = await enqueuePreparedQuoteWithinCap(
       db,
       {
@@ -2341,15 +2319,9 @@ export async function prefetchQuoteReadyForExtraction(
         triggerMessageId: evaluation.messageId,
         workItemId,
         userId: null,
-        request: {
-          kind: 'staff_quote',
-          input: shop.input,
-          ...(shop.shopStrategy ? { shopStrategy: shop.shopStrategy } : {}),
-        },
+        request: { kind: 'staff_quote', input: quoteInput },
         priority,
-        idempotencyKey: shop.shopStrategy
-          ? `hms-job:staff-quote-strategy:${evaluation.transportId}:${evaluation.messageId}:${digest}`
-          : `hms-job:staff-quote-prepared:${evaluation.transportId}:${evaluation.messageId}:${digest}`,
+        idempotencyKey: `hms-job:staff-quote-prepared:${evaluation.transportId}:${evaluation.messageId}:${digest}`,
         extraMetrics: { quotePrepared: true },
       },
       perHour,
@@ -3256,33 +3228,19 @@ export async function executeHmsJob(input: {
       );
       return 'dead_letter';
     }
-    const quoteInput = request.input;
-    if (!staffQuoteRunnerCanShop(request)) {
-      return storeStaffQuoteResult({
-        db,
-        mark,
-        result: {
-          ok: false,
-          code: 'STRATEGY_SHOP_UNAVAILABLE',
-          salesStrategy: staffQuoteShopLabel(request),
-          message: 'This rate type is queued for its own shop; BAR and Government are priced today.',
-        },
-        outcome: 'refused',
-      });
-    }
     try {
       await recordedToolRun(
         {
           kind: 'quote',
           transportId: run.transportId,
-          messageId: quoteInput.messageId,
+          messageId: request.input.messageId,
           userId: user?.id ?? null,
-          input: ledgerQuoteInput(quoteInput),
-          inputDigest: quoteDigest(quoteInput),
+          input: ledgerQuoteInput(request.input),
+          inputDigest: quoteDigest(request.input),
         },
         () =>
           runStaffQuote(
-            quoteInput,
+            request.input,
             { transportId: run.transportId, ...(user ? { user } : {}) },
             db,
             {
@@ -3390,7 +3348,7 @@ export async function executeHmsJob(input: {
           systemPreparedQuote ? (attachFailed ? 2 : 1) : JOB_MAX_ATTEMPTS,
         );
       }
-      const refusal = staffQuoteRefusal(error, quoteInput);
+      const refusal = staffQuoteRefusal(error, request.input);
       return storeStaffQuoteResult({
         db,
         mark,
@@ -3656,7 +3614,6 @@ async function latestStaffQuoteRunFor(
     if (
       parsed.success &&
       parsed.data.kind === 'staff_quote' &&
-      staffQuoteShopLabel(parsed.data) === quoteInput.salesStrategy &&
       staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput)
     ) {
       return [userRun];
@@ -3682,7 +3639,6 @@ async function latestStaffQuoteRunFor(
     if (
       !parsed.success ||
       parsed.data.kind !== 'staff_quote' ||
-      staffQuoteShopLabel(parsed.data) !== quoteInput.salesStrategy ||
       parsed.data.input.sourceHash !== quoteInput.sourceHash ||
       !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput)
     ) {
