@@ -62,7 +62,7 @@ describe('quote proposal helpers', () => {
 
   it('uses gold wrapper copy and hotel telephone', () => {
     expect(HOTEL_TELEPHONE).toBe('0126433600');
-    const html = quoteWrapperHtml('David Miller', 'R Opperman');
+    const html = quoteWrapperHtml('David Miller', 'R Opperman', { propertyCode: 'HRCEN' });
     expect(html).toContain('Good day David Miller,');
     expect(html).toContain('Thank you for Choosing The Centurion Hotel.');
     expect(html).toContain('Please see attached quotation.');
@@ -76,7 +76,7 @@ describe('quote proposal helpers', () => {
   });
 
   it('matches staff-sent quote cover wording without changing the editable reply', () => {
-    const html = quoteWrapperHtml('Guest', 'Reservations Team');
+    const html = quoteWrapperHtml('Guest', 'Reservations Team', { propertyCode: 'HRCEN' });
     expect(html).toContain('Thank you for Choosing The Centurion Hotel.');
     expect(html).toContain('Should you wish to proceed, please sign and return the attached quotation so that we can confirm and secure your reservation.');
     expect(html).toContain('bookings will only be confirmed once we have received the signed quotation.');
@@ -84,10 +84,18 @@ describe('quote proposal helpers', () => {
   });
 
   it('uses a safe fallback greeting when the email has no sender name', () => {
-    const html = quoteWrapperHtml('', 'R Opperman');
+    const html = quoteWrapperHtml('', 'R Opperman', { propertyCode: 'HRCEN' });
 
     expect(html).toContain('Good day Guest,');
     expect(html).toContain('R Opperman<br />Reservations<br />The Centurion Hotel');
+  });
+
+  it('does not assume Centurion branding when the property is missing', () => {
+    const html = quoteWrapperHtml('Guest', 'Reservations Team');
+
+    expect(html).toContain('Thank you for Choosing the hotel.');
+    expect(html).toContain('Reservations<br />the hotel');
+    expect(html).not.toMatch(/Centurion/i);
   });
 
   it('keeps dinner pricing in the attachment, not the cover reply', () => {
