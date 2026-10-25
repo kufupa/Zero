@@ -4,6 +4,14 @@ One entry per lesson: trigger, what happened, rule. Newest first. Add an entry w
 
 | Date | Trigger | What happened | Rule |
 |---|---|---|---|
+| 2026-10-25 | mh1024 #532/#534 merged while Greptile Apex was still running (2nd after M24 was written) | #533 fix +35 m; validation after merge | Merge only through `merge-gate.sh` (until it lands: orchestrator checks all four by hand and logs them) (Apex SUCCESS on head.sha, 0 open P1, ≤500 product LOC, remote tests on head). A rule in a brief is not a gate |
+| 2026-10-25 | U5 #538 562 and U6b draft 822 changed lines | 2 h 37 and ~6 h review/split loops; ~60% of the 18.6 h run | Size every unit at planning; estimate >400 lines → split before coding. Count + and − |
+| 2026-10-25 | U6a "6 strategies = 6 jobs" assumed, not tested end to end | Found by Greptile on #546 9 h later; #547 follow-up | Fan-out units ship a property × strategy × stay matrix test of emitted jobs |
+| 2026-10-25 | WAL fix #548 fixture `restricted:false` | Live WAL is `restricted:true, maxLeadTime:1`; filter dropped it; DoD 1 parked | Test fixtures are copied from captured live HMS JSON and cite the evidence file |
+| 2026-10-25 | DoD 2 compared old staff PDFs with live BAR | 2/27; price drift, not a bug | Price truth = same-day HMS grid, or staff quotes ≤3 days old |
+| 2026-10-25 | #550 round-2 "P1 fix" commit did not touch the flagged lines | 1 wasted Greptile round | Before re-review, diff the fix commit against each P1's file:line |
+| 2026-10-25 | Owner: "eta" — 330 min quoted for the run | It was milestone A p50; run was A+B+U7–U13, 18.6 h | Quote every milestone's p50/p75 and say which one the run is aiming for |
+| 2026-10-25 | Owner: "its 19:13 uk time btw" | Watchdog quoted BST (+1) after the clocks went back | UK time from `TZ=Europe/London date`, never a fixed offset |
 | 2026-10-23 | Faith's first Da Vinci session: "Rates failed" on every quote | `HMS_DAVINCI_MAKE_QUOTE=on` since 05:58Z, but no HRDAV quote installation exists; 19 quote runs refused in 1 ms, prefetch failed 3× before she opened the pane, nobody saw it. Plan step A5 flipped the flag with a score that had n=0 | A flag is not the feature. `on` requires a config-readiness check plus one live canary on that exact property and SHA; the flip script refuses otherwise. Prefetch failures per property alert |
 | 2026-10-23 | Owner pause sent as a chat message to the Grok orchestrator | Queued behind a steer; read 43 min later; in between it deployed #523 and ran a live HMS amend commit | HOLD is a file that `hms-job.sh` and `ops-deploy.sh` check and refuse on; chat is only the notice |
 | 2026-10-23 | Grok orchestrator at 300–390K context | $312 of $485 Grok night spend; steers read up to 85 min late. It drove live HMS proofs and read screenshots itself | Orchestrator never drives HMS or debugs DOM; a proof lane returns a 5-line result. Hard handoff at 150K (−$207/night measured) |
