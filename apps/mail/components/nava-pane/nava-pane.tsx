@@ -629,6 +629,10 @@ export function NavaPane({
     key: string;
     fields: Partial<Record<ContactField, string | null>>;
   } | null>(null);
+  const pendingContactCorrections = useRef<{
+    key: string;
+    fields: Partial<Record<ContactField, string | null>>;
+  } | null>(null);
   const contactFields = contactCorrection?.key === contactCorrectionKey ? contactCorrection.fields : null;
   const documentContact = contactFields
     ? {
@@ -655,8 +659,51 @@ export function NavaPane({
         [field]: value,
       },
     }));
+
+    const pending = pendingContactCorrections.current;
+    const hasStoredWorkItem =
+      storedWork.pane.state === 'ready' && Boolean(storedWork.pane.workItemId);
+    if (!hasStoredWorkItem) {
+      pendingContactCorrections.current = {
+        key: contactCorrectionKey,
+        fields: {
+          ...(pending?.key === contactCorrectionKey ? pending.fields : {}),
+          [field]: value,
+        },
+      };
+      storedWork.recordContact(field, value);
+      return;
+    }
+    if (pending?.key === contactCorrectionKey) {
+      const fields = { ...pending.fields, [field]: value };
+      pendingContactCorrections.current = null;
+      for (const [pendingField, pendingValue] of Object.entries(fields)) {
+        storedWork.recordContact(pendingField as ContactField, pendingValue);
+      }
+      return;
+    }
+    pendingContactCorrections.current = null;
     storedWork.recordContact(field, value);
   };
+  useEffect(() => {
+    const pending = pendingContactCorrections.current;
+    if (!pending) return;
+    if (pending.key !== contactCorrectionKey) {
+      pendingContactCorrections.current = null;
+      return;
+    }
+    if (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) return;
+    pendingContactCorrections.current = null;
+    for (const [field, value] of Object.entries(pending.fields)) {
+      storedWork.recordContact(field as ContactField, value);
+    }
+  }, [
+    contactCorrection,
+    contactCorrectionKey,
+    storedWork.pane.state,
+    storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null,
+    storedWork.recordContact,
+  ]);
   const treatAsMailKey = paneEditKey(activeConnection?.id ?? '', contactMessageKey);
   useEffect(() => {
     if (!quoteSession.binding || !treatAsMailKey) return;

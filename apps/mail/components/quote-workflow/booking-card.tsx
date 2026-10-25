@@ -587,9 +587,15 @@ function roomGroupFor(
 }
 
 function roomTypeFor(room: BookingDraftReady['draft']['rooms'][number], group?: StayGroupRequirement): string {
-  return textValue(group?.roomCodes?.[room.roomIndex - 1] ?? group?.roomCodes?.[0]) ||
-    textValue(group?.roomTypeCode) ||
+  const pickedRoomCode =
+    group?.fields.roomCodes === 'staff_corrected' && group.roomCodes?.length === 1
+      ? group.roomCodes[0]
+      : group?.fields.roomPreference === 'staff_corrected'
+        ? group.roomTypeCode ?? group.roomPreference
+        : undefined;
+  return textValue(pickedRoomCode) ||
     textValue(room.request.roomType) ||
+    textValue(group?.roomTypeCode) ||
     textValue(group?.roomPreference);
 }
 
