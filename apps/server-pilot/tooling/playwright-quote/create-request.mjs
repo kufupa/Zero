@@ -4,6 +4,7 @@
 // Descriptions are ignored at validation time.
 import { readFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
+import { parseStayProperty, profileFor } from './property-profile.mjs';
 
 const schemaUrl = new URL('./create-tool.schema.json', import.meta.url);
 
@@ -108,6 +109,17 @@ export function validate(schema, data, root) {
 
 export async function loadCreateToolSchema() {
   return JSON.parse(await readFile(schemaUrl, 'utf8'));
+}
+
+function createTrackEnumForProperty(schema, propertyCode) {
+  const trackSchema = schema.$defs.request.properties.track;
+  const propertyEnums = trackSchema['x-propertyEnums']?.[propertyCode] ?? [];
+  const validatorTracks = new Set([...trackSchema.enum, ...propertyEnums]);
+  const profileChoices = profileFor(propertyCode)?.createForm?.options?.track?.choices;
+  const propertyTracks = Array.isArray(profileChoices)
+    ? profileChoices.map(({ value }) => value)
+    : trackSchema.enum;
+  return propertyTracks.filter((track) => validatorTracks.has(track));
 }
 
 const ROOM_LABELS = {
@@ -305,7 +317,10 @@ export function parseRequestPath(argv) {
 export async function loadCreateRequest(argv) {
   const parsed = parseRequestPath(argv);
   if (!parsed.ok) return parsed;
+  const property = parseStayProperty(argv);
+  if (!property.ok) return property;
   const schema = await loadCreateToolSchema();
+  schema.$defs.request.properties.track.enum = createTrackEnumForProperty(schema, property.propertyCode);
   let text;
   try {
     text = await readFile(parsed.path, 'utf8');

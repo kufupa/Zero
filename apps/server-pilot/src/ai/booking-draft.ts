@@ -4,6 +4,7 @@ import { compareRateClaim, type RateComparison } from '../quote-proposal/rate-ch
 import type { Board, QuoteRevision } from '../quote-proposal/quote-revision.js';
 import type { RowPrice } from '../quote-proposal/quote-lines.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
+import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
 
 export type BookingDraftDefaults = {
   track: string | null;
@@ -265,7 +266,12 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
   sourceOfBusiness: string[];
   guaranteeType: string[];
   roomType: string[];
+  requiredCreateFields: string[];
 } {
+  const property = getPropertyRegistration(propertyCode);
+  if (!property) throw new Error('hms_property_unknown');
+  if (!property.active || !property.profileFile) throw new Error('hms_property_create_options_unavailable');
+
   const schema = JSON.parse(
     readFileSync(
       fileURLToPath(new URL('../../tooling/playwright-quote/create-tool.schema.json', import.meta.url)),
@@ -275,7 +281,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     $defs: {
       request: {
         properties: {
-          track: { enum: string[] };
+          track: { enum: string[]; 'x-propertyEnums'?: Record<string, string[]> };
           sourceOfBusiness: { enum: string[] };
           guaranteeType: { enum: string[] };
         };
@@ -283,20 +289,35 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     };
   };
   const props = schema.$defs.request.properties;
-  const code = propertyCode === 'HRDAV' ? 'HRDAV' : 'HRCEN';
   const profile = JSON.parse(
     readFileSync(
       fileURLToPath(
-        new URL(`../../tooling/playwright-quote/property-profiles/${code}.json`, import.meta.url),
+        new URL('../../tooling/playwright-quote/' + property.profileFile, import.meta.url),
       ),
       'utf8',
     ),
-  ) as { roomCapacity?: Record<string, number> };
+  ) as {
+    roomCapacity?: Record<string, number>;
+    requiredCreateFields?: string[];
+    createForm?: {
+      options?: Record<string, { choices?: Array<{ value: string; display: string }> }>;
+    };
+  };
+  const createOptions = profile.createForm?.options;
+  const validTracks = new Set([
+    ...props.track.enum,
+    ...(props.track['x-propertyEnums']?.[propertyCode] ?? []),
+  ]);
+  const propertyTrackChoices = createOptions?.track?.choices?.map(({ value }) => value);
   return {
-    track: props.track.enum,
-    sourceOfBusiness: props.sourceOfBusiness.enum,
-    guaranteeType: props.guaranteeType.enum,
+    track: (propertyTrackChoices ?? props.track.enum).filter((track) => validTracks.has(track)),
+    sourceOfBusiness:
+      createOptions?.sourceofbusinessdesc?.choices?.map(({ display }) => display) ??
+      props.sourceOfBusiness.enum,
+    guaranteeType:
+      createOptions?.guaranteetype?.choices?.map(({ display }) => display) ?? props.guaranteeType.enum,
     roomType: Object.keys(profile.roomCapacity ?? {}),
+    requiredCreateFields: profile.requiredCreateFields ?? [],
   };
 }
 

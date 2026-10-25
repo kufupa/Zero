@@ -705,6 +705,33 @@ describe('booking card pane save', () => {
     expect(previewButton(0)).toHaveProperty('disabled', false);
   });
 
+  it('marks HRDAV Reservation Note required and blocks preview and Book until it is filled', async () => {
+    const base = draftReady();
+    const draft = {
+      ...base,
+      draft: { ...base.draft, rooms: base.draft.rooms.slice(0, 1) },
+      options: { ...base.options, requiredCreateFields: ['reservationnote'] } as BookingDraftReady['options'],
+    };
+    const { client } = paneClient();
+    render(<BookingCards draft={draft} paneSave={client} />);
+    pickRoomChoices(0);
+
+    const reservationNote = screen.getByLabelText('Reservation note') as HTMLTextAreaElement;
+    expect(reservationNote.getAttribute('aria-required')).toBe('true');
+    expect(screen.getByText('(required)')).toBeDefined();
+    expect(previewButton(0)).toHaveProperty('disabled', true);
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', true);
+    expect(screen.getByText('Set reservation note before you preview.')).toBeDefined();
+
+    fireEvent.change(reservationNote, { target: { value: 'Late arrival' } });
+    expect(previewButton(0)).toHaveProperty('disabled', false);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    expect(bookButton(0)).toHaveProperty('disabled', false);
+    expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', false);
+  });
+
   it('previews with the typed guest names, not the draft request', async () => {
     const { client, preview } = paneClient();
     render(<BookingCards draft={draftReady()} paneSave={client} />);
