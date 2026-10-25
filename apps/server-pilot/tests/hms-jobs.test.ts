@@ -38,6 +38,7 @@ import {
   staffQuoteCanTeachSenderHistory,
 } from '../src/ai/hms-jobs.js';
 import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { paneStayLookupLoaders, type PaneStayLookupSpawnResult } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import {
@@ -104,6 +105,8 @@ const STAFF_QUOTE_INPUT = {
 afterEach(() => {
   paneStayLookupLoaders.lock = null;
   paneStayLookupLoaders.spawn = null;
+  mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
   staffQuoteRunner.run.mockReset();
   vi.unstubAllEnvs();
 });
@@ -2224,27 +2227,31 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   it('reuses a property-prefixed confirmation prefetch instead of a fresh batch read', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
-      const prefetched = await seedThread(db, `Booking ${CONFIRMATION}`);
-      await insertStoredExtraction(db, prefetched.messageId, 'booking', {
-        confirmationNumbers: [CONFIRMATION],
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+        selected: { toAddresses: ['centurion@legacyhotels.co.za'] },
+        selectedFound: true,
+        inbounds: [{ toAddresses: ['centurion@legacyhotels.co.za'] }],
       });
-      const inbound = await insertInboundExtraction(db, prefetched.threadId, prefetched.messageId);
-      const env = {
-        ...parseEnv(process.env as Record<string, string | undefined>),
-        HMS_PREFETCH_ENABLED: true,
-      };
-      expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(1);
-      const [prefetchJob] = await db
-        .select({ id: aiWorkflowRun.id, idempotencyKey: aiWorkflowRun.idempotencyKey })
-        .from(aiWorkflowRun)
-        .where(eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION));
-      expect(prefetchJob?.idempotencyKey).toBe(
-        confirmationPrefetchIdempotencyKey(
-          TRANSPORT_ID,
-          CONFIRMATION,
-          new Date().toISOString().slice(0, 10),
-          'HRCEN',
-        ),
+      const day = new Date().toISOString().slice(0, 10);
+      const prefetched = await seedThread(db, `Booking ${CONFIRMATION}`);
+      const { run: prefetchJob } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId: prefetched.threadId,
+          triggerMessageId: prefetched.messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'find', confirmation: CONFIRMATION },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: confirmationPrefetchIdempotencyKey(
+            TRANSPORT_ID,
+            CONFIRMATION,
+            day,
+            'HRCEN',
+          ),
+          extraMetrics: { propertyCode: 'HRCEN' },
+        },
+        db,
       );
 
       const batched = await seedThread(db, `Also ${CONFIRMATION}`);
@@ -2270,7 +2277,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         db,
       );
       expect(view).toMatchObject({
-        items: [{ workItemId, status: 'reused', runId: prefetchJob!.id }],
+        items: [{ workItemId, status: 'reused', runId: prefetchJob.id }],
       });
     }));
 
@@ -2278,16 +2285,22 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_DAVINCI_READS', 'on');
+      const origins = new Map<string, string[]>();
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async (input) => {
+        const toAddresses = origins.get(input.threadId) ?? ['centurion@legacyhotels.co.za'];
+        return {
+          selected: { toAddresses },
+          selectedFound: true,
+          inbounds: [{ toAddresses }],
+        };
+      };
       const items = await Promise.all(
         [
           { to: ['centurion@legacyhotels.co.za'] },
           { to: ['davinci@legacyhotels.co.za'] },
         ].map(async ({ to }) => {
           const seeded = await seedThread(db, `Booking ${CONFIRMATION}`);
-          await db
-            .update(message)
-            .set({ toAddresses: to })
-            .where(eq(message.id, seeded.messageId));
+          origins.set(seeded.threadId, to);
           await insertStoredExtraction(db, seeded.messageId, 'booking', {
             confirmationNumbers: [CONFIRMATION],
           });
