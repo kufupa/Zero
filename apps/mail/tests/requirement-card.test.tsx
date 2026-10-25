@@ -52,6 +52,12 @@ function renderStay(
   return { onPatch, onStayAction, onMealPlanChange, ...rendered };
 }
 
+function selectByLabel(label: string): HTMLSelectElement {
+  const element = screen.getByLabelText(label);
+  if (!(element instanceof HTMLSelectElement)) throw new Error(`${label} is not a select`);
+  return element;
+}
+
 describe('StayCard rooms', () => {
   it('keeps adults as compact subtext until staff taps to edit', () => {
     const { onPatch } = renderStay([stay()]);
@@ -82,7 +88,7 @@ describe('StayCard rooms', () => {
 
   it('renders one optional meal-plan display filter per stay without patching the HMS room rows', () => {
     const { onPatch, onMealPlanChange } = renderStay([stay({ board: 'bb' }), stay({ id: 'g2', board: 'bb' })]);
-    const meal = screen.getByLabelText('Meal plan') as HTMLSelectElement;
+    const meal = selectByLabel('Meal plan');
     expect(meal.tagName).toBe('SELECT');
     expect(meal.value).toBe('bb');
     expect(screen.getByText('Meal plan').parentElement?.textContent).not.toContain('*');
@@ -144,7 +150,7 @@ describe('StayCard rooms', () => {
     const { unmount: unmountExact } = renderStay([
       stay({ roomPreference: 'standard queen', roomTypeCode: 'STQN' }),
     ]);
-    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('STQN');
+    expect(selectByLabel('Room type').value).toBe('STQN');
     unmountExact();
 
     const match = matchRoomType('Standard RoomQueen Bed');
@@ -156,7 +162,7 @@ describe('StayCard rooms', () => {
         fields: { roomPreference: 'extracted' },
       }),
     ]);
-    const selectedRoom = screen.getByLabelText('Room type') as HTMLSelectElement;
+    const selectedRoom = selectByLabel('Room type');
     expect(selectedRoom.value).toBe('STQN');
     expect(screen.getByText('from email')).toBeTruthy();
     expect(
@@ -172,7 +178,7 @@ describe('StayCard rooms', () => {
         fields: { roomPreference: 'extracted' },
       }),
     ]);
-    const ambiguousRoom = screen.getByLabelText('Room type') as HTMLSelectElement;
+    const ambiguousRoom = selectByLabel('Room type');
     expect(ambiguousRoom.value).toBe('Single');
     expect(
       [...ambiguousRoom.options].some((option) => option.textContent === 'Email request'),
@@ -201,12 +207,12 @@ describe('StayCard rooms', () => {
     );
 
     renderConfigured([{ code: 'STQN', label: 'Standard Queen' }]);
-    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('STQN');
+    expect(selectByLabel('Room type').value).toBe('STQN');
     expect(screen.getByText('Standard Queen ×1')).toBeTruthy();
 
     cleanup();
     renderConfigured([{ code: 'JNRSUI', label: 'Junior Suite' }]);
-    const unavailableRoom = screen.getByLabelText('Room type') as HTMLSelectElement;
+    const unavailableRoom = selectByLabel('Room type');
     expect(unavailableRoom.value).toBe('standard queen room');
     expect([...unavailableRoom.options].map((option) => option.value)).not.toContain('STQN');
     expect(screen.getByText('Room type needed ×1')).toBeTruthy();
@@ -222,7 +228,7 @@ describe('StayCard rooms', () => {
 
   it('marks an unset room type as invalid and shortens its placeholder option', () => {
     renderStay([stay({ roomPreference: '', roomTypeCode: undefined })]);
-    const select = screen.getByLabelText('Room type') as HTMLSelectElement;
+    const select = selectByLabel('Room type');
     expect(select.getAttribute('aria-invalid')).toBe('true');
     expect(select.className).toMatch(/border-\[#c01823\]/);
     expect([...select.options].some((option) => option.textContent === 'Choose room type')).toBe(true);
@@ -230,7 +236,7 @@ describe('StayCard rooms', () => {
 
   it('a rate-card room pick is the row room, so the select shows it over the projected room type', () => {
     renderStay([stay({ roomPreference: 'standard queen', roomTypeCode: 'STQN', roomCodes: ['SKNG'] })]);
-    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('SKNG');
+    expect(selectByLabel('Room type').value).toBe('SKNG');
   });
 
   it('choosing a room type in the select clears a rate-card pick and sets the row room', () => {
@@ -244,7 +250,7 @@ describe('StayCard rooms', () => {
 
   it('lists every Centurion room type and shows room and guest totals plus the extracted room hint', () => {
     renderStay([stay()], { requestedRoomsTotal: 4 });
-    const roomType = screen.getByLabelText('Room type') as HTMLSelectElement;
+    const roomType = selectByLabel('Room type');
     expect([...roomType.options].map((option) => option.value)).toEqual(
       expect.arrayContaining([...ROOM_TYPE_CODES]),
     );
