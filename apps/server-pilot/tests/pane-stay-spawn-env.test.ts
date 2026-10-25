@@ -247,6 +247,13 @@ describe('paneStayHmsTargetForTransport', () => {
       reason: 'unknown_transport',
     });
   });
+
+  it('does not give the Nava collector an HMS target', () => {
+    expect(paneStayHmsTargetForTransport('transport-nava')).toEqual({
+      ok: false,
+      reason: 'collector_no_hotel',
+    });
+  });
 });
 
 describe('availability quote request property', () => {

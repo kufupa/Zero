@@ -6,6 +6,7 @@ import {
   HOTEL_TELEPHONE,
   missingQuoteDetailsWrapperHtml,
   quotePropertyCodeForTransport,
+  quoteHotelName,
   quoteWrapperHtml,
 } from '../lib/quote-proposal/copy';
 
@@ -42,11 +43,14 @@ describe('quote proposal helpers', () => {
     expect(lineTotal(2, 2, 2150)).toBe(8600);
   });
 
-  it('maps Da Vinci staff transports to HRDAV and others to HRCEN', () => {
+  it('maps known hotel transports and refuses empty or unknown transport IDs', () => {
     expect(quotePropertyCodeForTransport('transport-davinci')).toBe('HRDAV');
     expect(quotePropertyCodeForTransport('transport-kmgidi')).toBe('HRDAV');
     expect(quotePropertyCodeForTransport('transport-centurion')).toBe('HRCEN');
-    expect(quotePropertyCodeForTransport(undefined)).toBe('HRCEN');
+    expect(quotePropertyCodeForTransport(undefined)).toBeNull();
+    expect(quotePropertyCodeForTransport('')).toBeNull();
+    expect(quotePropertyCodeForTransport('transport-unknown')).toBeNull();
+    expect(quoteHotelName(null)).toBe('the hotel');
   });
 
   it('uses Da Vinci name on the cover and never Centurion copy', () => {

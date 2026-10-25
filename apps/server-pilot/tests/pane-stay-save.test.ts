@@ -274,6 +274,18 @@ describe('pane stay save guards', () => {
     expect(paneStayPropertyRefusal('')).toBe('pane_save_property_mismatch');
   });
 
+  it('refuses unknown, collector, and missing pane targets instead of defaulting to HRCEN', () => {
+    expect(paneStayCreateTarget({ transportId: 'transport-unknown' })).toEqual({
+      ok: false,
+      reason: 'property_unknown',
+    });
+    expect(paneStayCreateTarget({ transportId: 'transport-nava' })).toEqual({
+      ok: false,
+      reason: 'collector_no_hotel',
+    });
+    expect(paneStayCreateTarget({})).toEqual({ ok: false, reason: 'property_required' });
+  });
+
   it('the production property lock is keyed on the session hotel and the worker tenant', () => {
     vi.stubEnv('DATABASE_URL', 'postgres://user:secret@127.0.0.1:5432/zero_test');
     vi.stubEnv('PANE_STAY_TENANT_ID', '');

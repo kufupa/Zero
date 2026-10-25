@@ -6,6 +6,7 @@ import {
 } from '../src/hms/hms-read-target.js';
 import { bindCenturionHmsMailboxProperty } from '../src/hms/mailbox-hms-origin-bind.js';
 import { hmsDavinciMakeQuoteEnabled } from '../src/env.js';
+import { PropertyRefusalCause } from '../src/hms/property-refusal.js';
 import {
   DAVINCI_QUOTE_REFUSED_MESSAGE,
   assertHmsQuoteOriginAllowed,
@@ -64,6 +65,25 @@ describe('quoteTargetForTransport', () => {
     expect(
       quoteTargetForTransport('transport-centurion', { HMS_DAVINCI_MAKE_QUOTE: 'on' }),
     ).toEqual({ ok: true, target: CENTURION_HMS_READ_TARGET });
+  });
+
+  it('refuses unknown and collector transports instead of treating them as Centurion', () => {
+    for (const [transportId, code] of [
+      ['transport-unknown', 'property_unknown'],
+      ['transport-nava', 'collector_no_hotel'],
+    ]) {
+      let error: unknown;
+      try {
+        quoteTargetForTransport(transportId);
+      } catch (caught) {
+        error = caught;
+      }
+      expect((error as { cause?: unknown }).cause).toBeInstanceOf(PropertyRefusalCause);
+      expect(error).toMatchObject({ cause: { code } });
+    }
+    expect(() => quoteTargetForHmsJob({ transportId: 'transport-unknown' })).toThrow(
+      expect.objectContaining({ cause: expect.objectContaining({ code: 'property_unknown' }) }),
+    );
   });
 });
 

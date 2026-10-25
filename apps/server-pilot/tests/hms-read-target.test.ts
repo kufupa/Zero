@@ -13,6 +13,7 @@ import {
   readTargetForHmsJob,
 } from '../src/hms/hms-read-target.js';
 import { paneStaySpawnEnv } from '../src/ai/pane-stay-spawn-env.js';
+import { PropertyRefusalCause } from '../src/hms/property-refusal.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const DAVINCI_ORIGIN = { toAddresses: ['davinci@legacyhotels.co.za'] } as const;
@@ -55,9 +56,40 @@ describe('hmsReadTargetForTransport', () => {
     });
     expect(DAVINCI_HMS_READ_TARGET.browserSlot).not.toBe(CENTURION_HMS_READ_TARGET.browserSlot);
   });
+
+  it('refuses unknown and collector transports instead of returning the HRCEN target', () => {
+    for (const [transportId, code] of [
+      ['transport-unknown', 'property_unknown'],
+      ['', 'property_unknown'],
+      ['transport-nava', 'collector_no_hotel'],
+    ]) {
+      let error: unknown;
+      try {
+        hmsReadTargetForTransport(transportId);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({ code: 'PRECONDITION_FAILED' });
+      const cause = (error as { cause?: unknown }).cause;
+      expect(cause).toBeInstanceOf(PropertyRefusalCause);
+      expect(cause).toMatchObject({ code });
+    }
+    expect(() => hmsReadTargetForTransport({ fromAddress: 'guest@example.invalid' })).toThrow(
+      expect.objectContaining({ code: 'PRECONDITION_FAILED' }),
+    );
+  });
 });
 
 describe('readTargetForHmsJob flag', () => {
+  it('refuses unknown and collector transports before any HMS target can be queued', () => {
+    expect(() => readTargetForHmsJob({ transportId: 'transport-unknown' })).toThrow(
+      expect.objectContaining({ cause: expect.objectContaining({ code: 'property_unknown' }) }),
+    );
+    expect(() => readTargetForHmsJob({ transportId: 'transport-nava' })).toThrow(
+      expect.objectContaining({ cause: expect.objectContaining({ code: 'collector_no_hotel' }) }),
+    );
+  });
+
   it('flag off (default) refuses Da Vinci origin the same way as #292', () => {
     expect(hmsDavinciReadsEnabled({})).toBe(false);
     expect(

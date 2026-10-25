@@ -81,6 +81,15 @@ describe('bindCenturionHmsMailboxProperty', () => {
       }),
     ).toEqual({ ok: true, propertyCode: 'HRCEN' });
   });
+
+  it('refuses a property code that is not registered', () => {
+    expect(
+      bindCenturionHmsMailboxProperty({
+        propertyCode: 'HRFAKE',
+        origin: { toAddresses: ['centurion@legacyhotels.co.za'] },
+      }),
+    ).toEqual({ ok: false, code: 'READ_PROPERTY_UNKNOWN' });
+  });
 });
 
 describe('guardCenturionHmsMailboxOrigin', () => {

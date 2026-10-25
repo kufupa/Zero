@@ -2,9 +2,12 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { normalizeQuoteRequest } from '../tooling/playwright-quote/quote-contract.mjs';
 import {
+  PROPERTY_REGISTRY,
   getHmsPropertyRegistration,
   installRegisteredAvailabilityReadOnlyGuard,
+  resolvePropertyTransport,
   resolveSecretSource,
+  validatePropertyRegistry,
   validateHmsPropertySecret,
 } from '../tooling/playwright-quote/property-registry.mjs';
 
@@ -20,6 +23,55 @@ const DAVINCI_SECRET = {
 };
 
 describe('read-only HMS property registry', () => {
+  it('resolves every hotel mailbox to its property and transport-nava to a no-hotel collector', () => {
+    for (const [transportId, propertyCode] of [
+      ['transport-centurion', 'HRCEN'],
+      ['transport-davinci', 'HRDAV'],
+      ['transport-faith', 'HRDAV'],
+      ['transport-ayanda', 'HRDAV'],
+      ['transport-epick', 'HRDAV'],
+      ['transport-kmgidi', 'HRDAV'],
+    ]) {
+      expect(resolvePropertyTransport(transportId)).toMatchObject({
+        kind: 'property',
+        transportId,
+        property: { propertyCode },
+      });
+    }
+    expect(resolvePropertyTransport('transport-nava')).toEqual({
+      kind: 'collector',
+      transportId: 'transport-nava',
+    });
+  });
+
+  it('returns typed unknown/inactive refusals and rejects a transport assigned to two properties', () => {
+    expect(resolvePropertyTransport('')).toMatchObject({ kind: 'refusal', code: 'property_unknown' });
+    expect(resolvePropertyTransport('transport-unknown')).toMatchObject({
+      kind: 'refusal',
+      code: 'property_unknown',
+    });
+
+    const centurion = PROPERTY_REGISTRY.properties.find((property) => property.propertyCode === 'HRCEN')!;
+    const davinci = PROPERTY_REGISTRY.properties.find((property) => property.propertyCode === 'HRDAV')!;
+    const inactiveRegistry = {
+      properties: [{ ...centurion, active: false, transportIds: ['transport-retired'] }],
+      collectorTransportIds: [],
+    };
+    expect(resolvePropertyTransport('transport-retired', inactiveRegistry)).toMatchObject({
+      kind: 'refusal',
+      code: 'property_inactive',
+    });
+
+    const duplicateRegistry = {
+      properties: [
+        { ...centurion, transportIds: ['transport-shared'] },
+        { ...davinci, transportIds: ['transport-shared'] },
+      ],
+      collectorTransportIds: [],
+    };
+    expect(() => validatePropertyRegistry(duplicateRegistry)).toThrow('hms_property_duplicate_transport');
+  });
+
   it('resolves transport-davinci to HRDAV and the Da Vinci read secret', () => {
     const property = getHmsPropertyRegistration('transport-davinci');
     expect(Object.isFrozen(property)).toBe(true);
