@@ -42,7 +42,16 @@ import * as schema from '../src/db/schema/index.js';
 import { aiWorkflowRun, attachment, mailboxTransport, mailDraft, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { user } from '../src/db/schema/auth.js';
-import { NAVA_USER_EMAIL, NAVA_USER_ID } from '../src/db/seed.js';
+import {
+  AYANDA_TRANSPORT_EMAIL,
+  AYANDA_TRANSPORT_ID,
+  DAVINCI_TRANSPORT_EMAIL,
+  DAVINCI_TRANSPORT_ID,
+  FAITH_TRANSPORT_EMAIL,
+  FAITH_TRANSPORT_ID,
+  NAVA_USER_EMAIL,
+  NAVA_USER_ID,
+} from '../src/db/seed.js';
 import { appRouter } from '../src/trpc/router.js';
 import { AE1_OUTPUT, AE1_TEXT, fakeModel, selectionFor } from './fixtures/inbound-extraction.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
@@ -50,12 +59,27 @@ import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 
 const CENTURION = 'transport-centurion';
 const OTHER = 'transport-other';
+const DAVINCI = DAVINCI_TRANSPORT_ID;
+const FAITH = FAITH_TRANSPORT_ID;
 const USER = 'user-ropperman';
 const STAY_ONE = 's_aaaa1111';
 const STAY_TWO = 's_cccc2222';
 const ROW_SINGLE = 'r_bbbb1111';
 const ROW_TWIN = 'r_bbbb2222';
 const ROW_STAY_TWO = 'r_dddd1111';
+
+async function addDaVinciMailboxes(db: DB) {
+  for (const [id, email] of [
+    [DAVINCI, DAVINCI_TRANSPORT_EMAIL],
+    [FAITH, FAITH_TRANSPORT_EMAIL],
+    [AYANDA_TRANSPORT_ID, AYANDA_TRANSPORT_EMAIL],
+  ]) {
+    await db
+      .insert(mailboxTransport)
+      .values({ id, email, ownerHeaderValue: email, mailboxType: 'personal', sendFromConfig: { aliases: [] } })
+      .onConflictDoNothing({ target: mailboxTransport.id });
+  }
+}
 
 /** Two stays, the first with two room rows and the second with one. Dates are the AI's first read. */
 function payload(dates: { stayOneArrival?: string; stayTwoArrival?: string } = {}): MailExtractionPayload {
@@ -2259,6 +2283,89 @@ async function sentFromBefore(db: DB, id: string, from: string): Promise<void> {
   });
 }
 
+async function daVinciGuestMail(db: DB, id: string, threadId: string, at: string): Promise<string> {
+  const messageId = `msg-${id}`;
+  await seedInboxThread(db, {
+    threadId,
+    transportId: DAVINCI,
+    transportEmail: DAVINCI_TRANSPORT_EMAIL,
+    messageId,
+    fromAddress: GUEST,
+    subject: 'Rooms request',
+    textBody: 'Please quote.',
+    messageIdHeader: `${id}@example.com`,
+  });
+  await db.update(message).set({ receivedAt: new Date(at) }).where(eq(message.id, messageId));
+  return messageId;
+}
+
+async function propertyOutbound(
+  db: DB,
+  id: string,
+  transportId: string,
+  transportEmail: string,
+  from: string,
+  at: string,
+): Promise<void> {
+  const threadId = `thread-property-sent-${id}`;
+  await seedInboxThread(db, {
+    threadId,
+    transportId,
+    transportEmail,
+    messageId: `msg-property-sent-${id}-in`,
+    fromAddress: GUEST,
+    subject: 'Earlier request',
+    textBody: 'Earlier.',
+  });
+  await db.insert(message).values({
+    id: `msg-property-sent-${id}`,
+    transportId,
+    threadId,
+    direction: 'outbound',
+    fromAddress: from,
+    toAddresses: [GUEST],
+    subject: 'Earlier reply',
+    textBody: 'Earlier reply.',
+    ownerHeaderValue: transportEmail,
+    messageIdHeader: `${id}@example.com`,
+    sentAt: new Date(at),
+  });
+}
+
+async function daVinciReplyCopy(
+  db: DB,
+  id: string,
+  threadId: string,
+  from: string,
+  sentAt: string,
+  arrivedAt: string,
+): Promise<string> {
+  const messageId = `msg-${id}`;
+  await db.insert(message).values({
+    id: messageId,
+    transportId: DAVINCI,
+    threadId,
+    direction: 'inbound',
+    fromAddress: from,
+    toAddresses: [DAVINCI_TRANSPORT_EMAIL],
+    subject: 'Re: Rooms request',
+    textBody: 'Quoted.',
+    ownerHeaderValue: DAVINCI_TRANSPORT_EMAIL,
+    messageIdHeader: `${id}@example.com`,
+    pop3Uidl: `uidl-${id}`,
+    receivedAt: new Date(arrivedAt),
+    sentAt: new Date(sentAt),
+    createdAt: new Date(arrivedAt),
+  });
+  return messageId;
+}
+
+async function daVinciTodo(db: DB, id: string, at: string) {
+  const messageId = await daVinciGuestMail(db, id, `thread-${id}`, at);
+  await insertRead(db, messageId, { version: `dv-${id}`, kind: 'quote', payload: payload() });
+  return ensureWorkItemForMessage(db, { transportId: DAVINCI, messageId });
+}
+
 /** A guest mail's read, as the inbound run stores it. */
 function readOf(db: DB, messageId: string, kind: 'quote' | 'other', version = 'extract-v1') {
   return insertRead(db, messageId, { version, kind, payload: payload() });
@@ -2275,6 +2382,91 @@ async function replyStatus(db: DB, workItemId: string) {
 }
 
 describe('thread work: reply link, same-thread collapse, staff-sent other (C2, C3)', () => {
+  it('uses Faith sent-mail evidence to close a Da Vinci copy and reopens it for later guest mail', () =>
+    withDb(async (db) => {
+      await addDaVinciMailboxes(db);
+      const item = await daVinciTodo(db, 'faith-reply-request', '2027-10-01T08:00:00Z');
+      await propertyOutbound(
+        db,
+        'faith-reply-source',
+        FAITH,
+        FAITH_TRANSPORT_EMAIL,
+        FAITH_TRANSPORT_EMAIL,
+        '2027-10-01T09:00:00Z',
+      );
+      const replyCopy = await daVinciReplyCopy(
+        db,
+        'faith-reply-copy',
+        'thread-faith-reply-request',
+        FAITH_TRANSPORT_EMAIL,
+        '2027-10-01T09:00:00Z',
+        '2027-10-01T09:05:00Z',
+      );
+
+      expect(await refreshThreadWork(db, { transportId: DAVINCI, threadId: 'thread-faith-reply-request' })).toEqual([
+        expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: replyCopy }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('done');
+
+      await daVinciGuestMail(db, 'faith-reply-followup', 'thread-faith-reply-request', '2027-10-01T10:00:00Z');
+      expect(await refreshThreadWork(db, { transportId: DAVINCI, threadId: 'thread-faith-reply-request' })).toEqual([
+        expect.objectContaining({ to: 'needs_you', reason: 'new_inbound', previousSentMessageId: replyCopy }),
+      ]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+
+  it.each([
+    {
+      name: 'a forged own-domain From without any matching sent mail',
+      outbound: null,
+      copyFrom: FORGED,
+    },
+    {
+      name: 'notfaith@ as evidence for a faith@ copy',
+      outbound: {
+        transportId: FAITH,
+        transportEmail: FAITH_TRANSPORT_EMAIL,
+        from: 'notfaith@legacyhotels.co.za',
+      },
+      copyFrom: 'faith@legacyhotels.co.za',
+    },
+    {
+      name: 'a Centurion reply copied into Da Vinci',
+      outbound: { transportId: CENTURION, transportEmail: MAILBOX, from: MAILBOX },
+      copyFrom: MAILBOX,
+    },
+  ])('$name does not close a Da Vinci to-do', ({ name: _name, outbound, copyFrom }) =>
+    withDb(async (db) => {
+      await addDaVinciMailboxes(db);
+      const item = await daVinciTodo(db, `negative-${copyFrom.split('@')[0]}`, '2027-10-01T08:00:00Z');
+      if (outbound) {
+        await propertyOutbound(
+          db,
+          `negative-source-${copyFrom.split('@')[0]}`,
+          outbound.transportId,
+          outbound.transportEmail,
+          outbound.from,
+          '2027-10-01T09:00:00Z',
+        );
+      }
+      await daVinciReplyCopy(
+        db,
+        `negative-copy-${copyFrom.split('@')[0]}`,
+        `thread-negative-${copyFrom.split('@')[0]}`,
+        copyFrom,
+        '2027-10-01T09:00:00Z',
+        '2027-10-01T09:05:00Z',
+      );
+
+      expect(
+        await refreshThreadWork(db, {
+          transportId: DAVINCI,
+          threadId: `thread-negative-${copyFrom.split('@')[0]}`,
+        }),
+      ).toEqual([]);
+      expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+
   it('dismisses an older untouched request when a newer one lands on the thread', () =>
     withDb(async (db) => {
       const older = await guestMail(db, 'col-1', 'thread-col-1', '2027-10-01T08:00:00Z');

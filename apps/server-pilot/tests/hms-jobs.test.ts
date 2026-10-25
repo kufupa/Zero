@@ -54,6 +54,8 @@ import { partySenderMap } from '../src/db/schema/party-sender-map.js';
 import { hitlToolRun } from '../src/db/schema/hitl.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { runHmsJobOnce } from '../src/ai/worker.js';
+import { ensureWorkItemForMessage } from '../src/ai/work-items.js';
+import { admitLiveMessage } from '../src/mail/ingest/live-admission.js';
 import type { DB } from '../src/db/client.js';
 import { parseEnv } from '../src/env.js';
 import { createPropertyReadLock, PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
@@ -61,6 +63,9 @@ import {
   CENTURION_USER_ID,
   DAVINCI_TRANSPORT_EMAIL,
   DAVINCI_TRANSPORT_ID,
+  FAITH_TRANSPORT_ID,
+  AYANDA_TRANSPORT_ID,
+  NAVA_TRANSPORT_ID,
   TRANSPORT_EMAIL,
   TRANSPORT_ID,
 } from '../src/db/seed.js';
@@ -161,6 +166,7 @@ async function seedThread(
   db: DB,
   subject = 'Amend booking',
   transportId = TRANSPORT_ID,
+  messageIdHeader: string | null = null,
 ): Promise<{ threadId: string; messageId: string }> {
   const threadId = `thread-${randomUUID()}`;
   const messageId = `msg-${randomUUID()}`;
@@ -175,6 +181,7 @@ async function seedThread(
     subject,
     textBody: `Please amend ${CONFIRMATION}.`,
     receivedAt: new Date(),
+    messageIdHeader,
   });
   return { threadId, messageId };
 }
@@ -2823,6 +2830,141 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           ),
         );
       expect(job?.readRequest).toMatchObject({ kind: 'party', name: 'Acme Lodging Holdings' });
+    }));
+
+  it('shares one same-property prefetch result across three mailbox copies without merging their to-dos', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_DAVINCI_READS', 'on');
+      const env = {
+        ...parseEnv(process.env as Record<string, string | undefined>),
+        HMS_PREFETCH_ENABLED: true,
+      };
+      const transports = [DAVINCI_TRANSPORT_ID, FAITH_TRANSPORT_ID, AYANDA_TRANSPORT_ID];
+      const copies: Array<{ transportId: string; threadId: string; messageId: string; workItemId: string }> = [];
+      for (const transportId of transports) {
+        const { threadId, messageId } = await seedThread(
+          db,
+          'Quote request',
+          transportId,
+          'fanout-u5@example.test',
+        );
+        await insertStoredExtraction(db, messageId, 'quote', quoteExtractionPayload());
+        const item = await ensureWorkItemForMessage(db, { transportId, messageId });
+        expect(item).not.toBeNull();
+        copies.push({ transportId, threadId, messageId, workItemId: item!.id });
+      }
+
+      const queued = [];
+      for (const copy of copies) {
+        queued.push(
+          await hmsJobs.prefetchPartyForExtraction(
+            { runKind: 'inbound_extraction', transportId: copy.transportId, triggerMessageId: copy.messageId },
+            db,
+            env,
+          ),
+        );
+      }
+      expect(queued).toEqual([1, 0, 0]);
+
+      const readRuns = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(and(inArray(aiWorkflowRun.triggerMessageId, copies.map((copy) => copy.messageId)), eq(aiWorkflowRun.runKind, 'read_tool')));
+      expect(readRuns).toHaveLength(1);
+      const sharedResult = { matchVersion: 2, matchStatus: 'needs_pick', results: [], asOf: new Date().toISOString() };
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: sharedResult,
+          readResultExpiresAt: new Date(Date.now() + 60 * 60_000),
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(aiWorkflowRun.id, readRuns[0]!.id));
+
+      for (const copy of copies) {
+        const view = await readHmsJobView(
+          { transportId: copy.transportId, threadId: copy.threadId, kind: 'party', name: 'Acme Lodging Holdings' },
+          db,
+        );
+        expect(view).toMatchObject({ runId: readRuns[0]!.id, status: 'done', result: sharedResult });
+      }
+      expect(
+        await db.select({ id: workItem.id }).from(workItem).where(inArray(workItem.id, copies.map((copy) => copy.workItemId))),
+      ).toHaveLength(3);
+      const [shared] = await db.select({ metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun).where(eq(aiWorkflowRun.id, readRuns[0]!.id));
+      expect(shared?.metrics).toMatchObject({
+        sharedTransportIds: expect.arrayContaining([FAITH_TRANSPORT_ID, AYANDA_TRANSPORT_ID]),
+        sharedWorkItemIds: expect.arrayContaining(copies.map((copy) => copy.workItemId)),
+      });
+    }));
+
+  it('keeps null-Message-ID reads per copy and the same Message-ID distinct across properties', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_DAVINCI_READS', 'on');
+      const env = {
+        ...parseEnv(process.env as Record<string, string | undefined>),
+        HMS_PREFETCH_ENABLED: true,
+      };
+      const copies: Array<{ transportId: string; messageId: string }> = [];
+      for (const transportId of [DAVINCI_TRANSPORT_ID, FAITH_TRANSPORT_ID]) {
+        const { messageId } = await seedThread(db, 'Quote request', transportId, null);
+        await insertStoredExtraction(db, messageId, 'quote', quoteExtractionPayload());
+        copies.push({ transportId, messageId });
+      }
+      for (const [transportId, messageId] of [
+        [TRANSPORT_ID, 'msg-centurion-u5'],
+        [DAVINCI_TRANSPORT_ID, 'msg-davinci-u5'],
+      ] as const) {
+        const threadId = `thread-${messageId}`;
+        await db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
+        await db.insert(message).values({
+          id: messageId,
+          transportId,
+          threadId,
+          direction: 'inbound',
+          fromAddress: 'agent@agency.example.test',
+          subject: 'Quote request',
+          textBody: `Please amend ${CONFIRMATION}.`,
+          messageIdHeader: 'one-id-two-hotels@example.test',
+          receivedAt: new Date(),
+        });
+        await insertStoredExtraction(db, messageId, 'quote', quoteExtractionPayload());
+        copies.push({ transportId, messageId });
+      }
+
+      for (const copy of copies) {
+        expect(
+          await hmsJobs.prefetchPartyForExtraction(
+            { runKind: 'inbound_extraction', transportId: copy.transportId, triggerMessageId: copy.messageId },
+            db,
+            env,
+          ),
+        ).toBe(1);
+      }
+      const runs = await db
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .where(and(inArray(aiWorkflowRun.triggerMessageId, copies.map((copy) => copy.messageId)), eq(aiWorkflowRun.runKind, 'read_tool')));
+      expect(runs).toHaveLength(4);
+    }));
+
+  it('collector live admission persists mail without creating a to-do, extraction, or AI/HMS run', () =>
+    withSeededTestDb(async (db) => {
+      const { messageId } = await seedThread(db, 'Collector request', NAVA_TRANSPORT_ID);
+      await admitLiveMessage(db, {
+        transportId: NAVA_TRANSPORT_ID,
+        canonicalMessageId: messageId,
+        newlyPersisted: true,
+        evidence: { kind: 'verified-pop3', sourceReceiptId: 'u5-collector-test' },
+      });
+
+      expect(await db.select({ id: mailExtraction.id }).from(mailExtraction).where(eq(mailExtraction.messageId, messageId))).toHaveLength(0);
+      expect(await db.select({ id: workItem.id }).from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(0);
+      expect(await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId))).toHaveLength(0);
     }));
 
   it('skips party prefetch for a known channel sender', () =>

@@ -5,6 +5,7 @@ import {
   confidentPartyFromV2Result,
   quotePrepareKindReason,
   quoteShopJobsForPlan,
+  staffQuotePriceKey,
   staffQuoteInputsPriceEquivalent,
 } from '../src/ai/quote-ready.js';
 import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
@@ -556,6 +557,21 @@ describe('prepared quote reuse price fields', () => {
         agency: 'Changed header',
       }),
     ).toBe(true);
+  });
+
+  it('gives duplicate mailbox copies one price identity while preserving priced-input differences', () => {
+    const base = build().inputs[0]!;
+    const otherCopy = {
+      ...base,
+      messageId: 'quote-message-copy',
+      sourceHash: 'b'.repeat(64),
+      selectionEpoch: 12,
+      inputRevision: 18,
+    };
+    expect(staffQuotePriceKey(base)).toBe(staffQuotePriceKey(otherCopy));
+    expect(staffQuotePriceKey(base)).not.toBe(
+      staffQuotePriceKey({ ...otherCopy, salesStrategy: 'Government' }),
+    );
   });
 
   it('requires the same pane row identity for reuse', () => {
