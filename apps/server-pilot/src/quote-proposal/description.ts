@@ -1,4 +1,4 @@
-import { HRCEN_PROPERTY_CODE, HRDAV_PROPERTY_CODE, quotePropertyIdentity } from './filename.js';
+import { HRDAV_PROPERTY_CODE, quotePropertyIdentity } from './filename.js';
 
 export const QUOTE_MEALS = ['dinner_bb', 'bb', 'room_only'] as const;
 export type QuoteMeal = (typeof QUOTE_MEALS)[number];
@@ -43,7 +43,7 @@ function classByCode(propertyCode: string): Record<string, string> {
 export function proposalDescription(
   roomCode: string,
   meal: QuoteMeal,
-  propertyCode: string = HRCEN_PROPERTY_CODE,
+  propertyCode: string,
 ): string {
   const klass = classByCode(propertyCode)[roomCode.trim().toUpperCase()];
   if (!klass) throw new Error(`unknown room code: ${roomCode}`);

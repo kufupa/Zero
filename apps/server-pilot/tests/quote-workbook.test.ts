@@ -3,6 +3,7 @@ import { unzipSync } from 'fflate';
 import {
   excelSerialDate,
   MAX_WORKBOOK_LINES,
+  buildQuoteWorkbook,
   quoteDateLabel,
   quoteWorkbookFileName,
   quoteWorkbookForRevision,
@@ -95,6 +96,27 @@ function pdfTotalMinor(html: string): number {
 }
 
 describe('quote workbook totals and formulas', () => {
+  it('refuses to build a legacy workbook without its property identity', () => {
+    expect(() =>
+      buildQuoteWorkbook({
+        authoredDate: '2026-10-10',
+        breakfastIncluded: true,
+        header,
+        lines: [
+          {
+            dateLabel: '12-14 October 2026',
+            description: 'Twin room Bed & Breakfast',
+            qty: 1,
+            nights: 2,
+            rateMinor: 215_000,
+            totalMinor: 430_000,
+          },
+        ],
+        propertyCode: undefined as unknown as string,
+      }),
+    ).toThrow('quote_property_required');
+  });
+
   it('totals in the workbook equal the PDF total for the same revision', async () => {
     const { revision, facts } = await staffScenario(fullExtras);
     const { bytes, totalMinor } = quoteWorkbookForRevision({ revision, facts, header });

@@ -22,6 +22,7 @@ const { sendCommandMock, quotePdfMutateMock, quoteWorkbookMutateMock, prepareDra
     outlookEmail: 'ropperman@legacyhotels.co.za',
     transportId: 'transport-shared',
     transportEmail: 'centurion@legacyhotels.co.za',
+    propertyCode: 'HRCEN' as 'HRCEN' | 'HRDAV',
     requiresRelogin: false,
     nativeSelectedEntryId: '001',
   },
@@ -145,6 +146,17 @@ vi.mock('../providers/query-provider', () => ({
       list: { query: async () => [] },
     },
     quoteWorkflow: {
+      rateCatalogue: {
+        query: async () => ({
+          transportId: sessionState.transportId,
+          propertyCode: sessionState.propertyCode,
+          roomTypes: [],
+          ratePlans: [],
+          boards: [],
+          overrideRateCodes: [],
+          eventRateCodes: [],
+        }),
+      },
       analyseSelection: {
         mutate: async (input: unknown) => analyseOverride.current?.(input) ?? ({
           status: 'ready' as const,
@@ -273,6 +285,7 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.outlookEmail = 'ropperman@legacyhotels.co.za';
     sessionState.transportId = 'transport-shared';
     sessionState.transportEmail = 'centurion@legacyhotels.co.za';
+    sessionState.propertyCode = 'HRCEN';
     sessionState.requiresRelogin = false;
     sessionState.nativeSelectedEntryId = '001';
     analyseOverride.current = null;
@@ -443,9 +456,12 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
   });
 
-  it('attaches the reviewed quotation PDF, not sample RATE_TABLE bytes', async () => {
+  it('uses the registry property identity for the reviewed reply and attaches its PDF', async () => {
+    sessionState.transportId = 'transport-pane-registry';
+    sessionState.transportEmail = 'davinci@legacyhotels.co.za';
+    sessionState.propertyCode = 'HRDAV';
     render(<OutlookPanePage />);
-    await prepareReviewedQuote();
+    await prepareReviewedQuote(null);
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
 
@@ -453,7 +469,7 @@ describe('Outlook pane quote proposal PDF', () => {
       expect(sendCommandMock).toHaveBeenCalledWith(
         'CREATE_REPLY_DRAFT',
         expect.objectContaining({
-          htmlBody: expect.stringContaining('selected allocation only'),
+          htmlBody: expect.stringContaining('Da Vinci Hotel and Suites'),
         }),
       );
     });
@@ -461,7 +477,8 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(createCall).toBeDefined();
     if (!createCall) throw new Error('missing CREATE_REPLY_DRAFT');
     const htmlBody = (createCall[1] as { htmlBody: string }).htmlBody;
-    expect(htmlBody).not.toContain('Thank you for Choosing The Centurion Hotel.');
+    expect(htmlBody).toContain('Thank you for Choosing Da Vinci Hotel and Suites.');
+    expect(htmlBody).not.toMatch(/Centurion/i);
     expect(htmlBody).not.toContain('<table');
     expect(htmlBody).not.toMatch(/ZAR/i);
 

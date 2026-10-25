@@ -1,22 +1,3 @@
-export const HOTEL_TELEPHONE = '0126433600';
-
-const DAVINCI_STAFF_TRANSPORT_IDS = new Set([
-  'transport-davinci',
-  'transport-faith',
-  'transport-ayanda',
-  'transport-epick',
-  'transport-kmgidi',
-]);
-
-export function quotePropertyCodeForTransport(
-  transportId: string | null | undefined,
-): 'HRCEN' | 'HRDAV' | null {
-  const id = transportId?.trim();
-  if (id && DAVINCI_STAFF_TRANSPORT_IDS.has(id)) return 'HRDAV';
-  if (id === 'transport-centurion') return 'HRCEN';
-  return null;
-}
-
 export function quoteHotelName(propertyCode: string | null | undefined): string {
   if (propertyCode === 'HRDAV') return 'Da Vinci Hotel and Suites';
   if (propertyCode === 'HRCEN') return 'The Centurion Hotel';

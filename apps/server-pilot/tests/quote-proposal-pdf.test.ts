@@ -8,6 +8,7 @@ import { appRouter } from '../src/trpc/router.js';
 import { patchSheetXml } from '../src/quote-proposal/patch-sheet.js';
 import { patchProposalWorkbook } from '../src/quote-proposal/patch-template.js';
 import { brandQuoteWorkbookBytes } from '../src/quote-proposal/quote-workbook.js';
+import { buildQuoteProposalPdf } from '../src/quote-proposal/proposal-pdf.js';
 import { __setDbForTests } from '../src/db/client.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { mailboxAccess } from '../src/db/schema/mail.js';
@@ -106,6 +107,92 @@ describe('quote proposal xlsx patch', () => {
     expect(new TextDecoder().decode(files['xl/worksheets/_rels/sheet1.xml.rels'])).not.toContain(
       'centurion-hotel',
     );
+  });
+
+  it('keeps HRCEN legacy workbook branding byte-for-byte unchanged', () => {
+    const patched = patchProposalWorkbook(TEMPLATE, {
+      attention: 'David Miller',
+      company: 'CIDB',
+      clientEmail: 'guest@example.com',
+      clientTelephone: '',
+      signerName: 'R Opperman',
+      signerEmail: 'ropperman@legacyhotels.co.za',
+      signerTelephone: '0126433600',
+      lines: [
+        {
+          dateLabel: '15-17 September 2026',
+          qty: 1,
+          description: 'Single room Bed & Breakfast',
+          nights: 1,
+          rate: 2150,
+        },
+      ],
+    });
+
+    expect(Buffer.compare(brandQuoteWorkbookBytes(patched, 'HRCEN'), patched)).toBe(0);
+  });
+
+  it('refuses legacy PDF construction when property identity is missing', async () => {
+    await expect(
+      buildQuoteProposalPdf(
+        {
+          attention: 'David Miller',
+          company: 'CIDB',
+          clientEmail: 'guest@example.com',
+          clientTelephone: '',
+          agency: 'CIDB',
+          dateLabel: '15-17 September 2026',
+          propertyCode: undefined as unknown as string,
+          lines: sampleLines,
+        },
+        { name: 'R Opperman', email: 'ropperman@legacyhotels.co.za' },
+        '',
+      ),
+    ).rejects.toThrow('quote_property_required');
+  });
+
+  it('converts a Da Vinci-branded workbook to PDF without Centurion identity', async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const upload = (init?.body as FormData | undefined)?.get('files');
+      if (!(upload instanceof Blob)) throw new Error('missing workbook upload');
+      const files = unzipSync(new Uint8Array(await upload.arrayBuffer()));
+      const shared = new TextDecoder().decode(files['xl/sharedStrings.xml']!);
+      const sheet = new TextDecoder().decode(files['xl/worksheets/sheet1.xml']!);
+      const links = new TextDecoder().decode(files['xl/worksheets/_rels/sheet1.xml.rels']!);
+
+      expect(shared).toContain('Da Vinci Hotel and Suites');
+      expect(shared).toContain('Sandton');
+      expect(`${shared}\n${sheet}`).not.toMatch(/Centurion|Brunos|0126433600/i);
+      expect(links).not.toContain('centurion-hotel');
+      expect(files['xl/media/image1.png']).toBeUndefined();
+      expect(files['xl/media/image2.png']).toBeUndefined();
+      return new Response(new TextEncoder().encode('%PDF-1.4 test'), {
+        status: 200,
+        headers: { 'content-type': 'application/pdf' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const result = await buildQuoteProposalPdf(
+        {
+          attention: 'David Miller',
+          company: 'CIDB',
+          clientEmail: 'guest@example.com',
+          clientTelephone: '',
+          agency: 'CIDB',
+          dateLabel: '15-17 September 2026',
+          propertyCode: 'HRDAV',
+          lines: [{ ...sampleLines[0]!, roomCode: 'STKNG' }],
+        },
+        { name: 'R Opperman', email: 'ropperman@legacyhotels.co.za' },
+        'http://gotenberg.test',
+      );
+
+      expect(result.pdf).toEqual(new TextEncoder().encode('%PDF-1.4 test'));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('keeps VAT cell as Included shared-string', () => {

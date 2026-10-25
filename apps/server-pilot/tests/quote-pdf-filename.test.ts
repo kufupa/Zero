@@ -76,11 +76,17 @@ describe('quote property identity', () => {
   });
 
   it('names STWN by property so a shared HMS code is not the other hotel product', () => {
-    expect(proposalDescription('STWN', 'bb')).toBe('Twin room Bed & Breakfast');
+    expect(proposalDescription('STWN', 'bb', 'HRCEN')).toBe('Twin room Bed & Breakfast');
     expect(proposalDescription('STWN', 'bb', 'HRDAV')).toBe('Standard Twin room Bed & Breakfast');
     expect(proposalDescription('STKNG', 'room_only', 'HRDAV')).toBe('Standard King room Room Only');
     expect(() => proposalDescription('STKNG', 'bb', 'HRCEN')).toThrow(/unknown room code/);
     expect(() => proposalDescription('STQN', 'bb', 'HRDAV')).toThrow(/unknown room code/);
+  });
+
+  it('refuses to label a quote when its property is missing', () => {
+    expect(() => proposalDescription('STWN', 'bb', undefined as unknown as string)).toThrow(
+      'quote_property_required',
+    );
   });
 
   it('puts the sending hotel in the 66h follow-up and never names the other property', () => {
