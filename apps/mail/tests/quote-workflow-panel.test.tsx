@@ -162,10 +162,12 @@ function AlternativeStayPanel({
   initial,
   onRunStep,
   onPatchGroup,
+  paneConfig,
 }: {
   initial: QuoteSession;
   onRunStep: (stepId: string) => void;
   onPatchGroup: (groupId: string, patch: Partial<QuoteSession['groups'][number]>) => void;
+  paneConfig?: QuotePaneConfig | null;
 }) {
   const [session, setSession] = useState(initial);
   return (
@@ -177,6 +179,7 @@ function AlternativeStayPanel({
         setSession((current) => reduceQuoteSession(current, { type: 'patch_group', groupId, patch }));
       }}
       onRunStep={onRunStep}
+      paneConfig={paneConfig}
     />
   );
 }
@@ -799,7 +802,7 @@ describe('QuoteWorkflowPanel', () => {
       ...failed,
       groups: failed.groups.map((group) => ({ ...group, rateCode: 'BAR' })),
     };
-    render(<AlternativeStayPanel initial={session} onRunStep={onRunStep} onPatchGroup={onPatchGroup} />);
+    render(<AlternativeStayPanel initial={session} onRunStep={onRunStep} onPatchGroup={onPatchGroup} paneConfig={null} />);
 
     const alternative = screen.getByText('Not available — instead: Deluxe Twin × 2');
     const alternativeGroup = alternative.closest('[role="group"]');
@@ -820,6 +823,9 @@ describe('QuoteWorkflowPanel', () => {
       rateCode: 'BAR',
     }));
     await waitFor(() => expect(onRunStep).toHaveBeenCalledWith('quote-1'));
+    await waitFor(() =>
+      expect((screen.getByLabelText('Room type') as unknown as HTMLSelectElement).value).toBe('DLXTWN'),
+    );
   });
 
   it('shows a safe failed-rate banner once, then one safe local retry message', () => {
