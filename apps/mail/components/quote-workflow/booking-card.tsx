@@ -616,7 +616,7 @@ function roomChoiceFor(
   return {
     ...choice,
     roomType: roomTypeFor(room, group),
-    ratePlan: textValue(group?.rateCode) || textValue(group?.quotedRateCode) || textValue(room.request.ratePlan),
+    ratePlan: textValue(group?.rateCode) || textValue(room.request.ratePlan) || textValue(group?.quotedRateCode),
     bookerName: contact ? textValue(contact.name) : textValue(room.request.bookerName),
     bookerEmail: contact ? textValue(contact.email) : textValue(room.request.bookerEmail),
   };
@@ -673,6 +673,8 @@ export function BookingCards({
   savedStays?: Record<string, SavedStayCommit>;
 }) {
   const client = paneSave;
+  const contactRef = useRef(contact);
+  contactRef.current = contact;
   const requiredCreateFields = draft.options.requiredCreateFields ?? [];
   // off keeps the card copy-only. A client whose mode is not read yet is labelled as lab, the narrower mode.
   const mode: PaneSaveMode = client ? (client.mode?.() ?? 'lab') : 'off';
@@ -744,11 +746,14 @@ export function BookingCards({
     return draft.draft.rooms.filter((room) => childCountForRoom(room, groups) === 0);
   }
 
-  function roomBuilt(room: BookingDraftReady['draft']['rooms'][number]) {
+  function roomBuilt(
+    room: BookingDraftReady['draft']['rooms'][number],
+    currentContact: StoredContact | null = contact,
+  ) {
     const group = roomGroupFor(room, groups);
     return paneStayInputForConfiguredRoom(
       roomRequestFor(room, group),
-      roomChoiceFor(room, group, choices[roomKeyOf(room)] ?? NO_CHOICE, contact),
+      roomChoiceFor(room, group, choices[roomKeyOf(room)] ?? NO_CHOICE, currentContact),
       requiredCreateFields,
     );
   }
@@ -775,6 +780,10 @@ export function BookingCards({
     try {
       for (const item of snapshot) {
         if (!item || !stayBookingRef.current) return;
+        const room = draft.draft.rooms.find((candidate) => roomKeyOf(candidate) === item.roomKey);
+        if (!room) return;
+        const currentStay = roomBuilt(room, contactRef.current).stay;
+        if (!currentStay || paneStayKey(currentStay) !== paneStayKey(item.stay)) return;
         await bookRoom(item.roomKey, pane, item.stay, item.digest);
       }
     } finally {
