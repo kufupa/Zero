@@ -33,7 +33,7 @@ import {
   queueUserHmsJob,
   readHmsJobView,
   requeueHmsReadsAfterRestart,
-  isCenturionPartyHistoryTarget,
+  partyHistoryPropertyCode,
   senderHostForPartyHistory,
   staffQuoteCanTeachSenderHistory,
 } from '../src/ai/hms-jobs.js';
@@ -604,11 +604,13 @@ describe('party sender history policy', () => {
     ).toBeNull();
   });
 
-  it('allows sender history only for Centurion target', () => {
-    expect(isCenturionPartyHistoryTarget(null, TRANSPORT_ID)).toBe(true);
-    expect(isCenturionPartyHistoryTarget(CENTURION_HMS_READ_TARGET, TRANSPORT_ID)).toBe(true);
-    expect(isCenturionPartyHistoryTarget(DAVINCI_HMS_READ_TARGET, TRANSPORT_ID)).toBe(false);
-    expect(isCenturionPartyHistoryTarget(null, 'transport-davinci')).toBe(false);
+  it('scopes sender history to the resolved hotel', () => {
+    expect(partyHistoryPropertyCode(CENTURION_HMS_READ_TARGET)).toBe('HRCEN');
+    expect(partyHistoryPropertyCode(DAVINCI_HMS_READ_TARGET)).toBe('HRDAV');
+    expect(partyHistoryPropertyCode(null)).toBeNull();
+    expect(partyHistoryPropertyCode(null, TRANSPORT_ID)).toBe('HRCEN');
+    expect(partyHistoryPropertyCode(null, DAVINCI_TRANSPORT_ID)).toBe('HRDAV');
+    expect(partyHistoryPropertyCode(null, 'transport-1')).toBeNull();
   });
 
   it('learns from staff-initiated quotes only', () => {
@@ -3936,7 +3938,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         .select()
         .from(partySenderMap)
         .where(eq(partySenderMap.host, senderHost));
-      expect(learned).toMatchObject({ kind: 'agency', name: 'Harbor Travel', nativeId: 'AG-9', support: 1 });
+      expect(learned).toMatchObject({
+        propertyCode: 'HRCEN',
+        kind: 'agency',
+        name: 'Harbor Travel',
+        nativeId: 'AG-9',
+        support: 1,
+      });
       // A restart of that worker while a job runs puts it back to retry_wait for the next claim.
       const again = await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
