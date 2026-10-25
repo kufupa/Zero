@@ -733,6 +733,53 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       }
     }));
 
+  it('keeps a shared prepared quote read-back bound to its original message', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const messageIdHeader = 'u5-shared-readback@example.test';
+      const source = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID, messageIdHeader);
+      const copy = await seedThread(db, 'Quote request', FAITH_TRANSPORT_ID, messageIdHeader);
+      const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId: source.messageId });
+      const { run } = await enqueueHmsJob({
+        transportId: DAVINCI_TRANSPORT_ID,
+        threadId: source.threadId,
+        triggerMessageId: source.messageId,
+        workItemId: null,
+        userId: null,
+        request: { kind: 'staff_quote', input },
+        priority: HMS_JOB_PRIORITY_PREFETCH,
+        idempotencyKey: `hms-job:test-prepared-readback:${randomUUID()}`,
+        extraMetrics: { quotePrepared: true },
+      }, db);
+      const asOf = new Date();
+      await db.update(aiWorkflowRun).set({
+        state: 'succeeded',
+        readResult: {
+          kind: 'staff_quote',
+          status: 'ready',
+          messageId: source.messageId,
+          asOf: asOf.toISOString(),
+        },
+        finishedAt: asOf,
+        readResultExpiresAt: new Date(asOf.getTime() + 15 * 60_000),
+      }).where(eq(aiWorkflowRun.id, run.id));
+
+      const view = await readHmsJobView({
+        transportId: FAITH_TRANSPORT_ID,
+        userId: CENTURION_USER_ID,
+        messageId: copy.messageId,
+        kind: 'staff_quote',
+        input: staffQuoteInput.parse({ ...input, messageId: copy.messageId }),
+      }, db);
+
+      expect(view).toMatchObject({
+        runId: run.id,
+        sourceMessageId: source.messageId,
+        result: { messageId: source.messageId },
+      });
+    }));
+
   it('enqueues one primary shop per stay under the default hour cap', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');

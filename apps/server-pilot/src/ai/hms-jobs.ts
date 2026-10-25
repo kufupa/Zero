@@ -3851,23 +3851,11 @@ async function queuePosition(db: DB, run: AiWorkflowRun): Promise<number> {
 async function toView(
   db: DB,
   run: AiWorkflowRun,
-  options: { includePosition?: boolean; selectedMessageId?: string } = {},
+  options: { includePosition?: boolean } = {},
 ): Promise<HmsJobView> {
   const request = hmsJobRequestSchema.safeParse(run.readRequest);
   const status = STATUS_BY_STATE[run.state];
-  const storedResult = run.state === 'succeeded' && run.readResult ? run.readResult : null;
-  const bindPreparedQuote = Boolean(
-    options.selectedMessageId &&
-    request.success &&
-    request.data.kind === 'staff_quote' &&
-    isSystemPreparedPriority(run.priority) &&
-    objectRecord(run.metrics).userId == null &&
-    objectRecord(run.metrics).quotePrepared === true,
-  );
-  const result =
-    bindPreparedQuote && storedResult && objectRecord(storedResult).status === 'ready'
-      ? { ...objectRecord(storedResult), messageId: options.selectedMessageId! }
-      : storedResult;
+  const result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
   return {
     runId: run.id,
     sourceMessageId: run.triggerMessageId,
@@ -3885,42 +3873,6 @@ async function toView(
     outcome: safePartyJobOutcome(run, request.success ? request.data : null, result),
     result,
   };
-}
-
-/** A shared prepared quote may be polled only from an actual copy in the same property's mail fan-out. */
-async function sharedPreparedQuoteMessageIdForTransport(
-  db: DB,
-  run: AiWorkflowRun,
-  transportId: string,
-): Promise<string | null> {
-  const metrics = objectRecord(run.metrics);
-  if (
-    run.transportId === transportId ||
-    !isSystemPreparedPriority(run.priority) ||
-    metrics.userId != null ||
-    metrics.quotePrepared !== true
-  ) {
-    return null;
-  }
-  const copies = await hmsMailCopiesForMessage(db, run.transportId, run.triggerMessageId);
-  if (
-    !copies.propertyCode ||
-    !copies.messageIdHeader ||
-    !getPropertyTransportIds(copies.propertyCode).includes(transportId)
-  ) {
-    return null;
-  }
-  const matches = await db
-    .select({ id: message.id })
-    .from(message)
-    .where(
-      and(
-        eq(message.transportId, transportId),
-        eq(message.messageIdHeader, copies.messageIdHeader),
-      ),
-    )
-    .limit(2);
-  return matches.length === 1 ? matches[0]!.id : null;
 }
 
 /** The newest staff quote job on this message whose stay inputs match, ignoring the pane's selection counters. */
@@ -4231,13 +4183,7 @@ export async function readHmsJobView(
           )
           .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
           .limit(1);
-  const selectedMessageId =
-    run && quoteInput && quoteCopies?.messageIds.includes(quoteInput.messageId)
-      ? quoteInput.messageId
-      : run && 'runId' in input
-        ? (await sharedPreparedQuoteMessageIdForTransport(db, run, input.transportId)) ?? undefined
-        : undefined;
-  return run ? toView(db, run, { selectedMessageId }) : null;
+  return run ? toView(db, run) : null;
 }
 
 function batchEffectiveStatus(item: HmsBatchItemView): HmsJobStatus | 'cancelled' {

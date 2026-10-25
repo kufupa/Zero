@@ -148,20 +148,13 @@ describe('staff quote HMS job binding', () => {
     });
   });
 
-  it('binds a shared prepared quote read-back to the selected mailbox copy', async () => {
+  it('rejects a shared prepared quote read-back from another mailbox copy', async () => {
     const selectedSource = {
       messageId: 'mail-copy-2',
       threadId: 'thread-copy-2',
       sourceHash: 'c'.repeat(64),
     };
-    const staffQuoteJob = vi.fn(async (_input: unknown) =>
-      view(
-        'done',
-        { ...READY, messageId: selectedSource.messageId },
-        undefined,
-        true,
-      ),
-    );
+    const staffQuoteJob = vi.fn(async (_input: unknown) => view('done', READY, undefined, true));
 
     const result = await bindReadBackStaffQuote({
       query: staffQuoteJob,
@@ -173,12 +166,8 @@ describe('staff quote HMS job binding', () => {
     });
 
     expect(result).toMatchObject({
-      status: 'ok',
-      staffQuote: {
-        messageId: selectedSource.messageId,
-        sourceHash: selectedSource.sourceHash,
-        preparedByNava: true,
-      },
+      status: 'unavailable',
+      reason: 'The quote does not match the selected email. Select the email again, then run it again.',
     });
     expect(staffQuoteJob.mock.calls[0]?.[0]).toMatchObject({
       input: { messageId: selectedSource.messageId, sourceHash: selectedSource.sourceHash },
