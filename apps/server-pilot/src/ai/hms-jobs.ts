@@ -2567,7 +2567,7 @@ export async function evaluateQuoteReadyForMessage(
     const partyMetrics = objectRecord(partyRun.metrics);
     const hasRecordedTarget = partyMetrics.hmsReadTarget !== undefined;
     const target = hasRecordedTarget ? parseHmsReadTarget(partyMetrics.hmsReadTarget) : null;
-    const historyProperty = partyHistoryPropertyCode(target);
+    const historyProperty = partyHistoryPropertyCode(target, source.transportId);
     const allowLearnedSenderHistory = Boolean(historyProperty);
     const readParties = () =>
       confidentPartyFromV2Result({
@@ -3313,9 +3313,15 @@ function senderHostFromAddress(address: string): string | null {
     .replace(/\.+$/, '') ?? null;
 }
 
-export function partyHistoryPropertyCode(target: HmsReadTarget | null): string | null {
-  const code = target?.propertyCode?.trim();
-  return code || null;
+export function partyHistoryPropertyCode(
+  target: HmsReadTarget | null,
+  transportId?: string,
+): string | null {
+  const fromTarget = target?.propertyCode?.trim();
+  if (fromTarget) return fromTarget;
+  if (!transportId) return null;
+  const resolved = resolvePropertyTransport(transportId);
+  return resolved.kind === 'property' ? resolved.property.propertyCode : null;
 }
 
 export function staffQuoteCanTeachSenderHistory(

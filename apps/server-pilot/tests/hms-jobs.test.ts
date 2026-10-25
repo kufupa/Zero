@@ -608,6 +608,9 @@ describe('party sender history policy', () => {
     expect(partyHistoryPropertyCode(CENTURION_HMS_READ_TARGET)).toBe('HRCEN');
     expect(partyHistoryPropertyCode(DAVINCI_HMS_READ_TARGET)).toBe('HRDAV');
     expect(partyHistoryPropertyCode(null)).toBeNull();
+    expect(partyHistoryPropertyCode(null, TRANSPORT_ID)).toBe('HRCEN');
+    expect(partyHistoryPropertyCode(null, DAVINCI_TRANSPORT_ID)).toBe('HRDAV');
+    expect(partyHistoryPropertyCode(null, 'transport-1')).toBeNull();
   });
 
   it('learns from staff-initiated quotes only', () => {

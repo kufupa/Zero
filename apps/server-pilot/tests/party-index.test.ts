@@ -230,7 +230,7 @@ describe('the typeahead and the index age', () => {
       auth: null as never,
       reqHeaders: new Headers(),
       sessionUser: { id: 'user-ropperman', email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
-      activeTransportId: 'transport-1',
+      activeTransportId: 'transport-centurion',
       transportEmail: 'centurion@legacyhotels.co.za',
       accessRole: 'owner',
     } as never);
