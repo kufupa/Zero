@@ -46,6 +46,7 @@ import type {
   DinnerAddOnUnit,
   StayEditAction,
   StayGroupRequirement,
+  QuotePaneConfig,
 } from '@/lib/quote-workflow/types';
 import {
   Disclosure,
@@ -1210,6 +1211,7 @@ export function QuoteWorkflowPanel({
   partyIndex,
   rates,
   rateCatalogue,
+  paneConfig,
   contact,
   makeQuote = true,
 }: {
@@ -1225,8 +1227,10 @@ export function QuoteWorkflowPanel({
   partyJobTransport?: HmsJobTransport | null;
   /** The saved rates for each row's price. Null or absent: no saved-rate picker, but one-off and override still show. */
   rates?: SavedRatesClient | null;
-  /** Static Centurion rates from the authenticated read-only query. */
+  /** Rate plans returned with the active mailbox's quote pane config. */
   rateCatalogue?: RatePlanCatalogueEntry[];
+  /** Null means the mailbox config is loading or was refused; undefined preserves legacy CEN-only callers. */
+  paneConfig?: QuotePaneConfig | null;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   /** Adds, duplicates or removes a room or a stay. The shell keeps a removed stay for Undo. */
   onStayAction?: (action: StayEditAction) => void;
@@ -1463,6 +1467,10 @@ export function QuoteWorkflowPanel({
 
   const header = session.staffHeader ?? emptyStaffQuoteHeader();
   const ratePlans = ratePlanChoices(rateCatalogue ?? [], session.rateOptions ?? []);
+  const paneRoomTypes = paneConfig === undefined ? undefined : paneConfig?.roomTypes ?? [];
+  const paneBoards = paneConfig === undefined ? undefined : paneConfig?.boards ?? [];
+  const overrideRateCodes = paneConfig === undefined ? undefined : paneConfig?.overrideRateCodes ?? [];
+  const eventRateCodes = paneConfig === undefined ? undefined : paneConfig?.eventRateCodes ?? [];
   const ratePlan =
     ratePlanState?.selectionEpoch === selectionEpoch && ratePlanState.analysis === session.analysis
       ? ratePlanState.value
@@ -1493,9 +1501,27 @@ export function QuoteWorkflowPanel({
   };
   // Room names follow the type and count, so a rate or override always identifies the actual row.
   const rowLabels = new Map<string, string>();
+  const roomLabel = (row: StayGroupRequirement): string => {
+    if (paneConfig === undefined) return rowRoomLabel(row);
+    const candidates = [
+      ...(row.roomCodes?.length === 1 ? row.roomCodes : []),
+      row.roomPreference ?? '',
+      row.roomTypeCode ?? '',
+    ].map((raw) => raw.trim());
+    const room = paneConfig?.roomTypes.find(({ code, label }) =>
+      candidates.some(
+        (raw) =>
+          raw.replace(/[^a-z0-9]/gi, '').toUpperCase() === code ||
+          raw.toLowerCase().replace(/\s+/g, ' ') === label.toLowerCase(),
+      ),
+    );
+    const name = room?.label ?? 'Room type needed';
+    const count = typeof row.quantity === 'number' && row.quantity > 0 ? row.quantity : '?';
+    return `${name} ×${count}`;
+  };
   stays.forEach((stay, stayIndex) =>
     stay.rows.forEach((row) =>
-      rowLabels.set(row.id, stays.length > 1 ? `Stay ${stayIndex + 1} · ${rowRoomLabel(row)}` : rowRoomLabel(row)),
+      rowLabels.set(row.id, stays.length > 1 ? `Stay ${stayIndex + 1} · ${roomLabel(row)}` : roomLabel(row)),
     ),
   );
   const running = Boolean(session.runningStepId) || Boolean(hmsQueue?.pending);
@@ -1795,6 +1821,8 @@ export function QuoteWorkflowPanel({
                   ) || session.analysis?.requestedRoomsByStay?.[stay.id]
                 }
                 mealPlan={mealPlanForStay(stay.id, stay.rows)}
+                roomTypes={paneRoomTypes}
+                boards={paneBoards}
                 onMealPlanChange={(value) =>
                   setMealPlanFilters((current) => ({ ...current, [stay.id]: value }))
                 }
@@ -1986,6 +2014,8 @@ export function QuoteWorkflowPanel({
                             busy={loadingThisStay || pinRunningThisStay}
                             blockReason={rowStep ? quoteRunBlockReason(session, rowStep) : 'Search availability first.'}
                             onSetPrice={(rowPrice) => setRowPrices([{ group, rowPrice }])}
+                            overrideRateCodes={overrideRateCodes}
+                            eventRateCodes={eventRateCodes}
                             onSavedRateChanged={followSavedRate}
                           />
                         </div>

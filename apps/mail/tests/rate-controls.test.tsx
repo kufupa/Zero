@@ -30,6 +30,8 @@ import {
 } from '../lib/quote-workflow/staff-quote-bind';
 import {
   emptyStaffQuoteHeader,
+  HRCEN_PROPERTY_CODE,
+  type QuotePaneConfig,
   type QuoteSession,
   type RateOption,
   type RowPriceChoice,
@@ -167,6 +169,7 @@ async function pricedSession(
     inputRevision: session.inputRevision,
     groups: session.groups,
     header: session.staffHeader,
+    propertyCode: HRCEN_PROPERTY_CODE,
   });
   if (run.status !== 'ok') throw new Error(run.reason);
   return reduceQuoteSession(session, {
@@ -191,13 +194,13 @@ function PinnedPanel({
   rates?: SavedRatesClient | null;
   runs: string[];
   seen: { session: QuoteSession | null };
-  paneConfig?: unknown;
+  paneConfig?: QuotePaneConfig | null;
 }) {
   const [session, setSession] = useState(withSelectedRate(initial));
   seen.session = session;
   return (
     <QuoteWorkflowPanel
-      {...({ paneConfig } as never)}
+      paneConfig={paneConfig}
       session={session}
       rates={rates}
       onPatchGroup={(groupId, patch) =>
@@ -477,6 +480,7 @@ describe('row price controls in the quote panel', () => {
       inputRevision: 1,
       groups: [{ ...stay, rowPrice: { source: 'override', rateCode: 'NCOR1B', amountMinor: 185000, note: NOTE } }],
       header: emptyStaffQuoteHeader(),
+      propertyCode: HRCEN_PROPERTY_CODE,
     });
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({

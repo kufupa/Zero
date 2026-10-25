@@ -41,7 +41,7 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
-import type { QuoteAnalysis, QuoteSessionAction, RatePlanCatalogueEntry } from '@/lib/quote-workflow/types';
+import type { QuoteAnalysis, QuotePaneConfig, QuoteSessionAction } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
@@ -323,7 +323,7 @@ export function NavaPane({
     () => hmsJobTransport(PANE_HMS_JOB_CLIENT, partyJobThreadId, partyJobMessageId),
     [partyJobThreadId, partyJobMessageId],
   );
-  const [rateCatalogue, setRateCatalogue] = useState<RatePlanCatalogueEntry[]>([]);
+  const [quotePaneConfig, setQuotePaneConfig] = useState<QuotePaneConfig | null>(null);
   // Preview/Book in HMS show only when create mode is lab or on. Until the read answers, the card stays copy-only.
   const [paneSaveOn, setPaneSaveOn] = useState(false);
   // Attach stays Labtest-only. Create=on never enables it.
@@ -444,6 +444,7 @@ export function NavaPane({
   const { data: session, isLoading } = useSession();
   const staffSignerName = session?.user?.name ?? '';
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
+  const activePaneConfig = quotePaneConfig?.transportId === activeConnection?.id ? quotePaneConfig : null;
   const sourceClassification = classifyMailSource({
     fromAddress: activeEmail?.senderEmail,
     subject: activeEmail?.subject,
@@ -460,30 +461,24 @@ export function NavaPane({
   const isNonActionableBySourceOrSubject = isNonActionableMailSource || selfSentPreStayBySubject;
   useEffect(() => {
     let alive = true;
-    if (!session?.user?.id) {
-      setRateCatalogue([]);
+    setQuotePaneConfig(null);
+    const transportId = activeConnection?.id;
+    if (!session?.user?.id || !transportId) {
       return () => {
         alive = false;
       };
     }
-    const query = quoteWorkflowFromTrpc(trpcClient).rateCatalogue?.query;
-    if (!query) {
-      setRateCatalogue([]);
-      return () => {
-        alive = false;
-      };
-    }
-    void query()
-      .then((entries) => {
-        if (alive) setRateCatalogue(entries);
+    void trpcClient.quoteWorkflow.rateCatalogue.query()
+      .then((config) => {
+        if (alive && config.transportId === transportId) setQuotePaneConfig(config);
       })
       .catch(() => {
-        if (alive) setRateCatalogue([]);
+        if (alive) setQuotePaneConfig(null);
       });
     return () => {
       alive = false;
     };
-  }, [session?.user?.id]);
+  }, [session?.user?.id, activeConnection?.id]);
   const readOnlySyncStatus = Boolean(preview || onOpenThread);
   const sync = useOutlookSync({
     userId: session?.user?.id ?? null,
@@ -915,6 +910,7 @@ export function NavaPane({
               inputRevision,
               groups,
               header,
+              propertyCode: activePaneConfig?.propertyCode,
               stayKey,
             });
             return { stayKey, result };
@@ -1134,7 +1130,7 @@ export function NavaPane({
         staffQuoteReadBackInFlight.current = false;
       }
     };
-  }, [priorQuoteKey, isNonActionableMessage, staffQuoteQueueMode]);
+  }, [priorQuoteKey, isNonActionableMessage, staffQuoteQueueMode, activePaneConfig?.transportId]);
 
   useEffect(() => {
     if (staffQuoteQueueMode !== 'on') return;
@@ -1148,6 +1144,7 @@ export function NavaPane({
     session?.user?.id,
     requiresRelogin,
     isNonActionableMessage,
+    activePaneConfig?.transportId,
   ]);
 
   // Onboarding & Screen State
@@ -1410,6 +1407,7 @@ export function NavaPane({
         inputRevision,
         groups,
         header,
+        propertyCode: activePaneConfig?.propertyCode,
       });
       return trackStaffQuoteRun(run).then((remote) => {
         // The reducer drops this result when the selection, inputs or stay rows moved on while HMS searched. Say so.
@@ -1572,6 +1570,7 @@ export function NavaPane({
           inputRevision,
           groups: stayGroups,
           header: runHeader,
+          propertyCode: activePaneConfig?.propertyCode,
           stayKey: step.shareKey,
         })
       : autoStart
@@ -1583,6 +1582,7 @@ export function NavaPane({
           inputRevision,
           groups: stayGroups,
           header: runHeader,
+          propertyCode: activePaneConfig?.propertyCode,
           stayKey: step.shareKey,
         })
         : bindExecuteStaffQuote({
@@ -1594,6 +1594,7 @@ export function NavaPane({
           inputRevision,
           groups: stayGroups,
           header: runHeader,
+          propertyCode: activePaneConfig?.propertyCode,
           stayKey: step.shareKey,
         });
     const noticeEmail = {
@@ -1613,6 +1614,7 @@ export function NavaPane({
             inputRevision,
             groups: stayGroups,
             header: runHeader,
+            propertyCode: activePaneConfig?.propertyCode,
             stayKey: step.shareKey,
           })
         : bindExecuteStaffQuote({
@@ -1624,6 +1626,7 @@ export function NavaPane({
             inputRevision,
             groups: stayGroups,
             header: runHeader,
+            propertyCode: activePaneConfig?.propertyCode,
             stayKey: step.shareKey,
           });
       void runNoticed(retryRun).then(applyStaffQuoteResult);
@@ -1760,6 +1763,7 @@ export function NavaPane({
         inputRevision: quoteSession.inputRevision,
         groups: groupsForQuoteStep(quoteSession, candidate),
         header: autoRunHeader(quoteSession),
+        propertyCode: activePaneConfig?.propertyCode,
         stayKey: candidate.shareKey,
       });
     });
@@ -2245,7 +2249,8 @@ export function NavaPane({
             {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
             <QuoteWorkflowPanel
               session={quoteSession}
-              rateCatalogue={rateCatalogue}
+              rateCatalogue={activePaneConfig?.ratePlans ?? []}
+              paneConfig={activePaneConfig}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
               findParty={PANE_PARTY_FINDER}

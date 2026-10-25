@@ -2,6 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StayCard } from '../components/quote-workflow/requirement-card';
 import type { StayGroupRequirement } from '../lib/quote-workflow/types';
@@ -226,25 +227,24 @@ describe('StayCard rooms', () => {
   });
 
   it('shows only the active hotel room and meal-plan choices', () => {
-    const roomTypes = [
-      ['JNRSUI', 'Junior Suite'],
-      ['EXKNGB', 'Executive King Balcony'],
-      ['EXKNGR', 'Executive King Round'],
-      ['EXKNGS', 'Executive King Square'],
-      ['DLXPAT', 'Deluxe Patio'],
-      ['DLXKNG', 'Deluxe King'],
-      ['ACCES', 'Accessible'],
-      ['STKNG', 'Standard King'],
-      ['STWN', 'Standard Twin'],
-    ].map(([code, label]) => ({ code, label }));
-    const props = {
+    const props: ComponentProps<typeof StayCard> = {
       stayId: 's1',
       rows: [stay({ roomPreference: '' })],
       index: 0,
       stayCount: 1,
-      roomTypes,
+      roomTypes: [
+        { code: 'JNRSUI', label: 'Junior Suite' },
+        { code: 'EXKNGB', label: 'Executive King Balcony' },
+        { code: 'EXKNGR', label: 'Executive King Round' },
+        { code: 'EXKNGS', label: 'Executive King Square' },
+        { code: 'DLXPAT', label: 'Deluxe Patio' },
+        { code: 'DLXKNG', label: 'Deluxe King' },
+        { code: 'ACCES', label: 'Accessible' },
+        { code: 'STKNG', label: 'Standard King' },
+        { code: 'STWN', label: 'Standard Twin' },
+      ],
       boards: ['room_only', 'bb'],
-    } as never;
+    };
     render(<StayCard {...props} />);
 
     const roomType = screen.getByLabelText('Room type') as HTMLSelectElement;

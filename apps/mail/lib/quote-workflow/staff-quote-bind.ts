@@ -27,6 +27,7 @@ import type {
   AvailabilityBoardRow,
 } from './types';
 import {
+  HRCEN_PROPERTY_CODE,
   HRDAV_PROPERTY_CODE,
   HRDAV_ROOM_NAMES,
   staffHeaderFieldProblem,
@@ -1010,7 +1011,7 @@ type StaffQuoteRequestArgs = {
   header: StaffQuoteHeader;
   /** Prefer an explicit stay key when the request is built from a reconstructed stay. */
   stayKey?: string;
-  /** Quote-target property. Absent keeps the Centurion room map. */
+  /** Resolved quote-target property; staff quote requests refuse a missing or unknown code. */
   propertyCode?: string;
 };
 
@@ -1023,6 +1024,9 @@ type BuiltStaffQuoteRequest = {
 function staffQuoteRequest(
   args: StaffQuoteRequestArgs,
 ): BuiltStaffQuoteRequest | { error: string } {
+  if (args.propertyCode !== HRCEN_PROPERTY_CODE && args.propertyCode !== HRDAV_PROPERTY_CODE) {
+    return { error: 'Could not identify the hotel for this mailbox. Refresh the pane before running the quote.' };
+  }
   const prepared = staffQuoteGroupsFromStay(args.groups, args.propertyCode);
   if ('error' in prepared) return { error: prepared.error };
   const first = prepared.ok[0];

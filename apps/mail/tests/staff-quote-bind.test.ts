@@ -44,10 +44,6 @@ describe('HRDAV native room and board maps', () => {
       status: 'codes',
       codes: ['STQN'],
     });
-    expect(resolveNativeRoomCodes({ roomPreference: 'Standard Queen' })).toEqual({
-      status: 'unresolved',
-      label: 'property not set',
-    });
   });
 
   it('keeps shared DLXKNG and STWN codes on HRDAV without using the Centurion room list as a fallback', () => {
@@ -113,8 +109,8 @@ describe('HRDAV native room and board maps', () => {
 
   it('refuses a staff quote with no mailbox property instead of treating it as Centurion', async () => {
     const reason = /hotel.*mailbox|mailbox.*hotel/i;
-    expect(staffQuoteGroupsFromStay([stay({ roomPreference: 'Standard Queen' })])).toEqual({
-      error: expect.stringMatching(reason),
+    expect(staffQuoteGroupsFromStay([stay({ roomPreference: 'Standard Queen' })])).toMatchObject({
+      ok: [{ roomCodes: ['STQN'] }],
     });
 
     const mutate = vi.fn();
