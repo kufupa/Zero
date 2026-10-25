@@ -731,6 +731,7 @@ export type BookingDraftReady = {
     sourceOfBusiness: string[];
     guaranteeType: string[];
     roomType: string[];
+    requiredCreateFields?: string[];
   };
   messageId: string;
   selectionEpoch: number;

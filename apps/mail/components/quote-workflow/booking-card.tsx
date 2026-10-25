@@ -542,6 +542,7 @@ function RoomTextField({
   maxLength,
   multiline = false,
   pii = false,
+  required = false,
   onChange,
 }: {
   label: string;
@@ -551,16 +552,20 @@ function RoomTextField({
   maxLength: number;
   multiline?: boolean;
   pii?: boolean;
+  required?: boolean;
   onChange: (value: string) => void;
 }) {
   return (
     <div className="flex items-end gap-2" data-pii={pii || undefined}>
       <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
         {label}
+        {required ? <span className="font-normal text-[#64748b]"> (required)</span> : null}
         {multiline ? (
           <textarea
             rows={3}
             aria-label={label}
+            aria-required={required || undefined}
+            required={required}
             disabled={disabled}
             maxLength={maxLength}
             value={value}
@@ -571,6 +576,8 @@ function RoomTextField({
           <input
             type="text"
             aria-label={label}
+            aria-required={required || undefined}
+            required={required}
             disabled={disabled}
             maxLength={maxLength}
             value={value}
@@ -614,6 +621,25 @@ const NO_CHOICE: RoomChoice = {
   bookerEmail: '',
 };
 
+function paneStayInputForConfiguredRoom(
+  request: Record<string, unknown>,
+  choice: RoomChoice,
+  requiredCreateFields: string[],
+): ReturnType<typeof paneStayInputForRoom> {
+  const built = paneStayInputForRoom(request, choice);
+  const requiredFields = requiredCreateFields
+    .map((field) => field.trim().toLowerCase().replace(/[^a-z0-9]/g, ''))
+    .filter(Boolean);
+  const missing = [...built.missing];
+  if (requiredFields.includes('reservationnote') && !textValue(choice.reservationNote).trim()) {
+    missing.push('reservation note');
+  }
+  if (requiredFields.some((field) => field !== 'reservationnote')) {
+    missing.push('required hotel field');
+  }
+  return { stay: missing.length ? null : built.stay, missing };
+}
+
 export function BookingCards({
   draft,
   groups = [],
@@ -637,6 +663,7 @@ export function BookingCards({
   savedStays?: Record<string, SavedStayCommit>;
 }) {
   const client = paneSave;
+  const requiredCreateFields = draft.options.requiredCreateFields ?? [];
   // off keeps the card copy-only. A client whose mode is not read yet is labelled as lab, the narrower mode.
   const mode: PaneSaveMode = client ? (client.mode?.() ?? 'lab') : 'off';
   const savesOn = mode !== 'off';
@@ -722,7 +749,11 @@ export function BookingCards({
   }
 
   function roomBuilt(room: BookingDraftReady['draft']['rooms'][number]) {
-    return paneStayInputForRoom(room.request, choices[roomKeyOf(room)] ?? NO_CHOICE);
+    return paneStayInputForConfiguredRoom(
+      room.request,
+      choices[roomKeyOf(room)] ?? NO_CHOICE,
+      requiredCreateFields,
+    );
   }
 
   function roomPreviewReady(room: BookingDraftReady['draft']['rooms'][number]): { stay: PaneStayInput; digest: string } | null {
@@ -837,7 +868,7 @@ export function BookingCards({
         const commitStatus = saves[key]?.commit?.status;
         const locked = stayBooking || commitStatus === 'running' || commitStatus === 'booked';
         const request = room.request;
-        const built = paneStayInputForRoom(request, choice);
+        const built = paneStayInputForConfiguredRoom(request, choice, requiredCreateFields);
         const group =
           groups.find((item) => item.id === room.groupId) ??
           groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
@@ -1008,6 +1039,9 @@ export function BookingCards({
               value={choice.reservationNote}
               disabled={locked}
               maxLength={PANE_RESERVATION_NOTE_MAX}
+              required={requiredCreateFields.some(
+                (field) => field.trim().toLowerCase().replace(/[^a-z0-9]/g, '') === 'reservationnote',
+              )}
               onChange={(value) => setChoice({ reservationNote: value })}
             />
             <RoomTextField
@@ -1077,6 +1111,7 @@ export function BookingCards({
           rooms={draft.draft.rooms}
           saves={saves}
           choices={choices}
+          requiredCreateFields={requiredCreateFields}
           pane={client}
           stayBooking={stayBooking}
           onBookStay={bookThisStay}
@@ -1090,6 +1125,7 @@ function StayBookBar({
   rooms,
   saves,
   choices,
+  requiredCreateFields,
   pane,
   stayBooking,
   onBookStay,
@@ -1097,6 +1133,7 @@ function StayBookBar({
   rooms: BookingDraftReady['draft']['rooms'];
   saves: Record<string, RoomSaveState>;
   choices: Record<string, RoomChoice>;
+  requiredCreateFields: string[];
   pane: PaneStayClient;
   stayBooking: boolean;
   onBookStay: (pane: PaneStayClient) => Promise<void>;
@@ -1116,7 +1153,7 @@ function StayBookBar({
     });
   const allPreviewed = pending.every((room) => {
     const key = `${room.groupId}:${room.roomIndex}`;
-    const built = paneStayInputForRoom(room.request, choices[key] ?? NO_CHOICE);
+    const built = paneStayInputForConfiguredRoom(room.request, choices[key] ?? NO_CHOICE, requiredCreateFields);
     const preview = saves[key]?.preview;
     return Boolean(built.stay && preview?.status === 'ready' && preview.key === paneStayKey(built.stay));
   });
