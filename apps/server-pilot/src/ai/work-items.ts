@@ -39,6 +39,10 @@ import { normalizeEmailAddress, PUBLIC_MAIL_DOMAINS } from './never-spam.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
 import { isNoReplyAddress } from '../mail/conversation-signals.js';
 import {
+  getPropertyTransportIds,
+  resolvePropertyTransport,
+} from '../../tooling/playwright-quote/property-registry.mjs';
+import {
   COARSE_TO_AGENT,
   parseStoredClassifier,
   shouldAttachWorkflowHint,
@@ -1081,21 +1085,26 @@ export function isStaffSender(fromAddress: string, mailboxEmail: string): boolea
 }
 
 /**
- * The given addresses that the transport has sent from: an outbound message on it has that From. The From can carry a
- * display name ("Ops <ops@x>"), so both sides are reduced to the bare address by normalizeEmailAddress. Nothing stores an
- * authentication result, so this is the only evidence that a same-domain mail is the hotel's own. Not limited in time, so
- * a rerun, or a backfill, plans what the live rules plan whatever order the mail landed in.
+ * The given addresses that any mailbox for the same property has sent from: an outbound message on one of its transports
+ * has that From. The From can carry a display name ("Ops <ops@x>"), so both sides are reduced to the bare address by
+ * normalizeEmailAddress. Nothing stores an authentication result, so this is the only evidence that a same-domain mail is
+ * the hotel's own. Not limited in time, so a rerun, or a backfill, plans what the live rules plan whatever order the mail
+ * landed in. The final set comparison is exact; the SQL substring is only a candidate prefilter.
  */
 export async function knownSenders(db: WorkTx, transportId: string, fromAddresses: string[]): Promise<Set<string>> {
   const wanted = [...new Set(fromAddresses.map((address) => normalizeEmailAddress(address)).filter(Boolean))];
   if (!wanted.length) return new Set();
+  const resolved = resolvePropertyTransport(transportId);
+  if (resolved.kind !== 'property') return new Set();
+  const propertyTransportIds = getPropertyTransportIds(resolved.property.propertyCode);
+  if (!propertyTransportIds.length) return new Set();
   // The bare address is a substring of its lower-cased From, so this prefilter drops no match.
   const rows = await db
     .selectDistinct({ from: message.fromAddress })
     .from(message)
     .where(
       and(
-        eq(message.transportId, transportId),
+        inArray(message.transportId, propertyTransportIds),
         eq(message.direction, 'outbound'),
         or(...wanted.map((address) => sql`strpos(lower(${message.fromAddress}), ${address}) > 0`)),
       ),
@@ -1941,7 +1950,7 @@ export async function listWorkItems(
   // Stored origin `person` means human-written; `system_notice` means automated and is excluded.
   // Coalesce keeps missing origin human-written.
   const origin = sql<string>`coalesce(${mailExtraction.payload}->>'origin', 'person')`;
-  const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.workItemId} = ${workItem.id} and ${aiWorkflowRun.executorLane} = 'hms' order by ${aiWorkflowRun.createdAt} desc limit 1)`;
+  const hmsRunState = sql`(select ${aiWorkflowRun.state} from ${aiWorkflowRun} where ${aiWorkflowRun.executorLane} = 'hms' and (${aiWorkflowRun.workItemId} = ${workItem.id} or ${aiWorkflowRun.metrics}->'sharedWorkItemIds' @> jsonb_build_array(${workItem.id}::text) or ${aiWorkflowRun.metrics}->'batchLinks' @> jsonb_build_array(jsonb_build_object('workItemId', ${workItem.id}::text))) order by ${aiWorkflowRun.createdAt} desc limit 1)`;
   const chipRank = sql<number>`case ${hmsRunState} when 'claimed' then 3 when 'running' then 3 when 'queued' then 2 when 'retry_wait' then 2 else case when ${workItem.status} = 'review' then 1 else 0 end end`
     .mapWith(Number)
     .as('chip_rank');
