@@ -706,6 +706,7 @@ describe('NavaPane screen states', () => {
     sendCommandMock.mockClear();
     bridgeMockState.hmsQueueStatus = null;
     saveReplyMutate.mockReset().mockResolvedValue({ id: 'draft-1', replaced: false });
+    qualifiedQuotePdfMutate.mockReset().mockResolvedValue(AUTHORISED_QUOTE_PDF);
     bridgeMockState.holdStaffQuote = false;
     bridgeMockState.releaseStaffQuote = null;
     bridgeMockState.staffQuoteFailure = null;
@@ -1453,6 +1454,16 @@ describe('NavaPane screen states', () => {
   });
 
   it('preview: uses Guest for a nameless sender and saves the reviewed PDF through webmail', async () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1',
+      propertyCode: 'HRCEN',
+      roomTypes: [{ code: 'SKNG', label: 'Standard King' }],
+      ratePlans: [],
+      boards: ['bb'],
+      salesStrategies: [],
+      overrideRateCodes: [],
+      eventRateCodes: [],
+    };
     bridgeMockState.analysisOverride = {
       status: 'ready',
       intent: 'quote',
@@ -1485,14 +1496,12 @@ describe('NavaPane screen states', () => {
 
     expect(qualifiedQuotePdfMutate).toHaveBeenCalledWith(
       expect.objectContaining({
-        input: expect.objectContaining({
-          attention: 'Updated Contact',
-          clientEmail: 'updated@example.invalid',
-          clientTelephone: '',
-        }),
+        attention: 'Updated Contact',
+        clientEmail: 'updated@example.invalid',
+        clientTelephone: '',
       }),
     );
-    const expectedHtml = quoteWrapperHtml('', 'R Opperman');
+    const expectedHtml = quoteWrapperHtml('Updated Contact', 'R Opperman', { propertyCode: 'HRCEN' });
     expect(reviewedReplyHtml()).toBe(expectedHtml);
     fireEvent.click(screen.getByRole('button', { name: 'Draft quotation into email reply' }));
 
