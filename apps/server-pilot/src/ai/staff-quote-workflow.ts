@@ -488,7 +488,7 @@ export function prepareStaffQuote(
   return {
     context,
     request,
-    salesStrategyValue: input.salesStrategy,
+    salesStrategyValue: input.salesStrategy === 'GOV' ? 'Government' : input.salesStrategy,
     header,
     inputDigest,
     authorizationId,
@@ -750,10 +750,9 @@ export async function executeStaffQuote(
     if (!(await stillCurrent())) throw new Error('staff_quote_source_changed');
   };
   await guard();
-  const paneConfig = await quotePaneConfigForProperty(
-    prepared.context.input.propertyCode,
-    prepared.context.input.authorizationScope.ownerRef ?? '',
-  );
+  const ownerRef = prepared.context.input.authorizationScope?.ownerRef;
+  if (!ownerRef) throw new Error('staff_quote_authorization_scope_missing');
+  const paneConfig = await quotePaneConfigForProperty(prepared.context.input.propertyCode, ownerRef);
   const configuredStrategy = paneConfig?.salesStrategies.find(
     (strategy) => strategy.requestValue === prepared.salesStrategyValue,
   );

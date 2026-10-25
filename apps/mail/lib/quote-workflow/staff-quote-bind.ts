@@ -169,16 +169,25 @@ function stableJson(value: unknown): string {
     .join(',')}}`;
 }
 
+const STAFF_QUOTE_NON_PRICE_FIELDS = new Set(
+  'messageId sourceHash selectionEpoch inputRevision company agency attention clientEmail clientTelephone dinnerAllowanceLabel lunchAllowanceLabel notes maxOptionsPerGroup'.split(' '),
+);
+
 function staffQuoteRequestMatches(
   request: StaffQuoteJobView['request'],
   expected: ExecuteStaffQuoteInput,
 ): boolean {
-  if (request?.kind !== 'staff_quote') return false;
-  const stableInput = (input: ExecuteStaffQuoteInput) =>
-    Object.fromEntries(
-      Object.entries(input).filter(([key]) => key !== 'selectionEpoch' && key !== 'inputRevision'),
-    );
-  return stableJson(stableInput(request.input)) === stableJson(stableInput(expected));
+  if (request?.kind !== 'staff_quote' || request.input.messageId !== expected.messageId ||
+    request.input.sourceHash !== expected.sourceHash || request.input.salesStrategy !== expected.salesStrategy) return false;
+  const priceKey = (input: ExecuteStaffQuoteInput) => stableJson({
+    ...Object.fromEntries(Object.entries(input).filter(([key]) => !STAFF_QUOTE_NON_PRICE_FIELDS.has(key))),
+    groups: input.groups.map((group) => ({
+      id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate, quantity: group.quantity,
+      adults: group.adults, childrenAges: group.childrenAges, board: group.board,
+      roomCodes: [...(group.roomCodes ?? [])].sort(), rateCode: group.rateCode ?? null,
+    })),
+  });
+  return priceKey(request.input) === priceKey(expected);
 }
 
 function staffQuoteStayTermsMatch(
@@ -1160,7 +1169,7 @@ function boundStaffQuoteResult(
     ...(dinnerFallbackGroupIds.length ? { dinnerFallbackGroupIds } : {}),
     ...(dinnerAddOn ? { dinnerAddOn } : {}),
     approvedHeader: {
-      salesStrategy: built.header.salesStrategy,
+      salesStrategy: built.sent.salesStrategy,
       company: built.header.company,
       agency: built.header.agency,
       attention: built.header.attention,

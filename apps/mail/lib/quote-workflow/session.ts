@@ -51,26 +51,19 @@ export type QuoteWorkflowSession = QuoteSession & {
   quoteStrategySelections: Record<string, QuoteSalesStrategyCode>;
 };
 
+type QuoteStrategySessionState = Pick<
+  QuoteWorkflowSession,
+  'quoteStrategyRows' | 'quoteStrategyResults' | 'quoteStrategyRevisions' | 'quoteStrategySelections'
+>;
+
+type QuoteStrategyRequestAction = { stayKey: string; selectionEpoch: number; stayRevision: number };
 export type QuoteStrategySessionAction =
-  | {
-      type: 'quote_strategy_comparison_started';
-      stayKey: string;
-      strategyCodes: QuoteSalesStrategyCode[];
-      selectionEpoch: number;
-      stayRevision: number;
-    }
-  | {
+  | (QuoteStrategyRequestAction & { type: 'quote_strategy_comparison_started'; strategyCodes: QuoteSalesStrategyCode[] })
+  | (QuoteStrategyRequestAction & {
       type: 'quote_strategy_comparison_result';
-      stayKey: string;
       strategyCode: QuoteSalesStrategyCode;
-      selectionEpoch: number;
-      stayRevision: number;
-      outcome: {
-        strategyCode: QuoteSalesStrategyCode;
-        row: QuoteStrategyRow;
-        result?: QuoteStrategyResult;
-      };
-    }
+      outcome: { strategyCode: QuoteSalesStrategyCode; row: QuoteStrategyRow; result?: QuoteStrategyResult };
+    })
   | { type: 'quote_strategy_selected'; stayKey: string; strategyCode: QuoteSalesStrategyCode };
 
 /**
@@ -892,27 +885,17 @@ export function canCreateNativeDraft(session: QuoteSession): boolean {
   );
 }
 
-function quoteStrategyState(session: QuoteSession): Pick<
-  QuoteWorkflowSession,
-  'quoteStrategyRows' | 'quoteStrategyResults' | 'quoteStrategyRevisions' | 'quoteStrategySelections'
-> {
+function quoteStrategyState(session: QuoteSession): QuoteStrategySessionState {
   const state = session as Partial<QuoteWorkflowSession>;
-  return {
-    quoteStrategyRows: state.quoteStrategyRows ?? {},
-    quoteStrategyResults: state.quoteStrategyResults ?? {},
-    quoteStrategyRevisions: state.quoteStrategyRevisions ?? {},
-    quoteStrategySelections: state.quoteStrategySelections ?? {},
-  };
+  return { quoteStrategyRows: state.quoteStrategyRows ?? {}, quoteStrategyResults: state.quoteStrategyResults ?? {},
+    quoteStrategyRevisions: state.quoteStrategyRevisions ?? {}, quoteStrategySelections: state.quoteStrategySelections ?? {} };
 }
 
 export function quoteStrategyStayRevision(session: QuoteSession, stayKey: string): number {
   return quoteStrategyState(session).quoteStrategyRevisions[stayKey] ?? 1;
 }
 
-function invalidatedQuoteStrategyState(session: QuoteSession): Pick<
-  QuoteWorkflowSession,
-  'quoteStrategyRows' | 'quoteStrategyResults' | 'quoteStrategyRevisions' | 'quoteStrategySelections'
-> {
+function invalidatedQuoteStrategyState(session: QuoteSession): QuoteStrategySessionState {
   const state = quoteStrategyState(session);
   const revisions = { ...state.quoteStrategyRevisions };
   const keys = new Set([
@@ -933,10 +916,7 @@ function invalidatedQuoteStrategyState(session: QuoteSession): Pick<
 function quoteStrategyStateAfterStayEdit(
   session: QuoteSession,
   affected: ReadonlySet<string>,
-): Pick<
-  QuoteWorkflowSession,
-  'quoteStrategyRows' | 'quoteStrategyResults' | 'quoteStrategyRevisions' | 'quoteStrategySelections'
-> {
+): QuoteStrategySessionState {
   const state = quoteStrategyState(session);
   const quoteStrategyRows = { ...state.quoteStrategyRows };
   const quoteStrategyResults = { ...state.quoteStrategyResults };
@@ -967,19 +947,14 @@ function quoteStrategyOutcomeIsCurrent(
   const expectedGroupIds = session.groups
     .filter((group) => stayKeyForGroup(group) === stayKey)
     .map((group) => group.id);
-  return Boolean(
-    source &&
-      expectedGroupIds.length > 0 &&
-      expectedGroupIds.every((id) => offer.coversGroupIds.includes(id)) &&
-      offer.kind === 'allocation' &&
-      offer.quoteRequestKey === stayKey &&
-      offer.id === staffQuote.revisionRef &&
-      offer.stayTotalMinor === staffQuote.totalMinor &&
-      staffQuote.totalMinor > 0 &&
-      staffQuote.selectionEpoch === selectionEpoch &&
-      staffQuote.sourceHash === source.sourceHash &&
-      staffQuote.messageId === source.messageId &&
-      staffQuote.threadId === source.threadId,
+  if (!source || !expectedGroupIds.length) return false;
+  return (
+    expectedGroupIds.every((id) => offer.coversGroupIds.includes(id)) &&
+    offer.kind === 'allocation' && offer.quoteRequestKey === stayKey &&
+    offer.id === staffQuote.revisionRef && offer.stayTotalMinor === staffQuote.totalMinor &&
+    staffQuote.totalMinor > 0 && staffQuote.selectionEpoch === selectionEpoch &&
+    staffQuote.sourceHash === source.sourceHash && staffQuote.messageId === source.messageId &&
+    staffQuote.threadId === source.threadId
   );
 }
 
@@ -987,7 +962,7 @@ function reduceQuoteStrategySession(
   session: QuoteSession,
   action: QuoteStrategySessionAction,
 ): QuoteWorkflowSession {
-  const state: QuoteWorkflowSession = { ...session, ...quoteStrategyState(session) };
+  const state = session as QuoteWorkflowSession;
   if (action.type === 'quote_strategy_comparison_started') {
     if (
       !state.binding ||
@@ -1054,6 +1029,9 @@ function reduceQuoteStrategySession(
   if (!state.binding || row?.status !== 'ready' || !result) return state;
   const staffQuote = { ...result.staffQuote, quoteRequestKey: action.stayKey, inputRevision: state.inputRevision };
   const offer = { ...result.offer, quoteRequestKey: action.stayKey };
+  const quoteChanged = state.quoteStrategySelections[action.stayKey] !== action.strategyCode ||
+    state.staffQuote?.revisionRef !== staffQuote.revisionRef;
+  const runGroupIds = new Set(offer.coversGroupIds);
   const stayPdfs = { ...state.stayPdfs };
   if (result.pdf) stayPdfs[action.stayKey] = result.pdf;
   else delete stayPdfs[action.stayKey];
@@ -1062,6 +1040,7 @@ function reduceQuoteStrategySession(
     phase: state.phase === 'requirements' ? 'results' : state.phase,
     selectedStayKey: action.stayKey,
     selectedOfferIds: [offer.id],
+    rateOptions: [...(state.rateOptions ?? []).filter((option) => !runGroupIds.has(option.groupId)), ...(staffQuote.rateOptions ?? [])],
     offers: [
       ...state.offers.filter((item) => item.kind !== 'allocation' || item.quoteRequestKey !== action.stayKey),
       offer,
@@ -1077,6 +1056,8 @@ function reduceQuoteStrategySession(
     },
     bookingDrafts: keepKeys(state.bookingDrafts, new Set([action.stayKey]), false),
     quoteStrategySelections: { ...state.quoteStrategySelections, [action.stayKey]: action.strategyCode },
+    reviewItems: reviewItemsFromExtrasNotes(state, result.extrasReviewItems ?? []),
+    ...(quoteChanged ? { reviewedReplyHtml: '', reviewedReplySource: undefined, reviewedReplyEdited: false } : {}),
   };
 }
 
@@ -1638,7 +1619,7 @@ export function reduceQuoteSession(
   session: QuoteSession,
   action: QuoteSessionAction | QuoteStrategySessionAction,
 ): QuoteSession {
-  session = { ...session, ...quoteStrategyState(session) };
+  if (!('quoteStrategyRows' in session)) session = { ...session, ...quoteStrategyState(session) };
   if (
     action.type === 'quote_strategy_comparison_started' ||
     action.type === 'quote_strategy_comparison_result' ||
@@ -2079,7 +2060,7 @@ export function reduceQuoteSession(
         ),
         // Only this stay's booking draft is stale. The other stays' drafts still match their own runs.
         bookingDrafts: stayCount > 1 ? keepKeys(session.bookingDrafts, new Set([stayKey]), false) : {},
-      };
+      } as QuoteWorkflowSession;
     }
     case 'booking_draft_ready': {
       if (!requestMatchesCurrent(session, action.payload.selectionEpoch, action.payload.inputRevision)) {
@@ -2505,7 +2486,7 @@ export function reduceQuoteSession(
         reviewedReplyEdited: replaceReply ? false : session.reviewedReplyEdited,
         // A combined PDF is one document for all stays, so it is not kept under any one of them.
         stayPdfs: stayKey && !isMultiStay(session) ? { ...session.stayPdfs, [stayKey]: action.pdf } : session.stayPdfs,
-      };
+      } as QuoteWorkflowSession;
     }
     case 'set_reviewed_reply':
       return {

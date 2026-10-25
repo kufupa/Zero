@@ -874,12 +874,12 @@ describe('staff-approved quotation beneath native guards', () => {
         new AbortController().signal,
       );
       expect(prepared.request.search.salesStrategy).toBe(display);
-      expect(prepared.salesStrategyValue).toBe(salesStrategy);
+      expect(prepared.salesStrategyValue).toBe(salesStrategy === 'GOV' ? 'Government' : salesStrategy);
     }
   });
 
-  it('keeps HRCEN BAR and Government values unchanged', async () => {
-    for (const [salesStrategy, display] of [['BAR', 'BAR'], ['Government', 'Government']] as const) {
+  it('accepts HRCEN BAR and Government labels, including the GOV code', async () => {
+    for (const [salesStrategy, display] of [['BAR', 'BAR'], ['Government', 'Government'], ['GOV', 'Government']] as const) {
       const prepared = prepareStaffQuote(
         { ...input(), salesStrategy },
         scope,

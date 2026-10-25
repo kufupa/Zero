@@ -5,6 +5,7 @@ import {
   bindStaffQuoteStrategies,
   resolveNativeRoomCodes,
   staffQuoteGroupsFromStay,
+  type ExecuteStaffQuoteInput,
   type StaffQuoteJobQuery,
 } from '../lib/quote-workflow/staff-quote-bind';
 import {
@@ -320,5 +321,63 @@ describe('staff quote strategy comparisons', () => {
     });
 
     expect(staffQuoteJob.mock.calls.map(([lookup]) => ('input' in lookup ? lookup.input.salesStrategy : '')).sort()).toEqual(['BAR', 'Government']);
+  });
+
+  it('binds a U6a all-room job when the pane adds its option-count counter', async () => {
+    const group = stay();
+    const staffQuoteJob = vi.fn<StaffQuoteJobQuery>(async (lookup) => {
+      if (!('input' in lookup)) return null;
+      const preparedInput = { ...lookup.input };
+      delete preparedInput.maxOptionsPerGroup;
+      return {
+        runId: 'run-BAR',
+        status: 'done',
+        prefetch: true,
+        asOf: new Date().toISOString(),
+        failureClass: null,
+        request: { kind: 'staff_quote', input: preparedInput },
+        result: queuedQuote('BAR', group),
+      };
+    });
+
+    const outcome = await bindStaffQuoteStrategy({
+      ...args,
+      groups: [group],
+      strategyCode: 'BAR',
+      staffQuoteJob,
+    });
+
+    expect(staffQuoteJob.mock.calls[0]?.[0]).toMatchObject({ input: { maxOptionsPerGroup: 200 } });
+    expect(outcome.row.status).toBe('ready');
+  });
+
+  it('still requires the same source and strategy when matching prepared inputs', async () => {
+    const group = stay();
+    const mismatches: Array<Partial<ExecuteStaffQuoteInput>> = [
+      { messageId: 'another-message' },
+      { sourceHash: 'b'.repeat(64) },
+      { salesStrategy: 'Government' },
+    ];
+    for (const mismatch of mismatches) {
+      const staffQuoteJob = vi.fn<StaffQuoteJobQuery>(async (lookup) => {
+        if (!('input' in lookup)) return null;
+        const preparedInput = { ...lookup.input };
+        delete preparedInput.maxOptionsPerGroup;
+        Object.assign(preparedInput, mismatch);
+        return {
+          runId: 'run-BAR',
+          status: 'done',
+          prefetch: true,
+          asOf: new Date().toISOString(),
+          failureClass: null,
+          request: { kind: 'staff_quote', input: preparedInput },
+          result: queuedQuote('BAR', group),
+        };
+      });
+
+      const outcome = await bindStaffQuoteStrategy({ ...args, groups: [group], strategyCode: 'BAR', staffQuoteJob });
+
+      expect(outcome.row.status).toBe('failed');
+    }
   });
 });

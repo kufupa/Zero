@@ -1472,8 +1472,26 @@ function strategyOutcome(
         currency: 'ZAR',
         quoteRequestKey: stayKey,
         approvedHeader: emptyHeader(),
+        rateOptions: groupIds.map((groupId) => ({
+          id: `rate-${revisionRef}-${groupId}`,
+          groupId,
+          board: 'bb',
+          boardLabel: 'Bed & Breakfast',
+          rateCode: 'BAR',
+          rateLabel: 'BAR',
+          roomCode: 'STKNG',
+          roomLabel: 'Standard King',
+          contract: false,
+          onlyContract: false,
+          matchesRequest: true,
+          perNightMinor: totalMinor,
+          totalMinor,
+          currency: 'ZAR',
+          priced: 'full',
+          selected: false,
+        })),
       } as StaffQuoteAllocation,
-      extrasReviewItems: [],
+      extrasReviewItems: [`${strategyCode} comparison extra`],
     },
   };
 }
@@ -1555,12 +1573,21 @@ describe('strategy comparison session state', () => {
       strategyCode: 'BAR',
     });
     expect(session.staffQuote?.revisionRef).toBe('bar-row');
+    expect(session.rateOptions?.map((option) => option.id)).toEqual(['rate-bar-row-g1']);
+    expect(session.reviewItems.filter((item) => item.sourceLabel === 'Quote extras').map((item) => item.text)).toEqual([
+      'BAR comparison extra',
+    ]);
     session = reduceQuoteSession(session, {
       type: 'pdf_ready',
       pdf: quotePdf('bar-row', 700_000),
       selectedOfferIds: ['bar-row'],
       selectionEpoch: session.binding!.selectionEpoch,
       inputRevision: session.inputRevision,
+    });
+    session = reduceQuoteSession(session, {
+      type: 'set_reviewed_reply',
+      html: '<p>BAR reply</p>',
+      staffEdited: true,
     });
     const barPdf = session.stayPdfs[STAY_A]!;
 
@@ -1570,6 +1597,10 @@ describe('strategy comparison session state', () => {
       strategyCode: 'WS',
     });
     expect(session.staffQuote?.revisionRef).toBe('ws-row');
+    expect(session.rateOptions?.map((option) => option.id)).toEqual(['rate-ws-row-g1']);
+    expect(session.reviewItems.filter((item) => item.sourceLabel === 'Quote extras').map((item) => item.text)).toEqual([
+      'WS comparison extra',
+    ]);
     session = reduceQuoteSession(session, {
       type: 'pdf_ready',
       pdf: quotePdf('ws-row', 650_000),
@@ -1577,6 +1608,12 @@ describe('strategy comparison session state', () => {
       selectionEpoch: session.binding!.selectionEpoch,
       inputRevision: session.inputRevision,
     });
+    session = reduceQuoteSession(session, {
+      type: 'set_reviewed_reply',
+      html: '<p>WS reply</p>',
+      staffEdited: true,
+    });
+    expect(canCreateNativeDraft(session)).toBe(true);
 
     session = reduceQuoteSession(session, {
       type: 'quote_strategy_selected',
@@ -1587,6 +1624,13 @@ describe('strategy comparison session state', () => {
     expect(session.staffQuote?.revisionRef).toBe('bar-row');
     expect(session.pdf).toEqual(barPdf);
     expect(session.stayPdfs[STAY_A]).toEqual(barPdf);
+    expect(session.reviewedReplyHtml).toBe('');
+    expect(session.reviewedReplyEdited).toBe(false);
+    expect(canCreateNativeDraft(session)).toBe(false);
+    expect(session.rateOptions?.map((option) => option.id)).toEqual(['rate-bar-row-g1']);
+    expect(session.reviewItems.filter((item) => item.sourceLabel === 'Quote extras').map((item) => item.text)).toEqual([
+      'BAR comparison extra',
+    ]);
     expect(session.quoteStrategyResults[STAY_A]?.WS?.staffQuote.workflowRunId).toBe('run-ws-row');
   });
 
