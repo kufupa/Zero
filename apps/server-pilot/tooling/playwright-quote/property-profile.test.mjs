@@ -51,6 +51,7 @@ test('propertySecretRefusal refuses a secret for the other hotel before login', 
   assert.equal(propertySecretRefusal({ expectedPropertyCode: 'HRDAV' }, 'HRDAV'), null);
   assert.equal(propertySecretRefusal({ expectedPropertyCode: 'HRCEN' }, 'HRDAV'), 'PROPERTY_HRDAV_REQUIRED');
   assert.equal(propertySecretRefusal({ expectedPropertyCode: 'HRDAV' }, 'HRCEN'), 'PROPERTY_HRCEN_REQUIRED');
+  assert.equal(propertySecretRefusal({ expectedPropertyCode: 'HRCEN' }, 'HRFAKE'), 'PROPERTY_HRFAKE_REQUIRED');
 });
 
 test('parseStayProperty defaults HRCEN, accepts HRDAV, strips the flag, refuses unknown', () => {

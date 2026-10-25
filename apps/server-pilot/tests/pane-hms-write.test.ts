@@ -61,6 +61,7 @@ const attachCli = (await import('../tooling/playwright-quote/attach-document.mjs
       documentName: string;
       out: string;
       allowRealGuest: boolean;
+      property?: string;
     };
   };
 };
@@ -460,6 +461,15 @@ describe('pane HMS write (U26)', () => {
     };
     expect(buildAttachDocumentArgs(base, '/tmp/out')).not.toContain('--allow-real-guest');
     expect(buildAttachDocumentArgs({ ...base, allowRealGuest: true }, '/tmp/out')).toContain('--allow-real-guest');
+    expect(buildAttachDocumentArgs(base, '/tmp/out')).not.toContain('--property');
+    const hrdav = buildAttachDocumentArgs({ ...base, target: DAVINCI_HMS_READ_TARGET }, '/tmp/out');
+    expect(hrdav[hrdav.indexOf('--property') + 1]).toBe('HRDAV');
+    const hrcen = buildAttachDocumentArgs({ ...base, target: CENTURION_HMS_READ_TARGET }, '/tmp/out');
+    expect(hrcen[hrcen.indexOf('--property') + 1]).toBe('HRCEN');
+    expect(attachCli.parseAttachArgs([...argv, '--property', 'HRDAV']).args?.property).toBe('HRDAV');
+    expect(attachCli.parseAttachArgs([...argv, '--property', 'OTHER'])).toMatchObject({
+      ok: false,
+    });
   });
 
   it('PANE_WRITE_ATTACH=on lets a real-guest stay through attach', async () => {

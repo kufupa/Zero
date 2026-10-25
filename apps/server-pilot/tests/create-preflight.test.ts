@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { profileFor } from '../tooling/playwright-quote/property-profile.mjs';
+import { profileFor, propertySecretRefusal } from '../tooling/playwright-quote/property-profile.mjs';
 import {
   buildPreflightResult,
   collectBlockers,
@@ -128,6 +128,43 @@ describe('create preflight', () => {
       }),
     ).map(formatBlocker);
     expect(labels).toEqual(['blocker:required_field reservationnote']);
+  });
+
+  it('required fields come from profile.requiredCreateFields, not an HRDAV special case', () => {
+    const davEmpty = collectBlockers(
+      clearSnapshot({
+        propertyCode: 'HRDAV',
+        profile: { requiredCreateFields: [] },
+        fields: [{ name: 'reservationnote', value: '', required: false, blank: true }],
+      }),
+    ).map(formatBlocker);
+    expect(davEmpty).toEqual([]);
+    const cenNote = collectBlockers(
+      clearSnapshot({
+        propertyCode: 'HRCEN',
+        profile: { requiredCreateFields: ['reservationnote'] },
+        fields: [{ name: 'reservationnote', value: '', required: false, blank: true }],
+      }),
+    ).map(formatBlocker);
+    expect(cenNote).toEqual(['blocker:required_field reservationnote']);
+  });
+
+  it('propertySecretRefusal names the requested hotel, never falls through to HRCEN', () => {
+    expect(propertySecretRefusal({ expectedPropertyCode: 'HRDAV' }, 'HRDAV')).toBeNull();
+    expect(propertySecretRefusal({ expectedPropertyCode: 'HRCEN' }, 'HRDAV')).toBe('PROPERTY_HRDAV_REQUIRED');
+    expect(propertySecretRefusal({ expectedPropertyCode: 'HRDAV' }, 'HRCEN')).toBe('PROPERTY_HRCEN_REQUIRED');
+    expect(propertySecretRefusal({ expectedPropertyCode: 'HRCEN' }, 'HRFAKE')).toBe('PROPERTY_HRFAKE_REQUIRED');
+  });
+
+  it('HRCEN with its live profile still ignores a blank reservation note', () => {
+    const labels = collectBlockers(
+      clearSnapshot({
+        propertyCode: 'HRCEN',
+        profile: profileFor('HRCEN'),
+        fields: [{ name: 'reservationnote', value: '', required: false, blank: true }],
+      }),
+    ).map(formatBlocker);
+    expect(labels).toEqual([]);
   });
 
   it('nav off-screen is blocker:nav', () => {

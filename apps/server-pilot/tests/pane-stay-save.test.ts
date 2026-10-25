@@ -284,6 +284,23 @@ describe('pane stay save guards', () => {
       reason: 'collector_no_hotel',
     });
     expect(paneStayCreateTarget({})).toEqual({ ok: false, reason: 'property_required' });
+    expect(paneStayCreateTarget({ propertyCode: 'OTHER' })).toEqual({
+      ok: false,
+      reason: 'property_unknown',
+    });
+  });
+
+  it('refuses an unknown transport before any write lock or spawn', async () => {
+    const locked: string[] = [];
+    paneStaySaveLoaders.mode = () => 'lab';
+    paneStaySaveLoaders.lock = passingLock(locked);
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: labStay, owner: freshOwner('transport-unknown') }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'property_unknown' });
+    expect(locked).toEqual([]);
   });
 
   it('the production property lock is keyed on the session hotel and the worker tenant', () => {

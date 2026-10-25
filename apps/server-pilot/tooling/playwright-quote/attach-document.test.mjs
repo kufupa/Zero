@@ -34,7 +34,17 @@ test('parseAttachArgs accepts a full set and normalizes the confirmation and arr
     documentName: 'Confirmation.pdf',
     out: '/tmp/attach-document-test/out',
     allowRealGuest: false,
+    property: 'HRCEN',
   });
+});
+
+test('parseAttachArgs takes --property from the profile registry and refuses unknown before spawn', () => {
+  const dav = parseAttachArgs([...VALID_ARGV, '--property', 'HRDAV']);
+  assert.equal(dav.ok, true);
+  assert.equal(dav.args.property, 'HRDAV');
+  const unknown = parseAttachArgs([...VALID_ARGV, '--property', 'OTHER']);
+  assert.equal(unknown.ok, false);
+  assert.equal(unknown.error, 'PROPERTY_UNKNOWN');
 });
 
 test('--allow-real-guest skips Labtest identity; without it a real guest is refused', () => {

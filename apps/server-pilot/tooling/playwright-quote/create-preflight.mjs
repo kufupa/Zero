@@ -4,9 +4,9 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseCreateProperty, INFORMATIONAL_NO_ROOMS_MESSAGE, waitHmsMaskCleared } from './create-lab-stay.mjs';
+import { INFORMATIONAL_NO_ROOMS_MESSAGE, waitHmsMaskCleared } from './create-lab-stay.mjs';
 import { loadCreateRequest, optionalPartyAndNoteFills, parseOutDir, shopResult } from './create-request.mjs';
-import { profileFor } from './property-profile.mjs';
+import { parseStayProperty, profileFor, propertySecretRefusal } from './property-profile.mjs';
 import { searchGuestOnOpenGuestStay } from './stay-lookup.mjs';
 import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { installReadOnlyGuard, shouldAbortReadOnlyRequest } from './hms-read-only-guard.mjs';
@@ -14,7 +14,6 @@ import { displayDate, login, newBorrowedContext, openHotelAvailability, playwrig
 import { checkCdpEnv } from './cancel-stay-rules.mjs';
 
 const NAV_WATCH = ['Front Desk', 'Availability', 'Hotel Availability', 'Guest Stay', 'New Record'];
-const PROFILE_REQUIRED = ['createRequiredFields', 'requiredCreateFields', 'requiredFields'];
 
 export { shouldAbortReadOnlyRequest, installReadOnlyGuard };
 
@@ -59,12 +58,11 @@ export function availabilityBlockers(availability = {}, messages = []) {
   return [];
 }
 
-export function requiredNames(propertyCode, profile) {
+export function requiredNames(_propertyCode, profile) {
   const names = new Set();
-  for (const key of PROFILE_REQUIRED) {
-    if (Array.isArray(profile?.[key])) for (const name of profile[key]) names.add(String(name).toLowerCase());
+  if (Array.isArray(profile?.requiredCreateFields)) {
+    for (const name of profile.requiredCreateFields) names.add(String(name).toLowerCase());
   }
-  if (propertyCode === 'HRDAV') names.add('reservationnote');
   return names;
 }
 
@@ -302,9 +300,10 @@ export async function runCreatePreflight({ context, page, stay, propertyCode, pr
 }
 
 async function main(argv = process.argv.slice(2)) {
-  const property = parseCreateProperty(argv);
-  const loaded = await loadCreateRequest(argv);
-  const out = parseOutDir(argv);
+  const property = parseStayProperty(argv);
+  const rest = property.ok ? property.rest : argv;
+  const loaded = await loadCreateRequest(rest);
+  const out = parseOutDir(rest);
   for (const step of [property, loaded, out]) {
     if (!step.ok) {
       process.stderr.write(`${step.error}\n`);
@@ -320,9 +319,8 @@ async function main(argv = process.argv.slice(2)) {
   const dir = out.outDir ?? join(fileURLToPath(new URL('../../../../.private/create-screen/preflight/', import.meta.url)), propertyCode);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const secret = await readSecret();
-  if (secret.expectedPropertyCode !== propertyCode) {
-    throw new Error(propertyCode === 'HRDAV' ? 'PROPERTY_HRDAV_REQUIRED' : 'PROPERTY_HRCEN_REQUIRED');
-  }
+  const hotelMismatch = propertySecretRefusal(secret, propertyCode);
+  if (hotelMismatch) throw new Error(hotelMismatch);
   const browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
   const context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
   const page = await context.newPage();

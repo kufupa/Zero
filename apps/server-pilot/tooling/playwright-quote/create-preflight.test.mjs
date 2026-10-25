@@ -107,6 +107,30 @@ test('DV note blank is blocker:required_field reservationnote', () => {
   assert.deepEqual(labels, ['blocker:required_field reservationnote']);
 });
 
+test('required fields come from profile.requiredCreateFields, not an HRDAV special case', () => {
+  const davEmpty = collectBlockers(clearSnapshot({
+    propertyCode: 'HRDAV',
+    profile: { requiredCreateFields: [] },
+    fields: [{ name: 'reservationnote', value: '', required: false, blank: true }],
+  })).map(formatBlocker);
+  assert.deepEqual(davEmpty, []);
+  const cenNote = collectBlockers(clearSnapshot({
+    propertyCode: 'HRCEN',
+    profile: { requiredCreateFields: ['reservationnote'] },
+    fields: [{ name: 'reservationnote', value: '', required: false, blank: true }],
+  })).map(formatBlocker);
+  assert.deepEqual(cenNote, ['blocker:required_field reservationnote']);
+});
+
+test('HRCEN with its live profile still ignores a blank reservation note', () => {
+  const labels = collectBlockers(clearSnapshot({
+    propertyCode: 'HRCEN',
+    profile: profileFor('HRCEN'),
+    fields: [{ name: 'reservationnote', value: '', required: false, blank: true }],
+  })).map(formatBlocker);
+  assert.deepEqual(labels, []);
+});
+
 test('nav off-screen is blocker:nav', () => {
   const labels = collectBlockers(clearSnapshot({
     nav: [{ name: 'Guest Stay', visible: true, inViewport: false }],
