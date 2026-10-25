@@ -852,4 +852,73 @@ describe('staff-approved quotation beneath native guards', () => {
       ),
     ).rejects.toThrow('selected_price');
   });
+
+  it('accepts configured codes and maps them to the property registry display labels', async () => {
+    const cases = [
+      ['PROMO', 'Promotions'],
+      ['BAR', 'BAR'],
+      ['PRESET', 'Preset'],
+      ['WS', 'Wholesale'],
+      ['NC', 'Negoticated Contracted'],
+      ['GOV', 'Government'],
+      ['AIR', 'Airline Crews'],
+      ['DOML', 'Domestic Leisure'],
+      ['OTHER', 'Other'],
+    ] as const;
+
+    for (const [salesStrategy, display] of cases) {
+      const prepared = prepareStaffQuote(
+        { ...input(), salesStrategy },
+        { ...scope, propertyCode: 'HRDAV' },
+        { signerName: '', signerEmail: '' },
+        new AbortController().signal,
+      );
+      const resolveQuoteTask = vi.fn(async () => {
+        throw new Error('quote read reached');
+      });
+
+      await expect(
+        executeStaffQuote(prepared, { resolveQuoteTask } as never, async () => true),
+      ).rejects.toThrow('quote read reached');
+
+      expect(prepared.request.search.salesStrategy).toBe(display);
+      expect(resolveQuoteTask).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('keeps HRCEN BAR and Government values unchanged', async () => {
+    for (const [salesStrategy, display] of [['BAR', 'BAR'], ['Government', 'Government']] as const) {
+      const prepared = prepareStaffQuote(
+        { ...input(), salesStrategy },
+        scope,
+        { signerName: '', signerEmail: '' },
+        new AbortController().signal,
+      );
+      const resolveQuoteTask = vi.fn(async () => {
+        throw new Error('quote read reached');
+      });
+
+      await expect(
+        executeStaffQuote(prepared, { resolveQuoteTask } as never, async () => true),
+      ).rejects.toThrow('quote read reached');
+
+      expect(prepared.request.search.salesStrategy).toBe(display);
+    }
+  });
+
+  it('rejects a code absent from HRCEN registry before invoking the quote reader', async () => {
+    const prepared = prepareStaffQuote(
+      { ...input(), salesStrategy: 'WS' },
+      scope,
+      { signerName: '', signerEmail: '' },
+      new AbortController().signal,
+    );
+    const resolveQuoteTask = vi.fn();
+
+    await expect(
+      executeStaffQuote(prepared, { resolveQuoteTask } as never, async () => true),
+    ).rejects.toThrow(/sales.strategy.*not configured/i);
+
+    expect(resolveQuoteTask).not.toHaveBeenCalled();
+  });
 });

@@ -14,6 +14,7 @@ import {
   planQuoteSteps,
   quoteRunBlockReason,
   quoteRunIsCurrent,
+  quoteStrategyStayRevision,
   reduceQuoteSession,
   selectionDigest,
   buildQuoteStepInputs,
@@ -29,12 +30,15 @@ import {
   groupStays,
   removedStayFor,
   rowRoomCode,
+  stayKeyForGroup,
   stayIdOf,
   stayTotals,
   amendmentOf,
   stayAskGuests,
   stayAskAction,
   stayAskActionLabel,
+  type QuoteStrategySessionAction,
+  type QuoteWorkflowSession,
 } from '../lib/quote-workflow/session';
 import { documentFailureItems, openReviewItems, projectQuoteReviewItems } from '../lib/quote-workflow/review-items';
 import {
@@ -57,6 +61,8 @@ import type {
   QuoteSession,
   QuoteSessionAction,
   QuoteToolStep,
+  QuoteStrategyRow,
+  QuoteSalesStrategyCode,
   RateOption,
   StaffQuoteAllocation,
 } from '../lib/quote-workflow/types';
@@ -1422,6 +1428,197 @@ function quotePdf(revisionId: string, totalMinor = 850000): QuotePdf {
     totalMinor,
   };
 }
+
+function strategyOutcome(
+  session: QuoteSession,
+  stayKey: string,
+  strategyCode: QuoteSalesStrategyCode,
+  revisionRef: string,
+  totalMinor: number,
+) {
+  const groupIds = session.groups
+    .filter((group) => stayKeyForGroup(group) === stayKey)
+    .map((group) => group.id);
+  return {
+    strategyCode,
+    row: {
+      status: 'ready' as const,
+      roomLabels: ['Standard King'],
+      boardLabels: ['Bed & Breakfast'],
+      nightlyMinor: [totalMinor],
+      totalMinor,
+    },
+    result: {
+      offer: {
+        ...authorisedOffer,
+        id: revisionRef,
+        sourceRef: revisionRef,
+        quoteRequestKey: stayKey,
+        coversGroupIds: groupIds,
+        nightly: [],
+        stayTotalMinor: totalMinor,
+      },
+      staffQuote: {
+        workflowRunId: `run-${revisionRef}`,
+        revisionRef,
+        factRefs: [],
+        messageId: session.staffSource!.messageId,
+        threadId: session.staffSource!.threadId,
+        sourceHash: session.staffSource!.sourceHash,
+        selectionEpoch: session.binding!.selectionEpoch,
+        inputRevision: session.inputRevision,
+        inputDigest: `digest-${revisionRef}`,
+        totalMinor,
+        currency: 'ZAR',
+        quoteRequestKey: stayKey,
+        approvedHeader: emptyHeader(),
+      } as StaffQuoteAllocation,
+      extrasReviewItems: [],
+    },
+  };
+}
+
+function strategyResultAction(
+  session: QuoteSession,
+  stayKey: string,
+  strategyCode: QuoteSalesStrategyCode,
+  revision: number,
+  revisionRef: string,
+  totalMinor: number,
+): Extract<QuoteStrategySessionAction, { type: 'quote_strategy_comparison_result' }> {
+  return {
+    type: 'quote_strategy_comparison_result',
+    stayKey,
+    strategyCode,
+    selectionEpoch: session.binding!.selectionEpoch,
+    stayRevision: revision,
+    outcome: strategyOutcome(session, stayKey, strategyCode, revisionRef, totalMinor),
+  };
+}
+
+function singleStaySession(stayKey = STAY_A): QuoteSession {
+  const source = twoDateSession();
+  const groups = source.groups.filter((group) => stayKeyForGroup(group) === stayKey);
+  return {
+    ...source,
+    groups,
+    steps: planQuoteSteps(groups),
+    phase: 'requirements',
+    selectedStayKey: stayKey,
+    runningStepId: null,
+    staffQuote: null,
+    staffQuotes: {},
+    stayPdfs: {},
+    offers: [],
+    selectedOfferIds: [],
+    pdf: null,
+    evidence: null,
+  };
+}
+
+describe('strategy comparison session state', () => {
+  it('keeps comparison searches separate from an approved quote and restores each strategy PDF', () => {
+    const base = singleStaySession();
+    const withApprovedQuote = reduceQuoteSession(
+      base,
+      staffQuoteFor(STAY_A, 'approved-before-comparisons', 850_000, base.inputRevision),
+    );
+    const originalPdf = quotePdf('approved-before-comparisons', 850_000);
+    let session = {
+      ...withApprovedQuote,
+      pdf: originalPdf,
+      stayPdfs: { ...withApprovedQuote.stayPdfs, [STAY_A]: originalPdf },
+    } as QuoteWorkflowSession;
+    const stayRevision = quoteStrategyStayRevision(session, STAY_A);
+
+    session = reduceQuoteSession(session, {
+      type: 'quote_strategy_comparison_started',
+      stayKey: STAY_A,
+      strategyCodes: ['BAR', 'WS'],
+      selectionEpoch: session.binding!.selectionEpoch,
+      stayRevision,
+    });
+    session = reduceQuoteSession(session, strategyResultAction(session, STAY_A, 'BAR', stayRevision, 'bar-row', 700_000));
+    session = reduceQuoteSession(session, strategyResultAction(session, STAY_A, 'WS', stayRevision, 'ws-row', 650_000));
+
+    expect(session.staffQuote?.revisionRef).toBe('approved-before-comparisons');
+    expect(session.stayPdfs[STAY_A]).toEqual(originalPdf);
+    expect(session.quoteStrategyRows[STAY_A]).toMatchObject({
+      BAR: { status: 'ready', totalMinor: 700_000 },
+      WS: { status: 'ready', totalMinor: 650_000 },
+    });
+    expect(Object.keys(session.quoteStrategyResults[STAY_A] ?? {}).sort()).toEqual(['BAR', 'WS']);
+
+    session = reduceQuoteSession(session, {
+      type: 'quote_strategy_selected',
+      stayKey: STAY_A,
+      strategyCode: 'BAR',
+    });
+    expect(session.staffQuote?.revisionRef).toBe('bar-row');
+    session = reduceQuoteSession(session, {
+      type: 'pdf_ready',
+      pdf: quotePdf('bar-row', 700_000),
+      selectedOfferIds: ['bar-row'],
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+    });
+    const barPdf = session.stayPdfs[STAY_A]!;
+
+    session = reduceQuoteSession(session, {
+      type: 'quote_strategy_selected',
+      stayKey: STAY_A,
+      strategyCode: 'WS',
+    });
+    expect(session.staffQuote?.revisionRef).toBe('ws-row');
+    session = reduceQuoteSession(session, {
+      type: 'pdf_ready',
+      pdf: quotePdf('ws-row', 650_000),
+      selectedOfferIds: ['ws-row'],
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+    });
+
+    session = reduceQuoteSession(session, {
+      type: 'quote_strategy_selected',
+      stayKey: STAY_A,
+      strategyCode: 'BAR',
+    });
+
+    expect(session.staffQuote?.revisionRef).toBe('bar-row');
+    expect(session.pdf).toEqual(barPdf);
+    expect(session.stayPdfs[STAY_A]).toEqual(barPdf);
+    expect(session.quoteStrategyResults[STAY_A]?.WS?.staffQuote.workflowRunId).toBe('run-ws-row');
+  });
+
+  it('editing stay B preserves stay A rows and still accepts its in-flight comparison result', () => {
+    let session = twoDateSession() as QuoteWorkflowSession;
+    const stayRevisionA = quoteStrategyStayRevision(session, STAY_A);
+    session = reduceQuoteSession(session, {
+      type: 'quote_strategy_comparison_started',
+      stayKey: STAY_A,
+      strategyCodes: ['BAR', 'WS'],
+      selectionEpoch: session.binding!.selectionEpoch,
+      stayRevision: stayRevisionA,
+    });
+    session = reduceQuoteSession(session, strategyResultAction(session, STAY_A, 'BAR', stayRevisionA, 'bar-a', 700_000));
+
+    const runningB = session.steps.find((step) => step.shareKey === STAY_B)!;
+    session = reduceQuoteSession({ ...session, runningStepId: runningB.id }, {
+      type: 'patch_group',
+      groupId: 'g2',
+      patch: { adults: 2 },
+    });
+
+    expect(quoteStrategyStayRevision(session, STAY_A)).toBe(stayRevisionA);
+    expect(session.quoteStrategyRows[STAY_A]?.BAR).toMatchObject({ status: 'ready', totalMinor: 700_000 });
+    expect(session.quoteStrategyRows[STAY_A]?.WS).toEqual({ status: 'pending' });
+    expect(session.quoteStrategyRows[STAY_B]).toBeUndefined();
+    expect(quoteStrategyStayRevision(session, STAY_B)).toBeGreaterThan(0);
+
+    session = reduceQuoteSession(session, strategyResultAction(session, STAY_A, 'WS', stayRevisionA, 'ws-a', 650_000));
+    expect(session.quoteStrategyRows[STAY_A]?.WS).toMatchObject({ status: 'ready', totalMinor: 650_000 });
+  });
+});
 
 describe('quote session staff review items', () => {
   it('projects a clean selected quote with no Items for you', () => {

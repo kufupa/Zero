@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   bindExecuteStaffQuote,
+  bindStaffQuoteStrategy,
+  bindStaffQuoteStrategies,
   resolveNativeRoomCodes,
   staffQuoteGroupsFromStay,
 } from '../lib/quote-workflow/staff-quote-bind';
@@ -9,6 +11,8 @@ import {
   HRDAV_PROPERTY_CODE,
   HRDAV_RATE_PLANS,
   HRDAV_ROOM_NAMES,
+  emptyStaffQuoteHeader,
+  type QuoteSalesStrategy,
   hrdavBoardFromLabel,
   type StayGroupRequirement,
 } from '../lib/quote-workflow/types';
@@ -136,5 +140,176 @@ describe('HRDAV native room and board maps', () => {
     });
     expect(result).toMatchObject({ status: 'unavailable', reason: expect.stringMatching(reason) });
     expect(mutate).not.toHaveBeenCalled();
+  });
+});
+
+describe('staff quote strategy comparisons', () => {
+  const strategies: QuoteSalesStrategy[] = [
+    { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
+    { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+    { code: 'PRESET', label: 'Preset', requestValue: 'PRESET' },
+    { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
+    { code: 'NC', label: 'Negoticated Contracted', requestValue: 'NC' },
+    { code: 'GOV', label: 'Government', requestValue: 'Government' },
+  ];
+
+  const args = {
+    source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'a'.repeat(64) },
+    selectionEpoch: 1,
+    inputRevision: 1,
+    groups: [stay({ roomPreference: 'Standard King' })],
+    header: emptyStaffQuoteHeader(),
+    propertyCode: HRDAV_PROPERTY_CODE,
+    registryStrategies: strategies,
+  };
+
+  function queuedQuote(strategy: string, group: StayGroupRequirement) {
+    return {
+      status: 'ready',
+      workflowRunId: `workflow-${strategy}`,
+      revisionRef: `revision-${strategy}`,
+      messageId: 'mail-1',
+      threadId: 'thread-1',
+      factRefs: [],
+      selectionEpoch: 1,
+      inputRevision: 1,
+      inputDigest: `digest-${strategy}`,
+      totalMinor: 100_00,
+      currency: 'ZAR',
+      arrivalDate: group.arrivalDate,
+      departureDate: group.departureDate,
+      description: 'Standard King · Bed & Breakfast',
+      rateOptions: [
+        {
+          id: `option-${strategy}`,
+          groupId: group.id,
+          board: 'bb',
+          boardLabel: 'Bed & Breakfast',
+          rateCode: 'BAR',
+          rateLabel: 'Best available',
+          roomCode: 'STKNG',
+          roomLabel: 'Standard King',
+          contract: false,
+          onlyContract: false,
+          matchesRequest: true,
+          perNightMinor: 100_00,
+          totalMinor: 100_00,
+          currency: 'ZAR',
+          priced: 'full',
+          selected: true,
+        },
+      ],
+    };
+  }
+
+  it('binds every configured strategy independently and keeps no-room results partial', async () => {
+    const staffQuoteJob = vi.fn(async (lookup: { runId?: string; input?: Record<string, unknown> }) => {
+      const request = lookup.input ?? {};
+      const salesStrategy = String(request.salesStrategy);
+      const runId = `run-${salesStrategy}`;
+      return salesStrategy === 'WS'
+        ? {
+            runId,
+            status: 'done' as const,
+            prefetch: true,
+            request: { kind: 'staff_quote' as const, input: request as never },
+            result: {
+              ok: false,
+              code: 'NATIVE_NO_MATCHING_RATE',
+              message: 'HMS has no rate for this meal plan under Wholesale.',
+            },
+          }
+        : {
+            runId,
+            status: 'done' as const,
+            prefetch: true,
+            request: { kind: 'staff_quote' as const, input: request as never },
+            result: queuedQuote(salesStrategy, args.groups[0]!),
+          };
+    });
+
+    const results = await bindStaffQuoteStrategies({ ...args, staffQuoteJob });
+
+    expect(results).toHaveLength(6);
+    expect(results.map((item) => item.strategyCode).sort()).toEqual(
+      strategies.map((item) => item.code).sort(),
+    );
+    expect(results.filter((item) => item.row.status === 'ready')).toHaveLength(5);
+    expect(results.find((item) => item.strategyCode === 'WS')?.row).toMatchObject({
+      status: 'not_offered',
+      message: expect.stringMatching(/no rate/i),
+    });
+    expect(staffQuoteJob).toHaveBeenCalledTimes(6);
+    expect(staffQuoteJob.mock.calls.map(([lookup]) => lookup.input?.salesStrategy).sort()).toEqual(
+      ['BAR', 'Government', 'NC', 'PRESET', 'PROMO', 'WS'].sort(),
+    );
+    expect(results.find((item) => item.strategyCode === 'BAR')).toMatchObject({
+      row: {
+        status: 'ready',
+        roomLabels: ['Standard King'],
+        boardLabels: ['Bed & Breakfast'],
+        nightlyMinor: [10_000],
+        totalMinor: 10_000,
+      },
+      result: { staffQuote: { preparedByNava: true } },
+    });
+  });
+
+  it('does not shop a strategy absent from the active property registry', async () => {
+    const staffQuoteJob = vi.fn(async () => null);
+    const outcome = await bindStaffQuoteStrategy({
+      ...args,
+      registryStrategies: strategies.filter((item) => item.code === 'BAR' || item.code === 'GOV'),
+      strategyCode: 'WS',
+      staffQuoteJob,
+    });
+
+    expect(outcome.row).toMatchObject({
+      status: 'failed',
+      message: expect.stringMatching(/not configured.*no search was run/i),
+    });
+    expect(staffQuoteJob).not.toHaveBeenCalled();
+  });
+
+  it('refuses queue-disabled comparisons clearly and does not fall through to inline mutation', async () => {
+    const mutate = vi.fn();
+    const outcome = await bindStaffQuoteStrategy({
+      ...args,
+      strategyCode: 'BAR',
+      mutate,
+    } as never);
+
+    expect(outcome.row).toMatchObject({
+      status: 'failed',
+      message: expect.stringMatching(/queue.*disabled.*no search was run/i),
+    });
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it('keeps the HRCEN BAR and Government request values unchanged', async () => {
+    const hrcenStrategies: QuoteSalesStrategy[] = [
+      { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+      { code: 'GOV', label: 'Government', requestValue: 'Government' },
+    ];
+    const staffQuoteJob = vi.fn(async (lookup: { runId?: string; input?: Record<string, unknown> }) => {
+      const request = lookup.input ?? {};
+      const runId = `run-${request.salesStrategy}`;
+      return {
+        runId,
+        status: 'done' as const,
+        prefetch: true,
+        request: { kind: 'staff_quote' as const, input: request as never },
+        result: queuedQuote(String(request.salesStrategy), stay()),
+      };
+    });
+
+    await bindStaffQuoteStrategies({
+      ...args,
+      propertyCode: HRCEN_PROPERTY_CODE,
+      registryStrategies: hrcenStrategies,
+      staffQuoteJob,
+    });
+
+    expect(staffQuoteJob.mock.calls.map(([lookup]) => lookup.input?.salesStrategy).sort()).toEqual(['BAR', 'Government']);
   });
 });

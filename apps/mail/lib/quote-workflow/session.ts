@@ -17,6 +17,9 @@ import type {
   StaffStayExtras,
   StayGroupRequirement,
   StaffQuoteHeader,
+  QuotePdf,
+  QuoteSalesStrategyCode,
+  QuoteStrategyRow,
 } from './types';
 import {
   emptyStaffQuoteHeader,
@@ -32,6 +35,43 @@ import {
   staffHeaderForStay,
 } from './staff-quote-bind';
 import { rowRoomLabel, rowRoomTypeCode, type RoomTypeCode } from './room-types';
+
+export type QuoteStrategyResult = {
+  offer: QuoteOffer;
+  staffQuote: StaffQuoteAllocation;
+  extrasReviewItems?: string[];
+  /** Per-strategy document cache; changing the selected row never discards earlier PDFs. */
+  pdf?: QuotePdf;
+};
+
+export type QuoteWorkflowSession = QuoteSession & {
+  quoteStrategyRows: Record<string, Partial<Record<QuoteSalesStrategyCode, QuoteStrategyRow>>>;
+  quoteStrategyResults: Record<string, Partial<Record<QuoteSalesStrategyCode, QuoteStrategyResult>>>;
+  quoteStrategyRevisions: Record<string, number>;
+  quoteStrategySelections: Record<string, QuoteSalesStrategyCode>;
+};
+
+export type QuoteStrategySessionAction =
+  | {
+      type: 'quote_strategy_comparison_started';
+      stayKey: string;
+      strategyCodes: QuoteSalesStrategyCode[];
+      selectionEpoch: number;
+      stayRevision: number;
+    }
+  | {
+      type: 'quote_strategy_comparison_result';
+      stayKey: string;
+      strategyCode: QuoteSalesStrategyCode;
+      selectionEpoch: number;
+      stayRevision: number;
+      outcome: {
+        strategyCode: QuoteSalesStrategyCode;
+        row: QuoteStrategyRow;
+        result?: QuoteStrategyResult;
+      };
+    }
+  | { type: 'quote_strategy_selected'; stayKey: string; strategyCode: QuoteSalesStrategyCode };
 
 /**
  * The amendment Luna reported on this email, or null. It lives on the analysis, so it survives every reducer
@@ -488,7 +528,7 @@ export function analysisRetryKey(
   return staffNote ? `${withTreat}|note:${staffNote}` : withTreat;
 }
 
-export function initialQuoteSession(): QuoteSession {
+export function initialQuoteSession(): QuoteWorkflowSession {
   return {
     phase: 'idle',
     binding: null,
@@ -522,6 +562,10 @@ export function initialQuoteSession(): QuoteSession {
     staffNote: null,
     stayRevision: 1,
     analysisStartStayRevision: null,
+    quoteStrategyRows: {},
+    quoteStrategyResults: {},
+    quoteStrategyRevisions: {},
+    quoteStrategySelections: {},
   };
 }
 
@@ -848,9 +892,201 @@ export function canCreateNativeDraft(session: QuoteSession): boolean {
   );
 }
 
-function clearDownstream(session: QuoteSession): QuoteSession {
+function quoteStrategyState(session: QuoteSession): Pick<
+  QuoteWorkflowSession,
+  'quoteStrategyRows' | 'quoteStrategyResults' | 'quoteStrategyRevisions' | 'quoteStrategySelections'
+> {
+  const state = session as Partial<QuoteWorkflowSession>;
+  return {
+    quoteStrategyRows: state.quoteStrategyRows ?? {},
+    quoteStrategyResults: state.quoteStrategyResults ?? {},
+    quoteStrategyRevisions: state.quoteStrategyRevisions ?? {},
+    quoteStrategySelections: state.quoteStrategySelections ?? {},
+  };
+}
+
+export function quoteStrategyStayRevision(session: QuoteSession, stayKey: string): number {
+  return quoteStrategyState(session).quoteStrategyRevisions[stayKey] ?? 1;
+}
+
+function invalidatedQuoteStrategyState(session: QuoteSession): Pick<
+  QuoteWorkflowSession,
+  'quoteStrategyRows' | 'quoteStrategyResults' | 'quoteStrategyRevisions' | 'quoteStrategySelections'
+> {
+  const state = quoteStrategyState(session);
+  const revisions = { ...state.quoteStrategyRevisions };
+  const keys = new Set([
+    ...Object.keys(state.quoteStrategyRows),
+    ...Object.keys(state.quoteStrategyResults),
+    ...Object.keys(state.quoteStrategyRevisions),
+    ...Object.keys(state.quoteStrategySelections),
+  ]);
+  for (const key of keys) revisions[key] = quoteStrategyStayRevision(session, key) + 1;
+  return {
+    quoteStrategyRows: {},
+    quoteStrategyResults: {},
+    quoteStrategyRevisions: revisions,
+    quoteStrategySelections: {},
+  };
+}
+
+function quoteStrategyStateAfterStayEdit(
+  session: QuoteSession,
+  affected: ReadonlySet<string>,
+): Pick<
+  QuoteWorkflowSession,
+  'quoteStrategyRows' | 'quoteStrategyResults' | 'quoteStrategyRevisions' | 'quoteStrategySelections'
+> {
+  const state = quoteStrategyState(session);
+  const quoteStrategyRows = { ...state.quoteStrategyRows };
+  const quoteStrategyResults = { ...state.quoteStrategyResults };
+  const quoteStrategyRevisions = { ...state.quoteStrategyRevisions };
+  const quoteStrategySelections = { ...state.quoteStrategySelections };
+  for (const key of affected) {
+    delete quoteStrategyRows[key];
+    delete quoteStrategyResults[key];
+    delete quoteStrategySelections[key];
+    quoteStrategyRevisions[key] = quoteStrategyStayRevision(session, key) + 1;
+  }
+  return { quoteStrategyRows, quoteStrategyResults, quoteStrategyRevisions, quoteStrategySelections };
+}
+
+function quoteStrategyStayExists(session: QuoteSession, stayKey: string): boolean {
+  return session.groups.some((group) => stayKeyForGroup(group) === stayKey);
+}
+
+function quoteStrategyOutcomeIsCurrent(
+  session: QuoteSession,
+  stayKey: string,
+  selectionEpoch: number,
+  outcome: { row: QuoteStrategyRow; result?: QuoteStrategyResult },
+): outcome is { row: Extract<QuoteStrategyRow, { status: 'ready' }>; result: QuoteStrategyResult } {
+  if (outcome.row.status !== 'ready' || !outcome.result) return false;
+  const source = session.staffSource;
+  const { offer, staffQuote } = outcome.result;
+  const expectedGroupIds = session.groups
+    .filter((group) => stayKeyForGroup(group) === stayKey)
+    .map((group) => group.id);
+  return Boolean(
+    source &&
+      expectedGroupIds.length > 0 &&
+      expectedGroupIds.every((id) => offer.coversGroupIds.includes(id)) &&
+      offer.kind === 'allocation' &&
+      offer.quoteRequestKey === stayKey &&
+      offer.id === staffQuote.revisionRef &&
+      offer.stayTotalMinor === staffQuote.totalMinor &&
+      staffQuote.totalMinor > 0 &&
+      staffQuote.selectionEpoch === selectionEpoch &&
+      staffQuote.sourceHash === source.sourceHash &&
+      staffQuote.messageId === source.messageId &&
+      staffQuote.threadId === source.threadId,
+  );
+}
+
+function reduceQuoteStrategySession(
+  session: QuoteSession,
+  action: QuoteStrategySessionAction,
+): QuoteWorkflowSession {
+  const state: QuoteWorkflowSession = { ...session, ...quoteStrategyState(session) };
+  if (action.type === 'quote_strategy_comparison_started') {
+    if (
+      !state.binding ||
+      state.binding.selectionEpoch !== action.selectionEpoch ||
+      !quoteStrategyStayExists(state, action.stayKey) ||
+      quoteStrategyStayRevision(state, action.stayKey) !== action.stayRevision
+    ) return state;
+    const rows = { ...state.quoteStrategyRows[action.stayKey] };
+    const results = { ...state.quoteStrategyResults[action.stayKey] };
+    for (const code of action.strategyCodes) {
+      rows[code] = { status: 'pending' };
+      delete results[code];
+    }
+    return {
+      ...state,
+      quoteStrategyRows: { ...state.quoteStrategyRows, [action.stayKey]: rows },
+      quoteStrategyResults: { ...state.quoteStrategyResults, [action.stayKey]: results },
+      quoteStrategyRevisions: { ...state.quoteStrategyRevisions, [action.stayKey]: action.stayRevision },
+    };
+  }
+
+  if (action.type === 'quote_strategy_comparison_result') {
+    if (
+      !state.binding ||
+      state.binding.selectionEpoch !== action.selectionEpoch ||
+      action.outcome.strategyCode !== action.strategyCode ||
+      !quoteStrategyStayExists(state, action.stayKey) ||
+      quoteStrategyStayRevision(state, action.stayKey) !== action.stayRevision ||
+      state.quoteStrategyRows[action.stayKey]?.[action.strategyCode]?.status !== 'pending'
+    ) return state;
+
+    const { row } = action.outcome;
+    const results = { ...state.quoteStrategyResults[action.stayKey] };
+    if (row.status === 'ready') {
+      if (!quoteStrategyOutcomeIsCurrent(state, action.stayKey, action.selectionEpoch, action.outcome)) return state;
+      const result = action.outcome.result!;
+      results[action.strategyCode] = {
+        ...result,
+        offer: { ...result.offer, quoteRequestKey: action.stayKey },
+        staffQuote: {
+          ...result.staffQuote,
+          quoteRequestKey: action.stayKey,
+          // A change to another stay may move the global input revision. This result was admitted by the unchanged
+          // per-stay revision above, so rebase it for the active session without making other rows stale.
+          inputRevision: state.inputRevision,
+        },
+      };
+    } else {
+      if ((row.status !== 'not_offered' && row.status !== 'failed') || !row.message.trim()) return state;
+      delete results[action.strategyCode];
+    }
+    return {
+      ...state,
+      quoteStrategyRows: {
+        ...state.quoteStrategyRows,
+        [action.stayKey]: { ...state.quoteStrategyRows[action.stayKey], [action.strategyCode]: row },
+      },
+      quoteStrategyResults: { ...state.quoteStrategyResults, [action.stayKey]: results },
+    };
+  }
+
+  const row = state.quoteStrategyRows[action.stayKey]?.[action.strategyCode];
+  const result = state.quoteStrategyResults[action.stayKey]?.[action.strategyCode];
+  if (!state.binding || row?.status !== 'ready' || !result) return state;
+  const staffQuote = { ...result.staffQuote, quoteRequestKey: action.stayKey, inputRevision: state.inputRevision };
+  const offer = { ...result.offer, quoteRequestKey: action.stayKey };
+  const stayPdfs = { ...state.stayPdfs };
+  if (result.pdf) stayPdfs[action.stayKey] = result.pdf;
+  else delete stayPdfs[action.stayKey];
+  return {
+    ...state,
+    phase: state.phase === 'requirements' ? 'results' : state.phase,
+    selectedStayKey: action.stayKey,
+    selectedOfferIds: [offer.id],
+    offers: [
+      ...state.offers.filter((item) => item.kind !== 'allocation' || item.quoteRequestKey !== action.stayKey),
+      offer,
+    ],
+    staffQuote,
+    staffQuotes: { ...state.staffQuotes, [action.stayKey]: staffQuote },
+    stayPdfs,
+    pdf: isMultiStay(state) ? null : result.pdf ?? null,
+    evidence: {
+      kind: 'authorised',
+      selectionEpoch: state.binding.selectionEpoch,
+      inputRevision: state.inputRevision,
+    },
+    bookingDrafts: keepKeys(state.bookingDrafts, new Set([action.stayKey]), false),
+    quoteStrategySelections: { ...state.quoteStrategySelections, [action.stayKey]: action.strategyCode },
+  };
+}
+
+function clearDownstream(session: QuoteSession, preserveQuoteStrategies = false): QuoteSession {
+  const strategyState = preserveQuoteStrategies
+    ? quoteStrategyState(session)
+    : invalidatedQuoteStrategyState(session);
   return {
     ...session,
+    ...strategyState,
     ...(session.reviewedReplySource === 'quote_decline'
       ? { reviewedReplyHtml: '', reviewedReplySource: undefined }
       : {}),
@@ -1204,6 +1440,7 @@ function editStays(
     )
     .map(([key]) => key);
   const affected: ReadonlySet<string> = misplaced.length ? new Set([...touched, ...misplaced]) : touched;
+  const strategyState = quoteStrategyStateAfterStayEdit(session, affected);
   const selectedStayKey =
     session.selectedStayKey && keys.includes(session.selectedStayKey)
       ? session.selectedStayKey
@@ -1236,8 +1473,12 @@ function editStays(
       inputRevision: session.inputRevision + 1,
       phase: 'requirements',
       steps: planQuoteSteps(groups),
-    });
-    return { ...cleared, rateOptions: (session.rateOptions ?? []).filter((option) => option.groupId === keepRatesOf) };
+    }, true);
+    return {
+      ...cleared,
+      ...strategyState,
+      rateOptions: (session.rateOptions ?? []).filter((option) => option.groupId === keepRatesOf),
+    };
   }
   const staffQuotes = keepKeys(session.staffQuotes, affected, false);
   const offers = session.offers.filter((offer) => !affected.has(offer.quoteRequestKey));
@@ -1250,6 +1491,7 @@ function editStays(
   const resultsPhase = session.phase === 'results' || session.phase === 'tools' || session.phase === 'review';
   return {
     ...edited,
+    ...strategyState,
     phase: !hasResults && resultsPhase ? 'requirements' : session.phase,
     steps: rePlanSteps(session, groups, staffQuotes, affected),
     staffQuotes,
@@ -1388,7 +1630,22 @@ export function quoteStayRunIsCurrent(
   );
 }
 
-export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAction): QuoteSession {
+export function reduceQuoteSession(
+  session: QuoteSession,
+  action: QuoteSessionAction | QuoteStrategySessionAction,
+): QuoteWorkflowSession;
+export function reduceQuoteSession(
+  session: QuoteSession,
+  action: QuoteSessionAction | QuoteStrategySessionAction,
+): QuoteSession {
+  session = { ...session, ...quoteStrategyState(session) };
+  if (
+    action.type === 'quote_strategy_comparison_started' ||
+    action.type === 'quote_strategy_comparison_result' ||
+    action.type === 'quote_strategy_selected'
+  ) {
+    return reduceQuoteStrategySession(session, action);
+  }
   if (action.type === 'analysis_ready') {
     const analysis = withFallbackMissingQuoteReplyFields(action.analysis);
     if (analysis !== action.analysis) action = { ...action, analysis };
@@ -1415,7 +1672,8 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (
         !session.staffQuote &&
         Object.keys(session.bookingDrafts).length === 0 &&
-        Object.keys(session.staffQuotes ?? {}).length === 0
+        Object.keys(session.staffQuotes ?? {}).length === 0 &&
+        Object.keys(quoteStrategyState(session).quoteStrategyResults).length === 0
       ) {
         return chosen;
       }
@@ -1709,6 +1967,9 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       if (action.offer.nightly.length) return session;
       const stayKey = action.offer.quoteRequestKey;
       const staffQuote = { ...action.staffQuote, quoteRequestKey: stayKey };
+      const strategyState = quoteStrategyState(session);
+      const quoteStrategySelections = { ...strategyState.quoteStrategySelections };
+      delete quoteStrategySelections[stayKey];
       const stayCount = requestedQuoteKeys(session.groups).length;
       // A new run replaces only this option's result and PDF. Other options keep theirs.
       const stayPdfs = { ...session.stayPdfs };
@@ -1758,6 +2019,8 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       }
       return {
         ...session,
+        ...strategyState,
+        quoteStrategySelections,
         phase: stayCount > 1 ? 'tools' : 'results',
         rateOptions: [
           ...(session.rateOptions ?? []).filter((option) => !runGroupIds.has(option.groupId)),
@@ -2200,6 +2463,21 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         return session;
       }
       const stayKey = session.selectedStayKey;
+      const strategyState = quoteStrategyState(session);
+      const selectedStrategy = stayKey ? strategyState.quoteStrategySelections[stayKey] : undefined;
+      let quoteStrategyResults = strategyState.quoteStrategyResults;
+      if (stayKey && selectedStrategy && strategyState.quoteStrategyResults[stayKey]?.[selectedStrategy]) {
+        quoteStrategyResults = {
+          ...strategyState.quoteStrategyResults,
+          [stayKey]: {
+            ...strategyState.quoteStrategyResults[stayKey],
+            [selectedStrategy]: {
+              ...strategyState.quoteStrategyResults[stayKey]![selectedStrategy]!,
+              pdf: action.pdf,
+            },
+          },
+        };
+      }
       const generatedReply =
         session.reviewedReplySource === 'missing_quote_details' ||
         session.reviewedReplySource === 'quote_decline' ||
@@ -2218,6 +2496,8 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
           : session.reviewedReplySource;
       return {
         ...session,
+        ...strategyState,
+        quoteStrategyResults,
         pdf: action.pdf,
         phase: 'review',
         reviewedReplyHtml,
