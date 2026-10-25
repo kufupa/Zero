@@ -37,7 +37,8 @@ export const HRDAV_QUOTE_IDENTITY: QuotePropertyIdentity = {
   letterhead: 'none',
 };
 
-export function quotePropertyIdentity(propertyCode: string): QuotePropertyIdentity {
+export function quotePropertyIdentity(propertyCode: string | null | undefined): QuotePropertyIdentity {
+  if (!propertyCode?.trim()) throw new Error('quote_property_required');
   if (propertyCode === HRDAV_PROPERTY_CODE) return HRDAV_QUOTE_IDENTITY;
   if (propertyCode === HRCEN_PROPERTY_CODE) return HRCEN_QUOTE_IDENTITY;
   throw new Error(`unknown_quote_property:${propertyCode}`);

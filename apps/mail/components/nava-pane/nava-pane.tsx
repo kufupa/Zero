@@ -19,7 +19,6 @@ import { withContactLines } from '@/lib/quote-workflow/document-contact';
 import {
   missingQuoteDetailsWrapperHtml,
   quoteDeclineReplyHtml,
-  quotePropertyCodeForTransport,
   quoteWrapperHtml,
 } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
@@ -793,7 +792,7 @@ export function NavaPane({
         replyGreetingName(documentContact?.name, activeEmail),
         fields,
         staffSignerName,
-        quotePropertyCodeForTransport(quoteSession.binding?.transportId),
+        activePaneConfig?.propertyCode,
       );
       if (
         (!quoteSession.reviewedReplyHtml.trim() && !quoteSession.reviewedReplyEdited) ||
@@ -816,6 +815,7 @@ export function NavaPane({
     quoteSession.reviewedReplyHtml,
     quoteSession.reviewedReplySource,
     staffSignerName,
+    activePaneConfig?.propertyCode,
   ]);
 
   const priorQuoteKey = [
@@ -1877,7 +1877,7 @@ export function NavaPane({
       ? quoteWrapperHtml(greetingName, staffSignerName, {
           ...(quote.dinnerAddOn ? { dinnerAddOn: quote.dinnerAddOn } : {}),
           totalMinor: quote.totalMinor,
-          propertyCode: quotePropertyCodeForTransport(session.binding?.transportId),
+          propertyCode: activePaneConfig?.propertyCode,
         })
       : undefined;
     const staff = staffQuoteFromTrpc(trpcClient);

@@ -65,7 +65,7 @@ export type QuoteWorkbookInput = {
   lines: WorkbookLine[];
   /** Unpriced staff note, printed in the note block. */
   note?: string;
-  propertyCode?: string;
+  propertyCode: string;
 };
 
 type WorkbookItem = {
@@ -454,6 +454,7 @@ function scrubCore(xml: string): string {
  * values, so Excel can recalculate them. Metadata is scrubbed. The date is fixed, not TODAY().
  */
 export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
+  const identity = quotePropertyIdentity(input.propertyCode);
   if (input.lines.length < 1) throw new Error('workbook_line_count');
   if (input.lines.length > MAX_WORKBOOK_LINES) throw new WorkbookLineLimitError(lineLimitMessage(input.lines.length));
   const files = unzipSync(readFileSync(TEMPLATE_PATH));
@@ -517,7 +518,6 @@ export function buildQuoteWorkbook(input: QuoteWorkbookInput): Uint8Array {
   if (note) sheet = setNote(sheet, note, NOTE_ROWS.map(below));
   sheet = setText(sheet, `B${below(61)}`, input.header.signerName);
   sheet = setText(sheet, `B${below(62)}`, input.header.signerEmail);
-  const identity = quotePropertyIdentity(input.propertyCode ?? 'HRCEN');
   if (identity.telephone) sheet = setText(sheet, `B${below(63)}`, identity.telephone);
   else sheet = clearCell(sheet, `B${below(63)}`);
   if (identity.letterhead === 'none') sheet = stripCenturionGuestLinks(sheet, below);

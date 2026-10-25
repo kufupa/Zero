@@ -16,7 +16,7 @@ export type ProposalPdfInput = {
   clientTelephone: string;
   agency: string;
   dateLabel: string;
-  propertyCode?: string;
+  propertyCode: string;
   lines: Array<{
     dateLabel: string;
     qty: number;
@@ -34,19 +34,19 @@ export async function buildQuoteProposalPdf(
   signer: { name: string; email: string },
   gotenbergUrl: string,
 ): Promise<{ fileName: string; pdf: Uint8Array }> {
+  let identity: ReturnType<typeof quotePropertyIdentity>;
   let descriptions: string[];
   try {
+    identity = quotePropertyIdentity(input.propertyCode);
     if (input.lines.some((line) => !['bb', 'dinner_bb', 'room_only'].includes(line.meal))) throw new Error('unknown meal plan');
     descriptions = input.lines.map((line) =>
-      proposalDescription(line.roomCode, line.meal, input.propertyCode ?? 'HRCEN'),
+      proposalDescription(line.roomCode, line.meal, input.propertyCode),
     );
   } catch (err) {
     throw new ProposalInputError(err instanceof Error ? err.message : 'unknown room code');
   }
   let xlsx: Uint8Array;
   try {
-    const propertyCode = input.propertyCode ?? 'HRCEN';
-    const identity = quotePropertyIdentity(propertyCode);
     xlsx = brandQuoteWorkbookBytes(
       patchProposalWorkbook(readFileSync(TEMPLATE_PATH), {
         attention: input.attention,
@@ -65,7 +65,7 @@ export async function buildQuoteProposalPdf(
           rate: line.rate,
         })),
       }),
-      propertyCode,
+      identity.propertyCode,
     );
   } catch (err) {
     throw new ProposalInputError(err instanceof Error ? err.message : 'invalid proposal input');

@@ -53,7 +53,7 @@ describe('quote proposal helpers', () => {
     expect(html).not.toMatch(/Centurion/i);
   });
 
-  it('uses gold wrapper copy and hotel telephone', () => {
+  it('uses gold Centurion wrapper copy', () => {
     const html = quoteWrapperHtml('David Miller', 'R Opperman', { propertyCode: 'HRCEN' });
     expect(html).toContain('Good day David Miller,');
     expect(html).toContain('Thank you for Choosing The Centurion Hotel.');
