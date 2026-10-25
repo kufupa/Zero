@@ -263,7 +263,7 @@ describe('booking cards', () => {
   it('builds the HMS preview from the current Stay group instead of stale draft values', () => {
     const { client, preview } = paneClient();
     const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
-    const currentGroup = {
+    const currentGroup: StayGroupRequirement = {
       ...g1,
       arrivalDate: '2026-12-03',
       departureDate: '2026-12-05',
