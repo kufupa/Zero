@@ -71,23 +71,26 @@ export function configuredQuoteShopStrategies(propertyCode: string): string[] {
   return selectQuoteShopStrategies({ configured });
 }
 
-/** Primary BAR/Government shops first so the hourly cap cannot drop a stay. Extras follow. */
+function extraQuoteShopJobs(input: StaffQuoteInput, allowed: readonly string[]): QuoteShopJob[] {
+  const extras: QuoteShopJob[] = [];
+  for (const strategy of allowed) {
+    if (strategy === input.salesStrategy) continue;
+    if (strategy === 'BAR' || strategy === 'Government') {
+      extras.push({ input: { ...input, salesStrategy: strategy } });
+    } else {
+      extras.push({ input, shopStrategy: strategy });
+    }
+  }
+  return extras;
+}
+
+/** Base BAR/Government job for every stay, then extra strategies. Default hour cap is 6. */
 export function quoteShopJobsForPlan(
   plan: PreparedStaffQuotePlan,
   allowed: readonly string[],
 ): QuoteShopJob[] {
-  const primaries: QuoteShopJob[] = plan.inputs.map((input) => ({ input }));
-  const extras: QuoteShopJob[] = [];
-  for (const input of plan.inputs) {
-    for (const strategy of allowed) {
-      if (strategy === input.salesStrategy) continue;
-      if (strategy === 'BAR' || strategy === 'Government') {
-        extras.push({ input: { ...input, salesStrategy: strategy } });
-      } else {
-        extras.push({ input, shopStrategy: strategy });
-      }
-    }
-  }
+  const primaries = plan.inputs.map((input) => ({ input }));
+  const extras = plan.inputs.flatMap((input) => extraQuoteShopJobs(input, allowed));
   return [...primaries, ...extras];
 }
 

@@ -782,6 +782,60 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(bar?.readRequest).not.toHaveProperty('shopStrategy');
     }));
 
+  it('queues a BAR job for every stay before extra shops under the default hour cap', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      quoteShopStrategyLoaders.forProperty = () => [
+        'BAR',
+        'Wholesale',
+        'Negotiated Contracted',
+        'Government',
+        'Airline Crews',
+        'STO',
+      ];
+      const first = quoteExtractionPayload();
+      const stay = first.stays[0]!;
+      const { messageId, run } = await seedQuoteExtraction(db, {
+        payload: {
+          ...first,
+          stays: [
+            stay,
+            {
+              ...stay,
+              id: 's_87654321',
+              requested: { arrival: '2099-12-12', departure: '2099-12-14' },
+              rows: [{ ...stay.rows[0]!, id: 'r_87654321' }],
+            },
+          ],
+        },
+      });
+
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(6);
+      const rows = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      expect(rows).toHaveLength(6);
+      const primaryBars = rows.filter((row) => {
+        const request = row.readRequest as {
+          shopStrategy?: string;
+          input?: { salesStrategy?: string; groups?: Array<{ id?: string; arrivalDate?: string }> };
+        };
+        return !request.shopStrategy && request.input?.salesStrategy === 'BAR';
+      });
+      expect(primaryBars).toHaveLength(2);
+      expect(
+        new Set(
+          primaryBars.map(
+            (row) =>
+              (row.readRequest as { input?: { groups?: Array<{ arrivalDate?: string }> } }).input
+                ?.groups?.[0]?.arrivalDate,
+          ),
+        ),
+      ).toEqual(new Set(['2099-11-12', '2099-12-12']));
+    }));
+
   it('keeps HRCEN BAR and Government as a single prepared job', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');

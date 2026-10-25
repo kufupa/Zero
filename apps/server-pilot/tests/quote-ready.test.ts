@@ -590,6 +590,21 @@ const SIX_QUOTE_SHOP_STRATEGIES = [
   'STO',
 ] as const;
 
+function twoStayPlan() {
+  const second = payload().stays[0]!;
+  return build({
+    stays: [
+      payload().stays[0]!,
+      {
+        ...second,
+        id: 'stay-2',
+        requested: { arrival: '2026-10-24', departure: '2026-10-27' },
+        rows: second.rows.map((row) => ({ ...row, id: 'row-2' })),
+      },
+    ],
+  });
+}
+
 describe('per-strategy quote shop jobs', () => {
   afterEach(() => {
     quoteShopStrategyLoaders.forProperty = null;
@@ -650,24 +665,24 @@ describe('per-strategy quote shop jobs', () => {
   });
 
   it('queues every stay primary before extra strategy shops', () => {
-    const second = payload().stays[0]!;
-    const plan = build({
-      stays: [
-        payload().stays[0]!,
-        {
-          ...second,
-          id: 'stay-2',
-          requested: { arrival: '2026-10-24', departure: '2026-10-27' },
-          rows: second.rows.map((row) => ({ ...row, id: 'row-2' })),
-        },
-      ],
-    });
-    const jobs = quoteShopJobsForPlan(plan, SIX_QUOTE_SHOP_STRATEGIES);
+    const jobs = quoteShopJobsForPlan(twoStayPlan(), SIX_QUOTE_SHOP_STRATEGIES);
     expect(jobs).toHaveLength(12);
     expect(jobs.slice(0, 2).map((job) => job.shopStrategy ?? job.input.salesStrategy)).toEqual([
       'BAR',
       'BAR',
     ]);
     expect(jobs.slice(0, 2).every((job) => !job.shopStrategy)).toBe(true);
+  });
+
+  it('keeps every stay BAR inside the default six-job hour cap', () => {
+    const jobs = quoteShopJobsForPlan(twoStayPlan(), SIX_QUOTE_SHOP_STRATEGIES);
+    const queued = jobs.slice(0, 6);
+    const primaryBars = queued.filter(
+      (job) => !job.shopStrategy && job.input.salesStrategy === 'BAR',
+    );
+    expect(primaryBars).toHaveLength(2);
+    expect(new Set(primaryBars.map((job) => job.input.groups[0]?.id))).toEqual(
+      new Set(['row-1', 'row-2']),
+    );
   });
 });
