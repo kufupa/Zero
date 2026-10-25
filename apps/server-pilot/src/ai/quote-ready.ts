@@ -22,7 +22,7 @@ export type QuoteShopJob = {
   input: StaffQuoteInput;
 };
 
-/** One shop per allowed registry strategy per stay. BAR first. Empty list keeps the primary plan shop. */
+/** One shop per allowed registry strategy per stay. Primaries first, then extras with BAR first. */
 export function quoteShopJobsForPlan(
   plan: PreparedStaffQuotePlan,
   strategies: readonly QuoteSalesStrategy[] = [],
@@ -33,11 +33,15 @@ export function quoteShopJobsForPlan(
   const ordered = [...strategies].sort(
     (left, right) => Number(right.code === 'BAR') - Number(left.code === 'BAR'),
   );
-  return plan.inputs.flatMap((input) =>
-    ordered.map((strategy) => ({
-      input: { ...input, salesStrategy: strategy.requestValue },
-    })),
+  const primary = plan.inputs.map((input) => ({ input }));
+  const extras = plan.inputs.flatMap((input) =>
+    ordered
+      .filter((strategy) => strategy.requestValue !== input.salesStrategy)
+      .map((strategy) => ({
+        input: { ...input, salesStrategy: strategy.requestValue },
+      })),
   );
+  return [...primary, ...extras];
 }
 
 function record(value: unknown): Record<string, unknown> | null {

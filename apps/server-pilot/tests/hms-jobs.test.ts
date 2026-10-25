@@ -870,6 +870,59 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(govJobs.map(shopSalesStrategy).sort()).toEqual(['BAR', 'Government']);
     }));
 
+  it('keeps each stay primary under the default hour cap before extra strategies', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const quoteEnv = {
+        ...QUOTE_PREPARE_ENV,
+        HMS_DAVINCI_MAKE_QUOTE: 'on',
+        RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '/tmp/hrdav-quote.json',
+      };
+      const first = quoteExtractionPayload();
+      const stay = first.stays[0]!;
+      const source = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID);
+      await insertStoredExtraction(db, source.messageId, 'quote', {
+        ...first,
+        stays: [
+          stay,
+          {
+            ...stay,
+            id: 's_87654321',
+            requested: { arrival: '2099-12-12', departure: '2099-12-14' },
+            rows: [{ ...stay.rows[0]!, id: 'r_87654321' }],
+          },
+        ],
+      });
+      const run = {
+        runKind: 'inbound_extraction' as const,
+        transportId: DAVINCI_TRANSPORT_ID,
+        triggerMessageId: source.messageId,
+      };
+      expect(await prefetchQuoteReadyForExtraction(run, db, quoteEnv)).toBe(6);
+      const rows = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, source.messageId),
+            sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+          ),
+        );
+      expect(rows).toHaveLength(6);
+      expect(
+        new Set(
+          rows
+            .filter((row) => shopSalesStrategy(row) === 'BAR')
+            .map(
+              (row) =>
+                (row.readRequest as { input?: { groups?: Array<{ arrivalDate?: string }> } }).input
+                  ?.groups?.[0]?.arrivalDate,
+            ),
+        ),
+      ).toEqual(new Set(['2099-11-12', '2099-12-12']));
+    }));
+
   it('does not reuse a queued dev-eval quote for a later staff quote', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');

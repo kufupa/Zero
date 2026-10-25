@@ -654,22 +654,22 @@ describe('quote shop jobs per registry strategy', () => {
     const jobs = quoteShopJobsForPlan(twoStayPlan(), HRCEN_STRATEGIES);
     expect(jobs.map((job) => job.input.salesStrategy)).toEqual([
       'BAR',
-      'Government',
       'BAR',
       'Government',
+      'Government',
     ]);
-    expect(jobs.map((job) => job.input.groups[0]?.id)).toEqual(['row-1', 'row-1', 'row-2', 'row-2']);
+    expect(jobs.map((job) => job.input.groups[0]?.id)).toEqual(['row-1', 'row-2', 'row-1', 'row-2']);
   });
 
-  it('shops BAR plus Government for an all-dbb HRCEN stay', () => {
+  it('shops Government plus BAR for an all-dbb HRCEN stay', () => {
     const stay = payload().stays[0]!;
     const plan = build({
       stays: [{ ...stay, rows: stay.rows.map((row) => ({ ...row, board: 'dbb' })) }],
     });
     expect(plan.inputs[0]?.salesStrategy).toBe('Government');
     expect(quoteShopJobsForPlan(plan, HRCEN_STRATEGIES).map((job) => job.input.salesStrategy)).toEqual([
-      'BAR',
       'Government',
+      'BAR',
     ]);
   });
 
@@ -678,6 +678,12 @@ describe('quote shop jobs per registry strategy', () => {
     expect(jobs).toHaveLength(12);
     expect(jobs.filter((job) => job.input.groups[0]?.id === 'row-1')).toHaveLength(6);
     expect(jobs.filter((job) => job.input.groups[0]?.id === 'row-2')).toHaveLength(6);
+  });
+
+  it('queues every stay primary before extra strategies', () => {
+    const jobs = quoteShopJobsForPlan(twoStayPlan(), SIX_STRATEGIES);
+    expect(jobs.slice(0, 2).map((job) => job.input.salesStrategy)).toEqual(['BAR', 'BAR']);
+    expect(jobs.slice(0, 2).map((job) => job.input.groups[0]?.id)).toEqual(['row-1', 'row-2']);
   });
 
   it('pins BAR first even when the registry list does not', () => {
