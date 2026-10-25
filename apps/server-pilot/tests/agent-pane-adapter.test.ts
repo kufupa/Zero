@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  DAVINCI_HOTEL_RULES,
   lunaAnalysisSchema,
   RESERVATIONIST_WORKFLOWS,
   type LunaAnalysis,
@@ -318,6 +319,35 @@ describe('analyseSelectionWithAgent', () => {
     expect(prompt).toContain(selection.bodyText);
     expect(prompt).toContain('Use the November dates.');
     expect(prompt).toContain('Attachment note.');
+  });
+
+  it('uses registry hotel rules for HRDAV and refuses an unknown property with cause class', async () => {
+    mocks.generate.mockResolvedValueOnce({
+      object: decision('quote'),
+      usage: {},
+      steps: [],
+    });
+    await analyseSelectionWithAgent({
+      selection,
+      model: azureModel,
+      propertyCode: 'HRDAV',
+    });
+    const options = mocks.generate.mock.calls.at(-1)?.[1] as {
+      requestContext?: { get: (key: string) => unknown };
+    };
+    expect(options.requestContext?.get('propertyCode')).toBe('HRDAV');
+    expect(options.requestContext?.get('hotelRules')).toBe(DAVINCI_HOTEL_RULES);
+
+    await expect(
+      analyseSelectionWithAgent({
+        selection,
+        model: azureModel,
+        propertyCode: 'HRFAKE',
+      }),
+    ).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      cause: expect.objectContaining({ name: 'PropertyRefusalCause', code: 'property_unknown' }),
+    });
   });
 
   describe('PANE_PRECLASSIFY hint', () => {

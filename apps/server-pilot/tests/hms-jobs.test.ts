@@ -55,7 +55,13 @@ import { runHmsJobOnce } from '../src/ai/worker.js';
 import type { DB } from '../src/db/client.js';
 import { parseEnv } from '../src/env.js';
 import { createPropertyReadLock, PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
-import { CENTURION_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
+import {
+  CENTURION_USER_ID,
+  DAVINCI_TRANSPORT_EMAIL,
+  DAVINCI_TRANSPORT_ID,
+  TRANSPORT_EMAIL,
+  TRANSPORT_ID,
+} from '../src/db/seed.js';
 import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
 const staffQuoteRunner = vi.hoisted(() => ({ run: vi.fn() }));
@@ -147,16 +153,21 @@ const FOUND: PaneStayLookupSpawnResult = {
 };
 
 /** A thread with one inbound message, so a job has trigger mail to anchor to. */
-async function seedThread(db: DB, subject = 'Amend booking'): Promise<{ threadId: string; messageId: string }> {
+async function seedThread(
+  db: DB,
+  subject = 'Amend booking',
+  transportId = TRANSPORT_ID,
+): Promise<{ threadId: string; messageId: string }> {
   const threadId = `thread-${randomUUID()}`;
   const messageId = `msg-${randomUUID()}`;
-  await db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID, threadRootId: threadId });
+  await db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
   await db.insert(message).values({
     id: messageId,
-    transportId: TRANSPORT_ID,
+    transportId,
     threadId,
     direction: 'inbound',
     fromAddress: 'guest@example.test',
+    toAddresses: transportId === DAVINCI_TRANSPORT_ID ? [DAVINCI_TRANSPORT_EMAIL] : [],
     subject,
     textBody: `Please amend ${CONFIRMATION}.`,
     receivedAt: new Date(),
@@ -2047,6 +2058,162 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       await expect(queue('Company 12')).rejects.toMatchObject({ name: 'HmsPartyQueueLimitError' });
     }));
 
+  it('a Da Vinci party search without propertyCode uses the HRDAV slot, not HRCEN', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID);
+      const run = await queueUserPartyHmsJob(
+        {
+          transportId: DAVINCI_TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          threadId,
+          request: { kind: 'party', name: 'Horizon Trail Tours', partyKind: 'company' },
+        },
+        db,
+      );
+      expect(run?.metrics).toMatchObject({
+        propertyCode: 'HRDAV',
+        slotId: 'davinci',
+        hmsReadTarget: DAVINCI_HMS_READ_TARGET,
+      });
+      expect(run?.metrics).not.toMatchObject({ propertyCode: 'HRCEN' });
+    }));
+
+  it('a Centurion party search without propertyCode stays on the HRCEN slot', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      const run = await queueUserPartyHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          threadId,
+          request: { kind: 'party', name: 'Horizon Trail Tours', partyKind: 'company' },
+        },
+        db,
+      );
+      expect(run?.metrics).toMatchObject({ propertyCode: 'HRCEN', slotId: 'centurion' });
+      expect(run?.metrics).not.toHaveProperty('hmsReadTarget');
+    }));
+
+  it('refuses an unknown propertyCode with cause class property_unknown before HMS', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db);
+      await expect(
+        queueUserPartyHmsJob(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            threadId,
+            request: { kind: 'party', name: 'Horizon Trail Tours', partyKind: 'company' },
+            propertyCode: 'HRFAKE',
+          },
+          db,
+        ),
+      ).rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED',
+        cause: expect.objectContaining({ name: 'PropertyRefusalCause', code: 'property_unknown' }),
+      });
+    }));
+
+  it('a Da Vinci user find without an explicit target uses the HRDAV slot', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId } = await seedThread(db, 'Amend booking', DAVINCI_TRANSPORT_ID);
+      const run = await queueUserHmsJob(
+        {
+          transportId: DAVINCI_TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          threadId,
+          request: { kind: 'find', confirmation: CONFIRMATION },
+        },
+        db,
+      );
+      expect(run?.metrics).toMatchObject({
+        propertyCode: 'HRDAV',
+        slotId: 'davinci',
+        hmsReadTarget: DAVINCI_HMS_READ_TARGET,
+      });
+    }));
+
+  it('prefetches a Da Vinci confirmation onto the HRDAV slot when HMS_DAVINCI_READS is on', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_DAVINCI_READS', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1', DAVINCI_TRANSPORT_ID);
+      const inbound = await insertInboundExtraction(
+        db,
+        threadId,
+        messageId,
+        'inbound_extraction',
+        `snapshot-${randomUUID()}`,
+        DAVINCI_TRANSPORT_ID,
+      );
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: ['1234567-1'],
+      });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+      expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(1);
+      const [job] = await db
+        .select({ metrics: aiWorkflowRun.metrics })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION));
+      expect(job?.metrics).toMatchObject({
+        propertyCode: 'HRDAV',
+        slotId: 'davinci',
+        hmsReadTarget: DAVINCI_HMS_READ_TARGET,
+      });
+    }));
+
+  it('does not prefetch a Da Vinci confirmation when HMS_DAVINCI_READS is off', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_DAVINCI_READS', 'off');
+      const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1', DAVINCI_TRANSPORT_ID);
+      const inbound = await insertInboundExtraction(
+        db,
+        threadId,
+        messageId,
+        'inbound_extraction',
+        `snapshot-${randomUUID()}`,
+        DAVINCI_TRANSPORT_ID,
+      );
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: ['1234567-1'],
+      });
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+      expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(0);
+    }));
+
+  it('a Da Vinci staff quote without installation refuses not_set_up before HMS', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+      vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '');
+      const { threadId, messageId } = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID);
+      const queued = await enqueueHmsJob(
+        {
+          transportId: DAVINCI_TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: CENTURION_USER_ID,
+          request: { kind: 'staff_quote', input: { ...STAFF_QUOTE_INPUT, messageId } },
+          priority: HMS_JOB_PRIORITY_USER,
+          idempotencyKey: `hms-job:staff-quote:${randomUUID()}`,
+          extraMetrics: {
+            staffQuoteUser: { id: CENTURION_USER_ID, name: 'Synthetic Staff', email: 'staff@example.test' },
+          },
+        },
+        db,
+      );
+      const claimed = await claimJob(db);
+      expect(claimed.id).toBe(queued.run.id);
+      expect(await runClaimedJob(db, claimed)).toBe('dead_letter');
+      const [row] = await db
+        .select({ lastError: aiWorkflowRun.lastError })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.id, queued.run.id));
+      expect(row?.lastError).toBe('not_set_up');
+      expect(staffQuoteRunner.run).not.toHaveBeenCalled();
+    }));
+
   it('queued user jobs report their position in the lane', () =>
     withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
@@ -3220,12 +3387,13 @@ async function insertInboundExtraction(
   messageId: string,
   kind: 'inbound_extraction' | 'inbound_triage' = 'inbound_extraction',
   admissionSnapshotId = `snapshot-${randomUUID()}`,
+  transportId = TRANSPORT_ID,
 ): Promise<AiWorkflowRun> {
   const [row] = await db
     .insert(aiWorkflowRun)
     .values({
       id: randomUUID(),
-      transportId: TRANSPORT_ID,
+      transportId,
       threadId,
       triggerMessageId: messageId,
       runKind: kind,

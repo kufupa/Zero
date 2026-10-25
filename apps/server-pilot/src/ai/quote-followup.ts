@@ -52,7 +52,7 @@ import {
 } from './work-items.js';
 import { normalizeEmailAddress } from './never-spam.js';
 import { quoteFollowUpBody, quotePropertyIdentity } from '../quote-proposal/filename.js';
-import { isDaVinciTransport } from '../hms/hms-read-target.js';
+import { hmsReadTargetForTransport } from '../hms/hms-read-target.js';
 import { confirmationBase } from '../hms/confirmation-match.js';
 
 /**
@@ -1126,7 +1126,7 @@ async function writeFollowUp(
   const text = followUpText(
     transport?.displayName ?? null,
     new Date(sentTime(sent)),
-    isDaVinciTransport(run.transportId) ? 'HRDAV' : 'HRCEN',
+    hmsReadTargetForTransport(run.transportId).propertyCode,
     item.kind,
   );
   const draftId = `${QUOTE_FOLLOWUP_DRAFT_PREFIX}${sent.id}`;
