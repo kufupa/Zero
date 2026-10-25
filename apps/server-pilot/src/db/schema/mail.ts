@@ -71,6 +71,7 @@ export const aiWorkflowRunKindEnum = pgEnum('ai_workflow_run_kind', [
   'inbound_extraction',
   'quote_followup',
   'hms_write',
+  'reply_check',
 ]);
 
 export const aiWorkflowRunStateEnum = pgEnum('ai_workflow_run_state', [
