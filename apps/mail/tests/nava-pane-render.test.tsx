@@ -268,16 +268,7 @@ vi.mock('../providers/query-provider', () => ({
     },
     quoteWorkflow: {
       rateCatalogue: {
-        query: async () => bridgeMockState.quotePaneConfig ?? {
-          transportId: 'transport-1',
-          propertyCode: 'HRCEN',
-          roomTypes: [],
-          ratePlans: [],
-          boards: ['bb'],
-          salesStrategies: [],
-          overrideRateCodes: [],
-          eventRateCodes: [],
-        },
+        query: async () => bridgeMockState.quotePaneConfig,
       },
       voucherFind: { query: voucherFindQuery },
       analyseSelection: {
