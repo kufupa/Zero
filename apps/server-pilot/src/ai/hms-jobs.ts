@@ -2329,7 +2329,7 @@ export async function prefetchQuoteReadyForExtraction(
   const perHour = quotePreparationPerHour(env);
   const shops = quoteShopJobsForPlan(
     evaluation.plan,
-    configuredQuoteShopStrategies(target.propertyCode),
+    configuredQuoteShopStrategies(target.target.propertyCode),
   );
   let created = 0;
   for (const shop of shops) {
