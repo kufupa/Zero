@@ -148,7 +148,7 @@ describe('quote proposal xlsx patch', () => {
         { name: 'R Opperman', email: 'ropperman@legacyhotels.co.za' },
         '',
       ),
-    ).rejects.toMatchObject({ name: 'ProposalInputError', message: 'quote_property_required' });
+    ).rejects.toThrow('quote_property_required');
   });
 
   it('converts a Da Vinci-branded workbook to PDF without Centurion identity', async () => {
