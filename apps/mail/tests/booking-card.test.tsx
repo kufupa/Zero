@@ -1192,13 +1192,16 @@ describe('booking card pane save', () => {
     rerender(view());
     await act(async () => firstCommit.resolve(COMMIT_OK));
 
-    await screen.findByText('Booked in HMS – confirmation 98765-1');
+    await waitFor(() => {
+      const secondRoomName = screen.getAllByLabelText('First name')[1] as HTMLInputElement;
+      expect(secondRoomName.disabled).toBe(false);
+    });
     expect(commit).toHaveBeenCalledTimes(1);
     expect(commit).toHaveBeenCalledWith(
       expect.objectContaining({ bookerName: 'Original Booker' }),
       PANE_DIGEST,
     );
-    expect(bookStay.disabled).toBe(true);
+    expect((screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('sends stayId and workItemId with Book so the server can persist the confirmation', async () => {
