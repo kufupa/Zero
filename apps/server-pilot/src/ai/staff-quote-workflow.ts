@@ -18,8 +18,27 @@ import {
 } from '../quote-proposal/quote-lines.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
 import { PARTY_NO_CONTRACT_CODE, PARTY_SEARCH_INCOMPLETE_CODE, isPartyRateFailure } from './party-rate-failure.js';
+import { quotePaneConfigForProperty } from '../hms/rate-catalogue.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
+
+const STAFF_QUOTE_STRATEGY_LABELS = {
+  BAR: 'BAR',
+  PROMO: 'Promotions',
+  PRESET: 'Preset',
+  WS: 'Wholesale',
+  NC: 'Negoticated Contracted',
+  GOV: 'Government',
+  AIR: 'Airline Crews',
+  DOML: 'Domestic Leisure',
+  OTHER: 'Other',
+} as const;
+type StaffQuoteStrategyCode = keyof typeof STAFF_QUOTE_STRATEGY_LABELS;
+type StaffQuoteStrategyValue = StaffQuoteStrategyCode | 'Government';
+
+function governmentStrategy(value: StaffQuoteStrategyValue): boolean {
+  return value === 'Government' || value === 'GOV';
+}
 
 const groupSchema = z
   .object({
@@ -93,7 +112,7 @@ export const staffQuoteInput = z
     selectionEpoch: z.number().int().nonnegative(),
     inputRevision: z.number().int().nonnegative(),
     groups: z.array(groupSchema).min(1).max(8),
-    salesStrategy: z.enum(['BAR', 'Government']).default('BAR'),
+    salesStrategy: z.enum(['BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER', 'Government']).default('BAR'),
     company: z.string().max(256).default(''),
     agency: z.string().max(256).default(''),
     attention: z.string().max(256).default(''),
@@ -147,6 +166,9 @@ export function staffQuoteDinnerFallback(
   input: StaffQuoteInput;
   groupIds: string[];
 } | null {
+  // These retries belong to the legacy BAR/Government quote path. Comparison rows must report the requested strategy,
+  // not quietly replace a missing room/board with a different search.
+  if (input.salesStrategy !== 'BAR' && input.salesStrategy !== 'Government') return null;
   const requested = requestedGroupIds === undefined ? null : new Set(requestedGroupIds);
   const groupIds = input.groups
     .filter((group) => group.board === 'dinner_bb' && (!requested || requested.has(group.id)))
@@ -186,7 +208,7 @@ export function staffQuoteDinnerNoMatchFallback(
 
 /** Staff note for a successful Government Dinner B&B quote. */
 export function staffQuoteGovernmentDinnerNote(input: StaffQuoteInput): string | null {
-  return input.salesStrategy === 'Government' && input.groups.some((group) => group.board === 'dinner_bb')
+  return governmentStrategy(input.salesStrategy) && input.groups.some((group) => group.board === 'dinner_bb')
     ? 'Priced on the Government Dinner B&B rate because the guest asked for dinner. ' +
       'Choose All public rates (BAR) if the guest is not entitled.'
     : null;
@@ -239,7 +261,7 @@ export function staffQuoteDinnerGroupIdsToRetryAsBb(
   input: StaffQuoteInput,
   rateOptions: readonly { groupId: string; selected: boolean; contract: boolean; rateCode: string }[],
 ): string[] {
-  if (input.salesStrategy === 'Government') return [];
+  if (input.salesStrategy !== 'BAR') return [];
   const dinnerGroupIds = input.groups.filter((group) => group.board === 'dinner_bb').map((group) => group.id);
   if (!input.parties) return dinnerGroupIds;
   const verifiedContractGroupIds = new Set(
@@ -395,7 +417,10 @@ export function prepareStaffQuote(
         includeRestricted: false,
         // Other boards and rooms come back as alternatives, so staff see the rate cards. Only the quoted option is priced in full.
         includeAlternatives: true,
-        salesStrategy: input.salesStrategy,
+        salesStrategy:
+          input.salesStrategy === 'Government'
+            ? 'Government'
+            : STAFF_QUOTE_STRATEGY_LABELS[input.salesStrategy],
       },
       details: 'full',
       maxOptionsPerGroup:
@@ -463,6 +488,7 @@ export function prepareStaffQuote(
   return {
     context,
     request,
+    salesStrategyValue: input.salesStrategy === 'GOV' ? 'Government' : input.salesStrategy,
     header,
     inputDigest,
     authorizationId,
@@ -546,7 +572,7 @@ export function buildStaffProposalFacts(
     input.dinnerAllowanceMinor !== undefined ||
     input.dinnerAllowanceLabel !== undefined ||
     input.dinnerAllowanceUnit !== undefined;
-  const configured = input.salesStrategy === 'Government' ? undefined : options.dinnerAddOn;
+  const configured = governmentStrategy(input.salesStrategy) ? undefined : options.dinnerAddOn;
   // A priced dinner charge also covers rows retried from a dinner board after the scope was saved (a row staff added later).
   const pricedDinner =
     (input.dinnerAllowanceMinor ?? configured?.amountMinor) !== undefined &&
@@ -724,6 +750,15 @@ export async function executeStaffQuote(
     if (!(await stillCurrent())) throw new Error('staff_quote_source_changed');
   };
   await guard();
+  const ownerRef = prepared.context.input.authorizationScope?.ownerRef;
+  if (!ownerRef) throw new Error('staff_quote_authorization_scope_missing');
+  const paneConfig = await quotePaneConfigForProperty(prepared.context.input.propertyCode, ownerRef);
+  const configuredStrategy = paneConfig?.salesStrategies.find(
+    (strategy) => strategy.requestValue === prepared.salesStrategyValue,
+  );
+  if (!configuredStrategy || configuredStrategy.label !== prepared.request.search.salesStrategy) {
+    throw new Error('The selected sales strategy is not configured for this hotel.');
+  }
   if (!services.resolveQuoteTask) throw new Error('staff_quote_installation_unavailable');
   const resolved = await services.resolveQuoteTask(prepared.context);
   await guard();

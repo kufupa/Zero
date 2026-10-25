@@ -25,6 +25,10 @@ import type {
   StaffStayExtras,
   StayGroupRequirement,
   AvailabilityBoardRow,
+  QuoteSalesStrategy,
+  QuoteSalesStrategyCode,
+  QuoteSalesStrategyValue,
+  QuoteStrategyRow,
 } from './types';
 import {
   HRCEN_PROPERTY_CODE,
@@ -84,7 +88,7 @@ export type ExecuteStaffQuoteInput = {
   selectionEpoch: number;
   inputRevision: number;
   groups: StaffQuoteGroupInput[];
-  salesStrategy: 'BAR' | 'Government';
+  salesStrategy: QuoteSalesStrategyValue;
   company: string;
   agency: string;
   attention: string;
@@ -165,16 +169,25 @@ function stableJson(value: unknown): string {
     .join(',')}}`;
 }
 
+const STAFF_QUOTE_NON_PRICE_FIELDS = new Set(
+  'messageId sourceHash selectionEpoch inputRevision company agency attention clientEmail clientTelephone dinnerAllowanceLabel lunchAllowanceLabel notes maxOptionsPerGroup'.split(' '),
+);
+
 function staffQuoteRequestMatches(
   request: StaffQuoteJobView['request'],
   expected: ExecuteStaffQuoteInput,
 ): boolean {
-  if (request?.kind !== 'staff_quote') return false;
-  const stableInput = (input: ExecuteStaffQuoteInput) =>
-    Object.fromEntries(
-      Object.entries(input).filter(([key]) => key !== 'selectionEpoch' && key !== 'inputRevision'),
-    );
-  return stableJson(stableInput(request.input)) === stableJson(stableInput(expected));
+  if (request?.kind !== 'staff_quote' || request.input.messageId !== expected.messageId ||
+    request.input.sourceHash !== expected.sourceHash || request.input.salesStrategy !== expected.salesStrategy) return false;
+  const priceKey = (input: ExecuteStaffQuoteInput) => stableJson({
+    ...Object.fromEntries(Object.entries(input).filter(([key]) => !STAFF_QUOTE_NON_PRICE_FIELDS.has(key))),
+    groups: input.groups.map((group) => ({
+      id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate, quantity: group.quantity,
+      adults: group.adults, childrenAges: group.childrenAges, board: group.board,
+      roomCodes: [...(group.roomCodes ?? [])].sort(), rateCode: group.rateCode ?? null,
+    })),
+  });
+  return priceKey(request.input) === priceKey(expected);
 }
 
 function staffQuoteStayTermsMatch(
@@ -1013,6 +1026,8 @@ type StaffQuoteRequestArgs = {
   stayKey?: string;
   /** Resolved quote-target property; staff quote requests refuse a missing or unknown code. */
   propertyCode?: string;
+  /** Comparison rows are read-back bindings for an already prepared, property-allowed strategy. */
+  strategyRequestValue?: QuoteSalesStrategyValue;
 };
 
 type BuiltStaffQuoteRequest = {
@@ -1051,6 +1066,7 @@ function staffQuoteRequest(
         inputRevision: args.inputRevision,
         groups: prepared.ok,
         ...header,
+        ...(args.strategyRequestValue ? { salesStrategy: args.strategyRequestValue } : {}),
         ...(pickedParties(sent.parties) ? { parties: pickedParties(sent.parties) } : {}),
         ...(rowPrices.length ? { rowPrices } : {}),
         ...(allRoomSearch ? { maxOptionsPerGroup: 200 } : {}),
@@ -1153,7 +1169,7 @@ function boundStaffQuoteResult(
     ...(dinnerFallbackGroupIds.length ? { dinnerFallbackGroupIds } : {}),
     ...(dinnerAddOn ? { dinnerAddOn } : {}),
     approvedHeader: {
-      salesStrategy: built.header.salesStrategy,
+      salesStrategy: built.sent.salesStrategy,
       company: built.header.company,
       agency: built.header.agency,
       attention: built.header.attention,
@@ -1477,6 +1493,138 @@ export async function bindReadBackStaffQuote(
   } catch (error) {
     return { status: 'unavailable', ...searchFailure(error) };
   }
+}
+
+export type BoundStaffQuoteStrategy = {
+  strategyCode: QuoteSalesStrategyCode;
+  row: QuoteStrategyRow;
+  /** Present only when the existing prepared job returned a bindable quote. */
+  result?: Extract<BoundExecuteStaffQuote, { status: 'ok' }>;
+};
+
+type StaffQuoteStrategyBindArgs = StaffQuoteRequestArgs & {
+  registryStrategies: readonly QuoteSalesStrategy[];
+  strategyCode: QuoteSalesStrategyCode;
+  staffQuoteJob?: StaffQuoteJobQuery;
+};
+
+const QUOTE_STRATEGY_CODES: ReadonlySet<string> = new Set([
+  'BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER',
+]);
+const QUOTE_STRATEGY_VALUES: ReadonlySet<string> = new Set([
+  ...QUOTE_STRATEGY_CODES,
+  'Government',
+]);
+
+function failedQuoteStrategy(
+  strategyCode: QuoteSalesStrategyCode,
+  message: string,
+): BoundStaffQuoteStrategy {
+  return { strategyCode, row: { status: 'failed', message } };
+}
+
+function rowForBoundStrategy(
+  strategyCode: QuoteSalesStrategyCode,
+  result: Extract<BoundExecuteStaffQuote, { status: 'ok' }>,
+  groups: readonly StayGroupRequirement[],
+): BoundStaffQuoteStrategy {
+  const selected = result.staffQuote.rateOptions?.filter((option) => option.selected) ?? [];
+  const selectedGroupIds = new Set(selected.map((option) => option.groupId));
+  if (!groups.length || groups.some((group) => !selectedGroupIds.has(group.id))) {
+    return {
+      strategyCode,
+      row: { status: 'not_offered', message: 'No room option was returned for this strategy and stay.' },
+    };
+  }
+  return {
+    strategyCode,
+    row: {
+      status: 'ready',
+      roomLabels: selected.map((option) => option.roomLabel),
+      boardLabels: selected.map((option) => option.boardLabel),
+      nightlyMinor: selected.map((option) => option.perNightMinor),
+      totalMinor: result.staffQuote.totalMinor,
+    },
+    result,
+  };
+}
+
+/** Binds one U6a-prepared strategy job without starting a new quote or changing the active approval. */
+export async function bindStaffQuoteStrategy(
+  args: StaffQuoteStrategyBindArgs,
+): Promise<BoundStaffQuoteStrategy> {
+  const strategy = args.registryStrategies.find((item) => item.code === args.strategyCode);
+  if (!strategy || !QUOTE_STRATEGY_CODES.has(strategy.code) || !QUOTE_STRATEGY_VALUES.has(strategy.requestValue)) {
+    return failedQuoteStrategy(
+      args.strategyCode,
+      'This rate strategy is not configured for the selected hotel; no search was run.',
+    );
+  }
+  if (!args.staffQuoteJob) {
+    return failedQuoteStrategy(
+      args.strategyCode,
+      'The quote comparison queue is disabled or unavailable; no search was run.',
+    );
+  }
+
+  try {
+    const request = staffQuoteRequest({ ...args, strategyRequestValue: strategy.requestValue });
+    if ('error' in request) return failedQuoteStrategy(args.strategyCode, request.error);
+    const query: StaffQuoteJobQuery = async (lookup, options) => {
+      const view = await args.staffQuoteJob!(lookup, options);
+      if (
+        view?.request?.kind === 'staff_quote' &&
+        !staffQuoteRequestMatches(view.request, request.input)
+      ) return null;
+      return view;
+    };
+    const bound = await bindReadBackStaffQuote({
+      ...args,
+      strategyRequestValue: strategy.requestValue,
+      query,
+    });
+    if (!bound) {
+      return failedQuoteStrategy(
+        args.strategyCode,
+        'No prepared comparison job was found. The queue may be disabled; no search was run.',
+      );
+    }
+    if (bound.status !== 'ok') {
+      const notOffered = bound.noMatchingRate === true || bound.detail === 'NATIVE_NO_MATCHING_RATE';
+      return {
+        strategyCode: args.strategyCode,
+        row: {
+          status: notOffered ? 'not_offered' : 'failed',
+          message: bound.reason,
+        },
+      };
+    }
+    if (bound.staffQuote.preparedByNava !== true) {
+      return failedQuoteStrategy(
+        args.strategyCode,
+        'The comparison job was not prepared by Nava; its result was not bound.',
+      );
+    }
+    return rowForBoundStrategy(args.strategyCode, bound, args.groups);
+  } catch (error) {
+    return failedQuoteStrategy(args.strategyCode, rejectionReason(error));
+  }
+}
+
+/** Binds all active registry strategies independently; one failed or unavailable row cannot hide the others. */
+export async function bindStaffQuoteStrategies(
+  args: Omit<StaffQuoteStrategyBindArgs, 'strategyCode'> & {
+    onResult?: (result: BoundStaffQuoteStrategy) => void;
+  },
+): Promise<BoundStaffQuoteStrategy[]> {
+  const { onResult, ...bindArgs } = args;
+  return Promise.all(
+    bindArgs.registryStrategies.map(async (strategy) => {
+      const result = await bindStaffQuoteStrategy({ ...bindArgs, strategyCode: strategy.code });
+      onResult?.(result);
+      return result;
+    }),
+  );
 }
 
 /**

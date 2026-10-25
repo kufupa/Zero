@@ -54,6 +54,16 @@ test('ambiguous applied stay or occupancy fails, never becomes unavailable',()=>
   for(const delta of [{startDate:null},{adultCount:2},{childAges:[12]},{shopByDay:true},{groupID:'stale'}])
     assert.throws(()=>quote.assertApplied(request,request.rooms[0],{...applied,...delta}));
 });
+test('registry strategy labels map to their observed Hotel Availability values',()=>{
+  const cases=[['Airline Crews','AIR'],['Domestic Leisure','DOML'],['Negoticated Contracted','CON']];
+  for(const [label,value] of cases){
+    const scoped={...request,propertyCode:'HRDAV',search:{salesStrategy:label}};
+    const criteria={propertyCodes:'HRDAV',startDate:'2026-09-24T00:00:00',adultCount:1,childCount:0,salesStrategy:value,lengthOfStay:'DY',shopByDay:false,
+      roomTypeCodes:'',ratePlanCodes:'',groupID:'',organizationID:'',travelAgencyID:'',convertFromPropertyCurrency:false,currency:null};
+    assert.doesNotThrow(()=>quote.assertApplied(scoped,scoped.rooms[0],criteria));
+    assert.throws(()=>quote.assertApplied(scoped,scoped.rooms[0],{...criteria,salesStrategy:'BAR'}));
+  }
+});
 test('criteria evidence excludes session tokens',()=>{
   assert.deepEqual(quote.projectCriteria({adultCount:1,bookingSessionID:'private-token',password:'private'}),{adultCount:1});
 });
