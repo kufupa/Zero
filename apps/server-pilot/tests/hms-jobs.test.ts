@@ -464,6 +464,11 @@ describe('U23 HMS job queue (pure)', () => {
     expect(confirmationPrefetchIdempotencyKey(TRANSPORT_ID, CONFIRMATION, '2026-10-13')).toBe(
       `hms-job:prefetch:${TRANSPORT_ID}:${CONFIRMATION}:2026-10-13`,
     );
+    expect(
+      confirmationPrefetchIdempotencyKey(TRANSPORT_ID, CONFIRMATION, '2026-10-13', 'HRCEN'),
+    ).not.toBe(
+      confirmationPrefetchIdempotencyKey(TRANSPORT_ID, CONFIRMATION, '2026-10-13', 'HRDAV'),
+    );
   });
 
   it('turns the job queue on only for HMS_JOB_QUEUE=on', () => {
