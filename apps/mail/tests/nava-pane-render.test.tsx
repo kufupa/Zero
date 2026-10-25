@@ -1816,7 +1816,7 @@ describe('NavaPane screen states', () => {
     });
     render(<NavaPane bridge={fakeBridge} preview />);
 
-    const contact = await screen.findByRole('region', { name: 'Quote contact — printed on the PDF' });
+    const contact = await screen.findByRole('region', { name: 'Contact' });
     expect(within(contact).getByText('David Miller')).toBeDefined();
     openContactCorrections();
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Corrected Guest' } });
