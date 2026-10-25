@@ -1184,19 +1184,79 @@ describe('quote strategy comparison rows', () => {
       inputRevision: session.inputRevision,
       stayRevision: session.stayRevision,
     });
+    session = reduceQuoteSession(session, {
+      type: 'quote_strategy_result',
+      stayKey,
+      strategy: strategies[0]!,
+      outcome: { status: 'not_offered', message: 'No rooms for these dates.' },
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+      stayRevision: session.stayRevision,
+    });
 
     expect(session.quoteStrategyRows?.[stayKey]?.WS?.status).toBe('ready');
     expect(session.quoteStrategyRows?.[stayKey]?.GOV?.status).toBe('not_offered');
     expect(session.selectedOfferIds).toEqual([]);
     expect(session.staffQuote).toBeNull();
 
-    const selected = reduceQuoteSession(session, {
+    const unapproved = reduceQuoteSession(session, {
       type: 'select_quote_strategy',
       stayKey,
       strategyCode: 'WS',
     });
-    expect(selected.selectedOfferIds).toEqual([offer.id]);
-    expect(selected.staffQuote?.revisionRef).toBe(offer.id);
+    expect(unapproved).toBe(session);
+
+    const pickedOffer = { ...offer, id: 'rev-ws-picked', sourceRef: 'rev-ws-picked' };
+    const pickedQuote = {
+      ...staffQuote,
+      workflowRunId: 'run-ws-picked',
+      revisionRef: pickedOffer.id,
+    };
+    const selected = reduceQuoteSession(session, {
+      type: 'select_quote_strategy',
+      stayKey,
+      strategyCode: 'WS',
+      offer: pickedOffer,
+      staffQuote: pickedQuote,
+      extrasReviewItems: [],
+      approvedHeader: { ...emptyHeader(), salesStrategy: 'WS' },
+    });
+    expect(selected.selectedOfferIds).toEqual([pickedOffer.id]);
+    expect(selected.staffQuote?.revisionRef).toBe(pickedOffer.id);
+    expect(selected.quoteStrategyRows?.[stayKey]?.WS?.staffQuote?.revisionRef).toBe(pickedOffer.id);
+  });
+
+  it('accepts an unchanged stay comparison result after another stay is edited', () => {
+    let session = twoDateSession();
+    const strategy: QuoteSalesStrategy = { code: 'WS', label: 'Wholesale', requestValue: 'WS' };
+    const startedAt = session.stayRevision;
+    session = reduceQuoteSession(session, {
+      type: 'quote_strategy_rows_started',
+      stayKey: STAY_A,
+      strategies: [strategy],
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+      stayRevision: startedAt,
+    });
+
+    const editedOtherStay = reduceQuoteSession(session, {
+      type: 'patch_group',
+      groupId: 'g2',
+      patch: { board: 'room_only' },
+    });
+    expect(editedOtherStay.quoteStrategyRows?.[STAY_A]?.WS?.status).toBe('pending');
+
+    const result = reduceQuoteSession(editedOtherStay, {
+      type: 'quote_strategy_result',
+      stayKey: STAY_A,
+      strategy,
+      outcome: { status: 'not_offered', message: 'No rooms for these dates.' },
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+      stayRevision: startedAt,
+    });
+
+    expect(result.quoteStrategyRows?.[STAY_A]?.WS?.status).toBe('not_offered');
   });
 });
 

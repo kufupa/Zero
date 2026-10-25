@@ -178,4 +178,25 @@ describe('staff quote strategy jobs', () => {
     expect(queue.mock.calls.every(([input]) => input.autoStart === true)).toBe(true);
     expect(onResult).toHaveBeenCalledTimes(6);
   });
+
+  it('falls back to executeStaffQuote when the comparison queue is disabled', async () => {
+    const queue = vi.fn(async () => ({ runId: null }));
+    const mutate = vi.fn(async () => ({ status: 'unavailable' }));
+    await bindStaffQuoteStrategyRows({
+      mode: 'staff',
+      source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'a'.repeat(64) },
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [stay({ roomCodes: ['STKNG'] })],
+      header: emptyStaffQuoteHeader(),
+      propertyCode: HRDAV_PROPERTY_CODE,
+      stayKey: '2026-11-16:2026-11-17',
+      strategies: [{ code: 'WS', label: 'Wholesale', requestValue: 'WS' }],
+      queue,
+      mutate,
+    });
+
+    expect(queue).toHaveBeenCalledTimes(1);
+    expect(mutate).toHaveBeenCalledTimes(1);
+  });
 });

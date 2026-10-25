@@ -2316,7 +2316,9 @@ describe('quote strategy comparison', () => {
     };
     const onSelectQuoteStrategy = vi.fn();
 
-    render(<QuoteWorkflowPanel session={session} paneConfig={paneConfig} onSelectQuoteStrategy={onSelectQuoteStrategy} />);
+    const rendered = render(
+      <QuoteWorkflowPanel session={session} paneConfig={paneConfig} onSelectQuoteStrategy={onSelectQuoteStrategy} />,
+    );
 
     const table = screen.getByRole('table', { name: /quote strategy comparison/i });
     const rows = within(table).getAllByRole('row');
@@ -2327,7 +2329,25 @@ describe('quote strategy comparison', () => {
     expect(within(table).getByText('R800,00')).toBeDefined();
     expect(within(table).getByText(/R1\s600,00/)).toBeDefined();
     expect(session.selectedOfferIds).toEqual([]);
-    fireEvent.click(screen.getByRole('button', { name: /use wholesale \(WS\) rates/i }));
+    const chooseWholesale = screen.getByRole('button', { name: /use wholesale \(WS\) rates/i });
+    expect(chooseWholesale).toBeDisabled();
+
+    const completedRows = Object.fromEntries(strategies.map((strategy) => [
+      strategy.code,
+      strategy.code === 'WS'
+        ? session.quoteStrategyRows?.[stayKey]?.WS!
+        : { strategy, status: 'not_offered' as const, message: 'No rooms for these dates.' },
+    ]));
+    rendered.rerender(
+      <QuoteWorkflowPanel
+        session={{ ...session, quoteStrategyRows: { [stayKey]: completedRows } }}
+        paneConfig={paneConfig}
+        onSelectQuoteStrategy={onSelectQuoteStrategy}
+      />,
+    );
+    const completedChoice = screen.getByRole('button', { name: /use wholesale \(WS\) rates/i });
+    expect(completedChoice).toBeEnabled();
+    fireEvent.click(completedChoice);
     expect(onSelectQuoteStrategy).toHaveBeenCalledWith(stayKey, 'WS');
   });
 });
