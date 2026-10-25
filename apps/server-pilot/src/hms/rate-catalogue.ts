@@ -90,6 +90,7 @@ function boardForCatalogue(board: string): QuotePaneBoard | null {
 function ratePlanBoard(board: string): CenturionRateBoard {
   const known = boardForCatalogue(board);
   if (known === 'bb') return 'bed_breakfast';
+  if (known === 'dinner_bb') return 'dinner_bed_breakfast';
   return known ?? 'unknown';
 }
 

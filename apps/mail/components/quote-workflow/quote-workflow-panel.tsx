@@ -85,7 +85,11 @@ import {
 } from './rate-controls';
 import { StayCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
-import { rowRoomLabel, rowRoomTypeCode } from '@/lib/quote-workflow/room-types';
+import {
+  matchConfiguredRoomType,
+  rowRoomLabel,
+  rowRoomTypeCode,
+} from '@/lib/quote-workflow/room-types';
 
 const TELL_NAVA_ENABLED = false;
 
@@ -1503,18 +1507,11 @@ export function QuoteWorkflowPanel({
   const rowLabels = new Map<string, string>();
   const roomLabel = (row: StayGroupRequirement): string => {
     if (paneConfig === undefined) return rowRoomLabel(row);
-    const candidates = [
+    const room = matchConfiguredRoomType([
       ...(row.roomCodes?.length === 1 ? row.roomCodes : []),
-      row.roomPreference ?? '',
-      row.roomTypeCode ?? '',
-    ].map((raw) => raw.trim());
-    const room = paneConfig?.roomTypes.find(({ code, label }) =>
-      candidates.some(
-        (raw) =>
-          raw.replace(/[^a-z0-9]/gi, '').toUpperCase() === code ||
-          raw.toLowerCase().replace(/\s+/g, ' ') === label.toLowerCase(),
-      ),
-    );
+      row.roomPreference,
+      row.roomTypeCode,
+    ], paneConfig?.roomTypes ?? []);
     const name = room?.label ?? 'Room type needed';
     const count = typeof row.quantity === 'number' && row.quantity > 0 ? row.quantity : '?';
     return `${name} ×${count}`;

@@ -14,6 +14,7 @@ import {
   ROOM_TYPE_CODES,
   ROOM_TYPE_NAMES,
   knownRoomCode,
+  matchConfiguredRoomType,
   rowRoomLabel,
   rowRoomTypeCode,
   type RoomTypeCode,
@@ -102,18 +103,11 @@ function paneRoomTypeForGroup(
   group: StayGroupRequirement,
   roomTypes: readonly QuotePaneRoomType[],
 ): QuotePaneRoomType | null {
-  const candidates = [
+  return matchConfiguredRoomType([
     ...(group.roomCodes?.length === 1 ? group.roomCodes : []),
-    group.roomPreference ?? '',
-    group.roomTypeCode ?? '',
-  ].map((raw) => raw.trim());
-  return roomTypes.find((room) =>
-    candidates.some(
-      (raw) =>
-        raw.replace(/[^a-z0-9]/gi, '').toUpperCase() === room.code ||
-        raw.toLowerCase().replace(/\s+/g, ' ') === room.label.toLowerCase(),
-    ),
-  ) ?? null;
+    group.roomPreference,
+    group.roomTypeCode,
+  ], roomTypes);
 }
 
 function paneRoomLabel(
@@ -426,7 +420,7 @@ export function RequirementCard({
                     className="rounded-full border border-[#93c5fd] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
                     onClick={() => chooseRoomType(code)}
                   >
-                    {roomTypeLabel(code).replace(/\s+\([A-Z]+\)$/, '')}
+                    {roomTypes.find((room) => room.code === code)?.label ?? code}
                   </button>
                 ))}
                 <span aria-hidden="true">·</span>

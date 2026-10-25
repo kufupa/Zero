@@ -5,6 +5,24 @@ export { ROOM_TYPE_NAMES };
 export type RoomTypeCode = keyof typeof ROOM_TYPE_NAMES;
 export type RoomTypeMatch = { code?: RoomTypeCode; suggestions: RoomTypeCode[] };
 
+/** Match ordered staff-picked room values against a property's configured room choices. */
+export function matchConfiguredRoomType<T extends { code: string; label: string }>(
+  candidates: readonly (string | undefined)[],
+  roomTypes: readonly T[],
+): T | null {
+  for (const candidate of candidates) {
+    const raw = candidate?.trim();
+    if (!raw) continue;
+    const code = raw.replace(/[^a-z0-9]/gi, '').toUpperCase();
+    const label = raw.toLowerCase().replace(/\s+/g, ' ');
+    const room = roomTypes.find(
+      (item) => item.code === code || item.label.toLowerCase() === label,
+    );
+    if (room) return room;
+  }
+  return null;
+}
+
 /** Every known code, in the order the builder lists them. */
 export const ROOM_TYPE_CODES = Object.keys(ROOM_TYPE_NAMES) as RoomTypeCode[];
 

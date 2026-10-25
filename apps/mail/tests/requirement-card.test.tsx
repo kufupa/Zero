@@ -247,14 +247,15 @@ describe('StayCard rooms', () => {
     };
     render(<StayCard {...props} />);
 
-    const roomType = screen.getByLabelText('Room type') as HTMLSelectElement;
-    expect([...roomType.options].map((option) => option.value)).toEqual([
-      '', 'JNRSUI', 'EXKNGB', 'EXKNGR', 'EXKNGS', 'DLXPAT', 'DLXKNG', 'ACCES', 'STKNG', 'STWN',
+    const roomType = screen.getByLabelText('Room type');
+    const roomOptionValues = [...roomType.querySelectorAll('option')].map((option) => option.value);
+    expect(roomOptionValues.slice(1)).toEqual([
+      'JNRSUI', 'EXKNGB', 'EXKNGR', 'EXKNGS', 'DLXPAT', 'DLXKNG', 'ACCES', 'STKNG', 'STWN',
     ]);
-    expect([...roomType.options].map((option) => option.value)).not.toContain('STQN');
+    expect(roomOptionValues).not.toContain('STQN');
     expect(screen.getByRole('rowheader', { name: 'Room type needed ×1' })).toBeTruthy();
-    const mealPlan = screen.getByLabelText('Meal plan') as HTMLSelectElement;
-    expect([...mealPlan.options].map((option) => option.value)).toEqual(['all', 'room_only', 'bb']);
+    const mealPlan = screen.getByLabelText('Meal plan');
+    expect([...mealPlan.querySelectorAll('option')].map((option) => option.value)).toEqual(['all', 'room_only', 'bb']);
   });
 
   it('uses a requested-room split header until room quantities are assigned', () => {
