@@ -11,7 +11,11 @@ import {
   type PartySuggestion,
 } from '../lib/quote-workflow/party-lookup';
 import { bindExecuteStaffQuote, pickedParties } from '../lib/quote-workflow/staff-quote-bind';
-import { emptyStaffQuoteHeader, type StaffQuoteParty } from '../lib/quote-workflow/types';
+import {
+  emptyStaffQuoteHeader,
+  HRCEN_PROPERTY_CODE,
+  type StaffQuoteParty,
+} from '../lib/quote-workflow/types';
 
 afterEach(() => {
   resetPartyAutoLookupForTests();
@@ -54,6 +58,7 @@ describe('the company and agency the quote sends', () => {
     await bindExecuteStaffQuote({
       mutate,
       source: { messageId: 'm', threadId: 't', sourceHash: 'ab'.repeat(32) },
+      propertyCode: HRCEN_PROPERTY_CODE,
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [

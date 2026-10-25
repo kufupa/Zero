@@ -8,15 +8,16 @@ import {
   reduceQuoteSession,
   stayIdOf,
 } from '../lib/quote-workflow/session';
-import { staffStayExtrasFor } from '../lib/quote-workflow/types';
-import type {
-  BookingDraftReady,
-  LunaAnalysisWire,
-  QuoteOffer,
-  QuoteSession,
-  StaffQuoteAllocation,
-  StaffStayExtras,
-  StayGroupRequirement,
+import {
+  HRCEN_PROPERTY_CODE,
+  staffStayExtrasFor,
+  type BookingDraftReady,
+  type LunaAnalysisWire,
+  type QuoteOffer,
+  type QuoteSession,
+  type StaffQuoteAllocation,
+  type StaffStayExtras,
+  type StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 import {
   bindExecuteStaffQuote,
@@ -581,6 +582,7 @@ describe('per-stay extras on a combined quote', () => {
     const run = await bindExecuteStaffQuote({
       mutate: pricedMutate(sent),
       source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: SOURCE_HASH },
+      propertyCode: HRCEN_PROPERTY_CODE,
       selectionEpoch: 1,
       inputRevision: session.inputRevision,
       groups,

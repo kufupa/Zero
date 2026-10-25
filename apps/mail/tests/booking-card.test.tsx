@@ -39,14 +39,15 @@ import {
   type PaneStayResult,
 } from '../lib/quote-workflow/pane-stay-bind';
 import { hasStaffStayEdits, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
-import type {
-  BookingDraftReady,
-  LunaAnalysisWire,
-  QuoteAnalysis,
-  QuoteOffer,
-  QuoteSession,
-  StaffQuoteParties,
-  StayGroupRequirement,
+import {
+  HRCEN_PROPERTY_CODE,
+  type BookingDraftReady,
+  type LunaAnalysisWire,
+  type QuoteAnalysis,
+  type QuoteOffer,
+  type QuoteSession,
+  type StaffQuoteParties,
+  type StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 
 // sonner injects its stylesheet into the document on import (via hms-link-actions since U17), and every role query
@@ -1730,6 +1731,7 @@ describe('expired prior re-quote', () => {
     await bindExecuteStaffQuote({
       mutate,
       source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: STAFF_HASH },
+      propertyCode: HRCEN_PROPERTY_CODE,
       selectionEpoch: 1,
       inputRevision: 1,
       groups,
