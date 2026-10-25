@@ -22,10 +22,9 @@ export type HmsReadTarget = {
   browserSlot: HmsReadBrowserSlot;
 };
 
-function readTargetForProperty(propertyCode: string): HmsReadTarget {
+function targetForRegisteredProperty(propertyCode: string): HmsReadTarget {
   const property = getPropertyRegistration(propertyCode);
   if (!property) return refuseProperty({ code: 'property_unknown' });
-  if (!property.active) return refuseProperty({ code: 'property_inactive' });
   return Object.freeze({
     propertyCode: property.propertyCode,
     secretId: property.credentialSecretRef,
@@ -33,15 +32,23 @@ function readTargetForProperty(propertyCode: string): HmsReadTarget {
   });
 }
 
+/** Request-time resolver; registry descriptors remain importable when a property is inactive. */
+export function hmsReadTargetForProperty(propertyCode: string): HmsReadTarget {
+  const property = getPropertyRegistration(propertyCode);
+  if (!property) return refuseProperty({ code: 'property_unknown' });
+  if (!property.active) return refuseProperty({ code: 'property_inactive' });
+  return targetForRegisteredProperty(property.propertyCode);
+}
+
 /** Centurion pane reads: sourced from the property registry. */
-export const CENTURION_HMS_READ_TARGET: HmsReadTarget = readTargetForProperty('HRCEN');
+export const CENTURION_HMS_READ_TARGET: HmsReadTarget = targetForRegisteredProperty('HRCEN');
 
 /** Da Vinci pane reads: sourced from its isolated registry slot and secret. */
-export const DAVINCI_HMS_READ_TARGET: HmsReadTarget = readTargetForProperty('HRDAV');
+export const DAVINCI_HMS_READ_TARGET: HmsReadTarget = targetForRegisteredProperty('HRDAV');
 
 const KNOWN_READ_TARGETS: readonly HmsReadTarget[] = PROPERTY_REGISTRY.properties
   .filter((property) => property.active)
-  .map((property) => readTargetForProperty(property.propertyCode));
+  .map((property) => hmsReadTargetForProperty(property.propertyCode));
 
 /** Every Da Vinci staff mailbox. External guest mail in these inboxes is still HRDAV. */
 export const DAVINCI_STAFF_TRANSPORT_IDS = getPropertyTransportIds('HRDAV');
@@ -65,6 +72,7 @@ export function isDaVinciTransport(transportId: string): boolean {
 }
 
 function davinciReadOrRefuse(env?: NodeJS.Dict<string>): HmsReadJobTargetResult {
+  const target = hmsReadTargetForProperty(DAVINCI_HMS_READ_TARGET.propertyCode);
   if (!hmsDavinciReadsEnabled(env)) {
     return {
       ok: false,
@@ -72,7 +80,7 @@ function davinciReadOrRefuse(env?: NodeJS.Dict<string>): HmsReadJobTargetResult 
       message: DAVINCI_ORIGIN_REFUSED_MESSAGE,
     };
   }
-  return { ok: true, target: DAVINCI_HMS_READ_TARGET };
+  return { ok: true, target };
 }
 
 /**
@@ -88,10 +96,14 @@ export function hmsReadTargetForTransport(
     if (resolved.kind === 'collector') {
       return refuseProperty({ code: 'collector_no_hotel', transportId: resolved.transportId });
     }
-    return readTargetForProperty(resolved.property.propertyCode);
+    return hmsReadTargetForProperty(resolved.property.propertyCode);
   }
-  if (isDaVinciMailboxOrigin(transportOrOrigin)) return DAVINCI_HMS_READ_TARGET;
-  if (isCenturionMailboxOrigin(transportOrOrigin)) return CENTURION_HMS_READ_TARGET;
+  if (isDaVinciMailboxOrigin(transportOrOrigin)) {
+    return hmsReadTargetForProperty(DAVINCI_HMS_READ_TARGET.propertyCode);
+  }
+  if (isCenturionMailboxOrigin(transportOrOrigin)) {
+    return hmsReadTargetForProperty(CENTURION_HMS_READ_TARGET.propertyCode);
+  }
   return refuseProperty({ code: 'property_unknown' });
 }
 

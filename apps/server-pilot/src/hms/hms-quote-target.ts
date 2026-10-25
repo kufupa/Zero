@@ -3,6 +3,7 @@ import { hmsDavinciMakeQuoteEnabled } from '../env.js';
 import {
   DAVINCI_HMS_READ_TARGET,
   DAVINCI_ORIGIN_REFUSED_MESSAGE,
+  hmsReadTargetForProperty,
   hmsReadTargetForTransport,
   type HmsReadTarget,
 } from './hms-read-target.js';
@@ -21,6 +22,7 @@ export type HmsQuoteJobTargetResult =
   | { ok: false; code: 'QUOTE_DAVINCI_DISABLED'; message: string };
 
 function davinciQuoteOrRefuse(env?: NodeJS.Dict<string>): HmsQuoteJobTargetResult {
+  const target = hmsReadTargetForProperty(DAVINCI_HMS_READ_TARGET.propertyCode);
   if (!hmsDavinciMakeQuoteEnabled(env)) {
     return {
       ok: false,
@@ -28,7 +30,7 @@ function davinciQuoteOrRefuse(env?: NodeJS.Dict<string>): HmsQuoteJobTargetResul
       message: DAVINCI_QUOTE_REFUSED_MESSAGE,
     };
   }
-  return { ok: true, target: DAVINCI_HMS_READ_TARGET };
+  return { ok: true, target };
 }
 
 /**
