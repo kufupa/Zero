@@ -149,6 +149,7 @@ function makeHarness() {
     HMS_JOB_U0_SLEEP: '0.4',
     HMS_JOB_U0_LOG: join(root, 'u0.log'),
     HMS_JOB_STUB_UNITS: join(root, 'units.log'),
+    NAVA_RUN_HOLD_FILE: join(root, 'absent-hold'),
   };
   return { root, bin, logRoot, server, env, argsFile: join(root, 'args.json') };
 }
@@ -375,6 +376,7 @@ describe('ops-deploy.sh worktree guard', () => {
       env: {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: root,
+        NAVA_RUN_HOLD_FILE: join(root, 'absent-hold'),
       },
     });
   }
@@ -409,6 +411,7 @@ describe('ops-deploy.sh worktree guard', () => {
       env: {
         PATH: process.env.PATH ?? '/usr/bin:/bin',
         HOME: root,
+        NAVA_RUN_HOLD_FILE: join(root, 'absent-hold'),
       },
     });
     expect(refused.status).toBe(2);

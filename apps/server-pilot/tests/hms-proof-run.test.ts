@@ -3,9 +3,14 @@ import { paneStaySaveLoaders, paneStayTenantId, type PaneStayLock } from '../src
 import { paneStayCancelLoaders, paneCancelDigest } from '../src/ai/pane-stay-cancel.js';
 import { paneHmsWriteLoaders } from '../src/ai/pane-hms-write.js';
 import { propertyReadLockKey } from '../src/hms/property-read-lock.js';
-import { hmsProofRun, parseProofRunArgs, stayFromProofRequest } from '../src/ops/hms-proof-run.js';
+import {
+  hmsProofRun,
+  parseProofRunArgs,
+  recordCellFailure,
+  stayFromProofRequest,
+} from '../src/ops/hms-proof-run.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, utimesSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,6 +31,7 @@ const WRITE_LAB: NodeJS.Dict<string> = {
   RESERVATIONIST_PANE_SAVE: 'lab',
   HMS_EXPECTED_TENANT: 'centurion',
   DATABASE_URL: 'postgres://proof-lock/unused',
+  NAVA_RUN_HOLD_FILE: '/tmp/mh-u12-absent-hold',
 };
 
 const HELD: PaneStayLock = { withLock: (fn) => fn() };
@@ -33,7 +39,7 @@ const HELD: PaneStayLock = { withLock: (fn) => fn() };
 function argv(
   command: string,
   request: Record<string, unknown>,
-  extra: { transport?: string; mode?: string; out?: string } = {},
+  extra: { transport?: string; mode?: string; out?: string; cell?: string } = {},
 ): string[] {
   return [
     command,
@@ -45,6 +51,7 @@ function argv(
     extra.mode ?? 'preview',
     '--out',
     extra.out ?? '/tmp/hms-proof-run-out',
+    ...(extra.cell ? ['--cell', extra.cell] : []),
   ];
 }
 
@@ -88,6 +95,9 @@ describe('hms-proof-run args', () => {
       outDir: '/tmp/hms-proof-run-out',
     });
     expect(parseProofRunArgs(argv('cancel', LAB, { mode: 'commit' })).mode).toBe('commit');
+    expect(parseProofRunArgs(argv('find', LAB, { cell: 'hrdav-quote-1' })).cell).toBe(
+      'hrdav-quote-1',
+    );
   });
 
   it('refuses unknown commands and missing or repeated flags', () => {
@@ -105,6 +115,126 @@ describe('hms-proof-run args', () => {
 });
 
 describe('hms-proof-run refusals', () => {
+  it('refuses when NAVA_RUN_HOLD_FILE is present before any lock or spawn', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn();
+    paneStayLookupLoaders.spawn = spawn;
+    const outDir = await mkdtemp(join(tmpdir(), 'hms-proof-hold-'));
+    const hold = join(outDir, 'HOLD.txt');
+    await writeFile(hold, 'pause\n');
+    try {
+      await expect(
+        hmsProofRun(parseProofRunArgs(argv('find', LAB, { out: outDir })), {
+          ...WRITE_LAB,
+          NAVA_RUN_HOLD_FILE: hold,
+        }, createLock),
+      ).rejects.toThrow(/refused_hold/);
+      expect(createLock).not.toHaveBeenCalled();
+      expect(spawn).not.toHaveBeenCalled();
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a 3rd cell attempt unless diagnosis is newer than the last failure', async () => {
+    const { createLock } = createLockSpy();
+    const spawn = vi.fn();
+    paneStayLookupLoaders.spawn = spawn;
+    const outDir = await mkdtemp(join(tmpdir(), 'hms-proof-cell-'));
+    const cellDir = join(outDir, 'cells');
+    const cell = 'hrdav-quote-1';
+    const env = { ...WRITE_LAB, NAVA_PROOF_CELL_DIR: cellDir, NAVA_RUN_HOLD_FILE: join(outDir, 'no-hold') };
+    try {
+      recordCellFailure({ cell, dir: cellDir, at: 1_000 });
+      recordCellFailure({ cell, dir: cellDir, at: 2_000 });
+      await expect(
+        hmsProofRun(parseProofRunArgs(argv('find', LAB, { out: outDir, cell })), env, createLock),
+      ).rejects.toThrow(/refused_cell_attempt/);
+      expect(createLock).not.toHaveBeenCalled();
+
+      const diagnosis = join(cellDir, `diagnosis-${cell}.md`);
+      await writeFile(diagnosis, 'DOM: rate grid empty\n');
+      utimesSync(diagnosis, 1.5, 1.5);
+      await expect(
+        hmsProofRun(parseProofRunArgs(argv('find', LAB, { out: outDir, cell })), env, createLock),
+      ).rejects.toThrow(/refused_cell_attempt/);
+      expect(createLock).not.toHaveBeenCalled();
+
+      utimesSync(diagnosis, 3, 3);
+      paneStayLookupLoaders.spawn = vi.fn(async () => ({
+        outcome: 'found',
+        reason: null,
+        stay: {
+          status: 'Reserved',
+          confirmation: LAB.confirmation,
+          lastName: LAB.lastName,
+          firstName: LAB.firstName,
+          arrival: LAB.arrival,
+          departure: '2027-03-12',
+          nights: 2,
+          adults: 1,
+          children: 0,
+          roomType: 'DBL',
+          ratePlan: 'BAR',
+          mealPlan: 'BB',
+          averageRate: '1000.00',
+          grandTotal: '2000.00',
+          balance: '2000.00',
+          sourceOfBusiness: null,
+          guaranteeType: null,
+          bookingAgency: null,
+          organization: null,
+        },
+        rows: [],
+        screenshots: [],
+        runId: '00000000-0000-4000-8000-000000000099',
+      }));
+      const line = await hmsProofRun(
+        parseProofRunArgs(argv('find', LAB, { out: outDir, cell })),
+        env,
+        createLock,
+      );
+      expect(createLock).toHaveBeenCalled();
+      expect(line).toMatchObject({ command: 'find', outcome: 'found' });
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  });
+
+  it('counts a returned execution_failure toward the cell attempt cap', async () => {
+    const { createLock } = createLockSpy();
+    paneStayLookupLoaders.spawn = vi.fn(async () => ({
+      outcome: 'execution_failure',
+      reason: 'browser_error',
+      stay: null,
+      rows: [],
+      screenshots: [],
+    }));
+    const outDir = await mkdtemp(join(tmpdir(), 'hms-proof-cell-fail-'));
+    const cellDir = join(outDir, 'cells');
+    const cell = 'hrdav-quote-fail';
+    const env = {
+      ...WRITE_LAB,
+      NAVA_PROOF_CELL_DIR: cellDir,
+      NAVA_RUN_HOLD_FILE: join(outDir, 'no-hold'),
+    };
+    try {
+      for (let i = 0; i < 2; i += 1) {
+        const line = await hmsProofRun(
+          parseProofRunArgs(argv('find', LAB, { out: outDir, cell })),
+          env,
+          createLock,
+        );
+        expect(line.outcome).toBe('execution_failure');
+      }
+      await expect(
+        hmsProofRun(parseProofRunArgs(argv('find', LAB, { out: outDir, cell })), env, createLock),
+      ).rejects.toThrow(/refused_cell_attempt/);
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a non-Labtest request before any lock or spawn', async () => {
     const { createLock } = createLockSpy();
     const spawn = vi.fn();
