@@ -14,6 +14,7 @@ import {
   seedAll,
   PILOT_USERS,
   NAVA_TRANSPORT_EMAIL,
+  NAVA_TRANSPORT_ID,
   NAVA_USER_EMAIL,
   NAVA_USER_ID,
   CENTURION_USER_EMAIL,
@@ -26,7 +27,13 @@ import {
   DARREN_USER_ID,
   KAMALA_USER_EMAIL,
   KAMALA_USER_ID,
+  FAITH_USER_EMAIL,
+  FAITH_USER_ID,
+  AYANDA_USER_EMAIL,
+  AYANDA_USER_ID,
+  PILOT_MAILBOX_ACCESS_ROWS,
   INGEST_EMAIL,
+  TRANSPORT_ID,
   TRANSPORT_EMAIL,
   TRANSPORT_OWNER_HEADER,
   TRANSPORT_ALIASES,
@@ -78,7 +85,47 @@ describe('seed identity constants', () => {
       { id: ROPPERMAN_USER_ID, name: 'R Opperman', email: ROPPERMAN_USER_EMAIL },
       { id: DARREN_USER_ID, name: 'Darren Bezuidenhout', email: DARREN_USER_EMAIL },
       { id: KAMALA_USER_ID, name: 'Kamala Douglas', email: KAMALA_USER_EMAIL },
+      { id: FAITH_USER_ID, name: 'Faith Khumalo', email: FAITH_USER_EMAIL },
+      { id: AYANDA_USER_ID, name: 'Ayanda Dladla', email: AYANDA_USER_EMAIL },
     ]);
+  });
+
+  it('keeps every live prod mailbox grant; Faith and Ayanda also own davinci@', () => {
+    const byUserTransport = (userId: string, transportId: string) =>
+      PILOT_MAILBOX_ACCESS_ROWS.find(
+        (row) => row.userId === userId && row.transportId === transportId,
+      );
+
+    expect(PILOT_MAILBOX_ACCESS_ROWS).toEqual(
+      expect.arrayContaining([
+        { userId: AYANDA_USER_ID, transportId: AYANDA_TRANSPORT_ID, role: 'owner', isDefault: true },
+        { userId: CENTURION_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
+        { userId: DARREN_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
+        { userId: FAITH_USER_ID, transportId: FAITH_TRANSPORT_ID, role: 'owner', isDefault: true },
+        { userId: MARTHA_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
+        { userId: NAVA_USER_ID, transportId: AYANDA_TRANSPORT_ID, role: 'owner', isDefault: false },
+        { userId: NAVA_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: false },
+        { userId: NAVA_USER_ID, transportId: DAVINCI_TRANSPORT_ID, role: 'owner', isDefault: false },
+        { userId: NAVA_USER_ID, transportId: EPICK_TRANSPORT_ID, role: 'owner', isDefault: false },
+        { userId: NAVA_USER_ID, transportId: FAITH_TRANSPORT_ID, role: 'owner', isDefault: false },
+        { userId: NAVA_USER_ID, transportId: KMGIDI_TRANSPORT_ID, role: 'owner', isDefault: false },
+        { userId: NAVA_USER_ID, transportId: NAVA_TRANSPORT_ID, role: 'owner', isDefault: true },
+        { userId: ROPPERMAN_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
+      ]),
+    );
+    expect(PILOT_MAILBOX_ACCESS_ROWS).toHaveLength(16);
+    expect(
+      PILOT_MAILBOX_ACCESS_ROWS.filter((row) => row.userId === FAITH_USER_ID)
+        .map((row) => row.transportId)
+        .sort(),
+    ).toEqual(['transport-davinci', 'transport-faith']);
+    expect(
+      PILOT_MAILBOX_ACCESS_ROWS.filter((row) => row.userId === AYANDA_USER_ID)
+        .map((row) => row.transportId)
+        .sort(),
+    ).toEqual(['transport-ayanda', 'transport-davinci']);
+    expect(byUserTransport(FAITH_USER_ID, DAVINCI_TRANSPORT_ID)?.isDefault).toBe(false);
+    expect(byUserTransport(AYANDA_USER_ID, DAVINCI_TRANSPORT_ID)?.isDefault).toBe(false);
   });
 
   it('exports Centurion Hotel Reservations transport label', () => {
@@ -231,13 +278,18 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 
         const navaRows = result.access.filter((r) => r.userId === NAVA_USER_ID);
         expect(navaRows.map((r) => r.transportId).sort()).toEqual([
+          'transport-ayanda',
           'transport-centurion',
+          'transport-davinci',
+          'transport-epick',
+          'transport-faith',
+          'transport-kmgidi',
           'transport-nava',
         ]);
         expect(navaRows.every((r) => r.role === 'owner')).toBe(true);
         expect(navaRows.find((r) => r.transportId === 'transport-nava')?.isDefault).toBe(true);
         expect(navaRows.filter((r) => r.isDefault)).toHaveLength(1);
-        expect(result.access.filter((r) => r.isDefault)).toHaveLength(6);
+        expect(result.access.filter((r) => r.isDefault)).toHaveLength(8);
 
         for (const userId of [
           CENTURION_USER_ID,
@@ -315,7 +367,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'seeds transport-davinci with Da Vinci mailbox identities and grants nobody',
+      'seeds transport-davinci with Da Vinci mailbox identities and Nava + Faith + Ayanda owners',
       async () => {
         const outcome = await withSeededTestDb(async (db) => {
           const rows = await db
@@ -338,13 +390,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(outcome.transport!.sendFromConfig).toEqual({
           aliases: DAVINCI_MAILBOX_IDENTITIES.slice(1),
         });
-        expect(outcome.access).toEqual([]);
+        expect(outcome.access.map((row) => row.userId).sort()).toEqual([
+          AYANDA_USER_ID,
+          FAITH_USER_ID,
+          NAVA_USER_ID,
+        ]);
       },
       30000,
     );
 
     it(
-      'seeds transport-faith with Faith mailbox identities and grants nobody',
+      'seeds transport-faith with Faith mailbox identities and Faith + Nava owners',
       async () => {
         const outcome = await withSeededTestDb(async (db) => {
           const rows = await db
@@ -367,13 +423,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(outcome.transport!.sendFromConfig).toEqual({
           aliases: FAITH_MAILBOX_IDENTITIES.slice(1),
         });
-        expect(outcome.access).toEqual([]);
+        expect(outcome.access.map((row) => row.userId).sort()).toEqual([
+          FAITH_USER_ID,
+          NAVA_USER_ID,
+        ]);
       },
       30000,
     );
 
     it(
-      'seeds transport-ayanda with Ayanda mailbox identities and grants nobody',
+      'seeds transport-ayanda with Ayanda mailbox identities and Ayanda + Nava owners',
       async () => {
         const outcome = await withSeededTestDb(async (db) => {
           const rows = await db
@@ -396,7 +455,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(outcome.transport!.sendFromConfig).toEqual({
           aliases: AYANDA_MAILBOX_IDENTITIES.slice(1),
         });
-        expect(outcome.access).toEqual([]);
+        expect(outcome.access.map((row) => row.userId).sort()).toEqual([
+          AYANDA_USER_ID,
+          NAVA_USER_ID,
+        ]);
       },
       30000,
     );
@@ -454,7 +516,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           };
         });
         expect(outcome.unlistedAccess).toEqual([]);
-        expect(outcome.navaIds).toEqual(['transport-centurion', 'transport-nava']);
+        expect(outcome.navaIds).toEqual([
+          'transport-ayanda',
+          'transport-centurion',
+          'transport-davinci',
+          'transport-epick',
+          'transport-faith',
+          'transport-kmgidi',
+          'transport-nava',
+        ]);
         expect(outcome.cenIds).toEqual(['transport-centurion']);
         expect(outcome.marthaIds).toEqual(['transport-centurion']);
         expect(outcome.roppermanIds).toEqual(['transport-centurion']);
@@ -465,7 +535,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     );
 
     it(
-      'seeds navaai@, centurion@, martha@, ropperman@, dbezuidenhout@, and kdouglas@ pilot users with emailVerified=true',
+      'seeds navaai@, centurion@, martha@, ropperman@, dbezuidenhout@, kdouglas@, faith, and ayanda pilot users with emailVerified=true',
       async () => {
         const users = await withSeededTestDb(async (db) => {
           return db
@@ -476,7 +546,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             })
             .from(userTable);
         });
-        expect(users).toHaveLength(6);
+        expect(users).toHaveLength(8);
         expect(users).toEqual(
           expect.arrayContaining([
             {
@@ -509,6 +579,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
               email: KAMALA_USER_EMAIL,
               emailVerified: true,
             },
+            {
+              id: FAITH_USER_ID,
+              email: FAITH_USER_EMAIL,
+              emailVerified: true,
+            },
+            {
+              id: AYANDA_USER_ID,
+              email: AYANDA_USER_EMAIL,
+              emailVerified: true,
+            },
           ]),
         );
       },
@@ -539,9 +619,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             { id: ROPPERMAN_USER_ID, email: ROPPERMAN_USER_EMAIL },
             { id: DARREN_USER_ID, email: DARREN_USER_EMAIL },
             { id: KAMALA_USER_ID, email: KAMALA_USER_EMAIL },
+            { id: FAITH_USER_ID, email: FAITH_USER_EMAIL },
+            { id: AYANDA_USER_ID, email: AYANDA_USER_EMAIL },
           ]),
         );
-        expect(remaining).toHaveLength(6);
+        expect(remaining).toHaveLength(8);
       },
       30000,
     );
