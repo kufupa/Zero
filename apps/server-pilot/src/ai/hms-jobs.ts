@@ -1134,6 +1134,21 @@ function stableStaffQuoteInput(
   return stable as Omit<StaffQuoteInput, 'selectionEpoch' | 'inputRevision'>;
 }
 
+function batchReuseSignature(request: HmsJobRequest, propertyCode: string): string {
+  return `${propertyCode}\n${hmsRequestKey(request)}`;
+}
+
+function runPropertyCode(run: { metrics?: unknown }): string {
+  const metrics = objectRecord(run.metrics);
+  if (typeof metrics.propertyCode === 'string' && metrics.propertyCode.trim()) {
+    return metrics.propertyCode.trim();
+  }
+  return (
+    parseHmsReadTarget(metrics.hmsReadTarget)?.propertyCode ??
+    CENTURION_HMS_READ_TARGET.propertyCode
+  );
+}
+
 function hmsRequestKey(request: HmsJobRequest): string {
   if (request.kind === 'find') {
     return JSON.stringify({
@@ -1410,7 +1425,7 @@ export async function enqueueHmsBatch(
     for (const run of reusable) {
       const request = hmsJobRequestSchema.safeParse(run.readRequest);
       if (!request.success || !isReusableHmsRun(run, request.data, now)) continue;
-      const signature = hmsRequestKey(request.data);
+      const signature = batchReuseSignature(request.data, runPropertyCode(run));
       reusableBySignature.set(signature, [...(reusableBySignature.get(signature) ?? []), run]);
     }
     for (const runs of reusableBySignature.values()) {
@@ -1441,7 +1456,7 @@ export async function enqueueHmsBatch(
       }
 
       const request = selection.request;
-      const signature = hmsRequestKey(request);
+      const signature = batchReuseSignature(request, selection.target.propertyCode);
       const linkedRun = reusableBySignature.get(signature)?.[0];
       if (linkedRun) {
         const link = hmsBatchLink({
@@ -1486,6 +1501,12 @@ export async function enqueueHmsBatch(
           batchId: input.batchId,
           itemIndex,
           batchItemStatus: 'queued',
+          ...hmsReadAuditMetrics({
+            actorKind: 'user',
+            actorUserId: input.userId,
+            target: selection.target,
+          }),
+          ...hmsReadTargetJobMetrics(selection.target),
         },
       });
       newRunBySignature.set(signature, job);

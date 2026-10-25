@@ -2274,6 +2274,57 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       });
     }));
 
+  it('does not share one HMS job across hotels for the same confirmation in one batch', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_DAVINCI_READS', 'on');
+      const items = await Promise.all(
+        [
+          { to: ['centurion@legacyhotels.co.za'] },
+          { to: ['davinci@legacyhotels.co.za'] },
+        ].map(async ({ to }) => {
+          const seeded = await seedThread(db, `Booking ${CONFIRMATION}`);
+          await db
+            .update(message)
+            .set({ toAddresses: to })
+            .where(eq(message.id, seeded.messageId));
+          await insertStoredExtraction(db, seeded.messageId, 'booking', {
+            confirmationNumbers: [CONFIRMATION],
+          });
+          const workItemId = randomUUID();
+          await db.insert(workItem).values({
+            id: workItemId,
+            transportId: TRANSPORT_ID,
+            threadId: seeded.threadId,
+            sourceMessageId: seeded.messageId,
+            kind: 'booking',
+            status: 'needs_you',
+          });
+          return workItemId;
+        }),
+      );
+      const view = await enqueueHmsBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: items,
+        },
+        db,
+      );
+      expect(view?.items).toHaveLength(2);
+      expect(view?.items.every((item) => item.status === 'queued')).toBe(true);
+      expect(view?.items[0]?.runId).not.toBe(view?.items[1]?.runId);
+      const runs = await db
+        .select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics })
+        .from(aiWorkflowRun)
+        .where(inArray(aiWorkflowRun.id, [view!.items[0]!.runId!, view!.items[1]!.runId!]));
+      const properties = new Set(
+        runs.map((run) => (run.metrics as { propertyCode?: string }).propertyCode),
+      );
+      expect(properties).toEqual(new Set(['HRCEN', 'HRDAV']));
+    }));
+
   it('a Da Vinci staff quote without installation refuses not_set_up before HMS', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
