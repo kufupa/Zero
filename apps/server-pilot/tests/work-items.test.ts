@@ -1,5 +1,5 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
@@ -3702,6 +3702,119 @@ describe('trusted POP3 delivery clock (KTD-1)', () => {
       expect(await refreshThread(db, threadId)).toEqual([]);
       expect(await refreshThread(db, threadId)).toEqual([]);
       expect(await replyStatus(db, item!.id)).toBe('needs_you');
+    }));
+});
+
+describe('thread work: reply re-check enqueue', () => {
+  async function replyCheckRuns(db: DB, workItemId: string) {
+    return db
+      .select({
+        idempotencyKey: aiWorkflowRun.idempotencyKey,
+        triggerMessageId: aiWorkflowRun.triggerMessageId,
+        modelId: aiWorkflowRun.modelId,
+        runKind: aiWorkflowRun.runKind,
+      })
+      .from(aiWorkflowRun)
+      .where(and(eq(aiWorkflowRun.workItemId, workItemId), eq(aiWorkflowRun.runKind, 'reply_check')));
+  }
+
+  function withRecheck<T>(mode: string, run: () => Promise<T>): Promise<T> {
+    const previous = process.env.REPLY_RECHECK;
+    process.env.REPLY_RECHECK = mode;
+    return run().finally(() => {
+      if (previous === undefined) delete process.env.REPLY_RECHECK;
+      else process.env.REPLY_RECHECK = previous;
+    });
+  }
+
+  it('a hotel_replied close enqueues reply_check when REPLY_RECHECK is shadow', () =>
+    withRecheck('shadow', () =>
+      withDb(async (db) => {
+        const request = await guestMail(db, 'rc-1', 'thread-rc-1', '2027-10-01T08:00:00Z');
+        await readOf(db, request, 'quote');
+        const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+        const reply = await hotelMail(db, 'rc-1-out', 'thread-rc-1', '2027-10-01T09:00:00Z');
+        expect(await refreshThread(db, 'thread-rc-1')).toEqual([
+          expect.objectContaining({ to: 'done', reason: 'hotel_replied', sentMessageId: reply }),
+        ]);
+        expect(await replyCheckRuns(db, item!.id)).toEqual([
+          expect.objectContaining({
+            runKind: 'reply_check',
+            triggerMessageId: reply,
+            modelId: 'gpt-6-luna',
+            idempotencyKey: `reply-check:${item!.id}:${reply}`,
+          }),
+        ]);
+      }),
+    ));
+
+  it('off does not enqueue', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'rc-off', 'thread-rc-off', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await hotelMail(db, 'rc-off-out', 'thread-rc-off', '2027-10-01T09:00:00Z');
+      await refreshThread(db, 'thread-rc-off');
+      expect(await replyCheckRuns(db, item!.id)).toEqual([]);
+    }));
+
+  it('a newer hotel reply enqueues a second key', () =>
+    withRecheck('shadow', () =>
+      withDb(async (db) => {
+        const request = await guestMail(db, 'rc-2', 'thread-rc-2', '2027-10-01T08:00:00Z');
+        await readOf(db, request, 'quote');
+        const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+        const first = await hotelMail(db, 'rc-2-out', 'thread-rc-2', '2027-10-01T09:00:00Z');
+        await refreshThread(db, 'thread-rc-2');
+        const second = await hotelMail(db, 'rc-2-out-2', 'thread-rc-2', '2027-10-01T10:00:00Z');
+        await refreshThread(db, 'thread-rc-2');
+        const keys = (await replyCheckRuns(db, item!.id)).map((row) => row.idempotencyKey).sort();
+        expect(keys).toEqual([
+          `reply-check:${item!.id}:${first}`,
+          `reply-check:${item!.id}:${second}`,
+        ].sort());
+      }),
+    ));
+
+  it('a Centurion close never enqueues on a Da Vinci to-do', () =>
+    withRecheck('shadow', () =>
+      withDb(async (db) => {
+        await addDaVinciMailboxes(db);
+        const dv = await daVinciTodo(db, 'rc-dv', '2027-10-01T08:00:00Z');
+        const request = await guestMail(db, 'rc-cen', 'thread-rc-cen', '2027-10-01T08:00:00Z');
+        await readOf(db, request, 'quote');
+        await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+        await hotelMail(db, 'rc-cen-out', 'thread-rc-cen', '2027-10-01T09:00:00Z');
+        await refreshThread(db, 'thread-rc-cen');
+        expect(await replyCheckRuns(db, dv!.id)).toEqual([]);
+      }),
+    ));
+
+  it('lists the one-line reopen reason on a needs-you row', () =>
+    withDb(async (db) => {
+      const request = await guestMail(db, 'rc-reason', 'thread-rc-reason', '2027-10-01T08:00:00Z');
+      await readOf(db, request, 'quote');
+      const item = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId: request });
+      await db.insert(workEvent).values({
+        workItemId: item!.id,
+        actorKind: 'system',
+        type: 'status.changed',
+        value: {
+          from: 'done',
+          to: 'needs_you',
+          reason: 'reply_needs_action',
+          reasonLine: "said they'd come back with rates",
+        },
+      });
+      const [row] = await listWorkItems(db, {
+        transportId: CENTURION,
+        statuses: ['needs_you'],
+        limit: 10,
+      });
+      expect(row).toMatchObject({
+        id: item!.id,
+        reopenReason: "said they'd come back with rates",
+      });
     }));
 });
 

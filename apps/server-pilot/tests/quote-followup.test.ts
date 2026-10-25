@@ -1898,6 +1898,40 @@ describe('a quote a hotel reply closed (C2) keeps its follow-up clock', () => {
     });
   });
 
+  it('a pending reply_check holds the quote follow-up queue', async () => {
+    await withIngestionDb(async ({ db }) => {
+      await seedNavaUser(db);
+      const itemId = await quoteRequest(db, 'thread-c2-pending-check', REQUEST_AT);
+      await sendReply(db, { id: 'out-c2-pending-check', threadId: 'thread-c2-pending-check', sentAt: FRI_SEND });
+      await refreshThreadWork(db, { transportId: TRANSPORT, threadId: 'thread-c2-pending-check' });
+      await db.insert(aiWorkflowRun).values({
+        transportId: TRANSPORT,
+        threadId: 'thread-c2-pending-check',
+        triggerMessageId: 'out-c2-pending-check',
+        runKind: 'reply_check',
+        idempotencyKey: `reply-check:${itemId}:out-c2-pending-check`,
+        modelId: 'gpt-6-luna',
+        promptVersion: 'reply-check/1',
+        state: 'queued',
+        workItemId: itemId,
+      });
+
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: FRI_SEND })).toEqual({
+        linked: 1,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect(await runQuoteFollowupSweep({ db, env: ON, now: WED_DUE })).toEqual({
+        linked: 0,
+        cancelled: 0,
+        queued: 0,
+        discarded: 0,
+      });
+      expect(await followUpRuns(db, itemId)).toHaveLength(0);
+    });
+  });
+
   it('a reply sent before QUOTE_FOLLOWUPS_SINCE starts no clock', async () => {
     await withIngestionDb(async ({ db }) => {
       await seedNavaUser(db);

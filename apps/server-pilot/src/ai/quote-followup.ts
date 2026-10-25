@@ -977,6 +977,18 @@ export async function runQuoteFollowupSweep(
         // An item was linked only after the cutoff let it through. Only a configured cutoff moved later drops it; the
         // process-start fallback moves on every restart and would strand items already waiting.
         sinceConfigured ? gte(workItem.sentAt, sinceConfigured) : undefined,
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(aiWorkflowRun)
+            .where(
+              and(
+                eq(aiWorkflowRun.workItemId, workItem.id),
+                eq(aiWorkflowRun.runKind, 'reply_check'),
+                inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
+              ),
+            ),
+        ),
       ),
     )
     .orderBy(asc(workItem.followUpDueAt))

@@ -262,6 +262,13 @@ function whenOf(value: Date | string | null): Date | null {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function reopenReasonOf(row: NeedsYouRow): string | null {
+  const value = (row as NeedsYouRow & { reopenReason?: unknown }).reopenReason;
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
+
 function NeedsYouRowView({
   row,
   finished,
@@ -277,6 +284,7 @@ function NeedsYouRowView({
   const sender = row.sender?.trim() || 'Unknown sender';
   const when = whenOf(row.receivedAt);
   const threadId = row.threadId;
+  const reopenReason = reopenReasonOf(row);
   const stateLabel = finished ? 'Finished' : NAVA_WORK_STATE_LABEL[row.chip];
   const stateClass = finished ? 'bg-[#f1f5f9] text-[#475569]' : CHIP_CLASS[row.chip];
   return (
@@ -306,6 +314,7 @@ function NeedsYouRowView({
           </>
         ) : null}
       </p>
+      {reopenReason ? <p className="text-[11.5px] text-[#92400e]">{reopenReason}</p> : null}
       <div className="flex items-center gap-3">
         {onOpenThread && threadId ? (
           <SecondaryButton onClick={() => onOpenThread(threadId)}>
