@@ -282,6 +282,17 @@ describe('worker HRCEN hardcode', () => {
     expect(src).toMatch(/readToolExpectedPropertyCode/);
     expect(src).not.toMatch(/: 'HRCEN'/);
   });
+
+  it('mail document read_tool skips hotel env before the MAIL branch', () => {
+    const src = readFileSync(fileURLToPath(new URL('../src/ai/worker.ts', import.meta.url)), 'utf8');
+    const start = src.indexOf('async function executeProductionReadTool');
+    const chunk = src.slice(start, src.indexOf('const admission', start));
+    expect(chunk).toMatch(/documents_list_existing/);
+    expect(chunk).toMatch(/documents_read_existing/);
+    expect(chunk.indexOf('documents_list_existing')).toBeLessThan(
+      chunk.indexOf('readToolExpectedPropertyCode'),
+    );
+  });
 });
 
 describe('warnPaneStaySpawnFailed', () => {

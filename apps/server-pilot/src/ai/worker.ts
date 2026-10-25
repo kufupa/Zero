@@ -2882,12 +2882,14 @@ async function executeProductionReadTool(input: {
       ? 'mail-existing-documents-v1'
       : resolveHmsSourceRevision();
   const expectedPropertyCode =
-    request.toolId === 'hms_quote_stay'
-      ? request.quoteRequest.propertyCode
-      : request.toolId === 'hms_read_folio'
-        ? requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>)
-            .expectedPropertyCode
-        : readToolExpectedPropertyCode(process.env);
+    request.toolId === 'documents_list_existing' || request.toolId === 'documents_read_existing'
+      ? ''
+      : request.toolId === 'hms_quote_stay'
+        ? request.quoteRequest.propertyCode
+        : request.toolId === 'hms_read_folio'
+          ? requireHmsReadRuntimeConfig(process.env as Record<string, string | undefined>)
+              .expectedPropertyCode
+          : readToolExpectedPropertyCode(process.env);
   const admission = 'admission' in request ? request.admission : undefined;
   if (!admission) {
     throw Object.assign(new Error('read_tool requires trusted release/input/capture admission'), {
