@@ -313,10 +313,24 @@ describe('shared prepared quote source checks', () => {
 
   it('accepts only an identical inbound copy with the same canonical Message-ID at the same property', () => {
     expect(isSharedPreparedQuoteSourceCopy(run, source, selected)).toBe(true);
-    expect(isSharedPreparedQuoteSourceCopy(run, source, { ...selected, textBody: 'Changed source.' })).toBe(false);
-    expect(isSharedPreparedQuoteSourceCopy(run, source, { ...selected, messageIdHeader: 'other@example.invalid' })).toBe(false);
-    expect(isSharedPreparedQuoteSourceCopy(run, source, { ...selected, direction: 'outbound' })).toBe(false);
-    expect(isSharedPreparedQuoteSourceCopy(run, source, { ...selected, transportId: 'transport-centurion' })).toBe(false);
+    expect(
+      isSharedPreparedQuoteSourceCopy(run, source, { ...selected, textBody: 'Changed source.' }),
+    ).toBe(false);
+    expect(
+      isSharedPreparedQuoteSourceCopy(run, source, {
+        ...selected,
+        messageIdHeader: 'other@example.invalid',
+      }),
+    ).toBe(false);
+    expect(isSharedPreparedQuoteSourceCopy(run, source, { ...selected, direction: 'outbound' })).toBe(
+      false,
+    );
+    expect(
+      isSharedPreparedQuoteSourceCopy(run, source, {
+        ...selected,
+        transportId: 'transport-centurion',
+      }),
+    ).toBe(false);
   });
 });
 
@@ -565,7 +579,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await expect(copyApi.workstation.qualifiedQuoteProposalPdf(input)).resolves.toMatchObject({
           totalMinor: quote.totalMinor,
         });
-        await db.update(message).set({ textBody: 'Changed source.' }).where(eq(message.id, copy.id));
+        await db
+          .update(message)
+          .set({ textBody: 'Changed source.' })
+          .where(eq(message.id, copy.id));
         await expect(copyApi.workstation.qualifiedQuoteProposalPdf(input)).rejects.toMatchObject({
           code: 'NOT_FOUND',
           message: 'Proposal source not found',

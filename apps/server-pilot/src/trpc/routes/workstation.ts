@@ -34,6 +34,10 @@ import {
   convertProposalHtml,
 } from '../../quote-proposal/proposal-pdf.js';
 import {
+  getPropertyTransportIds,
+  resolvePropertyTransport,
+} from '../../../tooling/playwright-quote/property-registry.mjs';
+import {
   deriveQuoteLines,
   deriveAuthorizedExtraLines,
   pricedRoomTotal,
@@ -85,7 +89,7 @@ import {
   quotePdfSenderDisplayName,
   retargetQuotePdfFileName,
 } from '../../quote-proposal/filename.js';
-import { and, eq, desc, sql } from 'drizzle-orm';
+import { and, eq, desc, inArray, sql } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
 import {
   assertHmsQuoteOriginAllowed,
@@ -507,6 +511,38 @@ function preparedStaySpan(readResult: Record<string, unknown> | null | undefined
   return readResult?.status === 'ready' && revision ? approvedStaySpan(revision) : null;
 }
 
+type SharedPreparedQuoteSource = Pick<
+  typeof message.$inferSelect,
+  'id' | 'transportId' | 'direction' | 'messageIdHeader' | 'subject' | 'textBody' | 'htmlBody'
+>;
+
+/** A prepared quote may cross mailboxes only when both persisted rows prove the same inbound source. */
+export function isSharedPreparedQuoteSourceCopy(
+  run: Pick<typeof aiWorkflowRun.$inferSelect, 'transportId' | 'triggerMessageId'>,
+  source: SharedPreparedQuoteSource,
+  selected: SharedPreparedQuoteSource,
+): boolean {
+  if (
+    source.id !== run.triggerMessageId ||
+    source.transportId !== run.transportId ||
+    source.id === selected.id ||
+    source.direction !== 'inbound' ||
+    selected.direction !== 'inbound' ||
+    source.subject !== selected.subject ||
+    source.textBody !== selected.textBody ||
+    source.htmlBody !== selected.htmlBody
+  ) {
+    return false;
+  }
+  const selectedProperty = resolvePropertyTransport(selected.transportId);
+  if (selectedProperty.kind !== 'property') return false;
+  const propertyTransportIds = getPropertyTransportIds(selectedProperty.property.propertyCode);
+  if (!propertyTransportIds.includes(source.transportId) || !propertyTransportIds.includes(selected.transportId))
+    return false;
+  const sourceMessageId = canonicalInternetMessageId(source.messageIdHeader);
+  return !!sourceMessageId && sourceMessageId === canonicalInternetMessageId(selected.messageIdHeader);
+}
+
 /** Every staff approval for this message, newest first, with the stay dates each one covers. */
 async function staffApprovalsFor(
   ctx: { activeTransportId: string; sessionUser: { id: string } },
@@ -539,9 +575,8 @@ async function staffApprovalsFor(
 }
 
 /**
- * Every stay of a proposal request, resolved to its approved revision. A run must be user-owned or system-prepared for
- * this transport and message. One stay keeps the message-wide currency rule. Run again after a document is built, so
- * nothing changes under it.
+ * Every stay of a proposal request, resolved to its approved revision. User runs require the exact source; prepared
+ * runs may use a checked same-property copy. One stay keeps the message-wide currency rule. Re-resolve after building.
  */
 async function proposalStaysFor(
   input: z.infer<typeof qualifiedProposalInput>,
@@ -560,17 +595,27 @@ async function proposalStaysFor(
   if (new Set(requests.map((request) => request.workflowRunId)).size !== requests.length)
     throw new TRPCError({ code: 'BAD_REQUEST', message: 'Each stay needs its own approved quote' });
   const db = getDb();
+  const activeProperty = resolvePropertyTransport(ctx.activeTransportId);
+  const propertyTransportIds =
+    activeProperty.kind === 'property'
+      ? getPropertyTransportIds(activeProperty.property.propertyCode)
+      : [];
+  const visibleTransportIds = [...new Set([ctx.activeTransportId, ...propertyTransportIds])];
+  await Promise.all(requests.map((request) => awaitPendingStaffQuote(request.workflowRunId)));
+  const [current] = await db
+    .select()
+    .from(message)
+    .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
+    .limit(1);
   const runs = await Promise.all(
     requests.map(async (request) => {
-      await awaitPendingStaffQuote(request.workflowRunId);
       const [run] = await db
         .select({ run: aiWorkflowRun })
         .from(aiWorkflowRun)
         .where(
           and(
             eq(aiWorkflowRun.id, request.workflowRunId),
-            eq(aiWorkflowRun.transportId, ctx.activeTransportId),
-            eq(aiWorkflowRun.triggerMessageId, input.messageId),
+            inArray(aiWorkflowRun.transportId, visibleTransportIds),
           ),
         )
         .limit(1);
@@ -578,6 +623,29 @@ async function proposalStaysFor(
       const systemPrepared = isSystemPreparedPriority(run.run.priority) &&
         run.run.metrics?.quotePrepared === true &&
         run.run.metrics.userId == null;
+      const exactSource =
+        run.run.transportId === ctx.activeTransportId &&
+        run.run.triggerMessageId === input.messageId;
+      let sharedSource: typeof current | null = null;
+      if (!exactSource) {
+        if (!systemPrepared || !current) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
+        }
+        const [source] = await db
+          .select()
+          .from(message)
+          .where(
+            and(
+              eq(message.id, run.run.triggerMessageId),
+              eq(message.transportId, run.run.transportId),
+            ),
+          )
+          .limit(1);
+        if (!source || !isSharedPreparedQuoteSourceCopy(run.run, source, current)) {
+          throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
+        }
+        sharedSource = source;
+      }
       if (systemPrepared && !quotePreparationEnabled())
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
@@ -599,16 +667,11 @@ async function proposalStaysFor(
           .limit(1);
         if (!owner) throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
       }
-      return { run: run.run, request, systemPrepared };
+      return { run: run.run, request, systemPrepared, sharedSource };
     }),
   );
   const combined = runs.length > 1;
   const threadId = runs[0]!.run.threadId;
-  const [current] = await db
-    .select()
-    .from(message)
-    .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
-    .limit(1);
   const approvals = combined
     ? [
         ...(await staffApprovalsFor(ctx, threadId, input.messageId)),
@@ -638,7 +701,7 @@ async function proposalStaysFor(
           .limit(1)
       )[0];
   const stays: ProposalStay[] = [];
-  for (const { run, request, systemPrepared } of runs) {
+  for (const { run, request, systemPrepared, sharedSource } of runs) {
     const staff = run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
     if (combined && !staff && !systemPrepared)
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Every stay needs its own approved quote' });
@@ -677,15 +740,19 @@ async function proposalStaysFor(
     let rowPrices: RowPrice[];
     try {
       const proposalScope = {
-        transportId: ctx.activeTransportId,
-        messageId: input.messageId,
+        transportId: sharedSource ? run.transportId : ctx.activeTransportId,
+        messageId: sharedSource ? run.triggerMessageId : input.messageId,
         revisionRef: request.revisionRef,
         factRefs: request.factRefs,
       };
       if (systemPrepared) {
         const prepared = resolvePreparedLedgerProposal(run, {
           ...proposalScope,
-          sourceHash: current ? staffQuoteSourceHash(current) : '',
+          sourceHash: sharedSource
+            ? staffQuoteSourceHash(sharedSource)
+            : current
+              ? staffQuoteSourceHash(current)
+              : '',
           party: { company: input.company, agency: input.agency },
         });
         resolved = { revision: prepared.revision, facts: prepared.facts };

@@ -154,7 +154,7 @@ describe('staff quote HMS job binding', () => {
       threadId: 'thread-copy-2',
       sourceHash: 'c'.repeat(64),
     };
-    const staffQuoteJob = vi.fn(async () =>
+    const staffQuoteJob = vi.fn(async (_input: unknown) =>
       view(
         'done',
         { ...READY, messageId: selectedSource.messageId },
