@@ -17,6 +17,15 @@ export type PreparedStaffQuotePlan = {
   partyBound: boolean;
 };
 
+export type QuoteShopJob = {
+  input: StaffQuoteInput;
+};
+
+/** One BAR/Government shop per stay. Extra strategies are U6b. */
+export function quoteShopJobsForPlan(plan: PreparedStaffQuotePlan): QuoteShopJob[] {
+  return plan.inputs.map((input) => ({ input }));
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)

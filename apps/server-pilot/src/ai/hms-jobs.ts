@@ -111,6 +111,7 @@ import {
   buildPreparedStaffQuotePlan,
   confidentPartyFromV2Result,
   quotePrepareKindReason,
+  quoteShopJobsForPlan,
   staffQuoteInputsPriceEquivalent,
   type PreparedStaffQuotePlan,
 } from './quote-ready.js';
@@ -2282,7 +2283,7 @@ export async function evaluateQuoteReadyForMessage(
   };
 }
 
-/** Creates one userless, low-priority staff-quote read for each complete future stay. */
+/** One userless, low-priority staff-quote read per complete future stay. Extra strategies are U6b. */
 export async function prefetchQuoteReadyForExtraction(
   run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
   db: DB = getDb(),
@@ -2309,8 +2310,8 @@ export async function prefetchQuoteReadyForExtraction(
   const workItemId = await latestWorkItemId(db, evaluation.transportId, evaluation.threadId);
   const perHour = quotePreparationPerHour(env);
   let created = 0;
-  for (const quoteInput of evaluation.plan.inputs) {
-    const digest = createHash('sha256').update(JSON.stringify(quoteInput)).digest('hex');
+  for (const shop of quoteShopJobsForPlan(evaluation.plan)) {
+    const digest = createHash('sha256').update(JSON.stringify(shop.input)).digest('hex');
     const queued = await enqueuePreparedQuoteWithinCap(
       db,
       {
@@ -2319,7 +2320,7 @@ export async function prefetchQuoteReadyForExtraction(
         triggerMessageId: evaluation.messageId,
         workItemId,
         userId: null,
-        request: { kind: 'staff_quote', input: quoteInput },
+        request: { kind: 'staff_quote', input: shop.input },
         priority,
         idempotencyKey: `hms-job:staff-quote-prepared:${evaluation.transportId}:${evaluation.messageId}:${digest}`,
         extraMetrics: { quotePrepared: true },
