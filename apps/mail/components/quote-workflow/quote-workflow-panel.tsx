@@ -1490,6 +1490,14 @@ export function QuoteWorkflowPanel({
       roomTypesByCode.set(alternative.roomCode, { code: alternative.roomCode, label: alternative.roomLabel });
     }
   }
+  for (const group of formGroups) {
+    for (const code of group.roomCodes ?? []) {
+      if (!roomTypesByCode.has(code)) {
+        const label = group.roomCodes?.length === 1 ? group.roomPreference || code : code;
+        roomTypesByCode.set(code, { code, label });
+      }
+    }
+  }
   const paneRoomTypes = [...roomTypesByCode.values()];
   const strictRoomTypes = paneConfig !== undefined;
   const paneBoards = paneConfig === undefined ? undefined : paneConfig?.boards ?? [];
