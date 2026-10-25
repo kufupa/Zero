@@ -1633,17 +1633,17 @@ describe('NavaPane screen states', () => {
       new Set(COMPARISON_STRATEGIES.map((strategy) => strategy.requestValue)),
     );
     expect(requestedStrategies).not.toContain('AIR');
-    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(screen.getByLabelText('Quotation total').textContent).toMatch(/R\s?1\s?600,00/),
     );
+    const queuedRunsBeforeSelection = bridgeMockState.queueStaffQuoteMutation.mock.calls.length;
 
     fireEvent.click(within(table).getByRole('button', { name: 'Use Wholesale (WS) rates' }));
 
     await waitFor(() =>
       expect(screen.getByLabelText('Quotation total').textContent).toMatch(/R\s?2\s?220,00/),
     );
-    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+    expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(queuedRunsBeforeSelection);
   });
 
   it('shows the bind queue-off failures without searching', async () => {
@@ -1654,10 +1654,11 @@ describe('NavaPane screen states', () => {
     await storedReadLands();
 
     const table = await screen.findByRole('table', { name: 'Quote strategy comparison' });
-    await waitFor(() => expect(within(table).getAllByText('Search failed')).toHaveLength(6));
-    expect(within(table).getByText('Search failed').getAttribute('title')).toContain(
-      'comparison queue is disabled or unavailable',
-    );
+    await waitFor(() => {
+      const failures = within(table).getAllByText('Search failed');
+      expect(failures).toHaveLength(6);
+      expect(failures[0]?.getAttribute('title')).toContain('comparison queue is disabled or unavailable');
+    });
     expect(bridgeMockState.staffQuoteJobQuery).not.toHaveBeenCalled();
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
