@@ -44,7 +44,7 @@ import {
   workItemIdForMail,
 } from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
-import { mailboxProcedure, privateProcedure, router } from '../trpc.js';
+import { mailboxProcedure, router } from '../trpc.js';
 import { quotePaneConfigForProperty } from '../../hms/rate-catalogue.js';
 import { quoteTargetForTransport } from '../../hms/hms-quote-target.js';
 import { refuseProperty } from '../../hms/property-refusal.js';
