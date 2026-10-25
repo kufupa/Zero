@@ -3504,7 +3504,7 @@ describe('stay edits: rows, stays and their rates', () => {
   }
 
   /** A session at the requirements step with both stays rated, as after a Get rates run for each. */
-  function ratedSession(groups: Row[]): QuoteSession {
+  function ratedSession(groups: Row[]): QuoteWorkflowSession {
     const allocation = (key: string, revisionRef: string) =>
       ({ revisionRef, inputRevision: 1, quoteRequestKey: key, totalMinor: 100 }) as QuoteSession['staffQuotes'][string];
     const staffQuotes = { [keyA]: allocation(keyA, 'oa'), [keyB]: allocation(keyB, 'ob') };
