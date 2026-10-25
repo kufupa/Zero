@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import * as quote from './fetch-quote.mjs';
-import { multipleSource, selectionFixture } from './fetch-quote-fixtures.mjs';
+import { barWalkInSource, multipleSource, selectionFixture } from './fetch-quote-fixtures.mjs';
 import { composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 const { validateRequest, stayDates, displayDate } = quote;
 const request = {propertyCode:'HRCEN',arrivalDate:'2026-09-24',departureDate:'2026-09-27',rooms:[{quantity:2,adults:1,children:0,childAges:[]}]};
@@ -204,6 +204,29 @@ test('on-screen rate label may differ from native desc; binding uses room and ra
   const ambiguous=quote.extractOptions(request,request.rooms[0],[{data:f.data,calendar:f.calendar}]);
   assert.ok(ambiguous.issues.some(i=>i.code==='RATE_NOT_BOUND_TO_VISIBLE_GRID'&&i.path.endsWith(':STWN:BAR')));
 });
+test('BAR grid Walk-in Rate stays in options with existing BAR rows',()=>{
+  // G9 HRDAV 2026-11-08→12 STKNG: HMS BAR grid showed WAL Walk-in Rate 4680×4 that Nava omitted.
+  const stay={propertyCode:'HRDAV',arrivalDate:'2026-11-08',departureDate:'2026-11-12',
+    rooms:[{quantity:1,adults:1,children:0,childAges:[],required:{roomCodes:['STKNG'],boardBases:['breakfast']}}]};
+  const amounts={BAR:'4680.00',BLRB:'4220.00',BARDIS:'3744.00',WAL:'4680.00'};
+  for (const includeNativeWal of [false, true]) {
+    const f=barWalkInSource({includeNativeWal});
+    const result=quote.extractOptions(stay,stay.rooms[0],[{data:f.data,calendar:f.calendar}]);
+    const codes=result.options.filter(o=>o.nightly.length===4).map(o=>o.rate.code).sort();
+    assert.deepEqual(codes,['BAR','BARDIS','BLRB','WAL']);
+    for (const [code,amount] of Object.entries(amounts)) {
+      const option=result.options.find(o=>o.rate.code===code);
+      assert.equal(option.room.code,'STKNG');
+      assert.deepEqual(option.nightly.map(n=>n.price.amount),Array(4).fill(amount));
+    }
+    const wal=result.options.find(o=>o.rate.code==='WAL');
+    assert.equal(wal.rate.label,'Walk-in Rate');
+    assert.equal(wal.board,'Bed & Breakfast NR');
+    assert.equal(wal.matchStatus,'match');
+    assert.equal(result.options.filter(o=>o.rate.code==='WAL').length,1);
+    if (!includeNativeWal) assert.notEqual(wal.availability,'available');
+  }
+});
 test('return limit hides only quote-eligible matches without claiming unseen matches',()=>{
   const rows=[
     {id:0,matchStatus:'match',eligibility:'verified',availability:'available'},
@@ -271,6 +294,7 @@ test('bed matching uses exact room information, never misleading Twin room name'
   const facts=quote.sourceFacts?.({room:{code:'STWN',label:'Standard Twin'},rate:{code:'BAR'},board:'Bed & Breakfast R'},'Standard Twin\nTwo Double Beds\nSleeps 4');
   assert.equal(facts?.bedType,'double');
   assert.equal(facts.boardBase,'breakfast');
+  assert.equal(quote.sourceFacts({room:{code:'STKNG',label:'Standard King'},rate:{code:'WAL'},board:'Bed & Breakfast NR'},'').boardBase,'breakfast');
   assert.equal(quote.sourceFacts({room:{code:'EXKNG',label:'Executive King'},rate:{code:'BAR'}},'King Bed').bedType,'king');
   assert.equal(quote.sourceFacts({room:{code:'STWN',label:'Standard Twin'},rate:{code:'BAR'},board:'invented breakfast'},'').bedType,undefined);
 });

@@ -454,7 +454,7 @@ export function sourceFacts(option, roomInformation='') {
     ['Two Single Beds','twin'],['One Single Bed','single'],['One Double Bed','double']]);
   const lines=new Set(roomInformation.split('\n').map(x=>x.trim()));
   const bedType=[...bedLabels].find(([label])=>lines.has(label))?.[1];
-  const boardBase=({'Bed & Breakfast R':'breakfast','Room Only R':'room_only','Dinner Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed, Breakfast & Beverage R':'dinner_bed_breakfast'})[option.board];
+  const boardBase=({'Bed & Breakfast R':'breakfast','Bed & Breakfast NR':'breakfast','Room Only R':'room_only','Dinner Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed, Breakfast & Beverage R':'dinner_bed_breakfast'})[option.board];
   return {roomCode:option.room.code,rateCode:option.rate.code,bedType,boardBase,
     features:[{name:'room_description',value:option.room.label}]};
 }
@@ -510,14 +510,35 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     const property=data.children.find(p=>p.isprop&&!p.issummary&&p.code===request.propertyCode);
     if (!property) {issues.push(issue('PROPERTY_RESULT_MISSING',`windows[${windowIndex}]`,'Requested property absent.'));continue;}
     const windowIds=new Set();
-    for (const nativeRoom of property.children??[]) for (const rate of nativeRoom.children??[]) {
+    for (const nativeRoom of property.children??[]) {
+      const seenCodes=new Set((nativeRoom.children??[]).map(r=>r.code));
+      const rates=[...(nativeRoom.children??[])];
+      for (const row of calendar.options) {
+        if (row.room?.code!==nativeRoom.code) continue;
+        const parsed=/^([A-Z0-9_-]+):\s*(.*)$/.exec(String(row.rate??''));
+        if (!parsed || seenCodes.has(parsed[1])) continue;
+        if (calendar.options.filter(o=>o.room.code===nativeRoom.code&&o.rate.startsWith(`${parsed[1]}: `)).length!==1) continue;
+        const columns={};
+        let priced=true;
+        for (const date of wanted) {
+          const idx=dates.indexOf(date);
+          if (idx<0) continue;
+          const price=normalizePrice(row.prices?.[idx],property.currency);
+          if (!price) {priced=false;break;}
+          columns[`col${idx+1}`]={value:Number(price.amount)};
+        }
+        if (!priced) continue;
+        rates.push({code:parsed[1],desc:parsed[2].trim(),currency:property.currency,columns});
+        seenCodes.add(parsed[1]);
+      }
+      for (const rate of rates) {
       const id=`${request.propertyCode}:${nativeRoom.code}:${rate.code}`;
       let option=candidates.get(id);
       if (!option) {
         option={id,room:{code:nativeRoom.code,label:nativeRoom.desc,buildingCode:nativeRoom.buildingCode??null},
           rate:{code:rate.code,label:rate.desc,...(nativeBundleLabels(rate.nonroombundleslist).length?{bundleLabels:nativeBundleLabels(rate.nonroombundleslist)}:{})},roomCode:nativeRoom.code,rateCode:rate.code,board:null,
           nightly:[],observations:new Map(),issues:[],held:false,_rate:rate,_nativeRoom:nativeRoom,
-          sourceCurrency:property.currency,rateScope:['BAR','BARRO'].includes(rate.code)?'public':rate.isNegotiatedRate===true?'contextual':'unknown'};
+          sourceCurrency:property.currency,rateScope:['BAR','BARRO','WAL'].includes(rate.code)?'public':rate.isNegotiatedRate===true?'contextual':'unknown'};
         candidates.set(id,option);
       }
       if(windowIds.has(id))option.issues.push(issue('AMBIGUOUS_NATIVE_ID',id,'Multiple native rows share this identity.'));
@@ -547,6 +568,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
         if (prior&&JSON.stringify(prior.fact)!==JSON.stringify(observation)) option.issues.push(issue('OVERLAP_CHANGED',`${id}:${date}`,'Overlapping pages disagree.'));
         else option.observations.set(date,{fact:observation,windowIndex,index:idx});
       }
+    }
     }
   }
   const options=[];
