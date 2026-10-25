@@ -54,11 +54,18 @@ it('isolates an injected HRFAKE target and refuses unknown or unsupported output
       browserSlot: 'davinci',
       installationEnvName: 'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRFAKE',
     });
-    const jobArgs = {
+    const queued = await targets.resolveHmsReadJobTarget({
+      transportId: fixture.property.mailboxTransportId,
+      threadId: 'fixture-thread',
+      messageId: 'fixture-message',
+      env: {},
+    });
+    expect(queued).toMatchObject({ ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED' });
+    const jobMetrics = {
       ...targets.hmsReadAuditMetrics({ actorKind: 'user', actorUserId: 'fixture-user', target }),
       ...targets.hmsReadTargetJobMetrics(target),
     };
-    expect(jobArgs).toMatchObject({
+    expect(jobMetrics).toMatchObject({
       propertyCode: 'HRFAKE',
       slotId: 'davinci',
       hmsReadTarget: { propertyCode: 'HRFAKE', secretId: 'test-only/hrfake' },
@@ -81,7 +88,7 @@ it('isolates an injected HRFAKE target and refuses unknown or unsupported output
       ),
     ).rejects.toThrow('unknown_quote_property:HRFAKE');
 
-    for (const output of [resolved, profile, target, jobArgs, paneConfig]) {
+    for (const output of [resolved, profile, target, queued, jobMetrics, paneConfig]) {
       expect(JSON.stringify(output)).not.toContain('HRCEN');
     }
   } finally {
