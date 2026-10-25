@@ -207,6 +207,12 @@ describe('U23 try-once acquisition', () => {
 });
 
 describe('two hotel slots', () => {
+  it('lock keys differ per property', () => {
+    expect(propertyReadLockKey('tenant-centurion', 'HRCEN')).not.toBe(
+      propertyReadLockKey('tenant-centurion', 'HRDAV'),
+    );
+  });
+
   it('two properties can hold locks at once', async () => {
     const hrcenHeld = deferred();
     const hrdavHeld = deferred();

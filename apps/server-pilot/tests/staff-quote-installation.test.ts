@@ -95,4 +95,12 @@ describe('readInstalledStaffQuoteConfiguration property install', () => {
       'staff_quote_installation_unavailable',
     );
   });
+
+  it('names a non-Centurion install from the property code, not an HRDAV-only branch', () => {
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION', '/tmp/centurion-quote.json');
+    vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRBAK', '');
+    expect(() => readInstalledStaffQuoteConfiguration('HRBAK')).toThrow(
+      'staff_quote_installation_unavailable',
+    );
+  });
 });

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { StaffQuoteInstallationConfiguration } from '../src/ai/staff-quote-installation.js';
 import {
+  HMS_SLOT_CDP_ENV,
   PANE_CLI_ENV_ALLOWLIST,
   paneStayHmsTargetForTransport,
   paneStaySpawnEnv,
@@ -178,6 +179,11 @@ describe('paneStaySpawnEnv', () => {
     expect(env.HMS_READ_SECRET_ARN).toBe('nava-zero/server-pilot/infor-hms-read-davinci');
   });
 
+  it('maps each registry slot to its own CDP env name', () => {
+    expect(HMS_SLOT_CDP_ENV.centurion).toBe('HMS_STAGEHAND_CDP_URL');
+    expect(HMS_SLOT_CDP_ENV.davinci).toBe('HMS_STAGEHAND_CDP_URL_DAVINCI');
+  });
+
   it('forwards HMS_DAVINCI_CREATE to HRDAV so the CLI can keep the lab guard', () => {
     expect(PANE_CLI_ENV_ALLOWLIST).toContain('HMS_DAVINCI_CREATE');
     const env = paneStaySpawnEnv(
@@ -271,9 +277,21 @@ describe('availability quote request property', () => {
 });
 
 describe('worker HRCEN hardcode', () => {
-  it('read_tool default property remains Centurion on the non-quote/non-folio branch', () => {
+  it('read_tool has no HRCEN default when HMS_EXPECTED_PROPERTY_CODE is unset', () => {
     const src = readFileSync(fileURLToPath(new URL('../src/ai/worker.ts', import.meta.url)), 'utf8');
-    expect(src).toMatch(/: 'HRCEN'/);
+    expect(src).toMatch(/readToolExpectedPropertyCode/);
+    expect(src).not.toMatch(/: 'HRCEN'/);
+  });
+
+  it('mail document read_tool skips hotel env before the MAIL branch', () => {
+    const src = readFileSync(fileURLToPath(new URL('../src/ai/worker.ts', import.meta.url)), 'utf8');
+    const start = src.indexOf('async function executeProductionReadTool');
+    const chunk = src.slice(start, src.indexOf('const admission', start));
+    expect(chunk).toMatch(/documents_list_existing/);
+    expect(chunk).toMatch(/documents_read_existing/);
+    expect(chunk.indexOf('documents_list_existing')).toBeLessThan(
+      chunk.indexOf('readToolExpectedPropertyCode'),
+    );
   });
 });
 

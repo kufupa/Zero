@@ -293,9 +293,10 @@ export function paneStayCreateTarget(input: {
   return { ok: true, target };
 }
 
-/** `--property HRDAV` only. Centurion omits the flag (CLI default HRCEN). */
+/** Non-Centurion targets pass `--property`; Centurion omits it (CLI default HRCEN). */
 export function paneStayCreatePropertyArgs(target?: HmsReadTarget | null): string[] {
-  return target?.propertyCode === 'HRDAV' ? ['--property', 'HRDAV'] : [];
+  const code = target?.propertyCode;
+  return code && code !== 'HRCEN' ? ['--property', code] : [];
 }
 
 /** CDP + secret for create-lab-stay. HRDAV never inherits the Centurion slot. */

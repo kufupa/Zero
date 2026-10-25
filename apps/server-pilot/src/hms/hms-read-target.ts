@@ -12,6 +12,7 @@ import {
   type MailboxHmsOriginFields,
   type MailboxHmsOriginLoadInput,
 } from './mailbox-hms-origin-bind.js';
+import { hmsProductionOriginForSlot } from './browser-artifacts.js';
 import { refuseProperty } from './property-refusal.js';
 
 export type HmsReadBrowserSlot = 'centurion' | 'davinci';
@@ -20,16 +21,62 @@ export type HmsReadTarget = {
   propertyCode: string;
   secretId: string;
   browserSlot: HmsReadBrowserSlot;
+  origin: string;
+  installationEnvName: string;
 };
+
+export function staffQuoteInstallationEnvName(propertyCode: string): string {
+  return propertyCode === 'HRCEN'
+    ? 'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION'
+    : `RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_${propertyCode}`;
+}
+
+function asReadBrowserSlot(slot: string): HmsReadBrowserSlot | null {
+  return slot === 'centurion' || slot === 'davinci' ? slot : null;
+}
 
 function targetForRegisteredProperty(propertyCode: string): HmsReadTarget {
   const property = getPropertyRegistration(propertyCode);
   if (!property) return refuseProperty({ code: 'property_unknown' });
+  const browserSlot = asReadBrowserSlot(property.browserSlot);
+  const origin = browserSlot ? hmsProductionOriginForSlot(browserSlot) : null;
+  if (!browserSlot || !origin || !property.credentialSecretRef) {
+    return refuseProperty({ code: 'not_set_up' });
+  }
   return Object.freeze({
     propertyCode: property.propertyCode,
     secretId: property.credentialSecretRef,
-    browserSlot: property.browserSlot,
+    browserSlot,
+    origin,
+    installationEnvName: staffQuoteInstallationEnvName(property.propertyCode),
   });
+}
+
+/** Worker read_tool hotel: env must name an active registry hotel. Unset/unknown/inactive refuse. */
+export function readToolExpectedPropertyCode(env: NodeJS.Dict<string> = process.env): string {
+  const code = env.HMS_EXPECTED_PROPERTY_CODE?.trim() ?? '';
+  if (!code) return refuseProperty({ code: 'not_set_up' });
+  return hmsReadTargetForProperty(code).propertyCode;
+}
+
+/** Quote flag `on` needs secret, slot, origin, installation, and a rate/fields profile. */
+export function assertPropertyQuoteReady(
+  propertyCode: string,
+  env: NodeJS.Dict<string> = process.env,
+): HmsReadTarget {
+  const target = hmsReadTargetForProperty(propertyCode);
+  const installation = env[target.installationEnvName];
+  const property = getPropertyRegistration(propertyCode);
+  if (
+    typeof installation !== 'string' ||
+    !installation.trim() ||
+    !property?.profileFile ||
+    !target.secretId ||
+    !target.origin
+  ) {
+    return refuseProperty({ code: 'not_set_up' });
+  }
+  return target;
 }
 
 /** Request-time resolver; registry descriptors remain importable when a property is inactive. */

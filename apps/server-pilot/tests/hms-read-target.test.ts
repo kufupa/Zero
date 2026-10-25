@@ -6,11 +6,14 @@ import {
   DAVINCI_HMS_READ_TARGET,
   DAVINCI_ORIGIN_REFUSED_MESSAGE,
   DAVINCI_STAFF_TRANSPORT_IDS,
+  assertPropertyQuoteReady,
   hmsDavinciReadsEnabled,
+  readToolExpectedPropertyCode,
   hmsReadTargetForTransport,
   hmsReadTargetJobMetrics,
   parseHmsReadTarget,
   readTargetForHmsJob,
+  staffQuoteInstallationEnvName,
 } from '../src/hms/hms-read-target.js';
 import { paneStaySpawnEnv } from '../src/ai/pane-stay-spawn-env.js';
 import { PropertyRefusalCause } from '../src/hms/property-refusal.js';
@@ -38,6 +41,8 @@ describe('hmsReadTargetForTransport', () => {
       propertyCode: 'HRCEN',
       secretId: 'nava-zero/server-pilot/infor-hms-read',
       browserSlot: 'centurion',
+      origin: 'https://appsrv-1.legacyhotels.co.za',
+      installationEnvName: 'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION',
     });
   });
 
@@ -53,8 +58,16 @@ describe('hmsReadTargetForTransport', () => {
       propertyCode: 'HRDAV',
       secretId: 'nava-zero/server-pilot/infor-hms-read-davinci',
       browserSlot: 'davinci',
+      origin: 'https://appsrv-1.legacyhotels.co.za',
+      installationEnvName: 'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV',
     });
     expect(DAVINCI_HMS_READ_TARGET.browserSlot).not.toBe(CENTURION_HMS_READ_TARGET.browserSlot);
+    expect(DAVINCI_HMS_READ_TARGET.installationEnvName).not.toBe(
+      CENTURION_HMS_READ_TARGET.installationEnvName,
+    );
+    expect(staffQuoteInstallationEnvName('HRDAV')).toBe(
+      'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV',
+    );
   });
 
   it('refuses unknown and collector transports instead of returning the HRCEN target', () => {
@@ -77,6 +90,49 @@ describe('hmsReadTargetForTransport', () => {
     expect(() => hmsReadTargetForTransport({ fromAddress: 'guest@example.invalid' })).toThrow(
       expect.objectContaining({ code: 'PRECONDITION_FAILED' }),
     );
+  });
+});
+
+describe('readToolExpectedPropertyCode', () => {
+  it('uses the registered hotel from env and refuses unset or unknown codes', () => {
+    expect(readToolExpectedPropertyCode({ HMS_EXPECTED_PROPERTY_CODE: 'HRCEN' })).toBe('HRCEN');
+    expect(readToolExpectedPropertyCode({ HMS_EXPECTED_PROPERTY_CODE: 'HRDAV' })).toBe('HRDAV');
+    expect(() => readToolExpectedPropertyCode({})).toThrow(
+      expect.objectContaining({ cause: expect.objectContaining({ code: 'not_set_up' }) }),
+    );
+    expect(() => readToolExpectedPropertyCode({ HMS_EXPECTED_PROPERTY_CODE: 'HRFAKE' })).toThrow(
+      expect.objectContaining({ cause: expect.objectContaining({ code: 'property_unknown' }) }),
+    );
+  });
+});
+
+describe('assertPropertyQuoteReady', () => {
+  it('returns the HRDAV target when its installation env is set', () => {
+    expect(
+      assertPropertyQuoteReady('HRDAV', {
+        RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '/tmp/hrdav-quote.json',
+      }),
+    ).toEqual(DAVINCI_HMS_READ_TARGET);
+    expect(
+      assertPropertyQuoteReady('HRCEN', {
+        RESERVATIONIST_STAFF_QUOTE_CONFIGURATION: '/tmp/hrcen-quote.json',
+      }),
+    ).toEqual(CENTURION_HMS_READ_TARGET);
+  });
+
+  it('refuses not_set_up before HMS when the property has no quote installation', () => {
+    let error: unknown;
+    try {
+      assertPropertyQuoteReady('HRDAV', {
+        RESERVATIONIST_STAFF_QUOTE_CONFIGURATION: '/tmp/hrcen-quote.json',
+        RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '',
+      });
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect((error as { cause?: unknown }).cause).toBeInstanceOf(PropertyRefusalCause);
+    expect(error).toMatchObject({ cause: { code: 'not_set_up' } });
   });
 });
 

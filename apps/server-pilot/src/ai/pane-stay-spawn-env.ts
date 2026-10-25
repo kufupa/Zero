@@ -66,7 +66,16 @@ export const PANE_CLI_ENV_ALLOWLIST = [
   'HMS_DAVINCI_CREATE',
 ] as const;
 
-function davinciPaneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget): NodeJS.ProcessEnv {
+export const HMS_SLOT_CDP_ENV = {
+  centurion: 'HMS_STAGEHAND_CDP_URL',
+  davinci: 'HMS_STAGEHAND_CDP_URL_DAVINCI',
+} as const;
+
+function isolatedSlotPaneStaySpawnEnv(
+  env: NodeJS.ProcessEnv,
+  target: HmsReadTarget,
+): NodeJS.ProcessEnv {
+  const cdpEnvName = HMS_SLOT_CDP_ENV[target.browserSlot];
   const out: NodeJS.ProcessEnv = {};
   for (const name of PANE_CLI_ENV_ALLOWLIST) {
     if (
@@ -83,7 +92,7 @@ function davinciPaneStaySpawnEnv(env: NodeJS.ProcessEnv, target: HmsReadTarget):
     if (env[name] !== undefined) out[name] = env[name];
   }
   out.HMS_READ_SECRET_ARN = target.secretId;
-  const cdp = env.HMS_STAGEHAND_CDP_URL_DAVINCI;
+  const cdp = env[cdpEnvName];
   if (cdp) {
     out.HMS_STAGEHAND_CDP_URL = cdp;
     out.HMS_STAGEHAND_BROWSER_OWNERSHIP = 'borrowed';
@@ -103,7 +112,9 @@ export function paneStaySpawnEnv(
   readConfiguration: () => StaffQuoteInstallationConfiguration = readInstalledStaffQuoteConfiguration,
   target: HmsReadTarget,
 ): NodeJS.ProcessEnv {
-  if (target.browserSlot === 'davinci') return davinciPaneStaySpawnEnv(env, target);
+  if (HMS_SLOT_CDP_ENV[target.browserSlot] !== 'HMS_STAGEHAND_CDP_URL') {
+    return isolatedSlotPaneStaySpawnEnv(env, target);
+  }
   const out: NodeJS.ProcessEnv = {};
   for (const name of PANE_CLI_ENV_ALLOWLIST) {
     if (env[name] !== undefined) out[name] = env[name];

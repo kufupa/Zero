@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { getPropertyRegistration } from '../tooling/playwright-quote/property-registry.mjs';
 
 export type NodeEnv = 'production' | 'development' | 'test';
 
@@ -54,7 +55,7 @@ export type HmsWorkerRuntimeConfig = {
   releaseRoot: string;
   healthPath: string;
   expectedTenant: string;
-  expectedPropertyCode: 'HRCEN';
+  expectedPropertyCode: string;
   expectedTransportId: string;
   runDeadlineMs: number;
   circuitCooldownMs: number;
@@ -331,8 +332,26 @@ function requireHmsRuntimeConfig(input: EnvInput): HmsWorkerRuntimeConfig {
     'HMS_EXPECTED_PROPERTY_CODE',
     input.HMS_EXPECTED_PROPERTY_CODE,
   );
-  if (expectedPropertyCode !== 'HRCEN') {
-    throw new Error(`env HMS_EXPECTED_PROPERTY_CODE must be HRCEN, got: ${expectedPropertyCode}`);
+  const property = getPropertyRegistration(expectedPropertyCode);
+  if (!property?.active) {
+    throw new Error(
+      `env HMS_EXPECTED_PROPERTY_CODE must be a registered hotel, got: ${expectedPropertyCode}`,
+    );
+  }
+  const expectedTenant = requireNonEmpty('HMS_EXPECTED_TENANT', input.HMS_EXPECTED_TENANT);
+  if (expectedTenant !== property.expectedTenant) {
+    throw new Error(
+      `env HMS_EXPECTED_TENANT must match registry for ${expectedPropertyCode}, got: ${expectedTenant}`,
+    );
+  }
+  const expectedTransportId = requireNonEmpty(
+    'HMS_EXPECTED_TRANSPORT_ID',
+    input.HMS_EXPECTED_TRANSPORT_ID,
+  );
+  if (!property.transportIds.includes(expectedTransportId)) {
+    throw new Error(
+      `env HMS_EXPECTED_TRANSPORT_ID must belong to ${expectedPropertyCode}, got: ${expectedTransportId}`,
+    );
   }
   return {
     secretArn: requireNonEmpty('HMS_READ_SECRET_ARN', input.HMS_READ_SECRET_ARN),
@@ -345,12 +364,9 @@ function requireHmsRuntimeConfig(input: EnvInput): HmsWorkerRuntimeConfig {
       input.HMS_ACTIVE_REGISTRY_PATH?.trim() || '/opt/nava/shared/hms-active-registry/active.json',
     releaseRoot: input.HMS_RELEASE_ROOT?.trim() || '/opt/nava/shared/hms-releases',
     healthPath,
-    expectedTenant: requireNonEmpty('HMS_EXPECTED_TENANT', input.HMS_EXPECTED_TENANT),
-    expectedPropertyCode: 'HRCEN',
-    expectedTransportId: requireNonEmpty(
-      'HMS_EXPECTED_TRANSPORT_ID',
-      input.HMS_EXPECTED_TRANSPORT_ID,
-    ),
+    expectedTenant,
+    expectedPropertyCode,
+    expectedTransportId,
     runDeadlineMs: input.HMS_RUN_DEADLINE_MS
       ? toInt('HMS_RUN_DEADLINE_MS', input.HMS_RUN_DEADLINE_MS)
       : 150_000,
