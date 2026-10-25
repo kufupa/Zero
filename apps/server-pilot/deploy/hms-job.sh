@@ -21,6 +21,15 @@ usage() {
   exit 2
 }
 
+# Hard stop (MISTAKES 2026-10-23): HOLD.txt, not a chat message.
+nava_refuse_if_hold() {
+  local hold="${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}"
+  if [ -f "$hold" ]; then
+    echo "hms-job: refuse: HOLD file present ($hold)" >&2
+    exit 2
+  fi
+}
+
 # systemd-run under SSM needs sudo -n. No --wait: SSM stdout cap + long HMS jobs.
 run_systemd() {
   if [ -n "${HMS_JOB_SYSTEMD_RUN:-}" ]; then
@@ -127,6 +136,7 @@ run_u0() {
 }
 
 cmd_start() {
+  nava_refuse_if_hold
   local property="" tool="" args_file=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -193,6 +203,7 @@ cmd_start() {
     -E "HMS_JOB_WAIT_SECS=${WAIT_SECS}" \
     -E "HMS_JOB_SYSTEMCTL=${SYSTEMCTL}" \
     -E "HMS_JOB_PROOF_CMD=${HMS_JOB_PROOF_CMD:-}" \
+    -E "NAVA_RUN_HOLD_FILE=${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}" \
     --working-directory "$SERVER_PILOT" \
     bash "${SCRIPT_DIR}/hms-job.sh" _run "$id"; then
     printf '%s\n' '{"ok":false,"error":"systemd_run_failed"}' >"${dir}/result.json"
@@ -245,6 +256,7 @@ cmd_result() {
 }
 
 cmd_run() {
+  nava_refuse_if_hold
   local id="${1:-}"
   safe_id "$id" || exit 2
   local dir log property args_file

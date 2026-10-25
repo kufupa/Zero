@@ -181,6 +181,107 @@ node "$SCRIPT_DIR/parse-ec2-legacy-env.mjs" \
   "$REMOTE_COMMON_TMP" \
   "${REMOTE_COMMON_ALLOWLIST[@]}"
 
+# Flip to `on` needs CANARY PASS <workflow> <property> <sha> on the live SHA (M3/G6).
+nava_live_sha="${NAVA_LIVE_SHA:-}"
+if [ -z "$nava_live_sha" ] && [ -d "${REPO_ROOT}/.git" ]; then
+  nava_live_sha="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
+fi
+node - "$REMOTE_COMMON_TMP" "$REMOTE_COMMON_ENV" \
+  "${NAVA_CANARY_PASS_FILE:-/tmp/mh1024/CANARY.txt}" "$nava_live_sha" <<'NODE'
+const fs = require("fs");
+const [newPath, oldPath, canaryPath, liveSha] = process.argv.slice(2);
+const WORKFLOW = {
+  HMS_DAVINCI_CREATE: "create",
+  HMS_DAVINCI_MAKE_QUOTE: "quote",
+  HMS_DAVINCI_READS: "reads",
+  HMS_QUOTE_PREPARE: "quote",
+  INBOUND_TRIAGE_CLASSIFIER: "triage",
+  INBOUND_EXTRACTION: "extraction",
+  PANE_WRITE_CREATE: "create",
+  PANE_WRITE_AMEND_UNPAID: "amend",
+  PANE_WRITE_AMEND_PAID: "amend",
+  PANE_WRITE_CANCEL_UNPAID: "cancel",
+  PANE_WRITE_CANCEL_PAID: "cancel",
+  PANE_WRITE_ATTACH: "attach",
+  RESERVATIONIST_PANE_SAVE: "save",
+  HMS_JOB_QUEUE: "queue",
+};
+function parse(path) {
+  const map = new Map();
+  if (!path || !fs.existsSync(path)) return map;
+  for (const line of fs.readFileSync(path, "utf8").split("\n")) {
+    const match = /^([A-Z][A-Z0-9_]*)='((?:[^']|'\\'')*)'$/.exec(line);
+    if (match) map.set(match[1], match[2].replace(/'\\''/g, "'"));
+  }
+  return map;
+}
+function isOn(value) {
+  return /^(on|true|1)$/i.test(String(value ?? ""));
+}
+function isWorkflow(key) {
+  return Object.prototype.hasOwnProperty.call(WORKFLOW, key) || key.endsWith("_ON");
+}
+const next = parse(newPath);
+const prev = parse(oldPath);
+const flips = [];
+for (const [key, value] of next) {
+  if (!isWorkflow(key) || !isOn(value) || isOn(prev.get(key))) continue;
+  flips.push(key);
+}
+if (flips.length === 0) process.exit(0);
+if (!liveSha) {
+  process.stderr.write("write-ec2-remote-env: refuse: live SHA missing for flag on\n");
+  process.exit(2);
+}
+let canary = "";
+try {
+  canary = fs.readFileSync(canaryPath, "utf8");
+} catch {
+  canary = "";
+}
+const rows = [];
+const lineRe = /^CANARY PASS (\S+) (\S+) ([0-9a-fA-F]{7,40})\s*$/;
+for (const line of canary.split(/\r?\n/)) {
+  const match = lineRe.exec(line);
+  if (match) rows.push({ workflow: match[1], property: match[2], sha: match[3] });
+}
+function shaMatch(canarySha, live) {
+  const a = canarySha.toLowerCase();
+  const b = live.toLowerCase();
+  if (a === b) return true;
+  if (a.length >= 7 && b.startsWith(a)) return true;
+  if (b.length >= 7 && a.startsWith(b)) return true;
+  return false;
+}
+function workflowMatch(flag, token) {
+  const alias = WORKFLOW[flag] || flag;
+  return token === flag || token.toLowerCase() === String(alias).toLowerCase();
+}
+const FLAG_PROPERTY = {
+  HMS_DAVINCI_CREATE: "HRDAV",
+  HMS_DAVINCI_MAKE_QUOTE: "HRDAV",
+  HMS_DAVINCI_READS: "HRDAV",
+};
+for (const flag of flips) {
+  const neededProperty = FLAG_PROPERTY[flag];
+  const hit = rows.find(
+    (row) =>
+      workflowMatch(flag, row.workflow) &&
+      /^(HRCEN|HRDAV)$/.test(row.property) &&
+      (!neededProperty || row.property === neededProperty) &&
+      shaMatch(row.sha, liveSha),
+  );
+  if (hit) continue;
+  const stale = rows.some((row) => workflowMatch(flag, row.workflow));
+  process.stderr.write(
+    stale
+      ? `write-ec2-remote-env: refuse: stale canary SHA for ${flag} (live ${liveSha})\n`
+      : `write-ec2-remote-env: refuse: no CANARY PASS <workflow> <property> <sha> for ${flag}\n`,
+  );
+  process.exit(2);
+}
+NODE
+
 REMOTE_AUTH_SECRET="$(
   aws secretsmanager get-secret-value \
     --region "$AWS_REGION" \
