@@ -358,7 +358,6 @@ describe('QuoteWorkflowPanel', () => {
       'quote-authority',
       'quote-stay',
       'quote-rates',
-      'quote-extras',
       'quote-quote',
     ]);
     expect(steps.map((step) => step.getAttribute('aria-label'))).toEqual([
@@ -366,10 +365,10 @@ describe('QuoteWorkflowPanel', () => {
       'HMS notes',
       'Stay',
       'Availability & rates',
-      'Extras & alternatives',
       'Documents',
     ]);
-    expect(steps.map((step) => step.querySelector('h3 span')?.textContent)).toEqual(['1', '2', '3', '4', '5', '6']);
+    expect(steps.map((step) => step.querySelector('h3 span')?.textContent)).toEqual(['1', '2', '3', '4', '5']);
+    expect(screen.queryByRole('region', { name: 'Extras & alternatives' })).toBeNull();
     expect(within(steps[0]!).getByRole('button', { name: 'Continue to HMS notes' })).toBeDefined();
     expect(within(steps[1]!).queryByLabelText('Rate plan')).toBeNull();
     expect(within(steps[1]!).getByText('HMS notes (optional)')).toBeDefined();
@@ -802,7 +801,12 @@ describe('QuoteWorkflowPanel', () => {
     };
     render(<AlternativeStayPanel initial={session} onRunStep={onRunStep} onPatchGroup={onPatchGroup} />);
 
-    expect(screen.getByText('Requested type not available — available instead: Deluxe Twin × 2')).toBeDefined();
+    const alternative = screen.getByText('Not available — instead: Deluxe Twin × 2');
+    const alternativeGroup = alternative.closest('[role="group"]');
+    expect(alternativeGroup).toBeTruthy();
+    expect(alternativeGroup?.parentElement?.querySelector('h5')?.textContent).toMatch(/rates$/);
+    const useThis = within(alternativeGroup as HTMLElement).getByRole('button', { name: 'Use this' });
+    expect(useThis.className).toContain('min-h-11');
     expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('SKNG');
     expect(onPatchGroup).not.toHaveBeenCalled();
     expect(onRunStep).not.toHaveBeenCalled();
@@ -1244,10 +1248,10 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByText('Is an airport shuttle available?')).toBeDefined();
   });
 
-  it('shows four enabled-by-checkbox extras for each stay after availability and rates', () => {
+  it('keeps extras with each Stay and patches the addressed stay only', () => {
     const session = staggeredDatesSession();
     const onPatchStayExtras = vi.fn();
-    render(<QuoteWorkflowPanel session={session} onPatchStayExtras={onPatchStayExtras} />);
+    const { rerender } = render(<QuoteWorkflowPanel session={session} onPatchStayExtras={onPatchStayExtras} />);
     const extras = screen.getAllByRole('group', { name: /^Extras for Stay / });
     expect(extras).toHaveLength(2);
     expect(screen.getAllByText('Stay subtotal')).toHaveLength(2);
@@ -1259,14 +1263,38 @@ describe('QuoteWorkflowPanel', () => {
         expect((amount as HTMLInputElement).disabled).toBe(true);
       }
     }
-    const firstStayKey = `${session.groups[0]!.arrivalDate}:${session.groups[0]!.departureDate}`;
-    const firstExtras = extras[0]!;
-    const ratesSection = screen.getByRole('region', { name: 'Availability & rates' });
-    const extrasSection = screen.getByRole('region', { name: 'Extras & alternatives' });
-    expect(ratesSection.compareDocumentPosition(extrasSection) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(extrasSection.contains(firstExtras)).toBe(true);
-    fireEvent.click(within(firstExtras).getByRole('checkbox', { name: 'Shuttle' }));
-    expect(onPatchStayExtras).toHaveBeenCalledWith(firstStayKey, { shuttleEnabled: true });
+    const firstStayCard = screen.getByRole('article', { name: 'Stay 1 details' });
+    const secondStayCard = screen.getByRole('article', { name: 'Stay 2 details' });
+    expect(firstStayCard.parentElement?.contains(extras[0]!)).toBe(true);
+    expect(secondStayCard.parentElement?.contains(extras[1]!)).toBe(true);
+    expect(screen.queryByRole('region', { name: 'Extras & alternatives' })).toBeNull();
+    const stayKeys = [...new Set(session.groups.map((group) => `${group.arrivalDate}:${group.departureDate}`))];
+    expect(stayKeys).toHaveLength(2);
+    const firstStayKey = stayKeys[0]!;
+    const secondStayKey = stayKeys[1]!;
+    const secondExtras = extras[1]!;
+    fireEvent.click(within(secondExtras).getByRole('checkbox', { name: 'Shuttle' }));
+    expect(onPatchStayExtras).toHaveBeenCalledWith(secondStayKey, { shuttleEnabled: true });
+    rerender(
+      <QuoteWorkflowPanel
+        session={{
+          ...session,
+          staffHeader: {
+            ...session.staffHeader,
+            stayExtrasByKey: {
+              ...session.staffHeader.stayExtrasByKey,
+              [secondStayKey]: { ...defaultStaffStayExtras(session.staffHeader), shuttleEnabled: true },
+            },
+          },
+        }}
+        onPatchStayExtras={onPatchStayExtras}
+      />,
+    );
+    const secondExtrasWithShuttle = screen.getByRole('group', { name: 'Extras for Stay 2' });
+    fireEvent.focus(within(secondExtrasWithShuttle).getByLabelText('Shuttle amount'));
+    fireEvent.change(within(secondExtrasWithShuttle).getByLabelText('Shuttle amount'), { target: { value: '375' } });
+    expect(onPatchStayExtras).toHaveBeenCalledWith(secondStayKey, { shuttleMinor: 37_500 });
+    expect(onPatchStayExtras).not.toHaveBeenCalledWith(firstStayKey, expect.anything());
 
     assertRatePlanVisible();
     expect(screen.getByText('HMS notes (optional)')).toBeDefined();

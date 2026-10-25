@@ -1957,7 +1957,7 @@ describe('NavaPane screen states', () => {
       expect(reviewedReplyHtml()).toBe(declineHtml);
     });
     expect(reply.innerHTML).not.toContain('Deluxe Twin');
-    expect(screen.getByText('Requested type not available — available instead: Deluxe Twin × 2')).toBeDefined();
+    expect(screen.getByText('Not available — instead: Deluxe Twin × 2')).toBeDefined();
     expect((screen.getByRole('button', { name: 'Draft decline reply' }) as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.click(screen.getByRole('button', { name: 'Draft decline reply' }));
@@ -2011,7 +2011,7 @@ describe('NavaPane screen states', () => {
     const declineHtml = '<p>Unfortunately, we are unable to accommodate your requested stay.</p>';
     await waitFor(() => expect(reviewedReplyHtml()).toBe(declineHtml));
     expect(reply.innerHTML).not.toContain('Deluxe Twin');
-    expect(screen.getByText('Requested type not available — available instead: Deluxe Twin × 2')).toBeDefined();
+    expect(screen.getByText('Not available — instead: Deluxe Twin × 2')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Use this' })).toBeDefined();
     expect(quotePdfMutate).not.toHaveBeenCalled();
 
@@ -2876,7 +2876,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
     ['the Outlook pane', false],
     ['the webmail panel', true],
   ] as const) {
-    it(`${surface}: keeps the six numbered quote sections in reservationist order`, async () => {
+    it(`${surface}: keeps the five numbered quote sections in reservationist order`, async () => {
       bridgeMockState.storedWork = STORED_FRENCH;
       const { container } = render(<NavaPane bridge={fakeBridge} preview={preview} />);
       await waitFor(() => expect(container.querySelector('#quote-quote')).not.toBeNull(), { timeout: 5000 });
@@ -2885,14 +2885,14 @@ describe('NavaPane contact and translation on both surfaces', () => {
         'quote-authority',
         'quote-stay',
         'quote-rates',
-        'quote-extras',
         'quote-quote',
       ].map((id) => container.querySelector(`#${id}`));
+      expect(container.querySelector('#quote-extras')).toBeNull();
       expect(steps.every(Boolean)).toBe(true);
       for (let index = 1; index < steps.length; index += 1) {
         expect(steps[index - 1]!.compareDocumentPosition(steps[index]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       }
-      expect(within(steps[5] as HTMLElement).getByText('Reply text · PDF · Excel')).toBeDefined();
+      expect(within(steps[4] as HTMLElement).getByText('Reply text · PDF · Excel')).toBeDefined();
     });
 
     it(`${surface}: shows mailbox and selected email first, with the quote contact before translation`, async () => {
