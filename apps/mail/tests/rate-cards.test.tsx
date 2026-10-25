@@ -457,6 +457,7 @@ describe('rate cards in the quote panel', () => {
       inputRevision: 1,
       groups: [stay],
       header: emptyStaffQuoteHeader(),
+      propertyCode: HRCEN_PROPERTY_CODE,
     });
     expect(run.status).toBe('ok');
     if (run.status !== 'ok') return;
@@ -488,6 +489,7 @@ describe('rate cards in the quote panel', () => {
       inputRevision: 1,
       groups: [blank],
       header: emptyStaffQuoteHeader(),
+      propertyCode: HRCEN_PROPERTY_CODE,
     });
     expect(run.status).toBe('ok');
     expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ maxOptionsPerGroup: 200 }));
@@ -738,6 +740,7 @@ describe('the pinned rate on the execute request', () => {
       inputRevision: 1,
       groups: [{ ...stay, board: 'room_only', rateCode: 'BARRO' }],
       header: emptyStaffQuoteHeader(),
+      propertyCode: HRCEN_PROPERTY_CODE,
     });
     expect(result.status).toBe('ok');
     expect(mutate.mock.calls[0]?.[0].groups).toEqual([
@@ -759,6 +762,7 @@ describe('the pinned rate on the execute request', () => {
       inputRevision: 1,
       groups: [stay],
       header: emptyStaffQuoteHeader(),
+      propertyCode: HRCEN_PROPERTY_CODE,
     });
     expect(result.status).toBe('ok');
     expect(mutate.mock.calls[0]?.[0].groups[0]).not.toHaveProperty('rateCode');
