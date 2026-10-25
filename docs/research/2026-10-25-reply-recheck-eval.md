@@ -93,7 +93,8 @@ the current evaluator no longer permits that hosted route. All rates below use t
 event-resolved production source above; accuracy is correct/114 and balanced accuracy is mean recall
 across the three supported labels. The current runner budgets the fully serialized prompt plus
 system text and schema to 26 KB, clips only JSON string fields when needed, and records clipping;
-the historical run predates that guard.
+the fitting search preserves the largest per-field text cap that still fits. The historical run
+predates that guard.
 
 | Predictor | Accuracy (n=114, this production source) | Balanced accuracy (n=114, same source) |
 |---|---:|---:|
@@ -137,7 +138,7 @@ its billable partial usage was not captured in the aggregate and is excluded fro
   limited by the missing attachments/full thread context.
 - `score` now rejects duplicate `(workItemId, replyMessageId)` pairs or ordinals and mixed
   `asOf`/`cohortN` snapshots before calling a model. `cohortN` can exceed retained `n` because
-  freeze excludes rows.
+  freeze excludes rows. Both `freeze` and `score` require positive, unique sample ordinals.
 
 **Decision:** keep the LLM offline; do not ship or shadow it from these rates. Reconsider only
 with independently adjudicated next-action labels, verified guest/staff actors, handled examples,

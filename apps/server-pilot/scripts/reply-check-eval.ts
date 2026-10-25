@@ -160,9 +160,9 @@ function fitJsonPromptToLimit(
     const candidate = JSON.stringify(clipJsonStrings(parsed, maxStringBytes));
     if (modelRequestBytes(systemPrompt, candidate) <= maxBytes) {
       best = candidate;
-      high = maxStringBytes - 1;
-    } else {
       low = maxStringBytes + 1;
+    } else {
+      high = maxStringBytes - 1;
     }
   }
   if (best === undefined) throw new Error('model_input_limit_exceeded');
@@ -209,7 +209,7 @@ function buildCases(rows: RawRow[]): { cases: Case[]; ambiguous: AmbiguousCase[]
     if (row.cohortN !== rows.length || row.asOf !== rows[0]?.asOf) {
       throw new Error('source_cohort_count_mismatch');
     }
-    if (!Number.isSafeInteger(row.sampleOrdinal) || ordinals.has(row.sampleOrdinal)) {
+    if (!Number.isSafeInteger(row.sampleOrdinal) || row.sampleOrdinal < 1 || ordinals.has(row.sampleOrdinal)) {
       throw new Error('source_ordinal_invalid_or_duplicate');
     }
     pairs.add(key);
@@ -598,7 +598,9 @@ async function selfTest(): Promise<void> {
   const fitted = await invokeOutcome(captureAdapter, 'Classify this evidence.', longUserPrompt);
   assert.ok(Buffer.byteLength('Classify this evidence.') + Buffer.byteLength(boundedUserPrompt) +
     Buffer.byteLength(JSON.stringify(RESPONSE_SCHEMA)) <= MODEL_MAX_INPUT_BYTES);
-  assert.doesNotThrow(() => JSON.parse(boundedUserPrompt));
+  const boundedRequest = JSON.parse(boundedUserPrompt) as { request: { body: string } };
+  assert.ok(boundedRequest.request.body.length > 100, 'prompt fitting must preserve useful request text');
+  assert.ok(boundedRequest.request.body.startsWith(longBody.slice(0, 10)));
   assert.equal(fitted.promptClipped, true);
   const raw = (direction: string, sameSourceSender: boolean): RawRow => ({
     sampleOrdinal: 1, cohortN: 1, asOf: '2026-10-25T01:00:00Z', workItemId: 'work-1',
@@ -611,6 +613,9 @@ async function selfTest(): Promise<void> {
   assert.equal(deriveGold(raw('inbound', false)), null, 'unverified inbound actor needs blind adjudication');
   assert.equal(deriveGold(raw('inbound', true)), null, 'message text must adjudicate even a matching sender');
   assert.equal(deriveGold(raw('outbound', false)), null, 'outbound direction alone is not a gold action');
+  const zeroOrdinal = raw('inbound', false);
+  zeroOrdinal.sampleOrdinal = 0;
+  assert.throws(() => buildCases([zeroOrdinal]), /source_ordinal_invalid_or_duplicate/);
   const booking = raw('inbound', false);
   booking.confirmedBooking = true;
   assert.equal(deriveGold(booking), 'handled');
