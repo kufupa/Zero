@@ -706,6 +706,8 @@ describe('NavaPane', () => {
 describe('NavaPane screen states', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    bridgeMockState.transportId = 'transport-1';
+    bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
     bridgeMockState.hmsQueueStatus = null;
     saveReplyMutate.mockReset().mockResolvedValue({ id: 'draft-1', replaced: false });
@@ -735,6 +737,8 @@ describe('NavaPane screen states', () => {
   });
 
   afterEach(() => {
+    bridgeMockState.transportId = 'transport-1';
+    bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     bridgeMockState.analysisOverride = null;
     bridgeMockState.analyseCalls = 0;
     bridgeMockState.analyseFails = false;
