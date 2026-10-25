@@ -1,0 +1,29 @@
+{
+  "property": {
+    "propertyCode": "HRFAKE", "active": true,
+    "transportIds": ["transport-hrfake", "transport-hrfake-sales"],
+    "expectedTenant": "HMS_FAKE",
+    "expectedPropertyName": "HRFAKE Fixture Hotel",
+    "username": "HRFAKE_TEST",
+    "mailboxTransportId": "transport-hrfake",
+    "credentialSecretRef": "test-only/hrfake",
+    "credentialMode": "view_only", "browserSlot": "davinci",
+    "profileFile": null
+  },
+  "profile": {
+    "propertyCode": "HRFAKE",
+    "publishedRooms": 3,
+    "building": "none",
+    "currency": "ZAR",
+    "roomCapacity": { "FAKEQ": 2, "FAKET": 1 },
+    "requiredCreateFields": ["reservationnote"],
+    "evidence": { "sources": ["synthetic U10 contract fixture"] },
+    "rooms": { "FAKEQ": { "label": "Fixture Queen" }, "FAKET": { "label": "Fixture Twin" } },
+    "ratePlans": {
+      "FAKEBB": { "label": "Fixture Breakfast", "board": "bb" },
+      "FAKERO": { "label": "Fixture Room Only", "board": "room_only" },
+      "FAKEEV": { "label": "Fixture Dinner", "board": "dinner_bb", "event": true }
+    },
+    "boards": ["room_only", "bb", "dinner_bb"]
+  }
+}
