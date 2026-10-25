@@ -66,7 +66,7 @@ const labStay = {
 
 let ownerSeq = 0;
 // Each test gets its own owner, so grants from one test never satisfy another.
-function freshOwner(transportId = 'transport-1'): string {
+function freshOwner(transportId = 'transport-centurion'): string {
   ownerSeq += 1;
   return `user-${ownerSeq}:${transportId}`;
 }
@@ -272,6 +272,18 @@ describe('pane stay save guards', () => {
     expect(paneStayPropertyRefusal(PANE_STAY_PROPERTY_CODE)).toBeNull();
     expect(paneStayPropertyRefusal('hrcen')).toBe('pane_save_property_mismatch');
     expect(paneStayPropertyRefusal('')).toBe('pane_save_property_mismatch');
+  });
+
+  it('refuses unknown, collector, and missing pane targets instead of defaulting to HRCEN', () => {
+    expect(paneStayCreateTarget({ transportId: 'transport-unknown' })).toEqual({
+      ok: false,
+      reason: 'property_unknown',
+    });
+    expect(paneStayCreateTarget({ transportId: 'transport-nava' })).toEqual({
+      ok: false,
+      reason: 'collector_no_hotel',
+    });
+    expect(paneStayCreateTarget({})).toEqual({ ok: false, reason: 'property_required' });
   });
 
   it('the production property lock is keyed on the session hotel and the worker tenant', () => {

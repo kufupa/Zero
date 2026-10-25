@@ -3,18 +3,14 @@ import {
   type StaffQuoteInstallationConfiguration,
 } from './staff-quote-installation.js';
 import {
-  CENTURION_HMS_READ_TARGET,
-  DAVINCI_HMS_READ_TARGET,
-  isDaVinciTransport,
+  hmsReadTargetForTransport,
   type HmsReadTarget,
 } from '../hms/hms-read-target.js';
-
-/** Centurion staff mailbox. Unknown ids fail closed; they never fall through to HRCEN. */
-const CENTURION_PANE_TRANSPORT_IDS: ReadonlySet<string> = new Set(['transport-centurion']);
+import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 
 export type PaneStayHmsTargetResolution =
   | { ok: true; target: HmsReadTarget }
-  | { ok: false; reason: 'unknown_transport' };
+  | { ok: false; reason: 'unknown_transport' | 'inactive_transport' | 'collector_no_hotel' };
 
 /**
  * Mailbox transport → HMS slot/secret/lock. Callers never supply the property: a second
@@ -26,9 +22,12 @@ export function paneStayHmsTargetForTransport(
 ): PaneStayHmsTargetResolution {
   const id = typeof transportId === 'string' ? transportId.trim() : '';
   if (!id) return { ok: false, reason: 'unknown_transport' };
-  if (isDaVinciTransport(id)) return { ok: true, target: DAVINCI_HMS_READ_TARGET };
-  if (CENTURION_PANE_TRANSPORT_IDS.has(id)) return { ok: true, target: CENTURION_HMS_READ_TARGET };
-  return { ok: false, reason: 'unknown_transport' };
+  const resolved = resolvePropertyTransport(id);
+  if (resolved.kind === 'collector') return { ok: false, reason: 'collector_no_hotel' };
+  if (resolved.kind === 'refusal') {
+    return { ok: false, reason: resolved.code === 'property_inactive' ? 'inactive_transport' : 'unknown_transport' };
+  }
+  return { ok: true, target: hmsReadTargetForTransport(id) };
 }
 
 const PANE_WRITE_ENV_NAMES = [

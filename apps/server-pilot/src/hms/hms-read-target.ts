@@ -1,10 +1,18 @@
 import { TRPCError } from '@trpc/server';
 import {
+  PROPERTY_REGISTRY,
+  getPropertyRegistration,
+  getPropertyTransportIds,
+  resolvePropertyTransport,
+} from '../../tooling/playwright-quote/property-registry.mjs';
+import {
   guardCenturionHmsMailboxOrigin,
+  isCenturionMailboxOrigin,
   isDaVinciMailboxOrigin,
   type MailboxHmsOriginFields,
   type MailboxHmsOriginLoadInput,
 } from './mailbox-hms-origin-bind.js';
+import { refuseProperty } from './property-refusal.js';
 
 export type HmsReadBrowserSlot = 'centurion' | 'davinci';
 
@@ -14,35 +22,36 @@ export type HmsReadTarget = {
   browserSlot: HmsReadBrowserSlot;
 };
 
-/** Centurion pane reads: existing secret name and borrowed-browser slot. */
-export const CENTURION_HMS_READ_TARGET: HmsReadTarget = Object.freeze({
-  propertyCode: 'HRCEN',
-  secretId: 'nava-zero/server-pilot/infor-hms-read',
-  browserSlot: 'centurion',
-});
+function targetForRegisteredProperty(propertyCode: string): HmsReadTarget {
+  const property = getPropertyRegistration(propertyCode);
+  if (!property) return refuseProperty({ code: 'property_unknown' });
+  return Object.freeze({
+    propertyCode: property.propertyCode,
+    secretId: property.credentialSecretRef,
+    browserSlot: property.browserSlot,
+  });
+}
 
-/** Da Vinci pane reads: HRDAV secret name and a slot that must not share Centurion CDP. */
-export const DAVINCI_HMS_READ_TARGET: HmsReadTarget = Object.freeze({
-  propertyCode: 'HRDAV',
-  secretId: 'nava-zero/server-pilot/infor-hms-read-davinci',
-  browserSlot: 'davinci',
-});
+/** Request-time resolver; registry descriptors remain importable when a property is inactive. */
+export function hmsReadTargetForProperty(propertyCode: string): HmsReadTarget {
+  const property = getPropertyRegistration(propertyCode);
+  if (!property) return refuseProperty({ code: 'property_unknown' });
+  if (!property.active) return refuseProperty({ code: 'property_inactive' });
+  return targetForRegisteredProperty(property.propertyCode);
+}
 
-const KNOWN_READ_TARGETS: readonly HmsReadTarget[] = [
-  CENTURION_HMS_READ_TARGET,
-  DAVINCI_HMS_READ_TARGET,
-];
+/** Centurion pane reads: sourced from the property registry. */
+export const CENTURION_HMS_READ_TARGET: HmsReadTarget = targetForRegisteredProperty('HRCEN');
+
+/** Da Vinci pane reads: sourced from its isolated registry slot and secret. */
+export const DAVINCI_HMS_READ_TARGET: HmsReadTarget = targetForRegisteredProperty('HRDAV');
+
+const KNOWN_READ_TARGETS: readonly HmsReadTarget[] = PROPERTY_REGISTRY.properties
+  .filter((property) => property.active)
+  .map((property) => hmsReadTargetForProperty(property.propertyCode));
 
 /** Every Da Vinci staff mailbox. External guest mail in these inboxes is still HRDAV. */
-export const DAVINCI_STAFF_TRANSPORT_IDS = [
-  'transport-davinci',
-  'transport-faith',
-  'transport-ayanda',
-  'transport-epick',
-  'transport-kmgidi',
-] as const;
-
-const DAVINCI_STAFF_TRANSPORT_SET: ReadonlySet<string> = new Set(DAVINCI_STAFF_TRANSPORT_IDS);
+export const DAVINCI_STAFF_TRANSPORT_IDS = getPropertyTransportIds('HRDAV');
 
 /** Staff-facing copy when a Da Vinci-origin thread must not use Centurion HMS. */
 export const DAVINCI_ORIGIN_REFUSED_MESSAGE =
@@ -57,11 +66,13 @@ export function hmsDavinciReadsEnabled(env: NodeJS.Dict<string> = process.env): 
   return env.HMS_DAVINCI_READS === 'on';
 }
 
+/** Identity classification; active HMS access is checked by the target resolver. */
 export function isDaVinciTransport(transportId: string): boolean {
-  return DAVINCI_STAFF_TRANSPORT_SET.has(transportId);
+  return DAVINCI_STAFF_TRANSPORT_IDS.includes(transportId.trim());
 }
 
 function davinciReadOrRefuse(env?: NodeJS.Dict<string>): HmsReadJobTargetResult {
+  const target = hmsReadTargetForProperty(DAVINCI_HMS_READ_TARGET.propertyCode);
   if (!hmsDavinciReadsEnabled(env)) {
     return {
       ok: false,
@@ -69,7 +80,7 @@ function davinciReadOrRefuse(env?: NodeJS.Dict<string>): HmsReadJobTargetResult 
       message: DAVINCI_ORIGIN_REFUSED_MESSAGE,
     };
   }
-  return { ok: true, target: DAVINCI_HMS_READ_TARGET };
+  return { ok: true, target };
 }
 
 /**
@@ -80,13 +91,20 @@ export function hmsReadTargetForTransport(
   transportOrOrigin: string | MailboxHmsOriginFields,
 ): HmsReadTarget {
   if (typeof transportOrOrigin === 'string') {
-    return isDaVinciTransport(transportOrOrigin)
-      ? DAVINCI_HMS_READ_TARGET
-      : CENTURION_HMS_READ_TARGET;
+    const resolved = resolvePropertyTransport(transportOrOrigin);
+    if (resolved.kind === 'refusal') return refuseProperty(resolved);
+    if (resolved.kind === 'collector') {
+      return refuseProperty({ code: 'collector_no_hotel', transportId: resolved.transportId });
+    }
+    return hmsReadTargetForProperty(resolved.property.propertyCode);
   }
-  return isDaVinciMailboxOrigin(transportOrOrigin)
-    ? DAVINCI_HMS_READ_TARGET
-    : CENTURION_HMS_READ_TARGET;
+  if (isDaVinciMailboxOrigin(transportOrOrigin)) {
+    return hmsReadTargetForProperty(DAVINCI_HMS_READ_TARGET.propertyCode);
+  }
+  if (isCenturionMailboxOrigin(transportOrOrigin)) {
+    return hmsReadTargetForProperty(CENTURION_HMS_READ_TARGET.propertyCode);
+  }
+  return refuseProperty({ code: 'property_unknown' });
 }
 
 /** Flag off: Da Vinci origin/transport still refused. Flag on: job carries the HRDAV target. */
@@ -95,9 +113,10 @@ export function readTargetForHmsJob(input: {
   origin?: MailboxHmsOriginFields | null;
   env?: NodeJS.Dict<string>;
 }): HmsReadJobTargetResult {
-  const daVinci =
-    isDaVinciTransport(input.transportId) || isDaVinciMailboxOrigin(input.origin ?? {});
-  if (!daVinci) return { ok: true, target: CENTURION_HMS_READ_TARGET };
+  const target = hmsReadTargetForTransport(input.transportId);
+  if (target.browserSlot !== 'davinci' && !isDaVinciMailboxOrigin(input.origin ?? {})) {
+    return { ok: true, target };
+  }
   return davinciReadOrRefuse(input.env);
 }
 
@@ -108,9 +127,10 @@ export function readTargetForHmsJob(input: {
 export async function resolveHmsReadJobTarget(
   input: MailboxHmsOriginLoadInput & { env?: NodeJS.Dict<string> },
 ): Promise<HmsReadJobTargetResult> {
-  if (isDaVinciTransport(input.transportId)) return davinciReadOrRefuse(input.env);
+  const target = hmsReadTargetForTransport(input.transportId);
+  if (target.browserSlot === 'davinci') return davinciReadOrRefuse(input.env);
   const guard = await guardCenturionHmsMailboxOrigin(input);
-  if (guard.ok) return { ok: true, target: CENTURION_HMS_READ_TARGET };
+  if (guard.ok) return { ok: true, target };
   return davinciReadOrRefuse(input.env);
 }
 

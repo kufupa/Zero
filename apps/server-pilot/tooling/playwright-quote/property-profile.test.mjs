@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { amendRoomTypes, parseStayProperty, profileFor, propertySecretRefusal, validateProfile } from './property-profile.mjs';
+import { PROPERTY_REGISTRY } from './property-registry.mjs';
 
 const hrcenUrl = new URL('./property-profiles/HRCEN.json', import.meta.url);
 const hrcenRaw = async () => JSON.parse(await readFile(hrcenUrl, 'utf8'));
@@ -15,6 +16,12 @@ test('the checked-in HRCEN profile loads: nine room types summing to the publish
   });
   assert.match(profile.digest, /^[0-9a-f]{64}$/);
   assert.equal(profileFor('HRCEN').digest, profile.digest);
+});
+
+test('every registry property points at its verified room profile', () => {
+  for (const property of PROPERTY_REGISTRY.properties) {
+    if (property.profileFile) assert.equal(profileFor(property.propertyCode).propertyCode, property.propertyCode);
+  }
 });
 
 test('capacities summing to 161 against 160 published rooms are rejected', async () => {
