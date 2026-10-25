@@ -8,6 +8,7 @@ import { appRouter } from '../src/trpc/router.js';
 import { patchSheetXml } from '../src/quote-proposal/patch-sheet.js';
 import { patchProposalWorkbook } from '../src/quote-proposal/patch-template.js';
 import { brandQuoteWorkbookBytes } from '../src/quote-proposal/quote-workbook.js';
+import { buildQuoteProposalPdf } from '../src/quote-proposal/proposal-pdf.js';
 import { __setDbForTests } from '../src/db/client.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { mailboxAccess } from '../src/db/schema/mail.js';
@@ -106,6 +107,29 @@ describe('quote proposal xlsx patch', () => {
     expect(new TextDecoder().decode(files['xl/worksheets/_rels/sheet1.xml.rels'])).not.toContain(
       'centurion-hotel',
     );
+  });
+
+  it('keeps HRCEN legacy workbook branding byte-for-byte unchanged', () => {
+    expect(brandQuoteWorkbookBytes(TEMPLATE, 'HRCEN')).toBe(TEMPLATE);
+  });
+
+  it('refuses legacy PDF construction when property identity is missing', async () => {
+    await expect(
+      buildQuoteProposalPdf(
+        {
+          attention: 'David Miller',
+          company: 'CIDB',
+          clientEmail: 'guest@example.com',
+          clientTelephone: '',
+          agency: 'CIDB',
+          dateLabel: '15-17 September 2026',
+          propertyCode: undefined as unknown as string,
+          lines: sampleLines,
+        },
+        { name: 'R Opperman', email: 'ropperman@legacyhotels.co.za' },
+        '',
+      ),
+    ).rejects.toMatchObject({ name: 'ProposalInputError', message: 'quote_property_required' });
   });
 
   it('keeps VAT cell as Included shared-string', () => {

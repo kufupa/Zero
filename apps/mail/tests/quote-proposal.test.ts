@@ -3,9 +3,7 @@ import { emailsMatch } from '../lib/quote-proposal/identity';
 import { occupancyRoomCode, proposalDescription } from '../lib/quote-proposal/description';
 import { lineTotal, quotePdfFileName } from '../lib/quote-proposal/filename';
 import {
-  HOTEL_TELEPHONE,
   missingQuoteDetailsWrapperHtml,
-  quotePropertyCodeForTransport,
   quoteHotelName,
   quoteWrapperHtml,
 } from '../lib/quote-proposal/copy';
@@ -43,14 +41,9 @@ describe('quote proposal helpers', () => {
     expect(lineTotal(2, 2, 2150)).toBe(8600);
   });
 
-  it('maps known hotel transports and refuses empty or unknown transport IDs', () => {
-    expect(quotePropertyCodeForTransport('transport-davinci')).toBe('HRDAV');
-    expect(quotePropertyCodeForTransport('transport-kmgidi')).toBe('HRDAV');
-    expect(quotePropertyCodeForTransport('transport-centurion')).toBe('HRCEN');
-    expect(quotePropertyCodeForTransport(undefined)).toBeNull();
-    expect(quotePropertyCodeForTransport('')).toBeNull();
-    expect(quotePropertyCodeForTransport('transport-unknown')).toBeNull();
+  it('uses no Centurion fallback when the property identity is unresolved', () => {
     expect(quoteHotelName(null)).toBe('the hotel');
+    expect(quoteWrapperHtml('Guest', 'Reservations Team')).not.toMatch(/Centurion/i);
   });
 
   it('uses Da Vinci name on the cover and never Centurion copy', () => {
@@ -61,7 +54,6 @@ describe('quote proposal helpers', () => {
   });
 
   it('uses gold wrapper copy and hotel telephone', () => {
-    expect(HOTEL_TELEPHONE).toBe('0126433600');
     const html = quoteWrapperHtml('David Miller', 'R Opperman', { propertyCode: 'HRCEN' });
     expect(html).toContain('Good day David Miller,');
     expect(html).toContain('Thank you for Choosing The Centurion Hotel.');
