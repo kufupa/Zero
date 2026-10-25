@@ -14,14 +14,13 @@ import { useHmsJobNoticeReporter } from '../lib/quote-workflow/hms-job-notice-co
 import { initialQuoteSession, reduceQuoteSession, stayKeyForGroup } from '../lib/quote-workflow/session';
 import type {
   LunaAnalysisWire,
-  QuoteOffer,
   QuotePaneConfig,
-  QuoteRoomAlternative,
   QuoteSalesStrategy,
+  QuoteStrategyRow,
+  QuoteRoomAlternative,
   QuoteSession,
   RateOption,
   RatePlanCatalogueEntry,
-  StaffQuoteAllocation,
 } from '../lib/quote-workflow/types';
 import { defaultStaffStayExtras, HRDAV_PROPERTY_CODE } from '../lib/quote-workflow/types';
 import { CENTURION_RATE_PLANS } from '../../server-pilot/src/hms/rate-catalogue';
@@ -2233,75 +2232,23 @@ describe('quote strategy comparison', () => {
       { code: 'NC', label: 'Negoticated Contracted', requestValue: 'NC' },
       { code: 'GOV', label: 'Government', requestValue: 'Government' },
     ];
-    const offer: QuoteOffer = {
-      id: 'rev-ws',
-      kind: 'allocation',
-      roomCode: '',
-      roomLabel: 'Selected room option',
-      board: 'bb',
-      rateCode: '',
-      currency: 'ZAR',
-      nightly: [],
-      stayTotalMinor: 160000,
-      observedAt: '',
-      sourceRef: 'rev-ws',
-      restrictions: [],
-      combinable: true,
-      quoteRequestKey: stayKey,
-      coversGroupIds: [group.id],
-      quantity: 1,
-    };
-    const staffQuote: StaffQuoteAllocation = {
-      workflowRunId: 'run-ws',
-      revisionRef: offer.id,
-      factRefs: [],
-      messageId: 'mail-1',
-      threadId: 'thread-1',
-      sourceHash: 'a'.repeat(64),
-      selectionEpoch: 1,
-      inputRevision: base.inputRevision,
-      inputDigest: 'b'.repeat(64),
-      totalMinor: offer.stayTotalMinor,
-      currency: 'ZAR',
-      quoteRequestKey: stayKey,
-      approvedHeader: {
-        salesStrategy: 'WS',
-        company: '',
-        agency: '',
-        attention: '',
-        clientEmail: '',
-        clientTelephone: '',
-      },
-      rateOptions: [{
-        id: 'ws-stkng',
-        groupId: group.id,
-        board: 'bb',
-        boardLabel: 'Bed & Breakfast',
-        rateCode: 'BAR',
-        rateLabel: 'Best Available Rate',
-        roomCode: 'STKNG',
-        roomLabel: 'Standard King',
-        contract: false,
-        onlyContract: false,
-        matchesRequest: true,
-        perNightMinor: 80000,
-        totalMinor: 160000,
-        currency: 'ZAR',
-        priced: 'full',
-        selected: true,
-      }],
-    };
     const session: QuoteSession = {
       ...base,
       offers: [],
       selectedOfferIds: [],
       staffQuote: null,
       staffQuotes: {},
-      quoteStrategyRows: {
-        [stayKey]: {
-          WS: { strategy: strategies[3]!, status: 'ready', offer, staffQuote, extrasReviewItems: [] },
-          GOV: { strategy: strategies[5]!, status: 'not_offered', message: 'No rooms for these dates.' },
+    };
+    const strategyRows: Record<string, Partial<Record<QuoteSalesStrategy['code'], QuoteStrategyRow>>> = {
+      [stayKey]: {
+        WS: {
+          status: 'ready',
+          roomLabel: 'Standard King',
+          boardLabel: 'Bed & Breakfast',
+          nightlyMinor: 80000,
+          totalMinor: 160000,
         },
+        GOV: { status: 'not_offered', message: 'No rooms for these dates.' },
       },
     };
     const paneConfig: QuotePaneConfig = {
@@ -2317,31 +2264,45 @@ describe('quote strategy comparison', () => {
     const onSelectQuoteStrategy = vi.fn();
 
     const rendered = render(
-      <QuoteWorkflowPanel session={session} paneConfig={paneConfig} onSelectQuoteStrategy={onSelectQuoteStrategy} />,
+      <QuoteWorkflowPanel
+        session={session}
+        paneConfig={paneConfig}
+        quoteStrategyRows={strategyRows}
+        onSelectQuoteStrategy={onSelectQuoteStrategy}
+      />,
     );
 
     const table = screen.getByRole('table', { name: /quote strategy comparison/i });
     const rows = within(table).getAllByRole('row');
     expect(rows).toHaveLength(7);
     expect(rows[1]?.textContent).toContain('BAR');
+    expect(rows.map((row) => row.textContent).join(' ')).toContain('PROMO');
+    expect(rows.map((row) => row.textContent).join(' ')).toContain('PRESET');
+    expect(rows.map((row) => row.textContent).join(' ')).toContain('WS');
+    expect(rows.map((row) => row.textContent).join(' ')).toContain('NC');
+    expect(rows.map((row) => row.textContent).join(' ')).toContain('GOV');
     expect(within(table).getByText('Not offered for these dates')).toBeDefined();
+    expect(within(table).getAllByText('Not checked')).toHaveLength(4);
     expect(within(table).getByText('Standard King')).toBeDefined();
     expect(within(table).getByText('R800,00')).toBeDefined();
     expect(within(table).getByText(/R1\s600,00/)).toBeDefined();
     expect(session.selectedOfferIds).toEqual([]);
+    expect(session.staffQuote).toBeNull();
+    expect(onSelectQuoteStrategy).not.toHaveBeenCalled();
     const chooseWholesale = screen.getByRole('button', { name: /use wholesale \(WS\) rates/i });
     expect(chooseWholesale.hasAttribute('disabled')).toBe(true);
 
     const completedRows = Object.fromEntries(strategies.map((strategy) => [
       strategy.code,
       strategy.code === 'WS'
-        ? session.quoteStrategyRows?.[stayKey]?.WS!
-        : { strategy, status: 'not_offered' as const, message: 'No rooms for these dates.' },
+        ? strategyRows[stayKey]?.WS!
+        : { status: 'not_offered' as const, message: 'No rooms for these dates.' },
     ]));
     rendered.rerender(
       <QuoteWorkflowPanel
-        session={{ ...session, quoteStrategyRows: { [stayKey]: completedRows } }}
+        session={session}
         paneConfig={paneConfig}
+        quoteStrategyRows={{ [stayKey]: completedRows }}
         onSelectQuoteStrategy={onSelectQuoteStrategy}
       />,
     );
