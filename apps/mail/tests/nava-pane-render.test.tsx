@@ -49,6 +49,7 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     userId: 'staff-1',
     sessionId: 'session-1',
     transportId: 'transport-1',
+    transportEmail: 'ropperman@legacyhotels.co.za',
     holdStaffQuote: false,
     releaseStaffQuote: null as null | (() => void),
     hmsQueueStatus: null as null | Record<string, unknown>,
@@ -149,7 +150,7 @@ vi.mock('../lib/auth-client', () => ({
 
 vi.mock('../hooks/use-connections', () => ({
   useActiveConnection: () => ({
-    data: { id: bridgeMockState.transportId, email: 'ropperman@legacyhotels.co.za' },
+    data: { id: bridgeMockState.transportId, email: bridgeMockState.transportEmail },
     isLoading: false,
   }),
 }));
@@ -408,6 +409,8 @@ function mountBuildMeta(content: string) {
 describe('NavaPane', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    bridgeMockState.transportId = 'transport-1';
+    bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
     bridgeMockState.analysisOverride = null;
     bridgeMockState.analyseCalls = 0;
@@ -1790,6 +1793,77 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(1);
     expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-04');
     expect((screen.getAllByLabelText(/Departure/i)[0] as HTMLInputElement).value).toBe('2026-11-05');
+  });
+
+  it('stored: a contact name correction keeps other fields from the read that lands later', async () => {
+    let releaseLookup = () => {};
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      contact: {
+        name: 'Stored Guest',
+        company: 'Stored Company',
+        endClient: null,
+        email: 'stored@example.invalid',
+        phone: '+27123456789',
+      },
+    };
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    render(<NavaPane bridge={fakeBridge} preview />);
+
+    const contact = await screen.findByRole('region', { name: 'Quote contact — printed on the PDF' });
+    expect(within(contact).getByText('David Miller')).toBeDefined();
+    openContactCorrections();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Corrected Guest' } });
+    await act(async () => releaseLookup());
+    await storedReadLands();
+
+    openContactCorrections();
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Corrected Guest');
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('stored@example.invalid');
+    expect((screen.getByLabelText('Phone') as HTMLInputElement).value).toBe('+27123456789');
+  });
+
+  it('stored: a contact correction does not cross mailboxes for the same message id', async () => {
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      workItemId: 'wi-first-mailbox',
+      contact: {
+        name: 'First Mailbox Guest',
+        company: null,
+        endClient: null,
+        email: 'first@example.invalid',
+        phone: null,
+      },
+    };
+    const { rerender } = render(<NavaPane bridge={fakeBridge} preview />);
+    await storedReadLands();
+    openContactCorrections();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'First Mailbox Correction' } });
+
+    bridgeMockState.transportId = 'transport-2';
+    bridgeMockState.transportEmail = 'second@legacyhotels.co.za';
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      workItemId: 'wi-second-mailbox',
+      contact: {
+        name: 'Second Mailbox Guest',
+        company: null,
+        endClient: null,
+        email: 'second@example.invalid',
+        phone: null,
+      },
+    };
+    rerender(<NavaPane bridge={fakeBridge} preview />);
+
+    await waitFor(() => {
+      const contact = screen.getByRole('region', { name: 'Quote contact — printed on the PDF' });
+      expect(within(contact).getByText('Second Mailbox Guest')).toBeDefined();
+    });
+    openContactCorrections();
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Second Mailbox Guest');
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('second@example.invalid');
   });
 
   it('stored: shows a multi-row room total on the stay as an unset split', async () => {

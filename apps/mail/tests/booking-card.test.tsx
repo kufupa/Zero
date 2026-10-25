@@ -293,6 +293,23 @@ describe('booking cards', () => {
     );
   });
 
+  it('keeps the prepared native room code when the Stay has only an unmatched room name', () => {
+    const { client, preview } = paneClient();
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    draft.draft.rooms[0]!.request.roomType = 'JNRSUI';
+    const group: StayGroupRequirement = {
+      ...g1,
+      roomPreference: 'Junior Suite',
+      roomCodes: [],
+    };
+    render(<BookingCards draft={draft} groups={[group]} paneSave={client} />);
+    pickRoomChoices(0);
+
+    fireEvent.click(previewButton(0));
+
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ roomType: 'JNRSUI' }));
+  });
+
   it('renders create-only fields once per draft room', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
     expect(screen.getAllByLabelText('Booking agency').map((field) => (field as HTMLInputElement).value)).toEqual([
@@ -347,6 +364,17 @@ describe('booking cards', () => {
     fireEvent.blur(fields[0]!);
     expect((fields[0] as HTMLInputElement).value).toBe('BARRO');
     expect(onPatchGroup).toHaveBeenCalledWith('g1', { rateCode: 'BARRO' });
+  });
+
+  it('does not patch an unchanged rate code on blur', () => {
+    const session = quotedSession();
+    session.groups[0] = { ...session.groups[0]!, rateCode: 'BARRO' };
+    const onPatchGroup = vi.fn();
+    render(<QuoteWorkflowPanel session={session} onPatchGroup={onPatchGroup} />);
+
+    fireEvent.blur(screen.getByLabelText('Rate code'));
+
+    expect(onPatchGroup).not.toHaveBeenCalled();
   });
 
   it('merges hotel-config and booking-draft room codes into one Stay selector', () => {
@@ -1941,12 +1969,12 @@ describe('booking card HMS notes copy', () => {
     const writeText = stubClipboard();
     const { client } = paneClient();
     const draft = draftReady();
-    draft.draft.rooms[0]!.board = 'room_only';
+    draft.draft.rooms[0]!.board = 'bb';
     const rowPrice = { source: 'override' as const, rateCode: 'NCOR1B', amountMinor: 185000, note: 'Thandi approved' };
     render(
       <BookingCards
         draft={draft}
-        groups={[{ ...g1, board: 'bb', rateCode: 'BARRO', specialRequests: ['Cot'], rowPrice }]}
+        groups={[{ ...g1, board: 'dinner_bb', rateCode: 'BARRO', specialRequests: ['Cot'], rowPrice }]}
         paneSave={client}
         contact={CONTACT}
       />,
