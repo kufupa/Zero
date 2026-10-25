@@ -1,109 +1,130 @@
 # Reply re-check evaluation — 2026-10-25
 
-Status: exploratory offline result; no product path, flag, mailbox state, or deployment changed.
-GPT-6 Luna beats the rule baseline on this selected set, but the result does not qualify the
-re-check for shipping. Labels combine deterministic event evidence with blind Luna adjudication;
-they are not independent human gold, and the input is not full production thread context.
+Status: exploratory offline result. No product path, flag, mailbox state, or deployment changed.
+On this selected cohort GPT-6 Luna scores higher than the rule baseline, but these labels are
+model-adjudicated rather than independent human gold, and the candidate input omits production
+attachment/thread context. This result is not sufficient to ship or shadow the LLM.
 
-## Source and cohort
+## Source and reproducible cohort recipe
 
-Read-only production SQL ran through `apps/server-pilot/deploy/ssm-run-command.sh` with
-`BEGIN READ ONLY` / `ROLLBACK`; database timezone was UTC. Snapshot: **2026-10-25 01:00:00Z**.
-The reply-check SUT did not produce the cohort: rows come from the direct work-item
-`source_message_id` / `sent_message_id` links to messages. No work-item `done` status or predictor
-output was selected or used. The earlier strict `In-Reply-To`-only count (166 pairs) did not have
-100 later-event rows, so this cohort uses the exact work-item source/reply links and then the
-thread/reference-bound next event.
+Read-only production SQL ran through `apps/server-pilot/deploy/ssm-run-command.sh` under
+`BEGIN READ ONLY` / `ROLLBACK`. Snapshot: **2026-10-25 01:00:00 UTC**. Raw message export and
+per-row predictions remained in mode-0600 files under `/tmp`; only aggregates are committed here.
+The reply-check SUT did not produce these labels or predictions. Cohort IDs are direct production
+links; neither Nava's work-item `status` nor any reply-check output was read for selection or truth.
+
+Credential-free reconstruction recipe (the SSM/psql command supplies the production connection;
+the SQL selection itself needs no credentials):
+
+1. Start with `work_item` rows and join `message` twice through `source_message_id` and
+   `sent_message_id`. Require matching `transport_id` and `thread_id`, inbound source and outbound
+   staff reply, and `mail_thread.spam_at IS NULL`. Deduplicate on
+   `(work_item.id, work_item.sent_message_id)`. Do not filter on `work_item.status`.
+2. Set reply time from the linked outbound message's `sent_at` (fall back to `work_item.sent_at`);
+   keep replies at least 24 hours old at the fixed snapshot.
+3. For each pair, choose the earliest later message in the same transport in the next 24 hours,
+   ordered by its direction-specific timestamp (`received_at` for inbound, `sent_at` for
+   outbound), then message ID. A candidate must share the work-item thread or have an RFC link to
+   the staff reply (`in_reply_to = reply.message_id_header` or `references` contains that header).
+   Keep the linked message text, direction, timestamp, and whether its sender exactly matches the
+   source sender only in the private export.
+4. Exclude an explicit auto-response if the next message subject/body matches, case-insensitively,
+   `automatic reply|auto(?:matic)?-?reply|out of office|delivery status notification|mail delivery subsystem|do not reply`.
+   The two matched rows were inbound; no raw subject/body or sender is included here.
+5. Check the linked source/thread window for confirmed booking evidence (`stay_commit`, successful
+   status, and a non-empty confirmation number in `hitl_tool_run`, plus episode booking confirmation).
+   There were no confirmed bookings in this cohort.
+
+The earlier **166** `In-Reply-To`-only pair count was not the evaluation denominator: fewer than
+100 of those had a linked next event. The broader direct work-item links above were used, then the
+next-event and maturity rules were applied:
 
 | Selection stage | Distinct `(workItemId, replyMessageId)` pairs | Source / rule |
 |---|---:|---|
 | Directly linked, non-spam production pairs | 1,017 | inbound source + outbound staff reply, same transport/thread |
-| Mature at snapshot (at least 24 h since reply) | 953 | reply time ≤ snapshot − 24 h |
+| Mature at snapshot (at least 24 h) | 953 | reply time ≤ snapshot − 24 h |
 | First later message linked within 24 h | 116 | same thread or RFC reference to the reply |
-| Explicit automatic-reply marker excluded | 2 | marker checked on the first later message |
-| **Truth-labelled rows** | **114** | all remaining distinct pair keys; selected independently of predictions |
+| Explicit automatic replies excluded | 2 | subject/body marker above |
+| **Truth-labelled rows** | **114** | all remaining distinct pair keys; selected without predictions |
 
-Labels were frozen before either predictor ran. Clear cases use event metadata; ambiguous events
-were drafted and adjudicated by separate GPT-6 Luna medium-reasoning passes. Both label passes saw
-only the work-item kind, source request, staff reply, first later event text/direction, and a boolean
-indicating whether its sender matched the source sender. Neither pass saw predictor output, message
-IDs, or Nava work-item status; the second pass also saw the first-pass label.
+## Predictor-blind labels
 
-| Label evidence | Labeling method | Rows |
-|---|---|---:|
-| Confirmed successful booking | `handled` | 0 |
-| Later inbound event, exact same sender as source | deterministic `waiting_on_guest` | 22 |
-| Later outbound staff event | deterministic `needs_more_action` | 8 |
-| Later inbound event, sender differs or is unverified | two-pass Luna draft/adjudication | 84 |
+Labels were frozen before either predictor ran. All 114 retained cases were ambiguous: no
+confirmed-booking event supplied deterministic `handled` labels, and direction or sender match
+alone cannot identify who owns the next action. Each case received a GPT-6 Luna medium-reasoning
+draft and a second GPT-6 Luna adjudication. Both passes saw only work-item kind, source request,
+staff reply, and the first next event's direction, text, and source-sender-match boolean. They saw
+no predictor output, message/work-item IDs, or Nava work-item status; the adjudicator also saw the
+draft label. Neither pass could inspect later events after this first linked message.
 
-The two Luna label passes agreed on **72/84 (85.7%)** ambiguous rows; the adjudicator supplied the
-final label on all 84. Final frozen support is **20 `handled`, 41 `waiting_on_guest`, 53
-`needs_more_action`**. The 20 `handled` labels are inferred from event content; no confirmed booking
-occurred in this horizon. Only **22/106** inbound follow-ups have the exact same sender as the
-original inbound message, so other actor identities remain unverified. Rows span **66 threads**,
-**72 reply messages**, and **72 next messages**; they are clustered, not independent.
+The two label passes agreed on **91/114 = 79.8%**; the adjudicator supplied the final label for
+each row. Final label support from the same **n=114 production event-resolved source** is **32
+`handled`, 26 `waiting_on_guest`, 56 `needs_more_action`**. Of 116 first next events, 108 were
+inbound and 8 outbound; after the two auto-replies were excluded, 106 inbound and 8 outbound
+remained. Only **22/106** retained inbound messages had a sender exactly matching the original
+source sender. Rows span **66 threads**, **72 reply messages**, and **72 next messages**; they are
+clustered, not independent.
 
 ## Predictor input and scoring
 
-Both candidates were scored against the same frozen rows. Their available pre-reply fields were
+Both candidates scored the same 114 frozen rows by production pair ID. Their pre-reply inputs were
 work-item kind, source inbound subject/text, and staff-reply subject/text after quoted history and
-signature stripping. Bodies were capped at 8 KB per field; **0/114** rows were clipped. The rule
-uses reply text. GPT-6 Luna received only those pre-reply fields: no later message, event direction,
-booking evidence, IDs, labels, or work-item status. No attachment text or other prior thread
-messages were available, so this is a text-only candidate prompt, not exact parity with a future
-production thread reader.
+signature stripping. Each body was capped at 8 KB; **0/114** rows were clipped. The rule consumes
+the reply text. GPT-6 Luna received only those pre-reply fields—no next event, booking evidence,
+IDs, labels, or work-item status. Attachment text and earlier thread messages were unavailable, so
+this is not input parity with a future production thread reader.
 
-The deterministic rule was run twice with identical output on **114/114** rows. It maps a direct
-guest-directed request to `waiting_on_guest`; a concrete staff follow-up promise, check, pending, or
-partial answer to `needs_more_action`; a bare “we'll revert” cue to `waiting_on_guest`; otherwise
-`handled`. The specific staff-promise rule preserves the plan's acceptance example (“come back with
-rates” → more staff work) where the general “will revert” wording is ambiguous.
+The deterministic baseline ran twice with identical output on **114/114** rows. It maps a direct
+guest-directed request to `waiting_on_guest`; a concrete staff follow-up promise, check, pending,
+or partial answer to `needs_more_action`; a bare “we'll revert” cue to `waiting_on_guest`; otherwise
+`handled`. The specific staff-promise rule preserves the plan example (“come back with rates” →
+more staff work).
 
-The predictor was GPT-6 Luna at medium reasoning via Azure Foundry (`store:false`), run once on each
-row. It consumed 32,002 input tokens; estimated cost was **$0.0092**. Blind label drafting and
-adjudication used 65,830 input tokens and an estimated **$0.0194**. Total estimated cost for the
-successful labeling and scoring runs was **$0.0286**. Rates below all use the same source and
-**n=114 distinct production pair rows** above. Balanced accuracy is mean recall across the three
-supported labels.
+GPT-6 Luna medium reasoning via Azure Foundry (`store:false`) ran once per row. All rates below use
+the same **n=114** event-resolved production source above; accuracy is correct/114 and balanced
+accuracy is mean recall across the three supported labels.
 
-| Predictor | Accuracy (correct / n=114) | Balanced accuracy (3 supported labels, n=114) |
+| Predictor | Accuracy (n=114, this production source) | Balanced accuracy (n=114, same source) |
 |---|---:|---:|
-| Rule baseline | 21/114 = **18.4%** | **32.4%** |
-| GPT-6 Luna | 57/114 = **50.0%** | **49.1%** |
+| Rule baseline | 31/114 = **27.2%** | **32.8%** |
+| GPT-6 Luna | 59/114 = **51.8%** | **47.1%** |
 
-Per-label rates use the same `n=114` source; support is from the frozen, predictor-blind labels:
+Per-label precision and recall are also from the same **n=114** source; supports are the frozen
+blind-label counts above:
 
-| Gold label | Support | Rule precision / recall | Luna precision / recall |
+| Gold label | Support (source n=114) | Rule precision / recall | Luna precision / recall |
 |---|---:|---:|---:|
-| `handled` | 20 | 18/103 = 17.5% / 18/20 = 90.0% | 11/31 = 35.5% / 11/20 = 55.0% |
-| `waiting_on_guest` | 41 | 3/11 = 27.3% / 3/41 = 7.3% | 10/22 = 45.5% / 10/41 = 24.4% |
-| `needs_more_action` | 53 | no rule predictions / precision n/a, 0/53 = 0% recall | 36/61 = 59.0% / 36/53 = 67.9% |
+| `handled` | 32 | 29/103 = 28.2% / 29/32 = 90.6% | 16/34 = 47.1% / 16/32 = 50.0% |
+| `waiting_on_guest` | 26 | 2/11 = 18.2% / 2/26 = 7.7% | 7/19 = 36.8% / 7/26 = 26.9% |
+| `needs_more_action` | 56 | no rule predictions / precision n/a, 0/56 = 0% recall | 36/61 = 59.0% / 36/56 = 64.3% |
 
-Confusion counts, with row totals from the same 114-pair source:
+Confusion counts, with each row total from the same **n=114** production source:
 
-| Gold (n) | Rule: handled / waiting / needs | Luna: handled / waiting / needs |
+| Gold label (support) | Rule: handled / waiting / needs | Luna: handled / waiting / needs |
 |---|---:|---:|
-| `handled` (20) | 18 / 2 / 0 | 11 / 2 / 7 |
-| `waiting_on_guest` (41) | 38 / 3 / 0 | 13 / 10 / 18 |
-| `needs_more_action` (53) | 47 / 6 / 0 | 7 / 10 / 36 |
+| `handled` (32) | 29 / 3 / 0 | 16 / 3 / 13 |
+| `waiting_on_guest` (26) | 24 / 2 / 0 | 7 / 7 / 12 |
+| `needs_more_action` (56) | 50 / 6 / 0 | 11 / 9 / 36 |
+
+Successful blind-label passes used **86,012 input tokens** (estimated **$0.0270**); successful
+scoring used **32,002 input tokens** (estimated **$0.00833**). Known successful-run total: **$0.0354**.
+One earlier scoring attempt stopped on an incomplete model response and produced no output files;
+its billable partial usage was not captured in the aggregate and is excluded from that total.
 
 ## Limits and decision
 
-- This is the event-resolved subset: only 116/953 mature pairs had a linked next message within
-  24 h; two explicit auto-replies were removed. It does not estimate performance on replies with no
-  observed follow-up, and automatic mail beyond the explicit marker was not independently reviewed.
-- Ambiguous labels were adjudicated by the same GPT-6 Luna model family being evaluated, so
-  evaluator/model-family bias is possible; the second pass saw the draft and is not independent.
-  No two-human semantic adjudication was done. Read these as next-event-informed labels, not
-  independently verified semantic gold.
-- The event stream had 106 later inbound messages, 8 later outbound staff messages, and no confirmed
-  booking. Inbound senders are not verified guests unless matching the source sender. Final label
-  support is 20/41/53; the set remains event-selected, not representative of every staff reply.
-- GPT-6 Luna gains over this rule run but gets only 57/114 right; one predictor pass provides no
-  run-to-run variance estimate. Two earlier label attempts stopped before completion; reported
-  labeling cost covers only the successful complete pass.
-- Pair rows cluster in 66 threads; rates are row-level and no cluster-adjusted interval is claimed.
+- This is an event-resolved subset: only 116/953 mature pairs had a linked next message within
+  24 h. It does not estimate performance when no follow-up was observed.
+- Labels use the same model family as the LLM predictor; the adjudicator saw the draft and is not
+  independent. No two-human semantic adjudication was done. Treat these as next-event-informed
+  labels, not independently verified gold.
+- Actor identity is weak: 84/106 retained inbound senders did not exactly match the original
+  source sender. Thread clustering is material (66 threads for 114 rows); rates have no
+  cluster-adjusted interval.
+- Luna beats this rule run on accuracy and balanced accuracy but is correct on only 59/114 rows.
+  A single predictor run gives no run-to-run variance estimate. The comparison is additionally
+  limited by the missing attachments/full thread context.
 
-**Decision:** keep `REPLY_RECHECK` off. Do not ship or shadow this LLM from these rates. A release
-decision needs independently adjudicated next-action labels, verified guest/staff actors, handled
-examples, and an input set matching the eventual production thread reader.
+**Decision:** keep the LLM offline; do not ship or shadow it from these rates. Reconsider only
+with independently adjudicated next-action labels, verified guest/staff actors, handled examples,
+and inputs matching the eventual production thread reader.

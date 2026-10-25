@@ -6,11 +6,11 @@
  */
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { open, readFile } from 'node:fs/promises';
+import { open, readFile, unlink } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
-import { createAzureLunaModel, LunaModelAdapter } from '../src/ai/bedrock/luna.js';
+import { createAzureLunaModel, lunaCallBudget, LunaModelAdapter } from '../src/ai/bedrock/luna.js';
 
 const LABELS = ['handled', 'waiting_on_guest', 'needs_more_action'] as const;
 type Outcome = (typeof LABELS)[number];
@@ -33,7 +33,7 @@ type AmbiguousCase = { row: RawRow; input: Input };
 const MIN_N = 100;
 const BODY_MAX_BYTES = 8_000;
 const MODEL_MAX_INPUT_BYTES = 26_000;
-const LABEL_MAX_OUTPUT_TOKENS = 4_096;
+const MODEL_MAX_OUTPUT_TOKENS = 4_096;
 const CODEX_CONFIG = path.join(process.env.HOME ?? '', '.codex/config.toml');
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '../../..');
@@ -61,11 +61,12 @@ function stripQuotedAndSignature(raw: string): string {
     .replace(/&quot;/gi, '"')
     .replace(/\r/g, '');
   const lines = plain.split('\n');
-  const cut = lines.findIndex((line) =>
-    /^\s*(?:>{1}|-{2,}\s*original message\s*-{2,}|begin forwarded message:|on .{1,180}\bwrote:|(?:from|to|sent|subject):\s)/i.test(line) ||
-    /^\s*(?:--\s*|_{5,}\s*)$/.test(line) ||
-    /^\s*(?:kind regards|best regards|warm regards|regards|sincerely|cheers|thanks)[,!\s.]*$/i.test(line),
-  );
+  const cut = lines.findIndex((line, index) => {
+    if (/^\s*(?:>{1}|-{2,}\s*original message\s*-{2,}|begin forwarded message:|on .{1,180}\bwrote:|(?:from|to|sent|subject):\s)/i.test(line) ||
+        /^\s*(?:--\s*|_{5,}\s*)$/.test(line)) return true;
+    return index > 0 && lines.slice(0, index).some((prior) => prior.trim()) &&
+      /^\s*(?:kind regards|best regards|warm regards|regards|sincerely|cheers|thanks)[,!\s.]*$/i.test(line);
+  });
   return lines.slice(0, cut < 0 ? undefined : cut).join('\n').replace(/[ \t]+\n/g, '\n').trim();
 }
 
@@ -102,10 +103,7 @@ function makeInput(row: RawRow): Input | null {
 function deriveGold(row: RawRow): Outcome | null {
   if (row.firstNext.autoMarker) return null;
   if (row.confirmedBooking) return 'handled';
-  if (row.firstNext.direction === 'inbound' && row.firstNext.sameSourceSender) {
-    return 'waiting_on_guest';
-  }
-  if (row.firstNext.direction === 'outbound') return 'needs_more_action';
+  // Event direction/sender cannot establish who owns the next action; adjudicate message content.
   return null;
 }
 
@@ -227,13 +225,36 @@ function assertPrivatePath(filename: string): string {
   return resolved;
 }
 
-async function writePrivate(filename: string, contents: string): Promise<void> {
-  const handle = await open(assertPrivatePath(filename), 'wx', 0o600);
+function privateOutputPaths(filenames: string[]): string[] {
+  const resolved = filenames.map(assertPrivatePath);
+  if (new Set(resolved).size !== resolved.length) throw new Error('output_paths_must_differ');
+  return resolved;
+}
+
+async function withPrivateOutputs<T>(filenames: string[], write: (handles: Awaited<ReturnType<typeof open>>[]) => Promise<T>): Promise<T> {
+  const paths = privateOutputPaths(filenames);
+  const handles: Awaited<ReturnType<typeof open>>[] = [];
   try {
-    await handle.writeFile(contents, 'utf8');
-  } finally {
-    await handle.close();
+    for (const filename of paths) handles.push(await open(filename, 'wx', 0o600));
+  } catch {
+    await Promise.all(handles.map((handle) => handle.close().catch(() => undefined)));
+    await Promise.all(paths.slice(0, handles.length).map((filename) => unlink(filename).catch(() => undefined)));
+    throw new Error('output_reservation_failed');
   }
+
+  let keep = false;
+  try {
+    const result = await write(handles);
+    keep = true;
+    return result;
+  } finally {
+    await Promise.all(handles.map((handle) => handle.close().catch(() => undefined)));
+    if (!keep) await Promise.all(paths.map((filename) => unlink(filename).catch(() => undefined)));
+  }
+}
+
+function modelDeadlineAt(now = Date.now()): number {
+  return now + lunaCallBudget('medium').deadlineMs;
 }
 
 function parseFlag(args: string[], name: string, fallback?: string): string | undefined {
@@ -281,9 +302,10 @@ function createAdapter(): LunaModelAdapter {
   }
 }
 
-async function invokeOutcome(adapter: LunaModelAdapter, systemPrompt: string, userPrompt: string, maxOutputTokens = 512) {
+async function invokeOutcome(adapter: LunaModelAdapter, systemPrompt: string, userPrompt: string, maxOutputTokens = MODEL_MAX_OUTPUT_TOKENS) {
   const result = await adapter.invoke({ modelId: 'gpt-6-luna', maxOutputTokens,
-    maxInputBytes: MODEL_MAX_INPUT_BYTES, systemPrompt, userPrompt, responseSchema: RESPONSE_SCHEMA });
+    maxInputBytes: MODEL_MAX_INPUT_BYTES, systemPrompt, userPrompt, responseSchema: RESPONSE_SCHEMA,
+    deadlineAt: modelDeadlineAt() });
   if (!asOutcome(result.output.outcome)) throw new Error('model_outcome_invalid');
   return { outcome: result.output.outcome, cost: result.usage.estimatedCostUsd,
     inputTokens: result.usage.inputTokens };
@@ -320,11 +342,11 @@ async function labelAmbiguous(rows: AmbiguousCase[], concurrency: number, costCa
       const draft = await invokeOutcome(adapter,
         'Blindly label the state immediately after the staff reply, using only the observed next event and request/reply context. ' +
         'No predictor outputs or Nava work-item status are available. handled means completed; waiting_on_guest means an external participant owns the next move; ' +
-        'needs_more_action means staff still own follow-up. Return only the schema outcome.', JSON.stringify(evidence), LABEL_MAX_OUTPUT_TOKENS);
+        'needs_more_action means staff still own follow-up. Return only the schema outcome.', JSON.stringify(evidence), MODEL_MAX_OUTPUT_TOKENS);
       const adjudication = await invokeOutcome(adapter,
         'Adjudicate this draft label using evidence only. You are blind to both predictor outputs and Nava work-item status; retain or change it as warranted. ' +
         'handled means completed; waiting_on_guest means an external participant owns the next move; needs_more_action means staff still own follow-up. Return only the schema outcome.',
-        JSON.stringify({ evidence, draftOutcome: draft.outcome }), LABEL_MAX_OUTPUT_TOKENS);
+        JSON.stringify({ evidence, draftOutcome: draft.outcome }), MODEL_MAX_OUTPUT_TOKENS);
       outcomes[index] = adjudication.outcome;
       if (draft.outcome === adjudication.outcome) agreement++;
       cost += draft.cost + adjudication.cost;
@@ -346,11 +368,16 @@ function selfTest(): void {
   assert.equal(ruleBaseline(input('We will revert.')), 'waiting_on_guest');
   assert.equal(ruleBaseline(input('We are still checking availability.')), 'needs_more_action');
   assert.equal(ruleBaseline(input('Your booking is confirmed.')), 'handled');
+  assert.equal(ruleBaseline(input(stripQuotedAndSignature('Thanks,\n\nCould you confirm your dates?'))), 'waiting_on_guest');
   assert.equal(stripQuotedAndSignature('Rates attached.\n\nOn Tuesday, the guest wrote:\nCan you quote?'), 'Rates attached.');
   const metrics = score(['waiting_on_guest', 'needs_more_action'], ['waiting_on_guest', 'waiting_on_guest']);
   assert.equal(metrics.n, 2);
   assert.equal(metrics.correct, 1);
   assert.equal(score(['needs_more_action'], ['handled']).perClass.needs_more_action.precision, null);
+  assert.throws(() => privateOutputPaths(['/tmp/reply-check-output.json', '/tmp/reply-check-output.json']),
+    /output_paths_must_differ/);
+  assert.equal(modelDeadlineAt(100), 100 + lunaCallBudget('medium').deadlineMs);
+  assert.equal(MODEL_MAX_OUTPUT_TOKENS, 4_096);
   const raw = (direction: string, sameSourceSender: boolean): RawRow => ({
     sampleOrdinal: 1, cohortN: 1, asOf: '2026-10-25T01:00:00Z', workItemId: 'work-1',
     threadId: 'thread-1', sourceMessageId: 'source-1', replyMessageId: 'reply-1',
@@ -360,8 +387,11 @@ function selfTest(): void {
     confirmedBooking: false,
   });
   assert.equal(deriveGold(raw('inbound', false)), null, 'unverified inbound actor needs blind adjudication');
-  assert.equal(deriveGold(raw('inbound', true)), 'waiting_on_guest');
-  assert.equal(deriveGold(raw('outbound', false)), 'needs_more_action');
+  assert.equal(deriveGold(raw('inbound', true)), null, 'message text must adjudicate even a matching sender');
+  assert.equal(deriveGold(raw('outbound', false)), null, 'outbound direction alone is not a gold action');
+  const booking = raw('inbound', false);
+  booking.confirmedBooking = true;
+  assert.equal(deriveGold(booking), 'handled');
   process.stdout.write('reply_check_eval_self_test: ok\n');
 }
 
@@ -371,25 +401,27 @@ async function freeze(inputPath: string, outputPath: string, concurrency: number
   if (!Number.isFinite(costCap) || costCap <= 0) throw new Error('cost_cap_invalid');
   const rows = (await readFile(inputPath, 'utf8')).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as RawRow);
   const built = buildCases(rows);
-  const labels = await labelAmbiguous(built.ambiguous, concurrency, costCap);
-  const cases = [...built.cases, ...built.ambiguous.map((item, index) =>
-    toCase(item.row, item.input, labels.outcomes[index]))].sort((a, b) => a.sampleOrdinal - b.sampleOrdinal);
-  if (cases.length < MIN_N) throw new Error('truth_rows_below_minimum');
-  const output = cases.map((item) => JSON.stringify(item)).join('\n') + '\n';
-  await writePrivate(outputPath, output);
-  const classCounts = Object.fromEntries(LABELS.map((label) => [label, cases.filter((item) => item.gold === label).length]));
-  process.stdout.write(JSON.stringify({ phase: 'truth_frozen', n: cases.length,
-    snapshotAsOf: cases[0].asOf, eventResolvedCohortN: cases[0].cohortN,
-    excludedAuto: built.excludedAuto, excludedUnusable: built.excludedUnusable,
-    threads: new Set(cases.map((item) => item.threadId)).size,
-    replyMessages: new Set(cases.map((item) => item.replyMessageId)).size,
-    sameSourceSenderInbound: built.sameSourceSenderInbound,
-    classes: classCounts, labelsDerivedBeforePrediction: true,
-    blindLabeling: { deterministicRows: built.cases.length, ambiguousRows: built.ambiguous.length,
-      lunaDraftAdjudicatorAgreement: { matches: labels.agreement, n: built.ambiguous.length },
-      clippedNextEvents: labels.clippedRows,
-      estimatedCostUsd: labels.cost, inputTokens: labels.inputTokens },
-  }) + '\n');
+  await withPrivateOutputs([outputPath], async ([outputFile]) => {
+    const labels = await labelAmbiguous(built.ambiguous, concurrency, costCap);
+    const cases = [...built.cases, ...built.ambiguous.map((item, index) =>
+      toCase(item.row, item.input, labels.outcomes[index]))].sort((a, b) => a.sampleOrdinal - b.sampleOrdinal);
+    if (cases.length < MIN_N) throw new Error('truth_rows_below_minimum');
+    const output = cases.map((item) => JSON.stringify(item)).join('\n') + '\n';
+    await outputFile.writeFile(output, 'utf8');
+    const classCounts = Object.fromEntries(LABELS.map((label) => [label, cases.filter((item) => item.gold === label).length]));
+    process.stdout.write(JSON.stringify({ phase: 'truth_frozen', n: cases.length,
+      snapshotAsOf: cases[0].asOf, eventResolvedCohortN: cases[0].cohortN,
+      excludedAuto: built.excludedAuto, excludedUnusable: built.excludedUnusable,
+      threads: new Set(cases.map((item) => item.threadId)).size,
+      replyMessages: new Set(cases.map((item) => item.replyMessageId)).size,
+      sameSourceSenderInbound: built.sameSourceSenderInbound,
+      classes: classCounts, labelsDerivedBeforePrediction: true,
+      blindLabeling: { deterministicRows: built.cases.length, ambiguousRows: built.ambiguous.length,
+        lunaDraftAdjudicatorAgreement: { matches: labels.agreement, n: built.ambiguous.length },
+        clippedNextEvents: labels.clippedRows,
+        estimatedCostUsd: labels.cost, inputTokens: labels.inputTokens },
+    }) + '\n');
+  });
 }
 
 async function scoreCases(inputPath: string, outputPath: string, aggregatePath: string | undefined, concurrency: number, costCap: number): Promise<void> {
@@ -401,60 +433,61 @@ async function scoreCases(inputPath: string, outputPath: string, aggregatePath: 
   const rules1 = cases.map((item) => ruleBaseline(item.input));
   const rules2 = cases.map((item) => ruleBaseline(item.input));
   const ruleRepeatMatches = rules1.filter((prediction, index) => prediction === rules2[index]).length;
-  const adapter = createAdapter();
-  const predictions: Outcome[] = new Array(cases.length);
-  const inputTokens: number[] = new Array(cases.length).fill(0);
-  let totalCost = 0;
-  let completed = 0;
-  try {
-    await forEachConcurrent(cases.length, concurrency, async (index) => {
-      const item = cases[index];
-      const userPrompt = JSON.stringify({
-        workItemKind: item.input.kind,
-        originalRequest: { subject: item.input.sourceSubject, body: item.input.sourceText },
-        staffReply: { subject: item.input.replySubject, body: item.input.replyText },
+  const finalAggregatePath = aggregatePath ?? `${outputPath}.aggregate.json`;
+  await withPrivateOutputs([outputPath, finalAggregatePath], async ([rowsFile, aggregateFile]) => {
+    const adapter = createAdapter();
+    const predictions: Outcome[] = new Array(cases.length);
+    const inputTokens: number[] = new Array(cases.length).fill(0);
+    let totalCost = 0;
+    let completed = 0;
+    try {
+      await forEachConcurrent(cases.length, concurrency, async (index) => {
+        const item = cases[index];
+        const userPrompt = JSON.stringify({
+          workItemKind: item.input.kind,
+          originalRequest: { subject: item.input.sourceSubject, body: item.input.sourceText },
+          staffReply: { subject: item.input.replySubject, body: item.input.replyText },
+        });
+        const result = await invokeOutcome(adapter,
+          'Classify the state immediately after this staff reply, using only the source request and reply. ' +
+          'handled means the request is complete; waiting_on_guest means staff asked an external participant for information or a decision; ' +
+          'needs_more_action means staff follow-up or unfinished work remains. Ignore quoted history and do not infer later events, mailbox status, or labels. ' +
+          'Return only the schema outcome.', userPrompt);
+        predictions[index] = result.outcome;
+        inputTokens[index] = result.inputTokens;
+        totalCost += result.cost;
+        if (totalCost > costCap) throw new Error('model_cost_cap_exceeded');
+        completed++;
+        if (completed % 20 === 0) process.stderr.write(`reply_check_eval_progress: ${completed}/${cases.length}\n`);
       });
-      const result = await invokeOutcome(adapter,
-        'Classify the state immediately after this staff reply, using only the source request and reply. ' +
-        'handled means the request is complete; waiting_on_guest means staff asked an external participant for information or a decision; ' +
-        'needs_more_action means staff follow-up or unfinished work remains. Ignore quoted history and do not infer later events, mailbox status, or labels. ' +
-        'Return only the schema outcome.', userPrompt);
-      predictions[index] = result.outcome;
-      inputTokens[index] = result.inputTokens;
-      totalCost += result.cost;
-      if (totalCost > costCap) throw new Error('model_cost_cap_exceeded');
-      completed++;
-      if (completed % 20 === 0) process.stderr.write(`reply_check_eval_progress: ${completed}/${cases.length}\n`);
-    });
-  } catch (error) {
-    process.stderr.write(`${safeModelFailure(error)}\n`);
-    process.exitCode = 1;
-    return;
-  }
-  const gold = cases.map((item) => item.gold);
-  const rule = score(gold, rules1);
-  const llm = score(gold, predictions);
-  const rows = cases.map((item, index) => JSON.stringify({
-    sampleOrdinal: item.sampleOrdinal, workItemId: item.workItemId, sourceMessageId: item.sourceMessageId,
-    replyMessageId: item.replyMessageId, threadId: item.threadId,
-    gold: item.gold, rule: rules1[index], llm: predictions[index],
-  })).join('\n') + '\n';
-  await writePrivate(outputPath, rows);
-  const aggregate = {
-    phase: 'scored', n: cases.length,
-    source: { snapshotAsOf: cases[0].asOf, eventResolvedCohortN: cases[0].cohortN },
-    threads: new Set(cases.map((item) => item.threadId)).size,
-    replyMessages: new Set(cases.map((item) => item.replyMessageId)).size,
-    classSupport: Object.fromEntries(LABELS.map((label) => [label, gold.filter((value) => value === label).length])),
-    ruleBaseline: rule, ruleRepeatAgreement: { matches: ruleRepeatMatches, n: cases.length },
-    llm: { model: 'gpt-6-luna', reasoningEffort: 'medium', ...llm },
-    input: { preReplyOnly: true, futureEventSentToModel: false,
-      clippedRows: cases.filter((item) => item.input.clipped).length, maxBodyBytesPerField: BODY_MAX_BYTES },
-    usage: { totalInputTokens: inputTokens.reduce((sum, value) => sum + value, 0),
-      estimatedCostUsd: totalCost, routeId: 'reply_check_eval' },
-  };
-  await writePrivate(aggregatePath ?? `${outputPath}.aggregate.json`, JSON.stringify(aggregate, null, 2) + '\n');
-  process.stdout.write(JSON.stringify(aggregate) + '\n');
+    } catch (error) {
+      throw new Error(safeModelFailure(error));
+    }
+    const gold = cases.map((item) => item.gold);
+    const rule = score(gold, rules1);
+    const llm = score(gold, predictions);
+    const rows = cases.map((item, index) => JSON.stringify({
+      sampleOrdinal: item.sampleOrdinal, workItemId: item.workItemId, sourceMessageId: item.sourceMessageId,
+      replyMessageId: item.replyMessageId, threadId: item.threadId,
+      gold: item.gold, rule: rules1[index], llm: predictions[index],
+    })).join('\n') + '\n';
+    await rowsFile.writeFile(rows, 'utf8');
+    const aggregate = {
+      phase: 'scored', n: cases.length,
+      source: { snapshotAsOf: cases[0].asOf, eventResolvedCohortN: cases[0].cohortN },
+      threads: new Set(cases.map((item) => item.threadId)).size,
+      replyMessages: new Set(cases.map((item) => item.replyMessageId)).size,
+      classSupport: Object.fromEntries(LABELS.map((label) => [label, gold.filter((value) => value === label).length])),
+      ruleBaseline: rule, ruleRepeatAgreement: { matches: ruleRepeatMatches, n: cases.length },
+      llm: { model: 'gpt-6-luna', reasoningEffort: 'medium', ...llm },
+      input: { preReplyOnly: true, futureEventSentToModel: false,
+        clippedRows: cases.filter((item) => item.input.clipped).length, maxBodyBytesPerField: BODY_MAX_BYTES },
+      usage: { totalInputTokens: inputTokens.reduce((sum, value) => sum + value, 0),
+        estimatedCostUsd: totalCost, routeId: 'reply_check_eval' },
+    };
+    await aggregateFile.writeFile(JSON.stringify(aggregate, null, 2) + '\n', 'utf8');
+    process.stdout.write(JSON.stringify(aggregate) + '\n');
+  });
 }
 
 async function main(): Promise<void> {
@@ -479,7 +512,7 @@ main().catch((error: unknown) => {
     process.exitCode = 1;
     return;
   }
-  const allowed = /^(source_[a-z_]+|truth_rows_below_minimum|output_must_be_outside_repo_or_in_private_directory|database_environment_must_be_unset|usage: freeze\|score --input=PRIVATE\.jsonl --out=PRIVATE\.jsonl|truth_input_invalid|concurrency_invalid|cost_cap_invalid|azure_luna_unavailable|unknown_command|model_(?:auth_failed|rate_limited|request_rejected|provider_error|input_limit_exceeded|output_invalid|cost_cap_exceeded|network_error|invalid_url|response_incomplete_(?:stop|length|content_filter|tool_calls|error)|response_parse_error|aborted|call_failed))$/;
+  const allowed = /^(source_[a-z_]+|truth_rows_below_minimum|output_must_be_outside_repo_or_in_private_directory|output_(?:paths_must_differ|reservation_failed)|database_environment_must_be_unset|usage: freeze\|score --input=PRIVATE\.jsonl --out=PRIVATE\.jsonl|truth_input_invalid|concurrency_invalid|cost_cap_invalid|azure_luna_unavailable|unknown_command|model_(?:auth_failed|rate_limited|request_rejected|provider_error|input_limit_exceeded|output_invalid|cost_cap_exceeded|network_error|invalid_url|response_incomplete_(?:stop|length|content_filter|tool_calls|error)|response_parse_error|aborted|call_failed))$/;
   process.stderr.write(`${allowed.test(message) ? message : 'reply_check_eval_failed'}\n`);
   process.exitCode = 1;
 });
