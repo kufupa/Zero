@@ -918,6 +918,62 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(claimed?.deadlineAt?.getTime()).toBe(now.getTime() + 7 * 60_000);
     }));
 
+  it('retries a dead-lettered shared prepared quote from its stored identity', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const messageIdHeader = 'u5-quote-retry@example.test';
+      const quoteEnv = {
+        ...QUOTE_PREPARE_ENV,
+        HMS_DAVINCI_MAKE_QUOTE: 'on',
+        RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '/tmp/hrdav-quote.json',
+      };
+      const firstCopy = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID, messageIdHeader);
+      const secondCopy = await seedThread(db, 'Quote request', FAITH_TRANSPORT_ID, messageIdHeader);
+      await insertStoredExtraction(db, firstCopy.messageId, 'quote', quoteExtractionPayload());
+      await insertStoredExtraction(db, secondCopy.messageId, 'quote', quoteExtractionPayload());
+      const firstExtraction = {
+        runKind: 'inbound_extraction' as const,
+        transportId: DAVINCI_TRANSPORT_ID,
+        triggerMessageId: firstCopy.messageId,
+      };
+      const secondExtraction = {
+        runKind: 'inbound_extraction' as const,
+        transportId: FAITH_TRANSPORT_ID,
+        triggerMessageId: secondCopy.messageId,
+      };
+
+      expect(await prefetchQuoteReadyForExtraction(firstExtraction, db, quoteEnv)).toBe(1);
+      const [first] = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, firstCopy.messageId),
+            sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+          ),
+        );
+      expect(first?.idempotencyKey).toMatch(/^hms-job:mail:HRDAV:/);
+      await db
+        .update(aiWorkflowRun)
+        .set({ state: 'dead_letter', finishedAt: new Date(), updatedAt: new Date() })
+        .where(eq(aiWorkflowRun.id, first!.id));
+
+      expect(await prefetchQuoteReadyForExtraction(secondExtraction, db, quoteEnv)).toBe(1);
+      const retries = await db
+        .select({ triggerMessageId: aiWorkflowRun.triggerMessageId, idempotencyKey: aiWorkflowRun.idempotencyKey })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            inArray(aiWorkflowRun.triggerMessageId, [firstCopy.messageId, secondCopy.messageId]),
+            sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+          ),
+        );
+      expect(retries).toHaveLength(2);
+      expect(
+        retries.find((retry) => retry.triggerMessageId === secondCopy.messageId)?.idempotencyKey,
+      ).toMatch(new RegExp(`^${first!.idempotencyKey}:retry:`));
+    }));
+
   it('yields a prepared quote without charging it while a user quote is queued', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
@@ -2975,7 +3031,6 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           ),
         );
       }
-      expect(preparedCounts).toEqual([1, 0, 0]);
       const [preparedQuote] = await db
         .select()
         .from(aiWorkflowRun)
@@ -2986,10 +3041,41 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
             sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
           ),
         );
+      expect(preparedCounts).toEqual([1, 0, 0]);
       expect(preparedQuote).toBeDefined();
+      const preparedInput = preparedInputFromRun(preparedQuote);
+      const asOf = new Date();
+      const preparedResult = {
+        status: 'ready',
+        workflowRunId: randomUUID(),
+        revisionRef: 'prepared-revision',
+        messageId: copies[0]!.messageId,
+        threadId: copies[0]!.threadId,
+        factRefs: [],
+        selectionEpoch: preparedInput.selectionEpoch,
+        inputRevision: preparedInput.inputRevision,
+        inputDigest: 'prepared-digest',
+        totalMinor: 10_000,
+        currency: 'ZAR',
+        arrivalDate: preparedInput.groups[0]!.arrivalDate,
+        departureDate: preparedInput.groups[0]!.departureDate,
+        description: 'Prepared quote',
+        asOf: asOf.toISOString(),
+        freshUntil: new Date(asOf.getTime() + 60 * 60_000).toISOString(),
+      };
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: preparedResult,
+          readResultExpiresAt: new Date(asOf.getTime() + 60 * 60_000),
+          finishedAt: asOf,
+          updatedAt: asOf,
+        })
+        .where(eq(aiWorkflowRun.id, preparedQuote!.id));
       for (const copy of copies) {
         const quoteInput = staffQuoteInput.parse({
-          ...preparedInputFromRun(preparedQuote),
+          ...preparedInput,
           messageId: copy.messageId,
           ...(copy.messageId === copies[0]!.messageId ? {} : { sourceHash: 'b'.repeat(64) }),
         });
@@ -3003,8 +3089,22 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           },
           db,
         );
-        expect(quoteView).toMatchObject({ runId: preparedQuote!.id, request: { kind: 'staff_quote' } });
+        expect(quoteView).toMatchObject({
+          runId: preparedQuote!.id,
+          request: { kind: 'staff_quote', input: { messageId: copies[0]!.messageId } },
+          result: { status: 'ready', messageId: copy.messageId },
+        });
+        expect(quoteView?.sourceMessageId).toBe(copies[0]!.messageId);
       }
+      const polledQuote = await readHmsJobView(
+        {
+          transportId: copies[1]!.transportId,
+          runId: preparedQuote!.id,
+          staffQuoteOwnerId: CENTURION_USER_ID,
+        },
+        db,
+      );
+      expect(polledQuote?.result).toMatchObject({ messageId: copies[1]!.messageId });
       expect(
         await db.select({ id: workItem.id }).from(workItem).where(inArray(workItem.id, copies.map((copy) => copy.workItemId))),
       ).toHaveLength(3);

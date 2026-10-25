@@ -1869,19 +1869,38 @@ async function enqueuePreparedQuoteWithinCap(
       ))`,
     );
     const scoped = tx as unknown as DB;
+    const copies = await hmsMailCopiesForMessage(scoped, input.transportId, input.triggerMessageId);
+    const storedIdentity =
+      copies.propertyCode && copies.messageIdHeader
+        ? hmsMailReadIdempotencyKey(
+            copies.propertyCode,
+            copies.messageIdHeader,
+            input.request,
+            input.createdAt ?? new Date(),
+            input.idempotencyKey,
+            input.threadId,
+          )
+        : input.idempotencyKey;
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(
+        ${'hms-prefetch:staff_quote_identity:' + storedIdentity}, 0
+      ))`,
+    );
     const existing = await scoped
-      .select({ id: aiWorkflowRun.id, idempotencyKey: aiWorkflowRun.idempotencyKey, state: aiWorkflowRun.state })
+      .select({ state: aiWorkflowRun.state })
       .from(aiWorkflowRun)
       .where(
         and(
-          eq(aiWorkflowRun.transportId, input.transportId),
-          eq(aiWorkflowRun.triggerMessageId, input.triggerMessageId),
           sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
           sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
-          sql`left(${aiWorkflowRun.idempotencyKey}, length(${input.idempotencyKey})) = ${input.idempotencyKey}`,
+          sql`left(${aiWorkflowRun.idempotencyKey}, length(${storedIdentity})) = ${storedIdentity}`,
         ),
       );
-    if (existing.some((run) => run.state !== 'dead_letter' && run.state !== 'superseded')) return false;
+    if (existing.some((run) => run.state !== 'dead_letter' && run.state !== 'superseded')) {
+      // Let enqueueHmsJob attach this mailbox to an active shared result for run-id polling.
+      await enqueueHmsJob(input, scoped);
+      return false;
+    }
     const used = await countRecentPrefetches(
       scoped,
       input.transportId,
@@ -1890,7 +1909,7 @@ async function enqueuePreparedQuoteWithinCap(
     );
     if (used >= perHour) return false;
     const retryInput = existing.length
-      ? { ...input, idempotencyKey: `${input.idempotencyKey}:retry:${randomUUID()}` }
+      ? { ...input, idempotencyKey: `${storedIdentity}:retry:${randomUUID()}` }
       : input;
     const queued = await enqueueHmsJob(retryInput, scoped);
     return queued.created;
@@ -3832,11 +3851,23 @@ async function queuePosition(db: DB, run: AiWorkflowRun): Promise<number> {
 async function toView(
   db: DB,
   run: AiWorkflowRun,
-  options: { includePosition?: boolean } = {},
+  options: { includePosition?: boolean; selectedMessageId?: string } = {},
 ): Promise<HmsJobView> {
   const request = hmsJobRequestSchema.safeParse(run.readRequest);
   const status = STATUS_BY_STATE[run.state];
-  const result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
+  const storedResult = run.state === 'succeeded' && run.readResult ? run.readResult : null;
+  const bindPreparedQuote = Boolean(
+    options.selectedMessageId &&
+    request.success &&
+    request.data.kind === 'staff_quote' &&
+    isSystemPreparedPriority(run.priority) &&
+    objectRecord(run.metrics).userId == null &&
+    objectRecord(run.metrics).quotePrepared === true,
+  );
+  const result =
+    bindPreparedQuote && storedResult && objectRecord(storedResult).status === 'ready'
+      ? { ...objectRecord(storedResult), messageId: options.selectedMessageId! }
+      : storedResult;
   return {
     runId: run.id,
     sourceMessageId: run.triggerMessageId,
@@ -3854,6 +3885,42 @@ async function toView(
     outcome: safePartyJobOutcome(run, request.success ? request.data : null, result),
     result,
   };
+}
+
+/** A shared prepared quote may be polled only from an actual copy in the same property's mail fan-out. */
+async function sharedPreparedQuoteMessageIdForTransport(
+  db: DB,
+  run: AiWorkflowRun,
+  transportId: string,
+): Promise<string | null> {
+  const metrics = objectRecord(run.metrics);
+  if (
+    run.transportId === transportId ||
+    !isSystemPreparedPriority(run.priority) ||
+    metrics.userId != null ||
+    metrics.quotePrepared !== true
+  ) {
+    return null;
+  }
+  const copies = await hmsMailCopiesForMessage(db, run.transportId, run.triggerMessageId);
+  if (
+    !copies.propertyCode ||
+    !copies.messageIdHeader ||
+    !getPropertyTransportIds(copies.propertyCode).includes(transportId)
+  ) {
+    return null;
+  }
+  const matches = await db
+    .select({ id: message.id })
+    .from(message)
+    .where(
+      and(
+        eq(message.transportId, transportId),
+        eq(message.messageIdHeader, copies.messageIdHeader),
+      ),
+    )
+    .limit(2);
+  return matches.length === 1 ? matches[0]!.id : null;
 }
 
 /** The newest staff quote job on this message whose stay inputs match, ignoring the pane's selection counters. */
@@ -4164,7 +4231,13 @@ export async function readHmsJobView(
           )
           .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
           .limit(1);
-  return run ? toView(db, run) : null;
+  const selectedMessageId =
+    run && quoteInput && quoteCopies?.messageIds.includes(quoteInput.messageId)
+      ? quoteInput.messageId
+      : run && 'runId' in input
+        ? (await sharedPreparedQuoteMessageIdForTransport(db, run, input.transportId)) ?? undefined
+        : undefined;
+  return run ? toView(db, run, { selectedMessageId }) : null;
 }
 
 function batchEffectiveStatus(item: HmsBatchItemView): HmsJobStatus | 'cancelled' {
