@@ -10,7 +10,11 @@ import {
 } from '../lib/quote-workflow/staff-quote-bind';
 import { HMS_JOB_POLL_MS } from '../lib/quote-workflow/amend-find';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
-import { emptyStaffQuoteHeader, type StayGroupRequirement } from '../lib/quote-workflow/types';
+import {
+  emptyStaffQuoteHeader,
+  HRCEN_PROPERTY_CODE,
+  type StayGroupRequirement,
+} from '../lib/quote-workflow/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const source = { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'a'.repeat(64) };
@@ -96,6 +100,7 @@ describe('staff quote HMS job binding', () => {
     setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-b' });
 
     const pending = bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue: staff.workstation.queueStaffQuote?.mutate,
       staffQuoteJob: staff.workstation.staffQuoteJob?.query,
       source,
@@ -127,6 +132,7 @@ describe('staff quote HMS job binding', () => {
     setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-b' });
 
     const pending = bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query: staff.workstation.staffQuoteJob?.query,
       source,
       selectionEpoch: 3,
@@ -160,6 +166,7 @@ describe('staff quote HMS job binding', () => {
       .mockResolvedValueOnce(view('done', READY));
     const mutate = vi.fn();
     const pending = bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue,
       staffQuoteJob,
       mutate,
@@ -197,6 +204,7 @@ describe('staff quote HMS job binding', () => {
       totalMinor: 50_000,
     };
     const result = await bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
       staffQuoteJob: vi.fn(async () => view('done', {
         ...READY,
@@ -220,6 +228,7 @@ describe('staff quote HMS job binding', () => {
 
   it('preserves an unpriced dinner requirement without fallback group ids', async () => {
     const result = await bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
       staffQuoteJob: vi.fn(async () => view('done', {
         ...READY,
@@ -248,6 +257,7 @@ describe('staff quote HMS job binding', () => {
     const mutate = vi.fn();
 
     const result = await bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue,
       staffQuoteJob,
       mutate,
@@ -270,6 +280,7 @@ describe('staff quote HMS job binding', () => {
   it('retains the dinner fallback signal for a persisted no-matching-rate refusal', async () => {
     const refusal = 'HMS has no rate for this meal plan under BAR. Try another meal plan.';
     const result = await bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
       staffQuoteJob: vi.fn(async () =>
         view('done', { ok: false, code: 'PRECONDITION_FAILED', message: refusal }),
@@ -293,6 +304,7 @@ describe('staff quote HMS job binding', () => {
       { groupId: 'single', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 2 },
     ];
     const result = await bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
       staffQuoteJob: vi.fn(async () =>
         view('done', {
@@ -321,6 +333,7 @@ describe('staff quote HMS job binding', () => {
     ['description', { ...READY, description: undefined }],
   ])('rejects persisted success payloads missing required %s', async (_field, malformed) => {
     const result = await bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
       staffQuoteJob: vi.fn(async () => view('done', malformed)),
       source,
@@ -347,6 +360,7 @@ describe('staff quote HMS job binding', () => {
     });
     const mutate = vi.fn();
     const pending = bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
       staffQuoteJob,
       mutate,
@@ -375,6 +389,7 @@ describe('staff quote HMS job binding', () => {
   ])('does not fall back inline for the %s worker failure', async (failureClass, reason) => {
     const mutate = vi.fn();
     const result = await bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
       staffQuoteJob: vi.fn(async () => ({ ...view('failed'), failureClass })),
       mutate,
@@ -394,6 +409,7 @@ describe('staff quote HMS job binding', () => {
     const mutate = vi.fn(async () => READY);
 
     const result = await bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue,
       mutate,
       source,
@@ -416,6 +432,7 @@ describe('staff quote HMS job binding', () => {
     const mutate = vi.fn(async () => READY);
 
     const result = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue,
       staffQuoteJob: vi.fn(),
       source,
@@ -439,6 +456,7 @@ describe('staff quote HMS job binding', () => {
     const mutate = vi.fn();
 
     const result = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue,
       staffQuoteJob,
       source,
@@ -462,6 +480,7 @@ describe('staff quote HMS job binding', () => {
     }));
 
     const result = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue,
       staffQuoteJob,
       source,
@@ -486,6 +505,7 @@ describe('staff quote HMS job binding', () => {
     }));
 
     const result = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue,
       staffQuoteJob,
       source,
@@ -515,6 +535,7 @@ describe('staff quote HMS job binding', () => {
     }));
 
     const result = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue,
       staffQuoteJob,
       source,
@@ -538,6 +559,7 @@ describe('staff quote HMS job binding', () => {
     }));
 
     const result = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue,
       staffQuoteJob,
       source,
@@ -556,6 +578,7 @@ describe('staff quote HMS job binding', () => {
   it('does not queue an incomplete auto-start request', async () => {
     const queue = vi.fn(async () => ({ runId: 'staff-job-1' }));
     const result = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue,
       staffQuoteJob: vi.fn(),
       source,
@@ -576,6 +599,7 @@ describe('staff quote HMS job binding', () => {
       .mockResolvedValueOnce(view('running'))
       .mockResolvedValueOnce(view('done', { ...READY, selectionEpoch: 1, inputRevision: 2 }));
     const pending = bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query,
       source,
       selectionEpoch: 3,
@@ -629,6 +653,7 @@ describe('staff quote HMS job binding', () => {
       },
     }));
     const result = await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query: query as never,
       source,
       selectionEpoch: 3,
@@ -670,6 +695,7 @@ describe('staff quote HMS job binding', () => {
       ),
     }));
     const result = await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query: query as never,
       source,
       selectionEpoch: 3,
@@ -755,6 +781,7 @@ describe('staff quote HMS job binding', () => {
       return null;
     });
     const first = await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query: query as never,
       source,
       selectionEpoch: 3,
@@ -764,6 +791,7 @@ describe('staff quote HMS job binding', () => {
       stayKey: '2026-11-12:2026-11-14',
     });
     const second = await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query: query as never,
       source,
       selectionEpoch: 3,
@@ -781,6 +809,7 @@ describe('staff quote HMS job binding', () => {
     const query = vi.fn(async () => view('done', READY, asOf, true));
 
     const result = await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query,
       source,
       selectionEpoch: 3,
@@ -800,6 +829,7 @@ describe('staff quote HMS job binding', () => {
     const query = vi.fn(async () => view('done', READY, expiredAsOf));
 
     const result = await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query,
       source,
       selectionEpoch: 3,
@@ -819,6 +849,7 @@ describe('staff quote HMS job binding', () => {
       Date.now() - startedAt > 9 * 60_000 ? view('done', READY) : view('running'),
     );
     const pending = bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
       staffQuoteJob,
       source,
@@ -843,6 +874,7 @@ describe('staff quote HMS job binding', () => {
     let reads = 0;
     const query = vi.fn(async () => (++reads === 1 ? view('running') : view('done', READY)));
     const pending = bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query,
       signal: controller.signal,
       source,
@@ -861,6 +893,7 @@ describe('staff quote HMS job binding', () => {
     const rerun = vi.fn(async () => view('done', READY));
     await expect(
       bindReadBackStaffQuote({
+        propertyCode: HRCEN_PROPERTY_CODE,
         query: rerun,
         source,
         selectionEpoch: 3,

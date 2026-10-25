@@ -9,7 +9,12 @@ import {
   requestedQuoteKeys,
 } from '../lib/quote-workflow/session';
 import { bindExecuteStaffQuote, type ExecuteStaffQuoteResult } from '../lib/quote-workflow/staff-quote-bind';
-import type { QuoteSession, StaffQuoteHeader, StayGroupRequirement } from '../lib/quote-workflow/types';
+import {
+  HRCEN_PROPERTY_CODE,
+  type QuoteSession,
+  type StaffQuoteHeader,
+  type StayGroupRequirement,
+} from '../lib/quote-workflow/types';
 
 // AE1 live proof (ae1-rates-20261011T023109Z): a quote with two date options, each with two rows (STQN 1 adult,
 // STWN 2 adults). Stay 1's run succeeded on the server, but the pane still said "0 of 2 stays rated".
@@ -111,6 +116,7 @@ async function runStay(
   const remote = await bindExecuteStaffQuote({
     mutate,
     source: SOURCE,
+    propertyCode: HRCEN_PROPERTY_CODE,
     selectionEpoch,
     inputRevision,
     groups: stayGroups,
@@ -157,6 +163,7 @@ describe('AE1 multi-stay: a succeeded stay run counts as rated', () => {
     const remote = await bindExecuteStaffQuote({
       mutate: async () => serverSummary({ inputRevision, stay: A, totalMinor: 24720000 }),
       source: SOURCE,
+      propertyCode: HRCEN_PROPERTY_CODE,
       selectionEpoch,
       inputRevision,
       groups,

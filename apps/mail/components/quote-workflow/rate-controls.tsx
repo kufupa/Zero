@@ -369,6 +369,8 @@ export function RowRateControls({
   pending,
   busy,
   blockReason = null,
+  overrideRateCodes,
+  eventRateCodes,
   onSetPrice,
   onSavedRateChanged,
 }: {
@@ -386,6 +388,9 @@ export function RowRateControls({
   busy: boolean;
   /** Why this row cannot take a new price yet, e.g. no room type. Null when it can. */
   blockReason?: string | null;
+  /** Property-specific choices from the active mailbox's quote pane config. */
+  overrideRateCodes?: readonly string[];
+  eventRateCodes?: readonly string[];
   /** Sets the row's price. Undefined returns the row to HMS's rate. */
   onSetPrice: (price: RowPriceChoice | undefined) => void;
   /** A saved rate was edited (next) or archived (null). Rows priced from it follow. */
@@ -396,6 +401,8 @@ export function RowRateControls({
   const [form, setForm] = useState<'one_off' | 'override' | null>(null);
   const oneOffToggle = useRef<HTMLButtonElement>(null);
   const overrideToggle = useRef<HTMLButtonElement>(null);
+  const rateCodes = overrideRateCodes ?? OVERRIDE_RATE_CODES;
+  const eventCodes = new Set(eventRateCodes ?? EVENT_RATE_CODES);
   const price = group.rowPrice;
   const chip = chipFor(price);
   // A new price re-runs the stay, so it waits for a run in flight and for a row that can run.
@@ -505,6 +512,8 @@ export function RowRateControls({
             <OverrideForm
               label={label}
               disabled={priceOff}
+              rateCodes={rateCodes}
+              eventRateCodes={eventCodes}
               onSave={(override) => finishForm('override', { source: 'override', ...override })}
               onCancel={() => finishForm('override')}
             />
@@ -820,11 +829,15 @@ function OneOffForm({
 function OverrideForm({
   label,
   disabled,
+  rateCodes,
+  eventRateCodes,
   onSave,
   onCancel,
 }: {
   label: string;
   disabled: boolean;
+  rateCodes: readonly string[];
+  eventRateCodes: ReadonlySet<string>;
   onSave: (override: { rateCode: string; amountMinor: number; note: string }) => void;
   onCancel: () => void;
 }) {
@@ -849,7 +862,7 @@ function OverrideForm({
       <Field
         label="HMS rate code"
         htmlFor={`${id}-code`}
-        hint={EVENT_RATE_CODES.has(draft.code) ? CRICKET_RATE_HINT : undefined}
+        hint={eventRateCodes.has(draft.code) ? CRICKET_RATE_HINT : undefined}
       >
         <select
           ref={code}
@@ -860,7 +873,7 @@ function OverrideForm({
           onChange={(event) => setDraft({ ...draft, code: event.target.value })}
         >
           <option value="">Choose a rate code</option>
-          {OVERRIDE_RATE_CODES.map((option) => (
+          {rateCodes.map((option) => (
             <option key={option} value={option}>
               {option}
             </option>

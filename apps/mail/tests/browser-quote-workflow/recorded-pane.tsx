@@ -4,6 +4,7 @@ import { useReducer } from 'react';
 import { QuoteWorkflowPanel } from '../../components/quote-workflow/quote-workflow-panel';
 import { initialQuoteSession, reduceQuoteSession, canCreateNativeDraft } from '../../lib/quote-workflow/session';
 import { bindExecuteStaffQuote, bindQualifiedStaffProposalPdf } from '../../lib/quote-workflow/staff-quote-bind';
+import { HRCEN_PROPERTY_CODE } from '../../lib/quote-workflow/types';
 
 const proof = await fetch('/recorded-proof').then(r => r.json());
 const source = { messageId: proof.approved.messageId, threadId: 'recorded-thread', sourceHash: proof.approved.sourceHash };
@@ -27,7 +28,8 @@ function RecordedPane() {
     const step = session.steps[0];
     dispatch({ type: 'step_running', stepId: step.id });
     const result = await bindExecuteStaffQuote({ source, selectionEpoch: 1, inputRevision: session.inputRevision,
-      groups: session.groups, header: session.staffHeader, mutate: async input => ({ status: 'ready',
+      groups: session.groups, header: session.staffHeader, propertyCode: HRCEN_PROPERTY_CODE,
+      mutate: async input => ({ status: 'ready',
         workflowRunId: 'recorded-run', revisionRef: proof.artifact.revisionId, messageId: source.messageId,
         threadId: source.threadId, factRefs: [], selectionEpoch: input.selectionEpoch, inputRevision: input.inputRevision,
         inputDigest: proof.revision.scopeDigest, totalMinor: proof.artifact.totalMinor, currency: 'ZAR',

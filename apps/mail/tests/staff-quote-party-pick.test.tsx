@@ -9,7 +9,11 @@ import {
   type PartyFindReply,
 } from '../lib/quote-workflow/party-lookup';
 import { PARTY_PICKER_HINT, PartyPicker } from '../components/quote-workflow/party-picker';
-import { emptyStaffQuoteHeader, type StaffQuoteParty } from '../lib/quote-workflow/types';
+import {
+  emptyStaffQuoteHeader,
+  HRCEN_PROPERTY_CODE,
+  type StaffQuoteParty,
+} from '../lib/quote-workflow/types';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { bindExecuteStaffQuote } from '../lib/quote-workflow/staff-quote-bind';
@@ -253,6 +257,7 @@ describe('executeStaffQuote party on the pane bind', () => {
     await bindExecuteStaffQuote({
       mutate,
       source,
+      propertyCode: HRCEN_PROPERTY_CODE,
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [stay],
@@ -267,6 +272,7 @@ describe('executeStaffQuote party on the pane bind', () => {
     await bindExecuteStaffQuote({
       mutate,
       source,
+      propertyCode: HRCEN_PROPERTY_CODE,
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [stay],

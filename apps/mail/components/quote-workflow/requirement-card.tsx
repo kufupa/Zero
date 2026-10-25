@@ -12,14 +12,24 @@ import {
 } from '@/components/nava-pane/pane-ui';
 import {
   ROOM_TYPE_CODES,
+  ROOM_TYPE_NAMES,
   knownRoomCode,
-  roomTypeLabel,
+  matchConfiguredRoomType,
   rowRoomLabel,
   rowRoomTypeCode,
+  roomTypeLabel,
   type RoomTypeCode,
 } from '@/lib/quote-workflow/room-types';
 import { newQuoteToken, parseChildrenAges, stayTotals } from '@/lib/quote-workflow/session';
-import type { QuoteBoard, StayEditAction, StayGroupRequirement } from '@/lib/quote-workflow/types';
+import { HRCEN_PROPERTY_CODE } from '@/lib/quote-workflow/types';
+import type {
+  HmsQuotePropertyCode,
+  QuoteBoard,
+  QuotePaneBoard,
+  QuotePaneRoomType,
+  StayEditAction,
+  StayGroupRequirement,
+} from '@/lib/quote-workflow/types';
 
 import { ProvenanceFlag, StayDateRange, type StayDatePatch } from './stay-date-range';
 
@@ -81,6 +91,42 @@ function inferredMealPlan(rows: StayGroupRequirement[]): QuoteBoard | 'all' {
   return boards.size === 1 ? [...boards][0]! : 'all';
 }
 
+const DEFAULT_ROOM_TYPES: QuotePaneRoomType[] = ROOM_TYPE_CODES.map((code) => ({
+  code,
+  label: ROOM_TYPE_NAMES[code],
+}));
+const DEFAULT_PANE_BOARDS: QuotePaneBoard[] = ['room_only', 'bb', 'dinner_bb'];
+const MEAL_PLAN_LABELS: Record<QuotePaneBoard, string> = {
+  room_only: 'Room only',
+  bb: 'Bed & breakfast',
+  dinner_bb: 'Dinner, bed & breakfast',
+};
+
+function paneRoomTypeForGroup(
+  group: StayGroupRequirement,
+  roomTypes: readonly QuotePaneRoomType[],
+  propertyCode: HmsQuotePropertyCode,
+): QuotePaneRoomType | null {
+  return matchConfiguredRoomType([
+    ...(group.roomCodes?.length === 1 ? group.roomCodes : []),
+    group.roomPreference,
+    group.roomTypeCode,
+  ], roomTypes, { allowCenturionRoomAliases: propertyCode === HRCEN_PROPERTY_CODE });
+}
+
+function paneRoomLabel(
+  group: StayGroupRequirement,
+  roomTypes: readonly QuotePaneRoomType[],
+  strictRoomTypes: boolean,
+  propertyCode: HmsQuotePropertyCode,
+): string {
+  const room = paneRoomTypeForGroup(group, roomTypes, propertyCode);
+  if (!room && !strictRoomTypes) return rowRoomLabel(group);
+  const label = room?.label ?? 'Room type needed';
+  const count = typeof group.quantity === 'number' && group.quantity > 0 ? group.quantity : '?';
+  return `${label} ×${count}`;
+}
+
 /**
  * One stay: the dates, meal-plan display filter, room types and occupancy for this date range. Its HMS request and
  * rates are attached by the parent under Rates, so those shared controls appear only once.
@@ -96,6 +142,9 @@ export function StayCard({
   onPatch,
   onStayAction,
   evidence,
+  propertyCode = HRCEN_PROPERTY_CODE,
+  roomTypes: configuredRoomTypes,
+  boards: configuredBoards,
 }: {
   stayId: string;
   rows: StayGroupRequirement[];
@@ -109,10 +158,17 @@ export function StayCard({
   onPatch?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onStayAction?: (action: StayEditAction) => void;
   evidence?: Array<{ field: string; quote: string; source?: 'staff_note' }>;
+  /** HRDAV uses only exact codes/labels; absent keeps legacy HRCEN matching for older callers. */
+  propertyCode?: HmsQuotePropertyCode;
+  roomTypes?: QuotePaneRoomType[];
+  boards?: QuotePaneBoard[];
 }) {
   const id = useId();
   const stayNumber = index + 1;
   const first = rows[0];
+  const roomTypes = configuredRoomTypes ?? DEFAULT_ROOM_TYPES;
+  const strictRoomTypes = configuredRoomTypes !== undefined;
+  const boards = configuredBoards ?? DEFAULT_PANE_BOARDS;
   const totals = stayTotals(rows);
   const splitNotSet = requestedRoomsTotal !== undefined && rows.some((row) => row.quantity == null);
   const selectedMealPlan = mealPlan ?? inferredMealPlan(rows);
@@ -203,9 +259,14 @@ export function StayCard({
             onChange={(event) => onMealPlanChange?.(event.target.value as QuoteBoard | 'all')}
           >
             <option value="all">All meal plans</option>
-            <option value="room_only">Room only</option>
-            <option value="bb">Bed &amp; breakfast</option>
-            <option value="dinner_bb">Dinner, bed &amp; breakfast</option>
+            {boards.map((board) => (
+              <option key={board} value={board}>{MEAL_PLAN_LABELS[board]}</option>
+            ))}
+            {first?.board && first.board !== 'unknown' && !boards.includes(first.board) ? (
+              <option value={first.board} disabled>
+                {`${MEAL_PLAN_LABELS[first.board]} (not offered at this hotel)`}
+              </option>
+            ) : null}
             {first?.board === 'unknown' ? <option value="unknown">Not stated in email</option> : null}
           </select>
           <FieldEvidence quotes={quotesFor('board', evidence)} />
@@ -227,6 +288,9 @@ export function StayCard({
                   onPatch={onPatch}
                   onStayAction={onStayAction}
                   evidence={evidence}
+                  propertyCode={propertyCode}
+                  roomTypes={roomTypes}
+                  strictRoomTypes={strictRoomTypes}
                 />
               ))}
             </div>
@@ -249,6 +313,9 @@ export function RequirementCard({
   onPatch,
   onStayAction,
   evidence,
+  propertyCode,
+  roomTypes,
+  strictRoomTypes,
 }: {
   group: StayGroupRequirement;
   stayNumber: number;
@@ -257,12 +324,18 @@ export function RequirementCard({
   onPatch?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onStayAction?: (action: StayEditAction) => void;
   evidence?: Array<{ field: string; quote: string; source?: 'staff_note' }>;
+  propertyCode: HmsQuotePropertyCode;
+  roomTypes: QuotePaneRoomType[];
+  strictRoomTypes: boolean;
 }) {
   const id = useId();
   const where = `stay ${stayNumber}, room ${roomNumber}`;
-  const selectedCode = rowRoomTypeCode(group);
+  const selectedRoom = paneRoomTypeForGroup(group, roomTypes, propertyCode);
+  const selectedCode = selectedRoom?.code ?? (strictRoomTypes ? null : rowRoomTypeCode(group));
   const unknownValue = group.roomPreference && !selectedCode ? group.roomPreference : null;
-  const suggestions = (group.roomTypeSuggestions ?? []).slice(0, 3);
+  const suggestions = (group.roomTypeSuggestions ?? [])
+    .filter((code) => !strictRoomTypes || roomTypes.some((room) => room.code === code))
+    .slice(0, 3);
   const roomSelect = useRef<HTMLSelectElement>(null);
   const [editingAdults, setEditingAdults] = useState(false);
   const hasOptionalDetails = group.childrenAges.length > 0 || group.specialRequests.length > 0;
@@ -275,10 +348,11 @@ export function RequirementCard({
 
   function chooseRoomType(value: string) {
     const code: RoomTypeCode | null = knownRoomCode(value);
+    const isConfiguredRoom = roomTypes.some((room) => room.code === value);
     onPatch?.(group.id, {
       roomPreference: value,
       roomTypeCode: code ?? undefined,
-      roomTypeSuggestions: code ? [] : group.roomTypeSuggestions,
+      roomTypeSuggestions: code || isConfiguredRoom ? [] : group.roomTypeSuggestions,
       roomCodes: undefined,
       rateCode: undefined,
     });
@@ -289,7 +363,7 @@ export function RequirementCard({
       ? 'Adults per room not set'
       : `${group.adults} ${group.adults === 1 ? 'adult' : 'adults'} per room`;
 
-  const displayName = rowRoomLabel(group);
+  const displayName = paneRoomLabel(group, roomTypes, strictRoomTypes, propertyCode);
 
   return (
     <div role="row" aria-label={displayName} data-room-index={roomNumber} className="flex flex-col gap-2.5 bg-white p-2.5">
@@ -337,9 +411,11 @@ export function RequirementCard({
             >
               <option value="">Choose room type</option>
               {unknownValue ? <option value={unknownValue}>Email request</option> : null}
-              {ROOM_TYPE_CODES.map((code) => (
+              {roomTypes.map(({ code, label }) => (
                 <option key={code} value={code}>
-                  {roomTypeLabel(code)}
+                  {propertyCode === HRCEN_PROPERTY_CODE && code in ROOM_TYPE_NAMES
+                    ? roomTypeLabel(code)
+                    : label}
                 </option>
               ))}
             </select>
@@ -357,7 +433,7 @@ export function RequirementCard({
                     className="rounded-full border border-[#93c5fd] bg-white px-2 py-0.5 text-[11.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
                     onClick={() => chooseRoomType(code)}
                   >
-                    {roomTypeLabel(code).replace(/\s+\([A-Z]+\)$/, '')}
+                    {roomTypes.find((room) => room.code === code)?.label ?? code}
                   </button>
                 ))}
                 <span aria-hidden="true">·</span>

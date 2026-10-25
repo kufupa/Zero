@@ -30,6 +30,8 @@ import {
 } from '../lib/quote-workflow/staff-quote-bind';
 import {
   emptyStaffQuoteHeader,
+  HRCEN_PROPERTY_CODE,
+  type QuotePaneConfig,
   type QuoteSession,
   type RateOption,
   type RowPriceChoice,
@@ -167,6 +169,7 @@ async function pricedSession(
     inputRevision: session.inputRevision,
     groups: session.groups,
     header: session.staffHeader,
+    propertyCode: HRCEN_PROPERTY_CODE,
   });
   if (run.status !== 'ok') throw new Error(run.reason);
   return reduceQuoteSession(session, {
@@ -185,16 +188,19 @@ function PinnedPanel({
   rates,
   runs,
   seen,
+  paneConfig,
 }: {
   initial: QuoteSession;
   rates?: SavedRatesClient | null;
   runs: string[];
   seen: { session: QuoteSession | null };
+  paneConfig?: QuotePaneConfig | null;
 }) {
   const [session, setSession] = useState(withSelectedRate(initial));
   seen.session = session;
   return (
     <QuoteWorkflowPanel
+      paneConfig={paneConfig}
       session={session}
       rates={rates}
       onPatchGroup={(groupId, patch) =>
@@ -263,6 +269,35 @@ describe('row price controls in the quote panel', () => {
       note: NOTE,
     });
     expect(screen.getByText(`NCOR1B override, ${rand(185000)} a night`)).toBeDefined();
+  });
+
+  it('uses the active hotel override codes instead of Centurion-only choices', () => {
+    const runs: string[] = [];
+    const seen = { session: null as QuoteSession | null };
+    render(
+      <PinnedPanel
+        initial={readySession()}
+        runs={runs}
+        seen={seen}
+        paneConfig={{
+          propertyCode: 'HRDAV',
+          transportId: 'transport-davinci',
+          roomTypes: [{ code: 'JNRSUI', label: 'Junior Suite' }],
+          ratePlans: [],
+          boards: ['room_only', 'bb'],
+          overrideRateCodes: ['BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF'],
+          eventRateCodes: [],
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Special price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discount / override' }));
+
+    const rateCode = screen.getByLabelText('HMS rate code');
+    expect([...rateCode.querySelectorAll('option')].map((option) => option.textContent)).toEqual([
+      'Choose a rate code', 'BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF', 'Other',
+    ]);
+    expect([...rateCode.querySelectorAll('option')].map((option) => option.textContent)).not.toContain('NCOR1B');
   });
 
   it('a saved rate is picked from the list, and the stay re-runs', async () => {
@@ -412,7 +447,7 @@ describe('row price controls in the quote panel', () => {
     // Staff see the note in the row's price box.
     expect(screen.getByText(new RegExp(`Authorised by: ${NOTE}`))).toBeDefined();
     // The documents are what the client gets: the reply preview, PDF and Excel.
-    const documents = screen.getByRole('region', { name: 'Quote' });
+    const documents = screen.getByRole('region', { name: 'Documents' });
     expect(within(documents).queryByText(new RegExp(NOTE))).toBeNull();
     expect(JSON.stringify(session.staffHeader)).not.toContain(NOTE);
     expect(session.reviewedReplyHtml ?? '').not.toContain(NOTE);
@@ -445,6 +480,7 @@ describe('row price controls in the quote panel', () => {
       inputRevision: 1,
       groups: [{ ...stay, rowPrice: { source: 'override', rateCode: 'NCOR1B', amountMinor: 185000, note: NOTE } }],
       header: emptyStaffQuoteHeader(),
+      propertyCode: HRCEN_PROPERTY_CODE,
     });
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({

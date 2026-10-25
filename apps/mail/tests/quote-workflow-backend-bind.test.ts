@@ -10,14 +10,19 @@ import {
 } from '../lib/quote-workflow/backend-bind';
 import {
   approvedExecuteHeader,
-  bindExecuteStaffQuote,
+  bindExecuteStaffQuote as bindPropertyScopedStaffQuote,
   bindQualifiedStaffProposalPdf,
   nativeRoomCodes,
   resolveNativeRoomCodes,
   staffQuoteGroupsFromStay,
   sha256HexOfBytes,
 } from '../lib/quote-workflow/staff-quote-bind';
-import { emptyStaffQuoteHeader } from '../lib/quote-workflow/types';
+import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE } from '../lib/quote-workflow/types';
+
+// Every staff-quote request in this file uses Centurion data; pin the fixture property explicitly.
+function bindExecuteStaffQuote(args: Parameters<typeof bindPropertyScopedStaffQuote>[0]) {
+  return bindPropertyScopedStaffQuote({ ...args, propertyCode: HRCEN_PROPERTY_CODE });
+}
 
 describe('quote workflow backend bind', () => {
   it('names the published staff-quote procedures rather than a second engine', () => {

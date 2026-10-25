@@ -265,7 +265,7 @@ export type QuoteAnalysis = {
 
 export type RatePlanBoard = 'room_only' | 'bed_breakfast' | 'dinner_bed_breakfast' | 'unknown';
 
-/** The server's read-only Centurion catalogue; flags group choices, but do not prove rate eligibility. */
+/** A read-only property rate-plan list; flags group choices but do not prove rate eligibility. */
 export type RatePlanCatalogueEntry = {
   code: string;
   name: string;
@@ -273,6 +273,20 @@ export type RatePlanCatalogueEntry = {
   contract?: boolean;
   government?: boolean;
   event?: boolean;
+};
+
+export type QuotePaneRoomType = { code: string; label: string };
+export type QuotePaneBoard = Exclude<QuoteBoard, 'unknown'>;
+
+/** Mailbox-selected, registry-backed choices for the quote pane. */
+export type QuotePaneConfig = {
+  transportId: string;
+  propertyCode: HmsQuotePropertyCode;
+  roomTypes: QuotePaneRoomType[];
+  ratePlans: RatePlanCatalogueEntry[];
+  boards: QuotePaneBoard[];
+  overrideRateCodes: string[];
+  eventRateCodes: string[];
 };
 
 export type StaffQuoteSource = {

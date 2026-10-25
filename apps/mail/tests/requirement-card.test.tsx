@@ -2,9 +2,15 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StayCard } from '../components/quote-workflow/requirement-card';
-import type { StayGroupRequirement } from '../lib/quote-workflow/types';
+import { resolveNativeRoomCodes } from '../lib/quote-workflow/staff-quote-bind';
+import {
+  HRDAV_PROPERTY_CODE,
+  HRDAV_ROOM_NAMES,
+  type StayGroupRequirement,
+} from '../lib/quote-workflow/types';
 import { matchRoomType, ROOM_TYPE_CODES } from '../lib/quote-workflow/room-types';
 
 afterEach(cleanup);
@@ -51,6 +57,12 @@ function renderStay(
   return { onPatch, onStayAction, onMealPlanChange, ...rendered };
 }
 
+function selectByLabel(label: string): HTMLSelectElement {
+  const element = screen.getByLabelText(label);
+  if (!(element instanceof HTMLSelectElement)) throw new Error(`${label} is not a select`);
+  return element;
+}
+
 describe('StayCard rooms', () => {
   it('keeps adults as compact subtext until staff taps to edit', () => {
     const { onPatch } = renderStay([stay()]);
@@ -81,7 +93,7 @@ describe('StayCard rooms', () => {
 
   it('renders one optional meal-plan display filter per stay without patching the HMS room rows', () => {
     const { onPatch, onMealPlanChange } = renderStay([stay({ board: 'bb' }), stay({ id: 'g2', board: 'bb' })]);
-    const meal = screen.getByLabelText('Meal plan') as HTMLSelectElement;
+    const meal = selectByLabel('Meal plan');
     expect(meal.tagName).toBe('SELECT');
     expect(meal.value).toBe('bb');
     expect(screen.getByText('Meal plan').parentElement?.textContent).not.toContain('*');
@@ -143,7 +155,7 @@ describe('StayCard rooms', () => {
     const { unmount: unmountExact } = renderStay([
       stay({ roomPreference: 'standard queen', roomTypeCode: 'STQN' }),
     ]);
-    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('STQN');
+    expect(selectByLabel('Room type').value).toBe('STQN');
     unmountExact();
 
     const match = matchRoomType('Standard RoomQueen Bed');
@@ -155,7 +167,7 @@ describe('StayCard rooms', () => {
         fields: { roomPreference: 'extracted' },
       }),
     ]);
-    const selectedRoom = screen.getByLabelText('Room type') as HTMLSelectElement;
+    const selectedRoom = selectByLabel('Room type');
     expect(selectedRoom.value).toBe('STQN');
     expect(screen.getByText('from email')).toBeTruthy();
     expect(
@@ -171,7 +183,7 @@ describe('StayCard rooms', () => {
         fields: { roomPreference: 'extracted' },
       }),
     ]);
-    const ambiguousRoom = screen.getByLabelText('Room type') as HTMLSelectElement;
+    const ambiguousRoom = selectByLabel('Room type');
     expect(ambiguousRoom.value).toBe('Single');
     expect(
       [...ambiguousRoom.options].some((option) => option.textContent === 'Email request'),
@@ -185,6 +197,32 @@ describe('StayCard rooms', () => {
     expect(screen.queryByRole('button', { name: 'Suite' })).toBeNull();
   });
 
+  it('matches room-name variants only when present in the active property config', () => {
+    const renderConfigured = (
+      roomTypes: NonNullable<ComponentProps<typeof StayCard>['roomTypes']>,
+    ) => render(
+      <StayCard
+        stayId="s1"
+        rows={[stay({ roomPreference: 'standard queen room' })]}
+        index={0}
+        stayCount={1}
+        roomTypes={roomTypes}
+        boards={['bb']}
+      />,
+    );
+
+    renderConfigured([{ code: 'STQN', label: 'Standard Queen' }]);
+    expect(selectByLabel('Room type').value).toBe('STQN');
+    expect(screen.getByText('Standard Queen ×1')).toBeTruthy();
+
+    cleanup();
+    renderConfigured([{ code: 'JNRSUI', label: 'Junior Suite' }]);
+    const unavailableRoom = selectByLabel('Room type');
+    expect(unavailableRoom.value).toBe('standard queen room');
+    expect([...unavailableRoom.options].map((option) => option.value)).not.toContain('STQN');
+    expect(screen.getByText('Room type needed ×1')).toBeTruthy();
+  });
+
   it('makes other… focus the full room-type select without changing the row', () => {
     const { onPatch } = renderStay([stay({ roomPreference: 'Single', roomTypeSuggestions: ['STWN', 'SKNG'] })]);
     const select = screen.getByLabelText('Room type');
@@ -195,7 +233,7 @@ describe('StayCard rooms', () => {
 
   it('marks an unset room type as invalid and shortens its placeholder option', () => {
     renderStay([stay({ roomPreference: '', roomTypeCode: undefined })]);
-    const select = screen.getByLabelText('Room type') as HTMLSelectElement;
+    const select = selectByLabel('Room type');
     expect(select.getAttribute('aria-invalid')).toBe('true');
     expect(select.className).toMatch(/border-\[#c01823\]/);
     expect([...select.options].some((option) => option.textContent === 'Choose room type')).toBe(true);
@@ -203,7 +241,7 @@ describe('StayCard rooms', () => {
 
   it('a rate-card room pick is the row room, so the select shows it over the projected room type', () => {
     renderStay([stay({ roomPreference: 'standard queen', roomTypeCode: 'STQN', roomCodes: ['SKNG'] })]);
-    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('SKNG');
+    expect(selectByLabel('Room type').value).toBe('SKNG');
   });
 
   it('choosing a room type in the select clears a rate-card pick and sets the row room', () => {
@@ -217,12 +255,86 @@ describe('StayCard rooms', () => {
 
   it('lists every Centurion room type and shows room and guest totals plus the extracted room hint', () => {
     renderStay([stay()], { requestedRoomsTotal: 4 });
-    const roomType = screen.getByLabelText('Room type') as HTMLSelectElement;
+    const roomType = selectByLabel('Room type');
     expect([...roomType.options].map((option) => option.value)).toEqual(
       expect.arrayContaining([...ROOM_TYPE_CODES]),
     );
     expect(screen.getByText('1 room · 2 guests total')).toBeTruthy();
     expect(screen.getByText(/Email requested 4 rooms in total/)).toBeTruthy();
+  });
+
+  it('shows only the active hotel room and meal-plan choices', () => {
+    const props: ComponentProps<typeof StayCard> = {
+      stayId: 's1',
+      rows: [stay({ roomPreference: '' })],
+      index: 0,
+      stayCount: 1,
+      propertyCode: HRDAV_PROPERTY_CODE,
+      roomTypes: [
+        { code: 'JNRSUI', label: 'Junior Suite' },
+        { code: 'EXKNGB', label: 'Executive King Balcony' },
+        { code: 'EXKNGR', label: 'Executive King Round' },
+        { code: 'EXKNGS', label: 'Executive King Square' },
+        { code: 'DLXPAT', label: 'Deluxe Patio' },
+        { code: 'DLXKNG', label: 'Deluxe King' },
+        { code: 'ACCES', label: 'Accessible' },
+        { code: 'STKNG', label: 'Standard King' },
+        { code: 'STWN', label: 'Standard Twin' },
+      ],
+      boards: ['room_only', 'bb'],
+    };
+    render(<StayCard {...props} />);
+
+    const roomType = screen.getByLabelText('Room type');
+    const roomOptionValues = [...roomType.querySelectorAll('option')].map((option) => option.value);
+    expect(roomOptionValues.slice(1)).toEqual([
+      'JNRSUI', 'EXKNGB', 'EXKNGR', 'EXKNGS', 'DLXPAT', 'DLXKNG', 'ACCES', 'STKNG', 'STWN',
+    ]);
+    expect(roomOptionValues).not.toContain('STQN');
+    expect(screen.getByRole('option', { name: 'Junior Suite' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'JNRSUI' })).toBeNull();
+    expect(screen.getByRole('option', { name: 'Standard Twin' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'Standard Twin (STWN)' })).toBeNull();
+    expect(screen.getByText('Room type needed ×1')).toBeTruthy();
+    const mealPlan = screen.getByLabelText('Meal plan');
+    expect([...mealPlan.querySelectorAll('option')].map((option) => option.value)).toEqual(['all', 'room_only', 'bb']);
+  });
+
+  it('does not preselect an unbindable HRDAV room-name variant', () => {
+    const roomTypes = Object.entries(HRDAV_ROOM_NAMES).map(([code, label]) => ({ code, label }));
+    const unlistedPreference = 'standard twin room';
+    const props: ComponentProps<typeof StayCard> = {
+      stayId: 's1',
+      rows: [stay({ roomPreference: unlistedPreference })],
+      index: 0,
+      stayCount: 1,
+      propertyCode: HRDAV_PROPERTY_CODE,
+      roomTypes,
+      boards: ['room_only', 'bb'],
+    };
+
+    render(<StayCard {...props} />);
+
+    const roomType = selectByLabel('Room type');
+    expect(
+      resolveNativeRoomCodes({ roomPreference: unlistedPreference, propertyCode: HRDAV_PROPERTY_CODE }),
+    ).toEqual({
+      status: 'unresolved',
+      label: unlistedPreference,
+    });
+    expect(roomType.value).toBe(unlistedPreference);
+    expect(screen.getByRole('option', { name: 'Email request' })).toBeTruthy();
+
+    cleanup();
+    const exactPreference = 'Standard Twin';
+    render(<StayCard {...props} rows={[stay({ roomPreference: exactPreference })]} />);
+    expect(selectByLabel('Room type').value).toBe('STWN');
+    expect(
+      resolveNativeRoomCodes({ roomPreference: exactPreference, propertyCode: HRDAV_PROPERTY_CODE }),
+    ).toEqual({
+      status: 'codes',
+      codes: ['STWN'],
+    });
   });
 
   it('uses a requested-room split header until room quantities are assigned', () => {

@@ -44,9 +44,11 @@ import {
   workItemIdForMail,
 } from '../../ai/work-items.js';
 import { getDb } from '../../db/client.js';
-import { mailboxProcedure, privateProcedure, router } from '../trpc.js';
-import { CENTURION_RATE_PLANS } from '../../hms/rate-catalogue.js';
+import { mailboxProcedure, router } from '../trpc.js';
+import { quotePaneConfigForProperty } from '../../hms/rate-catalogue.js';
 import { quoteTargetForTransport } from '../../hms/hms-quote-target.js';
+import { refuseProperty } from '../../hms/property-refusal.js';
+import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 import { z } from 'zod';
 
 export { hashSyncedQuoteSelection } from '../../ai/quote-workflow-analyse-selection.js';
@@ -153,7 +155,16 @@ export const runStepInput = z.object({
 });
 
 export const quoteWorkflowRouter = router({
-  rateCatalogue: privateProcedure.query(() => CENTURION_RATE_PLANS),
+  rateCatalogue: mailboxProcedure.query(async ({ ctx }) => {
+    const resolved = resolvePropertyTransport(ctx.activeTransportId);
+    if (resolved.kind === 'collector') {
+      refuseProperty({ code: 'collector_no_hotel', transportId: resolved.transportId });
+    }
+    if (resolved.kind === 'refusal') refuseProperty(resolved);
+    const config = await quotePaneConfigForProperty(resolved.property.propertyCode, resolved.transportId);
+    if (!config) refuseProperty({ code: 'not_set_up', transportId: resolved.transportId });
+    return config;
+  }),
   /** Server-backed Make quote: DV mailboxes only when HMS_DAVINCI_MAKE_QUOTE=on. Writes stay ungated here. */
   makeQuote: mailboxProcedure.query(({ ctx }) => {
     const resolved = quoteTargetForTransport(ctx.activeTransportId);
