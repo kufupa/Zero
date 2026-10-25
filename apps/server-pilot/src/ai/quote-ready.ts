@@ -33,7 +33,10 @@ export function quoteShopJobsForPlan(
   const ordered = [...strategies].sort(
     (left, right) => Number(right.code === 'BAR') - Number(left.code === 'BAR'),
   );
-  const primary = plan.inputs.map((input) => ({ input }));
+  const allowed = new Set(ordered.map((strategy) => strategy.requestValue));
+  const primary = plan.inputs
+    .filter((input) => allowed.has(input.salesStrategy))
+    .map((input) => ({ input }));
   const extras = plan.inputs.flatMap((input) =>
     ordered
       .filter((strategy) => strategy.requestValue !== input.salesStrategy)

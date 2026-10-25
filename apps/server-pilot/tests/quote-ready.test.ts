@@ -693,4 +693,19 @@ describe('quote shop jobs per registry strategy', () => {
     ]);
     expect(jobs.map((job) => job.input.salesStrategy)).toEqual(['BAR', 'WS']);
   });
+
+  it('omits an unconfigured Government primary and still shops allowed extras', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({
+      stays: [{ ...stay, rows: stay.rows.map((row) => ({ ...row, board: 'dbb' })) }],
+    });
+    expect(plan.inputs[0]?.salesStrategy).toBe('Government');
+    const jobs = quoteShopJobsForPlan(plan, [
+      { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
+      { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+      { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
+    ]);
+    expect(jobs.map((job) => job.input.salesStrategy)).toEqual(['BAR', 'WS', 'PROMO']);
+    expect(jobs.some((job) => job.input.salesStrategy === 'Government')).toBe(false);
+  });
 });
