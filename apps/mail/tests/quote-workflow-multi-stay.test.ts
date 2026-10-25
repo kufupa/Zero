@@ -7,6 +7,7 @@ import {
   ratedStayCount,
   reduceQuoteSession,
   stayIdOf,
+  type QuoteWorkflowSession,
 } from '../lib/quote-workflow/session';
 import {
   HRCEN_PROPERTY_CODE,
@@ -129,7 +130,7 @@ function quoteStay(
   session: QuoteSession,
   option: { revisionRef: string; key: string; totalMinor: number; onceExtras?: boolean },
   groups?: StayGroupRequirement[],
-): QuoteSession {
+): QuoteWorkflowSession {
   return reduceQuoteSession(session, {
     type: 'staff_quote_ready',
     offer: allocation(option.revisionRef, option.key, option.totalMinor),
@@ -573,7 +574,7 @@ describe('per-stay extras on a combined quote', () => {
     session: QuoteSession,
     key: string,
     sent: ExecuteStaffQuoteInput[],
-  ): Promise<QuoteSession> {
+  ): Promise<QuoteWorkflowSession> {
     const step = session.steps.find((item) => item.shareKey === key)!;
     const groups = groupsForQuoteStep(session, step).map((group) => ({
       ...group,

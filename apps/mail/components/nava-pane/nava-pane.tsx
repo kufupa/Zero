@@ -79,6 +79,7 @@ import {
   bindReadBackStaffQuote,
   bindQuoteRunScreenshot,
   bindQualifiedStaffProposalPdf,
+  bindStaffQuoteStrategies,
   bindStaffActions,
   bindStaffQuoteSource,
   staffQuoteFromTrpc,
@@ -115,6 +116,7 @@ import {
   quoteRunBlockReason,
   reduceQuoteSession,
   removedStayFor,
+  quoteStrategyStayRevision,
   staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
@@ -295,6 +297,7 @@ export function NavaPane({
   const [staffQuoteNoticeScope] = useState(() => `main-rates-${++nextStaffQuoteNoticeScope}`);
   const staffQuoteNoticeSequence = useRef(0);
   const staffQuoteAutoAttempted = useRef(new Set<string>());
+  const quoteStrategyBindAttempts = useRef(new Set<string>());
   const staffQuoteAutoSuppressed = useRef(new Set<string>());
   const staffQuoteRunCount = useRef(0);
   const staffQuoteReadBackInFlight = useRef(false);
@@ -444,6 +447,9 @@ export function NavaPane({
   const staffSignerName = session?.user?.name ?? '';
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
   const activePaneConfig = quotePaneConfig?.transportId === activeConnection?.id ? quotePaneConfig : null;
+  const quoteStrategyRegistryKey = (activePaneConfig?.salesStrategies ?? [])
+    .map((strategy) => `${strategy.code}:${strategy.requestValue}`)
+    .join('|');
   const sourceClassification = classifyMailSource({
     fromAddress: activeEmail?.senderEmail,
     subject: activeEmail?.subject,
@@ -830,6 +836,98 @@ export function NavaPane({
     quoteSession.staffQuote ? 'quoted' : '',
     Object.keys(quoteSession.staffQuotes).join(','),
   ].join(':');
+  useEffect(() => {
+    const paneConfig = activePaneConfig;
+    const registryStrategies = paneConfig?.salesStrategies ?? [];
+    const source = quoteSession.staffSource;
+    const binding = quoteSession.binding;
+    const isQuote = quoteSession.analysis?.intent === 'quote' || quoteSession.analysis?.luna?.workflow === 'quote';
+    if (
+      isNonActionableMessage ||
+      !isQuote ||
+      !source ||
+      !binding ||
+      !paneConfig ||
+      binding.transportId !== paneConfig.transportId ||
+      !registryStrategies.length ||
+      staffQuoteQueueMode === 'checking'
+    ) return;
+
+    const staff = staffQuoteFromTrpc(trpcClient);
+    const staffQuoteJob = staffQuoteQueueMode === 'on'
+      ? trackRatesJob(staff.workstation.staffQuoteJob?.query, source)
+      : undefined;
+    const selectionEpoch = binding.selectionEpoch;
+    const inputRevision = quoteSession.inputRevision;
+    const header = quoteSession.staffHeader;
+    const stayKeys = requestedQuoteKeys(quoteSession.groups);
+    for (const stayKey of stayKeys) {
+      const groups = quoteSession.groups.filter((group) => stayKeyForGroup(group) === stayKey);
+      const stayRevision = quoteStrategyStayRevision(quoteSession, stayKey);
+      const attemptKey = JSON.stringify([
+        binding.transportId,
+        source.messageId,
+        source.sourceHash,
+        selectionEpoch,
+        inputRevision,
+        stayKey,
+        stayRevision,
+        paneConfig.propertyCode,
+        staffQuoteQueueMode,
+        registryStrategies.map((strategy) => [strategy.code, strategy.requestValue]),
+      ]);
+      if (quoteStrategyBindAttempts.current.has(attemptKey)) continue;
+      quoteStrategyBindAttempts.current.add(attemptKey);
+      dispatchQuote({
+        type: 'quote_strategy_comparison_started',
+        stayKey,
+        selectionEpoch,
+        stayRevision,
+        strategyCodes: registryStrategies.map((strategy) => strategy.code),
+      });
+      void bindStaffQuoteStrategies({
+        staffQuoteJob,
+        registryStrategies,
+        source,
+        selectionEpoch,
+        inputRevision,
+        groups,
+        header,
+        propertyCode: paneConfig.propertyCode,
+        stayKey,
+        onResult: ({ strategyCode, row, result }) => dispatchQuote({
+          type: 'quote_strategy_comparison_result',
+          stayKey,
+          selectionEpoch,
+          stayRevision,
+          strategyCode,
+          outcome: {
+            strategyCode,
+            row,
+            ...(result ? {
+              result: {
+                offer: result.offer,
+                staffQuote: result.staffQuote,
+                ...(result.extrasReviewItems ? { extrasReviewItems: result.extrasReviewItems } : {}),
+              },
+            } : {}),
+          },
+        }),
+      }).then((results) => {
+        if (results.some(({ retryable, row }) => retryable || row.status === 'pending')) {
+          quoteStrategyBindAttempts.current.delete(attemptKey);
+        }
+      });
+    }
+  }, [
+    activePaneConfig?.propertyCode,
+    activePaneConfig?.transportId,
+    isNonActionableMessage,
+    priorQuoteKey,
+    quoteStrategyRegistryKey,
+    staffQuoteQueueMode,
+  ]);
+
   useEffect(() => {
     if (isNonActionableMessage) return;
     const luna = quoteSession.analysis?.luna;
@@ -2249,6 +2347,10 @@ export function NavaPane({
             {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
             <QuoteWorkflowPanel
               session={quoteSession}
+              quoteStrategyRows={quoteSession.quoteStrategyRows}
+              onSelectQuoteStrategy={(stayKey, strategyCode) =>
+                dispatchQuote({ type: 'quote_strategy_selected', stayKey, strategyCode })
+              }
               rateCatalogue={activePaneConfig?.ratePlans ?? []}
               paneConfig={activePaneConfig}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}

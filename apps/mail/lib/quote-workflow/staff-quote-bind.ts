@@ -1498,6 +1498,8 @@ export async function bindReadBackStaffQuote(
 export type BoundStaffQuoteStrategy = {
   strategyCode: QuoteSalesStrategyCode;
   row: QuoteStrategyRow;
+  /** A matching prepared job may become readable on a later pane effect. */
+  retryable?: true;
   /** Present only when the existing prepared job returned a bindable quote. */
   result?: Extract<BoundExecuteStaffQuote, { status: 'ok' }>;
 };
@@ -1519,8 +1521,13 @@ const QUOTE_STRATEGY_VALUES: ReadonlySet<string> = new Set([
 function failedQuoteStrategy(
   strategyCode: QuoteSalesStrategyCode,
   message: string,
+  retryable = false,
 ): BoundStaffQuoteStrategy {
-  return { strategyCode, row: { status: 'failed', message } };
+  return {
+    strategyCode,
+    row: { status: 'failed', message },
+    ...(retryable ? { retryable: true as const } : {}),
+  };
 }
 
 function rowForBoundStrategy(
@@ -1587,6 +1594,7 @@ export async function bindStaffQuoteStrategy(
       return failedQuoteStrategy(
         args.strategyCode,
         'No prepared comparison job was found. The queue may be disabled; no search was run.',
+        true,
       );
     }
     if (bound.status !== 'ok') {

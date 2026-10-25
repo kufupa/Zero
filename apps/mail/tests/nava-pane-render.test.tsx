@@ -72,6 +72,7 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     staffQuoteJobQuery: vi.fn().mockResolvedValue(null),
     queueStaffQuoteMutation: vi.fn().mockResolvedValue({ runId: null }),
     staffQuoteSources: {} as Record<string, { messageId: string; threadId: string; sourceHash: string }>,
+    quotePaneConfig: null as null | Record<string, unknown>,
     findPartyMutation: vi.fn().mockResolvedValue({
       outcome: 'no_match',
       results: [],
@@ -266,6 +267,9 @@ vi.mock('../providers/query-provider', () => ({
       };
     },
     quoteWorkflow: {
+      rateCatalogue: {
+        query: async () => bridgeMockState.quotePaneConfig,
+      },
       voucherFind: { query: voucherFindQuery },
       analyseSelection: {
         mutate: async () => {
@@ -418,6 +422,7 @@ describe('NavaPane', () => {
     bridgeMockState.staffQuoteJobCalls.length = 0;
     bridgeMockState.queueStaffQuoteMutation.mockReset().mockResolvedValue({ runId: null });
     bridgeMockState.staffQuoteSources = {};
+    bridgeMockState.quotePaneConfig = null;
     bridgeMockState.findPartyMutation.mockReset().mockResolvedValue({
       outcome: 'no_match',
       results: [],
@@ -880,6 +885,35 @@ describe('NavaPane screen states', () => {
     return {
       ...STORED_READY,
       analysis: { ...STORED_READY.analysis, luna: BOOKING_LUNA },
+    };
+  }
+
+  const COMPARISON_STRATEGIES = [
+    { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
+    { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+    { code: 'PRESET', label: 'Preset', requestValue: 'PRESET' },
+    { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
+    { code: 'NC', label: 'Negotiated Contract', requestValue: 'NC' },
+    { code: 'GOV', label: 'Government', requestValue: 'Government' },
+  ] as const;
+
+  function configureStrategyComparisons() {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1',
+      propertyCode: 'HRCEN',
+      roomTypes: [],
+      ratePlans: [],
+      boards: ['bb'],
+      salesStrategies: COMPARISON_STRATEGIES,
+      overrideRateCodes: [],
+      eventRateCodes: [],
+    };
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: STORED_READY.analysis.groups.map((group) => ({ ...group, roomCodes: ['SKNG'] })),
+      },
     };
   }
 
@@ -1528,6 +1562,179 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalledWith(
       expect.objectContaining({ input: expect.objectContaining({ messageId: 'mail-1' }) }),
     );
+  });
+
+  it('binds each configured strategy result independently and selects only the staff-picked row', async () => {
+    configureStrategyComparisons();
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    const requestedStrategies: string[] = [];
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(async (lookup: unknown) => {
+      if (!lookup || typeof lookup !== 'object' || !('input' in lookup)) return null;
+      const input = (lookup as { input: Record<string, unknown> }).input;
+      const strategy = String(input.salesStrategy);
+      requestedStrategies.push(strategy);
+      const requestGroups = input.groups as Array<{ id: string; arrivalDate: string; departureDate: string }>;
+      const runId = `prepared-${strategy}`;
+      const request = { kind: 'staff_quote' as const, input: input as never };
+      if (strategy === 'Government') {
+        return {
+          ...completedStaffQuoteJob({
+            ok: false,
+            code: 'NATIVE_NO_MATCHING_RATE',
+            message: 'HMS found no Government rate for these dates.',
+          }),
+          runId,
+          request,
+          prefetch: true,
+        };
+      }
+      const totalMinor = strategy === 'WS' ? 222_000 : 160_000;
+      return {
+        ...completedStaffQuoteJob({
+          ...STAFF_QUOTE_READY,
+          workflowRunId: `workflow-${strategy}`,
+          revisionRef: `revision-${strategy}`,
+          messageId: String(input.messageId),
+          selectionEpoch: Number(input.selectionEpoch),
+          inputRevision: Number(input.inputRevision),
+          arrivalDate: requestGroups[0]!.arrivalDate,
+          departureDate: requestGroups[0]!.departureDate,
+          totalMinor,
+          rateOptions: [{
+            id: `rate-${strategy}`,
+            groupId: requestGroups[0]!.id,
+            board: 'bb',
+            boardLabel: 'Bed & Breakfast',
+            rateCode: `${strategy}-RATE`,
+            rateLabel: `${strategy} test rate`,
+            roomCode: 'SKNG',
+            roomLabel: `${strategy} Standard King`,
+            perNightMinor: totalMinor / 2,
+            totalMinor,
+            selected: true,
+          }],
+        }),
+        runId,
+        request,
+        prefetch: true,
+      };
+    });
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+
+    const table = await screen.findByRole('table', { name: 'Quote strategy comparison' });
+    await waitFor(() => {
+      expect(within(table).getAllByRole('row')).toHaveLength(7);
+      expect(within(table).getAllByText('Rates found')).toHaveLength(5);
+      expect(within(table).getByText('Not offered for these dates')).toBeDefined();
+    });
+    expect(new Set(requestedStrategies)).toEqual(
+      new Set(COMPARISON_STRATEGIES.map((strategy) => strategy.requestValue)),
+    );
+    expect(requestedStrategies).not.toContain('AIR');
+    await waitFor(() =>
+      expect(screen.getByLabelText('Quotation total').textContent).toMatch(/R\s?1\s?600,00/),
+    );
+    const queuedRunsBeforeSelection = bridgeMockState.queueStaffQuoteMutation.mock.calls.length;
+
+    fireEvent.click(within(table).getByRole('button', { name: 'Use Wholesale (WS) rates' }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Quotation total').textContent).toMatch(/R\s?2\s?220,00/),
+    );
+    expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(queuedRunsBeforeSelection);
+  });
+
+  it('retries a comparison bind when its prepared job appears after the primary quote', async () => {
+    configureStrategyComparisons();
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    let wholesaleReadCount = 0;
+    let barReadCount = 0;
+    let releasePrimaryRead = () => {};
+    const primaryReadGate = new Promise<void>((resolve) => {
+      releasePrimaryRead = resolve;
+    });
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(async (lookup: unknown) => {
+      if (!lookup || typeof lookup !== 'object' || !('input' in lookup)) return null;
+      const input = (lookup as { input: Record<string, unknown> }).input;
+      const strategy = String(input.salesStrategy);
+      if (strategy === 'WS' && wholesaleReadCount++ === 0) return null;
+      if (strategy === 'BAR' && barReadCount++ === 1) await primaryReadGate;
+
+      const requestGroups = input.groups as Array<{
+        id: string;
+        arrivalDate: string;
+        departureDate: string;
+      }>;
+      const totalMinor = 222_000;
+      return {
+        ...completedStaffQuoteJob({
+          ...STAFF_QUOTE_READY,
+          workflowRunId: `workflow-${strategy}`,
+          revisionRef: `revision-${strategy}`,
+          messageId: String(input.messageId),
+          selectionEpoch: Number(input.selectionEpoch),
+          inputRevision: Number(input.inputRevision),
+          arrivalDate: requestGroups[0]!.arrivalDate,
+          departureDate: requestGroups[0]!.departureDate,
+          totalMinor,
+          rateOptions: [{
+            id: `rate-${strategy}`,
+            groupId: requestGroups[0]!.id,
+            board: 'bb',
+            boardLabel: 'Bed & Breakfast',
+            rateCode: `${strategy}-RATE`,
+            rateLabel: `${strategy} test rate`,
+            roomCode: 'SKNG',
+            roomLabel: `${strategy} Standard King`,
+            perNightMinor: totalMinor / 2,
+            totalMinor,
+            selected: true,
+          }],
+        }),
+        runId: `prepared-${strategy}`,
+        request: { kind: 'staff_quote' as const, input: input as never },
+        prefetch: true,
+      };
+    });
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+
+    const table = await screen.findByRole('table', { name: 'Quote strategy comparison' });
+    const wholesaleRow = within(table).getByRole('row', { name: /WS Wholesale/ });
+    await waitFor(() => expect(within(wholesaleRow).getByText('Search failed')).toBeDefined());
+    expect(wholesaleReadCount).toBe(1);
+    await waitFor(() => expect(barReadCount).toBeGreaterThanOrEqual(2));
+
+    await act(async () => releasePrimaryRead());
+    await waitFor(() => {
+      expect(wholesaleReadCount).toBe(2);
+      expect(within(wholesaleRow).getByText('Rates found')).toBeDefined();
+    });
+    expect(
+      bridgeMockState.queueStaffQuoteMutation.mock.calls.some(([input]) =>
+        Boolean(input && typeof input === 'object' && (input as Record<string, unknown>).salesStrategy === 'WS'),
+      ),
+    ).toBe(false);
+  });
+
+  it('shows the bind queue-off failures without searching', async () => {
+    configureStrategyComparisons();
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+
+    const table = await screen.findByRole('table', { name: 'Quote strategy comparison' });
+    await waitFor(() => {
+      const failures = within(table).getAllByText('Search failed');
+      expect(failures).toHaveLength(6);
+      expect(failures[0]?.getAttribute('title')).toContain('comparison queue is disabled or unavailable');
+    });
+    expect(bridgeMockState.staffQuoteJobQuery).not.toHaveBeenCalled();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 
   it('retry read runs the read again after a failed live read', async () => {
