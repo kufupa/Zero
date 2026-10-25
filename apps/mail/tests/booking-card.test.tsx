@@ -276,6 +276,7 @@ describe('booking cards', () => {
       roomCodes: ['DLXKNG'],
       rateCode: 'NEWBAR',
       quotedRateCode: 'NEWBAR',
+      fields: { ...g1.fields, roomCodes: 'staff_corrected' },
     };
     render(<BookingCards draft={draft} groups={[currentGroup]} paneSave={client} />);
     pickRoomChoices(0);
@@ -544,6 +545,7 @@ describe('booking cards', () => {
       roomPreference: 'STQN',
       roomTypeCode: 'STQN',
       roomCodes: ['STQN'],
+      fields: { ...g1.fields, roomCodes: 'staff_corrected' },
     };
     const { rerender } = render(<BookingCards draft={draft} groups={[quotedGroup]} />);
     expect(screen.getByText(/Price matches the email/)).toBeDefined();
