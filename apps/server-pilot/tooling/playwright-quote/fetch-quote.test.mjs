@@ -222,6 +222,7 @@ test('BAR grid Walk-in Rate stays in options with existing BAR rows',()=>{
     const wal=result.options.find(o=>o.rate.code==='WAL');
     assert.equal(wal.rate.label,'Walk-in Rate');
     assert.equal(wal.board,'Bed & Breakfast NR');
+    assert.equal(wal.matchStatus,'match');
     assert.equal(result.options.filter(o=>o.rate.code==='WAL').length,1);
     if (!includeNativeWal) assert.notEqual(wal.availability,'available');
   }
@@ -293,6 +294,7 @@ test('bed matching uses exact room information, never misleading Twin room name'
   const facts=quote.sourceFacts?.({room:{code:'STWN',label:'Standard Twin'},rate:{code:'BAR'},board:'Bed & Breakfast R'},'Standard Twin\nTwo Double Beds\nSleeps 4');
   assert.equal(facts?.bedType,'double');
   assert.equal(facts.boardBase,'breakfast');
+  assert.equal(quote.sourceFacts({room:{code:'STKNG',label:'Standard King'},rate:{code:'WAL'},board:'Bed & Breakfast NR'},'').boardBase,'breakfast');
   assert.equal(quote.sourceFacts({room:{code:'EXKNG',label:'Executive King'},rate:{code:'BAR'}},'King Bed').bedType,'king');
   assert.equal(quote.sourceFacts({room:{code:'STWN',label:'Standard Twin'},rate:{code:'BAR'},board:'invented breakfast'},'').bedType,undefined);
 });

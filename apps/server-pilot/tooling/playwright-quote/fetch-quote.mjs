@@ -454,7 +454,7 @@ export function sourceFacts(option, roomInformation='') {
     ['Two Single Beds','twin'],['One Single Bed','single'],['One Double Bed','double']]);
   const lines=new Set(roomInformation.split('\n').map(x=>x.trim()));
   const bedType=[...bedLabels].find(([label])=>lines.has(label))?.[1];
-  const boardBase=({'Bed & Breakfast R':'breakfast','Room Only R':'room_only','Dinner Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed, Breakfast & Beverage R':'dinner_bed_breakfast'})[option.board];
+  const boardBase=({'Bed & Breakfast R':'breakfast','Bed & Breakfast NR':'breakfast','Room Only R':'room_only','Dinner Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed, Breakfast & Beverage R':'dinner_bed_breakfast'})[option.board];
   return {roomCode:option.room.code,rateCode:option.rate.code,bedType,boardBase,
     features:[{name:'room_description',value:option.room.label}]};
 }
