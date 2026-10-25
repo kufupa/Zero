@@ -848,6 +848,7 @@ export function NavaPane({
       !source ||
       !binding ||
       !paneConfig ||
+      binding.transportId !== paneConfig.transportId ||
       !registryStrategies.length ||
       staffQuoteQueueMode === 'checking'
     ) return;
@@ -2342,6 +2343,10 @@ export function NavaPane({
             {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
             <QuoteWorkflowPanel
               session={quoteSession}
+              quoteStrategyRows={quoteSession.quoteStrategyRows}
+              onSelectQuoteStrategy={(stayKey, strategyCode) =>
+                dispatchQuote({ type: 'quote_strategy_selected', stayKey, strategyCode })
+              }
               rateCatalogue={activePaneConfig?.ratePlans ?? []}
               paneConfig={activePaneConfig}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
