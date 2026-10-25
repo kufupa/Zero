@@ -1,0 +1,760 @@
+/**
+ * U11a private, offline reply-recheck evaluation.
+ * `freeze` derives truth from the first linked post-reply action before any prediction;
+ * `score` receives only the pre-reply work-item source and staff reply.
+ * Never connects to a database or hosted model. LLM calls require the approved local judge route;
+ * PII outputs must stay outside Git and mode 0600.
+ */
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import { open, readFile, unlink } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+
+import type { ModelAdapter } from '../src/ai/bedrock/adapter.js';
+import { createApprovedLocalModelAdapter } from '../src/ai/bedrock/factory.js';
+import type { LocalModelRouteEvidence, LocalModelTransport } from '../src/ai/bedrock/local.js';
+import { lunaCallBudget } from '../src/ai/bedrock/luna.js';
+
+const LABELS = ['handled', 'waiting_on_guest', 'needs_more_action'] as const;
+type Outcome = (typeof LABELS)[number];
+type RawRow = {
+  sampleOrdinal: number; cohortN: number; asOf: string; workItemId: string; threadId: string;
+  sourceMessageId: string; replyMessageId: string; kind?: string | null;
+  sourceSubject?: string | null; sourceBody?: string | null; replySubject?: string | null; replyBody?: string | null;
+  replyAt: string;
+  firstNext: { messageId: string; at: string; direction: string; sameThread: boolean; rfcLink: boolean;
+    sameSourceSender: boolean; autoMarker: boolean; subject?: string | null; body?: string | null };
+  confirmedBooking: boolean;
+};
+type Input = { kind: string; sourceSubject: string; sourceText: string; replySubject: string; replyText: string; clipped: boolean };
+type Case = {
+  sampleOrdinal: number; cohortN: number; asOf: string; workItemId: string; sourceMessageId: string;
+  threadId: string; replyMessageId: string; gold: Outcome; input: Input;
+};
+type AmbiguousCase = { row: RawRow; input: Input };
+type JudgeRouteEvidence = LocalModelRouteEvidence & { purpose: 'judge' };
+type JudgeRouteConfig = { route: JudgeRouteEvidence; transport: LocalModelTransport };
+type JudgeRouteDescriptor = { module: string; route: JudgeRouteEvidence };
+
+const MIN_N = 100;
+const BODY_MAX_BYTES = 8_000;
+const MODEL_MAX_INPUT_BYTES = 26_000;
+const MODEL_MAX_OUTPUT_TOKENS = 4_096;
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(SCRIPT_DIR, '../../..');
+const RESPONSE_SCHEMA = {
+  type: 'object',
+  properties: { outcome: { type: 'string', enum: LABELS } },
+  required: ['outcome'],
+  additionalProperties: false,
+};
+
+function asOutcome(value: unknown): value is Outcome {
+  return typeof value === 'string' && LABELS.includes(value as Outcome);
+}
+
+function stripHtmlBlockquotes(raw: string): string {
+  const tags = /<\/?blockquote\b[^>]*>/gi;
+  let output = '';
+  let cursor = 0;
+  let depth = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tags.exec(raw)) !== null) {
+    const tag = match[0];
+    const closing = /^<\//.test(tag);
+    const selfClosing = !closing && /\/\s*>$/.test(tag);
+    if (depth === 0) {
+      output += raw.slice(cursor, match.index);
+      if (closing || selfClosing) {
+        output += ' ';
+        cursor = tags.lastIndex;
+      } else {
+        depth = 1;
+        cursor = tags.lastIndex;
+      }
+    } else if (closing) {
+      depth--;
+      if (depth === 0) {
+        output += ' ';
+        cursor = tags.lastIndex;
+      }
+    } else if (!selfClosing) {
+      depth++;
+    }
+  }
+  if (depth === 0) output += raw.slice(cursor);
+  return output;
+}
+
+function stripQuotedAndSignature(raw: string): string {
+  const withoutNonTextBlocks = raw
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ');
+  const plain = stripHtmlBlockquotes(withoutNonTextBlocks)
+    .replace(/<br\s*\/?>|<\/p\s*>|<\/div\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/\r/g, '');
+  const lines = plain.split('\n');
+  const cut = lines.findIndex((line, index) => {
+    if (/^\s*(?:>{1}|-{2,}\s*original message\s*-{2,}|begin forwarded message:|on .{1,180}\bwrote:|(?:from|to|sent|subject):\s)/i.test(line) ||
+        /^\s*(?:--\s*|_{5,}\s*)$/.test(line)) return true;
+    return index > 0 && lines.slice(0, index).some((prior) => prior.trim()) &&
+      /^\s*(?:kind regards|best regards|warm regards|regards|sincerely|cheers|thanks)[,!\s.]*$/i.test(line);
+  });
+  return lines.slice(0, cut < 0 ? undefined : cut).join('\n').replace(/[ \t]+\n/g, '\n').trim();
+}
+
+function clipUtf8(raw: string, maxBytes: number): { text: string; clipped: boolean } {
+  if (Buffer.byteLength(raw) <= maxBytes) return { text: raw, clipped: false };
+  let text = '';
+  let bytes = 0;
+  for (const char of raw) {
+    const size = Buffer.byteLength(char);
+    if (bytes + size > maxBytes - 16) break;
+    text += char;
+    bytes += size;
+  }
+  return { text: `${text}\n[truncated]`, clipped: true };
+}
+
+function maxJsonStringBytes(value: unknown): number {
+  if (typeof value === 'string') return Buffer.byteLength(value);
+  if (Array.isArray(value)) return Math.max(0, ...value.map(maxJsonStringBytes));
+  if (value && typeof value === 'object') return Math.max(0, ...Object.values(value).map(maxJsonStringBytes));
+  return 0;
+}
+
+function clipJsonStrings(value: unknown, maxBytes: number): unknown {
+  if (typeof value === 'string') return clipUtf8(value, maxBytes).text;
+  if (Array.isArray(value)) return value.map((item) => clipJsonStrings(item, maxBytes));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clipJsonStrings(item, maxBytes)]));
+  }
+  return value;
+}
+
+function modelRequestBytes(systemPrompt: string, userPrompt: string): number {
+  return Buffer.byteLength(systemPrompt) + Buffer.byteLength(userPrompt) +
+    Buffer.byteLength(JSON.stringify(RESPONSE_SCHEMA));
+}
+
+function fitJsonPromptToLimit(
+  systemPrompt: string,
+  userPrompt: string,
+  maxBytes: number,
+): { userPrompt: string; clipped: boolean } {
+  if (modelRequestBytes(systemPrompt, userPrompt) <= maxBytes) return { userPrompt, clipped: false };
+  let parsed: unknown;
+  try { parsed = JSON.parse(userPrompt); } catch { throw new Error('model_input_limit_exceeded'); }
+  let low = 16;
+  let high = maxJsonStringBytes(parsed);
+  let best: string | undefined;
+  while (low <= high) {
+    const maxStringBytes = Math.floor((low + high) / 2);
+    const candidate = JSON.stringify(clipJsonStrings(parsed, maxStringBytes));
+    if (modelRequestBytes(systemPrompt, candidate) <= maxBytes) {
+      best = candidate;
+      low = maxStringBytes + 1;
+    } else {
+      high = maxStringBytes - 1;
+    }
+  }
+  if (best === undefined) throw new Error('model_input_limit_exceeded');
+  return { userPrompt: best, clipped: true };
+}
+
+function makeInput(row: RawRow): Input | null {
+  const source = clipUtf8(stripQuotedAndSignature(row.sourceBody ?? ''), BODY_MAX_BYTES);
+  const reply = clipUtf8(stripQuotedAndSignature(row.replyBody ?? ''), BODY_MAX_BYTES);
+  const sourceSubject = clipUtf8(stripQuotedAndSignature(row.sourceSubject ?? ''), 512);
+  const replySubject = clipUtf8(stripQuotedAndSignature(row.replySubject ?? ''), 512);
+  if (!source.text && !sourceSubject.text) return null;
+  if (!reply.text && !replySubject.text) return null;
+  return {
+    kind: row.kind ?? 'unknown',
+    sourceSubject: sourceSubject.text,
+    sourceText: source.text,
+    replySubject: replySubject.text,
+    replyText: reply.text,
+    clipped: source.clipped || reply.clipped || sourceSubject.clipped || replySubject.clipped,
+  };
+}
+
+function deriveGold(row: RawRow): Outcome | null {
+  if (row.firstNext.autoMarker) return null;
+  if (row.confirmedBooking) return 'handled';
+  // Event direction/sender cannot establish who owns the next action; adjudicate message content.
+  return null;
+}
+
+function buildCases(rows: RawRow[]): { cases: Case[]; ambiguous: AmbiguousCase[]; excludedAuto: number; excludedUnusable: number; sameSourceSenderInbound: number } {
+  const pairs = new Set<string>();
+  const ordinals = new Set<number>();
+  const cases: Case[] = [];
+  const ambiguous: AmbiguousCase[] = [];
+  let excludedAuto = 0;
+  let excludedUnusable = 0;
+  let sameSourceSenderInbound = 0;
+  for (const row of rows) {
+    const key = `${row.workItemId}:${row.replyMessageId}`;
+    if (!row.workItemId || !row.sourceMessageId || !row.replyMessageId || !row.threadId || pairs.has(key)) {
+      throw new Error('source_pair_invalid_or_duplicate');
+    }
+    if (row.cohortN !== rows.length || row.asOf !== rows[0]?.asOf) {
+      throw new Error('source_cohort_count_mismatch');
+    }
+    if (!Number.isSafeInteger(row.sampleOrdinal) || row.sampleOrdinal < 1 || ordinals.has(row.sampleOrdinal)) {
+      throw new Error('source_ordinal_invalid_or_duplicate');
+    }
+    pairs.add(key);
+    ordinals.add(row.sampleOrdinal);
+    const replyAt = Date.parse(row.replyAt);
+    const nextAt = Date.parse(row.firstNext?.at ?? '');
+    if (!Number.isFinite(replyAt) || !Number.isFinite(nextAt) || nextAt <= replyAt) {
+      throw new Error('source_event_time_invalid');
+    }
+    if (!row.firstNext.messageId || !(row.firstNext.sameThread || row.firstNext.rfcLink)) {
+      throw new Error('source_event_link_invalid');
+    }
+    if (row.firstNext.autoMarker) {
+      excludedAuto++;
+      continue;
+    }
+    const labeled = deriveGold(row);
+    const input = makeInput(row);
+    if (!input) {
+      excludedUnusable++;
+      continue;
+    }
+    if (row.firstNext.direction === 'inbound' && row.firstNext.sameSourceSender) sameSourceSenderInbound++;
+    if (labeled) cases.push(toCase(row, input, labeled));
+    else ambiguous.push({ row, input });
+  }
+  if (cases.length + ambiguous.length < MIN_N) throw new Error('truth_rows_below_minimum');
+  return { cases, ambiguous, excludedAuto, excludedUnusable, sameSourceSenderInbound };
+}
+
+function toCase(row: RawRow, input: Input, gold: Outcome): Case {
+  return { sampleOrdinal: row.sampleOrdinal, cohortN: row.cohortN, asOf: row.asOf,
+    workItemId: row.workItemId, sourceMessageId: row.sourceMessageId, threadId: row.threadId,
+    replyMessageId: row.replyMessageId, gold, input };
+}
+
+function asksGuest(text: string): boolean {
+  return /\?|\b(?:can|could|would) you\b|\bplease (?:send|share|confirm|provide|advise|let us know)\b|\bwe need you to\b|\blet us know\b/i.test(text);
+}
+
+function ruleBaseline(input: Input): Outcome {
+  const text = input.replyText.toLowerCase();
+  if (asksGuest(input.replyText)) return 'waiting_on_guest';
+  // A specific staff promise (e.g. returning with rates) is still staff work;
+  // only a bare “we'll revert” follows the plan's waiting-on-guest cue.
+  if (/\b(?:we|i)(?:'ll| will| shall)\s+(?:check|confirm|send|provide|prepare|follow up)\b/i.test(text) ||
+      /\b(?:we|i)(?:'ll| will| shall)\s+(?:come back|get back|revert)\b[^.?!]{0,100}\b(?:rates?|quotes?|availability|confirmations?|bookings?|details|updates?)\b/i.test(text) ||
+      /\b(?:still checking|currently checking|pending|partially answered|not yet confirmed|awaiting (?:internal|manager|hotel) confirmation)\b/i.test(text)) {
+    return 'needs_more_action';
+  }
+  if (/\b(?:we|i)(?:'ll| will| shall)\s+revert\b/i.test(text)) return 'waiting_on_guest';
+  return 'handled';
+}
+
+function score(gold: Outcome[], predictions: Outcome[]) {
+  const confusion = Object.fromEntries(LABELS.map((label) => [
+    label,
+    Object.fromEntries(LABELS.map((predicted) => [predicted, 0])),
+  ])) as Record<Outcome, Record<Outcome, number>>;
+  let correct = 0;
+  for (let i = 0; i < gold.length; i++) {
+    confusion[gold[i]][predictions[i]]++;
+    if (gold[i] === predictions[i]) correct++;
+  }
+  const perClass = Object.fromEntries(LABELS.map((label) => {
+    const tp = confusion[label][label];
+    const predicted = LABELS.reduce((sum, actual) => sum + confusion[actual][label], 0);
+    const goldSupport = LABELS.reduce((sum, predictedLabel) => sum + confusion[label][predictedLabel], 0);
+    const precision = predicted ? tp / predicted : null;
+    const recall = goldSupport ? tp / goldSupport : null;
+    return [label, { correct: tp, support: goldSupport, predicted, precision, recall }];
+  })) as Record<Outcome, {
+    correct: number;
+    support: number;
+    predicted: number;
+    precision: number | null;
+    recall: number | null;
+  }>;
+  const supported = LABELS.filter((label) => perClass[label].support > 0);
+  const balancedAccuracy = supported.reduce((sum, label) => sum + (perClass[label].recall ?? 0), 0) / supported.length;
+  return { n: gold.length, correct, accuracy: correct / gold.length, balancedAccuracy, supportedClasses: supported.length, perClass, confusion };
+}
+
+function validateScoredCases(cases: Case[]): void {
+  if (cases.length < MIN_N) throw new Error('truth_input_invalid');
+  const first = cases[0];
+  if (!first.asOf || !Number.isSafeInteger(first.cohortN) || first.cohortN < cases.length) {
+    throw new Error('truth_input_invalid');
+  }
+  const pairs = new Set<string>();
+  const ordinals = new Set<number>();
+  for (const item of cases) {
+    if (!asOutcome(item.gold) || !Number.isSafeInteger(item.sampleOrdinal) || item.sampleOrdinal < 1 ||
+        !item.workItemId || !item.sourceMessageId || !item.replyMessageId || !item.threadId ||
+        item.asOf !== first.asOf || item.cohortN !== first.cohortN) {
+      throw new Error('truth_input_invalid');
+    }
+    const pair = JSON.stringify([item.workItemId, item.replyMessageId]);
+    if (pairs.has(pair) || ordinals.has(item.sampleOrdinal)) throw new Error('truth_input_invalid');
+    pairs.add(pair);
+    ordinals.add(item.sampleOrdinal);
+  }
+}
+
+function assertPrivatePath(filename: string): string {
+  const resolved = path.resolve(filename);
+  const relative = path.relative(REPO_ROOT, resolved);
+  const outsideRepo = relative === '..' || relative.startsWith(`..${path.sep}`);
+  if (!outsideRepo && !relative.split(path.sep).includes('.private')) {
+    throw new Error('output_must_be_outside_repo_or_in_private_directory');
+  }
+  return resolved;
+}
+
+function privateOutputPaths(filenames: string[]): string[] {
+  const resolved = filenames.map(assertPrivatePath);
+  if (new Set(resolved).size !== resolved.length) throw new Error('output_paths_must_differ');
+  return resolved;
+}
+
+async function withPrivateOutputs<T>(filenames: string[], write: (handles: Awaited<ReturnType<typeof open>>[]) => Promise<T>): Promise<T> {
+  const paths = privateOutputPaths(filenames);
+  const handles: Awaited<ReturnType<typeof open>>[] = [];
+  try {
+    for (const filename of paths) handles.push(await open(filename, 'wx', 0o600));
+  } catch {
+    await Promise.all(handles.map((handle) => handle.close().catch(() => undefined)));
+    await Promise.all(paths.slice(0, handles.length).map((filename) => unlink(filename).catch(() => undefined)));
+    throw new Error('output_reservation_failed');
+  }
+
+  let keep = false;
+  try {
+    const result = await write(handles);
+    keep = true;
+    return result;
+  } finally {
+    await Promise.all(handles.map((handle) => handle.close().catch(() => undefined)));
+    if (!keep) await Promise.all(paths.map((filename) => unlink(filename).catch(() => undefined)));
+  }
+}
+
+function modelDeadlineAt(now = Date.now()): number {
+  return now + lunaCallBudget('medium').deadlineMs;
+}
+
+function parseFlag(args: string[], name: string, fallback?: string): string | undefined {
+  const prefix = `--${name}=`;
+  const value = args.find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
+  return value ?? fallback;
+}
+
+function assertNoDatabaseEnvironment(): void {
+  if (process.env.DATABASE_URL || process.env.TEST_DATABASE_URL || process.env.VITEST_ALLOW_PILOT_RDS) {
+    throw new Error('database_environment_must_be_unset');
+  }
+}
+
+function safeModelFailure(error: unknown): string {
+  const details = error as { status?: number; statusCode?: number; message?: string; name?: string; cause?: { status?: number; statusCode?: number; message?: string } };
+  const status = Number(details?.statusCode ?? details?.status ?? details?.cause?.statusCode ?? details?.cause?.status);
+  if (status === 401 || status === 403) return 'model_auth_failed';
+  if (status === 429) return 'model_rate_limited';
+  if (status === 400) return 'model_request_rejected';
+  if (status >= 500) return 'model_provider_error';
+  const message = details?.message ?? '';
+  if (['approved_local_luna_unavailable', 'model_input_limit_exceeded', 'model_outcome_invalid', 'model_cost_cap_exceeded'].includes(message)) {
+    return message === 'model_outcome_invalid' ? 'model_output_invalid' : message;
+  }
+  const incomplete = message.match(/^model_response_incomplete:(stop|length|content-filter|tool-calls|error)$/i);
+  if (incomplete) return `model_response_incomplete_${incomplete[1].replace('-', '_')}`;
+  if (/fetch failed|network|socket|connection reset|timed out/i.test(`${message} ${details?.cause?.message ?? ''}`)) return 'model_network_error';
+  if (/invalid url/i.test(message)) return 'model_invalid_url';
+  if (/json|parse/i.test(message)) return 'model_response_parse_error';
+  if (details?.name === 'AbortError') return 'model_aborted';
+  return 'model_call_failed';
+}
+
+type ConfiguredJudgeRouteModule = {
+  default?: unknown;
+  createReplyCheckJudgeRoute?: () => unknown;
+};
+
+function isJudgeRouteEvidence(value: unknown): value is JudgeRouteEvidence {
+  if (typeof value !== 'object' || value === null) return false;
+  const route = value as Partial<LocalModelRouteEvidence>;
+  return typeof route.routeId === 'string' && route.routeId.trim().length > 0 &&
+    route.purpose === 'judge' && route.protocol === 'in_process' && route.access === 'current_app' &&
+    route.egress === 'none' && route.retention === 'bounded' && route.usage === 'reported' &&
+    route.modelId === 'gpt-6-luna';
+}
+
+function parseJudgeRouteDescriptor(): JudgeRouteDescriptor {
+  const raw = process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG?.trim();
+  if (!raw) throw new Error('approved_local_luna_unavailable');
+  try {
+    const parsed = JSON.parse(raw) as { module?: unknown; route?: unknown };
+    if (typeof parsed !== 'object' || parsed === null || typeof parsed.module !== 'string' ||
+        parsed.module.trim().length === 0 || !isJudgeRouteEvidence(parsed.route)) {
+      throw new Error('approved_local_luna_unavailable');
+    }
+    return { module: parsed.module.trim(), route: parsed.route };
+  } catch {
+    throw new Error('approved_local_luna_unavailable');
+  }
+}
+
+function sameJudgeRoute(left: JudgeRouteEvidence, right: JudgeRouteEvidence): boolean {
+  return left.routeId === right.routeId && left.purpose === right.purpose &&
+    left.protocol === right.protocol && left.access === right.access && left.egress === right.egress &&
+    left.retention === right.retention && left.usage === right.usage && left.modelId === right.modelId;
+}
+
+function localLunaReportMetadata() {
+  // Approved local transport contract does not accept or attest reasoning effort.
+  return { model: 'gpt-6-luna', reasoningEffort: 'unknown' as const };
+}
+
+function isJudgeRouteConfig(value: unknown): value is JudgeRouteConfig {
+  if (typeof value !== 'object' || value === null) return false;
+  const config = value as Partial<JudgeRouteConfig>;
+  return isJudgeRouteEvidence(config.route) && typeof config.transport === 'function';
+}
+
+function createAdapter(): ModelAdapter {
+  try {
+    if (process.env.AI_MODEL_ROUTE !== 'approved-local') throw new Error('route_not_approved');
+    const descriptor = parseJudgeRouteDescriptor();
+    const loaded = createRequire(import.meta.url)(descriptor.module) as ConfiguredJudgeRouteModule;
+    const configured = loaded.createReplyCheckJudgeRoute
+      ? loaded.createReplyCheckJudgeRoute()
+      : (loaded.default ?? loaded);
+    if (!isJudgeRouteConfig(configured) || !sameJudgeRoute(configured.route, descriptor.route)) {
+      throw new Error('configured_route_mismatch');
+    }
+    return createApprovedLocalModelAdapter({
+      purpose: 'judge', route: descriptor.route, transport: configured.transport,
+    });
+  } catch {
+    throw new Error('approved_local_luna_unavailable');
+  }
+}
+
+async function invokeOutcome(adapter: ModelAdapter, systemPrompt: string, userPrompt: string, maxOutputTokens = MODEL_MAX_OUTPUT_TOKENS) {
+  const fittedPrompt = fitJsonPromptToLimit(systemPrompt, userPrompt, MODEL_MAX_INPUT_BYTES);
+  const result = await adapter.invoke({ modelId: 'gpt-6-luna', maxOutputTokens,
+    maxInputBytes: MODEL_MAX_INPUT_BYTES, systemPrompt, userPrompt: fittedPrompt.userPrompt, responseSchema: RESPONSE_SCHEMA,
+    deadlineAt: modelDeadlineAt() });
+  if (!asOutcome(result.output.outcome)) throw new Error('model_outcome_invalid');
+  return { outcome: result.output.outcome, cost: result.usage.estimatedCostUsd,
+    inputTokens: result.usage.inputTokens, promptClipped: fittedPrompt.clipped };
+}
+
+async function forEachConcurrent(count: number, limit: number, run: (index: number) => Promise<void>): Promise<void> {
+  let cursor = 0, failed = false, failure: unknown;
+  await Promise.all(Array.from({ length: Math.min(count, limit) }, async () => {
+    while (!failed) {
+      const index = cursor++;
+      if (index >= count) return;
+      try { await run(index); } catch (error) { failed = true; failure = error; }
+    }
+  }));
+  if (failed) throw failure;
+}
+
+async function labelAmbiguous(rows: AmbiguousCase[], concurrency: number, costCap: number) {
+  if (!rows.length) return { outcomes: [] as Outcome[], agreement: 0, cost: 0, inputTokens: 0,
+    clippedRows: 0, clippedPromptCalls: 0, rowsWithClippedPrompt: 0 };
+  const adapter = createAdapter();
+  const outcomes: Outcome[] = new Array(rows.length);
+  const clippedPromptRows = new Set<number>();
+  let cost = 0;
+  let inputTokens = 0;
+  let agreement = 0;
+  let clippedRows = 0;
+  let clippedPromptCalls = 0;
+  try {
+    await forEachConcurrent(rows.length, concurrency, async (index) => {
+      const { row, input } = rows[index];
+      const next = clipUtf8(stripQuotedAndSignature(`${row.firstNext.subject ?? ''}\n${row.firstNext.body ?? ''}`), 7_000);
+      if (next.clipped) clippedRows++;
+      const evidence = { kind: input.kind, request: { subject: input.sourceSubject, body: input.sourceText },
+        staffReply: { subject: input.replySubject, body: input.replyText },
+        nextEvent: { direction: row.firstNext.direction, senderMatchesSource: row.firstNext.sameSourceSender, text: next.text } };
+      const draft = await invokeOutcome(adapter,
+        'Blindly label the state immediately after the staff reply, using only the observed next event and request/reply context. ' +
+        'No predictor outputs or Nava work-item status are available. handled means completed; waiting_on_guest means an external participant owns the next move; ' +
+        'needs_more_action means staff still own follow-up. Return only the schema outcome.', JSON.stringify(evidence), MODEL_MAX_OUTPUT_TOKENS);
+      const adjudication = await invokeOutcome(adapter,
+        'Adjudicate this draft label using evidence only. You are blind to both predictor outputs and Nava work-item status; retain or change it as warranted. ' +
+        'handled means completed; waiting_on_guest means an external participant owns the next move; needs_more_action means staff still own follow-up. Return only the schema outcome.',
+        JSON.stringify({ evidence, draftOutcome: draft.outcome }), MODEL_MAX_OUTPUT_TOKENS);
+      for (const call of [draft, adjudication]) {
+        if (call.promptClipped) {
+          clippedPromptCalls++;
+          clippedPromptRows.add(index);
+        }
+      }
+      outcomes[index] = adjudication.outcome;
+      if (draft.outcome === adjudication.outcome) agreement++;
+      cost += draft.cost + adjudication.cost;
+      inputTokens += draft.inputTokens + adjudication.inputTokens;
+      if (cost > costCap) throw new Error('model_cost_cap_exceeded');
+      if (outcomes.filter(Boolean).length % 20 === 0) process.stderr.write(`reply_check_label_progress: ${outcomes.filter(Boolean).length}/${rows.length}\n`);
+    });
+  } catch (error) { throw new Error(safeModelFailure(error)); }
+  return { outcomes, agreement, cost, inputTokens, clippedRows, clippedPromptCalls,
+    rowsWithClippedPrompt: clippedPromptRows.size };
+}
+
+async function selfTest(): Promise<void> {
+  const input = (replyText: string): Input => ({
+    kind: 'quote', sourceSubject: '', sourceText: 'Please quote two rooms.',
+    replySubject: '', replyText, clipped: false,
+  });
+  assert.equal(ruleBaseline(input('Could you confirm your dates?')), 'waiting_on_guest');
+  assert.equal(ruleBaseline(input("We'll come back with rates.")), 'needs_more_action');
+  assert.equal(ruleBaseline(input('We will revert.')), 'waiting_on_guest');
+  assert.equal(ruleBaseline(input('We are still checking availability.')), 'needs_more_action');
+  assert.equal(ruleBaseline(input('Your booking is confirmed.')), 'handled');
+  const htmlReply = '<p>Your booking is confirmed.</p><blockquote>Can you quote?</blockquote>';
+  const htmlReplyText = stripQuotedAndSignature(htmlReply);
+  assert.equal(htmlReplyText, 'Your booking is confirmed.');
+  assert.equal(ruleBaseline(input(htmlReplyText)), 'handled');
+  assert.equal(stripQuotedAndSignature(
+    '<p>Done.</p><blockquote>Outer <blockquote>Inner</blockquote> tail</blockquote>',
+  ), 'Done.');
+  assert.equal(ruleBaseline(input(stripQuotedAndSignature('Thanks,\n\nCould you confirm your dates?'))), 'waiting_on_guest');
+  assert.equal(stripQuotedAndSignature('Rates attached.\n\nOn Tuesday, the guest wrote:\nCan you quote?'), 'Rates attached.');
+  const metrics = score(['waiting_on_guest', 'needs_more_action'], ['waiting_on_guest', 'waiting_on_guest']);
+  assert.equal(metrics.n, 2);
+  assert.equal(metrics.correct, 1);
+  assert.equal(score(['needs_more_action'], ['handled']).perClass.needs_more_action.precision, null);
+  const frozenCases = Array.from({ length: MIN_N }, (_, index): Case => ({
+    sampleOrdinal: index + 1, cohortN: MIN_N + 2, asOf: '2026-10-25T01:00:00Z',
+    workItemId: `work-${index + 1}`, sourceMessageId: `source-${index + 1}`,
+    replyMessageId: `reply-${index + 1}`, threadId: `thread-${index + 1}`, gold: 'handled',
+    input: input('Your booking is confirmed.'),
+  }));
+  assert.doesNotThrow(() => validateScoredCases(frozenCases), 'cohortN may include freeze exclusions');
+  const duplicatePairCases = frozenCases.map((item) => ({ ...item }));
+  duplicatePairCases[1] = { ...duplicatePairCases[1], workItemId: duplicatePairCases[0].workItemId,
+    replyMessageId: duplicatePairCases[0].replyMessageId };
+  assert.throws(() => validateScoredCases(duplicatePairCases), /truth_input_invalid/);
+  const duplicateOrdinalCases = frozenCases.map((item) => ({ ...item }));
+  duplicateOrdinalCases[1] = { ...duplicateOrdinalCases[1], sampleOrdinal: duplicateOrdinalCases[0].sampleOrdinal };
+  assert.throws(() => validateScoredCases(duplicateOrdinalCases), /truth_input_invalid/);
+  const mixedSnapshotCases = frozenCases.map((item) => ({ ...item }));
+  mixedSnapshotCases[1] = { ...mixedSnapshotCases[1], asOf: '2026-10-24T01:00:00Z' };
+  assert.throws(() => validateScoredCases(mixedSnapshotCases), /truth_input_invalid/);
+  const mixedCohortCases = frozenCases.map((item) => ({ ...item }));
+  mixedCohortCases[1] = { ...mixedCohortCases[1], cohortN: MIN_N + 3 };
+  assert.throws(() => validateScoredCases(mixedCohortCases), /truth_input_invalid/);
+  assert.throws(() => privateOutputPaths(['/tmp/reply-check-output.json', '/tmp/reply-check-output.json']),
+    /output_paths_must_differ/);
+  assert.equal(modelDeadlineAt(100), 100 + lunaCallBudget('medium').deadlineMs);
+  assert.equal(MODEL_MAX_OUTPUT_TOKENS, 4_096);
+  assert.deepEqual(localLunaReportMetadata(), { model: 'gpt-6-luna', reasoningEffort: 'unknown' });
+  const previousRoute = process.env.AI_MODEL_ROUTE;
+  const previousJudgeConfig = process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG;
+  delete process.env.AI_MODEL_ROUTE;
+  delete process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG;
+  try {
+    assert.throws(() => createAdapter(), /approved_local_luna_unavailable/);
+    const judgeRoute = { routeId: 'self-test', purpose: 'judge', protocol: 'in_process',
+      access: 'current_app', egress: 'none', retention: 'bounded', usage: 'reported',
+      modelId: 'gpt-6-luna' } as const;
+    assert.equal(isJudgeRouteEvidence(judgeRoute), true);
+    assert.equal(isJudgeRouteEvidence({ ...judgeRoute, egress: 'azure-foundry' }), false);
+    process.env.AI_MODEL_ROUTE = 'approved-local';
+    process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG = JSON.stringify({
+      module: 'must-not-load', route: { ...judgeRoute, egress: 'azure-foundry' },
+    });
+    assert.throws(() => createAdapter(), /approved_local_luna_unavailable/);
+  } finally {
+    if (previousRoute === undefined) delete process.env.AI_MODEL_ROUTE;
+    else process.env.AI_MODEL_ROUTE = previousRoute;
+    if (previousJudgeConfig === undefined) delete process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG;
+    else process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG = previousJudgeConfig;
+  }
+  const longBody = '"\n'.repeat(3_995);
+  const longUserPrompt = JSON.stringify({
+    request: { body: longBody }, reply: { body: longBody }, nextEvent: { text: 'x'.repeat(6_992) },
+  });
+  let boundedUserPrompt = '';
+  const captureAdapter = {
+    invoke: async (request: { userPrompt: string }) => {
+      boundedUserPrompt = request.userPrompt;
+      return { output: { outcome: 'handled' }, usage: { estimatedCostUsd: 0, inputTokens: 0 } };
+    },
+  } as unknown as ModelAdapter;
+  const fitted = await invokeOutcome(captureAdapter, 'Classify this evidence.', longUserPrompt);
+  assert.ok(Buffer.byteLength('Classify this evidence.') + Buffer.byteLength(boundedUserPrompt) +
+    Buffer.byteLength(JSON.stringify(RESPONSE_SCHEMA)) <= MODEL_MAX_INPUT_BYTES);
+  const boundedRequest = JSON.parse(boundedUserPrompt) as { request: { body: string } };
+  assert.ok(boundedRequest.request.body.length > 100, 'prompt fitting must preserve useful request text');
+  assert.ok(boundedRequest.request.body.startsWith(longBody.slice(0, 10)));
+  assert.equal(fitted.promptClipped, true);
+  const raw = (direction: string, sameSourceSender: boolean): RawRow => ({
+    sampleOrdinal: 1, cohortN: 1, asOf: '2026-10-25T01:00:00Z', workItemId: 'work-1',
+    threadId: 'thread-1', sourceMessageId: 'source-1', replyMessageId: 'reply-1',
+    sourceBody: 'Please quote a room.', replyBody: 'I will check.', replyAt: '2026-10-20T10:00:00Z',
+    firstNext: { messageId: 'next-1', at: '2026-10-20T11:00:00Z', direction, sameThread: true,
+      rfcLink: false, sameSourceSender, autoMarker: false, subject: 'Follow-up', body: 'Please let us know.' },
+    confirmedBooking: false,
+  });
+  assert.equal(deriveGold(raw('inbound', false)), null, 'unverified inbound actor needs blind adjudication');
+  assert.equal(deriveGold(raw('inbound', true)), null, 'message text must adjudicate even a matching sender');
+  assert.equal(deriveGold(raw('outbound', false)), null, 'outbound direction alone is not a gold action');
+  const zeroOrdinal = raw('inbound', false);
+  zeroOrdinal.sampleOrdinal = 0;
+  assert.throws(() => buildCases([zeroOrdinal]), /source_ordinal_invalid_or_duplicate/);
+  const booking = raw('inbound', false);
+  booking.confirmedBooking = true;
+  assert.equal(deriveGold(booking), 'handled');
+  process.stdout.write('reply_check_eval_self_test: ok\n');
+}
+
+async function freeze(inputPath: string, outputPath: string, concurrency: number, costCap: number): Promise<void> {
+  assertNoDatabaseEnvironment();
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('concurrency_invalid');
+  if (!Number.isFinite(costCap) || costCap <= 0) throw new Error('cost_cap_invalid');
+  const rows = (await readFile(inputPath, 'utf8')).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as RawRow);
+  const built = buildCases(rows);
+  await withPrivateOutputs([outputPath], async ([outputFile]) => {
+    const labels = await labelAmbiguous(built.ambiguous, concurrency, costCap);
+    const cases = [...built.cases, ...built.ambiguous.map((item, index) =>
+      toCase(item.row, item.input, labels.outcomes[index]))].sort((a, b) => a.sampleOrdinal - b.sampleOrdinal);
+    if (cases.length < MIN_N) throw new Error('truth_rows_below_minimum');
+    const output = cases.map((item) => JSON.stringify(item)).join('\n') + '\n';
+    await outputFile.writeFile(output, 'utf8');
+    const classCounts = Object.fromEntries(LABELS.map((label) => [label, cases.filter((item) => item.gold === label).length]));
+    process.stdout.write(JSON.stringify({ phase: 'truth_frozen', n: cases.length,
+      snapshotAsOf: cases[0].asOf, eventResolvedCohortN: cases[0].cohortN,
+      excludedAuto: built.excludedAuto, excludedUnusable: built.excludedUnusable,
+      threads: new Set(cases.map((item) => item.threadId)).size,
+      replyMessages: new Set(cases.map((item) => item.replyMessageId)).size,
+      sameSourceSenderInbound: built.sameSourceSenderInbound,
+      classes: classCounts, labelsDerivedBeforePrediction: true,
+      blindLabeling: { deterministicRows: built.cases.length, ambiguousRows: built.ambiguous.length,
+        lunaDraftAdjudicatorAgreement: { matches: labels.agreement, n: built.ambiguous.length },
+        clippedNextEvents: labels.clippedRows, clippedPromptCalls: labels.clippedPromptCalls,
+        rowsWithClippedPrompt: labels.rowsWithClippedPrompt,
+        estimatedCostUsd: labels.cost, inputTokens: labels.inputTokens },
+    }) + '\n');
+  });
+}
+
+async function scoreCases(inputPath: string, outputPath: string, aggregatePath: string | undefined, concurrency: number, costCap: number): Promise<void> {
+  assertNoDatabaseEnvironment();
+  const cases = (await readFile(inputPath, 'utf8')).split(/\r?\n/).filter(Boolean).map((line) => JSON.parse(line) as Case);
+  validateScoredCases(cases);
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('concurrency_invalid');
+  if (!Number.isFinite(costCap) || costCap <= 0) throw new Error('cost_cap_invalid');
+  const rules1 = cases.map((item) => ruleBaseline(item.input));
+  const rules2 = cases.map((item) => ruleBaseline(item.input));
+  const ruleRepeatMatches = rules1.filter((prediction, index) => prediction === rules2[index]).length;
+  const finalAggregatePath = aggregatePath ?? `${outputPath}.aggregate.json`;
+  await withPrivateOutputs([outputPath, finalAggregatePath], async ([rowsFile, aggregateFile]) => {
+    const adapter = createAdapter();
+    const predictions: Outcome[] = new Array(cases.length);
+    const inputTokens: number[] = new Array(cases.length).fill(0);
+    const rowsWithClippedPrompt = new Set<number>();
+    let totalCost = 0;
+    let completed = 0;
+    let clippedPromptCalls = 0;
+    try {
+      await forEachConcurrent(cases.length, concurrency, async (index) => {
+        const item = cases[index];
+        const userPrompt = JSON.stringify({
+          workItemKind: item.input.kind,
+          originalRequest: { subject: item.input.sourceSubject, body: item.input.sourceText },
+          staffReply: { subject: item.input.replySubject, body: item.input.replyText },
+        });
+        const result = await invokeOutcome(adapter,
+          'Classify the state immediately after this staff reply, using only the source request and reply. ' +
+          'handled means the request is complete; waiting_on_guest means staff asked an external participant for information or a decision; ' +
+          'needs_more_action means staff follow-up or unfinished work remains. Ignore quoted history and do not infer later events, mailbox status, or labels. ' +
+          'Return only the schema outcome.', userPrompt);
+        predictions[index] = result.outcome;
+        if (result.promptClipped) {
+          clippedPromptCalls++;
+          rowsWithClippedPrompt.add(index);
+        }
+        inputTokens[index] = result.inputTokens;
+        totalCost += result.cost;
+        if (totalCost > costCap) throw new Error('model_cost_cap_exceeded');
+        completed++;
+        if (completed % 20 === 0) process.stderr.write(`reply_check_eval_progress: ${completed}/${cases.length}\n`);
+      });
+    } catch (error) {
+      throw new Error(safeModelFailure(error));
+    }
+    const gold = cases.map((item) => item.gold);
+    const rule = score(gold, rules1);
+    const llm = score(gold, predictions);
+    const rows = cases.map((item, index) => JSON.stringify({
+      sampleOrdinal: item.sampleOrdinal, workItemId: item.workItemId, sourceMessageId: item.sourceMessageId,
+      replyMessageId: item.replyMessageId, threadId: item.threadId,
+      gold: item.gold, rule: rules1[index], llm: predictions[index],
+    })).join('\n') + '\n';
+    await rowsFile.writeFile(rows, 'utf8');
+    const aggregate = {
+      phase: 'scored', n: cases.length,
+      source: { snapshotAsOf: cases[0].asOf, eventResolvedCohortN: cases[0].cohortN },
+      threads: new Set(cases.map((item) => item.threadId)).size,
+      replyMessages: new Set(cases.map((item) => item.replyMessageId)).size,
+      classSupport: Object.fromEntries(LABELS.map((label) => [label, gold.filter((value) => value === label).length])),
+      ruleBaseline: rule, ruleRepeatAgreement: { matches: ruleRepeatMatches, n: cases.length },
+      llm: { ...localLunaReportMetadata(), ...llm },
+      input: { preReplyOnly: true, futureEventSentToModel: false,
+        clippedRows: cases.filter((item) => item.input.clipped).length,
+        clippedPromptCalls, rowsWithClippedPrompt: rowsWithClippedPrompt.size,
+        maxBodyBytesPerField: BODY_MAX_BYTES, maxRequestBytes: MODEL_MAX_INPUT_BYTES },
+      usage: { totalInputTokens: inputTokens.reduce((sum, value) => sum + value, 0),
+        estimatedCostUsd: totalCost, routeId: 'approved_local_judge' },
+    };
+    await aggregateFile.writeFile(JSON.stringify(aggregate, null, 2) + '\n', 'utf8');
+    process.stdout.write(JSON.stringify(aggregate) + '\n');
+  });
+}
+
+async function main(): Promise<void> {
+  const [command, ...args] = process.argv.slice(2);
+  if (command === '--self-test') return selfTest();
+  const input = parseFlag(args, 'input');
+  const output = parseFlag(args, 'out');
+  if (!input || !output) throw new Error('usage: freeze|score --input=PRIVATE.jsonl --out=PRIVATE.jsonl');
+  const concurrency = Number(parseFlag(args, 'concurrency', '4'));
+  const costCap = Number(parseFlag(args, 'cost-cap-usd', '5'));
+  if (command === 'freeze') return freeze(input, output, concurrency, costCap);
+  if (command === 'score') {
+    return scoreCases(input, output, parseFlag(args, 'aggregate'), concurrency, costCap);
+  }
+  throw new Error('unknown_command');
+}
+
+main().catch((error: unknown) => {
+  const message = error instanceof Error ? error.message : '';
+  if (process.argv.includes('--self-test') && error instanceof assert.AssertionError) {
+    process.stderr.write(`reply_check_eval_self_test_failed: ${message}\n`);
+    process.exitCode = 1;
+    return;
+  }
+  const allowed = /^(source_[a-z_]+|truth_rows_below_minimum|output_must_be_outside_repo_or_in_private_directory|output_(?:paths_must_differ|reservation_failed)|database_environment_must_be_unset|usage: freeze\|score --input=PRIVATE\.jsonl --out=PRIVATE\.jsonl|truth_input_invalid|concurrency_invalid|cost_cap_invalid|approved_local_luna_unavailable|unknown_command|model_(?:auth_failed|rate_limited|request_rejected|provider_error|input_limit_exceeded|output_invalid|cost_cap_exceeded|network_error|invalid_url|response_incomplete_(?:stop|length|content_filter|tool_calls|error)|response_parse_error|aborted|call_failed))$/;
+  process.stderr.write(`${allowed.test(message) ? message : 'reply_check_eval_failed'}\n`);
+  process.exitCode = 1;
+});
