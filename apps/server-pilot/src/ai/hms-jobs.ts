@@ -415,12 +415,14 @@ export function guestSearchPrefetchIdempotencyKey(
   threadId: string,
   lastName: string,
   arrival: string,
+  propertyCode?: string,
 ): string {
   const digest = createHash('sha256')
     .update(`${lastName.replace(/\s+/g, ' ').trim().toLowerCase()}\n${arrival}`)
     .digest('hex')
     .slice(0, 24);
-  return `hms-job:prefetch-guest:${transportId}:${threadId}:${digest}`;
+  const property = propertyCode ? `${propertyCode}:` : '';
+  return `hms-job:prefetch-guest:${property}${transportId}:${threadId}:${digest}`;
 }
 
 /** The automatic pane find shares this daily key with confirmation prefetches. */
@@ -428,8 +430,10 @@ export function confirmationPrefetchIdempotencyKey(
   transportId: string,
   confirmation: string,
   day = new Date().toISOString().slice(0, 10),
+  propertyCode?: string,
 ): string {
-  return `hms-job:prefetch:${transportId}:${confirmation}:${day}`;
+  const property = propertyCode ? `${propertyCode}:` : '';
+  return `hms-job:prefetch:${property}${transportId}:${confirmation}:${day}`;
 }
 
 /** One kind-less party prefetch per transport, normalized name and UTC day.
@@ -439,12 +443,14 @@ export function partyPrefetchIdempotencyKey(
   transportId: string,
   name: string,
   day: string,
+  propertyCode?: string,
 ): string {
   const digest = createHash('sha256')
     .update(`${name.replace(/\s+/g, ' ').trim().toLowerCase()}\n${day}`)
     .digest('hex')
     .slice(0, 24);
-  return `hms-job:prefetch-party:${transportId}:${digest}`;
+  const property = propertyCode ? `${propertyCode}:` : '';
+  return `hms-job:prefetch-party:${property}${transportId}:${digest}`;
 }
 
 /** V2 decisions use email-specific evidence, so they must never reuse another email's party pick. */
@@ -452,12 +458,14 @@ export function partyPrefetchV2IdempotencyKey(
   transportId: string,
   messageId: string,
   day: string,
+  propertyCode?: string,
 ): string {
   const digest = createHash('sha256')
     .update(`${messageId}\n${day}`)
     .digest('hex')
     .slice(0, 24);
-  return `hms-job:prefetch-party-v2:${transportId}:${digest}`;
+  const property = propertyCode ? `${propertyCode}:` : '';
+  return `hms-job:prefetch-party-v2:${property}${transportId}:${digest}`;
 }
 
 /** A quote's extracted agency wins; otherwise use the first unverified email hint.
@@ -1737,7 +1745,12 @@ export async function prefetchHmsConfirmations(
         request: { kind: 'find', confirmation },
         priority: HMS_JOB_PRIORITY_PREFETCH,
         // Same number again on the same day is a no-op, whichever mail carried it.
-        idempotencyKey: confirmationPrefetchIdempotencyKey(run.transportId, confirmation, dayKey),
+        idempotencyKey: confirmationPrefetchIdempotencyKey(
+          run.transportId,
+          confirmation,
+          dayKey,
+          target.propertyCode,
+        ),
         extraMetrics: {
           ...hmsReadAuditMetrics({ actorKind: 'system', target }),
           ...hmsReadTargetJobMetrics(target),
@@ -1767,6 +1780,7 @@ export async function prefetchHmsConfirmations(
           run.threadId,
           lastName,
           arrival,
+          target.propertyCode,
         ),
         extraMetrics: {
           ...hmsReadAuditMetrics({ actorKind: 'system', target }),
@@ -1823,6 +1837,7 @@ export async function prefetchAvailabilityForExtraction(
     env,
   });
   if (!resolved.ok) return 0;
+  const target = resolved.target;
   const perHour = availabilityProbesPerHour(env);
   const workItemId = await latestWorkItemId(db, run.transportId, extraction.threadId);
   const dayKey = new Date().toISOString().slice(0, 10);
@@ -1845,7 +1860,7 @@ export async function prefetchAvailabilityForExtraction(
         userId: null,
         request,
         priority: HMS_JOB_PRIORITY_PREFETCH,
-        idempotencyKey: `hms-job:availability:${run.transportId}:${digest}:${dayKey}`,
+        idempotencyKey: `hms-job:availability:${target.propertyCode}:${run.transportId}:${digest}:${dayKey}`,
       },
       db,
     );
@@ -1930,6 +1945,7 @@ export async function prefetchPartyForExtraction(
     messageId: run.triggerMessageId,
   });
   if (!resolved.ok) return 0;
+  const target = resolved.target;
   if (isStaffSender(source.fromAddress, source.mailboxEmail)) {
     const sentFrom = await knownSenders(db, run.transportId, [source.fromAddress]);
     if (sentFrom.has(from)) return 0;
@@ -1967,11 +1983,13 @@ export async function prefetchPartyForExtraction(
               run.transportId,
               run.triggerMessageId,
               new Date().toISOString().slice(0, 10),
+              target.propertyCode,
             )
           : partyPrefetchIdempotencyKey(
               run.transportId,
               request.name,
               new Date().toISOString().slice(0, 10),
+              target.propertyCode,
             ),
     },
     env.HMS_PREFETCH_PER_HOUR,
