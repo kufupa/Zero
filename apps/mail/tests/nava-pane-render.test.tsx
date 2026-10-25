@@ -1646,6 +1646,80 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(queuedRunsBeforeSelection);
   });
 
+  it('retries a comparison bind when its prepared job appears after the primary quote', async () => {
+    configureStrategyComparisons();
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    let wholesaleReadCount = 0;
+    let barReadCount = 0;
+    let releasePrimaryRead = () => {};
+    const primaryReadGate = new Promise<void>((resolve) => {
+      releasePrimaryRead = resolve;
+    });
+    bridgeMockState.staffQuoteJobQuery.mockImplementation(async (lookup: unknown) => {
+      if (!lookup || typeof lookup !== 'object' || !('input' in lookup)) return null;
+      const input = (lookup as { input: Record<string, unknown> }).input;
+      const strategy = String(input.salesStrategy);
+      if (strategy === 'WS' && wholesaleReadCount++ === 0) return null;
+      if (strategy === 'BAR' && barReadCount++ === 1) await primaryReadGate;
+
+      const requestGroups = input.groups as Array<{
+        id: string;
+        arrivalDate: string;
+        departureDate: string;
+      }>;
+      const totalMinor = 222_000;
+      return {
+        ...completedStaffQuoteJob({
+          ...STAFF_QUOTE_READY,
+          workflowRunId: `workflow-${strategy}`,
+          revisionRef: `revision-${strategy}`,
+          messageId: String(input.messageId),
+          selectionEpoch: Number(input.selectionEpoch),
+          inputRevision: Number(input.inputRevision),
+          arrivalDate: requestGroups[0]!.arrivalDate,
+          departureDate: requestGroups[0]!.departureDate,
+          totalMinor,
+          rateOptions: [{
+            id: `rate-${strategy}`,
+            groupId: requestGroups[0]!.id,
+            board: 'bb',
+            boardLabel: 'Bed & Breakfast',
+            rateCode: `${strategy}-RATE`,
+            rateLabel: `${strategy} test rate`,
+            roomCode: 'SKNG',
+            roomLabel: `${strategy} Standard King`,
+            perNightMinor: totalMinor / 2,
+            totalMinor,
+            selected: true,
+          }],
+        }),
+        runId: `prepared-${strategy}`,
+        request: { kind: 'staff_quote' as const, input: input as never },
+        prefetch: true,
+      };
+    });
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+
+    const table = await screen.findByRole('table', { name: 'Quote strategy comparison' });
+    const wholesaleRow = within(table).getByRole('row', { name: /WS Wholesale/ });
+    await waitFor(() => expect(within(wholesaleRow).getByText('Search failed')).toBeDefined());
+    expect(wholesaleReadCount).toBe(1);
+    await waitFor(() => expect(barReadCount).toBeGreaterThanOrEqual(2));
+
+    await act(async () => releasePrimaryRead());
+    await waitFor(() => {
+      expect(wholesaleReadCount).toBe(2);
+      expect(within(wholesaleRow).getByText('Rates found')).toBeDefined();
+    });
+    expect(
+      bridgeMockState.queueStaffQuoteMutation.mock.calls.some(([input]) =>
+        Boolean(input && typeof input === 'object' && (input as Record<string, unknown>).salesStrategy === 'WS'),
+      ),
+    ).toBe(false);
+  });
+
   it('shows the bind queue-off failures without searching', async () => {
     configureStrategyComparisons();
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);

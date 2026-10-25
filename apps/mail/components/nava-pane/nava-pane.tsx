@@ -913,6 +913,10 @@ export function NavaPane({
             } : {}),
           },
         }),
+      }).then((results) => {
+        if (results.some(({ retryable, row }) => retryable || row.status === 'pending')) {
+          quoteStrategyBindAttempts.current.delete(attemptKey);
+        }
       });
     }
   }, [
