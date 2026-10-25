@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { StaffQuoteInstallationConfiguration } from '../src/ai/staff-quote-installation.js';
 import {
+  HMS_SLOT_CDP_ENV,
   PANE_CLI_ENV_ALLOWLIST,
   paneStayHmsTargetForTransport,
   paneStaySpawnEnv,
@@ -176,6 +177,11 @@ describe('paneStaySpawnEnv', () => {
     );
     expect(env.HMS_STAGEHAND_CDP_URL).toBeUndefined();
     expect(env.HMS_READ_SECRET_ARN).toBe('nava-zero/server-pilot/infor-hms-read-davinci');
+  });
+
+  it('maps each registry slot to its own CDP env name', () => {
+    expect(HMS_SLOT_CDP_ENV.centurion).toBe('HMS_STAGEHAND_CDP_URL');
+    expect(HMS_SLOT_CDP_ENV.davinci).toBe('HMS_STAGEHAND_CDP_URL_DAVINCI');
   });
 
   it('forwards HMS_DAVINCI_CREATE to HRDAV so the CLI can keep the lab guard', () => {

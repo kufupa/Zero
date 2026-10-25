@@ -19,6 +19,7 @@ import {
   bindCenturionHmsMailboxProperty,
   type MailboxHmsOriginFields,
 } from '../hms/mailbox-hms-origin-bind.js';
+import { staffQuoteInstallationEnvName } from '../hms/hms-read-target.js';
 import {
   PROVISIONAL_QUOTE_SCRIPT,
   quoteTraceAsyncEnabled,
@@ -150,11 +151,9 @@ export function validateStaffQuoteInstallationConfiguration(
     : configuration;
 }
 
-/** HRDAV uses its own env; HRCEN and omitted keep the existing Centurion env. */
+/** HRCEN keeps the unsuffixed prod env; every other hotel uses `_${propertyCode}`. Omitted stays HRCEN. */
 function staffQuoteConfigurationEnvName(propertyCode?: string): string {
-  return propertyCode === 'HRDAV'
-    ? 'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV'
-    : 'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION';
+  return staffQuoteInstallationEnvName(propertyCode ?? 'HRCEN');
 }
 
 /** Reads only the installed descriptor, never credentials or a browser. */

@@ -53,6 +53,17 @@ export const HMS_BROWSER_CAPACITY_WATCHDOG_MS = 2_000;
 
 export const CENTURION_HMS_PRODUCTION_ORIGIN = 'https://appsrv-1.legacyhotels.co.za' as const;
 
+/** Infor host per browser slot. Both live hotels share appsrv-1 until a property gets its own origin. */
+const HMS_PRODUCTION_ORIGIN_BY_SLOT = {
+  centurion: CENTURION_HMS_PRODUCTION_ORIGIN,
+  davinci: CENTURION_HMS_PRODUCTION_ORIGIN,
+} as const;
+
+export function hmsProductionOriginForSlot(slot: string): string | null {
+  if (slot !== 'centurion' && slot !== 'davinci') return null;
+  return HMS_PRODUCTION_ORIGIN_BY_SLOT[slot];
+}
+
 export type HmsExecutionClass = 'normal' | 'live_proof';
 
 export type HmsBrowserAuditSpec = {

@@ -441,4 +441,24 @@ describe('env', () => {
     const env = parseEnv(baseEnv({ HMS_EVIDENCE_HMAC_KEY: 'should-not-land' }));
     expect(env).not.toHaveProperty('HMS_EVIDENCE_HMAC_KEY');
   });
+
+  it('HMS worker boot accepts a registered hotel and refuses an unknown code', () => {
+    expect(
+      requireHmsWorkerRuntimeConfig(
+        hmsShadowRuntimeEnv({
+          HMS_EXPECTED_PROPERTY_CODE: 'HRDAV',
+          HMS_EXPECTED_TENANT: 'HMS_DAVINCI',
+          HMS_EXPECTED_TRANSPORT_ID: 'transport-davinci',
+        }),
+      ).expectedPropertyCode,
+    ).toBe('HRDAV');
+    expect(() =>
+      requireHmsWorkerRuntimeConfig(hmsShadowRuntimeEnv({ HMS_EXPECTED_PROPERTY_CODE: 'HRFAKE' })),
+    ).toThrow(/registered hotel/);
+    expect(() =>
+      requireHmsWorkerRuntimeConfig(
+        hmsShadowRuntimeEnv({ HMS_EXPECTED_TENANT: 'HMS_DAVINCI' }),
+      ),
+    ).toThrow(/HMS_EXPECTED_TENANT/);
+  });
 });

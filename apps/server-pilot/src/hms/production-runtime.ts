@@ -16,7 +16,9 @@ import {
   CENTURION_HMS_PRODUCTION_ORIGIN,
   createHmsBrowserArtifactStore,
   ensureHmsBrowserArtifactRoot,
+  hmsProductionOriginForSlot,
 } from './browser-artifacts.js';
+import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
 import {
   revalidateEvidenceBindings,
   type HmsEvidenceHmacConfig,
@@ -40,9 +42,27 @@ import {
   type HmsSecretLoader,
 } from './runtime.js';
 
-export { CENTURION_HMS_PRODUCTION_ORIGIN };
+export { CENTURION_HMS_PRODUCTION_ORIGIN, hmsProductionOriginForSlot };
 export { hmsReadRoleProofV1Schema, loadHmsReadRoleProof };
 export type { HmsReadRoleProofV1 };
+
+function expectedProductionOrigin(config: HmsWorkerRuntimeConfig): string {
+  const property = getPropertyRegistration(config.expectedPropertyCode);
+  if (!property?.active) {
+    throw new HmsRuntimeError(
+      'PROPERTY_MISMATCH',
+      'worker property is not a registered hotel',
+    );
+  }
+  const origin = hmsProductionOriginForSlot(property.browserSlot);
+  if (!origin) {
+    throw new HmsRuntimeError(
+      'PRODUCTION_ORIGIN_MISMATCH',
+      'property has no production HMS origin',
+    );
+  }
+  return origin;
+}
 
 export type ProductionSecretLoadResult = {
   secret: unknown;
@@ -245,11 +265,12 @@ async function createProductionHmsRuntimeInternal(
   const { secret: rawSecret, version } = normalizeLoadedSecret(rawLoaded);
   const secret = hmsSecretSchema.parse(rawSecret);
   const origin = new URL(secret.loginUrl).origin;
+  const expectedOrigin = expectedProductionOrigin(config);
 
-  if (origin !== CENTURION_HMS_PRODUCTION_ORIGIN) {
+  if (origin !== expectedOrigin) {
     throw new HmsRuntimeError(
       'PRODUCTION_ORIGIN_MISMATCH',
-      'secret login origin is not Centurion production HMS',
+      'secret login origin is not this property\'s production HMS',
     );
   }
 
@@ -307,10 +328,10 @@ async function createProductionHmsRuntimeInternal(
 
   const manifest = buildLiveGuestStayReadManifest(origin);
   for (const rule of manifest.rules) {
-    if (rule.origin !== CENTURION_HMS_PRODUCTION_ORIGIN) {
+    if (rule.origin !== expectedOrigin) {
       throw new HmsRuntimeError(
         'PRODUCTION_ORIGIN_MISMATCH',
-        'manifest rule origin is not Centurion production HMS',
+        'manifest rule origin is not this property\'s production HMS',
       );
     }
   }
@@ -346,7 +367,7 @@ async function createProductionHmsRuntimeInternal(
     circuitCooldownMs: config.circuitCooldownMs,
     defaultTimeoutMs: Math.min(15_000, config.runDeadlineMs),
     requireViewOnly: true,
-    expectedOrigin: CENTURION_HMS_PRODUCTION_ORIGIN,
+    expectedOrigin,
     roleProofPath: config.roleProofPath,
     loadRoleProof: async (path, now) => {
       const proof = await loadProductionRoleProof(path, { now });

@@ -4,7 +4,8 @@ export type PropertyRefusalCode =
   | 'property_unknown'
   | 'property_inactive'
   | 'collector_no_hotel'
-  | 'property_required';
+  | 'property_required'
+  | 'not_set_up';
 
 export class PropertyRefusalCause extends Error {
   constructor(

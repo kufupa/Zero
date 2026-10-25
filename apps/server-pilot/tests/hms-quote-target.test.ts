@@ -36,6 +36,11 @@ describe('hmsDavinciMakeQuoteEnabled', () => {
   });
 });
 
+const HRDAV_QUOTE_READY_ENV = {
+  HMS_DAVINCI_MAKE_QUOTE: 'on',
+  RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '/tmp/hrdav-quote.json',
+} as const;
+
 describe('quoteTargetForTransport', () => {
   it('maps every Da Vinci staff transport to HRDAV only when the quote flag is on', () => {
     expect(DAVINCI_STAFF_TRANSPORT_IDS).toEqual([
@@ -51,10 +56,20 @@ describe('quoteTargetForTransport', () => {
         code: 'QUOTE_DAVINCI_DISABLED',
         message: DAVINCI_QUOTE_REFUSED_MESSAGE,
       });
-      expect(
-        quoteTargetForTransport(transportId, { HMS_DAVINCI_MAKE_QUOTE: 'on' }),
-      ).toEqual({ ok: true, target: DAVINCI_HMS_READ_TARGET });
+      expect(quoteTargetForTransport(transportId, HRDAV_QUOTE_READY_ENV)).toEqual({
+        ok: true,
+        target: DAVINCI_HMS_READ_TARGET,
+      });
     }
+  });
+
+  it('flag on without HRDAV installation refuses not_set_up before HMS', () => {
+    expect(() =>
+      quoteTargetForTransport('transport-davinci', {
+        HMS_DAVINCI_MAKE_QUOTE: 'on',
+        RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '',
+      }),
+    ).toThrow(expect.objectContaining({ cause: expect.objectContaining({ code: 'not_set_up' }) }));
   });
 
   it('leaves Centurion on HRCEN whether the quote flag is on or off', () => {
@@ -105,7 +120,7 @@ describe('quoteTargetForHmsJob', () => {
   });
 
   it('flag on: five DV transports and DV origin resolve HRDAV; Centurion stays HRCEN', () => {
-    const env = { HMS_DAVINCI_MAKE_QUOTE: 'on' };
+    const env = HRDAV_QUOTE_READY_ENV;
     for (const transportId of DAVINCI_STAFF_TRANSPORT_IDS) {
       expect(quoteTargetForHmsJob({ transportId, origin: EXTERNAL_GUEST_ORIGIN, env })).toEqual({
         ok: true,
@@ -166,7 +181,7 @@ describe('assertHmsQuoteOriginAllowed', () => {
         transportId: 'transport-ayanda',
         threadId: 'thread-dv',
         messageId: 'msg-dv',
-        env: { HMS_DAVINCI_MAKE_QUOTE: 'on' },
+        env: HRDAV_QUOTE_READY_ENV,
       }),
     ).resolves.toEqual(DAVINCI_HMS_READ_TARGET);
   });
