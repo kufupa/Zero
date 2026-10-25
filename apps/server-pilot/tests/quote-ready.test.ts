@@ -4,6 +4,7 @@ import {
   buildPreparedStaffQuotePlan,
   confidentPartyFromV2Result,
   quotePrepareKindReason,
+  quoteShopJobsForPlan,
   staffQuoteInputsPriceEquivalent,
 } from '../src/ai/quote-ready.js';
 import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
@@ -574,5 +575,27 @@ describe('prepared quote reuse price fields', () => {
     ['sales strategy', { salesStrategy: 'Government' as const }],
   ])('requires the same %s for reuse', (_label, changes) => {
     expect(staffQuoteInputsPriceEquivalent(base, { ...base, ...changes })).toBe(false);
+  });
+});
+
+describe('one primary shop per stay', () => {
+  it('builds one BAR shop per stay and never extra strategies', () => {
+    const second = payload().stays[0]!;
+    const plan = build({
+      stays: [
+        payload().stays[0]!,
+        {
+          ...second,
+          id: 'stay-2',
+          requested: { arrival: '2026-10-24', departure: '2026-10-27' },
+          rows: second.rows.map((row) => ({ ...row, id: 'row-2' })),
+        },
+      ],
+    });
+    const jobs = quoteShopJobsForPlan(plan);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.map((job) => job.input.salesStrategy)).toEqual(['BAR', 'BAR']);
+    expect(jobs.map((job) => job.input.groups[0]?.id)).toEqual(['row-1', 'row-2']);
+    expect(jobs.every((job) => !('shopStrategy' in job))).toBe(true);
   });
 });

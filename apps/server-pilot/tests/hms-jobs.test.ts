@@ -3,7 +3,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 import * as hmsJobs from '../src/ai/hms-jobs.js';
-import { staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
+import { staffQuoteInput, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import {
   canClaimReadToolRun,
   claimNextAiRun,
@@ -375,6 +375,13 @@ describe('U23 HMS job queue (pure)', () => {
     expect(
       hmsJobRequestSchema.safeParse({
         kind: 'staff_quote',
+        input: STAFF_QUOTE_INPUT,
+        shopStrategy: 'Wholesale',
+      }).success,
+    ).toBe(false);
+    expect(
+      hmsJobRequestSchema.safeParse({
+        kind: 'staff_quote',
         input: { ...STAFF_QUOTE_INPUT, customerOverride: true },
       }).success,
     ).toBe(false);
@@ -717,6 +724,83 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         expect(reused.run.id).not.toBe(prepared?.id);
         expect(reused.run.priority).toBe(HMS_JOB_PRIORITY_USER);
       }
+    }));
+
+  it('enqueues one primary shop per stay under the default hour cap', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const first = quoteExtractionPayload();
+      const stay = first.stays[0]!;
+      const { messageId, run } = await seedQuoteExtraction(db, {
+        payload: {
+          ...first,
+          stays: [
+            stay,
+            {
+              ...stay,
+              id: 's_87654321',
+              requested: { arrival: '2099-12-12', departure: '2099-12-14' },
+              rows: [{ ...stay.rows[0]!, id: 'r_87654321' }],
+            },
+          ],
+        },
+      });
+
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(2);
+      const rows = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      expect(rows).toHaveLength(2);
+      expect(
+        rows.map(
+          (row) =>
+            (row.readRequest as { input?: { salesStrategy?: string } }).input?.salesStrategy,
+        ),
+      ).toEqual(['BAR', 'BAR']);
+      expect(
+        new Set(
+          rows.map(
+            (row) =>
+              (row.readRequest as { input?: { groups?: Array<{ arrivalDate?: string }> } }).input
+                ?.groups?.[0]?.arrivalDate,
+          ),
+        ),
+      ).toEqual(new Set(['2099-11-12', '2099-12-12']));
+    }));
+
+  it('keeps HRCEN BAR and Government as a single prepared job', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const bar = await seedQuoteExtraction(db);
+      expect(await prefetchQuoteReadyForExtraction(bar.run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      const [barJob] = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.triggerMessageId, bar.messageId));
+      expect(barJob?.readRequest).toMatchObject({ kind: 'staff_quote', input: { salesStrategy: 'BAR' } });
+
+      const barPayload = quoteExtractionPayload();
+      const government = await seedQuoteExtraction(db, {
+        payload: {
+          ...barPayload,
+          stays: barPayload.stays.map((stay) => ({
+            ...stay,
+            rows: stay.rows.map((row) => ({ ...row, board: 'dbb' })),
+          })),
+        },
+      });
+      expect(await prefetchQuoteReadyForExtraction(government.run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      const [govJob] = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.triggerMessageId, government.messageId));
+      expect(govJob?.readRequest).toMatchObject({
+        kind: 'staff_quote',
+        input: { salesStrategy: 'Government' },
+      });
     }));
 
   it('does not reuse a queued dev-eval quote for a later staff quote', () =>
