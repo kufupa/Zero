@@ -85,7 +85,7 @@ import {
   type SavedRate,
   type SavedRatesClient,
 } from './rate-controls';
-import { StayCard } from './requirement-card';
+import { DEFAULT_ROOM_TYPES, StayCard } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
 import {
   matchConfiguredRoomType,
@@ -1479,7 +1479,14 @@ export function QuoteWorkflowPanel({
 
   const header = session.staffHeader ?? emptyStaffQuoteHeader();
   const ratePlans = ratePlanChoices(rateCatalogue ?? [], session.rateOptions ?? []);
-  const paneRoomTypes = paneConfig === undefined ? undefined : paneConfig?.roomTypes ?? [];
+  const roomTypesByCode = new Map(
+    (paneConfig === undefined ? DEFAULT_ROOM_TYPES : paneConfig?.roomTypes ?? []).map((room) => [room.code, room]),
+  );
+  for (const code of Object.values(session.bookingDrafts).flatMap((draft) => draft.options.roomType)) {
+    if (!roomTypesByCode.has(code)) roomTypesByCode.set(code, { code, label: code });
+  }
+  const paneRoomTypes = [...roomTypesByCode.values()];
+  const strictRoomTypes = paneConfig !== undefined;
   const paneBoards = paneConfig === undefined ? undefined : paneConfig?.boards ?? [];
   const salesStrategies = [...(paneConfig?.salesStrategies ?? [])].sort(
     (left, right) => Number(right.code === 'BAR') - Number(left.code === 'BAR'),
@@ -1522,7 +1529,7 @@ export function QuoteWorkflowPanel({
       ...(row.roomCodes?.length === 1 ? row.roomCodes : []),
       row.roomPreference,
       row.roomTypeCode,
-    ], paneConfig?.roomTypes ?? [], {
+    ], paneRoomTypes, {
       allowCenturionRoomAliases: paneConfig?.propertyCode === HRCEN_PROPERTY_CODE,
     });
     const name = room?.label ?? 'Room type needed';
@@ -1833,6 +1840,7 @@ export function QuoteWorkflowPanel({
                 mealPlan={mealPlanForStay(stay.id, stay.rows)}
                 propertyCode={paneConfig?.propertyCode}
                 roomTypes={paneRoomTypes}
+                strictRoomTypes={strictRoomTypes}
                 boards={paneBoards}
                 onMealPlanChange={(value) =>
                   setMealPlanFilters((current) => ({ ...current, [stay.id]: value }))
@@ -2114,9 +2122,32 @@ export function QuoteWorkflowPanel({
                           />
                         </div>
                       );
+                      const draftRateCode = Object.values(session.bookingDrafts)
+                        .flatMap((draft) => draft.draft.rooms)
+                        .find((room) => room.groupId === group.id)?.request.ratePlan;
+                      const rateCode =
+                        group.rateCode ||
+                        group.quotedRateCode ||
+                        (typeof draftRateCode === 'string' ? draftRateCode : '');
                       return (
                         <div key={group.id} className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5">
                           <h5 className="text-[13px] font-semibold text-[#475569]">{`${rowLabels.get(group.id) ?? 'Room type needed'} rates`}</h5>
+                          <Field label="Rate code" htmlFor={`rate-code-${group.id}`}>
+                            <input
+                              key={`${group.id}:${rateCode}`}
+                              id={`rate-code-${group.id}`}
+                              aria-label="Rate code"
+                              className={paneFieldClass}
+                              maxLength={10}
+                              disabled={!onPatchGroup || loadingThisStay || pinRunningThisStay}
+                              defaultValue={rateCode}
+                              onBlur={(event) => {
+                                const value = event.currentTarget.value.trim().toUpperCase();
+                                event.currentTarget.value = value;
+                                onPatchGroup?.(group.id, { rateCode: value || undefined });
+                              }}
+                            />
+                          </Field>
                           <RatesBarGrid
                             cells={projectBarGrid(stayBoard.filter((row) => row.groupId === group.id))}
                             contractChecked={contractChecked}

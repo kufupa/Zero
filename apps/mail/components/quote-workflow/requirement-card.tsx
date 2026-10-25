@@ -91,7 +91,7 @@ function inferredMealPlan(rows: StayGroupRequirement[]): QuoteBoard | 'all' {
   return boards.size === 1 ? [...boards][0]! : 'all';
 }
 
-const DEFAULT_ROOM_TYPES: QuotePaneRoomType[] = ROOM_TYPE_CODES.map((code) => ({
+export const DEFAULT_ROOM_TYPES: QuotePaneRoomType[] = ROOM_TYPE_CODES.map((code) => ({
   code,
   label: ROOM_TYPE_NAMES[code],
 }));
@@ -144,6 +144,7 @@ export function StayCard({
   evidence,
   propertyCode = HRCEN_PROPERTY_CODE,
   roomTypes: configuredRoomTypes,
+  strictRoomTypes: configuredStrictRoomTypes,
   boards: configuredBoards,
 }: {
   stayId: string;
@@ -161,13 +162,15 @@ export function StayCard({
   /** HRDAV uses only exact codes/labels; absent keeps legacy HRCEN matching for older callers. */
   propertyCode?: HmsQuotePropertyCode;
   roomTypes?: QuotePaneRoomType[];
+  /** Callers with a merged option list can preserve legacy matching separately. */
+  strictRoomTypes?: boolean;
   boards?: QuotePaneBoard[];
 }) {
   const id = useId();
   const stayNumber = index + 1;
   const first = rows[0];
   const roomTypes = configuredRoomTypes ?? DEFAULT_ROOM_TYPES;
-  const strictRoomTypes = configuredRoomTypes !== undefined;
+  const strictRoomTypes = configuredStrictRoomTypes ?? (configuredRoomTypes !== undefined);
   const boards = configuredBoards ?? DEFAULT_PANE_BOARDS;
   const totals = stayTotals(rows);
   const splitNotSet = requestedRoomsTotal !== undefined && rows.some((row) => row.quantity == null);

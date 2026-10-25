@@ -5,7 +5,9 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
+import { ContactBlock } from '../components/nava-pane/blocks/contact-block';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
+import type { StoredContact } from '../lib/quote-workflow/backend-bind';
 import { trackPaneAction } from '../lib/quote-workflow/pane-telemetry';
 import {
   bindGetPriorStaffQuoteRequote,
@@ -45,6 +47,7 @@ import {
   type LunaAnalysisWire,
   type QuoteAnalysis,
   type QuoteOffer,
+  type QuotePaneConfig,
   type QuoteSession,
   type StaffQuoteParties,
   type StayGroupRequirement,
@@ -290,15 +293,12 @@ describe('booking cards', () => {
     );
   });
 
-  it('renders one card per room with the agency name', () => {
+  it('renders create-only fields once per draft room', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
     expect(screen.getAllByLabelText('Booking agency').map((field) => (field as HTMLInputElement).value)).toEqual([
       'XYZ TRAVEL',
       'XYZ TRAVEL',
     ]);
-    expect(screen.getAllByRole('heading', { name: 'Standard Queen ×2' })).toHaveLength(2);
-    expect(screen.getAllByText('STQN')).toHaveLength(2);
-    expect(screen.getAllByText('TAXYZ')).toHaveLength(2);
     expect(screen.getAllByLabelText('Last name').map((field) => (field as HTMLInputElement).value)).toEqual([
       'Smith',
       'Doe',
@@ -307,7 +307,6 @@ describe('booking cards', () => {
       'John',
       'Jane',
     ]);
-    expect(screen.getAllByRole('button', { name: 'Copy Adults for Standard Queen ×2' })).toHaveLength(2);
   });
 
   it('does not render raw schema error strings on the card', () => {
@@ -332,35 +331,44 @@ describe('booking cards', () => {
       },
     };
     render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getByRole('heading', { name: 'Book in HMS' })).toBeDefined();
+    expect(screen.queryByRole('heading', { name: 'Book in HMS' })).toBeNull();
     expect(screen.queryByRole('heading', { name: 'Key into HMS' })).toBeNull();
     expect(screen.queryByText('Nava does not write to HMS')).toBeNull();
   });
 
-  it('lets staff type a rate code when the draft has none', () => {
+  it('keeps the free-text rate-code fallback in the inline rate row', () => {
     const draft = draftReady();
     for (const room of draft.draft.rooms) delete room.request.ratePlan;
-    render(<QuoteWorkflowPanel session={quotedSession(draft)} />);
+    const onPatchGroup = vi.fn();
+    render(<QuoteWorkflowPanel session={quotedSession(draft)} onPatchGroup={onPatchGroup} />);
     const fields = screen.getAllByLabelText('Rate code');
-    expect(fields).toHaveLength(2);
+    expect(fields).toHaveLength(1);
     fireEvent.change(fields[0]!, { target: { value: 'barro' } });
+    fireEvent.blur(fields[0]!);
     expect((fields[0] as HTMLInputElement).value).toBe('BARRO');
+    expect(onPatchGroup).toHaveBeenCalledWith('g1', { rateCode: 'BARRO' });
   });
 
-  it('prefills rate code and price from the prepared stay result', () => {
+  it('merges hotel-config and booking-draft room codes into one Stay selector', () => {
     const draft = draftReady();
-    for (const room of draft.draft.rooms) delete room.request.ratePlan;
-    render(
-      <BookingCards
-        draft={draft}
-        groups={[{ ...g1, quotedRateCode: 'BARRO', quotedAmountMinor: 185000 }]}
-      />,
-    );
-    const fields = screen.getAllByLabelText('Rate code');
-    expect(fields.map((field) => (field as HTMLInputElement).value)).toEqual(['BARRO', 'BARRO']);
-    expect(screen.getAllByText('R1850.00')).toHaveLength(2);
-    fireEvent.change(fields[0]!, { target: { value: 'bco1b' } });
-    expect((fields[0] as HTMLInputElement).value).toBe('BCO1B');
+    draft.options.roomType = [...draft.options.roomType, 'HOTEL-ONLY'];
+    const session = quotedSession(draft);
+    const paneConfig: QuotePaneConfig = {
+      transportId: 't1',
+      propertyCode: HRCEN_PROPERTY_CODE,
+      roomTypes: [{ code: 'CONFIG-ONLY', label: 'Hotel configured room' }],
+      ratePlans: [],
+      boards: ['room_only', 'bb', 'dinner_bb'],
+      salesStrategies: [],
+      overrideRateCodes: [],
+      eventRateCodes: [],
+    };
+    render(<QuoteWorkflowPanel session={session} paneConfig={paneConfig} />);
+    const roomType = screen.getByLabelText('Room type') as HTMLSelectElement;
+    const values = Array.from(roomType.options, (option) => option.value);
+    expect(values.filter((value) => value === 'CONFIG-ONLY')).toHaveLength(1);
+    expect(values.filter((value) => value === 'HOTEL-ONLY')).toHaveLength(1);
+    expect(values).toContain('STQN');
   });
 
   it('shows an amber mismatch banner with the claim quote', () => {
@@ -397,7 +405,7 @@ describe('booking cards', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
     expect(
       screen.getByText(
-        'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.',
+        'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.',
       ),
     ).toBeDefined();
     const writesOff = screen.getAllByRole('button', { name: 'Booking writes are off — create in HMS' });
@@ -446,37 +454,26 @@ describe('booking cards', () => {
     expect(Object.values(session.bookingDrafts)[0]?.draft.rooms[0]?.request.track).toBeUndefined();
   });
 
-  it('renders room type as a select with the draft options and the quoted room type', () => {
-    render(<BookingCards draft={draftReady()} />);
-    const roomType = screen.getAllByLabelText('Room type') as HTMLSelectElement[];
-    expect(roomType.map((field) => field.value)).toEqual(['STQN', 'STQN']);
-    expect(Array.from(roomType[0]!.options, (option) => option.textContent)).toEqual([
-      'Select room type',
-      'DLXKNG',
-      'STQN',
-      'SKNG',
-    ]);
-  });
-
-  it('drops the price match once staff pick another room type, and says to quote again', () => {
-    render(
-      <BookingCards
-        draft={draftReady({
-          rateCheck: [{ status: 'match', claimQuote: 'R1,750', assumedTaxBasis: false, differenceMinor: 0 }],
-        })}
-      />,
-    );
+  it('drops the price check when the Stay room type changes, and restores it when reverted', () => {
+    const draft = draftReady({
+      rateCheck: [{ status: 'match', claimQuote: 'R1,750', assumedTaxBasis: false, differenceMinor: 0 }],
+    });
+    const quotedGroup = { ...g1, roomPreference: 'STQN', roomTypeCode: 'STQN', roomCodes: ['STQN'] };
+    const { rerender } = render(<BookingCards draft={draft} groups={[quotedGroup]} />);
     expect(screen.getByText(/Price matches the email/)).toBeDefined();
-    fireEvent.change(screen.getAllByLabelText('Room type')[0]!, { target: { value: 'DLXKNG' } });
+
+    const changedGroup = { ...quotedGroup, roomPreference: 'DLXKNG', roomTypeCode: 'DLXKNG', roomCodes: ['DLXKNG'] };
+    rerender(<BookingCards draft={draft} groups={[changedGroup]} />);
     expect(screen.queryByText(/Price matches the email/)).toBeNull();
     expect(screen.getByText(ROOM_TYPE_CHANGED_COPY)).toBeDefined();
-    fireEvent.change(screen.getAllByLabelText('Room type')[0]!, { target: { value: 'STQN' } });
+
+    rerender(<BookingCards draft={draft} groups={[quotedGroup]} />);
     expect(screen.getByText(/Price matches the email/)).toBeDefined();
   });
 
-  it('does not warn about a quote room change when there is no quote', () => {
-    render(<BookingCards draft={draftReady({ rateCheck: [] })} />);
-    fireEvent.change(screen.getAllByLabelText('Room type')[0]!, { target: { value: 'DLXKNG' } });
+  it('does not warn about a Stay room change when there is no quote', () => {
+    const changedGroup = { ...g1, roomPreference: 'DLXKNG', roomTypeCode: 'DLXKNG', roomCodes: ['DLXKNG'] };
+    render(<BookingCards draft={draftReady({ rateCheck: [] })} groups={[changedGroup]} />);
     expect(screen.queryByText(ROOM_TYPE_CHANGED_COPY)).toBeNull();
   });
 
@@ -550,27 +547,28 @@ describe('booking card copy buttons', () => {
     Reflect.deleteProperty(document, 'execCommand');
   });
 
-  it('opens with a plain-English note that saving in HMS is off', () => {
+  it('opens with plain-English guidance for manual HMS entry', () => {
     render(<BookingCards draft={draftReady()} />);
     expect(
       screen.getByText(
-        'Saving to HMS from this pane is off for now. Click Copy next to each field, then paste it into HMS Guest Stay.',
+        'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.',
       ),
     ).toBeDefined();
   });
 
-  it('copies a field value to the clipboard and shows Copied for about 1.5 seconds', async () => {
+  it('copies a create-only field and shows Copied for about 1.5 seconds', async () => {
     const writeText = stubClipboard();
     vi.useFakeTimers();
     render(<BookingCards draft={draftReady()} />);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]!);
-    expect(writeText).toHaveBeenCalledWith('2026-11-12');
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'COR' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Track for Standard Queen ×2' })[0]!);
+    expect(writeText).toHaveBeenCalledWith('COR');
     await flushClipboard();
-    expect(screen.getAllByRole('button', { name: 'Copied Arrival for Standard Queen ×2' })[0]).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Copied Track for Standard Queen ×2' })[0]).toBeDefined();
     act(() => {
       vi.advanceTimersByTime(1500);
     });
-    expect(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Copy Track for Standard Queen ×2' })[0]).toBeDefined();
   });
 
   it('copies the track the staff picked, and stays disabled until one is picked', () => {
@@ -582,20 +580,17 @@ describe('booking card copy buttons', () => {
     expect(writeText).toHaveBeenCalledWith('COR');
   });
 
-  it('copies the meal plan the quote uses, not the board on the current analysis', () => {
-    const writeText = stubClipboard();
-    const rooms = draftReady().draft.rooms.map((room) => ({ ...room, board: 'bb' as const }));
-    render(<BookingCards draft={draftReady({ rooms })} groups={[{ ...g1, board: 'room_only' }]} />);
+  it('does not repeat room, board or selected rate in the create-only form', () => {
+    render(
+      <BookingCards
+        draft={draftReady()}
+        groups={[{ ...g1, board: 'room_only', rateCode: 'BARRO', quotedAmountMinor: 185000 }]}
+      />,
+    );
     expect(screen.queryByText('Room only')).toBeNull();
-    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Meal plan for Standard Queen ×2' })[0]!);
-    expect(writeText).toHaveBeenCalledWith('Bed & breakfast');
-  });
-
-  it('leaves the meal plan unset rather than using the analysis board when the draft has no quoted board', () => {
-    stubClipboard();
-    render(<BookingCards draft={draftReady()} groups={[{ ...g1, board: 'room_only' }]} />);
-    expect(screen.getAllByRole('button', { name: 'Copy Meal plan for Standard Queen ×2' })[0]).toHaveProperty('disabled', true);
-    expect(screen.queryByText('Room only')).toBeNull();
+    expect(screen.queryByText('BARRO')).toBeNull();
+    expect(screen.queryByText('R1850.00')).toBeNull();
+    expect(screen.queryByText('Standard Queen ×2')).toBeNull();
   });
 
   function stubExecCommand(result: () => boolean) {
@@ -612,12 +607,13 @@ describe('booking card copy buttons', () => {
       return true;
     });
     render(<BookingCards draft={draftReady()} />);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]!);
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'COR' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Track for Standard Queen ×2' })[0]!);
     await flushClipboard();
     expect(execCommand).toHaveBeenCalledWith('copy');
-    expect(copiedFrom).toBe('2026-11-12');
+    expect(copiedFrom).toBe('COR');
     expect(document.querySelector('textarea[readonly]')).toBeNull();
-    expect(screen.getAllByRole('button', { name: 'Copied Arrival for Standard Queen ×2' })[0]).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Copied Track for Standard Queen ×2' })[0]).toBeDefined();
     expect(screen.queryByText('Copy failed – select the text')).toBeNull();
   });
 
@@ -626,11 +622,12 @@ describe('booking card copy buttons', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     const execCommand = stubExecCommand(() => true);
     render(<BookingCards draft={draftReady()} />);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]!);
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'COR' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Track for Standard Queen ×2' })[0]!);
     await flushClipboard();
-    expect(writeText).toHaveBeenCalledWith('2026-11-12');
+    expect(writeText).toHaveBeenCalledWith('COR');
     expect(execCommand).toHaveBeenCalledWith('copy');
-    expect(screen.getAllByRole('button', { name: 'Copied Arrival for Standard Queen ×2' })[0]).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Copied Track for Standard Queen ×2' })[0]).toBeDefined();
   });
 
   it('says Copy failed – select the text briefly when both copy paths fail', async () => {
@@ -639,10 +636,11 @@ describe('booking card copy buttons', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     stubExecCommand(() => false);
     render(<BookingCards draft={draftReady()} />);
-    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]!);
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'COR' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Copy Track for Standard Queen ×2' })[0]!);
     await flushClipboard();
     expect(screen.getByText('Copy failed – select the text')).toBeDefined();
-    expect(screen.getAllByRole('button', { name: 'Copy Arrival for Standard Queen ×2' })[0]).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Copy Track for Standard Queen ×2' })[0]).toBeDefined();
     act(() => {
       vi.advanceTimersByTime(3000);
     });
@@ -1206,16 +1204,54 @@ describe('booking card save modes and the note fields', () => {
     expect(screen.queryByLabelText('Booker contact (email)')).toBeNull();
   });
 
-  it('sends the agency, organization, note and booker the staff typed, and a note change asks for a new preview', async () => {
+  it('uses the edited top contact for create preview', () => {
     const { client, preview } = paneClient();
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    let contact: StoredContact = {
+      name: 'Original Booker',
+      company: null,
+      endClient: null,
+      email: 'original@example.invalid',
+      phone: null,
+    };
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    const view = () => (
+      <>
+        <ContactBlock
+          contact={contact}
+          onEdit={(field, value) => {
+            contact = { ...contact, [field]: value };
+          }}
+        />
+        <BookingCards draft={draft} paneSave={client} contact={contact} />
+      </>
+    );
+    const { rerender } = render(view());
+    pickRoomChoices(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Updated Booker' } });
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'updated@example.invalid' } });
+    rerender(view());
+
+    fireEvent.click(previewButton(0));
+
+    expect(preview).toHaveBeenCalledWith(
+      expect.objectContaining({ bookerName: 'Updated Booker', bookerEmail: 'updated@example.invalid' }),
+    );
+  });
+
+  it('sends create-only edits with the top contact and invalidates preview when a note changes', async () => {
+    const { client, preview } = paneClient();
+    const contact = {
+      name: 'Ann Booker',
+      company: null,
+      endClient: null,
+      email: 'ann@example.invalid',
+      phone: null,
+    };
+    render(<BookingCards draft={draftReady()} paneSave={client} contact={contact} />);
     pickRoomChoices(0);
     fireEvent.change(screen.getAllByLabelText('Organization')[0]!, { target: { value: '  Bidvest Bank ' } });
     fireEvent.change(screen.getAllByLabelText('Reservation note')[0]!, { target: { value: 'Pay by EFT' } });
-    fireEvent.change(screen.getAllByLabelText('Booker name')[0]!, { target: { value: 'Ann Booker' } });
-    fireEvent.change(screen.getAllByLabelText('Booker contact (email)')[0]!, {
-      target: { value: 'ann@example.invalid' },
-    });
     fireEvent.click(previewButton(0));
     expect(preview).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1226,21 +1262,12 @@ describe('booking card save modes and the note fields', () => {
         bookerEmail: 'ann@example.invalid',
       }),
     );
+    expect(screen.queryByLabelText('Booker name')).toBeNull();
+    expect(screen.queryByLabelText('Booker contact (email)')).toBeNull();
     await screen.findByText(JOHN_SMITH_PREVIEW);
     fireEvent.change(screen.getAllByLabelText('Reservation note')[0]!, { target: { value: 'Early arrival' } });
     expect(screen.getByText('You changed the booking – preview again.')).toBeDefined();
     expect(bookButton(0)).toHaveProperty('disabled', true);
-  });
-
-  it('sends the room type the staff select, and the draft keeps the quoted room type', () => {
-    const { client, preview } = paneClient();
-    const draft = draftReady();
-    render(<BookingCards draft={draft} paneSave={client} />);
-    pickRoomChoices(0);
-    fireEvent.change(screen.getAllByLabelText('Room type')[0]!, { target: { value: 'DLXKNG' } });
-    fireEvent.click(previewButton(0));
-    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ roomType: 'DLXKNG' }));
-    expect(draft.draft.rooms[0]!.request.roomType).toBe('STQN');
   });
 
   it('caps the reservation note at 2000 characters, and a prefilled agency over 100 characters waits for Preview', () => {
@@ -1874,42 +1901,37 @@ describe('booking card HMS notes copy', () => {
     expect(screen.getAllByRole('button', { name: 'Copy for HMS notes' })).toHaveLength(2);
   });
 
-  it('copies the room block, and the stored contact fills the booker and company the room leaves empty', async () => {
+  it('uses the latest top contact and keeps Organization as a create-only field', async () => {
     const writeText = stubClipboard();
-    vi.mocked(trackPaneAction).mockClear();
-    render(<BookingCards draft={draftReady()} groups={[{ ...g1, specialRequests: ['Cot'] }]} contact={CONTACT} />);
+    const draft = draftReady();
+    draft.draft.rooms[0]!.request.bookerName = 'Old draft name';
+    const { rerender } = render(<BookingCards draft={draft} contact={CONTACT} />);
 
-    fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);
-
-    await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith(
-        ['Booker: Jane Smith', 'Company: Acme Travel', 'Special requests: Cot', 'Rate: TAXYZ'].join('\n'),
-      ),
-    );
-    expect(trackPaneAction).toHaveBeenCalledWith({ type: 'copy.hms_line', block: 'notes' });
-  });
-
-  it('a Booker name and Organization typed on the room replace the stored contact in its block', async () => {
-    const writeText = stubClipboard();
-    render(<BookingCards draft={draftReady()} contact={CONTACT} />);
-
-    fireEvent.change(screen.getAllByLabelText('Booker name')[0]!, { target: { value: 'Pat Jones' } });
     fireEvent.change(screen.getAllByLabelText('Organization')[0]!, { target: { value: 'Bidvest Bank' } });
+    rerender(
+      <BookingCards
+        draft={draft}
+        contact={{ ...CONTACT, name: 'Pat Jones' }}
+      />,
+    );
     fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);
 
     await waitFor(() =>
       expect(writeText).toHaveBeenCalledWith(['Booker: Pat Jones', 'Company: Bidvest Bank', 'Rate: TAXYZ'].join('\n')),
     );
+    expect(screen.queryByLabelText('Booker name')).toBeNull();
   });
 
-  it('the room block carries the chosen rate and its approval note, and the confirmation once the room is booked', async () => {
+  it('the HMS notes retain the selected board and approval note, then add the confirmation', async () => {
     const writeText = stubClipboard();
     const { client } = paneClient();
+    const draft = draftReady();
+    draft.draft.rooms[0]!.board = 'room_only';
     const rowPrice = { source: 'override' as const, rateCode: 'NCOR1B', amountMinor: 185000, note: 'Thandi approved' };
     render(
       <BookingCards
-        draft={draftReady()}
-        groups={[{ ...g1, specialRequests: ['Cot'], rowPrice }]}
+        draft={draft}
+        groups={[{ ...g1, board: 'bb', rateCode: 'BARRO', specialRequests: ['Cot'], rowPrice }]}
         paneSave={client}
         contact={CONTACT}
       />,
@@ -1919,7 +1941,7 @@ describe('booking card HMS notes copy', () => {
       'Company: Acme Travel',
       'Special requests: Cot',
       'Discount authorised by: Thandi approved',
-      'Rate: NCOR1B R1850.00 per night',
+      'Rate: NCOR1B R1850.00 per night, Bed & breakfast',
     ];
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);

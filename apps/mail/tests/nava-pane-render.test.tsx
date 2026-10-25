@@ -24,7 +24,7 @@ vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
 }));
 
 // State the mocks below read. Defaults match outlook-pane-render.test.tsx.
-const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFindQuery, syncStatusQuery, saveReplyMutate } = vi.hoisted(() => ({
+const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFindQuery, syncStatusQuery, saveReplyMutate } = vi.hoisted(() => ({
   pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
   voucherFindQuery: vi.fn().mockResolvedValue({ status: 'not_voucher' }),
   syncStatusQuery: vi.fn().mockResolvedValue(null),
@@ -33,6 +33,7 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     fileName: 'Quote - CIDB 15-17 Sep.pdf',
     pdfBase64: 'JVBERw==',
   }),
+  qualifiedQuotePdfMutate: vi.fn(),
   sendCommandMock: vi.fn(async (action: string): Promise<unknown> => {
     if (action === 'GET_ACTIVE_EMAIL') return { entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' };
     if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
@@ -233,7 +234,7 @@ vi.mock('../providers/query-provider', () => ({
           };
         },
       },
-      qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
+      qualifiedQuoteProposalPdf: { mutate: qualifiedQuotePdfMutate },
     },
     // The amendment panel's HMS job routes. These tests queue no job, so jobStatus has nothing to report.
     paneStayLookup: {
@@ -436,6 +437,7 @@ describe('NavaPane', () => {
     syncStatusQuery.mockReset().mockResolvedValue(null);
     saveReplyMutate.mockReset();
     saveReplyMutate.mockResolvedValue({ id: 'draft-1', replaced: false });
+    qualifiedQuotePdfMutate.mockReset().mockResolvedValue(AUTHORISED_QUOTE_PDF);
     bridgeMockState.staffQuoteJobQuery.mockReset().mockResolvedValue(null);
     bridgeMockState.listThreadQuoteRevisionsQuery.mockReset().mockResolvedValue([]);
     bridgeMockState.usePriorQuoteForBookingMutation
@@ -1476,8 +1478,20 @@ describe('NavaPane screen states', () => {
       },
     } as PaneBridge;
     render(<NavaPane bridge={namelessBridge} preview />);
+    openContactCorrections();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Updated Contact' } });
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'updated@example.invalid' } });
     await prepareReviewedQuote(null);
 
+    expect(qualifiedQuotePdfMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({
+          attention: 'Updated Contact',
+          clientEmail: 'updated@example.invalid',
+          clientTelephone: '',
+        }),
+      }),
+    );
     const expectedHtml = quoteWrapperHtml('', 'R Opperman');
     expect(reviewedReplyHtml()).toBe(expectedHtml);
     fireEvent.click(screen.getByRole('button', { name: 'Draft quotation into email reply' }));
@@ -1902,7 +1916,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await waitFor(() => expect(bridgeMockState.prepareUnquotedBookingDraftMutation).toHaveBeenCalled());
-    expect(await screen.findByRole('heading', { name: 'Book in HMS' })).toBeDefined();
+    expect(await screen.findByLabelText('Booking details')).toBeDefined();
     expect(screen.queryByText('$.roomType required')).toBeNull();
     expect(screen.queryByText('Available')).toBeNull();
     await act(async () => resolveJob(completedStaffQuoteJob(STAFF_QUOTE_READY)));

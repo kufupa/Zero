@@ -22,7 +22,7 @@ import {
   quoteWrapperHtml,
 } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
-import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
+import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { WorkflowBadge } from '@/components/quote-workflow/workflow-badge';
@@ -613,14 +613,35 @@ export function NavaPane({
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
   const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
-  const senderFallback =
-    storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
-  // The contact the quotation's client lines fall back to: the read's contact, else the external sender.
-  const documentContact = storedWork.pane.state === 'ready' ? storedWork.pane.contact : senderFallback;
-  const documentContactRef = useRef(documentContact);
-  documentContactRef.current = documentContact;
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
+  const senderFallback =
+    storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
+  const sourceContact: StoredContact | null =
+    storedWork.pane.state === 'ready'
+      ? storedWork.pane.contact
+      : senderFallback
+        ? { ...senderFallback, company: null, endClient: null, phone: null }
+        : null;
+  const normalizedContact = sourceContact ? { ...sourceContact } : null;
+  const [contactCorrection, setContactCorrection] = useState<{ key: string; contact: StoredContact } | null>(null);
+  const documentContact =
+    contactCorrection?.key === contactMessageKey ? contactCorrection.contact : normalizedContact;
+  const documentContactRef = useRef(documentContact);
+  documentContactRef.current = documentContact;
+  const recordContact = (field: ContactField, value: string | null) => {
+    const previous = documentContactRef.current ?? {
+      name: null,
+      company: null,
+      endClient: null,
+      email: null,
+      phone: null,
+    };
+    const contact = { ...previous, [field]: value };
+    documentContactRef.current = contact;
+    setContactCorrection({ key: contactMessageKey, contact });
+    storedWork.recordContact(field, value);
+  };
   const treatAsMailKey = paneEditKey(activeConnection?.id ?? '', contactMessageKey);
   useEffect(() => {
     if (!quoteSession.binding || !treatAsMailKey) return;
@@ -2321,10 +2342,9 @@ export function NavaPane({
                 // ContactBlock takes `contact` once, at mount. The key moves when the read lands, also for a read with
                 // no work item (its open failed), so the read's contact always fills the fields.
                 key={`${contactMessageKey}|${storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state}`}
-                contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
-                senderFallback={senderFallback}
+                contact={documentContact}
                 quote={readAs === 'quote' || readAs === 'group'}
-                onEdit={storedWork.recordContact}
+                onEdit={recordContact}
               />
             ) : null}
             <div className="flex flex-col gap-2">{mailboxWarnings}</div>
@@ -2354,7 +2374,7 @@ export function NavaPane({
               rateCatalogue={activePaneConfig?.ratePlans ?? []}
               paneConfig={activePaneConfig}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
-              contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
+              contact={documentContact}
               findParty={PANE_PARTY_FINDER}
               partySuggestions={partySuggestions}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}
