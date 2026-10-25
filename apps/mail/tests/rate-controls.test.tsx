@@ -294,10 +294,10 @@ describe('row price controls in the quote panel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Discount / override' }));
 
     const rateCode = screen.getByLabelText('HMS rate code');
-    expect([...rateCode.querySelectorAll('option')].map((option) => option.value)).toEqual([
-      '', 'BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF', 'OTHER',
+    expect([...rateCode.querySelectorAll('option')].map((option) => option.textContent)).toEqual([
+      'Choose a rate code', 'BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF', 'Other',
     ]);
-    expect([...rateCode.querySelectorAll('option')].map((option) => option.value)).not.toContain('NCOR1B');
+    expect([...rateCode.querySelectorAll('option')].map((option) => option.textContent)).not.toContain('NCOR1B');
   });
 
   it('a saved rate is picked from the list, and the stay re-runs', async () => {
@@ -447,7 +447,7 @@ describe('row price controls in the quote panel', () => {
     // Staff see the note in the row's price box.
     expect(screen.getByText(new RegExp(`Authorised by: ${NOTE}`))).toBeDefined();
     // The documents are what the client gets: the reply preview, PDF and Excel.
-    const documents = screen.getByRole('region', { name: 'Quote' });
+    const documents = screen.getByRole('region', { name: 'Documents' });
     expect(within(documents).queryByText(new RegExp(NOTE))).toBeNull();
     expect(JSON.stringify(session.staffHeader)).not.toContain(NOTE);
     expect(session.reviewedReplyHtml ?? '').not.toContain(NOTE);

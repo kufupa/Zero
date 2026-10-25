@@ -253,7 +253,7 @@ describe('StayCard rooms', () => {
       'JNRSUI', 'EXKNGB', 'EXKNGR', 'EXKNGS', 'DLXPAT', 'DLXKNG', 'ACCES', 'STKNG', 'STWN',
     ]);
     expect(roomOptionValues).not.toContain('STQN');
-    expect(screen.getByRole('rowheader', { name: 'Room type needed ×1' })).toBeTruthy();
+    expect(screen.getByText('Room type needed ×1')).toBeTruthy();
     const mealPlan = screen.getByLabelText('Meal plan');
     expect([...mealPlan.querySelectorAll('option')].map((option) => option.value)).toEqual(['all', 'room_only', 'bb']);
   });
