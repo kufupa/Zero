@@ -91,6 +91,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { markThreadRead } from '../thread-read.js';
 import type { DB } from '../../db/client.js';
+import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 
 const CENTURION_TRANSPORT_ID = 'transport-centurion';
 const DAVINCI_TRANSPORT_ID = 'transport-davinci';
@@ -514,6 +515,7 @@ export async function persistInboundMessage(
     // triage; AI (when write gate on) may set spam later.
   }
 
+  const isCollector = resolvePropertyTransport(transport.id).kind === 'collector';
   const messageId = meta.messageId;
   let threadId = '';
   let duplicate: PersistDuplicateResult | null = null;
@@ -960,7 +962,7 @@ export async function persistInboundMessage(
           sourceReceiptId: `${meta.ingestMailboxId}:${meta.pop3Uidl}`,
         },
       });
-    } else if (!ambiguousSource && !opts.skipAiEnqueue) {
+    } else if (!ambiguousSource && !opts.skipAiEnqueue && !isCollector) {
       if (!isHotelSent && mailSourceDecision?.kind === 'direct') {
         await removeDeterministicAutomatedChannelCategory(transactionDb, {
           transportId: transport.id,
@@ -1029,7 +1031,7 @@ export async function persistInboundMessage(
     // External Sent/imported hotel mail is the delayed reference producer. A
     // rematch reads only private prediction rows and appends an assessment;
     // it never mutates the just-stored message or visible thread state.
-    if (isHotelSent && !ambiguousSource && !opts.skipAiEnqueue) {
+    if (isHotelSent && !ambiguousSource && !opts.skipAiEnqueue && !isCollector) {
       await rematchShadowPredictions({
         transportId: transport.id,
         threadId,

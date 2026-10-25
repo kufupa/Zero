@@ -29,6 +29,7 @@ import { getSenderPreference } from '../sender-preference.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { markThreadRead } from '../thread-read.js';
 import type { DB } from '../../db/client.js';
+import { resolvePropertyTransport } from '../../../tooling/playwright-quote/property-registry.mjs';
 
 export type AdmissionProjection = {
   id: string;
@@ -310,6 +311,7 @@ export async function admitLiveMessage(
     .limit(1);
   if (!trigger) throw new Error('Live admission trigger unavailable');
   if (trigger.attention === 'AMBIGUOUS_IDENTITY') return { admitted: false, receiptId: '' };
+  const isCollector = resolvePropertyTransport(input.transportId).kind === 'collector';
   const mailSourceDecision =
     trigger.direction === 'inbound'
       ? classifyMailSource({
@@ -451,7 +453,7 @@ export async function admitLiveMessage(
     });
   }
   // A reply that lands closes the thread's open items, and a newer request supersedes the older ones (C2, C3).
-  if (trigger.threadId && !routeAsAutomatedChannel)
+  if (trigger.threadId && !routeAsAutomatedChannel && !isCollector)
     await refreshThreadWork(db, { transportId: input.transportId, threadId: trigger.threadId });
   if (trigger.direction === 'outbound')
     await markThreadRead(db, input.transportId, [trigger.threadId]);
@@ -505,9 +507,10 @@ export async function admitLiveMessage(
   }
   // The inbound folder/label classifier is retired by INBOUND_TRIAGE_CLASSIFIER=off. Sent copies keep their baseline run.
   if (
-    trigger.direction === 'outbound' ||
-    routeAsAutomatedChannel ||
-    isInboundTriageClassifierEnabled(process.env)
+    !isCollector &&
+    (trigger.direction === 'outbound' ||
+      routeAsAutomatedChannel ||
+      isInboundTriageClassifierEnabled(process.env))
   )
     await enqueueAiRun(
       {
@@ -531,6 +534,7 @@ export async function admitLiveMessage(
       db,
     );
   if (
+    !isCollector &&
     trigger.direction === 'inbound' &&
     !routeAsAutomatedChannel &&
     inboundExtractionEnabled(process.env)
@@ -546,7 +550,7 @@ export async function admitLiveMessage(
       },
       db,
     );
-  if (trigger.direction === 'inbound' && !routeAsAutomatedChannel)
+  if (!isCollector && trigger.direction === 'inbound' && !routeAsAutomatedChannel)
     await enqueueShadowPrediction({
       transportId: input.transportId,
       threadId: trigger.threadId,

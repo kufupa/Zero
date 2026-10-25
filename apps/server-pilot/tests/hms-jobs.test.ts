@@ -54,6 +54,8 @@ import { partySenderMap } from '../src/db/schema/party-sender-map.js';
 import { hitlToolRun } from '../src/db/schema/hitl.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { runHmsJobOnce } from '../src/ai/worker.js';
+import { ensureWorkItemForMessage } from '../src/ai/work-items.js';
+import { admitLiveMessage } from '../src/mail/ingest/live-admission.js';
 import type { DB } from '../src/db/client.js';
 import { parseEnv } from '../src/env.js';
 import { createPropertyReadLock, PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
@@ -61,6 +63,9 @@ import {
   CENTURION_USER_ID,
   DAVINCI_TRANSPORT_EMAIL,
   DAVINCI_TRANSPORT_ID,
+  FAITH_TRANSPORT_ID,
+  AYANDA_TRANSPORT_ID,
+  NAVA_TRANSPORT_ID,
   TRANSPORT_EMAIL,
   TRANSPORT_ID,
 } from '../src/db/seed.js';
@@ -161,6 +166,7 @@ async function seedThread(
   db: DB,
   subject = 'Amend booking',
   transportId = TRANSPORT_ID,
+  messageIdHeader: string | null = null,
 ): Promise<{ threadId: string; messageId: string }> {
   const threadId = `thread-${randomUUID()}`;
   const messageId = `msg-${randomUUID()}`;
@@ -175,6 +181,7 @@ async function seedThread(
     subject,
     textBody: `Please amend ${CONFIRMATION}.`,
     receivedAt: new Date(),
+    messageIdHeader,
   });
   return { threadId, messageId };
 }
@@ -726,6 +733,53 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       }
     }));
 
+  it('keeps a shared prepared quote read-back bound to its original message', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const messageIdHeader = 'u5-shared-readback@example.test';
+      const source = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID, messageIdHeader);
+      const copy = await seedThread(db, 'Quote request', FAITH_TRANSPORT_ID, messageIdHeader);
+      const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId: source.messageId });
+      const { run } = await enqueueHmsJob({
+        transportId: DAVINCI_TRANSPORT_ID,
+        threadId: source.threadId,
+        triggerMessageId: source.messageId,
+        workItemId: null,
+        userId: null,
+        request: { kind: 'staff_quote', input },
+        priority: HMS_JOB_PRIORITY_PREFETCH,
+        idempotencyKey: `hms-job:test-prepared-readback:${randomUUID()}`,
+        extraMetrics: { quotePrepared: true },
+      }, db);
+      const asOf = new Date();
+      await db.update(aiWorkflowRun).set({
+        state: 'succeeded',
+        readResult: {
+          kind: 'staff_quote',
+          status: 'ready',
+          messageId: source.messageId,
+          asOf: asOf.toISOString(),
+        },
+        finishedAt: asOf,
+        readResultExpiresAt: new Date(asOf.getTime() + 15 * 60_000),
+      }).where(eq(aiWorkflowRun.id, run.id));
+
+      const view = await readHmsJobView({
+        transportId: FAITH_TRANSPORT_ID,
+        userId: CENTURION_USER_ID,
+        messageId: copy.messageId,
+        kind: 'staff_quote',
+        input: staffQuoteInput.parse({ ...input, messageId: copy.messageId }),
+      }, db);
+
+      expect(view).toMatchObject({
+        runId: run.id,
+        sourceMessageId: source.messageId,
+        result: { messageId: source.messageId },
+      });
+    }));
+
   it('enqueues one primary shop per stay under the default hour cap', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
@@ -909,6 +963,62 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       });
 
       expect(claimed?.deadlineAt?.getTime()).toBe(now.getTime() + 7 * 60_000);
+    }));
+
+  it('retries a dead-lettered shared prepared quote from its stored identity', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const messageIdHeader = 'u5-quote-retry@example.test';
+      const quoteEnv = {
+        ...QUOTE_PREPARE_ENV,
+        HMS_DAVINCI_MAKE_QUOTE: 'on',
+        RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '/tmp/hrdav-quote.json',
+      };
+      const firstCopy = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID, messageIdHeader);
+      const secondCopy = await seedThread(db, 'Quote request', FAITH_TRANSPORT_ID, messageIdHeader);
+      await insertStoredExtraction(db, firstCopy.messageId, 'quote', quoteExtractionPayload());
+      await insertStoredExtraction(db, secondCopy.messageId, 'quote', quoteExtractionPayload());
+      const firstExtraction = {
+        runKind: 'inbound_extraction' as const,
+        transportId: DAVINCI_TRANSPORT_ID,
+        triggerMessageId: firstCopy.messageId,
+      };
+      const secondExtraction = {
+        runKind: 'inbound_extraction' as const,
+        transportId: FAITH_TRANSPORT_ID,
+        triggerMessageId: secondCopy.messageId,
+      };
+
+      expect(await prefetchQuoteReadyForExtraction(firstExtraction, db, quoteEnv)).toBe(1);
+      const [first] = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, firstCopy.messageId),
+            sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+          ),
+        );
+      expect(first?.idempotencyKey).toMatch(/^hms-job:mail:HRDAV:/);
+      await db
+        .update(aiWorkflowRun)
+        .set({ state: 'dead_letter', finishedAt: new Date(), updatedAt: new Date() })
+        .where(eq(aiWorkflowRun.id, first!.id));
+
+      expect(await prefetchQuoteReadyForExtraction(secondExtraction, db, quoteEnv)).toBe(1);
+      const retries = await db
+        .select({ triggerMessageId: aiWorkflowRun.triggerMessageId, idempotencyKey: aiWorkflowRun.idempotencyKey })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            inArray(aiWorkflowRun.triggerMessageId, [firstCopy.messageId, secondCopy.messageId]),
+            sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+          ),
+        );
+      expect(retries).toHaveLength(2);
+      expect(
+        retries.find((retry) => retry.triggerMessageId === secondCopy.messageId)?.idempotencyKey,
+      ).toMatch(new RegExp(`^${first!.idempotencyKey}:retry:`));
     }));
 
   it('yields a prepared quote without charging it while a user quote is queued', () =>
@@ -2365,6 +2475,70 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       });
     }));
 
+  it('reuses a batch read across same-property Message-ID copies and records mailbox batch membership', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_DAVINCI_READS', 'on');
+      const copies: Array<{ transportId: string; workItemId: string; messageId: string }> = [];
+      for (const transportId of [DAVINCI_TRANSPORT_ID, FAITH_TRANSPORT_ID]) {
+        const { threadId, messageId } = await seedThread(
+          db,
+          `Booking ${CONFIRMATION}`,
+          transportId,
+          'u5-batch-copy@example.test',
+        );
+        await insertStoredExtraction(db, messageId, 'booking', {
+          confirmationNumbers: [CONFIRMATION],
+        });
+        const workItemId = randomUUID();
+        await db.insert(workItem).values({
+          id: workItemId,
+          transportId,
+          threadId,
+          sourceMessageId: messageId,
+          kind: 'booking',
+          status: 'needs_you',
+        });
+        copies.push({ transportId, workItemId, messageId });
+      }
+
+      const first = await enqueueHmsBatch(
+        {
+          batchId: randomUUID(),
+          transportId: copies[0]!.transportId,
+          userId: CENTURION_USER_ID,
+          workItemIds: [copies[0]!.workItemId],
+        },
+        db,
+      );
+      const second = await enqueueHmsBatch(
+        {
+          batchId: randomUUID(),
+          transportId: copies[1]!.transportId,
+          userId: CENTURION_USER_ID,
+          workItemIds: [copies[1]!.workItemId],
+        },
+        db,
+      );
+
+      expect(first?.items[0]).toMatchObject({ status: 'queued' });
+      expect(second?.items[0]).toMatchObject({
+        status: 'reused',
+        runId: first?.items[0]?.runId,
+        workItemId: copies[1]!.workItemId,
+      });
+      const runs = await db
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            inArray(aiWorkflowRun.triggerMessageId, copies.map((copy) => copy.messageId)),
+            eq(aiWorkflowRun.runKind, 'read_tool'),
+          ),
+        );
+      expect(runs).toHaveLength(1);
+    }));
+
   it('does not share one HMS job across hotels for the same confirmation in one batch', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
@@ -2823,6 +2997,235 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           ),
         );
       expect(job?.readRequest).toMatchObject({ kind: 'party', name: 'Acme Lodging Holdings' });
+    }));
+
+  it('shares one same-property prefetch result across three mailbox copies without merging their to-dos', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_DAVINCI_READS', 'on');
+      vi.stubEnv('PARTY_MATCH_V2', 'true');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+      vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-quote.json');
+      const env = {
+        ...parseEnv(process.env as Record<string, string | undefined>),
+        HMS_PREFETCH_ENABLED: true,
+      };
+      const transports = [DAVINCI_TRANSPORT_ID, FAITH_TRANSPORT_ID, AYANDA_TRANSPORT_ID];
+      const copies: Array<{ transportId: string; threadId: string; messageId: string; workItemId: string }> = [];
+      for (const transportId of transports) {
+        const { threadId, messageId } = await seedThread(
+          db,
+          'Quote request',
+          transportId,
+          'fanout-u5@example.test',
+        );
+        await insertStoredExtraction(db, messageId, 'quote', quoteExtractionPayload());
+        const item = await ensureWorkItemForMessage(db, { transportId, messageId });
+        expect(item).not.toBeNull();
+        copies.push({ transportId, threadId, messageId, workItemId: item!.id });
+      }
+
+      const queued = [];
+      for (const copy of copies) {
+        queued.push(
+          await hmsJobs.prefetchPartyForExtraction(
+            { runKind: 'inbound_extraction', transportId: copy.transportId, triggerMessageId: copy.messageId },
+            db,
+            env,
+          ),
+        );
+      }
+      expect(queued).toEqual([1, 0, 0]);
+
+      const readRuns = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(and(inArray(aiWorkflowRun.triggerMessageId, copies.map((copy) => copy.messageId)), eq(aiWorkflowRun.runKind, 'read_tool')));
+      expect(readRuns).toHaveLength(1);
+      const sharedResult = { matchVersion: 2, matchStatus: 'needs_pick', results: [], asOf: new Date().toISOString() };
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: sharedResult,
+          readResultExpiresAt: new Date(Date.now() + 60 * 60_000),
+          finishedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(aiWorkflowRun.id, readRuns[0]!.id));
+
+      for (const copy of copies) {
+        const view = await readHmsJobView(
+          { transportId: copy.transportId, threadId: copy.threadId, kind: 'party', name: 'Acme Lodging Holdings' },
+          db,
+        );
+        expect(view).toMatchObject({ runId: readRuns[0]!.id, status: 'done', result: sharedResult });
+      }
+
+      const quoteEnv = {
+        ...QUOTE_PREPARE_ENV,
+        HMS_DAVINCI_MAKE_QUOTE: 'on',
+        RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '/tmp/hrdav-quote.json',
+      };
+      const preparedCounts: number[] = [];
+      for (const copy of copies) {
+        preparedCounts.push(
+          await prefetchQuoteReadyForExtraction(
+            { runKind: 'inbound_extraction', transportId: copy.transportId, triggerMessageId: copy.messageId },
+            db,
+            quoteEnv,
+          ),
+        );
+      }
+      const [preparedQuote] = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, copies[0]!.messageId),
+            eq(aiWorkflowRun.runKind, 'read_tool'),
+            sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+          ),
+        );
+      expect(preparedCounts).toEqual([1, 0, 0]);
+      expect(preparedQuote).toBeDefined();
+      const preparedInput = preparedInputFromRun(preparedQuote);
+      const asOf = new Date();
+      const preparedResult = {
+        status: 'ready',
+        workflowRunId: randomUUID(),
+        revisionRef: 'prepared-revision',
+        messageId: copies[0]!.messageId,
+        threadId: copies[0]!.threadId,
+        factRefs: [],
+        selectionEpoch: preparedInput.selectionEpoch,
+        inputRevision: preparedInput.inputRevision,
+        inputDigest: 'prepared-digest',
+        totalMinor: 10_000,
+        currency: 'ZAR',
+        arrivalDate: preparedInput.groups[0]!.arrivalDate,
+        departureDate: preparedInput.groups[0]!.departureDate,
+        description: 'Prepared quote',
+        asOf: asOf.toISOString(),
+        freshUntil: new Date(asOf.getTime() + 60 * 60_000).toISOString(),
+      };
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: preparedResult,
+          readResultExpiresAt: new Date(asOf.getTime() + 60 * 60_000),
+          finishedAt: asOf,
+          updatedAt: asOf,
+        })
+        .where(eq(aiWorkflowRun.id, preparedQuote!.id));
+      for (const copy of copies) {
+        const quoteInput = staffQuoteInput.parse({
+          ...preparedInput,
+          messageId: copy.messageId,
+          ...(copy.messageId === copies[0]!.messageId ? {} : { sourceHash: 'b'.repeat(64) }),
+        });
+        const quoteView = await readHmsJobView(
+          {
+            transportId: copy.transportId,
+            userId: CENTURION_USER_ID,
+            messageId: copy.messageId,
+            kind: 'staff_quote',
+            input: quoteInput,
+          },
+          db,
+        );
+        expect(quoteView).toMatchObject({
+          runId: preparedQuote!.id,
+          request: { kind: 'staff_quote', input: { messageId: copies[0]!.messageId } },
+          result: { status: 'ready', messageId: copies[0]!.messageId },
+        });
+        expect(quoteView?.sourceMessageId).toBe(copies[0]!.messageId);
+      }
+      const polledQuote = await readHmsJobView(
+        {
+          transportId: copies[1]!.transportId,
+          runId: preparedQuote!.id,
+          staffQuoteOwnerId: CENTURION_USER_ID,
+        },
+        db,
+      );
+      expect(polledQuote?.result).toMatchObject({ messageId: copies[0]!.messageId });
+      expect(
+        await db.select({ id: workItem.id }).from(workItem).where(inArray(workItem.id, copies.map((copy) => copy.workItemId))),
+      ).toHaveLength(3);
+      const [shared] = await db.select({ metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun).where(eq(aiWorkflowRun.id, readRuns[0]!.id));
+      expect(shared?.metrics).toMatchObject({
+        sharedTransportIds: expect.arrayContaining([FAITH_TRANSPORT_ID, AYANDA_TRANSPORT_ID]),
+        sharedWorkItemIds: expect.arrayContaining(copies.map((copy) => copy.workItemId)),
+      });
+    }));
+
+  it('keeps null-Message-ID reads per copy and the same Message-ID distinct across properties', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_DAVINCI_READS', 'on');
+      const env = {
+        ...parseEnv(process.env as Record<string, string | undefined>),
+        HMS_PREFETCH_ENABLED: true,
+      };
+      const copies: Array<{ transportId: string; messageId: string }> = [];
+      for (const transportId of [DAVINCI_TRANSPORT_ID, FAITH_TRANSPORT_ID]) {
+        const { messageId } = await seedThread(db, 'Quote request', transportId, null);
+        await insertStoredExtraction(db, messageId, 'quote', quoteExtractionPayload());
+        copies.push({ transportId, messageId });
+      }
+      for (const [transportId, messageId] of [
+        [TRANSPORT_ID, 'msg-centurion-u5'],
+        [DAVINCI_TRANSPORT_ID, 'msg-davinci-u5'],
+      ] as const) {
+        const threadId = `thread-${messageId}`;
+        await db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
+        await db.insert(message).values({
+          id: messageId,
+          transportId,
+          threadId,
+          direction: 'inbound',
+          fromAddress: 'agent@agency.example.test',
+          subject: 'Quote request',
+          textBody: `Please amend ${CONFIRMATION}.`,
+          messageIdHeader: 'one-id-two-hotels@example.test',
+          receivedAt: new Date(),
+        });
+        await insertStoredExtraction(db, messageId, 'quote', quoteExtractionPayload());
+        copies.push({ transportId, messageId });
+      }
+
+      for (const copy of copies) {
+        expect(
+          await hmsJobs.prefetchPartyForExtraction(
+            { runKind: 'inbound_extraction', transportId: copy.transportId, triggerMessageId: copy.messageId },
+            db,
+            env,
+          ),
+        ).toBe(1);
+      }
+      const runs = await db
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .where(and(inArray(aiWorkflowRun.triggerMessageId, copies.map((copy) => copy.messageId)), eq(aiWorkflowRun.runKind, 'read_tool')));
+      expect(runs).toHaveLength(4);
+    }));
+
+  it('collector live admission persists mail without creating a to-do, extraction, or AI/HMS run', () =>
+    withSeededTestDb(async (db) => {
+      const { messageId } = await seedThread(db, 'Collector request', NAVA_TRANSPORT_ID);
+      await admitLiveMessage(db, {
+        transportId: NAVA_TRANSPORT_ID,
+        canonicalMessageId: messageId,
+        newlyPersisted: true,
+        evidence: { kind: 'verified-pop3', sourceReceiptId: 'u5-collector-test' },
+      });
+
+      expect(await db.select({ id: mailExtraction.id }).from(mailExtraction).where(eq(mailExtraction.messageId, messageId))).toHaveLength(0);
+      expect(await db.select({ id: workItem.id }).from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(0);
+      expect(await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId))).toHaveLength(0);
     }));
 
   it('skips party prefetch for a known channel sender', () =>

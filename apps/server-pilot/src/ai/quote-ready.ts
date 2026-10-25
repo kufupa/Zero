@@ -308,6 +308,10 @@ function priceShape(input: StaffQuoteInput): unknown {
 }
 
 /** Pane counters and display headers do not affect a price; row identity, stay terms and paid extras do. */
+export function staffQuotePriceKey(input: StaffQuoteInput): string {
+  return JSON.stringify(priceShape(input));
+}
+
 export function staffQuoteInputsPriceEquivalent(left: StaffQuoteInput, right: StaffQuoteInput): boolean {
-  return JSON.stringify(priceShape(left)) === JSON.stringify(priceShape(right));
+  return staffQuotePriceKey(left) === staffQuotePriceKey(right);
 }

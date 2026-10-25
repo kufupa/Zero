@@ -154,6 +154,32 @@ describe('staff quote HMS job binding', () => {
     });
   });
 
+  it('rejects a shared prepared quote read-back from another mailbox copy', async () => {
+    const selectedSource = {
+      messageId: 'mail-copy-2',
+      threadId: 'thread-copy-2',
+      sourceHash: 'c'.repeat(64),
+    };
+    const staffQuoteJob = vi.fn(async (_input: unknown) => view('done', READY, undefined, true));
+
+    const result = await bindReadBackStaffQuote({
+      query: staffQuoteJob,
+      source: selectedSource,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'unavailable',
+      reason: 'The quote does not match the selected email. Select the email again, then run it again.',
+    });
+    expect(staffQuoteJob.mock.calls[0]?.[0]).toMatchObject({
+      input: { messageId: selectedSource.messageId, sourceHash: selectedSource.sourceHash },
+    });
+  });
+
   it('queues once, polls the persisted run, and binds the finished rate result', async () => {
     vi.useFakeTimers();
     const queue = vi.fn(async (input: ExecuteStaffQuoteInput) => {

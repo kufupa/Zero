@@ -538,9 +538,8 @@ async function staffApprovalsFor(
 }
 
 /**
- * Every stay of a proposal request, resolved to its approved revision. A run must be user-owned or system-prepared for
- * this transport and message. One stay keeps the message-wide currency rule. Run again after a document is built, so
- * nothing changes under it.
+ * Every stay of a proposal request, resolved to its approved revision. User and prepared runs require the exact source.
+ * One stay keeps the message-wide currency rule. Re-resolve after building.
  */
 async function proposalStaysFor(
   input: z.infer<typeof qualifiedProposalInput>,
@@ -559,9 +558,14 @@ async function proposalStaysFor(
   if (new Set(requests.map((request) => request.workflowRunId)).size !== requests.length)
     throw new TRPCError({ code: 'BAD_REQUEST', message: 'Each stay needs its own approved quote' });
   const db = getDb();
+  await Promise.all(requests.map((request) => awaitPendingStaffQuote(request.workflowRunId)));
+  const [current] = await db
+    .select()
+    .from(message)
+    .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
+    .limit(1);
   const runs = await Promise.all(
     requests.map(async (request) => {
-      await awaitPendingStaffQuote(request.workflowRunId);
       const [run] = await db
         .select({ run: aiWorkflowRun })
         .from(aiWorkflowRun)
@@ -569,7 +573,6 @@ async function proposalStaysFor(
           and(
             eq(aiWorkflowRun.id, request.workflowRunId),
             eq(aiWorkflowRun.transportId, ctx.activeTransportId),
-            eq(aiWorkflowRun.triggerMessageId, input.messageId),
           ),
         )
         .limit(1);
@@ -577,6 +580,11 @@ async function proposalStaysFor(
       const systemPrepared = isSystemPreparedPriority(run.run.priority) &&
         run.run.metrics?.quotePrepared === true &&
         run.run.metrics.userId == null;
+      const exactSource =
+        run.run.transportId === ctx.activeTransportId &&
+        run.run.triggerMessageId === input.messageId;
+      if (!exactSource || !current)
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Proposal source not found' });
       if (systemPrepared && !quotePreparationEnabled())
         throw new TRPCError({
           code: 'PRECONDITION_FAILED',
@@ -603,11 +611,6 @@ async function proposalStaysFor(
   );
   const combined = runs.length > 1;
   const threadId = runs[0]!.run.threadId;
-  const [current] = await db
-    .select()
-    .from(message)
-    .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
-    .limit(1);
   const approvals = combined
     ? [
         ...(await staffApprovalsFor(ctx, threadId, input.messageId)),

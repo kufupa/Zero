@@ -100,6 +100,11 @@ import {
   registerPaneRun,
 } from './pane-stay-save.js';
 import { normalizeEmailAddress } from './never-spam.js';
+import { canonicalMessageId } from '../mail/ingest/message-id.js';
+import {
+  getPropertyTransportIds,
+  resolvePropertyTransport,
+} from '../../tooling/playwright-quote/property-registry.mjs';
 import { extractVoucherGuest, surnameFrom } from './voucher-find.js';
 import { isStaffSender, knownSenders } from './work-items.js';
 import {
@@ -112,6 +117,7 @@ import {
   confidentPartyFromV2Result,
   quotePrepareKindReason,
   quoteShopJobsForPlan,
+  staffQuotePriceKey,
   staffQuoteInputsPriceEquivalent,
   type PreparedStaffQuotePlan,
 } from './quote-ready.js';
@@ -654,40 +660,208 @@ function hmsJobInsertValues(input: HmsJobEnqueueInput): typeof aiWorkflowRun.$in
   };
 }
 
+type HmsMailCopies = {
+  propertyCode: string | null;
+  messageIdHeader: string | null;
+  messageIds: string[];
+};
+
+/** The existing transport/header index finds every persisted copy of this RFC Message-ID at one hotel. */
+async function hmsMailCopiesForMessage(
+  db: DB,
+  transportId: string,
+  messageId: string,
+): Promise<HmsMailCopies> {
+  const [source] = await db
+    .select({ id: message.id, messageIdHeader: message.messageIdHeader })
+    .from(message)
+    .where(and(eq(message.id, messageId), eq(message.transportId, transportId)))
+    .limit(1);
+  const messageIdHeader = canonicalMessageId(source?.messageIdHeader);
+  const resolved = resolvePropertyTransport(transportId);
+  if (resolved.kind !== 'property') {
+    return { propertyCode: null, messageIdHeader: null, messageIds: [messageId] };
+  }
+  if (!messageIdHeader) {
+    return {
+      propertyCode: resolved.property.propertyCode,
+      messageIdHeader: null,
+      messageIds: [messageId],
+    };
+  }
+  const propertyTransportIds = getPropertyTransportIds(resolved.property.propertyCode);
+  const rows = propertyTransportIds.length
+    ? await db
+        .select({ id: message.id })
+        .from(message)
+        .where(
+          and(
+            inArray(message.transportId, propertyTransportIds),
+            eq(message.messageIdHeader, messageIdHeader),
+          ),
+        )
+    : [];
+  return {
+    propertyCode: resolved.property.propertyCode,
+    messageIdHeader,
+    messageIds: [...new Set([messageId, ...rows.map((row) => row.id)])],
+  };
+}
+
+function hmsMailReadRequestKey(request: HmsJobRequest): string {
+  return request.kind === 'staff_quote'
+    ? JSON.stringify({ kind: request.kind, price: staffQuotePriceKey(request.input) })
+    : hmsRequestKey(request);
+}
+
+function hmsMailReadIdempotencyKey(
+  propertyCode: string,
+  messageIdHeader: string,
+  request: HmsJobRequest,
+  createdAt: Date,
+  retryKey: string,
+  threadId: string,
+): string {
+  const day = createdAt.toISOString().slice(0, 10);
+  // Keep the pre-existing daily confirmation/availability and thread-scoped guest-search dedupe boundaries.
+  const reuseScope =
+    request.kind === 'find' ||
+    request.kind === 'availability' ||
+    (request.kind === 'party' && request.matchVersion !== 2)
+      ? `day:${day}`
+      : request.kind === 'search_guest'
+        ? `thread:${threadId}`
+        : `message:${messageIdHeader}:day:${day}`;
+  const digest = createHash('sha256')
+    .update(`${propertyCode}\n${reuseScope}\n${hmsMailReadRequestKey(request)}`)
+    .digest('hex');
+  const retrySuffix = retryKey.includes(':retry:') ? retryKey.slice(retryKey.indexOf(':retry:')) : '';
+  return `hms-job:mail:${propertyCode}:${digest}${retrySuffix}`;
+}
+
+function reusableHmsMailRead(
+  run: AiWorkflowRun,
+  expectedKey: string,
+  now: Date,
+): boolean {
+  const parsed = hmsJobRequestSchema.safeParse(run.readRequest);
+  if (!parsed.success || hmsMailReadRequestKey(parsed.data) !== expectedKey) return false;
+  if (['queued', 'claimed', 'running', 'retry_wait'].includes(run.state)) return true;
+  return (
+    run.state === 'succeeded' &&
+    run.readResult !== null &&
+    run.readResult !== undefined &&
+    run.finishedAt !== null &&
+    run.finishedAt.getTime() <= now.getTime() &&
+    now.getTime() - run.finishedAt.getTime() < HMS_BATCH_RESULT_FRESH_MS &&
+    (!run.readResultExpiresAt || run.readResultExpiresAt.getTime() > now.getTime())
+  );
+}
+
+async function findReusableHmsMailRead(
+  db: DB,
+  input: HmsJobEnqueueInput,
+  copies: HmsMailCopies,
+  now: Date,
+): Promise<AiWorkflowRun | null> {
+  if (!copies.messageIdHeader || !copies.propertyCode) return null;
+  const propertyTransportIds = getPropertyTransportIds(copies.propertyCode);
+  if (!propertyTransportIds.length) return null;
+  const requestKey = hmsMailReadRequestKey(input.request);
+  const candidates = await db
+    .select()
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        inArray(aiWorkflowRun.triggerMessageId, copies.messageIds),
+        inArray(aiWorkflowRun.transportId, propertyTransportIds),
+        eq(aiWorkflowRun.runKind, 'read_tool'),
+        eq(aiWorkflowRun.executorLane, 'hms'),
+        eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+        sql`${aiWorkflowRun.metrics}->>'userId' IS NULL`,
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
+  return candidates.find((run) => reusableHmsMailRead(run, requestKey, now)) ?? null;
+}
+
+async function shareHmsRunWithMailbox(
+  db: DB,
+  run: AiWorkflowRun,
+  input: HmsJobEnqueueInput,
+): Promise<AiWorkflowRun> {
+  const threadJson = JSON.stringify([input.threadId]);
+  const transportJson = JSON.stringify([input.transportId]);
+  const workItemJson = input.workItemId ? JSON.stringify([input.workItemId]) : null;
+  const existingMetrics = sql`coalesce(${aiWorkflowRun.metrics}, '{}'::jsonb)`;
+  const withThread = sql`jsonb_set(
+    ${existingMetrics}, '{sharedThreadIds}',
+    case when coalesce(${existingMetrics}->'sharedThreadIds', '[]'::jsonb) @> ${threadJson}::jsonb
+      then coalesce(${existingMetrics}->'sharedThreadIds', '[]'::jsonb)
+      else coalesce(${existingMetrics}->'sharedThreadIds', '[]'::jsonb) || ${threadJson}::jsonb end
+  )`;
+  const withTransport = sql`jsonb_set(
+    ${withThread}, '{sharedTransportIds}',
+    case when coalesce(${withThread}->'sharedTransportIds', '[]'::jsonb) @> ${transportJson}::jsonb
+      then coalesce(${withThread}->'sharedTransportIds', '[]'::jsonb)
+      else coalesce(${withThread}->'sharedTransportIds', '[]'::jsonb) || ${transportJson}::jsonb end
+  )`;
+  const nextMetrics = workItemJson
+    ? sql`jsonb_set(
+        ${withTransport}, '{sharedWorkItemIds}',
+        case when coalesce(${withTransport}->'sharedWorkItemIds', '[]'::jsonb) @> ${workItemJson}::jsonb
+          then coalesce(${withTransport}->'sharedWorkItemIds', '[]'::jsonb)
+          else coalesce(${withTransport}->'sharedWorkItemIds', '[]'::jsonb) || ${workItemJson}::jsonb end
+      )`
+    : withTransport;
+  const [updated] = await db
+    .update(aiWorkflowRun)
+    .set({ metrics: nextMetrics })
+    .where(eq(aiWorkflowRun.id, run.id))
+    .returning();
+  return updated ?? run;
+}
+
 export async function enqueueHmsJob(
   input: HmsJobEnqueueInput,
   db: DB = getDb(),
 ): Promise<{ run: AiWorkflowRun; created: boolean }> {
+  const now = input.createdAt ?? new Date();
+  const shouldShareMailRead = input.userId === null && input.priority === HMS_JOB_PRIORITY_PREFETCH;
+  const copies = shouldShareMailRead
+    ? await hmsMailCopiesForMessage(db, input.transportId, input.triggerMessageId)
+    : null;
+  let enqueueInput = input;
+  if (copies?.messageIdHeader && copies.propertyCode) {
+    const existing = await findReusableHmsMailRead(db, input, copies, now);
+    if (existing) {
+      return { run: await shareHmsRunWithMailbox(db, existing, input), created: false };
+    }
+    enqueueInput = {
+      ...input,
+      idempotencyKey: hmsMailReadIdempotencyKey(
+        copies.propertyCode,
+        copies.messageIdHeader,
+        input.request,
+        now,
+        input.idempotencyKey,
+        input.threadId,
+      ),
+    };
+  }
   const [inserted] = await db
     .insert(aiWorkflowRun)
-    .values(hmsJobInsertValues(input))
+    .values(hmsJobInsertValues(enqueueInput))
     .onConflictDoNothing({ target: aiWorkflowRun.idempotencyKey })
     .returning();
   if (inserted) return { run: inserted, created: true };
-  // A shared job (the same read from another thread's mail) lists this thread too, so its lookup finds the snapshot.
-  const threadJson = JSON.stringify([input.threadId]);
-  const [shared] = await db
-    .update(aiWorkflowRun)
-    .set({
-      metrics: sql`jsonb_set(coalesce(${aiWorkflowRun.metrics}, '{}'::jsonb), '{sharedThreadIds}', coalesce(${aiWorkflowRun.metrics}->'sharedThreadIds', '[]'::jsonb) || ${threadJson}::jsonb)`,
-    })
-    .where(
-      and(
-        eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey),
-        ne(aiWorkflowRun.threadId, input.threadId),
-        sql`not coalesce(${aiWorkflowRun.metrics}->'sharedThreadIds', '[]'::jsonb) @> ${threadJson}::jsonb`,
-      ),
-    )
-    .returning();
-  const [existing] = shared
-    ? [shared]
-    : await db
-        .select()
-        .from(aiWorkflowRun)
-        .where(eq(aiWorkflowRun.idempotencyKey, input.idempotencyKey))
-        .limit(1);
+  const [existing] = await db
+    .select()
+    .from(aiWorkflowRun)
+    .where(eq(aiWorkflowRun.idempotencyKey, enqueueInput.idempotencyKey))
+    .limit(1);
   if (!existing) throw new Error(`failed to enqueue or load HMS job for ${input.idempotencyKey}`);
-  return { run: existing, created: false };
+  return { run: await shareHmsRunWithMailbox(db, existing, input), created: false };
 }
 
 /** Auto-starts serialize one actor/mail/input request so simultaneous pane mounts share a fresh run. */
@@ -942,6 +1116,7 @@ type HmsBatchScope = { batchId: string; transportId: string };
 
 type HmsBatchLink = {
   batchId: string;
+  batchTransportId: string;
   itemIndex: number;
   workItemId: string;
   idempotencyKey: string;
@@ -953,6 +1128,7 @@ type HmsBatchSource = {
   workItemId: string;
   threadId: string;
   triggerMessageId: string;
+  messageIdHeader: string | null;
   spamAt: Date | null;
   extraction: { status: string; kind: string | null; payload: unknown } | null;
   subject: string | null;
@@ -965,6 +1141,11 @@ function objectRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function batchTransportMatches(value: unknown, runTransportId: string, transportId: string): boolean {
+  const batchTransportId = objectRecord(value).batchTransportId;
+  return batchTransportId === transportId || (batchTransportId == null && runTransportId === transportId);
+}
+
 function batchItemIdempotencyKey(batchId: string, workItemId: string): string {
   return `hms-job:batch:${batchId}:${workItemId}`;
 }
@@ -972,22 +1153,33 @@ function batchItemIdempotencyKey(batchId: string, workItemId: string): string {
 // Lock order: this transaction lock is taken only in enqueueHmsBatch and cancelHmsBatch, and nothing inside those
 // transactions takes the property lock (paneStayPropertyLock) or the guest-prefetch lock. Property-lock holders (HMS
 // spawns, the staff quote, the read service) never enqueue batch or prefetch rows, so no path nests the two locks.
-// One lock per transport, not per batch: overlapping batches must see each other's runs before they reuse or insert,
-// or the same work item is read twice.
+// One lock per property, not per batch: overlapping mailbox batches must see each other's runs before reuse/insert.
 async function acquireHmsBatchLock(db: DB, input: { transportId: string }): Promise<void> {
+  const resolved = resolvePropertyTransport(input.transportId);
+  const scope = resolved.kind === 'property' ? resolved.property.propertyCode : input.transportId;
   await db.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${'hms-batch:' + input.transportId}, 0))`,
+    sql`select pg_advisory_xact_lock(hashtextextended(${'hms-batch:' + scope}, 0))`,
   );
 }
 
 function batchMembershipWhere(input: HmsBatchScope) {
+  const localBatchLink = sql`exists (
+    select 1
+    from jsonb_array_elements(coalesce(${aiWorkflowRun.metrics}->'batchLinks', '[]'::jsonb)) as batch_link(value)
+    where batch_link.value->>'batchId' = ${input.batchId}
+      and coalesce(batch_link.value->>'batchTransportId', ${aiWorkflowRun.transportId}) = ${input.transportId}
+  )`;
   return and(
-    eq(aiWorkflowRun.transportId, input.transportId),
     eq(aiWorkflowRun.runKind, 'read_tool'),
     eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
     or(
-      sql`${aiWorkflowRun.metrics}->>'batchId' = ${input.batchId}`,
-      sql`${aiWorkflowRun.metrics}->'batchLinks' @> ${JSON.stringify([{ batchId: input.batchId }])}::jsonb`,
+      and(
+        eq(aiWorkflowRun.transportId, input.transportId),
+        or(sql`${aiWorkflowRun.metrics}->>'batchId' = ${input.batchId}`, localBatchLink),
+      ),
+      sql`${aiWorkflowRun.metrics}->'batchLinks' @> ${JSON.stringify([
+        { batchId: input.batchId, batchTransportId: input.transportId },
+      ])}::jsonb`,
     ),
   );
 }
@@ -1008,12 +1200,13 @@ async function hmsBatchRows(
 
 function batchMemberships(
   rows: AiWorkflowRun[],
-  batchId: string,
+  scope: HmsBatchScope,
 ): Array<{ itemIndex: number; workItemId: string }> {
   const memberships: Array<{ itemIndex: number; workItemId: string }> = [];
   for (const row of rows) {
     const metrics = objectRecord(row.metrics);
-    if (metrics.batchId === batchId && typeof row.workItemId === 'string') {
+    const primaryBelongsToTransport = batchTransportMatches(metrics, row.transportId, scope.transportId);
+    if (metrics.batchId === scope.batchId && primaryBelongsToTransport && typeof row.workItemId === 'string') {
       const itemIndex = Number(metrics.itemIndex);
       if (Number.isInteger(itemIndex) && itemIndex >= 0)
         memberships.push({ itemIndex, workItemId: row.workItemId });
@@ -1023,7 +1216,8 @@ function batchMemberships(
       const link = objectRecord(value);
       const itemIndex = Number(link.itemIndex);
       if (
-        link.batchId === batchId &&
+        link.batchId === scope.batchId &&
+        batchTransportMatches(link, row.transportId, scope.transportId) &&
         typeof link.workItemId === 'string' &&
         Number.isInteger(itemIndex) &&
         itemIndex >= 0
@@ -1036,7 +1230,9 @@ function batchMemberships(
 }
 
 function assertBatchReplayMatches(rows: AiWorkflowRun[], input: HmsBatchEnqueueInput): void {
-  const existing = batchMemberships(rows, input.batchId).sort((a, b) => a.itemIndex - b.itemIndex);
+  const existing = batchMemberships(rows, { batchId: input.batchId, transportId: input.transportId }).sort(
+    (a, b) => a.itemIndex - b.itemIndex,
+  );
   if (
     existing.length !== input.workItemIds.length ||
     existing.some(
@@ -1055,6 +1251,7 @@ async function loadHmsBatchSources(db: DB, input: HmsBatchEnqueueInput): Promise
     workItemId: string;
     threadId: string;
     triggerMessageId: string;
+    messageIdHeader: string | null;
     spamAt: Date | null;
     subject: string | null;
     textBody: string | null;
@@ -1067,6 +1264,7 @@ async function loadHmsBatchSources(db: DB, input: HmsBatchEnqueueInput): Promise
           workItemId: workItem.id,
           threadId: mailThread.id,
           triggerMessageId: message.id,
+          messageIdHeader: message.messageIdHeader,
           spamAt: mailThread.spamAt,
           subject: message.subject,
           textBody: message.textBody,
@@ -1122,6 +1320,7 @@ async function loadHmsBatchSources(db: DB, input: HmsBatchEnqueueInput): Promise
 
   return rows.map((row) => ({
     ...row,
+    messageIdHeader: canonicalMessageId(row.messageIdHeader),
     extraction: extractions.get(row.triggerMessageId) ?? null,
   }));
 }
@@ -1235,12 +1434,18 @@ function isReusableHmsRun(run: AiWorkflowRun, request: HmsJobRequest, now: Date)
   );
 }
 
+type HmsBatchReusableRuns = {
+  runs: AiWorkflowRun[];
+  sameTransportCandidateIds: Set<string>;
+  messageHeaderById: Map<string, string>;
+};
+
 async function loadReusableHmsRuns(
   db: DB,
   input: HmsBatchEnqueueInput,
   requests: Array<{ source: HmsBatchSource; request: HmsJobRequest; target: HmsReadTarget }>,
   now: Date,
-): Promise<AiWorkflowRun[]> {
+): Promise<HmsBatchReusableRuns> {
   const sourceIds = requests.map(({ source }) => source.workItemId);
   const allPrefetchKeys = [
     ...new Set(
@@ -1249,8 +1454,40 @@ async function loadReusableHmsRuns(
       ),
     ),
   ];
+  const sourceMessageIds = [
+    ...new Set(
+      requests
+        .map(({ source }) => source.messageIdHeader)
+        .filter((messageIdHeader): messageIdHeader is string => messageIdHeader !== null),
+    ),
+  ];
+  const property = resolvePropertyTransport(input.transportId);
+  const registeredTransportIds =
+    property.kind === 'property'
+      ? getPropertyTransportIds(property.property.propertyCode)
+      : [];
+  const propertyTransportIds = registeredTransportIds.length ? registeredTransportIds : [input.transportId];
+  const messageHeaderById = new Map<string, string>();
+  for (let start = 0; start < sourceMessageIds.length; start += HMS_BATCH_INSERT_CHUNK) {
+    const headers = sourceMessageIds.slice(start, start + HMS_BATCH_INSERT_CHUNK);
+    const copies = await db
+      .select({ id: message.id, messageIdHeader: message.messageIdHeader })
+      .from(message)
+      .where(
+        and(
+          inArray(message.transportId, propertyTransportIds),
+          inArray(message.messageIdHeader, headers),
+        ),
+      );
+    for (const copy of copies) {
+      const header = canonicalMessageId(copy.messageIdHeader);
+      if (header) messageHeaderById.set(copy.id, header);
+    }
+  }
+
   // Pass 1, unlocked: collect every candidate id across the chunks.
   const candidateIds = new Set<string>();
+  const sameTransportCandidateIds = new Set<string>();
   for (
     let start = 0;
     start < Math.max(sourceIds.length, allPrefetchKeys.length);
@@ -1291,21 +1528,51 @@ async function loadReusableHmsRuns(
           or(...candidatePredicates),
         ),
       );
+    for (const row of found) {
+      candidateIds.add(row.id);
+      sameTransportCandidateIds.add(row.id);
+    }
+  }
+
+  const copyMessageIds = [...messageHeaderById.keys()];
+  for (let start = 0; start < copyMessageIds.length; start += HMS_BATCH_INSERT_CHUNK) {
+    const ids = copyMessageIds.slice(start, start + HMS_BATCH_INSERT_CHUNK);
+    const found = await db
+      .select({ id: aiWorkflowRun.id })
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          inArray(aiWorkflowRun.transportId, propertyTransportIds),
+          inArray(aiWorkflowRun.triggerMessageId, ids),
+          eq(aiWorkflowRun.runKind, 'read_tool'),
+          eq(aiWorkflowRun.executorLane, 'hms'),
+          eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+          or(
+            inArray(aiWorkflowRun.state, ['queued', 'claimed', 'running', 'retry_wait']),
+            and(
+              eq(aiWorkflowRun.state, 'succeeded'),
+              gte(aiWorkflowRun.finishedAt, new Date(now.getTime() - HMS_BATCH_RESULT_FRESH_MS)),
+            ),
+          ),
+        ),
+      );
     for (const row of found) candidateIds.add(row.id);
   }
-  if (candidateIds.size === 0) return [];
+  if (candidateIds.size === 0) return { runs: [], sameTransportCandidateIds, messageHeaderById };
   // Pass 2 locks every candidate in ONE statement, in id order, before any insert. The restart sweep also locks in
   // id order, so the two cannot wait on each other; a lock statement per chunk could.
-  return db
+  const runs = await db
     .select()
     .from(aiWorkflowRun)
     .where(inArray(aiWorkflowRun.id, [...candidateIds]))
     .orderBy(aiWorkflowRun.id)
     .for('update');
+  return { runs, sameTransportCandidateIds, messageHeaderById };
 }
 
 function hmsBatchLink(input: {
   batchId: string;
+  batchTransportId: string;
   itemIndex: number;
   workItemId: string;
   linkedRunId: string;
@@ -1343,6 +1610,7 @@ function hmsBatchSkippedValues(
     metrics: {
       hmsJob: false,
       batchId: input.batchId,
+      batchTransportId: input.transportId,
       itemIndex,
       batchItemStatus: 'skipped',
       batchItemReason: reason,
@@ -1423,13 +1691,24 @@ export async function enqueueHmsBatch(
     });
     const reusable = await loadReusableHmsRuns(scoped, input, requested, now);
     const reusableBySignature = new Map<string, AiWorkflowRun[]>();
-    for (const run of reusable) {
+    const reusableByMessageSignature = new Map<string, AiWorkflowRun[]>();
+    for (const run of reusable.runs) {
       const request = hmsJobRequestSchema.safeParse(run.readRequest);
       if (!request.success || !isReusableHmsRun(run, request.data, now)) continue;
       const signature = batchReuseSignature(request.data, runPropertyCode(run));
-      reusableBySignature.set(signature, [...(reusableBySignature.get(signature) ?? []), run]);
+      if (reusable.sameTransportCandidateIds.has(run.id)) {
+        reusableBySignature.set(signature, [...(reusableBySignature.get(signature) ?? []), run]);
+      }
+      const messageHeader = reusable.messageHeaderById.get(run.triggerMessageId);
+      if (messageHeader) {
+        const messageSignature = `${messageHeader}\n${signature}`;
+        reusableByMessageSignature.set(messageSignature, [
+          ...(reusableByMessageSignature.get(messageSignature) ?? []),
+          run,
+        ]);
+      }
     }
-    for (const runs of reusableBySignature.values()) {
+    for (const runs of [...reusableBySignature.values(), ...reusableByMessageSignature.values()]) {
       runs.sort((left, right) => {
         const leftActive =
           left.state === 'queued' ||
@@ -1458,10 +1737,16 @@ export async function enqueueHmsBatch(
 
       const request = selection.request;
       const signature = batchReuseSignature(request, selection.target.propertyCode);
-      const linkedRun = reusableBySignature.get(signature)?.[0];
+      const messageSignature = source.messageIdHeader
+        ? `${source.messageIdHeader}\n${signature}`
+        : null;
+      const linkedRun =
+        (messageSignature ? reusableByMessageSignature.get(messageSignature)?.[0] : undefined) ??
+        reusableBySignature.get(signature)?.[0];
       if (linkedRun) {
         const link = hmsBatchLink({
           batchId: input.batchId,
+          batchTransportId: input.transportId,
           itemIndex,
           workItemId: source.workItemId,
           linkedRunId: linkedRun.id,
@@ -1479,6 +1764,7 @@ export async function enqueueHmsBatch(
           plannedRun,
           hmsBatchLink({
             batchId: input.batchId,
+            batchTransportId: input.transportId,
             itemIndex,
             workItemId: source.workItemId,
             linkedRunId: String(plannedRun.id),
@@ -1500,6 +1786,7 @@ export async function enqueueHmsBatch(
         nextRunAt: now,
         extraMetrics: {
           batchId: input.batchId,
+          batchTransportId: input.transportId,
           itemIndex,
           batchItemStatus: 'queued',
           ...hmsReadAuditMetrics({
@@ -1521,7 +1808,7 @@ export async function enqueueHmsBatch(
         .onConflictDoNothing({ target: aiWorkflowRun.idempotencyKey });
     }
     for (const [runId, links] of linksByExistingRunId) {
-      const run = reusable.find((candidate) => candidate.id === runId);
+      const run = reusable.runs.find((candidate) => candidate.id === runId);
       if (!run) continue;
       const metrics = objectRecord(run.metrics);
       const oldLinks = Array.isArray(metrics.batchLinks) ? metrics.batchLinks : [];
@@ -1582,19 +1869,38 @@ async function enqueuePreparedQuoteWithinCap(
       ))`,
     );
     const scoped = tx as unknown as DB;
+    const copies = await hmsMailCopiesForMessage(scoped, input.transportId, input.triggerMessageId);
+    const storedIdentity =
+      copies.propertyCode && copies.messageIdHeader
+        ? hmsMailReadIdempotencyKey(
+            copies.propertyCode,
+            copies.messageIdHeader,
+            input.request,
+            input.createdAt ?? new Date(),
+            input.idempotencyKey,
+            input.threadId,
+          )
+        : input.idempotencyKey;
+    await tx.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(
+        ${'hms-prefetch:staff_quote_identity:' + storedIdentity}, 0
+      ))`,
+    );
     const existing = await scoped
-      .select({ id: aiWorkflowRun.id, idempotencyKey: aiWorkflowRun.idempotencyKey, state: aiWorkflowRun.state })
+      .select({ state: aiWorkflowRun.state })
       .from(aiWorkflowRun)
       .where(
         and(
-          eq(aiWorkflowRun.transportId, input.transportId),
-          eq(aiWorkflowRun.triggerMessageId, input.triggerMessageId),
           sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
           sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
-          sql`left(${aiWorkflowRun.idempotencyKey}, length(${input.idempotencyKey})) = ${input.idempotencyKey}`,
+          sql`left(${aiWorkflowRun.idempotencyKey}, length(${storedIdentity})) = ${storedIdentity}`,
         ),
       );
-    if (existing.some((run) => run.state !== 'dead_letter' && run.state !== 'superseded')) return false;
+    if (existing.some((run) => run.state !== 'dead_letter' && run.state !== 'superseded')) {
+      // Let enqueueHmsJob attach this mailbox to an active shared result for run-id polling.
+      await enqueueHmsJob(input, scoped);
+      return false;
+    }
     const used = await countRecentPrefetches(
       scoped,
       input.transportId,
@@ -1603,7 +1909,7 @@ async function enqueuePreparedQuoteWithinCap(
     );
     if (used >= perHour) return false;
     const retryInput = existing.length
-      ? { ...input, idempotencyKey: `${input.idempotencyKey}:retry:${randomUUID()}` }
+      ? { ...input, idempotencyKey: `${storedIdentity}:retry:${randomUUID()}` }
       : input;
     const queued = await enqueueHmsJob(retryInput, scoped);
     return queued.created;
@@ -2168,14 +2474,18 @@ async function latestPartyMatchV2ForMessage(
   db: DB,
   source: QuoteReadyMessageSource,
 ): Promise<AiWorkflowRun | null> {
+  const copies = await hmsMailCopiesForMessage(db, source.transportId, source.messageId);
+  const propertyTransportIds = copies.propertyCode
+    ? getPropertyTransportIds(copies.propertyCode)
+    : [source.transportId];
+  if (!propertyTransportIds.length) return null;
   const [run] = await db
     .select()
     .from(aiWorkflowRun)
     .where(
       and(
-        eq(aiWorkflowRun.transportId, source.transportId),
-        eq(aiWorkflowRun.threadId, source.threadId),
-        eq(aiWorkflowRun.triggerMessageId, source.messageId),
+        inArray(aiWorkflowRun.transportId, propertyTransportIds),
+        inArray(aiWorkflowRun.triggerMessageId, copies.messageIds),
         eq(aiWorkflowRun.runKind, 'read_tool'),
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
         eq(aiWorkflowRun.executorLane, 'hms'),
@@ -3573,6 +3883,7 @@ async function latestStaffQuoteRunFor(
   quoteInput: StaffQuoteInput,
   userId: string,
   includeDevEval = false,
+  relatedMessageIds: readonly string[] = [messageId],
 ): Promise<AiWorkflowRun[]> {
   const now = new Date();
   const ownerScope = quotePreparationEnabled()
@@ -3592,9 +3903,14 @@ async function latestStaffQuoteRunFor(
       and(
         scope,
         ownerScope,
-        eq(aiWorkflowRun.triggerMessageId, messageId),
+        inArray(aiWorkflowRun.triggerMessageId, relatedMessageIds),
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
-        sql`${aiWorkflowRun.readRequest}->'input'->>'messageId' = ${messageId}`,
+        or(
+          ...relatedMessageIds.map(
+            (relatedMessageId) =>
+              sql`${aiWorkflowRun.readRequest}->'input'->>'messageId' = ${relatedMessageId}`,
+          ),
+        ),
         // Every success counts when picking the newest: an expired price must not let an older refusal answer.
         or(eq(aiWorkflowRun.state, 'succeeded'), staffQuoteRunFreshness(now)),
       ),
@@ -3610,11 +3926,19 @@ async function latestStaffQuoteRunFor(
   // User quotes are independent per stay. Match the newest run whose stay terms equal this request.
   for (const userRun of rows) {
     const userMetrics = objectRecord(userRun.metrics);
-    if (userMetrics.userId !== userId || (userMetrics.devEval === true && !includeDevEval) || !reusable(userRun)) continue;
+    if (
+      userRun.triggerMessageId !== messageId ||
+      userMetrics.userId !== userId ||
+      (userMetrics.devEval === true && !includeDevEval) ||
+      !reusable(userRun)
+    ) {
+      continue;
+    }
     const parsed = hmsJobRequestSchema.safeParse(userRun.readRequest);
     if (
       parsed.success &&
       parsed.data.kind === 'staff_quote' &&
+      parsed.data.input.messageId === messageId &&
       staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput)
     ) {
       return [userRun];
@@ -3637,25 +3961,29 @@ async function latestStaffQuoteRunFor(
       continue;
     }
     const parsed = hmsJobRequestSchema.safeParse(preparedRun.readRequest);
+    const sameMessageCopy = preparedRun.triggerMessageId === messageId;
     if (
       !parsed.success ||
       parsed.data.kind !== 'staff_quote' ||
-      parsed.data.input.sourceHash !== quoteInput.sourceHash ||
+      parsed.data.input.messageId !== preparedRun.triggerMessageId ||
+      (!sameMessageCopy && !relatedMessageIds.includes(preparedRun.triggerMessageId)) ||
+      (sameMessageCopy && parsed.data.input.sourceHash !== quoteInput.sourceHash) ||
       !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput)
     ) {
       continue;
     }
-    if (!preparedRun.threadId) return [];
+    const approvalTargets = relatedMessageIds.map(
+      (relatedMessageId) =>
+        sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([relatedMessageId])}::jsonb`,
+    );
     const [latestApproval] = await db
       .select({ createdAt: aiDraftGeneration.createdAt })
       .from(aiDraftGeneration)
       .where(
         and(
-          eq(aiDraftGeneration.transportId, preparedRun.transportId),
-          eq(aiDraftGeneration.threadId, preparedRun.threadId),
           eq(aiDraftGeneration.requestedByUserId, userId),
           eq(aiDraftGeneration.model, 'staff-approved-native'),
-          sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([messageId])}::jsonb`,
+          or(...approvalTargets),
         ),
       )
       .orderBy(desc(aiDraftGeneration.createdAt))
@@ -3723,10 +4051,23 @@ export async function readHmsJobView(
       },
   db: DB = getDb(),
 ): Promise<HmsJobView | null> {
-  const staffQuoteByInput = 'kind' in input && input.kind === 'staff_quote';
+  const quoteInput = 'kind' in input && input.kind === 'staff_quote' ? input : null;
+  const staffQuoteByInput = quoteInput !== null;
+  const quoteCopies = quoteInput
+    ? await hmsMailCopiesForMessage(db, quoteInput.transportId, quoteInput.messageId)
+    : null;
+  const quoteTransportIds = quoteCopies?.propertyCode
+    ? getPropertyTransportIds(quoteCopies.propertyCode)
+    : [];
   const staffQuoteByOwner = 'staffQuoteOwnerId' in input && Boolean(input.staffQuoteOwnerId);
   const scope = and(
-    eq(aiWorkflowRun.transportId, input.transportId),
+    or(
+      eq(aiWorkflowRun.transportId, input.transportId),
+      sql`${aiWorkflowRun.metrics}->'sharedTransportIds' @> ${JSON.stringify([input.transportId])}::jsonb`,
+      ...(staffQuoteByInput && quoteTransportIds.length
+        ? [inArray(aiWorkflowRun.transportId, quoteTransportIds)]
+        : []),
+    ),
     eq(aiWorkflowRun.runKind, 'read_tool'),
     eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
     ...('userId' in input && input.userId && !staffQuoteByInput && !staffQuoteByOwner
@@ -3768,8 +4109,16 @@ export async function readHmsJobView(
             ),
           )
           .limit(1)
-      : input.kind === 'staff_quote'
-        ? await latestStaffQuoteRunFor(db, scope, input.messageId, input.input, input.userId)
+      : 'kind' in input && input.kind === 'staff_quote'
+        ? await latestStaffQuoteRunFor(
+            db,
+            scope,
+            input.messageId,
+            input.input,
+            input.userId,
+            false,
+            quoteCopies?.messageIds ?? [input.messageId],
+          )
         : await db
           .select()
           .from(aiWorkflowRun)
@@ -3893,7 +4242,11 @@ export async function readHmsBatchView(
   const items: HmsBatchItemView[] = [];
   for (const run of rows) {
     const metrics = objectRecord(run.metrics);
-    if (metrics.batchId === input.batchId && typeof metrics.itemIndex === 'number') {
+    if (
+      metrics.batchId === input.batchId &&
+      batchTransportMatches(metrics, run.transportId, input.transportId) &&
+      typeof metrics.itemIndex === 'number'
+    ) {
       if (metrics.batchItemStatus === 'skipped') {
         items.push({
           itemIndex: metrics.itemIndex,
@@ -3928,6 +4281,7 @@ export async function readHmsBatchView(
       const link = objectRecord(value);
       if (
         link.batchId !== input.batchId ||
+        !batchTransportMatches(link, run.transportId, input.transportId) ||
         typeof link.itemIndex !== 'number' ||
         typeof link.workItemId !== 'string'
       ) {
@@ -3972,7 +4326,9 @@ export async function cancelHmsBatch(
       const metrics = objectRecord(run.metrics);
       let nextMetrics = metrics;
       let changed = false;
-      const primaryItem = metrics.batchId === input.batchId;
+      const primaryItem =
+        metrics.batchId === input.batchId &&
+        batchTransportMatches(metrics, run.transportId, input.transportId);
       const queued = run.state === 'queued' || run.state === 'retry_wait';
       const cancelPrimary =
         primaryItem &&
@@ -3988,7 +4344,11 @@ export async function cancelHmsBatch(
         let linkChanged = false;
         batchLinks = metrics.batchLinks.map((value) => {
           const link = objectRecord(value);
-          if (link.batchId === input.batchId && link.status === 'reused') {
+          if (
+            link.batchId === input.batchId &&
+            batchTransportMatches(link, run.transportId, input.transportId) &&
+            link.status === 'reused'
+          ) {
             linkChanged = true;
             return { ...link, status: 'cancelled' };
           }
