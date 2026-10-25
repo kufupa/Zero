@@ -277,9 +277,10 @@ describe('availability quote request property', () => {
 });
 
 describe('worker HRCEN hardcode', () => {
-  it('read_tool default property remains Centurion on the non-quote/non-folio branch', () => {
+  it('read_tool has no HRCEN default when HMS_EXPECTED_PROPERTY_CODE is unset', () => {
     const src = readFileSync(fileURLToPath(new URL('../src/ai/worker.ts', import.meta.url)), 'utf8');
-    expect(src).toMatch(/: 'HRCEN'/);
+    expect(src).toMatch(/readToolExpectedPropertyCode/);
+    expect(src).not.toMatch(/: 'HRCEN'/);
   });
 });
 

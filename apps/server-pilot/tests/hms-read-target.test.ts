@@ -8,6 +8,7 @@ import {
   DAVINCI_STAFF_TRANSPORT_IDS,
   assertPropertyQuoteReady,
   hmsDavinciReadsEnabled,
+  readToolExpectedPropertyCode,
   hmsReadTargetForTransport,
   hmsReadTargetJobMetrics,
   parseHmsReadTarget,
@@ -88,6 +89,19 @@ describe('hmsReadTargetForTransport', () => {
     }
     expect(() => hmsReadTargetForTransport({ fromAddress: 'guest@example.invalid' })).toThrow(
       expect.objectContaining({ code: 'PRECONDITION_FAILED' }),
+    );
+  });
+});
+
+describe('readToolExpectedPropertyCode', () => {
+  it('uses the registered hotel from env and refuses unset or unknown codes', () => {
+    expect(readToolExpectedPropertyCode({ HMS_EXPECTED_PROPERTY_CODE: 'HRCEN' })).toBe('HRCEN');
+    expect(readToolExpectedPropertyCode({ HMS_EXPECTED_PROPERTY_CODE: 'HRDAV' })).toBe('HRDAV');
+    expect(() => readToolExpectedPropertyCode({})).toThrow(
+      expect.objectContaining({ cause: expect.objectContaining({ code: 'not_set_up' }) }),
+    );
+    expect(() => readToolExpectedPropertyCode({ HMS_EXPECTED_PROPERTY_CODE: 'HRFAKE' })).toThrow(
+      expect.objectContaining({ cause: expect.objectContaining({ code: 'property_unknown' }) }),
     );
   });
 });

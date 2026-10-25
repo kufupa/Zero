@@ -52,6 +52,13 @@ function targetForRegisteredProperty(propertyCode: string): HmsReadTarget {
   });
 }
 
+/** Worker read_tool hotel: env must name an active registry hotel. Unset/unknown/inactive refuse. */
+export function readToolExpectedPropertyCode(env: NodeJS.Dict<string> = process.env): string {
+  const code = env.HMS_EXPECTED_PROPERTY_CODE?.trim() ?? '';
+  if (!code) return refuseProperty({ code: 'not_set_up' });
+  return hmsReadTargetForProperty(code).propertyCode;
+}
+
 /** Quote flag `on` needs secret, slot, origin, installation, and a rate/fields profile. */
 export function assertPropertyQuoteReady(
   propertyCode: string,
