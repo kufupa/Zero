@@ -34,6 +34,7 @@ import {
   lookupLearnedSenderHistory,
   partyHistoryBindEnabled,
   recordSenderParty,
+  withSenderHistoryProperty,
   type RecordSenderPartyInput,
 } from './party-sender-map.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
@@ -43,7 +44,6 @@ import {
   hmsReadTargetForProperty,
   hmsReadTargetForTransport,
   hmsReadTargetJobMetrics,
-  isDaVinciTransport,
   parseHmsReadTarget,
   resolveHmsReadJobTarget,
   type HmsReadTarget,
@@ -483,13 +483,18 @@ export function selectPartyPrefetchRequest(input: {
   payload: unknown;
   sender: string | null;
   body: string | null;
+  propertyCode?: string | null;
 }): Extract<HmsJobRequest, { kind: 'party' }> | null {
   if (quotePrepareKindReason({ kind: input.kind, payload: input.payload }) === 'not_quote') return null;
   const payload = objectRecord(input.payload);
   const agency = typeof payload.agency === 'string' ? payload.agency.trim() : '';
   if (agency.length > 0 && agency.length <= 256)
     return { kind: 'party', name: agency };
-  const suggestion = suggestPartiesFor({ sender: input.sender ?? '', body: input.body ?? '' })[0];
+  const suggestion = suggestPartiesFor({
+    sender: input.sender ?? '',
+    body: input.body ?? '',
+    propertyCode: input.propertyCode,
+  })[0];
   if (!suggestion || !suggestion.name.trim() || suggestion.name.trim().length > 256) return null;
   return { kind: 'party', name: suggestion.name.trim() };
 }
@@ -502,6 +507,7 @@ export function selectPartyMatchV2PrefetchRequest(input: {
   subject?: string | null;
   body: string | null;
   allowLearnedSenderHistory?: boolean;
+  historyPropertyCode?: string | null;
 }): Extract<HmsJobRequest, { kind: 'party' }> | null {
   if (
     quotePrepareKindReason({ kind: input.kind, payload: input.payload, subject: input.subject }) === 'not_quote'
@@ -514,6 +520,7 @@ export function selectPartyMatchV2PrefetchRequest(input: {
     subject: input.subject,
     body: input.body,
     allowLearnedSenderHistory: input.allowLearnedSenderHistory,
+    historyPropertyCode: input.historyPropertyCode,
   });
   const first = planPartySearches(candidates)[0];
   if (!first || !first.candidateName.trim() || first.candidateName.length > 256) return null;
@@ -2314,13 +2321,15 @@ export async function prefetchPartyForExtraction(
         sender: source.fromAddress,
         subject: source.subject,
         body: source.textBody,
-        allowLearnedSenderHistory: isCenturionPartyHistoryTarget(null, run.transportId),
+        allowLearnedSenderHistory: Boolean(partyHistoryPropertyCode(target)),
+        historyPropertyCode: partyHistoryPropertyCode(target),
       })
     : selectPartyPrefetchRequest({
         kind: source.kind,
         payload: source.payload,
         sender: source.fromAddress,
         body: source.textBody,
+        propertyCode: partyHistoryPropertyCode(target),
       });
   if (!request || env.HMS_PREFETCH_PER_HOUR <= 0) return 0;
   const queued = await enqueuePartyPrefetchWithinCap(
@@ -2558,18 +2567,19 @@ export async function evaluateQuoteReadyForMessage(
     const partyMetrics = objectRecord(partyRun.metrics);
     const hasRecordedTarget = partyMetrics.hmsReadTarget !== undefined;
     const target = hasRecordedTarget ? parseHmsReadTarget(partyMetrics.hmsReadTarget) : null;
-    const allowLearnedSenderHistory =
-      !isDaVinciTransport(source.transportId) &&
-      (!hasRecordedTarget || target?.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode);
-    parties = confidentPartyFromV2Result({
-      payload: source.payload,
-      fromAddress: source.fromAddress,
-      subject: source.subject,
-      body: source.textBody ?? source.htmlBody,
-      quoteLlmParty,
-      allowLearnedSenderHistory,
-      result: partyRun.readResult,
-    });
+    const historyProperty = partyHistoryPropertyCode(target);
+    const allowLearnedSenderHistory = Boolean(historyProperty);
+    const readParties = () =>
+      confidentPartyFromV2Result({
+        payload: source.payload,
+        fromAddress: source.fromAddress,
+        subject: source.subject,
+        body: source.textBody ?? source.htmlBody,
+        quoteLlmParty,
+        allowLearnedSenderHistory,
+        result: partyRun.readResult,
+      });
+    parties = historyProperty ? withSenderHistoryProperty(historyProperty, readParties) : readParties();
   }
   const plan = buildPreparedStaffQuotePlan({
     messageId: source.messageId,
@@ -2813,19 +2823,18 @@ async function executePartyMatchV2(input: {
     body: source.textBody,
     quoteLlmParty,
   };
-  const historyTargetAllowed = isCenturionPartyHistoryTarget(
-    readTarget,
-    input.run.transportId,
-  );
+  const historyProperty = partyHistoryPropertyCode(readTarget);
+  const historyTargetAllowed = Boolean(historyProperty);
   const candidates = buildPartyMatchCandidates({
     ...emailInput,
     allowLearnedSenderHistory: historyTargetAllowed,
+    historyPropertyCode: historyProperty,
   });
   const context: PartyMatchEmailContext = partyMatchEmailContext(emailInput);
   const senderHost = source.fromAddress?.match(/@([a-z0-9.-]+)/i)?.[1]?.toLowerCase().replace(/\.+$/, '');
   const learnedSender =
     partyHistoryBindEnabled(process.env) && historyTargetAllowed && senderHost
-      ? lookupLearnedSenderHistory(senderHost)
+      ? lookupLearnedSenderHistory(senderHost, historyProperty)
       : null;
   const { partyMatchV3Enabled, runPartyMatchV3 } = await import('./party-match-v3.js');
   if (partyMatchV3Enabled(process.env)) {
@@ -3243,7 +3252,7 @@ export function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): {
   };
 }
 
-type SenderPartyObservation = Omit<RecordSenderPartyInput, 'host'>;
+type SenderPartyObservation = Omit<RecordSenderPartyInput, 'host' | 'propertyCode'>;
 
 function senderPartyObservation(
   kind: 'company' | 'agency',
@@ -3304,14 +3313,9 @@ function senderHostFromAddress(address: string): string | null {
     .replace(/\.+$/, '') ?? null;
 }
 
-export function isCenturionPartyHistoryTarget(
-  target: HmsReadTarget | null,
-  transportId: string,
-): boolean {
-  return (
-    !isDaVinciTransport(transportId) &&
-    (!target || target.propertyCode === CENTURION_HMS_READ_TARGET.propertyCode)
-  );
+export function partyHistoryPropertyCode(target: HmsReadTarget | null): string | null {
+  const code = target?.propertyCode?.trim();
+  return code || null;
 }
 
 export function staffQuoteCanTeachSenderHistory(
@@ -3404,17 +3408,14 @@ async function recordSenderHistoryAfterRead(
   parties: readonly SenderPartyObservation[],
   target: HmsReadTarget | null,
 ): Promise<void> {
-  if (
-    !parties.length ||
-    !partyHistoryBindEnabled(process.env) ||
-    !isCenturionPartyHistoryTarget(target, run.transportId)
-  ) return;
+  const propertyCode = partyHistoryPropertyCode(target);
+  if (!parties.length || !partyHistoryBindEnabled(process.env) || !propertyCode) return;
   try {
     const host = await firstDirectInboundSenderHost(db, run);
     if (!host) return;
     const party = selectSenderPartyForHost(host, parties);
     if (!party) return;
-    await recordSenderParty(db, { host, ...party });
+    await recordSenderParty(db, { propertyCode, host, ...party });
   } catch {
     console.warn('party_sender_map_write_failed', { count: 1 });
   }
@@ -3589,7 +3590,7 @@ export async function executeHmsJob(input: {
             iata: null,
           });
         }
-        await recordSenderHistoryAfterRead(db, run, selectedParties, null);
+        await recordSenderHistoryAfterRead(db, run, selectedParties, jobTarget);
       }
       return 'succeeded';
     } catch (error) {

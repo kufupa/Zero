@@ -47,10 +47,13 @@ async function main(): Promise<void> {
       console.log('loaded 0');
       return;
     }
-    await db.insert(partySenderMap).values(rows).onConflictDoUpdate({
-      target: partySenderMap.host,
-      set: { kind: sql`excluded.kind`, name: sql`excluded.name`, support: sql`excluded.support` },
-    });
+    await db
+      .insert(partySenderMap)
+      .values(rows.map((row) => ({ ...row, propertyCode: 'HRCEN' })))
+      .onConflictDoUpdate({
+        target: [partySenderMap.propertyCode, partySenderMap.host],
+        set: { kind: sql`excluded.kind`, name: sql`excluded.name`, support: sql`excluded.support` },
+      });
     console.log(`loaded ${rows.length}`);
   } finally {
     await conn.end();

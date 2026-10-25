@@ -97,12 +97,15 @@ function suggestPartyFromDomain(sender: unknown): PartySuggestion | null {
 }
 
 /** Suggests the party a sender's domain belongs to. Null when the domain is not in the table. */
-export function suggestPartyFromSender(sender: unknown): PartySuggestion | null {
+export function suggestPartyFromSender(
+  sender: unknown,
+  propertyCode?: string | null,
+): PartySuggestion | null {
   const fromDomain = suggestPartyFromDomain(sender);
   if (fromDomain) return fromDomain;
   const host = senderHost(sender);
   if (!host) return null;
-  const learned = lookupLearnedSenderParty(host);
+  const learned = lookupLearnedSenderParty(host, propertyCode);
   if (!learned) return null;
   return unverifiedSuggestion(learned.kind, learned.name);
 }
@@ -157,7 +160,11 @@ export type PartySuggestionView = {
  * Suggestions for the picker, ranked body mention > learned sender history > domain alias. Domain is a suggestion
  * only and never carries an HMS id. A name from the body never carries one either; staff confirm it with Find in HMS.
  */
-export function suggestPartiesFor(input: { sender?: string; body?: string }): PartySuggestionView[] {
+export function suggestPartiesFor(input: {
+  sender?: string;
+  body?: string;
+  propertyCode?: string | null;
+}): PartySuggestionView[] {
   const out: PartySuggestionView[] = [];
   const seen = new Set<string>();
   const push = (row: PartySuggestionView) => {
@@ -171,7 +178,7 @@ export function suggestPartiesFor(input: { sender?: string; body?: string }): Pa
   }
   const host = senderHost(input.sender);
   if (host) {
-    const history = lookupLearnedSenderHistory(host);
+    const history = lookupLearnedSenderHistory(host, input.propertyCode);
     if (history) push({ source: 'sender', ...unverifiedSuggestion(history.kind, history.name) });
     const fromDomain = suggestPartyFromDomain(input.sender);
     if (fromDomain) push({ source: 'sender', ...fromDomain });

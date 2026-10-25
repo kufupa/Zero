@@ -191,4 +191,23 @@ describe('suggestPartiesFor rank', () => {
       { source: 'body', kind: 'agency', name: 'Harbor Travel', nativeId: null, idStatus: 'unverified' },
     ]);
   });
+
+  it('does not suggest a Centurion history row for a Da Vinci hotel', () => {
+    replaceLearnedSenderMapForTests([
+      {
+        propertyCode: 'HRCEN',
+        host: 'learned-agency.test',
+        kind: 'agency',
+        name: 'Centurion Only',
+        support: 3,
+      },
+    ]);
+    expect(
+      suggestPartiesFor({
+        sender: 'ops@learned-agency.test',
+        body: '',
+        propertyCode: 'HRDAV',
+      }),
+    ).toEqual([]);
+  });
 });

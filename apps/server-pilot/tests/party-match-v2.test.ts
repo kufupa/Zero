@@ -319,6 +319,26 @@ describe('party sender history candidates', () => {
 
     expect(history?.strength).toBe('weak');
   });
+
+  it('does not attach Centurion history when matching a Da Vinci hotel', () => {
+    vi.stubEnv('PARTY_HISTORY_BIND', 'on');
+    replaceLearnedSenderMapForTests([
+      {
+        propertyCode: 'HRCEN',
+        host: 'agency.example.test',
+        kind: 'agency',
+        name: 'Harbor Travel',
+        support: 2,
+      },
+    ]);
+    expect(
+      buildPartyMatchCandidates({
+        fromAddress: 'agent@agency.example.test',
+        allowLearnedSenderHistory: true,
+        historyPropertyCode: 'HRDAV',
+      }),
+    ).not.toContainEqual(expect.objectContaining({ source: 'sender_history' }));
+  });
 });
 
 describe('PARTY MATCH V2 binding', () => {
