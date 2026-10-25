@@ -50,6 +50,7 @@ import {
 } from '../hms/hms-read-target.js';
 import { PropertyRefusalCause } from '../hms/property-refusal.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { quotePaneConfigForProperty } from '../hms/rate-catalogue.js';
 import {
   acquisitionWithin,
   isPropertyReadLockDeadline,
@@ -2603,7 +2604,7 @@ export async function evaluateQuoteReadyForMessage(
   };
 }
 
-/** One userless, low-priority staff-quote read per complete future stay. Extra strategies are U6b. */
+/** One userless, low-priority staff-quote read per allowed registry strategy per complete future stay. */
 export async function prefetchQuoteReadyForExtraction(
   run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
   db: DB = getDb(),
@@ -2627,10 +2628,11 @@ export async function prefetchQuoteReadyForExtraction(
     env,
   });
   if (!target.ok) return 0;
+  const paneConfig = await quotePaneConfigForProperty(target.target.propertyCode, evaluation.transportId);
   const workItemId = await latestWorkItemId(db, evaluation.transportId, evaluation.threadId);
   const perHour = quotePreparationPerHour(env);
   let created = 0;
-  for (const shop of quoteShopJobsForPlan(evaluation.plan)) {
+  for (const shop of quoteShopJobsForPlan(evaluation.plan, paneConfig?.salesStrategies ?? [])) {
     const digest = createHash('sha256').update(JSON.stringify(shop.input)).digest('hex');
     const queued = await enqueuePreparedQuoteWithinCap(
       db,

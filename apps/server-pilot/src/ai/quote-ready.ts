@@ -1,3 +1,4 @@
+import type { QuoteSalesStrategy } from '../hms/rate-catalogue.js';
 import { mailExtractionPayloadSchema } from './extraction/schema.js';
 import { addDays } from './stay-date-anchoring.js';
 import { applyPartyBindRule, buildPartyMatchCandidates, type PartyMatchRow } from './party-match-v2.js';
@@ -21,9 +22,29 @@ export type QuoteShopJob = {
   input: StaffQuoteInput;
 };
 
-/** One BAR/Government shop per stay. Extra strategies are U6b. */
-export function quoteShopJobsForPlan(plan: PreparedStaffQuotePlan): QuoteShopJob[] {
-  return plan.inputs.map((input) => ({ input }));
+/** One shop per allowed registry strategy per stay. Primaries first, then extras with BAR first. */
+export function quoteShopJobsForPlan(
+  plan: PreparedStaffQuotePlan,
+  strategies: readonly QuoteSalesStrategy[] = [],
+): QuoteShopJob[] {
+  if (strategies.length === 0) {
+    return plan.inputs.map((input) => ({ input }));
+  }
+  const ordered = [...strategies].sort(
+    (left, right) => Number(right.code === 'BAR') - Number(left.code === 'BAR'),
+  );
+  const allowed = new Set(ordered.map((strategy) => strategy.requestValue));
+  const primary = plan.inputs
+    .filter((input) => allowed.has(input.salesStrategy))
+    .map((input) => ({ input }));
+  const extras = plan.inputs.flatMap((input) =>
+    ordered
+      .filter((strategy) => strategy.requestValue !== input.salesStrategy)
+      .map((strategy) => ({
+        input: { ...input, salesStrategy: strategy.requestValue },
+      })),
+  );
+  return [...primary, ...extras];
 }
 
 function record(value: unknown): Record<string, unknown> | null {
