@@ -5,6 +5,7 @@ import {
   bindStaffQuoteStrategies,
   resolveNativeRoomCodes,
   staffQuoteGroupsFromStay,
+  type StaffQuoteJobQuery,
 } from '../lib/quote-workflow/staff-quote-bind';
 import {
   HRCEN_PROPERTY_CODE,
@@ -203,8 +204,9 @@ describe('staff quote strategy comparisons', () => {
   }
 
   it('binds every configured strategy independently and keeps no-room results partial', async () => {
-    const staffQuoteJob = vi.fn(async (lookup: { runId?: string; input?: Record<string, unknown> }) => {
-      const request = lookup.input ?? {};
+    const staffQuoteJob = vi.fn<StaffQuoteJobQuery>(async (lookup) => {
+      if (!('input' in lookup)) return null;
+      const request = lookup.input as unknown as Record<string, unknown>;
       const salesStrategy = String(request.salesStrategy);
       const runId = `run-${salesStrategy}`;
       return salesStrategy === 'WS'
@@ -212,6 +214,8 @@ describe('staff quote strategy comparisons', () => {
             runId,
             status: 'done' as const,
             prefetch: true,
+            asOf: new Date().toISOString(),
+            failureClass: null,
             request: { kind: 'staff_quote' as const, input: request as never },
             result: {
               ok: false,
@@ -223,6 +227,8 @@ describe('staff quote strategy comparisons', () => {
             runId,
             status: 'done' as const,
             prefetch: true,
+            asOf: new Date().toISOString(),
+            failureClass: null,
             request: { kind: 'staff_quote' as const, input: request as never },
             result: queuedQuote(salesStrategy, args.groups[0]!),
           };
@@ -240,7 +246,7 @@ describe('staff quote strategy comparisons', () => {
       message: expect.stringMatching(/no rate/i),
     });
     expect(staffQuoteJob).toHaveBeenCalledTimes(6);
-    expect(staffQuoteJob.mock.calls.map(([lookup]) => lookup.input?.salesStrategy).sort()).toEqual(
+    expect(staffQuoteJob.mock.calls.map(([lookup]) => ('input' in lookup ? lookup.input.salesStrategy : '')).sort()).toEqual(
       ['BAR', 'Government', 'NC', 'PRESET', 'PROMO', 'WS'].sort(),
     );
     expect(results.find((item) => item.strategyCode === 'BAR')).toMatchObject({
@@ -291,13 +297,16 @@ describe('staff quote strategy comparisons', () => {
       { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
       { code: 'GOV', label: 'Government', requestValue: 'Government' },
     ];
-    const staffQuoteJob = vi.fn(async (lookup: { runId?: string; input?: Record<string, unknown> }) => {
-      const request = lookup.input ?? {};
+    const staffQuoteJob = vi.fn<StaffQuoteJobQuery>(async (lookup) => {
+      if (!('input' in lookup)) return null;
+      const request = lookup.input as unknown as Record<string, unknown>;
       const runId = `run-${request.salesStrategy}`;
       return {
         runId,
         status: 'done' as const,
         prefetch: true,
+        asOf: new Date().toISOString(),
+        failureClass: null,
         request: { kind: 'staff_quote' as const, input: request as never },
         result: queuedQuote(String(request.salesStrategy), stay()),
       };
@@ -310,6 +319,6 @@ describe('staff quote strategy comparisons', () => {
       staffQuoteJob,
     });
 
-    expect(staffQuoteJob.mock.calls.map(([lookup]) => lookup.input?.salesStrategy).sort()).toEqual(['BAR', 'Government']);
+    expect(staffQuoteJob.mock.calls.map(([lookup]) => ('input' in lookup ? lookup.input.salesStrategy : '')).sort()).toEqual(['BAR', 'Government']);
   });
 });

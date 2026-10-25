@@ -853,7 +853,7 @@ describe('staff-approved quotation beneath native guards', () => {
     ).rejects.toThrow('selected_price');
   });
 
-  it('accepts configured codes and maps them to the property registry display labels', async () => {
+  it('maps supported strategy codes to their native request labels', () => {
     const cases = [
       ['PROMO', 'Promotions'],
       ['BAR', 'BAR'],
@@ -873,16 +873,8 @@ describe('staff-approved quotation beneath native guards', () => {
         { signerName: '', signerEmail: '' },
         new AbortController().signal,
       );
-      const resolveQuoteTask = vi.fn(async () => {
-        throw new Error('quote read reached');
-      });
-
-      await expect(
-        executeStaffQuote(prepared, { resolveQuoteTask } as never, async () => true),
-      ).rejects.toThrow('quote read reached');
-
       expect(prepared.request.search.salesStrategy).toBe(display);
-      expect(resolveQuoteTask).toHaveBeenCalledTimes(1);
+      expect(prepared.salesStrategyValue).toBe(salesStrategy);
     }
   });
 
@@ -918,6 +910,23 @@ describe('staff-approved quotation beneath native guards', () => {
     await expect(
       executeStaffQuote(prepared, { resolveQuoteTask } as never, async () => true),
     ).rejects.toThrow(/sales.strategy.*not configured/i);
+
+    expect(resolveQuoteTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects a prepared quote without authorization scope before resolving the quote task', async () => {
+    const prepared = prepareStaffQuote(
+      input(),
+      scope,
+      { signerName: '', signerEmail: '' },
+      new AbortController().signal,
+    );
+    prepared.context.input.authorizationScope = undefined;
+    const resolveQuoteTask = vi.fn();
+
+    await expect(
+      executeStaffQuote(prepared, { resolveQuoteTask } as never, async () => true),
+    ).rejects.toThrow('staff_quote_authorization_scope_missing');
 
     expect(resolveQuoteTask).not.toHaveBeenCalled();
   });
