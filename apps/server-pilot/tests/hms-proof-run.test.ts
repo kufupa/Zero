@@ -201,6 +201,40 @@ describe('hms-proof-run refusals', () => {
     }
   });
 
+  it('counts a returned execution_failure toward the cell attempt cap', async () => {
+    const { createLock } = createLockSpy();
+    paneStayLookupLoaders.spawn = vi.fn(async () => ({
+      outcome: 'execution_failure',
+      reason: 'browser_error',
+      stay: null,
+      rows: [],
+      screenshots: [],
+    }));
+    const outDir = await mkdtemp(join(tmpdir(), 'hms-proof-cell-fail-'));
+    const cellDir = join(outDir, 'cells');
+    const cell = 'hrdav-quote-fail';
+    const env = {
+      ...WRITE_LAB,
+      NAVA_PROOF_CELL_DIR: cellDir,
+      NAVA_RUN_HOLD_FILE: join(outDir, 'no-hold'),
+    };
+    try {
+      for (let i = 0; i < 2; i += 1) {
+        const line = await hmsProofRun(
+          parseProofRunArgs(argv('find', LAB, { out: outDir, cell })),
+          env,
+          createLock,
+        );
+        expect(line.outcome).toBe('execution_failure');
+      }
+      await expect(
+        hmsProofRun(parseProofRunArgs(argv('find', LAB, { out: outDir, cell })), env, createLock),
+      ).rejects.toThrow(/refused_cell_attempt/);
+    } finally {
+      await rm(outDir, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a non-Labtest request before any lock or spawn', async () => {
     const { createLock } = createLockSpy();
     const spawn = vi.fn();

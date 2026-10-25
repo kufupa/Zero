@@ -156,7 +156,9 @@ describe('write-ec2-remote-env.sh canary SHA', () => {
     }
     const canary = join(root, 'CANARY.txt');
     if (opts.canaryLine !== null) writeFileSync(canary, `${opts.canaryLine}\n`);
-    writeFileSync(join(stubDir, 'id'), '#!/usr/bin/env bash\nprintf ubuntu\\n\n', { mode: 0o755 });
+    writeFileSync(join(stubDir, 'id'), '#!/usr/bin/env bash\nprintf "%s\\n" ubuntu\n', {
+      mode: 0o755,
+    });
     chmodSync(join(stubDir, 'id'), 0o755);
     writeFileSync(
       join(stubDir, 'stat'),

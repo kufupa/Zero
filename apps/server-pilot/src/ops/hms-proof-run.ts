@@ -414,6 +414,9 @@ export async function hmsProofRun(
       ...(stripGuest(result) as Record<string, unknown>),
       screenshots,
     };
+    if (args.cell && proofFailed(line)) {
+      recordCellFailure({ cell: args.cell, dir: cellDir });
+    }
     return line;
   } catch (error) {
     if (args.cell) recordCellFailure({ cell: args.cell, dir: cellDir });
@@ -486,11 +489,14 @@ async function runCommand(
   );
 }
 
-function proofExitCode(result: Record<string, unknown>): number {
-  if (result.status === 'refused') return 2;
+function proofFailed(result: Record<string, unknown>): boolean {
+  if (result.status === 'refused') return true;
   const outcome = result.outcome;
-  if (typeof outcome === 'string' && /refus|fail|execution_failure/.test(outcome)) return 2;
-  return 0;
+  return typeof outcome === 'string' && /refus|fail|execution_failure/.test(outcome);
+}
+
+function proofExitCode(result: Record<string, unknown>): number {
+  return proofFailed(result) ? 2 : 0;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {

@@ -216,7 +216,7 @@ function parse(path) {
   return map;
 }
 function isOn(value) {
-  return value === "on";
+  return /^(on|true|1)$/i.test(String(value ?? ""));
 }
 function isWorkflow(key) {
   return Object.prototype.hasOwnProperty.call(WORKFLOW, key) || key.endsWith("_ON");
@@ -257,11 +257,18 @@ function workflowMatch(flag, token) {
   const alias = WORKFLOW[flag] || flag;
   return token === flag || token.toLowerCase() === String(alias).toLowerCase();
 }
+const FLAG_PROPERTY = {
+  HMS_DAVINCI_CREATE: "HRDAV",
+  HMS_DAVINCI_MAKE_QUOTE: "HRDAV",
+  HMS_DAVINCI_READS: "HRDAV",
+};
 for (const flag of flips) {
+  const neededProperty = FLAG_PROPERTY[flag];
   const hit = rows.find(
     (row) =>
       workflowMatch(flag, row.workflow) &&
       /^(HRCEN|HRDAV)$/.test(row.property) &&
+      (!neededProperty || row.property === neededProperty) &&
       shaMatch(row.sha, liveSha),
   );
   if (hit) continue;
