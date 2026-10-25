@@ -1709,7 +1709,6 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     case 'quote_strategy_rows_started': {
       if (
         !requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision) ||
-        action.stayRevision !== session.stayRevision ||
         !requestedQuoteKeys(session.groups).includes(action.stayKey)
       ) return session;
       const seen = new Set<string>();
@@ -1731,11 +1730,48 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         status: 'pending' as const,
         selectionEpoch: action.selectionEpoch,
         inputRevision: action.inputRevision,
-        stayRevision: action.stayRevision,
       }]));
+      // Each fan-out request advances the server's latest staff approval. Hide this stay's old selected quote until
+      // staff picks a strategy and its fresh quote run becomes the approval used for the PDF.
+      const invalidatedOffers = session.offers.filter((offer) => offer.quoteRequestKey === action.stayKey);
+      const invalidatedOfferIds = new Set(invalidatedOffers.map((offer) => offer.id));
+      const offers = session.offers.filter((offer) => offer.quoteRequestKey !== action.stayKey);
+      const staffQuotes = { ...session.staffQuotes };
+      delete staffQuotes[action.stayKey];
+      const stayPdfs = { ...session.stayPdfs };
+      delete stayPdfs[action.stayKey];
+      const bookingDrafts = { ...session.bookingDrafts };
+      delete bookingDrafts[action.stayKey];
+      const affectedGroupIds = new Set(
+        session.groups
+          .filter((group) => stayKeyForGroup(group) === action.stayKey)
+          .map((group) => group.id),
+      );
+      const selectedQuoteAffected =
+        session.selectedStayKey === action.stayKey || session.staffQuote?.quoteRequestKey === action.stayKey;
+      const hasResults = Object.keys(staffQuotes).length > 0 || offers.length > 0;
+      const generatedReplySource =
+        session.reviewedReplySource === 'missing_quote_details' ||
+        session.reviewedReplySource === 'quote_decline' ||
+        session.reviewedReplySource === 'quote_generated';
       return {
         ...session,
         quoteStrategyRows: { ...(session.quoteStrategyRows ?? {}), [action.stayKey]: rows },
+        staffQuotes,
+        offers,
+        selectedOfferIds: selectedQuoteAffected
+          ? []
+          : session.selectedOfferIds.filter((id) => !invalidatedOfferIds.has(id)),
+        staffQuote: selectedQuoteAffected ? null : session.staffQuote,
+        stayPdfs,
+        // A combined PDF includes this stay too, so any in-flight strategy refresh invalidates it.
+        pdf: null,
+        bookingDrafts,
+        rateOptions: (session.rateOptions ?? []).filter((option) => !affectedGroupIds.has(option.groupId)),
+        evidence: hasResults ? session.evidence : null,
+        ...(generatedReplySource
+          ? { reviewedReplyHtml: '', reviewedReplySource: undefined, reviewedReplyEdited: false }
+          : {}),
       };
     }
     case 'quote_strategy_result': {
@@ -1750,8 +1786,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
         prior.status !== 'pending' ||
         prior.strategy.requestValue !== action.strategy.requestValue ||
         prior.selectionEpoch !== action.selectionEpoch ||
-        prior.inputRevision !== action.inputRevision ||
-        prior.stayRevision !== action.stayRevision
+        prior.inputRevision !== action.inputRevision
       ) return session;
 
       let row: NonNullable<typeof prior>;

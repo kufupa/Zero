@@ -1614,7 +1614,6 @@ export function NavaPane({
         strategies,
         selectionEpoch,
         inputRevision,
-        stayRevision: quoteSession.stayRevision,
       });
       const isCurrent = () => quoteStayRunIsCurrent(quoteSessionRef.current, {
         selectionEpoch,
@@ -1645,7 +1644,6 @@ export function NavaPane({
             outcome,
             selectionEpoch,
             inputRevision,
-            stayRevision: quoteSession.stayRevision,
           });
         },
       });

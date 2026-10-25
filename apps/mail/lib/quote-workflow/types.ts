@@ -656,7 +656,6 @@ export type QuoteStrategyRow = {
   message?: string;
   selectionEpoch?: number;
   inputRevision?: number;
-  stayRevision?: number;
 };
 
 export type QuoteMailboxStatus = 'unsynced' | 'missing_source' | 'ready' | 'unavailable';
@@ -892,7 +891,6 @@ export type QuoteSessionAction =
       strategies: QuoteSalesStrategy[];
       selectionEpoch: number;
       inputRevision: number;
-      stayRevision: number;
     }
   | {
       type: 'quote_strategy_result';
@@ -901,7 +899,6 @@ export type QuoteSessionAction =
       outcome: QuoteStrategyRowOutcome;
       selectionEpoch: number;
       inputRevision: number;
-      stayRevision: number;
     }
   | {
       type: 'select_quote_strategy';

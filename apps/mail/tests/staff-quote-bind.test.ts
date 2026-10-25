@@ -4,6 +4,7 @@ import {
   bindStaffQuoteStrategyRows,
   resolveNativeRoomCodes,
   staffQuoteGroupsFromStay,
+  type ExecuteStaffQuoteResult,
 } from '../lib/quote-workflow/staff-quote-bind';
 import {
   HRCEN_PROPERTY_CODE,
@@ -181,8 +182,26 @@ describe('staff quote strategy jobs', () => {
 
   it('falls back to executeStaffQuote when the comparison queue is disabled', async () => {
     const queue = vi.fn(async () => ({ runId: null }));
-    const mutate = vi.fn(async () => ({ status: 'unavailable' }));
-    await bindStaffQuoteStrategyRows({
+    const mutate = vi.fn(async (input: { selectionEpoch: number; inputRevision: number }) => {
+      const result: ExecuteStaffQuoteResult = {
+        status: 'ready',
+        workflowRunId: 'run-ws',
+        revisionRef: 'rev-ws',
+        messageId: 'mail-1',
+        threadId: 'thread-1',
+        factRefs: [],
+        selectionEpoch: input.selectionEpoch,
+        inputRevision: input.inputRevision,
+        inputDigest: 'digest-ws',
+        totalMinor: 272_000,
+        currency: 'ZAR',
+        arrivalDate: '2026-11-16',
+        departureDate: '2026-11-17',
+        description: 'Wholesale allocation',
+      };
+      return result;
+    });
+    const rows = await bindStaffQuoteStrategyRows({
       mode: 'staff',
       source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'a'.repeat(64) },
       selectionEpoch: 1,
@@ -198,5 +217,6 @@ describe('staff quote strategy jobs', () => {
 
     expect(queue).toHaveBeenCalledTimes(1);
     expect(mutate).toHaveBeenCalledTimes(1);
+    expect(rows[0]?.outcome).toMatchObject({ status: 'ready', staffQuote: { revisionRef: 'rev-ws' } });
   });
 });

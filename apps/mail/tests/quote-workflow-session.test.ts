@@ -1142,7 +1142,6 @@ describe('quote strategy comparison rows', () => {
       strategies,
       selectionEpoch: session.binding!.selectionEpoch,
       inputRevision: session.inputRevision,
-      stayRevision: session.stayRevision,
     });
     const offer: QuoteOffer = {
       ...authorisedOffer,
@@ -1173,7 +1172,6 @@ describe('quote strategy comparison rows', () => {
       outcome: { status: 'ready', offer, staffQuote, extrasReviewItems: [] },
       selectionEpoch: session.binding!.selectionEpoch,
       inputRevision: session.inputRevision,
-      stayRevision: session.stayRevision,
     });
     session = reduceQuoteSession(session, {
       type: 'quote_strategy_result',
@@ -1182,7 +1180,6 @@ describe('quote strategy comparison rows', () => {
       outcome: { status: 'not_offered', message: 'No rooms for these dates.' },
       selectionEpoch: session.binding!.selectionEpoch,
       inputRevision: session.inputRevision,
-      stayRevision: session.stayRevision,
     });
     session = reduceQuoteSession(session, {
       type: 'quote_strategy_result',
@@ -1191,7 +1188,6 @@ describe('quote strategy comparison rows', () => {
       outcome: { status: 'not_offered', message: 'No rooms for these dates.' },
       selectionEpoch: session.binding!.selectionEpoch,
       inputRevision: session.inputRevision,
-      stayRevision: session.stayRevision,
     });
 
     expect(session.quoteStrategyRows?.[stayKey]?.WS?.status).toBe('ready');
@@ -1228,17 +1224,48 @@ describe('quote strategy comparison rows', () => {
     expect(selected.quoteStrategyRows?.[stayKey]?.WS?.staffQuote?.revisionRef).toBe(pickedOffer.id);
   });
 
+  it('withdraws the previous quote approval while its strategy comparisons are refreshed', () => {
+    let session = withStaffSource(analysisReady());
+    session = reduceQuoteSession(session, staffQuoteFor(STAY_A, 'rev-before-compare', 272_000, session.inputRevision));
+    expect(canCreatePdf(session)).toBe(true);
+
+    session = reduceQuoteSession(session, {
+      type: 'pdf_ready',
+      pdf: quotePdf('rev-before-compare', 272_000),
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+      selectedOfferIds: ['rev-before-compare'],
+    });
+    expect(session.pdf).not.toBeNull();
+
+    const comparing = reduceQuoteSession(session, {
+      type: 'quote_strategy_rows_started',
+      stayKey: STAY_A,
+      strategies: [
+        { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+        { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
+      ],
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+    });
+
+    expect(comparing.staffQuotes[STAY_A]).toBeUndefined();
+    expect(comparing.staffQuote).toBeNull();
+    expect(comparing.selectedOfferIds).toEqual([]);
+    expect(comparing.stayPdfs[STAY_A]).toBeUndefined();
+    expect(comparing.pdf).toBeNull();
+    expect(canCreatePdf(comparing)).toBe(false);
+  });
+
   it('accepts an unchanged stay comparison result after another stay is edited', () => {
     let session = twoDateSession();
     const strategy: QuoteSalesStrategy = { code: 'WS', label: 'Wholesale', requestValue: 'WS' };
-    const startedAt = session.stayRevision;
     session = reduceQuoteSession(session, {
       type: 'quote_strategy_rows_started',
       stayKey: STAY_A,
       strategies: [strategy],
       selectionEpoch: session.binding!.selectionEpoch,
       inputRevision: session.inputRevision,
-      stayRevision: startedAt,
     });
 
     const editedOtherStay = reduceQuoteSession(session, {
@@ -1248,17 +1275,57 @@ describe('quote strategy comparison rows', () => {
     });
     expect(editedOtherStay.quoteStrategyRows?.[STAY_A]?.WS?.status).toBe('pending');
 
+    const offer: QuoteOffer = {
+      ...authorisedOffer,
+      id: 'rev-ws-after-unrelated-edit',
+      sourceRef: 'rev-ws-after-unrelated-edit',
+      quoteRequestKey: STAY_A,
+      coversGroupIds: ['g1'],
+      nightly: [],
+    };
+    const staffQuote: StaffQuoteAllocation = {
+      workflowRunId: 'run-ws-after-unrelated-edit',
+      revisionRef: offer.id,
+      factRefs: [],
+      messageId: 'mail-1',
+      threadId: 'thread-1',
+      sourceHash: STAFF_HASH,
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+      inputDigest: 'cd'.repeat(32),
+      totalMinor: offer.stayTotalMinor,
+      currency: 'ZAR',
+      quoteRequestKey: STAY_A,
+      approvedHeader: { ...emptyHeader(), salesStrategy: 'WS' },
+    };
     const result = reduceQuoteSession(editedOtherStay, {
       type: 'quote_strategy_result',
       stayKey: STAY_A,
       strategy,
-      outcome: { status: 'not_offered', message: 'No rooms for these dates.' },
+      outcome: { status: 'ready', offer, staffQuote, extrasReviewItems: [] },
       selectionEpoch: session.binding!.selectionEpoch,
       inputRevision: session.inputRevision,
-      stayRevision: startedAt,
     });
 
-    expect(result.quoteStrategyRows?.[STAY_A]?.WS?.status).toBe('not_offered');
+    expect(result.quoteStrategyRows?.[STAY_A]?.WS?.status).toBe('ready');
+
+    const selected = reduceQuoteSession(result, {
+      type: 'select_quote_strategy',
+      stayKey: STAY_A,
+      strategyCode: 'WS',
+      offer: { ...offer, id: 'rev-ws-selected-after-edit', sourceRef: 'rev-ws-selected-after-edit' },
+      staffQuote: {
+        ...staffQuote,
+        workflowRunId: 'run-ws-selected-after-edit',
+        revisionRef: 'rev-ws-selected-after-edit',
+      },
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
+      extrasReviewItems: [],
+      approvedHeader: { ...emptyHeader(), salesStrategy: 'WS' },
+    });
+    expect(selected.staffQuote?.revisionRef).toBe('rev-ws-selected-after-edit');
+    expect(selected.groups.find((group) => group.id === 'g2')?.board).toBe('room_only');
   });
 });
 
