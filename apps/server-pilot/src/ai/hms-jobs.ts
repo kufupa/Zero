@@ -1156,12 +1156,9 @@ function staffQuoteShopLabel(request: Extract<HmsJobRequest, { kind: 'staff_quot
   return request.shopStrategy ?? request.input.salesStrategy;
 }
 
-function staffQuoteInputForShop(
-  request: Extract<HmsJobRequest, { kind: 'staff_quote' }>,
-): StaffQuoteInput {
+function staffQuoteRunnerCanShop(request: Extract<HmsJobRequest, { kind: 'staff_quote' }>): boolean {
   const shop = staffQuoteShopLabel(request);
-  if (shop === request.input.salesStrategy) return request.input;
-  return { ...request.input, salesStrategy: shop as StaffQuoteInput['salesStrategy'] };
+  return shop === 'BAR' || shop === 'Government';
 }
 
 function hmsRequestKey(request: HmsJobRequest): string {
@@ -3259,7 +3256,20 @@ export async function executeHmsJob(input: {
       );
       return 'dead_letter';
     }
-    const quoteInput = staffQuoteInputForShop(request);
+    const quoteInput = request.input;
+    if (!staffQuoteRunnerCanShop(request)) {
+      return storeStaffQuoteResult({
+        db,
+        mark,
+        result: {
+          ok: false,
+          code: 'STRATEGY_SHOP_UNAVAILABLE',
+          salesStrategy: staffQuoteShopLabel(request),
+          message: 'This rate type is queued for its own shop; BAR and Government are priced today.',
+        },
+        outcome: 'refused',
+      });
+    }
     try {
       await recordedToolRun(
         {

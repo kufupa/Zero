@@ -71,24 +71,24 @@ export function configuredQuoteShopStrategies(propertyCode: string): string[] {
   return selectQuoteShopStrategies({ configured });
 }
 
-/** One job per stay as today, plus one shop per other allowed strategy. */
+/** Primary BAR/Government shops first so the hourly cap cannot drop a stay. Extras follow. */
 export function quoteShopJobsForPlan(
   plan: PreparedStaffQuotePlan,
   allowed: readonly string[],
 ): QuoteShopJob[] {
-  const jobs: QuoteShopJob[] = [];
+  const primaries: QuoteShopJob[] = plan.inputs.map((input) => ({ input }));
+  const extras: QuoteShopJob[] = [];
   for (const input of plan.inputs) {
-    jobs.push({ input });
     for (const strategy of allowed) {
       if (strategy === input.salesStrategy) continue;
       if (strategy === 'BAR' || strategy === 'Government') {
-        jobs.push({ input: { ...input, salesStrategy: strategy } });
+        extras.push({ input: { ...input, salesStrategy: strategy } });
       } else {
-        jobs.push({ input, shopStrategy: strategy });
+        extras.push({ input, shopStrategy: strategy });
       }
     }
   }
-  return jobs;
+  return [...primaries, ...extras];
 }
 
 function record(value: unknown): Record<string, unknown> | null {

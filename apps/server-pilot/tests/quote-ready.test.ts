@@ -648,4 +648,26 @@ describe('per-strategy quote shop jobs', () => {
   it('uses the Da Vinci allow-list of six shoppable strategies', () => {
     expect(configuredQuoteShopStrategies('HRDAV')).toEqual([...SIX_QUOTE_SHOP_STRATEGIES]);
   });
+
+  it('queues every stay primary before extra strategy shops', () => {
+    const second = payload().stays[0]!;
+    const plan = build({
+      stays: [
+        payload().stays[0]!,
+        {
+          ...second,
+          id: 'stay-2',
+          requested: { arrival: '2026-10-24', departure: '2026-10-27' },
+          rows: second.rows.map((row) => ({ ...row, id: 'row-2' })),
+        },
+      ],
+    });
+    const jobs = quoteShopJobsForPlan(plan, SIX_QUOTE_SHOP_STRATEGIES);
+    expect(jobs).toHaveLength(12);
+    expect(jobs.slice(0, 2).map((job) => job.shopStrategy ?? job.input.salesStrategy)).toEqual([
+      'BAR',
+      'BAR',
+    ]);
+    expect(jobs.slice(0, 2).every((job) => !job.shopStrategy)).toBe(true);
+  });
 });

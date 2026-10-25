@@ -748,34 +748,38 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const rows = await db
         .select()
         .from(aiWorkflowRun)
-        .where(eq(aiWorkflowRun.triggerMessageId, messageId))
-        .orderBy(aiWorkflowRun.createdAt, aiWorkflowRun.id);
+        .where(eq(aiWorkflowRun.triggerMessageId, messageId));
       expect(rows).toHaveLength(6);
-      expect(
-        rows.map((row) => {
-          const request = row.readRequest as {
-            kind?: string;
-            shopStrategy?: string;
-            input?: { salesStrategy?: string };
-          };
-          return {
-            kind: request.kind,
-            shop: request.shopStrategy ?? request.input?.salesStrategy,
-            priority: row.priority,
-            prepared: (row.metrics as { quotePrepared?: boolean } | null)?.quotePrepared,
-          };
-        }),
-      ).toEqual([
-        { kind: 'staff_quote', shop: 'BAR', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
-        { kind: 'staff_quote', shop: 'Wholesale', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
-        { kind: 'staff_quote', shop: 'Negotiated Contracted', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
-        { kind: 'staff_quote', shop: 'Government', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
-        { kind: 'staff_quote', shop: 'Airline Crews', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
-        { kind: 'staff_quote', shop: 'STO', priority: HMS_JOB_PRIORITY_PREFETCH, prepared: true },
+      const shops = rows.map((row) => {
+        const request = row.readRequest as {
+          kind?: string;
+          shopStrategy?: string;
+          input?: { salesStrategy?: string };
+        };
+        return {
+          kind: request.kind,
+          shop: request.shopStrategy ?? request.input?.salesStrategy,
+          shopStrategy: request.shopStrategy,
+          priority: row.priority,
+          prepared: (row.metrics as { quotePrepared?: boolean } | null)?.quotePrepared,
+        };
+      });
+      expect(shops.map((row) => row.shop).sort()).toEqual([
+        'Airline Crews',
+        'BAR',
+        'Government',
+        'Negotiated Contracted',
+        'STO',
+        'Wholesale',
       ]);
-      expect(rows.some((row) => JSON.stringify(row.readRequest).includes('Corporate'))).toBe(false);
-      expect(rows[0]?.readRequest).toMatchObject({ kind: 'staff_quote', input: { salesStrategy: 'BAR' } });
-      expect(rows[0]?.readRequest).not.toHaveProperty('shopStrategy');
+      expect(shops.every((row) => row.kind === 'staff_quote' && row.priority === HMS_JOB_PRIORITY_PREFETCH && row.prepared === true)).toBe(true);
+      expect(shops.some((row) => row.shop === 'Corporate' || row.shopStrategy === 'Corporate')).toBe(false);
+      const bar = rows.find((row) => {
+        const request = row.readRequest as { shopStrategy?: string; input?: { salesStrategy?: string } };
+        return !request.shopStrategy && request.input?.salesStrategy === 'BAR';
+      });
+      expect(bar?.readRequest).toMatchObject({ kind: 'staff_quote', input: { salesStrategy: 'BAR' } });
+      expect(bar?.readRequest).not.toHaveProperty('shopStrategy');
     }));
 
   it('keeps HRCEN BAR and Government as a single prepared job', () =>
