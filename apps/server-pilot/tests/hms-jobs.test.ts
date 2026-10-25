@@ -3139,7 +3139,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         expect(quoteView).toMatchObject({
           runId: preparedQuote!.id,
           request: { kind: 'staff_quote', input: { messageId: copies[0]!.messageId } },
-          result: { status: 'ready', messageId: copy.messageId },
+          result: { status: 'ready', messageId: copies[0]!.messageId },
         });
         expect(quoteView?.sourceMessageId).toBe(copies[0]!.messageId);
       }
@@ -3151,7 +3151,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         },
         db,
       );
-      expect(polledQuote?.result).toMatchObject({ messageId: copies[1]!.messageId });
+      expect(polledQuote?.result).toMatchObject({ messageId: copies[0]!.messageId });
       expect(
         await db.select({ id: workItem.id }).from(workItem).where(inArray(workItem.id, copies.map((copy) => copy.workItemId))),
       ).toHaveLength(3);

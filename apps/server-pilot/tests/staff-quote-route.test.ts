@@ -8,7 +8,6 @@ import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
-import { isSharedPreparedQuoteSourceCopy } from '../src/trpc/routes/workstation.js';
 import { findParty, panePartyLookupLoaders, resetPartyCacheForTests } from '../src/ai/pane-party-lookup.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-synced-selection.js';
 import { FAITH_TRANSPORT_EMAIL, FAITH_USER_ID } from '../src/db/seed.js';
@@ -293,47 +292,6 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-describe('shared prepared quote source checks', () => {
-  const source = {
-    id: 'source-message',
-    transportId: 'transport-davinci',
-    direction: 'inbound',
-    messageIdHeader: '<Shared-U5@Example.Invalid>',
-    subject: 'Quote request',
-    textBody: 'Please quote the stay.',
-    htmlBody: null,
-  } as const;
-  const run = { transportId: source.transportId, triggerMessageId: source.id };
-  const selected = {
-    ...source,
-    id: 'selected-copy',
-    transportId: 'transport-faith',
-    messageIdHeader: 'shared-u5@example.invalid',
-  };
-
-  it('accepts only an identical inbound copy with the same canonical Message-ID at the same property', () => {
-    expect(isSharedPreparedQuoteSourceCopy(run, source, selected)).toBe(true);
-    expect(
-      isSharedPreparedQuoteSourceCopy(run, source, { ...selected, textBody: 'Changed source.' }),
-    ).toBe(false);
-    expect(
-      isSharedPreparedQuoteSourceCopy(run, source, {
-        ...selected,
-        messageIdHeader: 'other@example.invalid',
-      }),
-    ).toBe(false);
-    expect(isSharedPreparedQuoteSourceCopy(run, source, { ...selected, direction: 'outbound' })).toBe(
-      false,
-    );
-    expect(
-      isSharedPreparedQuoteSourceCopy(run, source, {
-        ...selected,
-        transportId: 'transport-centurion',
-      }),
-    ).toBe(false);
-  });
-});
-
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'staff quote route approval ledger (disposable DB, no HMS)',
   () => {
@@ -559,7 +517,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
     });
 
-    it('exports a prepared quote from an unchanged same-property copy, and refuses a changed copy', async () => {
+    it('exports a prepared quote only from its original mailbox and source messageId', async () => {
       await withSeededTestDb(async (db) => {
         installFixture(db, 'HRDAV');
         vi.stubEnv('HMS_JOB_QUEUE', 'on');
@@ -571,19 +529,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const prepared = await seedPreparedQuote(db, request, quote);
         const copy = await seedMailboxCopy(db, request.mail, 'transport-faith');
         const copyApi = caller('transport-faith', FAITH_USER_ID);
-        const input = {
+        const sourceInput = pdfInput({ ...prepared, messageId: request.mail.id });
+        const copyInput = {
           ...pdfInput({ ...prepared, messageId: copy.id }),
           outlookEmail: FAITH_TRANSPORT_EMAIL,
         };
 
-        await expect(copyApi.workstation.qualifiedQuoteProposalPdf(input)).resolves.toMatchObject({
+        await expect(sourceApi.workstation.qualifiedQuoteProposalPdf(sourceInput)).resolves.toMatchObject({
           totalMinor: quote.totalMinor,
         });
-        await db
-          .update(message)
-          .set({ textBody: 'Changed source.' })
-          .where(eq(message.id, copy.id));
-        await expect(copyApi.workstation.qualifiedQuoteProposalPdf(input)).rejects.toMatchObject({
+        await expect(copyApi.workstation.qualifiedQuoteProposalPdf(copyInput)).rejects.toMatchObject({
           code: 'NOT_FOUND',
           message: 'Proposal source not found',
         });
