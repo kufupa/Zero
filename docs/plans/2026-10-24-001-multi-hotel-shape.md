@@ -148,7 +148,7 @@ LOC = product lines (tests excluded), from sizing lanes P1–P3 (`docs/research/
 
 #### U0. HRDAV read-only DOM read: allowed strategies + create option lists
 
-**Goal:** Record which sales strategies Da Vinci actually allows (incl. STO and wholesale names) and the create form's source/track/guarantee/board options and required markers. **Requirements:** R2, R3. **Dependencies:** none (runs in parallel with U1). **Files:** `apps/server-pilot/tooling/playwright-quote/property-profiles/HRDAV.json`; evidence `docs/research/2026-10-2x-hrdav-dom-read.md`. **Approach:** Codex GPT-6.1 Sol drives Playwright over CDP on the HRDAV slot (owner 2026-10-24: computer use = Sol), read-only, under the HMS lock, one session; captures DOM + screenshots; writes nothing in HMS. Guard: the Playwright wrapper refuses clicks on Save/OK/Book/Confirm/Cancel Reservation buttons and any dialog accept; navigation, dropdown open and read only. **Owner yes needed** (PRODUCT.md says no LLM drives live HMS; this is the one exception, read-only). Ask Faith only if STO maps to no HMS code. **Test expectation:** none — data capture; consumed by U4b/U6 tests. **Verification:** profile lists strategies with codes + labels and create lists with required markers, each with a screenshot reference.
+**Goal:** Record which sales strategies Da Vinci actually allows (incl. STO and wholesale names) and the create form's source/track/guarantee/board options and required markers. **Requirements:** R2, R3. **Dependencies:** none (runs in parallel with U1). **Files:** `apps/server-pilot/tooling/playwright-quote/property-profiles/HRDAV.json`; evidence `docs/research/2026-10-2x-hrdav-dom-read.md`. **Approach:** Codex GPT-6.1 Sol drives Playwright over CDP on the HRDAV slot (owner 2026-10-24: computer use = Sol), read-only, under the HMS lock, one session; captures DOM + screenshots; writes nothing in HMS. Guard: the Playwright wrapper refuses clicks on Save/OK/Book/Confirm/Cancel Reservation buttons and any dialog accept; navigation, dropdown open and read only. Owner approved 2026-10-25 (A1); PRODUCT.md rule changed. Ask Faith only if STO maps to no HMS code. **Test expectation:** none — data capture; consumed by U4b/U6 tests. **Verification:** profile lists strategies with codes + labels and create lists with required markers, each with a screenshot reference.
 
 #### U1. Property registry package + mailbox resolver (unknown refuses)
 
@@ -202,6 +202,10 @@ LOC = product lines (tests excluded), from sizing lanes P1–P3 (`docs/research/
 
 **Goal:** Make the three rules that failed on 10-23 mechanical. **Dependencies:** none (T0). **Coder:** Grok 4.6. **LOC:** 40–80. **Files:** `apps/server-pilot/deploy/{hms-job.sh,ops-deploy.sh}`, `apps/server-pilot/src/ops/hms-proof-run.ts`. **Approach:** both scripts refuse to start when the run's `HOLD.txt` exists (path from env `NAVA_RUN_HOLD_FILE`); `hms-proof-run` refuses a 3rd attempt on the same cell unless a `diagnosis-<cell>.md` newer than the last failure exists; flag-flip helper refuses `on` without a `CANARY PASS <workflow> <property> <sha>` line whose SHA = live SHA. **Test scenarios:** HOLD present → exit non-zero before SSM; 3rd attempt without diagnosis → refused; stale-SHA canary → flip refused. **Verification:** script tests on EC2 runner.
 
+#### U13. Pane UI review + de-duplication (LAST unit, after every other unit merged)
+
+**Goal (owner ask 222):** the pane should feel like Infor in one place: every Infor field once, prefilled from the email + past knowledge, staff check/edit and hit yes; never need to open HMS. No repetition: one room-type control (today stage 3 stay *and* "Book in HMS" both edit it), one booker/contact block (today top "Quote contact — save to this request only" *and* a prefilled copy at the bottom), no separate "Book in HMS" card repeating stay/rooms/board/rate. Human in the loop: staff can change room type, rate (e.g. BAR → wholesale), board inline. **Dependencies:** all others (the middle units change the pane). **Coder:** review = Luna (read-only: screenshot the pane on both hotels via the viewer, list every duplicated field/control with file:line, propose one merged layout); build = Luna, ≤500 lines per PR, split by card. **Approach:** step 1 writes `docs/research/2026-10-2x-pane-dup-review.md` (each duplicate → which copy stays, why) and posts it in state.md; step 2 builds it only if ≤2 PRs and nothing in it removes an Infor option (PRODUCT.md "never remove options; pre-fill instead"); bigger → stop at the review for the owner. **Test scenarios:** room type edited once is what create sends; contact edited at top is what the PDF and the create use; no field rendered twice (test asserts each field label appears once); every UI test asserting the removed card updated. **Verification:** viewer run green both surfaces + nginx bundle load; owner looks in the morning.
+
 ### Sequencing, model and ETA (revised after Grok review)
 
 Shared-file owners (serialize, never parallel): `hms-jobs.ts` U3b → U5 → U7; `work-items.ts` U5 → U11b; `quote-ready.ts` U5 → U6a; `nava-pane.tsx` + `workstation.ts` U4a → U4b → U8; `pane-stay-save.ts` U3a → U9.
@@ -218,6 +222,7 @@ Shared-file owners (serialize, never parallel): `hms-jobs.ts` U3b → U5 → U7;
 | U5 merged | U7 ‖ U11b | Grok, Grok |
 | U4b merged | U8 | Luna |
 | all merged | U10 → deploy → canaries | Luna, orchestrator |
+| canaries done | U13 pane review → (≤2 PRs) de-dup build → deploy | Luna |
 
 Peak 5–6 coding lanes. 16 PRs, product LOC ~1,900–3,000, each ≤ 500.
 
@@ -345,14 +350,7 @@ Read every Greptile Apex comment on PR #<n> at head <sha> (check the comment's S
 
 ## Holds (owner)
 
-What the owner's **"go"** authorises for this run (written into the run's `state.md` as A1–A4; never relayed from another session):
-
-| # | Action | Why it needs the owner |
-|---|---|---|
-| A1 | U0: Sol drives Playwright on HRDAV, **read-only**, click guard on | PRODUCT.md: no LLM drives live HMS. One read-only exception |
-| A2 | Deploys from `recover-parse-failure` whenever a merge must be seen | Live with the client; owner already OK'd (memory: deploy when needed) |
-| A3 | Labtest create / cancel / attach on HRCEN and HRDAV (2027+ stays, Labtest guest only) | HMS writes; same fence as g1023 |
-| A4 | Read-only quote canaries on real DV + CEN threads | Live HMS reads on real mail |
+**Granted 2026-10-25 (owner, this chat):** A1 Sol/agents may drive live HMS (read-only real guests); A2 deploy whenever needed — weekend, staff not using it; A3 Labtest writes on both hotels, always, never ask again; A4 read live HMS on real mail. Recorded in `/tmp/mh1024/state.md`.
 
 Asked later, separately: switching `REPLY_RECHECK` to `on` after its shadow day (it changes every mailbox's to-do list).
 
@@ -366,6 +364,8 @@ Not needed by this plan (so not asked): real-guest writes, `seed:prod` or any pr
 - Third hotel onboarding (data + canaries only).
 
 ## Review log
+
+- 2026-10-25 owner: A1–A4 granted; PRODUCT.md live-HMS rule changed; U13 pane de-dup review added as last unit (ask 222); run autonomous overnight with an Opus watchdog every 55 min.
 
 - 2026-10-25 owner round 2 (ask 221): ETA re-derived (was double-counting review + multiplier; now 4.5 h / 9.5 h for milestone A), U11 reply re-check (P4 sizing), U12 run guards, collector mailbox, 1-stay strategy proof, Run Contract with M1–M23 and verbatim prompts, holds rewritten as A1–A4.
 

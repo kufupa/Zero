@@ -46,8 +46,9 @@ Keep the V1 look. One primary action per step. Hide dead controls.
 ## Hard rules
 
 - No real-guest HMS writes unless the owner set `RESERVATIONIST_PANE_SAVE=on`. Bot never accepts cancellation-penalty dialogs.
-- One HMS browser lock. Subagents never drive live HMS.
-- Never Nova Lite. Luna max for implementation; Opus for briefs, merges, deploys, live HMS, user-facing claims.
+- One HMS browser lock per hotel. An AI agent may drive live HMS (owner 2026-10-25), read-only on real guests; writes only on Labtest.
+- Labtest (fake "Proof Labtest" guest, 2027+ stays) writes are always allowed on any hotel; never ask (owner 2026-10-25).
+- Never Nova Lite. Model routing: see AGENTS.md (Grok orchestrator; Luna/Grok coders by risk).
 - Before Vitest: `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL`. Never test against pilot RDS. Never print secrets or `postgres://`.
 - Deploy only from `.worktrees/recover-parse-failure` via `apps/server-pilot/deploy/ops-deploy.sh`. A pane fix is live only after staff’s bundle reloads.
 - P0/P1 review findings fixed before merge. No `--no-verify`.
