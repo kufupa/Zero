@@ -1009,7 +1009,7 @@ export function BookingCards({
                           textValue(request.ratePlan)),
                       nightlyMinor:
                         price ? [price.amountMinor] : group?.quotedAmountMinor != null ? [group.quotedAmountMinor] : undefined,
-                      board: BOARD_LABELS[room.board],
+                      board: room.board ? BOARD_LABELS[room.board] : undefined,
                     },
                   },
                 ],
