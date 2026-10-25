@@ -17,6 +17,7 @@ import {
 } from '../lib/quote-workflow/staff-quote-bind';
 import {
   emptyStaffQuoteHeader,
+  HRCEN_PROPERTY_CODE,
   type AvailabilityBoardRow,
   type QuoteSession,
   type RateOption,
@@ -135,6 +136,7 @@ async function quotedSession(
     inputRevision: session.inputRevision,
     groups: session.groups,
     header: session.staffHeader,
+    propertyCode: HRCEN_PROPERTY_CODE,
   });
   if (run.status !== 'ok') throw new Error(run.reason);
   return reduceQuoteSession(session, {
