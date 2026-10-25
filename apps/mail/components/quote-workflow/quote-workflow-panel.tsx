@@ -1943,6 +1943,9 @@ export function QuoteWorkflowPanel({
                           : 'Not checked';
                   return { strategy, row, room, board, nightly, status };
                 });
+                const comparisonsComplete = comparisonRows.length > 0 && comparisonRows.every(({ row }) =>
+                  row?.status === 'ready' || row?.status === 'not_offered' || row?.status === 'failed',
+                );
                 return (
                   <article key={`${stay.id}-search`} className="flex flex-col gap-3 rounded-[4px] border border-[#cbd5e1] bg-white p-3">
                     {stayQuote?.preparedByNava ? (
@@ -2056,6 +2059,16 @@ export function QuoteWorkflowPanel({
                                   {row?.status === 'ready' ? (
                                     <SecondaryButton
                                       className="w-auto"
+                                      disabled={!comparisonsComplete || loadingThisStay || queuedThisStay}
+                                      disabledReason={
+                                        loadingThisStay
+                                          ? 'A search is running for this stay.'
+                                          : queuedThisStay
+                                            ? 'A search is queued for this stay.'
+                                            : !comparisonsComplete
+                                              ? 'Wait for each strategy search to finish before choosing a rate.'
+                                              : null
+                                      }
                                       onClick={() => onSelectQuoteStrategy?.(stayKey, strategy.code)}
                                     >
                                       {`Use ${strategy.label} (${strategy.code}) rates`}

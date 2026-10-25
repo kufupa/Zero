@@ -40,7 +40,12 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
-import type { QuoteAnalysis, QuotePaneConfig, QuoteSessionAction } from '@/lib/quote-workflow/types';
+import type {
+  QuoteAnalysis,
+  QuotePaneConfig,
+  QuoteSalesStrategyCode,
+  QuoteSessionAction,
+} from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
@@ -1489,12 +1494,21 @@ export function NavaPane({
       return current;
     });
 
-  const runQuoteStep = (stepId: string, autoStart = false, readBack = false) => {
+  const runQuoteStep = (
+    stepId: string,
+    autoStart = false,
+    readBack = false,
+    selectedStrategyCode?: QuoteSalesStrategyCode,
+  ) => {
     if (isNonActionableMessage) return;
     if ((autoStart || readBack) && (staffQuoteQueueMode !== 'on' || isQuoteFixturePreview())) return;
     const step = quoteSession.steps.find((item) => item.id === stepId);
     const maySearchAgain = step?.kind === 'quote_stay' && step.status === 'succeeded' && !quoteSession.runningStepId;
     if (!step || (!maySearchAgain && !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId))) return;
+    const selectedStrategy = selectedStrategyCode
+      ? activePaneConfig?.salesStrategies?.find((strategy) => strategy.code === selectedStrategyCode)
+      : undefined;
+    if (selectedStrategyCode && (!selectedStrategy || step.kind !== 'quote_stay' || !step.shareKey)) return;
     const waiting = quoteRunBlockReason(quoteSession, step);
     if (waiting) {
       toast.warning(waiting);
@@ -1569,10 +1583,15 @@ export function NavaPane({
       : undefined;
     // Auto-start and read-back use the session strategy, as the background prepare does (Government only when every
     // row is Dinner B&B), so a prepared run's price shape matches.
-    const runHeader = autoStart || readBack ? autoRunHeader(quoteSession) : quoteSession.staffHeader;
+    const runHeader = selectedStrategy
+      ? { ...quoteSession.staffHeader, salesStrategy: selectedStrategy.requestValue }
+      : autoStart || readBack
+        ? autoRunHeader(quoteSession)
+        : quoteSession.staffHeader;
     // Get rates is where she proceeds with the read as shown, so unedited AI fields are accepted (v5 B2).
     if (!autoStart && !readBack && !storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
     const quoteStrategyComparison =
+      !selectedStrategy &&
       step.kind === 'quote_stay' &&
       quoteSession.analysis?.intent === 'quote' &&
       quoteSession.analysis.luna?.workflow !== 'create_booking';
@@ -1606,6 +1625,7 @@ export function NavaPane({
       });
       const fanout = bindStaffQuoteStrategyRows({
         mode: autoStart ? 'auto' : 'staff',
+        mutate: staff.workstation.executeStaffQuote?.mutate,
         queue: staff.workstation.queueStaffQuote?.mutate,
         staffQuoteJob: observedStaffQuoteJob,
         source,
@@ -1756,15 +1776,29 @@ export function NavaPane({
         toast.warning(remote.reason);
         return;
       }
-      dispatchQuote({
-        type: 'staff_quote_ready',
-        offer: remote.offer,
-        staffQuote: remote.staffQuote,
-        selectionEpoch,
-        inputRevision,
-        extrasReviewItems: remote.extrasReviewItems,
-        approvedHeader: runHeader,
-      });
+      if (selectedStrategy && staffQuoteStep.shareKey) {
+        dispatchQuote({
+          type: 'select_quote_strategy',
+          stayKey: staffQuoteStep.shareKey,
+          strategyCode: selectedStrategy.code,
+          offer: remote.offer,
+          staffQuote: remote.staffQuote,
+          selectionEpoch,
+          inputRevision,
+          extrasReviewItems: remote.extrasReviewItems,
+          approvedHeader: runHeader,
+        });
+      } else {
+        dispatchQuote({
+          type: 'staff_quote_ready',
+          offer: remote.offer,
+          staffQuote: remote.staffQuote,
+          selectionEpoch,
+          inputRevision,
+          extrasReviewItems: remote.extrasReviewItems,
+          approvedHeader: runHeader,
+        });
+      }
       for (const item of remote.extrasReviewItems) toast.warning(item);
       const luna = quoteSession.analysis?.luna;
       if (luna?.workflow === 'create_booking') {
@@ -2370,9 +2404,24 @@ export function NavaPane({
                 dispatchQuote({ type: 'patch_staff_stay_extras', stayKey, extras });
               }}
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
-              onSelectQuoteStrategy={(stayKey, strategyCode) =>
-                dispatchQuote({ type: 'select_quote_strategy', stayKey, strategyCode })
-              }
+              onSelectQuoteStrategy={(stayKey, strategyCode) => {
+                const rows = quoteSession.quoteStrategyRows?.[stayKey];
+                const selectedRow = rows?.[strategyCode];
+                const comparisonsComplete = Boolean(rows && Object.values(rows).length > 0 &&
+                  Object.values(rows).every((row) =>
+                    row.status === 'ready' || row.status === 'not_offered' || row.status === 'failed',
+                  ));
+                const selectedStep = quoteSession.steps.find(
+                  (step) => step.kind === 'quote_stay' && step.shareKey === stayKey,
+                );
+                if (
+                  selectedRow?.status !== 'ready' ||
+                  !comparisonsComplete ||
+                  !selectedStep ||
+                  !activePaneConfig?.salesStrategies?.some((strategy) => strategy.code === strategyCode)
+                ) return;
+                runQuoteStep(selectedStep.id, false, false, strategyCode);
+              }}
               onStaffNote={(staffNote) => {
                 suppressAutoStaffQuoteForCurrentEmail();
                 setStaffNoteSent(staffNote);

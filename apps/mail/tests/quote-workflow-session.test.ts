@@ -1218,6 +1218,8 @@ describe('quote strategy comparison rows', () => {
       strategyCode: 'WS',
       offer: pickedOffer,
       staffQuote: pickedQuote,
+      selectionEpoch: session.binding!.selectionEpoch,
+      inputRevision: session.inputRevision,
       extrasReviewItems: [],
       approvedHeader: { ...emptyHeader(), salesStrategy: 'WS' },
     });

@@ -2330,7 +2330,7 @@ describe('quote strategy comparison', () => {
     expect(within(table).getByText(/R1\s600,00/)).toBeDefined();
     expect(session.selectedOfferIds).toEqual([]);
     const chooseWholesale = screen.getByRole('button', { name: /use wholesale \(WS\) rates/i });
-    expect(chooseWholesale).toBeDisabled();
+    expect(chooseWholesale.hasAttribute('disabled')).toBe(true);
 
     const completedRows = Object.fromEntries(strategies.map((strategy) => [
       strategy.code,
@@ -2346,7 +2346,7 @@ describe('quote strategy comparison', () => {
       />,
     );
     const completedChoice = screen.getByRole('button', { name: /use wholesale \(WS\) rates/i });
-    expect(completedChoice).toBeEnabled();
+    expect(completedChoice.hasAttribute('disabled')).toBe(false);
     fireEvent.click(completedChoice);
     expect(onSelectQuoteStrategy).toHaveBeenCalledWith(stayKey, 'WS');
   });

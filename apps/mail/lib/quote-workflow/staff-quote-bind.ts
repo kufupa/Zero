@@ -1473,6 +1473,7 @@ export async function bindStaffQuoteStrategyRows(
   args: StaffQuoteRequestArgs & {
     mode: 'auto' | 'staff';
     strategies: readonly QuoteSalesStrategy[];
+    mutate?: Parameters<typeof bindExecuteStaffQuote>[0]['mutate'];
     queue?: StaffQuoteJobQueue;
     staffQuoteJob?: StaffQuoteJobQuery;
     signal?: AbortSignal;
@@ -1511,6 +1512,7 @@ export async function bindStaffQuoteStrategyRows(
         })
       : await bindExecuteStaffQuote({
           ...request,
+          mutate: args.mutate,
           queue: args.queue,
           staffQuoteJob: args.staffQuoteJob,
         });

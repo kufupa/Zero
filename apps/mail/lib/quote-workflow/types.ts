@@ -903,7 +903,18 @@ export type QuoteSessionAction =
       inputRevision: number;
       stayRevision: number;
     }
-  | { type: 'select_quote_strategy'; stayKey: string; strategyCode: QuoteSalesStrategyCode }
+  | {
+      type: 'select_quote_strategy';
+      stayKey: string;
+      strategyCode: QuoteSalesStrategyCode;
+      /** Only a fresh HMS result from the staff's pick can approve a comparison row. */
+      offer?: QuoteOffer;
+      staffQuote?: StaffQuoteAllocation;
+      selectionEpoch?: number;
+      inputRevision?: number;
+      extrasReviewItems?: string[];
+      approvedHeader?: StaffQuoteHeader;
+    }
   | {
       type: 'staff_quote_ready';
       offer: QuoteOffer;

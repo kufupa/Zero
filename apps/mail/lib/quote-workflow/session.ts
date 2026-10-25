@@ -1740,8 +1740,7 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
     }
     case 'quote_strategy_result': {
       if (
-        !requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision) ||
-        action.stayRevision !== session.stayRevision
+        !requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)
       ) return session;
       const rows = session.quoteStrategyRows?.[action.stayKey];
       const prior = rows?.[action.strategy.code];
@@ -1829,30 +1828,84 @@ export function reduceQuoteSession(session: QuoteSession, action: QuoteSessionAc
       };
     }
     case 'select_quote_strategy': {
-      const row = session.quoteStrategyRows?.[action.stayKey]?.[action.strategyCode];
+      const rows = session.quoteStrategyRows?.[action.stayKey];
+      const row = rows?.[action.strategyCode];
+      const allComparisonsComplete = Boolean(rows && Object.values(rows).length > 0 &&
+        Object.values(rows).every((item) =>
+          item.status === 'ready' || item.status === 'not_offered' || item.status === 'failed',
+        ));
+      const offer = action.offer;
+      const staffQuote = action.staffQuote;
+      const selectionEpoch = action.selectionEpoch;
+      const inputRevision = action.inputRevision;
+      const approvedHeader = action.approvedHeader;
       if (
+        !allComparisonsComplete ||
         !row ||
         row.status !== 'ready' ||
-        !row.offer ||
-        !row.staffQuote ||
+        !offer ||
+        !staffQuote ||
+        selectionEpoch === undefined ||
+        inputRevision === undefined ||
+        !approvedHeader ||
+        !requestMatchesCurrent(session, selectionEpoch, inputRevision) ||
         row.selectionEpoch !== undefined && row.selectionEpoch !== (session.binding?.selectionEpoch ?? -1) ||
-        row.inputRevision !== undefined && row.inputRevision !== session.inputRevision ||
-        row.stayRevision !== undefined && row.stayRevision !== session.stayRevision
+        row.inputRevision !== undefined && row.inputRevision !== session.inputRevision
       ) return session;
+
+      const source = session.staffSource;
+      const expectedGroupIds = session.groups
+        .filter((group) => stayKeyForGroup(group) === action.stayKey)
+        .map((group) => group.id)
+        .sort();
+      const returnedGroupIds = [...offer.coversGroupIds].sort();
+      if (
+        !source ||
+        offer.kind !== 'allocation' ||
+        offer.id !== staffQuote.revisionRef ||
+        offer.quoteRequestKey !== action.stayKey ||
+        staffQuote.quoteRequestKey !== action.stayKey ||
+        staffQuote.sourceHash !== source.sourceHash ||
+        staffQuote.messageId !== source.messageId ||
+        staffQuote.selectionEpoch !== selectionEpoch ||
+        staffQuote.inputRevision !== inputRevision ||
+        staffQuote.approvedHeader.salesStrategy !== row.strategy.requestValue ||
+        approvedHeader.salesStrategy !== row.strategy.requestValue ||
+        expectedGroupIds.length === 0 ||
+        expectedGroupIds.join('|') !== returnedGroupIds.join('|') ||
+        offer.nightly.length !== 0 ||
+        staffQuote.totalMinor <= 0 ||
+        offer.stayTotalMinor !== staffQuote.totalMinor
+      ) return session;
+
       const selected = reduceQuoteSession(session, {
         type: 'staff_quote_ready',
-        offer: row.offer,
-        staffQuote: row.staffQuote,
-        selectionEpoch: row.selectionEpoch ?? session.binding?.selectionEpoch ?? 0,
-        inputRevision: row.inputRevision ?? session.inputRevision,
-        extrasReviewItems: row.extrasReviewItems,
-        approvedHeader: row.approvedHeader ?? {
-          ...session.staffHeader,
-          salesStrategy: row.strategy.requestValue,
-        },
-        stayRevision: row.stayRevision,
+        offer,
+        staffQuote,
+        selectionEpoch,
+        inputRevision,
+        extrasReviewItems: action.extrasReviewItems,
+        approvedHeader,
       });
-      return selected === session ? session : { ...selected, staffSalesStrategyEdited: true };
+      return selected === session
+        ? session
+        : {
+            ...selected,
+            quoteStrategyRows: {
+              ...(selected.quoteStrategyRows ?? {}),
+              [action.stayKey]: {
+                ...(selected.quoteStrategyRows?.[action.stayKey] ?? {}),
+                [action.strategyCode]: {
+                  ...row,
+                  offer,
+                  staffQuote: { ...staffQuote, quoteRequestKey: action.stayKey },
+                  extrasReviewItems: [...(action.extrasReviewItems ?? [])],
+                  approvedHeader,
+                },
+              },
+            },
+            staffSalesStrategyEdited: true,
+          };
     }
     case 'staff_quote_ready': {
       if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) return session;
