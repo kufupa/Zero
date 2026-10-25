@@ -933,6 +933,7 @@ type HmsBatchEnqueueInput = {
   transportId: string;
   userId: string;
   workItemIds: string[];
+  /** queueBatch still sends this from the CEN-only guard; skip authority is resolveHmsReadJobTarget. */
   originRefusedWorkItemIds?: readonly string[];
 };
 
@@ -1160,18 +1161,39 @@ function batchPrefetchKeys(
   threadId: string,
   request: HmsJobRequest,
   now: Date,
+  propertyCode?: string,
 ): string[] {
   if (request.kind === 'find') {
     const today = now.toISOString().slice(0, 10);
     const yesterday = new Date(now.getTime() - 24 * 60 * 60_000).toISOString().slice(0, 10);
-    return [today, yesterday].map(
-      (day) => `hms-job:prefetch:${transportId}:${request.confirmation}:${day}`,
-    );
+    return [today, yesterday].flatMap((day) => {
+      const bare = confirmationPrefetchIdempotencyKey(transportId, request.confirmation, day);
+      if (!propertyCode) return [bare];
+      return [
+        bare,
+        confirmationPrefetchIdempotencyKey(transportId, request.confirmation, day, propertyCode),
+      ];
+    });
   }
   if (request.kind === 'search_guest') {
-    return [
-      guestSearchPrefetchIdempotencyKey(transportId, threadId, request.lastName, request.arrival),
-    ];
+    const bare = guestSearchPrefetchIdempotencyKey(
+      transportId,
+      threadId,
+      request.lastName,
+      request.arrival,
+    );
+    return propertyCode
+      ? [
+          bare,
+          guestSearchPrefetchIdempotencyKey(
+            transportId,
+            threadId,
+            request.lastName,
+            request.arrival,
+            propertyCode,
+          ),
+        ]
+      : [bare];
   }
   return [];
 }
@@ -1200,14 +1222,14 @@ function isReusableHmsRun(run: AiWorkflowRun, request: HmsJobRequest, now: Date)
 async function loadReusableHmsRuns(
   db: DB,
   input: HmsBatchEnqueueInput,
-  requests: Array<{ source: HmsBatchSource; request: HmsJobRequest }>,
+  requests: Array<{ source: HmsBatchSource; request: HmsJobRequest; target: HmsReadTarget }>,
   now: Date,
 ): Promise<AiWorkflowRun[]> {
   const sourceIds = requests.map(({ source }) => source.workItemId);
   const allPrefetchKeys = [
     ...new Set(
-      requests.flatMap(({ source, request }) =>
-        batchPrefetchKeys(input.transportId, source.threadId, request, now),
+      requests.flatMap(({ source, request, target }) =>
+        batchPrefetchKeys(input.transportId, source.threadId, request, now, target.propertyCode),
       ),
     ),
   ];
@@ -1351,12 +1373,14 @@ export async function enqueueHmsBatch(
     const now = new Date();
     // Spam gets no lookup: the thread-state gate (spamAt) the automatic prefetch also applies. An extraction label
     // alone is not spam, because staff can clear spam on a thread whose extraction still says spam.
-    const originRefused = new Set(input.originRefusedWorkItemIds ?? []);
     const selections = await Promise.all(
       orderedSources.map(
-        async (source): Promise<{ skipped: HmsBatchSkipReason } | { request: HmsJobRequest }> => {
+        async (
+          source,
+        ): Promise<
+          { skipped: HmsBatchSkipReason } | { request: HmsJobRequest; target: HmsReadTarget }
+        > => {
           if (source.spamAt) return { skipped: 'spam' };
-          if (originRefused.has(source.workItemId)) return { skipped: 'davinci_origin' };
           const resolved = await resolveHmsReadJobTarget({
             transportId: input.transportId,
             threadId: source.threadId,
@@ -1364,18 +1388,22 @@ export async function enqueueHmsBatch(
           });
           if (!resolved.ok) return { skipped: 'davinci_origin' };
           // No succeeded extraction still leaves the message text, so a confirmation in the subject or body queues.
-          return selectHmsBatchRequest({
+          const selection = selectHmsBatchRequest({
             kind: source.extraction?.kind ?? null,
             payload: source.extraction?.payload ?? null,
             subject: source.subject,
             textBody: source.textBody,
           });
+          if ('skipped' in selection) return selection;
+          return { request: selection.request, target: resolved.target };
         },
       ),
     );
     const requested = orderedSources.flatMap((source, itemIndex) => {
       const selection = selections[itemIndex]!;
-      return 'request' in selection ? [{ source, request: selection.request }] : [];
+      return 'request' in selection
+        ? [{ source, request: selection.request, target: selection.target }]
+        : [];
     });
     const reusable = await loadReusableHmsRuns(scoped, input, requested, now);
     const reusableBySignature = new Map<string, AiWorkflowRun[]>();
