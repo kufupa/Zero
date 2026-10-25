@@ -5,7 +5,12 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import type { ComponentProps } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StayCard } from '../components/quote-workflow/requirement-card';
-import type { StayGroupRequirement } from '../lib/quote-workflow/types';
+import { resolveNativeRoomCodes } from '../lib/quote-workflow/staff-quote-bind';
+import {
+  HRDAV_PROPERTY_CODE,
+  HRDAV_ROOM_NAMES,
+  type StayGroupRequirement,
+} from '../lib/quote-workflow/types';
 import { matchRoomType, ROOM_TYPE_CODES } from '../lib/quote-workflow/room-types';
 
 afterEach(cleanup);
@@ -264,6 +269,7 @@ describe('StayCard rooms', () => {
       rows: [stay({ roomPreference: '' })],
       index: 0,
       stayCount: 1,
+      propertyCode: HRDAV_PROPERTY_CODE,
       roomTypes: [
         { code: 'JNRSUI', label: 'Junior Suite' },
         { code: 'EXKNGB', label: 'Executive King Balcony' },
@@ -285,9 +291,44 @@ describe('StayCard rooms', () => {
       'JNRSUI', 'EXKNGB', 'EXKNGR', 'EXKNGS', 'DLXPAT', 'DLXKNG', 'ACCES', 'STKNG', 'STWN',
     ]);
     expect(roomOptionValues).not.toContain('STQN');
+    expect(screen.getByRole('option', { name: 'Junior Suite' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'JNRSUI' })).toBeNull();
     expect(screen.getByText('Room type needed ×1')).toBeTruthy();
     const mealPlan = screen.getByLabelText('Meal plan');
     expect([...mealPlan.querySelectorAll('option')].map((option) => option.value)).toEqual(['all', 'room_only', 'bb']);
+  });
+
+  it('does not preselect an unbindable HRDAV room-name variant', () => {
+    const roomTypes = Object.entries(HRDAV_ROOM_NAMES).map(([code, label]) => ({ code, label }));
+    const unlistedPreference = 'standard twin room';
+    const props: ComponentProps<typeof StayCard> = {
+      stayId: 's1',
+      rows: [stay({ roomPreference: unlistedPreference })],
+      index: 0,
+      stayCount: 1,
+      propertyCode: HRDAV_PROPERTY_CODE,
+      roomTypes,
+      boards: ['room_only', 'bb'],
+    };
+
+    render(<StayCard {...props} />);
+
+    const roomType = selectByLabel('Room type');
+    expect(resolveNativeRoomCodes({ roomPreference: unlistedPreference, propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'unresolved',
+      label: unlistedPreference,
+    });
+    expect(roomType.value).toBe(unlistedPreference);
+    expect(screen.getByRole('option', { name: 'Email request' })).toBeTruthy();
+
+    cleanup();
+    const exactPreference = 'Standard Twin';
+    render(<StayCard {...props} rows={[stay({ roomPreference: exactPreference })]} />);
+    expect(selectByLabel('Room type').value).toBe('STWN');
+    expect(resolveNativeRoomCodes({ roomPreference: exactPreference, propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['STWN'],
+    });
   });
 
   it('uses a requested-room split header until room quantities are assigned', () => {

@@ -107,6 +107,13 @@ describe('HRDAV native room and board maps', () => {
     });
   });
 
+  it('does not inherit a Centurion-only room alias on HRDAV', () => {
+    expect(resolveNativeRoomCodes({ roomPreference: 'standard queen room', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'unresolved',
+      label: 'standard queen room',
+    });
+  });
+
   it('refuses a staff quote with no mailbox property instead of treating it as Centurion', async () => {
     const reason = /hotel.*mailbox|mailbox.*hotel/i;
     expect(staffQuoteGroupsFromStay([stay({ roomPreference: 'Standard Queen' })])).toMatchObject({
