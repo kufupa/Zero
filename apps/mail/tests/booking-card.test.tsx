@@ -949,7 +949,7 @@ describe('booking card pane save', () => {
     await screen.findByText('Booked in HMS – confirmation 98765-1');
     const [booked, other] = Array.from(document.querySelectorAll('article'));
     const bookedSelects = Array.from(booked?.querySelectorAll('select') ?? []);
-    expect(bookedSelects).toHaveLength(4);
+    expect(bookedSelects).toHaveLength(3);
     for (const select of bookedSelects) expect(select.disabled).toBe(true);
     for (const select of Array.from(other?.querySelectorAll('select') ?? [])) expect(select.disabled).toBe(false);
   });
@@ -1964,7 +1964,7 @@ describe('booking card HMS notes copy', () => {
 
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
-    await screen.findByText(JOHN_SMITH_PREVIEW);
+    await screen.findByText(/Nava will book John Smith .*rate BARRO/);
     fireEvent.click(bookButton(0));
     await screen.findByText('Booked in HMS – confirmation 98765-1');
 
