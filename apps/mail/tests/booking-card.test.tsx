@@ -293,6 +293,19 @@ describe('booking cards', () => {
     );
   });
 
+  it('keeps the draft rate plan when a manual quote code is not an HMS rate selection', () => {
+    const { client, preview } = paneClient();
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    draft.draft.rooms[0]!.request.ratePlan = 'TAXYZ';
+    const group: StayGroupRequirement = { ...g1, quotedRateCode: 'OTHER' };
+    render(<BookingCards draft={draft} groups={[group]} paneSave={client} />);
+    pickRoomChoices(0);
+
+    fireEvent.click(previewButton(0));
+
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ ratePlan: 'TAXYZ' }));
+  });
+
   it('keeps the prepared native room code when the Stay has only an unmatched room name', () => {
     const { client, preview } = paneClient();
     const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
@@ -1150,6 +1163,42 @@ describe('booking card pane save', () => {
     expect(commit).toHaveBeenCalledTimes(2);
     expect(screen.getByText('Booked in HMS – confirmation 11111-1')).toBeDefined();
     expect(screen.getByText('Booked in HMS – confirmation 22222-1')).toBeDefined();
+  });
+
+  it('stops later room creates when the top contact changes during batch booking', async () => {
+    const { client, commit } = paneClient();
+    const firstCommit = deferred<PaneStayResult>();
+    commit.mockReturnValueOnce(firstCommit.promise).mockResolvedValueOnce(COMMIT_OK);
+    const draft = draftReady();
+    let contact: StoredContact = {
+      name: 'Original Booker',
+      company: null,
+      endClient: null,
+      email: 'original@example.invalid',
+      phone: null,
+    };
+    const view = () => <BookingCards draft={draft} paneSave={client} contact={contact} />;
+    const { rerender } = render(view());
+    pickRoomChoices(0);
+    pickRoomChoices(1);
+    fireEvent.click(previewButton(0));
+    fireEvent.click(previewButton(1));
+    const bookStay = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
+    await waitFor(() => expect(bookStay.disabled).toBe(false));
+    fireEvent.click(bookStay);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+
+    contact = { ...contact, name: 'Updated Booker' };
+    rerender(view());
+    await act(async () => firstCommit.resolve(COMMIT_OK));
+
+    await screen.findByText('Booked in HMS – confirmation 98765-1');
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit).toHaveBeenCalledWith(
+      expect.objectContaining({ bookerName: 'Original Booker' }),
+      PANE_DIGEST,
+    );
+    expect(bookStay.disabled).toBe(true);
   });
 
   it('sends stayId and workItemId with Book so the server can persist the confirmation', async () => {
