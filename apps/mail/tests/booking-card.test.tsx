@@ -364,7 +364,7 @@ describe('booking cards', () => {
       eventRateCodes: [],
     };
     render(<QuoteWorkflowPanel session={session} paneConfig={paneConfig} />);
-    const roomType = screen.getByLabelText('Room type') as HTMLSelectElement;
+    const roomType = screen.getByLabelText('Room type') as unknown as HTMLSelectElement;
     const values = Array.from(roomType.options, (option) => option.value);
     expect(values.filter((value) => value === 'CONFIG-ONLY')).toHaveLength(1);
     expect(values.filter((value) => value === 'HOTEL-ONLY')).toHaveLength(1);
@@ -450,7 +450,7 @@ describe('booking cards', () => {
     render(<QuoteWorkflowPanel session={session} />);
     const track = screen.getAllByLabelText('Track')[0]!;
     fireEvent.change(track, { target: { value: 'COR' } });
-    expect((track as HTMLSelectElement).value).toBe('COR');
+    expect((track as unknown as HTMLSelectElement).value).toBe('COR');
     expect(Object.values(session.bookingDrafts)[0]?.draft.rooms[0]?.request.track).toBeUndefined();
   });
 
@@ -458,11 +458,21 @@ describe('booking cards', () => {
     const draft = draftReady({
       rateCheck: [{ status: 'match', claimQuote: 'R1,750', assumedTaxBasis: false, differenceMinor: 0 }],
     });
-    const quotedGroup = { ...g1, roomPreference: 'STQN', roomTypeCode: 'STQN', roomCodes: ['STQN'] };
+    const quotedGroup: StayGroupRequirement = {
+      ...g1,
+      roomPreference: 'STQN',
+      roomTypeCode: 'STQN',
+      roomCodes: ['STQN'],
+    };
     const { rerender } = render(<BookingCards draft={draft} groups={[quotedGroup]} />);
     expect(screen.getByText(/Price matches the email/)).toBeDefined();
 
-    const changedGroup = { ...quotedGroup, roomPreference: 'DLXKNG', roomTypeCode: 'DLXKNG', roomCodes: ['DLXKNG'] };
+    const changedGroup: StayGroupRequirement = {
+      ...quotedGroup,
+      roomPreference: 'DLXKNG',
+      roomTypeCode: 'DLXKNG',
+      roomCodes: ['DLXKNG'],
+    };
     rerender(<BookingCards draft={draft} groups={[changedGroup]} />);
     expect(screen.queryByText(/Price matches the email/)).toBeNull();
     expect(screen.getByText(ROOM_TYPE_CHANGED_COPY)).toBeDefined();
@@ -472,7 +482,12 @@ describe('booking cards', () => {
   });
 
   it('does not warn about a Stay room change when there is no quote', () => {
-    const changedGroup = { ...g1, roomPreference: 'DLXKNG', roomTypeCode: 'DLXKNG', roomCodes: ['DLXKNG'] };
+    const changedGroup: StayGroupRequirement = {
+      ...g1,
+      roomPreference: 'DLXKNG',
+      roomTypeCode: 'DLXKNG',
+      roomCodes: ['DLXKNG'],
+    };
     render(<BookingCards draft={draftReady({ rateCheck: [] })} groups={[changedGroup]} />);
     expect(screen.queryByText(ROOM_TYPE_CHANGED_COPY)).toBeNull();
   });
