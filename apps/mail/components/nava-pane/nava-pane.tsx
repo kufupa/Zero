@@ -22,7 +22,7 @@ import {
   quoteWrapperHtml,
 } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
-import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
+import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { WorkflowBadge } from '@/components/quote-workflow/workflow-badge';
@@ -613,14 +613,97 @@ export function NavaPane({
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
   const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
-  const senderFallback =
-    storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
-  // The contact the quotation's client lines fall back to: the read's contact, else the external sender.
-  const documentContact = storedWork.pane.state === 'ready' ? storedWork.pane.contact : senderFallback;
-  const documentContactRef = useRef(documentContact);
-  documentContactRef.current = documentContact;
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
+  const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
+  const senderFallback =
+    storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
+  const sourceContact: StoredContact | null =
+    storedWork.pane.state === 'ready'
+      ? storedWork.pane.contact
+      : senderFallback
+        ? { ...senderFallback, company: null, endClient: null, phone: null }
+        : null;
+  const normalizedContact = sourceContact ? { ...sourceContact } : null;
+  const [contactCorrection, setContactCorrection] = useState<{
+    key: string;
+    fields: Partial<Record<ContactField, string | null>>;
+  } | null>(null);
+  const pendingContactCorrections = useRef<{
+    key: string;
+    fields: Partial<Record<ContactField, string | null>>;
+  } | null>(null);
+  const contactFields = contactCorrection?.key === contactCorrectionKey ? contactCorrection.fields : null;
+  const documentContact = contactFields
+    ? {
+        ...(normalizedContact ?? { name: null, company: null, endClient: null, email: null, phone: null }),
+        ...contactFields,
+      }
+    : normalizedContact;
+  const documentContactRef = useRef(documentContact);
+  documentContactRef.current = documentContact;
+  const recordContact = (field: ContactField, value: string | null) => {
+    const previous = documentContactRef.current ?? {
+      name: null,
+      company: null,
+      endClient: null,
+      email: null,
+      phone: null,
+    };
+    const contact = { ...previous, [field]: value };
+    documentContactRef.current = contact;
+    setContactCorrection((prior) => ({
+      key: contactCorrectionKey,
+      fields: {
+        ...(prior?.key === contactCorrectionKey ? prior.fields : {}),
+        [field]: value,
+      },
+    }));
+
+    const pending = pendingContactCorrections.current;
+    const hasStoredWorkItem =
+      storedWork.pane.state === 'ready' && Boolean(storedWork.pane.workItemId);
+    if (!hasStoredWorkItem) {
+      pendingContactCorrections.current = {
+        key: contactCorrectionKey,
+        fields: {
+          ...(pending?.key === contactCorrectionKey ? pending.fields : {}),
+          [field]: value,
+        },
+      };
+      storedWork.recordContact(field, value);
+      return;
+    }
+    if (pending?.key === contactCorrectionKey) {
+      const fields = { ...pending.fields, [field]: value };
+      pendingContactCorrections.current = null;
+      for (const [pendingField, pendingValue] of Object.entries(fields)) {
+        storedWork.recordContact(pendingField as ContactField, pendingValue);
+      }
+      return;
+    }
+    pendingContactCorrections.current = null;
+    storedWork.recordContact(field, value);
+  };
+  useEffect(() => {
+    const pending = pendingContactCorrections.current;
+    if (!pending) return;
+    if (pending.key !== contactCorrectionKey) {
+      pendingContactCorrections.current = null;
+      return;
+    }
+    if (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) return;
+    pendingContactCorrections.current = null;
+    for (const [field, value] of Object.entries(pending.fields)) {
+      storedWork.recordContact(field as ContactField, value);
+    }
+  }, [
+    contactCorrection,
+    contactCorrectionKey,
+    storedWork.pane.state,
+    storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null,
+    storedWork.recordContact,
+  ]);
   const treatAsMailKey = paneEditKey(activeConnection?.id ?? '', contactMessageKey);
   useEffect(() => {
     if (!quoteSession.binding || !treatAsMailKey) return;
@@ -2318,13 +2401,12 @@ export function NavaPane({
             {/* Contact is the first selected-message context. Extraction values win; only an external sender can fill its early fallback. */}
             {activeEmail ? (
               <ContactBlock
-                // ContactBlock takes `contact` once, at mount. The key moves when the read lands, also for a read with
-                // no work item (its open failed), so the read's contact always fills the fields.
-                key={`${contactMessageKey}|${storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state}`}
-                contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
-                senderFallback={senderFallback}
+                // ContactBlock takes `contact` once, at mount. The key moves when the read or mailbox changes, so the
+                // current request's contact fills the fields without carrying a correction across mailboxes.
+                key={`${contactCorrectionKey}|${storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state}`}
+                contact={documentContact}
                 quote={readAs === 'quote' || readAs === 'group'}
-                onEdit={storedWork.recordContact}
+                onEdit={recordContact}
               />
             ) : null}
             <div className="flex flex-col gap-2">{mailboxWarnings}</div>
@@ -2354,7 +2436,7 @@ export function NavaPane({
               rateCatalogue={activePaneConfig?.ratePlans ?? []}
               paneConfig={activePaneConfig}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
-              contact={storedWork.pane.state === 'ready' ? storedWork.pane.contact : null}
+              contact={documentContact}
               findParty={PANE_PARTY_FINDER}
               partySuggestions={partySuggestions}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}

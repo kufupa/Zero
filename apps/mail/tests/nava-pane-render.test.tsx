@@ -24,7 +24,7 @@ vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
 }));
 
 // State the mocks below read. Defaults match outlook-pane-render.test.tsx.
-const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFindQuery, syncStatusQuery, saveReplyMutate } = vi.hoisted(() => ({
+const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFindQuery, syncStatusQuery, saveReplyMutate } = vi.hoisted(() => ({
   pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
   voucherFindQuery: vi.fn().mockResolvedValue({ status: 'not_voucher' }),
   syncStatusQuery: vi.fn().mockResolvedValue(null),
@@ -33,6 +33,7 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     fileName: 'Quote - CIDB 15-17 Sep.pdf',
     pdfBase64: 'JVBERw==',
   }),
+  qualifiedQuotePdfMutate: vi.fn(),
   sendCommandMock: vi.fn(async (action: string): Promise<unknown> => {
     if (action === 'GET_ACTIVE_EMAIL') return { entryId: '001', storeId: 'store-1', folderEntryId: 'folder-inbox' };
     if (action === 'ADD_ATTACHMENT_TO_DRAFT') return { attached: true };
@@ -48,6 +49,7 @@ const { quotePdfMutate, sendCommandMock, bridgeMockState, pingMutate, voucherFin
     userId: 'staff-1',
     sessionId: 'session-1',
     transportId: 'transport-1',
+    transportEmail: 'ropperman@legacyhotels.co.za',
     holdStaffQuote: false,
     releaseStaffQuote: null as null | (() => void),
     hmsQueueStatus: null as null | Record<string, unknown>,
@@ -148,7 +150,7 @@ vi.mock('../lib/auth-client', () => ({
 
 vi.mock('../hooks/use-connections', () => ({
   useActiveConnection: () => ({
-    data: { id: bridgeMockState.transportId, email: 'ropperman@legacyhotels.co.za' },
+    data: { id: bridgeMockState.transportId, email: bridgeMockState.transportEmail },
     isLoading: false,
   }),
 }));
@@ -233,7 +235,7 @@ vi.mock('../providers/query-provider', () => ({
           };
         },
       },
-      qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
+      qualifiedQuoteProposalPdf: { mutate: qualifiedQuotePdfMutate },
     },
     // The amendment panel's HMS job routes. These tests queue no job, so jobStatus has nothing to report.
     paneStayLookup: {
@@ -407,6 +409,8 @@ function mountBuildMeta(content: string) {
 describe('NavaPane', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    bridgeMockState.transportId = 'transport-1';
+    bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
     bridgeMockState.analysisOverride = null;
     bridgeMockState.analyseCalls = 0;
@@ -436,6 +440,7 @@ describe('NavaPane', () => {
     syncStatusQuery.mockReset().mockResolvedValue(null);
     saveReplyMutate.mockReset();
     saveReplyMutate.mockResolvedValue({ id: 'draft-1', replaced: false });
+    qualifiedQuotePdfMutate.mockReset().mockResolvedValue(AUTHORISED_QUOTE_PDF);
     bridgeMockState.staffQuoteJobQuery.mockReset().mockResolvedValue(null);
     bridgeMockState.listThreadQuoteRevisionsQuery.mockReset().mockResolvedValue([]);
     bridgeMockState.usePriorQuoteForBookingMutation
@@ -701,9 +706,12 @@ describe('NavaPane', () => {
 describe('NavaPane screen states', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    bridgeMockState.transportId = 'transport-1';
+    bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
     bridgeMockState.hmsQueueStatus = null;
     saveReplyMutate.mockReset().mockResolvedValue({ id: 'draft-1', replaced: false });
+    qualifiedQuotePdfMutate.mockReset().mockResolvedValue(AUTHORISED_QUOTE_PDF);
     bridgeMockState.holdStaffQuote = false;
     bridgeMockState.releaseStaffQuote = null;
     bridgeMockState.staffQuoteFailure = null;
@@ -729,6 +737,8 @@ describe('NavaPane screen states', () => {
   });
 
   afterEach(() => {
+    bridgeMockState.transportId = 'transport-1';
+    bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     bridgeMockState.analysisOverride = null;
     bridgeMockState.analyseCalls = 0;
     bridgeMockState.analyseFails = false;
@@ -1451,6 +1461,16 @@ describe('NavaPane screen states', () => {
   });
 
   it('preview: uses Guest for a nameless sender and saves the reviewed PDF through webmail', async () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1',
+      propertyCode: 'HRCEN',
+      roomTypes: [{ code: 'SKNG', label: 'Standard King' }],
+      ratePlans: [],
+      boards: ['bb'],
+      salesStrategies: [],
+      overrideRateCodes: [],
+      eventRateCodes: [],
+    };
     bridgeMockState.analysisOverride = {
       status: 'ready',
       intent: 'quote',
@@ -1476,9 +1496,19 @@ describe('NavaPane screen states', () => {
       },
     } as PaneBridge;
     render(<NavaPane bridge={namelessBridge} preview />);
+    openContactCorrections();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Updated Contact' } });
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'updated@example.invalid' } });
     await prepareReviewedQuote(null);
 
-    const expectedHtml = quoteWrapperHtml('', 'R Opperman');
+    expect(qualifiedQuotePdfMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attention: 'Updated Contact',
+        clientEmail: 'updated@example.invalid',
+        clientTelephone: '',
+      }),
+    );
+    const expectedHtml = quoteWrapperHtml('Updated Contact', 'R Opperman', { propertyCode: 'HRCEN' });
     expect(reviewedReplyHtml()).toBe(expectedHtml);
     fireEvent.click(screen.getByRole('button', { name: 'Draft quotation into email reply' }));
 
@@ -1769,6 +1799,87 @@ describe('NavaPane screen states', () => {
     expect((screen.getAllByLabelText(/Departure/i)[0] as HTMLInputElement).value).toBe('2026-11-05');
   });
 
+  it('stored: a contact name correction keeps other fields from the read that lands later', async () => {
+    let releaseLookup = () => {};
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      contact: {
+        name: 'Stored Guest',
+        company: 'Stored Company',
+        endClient: null,
+        email: 'stored@example.invalid',
+        phone: '+27123456789',
+      },
+    };
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    render(<NavaPane bridge={fakeBridge} preview />);
+
+    const contact = await screen.findByRole('region', { name: 'Contact' });
+    expect(within(contact).getByText('David Miller')).toBeDefined();
+    openContactCorrections();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Corrected Guest' } });
+    await act(async () => releaseLookup());
+    await storedReadLands();
+    await waitFor(() =>
+      expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItemId: 'wi-1',
+          fieldPath: 'contact.name',
+          value: 'Corrected Guest',
+        }),
+      ),
+    );
+    expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(1);
+
+    openContactCorrections();
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Corrected Guest');
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('stored@example.invalid');
+    expect((screen.getByLabelText('Phone') as HTMLInputElement).value).toBe('+27123456789');
+  });
+
+  it('stored: a contact correction does not cross mailboxes for the same message id', async () => {
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      workItemId: 'wi-first-mailbox',
+      contact: {
+        name: 'First Mailbox Guest',
+        company: null,
+        endClient: null,
+        email: 'first@example.invalid',
+        phone: null,
+      },
+    };
+    const { rerender } = render(<NavaPane bridge={fakeBridge} preview />);
+    await storedReadLands();
+    openContactCorrections();
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'First Mailbox Correction' } });
+
+    bridgeMockState.transportId = 'transport-2';
+    bridgeMockState.transportEmail = 'second@legacyhotels.co.za';
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      workItemId: 'wi-second-mailbox',
+      contact: {
+        name: 'Second Mailbox Guest',
+        company: null,
+        endClient: null,
+        email: 'second@example.invalid',
+        phone: null,
+      },
+    };
+    rerender(<NavaPane bridge={fakeBridge} preview />);
+
+    await waitFor(() => {
+      const contact = screen.getByRole('region', { name: 'Quote contact — printed on the PDF' });
+      expect(within(contact).getByText('Second Mailbox Guest')).toBeDefined();
+    });
+    openContactCorrections();
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Second Mailbox Guest');
+    expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('second@example.invalid');
+  });
+
   it('stored: shows a multi-row room total on the stay as an unset split', async () => {
     const group = STORED_READY.analysis.groups[0]!;
     bridgeMockState.storedWork = {
@@ -1902,7 +2013,7 @@ describe('NavaPane screen states', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await waitFor(() => expect(bridgeMockState.prepareUnquotedBookingDraftMutation).toHaveBeenCalled());
-    expect(await screen.findByRole('heading', { name: 'Book in HMS' })).toBeDefined();
+    expect(await screen.findByLabelText('Booking details')).toBeDefined();
     expect(screen.queryByText('$.roomType required')).toBeNull();
     expect(screen.queryByText('Available')).toBeNull();
     await act(async () => resolveJob(completedStaffQuoteJob(STAFF_QUOTE_READY)));
