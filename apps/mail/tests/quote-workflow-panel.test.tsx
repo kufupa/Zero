@@ -11,15 +11,18 @@ import { resetPartyAutoLookupForTests } from '../components/quote-workflow/party
 import type { HmsJobRequest, HmsJobView } from '../lib/quote-workflow/amend-find';
 import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
 import { useHmsJobNoticeReporter } from '../lib/quote-workflow/hms-job-notice-context';
-import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
+import { initialQuoteSession, reduceQuoteSession, stayKeyForGroup } from '../lib/quote-workflow/session';
 import type {
   LunaAnalysisWire,
+  QuotePaneConfig,
+  QuoteSalesStrategy,
+  QuoteStrategyRow,
   QuoteRoomAlternative,
   QuoteSession,
   RateOption,
   RatePlanCatalogueEntry,
 } from '../lib/quote-workflow/types';
-import { defaultStaffStayExtras } from '../lib/quote-workflow/types';
+import { defaultStaffStayExtras, HRDAV_PROPERTY_CODE } from '../lib/quote-workflow/types';
 import { CENTURION_RATE_PLANS } from '../../server-pilot/src/hms/rate-catalogue';
 
 vi.mock('sonner', () => ({ toast: { warning: vi.fn(), success: vi.fn(), error: vi.fn() } }));
@@ -2213,5 +2216,99 @@ describe('an unread document is a needs-review row, never a stop', () => {
     expect(screen.getByText("Nava can't read rooming.docx yet — open it if it has booking details.")).toBeDefined();
     expect(screen.getByText('Needs review. Nava did not read this file.')).toBeDefined();
     expect(screen.queryByText(/Blocks the quote/)).toBeNull();
+  });
+});
+
+describe('quote strategy comparison', () => {
+  it('renders every configured strategy BAR first, keeps no-room results visible, and waits for a staff pick', () => {
+    const base = sessionFromFixture('public-single');
+    const group = base.groups[0]!;
+    const stayKey = stayKeyForGroup(group);
+    const strategies: QuoteSalesStrategy[] = [
+      { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
+      { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+      { code: 'PRESET', label: 'Preset', requestValue: 'PRESET' },
+      { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
+      { code: 'NC', label: 'Negoticated Contracted', requestValue: 'NC' },
+      { code: 'GOV', label: 'Government', requestValue: 'Government' },
+    ];
+    const session: QuoteSession = {
+      ...base,
+      offers: [],
+      selectedOfferIds: [],
+      staffQuote: null,
+      staffQuotes: {},
+    };
+    const strategyRows: Record<string, Partial<Record<QuoteSalesStrategy['code'], QuoteStrategyRow>>> = {
+      [stayKey]: {
+        WS: {
+          status: 'ready',
+          roomLabels: ['Standard King'],
+          boardLabels: ['Bed & Breakfast'],
+          nightlyMinor: [80000],
+          totalMinor: 160000,
+        },
+        GOV: { status: 'not_offered', message: 'No rooms for these dates.' },
+      },
+    };
+    const paneConfig: QuotePaneConfig = {
+      transportId: 't1',
+      propertyCode: HRDAV_PROPERTY_CODE,
+      roomTypes: [],
+      ratePlans: [],
+      boards: ['bb'],
+      salesStrategies: strategies,
+      overrideRateCodes: [],
+      eventRateCodes: [],
+    };
+    const onSelectQuoteStrategy = vi.fn();
+
+    const rendered = render(
+      <QuoteWorkflowPanel
+        session={session}
+        paneConfig={paneConfig}
+        quoteStrategyRows={strategyRows}
+        onSelectQuoteStrategy={onSelectQuoteStrategy}
+      />,
+    );
+
+    const table = screen.getByRole('table', { name: /quote strategy comparison/i });
+    const rows = within(table).getAllByRole('row');
+    expect(rows).toHaveLength(7);
+    expect(rows[1]?.textContent).toContain('BAR');
+    expect(rows.map((row) => row.textContent).join(' ')).toContain('PROMO');
+    expect(rows.map((row) => row.textContent).join(' ')).toContain('PRESET');
+    expect(rows.map((row) => row.textContent).join(' ')).toContain('WS');
+    expect(rows.map((row) => row.textContent).join(' ')).toContain('NC');
+    expect(rows.map((row) => row.textContent).join(' ')).toContain('GOV');
+    expect(within(table).getByText('Not offered for these dates')).toBeDefined();
+    expect(within(table).getAllByText('Not checked')).toHaveLength(4);
+    expect(within(table).getByText('Standard King')).toBeDefined();
+    expect(within(table).getByText('R800,00')).toBeDefined();
+    expect(within(table).getByText(/R1\s600,00/)).toBeDefined();
+    expect(session.selectedOfferIds).toEqual([]);
+    expect(session.staffQuote).toBeNull();
+    expect(onSelectQuoteStrategy).not.toHaveBeenCalled();
+    const chooseWholesale = screen.getByRole('button', { name: /use wholesale \(WS\) rates/i });
+    expect(chooseWholesale.hasAttribute('disabled')).toBe(true);
+
+    const completedRows = Object.fromEntries(strategies.map((strategy) => [
+      strategy.code,
+      strategy.code === 'WS'
+        ? strategyRows[stayKey]?.WS!
+        : { status: 'not_offered' as const, message: 'No rooms for these dates.' },
+    ]));
+    rendered.rerender(
+      <QuoteWorkflowPanel
+        session={session}
+        paneConfig={paneConfig}
+        quoteStrategyRows={{ [stayKey]: completedRows }}
+        onSelectQuoteStrategy={onSelectQuoteStrategy}
+      />,
+    );
+    const completedChoice = screen.getByRole('button', { name: /use wholesale \(WS\) rates/i });
+    expect(completedChoice.hasAttribute('disabled')).toBe(false);
+    fireEvent.click(completedChoice);
+    expect(onSelectQuoteStrategy).toHaveBeenCalledWith(stayKey, 'WS');
   });
 });

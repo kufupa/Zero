@@ -285,6 +285,7 @@ describe('row price controls in the quote panel', () => {
           roomTypes: [{ code: 'JNRSUI', label: 'Junior Suite' }],
           ratePlans: [],
           boards: ['room_only', 'bb'],
+          salesStrategies: [],
           overrideRateCodes: ['BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF'],
           eventRateCodes: [],
         }}

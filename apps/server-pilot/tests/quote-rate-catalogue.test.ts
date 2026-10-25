@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
+import { quoteSalesStrategiesFromRegistry } from '../src/hms/rate-catalogue.js';
 
 function signedInCaller(transportId = 'transport-centurion') {
   return appRouter.createCaller({
@@ -37,6 +38,10 @@ describe('mailbox-scoped quote pane configuration', () => {
         { code: 'SUITE', label: 'Suite' },
       ],
       boards: ['room_only', 'bb', 'dinner_bb'],
+      salesStrategies: [
+        { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+        { code: 'GOV', label: 'Government', requestValue: 'Government' },
+      ],
       overrideRateCodes: ['NCOR1B', 'NCOR2B', 'BAR', 'GNC3B', 'GNC4B'],
       eventRateCodes: ['GNC3B', 'GNC4B'],
     });
@@ -67,11 +72,33 @@ describe('mailbox-scoped quote pane configuration', () => {
         { code: 'STWN', label: 'Standard Twin' },
       ],
       boards: ['room_only', 'bb'],
+      salesStrategies: [
+        { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+        { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
+        { code: 'PRESET', label: 'Preset', requestValue: 'PRESET' },
+        { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
+        { code: 'NC', label: 'Negoticated Contracted', requestValue: 'NC' },
+        { code: 'GOV', label: 'Government', requestValue: 'Government' },
+        { code: 'AIR', label: 'Airline Crews', requestValue: 'AIR' },
+        { code: 'DOML', label: 'Domestic Leisure', requestValue: 'DOML' },
+        { code: 'OTHER', label: 'Other', requestValue: 'OTHER' },
+      ],
       overrideRateCodes: ['BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF'],
       eventRateCodes: [],
     });
     expect(config.roomTypes.map(({ code }) => code)).not.toContain('STQN');
     expect(config.ratePlans.map(({ code }) => code)).toEqual(['BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF']);
+  });
+
+  it('exposes no Da Vinci strategy that is outside the supported registry codes', () => {
+    expect(quoteSalesStrategiesFromRegistry('HRDAV', [
+      { value: 'PROMO', display: 'Promotions' },
+      { value: 'UNREGISTERED', display: 'Unregistered strategy' },
+      { value: 'BAR', display: 'BAR' },
+    ])).toEqual([
+      { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+      { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
+    ]);
   });
 
   it('refuses unknown and collector mailboxes instead of falling back to Centurion', async () => {

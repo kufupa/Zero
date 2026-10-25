@@ -278,6 +278,15 @@ export type RatePlanCatalogueEntry = {
 export type QuotePaneRoomType = { code: string; label: string };
 export type QuotePaneBoard = Exclude<QuoteBoard, 'unknown'>;
 
+export type QuoteSalesStrategyCode = 'BAR' | 'PROMO' | 'PRESET' | 'WS' | 'NC' | 'GOV' | 'AIR' | 'DOML' | 'OTHER';
+export type QuoteSalesStrategyValue = QuoteSalesStrategyCode | 'Government';
+export type QuoteSalesStrategy = {
+  code: QuoteSalesStrategyCode;
+  label: string;
+  /** Request value is a native code, except legacy Government which shares the canonical prefetched quote. */
+  requestValue: QuoteSalesStrategyValue;
+};
+
 /** Mailbox-selected, registry-backed choices for the quote pane. */
 export type QuotePaneConfig = {
   transportId: string;
@@ -285,6 +294,7 @@ export type QuotePaneConfig = {
   roomTypes: QuotePaneRoomType[];
   ratePlans: RatePlanCatalogueEntry[];
   boards: QuotePaneBoard[];
+  salesStrategies: QuoteSalesStrategy[];
   overrideRateCodes: string[];
   eventRateCodes: string[];
 };
@@ -622,6 +632,18 @@ export type QuoteOffer = {
   childrenAges?: number[];
   screenshot?: QuoteScreenshot;
 };
+
+/** Display-only outcome for one registry-approved strategy in the quote comparison table. */
+export type QuoteStrategyRow =
+  | { status: 'pending' }
+  | { status: 'not_offered' | 'failed'; message: string }
+  | {
+      status: 'ready';
+      roomLabels: string[];
+      boardLabels: string[];
+      nightlyMinor: number[];
+      totalMinor: number;
+    };
 
 export type QuoteMailboxStatus = 'unsynced' | 'missing_source' | 'ready' | 'unavailable';
 

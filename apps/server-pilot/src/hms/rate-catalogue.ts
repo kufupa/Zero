@@ -56,12 +56,29 @@ type HmsPropertyCode = 'HRCEN' | 'HRDAV';
 type QuotePaneBoard = 'room_only' | 'bb' | 'dinner_bb';
 type PropertyRatePlan = CenturionRatePlan & { code: string };
 
+export type QuoteSalesStrategyCode = 'BAR' | 'PROMO' | 'PRESET' | 'WS' | 'NC' | 'GOV' | 'AIR' | 'DOML' | 'OTHER';
+export type QuoteSalesStrategy = {
+  code: QuoteSalesStrategyCode;
+  label: string;
+  /** Value sent to the quote tool. Government keeps the legacy request value used by prepared HRCEN quotes. */
+  requestValue: QuoteSalesStrategyCode | 'Government';
+};
+
+const HRCEN_SALES_STRATEGIES: QuoteSalesStrategy[] = [
+  { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+  { code: 'GOV', label: 'Government', requestValue: 'Government' },
+];
+const HRDAV_SALES_STRATEGY_CODES = new Set<QuoteSalesStrategyCode>([
+  'BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER',
+]);
+
 export type PropertyQuotePaneConfig = {
   transportId: string;
   propertyCode: HmsPropertyCode;
   roomTypes: Array<{ code: string; label: string }>;
   ratePlans: PropertyRatePlan[];
   boards: QuotePaneBoard[];
+  salesStrategies: QuoteSalesStrategy[];
   overrideRateCodes: string[];
   eventRateCodes: string[];
 };
@@ -75,10 +92,43 @@ type RegistryQuoteProfile = {
     government?: boolean;
     event?: boolean;
   }>;
+  salesStrategies?: Array<{ value: string; display: string }>;
 };
 
 const PROFILE_MODULE = '../../tooling/playwright-quote/property-profile.mjs';
 const PANE_BOARD_ORDER: readonly QuotePaneBoard[] = ['room_only', 'bb', 'dinner_bb'];
+
+/** Only registry-listed native codes become pane choices. BAR is pinned first when the registry offers it. */
+export function quoteSalesStrategiesFromRegistry(
+  propertyCode: string,
+  raw: unknown,
+): QuoteSalesStrategy[] {
+  if (propertyCode === 'HRCEN') return HRCEN_SALES_STRATEGIES.map((row) => ({ ...row }));
+  if (propertyCode !== 'HRDAV' || !Array.isArray(raw)) return [];
+  const seen = new Set<QuoteSalesStrategyCode>();
+  const strategies: QuoteSalesStrategy[] = [];
+  for (const candidate of raw) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const row = candidate as { value?: unknown; display?: unknown };
+    const code = typeof row.value === 'string' ? row.value.trim().toUpperCase() : '';
+    const label = typeof row.display === 'string' ? row.display.trim() : '';
+    if (
+      !HRDAV_SALES_STRATEGY_CODES.has(code as QuoteSalesStrategyCode) ||
+      seen.has(code as QuoteSalesStrategyCode) ||
+      !label ||
+      label.length > 80 ||
+      /[<>\u0000-\u001f\u007f]/.test(label)
+    ) continue;
+    const safeCode = code as QuoteSalesStrategyCode;
+    seen.add(safeCode);
+    strategies.push({
+      code: safeCode,
+      label,
+      requestValue: safeCode === 'GOV' ? 'Government' : safeCode,
+    });
+  }
+  return strategies.sort((left, right) => Number(right.code === 'BAR') - Number(left.code === 'BAR'));
+}
 
 function boardForCatalogue(board: string): QuotePaneBoard | null {
   if (board === 'room_only') return 'room_only';
@@ -118,6 +168,7 @@ export async function quotePaneConfigForProperty(
       roomTypes: Object.entries(ROOM_TYPE_NAMES).map(([code, label]) => ({ code, label })),
       ratePlans: CENTURION_RATE_PLANS,
       boards: boardsForPlans(CENTURION_RATE_PLANS),
+      salesStrategies: quoteSalesStrategiesFromRegistry(propertyCode, null),
       overrideRateCodes: [...CENTURION_OVERRIDE_RATE_CODES],
       eventRateCodes: [...CENTURION_EVENT_RATE_CODES],
     };
@@ -140,6 +191,7 @@ export async function quotePaneConfigForProperty(
     roomTypes: Object.entries(profile.rooms).map(([code, room]) => ({ code, label: room.label })),
     ratePlans,
     boards: boardsForPlans(ratePlans),
+    salesStrategies: quoteSalesStrategiesFromRegistry(propertyCode, profile.salesStrategies),
     overrideRateCodes: ratePlans.map(({ code }) => code),
     eventRateCodes: ratePlans.filter(({ event }) => event).map(({ code }) => code),
   };
