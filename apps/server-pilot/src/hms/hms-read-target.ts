@@ -66,9 +66,9 @@ export function hmsDavinciReadsEnabled(env: NodeJS.Dict<string> = process.env): 
   return env.HMS_DAVINCI_READS === 'on';
 }
 
+/** Identity classification; active HMS access is checked by the target resolver. */
 export function isDaVinciTransport(transportId: string): boolean {
-  const resolved = resolvePropertyTransport(transportId);
-  return resolved.kind === 'property' && resolved.property.propertyCode === 'HRDAV';
+  return DAVINCI_STAFF_TRANSPORT_IDS.includes(transportId.trim());
 }
 
 function davinciReadOrRefuse(env?: NodeJS.Dict<string>): HmsReadJobTargetResult {
