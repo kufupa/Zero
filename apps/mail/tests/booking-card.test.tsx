@@ -323,6 +323,46 @@ describe('booking cards', () => {
     expect(preview).toHaveBeenCalledWith(expect.objectContaining({ roomType: 'JNRSUI' }));
   });
 
+  it('keeps each draft allocation instead of indexing unpicked Stay room codes', () => {
+    const { client, preview } = paneClient();
+    const draft = draftReady();
+    draft.draft.rooms[1]!.request.roomType = 'JNRSUI';
+    const group: StayGroupRequirement = {
+      ...g1,
+      roomCodes: ['DLXKNG', 'ACCES'],
+      fields: { ...g1.fields, roomCodes: 'extracted' },
+    };
+    render(<BookingCards draft={draft} groups={[group]} paneSave={client} />);
+    pickRoomChoices(0);
+    pickRoomChoices(1);
+
+    fireEvent.click(previewButton(0));
+    fireEvent.click(previewButton(1));
+
+    expect(preview).toHaveBeenNthCalledWith(1, expect.objectContaining({ roomType: 'STQN' }));
+    expect(preview).toHaveBeenNthCalledWith(2, expect.objectContaining({ roomType: 'JNRSUI' }));
+  });
+
+  it('uses one room code explicitly picked on Stay as replacement for draft allocations', () => {
+    const { client, preview } = paneClient();
+    const draft = draftReady();
+    const group: StayGroupRequirement = {
+      ...g1,
+      roomPreference: 'DLXKNG',
+      roomTypeCode: 'DLXKNG',
+      fields: { ...g1.fields, roomPreference: 'staff_corrected' },
+    };
+    render(<BookingCards draft={draft} groups={[group]} paneSave={client} />);
+    pickRoomChoices(0);
+    pickRoomChoices(1);
+
+    fireEvent.click(previewButton(0));
+    fireEvent.click(previewButton(1));
+
+    expect(preview).toHaveBeenNthCalledWith(1, expect.objectContaining({ roomType: 'DLXKNG' }));
+    expect(preview).toHaveBeenNthCalledWith(2, expect.objectContaining({ roomType: 'DLXKNG' }));
+  });
+
   it('renders create-only fields once per draft room', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
     expect(screen.getAllByLabelText('Booking agency').map((field) => (field as HTMLInputElement).value)).toEqual([

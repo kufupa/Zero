@@ -1822,6 +1822,16 @@ describe('NavaPane screen states', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Corrected Guest' } });
     await act(async () => releaseLookup());
     await storedReadLands();
+    await waitFor(() =>
+      expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workItemId: 'wi-1',
+          fieldPath: 'contact.name',
+          value: 'Corrected Guest',
+        }),
+      ),
+    );
+    expect(bridgeMockState.recordEvent).toHaveBeenCalledTimes(1);
 
     openContactCorrections();
     expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Corrected Guest');
