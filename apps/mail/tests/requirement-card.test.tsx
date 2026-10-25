@@ -225,6 +225,38 @@ describe('StayCard rooms', () => {
     expect(screen.getByText(/Email requested 4 rooms in total/)).toBeTruthy();
   });
 
+  it('shows only the active hotel room and meal-plan choices', () => {
+    const roomTypes = [
+      ['JNRSUI', 'Junior Suite'],
+      ['EXKNGB', 'Executive King Balcony'],
+      ['EXKNGR', 'Executive King Round'],
+      ['EXKNGS', 'Executive King Square'],
+      ['DLXPAT', 'Deluxe Patio'],
+      ['DLXKNG', 'Deluxe King'],
+      ['ACCES', 'Accessible'],
+      ['STKNG', 'Standard King'],
+      ['STWN', 'Standard Twin'],
+    ].map(([code, label]) => ({ code, label }));
+    const props = {
+      stayId: 's1',
+      rows: [stay({ roomPreference: '' })],
+      index: 0,
+      stayCount: 1,
+      roomTypes,
+      boards: ['room_only', 'bb'],
+    } as never;
+    render(<StayCard {...props} />);
+
+    const roomType = screen.getByLabelText('Room type') as HTMLSelectElement;
+    expect([...roomType.options].map((option) => option.value)).toEqual([
+      '', 'JNRSUI', 'EXKNGB', 'EXKNGR', 'EXKNGS', 'DLXPAT', 'DLXKNG', 'ACCES', 'STKNG', 'STWN',
+    ]);
+    expect([...roomType.options].map((option) => option.value)).not.toContain('STQN');
+    expect(screen.getByRole('rowheader', { name: 'Room type needed ×1' })).toBeTruthy();
+    const mealPlan = screen.getByLabelText('Meal plan') as HTMLSelectElement;
+    expect([...mealPlan.options].map((option) => option.value)).toEqual(['all', 'room_only', 'bb']);
+  });
+
   it('uses a requested-room split header until room quantities are assigned', () => {
     renderStay(
       [stay({ quantity: undefined }), stay({ id: 'g2', quantity: undefined })],

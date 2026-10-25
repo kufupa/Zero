@@ -185,16 +185,19 @@ function PinnedPanel({
   rates,
   runs,
   seen,
+  paneConfig,
 }: {
   initial: QuoteSession;
   rates?: SavedRatesClient | null;
   runs: string[];
   seen: { session: QuoteSession | null };
+  paneConfig?: unknown;
 }) {
   const [session, setSession] = useState(withSelectedRate(initial));
   seen.session = session;
   return (
     <QuoteWorkflowPanel
+      {...({ paneConfig } as never)}
       session={session}
       rates={rates}
       onPatchGroup={(groupId, patch) =>
@@ -263,6 +266,35 @@ describe('row price controls in the quote panel', () => {
       note: NOTE,
     });
     expect(screen.getByText(`NCOR1B override, ${rand(185000)} a night`)).toBeDefined();
+  });
+
+  it('uses the active hotel override codes instead of Centurion-only choices', () => {
+    const runs: string[] = [];
+    const seen = { session: null as QuoteSession | null };
+    render(
+      <PinnedPanel
+        initial={readySession()}
+        runs={runs}
+        seen={seen}
+        paneConfig={{
+          propertyCode: 'HRDAV',
+          transportId: 'transport-davinci',
+          roomTypes: [{ code: 'JNRSUI', label: 'Junior Suite' }],
+          ratePlans: [],
+          boards: ['room_only', 'bb'],
+          overrideRateCodes: ['BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF'],
+          eventRateCodes: [],
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Special price' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Discount / override' }));
+
+    const rateCode = screen.getByLabelText('HMS rate code') as HTMLSelectElement;
+    expect([...rateCode.options].map((option) => option.value)).toEqual([
+      '', 'BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF', 'OTHER',
+    ]);
+    expect([...rateCode.options].map((option) => option.value)).not.toContain('NCOR1B');
   });
 
   it('a saved rate is picked from the list, and the stay re-runs', async () => {

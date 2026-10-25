@@ -1,9 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  bindExecuteStaffQuote,
   resolveNativeRoomCodes,
   staffQuoteGroupsFromStay,
 } from '../lib/quote-workflow/staff-quote-bind';
 import {
+  HRCEN_PROPERTY_CODE,
   HRDAV_PROPERTY_CODE,
   HRDAV_RATE_PLANS,
   HRDAV_ROOM_NAMES,
@@ -38,9 +40,13 @@ describe('HRDAV native room and board maps', () => {
       status: 'unresolved',
       label: 'SUITE',
     });
-    expect(resolveNativeRoomCodes({ roomPreference: 'Standard Queen' })).toEqual({
+    expect(resolveNativeRoomCodes({ roomPreference: 'Standard Queen', propertyCode: HRCEN_PROPERTY_CODE })).toEqual({
       status: 'codes',
       codes: ['STQN'],
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Standard Queen' })).toEqual({
+      status: 'unresolved',
+      label: 'property not set',
     });
   });
 
@@ -103,5 +109,24 @@ describe('HRDAV native room and board maps', () => {
       status: 'codes',
       codes: ['STWN'],
     });
+  });
+
+  it('refuses a staff quote with no mailbox property instead of treating it as Centurion', async () => {
+    const reason = /hotel.*mailbox|mailbox.*hotel/i;
+    expect(staffQuoteGroupsFromStay([stay({ roomPreference: 'Standard Queen' })])).toEqual({
+      error: expect.stringMatching(reason),
+    });
+
+    const mutate = vi.fn();
+    const result = await bindExecuteStaffQuote({
+      source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'a'.repeat(64) },
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups: [stay()],
+      header: {} as never,
+      mutate,
+    });
+    expect(result).toMatchObject({ status: 'unavailable', reason: expect.stringMatching(reason) });
+    expect(mutate).not.toHaveBeenCalled();
   });
 });
