@@ -17,10 +17,13 @@ import {
   matchConfiguredRoomType,
   rowRoomLabel,
   rowRoomTypeCode,
+  roomTypeLabel,
   type RoomTypeCode,
 } from '@/lib/quote-workflow/room-types';
 import { newQuoteToken, parseChildrenAges, stayTotals } from '@/lib/quote-workflow/session';
+import { HRCEN_PROPERTY_CODE } from '@/lib/quote-workflow/types';
 import type {
+  HmsQuotePropertyCode,
   QuoteBoard,
   QuotePaneBoard,
   QuotePaneRoomType,
@@ -102,20 +105,22 @@ const MEAL_PLAN_LABELS: Record<QuotePaneBoard, string> = {
 function paneRoomTypeForGroup(
   group: StayGroupRequirement,
   roomTypes: readonly QuotePaneRoomType[],
+  propertyCode: HmsQuotePropertyCode,
 ): QuotePaneRoomType | null {
   return matchConfiguredRoomType([
     ...(group.roomCodes?.length === 1 ? group.roomCodes : []),
     group.roomPreference,
     group.roomTypeCode,
-  ], roomTypes);
+  ], roomTypes, { allowCenturionRoomAliases: propertyCode === HRCEN_PROPERTY_CODE });
 }
 
 function paneRoomLabel(
   group: StayGroupRequirement,
   roomTypes: readonly QuotePaneRoomType[],
   strictRoomTypes: boolean,
+  propertyCode: HmsQuotePropertyCode,
 ): string {
-  const room = paneRoomTypeForGroup(group, roomTypes);
+  const room = paneRoomTypeForGroup(group, roomTypes, propertyCode);
   if (!room && !strictRoomTypes) return rowRoomLabel(group);
   const label = room?.label ?? 'Room type needed';
   const count = typeof group.quantity === 'number' && group.quantity > 0 ? group.quantity : '?';
@@ -137,6 +142,7 @@ export function StayCard({
   onPatch,
   onStayAction,
   evidence,
+  propertyCode = HRCEN_PROPERTY_CODE,
   roomTypes: configuredRoomTypes,
   boards: configuredBoards,
 }: {
@@ -152,6 +158,8 @@ export function StayCard({
   onPatch?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onStayAction?: (action: StayEditAction) => void;
   evidence?: Array<{ field: string; quote: string; source?: 'staff_note' }>;
+  /** HRDAV uses only exact codes/labels; absent keeps legacy HRCEN matching for older callers. */
+  propertyCode?: HmsQuotePropertyCode;
   roomTypes?: QuotePaneRoomType[];
   boards?: QuotePaneBoard[];
 }) {
@@ -280,6 +288,7 @@ export function StayCard({
                   onPatch={onPatch}
                   onStayAction={onStayAction}
                   evidence={evidence}
+                  propertyCode={propertyCode}
                   roomTypes={roomTypes}
                   strictRoomTypes={strictRoomTypes}
                 />
@@ -304,6 +313,7 @@ export function RequirementCard({
   onPatch,
   onStayAction,
   evidence,
+  propertyCode,
   roomTypes,
   strictRoomTypes,
 }: {
@@ -314,12 +324,13 @@ export function RequirementCard({
   onPatch?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onStayAction?: (action: StayEditAction) => void;
   evidence?: Array<{ field: string; quote: string; source?: 'staff_note' }>;
+  propertyCode: HmsQuotePropertyCode;
   roomTypes: QuotePaneRoomType[];
   strictRoomTypes: boolean;
 }) {
   const id = useId();
   const where = `stay ${stayNumber}, room ${roomNumber}`;
-  const selectedRoom = paneRoomTypeForGroup(group, roomTypes);
+  const selectedRoom = paneRoomTypeForGroup(group, roomTypes, propertyCode);
   const selectedCode = selectedRoom?.code ?? (strictRoomTypes ? null : rowRoomTypeCode(group));
   const unknownValue = group.roomPreference && !selectedCode ? group.roomPreference : null;
   const suggestions = (group.roomTypeSuggestions ?? [])
@@ -352,7 +363,7 @@ export function RequirementCard({
       ? 'Adults per room not set'
       : `${group.adults} ${group.adults === 1 ? 'adult' : 'adults'} per room`;
 
-  const displayName = paneRoomLabel(group, roomTypes, strictRoomTypes);
+  const displayName = paneRoomLabel(group, roomTypes, strictRoomTypes, propertyCode);
 
   return (
     <div role="row" aria-label={displayName} data-room-index={roomNumber} className="flex flex-col gap-2.5 bg-white p-2.5">
@@ -402,7 +413,9 @@ export function RequirementCard({
               {unknownValue ? <option value={unknownValue}>Email request</option> : null}
               {roomTypes.map(({ code, label }) => (
                 <option key={code} value={code}>
-                  {label}
+                  {propertyCode === HRCEN_PROPERTY_CODE && code in ROOM_TYPE_NAMES
+                    ? roomTypeLabel(code)
+                    : label}
                 </option>
               ))}
             </select>

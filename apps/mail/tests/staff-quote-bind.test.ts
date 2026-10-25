@@ -108,7 +108,12 @@ describe('HRDAV native room and board maps', () => {
   });
 
   it('does not inherit a Centurion-only room alias on HRDAV', () => {
-    expect(resolveNativeRoomCodes({ roomPreference: 'standard queen room', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+    expect(
+      resolveNativeRoomCodes({
+        roomPreference: 'standard queen room',
+        propertyCode: HRDAV_PROPERTY_CODE,
+      }),
+    ).toEqual({
       status: 'unresolved',
       label: 'standard queen room',
     });

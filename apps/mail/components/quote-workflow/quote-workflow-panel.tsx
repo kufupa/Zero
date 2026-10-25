@@ -25,7 +25,7 @@ import {
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
 import { draftMoney } from '@/lib/quote-workflow/multi-option-draft';
-import { emptyStaffQuoteHeader, staffStayExtrasFor } from '@/lib/quote-workflow/types';
+import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE, staffStayExtrasFor } from '@/lib/quote-workflow/types';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type {
@@ -1511,7 +1511,9 @@ export function QuoteWorkflowPanel({
       ...(row.roomCodes?.length === 1 ? row.roomCodes : []),
       row.roomPreference,
       row.roomTypeCode,
-    ], paneConfig?.roomTypes ?? []);
+    ], paneConfig?.roomTypes ?? [], {
+      allowCenturionRoomAliases: paneConfig?.propertyCode === HRCEN_PROPERTY_CODE,
+    });
     const name = room?.label ?? 'Room type needed';
     const count = typeof row.quantity === 'number' && row.quantity > 0 ? row.quantity : '?';
     return `${name} ×${count}`;
@@ -1818,6 +1820,7 @@ export function QuoteWorkflowPanel({
                   ) || session.analysis?.requestedRoomsByStay?.[stay.id]
                 }
                 mealPlan={mealPlanForStay(stay.id, stay.rows)}
+                propertyCode={paneConfig?.propertyCode}
                 roomTypes={paneRoomTypes}
                 boards={paneBoards}
                 onMealPlanChange={(value) =>

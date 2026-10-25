@@ -293,6 +293,8 @@ describe('StayCard rooms', () => {
     expect(roomOptionValues).not.toContain('STQN');
     expect(screen.getByRole('option', { name: 'Junior Suite' })).toBeTruthy();
     expect(screen.queryByRole('option', { name: 'JNRSUI' })).toBeNull();
+    expect(screen.getByRole('option', { name: 'Standard Twin' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'Standard Twin (STWN)' })).toBeNull();
     expect(screen.getByText('Room type needed ×1')).toBeTruthy();
     const mealPlan = screen.getByLabelText('Meal plan');
     expect([...mealPlan.querySelectorAll('option')].map((option) => option.value)).toEqual(['all', 'room_only', 'bb']);
@@ -314,7 +316,9 @@ describe('StayCard rooms', () => {
     render(<StayCard {...props} />);
 
     const roomType = selectByLabel('Room type');
-    expect(resolveNativeRoomCodes({ roomPreference: unlistedPreference, propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+    expect(
+      resolveNativeRoomCodes({ roomPreference: unlistedPreference, propertyCode: HRDAV_PROPERTY_CODE }),
+    ).toEqual({
       status: 'unresolved',
       label: unlistedPreference,
     });
@@ -325,7 +329,9 @@ describe('StayCard rooms', () => {
     const exactPreference = 'Standard Twin';
     render(<StayCard {...props} rows={[stay({ roomPreference: exactPreference })]} />);
     expect(selectByLabel('Room type').value).toBe('STWN');
-    expect(resolveNativeRoomCodes({ roomPreference: exactPreference, propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+    expect(
+      resolveNativeRoomCodes({ roomPreference: exactPreference, propertyCode: HRDAV_PROPERTY_CODE }),
+    ).toEqual({
       status: 'codes',
       codes: ['STWN'],
     });
