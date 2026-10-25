@@ -1,6 +1,27 @@
 # Active context
 
-Updated 2026-10-22 after the DV install run (paused for retro). Already imported by root `CLAUDE.md`. Keep this file short; dated research is evidence, not automatically current state.
+Updated 2026-10-25 19:00Z after U13-dedup `#550` deploy. Dated research is evidence, not automatically current state.
+
+## Multi-hotel overnight — 2026-10-25 (Grok orch, plan 2026-10-24-001)
+
+- **Live `20e5389ee`** (U13-dedup `#550` deploy ~18:59Z). Health 200/200. `REPLY_RECHECK=shadow` on http/worker/ai-worker; remote-http UNSET. last-good recorded by ops-deploy.
+- Merged this run: U6a-enqueue `#547` `7dd78a67b`, WAL `#548` `e688ddf09`, U13a extras `#549` `56b9c16b7`, U13-dedup `#550` `20e5389ee`.
+- Pane: Stay + contact canonical; extras in stay cards; Documents step 5. **DoD6 still FAIL** until a viewer reloads after this deploy.
+
+| DoD | Status | Evidence |
+|---|---|---|
+| 1 Faith pane DV rooms + wholesale HMS prices, 1 future S4 stay all strategies vs grid | **partial** | G9 A095 8/9 match; WAL HMS-only. `/tmp/mh1024/evidence/G9-hrdav.md`, `/tmp/mh1024/evidence/G9-hrdav-rerun.md` |
+| 2 DV BAR ≥10/27 S4 facts | **PARK 2/27** owner item | `/tmp/mh1024/evidence/dod2-s4.md` |
+| 3 HRFAKE contract + unknown mailbox refuse | not re-run this slice | — |
+| 4 CEN 8-row not lower | **PASS 5/8 = 5/8** | `/tmp/mh1024/evidence/dod4-cen.md` |
+| 5 Labtest create+cancel both hotels | **PASS** HRCEN `67907179-1`, HRDAV `96077329-1` + note | `/tmp/mh1024/evidence/dod5-hrcen.md`, `dod5-hrdav.md` |
+| 6 nginx pane bundle after last deploy | **FAIL** | SSM access.log 0 hits after 15:37Z |
+| 7 reply-check n≥100 + 24h shadow | **eval PASS n=114**; shadow clock to ~2026-10-26 14:50Z; **do not flip on** | `/tmp/mh1024/evidence/dod7-reply-check.md` |
+| 8 run closed clean | **open** | U13-dedup worktree still live |
+
+**Owner items:** (1) DoD2 variant A same-day HMS grid vs pane, or B stays quoted ≤3 days. (2) DoD6 real pane reload after U13 deploy. (3) G9 WAL restricted `maxLeadTime=1` excluded by `includeRestricted=false` — likely correct, confirm. (4) `REPLY_RECHECK=on` stays off (labels model-adjudicated).
+
+Compound drafts: `/tmp/mh1024/compound/`. Handoff at 240K: `HANDOFF-FINAL-7`.
 
 ## DV install run — 2026-10-22 day (Opus) — paused for retro
 

@@ -18,6 +18,12 @@ Searchable learnings from solved problems on this repo. Written by `/ce-compound
 | [runtime-errors/pm2-esm-is-cli-entry-and-unref-sleep.md](runtime-errors/pm2-esm-is-cli-entry-and-unref-sleep.md) | PM2 ESM `isMain` + unref sleep → worker errored / empty logs |
 | [workflow-issues/2026-10-13-evidence-first-research-library.md](workflow-issues/2026-10-13-evidence-first-research-library.md) | Reuse private snapshots; distinguish execution from scored correctness |
 | [../research/2026-10-13/README.md](../research/2026-10-13/README.md) | 2026-10-13 research index, corpus boundary, and report links |
+| [logic-errors/2026-10-25-wal-grid-vs-restricted-walk-in.md](logic-errors/2026-10-25-wal-grid-vs-restricted-walk-in.md) | WAL #548 calendar merge; native restricted Walk-in still dropped |
+| [ui-bugs/2026-10-25-extras-in-stay-cards.md](ui-bugs/2026-10-25-extras-in-stay-cards.md) | U13a extras in stay cards; alts under rate rows |
+| [conventions/2026-10-25-cen-8-row-held.md](conventions/2026-10-25-cen-8-row-held.md) | DoD4 CEN 8-row held 5/8 |
+| [integration-issues/2026-10-25-labtest-create-cancel-both-hotels.md](integration-issues/2026-10-25-labtest-create-cancel-both-hotels.md) | DoD5 Labtest create+cancel HRCEN+HRDAV |
+| [conventions/2026-10-25-reply-check-eval-n114.md](conventions/2026-10-25-reply-check-eval-n114.md) | DoD7 n=114; do not flip REPLY_RECHECK on |
+| [ui-bugs/2026-10-25-stay-contact-canonical.md](ui-bugs/2026-10-25-stay-contact-canonical.md) | U13-dedup Stay+contact canonical |
 
 Domain vocabulary: [CONCEPTS.md](../../CONCEPTS.md) at repo root.
 
