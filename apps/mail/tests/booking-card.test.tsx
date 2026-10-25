@@ -244,6 +244,52 @@ function quotedSession(
 }
 
 describe('booking cards', () => {
+  it('keeps the create action without repeating Stay, room, board or rate controls', () => {
+    const { client } = paneClient();
+    render(<BookingCards draft={draftReady()} paneSave={client} />);
+
+    expect(screen.queryByLabelText('Room type')).toBeNull();
+    for (const label of ['Arrival', 'Departure', 'Adults', 'Children', 'Meal plan', 'Rate code']) {
+      expect(screen.queryByRole('button', { name: new RegExp(`Copy ${label} for`) })).toBeNull();
+    }
+    expect(screen.queryByLabelText('Booker name')).toBeNull();
+    expect(screen.queryByLabelText('Booker contact (email)')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(2);
+    expect(screen.getAllByLabelText('Track')).toHaveLength(2);
+    expect(screen.getAllByLabelText('Source of business')).toHaveLength(2);
+    expect(screen.getAllByLabelText('Guarantee')).toHaveLength(2);
+  });
+
+  it('builds the HMS preview from the current Stay group instead of stale draft values', () => {
+    const { client, preview } = paneClient();
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    const currentGroup = {
+      ...g1,
+      arrivalDate: '2026-12-03',
+      departureDate: '2026-12-05',
+      adults: 2,
+      roomPreference: 'DLXKNG',
+      roomTypeCode: 'DLXKNG',
+      roomCodes: ['DLXKNG'],
+      rateCode: 'NEWBAR',
+      quotedRateCode: 'NEWBAR',
+    };
+    render(<BookingCards draft={draft} groups={[currentGroup]} paneSave={client} />);
+    pickRoomChoices(0);
+
+    fireEvent.click(previewButton(0));
+
+    expect(preview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        arrival: '2026-12-03',
+        departure: '2026-12-05',
+        adults: 2,
+        roomType: 'DLXKNG',
+        ratePlan: 'NEWBAR',
+      }),
+    );
+  });
+
   it('renders one card per room with the agency name', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
     expect(screen.getAllByLabelText('Booking agency').map((field) => (field as HTMLInputElement).value)).toEqual([
@@ -1132,6 +1178,32 @@ describe('booking card save modes and the note fields', () => {
     render(<BookingCards draft={draft} paneSave={client} />);
     expect(screen.getByText(PANE_CHILDREN_COPY)).toBeDefined();
     expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(1);
+  });
+
+  it('uses the latest top contact for create preview, not the draft or mounted contact copy', () => {
+    const { client, preview } = paneClient();
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    draft.draft.rooms[0]!.request.bookerName = 'Old draft name';
+    draft.draft.rooms[0]!.request.bookerEmail = 'old-draft@example.invalid';
+    const contact = {
+      name: 'Old top contact',
+      company: null,
+      endClient: null,
+      email: 'old-top@example.invalid',
+      phone: null,
+    };
+    const latestContact = { ...contact, name: 'Updated top contact', email: 'updated@example.invalid' };
+    const { rerender } = render(<BookingCards draft={draft} paneSave={client} contact={contact} />);
+    pickRoomChoices(0);
+    rerender(<BookingCards draft={draft} paneSave={client} contact={latestContact} />);
+
+    fireEvent.click(previewButton(0));
+
+    expect(preview).toHaveBeenCalledWith(
+      expect.objectContaining({ bookerName: 'Updated top contact', bookerEmail: 'updated@example.invalid' }),
+    );
+    expect(screen.queryByLabelText('Booker name')).toBeNull();
+    expect(screen.queryByLabelText('Booker contact (email)')).toBeNull();
   });
 
   it('sends the agency, organization, note and booker the staff typed, and a note change asks for a new preview', async () => {
