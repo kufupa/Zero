@@ -39,16 +39,16 @@ import {
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
 import {
   CENTURION_HMS_READ_TARGET,
-  DAVINCI_HMS_READ_TARGET,
-  hmsDavinciReadsEnabled,
   hmsReadAuditMetrics,
+  hmsReadTargetForProperty,
+  hmsReadTargetForTransport,
   hmsReadTargetJobMetrics,
   isDaVinciTransport,
   parseHmsReadTarget,
   resolveHmsReadJobTarget,
   type HmsReadTarget,
 } from '../hms/hms-read-target.js';
-import { guardCenturionHmsMailboxOrigin } from '../hms/mailbox-hms-origin-bind.js';
+import { PropertyRefusalCause } from '../hms/property-refusal.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import {
   acquisitionWithin,
@@ -415,12 +415,14 @@ export function guestSearchPrefetchIdempotencyKey(
   threadId: string,
   lastName: string,
   arrival: string,
+  propertyCode?: string,
 ): string {
   const digest = createHash('sha256')
     .update(`${lastName.replace(/\s+/g, ' ').trim().toLowerCase()}\n${arrival}`)
     .digest('hex')
     .slice(0, 24);
-  return `hms-job:prefetch-guest:${transportId}:${threadId}:${digest}`;
+  const property = propertyCode ? `${propertyCode}:` : '';
+  return `hms-job:prefetch-guest:${property}${transportId}:${threadId}:${digest}`;
 }
 
 /** The automatic pane find shares this daily key with confirmation prefetches. */
@@ -428,8 +430,10 @@ export function confirmationPrefetchIdempotencyKey(
   transportId: string,
   confirmation: string,
   day = new Date().toISOString().slice(0, 10),
+  propertyCode?: string,
 ): string {
-  return `hms-job:prefetch:${transportId}:${confirmation}:${day}`;
+  const property = propertyCode ? `${propertyCode}:` : '';
+  return `hms-job:prefetch:${property}${transportId}:${confirmation}:${day}`;
 }
 
 /** One kind-less party prefetch per transport, normalized name and UTC day.
@@ -439,12 +443,14 @@ export function partyPrefetchIdempotencyKey(
   transportId: string,
   name: string,
   day: string,
+  propertyCode?: string,
 ): string {
   const digest = createHash('sha256')
     .update(`${name.replace(/\s+/g, ' ').trim().toLowerCase()}\n${day}`)
     .digest('hex')
     .slice(0, 24);
-  return `hms-job:prefetch-party:${transportId}:${digest}`;
+  const property = propertyCode ? `${propertyCode}:` : '';
+  return `hms-job:prefetch-party:${property}${transportId}:${digest}`;
 }
 
 /** V2 decisions use email-specific evidence, so they must never reuse another email's party pick. */
@@ -452,12 +458,14 @@ export function partyPrefetchV2IdempotencyKey(
   transportId: string,
   messageId: string,
   day: string,
+  propertyCode?: string,
 ): string {
   const digest = createHash('sha256')
     .update(`${messageId}\n${day}`)
     .digest('hex')
     .slice(0, 24);
-  return `hms-job:prefetch-party-v2:${transportId}:${digest}`;
+  const property = propertyCode ? `${propertyCode}:` : '';
+  return `hms-job:prefetch-party-v2:${property}${transportId}:${digest}`;
 }
 
 /** A quote's extracted agency wins; otherwise use the first unverified email hint.
@@ -731,7 +739,7 @@ export async function queueUserHmsJob(
 ): Promise<AiWorkflowRun | null> {
   const triggerMessageId = await latestInboundMessageId(db, input.transportId, input.threadId);
   if (!triggerMessageId) return null;
-  const target = input.target ?? CENTURION_HMS_READ_TARGET;
+  const target = input.target ?? hmsReadTargetForTransport(input.transportId);
   const { run } = await enqueueHmsJob(
     {
       transportId: input.transportId,
@@ -797,11 +805,10 @@ export async function queueUserPartyHmsJob(
   if (!triggerMessageId) return null;
   const workItemId = await latestWorkItemId(db, input.transportId, input.threadId);
   const day = new Date().toISOString().slice(0, 10);
-  const propertyCode = input.propertyCode ?? 'HRCEN';
-  const target =
-    input.propertyCode === DAVINCI_HMS_READ_TARGET.propertyCode
-      ? DAVINCI_HMS_READ_TARGET
-      : CENTURION_HMS_READ_TARGET;
+  const target = input.propertyCode
+    ? hmsReadTargetForProperty(input.propertyCode)
+    : hmsReadTargetForTransport(input.transportId);
+  const propertyCode = target.propertyCode;
   const audit = hmsReadAuditMetrics({
     actorKind: 'user',
     actorUserId: input.userId,
@@ -816,7 +823,12 @@ export async function queueUserPartyHmsJob(
     devEval: input.devEval === true,
   });
   const priority = input.devEval ? HMS_JOB_PRIORITY_DEV : HMS_JOB_PRIORITY_USER;
-  const extraMetrics = { ...audit, ...input.extraMetrics, ...(input.devEval ? { devEval: true } : {}) };
+  const extraMetrics = {
+    ...audit,
+    ...hmsReadTargetJobMetrics(target),
+    ...input.extraMetrics,
+    ...(input.devEval ? { devEval: true } : {}),
+  };
 
   return db.transaction(async (tx) => {
     await tx.execute(
@@ -1345,12 +1357,12 @@ export async function enqueueHmsBatch(
         async (source): Promise<{ skipped: HmsBatchSkipReason } | { request: HmsJobRequest }> => {
           if (source.spamAt) return { skipped: 'spam' };
           if (originRefused.has(source.workItemId)) return { skipped: 'davinci_origin' };
-          const guard = await guardCenturionHmsMailboxOrigin({
+          const resolved = await resolveHmsReadJobTarget({
             transportId: input.transportId,
             threadId: source.threadId,
             messageId: source.triggerMessageId,
           });
-          if (!guard.ok) return { skipped: 'davinci_origin' };
+          if (!resolved.ok) return { skipped: 'davinci_origin' };
           // No succeeded extraction still leaves the message text, so a confirmation in the subject or body queues.
           return selectHmsBatchRequest({
             kind: source.extraction?.kind ?? null,
@@ -1703,12 +1715,13 @@ export async function prefetchHmsConfirmations(
     run.triggerMessageId,
   );
   if (triggerItem?.status === 'done' || triggerItem?.status === 'dismissed') return 0;
-  const origin = await guardCenturionHmsMailboxOrigin({
+  const resolved = await resolveHmsReadJobTarget({
     transportId: run.transportId,
     threadId: run.threadId,
     messageId: run.triggerMessageId,
   });
-  if (!origin.ok) return 0;
+  if (!resolved.ok) return 0;
+  const target = resolved.target;
   const workItemId = triggerItem?.id ?? null;
   let created = 0;
   const numbers = prefetchConfirmations(source.payload, source.subject, source.textBody);
@@ -1732,8 +1745,16 @@ export async function prefetchHmsConfirmations(
         request: { kind: 'find', confirmation },
         priority: HMS_JOB_PRIORITY_PREFETCH,
         // Same number again on the same day is a no-op, whichever mail carried it.
-        idempotencyKey: confirmationPrefetchIdempotencyKey(run.transportId, confirmation, dayKey),
-        extraMetrics: hmsReadAuditMetrics({ actorKind: 'system', target: CENTURION_HMS_READ_TARGET }),
+        idempotencyKey: confirmationPrefetchIdempotencyKey(
+          run.transportId,
+          confirmation,
+          dayKey,
+          target.propertyCode,
+        ),
+        extraMetrics: {
+          ...hmsReadAuditMetrics({ actorKind: 'system', target }),
+          ...hmsReadTargetJobMetrics(target),
+        },
       },
       db,
     );
@@ -1759,8 +1780,12 @@ export async function prefetchHmsConfirmations(
           run.threadId,
           lastName,
           arrival,
+          target.propertyCode,
         ),
-        extraMetrics: hmsReadAuditMetrics({ actorKind: 'system', target: CENTURION_HMS_READ_TARGET }),
+        extraMetrics: {
+          ...hmsReadAuditMetrics({ actorKind: 'system', target }),
+          ...hmsReadTargetJobMetrics(target),
+        },
       },
       env.HMS_GUEST_PREFETCH_PER_HOUR,
     );
@@ -1805,12 +1830,14 @@ export async function prefetchAvailabilityForExtraction(
     .orderBy(desc(mailExtraction.createdAt))
     .limit(1);
   if (!extraction || extraction.spamAt) return 0;
-  const origin = await guardCenturionHmsMailboxOrigin({
+  const resolved = await resolveHmsReadJobTarget({
     transportId: run.transportId,
     threadId: extraction.threadId,
     messageId: run.triggerMessageId,
+    env,
   });
-  if (!origin.ok) return 0;
+  if (!resolved.ok) return 0;
+  const target = resolved.target;
   const perHour = availabilityProbesPerHour(env);
   const workItemId = await latestWorkItemId(db, run.transportId, extraction.threadId);
   const dayKey = new Date().toISOString().slice(0, 10);
@@ -1833,7 +1860,7 @@ export async function prefetchAvailabilityForExtraction(
         userId: null,
         request,
         priority: HMS_JOB_PRIORITY_PREFETCH,
-        idempotencyKey: `hms-job:availability:${run.transportId}:${digest}:${dayKey}`,
+        idempotencyKey: `hms-job:availability:${target.propertyCode}:${run.transportId}:${digest}:${dayKey}`,
       },
       db,
     );
@@ -1912,12 +1939,13 @@ export async function prefetchPartyForExtraction(
   const from = normalizeEmailAddress(source.fromAddress);
   const mailbox = normalizeEmailAddress(source.mailboxEmail);
   if (from === mailbox) return 0;
-  const origin = await guardCenturionHmsMailboxOrigin({
+  const resolved = await resolveHmsReadJobTarget({
     transportId: run.transportId,
     threadId: source.threadId,
     messageId: run.triggerMessageId,
   });
-  if (!origin.ok) return 0;
+  if (!resolved.ok) return 0;
+  const target = resolved.target;
   if (isStaffSender(source.fromAddress, source.mailboxEmail)) {
     const sentFrom = await knownSenders(db, run.transportId, [source.fromAddress]);
     if (sentFrom.has(from)) return 0;
@@ -1955,11 +1983,13 @@ export async function prefetchPartyForExtraction(
               run.transportId,
               run.triggerMessageId,
               new Date().toISOString().slice(0, 10),
+              target.propertyCode,
             )
           : partyPrefetchIdempotencyKey(
               run.transportId,
               request.name,
               new Date().toISOString().slice(0, 10),
+              target.propertyCode,
             ),
     },
     env.HMS_PREFETCH_PER_HOUR,
@@ -2398,19 +2428,18 @@ async function executePartyMatchV2(input: {
     toAddresses: source.toAddresses,
     ccAddresses: source.ccAddresses,
   };
-  const origin = await guardCenturionHmsMailboxOrigin({
+  const resolved = await resolveHmsReadJobTarget({
     transportId: input.run.transportId,
     threadId: input.run.threadId,
     messageId: input.run.triggerMessageId,
   });
-  const davinciRead = isDaVinciTransport(input.run.transportId) || !origin.ok;
-  if (davinciRead && !hmsDavinciReadsEnabled()) {
+  if (!resolved.ok) {
     return {
       ...partyMatchV2NoMatch('Da Vinci mailbox origin is not bound to Centurion HMS'),
       outcome: 'refused_origin_mismatch',
     };
   }
-  const davinciTarget = davinciRead ? DAVINCI_HMS_READ_TARGET : null;
+  const readTarget = resolved.target;
 
   const quoteLlmParty = await existingQuoteWorkflowParty(
     input.db,
@@ -2425,7 +2454,7 @@ async function executePartyMatchV2(input: {
     quoteLlmParty,
   };
   const historyTargetAllowed = isCenturionPartyHistoryTarget(
-    davinciTarget,
+    readTarget,
     input.run.transportId,
   );
   const candidates = buildPartyMatchCandidates({
@@ -2463,7 +2492,7 @@ async function executePartyMatchV2(input: {
             acquisition: input.acquisition,
             resultCap: PARTY_MATCH_V2_ROW_CAP,
             origin: mailboxOrigin,
-            target: davinciTarget,
+            target: readTarget,
           },
         );
       },
@@ -2484,7 +2513,7 @@ async function executePartyMatchV2(input: {
           acquisition: input.acquisition,
           resultCap: PARTY_MATCH_V2_ROW_CAP,
           origin: mailboxOrigin,
-          target: davinciTarget,
+          target: readTarget,
         },
       )
     : [];
@@ -3031,6 +3060,14 @@ async function recordSenderHistoryAfterRead(
   }
 }
 
+function propertyRefusalCause(error: unknown): PropertyRefusalCause | null {
+  if (error instanceof PropertyRefusalCause) return error;
+  if (error instanceof TRPCError && error.cause instanceof PropertyRefusalCause) {
+    return error.cause;
+  }
+  return null;
+}
+
 /**
  * Runs one claimed job. Called from executeAiRun after markAiRunRunning, so
  * the fence is already live. Returns the state the run should end in.
@@ -3062,40 +3099,37 @@ export async function executeHmsJob(input: {
   // thread became mixed-origin after enqueue, must not reach Centurion HMS.
   // Party V2 keeps its own refusal result shape below.
   const partyV2 = request.kind === 'party' && request.matchVersion === 2;
-  let davinciReadTarget: HmsReadTarget | null = null;
+  let jobTarget: HmsReadTarget | null = null;
   if (!partyV2 && run.threadId) {
-    if (request.kind === 'find' || request.kind === 'search_guest' || request.kind === 'party') {
-      const resolved = await resolveHmsReadJobTarget({
-        transportId: run.transportId,
-        threadId: run.threadId,
-        messageId: run.triggerMessageId,
-      });
-      if (!resolved.ok) {
-        await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
-        return 'dead_letter';
+    try {
+      if (request.kind === 'staff_quote') {
+        const resolved = await resolveHmsQuoteJobTarget({
+          transportId: run.transportId,
+          threadId: run.threadId,
+          messageId: run.triggerMessageId,
+        });
+        if (!resolved.ok) {
+          await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
+          return 'dead_letter';
+        }
+        jobTarget = resolved.target;
+      } else {
+        const resolved = await resolveHmsReadJobTarget({
+          transportId: run.transportId,
+          threadId: run.threadId,
+          messageId: run.triggerMessageId,
+        });
+        if (!resolved.ok) {
+          await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
+          return 'dead_letter';
+        }
+        jobTarget = resolved.target;
       }
-      davinciReadTarget = hmsReadTargetJobMetrics(resolved.target)?.hmsReadTarget ?? null;
-    } else if (request.kind === 'staff_quote') {
-      const resolved = await resolveHmsQuoteJobTarget({
-        transportId: run.transportId,
-        threadId: run.threadId,
-        messageId: run.triggerMessageId,
-      });
-      if (!resolved.ok) {
-        await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
-        return 'dead_letter';
-      }
-      davinciReadTarget = hmsReadTargetJobMetrics(resolved.target)?.hmsReadTarget ?? null;
-    } else {
-      const origin = await guardCenturionHmsMailboxOrigin({
-        transportId: run.transportId,
-        threadId: run.threadId,
-        messageId: run.triggerMessageId,
-      });
-      if (!origin.ok) {
-        await markAiRunPolicyRefused({ ...mark, lastError: 'davinci_origin_refused' }, db);
-        return 'dead_letter';
-      }
+    } catch (error) {
+      const cause = propertyRefusalCause(error);
+      if (!cause) throw error;
+      await markAiRunPolicyRefused({ ...mark, lastError: cause.code }, db);
+      return 'dead_letter';
     }
   }
   const metrics = objectRecord(run.metrics) as {
@@ -3276,7 +3310,7 @@ export async function executeHmsJob(input: {
   }
   const ownerKey = metrics.owner ?? `hms-job-prefetch:${run.transportId}`;
   const screenshotDir: { value: string | null } = { value: null };
-  const target = davinciReadTarget ?? CENTURION_HMS_READ_TARGET;
+  const target = jobTarget ?? hmsReadTargetForTransport(run.transportId);
   const deps = {
     lock: () => paneStayLookupLoaders.lock ?? paneStayPropertyLock(target),
     acquisition: background ? { tryOnce: true } : acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS),
@@ -3378,7 +3412,7 @@ export async function executeHmsJob(input: {
         kind: request.kind,
         outcome,
         screenshotDir: screenshotDir.value,
-        ...(davinciReadTarget ? { hmsReadTarget: davinciReadTarget } : {}),
+        ...hmsReadTargetJobMetrics(target),
       },
     },
     db,
@@ -3388,7 +3422,7 @@ export async function executeHmsJob(input: {
       db,
       run,
       senderPartiesFromFindResult(result),
-      davinciReadTarget,
+      target,
     );
   }
   // ponytail: the CLI spawn keeps its own 5-minute timeout; the run deadline is enforced at claim time, not during the spawn.

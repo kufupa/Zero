@@ -14,6 +14,7 @@ import {
   type ReservationistDecision,
   type ReservationistRunners,
 } from './reservationist-agent.js';
+import { CENTURION_HMS_READ_TARGET, hmsReadTargetForProperty } from '../hms/hms-read-target.js';
 import { hotelRulesForProperty, type LunaAnalysis } from './reservationist-decision.js';
 import {
   classifyWorkflow,
@@ -196,7 +197,7 @@ export async function analyseSelectionWithAgent(input: {
   deadlineMs?: number;
   treatAs?: QuoteTreatAs;
   staffNote?: string;
-  /** HMS property for hotel rules. Omitted and unknown stay HRCEN. */
+  /** HMS property for hotel rules. Omitted stays HRCEN until the pane passes the mailbox property. Unknown refuses. */
   propertyCode?: string;
   classify?: (input: ReturnType<typeof classifierInputFromSelection>) => Promise<ClassifierResult | null>;
 }): Promise<AnalyseSelectionWithAgentResult> {
@@ -216,6 +217,9 @@ export async function analyseSelectionWithAgent(input: {
       workflowHint = undefined;
     }
   }
+  const propertyCode = input.propertyCode
+    ? hmsReadTargetForProperty(input.propertyCode).propertyCode
+    : CENTURION_HMS_READ_TARGET.propertyCode;
   try {
     const agent = createReservationistAgent({
       model: input.model,
@@ -223,7 +227,6 @@ export async function analyseSelectionWithAgent(input: {
       tools: input.runners ? paneAnalysisTools(input.runners) : {},
       aopSops: PANE_AOP_SOPS,
     });
-    const propertyCode = input.propertyCode === 'HRDAV' ? 'HRDAV' : 'HRCEN';
     const requestContext = new RequestContext<ReservationistContext>([
       ['propertyCode', propertyCode],
       ['hotelRules', hotelRulesForProperty(propertyCode)],
