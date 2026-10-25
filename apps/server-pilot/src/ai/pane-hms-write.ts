@@ -513,6 +513,7 @@ export function buildAttachDocumentArgs(input: PaneAttachSpawnInput, outDir: str
     outDir,
   ];
   if (input.allowRealGuest) args.push(ALLOW_REAL_GUEST_FLAG);
+  if (input.target) args.push('--property', input.target.propertyCode);
   return args;
 }
 

@@ -3,7 +3,7 @@
 // --allow-real-guest lifts the Labtest guard for one run (on mode). The server passes it; it is never read from the env.
 // The flow finds the stay, checks identity on the open record, opens Documents, uploads through Create/Upload Document,
 // and reads the document list back.
-// Usage: node attach-document.mjs --confirmation 57291630-1 --arrival 2027-09-14 --file <path.pdf> --document-name <name>.pdf --out <dir> [--allow-real-guest]
+// Usage: node attach-document.mjs --confirmation 57291630-1 --arrival 2027-09-14 --file <path.pdf> --document-name <name>.pdf --out <dir> [--property HRCEN] [--allow-real-guest]
 // Exit: 0 attached; 2 refused_* or not_found or usage; 1 any other outcome.
 // ATTACH_VERIFIED=true in the environment arms the driver. It is unset everywhere until U28-H2 captures the Documents
 // flow on a live Labtest stay, and H2 sets it for its own run only. While it is unset the driver refuses before any
@@ -25,6 +25,7 @@ import {
   preflight,
   squash,
 } from './cancel-stay-rules.mjs';
+import { parseStayProperty, propertySecretRefusal } from './property-profile.mjs';
 
 // The read path's cap (ARTIFACT_MAX_INPUT_BYTES in src/mail/artifacts/read-artifact.ts). A TS test pins the equality.
 export const ATTACH_MAX_BYTES = 20 * 1024 * 1024;
@@ -86,17 +87,19 @@ function refuse(error) {
 }
 
 export function parseAttachArgs(argv) {
+  const property = parseStayProperty(argv);
+  if (!property.ok) return refuse(property.error);
   const values = new Map();
   let allowRealGuest = false;
-  for (let index = 0; index < argv.length; index += 1) {
-    const flag = argv[index];
+  for (let index = 0; index < property.rest.length; index += 1) {
+    const flag = property.rest[index];
     if (flag === ALLOW_REAL_GUEST_FLAG) {
       if (allowRealGuest) return refuse(`Repeated argument: ${flag}`);
       allowRealGuest = true;
       continue;
     }
     if (!FLAGS.has(flag)) return refuse(`Unknown argument: ${flag}`);
-    const value = argv[index + 1];
+    const value = property.rest[index + 1];
     if (value === undefined || FLAGS.has(value) || value === ALLOW_REAL_GUEST_FLAG) {
       return refuse(`Missing value for ${flag}`);
     }
@@ -122,6 +125,7 @@ export function parseAttachArgs(argv) {
       documentName,
       out: values.get('--out'),
       allowRealGuest,
+      property: property.propertyCode,
     },
   };
 }
@@ -380,6 +384,8 @@ async function attachLive(args, dir) {
     const cdp = checkCdpEnv(process.env);
     if (!cdp.ok) throw new Error(cdp.error);
     ctx.secret = await readSecret();
+    const hotelMismatch = propertySecretRefusal(ctx.secret, args.property);
+    if (hotelMismatch) throw new Error(hotelMismatch);
     const origin = new URL(ctx.secret.loginUrl).origin;
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
     // serviceWorkers block: a service worker's requests would not pass through context.route.

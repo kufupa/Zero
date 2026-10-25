@@ -76,5 +76,5 @@ export function parseStayProperty(argv) {
 /** Same hotel check create-lab-stay uses: requested --property must match the borrowed secret. */
 export function propertySecretRefusal(secret, propertyCode) {
   if (secret?.expectedPropertyCode === propertyCode) return null;
-  return propertyCode === 'HRDAV' ? 'PROPERTY_HRDAV_REQUIRED' : 'PROPERTY_HRCEN_REQUIRED';
+  return `PROPERTY_${propertyCode}_REQUIRED`;
 }
