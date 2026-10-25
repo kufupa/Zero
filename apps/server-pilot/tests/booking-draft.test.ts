@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -180,6 +181,64 @@ describe('createRequestFieldOptions', () => {
   it('lists Da Vinci room codes when the property is HRDAV', () => {
     expect(createRequestFieldOptions('HRDAV').roomType).toEqual(expect.arrayContaining(['STKNG', 'JNRSUI']));
     expect(createRequestFieldOptions('HRDAV').roomType).not.toEqual(expect.arrayContaining(['STQN']));
+  });
+
+  it('uses HRDAV create-form choices and required fields from its registry profile', () => {
+    const profile = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL('../tooling/playwright-quote/property-profiles/HRDAV.json', import.meta.url),
+        ),
+        'utf8',
+      ),
+    ) as {
+      roomCapacity: Record<string, number>;
+      requiredCreateFields: string[];
+      createForm: {
+        options: {
+          sourceofbusinessdesc: { choices: Array<{ value: string; display: string }> };
+          track: { choices: Array<{ value: string; display: string }> };
+          guaranteetype: { choices: Array<{ value: string; display: string }> };
+        };
+      };
+    };
+    const options = createRequestFieldOptions('HRDAV');
+
+    expect(options.sourceOfBusiness).toEqual(
+      profile.createForm.options.sourceofbusinessdesc.choices.map(({ display }) => display),
+    );
+    expect(options.track).toEqual(profile.createForm.options.track.choices.map(({ value }) => value));
+    expect(options.guaranteeType).toEqual(
+      profile.createForm.options.guaranteetype.choices.map(({ display }) => display),
+    );
+    expect(options.roomType).toEqual(Object.keys(profile.roomCapacity));
+    expect(options).toHaveProperty('requiredCreateFields', profile.requiredCreateFields);
+  });
+
+  it('keeps HRCEN choices unchanged and has no extra required create fields', () => {
+    const schema = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL('../tooling/playwright-quote/create-tool.schema.json', import.meta.url)),
+        'utf8',
+      ),
+    ) as {
+      $defs: {
+        request: {
+          properties: {
+            track: { enum: string[] };
+            sourceOfBusiness: { enum: string[] };
+            guaranteeType: { enum: string[] };
+          };
+        };
+      };
+    };
+    const options = createRequestFieldOptions('HRCEN');
+
+    expect(options.track).toEqual(schema.$defs.request.properties.track.enum);
+    expect(options.sourceOfBusiness).toEqual(schema.$defs.request.properties.sourceOfBusiness.enum);
+    expect(options.guaranteeType).toEqual(schema.$defs.request.properties.guaranteeType.enum);
+    expect(options).toHaveProperty('requiredCreateFields', []);
+    expect(createRequestFieldOptions()).toEqual(options);
   });
 });
 
@@ -718,6 +777,22 @@ describe('prepareUnquotedBookingDraft route', () => {
       lastName: 'Smith',
       ratePlan: 'BAR',
     });
+  });
+
+  it('returns hotel-specific create lists and required fields from the active transport', async () => {
+    const [davinci, centurion] = await Promise.all([
+      draftCaller('transport-faith').workstation.prepareUnquotedBookingDraft(unquotedInput),
+      draftCaller('transport-centurion').workstation.prepareUnquotedBookingDraft(unquotedInput),
+    ]);
+
+    expect(davinci.status).toBe('ready');
+    expect(centurion.status).toBe('ready');
+    if (davinci.status !== 'ready' || centurion.status !== 'ready') return;
+
+    expect(davinci.options).toEqual(createRequestFieldOptions('HRDAV'));
+    expect(davinci.options).toHaveProperty('requiredCreateFields', ['reservationnote']);
+    expect(centurion.options).toEqual(createRequestFieldOptions('HRCEN'));
+    expect(centurion.options).toHaveProperty('requiredCreateFields', []);
   });
 
   it('prefills a party-contract rate code when given', async () => {
