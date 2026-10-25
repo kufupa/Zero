@@ -201,6 +201,12 @@
             "SPE",
             "STO"
           ],
+          "x-propertyEnums": {
+            "HRDAV": [
+              "CNT",
+              "DIS"
+            ]
+          },
           "description": "Native Track Code from the opened Track Code lookup. The code is the value."
         },
         "firstName": {

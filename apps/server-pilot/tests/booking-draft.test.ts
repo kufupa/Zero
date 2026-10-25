@@ -1,4 +1,7 @@
 import { readFileSync } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -49,6 +52,41 @@ async function validateCreate(request: Record<string, unknown>) {
     mod.normalizeCreateLabels(request),
     await mod.loadCreateToolSchema(),
   );
+}
+
+async function loadCreateRequestForProperty(propertyCode: string, track: string) {
+  const mod = (await import(
+    pathToFileURL(
+      fileURLToPath(new URL('../tooling/playwright-quote/create-request.mjs', import.meta.url)),
+    ).href
+  )) as {
+    loadCreateRequest(argv: string[]): Promise<{
+      ok: boolean;
+      exitCode: number;
+      error?: string;
+      request?: Record<string, unknown>;
+    }>;
+  };
+  const dir = await mkdtemp(join(tmpdir(), 'booking-draft-create-'));
+  const requestPath = join(dir, 'request.json');
+  const request = {
+    arrival: '2026-09-22',
+    departure: '2026-09-23',
+    adults: 1,
+    sourceOfBusiness: 'Walk in',
+    roomType: 'STQN',
+    ratePlan: 'OPEN-CODE',
+    track,
+    firstName: 'Pat',
+    lastName: 'Lee',
+    guaranteeType: 'Awaiting Voucher',
+  };
+  try {
+    await writeFile(requestPath, JSON.stringify(request));
+    return await mod.loadCreateRequest(['--property', propertyCode, '--request', requestPath]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 function analysis(over: Partial<LunaAnalysis> = {}): LunaAnalysis {
@@ -207,7 +245,29 @@ describe('createRequestFieldOptions', () => {
     expect(options.sourceOfBusiness).toEqual(
       profile.createForm.options.sourceofbusinessdesc.choices.map(({ display }) => display),
     );
-    expect(options.track).toEqual(profile.createForm.options.track.choices.map(({ value }) => value));
+    const schema = JSON.parse(
+      readFileSync(
+        fileURLToPath(new URL('../tooling/playwright-quote/create-tool.schema.json', import.meta.url)),
+        'utf8',
+      ),
+    ) as {
+      $defs: {
+        request: {
+          properties: {
+            track: { enum: string[]; 'x-propertyEnums'?: Record<string, string[]> };
+          };
+        };
+      };
+    };
+    const validTracks = new Set([
+      ...schema.$defs.request.properties.track.enum,
+      ...(schema.$defs.request.properties.track['x-propertyEnums']?.HRDAV ?? []),
+    ]);
+    expect(options.track).toEqual(
+      profile.createForm.options.track.choices
+        .map(({ value }) => value)
+        .filter((track) => validTracks.has(track)),
+    );
     expect(options.guaranteeType).toEqual(
       profile.createForm.options.guaranteetype.choices.map(({ display }) => display),
     );
@@ -239,6 +299,18 @@ describe('createRequestFieldOptions', () => {
     expect(options.guaranteeType).toEqual(schema.$defs.request.properties.guaranteeType.enum);
     expect(options).toHaveProperty('requiredCreateFields', []);
     expect(createRequestFieldOptions()).toEqual(options);
+  });
+});
+
+describe('loadCreateRequest property-aware track validation', () => {
+  it.each(['CNT', 'DIS'])('accepts HRDAV track %s and rejects it for HRCEN', async (track) => {
+    const davinci = await loadCreateRequestForProperty('HRDAV', track);
+    expect(davinci.ok).toBe(true, davinci.error);
+    expect(davinci.request?.track).toBe(track);
+
+    const centurion = await loadCreateRequestForProperty('HRCEN', track);
+    expect(centurion.ok).toBe(false);
+    expect(centurion.error).toContain('$.track enum');
   });
 });
 

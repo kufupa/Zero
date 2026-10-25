@@ -302,7 +302,7 @@ export async function runCreatePreflight({ context, page, stay, propertyCode, pr
 async function main(argv = process.argv.slice(2)) {
   const property = parseStayProperty(argv);
   const rest = property.ok ? property.rest : argv;
-  const loaded = await loadCreateRequest(rest);
+  const loaded = await loadCreateRequest(argv);
   const out = parseOutDir(rest);
   for (const step of [property, loaded, out]) {
     if (!step.ok) {

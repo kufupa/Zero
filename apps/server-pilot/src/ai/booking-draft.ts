@@ -281,7 +281,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     $defs: {
       request: {
         properties: {
-          track: { enum: string[] };
+          track: { enum: string[]; 'x-propertyEnums'?: Record<string, string[]> };
           sourceOfBusiness: { enum: string[] };
           guaranteeType: { enum: string[] };
         };
@@ -304,8 +304,13 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     };
   };
   const createOptions = profile.createForm?.options;
+  const validTracks = new Set([
+    ...props.track.enum,
+    ...(props.track['x-propertyEnums']?.[propertyCode] ?? []),
+  ]);
+  const propertyTrackChoices = createOptions?.track?.choices?.map(({ value }) => value);
   return {
-    track: createOptions?.track?.choices?.map(({ value }) => value) ?? props.track.enum,
+    track: (propertyTrackChoices ?? props.track.enum).filter((track) => validTracks.has(track)),
     sourceOfBusiness:
       createOptions?.sourceofbusinessdesc?.choices?.map(({ display }) => display) ??
       props.sourceOfBusiness.enum,
