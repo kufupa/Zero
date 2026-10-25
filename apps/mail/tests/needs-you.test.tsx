@@ -223,6 +223,16 @@ describe('Needs-you list', () => {
     expect(listQuery).toHaveBeenCalledWith({ limit: 200, statuses: ['needs_you', 'review'] });
   });
 
+  it('shows the one-line reopen reason on an open item', async () => {
+    listQuery.mockResolvedValue([
+      Object.assign(row({ id: 'wi-reopen', subject: 'Rooms request' }), {
+        reopenReason: "said they'd come back with rates",
+      }),
+    ]);
+    render(<Harness host="web" onOpenThread={() => {}} />);
+    expect(await screen.findByText("said they'd come back with rates")).toBeDefined();
+  });
+
   it('says All caught up when nothing is open', async () => {
     listQuery.mockResolvedValue([]);
     render(<Harness host="web" onOpenThread={() => {}} />);

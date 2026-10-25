@@ -49,6 +49,7 @@ import {
   type ClassifierResult,
 } from './workflow-classifier/index.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
+import { enqueueReplyCheckIfNeeded } from './reply-check.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -1386,6 +1387,7 @@ async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Prom
         value: { from: 'done', to: 'done', reason: HOTEL_REPLIED, sentMessageId: change.repoint.sentMessageId },
       });
     }
+    await enqueueReplyCheckForItem(tx, change.workItemId, change.repoint.sentMessageId);
     return;
   }
   const from = change.to === 'needs_you' ? 'done' : 'needs_you';
@@ -1412,6 +1414,24 @@ async function applyThreadWorkChange(tx: WorkTx, change: ThreadWorkChange): Prom
     actorKind: 'system',
     type: 'status.changed',
     value: { from, to: change.to, reason: change.reason, ...detail },
+  });
+  if (change.to === 'done' && change.reason === HOTEL_REPLIED) {
+    await enqueueReplyCheckForItem(tx, change.workItemId, change.sentMessageId);
+  }
+}
+
+async function enqueueReplyCheckForItem(tx: WorkTx, workItemId: string, replyMessageId: string): Promise<void> {
+  const [row] = await tx
+    .select({ transportId: workItem.transportId, threadId: workItem.threadId })
+    .from(workItem)
+    .where(eq(workItem.id, workItemId))
+    .limit(1);
+  if (!row?.threadId) return;
+  await enqueueReplyCheckIfNeeded(tx as unknown as DB, {
+    transportId: row.transportId,
+    threadId: row.threadId,
+    workItemId,
+    replyMessageId,
   });
 }
 
@@ -1966,6 +1986,15 @@ export async function listWorkItems(
       subject: message.subject,
       receivedAt: message.receivedAt,
       confirmationNumbers: sql<unknown>`${mailExtraction.payload}->'confirmationNumbers'`,
+      reopenReason: sql<string | null>`(
+        select we.value->>'reasonLine'
+        from ${workEvent} as we
+        where we.work_item_id = ${workItem}.id
+          and we.type = 'status.changed'
+          and we.value->>'reason' = 'reply_needs_action'
+        order by we.at desc, we.id desc
+        limit 1
+      )`,
       chipRank,
     })
     .from(workItem)

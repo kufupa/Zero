@@ -209,6 +209,7 @@ import {
   parseStoredClassifier,
 } from './workflow-classifier/index.js';
 import { executeQuoteFollowupRun } from './quote-followup.js';
+import { executeReplyCheckRun } from './reply-check.js';
 import { createMastraRuntime } from './mastra.js';
 import { closeDb, getDb, type DB } from '../db/client.js';
 import { getS3Storage } from '../storage/s3.js';
@@ -5492,6 +5493,10 @@ export async function executeAiRun(
 
     if (run.runKind === 'quote_followup') {
       return await executeQuoteFollowupRun({ run: runWithFence, fence, db });
+    }
+
+    if (run.runKind === 'reply_check') {
+      return await executeReplyCheckRun({ run: runWithFence, fence, db });
     }
 
     if (run.runKind === 'feedback_extraction') {

@@ -148,6 +148,13 @@ describe('ai worker contract', () => {
     expect(source).not.toMatch(/pop3-client/);
   });
 
+  it('dispatches reply_check runs on the default lane', () => {
+    const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
+    expect(source).toMatch(/from '\.\/reply-check\.js'/);
+    expect(source).toMatch(/run\.runKind === 'reply_check'/);
+    expect(source).toMatch(/executeReplyCheckRun\(\{ run: runWithFence, fence, db \}\)/);
+  });
+
   it('warms the Luna analyse cache fire-and-forget only after the live inbound run succeeds', () => {
     const source = readFileSync(join(here, '..', 'src', 'ai', 'worker.ts'), 'utf8');
     expect(source).toMatch(/from '\.\/quote-workflow-warmer\.js'/);
