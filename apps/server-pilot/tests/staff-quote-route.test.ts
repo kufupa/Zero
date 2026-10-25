@@ -8,8 +8,10 @@ import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
+import { isSharedPreparedQuoteSourceCopy } from '../src/trpc/routes/workstation.js';
 import { findParty, panePartyLookupLoaders, resetPartyCacheForTests } from '../src/ai/pane-party-lookup.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-synced-selection.js';
+import { FAITH_TRANSPORT_EMAIL, FAITH_USER_ID } from '../src/db/seed.js';
 import { randomUUID } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { eq } from 'drizzle-orm';
@@ -89,7 +91,10 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
   return { mail, input, internetMessageId, storedMessageId };
 }
 
-async function nativeFixture(request: QuoteSourceRecord['request']): Promise<QuoteSourceRecord> {
+async function nativeFixture(
+  request: QuoteSourceRecord['request'],
+  propertyCode = 'HRCEN',
+): Promise<QuoteSourceRecord> {
   const { normalizeQuoteRequest } = await import('../tooling/playwright-quote/quote-contract.mjs');
   const normalized = normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
   return {
@@ -100,7 +105,7 @@ async function nativeFixture(request: QuoteSourceRecord['request']): Promise<Quo
     request: normalized,
     result: {
       outcome: 'quote',
-      propertyCode: 'HRCEN',
+      propertyCode,
       groups: normalized.rooms.map((room: any) => ({
         id: room.id,
         request: room,
@@ -131,13 +136,13 @@ async function nativeFixture(request: QuoteSourceRecord['request']): Promise<Quo
   };
 }
 
-function installFixture(db: DB) {
+function installFixture(db: DB, propertyCode = 'HRCEN') {
   __setDbForTests({ db, conn: null as never });
   installation.configure.mockReturnValue({
     tenantId: 'synthetic-hotel',
-    owner: { propertyCode: 'HRCEN' },
+    owner: { propertyCode },
   });
-  nativeRead.mockReset().mockImplementation(nativeFixture);
+  nativeRead.mockReset().mockImplementation((request) => nativeFixture(request, propertyCode));
   installation.services.mockReset().mockImplementation((options, approval) =>
     createReservationistBusinessServices(
       {
@@ -145,7 +150,7 @@ function installFixture(db: DB) {
         readQuote: nativeRead,
         resolvePolicy: async () => ({
           ref: 'synthetic-policy',
-          propertyCode: 'HRCEN',
+          propertyCode,
           sourceHashes: ['c'.repeat(64)],
           authoredDates: ['2026-09-08'],
           families: [{ rateCode: 'BARRO', board: 'room_only' }],
@@ -176,6 +181,20 @@ function pdfInput(quote: { workflowRunId: string; revisionRef: string; messageId
     company: '',
     agency: '',
   };
+}
+
+async function seedMailboxCopy(
+  db: DB,
+  source: Awaited<ReturnType<typeof seedRequest>>['mail'],
+  transportId: string,
+) {
+  const threadId = randomUUID();
+  await db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
+  const [copy] = await db
+    .insert(message)
+    .values({ ...source, id: randomUUID(), transportId, threadId })
+    .returning();
+  return copy!;
 }
 
 async function seedPreparedQuote(
@@ -272,6 +291,33 @@ afterEach(() => {
   resetPartyCacheForTests();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+});
+
+describe('shared prepared quote source checks', () => {
+  const source = {
+    id: 'source-message',
+    transportId: 'transport-davinci',
+    direction: 'inbound',
+    messageIdHeader: '<Shared-U5@Example.Invalid>',
+    subject: 'Quote request',
+    textBody: 'Please quote the stay.',
+    htmlBody: null,
+  } as const;
+  const run = { transportId: source.transportId, triggerMessageId: source.id };
+  const selected = {
+    ...source,
+    id: 'selected-copy',
+    transportId: 'transport-faith',
+    messageIdHeader: 'shared-u5@example.invalid',
+  };
+
+  it('accepts only an identical inbound copy with the same canonical Message-ID at the same property', () => {
+    expect(isSharedPreparedQuoteSourceCopy(run, source, selected)).toBe(true);
+    expect(isSharedPreparedQuoteSourceCopy(run, source, { ...selected, textBody: 'Changed source.' })).toBe(false);
+    expect(isSharedPreparedQuoteSourceCopy(run, source, { ...selected, messageIdHeader: 'other@example.invalid' })).toBe(false);
+    expect(isSharedPreparedQuoteSourceCopy(run, source, { ...selected, direction: 'outbound' })).toBe(false);
+    expect(isSharedPreparedQuoteSourceCopy(run, source, { ...selected, transportId: 'transport-centurion' })).toBe(false);
+  });
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
@@ -496,6 +542,34 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(staffNote(htmlDocuments[1]!)).toBe(headerNote);
         expect(workbookSheet(freshWorkbook.xlsxBase64)).toContain(headerNote);
         expect(workbookSheet(preparedWorkbook.xlsxBase64)).toBe(workbookSheet(freshWorkbook.xlsxBase64));
+      });
+    });
+
+    it('exports a prepared quote from an unchanged same-property copy, and refuses a changed copy', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db, 'HRDAV');
+        vi.stubEnv('HMS_JOB_QUEUE', 'on');
+        vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+        vi.stubEnv('QUOTE_PDF_RENDERER', 'html');
+        const request = await seedRequest(db, 'transport-davinci');
+        const sourceApi = caller('transport-davinci', FAITH_USER_ID);
+        const quote = await sourceApi.workstation.executeStaffQuote(request.input);
+        const prepared = await seedPreparedQuote(db, request, quote);
+        const copy = await seedMailboxCopy(db, request.mail, 'transport-faith');
+        const copyApi = caller('transport-faith', FAITH_USER_ID);
+        const input = {
+          ...pdfInput({ ...prepared, messageId: copy.id }),
+          outlookEmail: FAITH_TRANSPORT_EMAIL,
+        };
+
+        await expect(copyApi.workstation.qualifiedQuoteProposalPdf(input)).resolves.toMatchObject({
+          totalMinor: quote.totalMinor,
+        });
+        await db.update(message).set({ textBody: 'Changed source.' }).where(eq(message.id, copy.id));
+        await expect(copyApi.workstation.qualifiedQuoteProposalPdf(input)).rejects.toMatchObject({
+          code: 'NOT_FOUND',
+          message: 'Proposal source not found',
+        });
       });
     });
 
