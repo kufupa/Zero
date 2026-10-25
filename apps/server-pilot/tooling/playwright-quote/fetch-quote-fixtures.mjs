@@ -81,6 +81,83 @@ export function multipleSource() {
   return fixture;
 }
 
+/** G9 HRDAV BAR shop: native BAR/BLRB/BARDIS plus a grid-only WAL Walk-in Rate. */
+export function barWalkInSource({ includeNativeWal = false } = {}) {
+  const open = {
+    israteavailable: true,
+    restricted: false,
+    combClosed: false,
+    combClosedToArrival: false,
+    combClosedToDeparture: false,
+    combMinLOSToArrival: 0,
+    combMinLOSToDeparture: 0,
+    combMaxLOSToArrival: null,
+    combMaxLOSToDeparture: null,
+    combMinLOSToThrough: null,
+    combMaxLOSToThrough: null,
+  };
+  const rateColumns = (amount) =>
+    Object.fromEntries([1, 2, 3, 4, 5].map((number) => [`col${number}`, { ...open, value: amount }]));
+  const rate = (code, desc, amount) => ({
+    code,
+    desc,
+    currency: 'ZAR',
+    isNegotiatedRate: false,
+    restricted: false,
+    minLOS: null,
+    maxLOS: null,
+    minLeadTime: null,
+    maxLeadTime: null,
+    haspolicies: true,
+    columns: rateColumns(amount),
+  });
+  const grid = (code, label, board, amount) => ({
+    room: { code: 'STKNG', inventory: ['84', '84', '84', '84', '84'] },
+    rate: `${code}: ${label}`,
+    board,
+    prices: Array(5).fill(`R${Number(amount).toLocaleString('en-US')}.00`),
+  });
+  const children = [
+    rate('BAR', 'Best Available Rate', 4680),
+    rate('BLRB', 'Lifestyle Rewards Programme Rate', 4220),
+    rate('BARDIS', 'BAR Discount', 3744),
+  ];
+  if (includeNativeWal) children.push(rate('WAL', 'Walk-in Rate', 4680));
+  return {
+    data: {
+      datesList: ['11/08/2026', '11/09/2026', '11/10/2026', '11/11/2026', '11/12/2026'],
+      children: [{
+        isprop: true,
+        issummary: false,
+        code: 'HRDAV',
+        currency: 'ZAR',
+        children: [{
+          code: 'STKNG',
+          desc: 'Standard King',
+          buildingCode: null,
+          children,
+          columns: Object.fromEntries([1, 2, 3, 4, 5].map((number) => [`col${number}`, { value: 84 }])),
+        }],
+      }],
+    },
+    calendar: {
+      headers: [
+        '08-NOV-2026Saturday',
+        '09-NOV-2026Sunday',
+        '10-NOV-2026Monday',
+        '11-NOV-2026Tuesday',
+        '12-NOV-2026Wednesday',
+      ],
+      options: [
+        grid('BAR', 'Best Available Rate', 'Bed & Breakfast R', 4680),
+        grid('BLRB', 'Lifestyle Rewards Programme Rate', 'Bed & Breakfast R', 4220),
+        grid('BARDIS', 'BAR Discount', 'Bed & Breakfast R', 3744),
+        grid('WAL', 'Walk-in Rate', 'Bed & Breakfast NR', 4680),
+      ],
+    },
+  };
+}
+
 export function manyRoomSource(additionalRoomCount = 24) {
   const fixture = multipleSource();
   const property = fixture.data.children[0];
