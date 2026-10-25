@@ -589,8 +589,8 @@ function roomGroupFor(
 function roomTypeFor(room: BookingDraftReady['draft']['rooms'][number], group?: StayGroupRequirement): string {
   return textValue(group?.roomCodes?.[room.roomIndex - 1] ?? group?.roomCodes?.[0]) ||
     textValue(group?.roomTypeCode) ||
-    textValue(group?.roomPreference) ||
-    textValue(room.request.roomType);
+    textValue(room.request.roomType) ||
+    textValue(group?.roomPreference);
 }
 
 function roomRequestFor(
@@ -1009,7 +1009,7 @@ export function BookingCards({
                           textValue(request.ratePlan)),
                       nightlyMinor:
                         price ? [price.amountMinor] : group?.quotedAmountMinor != null ? [group.quotedAmountMinor] : undefined,
-                      board: BOARD_LABELS[group?.board ?? textValue(room.board)],
+                      board: BOARD_LABELS[room.board],
                     },
                   },
                 ],

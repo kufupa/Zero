@@ -615,6 +615,7 @@ export function NavaPane({
   const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
+  const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
   const senderFallback =
     storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
   const sourceContact: StoredContact | null =
@@ -624,9 +625,17 @@ export function NavaPane({
         ? { ...senderFallback, company: null, endClient: null, phone: null }
         : null;
   const normalizedContact = sourceContact ? { ...sourceContact } : null;
-  const [contactCorrection, setContactCorrection] = useState<{ key: string; contact: StoredContact } | null>(null);
-  const documentContact =
-    contactCorrection?.key === contactMessageKey ? contactCorrection.contact : normalizedContact;
+  const [contactCorrection, setContactCorrection] = useState<{
+    key: string;
+    fields: Partial<Record<ContactField, string | null>>;
+  } | null>(null);
+  const contactFields = contactCorrection?.key === contactCorrectionKey ? contactCorrection.fields : null;
+  const documentContact = contactFields
+    ? {
+        ...(normalizedContact ?? { name: null, company: null, endClient: null, email: null, phone: null }),
+        ...contactFields,
+      }
+    : normalizedContact;
   const documentContactRef = useRef(documentContact);
   documentContactRef.current = documentContact;
   const recordContact = (field: ContactField, value: string | null) => {
@@ -639,7 +648,13 @@ export function NavaPane({
     };
     const contact = { ...previous, [field]: value };
     documentContactRef.current = contact;
-    setContactCorrection({ key: contactMessageKey, contact });
+    setContactCorrection((prior) => ({
+      key: contactCorrectionKey,
+      fields: {
+        ...(prior?.key === contactCorrectionKey ? prior.fields : {}),
+        [field]: value,
+      },
+    }));
     storedWork.recordContact(field, value);
   };
   const treatAsMailKey = paneEditKey(activeConnection?.id ?? '', contactMessageKey);
@@ -2339,9 +2354,9 @@ export function NavaPane({
             {/* Contact is the first selected-message context. Extraction values win; only an external sender can fill its early fallback. */}
             {activeEmail ? (
               <ContactBlock
-                // ContactBlock takes `contact` once, at mount. The key moves when the read lands, also for a read with
-                // no work item (its open failed), so the read's contact always fills the fields.
-                key={`${contactMessageKey}|${storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state}`}
+                // ContactBlock takes `contact` once, at mount. The key moves when the read or mailbox changes, so the
+                // current request's contact fills the fields without carrying a correction across mailboxes.
+                key={`${contactCorrectionKey}|${storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state}`}
                 contact={documentContact}
                 quote={readAs === 'quote' || readAs === 'group'}
                 onEdit={recordContact}

@@ -2157,6 +2157,7 @@ export function QuoteWorkflowPanel({
                               onBlur={(event) => {
                                 const value = event.currentTarget.value.trim().toUpperCase();
                                 event.currentTarget.value = value;
+                                if (value === rateCode.trim().toUpperCase()) return;
                                 onPatchGroup?.(group.id, { rateCode: value || undefined });
                               }}
                             />
