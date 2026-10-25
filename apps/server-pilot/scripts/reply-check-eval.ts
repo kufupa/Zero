@@ -423,6 +423,11 @@ function sameJudgeRoute(left: JudgeRouteEvidence, right: JudgeRouteEvidence): bo
     left.retention === right.retention && left.usage === right.usage && left.modelId === right.modelId;
 }
 
+function localLunaReportMetadata() {
+  // Approved local transport contract does not accept or attest reasoning effort.
+  return { model: 'gpt-6-luna', reasoningEffort: 'unknown' as const };
+}
+
 function isJudgeRouteConfig(value: unknown): value is JudgeRouteConfig {
   if (typeof value !== 'object' || value === null) return false;
   const config = value as Partial<JudgeRouteConfig>;
@@ -562,6 +567,7 @@ async function selfTest(): Promise<void> {
     /output_paths_must_differ/);
   assert.equal(modelDeadlineAt(100), 100 + lunaCallBudget('medium').deadlineMs);
   assert.equal(MODEL_MAX_OUTPUT_TOKENS, 4_096);
+  assert.deepEqual(localLunaReportMetadata(), { model: 'gpt-6-luna', reasoningEffort: 'unknown' });
   const previousRoute = process.env.AI_MODEL_ROUTE;
   const previousJudgeConfig = process.env.AI_APPROVED_LOCAL_JUDGE_CONFIG;
   delete process.env.AI_MODEL_ROUTE;
@@ -713,7 +719,7 @@ async function scoreCases(inputPath: string, outputPath: string, aggregatePath: 
       replyMessages: new Set(cases.map((item) => item.replyMessageId)).size,
       classSupport: Object.fromEntries(LABELS.map((label) => [label, gold.filter((value) => value === label).length])),
       ruleBaseline: rule, ruleRepeatAgreement: { matches: ruleRepeatMatches, n: cases.length },
-      llm: { model: 'gpt-6-luna', reasoningEffort: 'medium', ...llm },
+      llm: { ...localLunaReportMetadata(), ...llm },
       input: { preReplyOnly: true, futureEventSentToModel: false,
         clippedRows: cases.filter((item) => item.input.clipped).length,
         clippedPromptCalls, rowsWithClippedPrompt: rowsWithClippedPrompt.size,

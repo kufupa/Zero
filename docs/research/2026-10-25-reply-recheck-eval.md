@@ -89,12 +89,13 @@ or partial answer to `needs_more_action`; a bare “we'll revert” cue to `wait
 more staff work).
 
 The historical GPT-6 Luna medium-reasoning run used Azure Foundry (`store:false`) once per row;
-the current evaluator no longer permits that hosted route. All rates below use the same **n=114**
-event-resolved production source above; accuracy is correct/114 and balanced accuracy is mean recall
-across the three supported labels. The current runner budgets the fully serialized prompt plus
-system text and schema to 26 KB, clips only JSON string fields when needed, and records clipping;
-the fitting search preserves the largest per-field text cap that still fits. The historical run
-predates that guard.
+the current evaluator no longer permits that hosted route. Current approved-local score reports set
+`reasoningEffort: unknown`, because the local transport contract does not accept or attest the
+setting. All historical rates below use the same **n=114** event-resolved production source above;
+accuracy is correct/114 and balanced accuracy is mean recall across the three supported labels. The
+current runner budgets the fully serialized prompt plus system text and schema to 26 KB, clips only
+JSON string fields when needed, and records clipping; the fitting search preserves the largest
+per-field text cap that still fits. The historical run predates that guard.
 
 | Predictor | Accuracy (n=114, this production source) | Balanced accuracy (n=114, same source) |
 |---|---:|---:|
