@@ -32,6 +32,7 @@ it('keeps Centurion routes loadable and refuses an inactive Da Vinci property', 
     expect(readTargets.hmsReadTargetForTransport('transport-centurion')).toMatchObject({
       propertyCode: 'HRCEN',
     });
+    expect(readTargets.isDaVinciTransport('transport-davinci')).toBe(true);
     expect(() => readTargets.hmsReadTargetForTransport('transport-davinci')).toThrow(
       expect.objectContaining({ cause: expect.objectContaining({ code: 'property_inactive' }) }),
     );
