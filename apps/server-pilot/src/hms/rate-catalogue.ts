@@ -1,4 +1,3 @@
-import { createRequire } from 'node:module';
 import { ROOM_TYPE_NAMES } from '../ai/room-types.js';
 
 export type CenturionRateBoard =
@@ -97,7 +96,6 @@ type RegistryQuoteProfile = {
 };
 
 const PROFILE_MODULE = '../../tooling/playwright-quote/property-profile.mjs';
-const require = createRequire(import.meta.url);
 const PANE_BOARD_ORDER: readonly QuotePaneBoard[] = ['room_only', 'bb', 'dinner_bb'];
 
 /** Only registry-listed native codes become pane choices. BAR is pinned first when the registry offers it. */
@@ -130,16 +128,6 @@ export function quoteSalesStrategiesFromRegistry(
     });
   }
   return strategies.sort((left, right) => Number(right.code === 'BAR') - Number(left.code === 'BAR'));
-}
-
-/** The strategy allow-list used by server-side quote preparation; absent registry choices fail closed. */
-export function quoteSalesStrategiesForProperty(propertyCode: string): QuoteSalesStrategy[] {
-  if (propertyCode === 'HRCEN') return HRCEN_SALES_STRATEGIES.map((row) => ({ ...row }));
-  if (propertyCode !== 'HRDAV') return [];
-  const profile = (require(PROFILE_MODULE) as {
-    profileFor: (code: string) => RegistryQuoteProfile | null;
-  }).profileFor(propertyCode);
-  return quoteSalesStrategiesFromRegistry(propertyCode, profile?.salesStrategies);
 }
 
 function boardForCatalogue(board: string): QuotePaneBoard | null {

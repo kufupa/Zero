@@ -40,12 +40,7 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
-import type {
-  QuoteAnalysis,
-  QuotePaneConfig,
-  QuoteSalesStrategyCode,
-  QuoteSessionAction,
-} from '@/lib/quote-workflow/types';
+import type { QuoteAnalysis, QuotePaneConfig, QuoteSessionAction } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
@@ -80,7 +75,6 @@ import { amendFindClientFromTrpc, hmsJobTransport, type HmsJobRequest, type HmsJ
 import {
   bindAutoStartStaffQuote,
   bindExecuteStaffQuote,
-  bindStaffQuoteStrategyRows,
   bindHmsQueueStatus,
   bindReadBackStaffQuote,
   bindQuoteRunScreenshot,
@@ -853,9 +847,9 @@ export function NavaPane({
     if ((!isBooking && !isQuote) || !source || !binding || waiting.length === 0) {
       return;
     }
-    // Quote comparisons are read back by queueing every registry-approved strategy below. The legacy single-result
-    // read-back would otherwise silently select the first BAR/Government allocation before staff chose a row.
-    if (isQuote && !isBooking) return;
+    if (isQuote && !isBooking && staffQuoteQueueMode !== 'on') {
+      return;
+    }
     const generation = ++staffQuoteReadBackGeneration.current;
     staffQuoteReadBackInFlight.current = true;
     const staff = staffQuoteFromTrpc(trpcClient);
@@ -1136,14 +1130,7 @@ export function NavaPane({
         staffQuoteReadBackInFlight.current = false;
       }
     };
-  }, [
-    priorQuoteKey,
-    isNonActionableMessage,
-    staffQuoteQueueMode,
-    activePaneConfig?.transportId,
-    activePaneConfig?.propertyCode,
-    activePaneConfig?.salesStrategies,
-  ]);
+  }, [priorQuoteKey, isNonActionableMessage, staffQuoteQueueMode, activePaneConfig?.transportId]);
 
   useEffect(() => {
     if (staffQuoteQueueMode !== 'on') return;
@@ -1158,8 +1145,6 @@ export function NavaPane({
     requiresRelogin,
     isNonActionableMessage,
     activePaneConfig?.transportId,
-    activePaneConfig?.propertyCode,
-    activePaneConfig?.salesStrategies,
   ]);
 
   // Onboarding & Screen State
@@ -1494,21 +1479,12 @@ export function NavaPane({
       return current;
     });
 
-  const runQuoteStep = (
-    stepId: string,
-    autoStart = false,
-    readBack = false,
-    selectedStrategyCode?: QuoteSalesStrategyCode,
-  ) => {
+  const runQuoteStep = (stepId: string, autoStart = false, readBack = false) => {
     if (isNonActionableMessage) return;
     if ((autoStart || readBack) && (staffQuoteQueueMode !== 'on' || isQuoteFixturePreview())) return;
     const step = quoteSession.steps.find((item) => item.id === stepId);
     const maySearchAgain = step?.kind === 'quote_stay' && step.status === 'succeeded' && !quoteSession.runningStepId;
     if (!step || (!maySearchAgain && !canRunQuoteStep(step, quoteSession.steps, quoteSession.runningStepId))) return;
-    const selectedStrategy = selectedStrategyCode
-      ? activePaneConfig?.salesStrategies?.find((strategy) => strategy.code === selectedStrategyCode)
-      : undefined;
-    if (selectedStrategyCode && (!selectedStrategy || step.kind !== 'quote_stay' || !step.shareKey)) return;
     const waiting = quoteRunBlockReason(quoteSession, step);
     if (waiting) {
       toast.warning(waiting);
@@ -1583,78 +1559,9 @@ export function NavaPane({
       : undefined;
     // Auto-start and read-back use the session strategy, as the background prepare does (Government only when every
     // row is Dinner B&B), so a prepared run's price shape matches.
-    const runHeader = selectedStrategy
-      ? { ...quoteSession.staffHeader, salesStrategy: selectedStrategy.requestValue }
-      : autoStart || readBack
-        ? autoRunHeader(quoteSession)
-        : quoteSession.staffHeader;
+    const runHeader = autoStart || readBack ? autoRunHeader(quoteSession) : quoteSession.staffHeader;
     // Get rates is where she proceeds with the read as shown, so unedited AI fields are accepted (v5 B2).
     if (!autoStart && !readBack && !storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
-    const quoteStrategyComparison =
-      !selectedStrategy &&
-      step.kind === 'quote_stay' &&
-      quoteSession.analysis?.intent === 'quote' &&
-      quoteSession.analysis.luna?.workflow !== 'create_booking';
-    if (quoteStrategyComparison) {
-      const stayKey = step.shareKey;
-      const strategies = activePaneConfig?.salesStrategies ?? [];
-      if (!stayKey || !strategies.length) {
-        dispatchQuote({
-          type: 'results_unavailable',
-          stepId: step.id,
-          reason: 'No sales strategies are configured for this mailbox. Refresh the pane before searching.',
-          selectionEpoch,
-          inputRevision,
-        });
-        return;
-      }
-      dispatchQuote({
-        type: 'quote_strategy_rows_started',
-        stayKey,
-        strategies,
-        selectionEpoch,
-        inputRevision,
-      });
-      const isCurrent = () => quoteStayRunIsCurrent(quoteSessionRef.current, {
-        selectionEpoch,
-        inputRevision,
-        stepId: step.id,
-        stayKey,
-        groups: stayGroups,
-      });
-      const fanout = bindStaffQuoteStrategyRows({
-        mode: autoStart ? 'auto' : 'staff',
-        mutate: staff.workstation.executeStaffQuote?.mutate,
-        queue: staff.workstation.queueStaffQuote?.mutate,
-        staffQuoteJob: observedStaffQuoteJob,
-        source,
-        selectionEpoch,
-        inputRevision,
-        groups: stayGroups,
-        header: runHeader,
-        propertyCode: activePaneConfig?.propertyCode,
-        stayKey,
-        strategies,
-        onResult: ({ strategy, outcome }) => {
-          if (!isCurrent()) return;
-          dispatchQuote({
-            type: 'quote_strategy_result',
-            stayKey,
-            strategy,
-            outcome,
-            selectionEpoch,
-            inputRevision,
-          });
-        },
-      });
-      void trackStaffQuoteRun(fanout).then(() => {
-        if (!isCurrent()) {
-          dispatchQuote({ type: 'step_stale', stepId: step.id, selectionEpoch, inputRevision });
-          toast.warning('Details changed while HMS was searching — search availability again.');
-        }
-      });
-      return;
-    }
     const run = readBack
       ? bindReadBackStaffQuote({
           query: observedStaffQuoteJob,
@@ -1774,29 +1681,15 @@ export function NavaPane({
         toast.warning(remote.reason);
         return;
       }
-      if (selectedStrategy && staffQuoteStep.shareKey) {
-        dispatchQuote({
-          type: 'select_quote_strategy',
-          stayKey: staffQuoteStep.shareKey,
-          strategyCode: selectedStrategy.code,
-          offer: remote.offer,
-          staffQuote: remote.staffQuote,
-          selectionEpoch,
-          inputRevision,
-          extrasReviewItems: remote.extrasReviewItems,
-          approvedHeader: runHeader,
-        });
-      } else {
-        dispatchQuote({
-          type: 'staff_quote_ready',
-          offer: remote.offer,
-          staffQuote: remote.staffQuote,
-          selectionEpoch,
-          inputRevision,
-          extrasReviewItems: remote.extrasReviewItems,
-          approvedHeader: runHeader,
-        });
-      }
+      dispatchQuote({
+        type: 'staff_quote_ready',
+        offer: remote.offer,
+        staffQuote: remote.staffQuote,
+        selectionEpoch,
+        inputRevision,
+        extrasReviewItems: remote.extrasReviewItems,
+        approvedHeader: runHeader,
+      });
       for (const item of remote.extrasReviewItems) toast.warning(item);
       const luna = quoteSession.analysis?.luna;
       if (luna?.workflow === 'create_booking') {
@@ -2402,24 +2295,6 @@ export function NavaPane({
                 dispatchQuote({ type: 'patch_staff_stay_extras', stayKey, extras });
               }}
               onSelectStayKey={(stayKey) => dispatchQuote({ type: 'select_stay_key', stayKey })}
-              onSelectQuoteStrategy={(stayKey, strategyCode) => {
-                const rows = quoteSession.quoteStrategyRows?.[stayKey];
-                const selectedRow = rows?.[strategyCode];
-                const comparisonsComplete = Boolean(rows && Object.values(rows).length > 0 &&
-                  Object.values(rows).every((row) =>
-                    row.status === 'ready' || row.status === 'not_offered' || row.status === 'failed',
-                  ));
-                const selectedStep = quoteSession.steps.find(
-                  (step) => step.kind === 'quote_stay' && step.shareKey === stayKey,
-                );
-                if (
-                  selectedRow?.status !== 'ready' ||
-                  !comparisonsComplete ||
-                  !selectedStep ||
-                  !activePaneConfig?.salesStrategies?.some((strategy) => strategy.code === strategyCode)
-                ) return;
-                runQuoteStep(selectedStep.id, false, false, strategyCode);
-              }}
               onStaffNote={(staffNote) => {
                 suppressAutoStaffQuoteForCurrentEmail();
                 setStaffNoteSent(staffNote);

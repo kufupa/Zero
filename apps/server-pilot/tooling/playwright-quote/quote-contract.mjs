@@ -59,11 +59,7 @@ const V2_ROOT = new Set([
 const ROOM_BASE = new Set(['quantity', 'adults', 'children', 'childAges', 'id']);
 const CONSTRAINT_FIELDS = new Set(['roomCodes', 'rateCodes', 'bedTypes', 'boardBases', 'features']);
 const NATIVE_CODE = /^[A-Z0-9_-]+$/;
-const SALES_STRATEGIES = new Set([
-  'Preset', 'BAR', 'Promotions', 'Wholesale', 'Negotiated Contracted', 'Group & Convention',
-  'Government', 'Comp / House Use', 'Other', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR',
-  'DOML', 'OTHER', 'Negoticated Contracted', 'Airline Crews', 'Domestic Leisure',
-]);
+const SALES_STRATEGIES = new Set(['Preset', 'BAR', 'Promotions', 'Wholesale', 'Negotiated Contracted', 'Group & Convention', 'Government', 'Comp / House Use', 'Other']);
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const ISO_CURRENCY = /^[A-Z]{3}$/;
 const MONEY = /^(\d+)\.(\d{2})$/;

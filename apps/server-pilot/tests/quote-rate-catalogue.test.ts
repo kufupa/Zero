@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
+import { quoteSalesStrategiesFromRegistry } from '../src/hms/rate-catalogue.js';
 
 function signedInCaller(transportId = 'transport-centurion') {
   return appRouter.createCaller({
@@ -87,6 +88,17 @@ describe('mailbox-scoped quote pane configuration', () => {
     });
     expect(config.roomTypes.map(({ code }) => code)).not.toContain('STQN');
     expect(config.ratePlans.map(({ code }) => code)).toEqual(['BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF']);
+  });
+
+  it('exposes no Da Vinci strategy that is outside the supported registry codes', () => {
+    expect(quoteSalesStrategiesFromRegistry('HRDAV', [
+      { value: 'PROMO', display: 'Promotions' },
+      { value: 'UNREGISTERED', display: 'Unregistered strategy' },
+      { value: 'BAR', display: 'BAR' },
+    ])).toEqual([
+      { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+      { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
+    ]);
   });
 
   it('refuses unknown and collector mailboxes instead of falling back to Centurion', async () => {

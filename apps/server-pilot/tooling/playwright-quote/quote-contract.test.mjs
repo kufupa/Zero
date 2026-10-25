@@ -523,7 +523,7 @@ test('published schema documents request and result contracts without selectors 
   assert.ok(schema.$defs.result.properties.outcome.enum.includes('input_gap'));
   assert.ok(schema.$defs.result.properties.outcome.enum.includes('partial'));
   assert.ok(schema.$defs.result.properties.outcome.enum.includes('execution_failure'));
-  assert.deepEqual(schema.$defs.request.properties.search.properties.salesStrategy.enum, ['Preset', 'BAR', 'Promotions', 'Wholesale', 'Negotiated Contracted', 'Group & Convention', 'Government', 'Comp / House Use', 'Other', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER', 'Negoticated Contracted', 'Airline Crews', 'Domestic Leisure']);
+  assert.deepEqual(schema.$defs.request.properties.search.properties.salesStrategy.enum, ['Preset', 'BAR', 'Promotions', 'Wholesale', 'Negotiated Contracted', 'Group & Convention', 'Government', 'Comp / House Use', 'Other']);
   const optionProps = schema.$defs.result.properties.groups.items.properties.options.items.properties;
   assert.deepEqual(optionProps.room.required, ['code', 'label']);
   assert.deepEqual(optionProps.rate.required, ['code', 'label']);
@@ -627,10 +627,10 @@ test('orderOptions uses match class then full displayed-nightly sum with stable 
   ]);
 });
 
-test('salesStrategy accepts the dumped Hotel Availability labels and property strategy codes', () => {
+test('salesStrategy accepts the dumped Hotel Availability labels', () => {
   const room = [{ id: 'group-1', quantity: 1, adults: 1, children: 0, childAges: [] }];
   const search = { includeRestricted: false, includeAlternatives: true };
-  for (const salesStrategy of ['Preset', 'BAR', 'Promotions', 'Wholesale', 'Negotiated Contracted', 'Group & Convention', 'Government', 'Comp / House Use', 'Other', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER', 'Negoticated Contracted', 'Airline Crews', 'Domestic Leisure']) {
+  for (const salesStrategy of ['Preset', 'BAR', 'Promotions', 'Wholesale', 'Negotiated Contracted', 'Group & Convention', 'Government', 'Comp / House Use', 'Other']) {
     const result = normalizeQuoteRequest(v2(room, { search: { ...search, salesStrategy } }));
     assert.equal(result.ok, true);
     assert.equal(result.request.search.salesStrategy, salesStrategy);

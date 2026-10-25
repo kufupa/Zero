@@ -200,9 +200,7 @@ export function assertApplied(request, room, criteria, {resolvedContext={},start
   const label=request.search?.salesStrategy??(request.rateContext?'Preset':'BAR');
   const salesStrategy=strategy!==undefined?strategy:request.rateContext?.group?null:({
     BAR:'BAR',Preset:'PRESET',Promotions:'PROMO',Wholesale:'WS','Negotiated Contracted':'CON',
-    'Group & Convention':'GNC',Government:'GOV','Comp / House Use':'CMPHS',Other:'OTH',
-    PROMO:'PROMO',PRESET:'PRESET',WS:'WS',NC:'NC',GOV:'GOV',AIR:'AIR',DOML:'DOML',OTHER:'OTHER',
-    'Negoticated Contracted':'NC','Airline Crews':'AIR','Domestic Leisure':'DOML'})[label];
+    'Group & Convention':'GNC',Government:'GOV','Comp / House Use':'CMPHS',Other:'OTH'})[label];
   if (salesStrategy===undefined) throw new Error('UNVERIFIED_SALES_STRATEGY');
   const expected = {propertyCodes:request.propertyCode,startDate:`${startDate}T00:00:00`,
     adultCount:room.adults,childCount:room.children,salesStrategy,lengthOfStay:'DY',shopByDay:false,

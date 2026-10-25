@@ -21,7 +21,7 @@ export type QuoteShopJob = {
   input: StaffQuoteInput;
 };
 
-/** Canonical BAR/Government prefetch per stay; registry-scoped comparisons are queued by the mailbox pane. */
+/** One BAR/Government shop per stay. Extra strategies are U6b. */
 export function quoteShopJobsForPlan(plan: PreparedStaffQuotePlan): QuoteShopJob[] {
   return plan.inputs.map((input) => ({ input }));
 }

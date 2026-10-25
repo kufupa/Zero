@@ -10,7 +10,6 @@ import {
 import type {
   OtherChargeUnit,
   StaffQuoteAttestation,
-  StaffQuoteInput,
   StaffRowPriceInput,
 } from './staff-quote-workflow.js';
 
@@ -27,7 +26,7 @@ export type PriorStaffQuoteRequoteGroup = {
 
 export type PriorStaffQuoteRequotePayload = {
   groups: PriorStaffQuoteRequoteGroup[];
-  salesStrategy: StaffQuoteInput['salesStrategy'];
+  salesStrategy: 'BAR' | 'Government';
   company: string;
   agency: string;
   dinnerAllowanceMinor?: number;
@@ -316,7 +315,7 @@ export function priorStaffQuoteRequotePayload(
   const revision = revisionsFromRun(run).find((row) => row.id === revisionRef);
   if (!revision) return null;
   const staff = run.metrics?.staffQuoteAttestation as
-    | StaffQuoteAttestation
+    | (StaffQuoteAttestation & { salesStrategy?: 'BAR' | 'Government' })
     | undefined;
   if (
     staff?.version !== 1 ||
@@ -337,7 +336,7 @@ export function priorStaffQuoteRequotePayload(
       board: staffBoardFromRevision(group.board),
       ...(group.roomCode ? { roomCodes: [group.roomCode] } : {}),
     })),
-    salesStrategy: staff.salesStrategy ?? 'BAR',
+    salesStrategy: staff.salesStrategy === 'Government' ? 'Government' : 'BAR',
     company: staff.header.company ?? '',
     agency: staff.header.agency ?? '',
     ...extrasHeaderFromFacts(

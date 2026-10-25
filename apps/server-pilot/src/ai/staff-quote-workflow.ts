@@ -18,7 +18,6 @@ import {
 } from '../quote-proposal/quote-lines.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
 import { PARTY_NO_CONTRACT_CODE, PARTY_SEARCH_INCOMPLETE_CODE, isPartyRateFailure } from './party-rate-failure.js';
-import { quoteSalesStrategiesForProperty } from '../hms/rate-catalogue.js';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 
@@ -94,9 +93,7 @@ export const staffQuoteInput = z
     selectionEpoch: z.number().int().nonnegative(),
     inputRevision: z.number().int().nonnegative(),
     groups: z.array(groupSchema).min(1).max(8),
-    salesStrategy: z.enum([
-      'BAR', 'Government', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER',
-    ]).default('BAR'),
+    salesStrategy: z.enum(['BAR', 'Government']).default('BAR'),
     company: z.string().max(256).default(''),
     agency: z.string().max(256).default(''),
     attention: z.string().max(256).default(''),
@@ -135,16 +132,6 @@ export const staffQuoteInput = z
   })
   .strict();
 export type StaffQuoteInput = z.infer<typeof staffQuoteInput>;
-
-function isGovernmentSalesStrategy(value: StaffQuoteInput['salesStrategy']): boolean {
-  return value === 'Government' || value === 'GOV';
-}
-
-function salesStrategyAllowedForProperty(propertyCode: string, requested: StaffQuoteInput['salesStrategy']): boolean {
-  return quoteSalesStrategiesForProperty(propertyCode).some(
-    (strategy) => strategy.requestValue === requested || (propertyCode === 'HRDAV' && strategy.code === requested),
-  );
-}
 
 export type StaffQuoteDinnerAddOn = {
   amountMinor: number;
@@ -186,7 +173,7 @@ export function staffQuoteDinnerNoMatchFallback(
 ): { input: StaffQuoteInput; groupIds: string[]; note: string | null } | null {
   const fallback = staffQuoteDinnerFallback(input);
   if (!fallback) return null;
-  const governmentNoMatch = isGovernmentSalesStrategy(input.salesStrategy);
+  const governmentNoMatch = input.salesStrategy === 'Government';
   return {
     ...fallback,
     input: governmentNoMatch ? { ...fallback.input, salesStrategy: 'BAR' } : fallback.input,
@@ -199,7 +186,7 @@ export function staffQuoteDinnerNoMatchFallback(
 
 /** Staff note for a successful Government Dinner B&B quote. */
 export function staffQuoteGovernmentDinnerNote(input: StaffQuoteInput): string | null {
-  return isGovernmentSalesStrategy(input.salesStrategy) && input.groups.some((group) => group.board === 'dinner_bb')
+  return input.salesStrategy === 'Government' && input.groups.some((group) => group.board === 'dinner_bb')
     ? 'Priced on the Government Dinner B&B rate because the guest asked for dinner. ' +
       'Choose All public rates (BAR) if the guest is not entitled.'
     : null;
@@ -252,7 +239,7 @@ export function staffQuoteDinnerGroupIdsToRetryAsBb(
   input: StaffQuoteInput,
   rateOptions: readonly { groupId: string; selected: boolean; contract: boolean; rateCode: string }[],
 ): string[] {
-  if (isGovernmentSalesStrategy(input.salesStrategy)) return [];
+  if (input.salesStrategy === 'Government') return [];
   const dinnerGroupIds = input.groups.filter((group) => group.board === 'dinner_bb').map((group) => group.id);
   if (!input.parties) return dinnerGroupIds;
   const verifiedContractGroupIds = new Set(
@@ -329,8 +316,6 @@ export type StaffQuoteAttestation = {
   authorizationId: string;
   revisionIds: string[];
   header: Pick<RevisionProposalHeader, 'company' | 'agency'>;
-  /** The exact native sales strategy used. Missing only on historical attestations. */
-  salesStrategy?: StaffQuoteInput['salesStrategy'];
   /** Staff note approved with the quote; the PDF prints this stored copy, never a later client value. */
   notes?: string;
   /** Row prices approved with the quote, snapshotted when it ran. Old quotes keep these even after a rate is archived. */
@@ -369,9 +354,6 @@ export function prepareStaffQuote(
     !Number.isFinite(Date.parse(scope.messageAt))
   )
     throw new Error('staff_quote_source_changed');
-  if (!salesStrategyAllowedForProperty(scope.propertyCode, input.salesStrategy)) {
-    throw new Error('staff_quote_sales_strategy_not_allowed');
-  }
   if (new Set(input.groups.map((g) => g.id)).size !== input.groups.length)
     throw new Error('staff_quote_duplicate_group');
   const dates = new Set(
@@ -564,7 +546,7 @@ export function buildStaffProposalFacts(
     input.dinnerAllowanceMinor !== undefined ||
     input.dinnerAllowanceLabel !== undefined ||
     input.dinnerAllowanceUnit !== undefined;
-  const configured = isGovernmentSalesStrategy(input.salesStrategy) ? undefined : options.dinnerAddOn;
+  const configured = input.salesStrategy === 'Government' ? undefined : options.dinnerAddOn;
   // A priced dinner charge also covers rows retried from a dinner board after the scope was saved (a row staff added later).
   const pricedDinner =
     (input.dinnerAllowanceMinor ?? configured?.amountMinor) !== undefined &&

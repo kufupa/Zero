@@ -4,7 +4,6 @@ import type {
   QuoteBoard,
   RowPriceChoice,
   StaffQuoteHeader,
-  QuoteSalesStrategyValue,
   StaffQuoteOtherCharge,
   StaffQuoteSource,
   StayGroupRequirement,
@@ -275,7 +274,7 @@ export async function bindUsePriorQuoteForBooking(args: {
 
 export type PriorStaffQuoteRequotePayload = {
   groups: StaffQuoteGroupInput[];
-  salesStrategy: QuoteSalesStrategyValue;
+  salesStrategy: 'BAR' | 'Government';
   company: string;
   agency: string;
   dinnerAllowanceMinor?: number;

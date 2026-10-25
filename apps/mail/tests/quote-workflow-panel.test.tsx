@@ -2243,9 +2243,9 @@ describe('quote strategy comparison', () => {
       [stayKey]: {
         WS: {
           status: 'ready',
-          roomLabel: 'Standard King',
-          boardLabel: 'Bed & Breakfast',
-          nightlyMinor: 80000,
+          roomLabels: ['Standard King'],
+          boardLabels: ['Bed & Breakfast'],
+          nightlyMinor: [80000],
           totalMinor: 160000,
         },
         GOV: { status: 'not_offered', message: 'No rooms for these dates.' },
