@@ -9,6 +9,10 @@ import {
   staffQuoteInputsPriceEquivalent,
 } from '../src/ai/quote-ready.js';
 import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
+import {
+  quoteSalesStrategiesFromRegistry,
+  type QuoteSalesStrategy,
+} from '../src/hms/rate-catalogue.js';
 
 const messageId = 'quote-message-1';
 const sourceHash = 'a'.repeat(64);
@@ -594,24 +598,93 @@ describe('prepared quote reuse price fields', () => {
   });
 });
 
-describe('one primary shop per stay', () => {
-  it('builds one BAR shop per stay and never extra strategies', () => {
-    const second = payload().stays[0]!;
+const HRCEN_STRATEGIES = quoteSalesStrategiesFromRegistry('HRCEN', null);
+const SIX_STRATEGIES: QuoteSalesStrategy[] = [
+  { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+  { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
+  { code: 'PRESET', label: 'Preset', requestValue: 'PRESET' },
+  { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
+  { code: 'NC', label: 'Negoticated Contracted', requestValue: 'NC' },
+  { code: 'GOV', label: 'Government', requestValue: 'Government' },
+];
+
+function twoStayPlan() {
+  const second = payload().stays[0]!;
+  return build({
+    stays: [
+      payload().stays[0]!,
+      {
+        ...second,
+        id: 'stay-2',
+        requested: { arrival: '2026-10-24', departure: '2026-10-27' },
+        rows: second.rows.map((row) => ({ ...row, id: 'row-2' })),
+      },
+    ],
+  });
+}
+
+describe('quote shop jobs per registry strategy', () => {
+  it('builds one shop per configured strategy for the same stay', () => {
+    const jobs = quoteShopJobsForPlan(build(), SIX_STRATEGIES);
+    expect(jobs).toHaveLength(6);
+    expect(jobs.map((job) => job.input.salesStrategy)).toEqual([
+      'BAR',
+      'PROMO',
+      'PRESET',
+      'WS',
+      'NC',
+      'Government',
+    ]);
+    expect(jobs.every((job) => job.input.groups[0]?.id === 'row-1')).toBe(true);
+  });
+
+  it('never shops a strategy missing from the registry', () => {
+    const jobs = quoteShopJobsForPlan(
+      build(),
+      quoteSalesStrategiesFromRegistry('HRDAV', [
+        { value: 'BAR', display: 'BAR' },
+        { value: 'WS', display: 'Wholesale' },
+        { value: 'UNREGISTERED', display: 'Unregistered strategy' },
+      ]),
+    );
+    expect(jobs.map((job) => job.input.salesStrategy)).toEqual(['BAR', 'WS']);
+  });
+
+  it('keeps HRCEN BAR then Government for two stays', () => {
+    const jobs = quoteShopJobsForPlan(twoStayPlan(), HRCEN_STRATEGIES);
+    expect(jobs.map((job) => job.input.salesStrategy)).toEqual([
+      'BAR',
+      'Government',
+      'BAR',
+      'Government',
+    ]);
+    expect(jobs.map((job) => job.input.groups[0]?.id)).toEqual(['row-1', 'row-1', 'row-2', 'row-2']);
+  });
+
+  it('shops BAR plus Government for an all-dbb HRCEN stay', () => {
+    const stay = payload().stays[0]!;
     const plan = build({
-      stays: [
-        payload().stays[0]!,
-        {
-          ...second,
-          id: 'stay-2',
-          requested: { arrival: '2026-10-24', departure: '2026-10-27' },
-          rows: second.rows.map((row) => ({ ...row, id: 'row-2' })),
-        },
-      ],
+      stays: [{ ...stay, rows: stay.rows.map((row) => ({ ...row, board: 'dbb' })) }],
     });
-    const jobs = quoteShopJobsForPlan(plan);
-    expect(jobs).toHaveLength(2);
-    expect(jobs.map((job) => job.input.salesStrategy)).toEqual(['BAR', 'BAR']);
-    expect(jobs.map((job) => job.input.groups[0]?.id)).toEqual(['row-1', 'row-2']);
-    expect(jobs.every((job) => !('shopStrategy' in job))).toBe(true);
+    expect(plan.inputs[0]?.salesStrategy).toBe('Government');
+    expect(quoteShopJobsForPlan(plan, HRCEN_STRATEGIES).map((job) => job.input.salesStrategy)).toEqual([
+      'BAR',
+      'Government',
+    ]);
+  });
+
+  it('shops two stays times N strategies', () => {
+    const jobs = quoteShopJobsForPlan(twoStayPlan(), SIX_STRATEGIES);
+    expect(jobs).toHaveLength(12);
+    expect(jobs.filter((job) => job.input.groups[0]?.id === 'row-1')).toHaveLength(6);
+    expect(jobs.filter((job) => job.input.groups[0]?.id === 'row-2')).toHaveLength(6);
+  });
+
+  it('pins BAR first even when the registry list does not', () => {
+    const jobs = quoteShopJobsForPlan(build(), [
+      { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
+      { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
+    ]);
+    expect(jobs.map((job) => job.input.salesStrategy)).toEqual(['BAR', 'WS']);
   });
 });

@@ -38,6 +38,7 @@ import {
   staffQuoteCanTeachSenderHistory,
 } from '../src/ai/hms-jobs.js';
 import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { quotePaneConfigForProperty } from '../src/hms/rate-catalogue.js';
 import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { paneStayLookupLoaders, type PaneStayLookupSpawnResult } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
@@ -265,6 +266,16 @@ function preparedInputFromRun(run: AiWorkflowRun | undefined): StaffQuoteInput {
   if (!run) throw new Error('expected a staff quote run');
   const request = run.readRequest as { input?: unknown } | null;
   return staffQuoteInput.parse(request?.input);
+}
+
+const HRCEN_PREPARED_SHOPS = 2;
+
+function shopSalesStrategy(row: { readRequest: unknown }): string | undefined {
+  return (row.readRequest as { input?: { salesStrategy?: string } } | null)?.input?.salesStrategy;
+}
+
+function barPreparedRun<T extends { readRequest: unknown }>(rows: T[]): T | undefined {
+  return rows.find((row) => shopSalesStrategy(row) === 'BAR');
 }
 
 function autoStaffQuoteRequest(threadId: string, messageId: string) {
@@ -696,9 +707,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
 
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV, undefined, priority)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV, undefined, priority)).toBe(
+        HRCEN_PREPARED_SHOPS,
+      );
       expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(0);
-      const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      const preparedRows = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
+      expect(preparedRows).toHaveLength(HRCEN_PREPARED_SHOPS);
+      expect(preparedRows.map(shopSalesStrategy).sort()).toEqual(['BAR', 'Government']);
+      const prepared = barPreparedRun(preparedRows);
       expect(prepared).toMatchObject({
         runKind: 'read_tool',
         state: 'queued',
@@ -803,18 +819,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         },
       });
 
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(2);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(4);
       const rows = await db
         .select()
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      expect(rows).toHaveLength(2);
-      expect(
-        rows.map(
-          (row) =>
-            (row.readRequest as { input?: { salesStrategy?: string } }).input?.salesStrategy,
-        ),
-      ).toEqual(['BAR', 'BAR']);
+      expect(rows).toHaveLength(4);
+      expect(rows.filter((row) => shopSalesStrategy(row) === 'BAR')).toHaveLength(2);
+      expect(rows.filter((row) => shopSalesStrategy(row) === 'Government')).toHaveLength(2);
       expect(
         new Set(
           rows.map(
@@ -826,17 +838,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       ).toEqual(new Set(['2099-11-12', '2099-12-12']));
     }));
 
-  it('keeps HRCEN BAR and Government as a single prepared job', () =>
+  it('shops HRCEN BAR and Government per stay', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const bar = await seedQuoteExtraction(db);
-      expect(await prefetchQuoteReadyForExtraction(bar.run, db, QUOTE_PREPARE_ENV)).toBe(1);
-      const [barJob] = await db
+      expect(await prefetchQuoteReadyForExtraction(bar.run, db, QUOTE_PREPARE_ENV)).toBe(HRCEN_PREPARED_SHOPS);
+      const barJobs = await db
         .select()
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.triggerMessageId, bar.messageId));
-      expect(barJob?.readRequest).toMatchObject({ kind: 'staff_quote', input: { salesStrategy: 'BAR' } });
+      expect(barJobs.map(shopSalesStrategy).sort()).toEqual(['BAR', 'Government']);
 
       const barPayload = quoteExtractionPayload();
       const government = await seedQuoteExtraction(db, {
@@ -848,15 +860,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           })),
         },
       });
-      expect(await prefetchQuoteReadyForExtraction(government.run, db, QUOTE_PREPARE_ENV)).toBe(1);
-      const [govJob] = await db
+      expect(await prefetchQuoteReadyForExtraction(government.run, db, QUOTE_PREPARE_ENV)).toBe(
+        HRCEN_PREPARED_SHOPS,
+      );
+      const govJobs = await db
         .select()
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.triggerMessageId, government.messageId));
-      expect(govJob?.readRequest).toMatchObject({
-        kind: 'staff_quote',
-        input: { salesStrategy: 'Government' },
-      });
+      expect(govJobs.map(shopSalesStrategy).sort()).toEqual(['BAR', 'Government']);
     }));
 
   it('does not reuse a queued dev-eval quote for a later staff quote', () =>
@@ -952,7 +963,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_RUN_DEADLINE_MS', '150000');
       const { run } = await seedQuoteExtraction(db);
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(HRCEN_PREPARED_SHOPS);
       const now = new Date();
 
       const claimed = await claimNextAiRun({
@@ -974,8 +985,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const quoteEnv = {
         ...QUOTE_PREPARE_ENV,
         HMS_DAVINCI_MAKE_QUOTE: 'on',
+        HMS_QUOTE_PREPARE_PER_HOUR: '20',
         RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '/tmp/hrdav-quote.json',
       };
+      const hrdavShops = (await quotePaneConfigForProperty('HRDAV', DAVINCI_TRANSPORT_ID))?.salesStrategies.length ?? 0;
       const firstCopy = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID, messageIdHeader);
       const secondCopy = await seedThread(db, 'Quote request', FAITH_TRANSPORT_ID, messageIdHeader);
       await insertStoredExtraction(db, firstCopy.messageId, 'quote', quoteExtractionPayload());
@@ -991,8 +1004,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         triggerMessageId: secondCopy.messageId,
       };
 
-      expect(await prefetchQuoteReadyForExtraction(firstExtraction, db, quoteEnv)).toBe(1);
-      const [first] = await db
+      expect(await prefetchQuoteReadyForExtraction(firstExtraction, db, quoteEnv)).toBe(hrdavShops);
+      const firstJobs = await db
         .select()
         .from(aiWorkflowRun)
         .where(
@@ -1001,6 +1014,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
             sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
           ),
         );
+      const first = barPreparedRun(firstJobs) ?? firstJobs[0];
       expect(first?.idempotencyKey).toMatch(/^hms-job:mail:HRDAV:/);
       await db
         .update(aiWorkflowRun)
@@ -1017,7 +1031,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
             sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
           ),
         );
-      expect(retries).toHaveLength(2);
+      expect(retries).toHaveLength(hrdavShops + 1);
       expect(
         retries.find((retry) => retry.triggerMessageId === secondCopy.messageId)?.idempotencyKey,
       ).toMatch(new RegExp(`^${first!.idempotencyKey}:retry:`));
@@ -1028,7 +1042,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(HRCEN_PREPARED_SHOPS);
       const prepared = await claimJob(db);
       await enqueueStaffQuoteJob(db, threadId, messageId);
 
@@ -1050,7 +1064,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(HRCEN_PREPARED_SHOPS);
       const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
       await db.update(aiWorkflowRun).set({ state, finishedAt: new Date(), updatedAt: new Date() })
         .where(eq(aiWorkflowRun.id, prepared!.id));
@@ -1075,7 +1089,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(HRCEN_PREPARED_SHOPS);
       const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
       const input = staffQuoteInput.parse({
         ...preparedInputFromRun(prepared),
@@ -1098,7 +1112,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(HRCEN_PREPARED_SHOPS);
       const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
       const input = preparedInputFromRun(prepared);
       const differentPrice = staffQuoteInput.parse({
@@ -1122,7 +1136,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(HRCEN_PREPARED_SHOPS);
       const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
       await db.insert(aiDraftGeneration).values({
         id: randomUUID(),
@@ -1149,7 +1163,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
-      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(HRCEN_PREPARED_SHOPS);
       const [prepared] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
       const input = preparedInputFromRun(prepared);
       const changedSource = staffQuoteInput.parse({ ...input, sourceHash: 'e'.repeat(64) });
@@ -1237,8 +1251,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       for (const fixture of cases) {
         const { threadId, messageId, run } = await seedQuoteExtraction(db);
         await seedPartyMatchV2(db, { threadId, messageId, readResult: fixture.result });
-        expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(1);
-        const [prepared] = await db
+        expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(HRCEN_PREPARED_SHOPS);
+        const preparedRows = await db
           .select()
           .from(aiWorkflowRun)
           .where(
@@ -1247,12 +1261,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
               sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
             ),
           );
-        expect(prepared?.readRequest).toMatchObject({ kind: 'staff_quote' });
-        const request = prepared?.readRequest as { input?: StaffQuoteInput } | undefined;
-        expect(request?.input).toBeDefined();
-        expect(Boolean(request?.input?.parties)).toBe(fixture.partyBound);
-        if (fixture.partyBound) expect(request?.input?.parties).toEqual({ agency: party });
-        else expect(request?.input?.parties).toBeUndefined();
+        expect(preparedRows).toHaveLength(HRCEN_PREPARED_SHOPS);
+        for (const prepared of preparedRows) {
+          expect(prepared.readRequest).toMatchObject({ kind: 'staff_quote' });
+          const request = prepared.readRequest as { input?: StaffQuoteInput } | undefined;
+          expect(request?.input).toBeDefined();
+          expect(Boolean(request?.input?.parties)).toBe(fixture.partyBound);
+          if (fixture.partyBound) expect(request?.input?.parties).toEqual({ agency: party });
+          else expect(request?.input?.parties).toBeUndefined();
+        }
       }
     }));
 
@@ -3068,8 +3085,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const quoteEnv = {
         ...QUOTE_PREPARE_ENV,
         HMS_DAVINCI_MAKE_QUOTE: 'on',
+        HMS_QUOTE_PREPARE_PER_HOUR: '20',
         RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '/tmp/hrdav-quote.json',
       };
+      const hrdavShops = (await quotePaneConfigForProperty('HRDAV', DAVINCI_TRANSPORT_ID))?.salesStrategies.length ?? 0;
       const preparedCounts: number[] = [];
       for (const copy of copies) {
         preparedCounts.push(
@@ -3090,7 +3109,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
             sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
           ),
         );
-      expect(preparedCounts).toEqual([1, 0, 0]);
+      expect(preparedCounts).toEqual([hrdavShops, 0, 0]);
       expect(preparedQuote).toBeDefined();
       const preparedInput = preparedInputFromRun(preparedQuote);
       const asOf = new Date();
