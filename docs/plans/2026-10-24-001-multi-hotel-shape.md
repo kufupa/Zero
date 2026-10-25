@@ -42,6 +42,10 @@ asks: [210, 211, 212, 217, 218, 219, 220]
 | Reply closes a to-do only in the replier's mailbox | `planThreadWork` trusts an own-domain inbound as the hotel's reply only from an address *that* mailbox has sent from; a reply-all from faith@ landing in davinci@ leaves davinci@'s to-do open | `apps/server-pilot/src/ai/work-items.ts:1230-1240` (code read; not counted in data) |
 | Each mailbox copy runs its own prepare | quote-ready keys on the per-copy message row, so 5 copies = 5 HMS reads on one DV browser lock | `apps/server-pilot/src/ai/quote-ready.ts:226-246` (code read); 1,121 DV repeat copies / 30 d (S3) |
 | Live-HMS proof time | p50 22 min, p75 85 min (n=43) | ETA ledger |
+| AI mailbox (`transport-nava`) is a collector, not a hotel inbox | 14 d: 425 inbound, **0 outbound**, 416 from legacyhotels.co.za; 433 to-dos (427 still open, all created 10-10…10-15); 47 AI runs | read-only prod SQL 2026-10-25 00:05Z |
+| g1023 PR speed (Grok 4.6 coders, Greptile in-lane, Apex on 6) | 30 PRs open→merge p50 **13** / p75 32 / p90 75 min; lane launch→merge-ready (ledger) p50 ~29 / p75 ~47; 24 product PRs merged in ~4.7 h with 7 lanes at T0 | `gh pr list` 2026-10-25; ETA ledger g1023-* rows |
+| Leftover lanes after g1023 | 24 Orca worktrees + 21 Grok processes (~190 MB each) alive 36 h after their PRs merged; cleanup cron never removes `/home/orca/*` (`PROTECT_RE`) | `orca-ide worktree list`, `~/.orca-cleanup/worktree-cleanup.sh:23` |
+| Reply closes to-do on sender + time only, not meaning | `planThreadWork` closes on any later hotel mail, acknowledgements included | P4 (`docs/research/2026-10-25-multihotel-plan-sizing-P4-reply-recheck.md`) |
 
 ## Gate G1–G10
 
@@ -76,6 +80,8 @@ One property registry replaces two-hotel branches. Every mailbox maps to one hot
 | R2 | Pane quote + create lists (rooms, rate plans, boards, source/track/guarantee, required fields) come from the active mailbox's hotel | ask 211, F8–F10 |
 | R3 | Quote shows every strategy the hotel allows (BAR, WS, NC/contract, GOV, AIR, STO), each with its HMS price | ask 212, 219 |
 | R4 | One to-do per mailbox; a reply from any mailbox of the same hotel closes the others'; HMS reads run once per hotel + Message-ID | ask 220, F6, F16, F17 |
+| R10 | After a staff reply closes a to-do, an LLM re-reads the thread and decides: handled / waiting on guest / needs more action. Needs more action reopens that to-do with a one-line reason (e.g. "said they'd come back with rates") | ask 221 |
+| R11 | `transport-nava` (the AI collector mailbox) maps to **no hotel**: no to-dos, no extraction, no HMS reads; it only feeds research/evals | ask 221, F20 |
 | R5 | Per-mailbox access stays; prod-only DV grants live in seed | ask 220 Q3, F5 |
 | R6 | Party history and caches per hotel | A1, memory party-profiles-per-login |
 | R7 | PDF, workbook, reply copy per hotel | A1, P2 |
@@ -130,7 +136,10 @@ flowchart TB
   U4a --> U8[U8 branding/PDF/reply]
   U0[U0 DV DOM read: strategies + create lists] --> U6
   U0 --> U4b
-  U6 & U4b & U5 & U7 & U8 & U9 --> U10[U10 HRFAKE contract + eval]
+  U5 --> U11b[U11b reply re-check job]
+  U11a[U11a reply eval n>=100] --> U11b
+  U12[U12 HOLD/canary/retry guards]
+  U6 & U4b & U5 & U7 & U8 & U9 & U11b --> U10[U10 HRFAKE contract + eval]
 ```
 
 ### Implementation Units
@@ -139,11 +148,11 @@ LOC = product lines (tests excluded), from sizing lanes P1–P3 (`docs/research/
 
 #### U0. HRDAV read-only DOM read: allowed strategies + create option lists
 
-**Goal:** Record which sales strategies Da Vinci actually allows (incl. STO and wholesale names) and the create form's source/track/guarantee/board options and required markers. **Requirements:** R2, R3. **Dependencies:** none (runs in parallel with U1). **Files:** `apps/server-pilot/tooling/playwright-quote/property-profiles/HRDAV.json`; evidence `docs/research/2026-10-2x-hrdav-dom-read.md`. **Approach:** Codex GPT-6.1 Sol drives Playwright over CDP on the HRDAV slot, read-only, under the HMS lock, one session; captures DOM + screenshots; writes nothing in HMS. Ask Faith only if STO maps to no HMS code. **Test expectation:** none — data capture; consumed by U4b/U6 tests. **Verification:** profile lists strategies with codes + labels and create lists with required markers, each with a screenshot reference.
+**Goal:** Record which sales strategies Da Vinci actually allows (incl. STO and wholesale names) and the create form's source/track/guarantee/board options and required markers. **Requirements:** R2, R3. **Dependencies:** none (runs in parallel with U1). **Files:** `apps/server-pilot/tooling/playwright-quote/property-profiles/HRDAV.json`; evidence `docs/research/2026-10-2x-hrdav-dom-read.md`. **Approach:** Codex GPT-6.1 Sol drives Playwright over CDP on the HRDAV slot (owner 2026-10-24: computer use = Sol), read-only, under the HMS lock, one session; captures DOM + screenshots; writes nothing in HMS. Guard: the Playwright wrapper refuses clicks on Save/OK/Book/Confirm/Cancel Reservation buttons and any dialog accept; navigation, dropdown open and read only. **Owner yes needed** (PRODUCT.md says no LLM drives live HMS; this is the one exception, read-only). Ask Faith only if STO maps to no HMS code. **Test expectation:** none — data capture; consumed by U4b/U6 tests. **Verification:** profile lists strategies with codes + labels and create lists with required markers, each with a screenshot reference.
 
 #### U1. Property registry package + mailbox resolver (unknown refuses)
 
-**Goal:** One source of truth for property ↔ transports ↔ HMS identifiers. **Requirements:** R1. **Dependencies:** none. **Coder:** Luna. **LOC:** 120–200. **Files:** new `apps/server-pilot/tooling/playwright-quote/property-registry.d.mts`, new `apps/server-pilot/src/hms/property-refusal.ts` (one refuse helper + cause class); modify `apps/server-pilot/src/hms/{hms-read-target,hms-quote-target,mailbox-hms-origin-bind}.ts`, `apps/server-pilot/src/ai/{pane-stay-spawn-env,pane-stay-save}.ts`, `apps/server-pilot/tooling/playwright-quote/{property-registry,property-profile}.mjs`, `apps/mail/lib/quote-proposal/copy.ts` (stop defaulting to HRCEN; full removal of its map in U8). Tests: `apps/server-pilot/tests/{hms-read-target,hms-quote-target,hms-property-registry,mailbox-hms-origin-bind,pane-stay-spawn-env,pane-stay-save}.test.ts`, `apps/server-pilot/tooling/playwright-quote/property-profile.test.mjs`, `apps/mail/tests/quote-proposal.test.ts`. **Approach:** registry maps all 5 DV transports + davinci@ to HRDAV, centurion@ to HRCEN; `transport-nava` explicitly mapped (owner check: HRCEN today). Resolver returns property or a typed refusal. **Patterns:** existing fail-closed tooling registry (`property-registry.mjs` throws `hms_property_unknown`). **Test scenarios:** each of the 7 live transports resolves to the expected code; unknown transport → refusal, no HRCEN; inactive example transports → refusal; `quotePropertyCodeForTransport('')` → refusal not HRCEN; registry JSON schema rejects duplicate transport across two properties. **Verification:** the 45 `'HRCEN'` defaults are listed in the PR with an owner unit for each (U3a/U3b/U4b/U8); none left unowned.
+**Goal:** One source of truth for property ↔ transports ↔ HMS identifiers. **Requirements:** R1. **Dependencies:** none. **Coder:** Luna. **LOC:** 120–200. **Files:** new `apps/server-pilot/tooling/playwright-quote/property-registry.d.mts`, new `apps/server-pilot/src/hms/property-refusal.ts` (one refuse helper + cause class); modify `apps/server-pilot/src/hms/{hms-read-target,hms-quote-target,mailbox-hms-origin-bind}.ts`, `apps/server-pilot/src/ai/{pane-stay-spawn-env,pane-stay-save}.ts`, `apps/server-pilot/tooling/playwright-quote/{property-registry,property-profile}.mjs`, `apps/mail/lib/quote-proposal/copy.ts` (stop defaulting to HRCEN; full removal of its map in U8). Tests: `apps/server-pilot/tests/{hms-read-target,hms-quote-target,hms-property-registry,mailbox-hms-origin-bind,pane-stay-spawn-env,pane-stay-save}.test.ts`, `apps/server-pilot/tooling/playwright-quote/property-profile.test.mjs`, `apps/mail/tests/quote-proposal.test.ts`. **Approach:** registry maps the 5 DV transports to HRDAV, centurion@ to HRCEN; `transport-nava` is `kind: collector` (owner 2026-10-25: only receives BCC copies of every hotel mailbox) → resolves to *no hotel*: no to-dos, no extraction, no HMS reads; its 427 stale to-dos are hidden by the query, not deleted. Resolver returns property or a typed refusal. **Patterns:** existing fail-closed tooling registry (`property-registry.mjs` throws `hms_property_unknown`). **Test scenarios:** each of the 6 hotel transports resolves to the expected code; `transport-nava` resolves to collector (no property, no refusal noise); unknown transport → refusal, no HRCEN; inactive example transports → refusal; `quotePropertyCodeForTransport('')` → refusal not HRCEN; registry JSON schema rejects duplicate transport across two properties. **Verification:** the 45 `'HRCEN'` defaults are listed in the PR with an owner unit for each (U3a/U3b/U4b/U8); none left unowned.
 
 #### U2. Seed the prod-only DV mailbox grants
 
@@ -163,11 +172,11 @@ LOC = product lines (tests excluded), from sizing lanes P1–P3 (`docs/research/
 
 #### U5. Jobs carry property; one read per mail; cross-mailbox reply close
 
-**Goal:** No 5× HMS reads for one DV email; reply-all closes every copy's to-do. **Requirements:** R4. **Dependencies:** U3. **Coder:** Luna. **LOC:** 130–220. **Files:** `apps/server-pilot/src/ai/{hms-jobs,quote-ready,work-items}.ts`. Tests: `apps/server-pilot/tests/{hms-jobs,quote-ready,work-items,work-items-hms-todo}.test.ts`. **Approach:** before enqueueing, look up an existing read result for (property, Message-ID, kind) across that hotel's transports via the existing `(transport_id, message_id_header)` index; reuse it. `knownSenders` checks outbound From across same-hotel transports. **Test scenarios:** same Message-ID in 3 DV mailboxes → 1 run, 3 to-dos with the result; null Message-ID → per copy; different hotels, same Message-ID → separate runs; Faith reply-all copy in davinci@ closes davinci@'s to-do; forged own-domain From not sent by any DV mailbox stays open; `notfaith@` does not match `faith@` (exact equality); a CEN mailbox reply never closes a DV to-do; later guest mail reopens. **Verification:** tests + read-only prod count after deploy: DV runs per distinct Message-ID ≈ 1.
+**Goal:** No 5× HMS reads for one DV email; reply-all closes every copy's to-do. **Requirements:** R4. **Dependencies:** U3. **Coder:** Luna. **LOC:** 130–220. **Files:** `apps/server-pilot/src/ai/{hms-jobs,quote-ready,work-items}.ts`. Tests: `apps/server-pilot/tests/{hms-jobs,quote-ready,work-items,work-items-hms-todo}.test.ts`. **Approach:** before enqueueing, look up an existing read result for (property, Message-ID, kind) across that hotel's transports via the existing `(transport_id, message_id_header)` index; reuse it. `knownSenders` checks outbound From across same-hotel transports. Collector mailboxes enqueue nothing (R11). **Test scenarios:** collector mail → no to-do, no extraction, no HMS job; same Message-ID in 3 DV mailboxes → 1 run, 3 to-dos with the result; null Message-ID → per copy; different hotels, same Message-ID → separate runs; Faith reply-all copy in davinci@ closes davinci@'s to-do; forged own-domain From not sent by any DV mailbox stays open; `notfaith@` does not match `faith@` (exact equality); a CEN mailbox reply never closes a DV to-do; later guest mail reopens. **Verification:** tests + read-only prod count after deploy: DV runs per distinct Message-ID ≈ 1.
 
 #### U6. Quote shops every allowed strategy (two PRs: U6a per-strategy shop jobs; U6b pane strategy rows)
 
-**Goal:** Faith sees wholesale (and STO/contract/GOV/AIR) with HMS prices. **Requirements:** R3. **Dependencies:** U4a, U0. **Coder:** Grok 4.6 (Playwright). **LOC:** 250–400. **Files:** `apps/server-pilot/src/ai/{staff-quote-workflow,quote-ready}.ts`, `apps/server-pilot/tooling/playwright-quote/{fetch-quote.mjs,quote-tool.schema.json}`, `apps/mail/lib/quote-workflow/{types,session}.ts`, `apps/mail/components/nava-pane/quote-workflow/quote-workflow-panel.tsx`. Tests: `apps/server-pilot/tooling/playwright-quote/{fetch-quote,fetch-quote-phases}.test.mjs`, `apps/server-pilot/tests/{staff-quote-job,quote-ready}.test.ts`, `apps/mail/tests/quote-workflow-panel.test.tsx`. **Approach:** U6a: the staff quote job shops BAR as today; each other allowed strategy is enqueued as its own read job (one shop, fits the 7 min claim), queued on the hotel's slot behind staff work. U6b: pane shows one row per strategy as results arrive (code, label, room, board, nightly, total, or "not offered for these dates"), BAR first; staff pick. U0 measures one shop's time; if per-shop login dominates, add session reuse as a follow-up. No auto-pick. **LOC:** U6a 140–220, U6b 120–200. **Test scenarios:** 6 strategies configured → 6 rows; one strategy returns no rooms → row says not offered, others still shown; HRCEN config (BAR/GOV) unchanged; strategy missing from registry never shopped. **Verification:** live read-only canary (G9): 3 future S4 stays on HRDAV, every allowed strategy shows a price matching HMS's own grid; BAR matches S4 staff price.
+**Goal:** Faith sees wholesale (and STO/contract/GOV/AIR) with HMS prices. **Requirements:** R3. **Dependencies:** U4a, U0. **Coder:** Grok 4.6 (Playwright). **LOC:** 250–400. **Files:** `apps/server-pilot/src/ai/{staff-quote-workflow,quote-ready}.ts`, `apps/server-pilot/tooling/playwright-quote/{fetch-quote.mjs,quote-tool.schema.json}`, `apps/mail/lib/quote-workflow/{types,session}.ts`, `apps/mail/components/nava-pane/quote-workflow/quote-workflow-panel.tsx`. Tests: `apps/server-pilot/tooling/playwright-quote/{fetch-quote,fetch-quote-phases}.test.mjs`, `apps/server-pilot/tests/{staff-quote-job,quote-ready}.test.ts`, `apps/mail/tests/quote-workflow-panel.test.tsx`. **Approach:** U6a: the staff quote job shops BAR as today; each other allowed strategy is enqueued as its own read job (one shop, fits the 7 min claim), queued on the hotel's slot behind staff work. U6b: pane shows one row per strategy as results arrive (code, label, room, board, nightly, total, or "not offered for these dates"), BAR first; staff pick. U0 measures one shop's time; if per-shop login dominates, add session reuse as a follow-up. No auto-pick. **LOC:** U6a 140–220, U6b 120–200. **Test scenarios:** 6 strategies configured → 6 rows; one strategy returns no rooms → row says not offered, others still shown; HRCEN config (BAR/GOV) unchanged; strategy missing from registry never shopped. **Verification:** live read-only canary (G9): **1** future S4 stay on HRDAV, every allowed strategy shows the same price as HMS's own grid for that stay ("not offered" passes only if HMS also shows none); BAR price accuracy is proven separately by DoD 2.
 
 #### U7. Party history per hotel
 
@@ -185,29 +194,50 @@ LOC = product lines (tests excluded), from sizing lanes P1–P3 (`docs/research/
 
 **Goal:** Lock in "no silent Centurion fallback". **Requirements:** R1. **Dependencies:** U1–U9. **Coder:** Luna. **LOC:** 0–20 product, 60–120 total. **Files:** new `apps/server-pilot/tests/property-registry-contract.test.ts`, fixture `apps/server-pilot/tests/fixtures/property-registry-hrfake.json`. **Test scenarios:** HRFAKE mailbox resolves to HRFAKE target/slot/lists; unknown mailbox refuses before HMS; no HRCEN constant appears in HRFAKE pane config, target, PDF or job args. **Verification:** green in remote tests.
 
+#### U11. Re-check a thread after a staff reply (two PRs: U11a rule baseline + eval; U11b job + reopen)
+
+**Goal:** A staff reply closes that to-do, then a fresh read of the thread decides whether it is really done (owner ask 221: staff may defer, ask a question back, or answer only part). **Requirements:** R10. **Dependencies:** U11a none (offline, T0); U11b after U5 (shared `work-items.ts`). **Coder:** U11a Luna; U11b Grok 4.6 (new job kind + to-do state = write path to staff's list). **LOC:** U11a 80–130 (eval script) ; U11b 250–400 product (P4 says 330–535 incl. a migration; plan stores the outcome on the existing work-item row instead of a new table — reviewer confirms). **Files (U11b):** `apps/server-pilot/src/ai/{work-items,worker,quote-followup}.ts`, new `apps/server-pilot/src/ai/reply-check.ts`, `apps/server-pilot/src/db/schema/mail.ts` (job-kind enum), `apps/mail/components/nava-pane/screens/needs-you.tsx`. Tests: new `apps/server-pilot/tests/reply-check.test.ts`, `apps/server-pilot/tests/{work-items,quote-followup,ai-worker-contract}.test.ts`, `apps/mail/tests/needs-you.test.tsx`. **Approach:** on a `hotel_replied` close, enqueue `reply_check` keyed `reply-check:<workItemId>:<replyMessageId>` (idempotent). Outcome: `handled` / `waiting_on_guest` → stay done, 66 h quote follow-up clock unchanged; `needs_more_action` → reopen the same to-do with a one-line reason; a newer reply supersedes. Failure → to-do stays done + logged, never a silent reopen loop. Model: the current triage model (GPT-6 Luna); never Nova Lite (PRODUCT.md). **Execution note (AGENTS.md: cheapest baseline first):** U11a scores a rule baseline (strip quotes/signature; question to guest or "will revert" → waiting; pending/partial → needs action; else handled) and the LLM prompt on **≥100** prod reply rows whose truth comes from *what happened next in the thread* (later staff mail, guest reply, booking made), labelled by a Luna lane blind to both predictors, not from Nava's own `done` status. Ship the LLM only if it beats the rules. Behind `REPLY_RECHECK=off|shadow|on`; shadow first (logs outcome, changes nothing). **Test scenarios:** reply "we'll come back with rates" → needs action, reopens with reason; reply with full quote → handled; reply asking guest for dates → waiting on guest; second reply supersedes first check; CEN reply never touches a DV to-do; collector mailbox never checked. **Verification:** eval table n ≥ 100 committed to `docs/research/`; shadow on prod 24 h → agreement vs next-action truth reported; flip `on` = owner hold.
+
+#### U12. Run guards in ops scripts (retro changes #1, #2, #4 — still not built)
+
+**Goal:** Make the three rules that failed on 10-23 mechanical. **Dependencies:** none (T0). **Coder:** Grok 4.6. **LOC:** 40–80. **Files:** `apps/server-pilot/deploy/{hms-job.sh,ops-deploy.sh}`, `apps/server-pilot/src/ops/hms-proof-run.ts`. **Approach:** both scripts refuse to start when the run's `HOLD.txt` exists (path from env `NAVA_RUN_HOLD_FILE`); `hms-proof-run` refuses a 3rd attempt on the same cell unless a `diagnosis-<cell>.md` newer than the last failure exists; flag-flip helper refuses `on` without a `CANARY PASS <workflow> <property> <sha>` line whose SHA = live SHA. **Test scenarios:** HOLD present → exit non-zero before SSM; 3rd attempt without diagnosis → refused; stale-SHA canary → flip refused. **Verification:** script tests on EC2 runner.
+
 ### Sequencing, model and ETA (revised after Grok review)
 
-Shared-file owners (serialize, never parallel): `hms-jobs.ts` U3b → U5 → U7; `quote-ready.ts` U5 → U6a; `nava-pane.tsx` + `workstation.ts` U4a → U4b → U8; `pane-stay-save.ts` U3a → U9.
+Shared-file owners (serialize, never parallel): `hms-jobs.ts` U3b → U5 → U7; `work-items.ts` U5 → U11b; `quote-ready.ts` U5 → U6a; `nava-pane.tsx` + `workstation.ts` U4a → U4b → U8; `pane-stay-save.ts` U3a → U9.
 
-| Wave | Units (parallel) | Coder |
+**Max parallelism (owner 2026-10-25).** Lanes start the moment their files are free and their inputs exist; a lane may branch from a dependency's *pushed* branch (stacking ≤ 500 lines is allowed, AGENTS.md) and rebase once it merges, as g1023 did with U0 on U1. Only shared files and the one HMS slot per hotel serialize.
+
+| Start when | Lanes (parallel) | Coder |
 |---|---|---|
-| 0 | U0 (live, read-only) ‖ U1 ‖ U2 | Sol, Luna, Grok |
-| 1 | U3a → U3b | Grok |
-| 2 | U4a ‖ U5 ‖ U9 | Luna, Luna, Grok |
-| 3 | U4b ‖ U6a ‖ U7 | Luna, Grok, Grok |
-| 4 | U6b ‖ U8 | Luna, Luna |
-| 5 | U10, deploy, canaries | Luna, orchestrator |
+| T0 | U0 (live read, HRDAV slot) ‖ U1 ‖ U2 ‖ U11a (offline eval) ‖ U12 | Sol, Luna, Grok, Luna, Grok |
+| U1 pushed (not merged) | U3a ‖ U4a (both stacked on U1) | Grok, Luna |
+| U3a pushed | U3b ‖ U9 ‖ U6a (needs U0 data) | Grok, Grok, Grok |
+| U3b merged | U5 | Luna |
+| U4a + U6a pushed | U6b ‖ U4b (needs U0) | Luna, Luna |
+| U5 merged | U7 ‖ U11b | Grok, Grok |
+| U4b merged | U8 | Luna |
+| all merged | U10 → deploy → canaries | Luna, orchestrator |
 
-13 PRs, product LOC **1,550–2,480**, each ≤ 500.
+Peak 5–6 coding lanes. 16 PRs, product LOC ~1,900–3,000, each ≤ 500.
 
-**ETA basis** (ledger actual minutes: code-server p50 39 / p75 75 (n=169); review p50 17 / p75 27 (n=23), ×2 rounds per PR (Apex, triage, Apex); deploy p50 6 / p75 12; live-hms p50 22 / p75 79 (n=47); orchestration ×1.2 p50, retro p80 3.18× so p75 uses ×1.5). Per PR ≈ 73 min p50 / 129 p75.
+**ETA basis — evidence, and what was wrong before.** The first estimate (10 h / 24 h) double-counted: ledger `code-server` actuals already include the lane's own Greptile loop (g1023 U1: launch 02:05 → PR 02:45 → merged 02:51 = ledger 47 min), yet I added 2 review rounds on top, then multiplied the sum by 1.2–1.5 again, and chained PRs that do not depend on each other.
 
-| Milestone | Chain | p50 | p75 |
+| Part | p50 | p75 | Source |
+|---|---:|---:|---|
+| One PR, lane launch → merge-ready | 39 | 75 | ledger `code-server` actuals n=169 (g1023 alone: ~29 / ~47) |
+| Extra Apex round + Grok triage lane (owner 10-24: Apex on everything) | +17 | +27 | ledger `review` n=23 |
+| **Per PR** | **56** | **102** | |
+| Deploy | 6 | 12 | ledger `deploy` |
+| Live read cell (quote, strategy shop) | 22 | 79 | ledger `live-hms` n=47 |
+| Live write cell (Labtest create/cancel/attach) | 45 | 163 | g1023 retro §3: HRCEN create 12, HRDAV create 112, cancel 163 |
+
+| Milestone | Critical chain | p50 | p75 |
 |---|---|---:|---:|
-| **A. Faith sees DV rooms, BAR and wholesale with HMS prices** (U1 → U3a → U3b → U4a → U6a → U6b, 6 PRs) + 1 deploy + DV quote canary + strategy shop on 3 stays (2 live cells) | 6×73+6+44 = 488 ×1.2 / 6×129+12+158 = 944 ×1.5 | **~10 h** | **~24 h** |
-| B. Everything (longest chain 7 PRs + 2 deploys + 8 live cells over 2 hotel slots in parallel) | 7×73+12+88 = 611 ×1.2 / 7×129+24+316 = 1,243 ×1.5 | ~12 h | ~31 h |
+| **A. Faith's pane: DV rooms + BAR + wholesale with HMS prices** | U1 → U3a → U6a → U6b (4 PRs; U0, U4a run beside it) + deploy + 2 read cells | 4×56+6+44 = **~4.5 h** | 4×102+12+158 = **~9.5 h** |
+| B. Everything incl. reply re-check in shadow | U1 → U3a → U3b → U5 → U11b (5 PRs) + 2 deploys + 4 write cells per hotel slot (slots run in parallel) | 5×56+12+4×45 = **~8 h** | 5×102+24+4×163 = **~20 h** |
 
-Live tail is the swing: retro L4 live-hms median 1.75×, p80 5.31× (last 4 days). Wednesday HMS maintenance (~11:59–15:30 SAST) blocks live cells.
+No extra orchestration multiplier: these are measured end-to-end lane times. The p75 tail is live writes (retro: live-hms p80 5.31× in the last 4 days); a cell that fails twice parks (G4) instead of stretching the run. Not counted: Wednesday HMS maintenance (~11:59–15:30 SAST), Luna coder speed vs Grok (no Luna code-lane history yet; each PR logs it), U11 flip to `on` (after 24 h shadow).
 
 ### Live-test table (canary per workflow × hotel, on the deployed SHA after the last workflow-changing deploy)
 
@@ -221,6 +251,80 @@ Live tail is the swing: retro L4 live-hms median 1.75×, p80 5.31× (last 4 days
 | Attach (Labtest) | Labtest attach | Labtest attach | after last deploy |
 | Unknown mailbox | HRFAKE refuses, no HMS call | — | contract test |
 
+## Run Contract (orchestrator + lanes) — every past failure, made explicit
+
+Owner 2026-10-25: "plan n prompt all the orchestrator / worktree agents correctly… so we dont make same mistakes". Each row cites where the mistake is recorded. The kickoff and lane brief below are pasted **verbatim** into the run; nothing here is "see the handbook".
+
+### Mistakes → rule → how it is enforced
+
+| # | Past mistake (source) | Rule this run | Enforced by |
+|---|---|---|---|
+| M1 | Orchestrator drove HMS, read screenshots; context 300–390K; steers read 20–85 min late; owner pause ignored 43 min (g1023 retro §5) | Orchestrator never runs HMS jobs, never opens screenshots/DOM. A **proof lane** (Grok 4.6, own terminal) runs each live cell and returns 5 lines | kickoff; orchestrator has no SSM in its brief |
+| M2 | Pause was a chat message; deploy + HMS commit happened after it (retro §5–6) | Hard stop = `/tmp/mh1024/HOLD.txt` | U12: `hms-job.sh` + `ops-deploy.sh` refuse while it exists |
+| M3 | Flag `on` with no live proof on that hotel ×3 (retro §6; memory flag-needs-canary) | No flag flip in this run without owner + `CANARY PASS <wf> <prop> <sha>` on live SHA | U12 flip guard |
+| M4 | Live retry loops 5–8 rounds, no DOM look (retro §6, MISTAKES 10-09) | 2 failed loops per cell → written DOM diagnosis from the screenshot, else park | U12 proof runner refuses 3rd attempt |
+| M5 | Stale proofs: cell passed on a SHA before the last workflow deploy (retro §6) | Canary line carries live SHA; rerun after any workflow-changing deploy | U12; DoD |
+| M6 | ETA omitted proof tail ×4; ETA re-cut under pushback without evidence (MISTAKES 10-14) | ETA = parts table above; change only on new evidence | plan; ledger row per lane |
+| M7 | 24 finished worktrees + 21 Grok processes left alive 36 h; cron never cleans `/home/orca/*` (this session) | **Lane lifecycle**: merged → orchestrator closes the lane's terminals, `orca-ide worktree rm`, logs it in state.md, same turn. Proof lanes close after their 5-line result | kickoff tick checklist; DoD 8 |
+| M8 | Parallel tsc froze VPS (MISTAKES 10-14) | No tsc/vitest on VPS; `remote-typecheck.sh` / `remote-vitest.sh` | hook `block-local-tsc.sh` + brief |
+| M9 | Lanes refused PRs fearing Actions (MISTAKES 10-14) | "Workflows disabled; opening PRs is safe" | brief |
+| M10 | Lane without its test-file list stalled 25 min (AGENTS gates) | Every brief lists exact test files + every test asserting removed UI | brief template |
+| M11 | Stale Greptile base let 2 P1s reach main (19 Oct evening retro) | `git fetch` then `greptile review --apex --branch origin/main` | brief |
+| M12 | Merged with an open P1 / trusted P1 on old head (MISTAKES 10-08, 10-09) | Triage lane checks comment SHA = head SHA; no merge with unvalidated P1 | triage brief |
+| M13 | 4th review round on same design (AGENTS: #308 6 rounds) | Round 3 with a fresh adjacent P1 → split/strip, orchestrator decides | brief |
+| M14 | Deployed from a lane tree (SR3 ×2) | Deploy only from `recover-parse-failure`, `merge --ff-only origin/main` first | kickoff |
+| M15 | Pane fix "live" but staff never reloaded (MISTAKES 10-08) | Pane change done = nginx bundle load after last deploy | DoD 6 |
+| M16 | Flag flip missed a pm2 process (AGENTS flags row) | `/proc/<pid>/environ` on all 4 procs after any env change | kickoff deploy block |
+| M17 | `seed:prod` prunes users (pilot-user-credentials) | Never `seed:prod`; U2 is code only | brief U2 |
+| M18 | Lane grew to 58 files / 16 rounds (#214) | ≤500 product lines; lane splits itself | brief |
+| M19 | Idle orchestrator with 0 lanes (SR2 51 min, SR3 35 min) | Every tick: if a unit's files are free and inputs pushed, start it **that turn** | kickoff |
+| M20 | No handoff ever happened; $163 in 33 turns at >300K (retro §4; memory orchestrator-context) | At ~250K write handoff into state.md, `/compact`, log it; ceiling 300K | kickoff |
+| M21 | Closeout skipped (retro §6) | Run ends with retro + `ce-compound mode:lane-close` + ACTIVE.md update | DoD 8 |
+| M22 | Live mail / PII read by lanes | Lanes never open live guest mail; Labtest + synthetic fixtures only | brief |
+| M23 | Approvals relayed between sessions (AGENTS) | Approvals only from this run's `state.md` A1–A4, written by the Opus chat after owner "go" | kickoff |
+
+### Orca usage (correct way, `orca-ide skills get orca-cli`)
+
+- Never bare `orca` (GNOME screen reader). Executable: `orca-ide`.
+- Coding lane: `orca-ide worktree create --name mh-<unit> --no-parent --agent grok --prompt "Read /tmp/mh1024/briefs/<unit>.txt and do it." --json` → one terminal, agent-first, no fallback shell. Luna lane: `worktree create --name mh-<unit> --no-parent --json`, then `terminal create --worktree id:<full id> --command 'codex -m gpt-6-luna -c model_reasoning_effort=max --dangerously-bypass-approvals-and-sandbox'`, `terminal wait --for tui-idle` (send only if `satisfied: true`), `terminal send`.
+- Stacked lane: `--base-branch origin/mh-<dep>`; rebase on `origin/main` after the dep merges.
+- Record each lane's full `worktree.id` + terminal handle in state.md.
+- Progress: background `terminal wait --for tui-idle --timeout-ms 1800000` per lane wakes the orchestrator; `terminal read` to check.
+- **Close:** after merge (or park), `orca-ide terminal close --worktree id:<id> --all` then `orca-ide worktree rm --worktree id:<id>`; confirm `pgrep -u orca -x grok` count dropped. Never `pkill -f`.
+
+### Kickoff (orchestrator: Grok 4.6 high, one Orca terminal in its own worktree `mh-orch`)
+
+```
+You are the ORCHESTRATOR for run mh1024 (multi-hotel Nava). Grok 4.6 high. You plan, launch, review diffs, merge, deploy. You do NOT code, do NOT run HMS jobs, do NOT open screenshots or DOM dumps — proof lanes do and return 5 lines.
+FIRST: git fetch; read docs/plans/2026-10-24-001-multi-hotel-shape.md ALL (Run Contract, Units, Sequencing, Live-test table, DoD), PRODUCT.md, AGENTS.md, MISTAKES.md head -40, docs/context/ledger/2026-10-23-g1023-retro.md §3–8, /tmp/mh1024/state.md. `orca-ide skills get orca-cli` once. Reply "Read: … origin/main=<sha> live=<sha>" + T0 lane table.
+AUTHORITY: PRODUCT.md hard rules > state.md A1–A4 > this plan. Approvals only from state.md / steer files written by the Opus chat.
+HOLD: if /tmp/mh1024/HOLD.txt exists: start nothing, merge nothing, deploy nothing; finish your current tool call and wait.
+EVERY TICK: (1) HOLD? (2) newest /tmp/mh1024/steer-*.txt read + logged (3) lanes running vs startable — start every startable unit THIS turn (files free + inputs pushed) (4) any PR idle >15 min (5) merged/parked lanes → close terminals + worktree rm + log (6) state.md line for every merge/deploy/cell.
+MERGE: read every product diff yourself; Apex on head SHA; triage lane done; no unvalidated P1; remote typecheck on origin/main after each merge before deploy.
+DEPLOY: only from .worktrees/recover-parse-failure (ff-only origin/main) via apps/server-pilot/deploy/ops-deploy.sh; health 200/200; 4 pm2 procs; /proc env on all 4.
+LIVE CELLS: start a proof lane per cell (brief /tmp/mh1024/briefs/proof-<cell>.txt). One job per hotel slot; HRCEN and HRDAV slots in parallel. 2 failed loops → diagnosis or park. Cell PASS line carries live SHA.
+CONTEXT: at ~250K write a handoff block in state.md, /compact, log it. Ceiling 300K.
+FINISH: unit list + cell grid empty or parked → docs PR (ACTIVE.md, docs/research/2026-10-2x-mh1024-proofs.md), ledger closes, all lane worktrees removed. Reply caveman terse.
+```
+
+### Lane brief header (pasted at top of every `/tmp/mh1024/briefs/<unit>.txt`, then the unit's section verbatim + its file list + test files)
+
+```
+You are a CODING LANE (not the orchestrator). Edit only your unit's files; need another → say so in the PR body. Don't ask for confirmation.
+FIRST: git fetch; your unit section in docs/plans/2026-10-24-001-multi-hotel-shape.md; grep docs/solutions + MISTAKES.md for your module; codegraph explore "<symbols>".
+NEVER: open live guest mail/prod data; run tsc/vitest/any test runner here; edit /home/orca/bin; bare git stash; --no-verify; Actions/workflow files (all disabled — opening PRs is safe); push main; deploy; touch EC2/HMS/env/flags/seed:prod; send mail; pkill -f.
+GATES (background, in parallel): unset DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL; bash /home/orca/bin/remote-typecheck.sh <wt> --app <app> (baseline mail 62 / server-pilot 0) ‖ bash /home/orca/bin/remote-vitest.sh <wt> <app> <your test files> ‖ git fetch && greptile review --apex --branch origin/main --json.
+SIZE: one behaviour, ≤500 product lines; bigger → split yourself. No plumbing for later, no one-user abstractions.
+REVIEW: fix real P0/P1 (reachable from a staff action or prod path today); one-line pushback on the rest; Apex again. Round 3 still drawing a fresh adjacent P1 → stop, write why in the PR, tell the orchestrator.
+DONE: branch mh-<unit> pushed, PR open (what/tests/gates; coder model, rounds, real P1s), gates green, no open real P1. Kill anything you started. Report PR url + gate results.
+```
+
+### Triage lane (one per PR, Grok 4.6 high, same worktree as the coder after the coder reports)
+
+```
+Read every Greptile Apex comment on PR #<n> at head <sha> (check the comment's SHA). For each: real (reachable from a staff action / prod path today) → fix + test; over-engineering or speculative → reply one line why not. Owner: "ship 10/10 as fast as possible, no over-plumbing". Re-run Apex. Report: fixed N, pushed back M, open P1 0.
+```
+
 ## Verification Contract
 
 - Gates per PR: remote typecheck (`/home/orca/bin/remote-typecheck.sh`) ‖ remote tests on EC2 ‖ Greptile Apex on `origin/main`-fresh branch; oxlint on changed files. No local tsc/Vitest. DB tests on local disposable Postgres only.
@@ -230,16 +334,29 @@ Live tail is the swing: retro L4 live-hms median 1.75×, p80 5.31× (last 4 days
 
 ## Definition of Done
 
-1. On the deployed SHA, in **Faith's mailbox** pane: DV room list (no Standard Queen), a **wholesale row with an HMS price**, and every other U0-confirmed strategy with its HMS price on 3 future S4 stays, each matching HMS's own grid.
+1. On the deployed SHA, in **Faith's mailbox** pane: DV room list (no Standard Queen), a **wholesale row with an HMS price**, and every other U0-confirmed strategy with its HMS price on **1** future S4 stay, each matching HMS's own grid for that stay.
 2. DV BAR room + board + price match staff on ≥10 of the 27 S4 facts (future stays re-shopped live).
 3. HRFAKE contract green; unknown mailbox refuses.
 4. CEN quote score not lower on the 8 rows of `docs/research/2026-10-20-quote-backtest-pool.md` (re-scored on old and new build).
 5. Labtest create + cancel pass on both hotels on the deployed SHA.
 6. Staff bundle load seen in nginx after the last deploy.
+7. Reply re-check: eval n ≥ 100 committed; 24 h shadow on prod reported; AI collector mailbox creates 0 new to-dos after deploy.
+8. Run closed clean: 0 lane worktrees and 0 lane processes left; ETA ledger rows closed; retro + `ce-compound mode:lane-close` done.
 
 ## Holds (owner)
 
-Real-guest writes; any flag to `on`; `seed:prod`; Da Vinci brand assets; HRBAK/HRKWA HMS login.
+What the owner's **"go"** authorises for this run (written into the run's `state.md` as A1–A4; never relayed from another session):
+
+| # | Action | Why it needs the owner |
+|---|---|---|
+| A1 | U0: Sol drives Playwright on HRDAV, **read-only**, click guard on | PRODUCT.md: no LLM drives live HMS. One read-only exception |
+| A2 | Deploys from `recover-parse-failure` whenever a merge must be seen | Live with the client; owner already OK'd (memory: deploy when needed) |
+| A3 | Labtest create / cancel / attach on HRCEN and HRDAV (2027+ stays, Labtest guest only) | HMS writes; same fence as g1023 |
+| A4 | Read-only quote canaries on real DV + CEN threads | Live HMS reads on real mail |
+
+Asked later, separately: switching `REPLY_RECHECK` to `on` after its shadow day (it changes every mailbox's to-do list).
+
+Not needed by this plan (so not asked): real-guest writes, `seed:prod` or any prod grant change (DV grants already exist in prod; U2 only writes them into seed code), third-hotel login. DV quote/create flags are **already `on`** in prod (`HMS_DAVINCI_MAKE_QUOTE`, `HMS_DAVINCI_CREATE`, checked 2026-10-25) and failing; this plan fixes the code under them; staff are not using the pane yet. DV logo/address/phone: taken from the most common letterhead in staff's own sent DV PDFs (S4: "Da Vinci Hotel", 88 of 140); owner glances at one DV PDF.
 
 ## Deferred to Follow-Up Work
 
@@ -249,6 +366,8 @@ Real-guest writes; any flag to `on`; `seed:prod`; Da Vinci brand assets; HRBAK/H
 - Third hotel onboarding (data + canaries only).
 
 ## Review log
+
+- 2026-10-25 owner round 2 (ask 221): ETA re-derived (was double-counting review + multiplier; now 4.5 h / 9.5 h for milestone A), U11 reply re-check (P4 sizing), U12 run guards, collector mailbox, 1-stay strategy proof, Run Contract with M1–M23 and verbatim prompts, holds rewritten as A1–A4.
 
 - 2026-10-24 Grok 4.7 xhigh round 1: 3 P0, 5 P1, 2 P2, all folded in ([review](../research/2026-10-24-multihotel-plan-grok-review.md)). Changes: refuse helper + 45-default audit; `env.ts`/`worker.ts` in U3a; per-strategy jobs (7 min claim); exact-address reply trust; seed via provision only; sender-map pre-count; DoD in Faith's pane with wholesale; U3/U6 split; no new package; ETA requoted with live-hms tail.
 
@@ -262,11 +381,15 @@ Real-guest writes; any flag to `on`; `seed:prod`; Da Vinci brand assets; HRBAK/H
 | 4 | Duplicate copies | One to-do **per mailbox** (someone may be off). Dedupe only HMS reads. No claim-on-open |
 | 5 | Next hotels | HRBAK/HRKWA likely, unconfirmed; registry stays hotel-agnostic, hotel #3 after DV quote passes |
 | 6 | Routing | Luna writes 1,4,5,7,8,10; Grok 4.6 writes 2,3,6,9; Apex on everything; Grok lane triages comments |
+| 8 | Reply closes to-do (round 2) | Close that to-do, then re-read the thread: handled / waiting on guest / needs more action (LLM; owner's examples: defer, question back) → U11 |
+| 9 | AI mailbox | `transport-nava` only receives BCC copies of every hotel mailbox; not a hotel, not active → collector (R11) |
+| 10 | Strategy proof | 1 future stay is enough, not 3 |
+| 11 | Parallelism | Max parallel lanes; clean up finished worktrees/agents; every past mistake explicit in prompts → Run Contract |
 | 7 | HRFAKE | Owner sees it as low value; kept as one small test (60–120 LOC), because silent HRCEN fallback is exactly the 10-23 DV failure |
 
 ## Open questions
 
-- `transport-nava` maps to which hotel? (today HRCEN by fallback) — decide in U1, default: explicit HRCEN.
+- ~~`transport-nava` → which hotel?~~ Resolved 2026-10-25: none, it is a collector (R11).
 - Does STO exist as an HMS strategy at Da Vinci, or is it Faith's word for WS/NC? U0 answers; ask Faith only if U0 can't.
 
 ## Research log
