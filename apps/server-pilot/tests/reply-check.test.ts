@@ -15,6 +15,7 @@ import { __setDbForTests, type DB } from '../src/db/client.js';
 import { aiWorkflowRun, mailboxTransport, message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import { DAVINCI_TRANSPORT_EMAIL, DAVINCI_TRANSPORT_ID } from '../src/db/seed.js';
+import { refreshThreadWork } from '../src/ai/work-items.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 
@@ -309,6 +310,62 @@ describe('reply-check job', () => {
           }),
         ]),
       );
+    }));
+
+  it('refreshThreadWork does not close again on the rejected reply', () =>
+    withDb(async (db) => {
+      const closed = await quoteClosedByReply(db, {
+        id: 'hold-1',
+        replyBody: "We'll come back with rates.",
+      });
+      await db
+        .update(message)
+        .set({ receivedAt: new Date('2027-10-01T08:00:00Z') })
+        .where(eq(message.id, `msg-${'hold-1'}-in`));
+      await enqueueReplyCheckIfNeeded(db, {
+        transportId: closed.transportId,
+        threadId: closed.threadId,
+        workItemId: closed.itemId,
+        replyMessageId: closed.replyId,
+      }, { REPLY_RECHECK: 'on' });
+      const { run, fence } = await claimReplyCheck(db, closed.itemId, closed.replyId);
+      await executeReplyCheckRun({
+        run,
+        fence,
+        db,
+        env: { REPLY_RECHECK: 'on' },
+        adapter: keywordAdapter(),
+      });
+      expect(await refreshThreadWork(db, { transportId: closed.transportId, threadId: closed.threadId })).toEqual([]);
+      const [item] = await db.select().from(workItem).where(eq(workItem.id, closed.itemId));
+      expect(item?.status).toBe('needs_you');
+    }));
+
+  it('lost claim ownership rolls back the reopen', () =>
+    withDb(async (db) => {
+      const closed = await quoteClosedByReply(db, {
+        id: 'fence-1',
+        replyBody: "We'll come back with rates.",
+      });
+      await enqueueReplyCheckIfNeeded(db, {
+        transportId: closed.transportId,
+        threadId: closed.threadId,
+        workItemId: closed.itemId,
+        replyMessageId: closed.replyId,
+      }, { REPLY_RECHECK: 'on' });
+      const { run, fence } = await claimReplyCheck(db, closed.itemId, closed.replyId);
+      expect(
+        await executeReplyCheckRun({
+          run,
+          fence: { ...fence, claimToken: 'stale-token' },
+          db,
+          env: { REPLY_RECHECK: 'on' },
+          adapter: keywordAdapter(),
+        }),
+      ).toEqual({ runId: run.id, state: 'retry_wait' });
+      const [item] = await db.select().from(workItem).where(eq(workItem.id, closed.itemId));
+      expect(item?.status).toBe('done');
+      expect(item?.sentMessageId).toBe(closed.replyId);
     }));
 
   it('a full quote stays done', () =>

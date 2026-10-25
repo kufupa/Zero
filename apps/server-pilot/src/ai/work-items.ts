@@ -49,7 +49,7 @@ import {
   type ClassifierResult,
 } from './workflow-classifier/index.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
-import { enqueueReplyCheckIfNeeded } from './reply-check.js';
+import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -1198,6 +1198,15 @@ export async function planThreadWork(
       sentMessageId: workItem.sentMessageId,
       state: workItem.state,
       hmsOpen,
+      rejectedReplyId: sql<string | null>`(
+        select we.value->>'replyMessageId'
+        from ${workEvent} as we
+        where we.work_item_id = ${workItem}.id
+          and we.type = 'status.changed'
+          and we.value->>'reason' = ${REPLY_NEEDS_ACTION}
+        order by we.at desc, we.id desc
+        limit 1
+      )`,
       // Written with explicit table names: drizzle leaves the columns of a select-list subquery unqualified, and then
       // "id" binds to the subquery's own table and the check is always false.
       touched: sql<boolean>`exists (select 1 from ${workEvent} as we where we.work_item_id = ${workItem}.id and ${personTouchSql('we')})`,
@@ -1284,9 +1293,11 @@ export async function planThreadWork(
         : undefined;
     // A done `other` mail from this domain stays as it is (#172); only an exact sent-from match closes a needs-you `other`.
     const domainOther = kind === 'other' && ownDomain(source);
+    const closeOnReply =
+      replyChange && replyChange.sentMessageId !== item.rejectedReplyId ? replyChange : undefined;
     if (!untouched) {
-      if (item.status === 'needs_you' && replyChange) {
-        changes.push(replyChange);
+      if (item.status === 'needs_you' && closeOnReply) {
+        changes.push(closeOnReply);
       } else if (item.status === 'needs_you') {
         open.push({ id: item.id, kind, at, untouched: false, humanWritten });
       } else if (item.sentAt && !domainOther && lastGuest && lastGuest.at > item.sentAt.getTime() && !answered) {
@@ -1307,8 +1318,8 @@ export async function planThreadWork(
     if (item.status === 'needs_you') {
       if (staffOther) {
         changes.push({ workItemId: item.id, kind, to: 'done', reason: STAFF_SENT_OTHER });
-      } else if (replyChange) {
-        changes.push(replyChange);
+      } else if (closeOnReply) {
+        changes.push(closeOnReply);
       } else {
         open.push({ id: item.id, kind, at, untouched: true, humanWritten });
       }

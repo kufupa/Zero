@@ -14,6 +14,8 @@ export const REPLY_NEEDS_ACTION = 'reply_needs_action';
 const BODY_CAP = 8 * 1024;
 const REASON_CAP = 140;
 
+class ReplyCheckClaimLostError extends Error {}
+
 export type ReplyRecheckMode = 'off' | 'shadow' | 'on';
 export type ReplyCheckOutcome = 'handled' | 'waiting_on_guest' | 'needs_more_action';
 
@@ -195,50 +197,74 @@ Output JSON only. reason is one short staff-facing line, no guest names.`,
     return succeed({ replyCheck: { failed: true } });
   }
 
-  const applied = mode === 'on' && parsed.outcome === 'needs_more_action';
-  if (applied) {
-    const reasonLine = parsed.reason || 'Needs more action';
-    const now = new Date();
-    const [reopened] = await db
-      .update(workItem)
-      .set({
-        status: 'needs_you',
-        sentAt: null,
-        sentMessageId: null,
-        followUpDueAt: null,
-        updatedAt: now,
-      })
-      .where(
-        and(
-          eq(workItem.id, item.id),
-          eq(workItem.transportId, input.run.transportId),
-          eq(workItem.status, 'done'),
-          eq(workItem.sentMessageId, input.run.triggerMessageId),
-        ),
-      )
-      .returning({ id: workItem.id });
-    if (reopened) {
-      await db.insert(workEvent).values({
-        workItemId: item.id,
-        actorKind: 'system',
-        type: 'status.changed',
-        value: {
-          from: 'done',
-          to: 'needs_you',
-          reason: REPLY_NEEDS_ACTION,
-          reasonLine,
-          replyMessageId: input.run.triggerMessageId,
-        },
-      });
-    }
+  const shouldReopen = mode === 'on' && parsed.outcome === 'needs_more_action';
+  if (!shouldReopen) {
+    return succeed({
+      replyCheck: {
+        outcome: parsed.outcome,
+        mode,
+        applied: false,
+        reasonLine: parsed.reason || null,
+      },
+    });
   }
 
-  return succeed({
-    replyCheck: {
-      outcome: parsed.outcome,
-      mode,
-      applied,
-      reasonLine: parsed.reason || null,
-    },
-  });
+  try {
+    return await db.transaction(async (tx) => {
+      const reasonLine = parsed.reason || 'Needs more action';
+      const [reopened] = await tx
+        .update(workItem)
+        .set({
+          status: 'needs_you',
+          sentAt: null,
+          sentMessageId: null,
+          followUpDueAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(workItem.id, item.id),
+            eq(workItem.transportId, input.run.transportId),
+            eq(workItem.status, 'done'),
+            eq(workItem.sentMessageId, input.run.triggerMessageId),
+          ),
+        )
+        .returning({ id: workItem.id });
+      if (reopened) {
+        await tx.insert(workEvent).values({
+          workItemId: item.id,
+          actorKind: 'system',
+          type: 'status.changed',
+          value: {
+            from: 'done',
+            to: 'needs_you',
+            reason: REPLY_NEEDS_ACTION,
+            reasonLine,
+            replyMessageId: input.run.triggerMessageId,
+          },
+        });
+      }
+      const marked = await markAiRunSucceeded(
+        {
+          ...claim,
+          metrics: {
+            replyCheck: {
+              outcome: parsed.outcome,
+              mode,
+              applied: Boolean(reopened),
+              reasonLine: parsed.reason || null,
+            },
+          },
+        },
+        tx as unknown as DB,
+      );
+      if (!marked) throw new ReplyCheckClaimLostError();
+      return { runId: input.run.id, state: 'succeeded' as const };
+    });
+  } catch (error) {
+    if (error instanceof ReplyCheckClaimLostError) {
+      return { runId: input.run.id, state: 'retry_wait' };
+    }
+    throw error;
+  }
 }
