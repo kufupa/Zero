@@ -14,6 +14,7 @@ import {
 } from '../src/ai/run-ledger.js';
 import {
   enqueueHmsJob,
+  enqueueHmsBatch,
   confirmationPrefetchIdempotencyKey,
   executeHmsJob,
   extractHmsConfirmations,
@@ -37,6 +38,7 @@ import {
   staffQuoteCanTeachSenderHistory,
 } from '../src/ai/hms-jobs.js';
 import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { paneStayLookupLoaders, type PaneStayLookupSpawnResult } from '../src/ai/pane-stay-lookup.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import {
@@ -103,6 +105,8 @@ const STAFF_QUOTE_INPUT = {
 afterEach(() => {
   paneStayLookupLoaders.lock = null;
   paneStayLookupLoaders.spawn = null;
+  mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
   staffQuoteRunner.run.mockReset();
   vi.unstubAllEnvs();
 });
@@ -2185,6 +2189,153 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       });
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
       expect(await prefetchHmsConfirmations(inbound, db, env)).toBe(0);
+    }));
+
+  it('queues a Da Vinci batch item even when queueBatch marked it origin-refused', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_DAVINCI_READS', 'on');
+      const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1', DAVINCI_TRANSPORT_ID);
+      await insertStoredExtraction(db, messageId, 'booking', {
+        confirmationNumbers: [CONFIRMATION],
+      });
+      const workItemId = randomUUID();
+      await db.insert(workItem).values({
+        id: workItemId,
+        transportId: DAVINCI_TRANSPORT_ID,
+        threadId,
+        sourceMessageId: messageId,
+        kind: 'booking',
+        status: 'needs_you',
+      });
+      const view = await enqueueHmsBatch(
+        {
+          batchId: randomUUID(),
+          transportId: DAVINCI_TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: [workItemId],
+          originRefusedWorkItemIds: [workItemId],
+        },
+        db,
+      );
+      expect(view).toMatchObject({
+        status: 'queued',
+        items: [{ workItemId, status: 'queued', reason: null }],
+      });
+    }));
+
+  it('reuses a property-prefixed confirmation prefetch instead of a fresh batch read', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+        selected: { toAddresses: ['centurion@legacyhotels.co.za'] },
+        selectedFound: true,
+        inbounds: [{ toAddresses: ['centurion@legacyhotels.co.za'] }],
+      });
+      const day = new Date().toISOString().slice(0, 10);
+      const prefetched = await seedThread(db, `Booking ${CONFIRMATION}`);
+      const { run: prefetchJob } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId: prefetched.threadId,
+          triggerMessageId: prefetched.messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'find', confirmation: CONFIRMATION },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: confirmationPrefetchIdempotencyKey(
+            TRANSPORT_ID,
+            CONFIRMATION,
+            day,
+            'HRCEN',
+          ),
+          extraMetrics: { propertyCode: 'HRCEN' },
+        },
+        db,
+      );
+
+      const batched = await seedThread(db, `Also ${CONFIRMATION}`);
+      await insertStoredExtraction(db, batched.messageId, 'booking', {
+        confirmationNumbers: [CONFIRMATION],
+      });
+      const workItemId = randomUUID();
+      await db.insert(workItem).values({
+        id: workItemId,
+        transportId: TRANSPORT_ID,
+        threadId: batched.threadId,
+        sourceMessageId: batched.messageId,
+        kind: 'booking',
+        status: 'needs_you',
+      });
+      const view = await enqueueHmsBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: [workItemId],
+        },
+        db,
+      );
+      expect(view).toMatchObject({
+        items: [{ workItemId, status: 'reused', runId: prefetchJob.id }],
+      });
+    }));
+
+  it('does not share one HMS job across hotels for the same confirmation in one batch', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_DAVINCI_READS', 'on');
+      const origins = new Map<string, string[]>();
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async (input) => {
+        const toAddresses = origins.get(input.threadId) ?? ['centurion@legacyhotels.co.za'];
+        return {
+          selected: { toAddresses },
+          selectedFound: true,
+          inbounds: [{ toAddresses }],
+        };
+      };
+      const items = await Promise.all(
+        [
+          { to: ['centurion@legacyhotels.co.za'] },
+          { to: ['davinci@legacyhotels.co.za'] },
+        ].map(async ({ to }) => {
+          const seeded = await seedThread(db, `Booking ${CONFIRMATION}`);
+          origins.set(seeded.threadId, to);
+          await insertStoredExtraction(db, seeded.messageId, 'booking', {
+            confirmationNumbers: [CONFIRMATION],
+          });
+          const workItemId = randomUUID();
+          await db.insert(workItem).values({
+            id: workItemId,
+            transportId: TRANSPORT_ID,
+            threadId: seeded.threadId,
+            sourceMessageId: seeded.messageId,
+            kind: 'booking',
+            status: 'needs_you',
+          });
+          return workItemId;
+        }),
+      );
+      const view = await enqueueHmsBatch(
+        {
+          batchId: randomUUID(),
+          transportId: TRANSPORT_ID,
+          userId: CENTURION_USER_ID,
+          workItemIds: items,
+        },
+        db,
+      );
+      expect(view?.items).toHaveLength(2);
+      expect(view?.items.every((item) => item.status === 'queued')).toBe(true);
+      expect(view?.items[0]?.runId).not.toBe(view?.items[1]?.runId);
+      const runs = await db
+        .select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics })
+        .from(aiWorkflowRun)
+        .where(inArray(aiWorkflowRun.id, [view!.items[0]!.runId!, view!.items[1]!.runId!]));
+      const properties = new Set(
+        runs.map((run) => (run.metrics as { propertyCode?: string }).propertyCode),
+      );
+      expect(properties).toEqual(new Set(['HRCEN', 'HRDAV']));
     }));
 
   it('a Da Vinci staff quote without installation refuses not_set_up before HMS', () =>
