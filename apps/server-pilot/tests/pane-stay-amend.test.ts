@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   buildAmendStayArgs,
+  buildAttachDocumentArgs,
   checkAmendPaneInput,
   commitAmend,
   paneHmsWriteLoaders,
@@ -110,6 +111,40 @@ function mailboxCaller() {
 
 describe('pane stay amend', () => {
   const leftoverDirs: string[] = [];
+
+  it('HRDAV attach spawn includes --property HRDAV; unknown --property refuses before spawn', async () => {
+    const base = {
+      confirmation: stay.confirmation,
+      arrival: stay.arrival,
+      file: '/tmp/attach.pdf',
+      documentName: 'Confirmation.pdf',
+    };
+    expect(buildAttachDocumentArgs(base, '/tmp/out')).not.toContain('--property');
+    const hrdav = buildAttachDocumentArgs({ ...base, target: DAVINCI_HMS_READ_TARGET }, '/tmp/out');
+    expect(hrdav[hrdav.indexOf('--property') + 1]).toBe('HRDAV');
+    const hrcen = buildAttachDocumentArgs({ ...base, target: CENTURION_HMS_READ_TARGET }, '/tmp/out');
+    expect(hrcen[hrcen.indexOf('--property') + 1]).toBe('HRCEN');
+    const attachCli = (await import('../tooling/playwright-quote/attach-document.mjs')) as {
+      parseAttachArgs: (argv: string[]) => { ok: boolean; error?: string; args?: { property?: string } };
+    };
+    const argv = [
+      '--confirmation',
+      stay.confirmation,
+      '--arrival',
+      stay.arrival,
+      '--file',
+      '/tmp/attach.pdf',
+      '--document-name',
+      'Confirmation.pdf',
+      '--out',
+      '/tmp/out',
+    ];
+    expect(attachCli.parseAttachArgs([...argv, '--property', 'HRDAV']).args?.property).toBe('HRDAV');
+    expect(attachCli.parseAttachArgs([...argv, '--property', 'OTHER'])).toMatchObject({
+      ok: false,
+      error: 'PROPERTY_UNKNOWN',
+    });
+  });
 
   it('HRDAV amend spawn includes --property HRDAV', () => {
     const hrdav = buildAmendStayArgs(
