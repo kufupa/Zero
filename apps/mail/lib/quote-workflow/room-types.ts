@@ -14,9 +14,10 @@ export function matchConfiguredRoomType<T extends { code: string; label: string 
     const raw = candidate?.trim();
     if (!raw) continue;
     const code = raw.replace(/[^a-z0-9]/gi, '').toUpperCase();
+    const knownCode = knownRoomCode(raw);
     const label = raw.toLowerCase().replace(/\s+/g, ' ');
     const room = roomTypes.find(
-      (item) => item.code === code || item.label.toLowerCase() === label,
+      (item) => item.code === code || item.code === knownCode || item.label.toLowerCase() === label,
     );
     if (room) return room;
   }

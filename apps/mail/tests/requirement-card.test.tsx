@@ -186,6 +186,32 @@ describe('StayCard rooms', () => {
     expect(screen.queryByRole('button', { name: 'Suite' })).toBeNull();
   });
 
+  it('matches room-name variants only when present in the active property config', () => {
+    const renderConfigured = (
+      roomTypes: NonNullable<ComponentProps<typeof StayCard>['roomTypes']>,
+    ) => render(
+      <StayCard
+        stayId="s1"
+        rows={[stay({ roomPreference: 'standard queen room' })]}
+        index={0}
+        stayCount={1}
+        roomTypes={roomTypes}
+        boards={['bb']}
+      />,
+    );
+
+    renderConfigured([{ code: 'STQN', label: 'Standard Queen' }]);
+    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('STQN');
+    expect(screen.getByText('Standard Queen ×1')).toBeTruthy();
+
+    cleanup();
+    renderConfigured([{ code: 'JNRSUI', label: 'Junior Suite' }]);
+    const unavailableRoom = screen.getByLabelText('Room type') as HTMLSelectElement;
+    expect(unavailableRoom.value).toBe('standard queen room');
+    expect([...unavailableRoom.options].map((option) => option.value)).not.toContain('STQN');
+    expect(screen.getByText('Room type needed ×1')).toBeTruthy();
+  });
+
   it('makes other… focus the full room-type select without changing the row', () => {
     const { onPatch } = renderStay([stay({ roomPreference: 'Single', roomTypeSuggestions: ['STWN', 'SKNG'] })]);
     const select = screen.getByLabelText('Room type');
