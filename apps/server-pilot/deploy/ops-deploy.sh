@@ -28,6 +28,16 @@ for arg in "$@"; do
   esac
 done
 
+# Hard stop (MISTAKES 2026-10-23): HOLD.txt, not a chat message. Before any SSM.
+nava_refuse_if_hold() {
+  local hold="${NAVA_RUN_HOLD_FILE:-/tmp/mh1024/HOLD.txt}"
+  if [ -f "$hold" ]; then
+    echo "ops-deploy: refuse: HOLD file present ($hold)" >&2
+    exit 2
+  fi
+}
+nava_refuse_if_hold
+
 # Text rule failed twice (SR3 lane deploys). Refuse unless cwd AND this
 # script's checkout are the recover-parse-failure worktree. Copied-script
 # unit tests set REMOTE_TEST_REPO (deploy-sandbox) or run outside a Zero

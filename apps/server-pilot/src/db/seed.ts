@@ -63,6 +63,14 @@ export const DARREN_USER_EMAIL = 'dbezuidenhout@legacyhotels.co.za';
 export const KAMALA_USER_ID = 'user-kamala';
 export const KAMALA_USER_EMAIL = 'kdouglas@legacyhotels.co.za';
 
+/** Da Vinci reservations login (own mailbox + davinci@). */
+export const FAITH_USER_ID = 'user-faith';
+export const FAITH_USER_EMAIL = FAITH_MAILBOX_IDENTITIES[0];
+
+/** Da Vinci reservations login (own mailbox + davinci@). */
+export const AYANDA_USER_ID = 'user-ayanda';
+export const AYANDA_USER_EMAIL = AYANDA_MAILBOX_IDENTITIES[0];
+
 export const PILOT_USERS: PilotUserSpec[] = [
   { id: NAVA_USER_ID, name: 'Nava AI', email: NAVA_USER_EMAIL },
   { id: CENTURION_USER_ID, name: 'Centurion', email: CENTURION_USER_EMAIL },
@@ -70,6 +78,8 @@ export const PILOT_USERS: PilotUserSpec[] = [
   { id: ROPPERMAN_USER_ID, name: 'R Opperman', email: ROPPERMAN_USER_EMAIL },
   { id: DARREN_USER_ID, name: 'Darren Bezuidenhout', email: DARREN_USER_EMAIL },
   { id: KAMALA_USER_ID, name: 'Kamala Douglas', email: KAMALA_USER_EMAIL },
+  { id: FAITH_USER_ID, name: 'Faith Khumalo', email: FAITH_USER_EMAIL },
+  { id: AYANDA_USER_ID, name: 'Ayanda Dladla', email: AYANDA_USER_EMAIL },
 ];
 
 export const INGEST_EMAIL = 'navaai@legacyhotels.co.za';
@@ -184,11 +194,20 @@ type PilotMailboxAccessRow = {
 export const PILOT_MAILBOX_ACCESS_ROWS: readonly PilotMailboxAccessRow[] = [
   { userId: NAVA_USER_ID, transportId: NAVA_TRANSPORT_ID, role: 'owner', isDefault: true },
   { userId: NAVA_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: false },
+  { userId: NAVA_USER_ID, transportId: DAVINCI_TRANSPORT_ID, role: 'owner', isDefault: false },
+  { userId: NAVA_USER_ID, transportId: FAITH_TRANSPORT_ID, role: 'owner', isDefault: false },
+  { userId: NAVA_USER_ID, transportId: AYANDA_TRANSPORT_ID, role: 'owner', isDefault: false },
+  { userId: NAVA_USER_ID, transportId: EPICK_TRANSPORT_ID, role: 'owner', isDefault: false },
+  { userId: NAVA_USER_ID, transportId: KMGIDI_TRANSPORT_ID, role: 'owner', isDefault: false },
   { userId: CENTURION_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
   { userId: MARTHA_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
   { userId: ROPPERMAN_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
   { userId: DARREN_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
   { userId: KAMALA_USER_ID, transportId: TRANSPORT_ID, role: 'owner', isDefault: true },
+  { userId: FAITH_USER_ID, transportId: FAITH_TRANSPORT_ID, role: 'owner', isDefault: true },
+  { userId: FAITH_USER_ID, transportId: DAVINCI_TRANSPORT_ID, role: 'owner', isDefault: false },
+  { userId: AYANDA_USER_ID, transportId: AYANDA_TRANSPORT_ID, role: 'owner', isDefault: true },
+  { userId: AYANDA_USER_ID, transportId: DAVINCI_TRANSPORT_ID, role: 'owner', isDefault: false },
 ];
 
 export async function applyPilotMailboxAccess(db: DB): Promise<void> {

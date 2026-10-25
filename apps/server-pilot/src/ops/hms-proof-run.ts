@@ -42,13 +42,18 @@ import {
 } from '../hms/property-read-lock.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { copyFile, mkdir, writeFile } from 'node:fs/promises';
-import { readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const COMMANDS = new Set(['create', 'amend', 'cancel', 'attach', 'find']);
-const FLAGS = new Set(['--transport', '--request', '--mode', '--out']);
+const REQUIRED_FLAGS = new Set(['--transport', '--request', '--mode', '--out']);
+const OPTIONAL_FLAGS = new Set(['--cell']);
+const FLAGS = new Set([...REQUIRED_FLAGS, ...OPTIONAL_FLAGS]);
 const MODES = new Set(['preview', 'commit']);
+const CELL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const DEFAULT_HOLD_FILE = '/tmp/mh1024/HOLD.txt';
+const DEFAULT_CELL_DIR = '/tmp/mh1024';
 const LABTEST = /^labtest$/i;
 const LAB_ARRIVAL_FLOOR = '2027-01-01';
 const OWNER_PREFIX = 'proof:';
@@ -81,6 +86,7 @@ export type ProofRunArgs = {
   request: Record<string, unknown>;
   mode: ProofRunMode;
   outDir: string;
+  cell?: string;
 };
 
 export type ProofLockFactory = (input: {
@@ -105,17 +111,68 @@ export function parseProofRunArgs(argv: string[]): ProofRunArgs {
     if (values.has(flag)) throw new Error(`repeated argument: ${flag}`);
     values.set(flag, value);
   }
-  const missing = [...FLAGS].find((flag) => !values.has(flag));
+  const missing = [...REQUIRED_FLAGS].find((flag) => !values.has(flag));
   if (missing) throw new Error(`required: ${missing}`);
   const mode = values.get('--mode')!;
   if (!MODES.has(mode)) throw new Error('--mode must be preview or commit');
+  const cell = values.get('--cell');
+  if (cell !== undefined && !CELL_ID.test(cell)) throw new Error('--cell must be a short id');
   return {
     command: command as ProofRunCommand,
     transportId: values.get('--transport')!,
     request: parseRequestJson(values.get('--request')!),
     mode: mode as ProofRunMode,
     outDir: values.get('--out')!,
+    ...(cell ? { cell } : {}),
   };
+}
+
+export function assertRunHold(env: NodeJS.Dict<string> = process.env): void {
+  const hold = env.NAVA_RUN_HOLD_FILE?.trim() || DEFAULT_HOLD_FILE;
+  if (existsSync(hold) && statSync(hold).isFile()) {
+    throw new Error(`refused_hold:${hold}`);
+  }
+}
+
+type CellLog = { failures: number[] };
+
+function cellLogPath(dir: string, cell: string): string {
+  return join(dir, `cell-${cell}.json`);
+}
+
+export function cellDiagnosisPath(dir: string, cell: string): string {
+  return join(dir, `diagnosis-${cell}.md`);
+}
+
+function readCellLog(dir: string, cell: string): CellLog {
+  const path = cellLogPath(dir, cell);
+  if (!existsSync(path)) return { failures: [] };
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as { failures?: unknown };
+    const failures = Array.isArray(parsed.failures)
+      ? parsed.failures.filter((item): item is number => typeof item === 'number')
+      : [];
+    return { failures };
+  } catch {
+    return { failures: [] };
+  }
+}
+
+export function recordCellFailure(input: { cell: string; dir: string; at?: number }): void {
+  mkdirSync(input.dir, { recursive: true });
+  const log = readCellLog(input.dir, input.cell);
+  log.failures.push(input.at ?? Date.now());
+  writeFileSync(cellLogPath(input.dir, input.cell), `${JSON.stringify(log)}\n`);
+}
+
+export function assertCellAttempt(input: { cell: string; dir: string }): void {
+  const log = readCellLog(input.dir, input.cell);
+  if (log.failures.length < 2) return;
+  const lastFailure = Math.max(...log.failures);
+  const diagnosis = cellDiagnosisPath(input.dir, input.cell);
+  if (!existsSync(diagnosis) || statSync(diagnosis).mtimeMs <= lastFailure) {
+    throw new Error(`refused_cell_attempt:${basename(diagnosis)}`);
+  }
 }
 
 function parseRequestJson(raw: string): Record<string, unknown> {
@@ -299,6 +356,9 @@ export async function hmsProofRun(
   env: NodeJS.Dict<string> = process.env,
   createLock: ProofLockFactory = defaultCreateLock,
 ): Promise<Record<string, unknown>> {
+  assertRunHold(env);
+  const cellDir = env.NAVA_PROOF_CELL_DIR?.trim() || DEFAULT_CELL_DIR;
+  if (args.cell) assertCellAttempt({ cell: args.cell, dir: cellDir });
   const resolved = paneStayHmsTargetForTransport(args.transportId);
   if (!resolved.ok) throw new Error('unknown_transport');
   assertLabRequest(args.request);
@@ -354,7 +414,13 @@ export async function hmsProofRun(
       ...(stripGuest(result) as Record<string, unknown>),
       screenshots,
     };
+    if (args.cell && proofFailed(line)) {
+      recordCellFailure({ cell: args.cell, dir: cellDir });
+    }
     return line;
+  } catch (error) {
+    if (args.cell) recordCellFailure({ cell: args.cell, dir: cellDir });
+    throw error;
   } finally {
     paneStaySaveLoaders.lock = prev.save;
     paneStayCancelLoaders.lock = prev.cancel;
@@ -423,11 +489,14 @@ async function runCommand(
   );
 }
 
-function proofExitCode(result: Record<string, unknown>): number {
-  if (result.status === 'refused') return 2;
+function proofFailed(result: Record<string, unknown>): boolean {
+  if (result.status === 'refused') return true;
   const outcome = result.outcome;
-  if (typeof outcome === 'string' && /refus|fail|execution_failure/.test(outcome)) return 2;
-  return 0;
+  return typeof outcome === 'string' && /refus|fail|execution_failure/.test(outcome);
+}
+
+function proofExitCode(result: Record<string, unknown>): number {
+  return proofFailed(result) ? 2 : 0;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url))) {
