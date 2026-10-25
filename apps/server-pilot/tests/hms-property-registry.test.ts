@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
+import { parseStayProperty, profileFor } from '../tooling/playwright-quote/property-profile.mjs';
 import { normalizeQuoteRequest } from '../tooling/playwright-quote/quote-contract.mjs';
 import {
   PROPERTY_REGISTRY,
@@ -23,6 +24,22 @@ const DAVINCI_SECRET = {
 };
 
 describe('read-only HMS property registry', () => {
+  it('keeps the CLI-only HRCEN default and reads profiles through the registry', () => {
+    expect(parseStayProperty(['--mode', 'preview'])).toEqual({
+      ok: true,
+      propertyCode: 'HRCEN',
+      rest: ['--mode', 'preview'],
+    });
+    expect(parseStayProperty(['--property', 'HRDAV', '--mode', 'preview'])).toEqual({
+      ok: true,
+      propertyCode: 'HRDAV',
+      rest: ['--mode', 'preview'],
+    });
+    expect(profileFor('HRCEN')?.propertyCode).toBe('HRCEN');
+    expect(profileFor('HRDAV')?.propertyCode).toBe('HRDAV');
+    expect(profileFor('NOTAPROP')).toBeNull();
+  });
+
   it('resolves every hotel mailbox to its property and transport-nava to a no-hotel collector', () => {
     for (const [transportId, propertyCode] of [
       ['transport-centurion', 'HRCEN'],
