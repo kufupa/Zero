@@ -1485,6 +1485,11 @@ export function QuoteWorkflowPanel({
   for (const code of Object.values(session.bookingDrafts).flatMap((draft) => draft.options.roomType)) {
     if (!roomTypesByCode.has(code)) roomTypesByCode.set(code, { code, label: code });
   }
+  for (const alternative of session.steps.flatMap((step) => step.roomAlternatives ?? [])) {
+    if (!roomTypesByCode.has(alternative.roomCode)) {
+      roomTypesByCode.set(alternative.roomCode, { code: alternative.roomCode, label: alternative.roomLabel });
+    }
+  }
   const paneRoomTypes = [...roomTypesByCode.values()];
   const strictRoomTypes = paneConfig !== undefined;
   const paneBoards = paneConfig === undefined ? undefined : paneConfig?.boards ?? [];
