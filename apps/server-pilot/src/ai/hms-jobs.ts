@@ -664,7 +664,6 @@ type HmsMailCopies = {
   propertyCode: string | null;
   messageIdHeader: string | null;
   messageIds: string[];
-  mailboxes: Array<{ id: string; transportId: string; threadId: string | null }>;
 };
 
 /** The existing transport/header index finds every persisted copy of this RFC Message-ID at one hotel. */
@@ -674,35 +673,26 @@ async function hmsMailCopiesForMessage(
   messageId: string,
 ): Promise<HmsMailCopies> {
   const [source] = await db
-    .select({
-      id: message.id,
-      transportId: message.transportId,
-      threadId: message.threadId,
-      messageIdHeader: message.messageIdHeader,
-    })
+    .select({ id: message.id, messageIdHeader: message.messageIdHeader })
     .from(message)
     .where(and(eq(message.id, messageId), eq(message.transportId, transportId)))
     .limit(1);
   const messageIdHeader = canonicalMessageId(source?.messageIdHeader);
   const resolved = resolvePropertyTransport(transportId);
-  const sourceMailbox = source
-    ? [{ id: source.id, transportId: source.transportId, threadId: source.threadId }]
-    : [];
   if (resolved.kind !== 'property') {
-    return { propertyCode: null, messageIdHeader: null, messageIds: [messageId], mailboxes: sourceMailbox };
+    return { propertyCode: null, messageIdHeader: null, messageIds: [messageId] };
   }
   if (!messageIdHeader) {
     return {
       propertyCode: resolved.property.propertyCode,
       messageIdHeader: null,
       messageIds: [messageId],
-      mailboxes: sourceMailbox,
     };
   }
   const propertyTransportIds = getPropertyTransportIds(resolved.property.propertyCode);
   const rows = propertyTransportIds.length
     ? await db
-        .select({ id: message.id, transportId: message.transportId, threadId: message.threadId })
+        .select({ id: message.id })
         .from(message)
         .where(
           and(
@@ -711,13 +701,10 @@ async function hmsMailCopiesForMessage(
           ),
         )
     : [];
-  const mailboxes = new Map<string, HmsMailCopies['mailboxes'][number]>();
-  for (const mailbox of [...sourceMailbox, ...rows]) mailboxes.set(mailbox.id, mailbox);
   return {
     propertyCode: resolved.property.propertyCode,
     messageIdHeader,
     messageIds: [...new Set([messageId, ...rows.map((row) => row.id)])],
-    mailboxes: [...mailboxes.values()],
   };
 }
 
@@ -3878,7 +3865,6 @@ async function latestStaffQuoteRunFor(
   userId: string,
   includeDevEval = false,
   relatedMessageIds: readonly string[] = [messageId],
-  relatedMailboxes: HmsMailCopies['mailboxes'] = [],
 ): Promise<AiWorkflowRun[]> {
   const now = new Date();
   const ownerScope = quotePreparationEnabled()
@@ -3967,33 +3953,22 @@ async function latestStaffQuoteRunFor(
     ) {
       continue;
     }
-    if (!preparedRun.threadId) return [];
-    const approvalMailboxes = relatedMailboxes.length
-      ? relatedMailboxes
-      : [{ id: messageId, transportId: preparedRun.transportId, threadId: preparedRun.threadId }];
-    const approvalScopes = approvalMailboxes
-      .filter((mailbox) => mailbox.threadId)
-      .map((mailbox) =>
+    const approvalTargets = relatedMessageIds.map(
+      (relatedMessageId) =>
+        sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([relatedMessageId])}::jsonb`,
+    );
+    const [latestApproval] = await db
+      .select({ createdAt: aiDraftGeneration.createdAt })
+      .from(aiDraftGeneration)
+      .where(
         and(
-          eq(aiDraftGeneration.transportId, mailbox.transportId),
-          eq(aiDraftGeneration.threadId, mailbox.threadId!),
-          sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([mailbox.id])}::jsonb`,
+          eq(aiDraftGeneration.requestedByUserId, userId),
+          eq(aiDraftGeneration.model, 'staff-approved-native'),
+          or(...approvalTargets),
         ),
-      );
-    const [latestApproval] = approvalScopes.length
-      ? await db
-          .select({ createdAt: aiDraftGeneration.createdAt })
-          .from(aiDraftGeneration)
-          .where(
-            and(
-              eq(aiDraftGeneration.requestedByUserId, userId),
-              eq(aiDraftGeneration.model, 'staff-approved-native'),
-              or(...approvalScopes),
-            ),
-          )
-          .orderBy(desc(aiDraftGeneration.createdAt))
-          .limit(1)
-      : [];
+      )
+      .orderBy(desc(aiDraftGeneration.createdAt))
+      .limit(1);
     if (latestApproval && latestApproval.createdAt >= preparedRun.createdAt) return [];
     return reusable(preparedRun) ? [preparedRun] : [];
   }
@@ -4124,7 +4099,6 @@ export async function readHmsJobView(
             input.userId,
             false,
             quoteCopies?.messageIds ?? [input.messageId],
-            quoteCopies?.mailboxes ?? [],
           )
         : await db
           .select()
