@@ -1200,6 +1200,31 @@ describe('booking card pane save', () => {
     expect(bookButton(0)).toHaveProperty('disabled', true);
   });
 
+  it('does not restore a preview that resolves after a newer input remount', async () => {
+    const pending = deferred<PaneStayResult>();
+    const preview = vi.fn<PaneStayClient['preview']>().mockReturnValueOnce(pending.promise);
+    const { client, commit } = paneClient({ preview });
+    const workItemId = '44444444-4444-4444-8444-444444444444';
+    const host = (session: QuoteSession) => (
+      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+    );
+    const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
+
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledTimes(1);
+
+    rerender(host(bookingSessionForPreview(previewableDraft('BAR'), 2)));
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+
+    await act(async () => pending.resolve(PREVIEW_OK));
+    rerender(host(bookingSessionForPreview(previewableDraft(), 3)));
+
+    expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   it('after a save, shows only the after-save screenshot', async () => {
     const { client, screenshot } = paneClient({
       commit: async () => ({
