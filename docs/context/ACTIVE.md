@@ -1,6 +1,13 @@
 # Active context
 
-Updated 2026-10-25 19:00Z after U13-dedup `#550` deploy. Dated research is evidence, not automatically current state.
+Updated 2026-10-26 after Run 2 plan synthesis. No product/runtime changes or live checks were performed; dated research is evidence, not automatically current state.
+
+## Overnight run 2 plan handoff — 2026-10-26
+
+- Implementation-ready plan: [Run 2 plan](../plans/2026-10-26-002-overnight-run2-plan.md). It defines 45 slices (T0 4, T1 31, T2 8, T3 held 2); dispatch manifest and per-slice briefs are under `/tmp/or2/`.
+- Verified state: plan and dispatch artifacts are prepared; no product code was changed, no live environment was inspected, and no deployment, flag flip, mail requeue, or HMS action was performed.
+- Next acceptance: run T0 (`S0-PANE` before `S0-PANEL`; `S0-JOBS` and `R-CORPUS` independent), then start T1 only against merged S0 heads; keep `R-SEED` last in T1. Require same-head gates and specified canaries per plan.
+- Holds: T2 only after all T1 gates pass; T3 M1/M2 and XLSX parsing stay out tonight. P0 runtime enable/requeue requires the plan's EC2/SSM preflight and current-session authority; no real-guest writes or email sends. Original asks 223–228 remain in `OWNER-ASKS.md`.
 
 ## Multi-hotel overnight — 2026-10-25 (Grok orch, plan 2026-10-24-001)
 
