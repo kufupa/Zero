@@ -2194,6 +2194,43 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.prepareBookingDraftMutation).not.toHaveBeenCalled();
   });
 
+  it('debounces staff quote auto-start until a complete date pair settles', async () => {
+    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
+    const checkInOnlyGroup = STORED_READY.analysis.groups[0]!;
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: {
+        ...STORED_READY.analysis,
+        groups: [{ ...checkInOnlyGroup, departureDate: '' }],
+      },
+    };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    bridgeMockState.queueStaffQuoteMutation.mockImplementation((input: Record<string, unknown>) => {
+      bridgeMockState.lastStaffQuoteInput = input;
+      return Promise.resolve({ runId: 'staff-job-date-debounce' });
+    });
+    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(null);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await settle();
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 350));
+    });
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+
+    const departure = screen.getByLabelText('Departure');
+    const arrival = screen.getByLabelText('Arrival');
+    fireEvent.change(departure, { target: { value: '2026-11-05' } });
+    fireEvent.change(arrival, { target: { value: '2026-11-04' } });
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({
+      groups: [expect.objectContaining({ arrivalDate: '2026-11-04', departureDate: '2026-11-05' })],
+    });
+  });
+
   it('auto-queues a complete stay and reports the rate run in the pane notice system', async () => {
     let staffQuotePolls = 0;
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
