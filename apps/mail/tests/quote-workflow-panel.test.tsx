@@ -354,7 +354,7 @@ describe('QuoteWorkflowPanel', () => {
         offers: [],
         rateOptions: [],
         selectedOfferIds: [],
-        steps: base.steps.map((step) => ({ ...step, status: 'pending' as const })),
+        steps: base.steps.map((step) => ({ ...step, status: 'ready' as const })),
       },
       [],
     );
@@ -530,7 +530,7 @@ describe('QuoteWorkflowPanel', () => {
         offers: [],
         rateOptions: [],
         selectedOfferIds: [],
-        steps: base.steps.map((step) => ({ ...step, status: 'pending' as const })),
+        steps: base.steps.map((step) => ({ ...step, status: 'ready' as const })),
       },
       [],
     );
