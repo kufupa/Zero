@@ -53,7 +53,7 @@ vi.mock('../components/mail/mail-list', () => ({
 }));
 vi.mock('../components/mail/mail-search-bar', () => ({ MailSearchBar: () => null }));
 vi.mock('../components/ui/sidebar-toggle', () => ({ SidebarToggle: () => null }));
-vi.mock('../components/mail/workflow-folder-done-button', () => ({
+vi.mock('@/components/mail/workflow-folder-done-button', () => ({
   WorkflowFolderDoneButton: () => null,
 }));
 
@@ -134,6 +134,15 @@ vi.mock('@tanstack/react-query', () => ({
     isLoading: false,
     isError: false,
   }),
+  useInfiniteQuery: () => ({
+    data: { pages: [] },
+    isLoading: false,
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    fetchNextPage: vi.fn(),
+  }),
+  useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 vi.mock('@/lib/auth-proxy', () => ({ authProxy: {} }));
 
