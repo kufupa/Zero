@@ -7,11 +7,11 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
-import { assertTrackReadyForGuarantee, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
+import { assertTrackReadyForGuarantee, bookFieldFills, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
 import { readSaveSnapshot, readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { paneCommitOutcome, proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
-import { profileFor } from './property-profile.mjs';
+import { profileFor, stayBookFieldRefusal } from './property-profile.mjs';
 
 const REQUIRED = [
   'arrivaldate',
@@ -388,6 +388,17 @@ async function fillNamed(page, name, value) {
   await input.click();
   await input.fill(value);
   await input.press('Tab');
+}
+
+/** Explicit opt-in only. Never checks the box unless stay.guestoptin4 === true. LIVE-UNVERIFIED Ext checkbox. */
+async function fillGuestOptIn(page) {
+  const box = page.locator('input[name="guestoptin4"]:visible').first();
+  const type = await box.getAttribute('type');
+  if (type === 'checkbox') {
+    await box.setChecked(true);
+    return;
+  }
+  await box.click();
 }
 
 async function blankRequired(page, names) {
@@ -909,6 +920,14 @@ async function main() {
     process.exitCode = 2;
     return;
   }
+  if (!shopMode) {
+    const bookRefusal = stayBookFieldRefusal(stay, profile);
+    if (bookRefusal) {
+      process.stderr.write(`${bookRefusal}\n`);
+      process.exitCode = 2;
+      return;
+    }
+  }
   const labRefusal = createLabtestRefusal(propertyCode, stay, process.env);
   if (labRefusal) {
     process.stderr.write(`${labRefusal}\n`);
@@ -992,6 +1011,9 @@ async function main() {
       for (const [name, value] of Object.entries(optionalPartyAndNoteFills(stay))) {
         if (value) await fillNamed(page, name, value);
       }
+      const book = bookFieldFills(stay);
+      if (book.marketsegment) await fillNamed(page, 'marketsegment', book.marketsegment);
+      if (book.guestoptin4 === true) await fillGuestOptIn(page);
       if (stay.arAccount) await fillNamed(page, 'araccountname', stay.arAccount);
       if (stay.billingReference) await fillNamed(page, 'billingreference', stay.billingReference);
       if (Object.hasOwn(stay, 'profileId')) await fillNamed(page, 'guestid', String(stay.profileId));

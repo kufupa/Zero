@@ -14,6 +14,7 @@ import {
   type HmsReadTarget,
 } from '../hms/hms-read-target.js';
 import { getPropertyRegistration, resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
+import { profileFor, stayBookFieldRefusal } from '../../tooling/playwright-quote/property-profile.mjs';
 import {
   acquisitionWithin,
   createPostgresPropertyReadLock,
@@ -46,6 +47,7 @@ export const PANE_PARTY_NAME_MAX = 100; // ta1 Primary Booking Agency, company O
 export const PANE_PARTY_NATIVE_ID_MAX = 40;
 export const PANE_BOOKER_NAME_MAX = 50; // caller
 export const PANE_BOOKER_EMAIL_MAX = 80; // udfchar06 Booker Contact
+export const PANE_MARKET_SEGMENT_MAX = 80; // marketsegment
 
 /** A party as the pane sends it. The runner types name into the lookup. nativeId is carried, not selected by. */
 export type PaneStayParty = { nativeId?: string; name: string };
@@ -68,6 +70,8 @@ export type PaneStay = {
   reservationNote?: string;
   bookerName?: string;
   bookerEmail?: string;
+  marketSegment?: string;
+  guestoptin4?: boolean;
 };
 
 export type PaneStayMode = 'preview' | 'commit';
@@ -536,6 +540,10 @@ export async function runPaneStay(input: {
     } catch (error) {
       return { status: 'refused', reason: (error as Error).message };
     }
+  }
+  const bookRefusal = stayBookFieldRefusal(input.stay, profileFor(target.propertyCode));
+  if (bookRefusal) {
+    return { status: 'refused', reason: bookRefusal };
   }
   const digest = paneStayDigest(input.stay);
   if (input.mode === 'commit') {

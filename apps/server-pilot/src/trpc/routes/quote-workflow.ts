@@ -28,6 +28,7 @@ import type { QuoteAttachmentRow, SyncedQuoteAttachment } from '../../ai/quote-w
 import {
   PANE_BOOKER_EMAIL_MAX,
   PANE_BOOKER_NAME_MAX,
+  PANE_MARKET_SEGMENT_MAX,
   PANE_PARTY_NAME_MAX,
   PANE_PARTY_NATIVE_ID_MAX,
   PANE_RESERVATION_NOTE_MAX,
@@ -78,6 +79,8 @@ const paneStayInput = z.object({
   ratePlan: z.string().min(1),
   track: z.string().min(1),
   guaranteeType: z.string().min(1),
+  marketSegment: paneOptionalText(PANE_MARKET_SEGMENT_MAX),
+  guestoptin4: z.boolean().optional(),
   childAges: z.array(z.number().int()).max(16).optional(),
   propertyCode: z.string().min(1).optional(),
   bookingAgency: paneParty.optional(),

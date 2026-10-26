@@ -176,6 +176,16 @@
           "minLength": 1,
           "description": "Caller-picked native rate-plan code from --shop. Not an enum. A 2026-09-24 BAR search on 14-SEP-2027 to 15-SEP-2027 returned BARRO, BAR, BWEBB, and BLRB. Preset returned no rows."
         },
+        "marketSegment": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "Market Segment (marketsegment). Optional on the schema; required when the property profile marks marketsegment required. Options come from that profile, not a cross-hotel enum."
+        },
+        "guestoptin4": {
+          "type": "boolean",
+          "description": "Guest Terms and Conditions checkbox (guestoptin4). Explicit staff opt-in. Never defaulted true. Required true when the property profile marks guestoptin4 required."
+        },
         "track": {
           "type": "string",
           "enum": [

@@ -32,6 +32,7 @@ import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE, propertyReadLockKey } from '../src
 import {
   PANE_BOOKER_EMAIL_MAX,
   PANE_BOOKER_NAME_MAX,
+  PANE_MARKET_SEGMENT_MAX,
   PANE_PARTY_NAME_MAX,
   PANE_PARTY_NATIVE_ID_MAX,
   PANE_RESERVATION_NOTE_MAX,
@@ -39,10 +40,16 @@ import {
   paneStaySaveMode,
 } from '../src/ai/pane-stay-save.js';
 import {
+  bookFieldFills,
   loadCreateToolSchema,
   optionalPartyAndNoteFills,
   validateCreateRequest,
 } from '../tooling/playwright-quote/create-request.mjs';
+import {
+  marketSegmentOptions,
+  profileFor,
+  stayBookFieldRefusal,
+} from '../tooling/playwright-quote/property-profile.mjs';
 import {
   PANE_STAY_ALREADY_BOOKED,
   stayCommitFromPaneResult,
@@ -890,7 +897,13 @@ describe('pane stay save modes', () => {
 });
 
 describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
-  const davinciStay = { ...labStay, propertyCode: 'HRDAV' as const };
+  const davinciSegment = marketSegmentOptions(profileFor('HRDAV'))?.[0] ?? '';
+  const davinciStay = {
+    ...labStay,
+    propertyCode: 'HRDAV' as const,
+    marketSegment: davinciSegment,
+    guestoptin4: true,
+  };
 
   it('is off unless HMS_DAVINCI_CREATE is lab or on, same as PANE_WRITE_CREATE', () => {
     expect(hmsDavinciCreateMode({})).toBe('off');
@@ -1107,6 +1120,7 @@ describe('create request schema for the pane fields', () => {
     expect(request.reservationNote.maxLength).toBe(PANE_RESERVATION_NOTE_MAX);
     expect(request.bookerName.maxLength).toBe(PANE_BOOKER_NAME_MAX);
     expect(request.bookerEmail.maxLength).toBe(PANE_BOOKER_EMAIL_MAX);
+    expect(request.marketSegment.maxLength).toBe(PANE_MARKET_SEGMENT_MAX);
     expect(schema.$defs.partyRef.properties.name.maxLength).toBe(PANE_PARTY_NAME_MAX);
     expect(schema.$defs.partyRef.properties.nativeId.maxLength).toBe(PANE_PARTY_NATIVE_ID_MAX);
   });
@@ -1159,6 +1173,60 @@ describe('create request schema for the pane fields', () => {
       caller: '',
       udfchar06: '',
     });
+  });
+
+  it('missing required field refuses before spawn and valid fields survive serialization', async () => {
+    expect(stayBookFieldRefusal(labStay, null)).toBe('property_profile_required');
+    expect(stayBookFieldRefusal(labStay, { createForm: { requiredMarkers: {} } })).toBeNull();
+    expect(
+      stayBookFieldRefusal(labStay, {
+        createForm: { requiredMarkers: { marketsegment: { required: true } } },
+      }),
+    ).toBe('pane_save_market_segment_required');
+    expect(
+      stayBookFieldRefusal(
+        { ...labStay, marketSegment: 'Wholesale', guestoptin4: false },
+        { createForm: { requiredMarkers: { guestoptin4: { required: true } } } },
+      ),
+    ).toBe('pane_save_guest_opt_in_required');
+
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
+    enableSave();
+    const profile = profileFor('HRDAV');
+    const options = marketSegmentOptions(profile);
+    expect(options?.length).toBeGreaterThan(0);
+    const marketSegment = options![0];
+    const locked: string[] = [];
+    paneStaySaveLoaders.lock = passingLock(locked);
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(
+      runPaneStay({
+        mode: 'preview',
+        stay: { ...labStay, propertyCode: 'HRDAV' },
+        owner: freshOwner('transport-davinci'),
+      }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_market_segment_required' });
+    expect(locked).toEqual([]);
+
+    const valid = { ...labStay, propertyCode: 'HRDAV' as const, marketSegment, guestoptin4: true };
+    const seen: PaneStaySpawnInput[] = [];
+    paneStaySaveLoaders.lock = passingLock();
+    paneStaySaveLoaders.spawn = async (input) => {
+      seen.push(input);
+      return cliSpawn(input);
+    };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: valid, owner: freshOwner('transport-davinci') }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'previewed', clickedSave: false });
+    expect(seen[0]?.stay).toMatchObject({ marketSegment, guestoptin4: true });
+    const body = paneStayRequestBody(valid);
+    expect(body).toMatchObject({ marketSegment, guestoptin4: true });
+    expect(body).not.toHaveProperty('propertyCode');
+    expect(validateCreateRequest(body, await loadCreateToolSchema())).toMatchObject({ ok: true });
+    expect(bookFieldFills(valid)).toEqual({ marketsegment: marketSegment, guestoptin4: true });
+    expect(bookFieldFills({ ...valid, guestoptin4: false })).toEqual({ marketsegment: marketSegment });
   });
 });
 

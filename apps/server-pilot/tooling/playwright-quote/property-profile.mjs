@@ -13,6 +13,8 @@ const PROFILE_FILES = new Map(
 );
 const ROOM_CODE = /^[A-Z0-9_-]+$/;
 const FIELD_NAME = /^[a-z][a-z0-9]*$/;
+/** Native Book fields the pane maps. Required/options come from the profile, never a hotel branch. */
+export const BOOK_NATIVE_FIELDS = Object.freeze(['marketsegment', 'guestoptin4']);
 /** Native Hotel Availability strategy codes any registered profile may list. Not hotel-specific. */
 export const PROFILE_SALES_STRATEGY_CODES = Object.freeze([
   'BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER',
@@ -85,6 +87,58 @@ export function profileFor(propertyCode) {
   const file = typeof propertyCode === 'string' ? PROFILE_FILES.get(propertyCode) : undefined;
   if (!file) return null;
   return validateProfile(JSON.parse(readFileSync(file, 'utf8')), propertyCode);
+}
+
+function uniqueChoiceLabels(choices) {
+  const seen = new Set();
+  const labels = [];
+  for (const row of choices ?? []) {
+    for (const label of [row?.display, row?.value]) {
+      const text = typeof label === 'string' ? label.trim() : '';
+      if (!text || seen.has(text)) continue;
+      seen.add(text);
+      labels.push(text);
+    }
+  }
+  return labels;
+}
+
+/** Native Book fields this profile marks required on the create form. Empty when the profile has no markers. */
+export function requiredBookNativeFields(profile) {
+  const names = [];
+  const markers = profile?.createForm?.requiredMarkers;
+  if (!markers || typeof markers !== 'object' || Array.isArray(markers)) return names;
+  for (const name of BOOK_NATIVE_FIELDS) {
+    if (markers[name]?.required === true) names.push(name);
+  }
+  return names;
+}
+
+/**
+ * Market Segment labels from the profile. Prefer createForm.options.marketsegment; else unique
+ * track.choices[].marketSegment. null means the profile has no option list.
+ */
+export function marketSegmentOptions(profile) {
+  const direct = profile?.createForm?.options?.marketsegment?.choices;
+  if (Array.isArray(direct) && direct.length) return uniqueChoiceLabels(direct);
+  const tracks = profile?.createForm?.options?.track?.choices;
+  if (!Array.isArray(tracks)) return null;
+  const labels = uniqueChoiceLabels(
+    tracks.map((row) => ({ value: row?.marketSegment, display: row?.marketSegment })),
+  );
+  return labels.length ? labels : null;
+}
+
+/** Fail closed when the profile is missing, a required Book field is absent, or a listed option does not match. */
+export function stayBookFieldRefusal(stay, profile) {
+  if (!profile) return 'property_profile_required';
+  const required = requiredBookNativeFields(profile);
+  const marketSegment = typeof stay?.marketSegment === 'string' ? stay.marketSegment.trim() : '';
+  const options = marketSegmentOptions(profile);
+  if (required.includes('marketsegment') && !marketSegment) return 'pane_save_market_segment_required';
+  if (marketSegment && options && !options.includes(marketSegment)) return 'pane_save_market_segment_invalid';
+  if (required.includes('guestoptin4') && stay?.guestoptin4 !== true) return 'pane_save_guest_opt_in_required';
+  return null;
 }
 
 /** Amend allow-list: room type codes this property actually sells. */
