@@ -61,7 +61,7 @@ Estimate (not measured): per unit ~25–35 min wall (code 10–20 + gates ~5). L
 | F3 | Each lane is a full PR lifecycle: cold start (read rules + plan + codegraph), code, gates, local review, wait for Apex, fix, repeat | **89 min per lane session** for ~150 product lines | R1.md: 2,670 min / 30 sessions |
 | F4 | Tests and docs outweigh product code | 10-25 diff: product +4,576, tests +5,563, docs +1,529 | git diff origin/main |
 | F5 | Coordination is done by LLMs reading state files: orchestrator + Opus watchdog + 6 handoffs | orch $9.6, watchdog $14.8, docs lane Sol $24.5 = 40% of $123 | retro §3 |
-| F6 | Planning before the run is long | shape + plan 2026-10-24 ≈ 12 h, 400-line plan | git log of plan file |
+| F6 | ~~Planning took 12 h~~ **corrected:** shape 10-24 00:19–~02:00 UTC, owner away until 13:37, plan 21:49→00:27 = **~2.6 h active**; run start 00:42 (15 min after go) | transcript timestamps |
 | F7 | Live HMS proof sits on the critical path | proofs 14:29–15:56 + G9 reruns | retro §2b |
 | F8 | Every lane loads ~7.7k words of rules + a 400-line plan | wc -w | — |
 
@@ -78,3 +78,29 @@ Daily output is steady regardless of method: 10-19 52 PRs, 10-22 30, 10-23 35, 1
 7. **Proof off the critical path:** background canary lane per hotel after each deploy.
 
 Expected (inference, not measured): 4 busy lanes × ~3× less lane overhead ≈ 4–6× throughput, if P1 rounds stay low. No 2026 source shows a sustained 10×.
+
+## 6. P1 findings, last night (27 Greptile P1 comments on 14 PRs)
+
+| Kind | Count | Examples | Worth fixing? |
+|---|---:|---|---|
+| Real product bug, prod path | ~21 | DV batches stay blocked (#532); different hotels share one job (#533); GOV requests always fail (#545); bookings use the wrong room (#550); missing restrictions become open (#548) | Yes |
+| Test/ops-only | ~4 | existing quote tests fail (#536); overlapping proof runs bypass cap (#527); walk-in breakfast test (#548) | Fix cheaply, not worth a round |
+| Out of diff / follow-up | ~2 | "most strategies have no jobs" (#546, became #547) | Follow-up PR was right |
+
+The P1s were mostly real. Cost came from **waves**: big PRs got 3–4 P1s per round, 3 rounds each. #538 (share HMS reads across mailbox copies) was worth it: 1,887 of 8,636 distinct Message-IDs in 14 days (21.8%) arrive in 2+ mailboxes (prod read-only SQL 2026-10-26).
+
+## 7. Deploys
+
+11 deploys, ~8.5 min each, run by the orchestrator after most merges while it waited. Should be one background deploy train (deploy main when ≥1 new merge, never blocking a lane).
+
+## 8. Backtest (inference, rough)
+
+Last night's longest dependency chain: U1→U3a→U3b→U6a→U5→U6b(3 PRs)→U13 ≈ 9 units. At ~30 min/unit with no waiting on merge/deploy: ~4.5 h + ~1 h proof tail ≈ **5.5 h vs 18.6 h actual (≈3.4×)**. Not more because the chain was real (registry → targets → jobs → pane), and U13 was declared "after everything".
+
+## 9. Gemini 4 Argon on Google AI Pro (Exa run agent_run_1abcee683c4c42c4aa8f287f85b6042b, $0.10)
+
+- Paid Pro gets Argon in Antigravity CLI (antigravity.google/docs/models).
+- Quota is compute-based, refreshes every 5 h until a weekly cap; **no published numbers** (antigravity.google/docs/plans). Ultra = 5×/20× Pro.
+- `agy -p` likely draws the same pool; 2026 GitHub issues report Pro lockouts after 2 prompts and 168 h weekly lockouts (antigravity-cli #56, #234).
+- At the limit: wait for refresh, or AI-credit overage if enabled. No automatic fallback.
+- Use: adversarial review + at most 1 lane for the hardest slice; check `/usage` interactively after the first reviews.
