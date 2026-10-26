@@ -2,10 +2,14 @@
 // Cancel one lab Guest Stay. Aborts unless confirmation, name, and arrival match.
 import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { labGuard, parsePenalty } from './cancel-stay-rules.mjs';
+import { parseStayProperty, propertySecretRefusal } from './property-profile.mjs';
+import { withWriteCliPage } from './write-cli-lease.mjs';
+
+export { withWriteCliPage as withLeasedWritePage };
 
 const TARGET = {
   confirmation: '11110906-1',
@@ -186,20 +190,31 @@ async function cancelOpenRecord(page) {
   return { penaltyPending: null };
 }
 
-async function main() {
+export async function main(argv = process.argv.slice(2)) {
+  const property = parseStayProperty(argv);
+  if (!property.ok) {
+    process.stderr.write(`${property.error}\n`);
+    process.exitCode = property.exitCode ?? 2;
+    return property.exitCode ?? 2;
+  }
   const dir = outDir();
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const url = new URL(process.env.HMS_STAGEHAND_CDP_URL);
   if (!['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) throw new Error('PRIVATE_CDP_REQUIRED');
   if (process.env.HMS_STAGEHAND_BROWSER_OWNERSHIP !== 'borrowed') throw new Error('BORROWED_REQUIRED');
   const secret = await readSecret();
+  const hotelMismatch = propertySecretRefusal(secret, property.propertyCode);
+  if (hotelMismatch) throw new Error(hotelMismatch);
   const browser = await playwright().chromium.connectOverCDP(url.href, { timeout: 20000 });
   const context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
-  const page = await context.newPage();
-  page.setDefaultTimeout(20000);
   const result = { target: TARGET, cancelled: false };
+  let page = null;
   try {
-    await login(page, secret);
+    await withWriteCliPage({
+      propertyCode: property.propertyCode, secret, context, browser, env: process.env,
+    }, async ({ page: leased }) => {
+      page = leased;
+      page.setDefaultTimeout?.(20000);
     await openGuestStayScreen(page);
     await page.waitForTimeout(1500);
     await shot(page, dir, 'cancel-list.png');
@@ -245,6 +260,7 @@ async function main() {
     result.cancelled = sameStay({ ...after, status: before.status }) && /cancel/i.test(after.status);
     result.outcome = result.cancelled ? 'cancelled' : 'cancel_failed';
     await shot(page, dir, 'cancel-after.png');
+    });
   } catch (error) {
     result.outcome = 'execution_failure';
     result.error = String(error.message || error);
@@ -257,9 +273,12 @@ async function main() {
     process.stdout.write(`${result.outcome}\n`);
     if (result.outcome !== 'cancelled' && result.outcome !== 'already_cancelled') process.exitCode = 2;
   }
+  return process.exitCode ?? 0;
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.message || error}\n`);
-  process.exitCode = 2;
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    process.stderr.write(`${error.message || error}\n`);
+    process.exitCode = 2;
+  });
+}
