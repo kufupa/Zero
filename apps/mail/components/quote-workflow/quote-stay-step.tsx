@@ -288,7 +288,7 @@ export function QuoteStayStep({
   children?: ReactNode;
 }) {
   return (
-    <Section step={3} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
+    <Section step={2} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
       {stays.map((stay, index) => (
         <div key={stay.rows[0]?.id ?? stay.id} className="flex flex-col gap-2">
           <StayAskChrome session={session} stay={stay} onSelectStayKey={onSelectStayKey} />

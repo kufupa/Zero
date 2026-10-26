@@ -3145,24 +3145,24 @@ describe('NavaPane contact and translation on both surfaces', () => {
     ['the Outlook pane', false],
     ['the webmail panel', true],
   ] as const) {
-    it(`${surface}: keeps the four numbered quote sections in reservationist order with rates inside Stay`, async () => {
+    it(`${surface}: keeps the numbered quote sections in reservationist order with rates inside Stay`, async () => {
       bridgeMockState.storedWork = STORED_FRENCH;
       const { container } = render(<NavaPane bridge={fakeBridge} preview={preview} />);
       await waitFor(() => expect(container.querySelector('#quote-quote')).not.toBeNull(), { timeout: 5000 });
       const steps = [
         'quote-party',
-        'quote-authority',
         'quote-stay',
         'quote-quote',
       ].map((id) => container.querySelector(`#${id}`));
       const rates = container.querySelector('#quote-rates');
-      const stay = steps[2] as HTMLElement;
-      const documents = steps[3] as HTMLElement;
+      const stay = steps[1] as HTMLElement;
+      const documents = steps[2] as HTMLElement;
       expect(container.querySelector('#quote-extras')).toBeNull();
+      expect(container.querySelector('#quote-authority')).toBeNull();
       expect(steps.every(Boolean)).toBe(true);
       expect(rates).not.toBeNull();
       expect(stay.contains(rates)).toBe(true);
-      expect(documents.querySelector('h3 span')?.textContent).toBe('4');
+      expect(documents.querySelector('h3 span')?.textContent).toBe('3');
       for (let index = 1; index < steps.length; index += 1) {
         expect(steps[index - 1]!.compareDocumentPosition(steps[index]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       }
