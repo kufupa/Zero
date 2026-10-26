@@ -15,7 +15,7 @@ Owner prefs that matter: caveman + adhd replies; times in UK; $ by model; speed 
 6. Runtime rules digest: `/tmp/or2/RULES.md`; lane prompt: `/tmp/or2/lane-protocol.md` (incl. NO-MEMORY CHECKLIST for Grok/Luna lanes).
 
 ## 2. Where things stand (13:55 UK)
-**Live on prod:** `809f5fa` (deploy train, 13:47). T1 complete (34/34) + T2: H1, H2, I, L1, L2, HMSDOWN, plus green-main WORKITEMS, PANE-A, VITE. DISK #600 and PANE-B #604 merged, deploying next.
+**Live on prod:** `1e7c564` (14:06 UK). **Deploy train PAUSED 14:21 UK**: `eeb86f9` (J1) carries additive migration `0054_work_item_revision.sql`; ops-deploy refuses without `--migrate`. Needs owner OK, then `cd .worktrees/recover-parse-failure && bash apps/server-pilot/deploy/ops-deploy.sh --migrate`, verify, `kill -CONT $(cat /tmp/or2/deploy/train.pid)`.
 
 | Staff-visible | State |
 |---|---|
@@ -86,7 +86,8 @@ Safe and useful now (pick by ROI):
 | 7.3 | DV multi-room-type room profile refresh | 12:38 UK failure |
 | 7.4 | R-SEED via source-aware rate-pick store | R-SEED.blocked |
 | 7.5 | Interim leftovers: idempotency keys ignore dead-letter state; `staff_quote_private_file_invalid` classed transient; prepared-quote attach dead-letters at attempt 1/2; deploy-train fixture tests (#576 P2) | retro §11 |
-| 7.6 | DS4-G2a stale blocker: PR #589 merged earlier → just delete `/tmp/or2/fix/DS4-G2a.blocked` | coord |
+| 7.6 | ~~DS4-G2a stale blocker~~ cleared 14:36 UK | coord |
+| 7.8 | **mail.send rejects a staff-approved Azure-drafted reply** (wire-compat.ts:67-69 only accepts in_process route; found by GREEN-TYPES-PROD; reply-composer.tsx:285 TS2345 left as the marker) | /tmp/or2/fix/BUG-mail-send-azure-route.md |
 | 7.7 | Owner canaries: Needs-you (DS2-S5), PDF on a priced DV quote (DS4-K2) | retro §11 |
 
 ## 8. Owner asks this session (log as rows 234–237 in OWNER-ASKS.md)
