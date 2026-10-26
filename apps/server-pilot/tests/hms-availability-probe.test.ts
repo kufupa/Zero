@@ -224,12 +224,12 @@ function probeEnv(overrides: Record<string, string> = {}): Record<string, string
   return { ...process.env, HMS_JOB_QUEUE: 'on', HMS_AVAILABILITY_PREFETCH: 'on', ...overrides } as Record<string, string>;
 }
 
-function extractionRun(messageId: string, admitted = true) {
+function extractionRun(messageId: string, admissionSnapshotId?: string | null) {
   return {
     runKind: 'inbound_extraction' as const,
     transportId: TRANSPORT_ID,
     triggerMessageId: messageId,
-    admissionSnapshotId: admitted ? `snapshot-${randomUUID()}` : null,
+    ...(admissionSnapshotId !== undefined ? { admissionSnapshotId } : {}),
   };
 }
 
@@ -262,6 +262,26 @@ async function seedExtraction(
     status: 'succeeded',
     kind,
     payload: payload as Record<string, unknown>,
+  });
+  const [row] = await db
+    .select({ threadId: message.threadId, transportId: message.transportId })
+    .from(message)
+    .where(eq(message.id, messageId))
+    .limit(1);
+  if (!row) throw new Error('seedExtraction: message missing');
+  await db.insert(aiWorkflowRun).values({
+    id: randomUUID(),
+    transportId: row.transportId,
+    threadId: row.threadId,
+    triggerMessageId: messageId,
+    runKind: 'inbound_extraction',
+    idempotencyKey: `inbound-extraction:${messageId}`,
+    modelId: 'not_applicable',
+    promptVersion: 'extract-u10-test',
+    admissionSnapshotId: `snapshot-${randomUUID()}`,
+    state: 'succeeded',
+    executorLane: 'default',
+    priority: 0,
   });
 }
 
@@ -734,7 +754,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     withSeededTestDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
-      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId, false), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId, null), db, probeEnv())).toBe(0);
       expect(await availabilityRuns(db)).toHaveLength(0);
     }));
 
