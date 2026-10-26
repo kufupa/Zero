@@ -178,6 +178,7 @@ import {
   schedulePrefetchForInbound,
   type HmsRecoveryGate,
 } from './hms-jobs.js';
+import { executeQuotePdfJob, isQuotePdfRun, quotePdfResultOf } from './quote-pdf-jobs.js';
 import type { ExistingDocumentScope } from '../mail/artifacts/existing-document-contracts.js';
 import { persistMailBaselineProjection } from '../metrics/mail-baseline-projection.js';
 import type { LocalModelRouteEvidence, LocalModelTransport } from './bedrock/local.js';
@@ -4317,6 +4318,26 @@ export async function executeAiRun(
     }, AI_LEASE_HEARTBEAT_INTERVAL_MS);
 
     if (signal.aborted) throw new RunDeadlineError();
+
+    if (isQuotePdfRun(run)) {
+      const persisted = quotePdfResultOf(run);
+      if (persisted) {
+        const state = await executeQuotePdfJob({ run, fence, generate: async () => persisted });
+        return { runId, state };
+      }
+      // HTTP owner generates; yield so a reconnect can persist the same key.
+      const requeued = await markAiRunRetry({
+        runId,
+        claimOwner: owner,
+        claimToken,
+        expectedStates: ['running'],
+        attempts: run.attempts,
+        nextRunAt: new Date(Date.now() + 3_000),
+        lastError: 'quote_pdf_waiting',
+        failureClass: 'UNKNOWN',
+      });
+      return { runId, state: requeued ? 'retry_wait' : 'dead_letter' };
+    }
 
     // Pane HMS jobs run through the CLI under the property lock, so they do not need the read service.
     if (run.runKind === 'read_tool' && run.promptVersion === HMS_JOB_PROMPT_VERSION) {

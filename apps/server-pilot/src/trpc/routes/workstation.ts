@@ -109,6 +109,13 @@ import {
   staffQuoteResultReusable,
 } from '../../ai/hms-jobs.js';
 import { HMS_JOB_PROMPT_VERSION } from '../../ai/run-ledger.js';
+import {
+  enqueueQuotePdfJob,
+  executeQuotePdfJob,
+  quotePdfResultOf,
+  readQuotePdfJob,
+  type QuotePdfResult,
+} from '../../ai/quote-pdf-jobs.js';
 
 export {
   insufficientInventoryMessage,
@@ -241,6 +248,7 @@ export const qualifiedProposalInput = z
     notes: z.string().trim().max(1000).optional(),
     // Empty for one stay. A combined quote lists its other stays here; the first stay stays in the fields above.
     additionalStays: z.array(qualifiedStayInput).max(62).default([]),
+    workItemId: z.string().uuid().optional(),
   })
   .strict();
 export function resolveLedgerProposal(
@@ -1423,6 +1431,39 @@ export const workstationRouter = router({
       await awaitPendingStaffQuote(input.workflowRunId);
       if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
         throw new TRPCError({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' });
+      const asPdf = (artifact: QuotePdfResult) => ({
+        revisionId: artifact.revisionId,
+        pdfHash: artifact.pdfHash,
+        fileName: artifact.fileName,
+        totalMinor: artifact.totalMinor,
+        pdfBase64: artifact.pdfBase64,
+      });
+      const [mail] = await getDb()
+        .select({ fromAddress: message.fromAddress, threadId: message.threadId })
+        .from(message)
+        .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
+        .limit(1);
+      let jobRun: Awaited<ReturnType<typeof enqueueQuotePdfJob>>['run'] | undefined;
+      if (input.workItemId) {
+        if (!mail) throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
+        const stored = await readQuotePdfJob({
+          transportId: ctx.activeTransportId,
+          workItemId: input.workItemId,
+          revisionId: input.revisionRef,
+        });
+        if (stored?.result) return asPdf(stored.result);
+        const enqueued = await enqueueQuotePdfJob({
+          transportId: ctx.activeTransportId,
+          threadId: mail.threadId,
+          triggerMessageId: input.messageId,
+          workItemId: input.workItemId,
+          revisionId: input.revisionRef,
+          propertyCode: hmsReadTargetForTransport(ctx.activeTransportId).propertyCode,
+        });
+        jobRun = enqueued.run;
+        const already = quotePdfResultOf(enqueued.run);
+        if (already) return asPdf(already);
+      }
       const stays = await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
       const url = process.env.GOTENBERG_URL?.trim();
       if (!url)
@@ -1452,18 +1493,14 @@ export const workstationRouter = router({
         throw error;
       }
       await proposalStaysFor(input, ctx, 'Proposal evidence expired during conversion');
-      const [mail] = await getDb()
-        .select({ fromAddress: message.fromAddress })
-        .from(message)
-        .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
-        .limit(1);
       const party = quotePdfPartyName(
         input.agency,
         input.company,
         input.attention,
         quotePdfSenderDisplayName(mail?.fromAddress),
       );
-      return {
+      const artifact: QuotePdfResult = {
+        kind: 'quote_pdf',
         revisionId: result.revisionId,
         pdfHash: result.pdfHash,
         fileName: retargetQuotePdfFileName(
@@ -1474,7 +1511,30 @@ export const workstationRouter = router({
         totalMinor: result.totalMinor,
         pdfBase64: Buffer.from(result.pdf).toString('base64'),
       };
+      if (jobRun) {
+        const state = await executeQuotePdfJob({ run: jobRun, generate: async () => artifact });
+        if (state !== 'succeeded') {
+          await executeQuotePdfJob({ run: jobRun, generate: async () => artifact });
+        }
+      }
+      return asPdf(artifact);
     }),
+  quotePdfJob: mailboxProcedure
+    .input(
+      z
+        .object({
+          workItemId: z.string().uuid(),
+          revisionRef: z.string().min(1),
+        })
+        .strict(),
+    )
+    .query(({ input, ctx }) =>
+      readQuotePdfJob({
+        transportId: ctx.activeTransportId,
+        workItemId: input.workItemId,
+        revisionId: input.revisionRef,
+      }),
+    ),
   /**
    * Excel twin of qualifiedQuoteProposalPdf: the same ownership, transport and currency checks, then every approved
    * stay's revision and authorised extras written into the staff quotation template.
