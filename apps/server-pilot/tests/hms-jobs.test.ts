@@ -2032,7 +2032,84 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(staffQuoteRunner.run).not.toHaveBeenCalled();
     }));
 
-  it('dead-letters an already-attempted prepared quote as exhausted', () =>
+  it('retries a prepared quote after one transient failure', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId } = await seedThread(db, 'Quote request');
+      const { run } = await enqueueHmsJob({
+        transportId: TRANSPORT_ID,
+        threadId,
+        triggerMessageId: messageId,
+        workItemId: null,
+        userId: null,
+        request: {
+          kind: 'staff_quote',
+          input: staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId, selectionEpoch: 0, inputRevision: 0 }),
+        },
+        priority: HMS_JOB_PRIORITY_PREFETCH,
+        idempotencyKey: `hms-job:staff-quote-prepared:transient:${randomUUID()}`,
+        extraMetrics: { quotePrepared: true },
+      }, db);
+      staffQuoteRunner.run.mockRejectedValueOnce(new Error('native session ECONNRESET'));
+
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('retry_wait');
+      const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(stored).toMatchObject({
+        state: 'retry_wait',
+        attempts: 1,
+        failureClass: 'TRANSIENT_NETWORK',
+        lastError: 'staff quote execution failed',
+      });
+    }));
+
+  it('stores a prepared quote precondition refusal without retrying', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId } = await seedThread(db, 'Quote request');
+      const { run } = await enqueueHmsJob({
+        transportId: TRANSPORT_ID,
+        threadId,
+        triggerMessageId: messageId,
+        workItemId: null,
+        userId: null,
+        request: {
+          kind: 'staff_quote',
+          input: staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId, selectionEpoch: 0, inputRevision: 0 }),
+        },
+        priority: HMS_JOB_PRIORITY_PREFETCH,
+        idempotencyKey: `hms-job:staff-quote-prepared:refused:${randomUUID()}`,
+        extraMetrics: { quotePrepared: true },
+      }, db);
+      const alternatives = [
+        { groupId: 'single', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin', quantity: 1 },
+      ];
+      staffQuoteRunner.run.mockRejectedValue(
+        new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: 'HMS has no rate for this meal plan under BAR.',
+          cause: { alternatives },
+        }),
+      );
+
+      expect(await runClaimedJob(db, await claimJob(db))).toBe('succeeded');
+      const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(stored).toMatchObject({
+        state: 'succeeded',
+        attempts: 0,
+        failureClass: null,
+        lastError: null,
+      });
+      expect(stored?.readResult).toMatchObject({
+        ok: false,
+        code: 'PRECONDITION_FAILED',
+        message: 'HMS has no rate for this meal plan under BAR.',
+        alternatives,
+      });
+    }));
+
+  it('dead-letters a prepared quote once the transient retry budget is spent', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
@@ -2051,10 +2128,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         idempotencyKey: `hms-job:staff-quote-prepared:exhausted:${randomUUID()}`,
         extraMetrics: { quotePrepared: true },
       }, db);
-      await db.update(aiWorkflowRun).set({ attempts: 1 }).where(eq(aiWorkflowRun.id, run.id));
+      await db.update(aiWorkflowRun).set({ attempts: 3 }).where(eq(aiWorkflowRun.id, run.id));
 
       const claimed = await claimJob(db);
-      await expect(runClaimedJob(db, { ...claimed, attempts: 1 })).resolves.toBe('dead_letter');
+      await expect(runClaimedJob(db, { ...claimed, attempts: 3 })).resolves.toBe('dead_letter');
 
       const [stopped] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
       expect(stopped).toMatchObject({

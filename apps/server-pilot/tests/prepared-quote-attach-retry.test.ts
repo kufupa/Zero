@@ -112,18 +112,22 @@ afterEach(() => {
 });
 
 describe('prepared quote attach-phase retry', () => {
-  it('does not retry a prepared quote after a non-attach transient failure', async () => {
+  it('retries a prepared quote after a non-attach transient failure', async () => {
     const { run, fence } = preparedRun();
     jobMocks.runStaffQuote.mockRejectedValue(new Error('Target page, context or browser has been closed'));
 
-    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('retry_wait');
 
     expect(jobMocks.runStaffQuote).toHaveBeenCalledOnce();
-    expect(jobMocks.markDeadLetter).toHaveBeenCalledWith(
-      expect.objectContaining({ failureClass: 'TRANSIENT_NETWORK', lastError: 'staff quote execution failed' }),
+    expect(jobMocks.markRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempts: 1,
+        failureClass: 'TRANSIENT_NETWORK',
+        lastError: 'staff quote execution failed',
+      }),
       db,
     );
-    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+    expect(jobMocks.markDeadLetter).not.toHaveBeenCalled();
   });
 
   it('requeues a prepared quote once when the reader fails in the attach phase', async () => {
@@ -226,8 +230,8 @@ describe('prepared quote attach-phase retry', () => {
     expect(jobMocks.markDeadLetter).not.toHaveBeenCalled();
   });
 
-  it('still exhausts a prepared quote that already used a non-attach attempt', async () => {
-    const { run, fence } = preparedRun({ attempts: 1 });
+  it('still exhausts a prepared quote that already used the transient retry budget', async () => {
+    const { run, fence } = preparedRun({ attempts: 3 });
 
     await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
 
