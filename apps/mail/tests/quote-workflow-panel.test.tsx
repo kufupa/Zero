@@ -1966,6 +1966,195 @@ describe('the Find in HMS picker in the quote header', () => {
     );
   });
 
+  it('keeps remaining all-room choices after selecting a room in the same Stay', async () => {
+    const base = sessionFromFixture('public-single');
+    const first = {
+      ...base.groups[0]!,
+      id: 'availability-room-1',
+      stayId: 'extracted-stay',
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+      roomPreference: 'Requested queen',
+      roomTypeCode: undefined,
+      roomCodes: undefined,
+      quantity: 1,
+      adults: 2,
+      childrenAges: [],
+    };
+    const second = {
+      ...base.groups[0]!,
+      id: 'availability-room-2',
+      stayId: 'extracted-stay',
+      arrivalDate: first.arrivalDate,
+      departureDate: first.departureDate,
+      roomPreference: 'Requested twin',
+      roomTypeCode: undefined,
+      roomCodes: undefined,
+      quantity: 1,
+      adults: 2,
+      childrenAges: [],
+    };
+    const session: QuoteSession = {
+      ...base,
+      binding: { ...base.binding!, threadId: 'availability-thread', transportId: 'test-transport' },
+      groups: [first, second],
+    };
+    const originalRoomTypes = ['Requested queen', 'Requested twin'];
+    const asOf = new Date().toISOString();
+    const snapshot = {
+      status: 'done' as const,
+      asOf,
+      result: {
+        outcome: 'read',
+        roomScope: 'all_room_types',
+        observedAt: asOf,
+        groups: [
+          {
+            id: 'group-1',
+            options: [{ room: 'TEST-QUEEN', availability: 'available' }],
+          },
+          {
+            id: 'group-2',
+            options: [{ room: 'TEST-TWIN', availability: 'available' }],
+          },
+        ],
+      },
+    };
+    const readAvailability = vi.fn(async (request: {
+      arrival: string;
+      departure: string;
+      rooms: Array<{ roomType: string }>;
+    }) =>
+      request.arrival === first.arrivalDate &&
+      request.departure === first.departureDate &&
+      request.rooms.map((room) => room.roomType).join('|') === originalRoomTypes.join('|')
+        ? snapshot
+        : null,
+    );
+    const paneConfig: QuotePaneConfig = {
+      transportId: 'test-transport',
+      propertyCode: HRDAV_PROPERTY_CODE,
+      roomTypes: [
+        { code: 'TEST-QUEEN', label: 'Example Queen' },
+        { code: 'TEST-TWIN', label: 'Example Twin' },
+      ],
+      ratePlans: [],
+      boards: ['bb'],
+      salesStrategies: [{ code: 'BAR', label: 'Best Available Rate', requestValue: 'BAR' }],
+      overrideRateCodes: [],
+      eventRateCodes: [],
+    };
+    let currentSession: QuoteSession = session;
+    const onPatchGroup = vi.fn((groupId: string, patch: Partial<StayGroupRequirement>) => {
+      currentSession = {
+        ...currentSession,
+        groups: currentSession.groups.map((row) =>
+          row.id === groupId ? { ...row, ...patch } : row,
+        ),
+      };
+    });
+    const panel = (value: QuoteSession) => (
+      <QuoteWorkflowPanel
+        session={value}
+        availabilityReader={readAvailability}
+        paneConfig={paneConfig}
+        onPatchGroup={onPatchGroup}
+      />
+    );
+    const { rerender } = render(panel(currentSession));
+
+    const queen = await screen.findByRole('button', {
+      name: 'Use Example Queen for stay 1, room 1',
+    });
+    expect(
+      await screen.findByRole('button', { name: 'Use Example Twin for stay 1, room 2' }),
+    ).toBeDefined();
+    const readsBeforePick = readAvailability.mock.calls.length;
+
+    fireEvent.click(queen);
+    expect(onPatchGroup).toHaveBeenCalledWith(
+      first.id,
+      expect.objectContaining({ roomPreference: 'TEST-QUEEN' }),
+    );
+    rerender(panel(currentSession));
+
+    await waitFor(() => expect(readAvailability).toHaveBeenCalledTimes(readsBeforePick));
+    expect(
+      screen.getByRole('button', { name: 'Use Example Twin for stay 1, room 2' }),
+    ).toBeDefined();
+  });
+
+  it('does not reuse admitted availability after Stay occupancy changes', async () => {
+    const base = sessionFromFixture('public-single');
+    const group = {
+      ...base.groups[0]!,
+      id: 'availability-room',
+      stayId: 'extracted-stay',
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+      roomPreference: 'Requested queen',
+      roomTypeCode: undefined,
+      roomCodes: undefined,
+      quantity: 1,
+      adults: 2,
+      childrenAges: [],
+    };
+    const session: QuoteSession = {
+      ...base,
+      binding: { ...base.binding!, threadId: 'availability-thread', transportId: 'test-transport' },
+      groups: [group],
+    };
+    const asOf = new Date().toISOString();
+    const snapshot = {
+      status: 'done' as const,
+      asOf,
+      result: {
+        outcome: 'read',
+        roomScope: 'all_room_types',
+        observedAt: asOf,
+        groups: [{
+          id: 'group-1',
+          options: [{ room: 'TEST-QUEEN', availability: 'available' }],
+        }],
+      },
+    };
+    const readAvailability = vi.fn(async (request: { rooms: Array<{ adults: number }> }) =>
+      request.rooms[0]?.adults === 2 ? snapshot : null,
+    );
+    const paneConfig: QuotePaneConfig = {
+      transportId: 'test-transport',
+      propertyCode: HRDAV_PROPERTY_CODE,
+      roomTypes: [{ code: 'TEST-QUEEN', label: 'Example Queen' }],
+      ratePlans: [],
+      boards: ['bb'],
+      salesStrategies: [{ code: 'BAR', label: 'Best Available Rate', requestValue: 'BAR' }],
+      overrideRateCodes: [],
+      eventRateCodes: [],
+    };
+    const panel = (value: QuoteSession) => (
+      <QuoteWorkflowPanel
+        session={value}
+        availabilityReader={readAvailability}
+        paneConfig={paneConfig}
+      />
+    );
+    const { rerender } = render(panel(session));
+
+    expect(
+      await screen.findByRole('button', { name: 'Use Example Queen for stay 1, room 1' }),
+    ).toBeDefined();
+    rerender(panel({ ...session, groups: [{ ...group, adults: 3 }] }));
+
+    await waitFor(() =>
+      expect(readAvailability).toHaveBeenCalledWith(
+        expect.objectContaining({ rooms: [expect.objectContaining({ adults: 3 })] }),
+      ),
+    );
+    expect(
+      screen.queryByRole('button', { name: 'Use Example Queen for stay 1, room 1' }),
+    ).toBeNull();
+  });
+
   it('keeps availability rows empty when the snapshot admission was denied', async () => {
     const base = sessionFromFixture('public-single');
     const group = {
