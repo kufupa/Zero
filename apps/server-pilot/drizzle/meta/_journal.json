@@ -379,6 +379,13 @@
       "when": 1791072020000,
       "tag": "0053_party_sender_property",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1791072021000,
+      "tag": "0054_work_item_revision",
+      "breakpoints": true
     }
   ]
 }
