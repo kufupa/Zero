@@ -18,6 +18,7 @@ import {
   paneStaySaveEnabled,
   paneStaySaveLoaders,
   paneWriteMode,
+  clearPanePreviewMemory,
   paneWriteModes,
   paneStayCreatePropertyArgs,
   paneStayCreateSpawnEnv,
@@ -57,6 +58,12 @@ import {
   stayCommitOf,
   withStayCommit,
 } from '../src/ai/work-items.js';
+import {
+  stayPreviewGrantOf,
+  stayPreviewOf,
+  withStayPreview,
+  withoutStayPreview,
+} from '../src/ai/pane-stay-preview-persist.js';
 
 const labStay = {
   firstName: 'Pat',
@@ -117,6 +124,8 @@ afterEach(() => {
   paneStaySaveLoaders.osressGuestDatesSearch = null;
   paneStaySaveLoaders.mode = null;
   paneStaySaveLoaders.now = null;
+  paneStaySaveLoaders.previewPersist = null;
+  clearPanePreviewMemory();
   vi.unstubAllEnvs();
 });
 
@@ -1280,5 +1289,77 @@ describe('stay commit persist/reload', () => {
       status: 'unknown',
       screenshotRef: booked.screenshotRef,
     });
+  });
+});
+
+describe('pane stay preview persist', () => {
+  it('preview survives service restart and digest change invalidates it', async () => {
+    enableSave();
+    let state: Record<string, unknown> = {};
+    paneStaySaveLoaders.previewPersist = {
+      record: ({ stayId, digest, now }) => {
+        state = withStayPreview(state, stayId, {
+          digest,
+          status: 'previewed',
+          expiresAt: now + PANE_PREVIEW_TTL_MS,
+        });
+      },
+      take: ({ stayId, digest, now }) => {
+        const grant = stayPreviewGrantOf(stayPreviewOf(state, stayId), digest, now);
+        state = withoutStayPreview(state, stayId);
+        return Boolean(grant);
+      },
+    };
+    const spawned: string[] = [];
+    paneStaySaveLoaders.spawn = async (input) => {
+      spawned.push(input.paneCommit ? 'commit' : 'preview');
+      if (!input.paneCommit) {
+        expect(input.stopBefore).toBe('save');
+        expect(input.paneCommit).toBeFalsy();
+      }
+      return cliSpawn(input);
+    };
+    const workItemId = randomUUID();
+    const stayId = 's_1';
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner, workItemId, stayId });
+    expect(preview).toMatchObject({
+      status: 'ok',
+      outcome: 'previewed',
+      clickedSave: false,
+      previewDigest: paneStayDigest(labStay),
+    });
+    expect(spawned).toEqual(['preview']);
+    expect(stayPreviewOf(state, stayId)?.digest).toBe(paneStayDigest(labStay));
+
+    clearPanePreviewMemory();
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: labStay,
+        owner,
+        workItemId,
+        stayId,
+        previewDigest: preview.previewDigest as string,
+      }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
+    expect(stayPreviewOf(state, stayId)).toBeUndefined();
+
+    const second = await runPaneStay({ mode: 'preview', stay: labStay, owner, workItemId, stayId });
+    clearPanePreviewMemory();
+    const changed = { ...labStay, roomType: 'DBL' };
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: changed,
+        owner,
+        workItemId,
+        stayId,
+        previewDigest: paneStayDigest(changed),
+      }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
+    expect(stayPreviewOf(state, stayId)).toBeUndefined();
+    expect(second.clickedSave).toBe(false);
+    expect(spawned).toEqual(['preview', 'commit', 'preview']);
   });
 });

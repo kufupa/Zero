@@ -50,6 +50,7 @@ import {
 } from './workflow-classifier/index.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
+import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -1506,6 +1507,8 @@ export type StoredWork =
       contact: StoredContact;
       /** Last HMS commit per stay, keyed by extraction stay id. Empty until a stay is booked. */
       stays: Record<string, StayCommitRecord>;
+      /** Last Book preview grant per stay. Digest-bound status, never a reusable token. */
+      stayPreviews: Record<string, StayPreviewRecord>;
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
       translation: StoredTranslation;
@@ -1615,6 +1618,7 @@ async function readyView(
     },
     contact: storedContact(read.payload, state),
     stays: stayCommitsOf(state),
+    stayPreviews: stayPreviewsOf(state),
     language: read.language,
     translation: storedTranslation(read.translation),
   };

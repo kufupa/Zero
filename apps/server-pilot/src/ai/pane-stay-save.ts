@@ -171,6 +171,22 @@ export type PaneStayLock = {
   withLock: <T>(fn: () => Promise<T>, acquisition?: PropertyReadLockAcquisitionOptions) => Promise<T>;
 };
 
+/** Work-item + stay digest grant. Source of truth across restarts; never a reusable token. */
+export type PaneStayPreviewPersist = {
+  record: (input: {
+    workItemId: string;
+    stayId: string;
+    digest: string;
+    now: number;
+  }) => Promise<void> | void;
+  take: (input: {
+    workItemId: string;
+    stayId: string;
+    digest: string;
+    now: number;
+  }) => Promise<boolean> | boolean;
+};
+
 export const paneStaySaveLoaders: {
   spawn: ((input: PaneStaySpawnInput) => Promise<PaneStaySpawnResult>) | null;
   lock: PaneStayLock | null;
@@ -184,12 +200,14 @@ export const paneStaySaveLoaders: {
     | null;
   mode: (() => PaneSaveMode) | null;
   now: (() => number) | null;
+  previewPersist: PaneStayPreviewPersist | null;
 } = {
   spawn: null,
   lock: null,
   osressGuestDatesSearch: null,
   mode: null,
   now: null,
+  previewPersist: null,
 };
 
 // Shared with the cancel path, so tests drive one clock for both.
@@ -387,6 +405,59 @@ export function takePanePreview(owner: string, digest: string, now: number): boo
   return expiresAt !== undefined && expiresAt > now;
 }
 
+/** Drops in-memory grants. Durable work-item rows survive; used to simulate a service restart. */
+export function clearPanePreviewMemory(): void {
+  panePreviews.clear();
+}
+
+function boundPreviewPersist(
+  input: { previewPersist?: PaneStayPreviewPersist | null; workItemId?: string; stayId?: string },
+): PaneStayPreviewPersist | null {
+  if (!input.workItemId || !input.stayId) return null;
+  return input.previewPersist ?? paneStaySaveLoaders.previewPersist;
+}
+
+async function recordBoundPreview(input: {
+  owner: string;
+  digest: string;
+  now: number;
+  workItemId?: string;
+  stayId?: string;
+  previewPersist?: PaneStayPreviewPersist | null;
+}): Promise<void> {
+  recordPanePreview(input.owner, input.digest, input.now);
+  const persist = boundPreviewPersist(input);
+  if (!persist || !input.workItemId || !input.stayId) return;
+  await persist.record({
+    workItemId: input.workItemId,
+    stayId: input.stayId,
+    digest: input.digest,
+    now: input.now,
+  });
+}
+
+async function takeBoundPreview(input: {
+  owner: string;
+  digest: string;
+  now: number;
+  workItemId?: string;
+  stayId?: string;
+  previewPersist?: PaneStayPreviewPersist | null;
+}): Promise<boolean> {
+  const persist = boundPreviewPersist(input);
+  if (persist && input.workItemId && input.stayId) {
+    const taken = await persist.take({
+      workItemId: input.workItemId,
+      stayId: input.stayId,
+      digest: input.digest,
+      now: input.now,
+    });
+    takePanePreview(input.owner, input.digest, input.now);
+    return taken;
+  }
+  return takePanePreview(input.owner, input.digest, input.now);
+}
+
 // Run directories whose screenshots the owner can fetch. Expired runs are removed from disk.
 type PaneRun = { dir: string; owner: string; expiresAt: number };
 const paneRuns = new Map<string, PaneRun>();
@@ -518,6 +589,9 @@ export async function runPaneStay(input: {
   owner: string;
   previewDigest?: string;
   transportId?: string;
+  workItemId?: string;
+  stayId?: string;
+  previewPersist?: PaneStayPreviewPersist | null;
 }): Promise<PaneStayResult> {
   // Runs that outlived their retention window are removed here too, not only when a screenshot is read.
   await pruneExpiredPaneRuns(paneStayClock());
@@ -580,7 +654,17 @@ export async function runPaneStay(input: {
         if (status === 'busy') return { refusal: 'refused_lock_busy' };
         if (status === 'duplicate') return { refusal: 'osress_duplicate' };
         // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-        if (!takePanePreview(input.owner, digest, paneStayClock())) {
+        // Bound work-item grants are the durable source of truth; memory is consumed either way.
+        if (
+          !(await takeBoundPreview({
+            owner: input.owner,
+            digest,
+            now: paneStayClock(),
+            workItemId: input.workItemId,
+            stayId: input.stayId,
+            previewPersist: input.previewPersist,
+          }))
+        ) {
           return { refusal: 'pane_save_preview_required' };
         }
       }
@@ -621,7 +705,24 @@ export async function runPaneStay(input: {
     };
   }
   const previewed = input.mode === 'preview' && spawned.outcome === 'previewed';
-  if (previewed) recordPanePreview(input.owner, digest, paneStayClock());
+  if (previewed) {
+    try {
+      await recordBoundPreview({
+        owner: input.owner,
+        digest,
+        now: paneStayClock(),
+        workItemId: input.workItemId,
+        stayId: input.stayId,
+        previewPersist: input.previewPersist,
+      });
+    } catch (error) {
+      console.warn('stay_preview_persist_failed', {
+        stayId: input.stayId,
+        workItemId: input.workItemId,
+        error,
+      });
+    }
+  }
   if (spawned.runId && spawned.runDir) {
     registerPaneRun({
       runId: spawned.runId,
