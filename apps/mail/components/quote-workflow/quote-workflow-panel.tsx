@@ -54,7 +54,7 @@ import {
 } from '@/components/nava-pane/pane-ui';
 import { BOARD_LABELS } from './booking-card';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
-import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
+import type { PaneStayAvailabilityReader, PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { pdfBlockReason } from './document-review';
 import { QuoteBookingHost } from './quote-booking-host';
 import { QuoteDocumentsStep, type CurrentQuoteAction } from './quote-documents-step';
@@ -478,6 +478,7 @@ export function QuoteWorkflowPanel({
   hmsQueue,
   onLoadRunScreenshot,
   paneSave,
+  availabilityReader,
   partySuggestions,
   partyIndex,
   rates,
@@ -491,6 +492,8 @@ export function QuoteWorkflowPanel({
   session: QuoteSession;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
   paneSave?: PaneStayClient | null;
+  /** Read-only stored availability lookup; independent of whether saving to HMS is enabled. */
+  availabilityReader?: PaneStayAvailabilityReader | null;
   /** The stored read's contact (booker and company) for the HMS notes. Null while the mail has no stored read. */
   contact?: StoredContact | null;
   /** Key keeps Contact corrections scoped to the selected request/work item. */
@@ -1112,6 +1115,7 @@ export function QuoteWorkflowPanel({
           mealPlanForStay={mealPlanForStay}
           setMealPlanFilters={setMealPlanFilters}
           paneConfig={paneConfig}
+          availabilityReader={availabilityReader}
           paneRoomTypes={paneRoomTypes}
           strictRoomTypes={strictRoomTypes}
           paneBoards={paneBoards}
