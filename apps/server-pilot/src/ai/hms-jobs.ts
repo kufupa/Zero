@@ -143,9 +143,6 @@ import {
   markAiRunSucceeded,
   NOT_APPLICABLE_MODEL_ID,
 } from './run-ledger.js';
-import { enqueuePreparedQuoteWithinCap } from './prepared-quote-queue.js';
-
-export { enqueuePreparedQuoteWithinCap };
 
 /**
  * The queued pane path. Only the exact value `on` enables it. Off (the default), pane finds and searches run
@@ -1865,6 +1862,16 @@ export async function countRecentPrefetches(
       ),
     );
   return Number(row?.n ?? 0);
+}
+
+/** Compatibility export: load the moved helper after this module finishes initializing. */
+export async function enqueuePreparedQuoteWithinCap(
+  db: DB,
+  input: Parameters<typeof enqueueHmsJob>[0],
+  perHour: number,
+): Promise<boolean> {
+  const { enqueuePreparedQuoteWithinCap: enqueue } = await import('./prepared-quote-queue.js');
+  return enqueue(db, input, perHour);
 }
 
 /** Serializes the guest-search count and insert per transport so concurrent extractions cannot overspend the cap. */

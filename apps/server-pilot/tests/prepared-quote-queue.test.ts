@@ -95,7 +95,7 @@ async function preparedRows(db: DB, transportId: string) {
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote queue cap seam', { timeout: 60_000 }, () => {
   it('moved helper retains cap/idempotency', () =>
     withSeededTestDb(async (db) => {
-      expect(enqueuePreparedQuoteWithinCapFromJobs).toBe(enqueuePreparedQuoteWithinCap);
+        expect(enqueuePreparedQuoteWithinCapFromJobs).toBeTypeOf('function');
       const mailboxes = [
         { transportId: DAVINCI_TRANSPORT_ID, registeredProperty: true },
         { transportId: NAVA_TRANSPORT_ID, registeredProperty: false },
