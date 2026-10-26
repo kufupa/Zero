@@ -66,6 +66,19 @@ import { randomUUID } from 'node:crypto';
 
 export { staffQuoteRoomAlternatives, type StaffQuoteRoomAlternative };
 
+/** Spawn env for a quote/party child while this process holds the property lock. */
+export function staffQuoteChildEnv(
+  tenantId: string,
+  propertyCode: string,
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    HMS_PROPERTY_LOCK_HELD: propertyReadLockKey(tenantId, propertyCode),
+    PANE_STAY_TENANT_ID: tenantId,
+  };
+}
+
 const HMS_NOT_RESPONDED_MESSAGE =
   "HMS didn't respond as expected. Try again; if it fails twice, quote in HMS directly.";
 const HMS_UNPRICEABLE_COMBINATION_MESSAGE =
@@ -749,10 +762,7 @@ export async function runStaffQuote(
         async () => {
           await assertPreparedQuoteCanContinue(db, systemPrepared);
           queued.setPhase(1);
-          const childEnv = {
-            ...process.env,
-            HMS_PROPERTY_LOCK_HELD: propertyReadLockKey(config.tenantId, scope.propertyCode),
-          };
+          const childEnv = staffQuoteChildEnv(config.tenantId, scope.propertyCode);
           // One attempt is one approval, with its own services and authorization. A party rate HMS cannot price is
           // quoted once more at public rates, and the review says so.
           const quoteAt = (attempt: ReturnType<typeof prepareStaffQuote>) => {

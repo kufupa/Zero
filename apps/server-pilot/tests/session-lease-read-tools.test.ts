@@ -3,6 +3,7 @@ import {
   propertyReadLockKey,
   type PropertyReadConnection,
 } from '../src/hms/property-read-lock.js';
+import { staffQuoteChildEnv } from '../src/ai/staff-quote-run.js';
 import { createSlotSession } from '../src/hms/slot-session.js';
 import { withLeasedReadPage as createPreflightPage } from '../tooling/playwright-quote/create-preflight.mjs';
 import { withLeasedReadPage as fetchQuotePage } from '../tooling/playwright-quote/fetch-quote.mjs';
@@ -139,7 +140,6 @@ describe('read CLI session lease', () => {
   it('resolves the parent-held lock token before DATABASE_URL', async () => {
     const lookupProperty = (code: string) =>
       code === GENERIC_PROPERTY ? { propertyCode: GENERIC_PROPERTY } : null;
-    const held = propertyReadLockKey(LOCK_TENANT, GENERIC_PROPERTY);
     const otherProperty = propertyReadLockKey(LOCK_TENANT, 'HTLBB');
     const databaseUrl = 'postgres://lock-matrix.invalid/unused';
     const prepare = (env: NodeJS.ProcessEnv) =>
@@ -150,11 +150,13 @@ describe('read CLI session lease', () => {
         env,
       });
 
-    const matched = await prepare({
-      HMS_PROPERTY_LOCK_HELD: held,
-      DATABASE_URL: databaseUrl,
+    const matched = await prepareReadCliInput({
+      propertyCode: GENERIC_PROPERTY,
+      lookupProperty,
+      env: staffQuoteChildEnv(LOCK_TENANT, GENERIC_PROPERTY, { DATABASE_URL: databaseUrl }),
     });
     expect(matched.lockSource).toBe('parent-token');
+    expect(matched.tenantId).toBe(LOCK_TENANT);
     await expect(matched.lock.withLock(async (connection) => connection.query('SELECT 1'))).resolves.toEqual([
       { pg_try_advisory_lock: true },
     ]);

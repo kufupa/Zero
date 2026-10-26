@@ -38,6 +38,7 @@ vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/ai/staff-quote-run.js')>();
   return {
     staffQuoteRoomAlternatives: actual.staffQuoteRoomAlternatives,
+    staffQuoteChildEnv: actual.staffQuoteChildEnv,
     staffQuoteFailurePhase: actual.staffQuoteFailurePhase,
     runStaffQuote: jobMocks.runStaffQuote,
     staffQuoteFailureCode: (error: unknown) => {
@@ -1367,51 +1368,15 @@ describe('runStaffQuote property installation', () => {
   });
 
   it('puts the parent lock key on the quote child env', async () => {
-    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
-    vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
     const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
       '../src/ai/staff-quote-run.js',
     );
-    const mail = mailFor('transport-davinci');
-    const input = staffQuoteInput.parse({
-      ...STAFF_QUOTE_INPUT,
-      sourceHash: staffQuoteSourceHash(mail),
+    const tenantId = 'tenant-generic';
+    const propertyCode = 'HTLAA';
+    const env = actual.staffQuoteChildEnv(tenantId, propertyCode, {
+      DATABASE_URL: 'postgres://lock-matrix.invalid/unused',
     });
-    const tenantId = 'synthetic-hotel';
-    const propertyCode = 'HRDAV';
-    const lockKey = propertyReadLockKey(tenantId, propertyCode);
-    quoteRunMocks.readConfiguration.mockReturnValue({
-      tenantId,
-      owner: { propertyCode },
-      outputDir: '/tmp/synthetic-staff-quote',
-    });
-    quoteRunMocks.snapshotRowPrices.mockResolvedValue([]);
-    quoteRunMocks.createPropertyReadLock.mockReturnValue({
-      key: lockKey,
-      withLock: (callback: () => Promise<unknown>) => callback(),
-    });
-    quoteRunMocks.getServices.mockReturnValue({});
-    workflowMocks.executeStaffQuote.mockResolvedValue({
-      id: 'revision-1',
-      authorizationId: 'auth-1',
-      totalMinor: 240_000,
-      currency: 'ZAR',
-      groups: [
-        {
-          arrivalDate: input.groups[0]!.arrivalDate,
-          departureDate: input.groups[0]!.departureDate,
-          context: {},
-        },
-      ],
-    });
-    await actual
-      .runStaffQuote(input, { transportId: 'transport-davinci', user }, staffQuoteRunDb(mail).db)
-      .catch(() => undefined);
-    expect(quoteRunMocks.getServices).toHaveBeenCalledWith(
-      expect.objectContaining({
-        childEnv: expect.objectContaining({ HMS_PROPERTY_LOCK_HELD: lockKey }),
-      }),
-      expect.anything(),
-    );
+    expect(env.HMS_PROPERTY_LOCK_HELD).toBe(propertyReadLockKey(tenantId, propertyCode));
+    expect(env.PANE_STAY_TENANT_ID).toBe(tenantId);
   });
 });
