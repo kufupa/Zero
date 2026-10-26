@@ -1128,7 +1128,7 @@ describe('field events', () => {
       const after = await readyWork(db, 'e2');
       expect(after.analysis.groups[0]).toMatchObject({ quantity: 2 });
       expect(after.analysis.groups[0]!.departureDate).toBe('2027-10-27');
-      expect(after.analysis.groups[0]!.fields.departureDate).toBe('defaulted');
+      expect(after.analysis.groups[0]!.fields.departureDate).toBe('staff_corrected');
       expect(await eventsFor(db, work.workItemId)).toHaveLength(3);
     }));
 
