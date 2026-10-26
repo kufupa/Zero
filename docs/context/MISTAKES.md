@@ -4,6 +4,10 @@ One entry per lesson: trigger, what happened, rule. Newest first. Add an entry w
 
 | Date | Trigger | What happened | Rule |
 |---|---|---|---|
+| 2026-10-26 | or2 PM retro | Morning retro named 5 script fixes; 0 were built before the afternoon run, and the same delays repeated (manual clean-main checks, chained lanes, unchecked ETAs) | Retro fixes are T0 of the next run; speed-plan kickoff gate refuses to start until they are merged |
+| 2026-10-26 | J1/WIRE/DISK drew 24 of 32 Greptile P1s | 11 P1s were "adjacent": the next field/path in the same file after each per-field fix | Contract-heavy units carry the contract-risk checklist; the lane writes the race-matrix tests before the first push and fixes the class, not the field |
+| 2026-10-26 | Lanes blocked on a test failure waited for the coordinator to check clean main | ~297 lane-min blocked; 4 manual clean-main checks (H1, VITE, TYPES-TESTS, WIRE) | Machine-readable baseline (`baseline.json`) + `gate.sh` so lanes self-release when failures ⊆ baseline |
+| 2026-10-26 | Pane Undo/Redo ETA re-quoted ~12 times (13:05 → 15:55) | Most quotes had no parts; every slip followed a P1 round the ETA never priced | ETA = chain × per-kind link p50 (contract-heavy ~90 min) + P1 round + deploy; re-quote only with a new part |
 | 2026-10-26 | Owner: "terrible u should always check it against ETA ledger" | Quoted #607 ETA as a "rough guess, not checked against the ledger" | Every ETA: run the ledger jq + measured part times (Apex check-run p50, deploy log) first; never send an "unchecked" ETA |
 | 2026-10-26 | `ops-deploy.sh --migrate` for 0054 | drizzle-kit `SELF_SIGNED_CERT_IN_CHAIN`; nothing applied, deploy rc=70 | Migrate step must trust `deploy/rds-ca-global.pem` (`NODE_EXTRA_CA_CERTS`); fix the script before the next migration |
 | 2026-10-26 | Parallel lanes shared one DB test container/port (`sr2-pg:55432`) | DS4-I and J1 gates failed with ECONNREFUSED / auth errors | Per-run DB container name + random port in the DB test wrapper |
