@@ -165,6 +165,7 @@ function StaffPartyFields({
         kind={kind}
         name={value}
         parties={header.parties ?? {}}
+        jobReadBackStatusOwner={kind === 'agency' || Boolean(header.parties?.agency)}
         find={findParty}
         jobTransport={partyJobTransport}
         threadId={threadId}

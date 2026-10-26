@@ -156,6 +156,13 @@ describe('HmsQueueStatusLine messages', () => {
     expect(screen.queryByText(RUNNING.message)).toBeNull();
   });
 
+  it('separates the long-running reminder from the queue label', () => {
+    render(<HmsQueueStatusLine pending status={RUNNING} />);
+    expect(screen.getByRole('status').textContent).toContain(
+      'Running in HMS · Still working — you can keep going',
+    );
+  });
+
   it('formats elapsed time as seconds, then minutes and seconds', () => {
     expect(formatQueueElapsed(0)).toBe('0 s');
     expect(formatQueueElapsed(45_000)).toBe('45 s');
