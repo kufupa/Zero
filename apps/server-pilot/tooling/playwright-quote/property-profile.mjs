@@ -10,9 +10,34 @@ const PROFILE_FILES = new Map(
 );
 const ROOM_CODE = /^[A-Z0-9_-]+$/;
 const FIELD_NAME = /^[a-z][a-z0-9]*$/;
+/** Native Hotel Availability strategy codes any registered profile may list. Not hotel-specific. */
+export const PROFILE_SALES_STRATEGY_CODES = Object.freeze([
+  'BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER',
+]);
+const PROFILE_SALES_STRATEGY_CODE_SET = new Set(PROFILE_SALES_STRATEGY_CODES);
 
 function invalid(reason) {
   throw new Error(`property_profile_invalid: ${reason}`);
+}
+
+function validateSalesStrategies(rows) {
+  if (!Array.isArray(rows) || rows.length < 1) invalid('salesStrategies must list at least one strategy');
+  const seen = new Set();
+  for (const candidate of rows) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
+      invalid('salesStrategies entries must be objects');
+    }
+    const value = typeof candidate.value === 'string' ? candidate.value.trim() : '';
+    const display = typeof candidate.display === 'string' ? candidate.display.trim() : '';
+    if (!PROFILE_SALES_STRATEGY_CODE_SET.has(value)) {
+      invalid(`sales strategy ${value || '(empty)'} is not a known HMS strategy`);
+    }
+    if (!display || display.length > 80 || /[<>\u0000-\u001f\u007f]/.test(display)) {
+      invalid(`sales strategy ${value} display is invalid`);
+    }
+    if (seen.has(value)) invalid(`salesStrategies repeats ${value}`);
+    seen.add(value);
+  }
 }
 
 /** Checks the shape and the room arithmetic, then returns the profile with its identity digest. Throws when invalid. */
@@ -40,6 +65,7 @@ export function validateProfile(raw, propertyCode) {
     if (seenFields.has(name)) invalid(`requiredCreateFields repeats ${name}`);
     seenFields.add(name);
   }
+  if (Object.prototype.hasOwnProperty.call(raw, 'salesStrategies')) validateSalesStrategies(raw.salesStrategies);
   if (!Array.isArray(raw.evidence?.sources) || !raw.evidence.sources.length) invalid('evidence sources are required');
   // The digest covers room facts only, so editing the evidence wording does not invalidate recorded allocations.
   const identity = JSON.stringify({

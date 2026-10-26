@@ -1,4 +1,8 @@
 import { ROOM_TYPE_NAMES } from '../ai/room-types.js';
+import {
+  PROFILE_SALES_STRATEGY_CODES,
+  profileFor,
+} from '../../tooling/playwright-quote/property-profile.mjs';
 
 export type CenturionRateBoard =
   | 'room_only'
@@ -64,13 +68,9 @@ export type QuoteSalesStrategy = {
   requestValue: QuoteSalesStrategyCode | 'Government';
 };
 
-const HRCEN_SALES_STRATEGIES: QuoteSalesStrategy[] = [
-  { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
-  { code: 'GOV', label: 'Government', requestValue: 'Government' },
-];
-const HRDAV_SALES_STRATEGY_CODES = new Set<QuoteSalesStrategyCode>([
-  'BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER',
-]);
+const KNOWN_SALES_STRATEGY_CODES = new Set<QuoteSalesStrategyCode>(
+  PROFILE_SALES_STRATEGY_CODES as readonly QuoteSalesStrategyCode[],
+);
 
 export type PropertyQuotePaneConfig = {
   transportId: string;
@@ -95,25 +95,30 @@ type RegistryQuoteProfile = {
   salesStrategies?: Array<{ value: string; display: string }>;
 };
 
-const PROFILE_MODULE = '../../tooling/playwright-quote/property-profile.mjs';
 const PANE_BOARD_ORDER: readonly QuotePaneBoard[] = ['room_only', 'bb', 'dinner_bb'];
+
+function registeredProfile(propertyCode: string): RegistryQuoteProfile | null {
+  return profileFor(propertyCode) as RegistryQuoteProfile | null;
+}
 
 /** Only registry-listed native codes become pane choices. BAR is pinned first when the registry offers it. */
 export function quoteSalesStrategiesFromRegistry(
   propertyCode: string,
   raw: unknown,
 ): QuoteSalesStrategy[] {
-  if (propertyCode === 'HRCEN') return HRCEN_SALES_STRATEGIES.map((row) => ({ ...row }));
-  if (propertyCode !== 'HRDAV' || !Array.isArray(raw)) return [];
+  const profile = registeredProfile(propertyCode);
+  if (!profile) return [];
+  const rows = Array.isArray(raw) ? raw : profile.salesStrategies;
+  if (!Array.isArray(rows)) return [];
   const seen = new Set<QuoteSalesStrategyCode>();
   const strategies: QuoteSalesStrategy[] = [];
-  for (const candidate of raw) {
+  for (const candidate of rows) {
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
     const row = candidate as { value?: unknown; display?: unknown };
     const code = typeof row.value === 'string' ? row.value.trim().toUpperCase() : '';
     const label = typeof row.display === 'string' ? row.display.trim() : '';
     if (
-      !HRDAV_SALES_STRATEGY_CODES.has(code as QuoteSalesStrategyCode) ||
+      !KNOWN_SALES_STRATEGY_CODES.has(code as QuoteSalesStrategyCode) ||
       seen.has(code as QuoteSalesStrategyCode) ||
       !label ||
       label.length > 80 ||
@@ -149,13 +154,6 @@ function boardsForPlans(plans: readonly PropertyRatePlan[]): QuotePaneBoard[] {
   return PANE_BOARD_ORDER.filter((board) => known.has(board));
 }
 
-async function registryProfileFor(propertyCode: string): Promise<RegistryQuoteProfile | null> {
-  const profile = (await import(PROFILE_MODULE)) as {
-    profileFor: (code: string) => RegistryQuoteProfile | null;
-  };
-  return profile.profileFor(propertyCode);
-}
-
 /** Build safe pane choices for a property already resolved from the active mailbox registry entry. */
 export async function quotePaneConfigForProperty(
   propertyCode: string,
@@ -175,7 +173,7 @@ export async function quotePaneConfigForProperty(
   }
   if (propertyCode !== 'HRDAV') return null;
 
-  const profile = await registryProfileFor(propertyCode);
+  const profile = registeredProfile(propertyCode);
   if (!profile?.rooms || !profile.ratePlans) return null;
   const ratePlans: PropertyRatePlan[] = Object.entries(profile.ratePlans).map(([code, plan]) => ({
     code,
