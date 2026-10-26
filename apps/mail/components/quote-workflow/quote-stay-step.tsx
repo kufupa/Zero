@@ -293,6 +293,8 @@ export function QuoteStayStep({
 }) {
   return (
     <Section step={2} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
+      {/* Hold every stay control while Undo/Reset refreshes; edits made then would be dropped. */}
+      <fieldset disabled={workItemPane?.resetPending ?? false} className="contents">
       {stays.map((stay, index) => (
         <div key={stay.rows[0]?.id ?? stay.id} className="flex flex-col gap-2">
           <StayAskChrome session={session} stay={stay} onSelectStayKey={onSelectStayKey} />
@@ -352,6 +354,7 @@ export function QuoteStayStep({
         <p className="text-center text-[13px] text-[#64748b]">Each date range is searched and priced independently.</p>
       </div>
       {children}
+      </fieldset>
     </Section>
   );
 }

@@ -474,6 +474,20 @@ describe('Nava pane work-item controls', () => {
     });
   });
 
+  it('disables stay edits while Undo is refreshing', async () => {
+    let releaseLookup: (() => void) | undefined;
+    await renderReadyPane();
+    const addStay = () => screen.getByRole('button', { name: '+ Add another date range' });
+    expect(addStay().closest('fieldset')?.disabled).toBe(false);
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(addStay().closest('fieldset')?.disabled).toBe(true));
+    releaseLookup?.();
+    await waitFor(() => expect(addStay().closest('fieldset')?.disabled).toBe(false));
+  });
+
   it('failed refresh after Undo keeps controls disabled and Reload only refetches', async () => {
     await renderReadyPane();
     bridgeMockState.storedWorkLookupReject = true;
