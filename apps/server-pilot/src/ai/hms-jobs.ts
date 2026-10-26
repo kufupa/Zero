@@ -3993,20 +3993,23 @@ async function latestStaffQuoteRunFor(
     if (
       userRun.triggerMessageId !== messageId ||
       userMetrics.userId !== userId ||
-      (userMetrics.devEval === true && !includeDevEval) ||
-      !reusable(userRun)
+      (userMetrics.devEval === true && !includeDevEval)
     ) {
       continue;
     }
     const parsed = hmsJobRequestSchema.safeParse(userRun.readRequest);
-    if (
+    const sameTerms =
       parsed.success &&
       parsed.data.kind === 'staff_quote' &&
       parsed.data.input.messageId === messageId &&
-      staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput)
-    ) {
-      return [userRun];
+      staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput);
+    if (!reusable(userRun)) {
+      // Newest matching price is stale: do not fall back to an older refusal.
+      const stored = userRun.readResult as { status?: unknown } | null;
+      if (sameTerms && stored?.status === 'ready') return [];
+      continue;
     }
+    if (sameTerms) return [userRun];
   }
 
   // System-prepared quotes are independent per stay. Look for the newest prepared price for these terms rather than

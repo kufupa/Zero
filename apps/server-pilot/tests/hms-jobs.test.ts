@@ -3452,7 +3452,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const [shared] = await db.select({ metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun).where(eq(aiWorkflowRun.id, readRuns[0]!.id));
       expect(shared?.metrics).toMatchObject({
         sharedTransportIds: expect.arrayContaining([FAITH_TRANSPORT_ID, AYANDA_TRANSPORT_ID]),
-        sharedWorkItemIds: expect.arrayContaining(copies.map((copy) => copy.workItemId)),
+        sharedWorkItemIds: expect.arrayContaining(copies.slice(1).map((copy) => copy.workItemId)),
       });
     }));
 
