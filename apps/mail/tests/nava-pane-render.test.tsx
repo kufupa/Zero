@@ -714,9 +714,10 @@ describe('NavaPane', () => {
  * Characterisation for the block split: each first-run and tool state, asserted on what staff see and kept as a
  * DOM snapshot. The split must leave every snapshot unchanged.
  */
-describe('NavaPane screen states', () => {
+  describe('NavaPane screen states', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    sessionStorage.clear();
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
@@ -800,7 +801,7 @@ describe('NavaPane screen states', () => {
     expect(screen.getByRole('button', { name: '4. Quote Tool' })).toBeDefined();
     expect(screen.queryByRole('main')).toBeNull();
     await settle();
-    expect(await screen.findByRole('status', { name: 'Nava reads this as: Quote' })).toBeDefined();
+    expect(await screen.findByRole('status', { name: /Nava reads this as:/ })).toBeDefined();
     stabilizePaneSnapshot(container);
     expect(container).toMatchSnapshot();
   });

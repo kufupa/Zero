@@ -67,6 +67,15 @@ vi.mock('../hooks/use-threads', () => ({
     { isValid: true, folder: mocks.searchListFolder },
   ],
 }));
+vi.mock('@/hooks/use-threads', () => ({
+  useThreads: () => [
+    { isFetching: false, refetch: vi.fn() },
+    [],
+    false,
+    vi.fn(),
+    { isValid: true, folder: mocks.searchListFolder },
+  ],
+}));
 vi.mock('../hooks/use-connections', () => ({
   useActiveConnection: () => ({
     data: { id: 'transport-1', email: 'centurion@legacyhotels.co.za', providerId: 'custom' },
