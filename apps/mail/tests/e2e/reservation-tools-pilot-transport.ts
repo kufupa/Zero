@@ -211,7 +211,7 @@ function dashboardPayload(input: DashboardInput): AdminDashboardMetrics {
   const preset = input.window;
   const cutoff = input.observationCutoff ?? FIXTURE_CUTOFF;
   const historical = Boolean(input.observationCutoff && input.observationCutoff < FIXTURE_CUTOFF);
-  const inbound = cohortId === 'research' ? 2 : preset === '28d' ? 10 : 6;
+  const inbound: number = cohortId === 'research' ? 2 : preset === '28d' ? 10 : 6;
   const outbound = cohortId === 'research' ? 1 : preset === '28d' ? 7 : 4;
   const conversations = cohortId === 'research' ? 1 : preset === '28d' ? 5 : 3;
   const daily = [

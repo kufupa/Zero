@@ -15,7 +15,7 @@ describe('mail row focus helpers', () => {
     wrapper.tabIndex = 0;
     const thread = document.createElement('div');
     thread.dataset.threadId = 'thread-a';
-    wrapper.append(thread);
+    wrapper.appendChild(thread);
 
     expect(getFocusableThreadElement(thread)).toBe(wrapper);
   });
@@ -38,8 +38,8 @@ describe('mail row focus helpers', () => {
     const wrapper = document.createElement('div');
     wrapper.tabIndex = 0;
     const thread = document.createElement('div');
-    wrapper.append(thread);
-    document.body.append(wrapper);
+    wrapper.appendChild(thread);
+    document.body.appendChild(wrapper);
     const focus = vi.spyOn(wrapper, 'focus');
 
     expect(focusThreadElement(thread)).toBe(true);

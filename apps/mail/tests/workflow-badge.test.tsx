@@ -154,7 +154,7 @@ describe('WorkflowBadge', () => {
 
   it('offers the supported quote and new-booking corrections in the banner', () => {
     render(<WorkflowBadge analysis={analysis('quote')} onIntentChange={() => {}} />);
-    const picker = screen.getByLabelText('Change how Nava reads this email') as HTMLSelectElement;
+    const picker = screen.getByLabelText('Change how Nava reads this email') as unknown as HTMLSelectElement;
     expect(Array.from(picker.options).map((option) => option.text)).toEqual(['Quote', 'New booking']);
   });
 
@@ -164,7 +164,7 @@ describe('WorkflowBadge', () => {
     const onIntentChange = vi.fn();
     render(<WorkflowBadge analysis={grouped} onIntentChange={onIntentChange} />);
 
-    const picker = screen.getByLabelText('Change how Nava reads this email') as HTMLSelectElement;
+    const picker = screen.getByLabelText('Change how Nava reads this email') as unknown as HTMLSelectElement;
     expect(picker.value).toBe('quote');
     fireEvent.change(picker, { target: { value: 'create_booking' } });
     expect(onIntentChange).toHaveBeenCalledWith('create_booking');
@@ -177,7 +177,7 @@ describe('WorkflowBadge', () => {
     render(<WorkflowBadge analysis={paid} onIntentChange={onIntentChange} />);
 
     expect(screen.getByText('Payment')).toBeDefined();
-    const picker = screen.getByLabelText('Change how Nava reads this email') as HTMLSelectElement;
+    const picker = screen.getByLabelText('Change how Nava reads this email') as unknown as HTMLSelectElement;
     expect(picker.value).toBe('create_booking');
     fireEvent.change(picker, { target: { value: 'quote' } });
     expect(onIntentChange).toHaveBeenCalledWith('quote');

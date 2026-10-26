@@ -199,7 +199,9 @@ vi.mock('react-router', () => ({
   useParams: () => ({ folder: mocks.folder }),
 }));
 vi.mock('nuqs', () => ({
+  parseAsString: {},
   useQueryState: (key: string) => [key === 'threadId' ? mocks.threadId : null, vi.fn()],
+  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: null }, vi.fn()],
 }));
 vi.mock('react-hotkeys-hook', () => ({
   useHotkeys: vi.fn(),
@@ -208,11 +210,7 @@ vi.mock('react-hotkeys-hook', () => ({
 vi.mock('../hooks/use-media-query', () => ({ useMediaQuery: () => true }));
 vi.mock('../hooks/use-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('../paraglide/messages', () => ({ m: new Proxy({}, { get: () => () => '' }) }));
-vi.mock(
-  '@/paraglide/messages',
-  () => ({ m: new Proxy({}, { get: () => () => '' }) }),
-  { virtual: true },
-);
+vi.mock('@/paraglide/messages', () => ({ m: new Proxy({}, { get: () => () => '' }) }));
 
 import { MailLayout } from '../components/mail/mail';
 
