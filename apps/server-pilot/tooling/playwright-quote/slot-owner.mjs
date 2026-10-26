@@ -100,6 +100,17 @@ export async function wipeSlotProfile(profileDir) {
   await rm(profileDir, { recursive: true, force: true });
 }
 
+/** Pages already on the persistent slot context. Never creates a page. */
+export function persistentContextPages(context) {
+  return typeof context?.pages === 'function' ? context.pages() : [];
+}
+
+/** Default context of a persistent slot browser. Null when CDP has no context yet. */
+export function persistentBrowserContext(browser) {
+  const contexts = typeof browser?.contexts === 'function' ? browser.contexts() : [];
+  return contexts[0] ?? null;
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const command = process.argv[2];
   if (command === 'reset') {
