@@ -4,6 +4,7 @@ import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { recalledGuestName, rememberGuestName } from '@/lib/quote-workflow/guest-name-cache';
+import { paneEditKey } from '@/lib/quote-workflow/pane-edits';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type { QuoteSession, StaffQuoteHeader } from '@/lib/quote-workflow/types';
 import { PartyPicker } from './party-picker';
@@ -205,9 +206,12 @@ export function QuotePeopleStep({
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
   scrollToStep: (id: string) => void;
 }) {
+  const guestMessageKey = session.binding?.internetMessageId?.trim() || session.binding?.entryId;
   const guestEditorKey =
+    (session.binding && guestMessageKey
+      ? paneEditKey(session.binding.transportId, guestMessageKey)
+      : null) ??
     contactEditorKey ??
-    session.binding?.entryId ??
     session.staffSource?.messageId ??
     'quote-guest';
 
