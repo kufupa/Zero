@@ -147,7 +147,9 @@ function classifyRateFor(profile, code, strategy, isNegotiatedRate, label) {
     }
   }
   const strat = rates.strategies?.[strategyKey];
-  if (strat && Array.isArray(strat.plans) && strat.plans.includes(codeStr)) return 'contextual';
+  if (strat && Array.isArray(strat.plans) && strat.plans.includes(codeStr)) {
+    return strat.scope === 'public' ? 'public' : 'contextual';
+  }
   if (isNegotiatedRate === true) return 'contextual';
   return 'unknown';
 }
