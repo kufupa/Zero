@@ -45,8 +45,8 @@ export type StoredPane =
       language: string | null;
       translation: StoredTranslation;
       /** Latest per-path source from getByMessage. Null when the older server omits it. */
-      fieldProvenance: WorkItemProvenanceMap | null;
-      refs: Record<string, { stayId: string; rowId: string | null }>;
+      fieldProvenance?: WorkItemProvenanceMap | null;
+      refs?: Record<string, { stayId: string; rowId: string | null }>;
     };
 
 export type StoredDecision =

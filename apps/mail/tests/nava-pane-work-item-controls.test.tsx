@@ -87,10 +87,10 @@ const {
     prepareUnquotedBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
     recordEvent: vi.fn(async (_input: unknown): Promise<unknown> => ({ aiValue: null, value: null })),
     retryTranslation: vi.fn(async (_input: unknown): Promise<unknown> => ({ status: 'capped', translation: null })),
-    revisionCursor: vi.fn(async () => ({ revision: 2, revisionHead: 2, seq: 5 })),
-    undoRevision: vi.fn(async () => ({ revision: 1, revisionHead: 2, seq: 6 })),
-    redoRevision: vi.fn(async () => ({ revision: 2, revisionHead: 2, seq: 7 })),
-    resetSection: vi.fn(async () => ({ reset: 1 })),
+    revisionCursor: vi.fn(async (_input?: unknown) => ({ revision: 2, revisionHead: 2, seq: 5 })),
+    undoRevision: vi.fn(async (_input?: unknown) => ({ revision: 1, revisionHead: 2, seq: 6 })),
+    redoRevision: vi.fn(async (_input?: unknown) => ({ revision: 2, revisionHead: 2, seq: 7 })),
+    resetSection: vi.fn(async (_input?: unknown) => ({ reset: 1 })),
   },
 }));
 
@@ -283,9 +283,9 @@ vi.mock('../providers/query-provider', () => ({
         recordEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
         retryTranslation: { mutate: (input: unknown) => bridgeMockState.retryTranslation(input) },
         revisionCursor: { query: () => bridgeMockState.revisionCursor() },
-        undoRevision: { mutate: (input: unknown) => bridgeMockState.undoRevision(input) },
-        redoRevision: { mutate: (input: unknown) => bridgeMockState.redoRevision(input) },
-        resetSection: { mutate: (input: unknown) => bridgeMockState.resetSection(input) },
+        undoRevision: { mutate: (input: unknown) => bridgeMockState.undoRevision(input as never) },
+        redoRevision: { mutate: (input: unknown) => bridgeMockState.redoRevision(input as never) },
+        resetSection: { mutate: (input: unknown) => bridgeMockState.resetSection(input as never) },
       };
     },
     quoteWorkflow: {
