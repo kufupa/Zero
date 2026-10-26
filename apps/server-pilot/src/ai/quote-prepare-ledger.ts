@@ -156,6 +156,55 @@ export function appendQuotePrepareDecision(
   };
 }
 
+const inboundExtractionWhere = (source: QuotePrepareSourceRef) =>
+  and(
+    eq(aiWorkflowRun.transportId, source.transportId),
+    eq(aiWorkflowRun.triggerMessageId, source.triggerMessageId),
+    eq(aiWorkflowRun.runKind, 'inbound_extraction'),
+  );
+
+function isQuotePrepareSource(
+  row: { runKind: string; transportId: string; triggerMessageId: string } | undefined,
+  source: QuotePrepareSourceRef,
+): boolean {
+  return Boolean(
+    row &&
+      row.runKind === 'inbound_extraction' &&
+      row.transportId === source.transportId &&
+      row.triggerMessageId === source.triggerMessageId,
+  );
+}
+
+/**
+ * Resolve the source inbound_extraction row. Caller ids may belong to a party
+ * or triage run, so a mismatched id falls back to transport+message.
+ */
+async function selectQuotePrepareSource(db: DB, source: QuotePrepareSourceRef, forUpdate: boolean) {
+  const finish = async (where: ReturnType<typeof inboundExtractionWhere> | ReturnType<typeof eq>) => {
+    const pending = db
+      .select({
+        id: aiWorkflowRun.id,
+        runKind: aiWorkflowRun.runKind,
+        transportId: aiWorkflowRun.transportId,
+        triggerMessageId: aiWorkflowRun.triggerMessageId,
+        admissionSnapshotId: aiWorkflowRun.admissionSnapshotId,
+        metrics: aiWorkflowRun.metrics,
+      })
+      .from(aiWorkflowRun)
+      .where(where)
+      .orderBy(desc(aiWorkflowRun.createdAt))
+      .limit(1);
+    const [row] = forUpdate ? await pending.for('update') : await pending;
+    return row;
+  };
+  if (source.id) {
+    const byId = await finish(eq(aiWorkflowRun.id, source.id));
+    if (isQuotePrepareSource(byId, source)) return byId;
+  }
+  const byMessage = await finish(inboundExtractionWhere(source));
+  return isQuotePrepareSource(byMessage, source) ? byMessage : undefined;
+}
+
 /**
  * Append one prepare decision onto the source inbound_extraction row under FOR UPDATE.
  * Missing/mismatched rows and lock failures fail closed and leave metrics unchanged.
@@ -168,34 +217,8 @@ export async function recordQuotePrepareDecision(
   const decision = sanitizeQuotePrepareDecision(input);
   try {
     return await db.transaction(async (tx) => {
-      const where = source.id
-        ? eq(aiWorkflowRun.id, source.id)
-        : and(
-            eq(aiWorkflowRun.transportId, source.transportId),
-            eq(aiWorkflowRun.triggerMessageId, source.triggerMessageId),
-            eq(aiWorkflowRun.runKind, 'inbound_extraction'),
-          );
-      const [row] = await tx
-        .select({
-          id: aiWorkflowRun.id,
-          runKind: aiWorkflowRun.runKind,
-          transportId: aiWorkflowRun.transportId,
-          triggerMessageId: aiWorkflowRun.triggerMessageId,
-          metrics: aiWorkflowRun.metrics,
-        })
-        .from(aiWorkflowRun)
-        .where(where)
-        .orderBy(desc(aiWorkflowRun.createdAt))
-        .limit(1)
-        .for('update');
-      if (
-        !row ||
-        row.runKind !== 'inbound_extraction' ||
-        row.transportId !== source.transportId ||
-        row.triggerMessageId !== source.triggerMessageId
-      ) {
-        return false;
-      }
+      const row = await selectQuotePrepareSource(tx as unknown as DB, source, true);
+      if (!row) return false;
       const metrics = appendQuotePrepareDecision(row.metrics, decision);
       if (!metrics) return false;
       await tx
@@ -220,33 +243,8 @@ export async function loadQuotePrepareSourceRun(
   admissionSnapshotId: string | null;
 } | null> {
   try {
-    const where = source.id
-      ? eq(aiWorkflowRun.id, source.id)
-      : and(
-          eq(aiWorkflowRun.transportId, source.transportId),
-          eq(aiWorkflowRun.triggerMessageId, source.triggerMessageId),
-          eq(aiWorkflowRun.runKind, 'inbound_extraction'),
-        );
-    const [row] = await db
-      .select({
-        id: aiWorkflowRun.id,
-        runKind: aiWorkflowRun.runKind,
-        transportId: aiWorkflowRun.transportId,
-        triggerMessageId: aiWorkflowRun.triggerMessageId,
-        admissionSnapshotId: aiWorkflowRun.admissionSnapshotId,
-      })
-      .from(aiWorkflowRun)
-      .where(where)
-      .orderBy(desc(aiWorkflowRun.createdAt))
-      .limit(1);
-    if (
-      !row ||
-      row.runKind !== 'inbound_extraction' ||
-      row.transportId !== source.transportId ||
-      row.triggerMessageId !== source.triggerMessageId
-    ) {
-      return null;
-    }
+    const row = await selectQuotePrepareSource(db, source, false);
+    if (!row) return null;
     return { ...row, runKind: 'inbound_extraction' };
   } catch {
     return null;

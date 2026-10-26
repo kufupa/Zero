@@ -2650,7 +2650,10 @@ export async function prefetchQuoteReadyAfterPartyMatch(
   env: NodeJS.Dict<string> = process.env,
   now: Date = new Date(),
 ): Promise<number> {
-  const extraction = await loadQuotePrepareSourceRun(db, run);
+  const extraction = await loadQuotePrepareSourceRun(db, {
+    transportId: run.transportId,
+    triggerMessageId: run.triggerMessageId,
+  });
   if (!extraction) return 0;
   if (!extraction.admissionSnapshotId) {
     await recordQuotePrepareDecision(db, extraction, {

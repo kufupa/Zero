@@ -288,6 +288,30 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('quote prepare ledger (lane DB
       }),
   );
 
+  it('after-party ignores a party-job id and still records on the extraction', () =>
+    withSeededTestDb(async (db) => {
+      const seeded = await seedExtraction(db, { admissionSnapshotId: null });
+      const partyId = randomUUID();
+      expect(
+        await prefetchQuoteReadyAfterPartyMatch(
+          {
+            id: partyId,
+            transportId: seeded.prefetchRun.transportId,
+            triggerMessageId: seeded.prefetchRun.triggerMessageId,
+          },
+          db,
+          QUOTE_ON,
+        ),
+      ).toBe(0);
+      const [source] = await db
+        .select({ metrics: aiWorkflowRun.metrics })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.id, seeded.run.id));
+      expect(quotePrepareDecisionsFromMetrics(source?.metrics)).toEqual([
+        expect.objectContaining({ outcome: 'skipped', reason: 'no_live_admission' }),
+      ]);
+    }));
+
   it('keeps concurrent skip reasons under the source-row lock', () =>
     withSeededTestDb(async (db) => {
       const seeded = await seedExtraction(db, { metrics: { keep: 'sibling' } });
