@@ -1225,6 +1225,47 @@ describe('booking card pane save', () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
+  it('settles an invalidated preview when staff restore the original input', async () => {
+    const pending = deferred<PaneStayResult>();
+    const preview = vi.fn<PaneStayClient['preview']>().mockReturnValueOnce(pending.promise);
+    const { client, commit } = paneClient({ preview });
+    const workItemId = '55555555-5555-4555-8555-555555555555';
+    render(
+      <QuoteBookingHost
+        session={bookingSessionForPreview(previewableDraft(), 1)}
+        paneSave={client}
+        workItemId={workItemId}
+      />,
+    );
+
+    fireEvent.click(previewButton(0));
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'BAR' } });
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'COR' } });
+
+    await act(async () => pending.resolve(PREVIEW_OK));
+
+    expect(screen.getByText('You changed the booking – preview again.')).toBeDefined();
+    expect(previewButton(0)).toHaveProperty('disabled', false);
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('keeps the running preview notice visible after staff edit the booking', async () => {
+    const pending = deferred<PaneStayResult>();
+    const preview = vi.fn<PaneStayClient['preview']>().mockReturnValueOnce(pending.promise);
+    const { client } = paneClient({ preview });
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
+
+    fireEvent.click(previewButton(0));
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'BAR' } });
+
+    expect(screen.getByRole('status').textContent).toBe('Nava is filling the booking in HMS… (about 2 minutes)');
+    expect(screen.queryByText('You changed the booking – preview again.')).toBeNull();
+    expect(previewButton(0)).toHaveProperty('disabled', true);
+
+    await act(async () => pending.resolve(PREVIEW_OK));
+  });
+
   it('after a save, shows only the after-save screenshot', async () => {
     const { client, screenshot } = paneClient({
       commit: async () => ({

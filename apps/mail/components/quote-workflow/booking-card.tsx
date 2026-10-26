@@ -228,7 +228,7 @@ const textareaClass =
   'outline-hidden w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
 
 type PreviewView =
-  | { status: 'running'; key: string }
+  | { status: 'running'; key: string; requestId: symbol }
   | { status: 'ready'; key: string; digest: string; runId?: string; screenshots: string[] }
   | { status: 'refused'; key: string; message: string }
   | { status: 'stale'; key: string };
@@ -461,7 +461,7 @@ function RoomSave({
   const refusedShot = commit?.status === 'refused' ? pickScreenshot(commit.screenshots ?? [], SAVED_SHOT) : null;
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
-      {preview?.status === 'running' && preview.key === previewKey ? (
+      {preview?.status === 'running' ? (
         <p role="status" className="text-[11.5px] text-[#334155]">
           Nava is filling the booking in HMS… (about 2 minutes)
         </p>
@@ -471,7 +471,7 @@ function RoomSave({
           {preview.message}
         </p>
       ) : null}
-      {changed ? (
+      {changed && preview?.status !== 'running' ? (
         <p role="alert" className="text-[11.5px] text-amber-900">
           You changed the booking – preview again.
         </p>
@@ -882,15 +882,29 @@ export function BookingCards({
     setSaves((current) => ({ ...current, [roomKey]: { ...current[roomKey], ...patch } }));
   }
 
+  function finishPreviewIfRunning(
+    roomKey: string,
+    requestId: symbol,
+    preview: Exclude<PreviewView, { status: 'running' }>,
+  ) {
+    setSaves((current) => {
+      const save = current[roomKey];
+      const active = save?.preview;
+      if (!save || active?.status !== 'running' || active.requestId !== requestId) return current;
+      return { ...current, [roomKey]: { ...save, preview } };
+    });
+  }
+
   async function previewRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput) {
     const inputKey = paneStayKey(stay);
     const input = previewInputsRef.current[roomKey];
     if (!input?.key || input.inputKey !== inputKey) return;
     const { stayId } = input;
     const key = input.key;
+    const requestId = Symbol();
     const generation = previewReceipt.begin(workItemId, stayId, inputKey);
-    patchSave(roomKey, { preview: { status: 'running', key }, commit: undefined });
-    let preview: PreviewView;
+    patchSave(roomKey, { preview: { status: 'running', key, requestId }, commit: undefined });
+    let preview: Exclude<PreviewView, { status: 'running' }>;
     try {
       const previewInput = workItemId ? { ...stay, stayId, workItemId } : stay;
       const outcome = previewOutcome(await pane.preview(previewInput));
@@ -913,11 +927,14 @@ export function BookingCards({
         : undefined;
     const accepted = previewReceipt.finish(workItemId, stayId, inputKey, generation, receipt);
     if (!isCurrentInput) {
-      patchSave(roomKey, { preview: { status: 'stale', key } });
+      finishPreviewIfRunning(roomKey, requestId, { status: 'stale', key });
       return;
     }
-    if (!accepted) return;
-    patchSave(roomKey, { preview });
+    if (!accepted) {
+      finishPreviewIfRunning(roomKey, requestId, { status: 'stale', key });
+      return;
+    }
+    finishPreviewIfRunning(roomKey, requestId, preview);
   }
 
   function roomKeyOf(room: BookingDraftReady['draft']['rooms'][number]): string {
