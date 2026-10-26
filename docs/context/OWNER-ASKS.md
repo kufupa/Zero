@@ -367,3 +367,48 @@ Lane state lives in `/home/orca/nava-research/reports/LANES-20261014.md`. Settle
 | 235 | 2026-10-26 ~12:10 UK: "for T2 lanes / t1 if done alr, when is the UI done?" | WIRE plan gap found + added |
 | 236 | 2026-10-26 ~12:45 UK: DV training 13:00 UK — "can they send provisional HMS quotes… is amend / cancel working… why did u price DOML and BAR" | deploys paused 12:45–13:28; flags reported |
 | 237 | 2026-10-26 ~13:55 UK: "handoff for another LLM so i can do shit in parallel whilst not interrupting this chat… include the retro + speed lanes… goal is to end this chat after we finish this lane" | docs/plans/2026-10-26-005-session-handoff.md |
+
+## 14. Pomerado, booking UX and handoff planning (2026-10-26)
+
+Rows 223–237 belong to the parallel or2 handoff (merged above). Reserve 238–261 for this independent intake. Reconcile concurrent additions before any eventual merge. The previous branch used ask 175 for staff-call preservation, but main already uses 175 for quote follow-up; preserve both originals rather than overwrite.
+
+| # | Original ask / intent | Status | Evidence / next check |
+|---|---|---|---|
+| 238 | "use ... Pomerado ... to build the add-on feature" | Research | [Intake](2026-10-26-addons-ux-intake.md); source fit and controlled trial plan |
+| 239 | "still use ... 6.1 Sol in the Playwright browser on the EC2" | Research | Verify model/base URL and browser/CDP support, not a presumed compatibility |
+| 240 | "don't forget any features ... note them all down" | Intake saved | Original phrases and all sub-asks in intake; durable resume pointers |
+| 241 | "take the handoff ... all ... to-dos ... ROI ... fast speed plan" | Planning | Complete new-plus-existing scope, dependency and authority inventory |
+| 242 | Handoff gate.sh / eta.sh / canary.sh as parallel lanes in a new main-based worktree | Plan only | No swap into active or2, no implementation launch |
+| 243 | Da Vinci "room profile out of date" diagnosis | Research | Current source + dated incident evidence; property/code/freshness hypotheses |
+| 244 | "guests separately as rows ... names and ages" | Planning | Guest list linked to room-type rows, separate from contact/booker |
+| 245 | "children's ages ... comma" is poor UX | Planning | Individual numeric ages with validation, prefill and persistence |
+| 246 | "too many ... indented boxes ... too much text" | Planning | Flat hierarchy and clear step/state boundaries, not decorative rebrand |
+| 247 | Staff thought three rooms when two rooms were requested | Planning | One room total, distinct guest/type/stay counts |
+| 248 | "all rates drop down ... barely ... recognize" | Research | Visible full rate selection and disabled-action reason |
+| 249 | "rate grid ... expected ... clickable" | Research | Informational vs selectable current grids and exact selection contract |
+| 250 | "starts ... collapsed ... slowly ... open" | Planning | Progressive disclosure with visible blockers and all HMS options retained |
+| 251 | "Infor parity ... never ... less information"; avoid duplication | Planning | Workflow/field parity, both Outlook and webmail, V1 identity preserved |
+| 252 | "review ... yourself ... impeccable" | Research | Independent UX and deterministic evidence assessments, runtime gaps explicit |
+| 253 | "pre-filling ... super important ... order" | Research | Parallel safe reads, contextual dependencies, staff-edit precedence, freshness |
+| 254 | "create provisional booking ... sends it to ... FK email" | Research | Approved staff recipient for confirmation delivery, not guest-contact overwrite |
+| 255 | "jarrett tours ... adds ... money ... removes ... guest arrival detail" | Research | Reuse private transcript, reconcile sequence/property/accounting uncertainty |
+| 256 | Add-On may belong inside existing create-booking tool | Planning | Dedicated primitive composed with create; partial add-on failure never recreates stay |
+| 257 | Save screenshots and extract details instead of reloading every compaction | No images received | Private archive and small field/DOM manifest, raw evidence outside Git |
+| 258 | "rates are missing ... no progress since friday ... not merged?" | Research | Separate current code, deployed build, loaded bundle, HMS data and filters |
+| 259 | Standard Twin vs STWN error suggests frontend/backend naming mismatch | Hypothesis being checked | Exact property-scoped native-code trace and alternative causes |
+| 260 | "all ... rooms ... pre-looked up ... DaVinci ... never ... down" | Research | Background all-room/all-strategy results, admission, hydration and wait reasons |
+| 261 | "all ... other ... missed ... priority" | Research | Handoff backlog, R-SEED, queue health, PDF/Needs-you proof, feedback/evals and multi-mailbox |
+
+| 262 | Pane toast "Room type STANDARD TWIN ROOM is not one HMS knows" (screenshot) — "unacceptable so must fix that" | Planned A0a | HRDAV exact-label match in `staff-quote-bind.ts` `hrdavKnownCode`; confirms ask 259 |
+| 263 | Faith screenshot: after deleting the shuttle Add-On she sets Guest Details Arrival Type = Jarat Tours + Arrival Time | Answered | Field = Guest Stay → Guest Details → Arrival/Departure Information; plan 006 shuttle table |
+| 264 | "r u writing high level or deeper plan" / maybe /shape | Answered | Plan 006 deepened with per-unit missing/fix/test; shape G-table in chat |
+| 265 | Max-parallel 10/10 build ETA with evidence before choosing hours | Answered | Plan 006 ETA basis from ledger medians |
+| 266 | Pomerado approved; Azure OpenAI endpoint is ZDR; no fallback tool; "ship ship ship" cheap via Grok/Luna | Recorded | KTD3a |
+| 267 | Shuttle: corpus analysis of outbound provider mail, Centurion vs Da Vinci, who pays/invoices, removal trigger from transcript | Transcript answered; corpus lane running | `docs/research/2026-10-26-shuttle-corpus.md` |
+| 268 | /ponytail: check MISTAKES + retros, no over-engineering/over-plumbing generally | Applied | gate/eta/canary/dispatch scripts dropped from run |
+| 269 | Read the other chat to decide timing | Done | #607 pane edits append-only; pane units after merge |
+| 270 | Old worktree impact + how to switch | Answered | Moved working copy; cleanup done |
+| 271 | Other big ROI to-dos from parallel chat; clean up orphan worktrees | Answered + cleaned 9 worktrees | Plan 006 ROI table |
+| 272 | 2026-10-26 ~16:00 UK (voice): quote bar truth set by "Codex … Luna max building with Greptile Apex review", not Haiku; keep live proof steps — "middle ground where we're not overkilling it"; deploys ~7 min each — "how would a hundred X engineer do this", put final idea in plan; Grok 4.7 xhigh review then self-review risks ("maybe it will take longer or maybe we can cut it even more"); "i want to do everything now" — bigger to-dos into this run; DV PDF "pretty sure it's like done" | Planned | Plan 006 revision section; DV PDF status checked against /tmp/or2/fix notes |
+| 273 | 2026-10-26 ~17:00 UK (voice): retro pasted; "yeah, you can make small fixes yourself"; push back on 2.5 h for 5 scripts; zoom out to 10/10 product; inventory features vs fixes vs finish-ups; keep EC2 disk solid (keep only latest deploy); work autonomously; plan in chat then /shape; ETAs too long; reuse lanes; Greptile used properly?; forgotten items; Faith confirmation-to-self (DV) vs Centurion to client; amend/cancel paid vs provisional; HRCEN back up?; rates/wholesale not working; Pomerado last | In progress | Quote P0 found and fixed: docker image prune 11:31Z broke policy PDF, #614 deployed 17:19Z, PDFs extract on prod 3/3; full plan in chat |
+| 274 | 2026-10-26 ~19:00 UK (voice, 40 points, verbatim in [ask 274 file](asks/2026-10-26-ask274-walkthrough-and-owner-voice.md)): profile-driven per-hotel rates (no hard-coding, easy onboarding); screenshots on return, kept ≥1 month (S3 later); confirmation recipient settable per user + per booking via deterministic tool; background reads at ingest not pane open; never discard HMS data; paid amend/cancel out of scope (todo); ⓘ field info later; NR meaning researched not guessed; shuttle templates from all 5 DV mailboxes; Pomerado last, goal-driven, Azure OpenAI; anchor-rich prompts for all lanes incl. Cursor/Codex (no Claude memory); Orca CLI for lanes + cleanup; Greptile Apex via CLI, avoid long loops; disk never full + never delete runtime deps; split chats, run autonomously; aim quote+PDF+booking for Faith call | 🟡 planned | [Plan 007](../plans/2026-10-26-007-dv-faith-run-plan.md) · [run brief](../plans/2026-10-26-007-run-brief.md) · decisions D1–D14 |
