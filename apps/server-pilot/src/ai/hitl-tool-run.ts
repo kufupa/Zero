@@ -256,10 +256,13 @@ const QUOTE_REFUSAL_REASONS = new Set([
   'native_quote_capture_scope_or_completeness_invalid',
   'native_quote_capture_oversized',
   'staff_quote_source_changed',
+  'staff_quote_policy_pdf_unavailable',
+  'hms_execution_failure',
 ]);
 
 const QUOTE_REFUSAL_ALIASES: Record<string, string> = {
   HMS_LOCK_BUSY: 'refused_lock_busy',
+  EXECUTION_FAILURE: 'hms_execution_failure',
   QUOTE_DAVINCI_DISABLED: 'quote_davinci_disabled',
 };
 

@@ -9,6 +9,7 @@ Updated 2026-10-26 15:50Z after or2 (overnight run 2, speed mode) closeout. Date
 - Today on prod: DS4 work-item history (J1 #597 undo/redo revisions, J2 #599, WIRE #607 pane Undo/Redo + Reset to AI + AI/Edited markers + stay/contact hold during refresh), green-main (#605 #606 #608 #609 #610), mail.send approval fix (#611: Azure-route and reservationist `resultDigest` tokens were rejected by the wire schema).
 - Pane bundle `nava-pane-DACG_mgw.js` carries Reset to AI/Redo; **no nginx load yet** (staff off the pane until 2026-10-27) → pane bar not passed. Approved-draft send of an Azure draft not live-proven (needs a staff send).
 - Next acceptance: owner/staff opens one quote mail, edits a field, sees Undo + AI/Edited; nginx load of `DACG_mgw` after 15:42Z.
+- **Next chat: start at [or2 close handoff](../plans/2026-10-26-006-or2-close-handoff.md).**
 - Follow-ups (next run): `ops-deploy --migrate` fails `SELF_SIGNED_CERT_IN_CHAIN` (drizzle-kit lacks `deploy/rds-ca-global.pem`; 1-line `NODE_EXTRA_CA_CERTS` fix); #607 P2 (switching mail mid-Undo holds B's editors until A settles); stay date/room AI markers; 6 `rate-controls`/`rate-cards` test failures on clean main (UI moved to StayRateGrid / BookingCard fixtures); R-SEED. Retro: [or2 retro](ledger/2026-10-26-or2-retro.md); handoff: [session handoff](../plans/2026-10-26-005-session-handoff.md).
 
 ## Overnight run 2 plan handoff — 2026-10-26
