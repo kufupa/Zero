@@ -114,6 +114,42 @@ type CursorQuery = (
   opts?: ReturnType<typeof inMailbox>,
 ) => Promise<HistorySeqCursor>;
 
+const HISTORY_STALE = 'history_stale';
+const HISTORY_STALE_COPY = "This email was re-read, so older changes can't be undone.";
+const HISTORY_REFRESH_COPY = "Saved, but couldn't refresh —";
+
+/** J1 may throw or return this typed error while that PR is still landing. */
+function historyStaleOf(value: unknown): boolean {
+  if (value === HISTORY_STALE) return true;
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  const data =
+    record.data && typeof record.data === 'object' && !Array.isArray(record.data)
+      ? (record.data as Record<string, unknown>)
+      : null;
+  const shape =
+    record.shape && typeof record.shape === 'object' && !Array.isArray(record.shape)
+      ? (record.shape as Record<string, unknown>)
+      : null;
+  const shapeData =
+    shape?.data && typeof shape.data === 'object' && !Array.isArray(shape.data)
+      ? (shape.data as Record<string, unknown>)
+      : null;
+  return [
+    record.error,
+    record.message,
+    record.code,
+    data?.code,
+    data?.error,
+    shape?.message,
+    shapeData?.code,
+  ].some((token) => token === HISTORY_STALE);
+}
+
+function historyMoveErrorCopy(error: unknown, fallback: string): string {
+  return historyStaleOf(error) ? HISTORY_STALE_COPY : fallback;
+}
+
 /** Older servers omit these routes; the pane hides the controls then. */
 function historyRoutesFrom(trpc: unknown): {
   revisionCursor: { query: CursorQuery } | null;
@@ -335,6 +371,7 @@ export function useStoredWork(args: {
   const [historyCursor, setHistoryCursor] = useState<HistorySeqCursor | null>(null);
   const [historyPending, setHistoryPending] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyNeedsReload, setHistoryNeedsReload] = useState(false);
   const [cursorEpoch, setCursorEpoch] = useState(0);
   const trpcRef = useRef(trpc);
   const lookupKeyRef = useRef(lookupKey);
@@ -642,8 +679,14 @@ export function useStoredWork(args: {
         if (lookupKeyRef.current !== keyNow) return;
         setLookup((prev) => (prev && prev.key === keyNow ? { ...prev, result } : prev));
         setHistoryEpoch((n) => n + 1);
+        setHistoryError(null);
+        setHistoryNeedsReload(false);
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (lookupKeyRef.current !== keyNow) return;
+        setHistoryError(HISTORY_REFRESH_COPY);
+        setHistoryNeedsReload(true);
+      });
   }, [internetMessageId, lookupKey, readyTransportId]);
 
   const historyRoutes = historyRoutesFrom(trpc);
@@ -654,6 +697,7 @@ export function useStoredWork(args: {
     setHistoryEpoch(0);
     setHistoryCursor(null);
     setHistoryError(null);
+    setHistoryNeedsReload(false);
     setCursorEpoch(0);
   }, [lookupKey]);
 
@@ -693,6 +737,7 @@ export function useStoredWork(args: {
       const keyNow = lookupKey;
       setHistoryPending(true);
       setHistoryError(null);
+      setHistoryNeedsReload(false);
       dropQueuedSaves();
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, expectedSeq: seq };
@@ -704,14 +749,18 @@ export function useStoredWork(args: {
         })
         .then((result) => {
           if (lookupKeyRef.current !== keyNow) return;
+          if (historyStaleOf(result)) {
+            setHistoryError(HISTORY_STALE_COPY);
+            return;
+          }
           if (result && typeof result === 'object' && 'seq' in result) {
             const next = result as HistorySeqCursor;
             if (Number.isSafeInteger(next.revision) && Number.isSafeInteger(next.seq)) setHistoryCursor(next);
           }
           return refetchStored();
         })
-        .catch(() => {
-          setHistoryError(message);
+        .catch((error) => {
+          setHistoryError(historyMoveErrorCopy(error, message));
         })
         .finally(() => {
           setHistoryPending(false);
@@ -741,6 +790,7 @@ export function useStoredWork(args: {
       const keyNow = lookupKey;
       setHistoryPending(true);
       setHistoryError(null);
+      setHistoryNeedsReload(false);
       dropQueuedSaves(section);
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, section };
@@ -750,12 +800,16 @@ export function useStoredWork(args: {
           dropQueuedSaves(section);
           return pinned ? mutate(input, pinned) : mutate(input);
         })
-        .then(() => {
+        .then((result) => {
           if (lookupKeyRef.current !== keyNow) return;
+          if (historyStaleOf(result)) {
+            setHistoryError(HISTORY_STALE_COPY);
+            return;
+          }
           return refetchStored();
         })
-        .catch(() => {
-          setHistoryError("Couldn't reset — try again");
+        .catch((error) => {
+          setHistoryError(historyMoveErrorCopy(error, "Couldn't reset — try again"));
         })
         .finally(() => {
           setHistoryPending(false);
@@ -763,6 +817,13 @@ export function useStoredWork(args: {
     },
     [dropQueuedSaves, lookupKey, readyWorkItemId, readyTransportId, refetchStored],
   );
+
+  const reloadHistory = useCallback(() => {
+    setHistoryPending(true);
+    void refetchStored().finally(() => {
+      setHistoryPending(false);
+    });
+  }, [refetchStored]);
 
   return {
     pane,
@@ -787,11 +848,13 @@ export function useStoredWork(args: {
       : null,
     historyPending,
     historyError,
+    historyNeedsReload,
     historyAvailable,
     resetAvailable,
     undo,
     redo,
     resetSection,
+    reloadHistory,
   };
 }
 

@@ -66,6 +66,7 @@ const {
     analyseCalls: 0,
     staffQuoteSourceCalls: 0,
     storedWorkLookups: 0,
+    storedWorkLookupReject: false,
     analyseFails: false,
     storedWork: null as null | Record<string, unknown>,
     storedLookupGate: null as null | Promise<void>,
@@ -277,6 +278,7 @@ vi.mock('../providers/query-provider', () => ({
           query: async () => {
             bridgeMockState.storedWorkLookups += 1;
             await bridgeMockState.storedLookupGate;
+            if (bridgeMockState.storedWorkLookupReject) throw new Error('lookup failed');
             return stored;
           },
         },
@@ -399,6 +401,7 @@ describe('Nava pane work-item controls', () => {
     bridgeMockState.storedWork = null;
     bridgeMockState.storedLookupGate = null;
     bridgeMockState.storedWorkLookups = 0;
+    bridgeMockState.storedWorkLookupReject = false;
     bridgeMockState.analyseCalls = 0;
     bridgeMockState.analyseFails = false;
     bridgeMockState.analysisOverride = null;
@@ -450,5 +453,24 @@ describe('Nava pane work-item controls', () => {
         section: { type: 'contact' },
       });
     });
+  });
+
+  it('failed refresh after Undo keeps controls disabled and Reload only refetches', async () => {
+    await renderReadyPane();
+    bridgeMockState.storedWorkLookupReject = true;
+    const undoCallsBefore = bridgeMockState.undoRevision.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    await waitFor(() => {
+      expect(screen.getByText(/Saved, but couldn't refresh/)).toBeDefined();
+    });
+    expect((screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled).toBe(true);
+    const lookupsAfterFail = bridgeMockState.storedWorkLookups;
+    const undoCallsAfterFail = bridgeMockState.undoRevision.mock.calls.length;
+    expect(undoCallsAfterFail).toBeGreaterThan(undoCallsBefore);
+    fireEvent.click(screen.getByRole('button', { name: 'Reload' }));
+    await waitFor(() => expect(bridgeMockState.storedWorkLookups).toBeGreaterThan(lookupsAfterFail));
+    expect(bridgeMockState.undoRevision.mock.calls.length).toBe(undoCallsAfterFail);
+    expect(bridgeMockState.resetSection).not.toHaveBeenCalled();
+    expect(bridgeMockState.redoRevision).not.toHaveBeenCalled();
   });
 });

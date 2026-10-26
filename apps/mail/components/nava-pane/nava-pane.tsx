@@ -662,7 +662,7 @@ export function NavaPane({
           onResetStay: storedWork.resetAvailable
             ? (stayId: string) => storedWork.resetSection({ type: 'stay', stayId })
             : undefined,
-          resetPending: storedWork.historyPending,
+          resetPending: storedWork.historyPending || storedWork.historyNeedsReload,
         }
       : null;
   const recordContact = (field: ContactField, value: string | null) => {
@@ -2119,12 +2119,22 @@ export function NavaPane({
                 serverCursor={storedWork.historyCursor}
                 onUndo={storedWork.undo}
                 onRedo={storedWork.redo}
-                pending={storedWork.historyPending}
+                pending={storedWork.historyPending || storedWork.historyNeedsReload}
               />
             ) : null}
             {storedWork.historyError ? (
-              <p role="status" className="px-1 text-[11px] text-[#64748b]">
-                {storedWork.historyError}
+              <p role="status" className="flex flex-wrap items-center gap-1 px-1 text-[11px] text-[#64748b]">
+                <span>{storedWork.historyError}</span>
+                {storedWork.historyNeedsReload ? (
+                  <button
+                    type="button"
+                    disabled={storedWork.historyPending}
+                    onClick={storedWork.reloadHistory}
+                    className="rounded-[3px] text-[11px] font-semibold text-[#64748b] hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:text-[#94a3b8]"
+                  >
+                    Reload
+                  </button>
+                ) : null}
               </p>
             ) : null}
           </div>
