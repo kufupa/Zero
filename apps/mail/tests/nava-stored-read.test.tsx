@@ -82,6 +82,8 @@ vi.mock('@/providers/query-provider', () => {
         acceptFields: { mutate: async () => ({}) },
         retryTranslation: { mutate: async () => ({ status: 'capped', translation: null }) },
       },
+      panePartyLookup: { suggest: { query: async () => ({ suggestions: [] }) } },
+      hmsApproval: null,
       drafts: { savedReply: { query: async () => null }, saveReply: { mutate: async () => null } },
     }),
   };
