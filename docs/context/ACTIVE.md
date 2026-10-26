@@ -1,6 +1,12 @@
 # Active context
 
-Updated 2026-10-25 19:00Z after U13-dedup `#550` deploy. Dated research is evidence, not automatically current state.
+Updated 2026-10-26 for the dev-speed scripts handoff. Product-runtime checkpoint remains the 2026-10-25 19:00Z U13-dedup `#550` deploy; dated research is evidence, not automatically current state.
+
+## Dev-speed orchestration scripts — 2026-10-26
+
+- Branch `ops/speed-mode-scripts` adds merge-gate, deploy-train and dispatch scripts plus a fake-`gh` Bash self-test. `bash -n` and `scripts/orch/test-orch.sh` pass; `shellcheck` is unavailable. No remote typecheck/tests, gate record, merge or deploy were run in this lane; the PR remains unmerged.
+- Next acceptance: after remote typecheck and targeted remote tests pass, the lane writes `/tmp/or2/gates/<pr>-<headsha>.ok`; confirm Greptile success and zero unresolved Greptile P0/P1 threads before using `merge-gate.sh`. Run the deployment train only from a clean `recover-parse-failure` worktree when a deploy is separately needed.
+- Holds: no merge or production deploy from this coding lane; the deploy-train self-test is dry-run only.
 
 ## Multi-hotel overnight — 2026-10-25 (Grok orch, plan 2026-10-24-001)
 
