@@ -83,4 +83,39 @@ describe('QuotePeopleStep', () => {
     expect(selectedAgency.getAttribute('title')).toBe(agency.nativeId);
     expect(selectedCompany.getAttribute('title')).toBe(company.nativeId);
   });
+
+  it('asks for a guest name instead of using an agent sender when no guest was parsed', () => {
+    const agentContact: StoredContact = {
+      name: 'Agent sender',
+      company: null,
+      endClient: null,
+      email: null,
+      phone: null,
+    };
+    const props = {
+      session: {
+        staffSource: null,
+        analysis: {
+          luna: {
+            party: { kind: 'agency' },
+            groups: [{ guestNames: [] }],
+          },
+        },
+      } as unknown as QuoteSession,
+      partyState: 'Optional' as const,
+      header: emptyStaffQuoteHeader(),
+      contact: agentContact,
+      contactEditorKey: 'agent-message',
+      onContactEdit: vi.fn<(field: ContactField, value: string | null) => void>(),
+      scrollToStep: vi.fn(),
+    } as unknown as Parameters<typeof QuotePeopleStep>[0];
+
+    render(<QuotePeopleStep {...props} />);
+
+    const people = screen.getByRole('region', { name: 'People' });
+    const guest = within(people).getByLabelText('Guest') as HTMLInputElement;
+    expect(guest.value).toBe('');
+    expect(guest.getAttribute('placeholder')).toBe('Guest name?');
+    expect(within(people).getByText('Agent sender')).toBeDefined();
+  });
 });
