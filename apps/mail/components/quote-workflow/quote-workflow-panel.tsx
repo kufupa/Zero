@@ -409,6 +409,7 @@ export function QuoteWorkflowPanel({
   hmsQueue,
   onLoadRunScreenshot,
   paneSave,
+  workItemId,
   availabilityReader,
   partySuggestions,
   partyIndex,
@@ -423,6 +424,8 @@ export function QuoteWorkflowPanel({
   session: QuoteSession;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
   paneSave?: PaneStayClient | null;
+  /** Work item owning the Book preview receipt and any resulting commit. */
+  workItemId?: string;
   /** Read-only stored availability lookup; independent of whether saving to HMS is enabled. */
   availabilityReader?: PaneStayAvailabilityReader | null;
   /** The stored read's contact (booker and company) for the HMS notes. Null while the mail has no stored read. */
@@ -1498,6 +1501,7 @@ export function QuoteWorkflowPanel({
         session={session}
         paneSave={paneSave}
         contact={contact}
+        workItemId={workItemId}
         propertyCode={paneConfig?.propertyCode ?? null}
       />
     </div>
