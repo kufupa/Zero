@@ -38,12 +38,14 @@ fi
 deadletter_only() {
   local output=$1 report
   # Allow rc=1 only for the sole measured dead-letter gate after the health phase.
-  [[ $output == *'== ops-deploy: health =='* && $output == *'launch-readiness NOT_READY; criticalFailures=workflowDeadLetterBacklogEmpty;'* ]] || return 1
+  # Staff-hours jobs in flight also trip workflowNonterminalBacklogEmpty; health/pm2 still decide liveness.
+  [[ $output == *'== ops-deploy: health =='* && ( $output == *'launch-readiness NOT_READY; criticalFailures=workflowDeadLetterBacklogEmpty;'* || $output == *'launch-readiness NOT_READY; criticalFailures=workflowNonterminalBacklogEmpty,workflowDeadLetterBacklogEmpty;'* ) ]] || return 1
   report=$(grep -F '"workflowDeadLetterBacklogEmpty"' <<<"$output" | tail -n 1 || true)
   [[ -n $report ]] || return 1
   command -v jq >/dev/null 2>&1 || return 1
   jq -e '
-    .status == "NOT_READY" and .failures == ["workflowDeadLetterBacklogEmpty"] and
+    .status == "NOT_READY" and
+    ((.failures == ["workflowDeadLetterBacklogEmpty"]) or (.failures == ["workflowNonterminalBacklogEmpty","workflowDeadLetterBacklogEmpty"])) and
     .checks.httpHealthy == true and .checks.httpsHealthy == true and .checks.tlsValid == true and
     .checks.pm2HttpOnline == true and .checks.pm2WorkerOnline == true and .checks.pm2AiWorkerOnline == true and
     .checks.strictHotelProbe == true and
