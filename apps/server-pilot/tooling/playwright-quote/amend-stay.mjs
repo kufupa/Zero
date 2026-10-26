@@ -18,7 +18,10 @@ import {
   validateAmendCurrent,
   validateAmendRequest,
 } from './amend-stay-rules.mjs';
-import { propertySecretRefusal } from './property-profile.mjs';
+import { parseStayProperty, propertySecretRefusal } from './property-profile.mjs';
+import { withWriteCliPage } from './write-cli-lease.mjs';
+
+export { withWriteCliPage as withLeasedWritePage };
 
 // Source-backed New Record names. Existing-record writability remains TODO-LIVE-PROBE; unavailable controls refuse.
 const SELECTOR_BY_FIELD = {
@@ -186,9 +189,11 @@ async function run(ctx, request) {
     if (hotelMismatch) throw new Error(hotelMismatch);
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
     context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
-    ctx.page = await context.newPage();
-    ctx.page.setDefaultTimeout(20000);
-    await login(ctx.page, secret);
+    await withWriteCliPage({
+      propertyCode: ctx.args.property, secret, context, browser, env: process.env,
+    }, async ({ page: leased }) => {
+    ctx.page = leased;
+    ctx.page.setDefaultTimeout?.(20000);
     await openGuestStay(ctx.page);
     await ctx.page.waitForTimeout(1500);
 
@@ -292,6 +297,7 @@ async function run(ctx, request) {
     } else {
       ctx.result.outcome = 'amended';
     }
+    });
   } catch (error) {
     ctx.result.error = errorText(error);
     ctx.result.outcome = ctx.result.saveAttempted ? 'save_not_confirmed' : 'execution_failure';
@@ -307,14 +313,20 @@ async function run(ctx, request) {
 
 const exitCodeFor = (outcome) => outcome === 'previewed' || outcome === 'amended' ? 0 : outcome.startsWith('refused_') ? 2 : 1;
 
-async function main() {
-  const parsed = parseAmendArgs(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)) {
+  const property = parseStayProperty(argv);
+  if (!property.ok) {
+    process.stderr.write(`${property.error}\n`);
+    process.exitCode = property.exitCode;
+    return property.exitCode;
+  }
+  const parsed = parseAmendArgs(property.rest);
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
     process.exitCode = parsed.exitCode;
-    return;
+    return parsed.exitCode;
   }
-  const args = { ...parsed.args, out: resolve(parsed.args.out) };
+  const args = { ...parsed.args, out: resolve(parsed.args.out), property: property.propertyCode };
   const result = newResult();
   const ctx = { args, dir: args.out, result, page: null };
   await mkdir(ctx.dir, { recursive: true, mode: 0o700 });
@@ -335,6 +347,7 @@ async function main() {
   await writeFile(resultJson, `${JSON.stringify(result, null, 2)}\n`, { mode: 0o600 });
   process.stdout.write(`${JSON.stringify({ outcome: result.outcome, resultJson })}\n`);
   process.exitCode = exitCodeFor(result.outcome);
+  return process.exitCode;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

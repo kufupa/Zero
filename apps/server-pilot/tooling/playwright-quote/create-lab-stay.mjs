@@ -11,7 +11,10 @@ import { assertTrackReadyForGuarantee, bookFieldFills, loadCreateRequest, loadCr
 import { readSaveSnapshot, readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { paneCommitOutcome, proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
-import { profileFor, stayBookFieldRefusal } from './property-profile.mjs';
+import { parseStayProperty, profileFor, propertySecretRefusal, stayBookFieldRefusal } from './property-profile.mjs';
+import { withWriteCliPage } from './write-cli-lease.mjs';
+
+export { withWriteCliPage as withLeasedWritePage };
 
 const REQUIRED = [
   'arrivaldate',
@@ -49,16 +52,10 @@ export function extMessageBoxAction(text, stay) {
 }
 // --- end-ext-message-box-rules ---
 
-const CREATE_PROPERTIES = new Set(['HRCEN', 'HRDAV']);
-
 export function parseCreateProperty(argv) {
-  const index = argv.indexOf('--property');
-  if (index === -1) return { ok: true, propertyCode: 'HRCEN' };
-  const value = argv[index + 1];
-  if (!CREATE_PROPERTIES.has(value)) {
-    return { ok: false, exitCode: 2, error: 'PROPERTY_UNKNOWN' };
-  }
-  return { ok: true, propertyCode: value };
+  const parsed = parseStayProperty(argv);
+  if (!parsed.ok) return { ok: false, exitCode: parsed.exitCode, error: parsed.error };
+  return { ok: true, propertyCode: parsed.propertyCode };
 }
 
 export function createRoomTypeMismatch(profile, roomType) {
@@ -877,8 +874,7 @@ async function runProofReadback(browser, secret, stay, dir, save, savedScreensho
   };
 }
 
-async function main() {
-  const argv = process.argv.slice(2);
+export async function main(argv = process.argv.slice(2)) {
   const proofMode = argv.includes('--proof');
   const stop = parseStopBefore(argv);
   if (!stop.ok) {
@@ -898,7 +894,7 @@ async function main() {
   if (!property.ok) {
     process.stderr.write(`${property.error}\n`);
     process.exitCode = property.exitCode;
-    return;
+    return property.exitCode;
   }
   const propertyCode = property.propertyCode;
   const loaded = await loadCreateRequest(argv);
@@ -955,22 +951,24 @@ async function main() {
   }
   if (process.env.HMS_STAGEHAND_BROWSER_OWNERSHIP !== 'borrowed') throw new Error('BORROWED_REQUIRED');
   const secret = await readSecret();
-  if (secret.expectedPropertyCode !== propertyCode) {
-    throw new Error(propertyCode === 'HRDAV' ? 'PROPERTY_HRDAV_REQUIRED' : 'PROPERTY_HRCEN_REQUIRED');
-  }
+  const hotelMismatch = propertySecretRefusal(secret, propertyCode);
+  if (hotelMismatch) throw new Error(hotelMismatch);
   const browser = await playwright().chromium.connectOverCDP(url.href, { timeout: 20000 });
   const context = await newBorrowedContext(browser, {
     ignoreHTTPSErrors: true,
     viewport: { width: 1600, height: 1000 },
   });
-  const page = await context.newPage();
-  page.on('dialog', (dialog) => {
-    dialog.dismiss().catch(() => {});
-  });
-  page.setDefaultTimeout(20000);
   const result = { guest: stay, held: false, saved: false, cancelled: false };
+  let page = null;
   try {
-    await login(page, secret);
+    await withWriteCliPage({
+      propertyCode, secret, context, browser, env: process.env,
+    }, async ({ page: leased }) => {
+      page = leased;
+      page.on?.('dialog', (dialog) => {
+        dialog.dismiss().catch(() => {});
+      });
+      page.setDefaultTimeout?.(20000);
     await openGuestStayScreen(page);
     await waitHmsMaskCleared(page);
     await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
@@ -1197,6 +1195,9 @@ async function main() {
     result.cancelled = cancelled;
     await shot(page, dir, 'cancelled.png');
     result.outcome = cancelled ? 'saved_then_cancelled' : 'cancel_failed';
+      process.stdout.write(`${result.outcome}\n`);
+      if (result.outcome !== 'saved_then_cancelled') process.exitCode = 2;
+    });
   } catch (error) {
     result.outcome = 'execution_failure';
     result.error = String(error.message || error);
@@ -1207,8 +1208,6 @@ async function main() {
     await context.close().catch(() => {});
     if (typeof browser.disconnect === 'function') browser.disconnect();
   }
-  process.stdout.write(`${result.outcome}\n`);
-  if (result.outcome !== 'saved_then_cancelled') process.exitCode = 2;
 }
 
 async function flushOutput() {

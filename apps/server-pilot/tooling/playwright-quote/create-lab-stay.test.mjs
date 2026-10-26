@@ -211,7 +211,7 @@ test('proof mode is guarded before browser work and wires read-only reconciliati
   const browserCall = source.indexOf('connectOverCDP');
   assert.ok(proofGuard !== -1 && proofGuard < createDir && createDir < browserCall);
   assert.match(source, /argv\.includes\('--proof'\)/);
-  assert.match(source, /PROPERTY_HRCEN_REQUIRED/);
+  assert.match(source, /propertySecretRefusal\(secret, propertyCode\)/);
   assert.match(source, /installReadOnlyGuard/);
   assert.match(source, /await import\('\.\/stay-lookup\.mjs'\)/);
   assert.doesNotMatch(source, /import \{ findOnOpenGuestStay, searchGuestOnOpenGuestStay \} from '\.\/stay-lookup\.mjs'/);
@@ -304,8 +304,8 @@ test('proof mode captures parsed search rows before Save', async () => {
 
 test('JS dialogs are dismissed and a vanished dialog does not crash', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
-  const writePage = source.lastIndexOf('const page = await context.newPage()');
-  const dialogOn = source.indexOf("page.on('dialog'", writePage);
+  const writePage = source.indexOf('await withWriteCliPage({');
+  const dialogOn = source.indexOf("page.on?.('dialog'", writePage);
   assert.ok(writePage !== -1);
   assert.ok(dialogOn > writePage, 'write page must install a dialog listener');
   const handler = source.slice(dialogOn, dialogOn + 220);
@@ -314,20 +314,19 @@ test('JS dialogs are dismissed and a vanished dialog does not crash', async () =
   assert.doesNotMatch(source, /dialog\.accept\(/);
 });
 
-test('HRCEN property check runs on every write, not only proof', async () => {
+test('property check runs on every write, not only proof', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
   const secret = source.indexOf('const secret = await readSecret()');
-  const propertyCheck = source.indexOf('secret.expectedPropertyCode !== propertyCode');
+  const propertyCheck = source.indexOf('propertySecretRefusal(secret, propertyCode)');
   const browserCall = source.indexOf('connectOverCDP');
   assert.ok(secret !== -1 && propertyCheck > secret && propertyCheck < browserCall);
   assert.equal(source.includes('proofMode && secret.expectedPropertyCode'), false);
-  assert.match(source, /PROPERTY_HRCEN_REQUIRED/);
-  assert.match(source, /PROPERTY_HRDAV_REQUIRED/);
+  assert.match(source, /propertySecretRefusal\(secret, propertyCode\)/);
   assert.equal(source.includes('PROOF_PROPERTY_HRCEN_REQUIRED'), false);
 });
 
-test('--property defaults to HRCEN, accepts HRDAV, refuses unknown', () => {
-  assert.deepEqual(parseCreateProperty([]), { ok: true, propertyCode: 'HRCEN' });
+test('--property requires a registered code and refuses unknown', () => {
+  assert.deepEqual(parseCreateProperty([]), { ok: false, exitCode: 2, error: 'PROPERTY_REQUIRED' });
   assert.deepEqual(parseCreateProperty(['--property', 'HRDAV']), { ok: true, propertyCode: 'HRDAV' });
   assert.deepEqual(parseCreateProperty(['--property', 'OTHER']), {
     ok: false,
