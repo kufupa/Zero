@@ -22,6 +22,7 @@ import {
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote, reviewedReplyHtml, setReviewedReply } from './helpers/prepare-reviewed-quote';
 import { VOUCHER_COPY } from '../lib/quote-workflow/voucher-find';
+import { AMEND_SAVE_COPY } from '../lib/quote-workflow/amend-cancel';
 import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
@@ -770,6 +771,11 @@ describe('NavaPane screen states', () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
 
+  /** Radix menu ids change with prior mounts; snapshots keep a stable placeholder. */
+  const stabilizePaneSnapshot = (root: HTMLElement) => {
+    root.querySelectorAll('[id^="radix-"]').forEach((el) => el.setAttribute('id', 'radix-stable'));
+  };
+
   it('welcome: a first run shows the account step and the four-step bar', async () => {
     localStorage.removeItem('nava_onboarding_completed');
     const { container } = render(<NavaPane bridge={fakeBridge} />);
@@ -787,6 +793,8 @@ describe('NavaPane screen states', () => {
     expect(screen.getByRole('button', { name: 'Confirm Account & Connect' })).toBeDefined();
     expect(screen.getByRole('button', { name: '4. Quote Tool' })).toBeDefined();
     expect(screen.queryByRole('main')).toBeNull();
+    await settle();
+    stabilizePaneSnapshot(container);
     expect(container).toMatchSnapshot();
   });
 
@@ -849,6 +857,7 @@ describe('NavaPane screen states', () => {
     expect(card.textContent).toContain('Add the night of 31 Oct');
     expect(card.textContent).toContain('57291630-1');
     await settle();
+    stabilizePaneSnapshot(container);
     expect(container).toMatchSnapshot();
   });
 
@@ -1126,6 +1135,7 @@ describe('NavaPane screen states', () => {
     expect(await screen.findByText(/API server pinged at/)).toBeDefined();
     expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
     await settle();
+    stabilizePaneSnapshot(container);
     expect(container).toMatchSnapshot();
   });
 
@@ -1138,6 +1148,7 @@ describe('NavaPane screen states', () => {
     expect(screen.getByRole('heading', { name: '1. Automatic Email Sync' })).toBeDefined();
     expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
     await settle();
+    stabilizePaneSnapshot(container);
     expect(container).toMatchSnapshot();
   });
 
@@ -2987,7 +2998,7 @@ describe('NavaPane screen states', () => {
     expect(card.querySelector('[data-testid="amend-changes"]')).toBeNull();
     expect(within(card).getByRole('button', { name: 'Copy confirmation' })).toBeDefined();
     expect(within(card).queryByRole('button', { name: 'Run' })).toBeNull();
-    expect(within(card).getByText(/This booking is not unpaid. Change it in HMS yourself/)).toBeTruthy();
+    expect(within(card).getByText(AMEND_SAVE_COPY.handleInHms)).toBeTruthy();
   });
 
   it('amendment: right column shows only the requested departure difference', async () => {
