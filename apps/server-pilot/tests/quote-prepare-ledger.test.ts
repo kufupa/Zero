@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
+import { TRPCError } from '@trpc/server';
 import {
   appendQuotePrepareDecision,
   quotePrepareDecisionsFromMetrics,
+  quotePrepareErrorClass,
   recordQuotePrepareDecision,
   sanitizeQuotePrepareDecision,
 } from '../src/ai/quote-prepare-ledger.js';
+import { PropertyRefusalCause } from '../src/hms/property-refusal.js';
 import {
   prefetchQuoteReadyAfterPartyMatch,
   prefetchQuoteReadyForExtraction,
@@ -14,7 +17,7 @@ import {
 import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
-import { DAVINCI_TRANSPORT_ID, NAVA_TRANSPORT_ID } from '../src/db/seed.js';
+import { DAVINCI_TRANSPORT_EMAIL, DAVINCI_TRANSPORT_ID } from '../src/db/seed.js';
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
 const reachable = await probeTestDb();
@@ -80,10 +83,10 @@ async function seedExtraction(
     transportId,
     threadId,
     direction: 'inbound',
-    fromAddress: 'agent@example.test',
-    toAddresses: [],
+    fromAddress: 'guest@example.test',
+    toAddresses: transportId === DAVINCI_TRANSPORT_ID ? [DAVINCI_TRANSPORT_EMAIL] : [],
     subject: 'Quote request',
-    textBody: 'Please quote a future stay for Alex Guest at alex@example.test.',
+    textBody: 'Please quote a future stay.',
     receivedAt: new Date(),
   });
   await db.insert(mailExtraction).values({
@@ -163,6 +166,17 @@ describe('quote prepare ledger (pure)', () => {
       reason: 'unknown',
     });
     expect(JSON.stringify(decision)).not.toMatch(/@/);
+  });
+
+  it('maps property refusals to POLICY_BLOCK without the error message', () => {
+    const error = new TRPCError({
+      code: 'PRECONDITION_FAILED',
+      message: 'This mailbox is not set up for this hotel',
+      cause: new PropertyRefusalCause('property_unknown'),
+    });
+    expect(quotePrepareErrorClass(error)).toBe('POLICY_BLOCK');
+    expect(quotePrepareErrorClass(new PropertyRefusalCause('not_set_up'))).toBe('POLICY_BLOCK');
+    expect(quotePrepareErrorClass(new Error('alex@example.test'))).toBe('UNKNOWN');
   });
 
   it('appends under existing metrics and refuses a non-array ledger', () => {
@@ -253,6 +267,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('quote prepare ledger (lane DB
           .from(aiWorkflowRun)
           .where(eq(aiWorkflowRun.id, seeded.run.id));
         const decisions = quotePrepareDecisionsFromMetrics(source?.metrics);
+        expect(decisions.map((decision) => decision.reason)).toEqual([row.reason]);
         expect(created >= row.queued).toBe(true);
         if (row.queued === 0) expect(created).toBe(0);
         expect(decisions).toEqual([
@@ -305,9 +320,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('quote prepare ledger (lane DB
       ).toBe(0);
       const empty = await seedExtraction(db, { payload: quotePayload('2020-11-12', '2020-11-14') });
       expect(await prefetchQuoteReadyForExtraction(empty.prefetchRun, db, QUOTE_ON)).toBe(0);
-      const unknownProperty = await seedExtraction(db, { transportId: NAVA_TRANSPORT_ID });
+      const unset = await seedExtraction(db);
       await expect(
-        prefetchQuoteReadyForExtraction(unknownProperty.prefetchRun, db, QUOTE_ON),
+        prefetchQuoteReadyForExtraction(unset.prefetchRun, db, {
+          HMS_JOB_QUEUE: 'on',
+          HMS_QUOTE_PREPARE: 'true',
+          HMS_QUOTE_PREPARE_PER_HOUR: '6',
+          HMS_DAVINCI_MAKE_QUOTE: 'on',
+        }),
       ).rejects.toBeTruthy();
 
       const rows = await db
@@ -327,12 +347,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('quote prepare ledger (lane DB
       expect(quotePrepareDecisionsFromMetrics(byId[empty.run.id]?.metrics)).toEqual([
         expect.objectContaining({ outcome: 'skipped', reason: 'past_dates' }),
       ]);
-      expect(quotePrepareDecisionsFromMetrics(byId[unknownProperty.run.id]?.metrics)).toEqual([
+      expect(quotePrepareDecisionsFromMetrics(byId[unset.run.id]?.metrics)).toEqual([
         expect.objectContaining({ outcome: 'error', reason: 'error', errorClass: 'POLICY_BLOCK' }),
       ]);
       for (const row of rows) assertNoPii(row.metrics);
       expect(await preparedQuoteRows(db, refused.messageId)).toEqual([]);
       expect(await preparedQuoteRows(db, empty.messageId)).toEqual([]);
-      expect(await preparedQuoteRows(db, unknownProperty.messageId)).toEqual([]);
+      expect(await preparedQuoteRows(db, unset.messageId)).toEqual([]);
     }));
 });
