@@ -224,12 +224,14 @@ function probeEnv(overrides: Record<string, string> = {}): Record<string, string
   return { ...process.env, HMS_JOB_QUEUE: 'on', HMS_AVAILABILITY_PREFETCH: 'on', ...overrides } as Record<string, string>;
 }
 
-const EXTRACTION_RUN = (messageId: string, admissionSnapshotId: string | null = `snapshot-${randomUUID()}`) => ({
-  runKind: 'inbound_extraction' as const,
-  transportId: TRANSPORT_ID,
-  triggerMessageId: messageId,
-  admissionSnapshotId,
-});
+function extractionRun(messageId: string, admitted = true) {
+  return {
+    runKind: 'inbound_extraction' as const,
+    transportId: TRANSPORT_ID,
+    triggerMessageId: messageId,
+    admissionSnapshotId: admitted ? `snapshot-${randomUUID()}` : null,
+  };
+}
 
 async function seedThread(db: DB): Promise<{ threadId: string; messageId: string }> {
   const threadId = `thread-${randomUUID()}`;
@@ -720,7 +722,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     withSeededTestDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
-      const run = EXTRACTION_RUN(messageId);
+      const run = extractionRun(messageId);
       expect(await prefetchAvailabilityForExtraction(run, db, probeEnv({ HMS_AVAILABILITY_PREFETCH: 'off' }))).toBe(0);
       expect(await prefetchAvailabilityForExtraction(run, db, probeEnv({ HMS_AVAILABILITY_PREFETCH: '' }))).toBe(0);
       expect(await prefetchAvailabilityForExtraction(run, db, probeEnv({ HMS_JOB_QUEUE: 'off' }))).toBe(0);
@@ -732,7 +734,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     withSeededTestDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId, null), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId, null), db, probeEnv())).toBe(0);
       expect(await availabilityRuns(db)).toHaveLength(0);
     }));
 
@@ -740,12 +742,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     withSeededTestDb(async (db) => {
       const booking = await seedThread(db);
       await seedExtraction(db, booking.messageId, 'booking');
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(booking.messageId), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(booking.messageId), db, probeEnv())).toBe(0);
 
       const spam = await seedThread(db);
       await seedExtraction(db, spam.messageId, 'quote');
       await db.update(mailThread).set({ spamAt: new Date() }).where(eq(mailThread.id, spam.threadId));
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(spam.messageId), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(spam.messageId), db, probeEnv())).toBe(0);
       expect(await availabilityRuns(db)).toHaveLength(0);
     }));
 
@@ -753,12 +755,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     withSeededTestDb(async (db) => {
       const first = await seedThread(db);
       await seedExtraction(db, first.messageId, 'quote');
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(first.messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(first.messageId), db, probeEnv())).toBe(2);
 
       // The same stays from a second mail: deduplicated by the stay's digest and the day.
       const second = await seedThread(db);
       await seedExtraction(db, second.messageId, 'quote');
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(second.messageId), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(second.messageId), db, probeEnv())).toBe(0);
 
       const rows = await availabilityRuns(db);
       expect(rows).toHaveLength(2);
@@ -773,7 +775,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       const capped = probeEnv({ HMS_AVAILABILITY_PER_HOUR: '1' });
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, capped)).toBe(1);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, capped)).toBe(1);
       expect(await availabilityRuns(db)).toHaveLength(1);
     }));
 
@@ -795,7 +797,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
         db,
       );
       expect(
-        await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv({ HMS_PREFETCH_PER_HOUR: '1' })),
+        await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv({ HMS_PREFETCH_PER_HOUR: '1' })),
       ).toBe(2);
       expect(await availabilityRuns(db)).toHaveLength(2);
     }));
@@ -817,7 +819,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       paneStayLookupLoaders.lock = { withLock: takeLock } as unknown as PaneStayLock;
       const spawn = vi.fn(async () => QUOTE_RESULT);
       availabilityProbeLoaders.spawn = spawn;
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv())).toBe(2);
 
       const claimed = await claimJob(db);
       expect(await runClaimedJob(db, claimed)).toBe('retry_wait');
@@ -839,7 +841,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       paneStayLookupLoaders.lock = lockWith(false);
       const spawn = vi.fn(async () => QUOTE_RESULT);
       availabilityProbeLoaders.spawn = spawn;
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv())).toBe(2);
 
       const claimed = await claimJob(db);
       expect(await runClaimedJob(db, claimed)).toBe('retry_wait');
@@ -857,7 +859,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       await seedExtraction(db, messageId, 'quote');
       paneStayLookupLoaders.lock = lockWith(true);
       availabilityProbeLoaders.spawn = vi.fn(async () => QUOTE_RESULT);
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv())).toBe(2);
 
       // Both queued probes run, in whichever order the lane claims them.
       const before = Date.now();
@@ -913,10 +915,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       await seedExtraction(db, second.messageId, 'quote');
       paneStayLookupLoaders.lock = lockWith(true);
       availabilityProbeLoaders.spawn = vi.fn(async () => QUOTE_RESULT);
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(first.messageId), db, probeEnv())).toBe(2);
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(second.messageId), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(first.messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(second.messageId), db, probeEnv())).toBe(0);
       // A repeat from the same thread does not list it twice.
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(second.messageId), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(second.messageId), db, probeEnv())).toBe(0);
       expect(await runClaimedJob(db, await claimJob(db))).toBe('succeeded');
       expect(await runClaimedJob(db, await claimJob(db))).toBe('succeeded');
       const stay = { kind: 'availability' as const, arrival: '2026-10-26', departure: '2026-10-27' };
@@ -933,7 +935,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       const { threadId, messageId } = await seedThread(db);
       const twin = { ...STAY_A, id: 's_dddd4444', rows: [STAY_A.rows[1]!] };
       await seedExtraction(db, messageId, 'quote', { ...PAYLOAD, stays: [STAY_A, twin] });
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv())).toBe(2);
       const [a, b] = availabilityRequestsFor({ stays: [STAY_A, twin] });
       const view = (rooms: AvailabilityRequest['rooms']) =>
         readHmsJobView(
@@ -952,7 +954,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       availabilityProbeLoaders.spawn = vi.fn(async () => {
         throw new Error('quote tool exited');
       });
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv())).toBe(2);
 
       const claimed = await claimJob(db);
       expect(await runClaimedJob(db, claimed)).toBe('retry_wait');
