@@ -263,26 +263,6 @@ async function seedExtraction(
     kind,
     payload: payload as Record<string, unknown>,
   });
-  const [row] = await db
-    .select({ threadId: message.threadId, transportId: message.transportId })
-    .from(message)
-    .where(eq(message.id, messageId))
-    .limit(1);
-  if (!row) throw new Error('seedExtraction: message missing');
-  await db.insert(aiWorkflowRun).values({
-    id: randomUUID(),
-    transportId: row.transportId,
-    threadId: row.threadId,
-    triggerMessageId: messageId,
-    runKind: 'inbound_extraction',
-    idempotencyKey: `inbound-extraction:${messageId}`,
-    modelId: 'not_applicable',
-    promptVersion: 'extract-u10-test',
-    admissionSnapshotId: `snapshot-${randomUUID()}`,
-    state: 'succeeded',
-    executorLane: 'default',
-    priority: 0,
-  });
 }
 
 async function availabilityRuns(db: DB) {
