@@ -622,8 +622,16 @@ async function partyLookup(kind: PartyKind, name: string, deps: LiveCheckDeps): 
   const requestPath = join(dir, 'party-request.json');
   const request =
     kind === 'company'
-      ? { kind: 'organization', query: { organizationName: name } }
-      : { kind: 'bookingAgency', query: { bookingAgencyName: name } };
+      ? {
+        propertyCode: CENTURION_HMS_READ_TARGET.propertyCode,
+        kind: 'organization',
+        query: { organizationName: name },
+      }
+      : {
+        propertyCode: CENTURION_HMS_READ_TARGET.propertyCode,
+        kind: 'bookingAgency',
+        query: { bookingAgencyName: name },
+      };
   try {
     await writeFile(requestPath, JSON.stringify(request), { mode: 0o600 });
     const run = await deps.runCli(PARTY_CLI, ['--request', requestPath], deps.spawnEnv(), CHILD_TIMEOUT_MS.party);
@@ -669,7 +677,7 @@ async function partyCheck(kind: PartyKind, name: string, deps: LiveCheckDeps) {
 
 async function deeplinkCheck(check: { conf: string; stayId: string | null }, deps: LiveCheckDeps) {
   const started = Date.now();
-  const args = ['--conf', check.conf];
+  const args = ['--property', CENTURION_HMS_READ_TARGET.propertyCode, '--conf', check.conf];
   if (check.stayId !== null) args.push('--stay-id', check.stayId);
   const locked = await withPropertyLock(deps.lock(), () =>
     deps.runCli(PROBE_CLI, args, deps.spawnEnv(), CHILD_TIMEOUT_MS.deeplink),
@@ -776,7 +784,11 @@ async function stayCheck(check: { conf: string }, deps: LiveCheckDeps) {
   try {
     await mkdir(outDir, { recursive: true, mode: 0o700 });
     const locked = await withPropertyLock(deps.lock(), async () => {
-      const [script = '', ...args] = buildStayLookupArgs({ mode: 'find', confirmation: check.conf, arrival: null }, outDir);
+      const [script = '', ...args] = buildStayLookupArgs(
+        { mode: 'find', confirmation: check.conf, arrival: null },
+        outDir,
+        CENTURION_HMS_READ_TARGET.propertyCode,
+      );
       const run = await deps.runCli(script, args, deps.spawnEnv(), CHILD_TIMEOUT_MS.stay);
       return { run, result: await readJsonFile<StayResult>(join(outDir, 'result.json')) };
     });

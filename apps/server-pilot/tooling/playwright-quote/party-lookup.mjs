@@ -4,7 +4,10 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAudit } from './audit.mjs';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage };
 
 const KINDS = ['organization', 'bookingAgency', 'guest', 'arAccount'];
 const KIND_SET = new Set(KINDS);
@@ -179,14 +182,12 @@ function normalizeOneSearch(item) {
   return { kind: item.kind, query, name: String(item.name).trim() };
 }
 
-const PARTY_LOOKUP_PROPERTIES = new Set(['HRCEN', 'HRDAV']);
-
-/** HRCEN when omitted. Null when the code is not a known property — never Centurion fallback. */
+/** Explicit registered property only. Omitted or unknown codes are an input gap — never a hotel fallback. */
 export function partyLookupPropertyCode(request) {
-  if (request == null || typeof request !== 'object' || Array.isArray(request)) return 'HRCEN';
-  if (request.propertyCode == null || String(request.propertyCode).trim() === '') return 'HRCEN';
+  if (request == null || typeof request !== 'object' || Array.isArray(request)) return null;
+  if (request.propertyCode == null || String(request.propertyCode).trim() === '') return null;
   const code = String(request.propertyCode).trim().toUpperCase();
-  return PARTY_LOOKUP_PROPERTIES.has(code) ? code : null;
+  return lookupActiveProperty(code)?.propertyCode ?? null;
 }
 
 export function assertPartyLookupAccount(secret, propertyCode) {
@@ -1138,50 +1139,50 @@ export async function lookupParty({ requestPath, outputDir, env = process.env } 
       }, env),
       new Promise((_, reject) => setTimeout(() => reject(new Error('CONTEXT_TIMEOUT')), CONNECT_MS)),
     ]);
-    page = await context.newPage();
-    page.setDefaultTimeout(20000);
     timed.connect = Date.now() - connectStarted;
     audit = await createAudit(directory, { trace: false });
     const loginStarted = Date.now();
-    await login(page, secret, env);
-    timed.login = Date.now() - loginStarted;
-    await audit.start(page, [secret.password, secret.username, secret.loginUrl]);
-    const navStarted = Date.now();
-    await openGuestStayScreen(page);
-    await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
-    await page.locator('input[name="company"]:visible').waitFor();
-    timed.navigate = Date.now() - navStarted;
-    await audit.checkpoint('criteria');
-    const foundSearches = await runNormalizedSearches(normalized.searches, {
-      stopOnFirstHit: normalized.stopOnFirstHit,
-      search: async (item) => {
-        await closeLookupDialog(page).catch(() => {});
-        return searchKind(page, { kind: item.kind, query: item.query });
-      },
-    });
-    await audit.checkpoint('results');
-    await dismissUnsaved(page);
-    const screenshots = {
-      criteria: 'screenshots/criteria.png',
-      results: 'screenshots/results.png',
-    };
-    const phaseMs = partyLookupJobPhaseMs({ ...timed, searches: foundSearches });
-    if (normalized.single) {
-      result = applyScreenshotContract(resultEnvelope({
-        ...foundSearches[0],
-        screenshots,
-        evidenceDirectory: directory,
-        phaseMs,
-      }));
-    } else {
-      result = {
+    result = await withReadCliPage({ propertyCode, secret, context, browser, env }, async ({ page: leased }) => {
+      leased.setDefaultTimeout?.(20000);
+      page = leased;
+      timed.login = Date.now() - loginStarted;
+      await audit.start(page, [secret.password, secret.username, secret.loginUrl]);
+      const navStarted = Date.now();
+      await openGuestStayScreen(page);
+      await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
+      await page.locator('input[name="company"]:visible').waitFor();
+      timed.navigate = Date.now() - navStarted;
+      await audit.checkpoint('criteria');
+      const foundSearches = await runNormalizedSearches(normalized.searches, {
+        stopOnFirstHit: normalized.stopOnFirstHit,
+        search: async (item) => {
+          await closeLookupDialog(page).catch(() => {});
+          return searchKind(page, { kind: item.kind, query: item.query });
+        },
+      });
+      await audit.checkpoint('results');
+      await dismissUnsaved(page);
+      const screenshots = {
+        criteria: 'screenshots/criteria.png',
+        results: 'screenshots/results.png',
+      };
+      const phaseMs = partyLookupJobPhaseMs({ ...timed, searches: foundSearches });
+      if (normalized.single) {
+        return applyScreenshotContract(resultEnvelope({
+          ...foundSearches[0],
+          screenshots,
+          evidenceDirectory: directory,
+          phaseMs,
+        }));
+      }
+      return {
         outcome: overallSearchOutcome(foundSearches),
         searches: foundSearches.map((item) => applyScreenshotContract({ ...item, screenshots })),
         screenshots,
         evidenceDirectory: directory,
         phaseMs,
       };
-    }
+    });
   } catch (error) {
     result = resultEnvelope({
       outcome: 'execution_failure',

@@ -24,11 +24,11 @@ const DAVINCI_SECRET = {
 };
 
 describe('read-only HMS property registry', () => {
-  it('keeps the CLI-only HRCEN default and reads profiles through the registry', () => {
+  it('requires an explicit CLI property and reads profiles through the registry', () => {
     expect(parseStayProperty(['--mode', 'preview'])).toEqual({
-      ok: true,
-      propertyCode: 'HRCEN',
-      rest: ['--mode', 'preview'],
+      ok: false,
+      exitCode: 2,
+      error: 'PROPERTY_REQUIRED',
     });
     expect(parseStayProperty(['--property', 'HRDAV', '--mode', 'preview'])).toEqual({
       ok: true,

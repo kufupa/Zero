@@ -261,14 +261,24 @@ export function isGuestSurname(value: string): boolean {
   return value.length >= 2 && value.length <= 40 && GUEST_SURNAME_PATTERN.test(value);
 }
 
-export function buildStayLookupArgs(input: PaneStayLookupSpawnInput, outDir: string): string[] {
+export function buildStayLookupArgs(
+  input: PaneStayLookupSpawnInput,
+  outDir: string,
+  propertyCode: string,
+): string[] {
+  const code = typeof propertyCode === 'string' ? propertyCode.trim() : '';
+  if (!code) throw new Error('PROPERTY_REQUIRED');
   if (input.mode === 'find') {
-    const args = [STAY_LOOKUP, '--mode', 'find', '--confirmation', input.confirmation, '--out', outDir];
+    const args = [
+      STAY_LOOKUP, '--property', code, '--mode', 'find', '--confirmation', input.confirmation, '--out', outDir,
+    ];
     if (input.arrival) args.push('--arrival', input.arrival);
     return args;
   }
   const args = [
     STAY_LOOKUP,
+    '--property',
+    code,
     '--mode',
     'search-guest',
     '--last-name',
@@ -379,7 +389,7 @@ async function defaultSpawn(
   await mkdir(dir, { mode: 0o700 });
   let runError: unknown = null;
   try {
-    await execFileAsync('node', buildStayLookupArgs(input, dir), {
+    await execFileAsync('node', buildStayLookupArgs(input, dir, target.propertyCode), {
       timeout: LOOKUP_TIMEOUT_MS,
       env: paneStaySpawnEnv(process.env, undefined, target),
     });

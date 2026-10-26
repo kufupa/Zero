@@ -91,7 +91,27 @@ export type InstalledStaffQuoteServiceOptions = Pick<
   mailboxOrigin?: MailboxHmsOriginFields;
   /** Selects the HRDAV install when quoting Da Vinci. Omitted keeps Centurion. */
   propertyCode?: string;
+  /**
+   * Spawn env snapped while the parent holds this property lock.
+   * Must include HMS_PROPERTY_LOCK_HELD and PANE_STAY_TENANT_ID.
+   * Unset when this process is the lock owner.
+   */
+  childEnv?: NodeJS.ProcessEnv;
 };
+
+/** Copy the parent-held lock token and tenant into a quote child env. */
+export function spawnEnvWithHeldLock(
+  env: NodeJS.ProcessEnv,
+  childEnv: NodeJS.ProcessEnv | undefined,
+): NodeJS.ProcessEnv {
+  if (!childEnv) return env;
+  const held = childEnv.HMS_PROPERTY_LOCK_HELD;
+  if (!held) return env;
+  const next: NodeJS.ProcessEnv = { ...env, HMS_PROPERTY_LOCK_HELD: held };
+  const tenantId = childEnv.PANE_STAY_TENANT_ID;
+  if (typeof tenantId === 'string' && tenantId) next.PANE_STAY_TENANT_ID = tenantId;
+  return next;
+}
 
 /** Provisional mode: the final result must match the provisional capture the reader accepted. */
 async function verifyProvisionalQuoteFinal(evidenceDirectory: string): Promise<void> {
@@ -678,7 +698,7 @@ export function getInstalledStaffQuoteServices(
             request.args[2]!,
             configuration.outputDir,
           ],
-          env: request.env,
+          env: spawnEnvWithHeldLock(request.env, options.childEnv),
           signal: request.signal,
           timeoutMs: request.timeout,
           resultPath,
@@ -714,7 +734,7 @@ export function getInstalledStaffQuoteServices(
             configuration.outputDir,
           ],
           {
-            env: request.env,
+            env: spawnEnvWithHeldLock(request.env, options.childEnv),
             signal: request.signal,
             timeout: request.timeout,
             maxBuffer: 1024 * 1024,
@@ -750,6 +770,7 @@ export function getInstalledStaffQuoteServices(
     await writeFile(
       requestPath,
       JSON.stringify({
+        propertyCode: configuration.owner.propertyCode,
         kind,
         query: { [kind === 'organization' ? 'organizationName' : 'bookingAgencyName']: query },
       }),
@@ -773,7 +794,7 @@ export function getInstalledStaffQuoteServices(
           timeout: 300000,
           maxBuffer: 1024 * 1024,
           env: {
-            ...process.env,
+            ...(options.childEnv ?? process.env),
             HMS_STAGEHAND_CDP_URL: configuration.owner.cdpUrl,
             HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
             HMS_QUOTE_SECRET_PATH: configuration.owner.secretPath,

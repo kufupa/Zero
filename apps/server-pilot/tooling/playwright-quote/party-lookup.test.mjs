@@ -36,9 +36,9 @@ test('organization name request validates', () => {
   assert.deepEqual(lookup.validateRequest({ kind: 'organization', query: { organizationName: 'ACME' } }), []);
 });
 
-test('partyLookupPropertyCode keeps HRCEN as the default and never falls back from an unknown code', () => {
-  assert.equal(lookup.partyLookupPropertyCode(undefined), 'HRCEN');
-  assert.equal(lookup.partyLookupPropertyCode({ kind: 'organization', query: { organizationName: 'ACME' } }), 'HRCEN');
+test('partyLookupPropertyCode requires an explicit registered property and never falls back from an unknown code', () => {
+  assert.equal(lookup.partyLookupPropertyCode(undefined), null);
+  assert.equal(lookup.partyLookupPropertyCode({ kind: 'organization', query: { organizationName: 'ACME' } }), null);
   assert.equal(lookup.partyLookupPropertyCode({ propertyCode: 'hrdav' }), 'HRDAV');
   assert.equal(lookup.partyLookupPropertyCode({ propertyCode: 'HRCEN' }), 'HRCEN');
   assert.equal(lookup.partyLookupPropertyCode({ propertyCode: 'HROTH' }), null);

@@ -293,10 +293,10 @@ export function paneStayCreateTarget(input: {
   return { ok: true, target };
 }
 
-/** Non-Centurion targets pass `--property`; Centurion omits it (CLI default HRCEN). */
+/** Every target passes `--property`. The create CLI refuses an omitted code. */
 export function paneStayCreatePropertyArgs(target?: HmsReadTarget | null): string[] {
-  const code = target?.propertyCode;
-  return code && code !== 'HRCEN' ? ['--property', code] : [];
+  const code = typeof target?.propertyCode === 'string' ? target.propertyCode.trim() : '';
+  return code ? ['--property', code] : [];
 }
 
 /** CDP + secret for create-lab-stay. HRDAV never inherits the Centurion slot. */
