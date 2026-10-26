@@ -11,10 +11,13 @@ import {
   dismissWorkItem,
   ensureWorkItem,
   listWorkItems,
+  loadPaneRevisionCursor,
   openStoredWork,
   recordFieldEvent,
+  redoWorkItemRevision,
   storedTranslation,
   storedWorkFor,
+  undoWorkItemRevision,
 } from '../../ai/work-items.js';
 import {
   PANE_ACTION_BATCH_MAX,
@@ -358,4 +361,58 @@ export const workItemsRouter = router({
       }
       return { status: 'dismissed' as const };
     }),
+  revisionCursor: mailboxProcedure
+    .input(z.object({ workItemId: z.string().uuid() }).strict())
+    .query(async ({ input, ctx }) => {
+      const cursor = await loadPaneRevisionCursor(getDb(), {
+        transportId: ctx.activeTransportId,
+        workItemId: input.workItemId,
+      });
+      if (!cursor) throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+      return cursor;
+    }),
+  undoRevision: mailboxProcedure
+    .input(
+      z.object({ workItemId: z.string().uuid(), expectedRevision: z.number().int().min(0) }).strict(),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const result = await undoWorkItemRevision(getDb(), {
+        transportId: ctx.activeTransportId,
+        workItemId: input.workItemId,
+        userId: ctx.sessionUser.id,
+        expectedRevision: input.expectedRevision,
+      });
+      return historyMoveResult(result);
+    }),
+  redoRevision: mailboxProcedure
+    .input(
+      z.object({ workItemId: z.string().uuid(), expectedRevision: z.number().int().min(0) }).strict(),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const result = await redoWorkItemRevision(getDb(), {
+        transportId: ctx.activeTransportId,
+        workItemId: input.workItemId,
+        userId: ctx.sessionUser.id,
+        expectedRevision: input.expectedRevision,
+      });
+      return historyMoveResult(result);
+    }),
 });
+
+function historyMoveResult(
+  result: Awaited<ReturnType<typeof undoWorkItemRevision>>,
+): { revision: number; revisionHead: number } {
+  if (result.status === 'not_found') {
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+  }
+  if (result.status === 'stale') {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: 'This work item changed. Reload, then undo or redo.',
+    });
+  }
+  if (result.status === 'at_boundary') {
+    throw new TRPCError({ code: 'NOT_FOUND', message: 'Nothing left to undo or redo.' });
+  }
+  return { revision: result.revision, revisionHead: result.revisionHead };
+}

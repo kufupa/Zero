@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS "work_item" (
   "follow_up_due_at" timestamp,
   "created_at" timestamp DEFAULT now() NOT NULL,
   "updated_at" timestamp DEFAULT now() NOT NULL,
+  "revision" integer DEFAULT 0 NOT NULL,
+  "revision_head" integer DEFAULT 0 NOT NULL,
   CONSTRAINT "work_item_kind_check" CHECK ("kind" IN ('quote', 'booking', 'amendment', 'cancellation', 'voucher_pop', 'spam', 'other')),
   CONSTRAINT "work_item_status_check" CHECK ("status" IN ('needs_you', 'review', 'done', 'dismissed'))
 );--> statement-breakpoint

@@ -66,6 +66,8 @@ export const WORK_EVENT_TYPES = [
   'item.dismissed',
   'note.staff',
   'admin_review',
+  'history.undo',
+  'history.redo',
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
 /**
@@ -156,6 +158,9 @@ export const workItem = pgTable(
     followUpDueAt: timestamp('follow_up_due_at'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
+    /** Applied pane-field revisions. Undo/redo move this cursor; work_event rows stay append-only. */
+    revision: integer('revision').notNull().default(0),
+    revisionHead: integer('revision_head').notNull().default(0),
   },
   (t) => [
     uniqueIndex('work_item_thread_kind_source_uidx').on(t.threadId, t.kind, t.sourceMessageId),
