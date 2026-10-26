@@ -4,10 +4,12 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type {
   BookingDraftReady,
   BookingRateCheck,
+  QuoteSession,
   StaffQuoteParties,
   StaffQuoteParty,
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
+import { prefillReservationNote, reservationNoteForGroup } from '@/lib/quote-workflow/reservation-note';
 import { HmsLinkActions } from './hms-link-actions';
 import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
 import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
@@ -699,6 +701,8 @@ export function BookingCards({
   savedStays,
   guestName,
   guestEditorKey,
+  session,
+  propertyCode,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -716,6 +720,10 @@ export function BookingCards({
   guestName?: string;
   /** People-step cache key so a Guest edit updates Book first/last while both stay mounted. */
   guestEditorKey?: string;
+  /** Current quote session. Used to build the generated Reservation note; omitted leaves the field manual. */
+  session?: QuoteSession;
+  /** Active mailbox property. Unknown or missing codes fail closed (no generated note). */
+  propertyCode?: string | null;
 }) {
   const client = paneSave;
   const contactRef = useRef(contact);
@@ -732,6 +740,7 @@ export function BookingCards({
   const guestSplit = splitStayingGuestName(selectedGuestName);
   const previousSelectedGuestName = useRef(selectedGuestName);
   const guestNamesEdited = useRef<Record<string, boolean>>({});
+  const reservationNoteDirty = useRef<Record<string, boolean>>({});
   const [choices, setChoices] = useState<Record<string, RoomChoice>>(
     () =>
       Object.fromEntries(
@@ -741,6 +750,7 @@ export function BookingCards({
             readSelectedGuestName(guestEditorKey, guestName),
             room.request,
           );
+          const generated = session ? reservationNoteForGroup(session, propertyCode, room.groupId) : null;
           return [
             key,
             {
@@ -757,7 +767,11 @@ export function BookingCards({
               lastName: names.lastName,
               bookingAgency: textValue(room.request.agency) || pickedName(parties?.agency),
               organization: textValue(room.request.organization) || pickedName(parties?.company),
-              reservationNote: textValue(room.request.reservationNote),
+              reservationNote: prefillReservationNote(
+                textValue(room.request.reservationNote),
+                generated,
+                false,
+              ),
             },
           ];
         }),
@@ -822,6 +836,28 @@ export function BookingCards({
     selectedGuestName,
     stayBooking,
   ]);
+  useEffect(() => {
+    if (!session) return;
+    setChoices((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const room of draft.draft.rooms) {
+        const key = `${room.groupId}:${room.roomIndex}`;
+        const choice = current[key];
+        if (!choice) continue;
+        const generated = reservationNoteForGroup(session, propertyCode, room.groupId);
+        const bound = prefillReservationNote(
+          choice.reservationNote,
+          generated,
+          reservationNoteDirty.current[key] === true,
+        );
+        if (bound === choice.reservationNote) continue;
+        next[key] = { ...choice, reservationNote: bound };
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [draft.draft.rooms, propertyCode, session]);
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const requested = textValue(room.request.roomType);
@@ -995,6 +1031,7 @@ export function BookingCards({
         const locked = stayBooking || commitStatus === 'running' || commitStatus === 'booked';
         const request = room.request;
         const group = roomGroupFor(room, groups);
+        const generatedNote = session ? reservationNoteForGroup(session, propertyCode, room.groupId) : null;
         const built = roomBuilt(room);
         const price = group?.rowPrice;
         const override = price?.source === 'override' ? price : null;
@@ -1149,8 +1186,22 @@ export function BookingCards({
               required={requiredCreateFields.some(
                 (field) => field.trim().toLowerCase().replace(/[^a-z0-9]/g, '') === 'reservationnote',
               )}
-              onChange={(value) => setChoice({ reservationNote: value })}
+              onChange={(value) => {
+                reservationNoteDirty.current[key] = true;
+                setChoice({ reservationNote: value });
+              }}
             />
+            {generatedNote && generatedNote !== choice.reservationNote ? (
+              <SecondaryButton
+                disabled={locked}
+                onClick={() => {
+                  reservationNoteDirty.current[key] = false;
+                  setChoice({ reservationNote: generatedNote });
+                }}
+              >
+                Regenerate reservation note
+              </SecondaryButton>
+            ) : null}
             <CopyHmsNotesButton
               block={hmsNotesBlock({
                 booker: contact ? textValue(contact.name) : textValue(request.bookerName),

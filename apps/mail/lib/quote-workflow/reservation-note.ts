@@ -231,3 +231,13 @@ export function reservationNoteForGroup(
     officeTransferDays: session.staffHeader.officeTransferDays,
   });
 }
+
+/** Empty clean field takes the generated note. Dirty or existing staff text is never replaced. */
+export function prefillReservationNote(
+  current: string,
+  generated: string | null,
+  dirty: boolean,
+): string {
+  if (dirty || current.trim() !== '') return current;
+  return generated ?? '';
+}

@@ -12,12 +12,14 @@ export function QuoteBookingHost({
   contact,
   workItemId,
   savedStays,
+  propertyCode,
 }: {
   session: QuoteSession;
   paneSave?: PaneStayClient | null;
   contact?: StoredContact | null;
   workItemId?: string;
   savedStays?: Record<string, SavedStayCommit>;
+  propertyCode?: string | null;
 }) {
   const requestKey = JSON.stringify([
     session.binding?.transportId,
@@ -48,6 +50,8 @@ export function QuoteBookingHost({
               parties={session.staffHeader.parties}
               guestName={stayingGuestName(session, contact ?? null)}
               guestEditorKey={guestEditorKeyFor(session)}
+              session={session}
+              propertyCode={propertyCode}
             />
           </Fragment>
         ))}

@@ -41,7 +41,6 @@ import type {
   QuotePaneConfig,
 } from '@/lib/quote-workflow/types';
 import {
-  Disclosure,
   Field,
   LinkButton,
   Notice,
@@ -52,7 +51,6 @@ import {
   paneTextareaClass,
   StepState,
 } from '@/components/nava-pane/pane-ui';
-import { BOARD_LABELS } from './booking-card';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayAvailabilityReader, PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { pdfBlockReason } from './document-review';
@@ -72,8 +70,6 @@ import { projectBarGrid, RateCards } from './rate-cards';
 import { StayRateGrid } from './stay-rate-grid';
 import { filteredRateOptions, ratePlanChoices, RatePlanSelect } from './rate-plan-select';
 import {
-  CopyHmsNotesButton,
-  hmsNotesBlock,
   RowRateControls,
   savedPrice,
   useSavedRates,
@@ -151,35 +147,6 @@ function CorrectionNote({
           </div>
         </form>
       ) : null}
-    </div>
-  );
-}
-
-function HmsNotesFields({
-  notesBlock,
-  notes,
-  onNotesChange,
-}: {
-  notesBlock: string;
-  /** The staff note for HMS, stored on the quote header so it survives the pane and goes to the booking. */
-  notes: string;
-  onNotesChange: (value: string) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-3">
-      <Disclosure summary={<span>HMS notes (optional)</span>}>
-        <Field label="Notes for HMS" htmlFor="quote-hms-notes">
-          <textarea
-            id="quote-hms-notes"
-            aria-label="Notes for HMS"
-            className={paneTextareaClass}
-            placeholder="Add a staff note for the HMS handoff"
-            value={notes}
-            onChange={(event) => onNotesChange(event.target.value)}
-          />
-        </Field>
-        <CopyHmsNotesButton block={notesBlock} />
-      </Disclosure>
     </div>
   );
 }
@@ -388,42 +355,6 @@ type QueuedStayRun = { stepId: string; selectionEpoch: number };
 /** Equal for a session check. A cleared price (undefined) matches a row with no price. */
 function sameValue(current: unknown, wanted: unknown): boolean {
   return JSON.stringify(current) === JSON.stringify(wanted);
-}
-
-/** The generated room/rate summary remains available to copy alongside the editable handoff note. */
-function quoteNotesBlock(
-  session: QuoteSession,
-  rowLabels: ReadonlyMap<string, string>,
-  contact: StoredContact | null | undefined,
-): string {
-  const confirmation = session.analysis?.amendment?.confirmationNumber;
-  return hmsNotesBlock({
-    booker: contact?.name,
-    company: contact?.company,
-    confirmations: confirmation ? [confirmation] : [],
-    rooms: session.groups.map((group) => {
-      const rowRate = session.staffQuotes[stayKeyForGroup(group)]?.rowRates?.find((item) => item.groupId === group.id);
-      const override = group.rowPrice?.source === 'override' ? group.rowPrice : null;
-      const saved = group.rowPrice?.source === 'saved' ? group.rowPrice : null;
-      const code = rowRate?.rateCode ?? override?.rateCode ?? group.rateCode;
-      const option = (session.rateOptions ?? []).find((item) => item.groupId === group.id && item.rateCode === code);
-      return {
-        label: rowLabels.get(group.id) ?? 'Room',
-        specialRequests: group.specialRequests,
-        authorisedBy: override?.note,
-        rate: {
-          code,
-          label: rowRate?.customRateName ?? saved?.name ?? option?.rateLabel,
-          nightlyMinor: rowRate?.nightlyMinor ?? (group.rowPrice ? [group.rowPrice.amountMinor] : undefined),
-          stay:
-            group.arrivalDate && group.departureDate
-              ? { arrival: group.arrivalDate, departure: group.departureDate }
-              : null,
-          board: BOARD_LABELS[group.board],
-        },
-      };
-    }),
-  });
 }
 
 function stayDisplayTotal(session: QuoteSession, stayKey: string): number | null {
@@ -1088,24 +1019,6 @@ export function QuoteWorkflowPanel({
         />
       ) : null}
       {showWorkspace ? (
-        <Section
-          step={2}
-          title="HMS notes"
-          id="quote-authority"
-          action={<StepState state={header.notes?.trim() ? 'Done' : 'Optional'} />}
-        >
-          <HmsNotesFields
-            key={selectionEpoch}
-            notesBlock={quoteNotesBlock(session, rowLabels, contact)}
-            notes={header.notes ?? ''}
-            onNotesChange={(value) => onPatchStaffHeader?.({ notes: value }, { staffEdit: true })}
-          />
-          <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-stay')}>
-            Continue to Stay
-          </SecondaryButton>
-        </Section>
-      ) : null}
-      {showWorkspace ? (
         <QuoteStayStep
           session={session}
           stays={stays}
@@ -1581,7 +1494,12 @@ export function QuoteWorkflowPanel({
           />
         </>
       ) : null}
-      <QuoteBookingHost session={session} paneSave={paneSave} contact={contact} />
+      <QuoteBookingHost
+        session={session}
+        paneSave={paneSave}
+        contact={contact}
+        propertyCode={paneConfig?.propertyCode ?? null}
+      />
     </div>
   );
 }

@@ -44,8 +44,10 @@ import {
   type PaneStayResult,
 } from '../lib/quote-workflow/pane-stay-bind';
 import { hasStaffStayEdits, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
+import { reservationNoteForGroup } from '../lib/quote-workflow/reservation-note';
 import {
   emptyStaffQuoteHeader,
+  HRDAV_PROPERTY_CODE,
   HRCEN_PROPERTY_CODE,
   type BookingDraftReady,
   type LunaAnalysisWire,
@@ -248,6 +250,60 @@ function quotedSession(
     payload: { ...booking, inputRevision: session.inputRevision },
     sourceHash: STAFF_HASH,
   });
+}
+
+const GENERATED_NOTE_STAY_KEY = '2026-11-12:2026-11-14';
+
+function sessionWithGeneratedNote(booking: BookingDraftReady): QuoteSession {
+  const session = quotedSession(booking);
+  const quote = session.staffQuotes[GENERATED_NOTE_STAY_KEY];
+  if (!quote) throw new Error('expected staff quote');
+  return {
+    ...session,
+    groups: [{ ...session.groups[0]!, roomCodes: ['STWN'], rateCode: 'NCOR1B', board: 'bb' }],
+    staffQuotes: {
+      ...session.staffQuotes,
+      [GENERATED_NOTE_STAY_KEY]: {
+        ...quote,
+        availabilityBoard: [
+          {
+            groupId: 'g1',
+            roomCode: 'STWN',
+            roomLabel: 'Standard Twin',
+            rateCode: 'NCOR1B',
+            rateLabel: 'Corporate negotiated',
+            board: 'bb',
+            boardLabel: 'Bed & breakfast',
+            nightlyPriceMinor: 220000,
+            roomsLeft: 2,
+            rateScope: 'public',
+          },
+        ],
+        rowRates: [
+          {
+            groupId: 'g1',
+            source: 'hms',
+            hmsNightlyMinor: [215000, 225000],
+            nightlyMinor: [215000, 225000],
+            rateCode: 'NCOR1B',
+          },
+        ],
+      },
+    },
+  };
+}
+
+function sessionWithBoardRoomLabel(session: QuoteSession, roomLabel: string): QuoteSession {
+  const quote = session.staffQuotes[GENERATED_NOTE_STAY_KEY];
+  const row = quote?.availabilityBoard?.[0];
+  if (!quote || !row) throw new Error('expected availability row');
+  return {
+    ...session,
+    staffQuotes: {
+      ...session.staffQuotes,
+      [GENERATED_NOTE_STAY_KEY]: { ...quote, availabilityBoard: [{ ...row, roomLabel }] },
+    },
+  };
 }
 
 describe('booking cards', () => {
@@ -1561,6 +1617,37 @@ describe('booking card save modes and the note fields', () => {
     expect(previewButton(0)).toHaveProperty('disabled', true);
     expect(screen.getByText('Set agency name (100 characters at most) before you preview.')).toBeDefined();
     expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('prefills Book Reservation note from the generated stay note and keeps a dirty staff edit', () => {
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    const session = sessionWithGeneratedNote(draft);
+    const note = reservationNoteForGroup(session, HRDAV_PROPERTY_CODE, 'g1');
+    expect(note).toBeTruthy();
+
+    const view = (current: QuoteSession) => (
+      <BookingCards
+        draft={draft}
+        groups={current.groups}
+        session={current}
+        propertyCode={HRDAV_PROPERTY_CODE}
+      />
+    );
+    const { rerender } = render(view(session));
+    const field = screen.getByLabelText('Reservation note') as HTMLTextAreaElement;
+    expect(field.value).toBe(note);
+
+    fireEvent.change(field, { target: { value: 'Staff override' } });
+    expect(field.value).toBe('Staff override');
+
+    const changed = sessionWithBoardRoomLabel(session, 'Deluxe Twin');
+    const nextNote = reservationNoteForGroup(changed, HRDAV_PROPERTY_CODE, 'g1');
+    expect(nextNote).not.toBe(note);
+    rerender(view(changed));
+    expect((screen.getByLabelText('Reservation note') as HTMLTextAreaElement).value).toBe('Staff override');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate reservation note' }));
+    expect((screen.getByLabelText('Reservation note') as HTMLTextAreaElement).value).toBe(nextNote);
   });
 });
 

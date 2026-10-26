@@ -366,25 +366,20 @@ describe('QuoteWorkflowPanel', () => {
     const steps = Array.from(container.querySelectorAll<HTMLElement>('section[id^="quote-"]'));
     expect(steps.map((step) => step.id)).toEqual([
       'quote-party',
-      'quote-authority',
       'quote-stay',
       'quote-quote',
     ]);
     expect(steps.map((step) => step.getAttribute('aria-label'))).toEqual([
       'People',
-      'HMS notes',
       'Stay',
       'Documents',
     ]);
-    expect(steps.map((step) => step.querySelector('h3 span')?.textContent)).toEqual(['1', '2', '3', '4']);
+    expect(steps.map((step) => step.querySelector('h3 span')?.textContent)).toEqual(['1', '2', '3']);
     expect(screen.queryByRole('region', { name: 'Extras & alternatives' })).toBeNull();
-    expect(within(steps[0]!).getByRole('button', { name: 'Continue to HMS notes' })).toBeDefined();
-    expect(within(steps[1]!).queryByLabelText('Rate plan')).toBeNull();
-    expect(within(steps[1]!).getByText('HMS notes (optional)')).toBeDefined();
-    expect(within(steps[1]!).getByTestId('quote-step-state').textContent).toBe('Optional');
+    expect(within(steps[0]!).getByRole('button', { name: 'Continue to Stay' })).toBeDefined();
     const ratesStep = container.querySelector<HTMLElement>('#quote-rates');
     if (!ratesStep) throw new Error('Expected the nested Availability & rates controls.');
-    expect(steps[2]!.contains(ratesStep)).toBe(true);
+    expect(steps[1]!.contains(ratesStep)).toBe(true);
     const ratePlanSelect = within(ratesStep).getByLabelText('Rate plan');
     const searchHeading = within(ratesStep).getByText('Search availability & room rates');
     expect(
@@ -1005,7 +1000,6 @@ describe('QuoteWorkflowPanel', () => {
     const typeRate = screen.getAllByRole('button', { name: 'Type a rate' }) as HTMLButtonElement[];
     expect(typeRate[0]?.disabled).toBe(true);
     expect(typeRate[1]?.disabled).toBe(false);
-    expect((screen.getByRole('textbox', { name: 'Notes for HMS' }) as HTMLTextAreaElement).disabled).toBe(false);
 
     const finished: QuoteSession = {
       ...session,
@@ -1311,7 +1305,6 @@ describe('QuoteWorkflowPanel', () => {
     expect(onPatchStayExtras).not.toHaveBeenCalledWith(firstStayKey, expect.anything());
 
     assertRatePlanVisible();
-    expect(screen.getByText('HMS notes (optional)')).toBeDefined();
   });
 
   it('labels stay duplication and preserves the duplicate_stay action', () => {
@@ -1369,23 +1362,6 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.change(within(extraGroup).getByLabelText('Dinner add-on unit'), { target: { value: 'per_person' } });
     expect(onPatchStayExtras).toHaveBeenCalledWith(stayKey, { dinnerAllowanceMinor: 45_000 });
     expect(onPatchStayExtras).toHaveBeenCalledWith(stayKey, { dinnerAllowanceUnit: 'per_person' });
-  });
-
-  it('keeps an editable optional Notes for HMS field in Rates', () => {
-    // The note is bound to the staff header (header.notes), so a change is handed to onPatchStaffHeader; the parent
-    // stores it and passes it back. This test has no parent, so the textarea keeps its bound value.
-    const onPatchStaffHeader = vi.fn();
-    render(<QuoteWorkflowPanel session={sessionFromFixture('public-single')} onPatchStaffHeader={onPatchStaffHeader} />);
-    fireEvent.click(screen.getByText('HMS notes (optional)'));
-
-    const notes = screen.getByRole('textbox', { name: 'Notes for HMS' }) as HTMLTextAreaElement;
-    expect(notes.tagName).toBe('TEXTAREA');
-    expect(notes.placeholder).toBe('Add a staff note for the HMS handoff');
-    fireEvent.change(notes, { target: { value: 'Please confirm the booking reference.' } });
-    expect(onPatchStaffHeader).toHaveBeenCalledWith(
-      { notes: 'Please confirm the booking reference.' },
-      { staffEdit: true },
-    );
   });
 
   it('keeps email extras checked and their amounts prefilled for each stay', () => {

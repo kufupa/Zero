@@ -267,8 +267,8 @@ export function QuotePeopleStep({
         sourceMessageId={session.staffSource?.messageId ?? null}
         onPartyLookupPending={onPartyLookupPending}
       />
-      <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-authority')}>
-        Continue to HMS notes
+      <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-stay')}>
+        Continue to Stay
       </SecondaryButton>
     </Section>
   );
