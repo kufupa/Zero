@@ -8,7 +8,7 @@ import { chmodSync, existsSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, sql } from 'drizzle-orm';
 import { letterIdentity } from '../src/ai/reservationist-rate-policy-source.js';
 import {
   readInstalledStaffQuoteConfiguration,
@@ -152,6 +152,20 @@ async function writePrivateAtomic(path: string, bytes: Buffer | string) {
   await rename(tmp, path);
 }
 
+async function loadCorpusRows(repoRoot: string, paths: readonly string[] | undefined) {
+  const rows = new Map<string, Record<string, unknown>>();
+  for (const rel of paths ?? []) {
+    const abs = resolve(repoRoot, rel);
+    if (!insidePrivate(repoRoot, abs) || !existsSync(abs)) continue;
+    for (const line of (await readFile(abs, 'utf8')).split('\n')) {
+      if (!line.trim()) continue;
+      const row = JSON.parse(line) as { id?: unknown };
+      if (typeof row.id === 'string' && !rows.has(row.id)) rows.set(row.id, row as Record<string, unknown>);
+    }
+  }
+  return rows;
+}
+
 export async function listOutboundPdfCandidates(db: DB, ownerRef: string) {
   const rows = await db
     .select({
@@ -176,7 +190,10 @@ export async function listOutboundPdfCandidates(db: DB, ownerRef: string) {
         eq(attachment.mimeType, 'application/pdf'),
       ),
     )
-    .orderBy(desc(message.sentAt), desc(message.createdAt), desc(attachment.id))
+    .orderBy(
+      sql`coalesce(${message.sentAt}, ${message.createdAt}) desc nulls last`,
+      desc(attachment.id),
+    )
     .limit(80);
   return rows.flatMap((row) => {
     const eventAt = (row.sentAt ?? row.createdAt)?.toISOString();
@@ -244,10 +261,7 @@ export async function installRateTermsPolicy(deps: InstallRateTermsDependencies)
     }
     const { row, body, sourceHash: letterHash } = match;
     const requestAt = deps.now().toISOString();
-    const pdfPath = join(outputDir, `${row.attachmentId}.pdf`);
-    const corpusPath = join(outputDir, `${ownerRef}-corpus.jsonl`);
-    const receiptPath = join(outputDir, `${row.attachmentId}.receipts.json`);
-    const corpusBytes = `${JSON.stringify({
+    const letterRow = {
       id: row.id,
       transportId: row.transportId,
       direction: 'outbound',
@@ -263,8 +277,34 @@ export async function installRateTermsPolicy(deps: InstallRateTermsDependencies)
           inline: row.inline,
         },
       ],
-    })}\n`;
+    };
+    const policyPath = deps.policyPathForOwnerRef
+      ? await deps.policyPathForOwnerRef(ownerRef)
+      : resolveStaffQuoteRatePolicyPath(
+          readInstalledStaffQuoteConfiguration(deps.propertyCode),
+          ownerRef,
+        );
+    const policy = JSON.parse(await readFile(policyPath, 'utf8')) as {
+      ownerRef: string;
+      propertyCode: string;
+      documents: Array<Record<string, unknown>>;
+      corpusPaths?: string[];
+    };
+    if (policy.ownerRef !== ownerRef || policy.propertyCode !== deps.propertyCode)
+      throw new Error('rate_terms_policy_scope_invalid');
+    const retained = policy.documents.filter((item) => item.kind !== 'hotel_rate_terms');
+    const corpusRows = await loadCorpusRows(deps.repoRoot, policy.corpusPaths);
+    corpusRows.set(letterRow.id, letterRow);
+    const needed = new Set(
+      retained.map((item) => String(item.messageId ?? '')).concat(letterRow.id),
+    );
+    const corpusBytes = `${[...corpusRows.values()]
+      .filter((item) => needed.has(String(item.id ?? '')))
+      .map((item) => JSON.stringify(item))
+      .join('\n')}\n`;
     const snapshotHash = sha(corpusBytes);
+    const pdfPath = join(outputDir, `${row.attachmentId}-${letterHash.slice(0, 16)}.pdf`);
+    const corpusPath = join(outputDir, `${ownerRef}-${snapshotHash.slice(0, 16)}.jsonl`);
     const receiptBytes = `${JSON.stringify([
       {
         status: 'acquired',
@@ -293,17 +333,21 @@ export async function installRateTermsPolicy(deps: InstallRateTermsDependencies)
         },
       },
     ])}\n`;
+    const nextReceiptHash = sha(receiptBytes);
+    const receiptPath = join(
+      outputDir,
+      `${row.attachmentId}-${nextReceiptHash.slice(0, 16)}.receipts.json`,
+    );
     sourceHash = letterHash;
-    receiptHash = sha(receiptBytes);
+    receiptHash = nextReceiptHash;
     corpusHash = snapshotHash;
     if (deps.apply) {
-      const policyPath = deps.policyPathForOwnerRef
-        ? await deps.policyPathForOwnerRef(ownerRef)
-        : resolveStaffQuoteRatePolicyPath(
-            readInstalledStaffQuoteConfiguration(deps.propertyCode),
-            ownerRef,
-          );
-      if (!insidePrivate(deps.repoRoot, policyPath) || !insidePrivate(deps.repoRoot, pdfPath))
+      if (
+        !insidePrivate(deps.repoRoot, policyPath) ||
+        !insidePrivate(deps.repoRoot, pdfPath) ||
+        !insidePrivate(deps.repoRoot, corpusPath) ||
+        !insidePrivate(deps.repoRoot, receiptPath)
+      )
         throw new Error('rate_terms_path_invalid');
       await writePrivateAtomic(pdfPath, body);
       await writePrivateAtomic(corpusPath, corpusBytes);
@@ -312,18 +356,8 @@ export async function installRateTermsPolicy(deps: InstallRateTermsDependencies)
         await copyFile(policyPath, `${policyPath}.bak`);
         chmodSync(`${policyPath}.bak`, 0o600);
       }
-      const policy = JSON.parse(await readFile(policyPath, 'utf8')) as {
-        ownerRef: string;
-        propertyCode: string;
-        documents: Array<Record<string, unknown>>;
-        corpusPaths?: string[];
-      };
-      if (policy.ownerRef !== ownerRef || policy.propertyCode !== deps.propertyCode)
-        throw new Error('rate_terms_policy_scope_invalid');
       policy.documents = [
-        ...policy.documents.filter(
-          (item) => !(item.kind === 'hotel_rate_terms' && item.attachmentId === row.attachmentId),
-        ),
+        ...retained,
         {
           kind: 'hotel_rate_terms',
           ref: `hotel_rate_terms:${deps.propertyCode}:${row.attachmentId}`,
