@@ -3712,7 +3712,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION));
       expect(job?.readRequest).toMatchObject({ kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' });
-      expect(job?.idempotencyKey).toMatch(new RegExp(`^hms-job:prefetch-guest:${TRANSPORT_ID}:${threadId}:`));
+      expect(job?.idempotencyKey).toMatch(
+        new RegExp(`^hms-job:prefetch-guest:${CENTURION_HMS_READ_TARGET.propertyCode}:${TRANSPORT_ID}:${threadId}:`),
+      );
       expect(job?.idempotencyKey).not.toContain('Smith');
       const resumed = await readHmsJobView(
         { transportId: TRANSPORT_ID, threadId, kind: 'search_guest', lastName: 'smith', arrival: '2026-11-12' },
@@ -4216,7 +4218,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         },
       }));
       const { threadId, messageId } = await seedThread(db);
-      const senderHost = `history-${randomUUID()}.example.test`;
+      const senderHost = `harbortravel-${randomUUID()}.example.test`;
       await db
         .update(message)
         .set({ fromAddress: `guest@${senderHost}` })
