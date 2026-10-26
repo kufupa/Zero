@@ -695,7 +695,6 @@ export function BookingCards({
   savedStays,
   guestName,
   guestEditorKey,
-  reservationNotePreviews,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -713,8 +712,6 @@ export function BookingCards({
   guestName?: string;
   /** People-step cache key so a Guest edit updates Book first/last while both stay mounted. */
   guestEditorKey?: string;
-  /** Current generated notes by group. Missing or stale values leave each room's manual note in place. */
-  reservationNotePreviews?: Record<string, string | null>;
 }) {
   const client = paneSave;
   const contactRef = useRef(contact);
@@ -730,7 +727,6 @@ export function BookingCards({
   );
   const guestSplit = splitStayingGuestName(selectedGuestName);
   const guestNamesEdited = useRef<Record<string, boolean>>({});
-  const reservationNoteEdited = useRef<Record<string, boolean>>({});
   const [choices, setChoices] = useState<Record<string, RoomChoice>>(
     () =>
       Object.fromEntries(
@@ -821,16 +817,6 @@ export function BookingCards({
     return `${room.groupId}:${room.roomIndex}`;
   }
 
-  function choiceWithReservationNote(
-    room: BookingDraftReady['draft']['rooms'][number],
-    choice: RoomChoice,
-  ): RoomChoice {
-    const generated = reservationNotePreviews?.[room.groupId];
-    return !reservationNoteEdited.current[roomKeyOf(room)] && generated
-      ? { ...choice, reservationNote: generated }
-      : choice;
-  }
-
   function bookableRooms() {
     return draft.draft.rooms.filter((room) => childCountForRoom(room, groups) === 0);
   }
@@ -842,12 +828,7 @@ export function BookingCards({
     const group = roomGroupFor(room, groups);
     return paneStayInputForConfiguredRoom(
       roomRequestFor(room, group),
-      roomChoiceFor(
-        room,
-        group,
-        choiceWithReservationNote(room, choices[roomKeyOf(room)] ?? NO_CHOICE),
-        currentContact,
-      ),
+      roomChoiceFor(room, group, choices[roomKeyOf(room)] ?? NO_CHOICE, currentContact),
       requiredCreateFields,
     );
   }
@@ -1097,16 +1078,13 @@ export function BookingCards({
               multiline
               roomLabel={roomLabel}
               label="Reservation note"
-              value={choiceWithReservationNote(room, choice).reservationNote}
+              value={choice.reservationNote}
               disabled={locked}
               maxLength={PANE_RESERVATION_NOTE_MAX}
               required={requiredCreateFields.some(
                 (field) => field.trim().toLowerCase().replace(/[^a-z0-9]/g, '') === 'reservationnote',
               )}
-              onChange={(value) => {
-                reservationNoteEdited.current[key] = true;
-                setChoice({ reservationNote: value });
-              }}
+              onChange={(value) => setChoice({ reservationNote: value })}
             />
             <CopyHmsNotesButton
               block={hmsNotesBlock({

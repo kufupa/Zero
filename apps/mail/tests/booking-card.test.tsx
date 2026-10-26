@@ -948,27 +948,6 @@ describe('booking card pane save', () => {
     expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', false);
   });
 
-  it('shows a generated Reservation Note only while current and preserves manual edits', () => {
-    const firstRoom = draftReady().draft.rooms[0]!;
-    const draft = draftReady({
-      rooms: [{
-        ...firstRoom,
-        request: { ...firstRoom.request, reservationNote: 'Manual request note' },
-      }],
-    });
-    const props = (note: string | null) => <BookingCards draft={draft} reservationNotePreviews={{ g1: note }} />;
-    const { rerender } = render(props('Generated from the final selection'));
-    const reservationNote = screen.getByLabelText('Reservation note') as HTMLTextAreaElement;
-    expect(reservationNote.value).toBe('Generated from the final selection');
-
-    rerender(props(null));
-    expect(reservationNote.value).toBe('Manual request note');
-
-    fireEvent.change(reservationNote, { target: { value: 'Staff-edited note' } });
-    rerender(props('A newer generated note'));
-    expect(reservationNote.value).toBe('Staff-edited note');
-  });
-
   it('previews with the typed guest names, not the draft request', async () => {
     const { client, preview } = paneClient();
     render(<BookingCards draft={draftReady()} paneSave={client} />);
