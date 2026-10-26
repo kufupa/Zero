@@ -2,15 +2,31 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useReducer, useRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
+import { useQuotePdfJob } from '../components/nava-pane/use-quote-pdf-job';
+import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
+import { emptyStaffQuoteHeader, type QuoteSession } from '../lib/quote-workflow/types';
+import type { StoredContact } from '../lib/quote-workflow/backend-bind';
 import { toast } from 'sonner';
 import { findReadStayArrival, prepareReviewedQuote, setReviewedReply } from './helpers/prepare-reviewed-quote';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 
-const { sendCommandMock, quotePdfMutateMock, quoteWorkbookMutateMock, prepareDraftMutateMock, analyseOverride, sessionState } = vi.hoisted(() => ({
+const {
+  sendCommandMock,
+  quotePdfMutateMock,
+  qualifiedQuotePdfMutateMock,
+  quotePdfJobQueryMock,
+  quoteWorkbookMutateMock,
+  prepareDraftMutateMock,
+  analyseOverride,
+  sessionState,
+} = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
   quotePdfMutateMock: vi.fn(),
+  qualifiedQuotePdfMutateMock: vi.fn(),
+  quotePdfJobQueryMock: vi.fn(),
   quoteWorkbookMutateMock: vi.fn(),
   prepareDraftMutateMock: vi.fn(),
   // Tests opt in to a Luna read-out (e.g. create_booking); null keeps the default analysis.
@@ -139,8 +155,9 @@ vi.mock('../providers/query-provider', () => ({
       },
       prepareBookingDraft: { mutate: prepareDraftMutateMock },
       qualifiedQuoteProposalPdf: {
-        mutate: async () => AUTHORISED_QUOTE_PDF,
+        mutate: qualifiedQuotePdfMutateMock,
       },
+      quotePdfJob: { query: quotePdfJobQueryMock },
     },
     drafts: {
       list: { query: async () => [] },
@@ -190,6 +207,131 @@ vi.mock('../providers/query-provider', () => ({
   },
 }));
 
+const PDF_WORK_ITEM_ID = '00000000-0000-4000-8000-000000000011';
+const OTHER_WORK_ITEM_ID = '00000000-0000-4000-8000-000000000022';
+
+function reviewedQuoteSession(mailKey = 'one'): QuoteSession {
+  const binding = {
+    transportId: 'transport-test',
+    mailboxEmail: 'staff@example.invalid',
+    storeId: `store-${mailKey}`,
+    folderEntryId: `inbox-${mailKey}`,
+    entryId: `entry-${mailKey}`,
+    internetMessageId: `message-${mailKey}`,
+    selectionEpoch: 1,
+    scopeEpoch: 1,
+  };
+  const group = {
+    id: 'g1',
+    arrivalDate: '2026-11-12',
+    departureDate: '2026-11-14',
+    quantity: 1,
+    adults: 1,
+    childrenAges: [],
+    board: 'bb' as const,
+    specialRequests: [],
+    fields: {},
+  };
+  const key = `${group.arrivalDate}:${group.departureDate}`;
+  const source = { messageId: `mail-${mailKey}`, threadId: `thread-${mailKey}`, sourceHash: 'ab'.repeat(32) };
+  const header = emptyStaffQuoteHeader();
+  const offer = {
+    ...AUTHORISED_QUOTE_OFFERS[0]!,
+    id: 'revision-one',
+    sourceRef: 'revision-one',
+    nightly: [],
+  };
+
+  let session = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding });
+  session = reduceQuoteSession(session, {
+    type: 'analysis_ready',
+    analysis: { intent: 'quote', groups: [group], secondaryAsks: [], alternatives: [] },
+  });
+  session = reduceQuoteSession(session, { type: 'staff_source_ready', source });
+  session = reduceQuoteSession(session, {
+    type: 'results_ready',
+    offers: [offer],
+    selectionEpoch: binding.selectionEpoch,
+    inputRevision: session.inputRevision,
+    provenance: { kind: 'authorised', selectionEpoch: binding.selectionEpoch, inputRevision: session.inputRevision },
+  });
+  session = reduceQuoteSession(session, { type: 'select_offers', offerIds: [offer.id] });
+  session = reduceQuoteSession(session, {
+    type: 'staff_quote_ready',
+    offer,
+    staffQuote: {
+      workflowRunId: 'workflow-one',
+      revisionRef: offer.id,
+      factRefs: [],
+      messageId: source.messageId,
+      threadId: source.threadId,
+      sourceHash: source.sourceHash,
+      selectionEpoch: binding.selectionEpoch,
+      inputRevision: session.inputRevision,
+      inputDigest: 'digest-one',
+      totalMinor: offer.stayTotalMinor,
+      currency: offer.currency,
+      quoteRequestKey: key,
+      approvedHeader: header,
+    },
+    selectionEpoch: binding.selectionEpoch,
+    inputRevision: session.inputRevision,
+  });
+  return session;
+}
+
+function QuotePdfJobHarness({
+  session,
+  workItemId,
+  transportId,
+}: {
+  session: QuoteSession;
+  workItemId: string;
+  transportId: string;
+}) {
+  const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, session);
+  const quoteSessionRef = useRef(quoteSession);
+  quoteSessionRef.current = quoteSession;
+  const documentContactRef = useRef<StoredContact | null>(null);
+  const { pdfPending, preparePdfFor } = useQuotePdfJob({
+    quoteSession,
+    quoteSessionRef,
+    documentContact: null,
+    documentContactRef,
+    dispatchQuote,
+    activeEmail: quoteSession.binding ? {
+      entryId: quoteSession.binding.entryId,
+      storeId: quoteSession.binding.storeId,
+      folderEntryId: quoteSession.binding.folderEntryId,
+      internetMessageId: quoteSession.binding.internetMessageId,
+      subject: '',
+      senderEmail: '',
+      senderName: '',
+      receivedTime: '',
+      bodyText: '',
+      bodyHtml: '',
+    } : null,
+    staffSignerName: 'Staff',
+    activePaneConfig: null,
+    replyGreetingName: (contactName) => contactName ?? 'there',
+    workItemId,
+    transportId,
+  });
+
+  return (
+    <div>
+      <button disabled={pdfPending} onClick={() => preparePdfFor(null)}>Prepare PDF</button>
+      <output
+        data-testid="rehydrated-pdf"
+        data-revision-id={quoteSession.pdf?.revisionId ?? ''}
+        data-pdf-hash={quoteSession.pdf?.pdfHash ?? ''}
+      >
+        {quoteSession.pdf?.fileName ?? ''}
+      </output>
+    </div>
+  );
+}
+
 describe('Outlook pane quote proposal PDF', () => {
   it('uses the current reviewed reply when revalidation failed before any native create was submitted', async () => {
     let reads = 0;
@@ -209,6 +351,63 @@ describe('Outlook pane quote proposal PDF', () => {
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.objectContaining({ htmlBody: '<p>Different quotation reply</p>' })));
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.objectContaining({ base64Data: AUTHORISED_QUOTE_PDF.pdfBase64 })));
   }, 15_000);
+
+  it('rehydrates the same work-item PDF after switching away and back without preparing or sending again', async () => {
+    const jobs = new Map<string, unknown>();
+    const jobPdf = { ...AUTHORISED_QUOTE_PDF, revisionId: 'revision-one' };
+    let resolveOtherJob: ((value: unknown) => void) | undefined;
+    quotePdfJobQueryMock.mockImplementation((input: { workItemId: string }) => {
+      if (input.workItemId === OTHER_WORK_ITEM_ID) {
+        return new Promise((resolve) => { resolveOtherJob = resolve; });
+      }
+      return Promise.resolve(jobs.get(input.workItemId) ?? null);
+    });
+    qualifiedQuotePdfMutateMock.mockImplementation(async (input: { workItemId?: string }) => {
+      jobs.set(input.workItemId ?? '', {
+        runId: 'pdf-job-one',
+        state: 'succeeded',
+        result: { ...jobPdf, kind: 'quote_pdf' },
+      });
+      return jobPdf;
+    });
+    const session = reviewedQuoteSession();
+    const otherSession = reviewedQuoteSession('other');
+    const pane = (workItemId: string, quoteSession: QuoteSession) => (
+      <QuotePdfJobHarness key={workItemId} session={quoteSession} workItemId={workItemId} transportId="transport-test" />
+    );
+    const view = render(pane(PDF_WORK_ITEM_ID, session));
+
+    await waitFor(() => expect(quotePdfJobQueryMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Prepare PDF' }).hasAttribute('disabled')).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare PDF' }));
+    await waitFor(() => expect(screen.getByTestId('rehydrated-pdf').textContent).toBe(AUTHORISED_QUOTE_PDF.fileName));
+    expect(screen.getByTestId('rehydrated-pdf').getAttribute('data-revision-id')).toBe(jobPdf.revisionId);
+    expect(screen.getByTestId('rehydrated-pdf').getAttribute('data-pdf-hash')).toBe(jobPdf.pdfHash);
+    expect(qualifiedQuotePdfMutateMock).toHaveBeenCalledTimes(1);
+    expect(qualifiedQuotePdfMutateMock.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ workItemId: PDF_WORK_ITEM_ID, revisionRef: 'revision-one' }),
+    );
+    expect(qualifiedQuotePdfMutateMock.mock.calls[0]?.[1]).toEqual({ context: { activeTransportId: 'transport-test' } });
+
+    view.rerender(pane(OTHER_WORK_ITEM_ID, otherSession));
+    await waitFor(() => expect(resolveOtherJob).toBeTypeOf('function'));
+    view.rerender(pane(PDF_WORK_ITEM_ID, session));
+    await waitFor(() => expect(screen.getByTestId('rehydrated-pdf').textContent).toBe(AUTHORISED_QUOTE_PDF.fileName));
+    resolveOtherJob?.({
+      runId: 'other-job',
+      state: 'succeeded',
+      result: { ...AUTHORISED_QUOTE_PDF, fileName: 'Quote - wrong owner.pdf', kind: 'quote_pdf' },
+    });
+
+    await waitFor(() => expect(screen.getByTestId('rehydrated-pdf').textContent).toBe(AUTHORISED_QUOTE_PDF.fileName));
+    const sameJobReads = quotePdfJobQueryMock.mock.calls.filter(([input]) => input.workItemId === PDF_WORK_ITEM_ID);
+    expect(sameJobReads).toHaveLength(2);
+    expect(sameJobReads[0]?.[0]).toEqual(sameJobReads[1]?.[0]);
+    expect(quotePdfJobQueryMock.mock.calls.some(([input]) => input.workItemId === OTHER_WORK_ITEM_ID)).toBe(true);
+    expect(qualifiedQuotePdfMutateMock).toHaveBeenCalledTimes(1);
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  }, 15_000);
+
   it('requires a fresh quote after the staff session changes on the same selected message', async () => {
     const view = render(<OutlookPanePage />);
     await prepareReviewedQuote();
@@ -297,6 +496,10 @@ describe('Outlook pane quote proposal PDF', () => {
       fileName: 'Quote - CIDB 15-17 Sep.pdf',
       pdfBase64: 'JVBERw0KGgo=',
     });
+    qualifiedQuotePdfMutateMock.mockReset();
+    qualifiedQuotePdfMutateMock.mockResolvedValue(AUTHORISED_QUOTE_PDF);
+    quotePdfJobQueryMock.mockReset();
+    quotePdfJobQueryMock.mockResolvedValue(null);
     sendCommandMock.mockReset();
     sendCommandMock.mockImplementation(async (action: string) =>
       action === 'GET_ACTIVE_EMAIL'

@@ -1433,13 +1433,17 @@ export function NavaPane({
   const [workbookPending, setWorkbookPending] = useState(false);
   const workbookInFlight = useRef(false);
   const { pdfPending, preparePdfFor } = useQuotePdfJob({
+    quoteSession,
     quoteSessionRef,
+    documentContact,
     documentContactRef,
     dispatchQuote,
     activeEmail,
     staffSignerName,
     activePaneConfig,
     replyGreetingName,
+    workItemId: paneWorkItemId,
+    transportId: paneTransportId,
   });
   const downloadWorkbook = () => {
     if (workbookInFlight.current) return;
