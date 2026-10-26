@@ -3089,6 +3089,11 @@ async function requeueRun(
 
 const PREPARED_QUOTE_LOCK_WAIT_MS = 15 * 60_000;
 const PREPARED_QUOTE_ATTACH_FAILED = 'staff quote attach failed';
+const PREPARED_QUOTE_ATTACH_MAX_ATTEMPTS = 2;
+
+function preparedQuoteTransientMaxAttempts(attachPhase: boolean): number {
+  return attachPhase ? PREPARED_QUOTE_ATTACH_MAX_ATTEMPTS : JOB_MAX_ATTEMPTS;
+}
 
 /** Uncharged yields must not wipe the attach-retry token stored in lastError. */
 function preparedQuoteYieldLastError(run: AiWorkflowRun, lastError: string): string {
@@ -3656,8 +3661,7 @@ export async function executeHmsJob(input: {
   }
   if (
     systemPreparedQuote &&
-    run.attempts > 0 &&
-    !(run.attempts === 1 && run.lastError === PREPARED_QUOTE_ATTACH_FAILED)
+    run.attempts >= preparedQuoteTransientMaxAttempts(run.lastError === PREPARED_QUOTE_ATTACH_FAILED)
   ) {
     await markAiRunDeadLetter(
       { ...mark, lastError: 'prepared_quote_attempt_exhausted', failureClass: 'TRANSIENT_NETWORK' },
@@ -3803,7 +3807,7 @@ export async function executeHmsJob(input: {
           mark,
           'TRANSIENT_NETWORK',
           attachFailed ? PREPARED_QUOTE_ATTACH_FAILED : 'staff quote execution failed',
-          systemPreparedQuote ? (attachFailed ? 2 : 1) : JOB_MAX_ATTEMPTS,
+          systemPreparedQuote ? preparedQuoteTransientMaxAttempts(attachFailed) : JOB_MAX_ATTEMPTS,
         );
       }
       const refusal = staffQuoteRefusal(error, request.input);

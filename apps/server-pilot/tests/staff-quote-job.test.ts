@@ -760,23 +760,27 @@ describe('staff_quote HMS job execution', () => {
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
 
-  it('does not retry a prepared quote after a transient reader failure', async () => {
+  it('retries a prepared quote after a transient reader failure', async () => {
     const { run, fence } = preparedFixture();
     jobMocks.runStaffQuote.mockRejectedValue(new Error('Target page, context or browser has been closed'));
 
-    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('retry_wait');
 
     expect(jobMocks.runStaffQuote).toHaveBeenCalledOnce();
-    expect(jobMocks.markDeadLetter).toHaveBeenCalledWith(
-      expect.objectContaining({ failureClass: 'TRANSIENT_NETWORK', lastError: 'staff quote execution failed' }),
+    expect(jobMocks.markRetry).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attempts: 1,
+        failureClass: 'TRANSIENT_NETWORK',
+        lastError: 'staff quote execution failed',
+      }),
       db,
     );
-    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+    expect(jobMocks.markDeadLetter).not.toHaveBeenCalled();
   });
 
-  it('does not execute an already-attempted prepared quote again', async () => {
+  it('does not execute a prepared quote after the transient retry budget is spent', async () => {
     const { run, fence } = preparedFixture();
-    run.attempts = 1;
+    run.attempts = 3;
 
     await expect(executeHmsJob({ run, fence, db })).resolves.toBe('dead_letter');
 
