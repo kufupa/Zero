@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type {
   BookingDraftReady,
   BookingRateCheck,
@@ -12,7 +12,9 @@ import { HmsLinkActions } from './hms-link-actions';
 import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
 import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
+import { recalledGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
+import { subscribeStayingGuestName } from './quote-people-step';
 import {
   commitOutcome,
   PANE_BOOKER_NAME_MAX,
@@ -117,6 +119,33 @@ async function writeClipboard(value: string): Promise<boolean> {
 
 export const ROOM_TYPE_CHANGED_COPY =
   'Room type changed from the quote, so the price check no longer applies. Quote again to check the price for this room.';
+
+export const AMBIGUOUS_GUEST_NAME_COPY = 'Enter first and last name for the staying guest.';
+
+// Exactly two tokens is a first + last split. One token or three-plus is ambiguous, so staff type the fields.
+function splitStayingGuestName(name: string): { firstName: string; lastName: string; ambiguous: boolean } {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 2) {
+    return { firstName: parts[0]!, lastName: parts[1]!, ambiguous: false };
+  }
+  return { firstName: '', lastName: '', ambiguous: true };
+}
+
+function namesFromSelectedGuest(
+  selectedGuestName: string,
+  request: { firstName?: unknown; lastName?: unknown },
+): { firstName: string; lastName: string } {
+  const split = splitStayingGuestName(selectedGuestName);
+  if (!split.ambiguous) {
+    return { firstName: split.firstName, lastName: split.lastName };
+  }
+  return { firstName: textValue(request.firstName), lastName: textValue(request.lastName) };
+}
+
+function readSelectedGuestName(guestEditorKey?: string, guestName?: string): string {
+  const recalled = guestEditorKey ? recalledGuestName(guestEditorKey) : null;
+  return recalled ?? guestName ?? '';
+}
 
 function missingFactLabel(question: string): string {
   return question.replace(/\s+for this booking\??$/i, '').replace(/\?$/, '');
@@ -664,6 +693,8 @@ export function BookingCards({
   contact = null,
   workItemId,
   savedStays,
+  guestName,
+  guestEditorKey,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -677,6 +708,10 @@ export function BookingCards({
   workItemId?: string;
   /** Last HMS commit per stay, read back on mount so a reload still shows the confirmation. */
   savedStays?: Record<string, SavedStayCommit>;
+  /** Selected staying Guest from People. Prefills first/last; never the Contact/booker. */
+  guestName?: string;
+  /** People-step cache key so a Guest edit updates Book first/last while both stay mounted. */
+  guestEditorKey?: string;
 }) {
   const client = paneSave;
   const contactRef = useRef(contact);
@@ -685,11 +720,22 @@ export function BookingCards({
   // off keeps the card copy-only. A client whose mode is not read yet is labelled as lab, the narrower mode.
   const mode: PaneSaveMode = client ? (client.mode?.() ?? 'lab') : 'off';
   const savesOn = mode !== 'off';
+  const selectedGuestName = useSyncExternalStore(
+    subscribeStayingGuestName,
+    () => readSelectedGuestName(guestEditorKey, guestName),
+    () => readSelectedGuestName(guestEditorKey, guestName),
+  );
+  const guestSplit = splitStayingGuestName(selectedGuestName);
+  const guestNamesEdited = useRef(false);
   const [choices, setChoices] = useState<Record<string, RoomChoice>>(
     () =>
       Object.fromEntries(
         draft.draft.rooms.map((room) => {
           const key = `${room.groupId}:${room.roomIndex}`;
+          const names = namesFromSelectedGuest(
+            readSelectedGuestName(guestEditorKey, guestName),
+            room.request,
+          );
           return [
             key,
             {
@@ -699,8 +745,8 @@ export function BookingCards({
                 draft.options.sourceOfBusiness,
               ),
               guaranteeType: textValue(room.request.guaranteeType),
-              firstName: textValue(room.request.firstName),
-              lastName: textValue(room.request.lastName),
+              firstName: names.firstName,
+              lastName: names.lastName,
               bookingAgency: textValue(room.request.agency) || pickedName(parties?.agency),
               organization: textValue(room.request.organization) || pickedName(parties?.company),
               reservationNote: textValue(room.request.reservationNote),
@@ -718,6 +764,19 @@ export function BookingCards({
   useEffect(() => () => {
     stayBookingRef.current = false;
   }, []);
+  useEffect(() => {
+    if (guestNamesEdited.current || guestSplit.ambiguous) return;
+    setChoices((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const [key, choice] of Object.entries(current)) {
+        if (choice.firstName === guestSplit.firstName && choice.lastName === guestSplit.lastName) continue;
+        next[key] = { ...choice, firstName: guestSplit.firstName, lastName: guestSplit.lastName };
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [guestSplit.ambiguous, guestSplit.firstName, guestSplit.lastName]);
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const requested = textValue(room.request.roomType);
@@ -907,7 +966,10 @@ export function BookingCards({
               disabled={locked}
               maxLength={PANE_BOOKER_NAME_MAX}
               pii
-              onChange={(value) => setChoice({ lastName: value })}
+              onChange={(value) => {
+                guestNamesEdited.current = true;
+                setChoice({ lastName: value });
+              }}
             />
             <RoomTextField
               roomLabel={roomLabel}
@@ -916,8 +978,16 @@ export function BookingCards({
               disabled={locked}
               maxLength={PANE_BOOKER_NAME_MAX}
               pii
-              onChange={(value) => setChoice({ firstName: value })}
+              onChange={(value) => {
+                guestNamesEdited.current = true;
+                setChoice({ firstName: value });
+              }}
             />
+            {selectedGuestName.trim() && guestSplit.ambiguous ? (
+              <p role="status" className="text-[11px] text-[#64748b]">
+                {AMBIGUOUS_GUEST_NAME_COPY}
+              </p>
+            ) : null}
             <RoomTextField
               roomLabel={roomLabel}
               label="Booking agency"

@@ -4,6 +4,7 @@ import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { isMultiStay, requestedQuoteKeys } from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { BookingCards } from './booking-card';
+import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
 
 export function QuoteBookingHost({
   session,
@@ -29,6 +30,8 @@ export function QuoteBookingHost({
               paneSave={paneSave}
               contact={contact}
               parties={session.staffHeader.parties}
+              guestName={stayingGuestName(session, contact ?? null)}
+              guestEditorKey={guestEditorKeyFor(session)}
             />
           </Fragment>
         ))}
