@@ -4,6 +4,7 @@ Read conclusions and the evidence for the current decision, not every archive. `
 
 | Report                                                                      | Use for                                                                                                               | Evidence status                                                                                               |
 | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| [2026-10-26 or2 overnight retro](../context/ledger/2026-10-26-or2-retro.md) | Speed-mode run: 39 PRs / 10.6 h (2.6× mh1024), 240→633 min ETA miss, where time went, repeat table, 5 script fixes | coord.log, 61 lane logs (Luna + parser), GitHub #554–#594, ETA ledger |
 | [2026-10-26 T2 ETA cut](2026-10-26-t2-eta-cut.md) | How T2 went 5.5 h → ~80 min: no fake chains, gate once per SHA vs baseline, one reviewer (Greptile Apex) | or2 coord.log, lane logs, mh1024 retro |
 | [2026-10-26 DV P0 live evidence](2026-10-26-dv-p0-live-evidence.md) | Why DV background quotes never priced: 6 causes, each fixed live; canary log | Read-only prod SQL + EC2 logs, overnight run 2 |
 | [2026-10-26 run 2 Argon plan review](2026-10-26-run2-argon-plan-review.md) | What Argon found in the run-2 plan, what was fixed, DAG 13→~7 | Argon read-only review + coordinator triage |
