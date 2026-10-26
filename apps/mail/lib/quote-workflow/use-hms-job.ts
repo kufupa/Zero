@@ -325,18 +325,11 @@ export function useHmsJob(input: {
         const key =
           autoRequest.kind === 'find'
             ? [scope ?? '', 'find', autoRequest.confirmation].join('\u0000')
-            : autoRequest.kind === 'search_guest'
-              ? [
-                  scope ?? '',
-                  autoRequest.lastName.trim().replace(/\s+/g, ' ').toLowerCase(),
-                  autoRequest.arrival,
-                ].join('\u0000')
-              : [
-                  scope ?? '',
-                  'party',
-                  autoRequest.name.trim().replace(/\s+/g, ' ').toLowerCase(),
-                  autoRequest.partyKind ?? '',
-                ].join('\u0000');
+            : [
+                scope ?? '',
+                autoRequest.lastName.trim().replace(/\s+/g, ' ').toLowerCase(),
+                autoRequest.arrival,
+              ].join('\u0000');
         if (autoStartedKey.current === key) return;
         const startMissing = () => {
           if (!live || generation.current !== mine || autoStartedKey.current === key) return;
