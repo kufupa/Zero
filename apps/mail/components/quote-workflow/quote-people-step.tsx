@@ -1,10 +1,69 @@
+import { useState } from 'react';
 import { Field, Section, SecondaryButton, StepState, paneFieldClass } from '@/components/nava-pane/pane-ui';
 import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
+import { recalledGuestName, rememberGuestName } from '@/lib/quote-workflow/guest-name-cache';
+import { paneEditKey } from '@/lib/quote-workflow/pane-edits';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type { QuoteSession, StaffQuoteHeader } from '@/lib/quote-workflow/types';
 import { PartyPicker } from './party-picker';
+
+function inferredGuestName(session: QuoteSession, contact?: StoredContact | null): string {
+  const storedGuestNames = session.groups.flatMap((group) =>
+    'guestNames' in group && Array.isArray(group.guestNames)
+      ? group.guestNames.filter((name): name is string => typeof name === 'string')
+      : [],
+  );
+  const parsedGuestNames = [
+    ...storedGuestNames,
+    ...(session.analysis?.luna?.groups ?? []).flatMap((group) => group.guestNames),
+  ]
+    .map((name) => name.trim())
+    .filter(Boolean);
+  const uniqueGuestNames = [...new Set(parsedGuestNames)];
+
+  if (uniqueGuestNames.length === 1) return uniqueGuestNames[0] ?? '';
+  if (uniqueGuestNames.length > 1) return '';
+  if (session.analysis?.luna?.party?.kind === 'private') return contact?.name?.trim() ?? '';
+  return '';
+}
+
+function GuestNameField({
+  session,
+  contact,
+  guestEditorKey,
+}: {
+  session: QuoteSession;
+  contact?: StoredContact | null;
+  guestEditorKey: string;
+}) {
+  const [editedName, setEditedName] = useState<string | null>(() => recalledGuestName(guestEditorKey));
+  const guestName = editedName ?? inferredGuestName(session, contact);
+  const needsPrompt = guestName.trim().length === 0;
+
+  return (
+    <Field label="Guest" htmlFor="quote-guest-name">
+      <input
+        id="quote-guest-name"
+        aria-describedby={needsPrompt ? 'quote-guest-name-prompt' : undefined}
+        className={paneFieldClass}
+        value={guestName}
+        placeholder={needsPrompt ? 'Guest name?' : undefined}
+        onChange={(event) => {
+          const name = event.target.value;
+          rememberGuestName(guestEditorKey, name);
+          setEditedName(name);
+        }}
+      />
+      {needsPrompt ? (
+        <p id="quote-guest-name-prompt" className="text-[11px] text-[#64748b]">
+          Enter the staying guest’s name; the contact is not assumed to be the guest.
+        </p>
+      ) : null}
+    </Field>
+  );
+}
 
 /** Editing a field away from its picked name drops that pick, so the quote never sends a party the text no longer names. */
 function pickClearedBy(kind: 'company' | 'agency', header: StaffQuoteHeader, text: string): Partial<StaffQuoteHeader> {
@@ -147,11 +206,26 @@ export function QuotePeopleStep({
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
   scrollToStep: (id: string) => void;
 }) {
+  const guestMessageKey = session.binding?.internetMessageId?.trim() || session.binding?.entryId;
+  const guestEditorKey =
+    (session.binding && guestMessageKey
+      ? paneEditKey(session.binding.transportId, guestMessageKey)
+      : null) ??
+    contactEditorKey ??
+    session.staffSource?.messageId ??
+    'quote-guest';
+
   return (
     <Section step={1} title="People" id="quote-party" action={<StepState state={partyState} />}>
       {onContactEdit ? (
         <ContactBlock embedded key={contactEditorKey} contact={contact ?? null} onEdit={onContactEdit} />
       ) : null}
+      <GuestNameField
+        key={`guest:${guestEditorKey}`}
+        session={session}
+        contact={contact}
+        guestEditorKey={guestEditorKey}
+      />
       <StaffPartyFields
         header={header}
         onPatch={(header) => onPatchStaffHeader?.(header, { staffEdit: true })}

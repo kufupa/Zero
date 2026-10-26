@@ -2,14 +2,19 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step';
 import type { ContactField, StoredContact } from '../lib/quote-workflow/backend-bind';
+import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import type { PartyFindReply } from '../lib/quote-workflow/party-lookup';
 import { emptyStaffQuoteHeader } from '../lib/quote-workflow/types';
 import type { QuoteSession, StaffQuoteParty } from '../lib/quote-workflow/types';
 
-afterEach(() => cleanup());
+beforeEach(() => resetGuestNameCacheForTests());
+afterEach(() => {
+  cleanup();
+  resetGuestNameCacheForTests();
+});
 
 const agency: StaffQuoteParty = {
   kind: 'agency',
@@ -41,7 +46,7 @@ describe('QuotePeopleStep', () => {
       truncated: false,
     }));
     const props = {
-      session: { staffSource: null } as QuoteSession,
+      session: { staffSource: null, groups: [] } as unknown as QuoteSession,
       partyState: 'Done' as const,
       header: {
         ...emptyStaffQuoteHeader(),
@@ -82,5 +87,131 @@ describe('QuotePeopleStep', () => {
     expect(onPatchStaffHeader).not.toHaveBeenCalled();
     expect(selectedAgency.getAttribute('title')).toBe(agency.nativeId);
     expect(selectedCompany.getAttribute('title')).toBe(company.nativeId);
+  });
+
+  it('asks for a guest name instead of using an agent sender when no guest was parsed', () => {
+    const agentContact: StoredContact = {
+      name: 'Agent sender',
+      company: null,
+      endClient: null,
+      email: null,
+      phone: null,
+    };
+    const props = {
+      session: {
+        staffSource: null,
+        groups: [],
+        analysis: {
+          luna: {
+            party: { kind: 'agency' },
+            groups: [{ guestNames: [] }],
+          },
+        },
+      } as unknown as QuoteSession,
+      partyState: 'Optional' as const,
+      header: emptyStaffQuoteHeader(),
+      contact: agentContact,
+      contactEditorKey: 'agent-message',
+      scrollToStep: vi.fn(),
+    } as unknown as Parameters<typeof QuotePeopleStep>[0];
+
+    render(<QuotePeopleStep {...props} />);
+
+    const people = screen.getByRole('region', { name: 'People' });
+    const guest = within(people).getByLabelText('Guest') as HTMLInputElement;
+    expect(guest.value).toBe('');
+    expect(guest.getAttribute('placeholder')).toBe('Guest name?');
+
+    fireEvent.change(guest, { target: { value: 'Staff-entered value' } });
+    expect(guest.value).toBe('Staff-entered value');
+  });
+
+  it('keeps guest edits for the same message without leaking them to another message', () => {
+    const agentContact: StoredContact = {
+      name: 'Agent sender',
+      company: null,
+      endClient: null,
+      email: null,
+      phone: null,
+    };
+    const props = {
+      session: {
+        staffSource: null,
+        groups: [],
+        analysis: {
+          luna: {
+            party: { kind: 'agency' },
+            groups: [{ guestNames: [] }],
+          },
+        },
+      } as unknown as QuoteSession,
+      partyState: 'Optional' as const,
+      header: emptyStaffQuoteHeader(),
+      contact: agentContact,
+      contactEditorKey: 'agent-message-cache-test',
+      scrollToStep: vi.fn(),
+    } as unknown as Parameters<typeof QuotePeopleStep>[0];
+
+    const firstRender = render(<QuotePeopleStep {...props} />);
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Staff-entered value' } });
+    firstRender.unmount();
+
+    const otherMessage = render(
+      <QuotePeopleStep {...props} contactEditorKey="different-agent-message" />,
+    );
+    const otherGuest = screen.getByLabelText('Guest') as HTMLInputElement;
+    expect(otherGuest.value).toBe('');
+    expect(otherGuest.getAttribute('placeholder')).toBe('Guest name?');
+    otherMessage.unmount();
+
+    resetGuestNameCacheForTests({ keepSession: true });
+    render(<QuotePeopleStep {...props} />);
+    const sameMessageGuest = screen.getByLabelText('Guest') as HTMLInputElement;
+    expect(sameMessageGuest.value).toBe('Staff-entered value');
+  });
+
+  it('keeps a guest edit when the contact editor key changes for the same message', () => {
+    const agentContact: StoredContact = {
+      name: 'Agent sender',
+      company: null,
+      endClient: null,
+      email: null,
+      phone: null,
+    };
+    const props = {
+      session: {
+        binding: {
+          transportId: 'mailbox-1',
+          mailboxEmail: 'mailbox@example.invalid',
+          storeId: 'store-1',
+          folderEntryId: 'folder-entry-1',
+          entryId: 'entry-1',
+          internetMessageId: 'message-1',
+          selectionEpoch: 1,
+          scopeEpoch: 1,
+        },
+        staffSource: null,
+        groups: [],
+        analysis: {
+          luna: {
+            party: { kind: 'agency' },
+            groups: [{ guestNames: [] }],
+          },
+        },
+      } as unknown as QuoteSession,
+      partyState: 'Optional' as const,
+      header: emptyStaffQuoteHeader(),
+      contact: agentContact,
+      contactEditorKey: 'mailbox-1::message-1|reading',
+      scrollToStep: vi.fn(),
+    } as unknown as Parameters<typeof QuotePeopleStep>[0];
+
+    const readingRender = render(<QuotePeopleStep {...props} />);
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Staff-entered value' } });
+    readingRender.unmount();
+
+    render(<QuotePeopleStep {...props} contactEditorKey="mailbox-1::message-1|ready:work-item-1" />);
+
+    expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('Staff-entered value');
   });
 });
