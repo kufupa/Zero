@@ -83,6 +83,7 @@ describe('createSlotSession', () => {
 });
 
 const GENERIC_PROPERTY = 'HTLAA';
+const LOCK_TENANT = 'tenant-generic';
 
 function secretFor(propertyCode: string) {
   return {
@@ -132,14 +133,22 @@ describe('exclusive authenticated page lease', () => {
       authenticatedShell: async (candidate: { id: string }) => candidate === page,
     });
     const lock = createPropertyReadLock({
-      tenantId: 'tenant-generic',
+      tenantId: LOCK_TENANT,
       propertyCode: GENERIC_PROPERTY,
       connectionFactory: async () => lockConnection(),
     });
 
     const pages = await lock.withLock(async (connection) => {
       const first = await lease.withPage(
-        { propertyCode: GENERIC_PROPERTY, secret, session, lockConnection: connection, lockKey: lock.key, context },
+        {
+          propertyCode: GENERIC_PROPERTY,
+          tenantId: LOCK_TENANT,
+          secret,
+          session,
+          lockConnection: connection,
+          lockKey: lock.key,
+          context,
+        },
         async ({ page: leased, reused }) => {
           expect(leased).toBe(page);
           expect(reused).toBe(true);
@@ -147,7 +156,15 @@ describe('exclusive authenticated page lease', () => {
         },
       );
       const second = await lease.withPage(
-        { propertyCode: GENERIC_PROPERTY, secret, session, lockConnection: connection, lockKey: lock.key, context },
+        {
+          propertyCode: GENERIC_PROPERTY,
+          tenantId: LOCK_TENANT,
+          secret,
+          session,
+          lockConnection: connection,
+          lockKey: lock.key,
+          context,
+        },
         async ({ page: leased, reused }) => {
           expect(leased).toBe(page);
           expect(reused).toBe(true);
@@ -178,7 +195,7 @@ describe('exclusive authenticated page lease', () => {
       loginPage,
     });
     const lock = createPropertyReadLock({
-      tenantId: 'tenant-generic',
+      tenantId: LOCK_TENANT,
       propertyCode: GENERIC_PROPERTY,
       connectionFactory: async () => lockConnection(),
     });
@@ -188,6 +205,7 @@ describe('exclusive authenticated page lease', () => {
         lease.withPage(
           {
             propertyCode: GENERIC_PROPERTY,
+            tenantId: LOCK_TENANT,
             secret,
             session,
             generation: staleGeneration,
@@ -237,6 +255,116 @@ describe('exclusive authenticated page lease', () => {
       name: 'SlotLeaseRefusedError',
       code: 'property_unknown',
       payload: undefined,
+    });
+
+    expect(newPage).not.toHaveBeenCalled();
+    expect(loginPage).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('refuses a mismatched secret or another property lock before a new page', async () => {
+    const newPage = vi.fn(async () => ({ id: 'fresh-page' }));
+    const loginPage = vi.fn(async () => ({ reused: false }));
+    const run = vi.fn(async () => 'hms-action');
+    const session = readySession();
+    await session.recover();
+    const lease = createExclusivePageLease({
+      lookupProperty: (code: string) =>
+        code === GENERIC_PROPERTY ? { propertyCode: GENERIC_PROPERTY } : null,
+      loginPage,
+    });
+    const lock = createPropertyReadLock({
+      tenantId: LOCK_TENANT,
+      propertyCode: GENERIC_PROPERTY,
+      connectionFactory: async () => lockConnection(),
+    });
+    const otherLock = createPropertyReadLock({
+      tenantId: LOCK_TENANT,
+      propertyCode: 'HTLBB',
+      connectionFactory: async () => lockConnection(),
+    });
+
+    await expect(
+      lease.withPage(
+        {
+          propertyCode: GENERIC_PROPERTY,
+          tenantId: LOCK_TENANT,
+          secret: secretFor('HTLBB'),
+          session,
+          lockConnection: lockConnection(),
+          lockKey: lock.key,
+          context: { pages: () => [], newPage },
+        },
+        run,
+      ),
+    ).rejects.toMatchObject({ code: 'property_unknown', payload: undefined });
+
+    await lock.withLock(async (connection) => {
+      await expect(
+        lease.withPage(
+          {
+            propertyCode: GENERIC_PROPERTY,
+            tenantId: LOCK_TENANT,
+            secret: secretFor(GENERIC_PROPERTY),
+            session,
+            lockConnection: connection,
+            lockKey: otherLock.key,
+            context: { pages: () => [], newPage },
+          },
+          run,
+        ),
+      ).rejects.toMatchObject({ code: 'PROPERTY_READ_LOCK_LOST' });
+    });
+
+    expect(newPage).not.toHaveBeenCalled();
+    expect(loginPage).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('refuses login when recover starts during page lookup', async () => {
+    const hold = deferred();
+    const entered = deferred();
+    const newPage = vi.fn(async () => ({ id: 'fresh-page' }));
+    const loginPage = vi.fn(async () => ({ reused: false }));
+    const run = vi.fn(async () => 'hms-action');
+    const session = readySession();
+    await session.recover();
+    const lease = createExclusivePageLease({
+      lookupProperty: (code: string) =>
+        code === GENERIC_PROPERTY ? { propertyCode: GENERIC_PROPERTY } : null,
+      loginPage,
+      authenticatedShell: async () => {
+        entered.resolve();
+        await hold.promise;
+        return false;
+      },
+    });
+    const lock = createPropertyReadLock({
+      tenantId: LOCK_TENANT,
+      propertyCode: GENERIC_PROPERTY,
+      connectionFactory: async () => lockConnection(),
+    });
+
+    await lock.withLock(async (connection) => {
+      const work = lease.withPage(
+        {
+          propertyCode: GENERIC_PROPERTY,
+          tenantId: LOCK_TENANT,
+          secret: secretFor(GENERIC_PROPERTY),
+          session,
+          lockConnection: connection,
+          lockKey: lock.key,
+          context: { pages: () => [{ id: 'stale' }], newPage },
+        },
+        run,
+      );
+      await entered.promise;
+      await session.recover();
+      hold.resolve();
+      await expect(work).rejects.toMatchObject({
+        code: 'stale_generation',
+        payload: undefined,
+      });
     });
 
     expect(newPage).not.toHaveBeenCalled();
