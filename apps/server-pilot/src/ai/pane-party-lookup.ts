@@ -12,6 +12,7 @@ import {
 } from '../hms/property-read-lock.js';
 import { matchKey, partyNameParts, partySearchTerms, type PartyNameParts } from './party-match.js';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { paneStayPropertyLock, type PaneStayLock } from './pane-stay-save.js';
 import { quoteRateContextEnabled } from './quote-rate-switch.js';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -78,6 +79,8 @@ export type PanePartyLookupCore = {
   results: PanePartyCandidate[];
   /** True when an HMS grid held its 50-row load or the merged list passed the cap. More matches may exist. */
   truncated: boolean;
+  /** Login-phase failure code for queue parking. Absent on ordinary party results. */
+  error?: string;
 };
 
 /** The pane's reply: the search answer, ranked best first, with the best row and the HMS text that found the rows. */
@@ -169,7 +172,11 @@ export function panePartyFindResultFromCli(kind: PanePartyKind, raw: unknown): P
       ? cli.outcome
       : 'execution_failure';
   if (outcome !== 'resolved' && outcome !== 'ambiguous' && outcome !== 'no_match') {
-    return withoutResults(outcome as PanePartyOutcome);
+    const loginCode = classifyHmsLoginOutage(raw) ? 'AUTHENTICATED_SHELL_TIMEOUT' : undefined;
+    return {
+      ...withoutResults(outcome as PanePartyOutcome),
+      ...(loginCode ? { error: loginCode } : {}),
+    };
   }
   const truncated = cli.truncated === true;
   const results = panePartyCandidates(kind, cli.candidates);
@@ -523,7 +530,14 @@ async function spawnUnderOneLock(
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { ok: false, core: withoutResults('refused_lock_busy') };
     warnPaneStaySpawnFailed('party', error);
-    return { ok: false, core: withoutResults('execution_failure') };
+    const loginCode = classifyHmsLoginOutage(error) ? 'AUTHENTICATED_SHELL_TIMEOUT' : undefined;
+    return {
+      ok: false,
+      core: {
+        ...withoutResults('execution_failure'),
+        ...(loginCode ? { error: loginCode } : {}),
+      },
+    };
   }
 }
 

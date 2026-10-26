@@ -154,6 +154,14 @@ import {
   occupyPrefetchReservation,
   reservePrefetchCapacity,
 } from './prefetch-capacity.js';
+import {
+  HMS_OUTAGE_FAILURE_CLASS,
+  HMS_OUTAGE_LAST_ERROR,
+  classifyHmsLoginOutage,
+  clearPropertyOutage,
+  decidePropertyReadJob,
+  noteLoginOutage,
+} from '../hms/property-outage.js';
 
 /**
  * The queued pane path. Only the exact value `on` enables it. Off (the default), pane finds and searches run
@@ -3142,6 +3150,47 @@ async function retryOrFail(
   return 'retry_wait';
 }
 
+function hmsOutagePropertyCode(
+  run: AiWorkflowRun,
+  jobTarget: HmsReadTarget | null,
+): string | null {
+  const fromTarget = jobTarget?.propertyCode?.trim();
+  if (fromTarget) return fromTarget;
+  try {
+    const code = hmsReadTargetForTransport(run.transportId).propertyCode.trim();
+    return code.length > 0 ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+function requeueParkedOutage(
+  db: DB,
+  mark: Mark,
+  run: AiWorkflowRun,
+  delayMs: number,
+): Promise<'retry_wait'> {
+  return requeueRun(db, mark, {
+    attempts: run.attempts,
+    delayMs,
+    failureClass: HMS_OUTAGE_FAILURE_CLASS,
+    lastError: HMS_OUTAGE_LAST_ERROR,
+  });
+}
+
+async function parkLoginOutageFailure(
+  db: DB,
+  mark: Mark,
+  run: AiWorkflowRun,
+  propertyCode: string | null,
+  error: unknown,
+): Promise<'retry_wait' | null> {
+  if (!classifyHmsLoginOutage(error)) return null;
+  const parked = noteLoginOutage(propertyCode);
+  if (parked.kind !== 'park') return null;
+  return requeueParkedOutage(db, mark, run, parked.delayMs);
+}
+
 const STAFF_QUOTE_TRANSIENT_CODES = new Set([
   'TRANSIENT_NETWORK',
   'EXECUTION_FAILURE',
@@ -3700,6 +3749,12 @@ export async function executeHmsJob(input: {
     });
   }
 
+  const outagePropertyCode = hmsOutagePropertyCode(run, jobTarget);
+  const parkedOutage = decidePropertyReadJob(outagePropertyCode);
+  if (parkedOutage.kind === 'park') {
+    return requeueParkedOutage(db, mark, run, parkedOutage.delayMs);
+  }
+
   if (request.kind === 'staff_quote') {
     const user = staffQuoteUserFromMetrics(metrics);
     const systemPrepared = !user && systemPreparedQuote;
@@ -3762,6 +3817,7 @@ export async function executeHmsJob(input: {
         }
         await recordSenderHistoryAfterRead(db, run, selectedParties, jobTarget);
       }
+      clearPropertyOutage(outagePropertyCode);
       return 'succeeded';
     } catch (error) {
       if (systemPreparedQuote && preparedQuoteYielded(error)) {
@@ -3819,6 +3875,14 @@ export async function executeHmsJob(input: {
           systemPreparedQuote ? 1 : JOB_MAX_ATTEMPTS,
         );
       }
+      const parkedLogin = await parkLoginOutageFailure(
+        db,
+        mark,
+        run,
+        outagePropertyCode,
+        error,
+      );
+      if (parkedLogin) return parkedLogin;
       if (staffQuoteTransientFailure(error)) {
         const attachFailed = staffQuoteFailurePhase(error) === 'attach';
         return retryOrFail(
@@ -3919,6 +3983,14 @@ export async function executeHmsJob(input: {
     return retryOrFail(db, run, mark, 'HMS_LOCK_BUSY', 'property lock busy');
   }
   if (outcome === 'execution_failure') {
+    const parkedLogin = await parkLoginOutageFailure(
+      db,
+      mark,
+      run,
+      outagePropertyCode,
+      result,
+    );
+    if (parkedLogin) return parkedLogin;
     return retryOrFail(db, run, mark, 'TRANSIENT_NETWORK', 'lookup execution failed');
   }
   if (outcome.startsWith('refused_')) {
@@ -3958,6 +4030,7 @@ export async function executeHmsJob(input: {
   }
   // ponytail: the CLI spawn keeps its own 5-minute timeout; the run deadline is enforced at claim time, not during the spawn.
   await pruneExpiredPaneRuns(Date.now());
+  if (marked) clearPropertyOutage(outagePropertyCode);
   return marked ? 'succeeded' : 'retry_wait';
 }
 
