@@ -146,4 +146,34 @@ describe('staff quote rate policy by transport', () => {
       'staff_quote_policy_scope_invalid',
     );
   });
+
+  it('rejects an incomplete or out-of-private ratePolicyByOwnerRef map', () => {
+    const complete = Object.fromEntries(
+      DAVINCI_STAFF_TRANSPORT_IDS.map((ownerRef) => [
+        ownerRef,
+        resolve(privateRoot, `hrdav-rate-policy-${ownerRef}.json`),
+      ]),
+    );
+    const missingFaith = { ...complete };
+    delete missingFaith['transport-faith'];
+    const outsidePrivate = Object.fromEntries(
+      DAVINCI_STAFF_TRANSPORT_IDS.map((ownerRef) => [
+        ownerRef,
+        resolve('/tmp', `hrdav-rate-policy-${ownerRef}.json`),
+      ]),
+    );
+
+    expect(() =>
+      validateStaffQuoteInstallationConfiguration({
+        ...configuration('HRDAV'),
+        ratePolicyByOwnerRef: missingFaith,
+      }),
+    ).toThrow('staff_quote_installation_invalid');
+    expect(() =>
+      validateStaffQuoteInstallationConfiguration({
+        ...configuration('HRDAV'),
+        ratePolicyByOwnerRef: outsidePrivate,
+      }),
+    ).toThrow('staff_quote_installation_invalid');
+  });
 });

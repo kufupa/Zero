@@ -1,7 +1,0 @@
-{
-  "version": "source-native-invoice-rate-policy-v1",
-  "ownerRef": "transport-davinci",
-  "propertyCode": "HRDAV",
-  "documents": [],
-  "corpusPaths": [".private/hrdav-corpus/messages.jsonl"]
-}

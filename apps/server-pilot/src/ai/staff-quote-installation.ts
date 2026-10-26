@@ -201,6 +201,16 @@ export function resolveStaffQuoteRatePolicyPath(
   throw new Error('staff_quote_policy_scope_invalid');
 }
 
+function assertInstalledPropertyCode(
+  configuration: StaffQuoteInstallationConfiguration,
+  propertyCode?: string,
+): void {
+  const expectedPropertyCode = propertyCode ?? 'HRCEN';
+  if (configuration.owner.propertyCode !== expectedPropertyCode) {
+    throw new Error('staff_quote_installation_unavailable');
+  }
+}
+
 /** Reads only the installed descriptor, never credentials or a browser. */
 export function readInstalledStaffQuoteConfiguration(
   propertyCode?: string,
@@ -210,9 +220,7 @@ export function readInstalledStaffQuoteConfiguration(
   const configuration = validateStaffQuoteInstallationConfiguration(
     JSON.parse(checkedPrivateFile(path, 1024 * 1024).toString()),
   );
-  if (propertyCode && configuration.owner.propertyCode !== propertyCode) {
-    throw new Error('staff_quote_installation_unavailable');
-  }
+  assertInstalledPropertyCode(configuration, propertyCode);
   return configuration;
 }
 
@@ -629,6 +637,7 @@ export function getInstalledStaffQuoteServices(
   const bytes = checkedPrivateFile(path, 1024 * 1024),
     identity = sha(bytes);
   const configuration = validateStaffQuoteInstallationConfiguration(JSON.parse(bytes.toString()));
+  assertInstalledPropertyCode(configuration, options.propertyCode);
   const guard = () => {
     if (
       process.env[envName] !== path ||
