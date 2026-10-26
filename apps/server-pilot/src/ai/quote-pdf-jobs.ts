@@ -3,8 +3,8 @@
  * artifact). Keyed by work item + revision. Queryable after disconnect.
  * PDF only — no send/attach. Unknown property refuses; no hotel default.
  */
-import { randomUUID } from 'node:crypto';
-import { and, eq, inArray } from 'drizzle-orm';
+import { createHash, randomUUID } from 'node:crypto';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { getDb, type DB } from '../db/client.js';
 import { aiWorkflowRun } from '../db/schema/mail.js';
@@ -28,6 +28,11 @@ export const quotePdfRequestSchema = z
     workItemId: z.string().uuid(),
     revisionId: z.string().min(1),
     propertyCode: z.string().min(1),
+    transportId: z.string().min(1).optional(),
+    userId: z.string().min(1).optional(),
+    signerName: z.string().optional(),
+    signerEmail: z.string().optional(),
+    proposal: z.unknown().optional(),
   })
   .strict();
 
@@ -47,6 +52,18 @@ export type QuotePdfResult = z.infer<typeof quotePdfResultSchema>;
 
 export function quotePdfIdempotencyKey(workItemId: string, revisionId: string): string {
   return `quote-pdf:${workItemId}:${revisionId}`;
+}
+
+/** Stay revisions (sorted) plus a header digest so combined quotes and contact edits do not collide. */
+export function quotePdfDocumentKey(
+  revisionRef: string,
+  additionalStays: Array<{ revisionRef: string }> = [],
+  header?: Record<string, unknown>,
+): string {
+  const revisions = [revisionRef, ...additionalStays.map((stay) => stay.revisionRef)].sort().join('\u001f');
+  if (!header) return revisions;
+  const digest = createHash('sha256').update(JSON.stringify(header)).digest('hex').slice(0, 16);
+  return `${revisions}:${digest}`;
 }
 
 export function isQuotePdfRun(run: { promptVersion?: string | null }): boolean {
@@ -69,6 +86,10 @@ export async function enqueueQuotePdfJob(input: {
   workItemId: string;
   revisionId: string;
   propertyCode: string;
+  userId?: string;
+  signerName?: string;
+  signerEmail?: string;
+  proposal?: unknown;
   db?: DB;
 }): Promise<{ run: AiWorkflowRun; created: boolean }> {
   const db = input.db ?? getDb();
@@ -84,6 +105,11 @@ export async function enqueueQuotePdfJob(input: {
     workItemId: input.workItemId,
     revisionId: input.revisionId,
     propertyCode,
+    transportId: input.transportId,
+    ...(input.userId ? { userId: input.userId } : {}),
+    ...(input.signerName ? { signerName: input.signerName } : {}),
+    ...(input.signerEmail ? { signerEmail: input.signerEmail } : {}),
+    ...(input.proposal !== undefined ? { proposal: input.proposal } : {}),
   };
   const idempotencyKey = quotePdfIdempotencyKey(input.workItemId, input.revisionId);
   const run = await enqueueAiRun(
@@ -125,6 +151,30 @@ export async function readQuotePdfJob(input: {
     .limit(1);
   if (!run) return null;
   return { runId: run.id, state: run.state, result: quotePdfResultOf(run) };
+}
+
+/** Persist bytes even if another worker currently holds the claim. First writer wins. */
+export async function persistQuotePdfResult(
+  runId: string,
+  artifact: QuotePdfResult,
+  db: DB = getDb(),
+): Promise<QuotePdfResult> {
+  const now = new Date();
+  const [row] = await db
+    .update(aiWorkflowRun)
+    .set({
+      state: 'succeeded',
+      readResult: artifact,
+      finishedAt: now,
+      updatedAt: now,
+      claimOwner: null,
+      claimToken: null,
+    })
+    .where(and(eq(aiWorkflowRun.id, runId), sql`${aiWorkflowRun.readResult} IS NULL`))
+    .returning();
+  if (row) return artifact;
+  const [existing] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, runId)).limit(1);
+  return quotePdfResultOf(existing) ?? artifact;
 }
 
 async function fenceQueuedQuotePdf(

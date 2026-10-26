@@ -4321,22 +4321,13 @@ export async function executeAiRun(
 
     if (isQuotePdfRun(run)) {
       const persisted = quotePdfResultOf(run);
-      if (persisted) {
-        const state = await executeQuotePdfJob({ run, fence, generate: async () => persisted });
-        return { runId, state };
-      }
-      // HTTP owner generates; yield so a reconnect can persist the same key.
-      const requeued = await markAiRunRetry({
-        runId,
-        claimOwner: owner,
-        claimToken,
-        expectedStates: ['running'],
-        attempts: run.attempts,
-        nextRunAt: new Date(Date.now() + 3_000),
-        lastError: 'quote_pdf_waiting',
-        failureClass: 'UNKNOWN',
+      const { generateQuotePdfFromLedger } = await import('../trpc/routes/workstation.js');
+      const state = await executeQuotePdfJob({
+        run,
+        fence,
+        generate: persisted ? async () => persisted : generateQuotePdfFromLedger,
       });
-      return { runId, state: requeued ? 'retry_wait' : 'dead_letter' };
+      return { runId, state };
     }
 
     // Pane HMS jobs run through the CLI under the property lock, so they do not need the read service.
