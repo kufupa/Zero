@@ -74,8 +74,9 @@ export function ContactBlock({
           <button
             type="button"
             aria-expanded={correcting}
+            disabled={resetPending}
             onClick={() => setCorrecting((open) => !open)}
-            className="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline"
+            className="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:text-[#94a3b8]"
           >
             {correcting ? 'Done' : 'Edit'}
           </button>
@@ -92,6 +93,7 @@ export function ContactBlock({
                 data-pii={pii || undefined}
                 className={paneFieldClass}
                 maxLength={200}
+                disabled={resetPending}
                 value={values[field] ?? ''}
                 onChange={(event) => {
                   const next = event.target.value;

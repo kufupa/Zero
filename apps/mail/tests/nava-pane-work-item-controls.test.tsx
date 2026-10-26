@@ -455,6 +455,25 @@ describe('Nava pane work-item controls', () => {
     });
   });
 
+  it('disables contact edits while Undo is refreshing', async () => {
+    let releaseLookup: (() => void) | undefined;
+    await renderReadyPane();
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(true);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    expect(screen.queryByLabelText('Name')).toBeNull();
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    releaseLookup?.();
+    await waitFor(() => {
+      expect((screen.getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
   it('failed refresh after Undo keeps controls disabled and Reload only refetches', async () => {
     await renderReadyPane();
     bridgeMockState.storedWorkLookupReject = true;

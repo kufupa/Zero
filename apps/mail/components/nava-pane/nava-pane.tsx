@@ -666,6 +666,7 @@ export function NavaPane({
         }
       : null;
   const recordContact = (field: ContactField, value: string | null) => {
+    if (storedWork.historyPending || storedWork.historyNeedsReload) return;
     const previous = documentContactRef.current ?? {
       name: null,
       company: null,

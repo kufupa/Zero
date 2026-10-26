@@ -117,6 +117,12 @@ type CursorQuery = (
 const HISTORY_STALE = 'history_stale';
 const HISTORY_STALE_COPY = "This email was re-read, so older changes can't be undone.";
 const HISTORY_REFRESH_COPY = "Saved, but couldn't refresh —";
+/** J1 CONFLICT copy. The formatter does not send `cause.code`. */
+const HISTORY_STALE_SERVER = 'The mail reading changed. Reload, then undo or redo.';
+
+function messageOf(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
 
 /** J1 may throw or return this typed error while that PR is still landing. */
 function historyStaleOf(value: unknown): boolean {
@@ -135,6 +141,10 @@ function historyStaleOf(value: unknown): boolean {
     shape?.data && typeof shape.data === 'object' && !Array.isArray(shape.data)
       ? (shape.data as Record<string, unknown>)
       : null;
+  const messages = [record.message, shape?.message, record.error].map(messageOf);
+  if (messages.some((message) => message === HISTORY_STALE_SERVER || message.includes('mail reading changed'))) {
+    return true;
+  }
   return [
     record.error,
     record.message,
@@ -580,6 +590,7 @@ export function useStoredWork(args: {
   /** Logs one edit (a field patch or a stay/row action) as field events. Only a stored read has a work item. */
   const recordGroups = useCallback(
     (before: StayGroupRequirement[], after: StayGroupRequirement[]) => {
+      if (historyPending || historyNeedsReload) return;
       if (!readyRefs || !readyWorkItemId) return;
       const events = fieldEventsBetween(readyRefs, before, after);
       if (events.length) {
@@ -593,12 +604,13 @@ export function useStoredWork(args: {
         schedule(event.path, readyWorkItemId, readyTransportId, event.value);
       }
     },
-    [lookupKey, readyRefs, readyWorkItemId, readyTransportId, schedule],
+    [historyNeedsReload, historyPending, lookupKey, readyRefs, readyWorkItemId, readyTransportId, schedule],
   );
 
   /** Logs one contact edit as a `contact.<field>` event. Nothing is logged until the mail has a stored read. */
   const recordContact = useCallback(
     (field: ContactField, value: string | null) => {
+      if (historyPending || historyNeedsReload) return;
       // The stored read takes the edit at once, so the HMS notes agree with the Contact block before the save lands.
       setLookup((prev) =>
         prev && prev.key === lookupKey && prev.result?.status === 'ready'
@@ -614,7 +626,7 @@ export function useStoredWork(args: {
       if (!readyWorkItemId) return;
       schedule(`contact.${field}`, readyWorkItemId, readyTransportId, value);
     },
-    [lookupKey, readyWorkItemId, readyTransportId, schedule],
+    [historyNeedsReload, historyPending, lookupKey, readyWorkItemId, readyTransportId, schedule],
   );
 
   /**
