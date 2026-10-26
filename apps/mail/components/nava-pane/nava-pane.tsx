@@ -2248,7 +2248,7 @@ export function NavaPane({
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={documentContact}
               contactEditorKey={contactEditorKey}
-              onContactEdit={recordContact}
+              onContactEdit={contactInPeople ? recordContact : undefined}
               findParty={PANE_PARTY_FINDER}
               partySuggestions={partySuggestions}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}
