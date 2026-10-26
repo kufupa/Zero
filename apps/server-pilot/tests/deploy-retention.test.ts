@@ -143,7 +143,7 @@ describe('deployment retention scripts', () => {
     expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
   });
 
-  it('deletes evidence only when S3 object count matches and skips recent evidence', () => {
+  it('archives old run directories only after count verification and skips recent evidence', () => {
     const root = tempRoot();
     const bin = join(root, 'bin');
     const evidenceRoot = join(root, 'private', 'playwright-quote');
@@ -153,6 +153,12 @@ describe('deployment retention scripts', () => {
     const matched = addEvidenceDir(evidenceRoot, 'matched-run', 15, ['trace.zip', 'result.json']);
     const mismatch = addEvidenceDir(evidenceRoot, 'mismatch-run', 16, ['trace.zip', 'result.json']);
     const recent = addEvidenceDir(evidenceRoot, 'recent-run', 1, ['trace.zip']);
+    const nestedContainer = join(evidenceRoot, 'nested-container');
+    mkdirSync(nestedContainer);
+    const nestedRun = addEvidenceDir(nestedContainer, 'nested-run', 15, ['trace.zip', 'result.json']);
+    const nestedRecent = addEvidenceDir(nestedContainer, 'nested-recent', 1, ['trace.zip']);
+    const containerMtime = new Date(Date.now() - DAY_MS);
+    utimesSync(nestedContainer, containerMtime, containerMtime);
     writeExecutable(
       join(bin, 'aws'),
       [
@@ -165,8 +171,9 @@ describe('deployment retention scripts', () => {
         'fi',
         'if [[ "${4:-}" == ls ]]; then',
         '  case "${5:-}" in',
-        '    */matched-run/) printf "2026-01-01 00:00:00 1 a\\n2026-01-01 00:00:00 1 b\\n" ;;',
-        '    */mismatch-run/) printf "2026-01-01 00:00:00 1 a\\n" ;;',
+        '    */matched-run/*/) printf "2026-01-01 00:00:00 1 a\\n2026-01-01 00:00:00 1 b\\n" ;;',
+        '    */mismatch-run/*/) printf "2026-01-01 00:00:00 1 a\\n" ;;',
+        '    */nested-run/*/) printf "2026-01-01 00:00:00 1 a\\n2026-01-01 00:00:00 1 b\\n" ;;',
         '    *) exit 3 ;;',
         '  esac',
         '  exit 0',
@@ -176,40 +183,68 @@ describe('deployment retention scripts', () => {
       ].join('\n'),
     );
 
-    const result = runScript(archiveScript, bin, [], {
+    const environment = {
       EVIDENCE_ROOT: evidenceRoot,
       AWS_CALLS_FILE: awsCalls,
-    });
+    };
+    const result = runScript(archiveScript, bin, [], environment);
     expect(result.status).toBe(1);
     expect(existsSync(matched)).toBe(false);
     expect(existsSync(mismatch)).toBe(true);
     expect(existsSync(recent)).toBe(true);
+    expect(existsSync(nestedRun)).toBe(false);
+    expect(existsSync(nestedRecent)).toBe(true);
+    expect(existsSync(nestedContainer)).toBe(true);
     const output = result.stdout + result.stderr;
     expect(output).toContain('status=archived');
     expect(output).toContain('status=count_mismatch');
     expect(output).not.toContain('matched-run');
     expect(output).not.toContain('mismatch-run');
     expect(output).not.toContain('recent-run');
-    const calls = readFileSync(awsCalls, 'utf8');
-    expect(calls).toContain('--region af-south-1');
-    expect(calls).toContain('--storage-class STANDARD_IA');
-    expect(calls).toContain(
+    expect(output).not.toContain('nested-run');
+    const firstCalls = readFileSync(awsCalls, 'utf8');
+    const firstNestedDestination = firstCalls
+      .split('\n')
+      .find((line) => line.startsWith('--region af-south-1 s3 ls ') && line.includes('/nested-container/nested-run/'))
+      ?.split(' ')[4];
+    expect(firstNestedDestination).toBeDefined();
+    expect(firstCalls).toContain('--storage-class STANDARD_IA');
+    expect(firstCalls).toContain(
       's3://nava-zero-mail-845242190536-af-south-1/ops-dumps/hms-evidence/matched-run/',
     );
+
+    const recreatedRun = addEvidenceDir(nestedContainer, 'nested-run', 16, ['trace.zip', 'result.json']);
+    utimesSync(nestedContainer, containerMtime, containerMtime);
+    const repeated = runScript(archiveScript, bin, [], environment);
+    expect(repeated.status).toBe(1);
+    expect(existsSync(recreatedRun)).toBe(false);
+    const calls = readFileSync(awsCalls, 'utf8');
+    const nestedDestinations = calls
+      .split('\n')
+      .filter((line) => line.startsWith('--region af-south-1 s3 ls ') && line.includes('/nested-container/nested-run/'))
+      .map((line) => line.split(' ')[4] ?? '');
+    expect(nestedDestinations).toHaveLength(2);
+    expect(new Set(nestedDestinations).size).toBe(2);
+    expect(calls).toContain('--region af-south-1');
   });
 
-  it('runs web-release pruning after nginx reload in deploy activation', () => {
+  it('prunes after nginx reload and only after rollback is retired', () => {
     const deploy = readFileSync(deployEc2Script, 'utf8');
-    const start = deploy.indexOf('  activate_nginx() {');
-    const end = deploy.indexOf('\n  finalize_nginx_release()', start);
-    const activation = deploy.slice(start, end);
-    const reload = activation.indexOf('sudo systemctl reload nginx');
-    const prune = activation.indexOf('prune-web-releases.sh');
+    const reload = deploy.indexOf('sudo systemctl reload nginx');
+    const start = deploy.indexOf('  finalize_nginx_release() {');
+    const end = deploy.indexOf('\n  # All handlers exist', start);
+    const finalize = deploy.slice(start, end);
+    const transactionRetired = finalize.indexOf('NGINX_TRANSACTION_ACTIVE=0');
+    const backupCleanup = finalize.indexOf('cleanup_nginx_backup');
+    const prune = finalize.indexOf('prune-web-releases.sh');
 
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     expect(reload).toBeGreaterThan(-1);
-    expect(prune).toBeGreaterThan(reload);
+    expect(transactionRetired).toBeGreaterThan(-1);
+    expect(backupCleanup).toBeGreaterThan(transactionRetired);
+    expect(prune).toBeGreaterThan(backupCleanup);
+    expect(deploy.indexOf('prune-web-releases.sh')).toBeGreaterThan(reload);
     expect(deploy.match(/prune-web-releases\.sh/g)).toHaveLength(1);
   });
 });

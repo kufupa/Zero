@@ -17,23 +17,29 @@ command -v aws >/dev/null 2>&1 || { echo "hms-evidence-archive: aws cli unavaila
 
 directories_file="$(mktemp "${TMPDIR:-/tmp}/nava-hms-evidence-dirs.XXXXXX")"
 trap 'rm -f -- "$directories_file"' EXIT
-find "$EVIDENCE_ROOT" -mindepth 1 -maxdepth 1 -type d -print0 >"$directories_file" || {
+find "$EVIDENCE_ROOT" -mindepth 1 -type d -print0 2>/dev/null >"$directories_file" || {
   echo "hms-evidence-archive: evidence directories could not be listed" >&2
   exit 1
 }
-mapfile -d '' -t directories <"$directories_file"
 cutoff=$(( $(date +%s) - RETENTION_SECONDS ))
 status=0
 item=0
 report() { printf 'hms-evidence-archive: item=%d %s\n' "$item" "$1"; }
-for directory in "${directories[@]}"; do
+while IFS= read -r -d '' directory; do
+  [[ -d "$directory" && ! -L "$directory" ]] || continue
   item=$((item + 1))
-  mtime="$(stat -c '%Y' -- "$directory" 2>/dev/null)" || { report "status=stat_failed"; status=1; continue; }
+  metadata="$(stat -c '%Y %i' -- "$directory" 2>/dev/null)" || { report "status=stat_failed"; status=1; continue; }
+  [[ "$metadata" =~ ^[0-9]+[[:space:]]+[0-9]+$ ]] || { report "status=stat_failed"; status=1; continue; }
+  read -r mtime inode <<<"$metadata"
   if ((mtime >= cutoff)); then report "status=recent"; continue; fi
-  files="$(find "$directory" -type f -printf x 2>/dev/null | wc -c)" ||
+  newer="$(find "$directory" -mindepth 1 -newermt "@$((cutoff - 1))" -print -quit 2>/dev/null)" ||
+    { report "status=age_check_failed"; status=1; continue; }
+  if [[ -n "$newer" ]]; then report "status=contains_recent"; continue; fi
+  files="$(find "$directory" -type f -printf x 2>/dev/null | wc -c | tr -d '[:space:]')" ||
     { report "status=count_failed"; status=1; continue; }
-  files="${files//[!0-9]/}"
-  destination="${S3_PREFIX}${directory##*/}/"
+  relative="$(realpath --relative-to="$EVIDENCE_ROOT" -- "$directory")" ||
+    { report "status=path_failed"; status=1; continue; }
+  destination="$S3_PREFIX$relative/$mtime-$inode/"
   if ! aws --region "$AWS_REGION" s3 sync "$directory" "$destination" \
     --storage-class STANDARD_IA --no-follow-symlinks >/dev/null 2>&1; then
     report "files=$files status=sync_failed"; status=1; continue
@@ -47,7 +53,7 @@ for directory in "${directories[@]}"; do
   if rm -rf -- "$directory"; then report "files=$files status=archived"
   else report "files=$files status=delete_failed"; status=1
   fi
-done
+done <"$directories_file"
 trap - EXIT
 rm -f -- "$directories_file"
 exit "$status"
