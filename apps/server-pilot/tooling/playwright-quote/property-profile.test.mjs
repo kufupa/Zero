@@ -1,7 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { amendRoomTypes, parseStayProperty, profileFor, propertySecretRefusal, validateProfile } from './property-profile.mjs';
+import {
+  amendRoomTypes,
+  getProfileBoards,
+  getProfileLetter,
+  getProfileRates,
+  parseStayProperty,
+  profileFor,
+  propertySecretRefusal,
+  validateProfile,
+} from './property-profile.mjs';
 import { PROPERTY_REGISTRY } from './property-registry.mjs';
 
 const hrcenUrl = new URL('./property-profiles/HRCEN.json', import.meta.url);
@@ -91,4 +100,38 @@ test('a profile that drops its evidence or claims an HMS building is rejected', 
   const withBuilding = await hrcenRaw();
   withBuilding.building = 'MAIN';
   assert.throws(() => validateProfile(withBuilding, 'HRCEN'), /only a property with no HMS building/);
+});
+
+test('both hotels load rates, boards and letter; unknown property throws', () => {
+  const hrcen = profileFor('HRCEN');
+  const hrdav = profileFor('HRDAV');
+  assert.deepEqual(getProfileRates('HRCEN').public, ['BAR', 'BARRO', 'WAL']);
+  assert.equal(hrcen.classifyRate('BAR', 'BAR', false), 'public');
+  assert.equal(
+    hrcen.classifyRate('NGOVB', 'GOV', false, 'Local Government Rate Breakfast'),
+    'government',
+  );
+  assert.equal(hrcen.classifyRate('ZZZUNK', 'BAR', false), 'unknown');
+  assert.equal(getProfileBoards('HRCEN')['bed & breakfast r'], 'breakfast');
+  assert.match(getProfileLetter('HRCEN').hotel.source, /The Centurion Hotel/);
+  assert.equal(hrcen.cancellation.noticeHours, 48);
+
+  assert.deepEqual(getProfileRates('HRDAV').public, ['BAR', 'BARRO', 'WAL']);
+  const wsPlans = getProfileRates('HRDAV').strategies.WS.plans;
+  assert.ok(wsPlans.includes('BWS1B'));
+  assert.equal(getProfileRates('HRDAV').strategies.WS.scope, 'agency');
+  assert.equal(hrdav.classifyRate('BWS1B', 'WS', false), 'contextual');
+  assert.equal(getProfileBoards('HRDAV')['bed & breakfast nr'], 'breakfast');
+  assert.match(getProfileLetter('HRDAV').hotel.source, /Da \?Vinci Hotel/);
+  assert.equal(hrdav.cancellation.noticeHours, 48);
+  assert.ok(hrdav.observedStrategyRatePlans.WS.ratePlans.some((row) => row.value === 'BWS1B'));
+
+  assert.throws(() => getProfileRates('NOTAPROP'), /property_profile_unknown/);
+  assert.throws(() => getProfileRates(undefined), /property_profile_unknown/);
+});
+
+test('a bad letter regex string is rejected', async () => {
+  const raw = await hrcenRaw();
+  raw.letter = { hotel: '[', confirmation: '/The Centurion Hotel/' };
+  assert.throws(() => validateProfile(raw, 'HRCEN'), /not a valid regular expression/);
 });

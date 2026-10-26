@@ -18,6 +18,24 @@
     { "value": "BAR", "display": "BAR" },
     { "value": "GOV", "display": "Government" }
   ],
+  "rates": {
+    "public": ["BAR", "BARRO", "WAL"],
+    "government": {
+      "labelPattern": "^Local Government Rate (?:Breakfast|Dinner|Room Only)$"
+    }
+  },
+  "boards": {
+    "room only r": "room_only",
+    "bed & breakfast r": "breakfast",
+    "dinner bed & breakfast r": "dinner_bed_breakfast",
+    "dinner, bed & breakfast r": "dinner_bed_breakfast",
+    "dinner, bed, breakfast & beverage r": "dinner_bed_breakfast"
+  },
+  "letter": {
+    "hotel": "/The Centurion Hotel/",
+    "confirmation": "/We have pleasure in confirming your reservation at The Centurion Hotel, Centurion/"
+  },
+  "cancellation": { "noticeHours": 48 },
   "evidence": {
     "derivation": "max observed nightly inventory per room type across 95 captures",
     "derivedOn": "2026-10-10",
