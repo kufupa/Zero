@@ -1156,7 +1156,7 @@ describe('booking card pane save', () => {
 
   it('restores the same work-item Stay preview after the booking card remounts without saving', async () => {
     const { client, preview, commit } = paneClient();
-    const workItemId = 'work-item-preview-restore';
+    const workItemId = '22222222-2222-4222-8222-222222222222';
     const host = (session: QuoteSession) => (
       <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
     );
@@ -1165,6 +1165,7 @@ describe('booking card pane save', () => {
     fireEvent.click(previewButton(0));
     expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
     expect(preview).toHaveBeenCalledTimes(1);
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 'stay-preview-1_1' }));
     expect(commit).not.toHaveBeenCalled();
 
     rerender(host(bookingSessionForPreview(previewableDraft(), 2)));
@@ -1177,7 +1178,7 @@ describe('booking card pane save', () => {
 
   it('clears a cached preview when the same work-item Stay digest changes', async () => {
     const { client, preview, commit } = paneClient();
-    const workItemId = 'work-item-preview-digest';
+    const workItemId = '33333333-3333-4333-8333-333333333333';
     const host = (session: QuoteSession) => (
       <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
     );
