@@ -41,6 +41,10 @@ import { ThreadAiMailsSection } from '@/components/mail/thread-ai-mails-section'
 import { shouldShowOpenThreadSkeleton } from '@/lib/mail/thread-open-stability';
 import { flushComposeBeforeLeave } from '@/lib/mail/compose-flush-registry';
 import { orderMessagesNewestFirst } from '@/lib/mail/thread-display-order';
+import {
+  shouldSuppressLatestAutoScroll,
+  useExactSourceMessageSelection,
+} from '@/lib/mail/source-message-navigation';
 import { cn, FOLDERS, formatDateWithWeekdayAndTime } from '@/lib/utils';
 import { ThreadDraftCard } from '@/components/mail/thread-draft-card';
 import { useOptimisticActions } from '@/hooks/use-optimistic-actions';
@@ -1262,7 +1266,7 @@ interface MessageListProps {
   onOpenLinkedThread?: (threadId: string) => void;
 }
 
-export const MessageList = ({
+const MessageList = ({
   messages,
   sourceMessageId,
   isFullscreen,
@@ -1278,27 +1282,8 @@ export const MessageList = ({
 }: MessageListProps) => {
   const timezone = useTimezone();
   const displayMessages = orderMessagesNewestFirst(messages || []);
-  const sourceMessageRef = useRef<HTMLDivElement>(null);
-  const lastFocusedSourceMessageId = useRef<string | null>(null);
+  const sourceMessageRef = useExactSourceMessageSelection(sourceMessageId, messages);
   const linkedThreadCount = (linkedThreadIds?.length ?? 0) + 1;
-
-  useEffect(() => {
-    if (!sourceMessageId) {
-      lastFocusedSourceMessageId.current = null;
-      return;
-    }
-    if (
-      lastFocusedSourceMessageId.current === sourceMessageId ||
-      !messages.some((message) => message.id === sourceMessageId)
-    ) {
-      return;
-    }
-    const selectedMessage = sourceMessageRef.current;
-    if (!selectedMessage) return;
-    lastFocusedSourceMessageId.current = sourceMessageId;
-    selectedMessage.focus({ preventScroll: true });
-    selectedMessage.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, [messages, sourceMessageId]);
 
   return (
     <ScrollArea
@@ -1399,7 +1384,7 @@ export const MessageList = ({
                   isLoading={false}
                   index={index}
                   totalEmails={totalReplies}
-                  suppressLatestAutoScroll={Boolean(sourceMessageId)}
+                  suppressLatestAutoScroll={shouldSuppressLatestAutoScroll(sourceMessageId)}
                 />
               </div>
             </div>

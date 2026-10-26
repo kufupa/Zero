@@ -33,6 +33,7 @@ import {
 } from '../ui/dropdown-menu';
 import { cn, formatDate, formatMessageHeaderDate, formatTime, shouldShowSeparateTime } from '@/lib/utils';
 import { useTimezone } from '@/hooks/use-timezone';
+import { shouldAutoScrollToLatestMessage } from '@/lib/mail/source-message-navigation';
 import { memo, useEffect, useMemo, useState, useRef, useCallback, type MouseEvent } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
@@ -140,25 +141,6 @@ type Props = {
   onReplyAll?: () => void;
   onForward?: () => void;
 };
-
-export function shouldAutoScrollToLatestMessage({
-  demo,
-  suppressLatestAutoScroll,
-  isLastEmail,
-  totalEmails,
-}: {
-  demo?: boolean;
-  suppressLatestAutoScroll?: boolean;
-  isLastEmail: boolean;
-  totalEmails?: number;
-}): boolean {
-  return (
-    !demo &&
-    !suppressLatestAutoScroll &&
-    isLastEmail &&
-    Boolean(totalEmails && totalEmails > 5)
-  );
-}
 
 const MailDisplayLabels = ({ labels }: { labels: string[] }) => {
   const visibleLabels = labels.filter(
@@ -710,15 +692,8 @@ const MailDisplay = ({
   // Separate from collapse/reply toggles so mid-thread reply does not yank viewport to newest.
   useEffect(() => {
     if (
-      !shouldAutoScrollToLatestMessage({
-        demo,
-        suppressLatestAutoScroll,
-        isLastEmail,
-        totalEmails,
-      })
-    ) {
-      return;
-    }
+      !shouldAutoScrollToLatestMessage({ demo, suppressLatestAutoScroll, isLastEmail, totalEmails })
+    ) return;
     const timeout = setTimeout(() => {
       const element = document.getElementById(`mail-${emailData.id}`);
       element?.scrollIntoView({ behavior: 'smooth' });

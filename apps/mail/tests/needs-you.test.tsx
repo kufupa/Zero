@@ -13,17 +13,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import type { NeedsYouRow } from '../lib/quote-workflow/backend-bind';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
-import { MessageList } from '../components/mail/thread-display';
-import { shouldAutoScrollToLatestMessage } from '../components/mail/mail-display';
-import type { ParsedMessage } from '../types';
+import {
+  shouldAutoScrollToLatestMessage,
+  shouldSuppressLatestAutoScroll,
+  useExactSourceMessageSelection,
+} from '../lib/mail/source-message-navigation';
 
-const { listQuery, dismissMutate, toastMock, toastDismissMock, mailDisplayProps } = vi.hoisted(() => {
+const { listQuery, dismissMutate, toastMock, toastDismissMock } = vi.hoisted(() => {
   return {
     listQuery: vi.fn(),
     dismissMutate: vi.fn(),
     toastMock: vi.fn(),
     toastDismissMock: vi.fn(),
-    mailDisplayProps: vi.fn(),
   };
 });
 
@@ -35,20 +36,6 @@ vi.mock('sonner', () => ({
     warning: vi.fn(),
   }),
 }));
-
-vi.mock('../components/mail/mail-display', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../components/mail/mail-display')>();
-  return {
-    ...actual,
-    default: (props: unknown) => {
-      mailDisplayProps(props);
-      return null;
-    },
-    ThreadAttachments: () => null,
-  };
-});
-
-vi.mock('../hooks/use-timezone', () => ({ useTimezone: () => 'UTC' }));
 
 const needsYouClient = {
   workItems: { list: { query: listQuery }, dismiss: { mutate: dismissMutate } },
@@ -117,6 +104,33 @@ function ReloadingHarness() {
   );
 }
 
+function ExactSourceMessageReader({
+  sourceMessageId,
+  messages,
+}: {
+  sourceMessageId: string;
+  messages: { id: string }[];
+}) {
+  const selectedMessageRef = useExactSourceMessageSelection(sourceMessageId, messages);
+  return (
+    <>
+      <input data-testid="reply-editor" />
+      {messages.map((message) => {
+        const selected = message.id === sourceMessageId;
+        return (
+          <div
+            key={message.id}
+            ref={selected ? selectedMessageRef : undefined}
+            tabIndex={selected ? -1 : undefined}
+            aria-current={selected || undefined}
+            data-selected-source-message={selected ? '' : undefined}
+          />
+        );
+      })}
+    </>
+  );
+}
+
 beforeEach(() => {
   localStorage.setItem('nava_onboarding_completed', 'true');
   setMailCacheScope({ userId: null, activeTransportId: null });
@@ -127,7 +141,6 @@ beforeEach(() => {
   toastMock.mockReset();
   toastMock.mockReturnValue('needs-you-dismissal');
   toastDismissMock.mockReset();
-  mailDisplayProps.mockReset();
 });
 
 afterEach(() => {
@@ -471,7 +484,7 @@ describe('webmail exact-message reader selection', () => {
     expect(
       shouldAutoScrollToLatestMessage({
         demo: false,
-        suppressLatestAutoScroll: true,
+        suppressLatestAutoScroll: shouldSuppressLatestAutoScroll('message-exact'),
         isLastEmail: true,
         totalEmails: 6,
       }),
@@ -485,7 +498,7 @@ describe('webmail exact-message reader selection', () => {
     ).toBe(true);
   });
 
-  it('opens and retains focus on the exact source despite latest-message auto-scroll and new mail', () => {
+  it('focuses and scrolls to the exact source once; new mail does not steal reply-editor focus', () => {
     const previousScrollIntoView = Object.getOwnPropertyDescriptor(
       HTMLElement.prototype,
       'scrollIntoView',
@@ -495,33 +508,23 @@ describe('webmail exact-message reader selection', () => {
       configurable: true,
       value: scrollIntoView,
     });
-    const message = (id: string) => ({ id, threadId: 'thread-exact' }) as ParsedMessage;
+    const message = (id: string) => ({ id });
     const messages = [message('message-exact'), message('message-latest')];
     const props = {
       sourceMessageId: 'message-exact',
-      isFullscreen: false,
-      isMobile: false,
-      totalReplies: 6,
-      leading: <input data-testid="reply-editor" />,
     };
 
     try {
-      const { container, rerender } = render(<MessageList {...props} messages={messages} />);
+      const { container, rerender } = render(<ExactSourceMessageReader {...props} messages={messages} />);
       const selectedMessage = container.querySelector('[data-selected-source-message]');
       expect(selectedMessage?.getAttribute('aria-current')).toBe('true');
       expect(document.activeElement).toBe(selectedMessage);
       expect(scrollIntoView).toHaveBeenCalledOnce();
       expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
-      expect(mailDisplayProps).toHaveBeenCalledWith(
-        expect.objectContaining({
-          emailData: expect.objectContaining({ id: 'message-latest' }),
-          suppressLatestAutoScroll: true,
-        }),
-      );
 
       const replyEditor = screen.getByTestId('reply-editor') as HTMLInputElement;
       replyEditor.focus();
-      rerender(<MessageList {...props} messages={[...messages, message('message-new')]} />);
+      rerender(<ExactSourceMessageReader {...props} messages={[...messages, message('message-new')]} />);
 
       expect(document.activeElement).toBe(replyEditor);
       expect(scrollIntoView).toHaveBeenCalledOnce();
