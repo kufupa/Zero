@@ -61,6 +61,7 @@ const ALLOWED_REASONS = new Set([
   'empty_plan',
   'target_refused',
   'cap_exhausted',
+  'deferred',
   'not_queued',
   'queued',
   'error',

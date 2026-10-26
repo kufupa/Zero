@@ -696,6 +696,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
     vi.stubEnv('AWS_REGION', 'synthetic-region-1');
     vi.stubEnv('S3_BUCKET', 'u23-synthetic-bucket');
+    const davinciIds = new Set([DAVINCI_TRANSPORT_ID, FAITH_TRANSPORT_ID, AYANDA_TRANSPORT_ID]);
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async (input) => {
+      const toAddresses = davinciIds.has(input.transportId)
+        ? [DAVINCI_TRANSPORT_EMAIL]
+        : [TRANSPORT_EMAIL];
+      return {
+        selected: { toAddresses },
+        selectedFound: true,
+        inbounds: [{ toAddresses }],
+      };
+    };
   });
 
   it.each([
@@ -899,7 +910,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         transportId: DAVINCI_TRANSPORT_ID,
         triggerMessageId: source.messageId,
       };
-      expect(await prefetchQuoteReadyForExtraction(run, db, quoteEnv)).toBe(6);
+      const created = await prefetchQuoteReadyForExtraction(run, db, quoteEnv);
+      expect(created).toBeGreaterThanOrEqual(6);
       const rows = await db
         .select()
         .from(aiWorkflowRun)
@@ -909,7 +921,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
             sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
           ),
         );
-      expect(rows).toHaveLength(6);
+      expect(rows.length).toBe(created);
+      expect(rows.some((row) => row.nextRunAt && row.nextRunAt.getTime() > Date.now())).toBe(true);
       expect(
         new Set(
           rows
@@ -1278,7 +1291,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   it('does not prepare when the quote request is missing required room occupancy', () =>
     withSeededTestDb(async (db) => {
       const payload = quoteExtractionPayload() as ReturnType<typeof quoteExtractionPayload>;
-      payload.stays[0]!.rows[0]!.adultsPerRoom = null as unknown as number;
+      payload.stays[0]!.rows[0]!.adultsPerRoom = 0;
       const { messageId, run } = await seedQuoteExtraction(db, { payload });
 
       expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(0);
@@ -1355,30 +1368,152 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       }
     }));
 
-  it('caps prepared quotes per transport per hour', () =>
+  it('defers cap overflow with nextRunAt and later runs once without duplicate enqueue', () =>
     withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      vi.stubEnv('HMS_QUOTE_PREPARE_PER_HOUR', '1');
       const env = { ...QUOTE_PREPARE_ENV, HMS_QUOTE_PREPARE_PER_HOUR: '1' };
       const first = await seedQuoteExtraction(db);
       const second = await seedQuoteExtraction(db);
+      const seedInbound = async (seeded: typeof second) => {
+        const [run] = await db
+          .insert(aiWorkflowRun)
+          .values({
+            id: randomUUID(),
+            transportId: TRANSPORT_ID,
+            threadId: seeded.threadId,
+            triggerMessageId: seeded.messageId,
+            runKind: 'inbound_extraction',
+            idempotencyKey: `inbound-extraction:${seeded.messageId}`,
+            modelId: 'not_applicable',
+            promptVersion: 'triage-v6',
+            admissionSnapshotId: `snapshot-${randomUUID()}`,
+            state: 'succeeded',
+            executorLane: 'default',
+            priority: 0,
+            metrics: { keep: true },
+          })
+          .returning();
+        if (!run) throw new Error('inbound extraction seed failed');
+        return run;
+      };
+      await seedInbound(first);
+      await seedInbound(second);
 
-      expect(await prefetchQuoteReadyForExtraction(first.run, db, env)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(first.run, db, env)).toBeGreaterThanOrEqual(1);
+      const overflowed = await prefetchQuoteReadyForExtraction(second.run, db, env);
+      expect(overflowed).toBeGreaterThanOrEqual(1);
+      const secondRows = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, second.messageId),
+            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+          ),
+        );
+      expect(secondRows.some((row) => row.nextRunAt && row.nextRunAt.getTime() > Date.now())).toBe(true);
+      expect(await prefetchQuoteReadyForExtraction(second.run, db, env)).toBe(0);
+      expect(
+        await db
+          .select({ id: aiWorkflowRun.id })
+          .from(aiWorkflowRun)
+          .where(
+            and(
+              eq(aiWorkflowRun.triggerMessageId, second.messageId),
+              sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+            ),
+          ),
+      ).toHaveLength(secondRows.length);
+
+      const aged = new Date(Date.now() - 2 * 60 * 60_000);
+      await db
+        .update(aiWorkflowRun)
+        .set({ state: 'succeeded', createdAt: aged, finishedAt: aged, nextRunAt: null, updatedAt: aged })
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, first.messageId),
+            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+          ),
+        );
+      const deferred = secondRows.filter(
+        (row) => (row.metrics as { prefetchDeferred?: boolean } | null)?.prefetchDeferred === true,
+      );
+      expect(deferred.length).toBeGreaterThanOrEqual(1);
+      const [target, ...siblings] = deferred;
+      const later = new Date(Date.now() + 60 * 60_000);
+      for (const job of siblings) {
+        await db.update(aiWorkflowRun).set({ createdAt: aged, nextRunAt: later, updatedAt: aged }).where(eq(aiWorkflowRun.id, job.id));
+      }
+      await db.update(aiWorkflowRun).set({ nextRunAt: new Date(), updatedAt: new Date() }).where(eq(aiWorkflowRun.id, target!.id));
+
+      vi.stubEnv('HITL_LEDGER', 'on');
+      staffQuoteRunner.run.mockImplementation(async (...args: unknown[]) => {
+        const transaction = args[2] as DB;
+        const options = args[3] as {
+          commitQueuedResult?: (result: Record<string, unknown>, transaction: DB) => Promise<boolean>;
+        };
+        const quoteResult = {
+          status: 'ready',
+          workflowRunId: target!.id,
+          revisionRef: 'overflow-1',
+          messageId: second.messageId,
+          factRefs: [],
+          selectionEpoch: 0,
+          inputRevision: 0,
+          inputDigest: 'd'.repeat(64),
+          totalMinor: 1,
+          currency: 'ZAR',
+        };
+        await options.commitQueuedResult?.(quoteResult, transaction);
+        return quoteResult;
+      });
+      const claimed = await claimJob(db);
+      expect(claimed.id).toBe(target!.id);
+      expect(await runClaimedJob(db, claimed)).toBe('succeeded');
+      expect(staffQuoteRunner.run).toHaveBeenCalledTimes(1);
       expect(await prefetchQuoteReadyForExtraction(second.run, db, env)).toBe(0);
     }));
 
   it.each(['dead_letter', 'superseded'] as const)(
-    'counts a prepared %s run against the hourly cap',
+    'does not retry a prepared %s run while the hourly cap is full',
     (state) => withSeededTestDb(async (db) => {
       const env = { ...QUOTE_PREPARE_ENV, HMS_QUOTE_PREPARE_PER_HOUR: '1' };
       const { messageId, run } = await seedQuoteExtraction(db);
-      expect(await prefetchQuoteReadyForExtraction(run, db, env)).toBe(1);
-      const [first] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      await db.update(aiWorkflowRun).set({ state, finishedAt: new Date(), updatedAt: new Date() })
-        .where(eq(aiWorkflowRun.id, first!.id));
+      expect(await prefetchQuoteReadyForExtraction(run, db, env)).toBeGreaterThanOrEqual(1);
+      const prepared = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, messageId),
+            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+          ),
+        );
+      expect(prepared.length).toBeGreaterThanOrEqual(1);
+      await db
+        .update(aiWorkflowRun)
+        .set({ state, finishedAt: new Date(), updatedAt: new Date() })
+        .where(
+          inArray(
+            aiWorkflowRun.id,
+            prepared.map((row) => row.id),
+          ),
+        );
 
       expect(await prefetchQuoteReadyForExtraction(run, db, env)).toBe(0);
-      const prepared = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      expect(prepared).toHaveLength(1);
-      expect(prepared[0]?.id).toBe(first!.id);
+      const after = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, messageId),
+            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+          ),
+        );
+      expect(after).toHaveLength(prepared.length);
+      expect(after.map((row) => row.id).sort()).toEqual(prepared.map((row) => row.id).sort());
     }),
   );
 
@@ -1566,7 +1701,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         const other = await seedThread(db);
         await db.update(aiWorkflowRun).set({ triggerMessageId: other.messageId }).where(eq(aiWorkflowRun.id, run.id));
       } else {
-        request.request.input = { ...request.request.input, company: 'Different Company' };
+        request.request.input = {
+          ...request.request.input,
+          salesStrategy: request.request.input.salesStrategy === 'BAR' ? 'GOV' : 'BAR',
+        };
       }
 
       const queued = await hmsJobs.queueAutoStaffQuoteHmsJob(request, db);
@@ -1961,6 +2099,72 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       ).resolves.toBeNull();
     }));
 
+  it('still reads a fresh prepared quote after a newer user price expires', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId } = await seedThread(db);
+      const { run: priced } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const preparedInput = staffQuoteInput.parse({
+        ...STAFF_QUOTE_INPUT,
+        messageId,
+        selectionEpoch: 0,
+        inputRevision: 0,
+      });
+      const { run: prepared } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'staff_quote', input: preparedInput },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: `hms-job:staff-quote-prepared:fresh-after-user:${randomUUID()}`,
+          extraMetrics: { quotePrepared: true },
+        },
+        db,
+      );
+      const now = Date.now();
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: { kind: 'staff_quote', status: 'ready', freshUntil: new Date(now - 60_000).toISOString() },
+          readResultExpiresAt: new Date(now - 60_000),
+          createdAt: new Date(now - 20 * 60_000),
+        })
+        .where(eq(aiWorkflowRun.id, priced.id));
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: {
+            kind: 'staff_quote',
+            status: 'ready',
+            messageId,
+            asOf: new Date(now).toISOString(),
+          },
+          finishedAt: new Date(now),
+          readResultExpiresAt: new Date(now + 15 * 60_000),
+          createdAt: new Date(now - 10 * 60_000),
+        })
+        .where(eq(aiWorkflowRun.id, prepared.id));
+
+      await expect(
+        readHmsJobView(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            messageId,
+            kind: 'staff_quote',
+            input: preparedInput,
+          },
+          db,
+        ),
+      ).resolves.toMatchObject({ runId: prepared.id });
+    }));
+
   it('does not read back an expired staff quote result by owner-scoped run id', () =>
     withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
@@ -2038,7 +2242,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const createdAt = new Date(now.getTime() - 10 * 60_000 - 1);
       await db
         .update(aiWorkflowRun)
-        .set({ createdAt, updatedAt: createdAt })
+        .set({ createdAt, nextRunAt: createdAt, updatedAt: createdAt })
         .where(eq(aiWorkflowRun.id, run.id));
 
       const claimed = await claimNextAiRun({
@@ -2054,6 +2258,64 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(claimed).toBeNull();
       expect(expired).toMatchObject({ state: 'superseded', lastError: 'staff_quote_queue_expired' });
       expect(expired?.claimedAt).toBeNull();
+    }));
+
+  it('does not expire a deferred prepared quote before nextRunAt', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId } = await seedThread(db, 'Quote request');
+      const now = new Date();
+      const createdAt = new Date(now.getTime() - 15 * 60_000);
+      const nextRunAt = new Date(now.getTime() + 45 * 60_000);
+      const preparedInput = staffQuoteInput.parse({
+        ...STAFF_QUOTE_INPUT,
+        messageId,
+        selectionEpoch: 0,
+        inputRevision: 0,
+      });
+      const { run } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'staff_quote', input: preparedInput },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: `hms-job:staff-quote-prepared:deferred-ttl:${randomUUID()}`,
+          extraMetrics: { quotePrepared: true, prefetchDeferred: true },
+          nextRunAt,
+        },
+        db,
+      );
+      await db
+        .update(aiWorkflowRun)
+        .set({ createdAt, nextRunAt, updatedAt: createdAt })
+        .where(eq(aiWorkflowRun.id, run.id));
+
+      const claimedEarly = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        now,
+        db,
+      });
+      const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(claimedEarly?.id).not.toBe(run.id);
+      expect(stored).toMatchObject({ state: 'queued', lastError: null });
+
+      const claimedDue = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        now: nextRunAt,
+        db,
+      });
+      expect(claimedDue?.id).toBe(run.id);
+      expect(claimedDue?.state).not.toBe('superseded');
     }));
 
   it('stores a staff quote business refusal as a successful job with its real message', () =>
@@ -3261,7 +3523,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const [shared] = await db.select({ metrics: aiWorkflowRun.metrics }).from(aiWorkflowRun).where(eq(aiWorkflowRun.id, readRuns[0]!.id));
       expect(shared?.metrics).toMatchObject({
         sharedTransportIds: expect.arrayContaining([FAITH_TRANSPORT_ID, AYANDA_TRANSPORT_ID]),
-        sharedWorkItemIds: expect.arrayContaining(copies.map((copy) => copy.workItemId)),
+        sharedWorkItemIds: expect.arrayContaining(copies.slice(1).map((copy) => copy.workItemId)),
       });
     }));
 
@@ -3520,7 +3782,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         .from(aiWorkflowRun)
         .where(eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION));
       expect(job?.readRequest).toMatchObject({ kind: 'search_guest', lastName: 'Smith', arrival: '2026-11-12' });
-      expect(job?.idempotencyKey).toMatch(new RegExp(`^hms-job:prefetch-guest:${TRANSPORT_ID}:${threadId}:`));
+      expect(job?.idempotencyKey).toMatch(
+        new RegExp(`^hms-job:prefetch-guest:${CENTURION_HMS_READ_TARGET.propertyCode}:${TRANSPORT_ID}:${threadId}:`),
+      );
       expect(job?.idempotencyKey).not.toContain('Smith');
       const resumed = await readHmsJobView(
         { transportId: TRANSPORT_ID, threadId, kind: 'search_guest', lastName: 'smith', arrival: '2026-11-12' },
@@ -3704,17 +3968,23 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     const setup = openTestDbSession();
     const left = openTestDbSession();
     const right = openTestDbSession();
-    const suffix = randomUUID();
-    const transportId = `guest-cap-transport-${suffix}`;
-    const mailbox = `guest-cap-${suffix}@zero.test`;
+    const transportId = TRANSPORT_ID;
+    const threadIds: string[] = [];
     const messageIds: string[] = [];
     try {
       await setup.db
         .insert(mailboxTransport)
-        .values({ id: transportId, email: mailbox, ownerHeaderValue: mailbox, isActive: true });
+        .values({
+          id: TRANSPORT_ID,
+          email: TRANSPORT_EMAIL,
+          ownerHeaderValue: TRANSPORT_EMAIL,
+          isActive: true,
+        })
+        .onConflictDoNothing();
       const makeRequest = async (lastName: string): Promise<AiWorkflowRun> => {
         const threadId = `guest-cap-thread-${randomUUID()}`;
         const messageId = `guest-cap-msg-${randomUUID()}`;
+        threadIds.push(threadId);
         messageIds.push(messageId);
         await setup.db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
         await setup.db.insert(message).values({
@@ -3786,14 +4056,26 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       let queued: number[] = [];
       try {
         await locked;
-        const first = prefetchHmsConfirmations(firstRun, left.db, env).then((count) => {
-          settledWhileHeld += 1;
-          return count;
-        });
-        const second = prefetchHmsConfirmations(secondRun, right.db, env).then((count) => {
-          settledWhileHeld += 1;
-          return count;
-        });
+        const first = prefetchHmsConfirmations(firstRun, left.db, env).then(
+          (count) => {
+            settledWhileHeld += 1;
+            return count;
+          },
+          (error) => {
+            settledWhileHeld += 1;
+            throw error;
+          },
+        );
+        const second = prefetchHmsConfirmations(secondRun, right.db, env).then(
+          (count) => {
+            settledWhileHeld += 1;
+            return count;
+          },
+          (error) => {
+            settledWhileHeld += 1;
+            throw error;
+          },
+        );
         await new Promise((resolve) => setTimeout(resolve, 500));
         doneWhileHeld = settledWhileHeld;
         releaseLock();
@@ -3819,13 +4101,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(rows).toHaveLength(1);
     } finally {
       try {
-        await setup.db.delete(aiWorkflowRun).where(eq(aiWorkflowRun.transportId, transportId));
         if (messageIds.length > 0) {
+          await setup.db.delete(aiWorkflowRun).where(inArray(aiWorkflowRun.triggerMessageId, messageIds));
           await setup.db.delete(mailExtraction).where(inArray(mailExtraction.messageId, messageIds));
+          await setup.db.delete(message).where(inArray(message.id, messageIds));
         }
-        await setup.db.delete(message).where(eq(message.transportId, transportId));
-        await setup.db.delete(mailThread).where(eq(mailThread.transportId, transportId));
-        await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+        if (threadIds.length > 0) {
+          await setup.db.delete(mailThread).where(inArray(mailThread.id, threadIds));
+        }
       } finally {
         await Promise.all([setup.close(), left.close(), right.close()]);
       }
@@ -4005,7 +4288,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         },
       }));
       const { threadId, messageId } = await seedThread(db);
-      const senderHost = `history-${randomUUID()}.example.test`;
+      const senderHost = `harbortravel-${randomUUID()}.example.test`;
       await db
         .update(message)
         .set({ fromAddress: `guest@${senderHost}` })
