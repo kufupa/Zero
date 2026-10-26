@@ -2245,6 +2245,7 @@ export function NavaPane({
               }
               rateCatalogue={activePaneConfig?.ratePlans ?? []}
               paneConfig={activePaneConfig}
+              availabilityReader={PANE_STAY_CLIENT.readAvailability}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={documentContact}
               contactEditorKey={contactEditorKey}

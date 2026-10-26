@@ -12,7 +12,6 @@ import type { HmsJobRequest, HmsJobView } from '../lib/quote-workflow/amend-find
 import { fixtureResultsReady, loadQuoteFixture } from '../lib/quote-workflow/fixtures';
 import { useHmsJobNoticeReporter } from '../lib/quote-workflow/hms-job-notice-context';
 import { initialQuoteSession, reduceQuoteSession, stayKeyForGroup } from '../lib/quote-workflow/session';
-import type { PaneStayClient } from '../lib/quote-workflow/pane-stay-bind';
 import type {
   LunaAnalysisWire,
   QuotePaneConfig,
@@ -1900,14 +1899,19 @@ describe('the Find in HMS picker in the quote header', () => {
     const asOf = new Date().toISOString();
     const firstView = {
       runId: 'availability-run-1',
-      request: firstRequest,
+      request: {
+        kind: firstRequest.kind,
+        arrival: firstRequest.arrival,
+        departure: firstRequest.departure,
+        rooms: firstRequest.rooms,
+      },
       prefetch: true,
-      status: 'done',
+      status: 'done' as const,
       position: null,
       attempts: 1,
       failureClass: null,
       asOf,
-      outcome: 'read',
+      outcome: null,
       result: {
         outcome: 'read',
         roomScope: 'all_room_types',
@@ -1921,10 +1925,9 @@ describe('the Find in HMS picker in the quote header', () => {
         }],
       },
     };
-    const readAvailability = vi.fn(async (request: typeof firstRequest | typeof secondRequest) =>
+    const readAvailability = vi.fn(async (request: { arrival: string }) =>
       request.arrival === firstRequest.arrival ? firstView : null,
     );
-    const paneSave = { readAvailability } as unknown as PaneStayClient;
     const onPatchGroup = vi.fn();
     const paneConfig: QuotePaneConfig = {
       transportId: 't1',
@@ -1940,7 +1943,7 @@ describe('the Find in HMS picker in the quote header', () => {
     render(
       <QuoteWorkflowPanel
         session={session}
-        paneSave={paneSave}
+        availabilityReader={readAvailability}
         paneConfig={paneConfig}
         onPatchGroup={onPatchGroup}
       />,
@@ -1951,6 +1954,7 @@ describe('the Find in HMS picker in the quote header', () => {
     });
     expect(readAvailability).toHaveBeenCalledWith(firstRequest);
     expect(readAvailability).toHaveBeenCalledWith(secondRequest);
+    expect(screen.getByText('No admitted availability snapshot for this stay. Continue with manual room selection.')).toBeDefined();
     expect(
       screen.queryByRole('button', { name: 'Use Property Queen for stay 2, room 1' }),
     ).toBeNull();
@@ -1985,24 +1989,31 @@ describe('the Find in HMS picker in the quote header', () => {
     const readAvailability = vi.fn(async () => ({
       runId: 'availability-run-denied',
       request: {
-        threadId: 'availability-thread',
         kind: 'availability' as const,
         arrival: group.arrivalDate!,
         departure: group.departureDate!,
         rooms: [{ roomType: group.roomPreference!, quantity: 1, adults: 2, childAges: [] }],
       },
       prefetch: true,
-      status: 'done' as const,
+      status: 'failed' as const,
       position: null,
       attempts: 1,
-      failureClass: null,
-      asOf: new Date().toISOString(),
-      outcome: 'refused_lock_busy',
-      result: { outcome: 'refused_lock_busy' },
+      failureClass: 'POLICY_REFUSED',
+      asOf: null,
+      outcome: null,
+      result: null,
     }));
-    const paneSave = { readAvailability } as unknown as PaneStayClient;
-
-    render(<QuoteWorkflowPanel session={session} paneSave={paneSave} />);
+    const paneConfig: QuotePaneConfig = {
+      transportId: 't1',
+      propertyCode: HRDAV_PROPERTY_CODE,
+      roomTypes: [{ code: 'DVQ', label: 'Property Queen' }],
+      ratePlans: [],
+      boards: ['bb'],
+      salesStrategies: [{ code: 'BAR', label: 'Best Available Rate', requestValue: 'BAR' }],
+      overrideRateCodes: [],
+      eventRateCodes: [],
+    };
+    render(<QuoteWorkflowPanel session={session} availabilityReader={readAvailability} paneConfig={paneConfig} />);
 
     await waitFor(() => expect(readAvailability).toHaveBeenCalledTimes(1));
     expect(screen.getByText('Availability was not admitted for this stay. Continue with manual room selection.')).toBeDefined();
@@ -2030,7 +2041,6 @@ describe('the Find in HMS picker in the quote header', () => {
       groups: [group],
     };
     const request = {
-      threadId: 'availability-thread',
       kind: 'availability' as const,
       arrival: group.arrivalDate!,
       departure: group.departureDate!,
@@ -2046,7 +2056,7 @@ describe('the Find in HMS picker in the quote header', () => {
       attempts: 1,
       failureClass: null,
       asOf,
-      outcome: 'read',
+      outcome: null,
       result: {
         outcome: 'read',
         roomScope: 'all_room_types',
@@ -2060,11 +2070,9 @@ describe('the Find in HMS picker in the quote header', () => {
         }],
       },
     }));
-    const paneSave = { readAvailability } as unknown as PaneStayClient;
+    render(<QuoteWorkflowPanel session={session} availabilityReader={readAvailability} paneConfig={null} />);
 
-    render(<QuoteWorkflowPanel session={session} paneSave={paneSave} paneConfig={null} />);
-
-    await waitFor(() => expect(readAvailability).toHaveBeenCalledTimes(1));
+    expect(readAvailability).not.toHaveBeenCalled();
     expect(screen.getByText('Availability room options are unavailable for this property.')).toBeDefined();
     expect(screen.queryByRole('button', { name: /Use .* for stay 1, room 1/ })).toBeNull();
   });
@@ -2099,14 +2107,19 @@ describe('the Find in HMS picker in the quote header', () => {
     const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const readAvailability = vi.fn(async () => ({
       runId: 'availability-run-old',
-      request,
+      request: {
+        kind: request.kind,
+        arrival: request.arrival,
+        departure: request.departure,
+        rooms: request.rooms,
+      },
       prefetch: true,
-      status: 'done',
+      status: 'done' as const,
       position: null,
       attempts: 1,
       failureClass: null,
       asOf: yesterday,
-      outcome: 'read',
+      outcome: null,
       result: {
         outcome: 'read',
         roomScope: 'all_room_types',
@@ -2120,7 +2133,6 @@ describe('the Find in HMS picker in the quote header', () => {
         }],
       },
     }));
-    const paneSave = { readAvailability } as unknown as PaneStayClient;
     const paneConfig: QuotePaneConfig = {
       transportId: 't1',
       propertyCode: HRDAV_PROPERTY_CODE,
@@ -2132,7 +2144,7 @@ describe('the Find in HMS picker in the quote header', () => {
       eventRateCodes: [],
     };
 
-    render(<QuoteWorkflowPanel session={session} paneSave={paneSave} paneConfig={paneConfig} />);
+    render(<QuoteWorkflowPanel session={session} availabilityReader={readAvailability} paneConfig={paneConfig} />);
 
     await waitFor(() => expect(readAvailability).toHaveBeenCalledTimes(1));
     expect(screen.getByText('Availability snapshot is out of date. Search availability for current results.')).toBeDefined();

@@ -1,5 +1,13 @@
+import { useEffect, useMemo, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import { Section, SecondaryButton, StepState } from '@/components/nava-pane/pane-ui';
+import { knownRoomCode } from '@/lib/quote-workflow/room-types';
+import {
+  paneStayAvailabilityRequestFor,
+  type PaneStayAvailabilityJobView,
+  type PaneStayAvailabilityReader,
+  type PaneStayAvailabilityRequest,
+} from '@/lib/quote-workflow/pane-stay-bind';
 import {
   newQuoteToken,
   stayAskAction,
@@ -64,6 +72,157 @@ export function StayAskChrome({
   );
 }
 
+type AvailabilityViewState = 'ready' | 'stale' | 'denied' | 'pending' | 'missing';
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function currentUtcDay(value: unknown): boolean {
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) return false;
+  const today = new Date().toISOString().slice(0, 10);
+  return new Date(value).toISOString().slice(0, 10) === today;
+}
+
+function availabilityViewState(view: PaneStayAvailabilityJobView | null): AvailabilityViewState {
+  if (!view) return 'missing';
+  if (view.status === 'queued' || view.status === 'running' || view.status === 'retrying') return 'pending';
+  const result = asRecord(view.result);
+  if (
+    view.status !== 'done' ||
+    result?.outcome !== 'read' ||
+    result.roomScope !== 'all_room_types' ||
+    !Array.isArray(result.groups)
+  ) return 'denied';
+  return currentUtcDay(view.asOf) && currentUtcDay(result.observedAt) ? 'ready' : 'stale';
+}
+
+function availabilityOptions(
+  view: PaneStayAvailabilityJobView,
+  roomIndex: number,
+  roomTypes: QuotePaneRoomType[],
+): QuotePaneRoomType[] {
+  const result = asRecord(view.result);
+  const groups = Array.isArray(result?.groups) ? result.groups : [];
+  const group = groups.map(asRecord).find((candidate) => candidate?.id === `group-${roomIndex + 1}`);
+  const options = Array.isArray(group?.options) ? group.options : [];
+  const configured = new Map<string, QuotePaneRoomType>();
+  for (const value of options) {
+    const option = asRecord(value);
+    const code = option?.room;
+    if (option?.availability !== 'available' || typeof code !== 'string') continue;
+    const room = roomTypes.find((candidate) => candidate.code === code);
+    if (room) configured.set(room.code, room);
+  }
+  return [...configured.values()];
+}
+
+function StayAvailabilityPanel({
+  session,
+  stay,
+  stayNumber,
+  paneConfig,
+  reader,
+  onPatchGroup,
+}: {
+  session: QuoteSession;
+  stay: { id: string; rows: StayGroupRequirement[] };
+  stayNumber: number;
+  paneConfig?: QuotePaneConfig | null;
+  reader?: PaneStayAvailabilityReader | null;
+  onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
+}) {
+  const threadId = session.binding?.threadId;
+  const request = useMemo(
+    () => paneStayAvailabilityRequestFor(threadId, stay.rows),
+    [threadId, stay.rows],
+  );
+  const transportMatches = Boolean(paneConfig && session.binding?.transportId === paneConfig.transportId);
+  const canRead = Boolean(reader && request && paneConfig && paneConfig.roomTypes.length && transportMatches);
+  const key = JSON.stringify([stay.id, paneConfig?.transportId, paneConfig?.propertyCode, request]);
+  const [load, setLoad] = useState<{ key: string; view: PaneStayAvailabilityJobView | null } | null>(null);
+
+  useEffect(() => {
+    if (!canRead || !reader || !request) return;
+    let active = true;
+    setLoad(null);
+    void reader(request)
+      .then((view) => {
+        if (active) setLoad({ key, view });
+      })
+      .catch(() => {
+        if (active) setLoad({ key, view: null });
+      });
+    return () => { active = false; };
+  }, [canRead, key, reader, request]);
+
+  if (paneConfig === undefined) return null;
+  if (paneConfig === null || !transportMatches || !paneConfig.roomTypes.length) {
+    return <p className="text-[12px] text-[#64748b]">Availability room options are unavailable for this property.</p>;
+  }
+  if (!request || !reader) {
+    return <p className="text-[12px] text-[#64748b]">No admitted availability snapshot for this stay. Continue with manual room selection.</p>;
+  }
+  const current = load?.key === key ? load.view : undefined;
+  if (current === undefined) {
+    return <p role="status" className="text-[12px] text-[#64748b]">Loading saved availability…</p>;
+  }
+
+  const state = availabilityViewState(current);
+  if (state !== 'ready') {
+    const message = state === 'stale'
+      ? 'Availability snapshot is out of date. Search availability for current results.'
+      : state === 'denied'
+        ? 'Availability was not admitted for this stay. Continue with manual room selection.'
+        : state === 'pending'
+          ? 'Availability snapshot is still being prepared. Continue with manual room selection.'
+          : 'No admitted availability snapshot for this stay. Continue with manual room selection.';
+    return <p className="text-[12px] text-[#64748b]">{message}</p>;
+  }
+
+  const rows = stay.rows.map((row, roomIndex) => ({
+    row,
+    roomIndex,
+    options: availabilityOptions(current!, roomIndex, paneConfig.roomTypes),
+  }));
+  const hasOptions = Boolean(onPatchGroup) && rows.some(({ options }) => options.length > 0);
+  return (
+    <div role="group" aria-label={`All-room availability for stay ${stayNumber}`} className="flex flex-col gap-1">
+      <p className="text-[11px] text-[#64748b]">Read-only availability snapshot; not a quote.</p>
+      {rows.map(({ row, roomIndex, options }) => options.length && onPatchGroup ? (
+        <div key={row.id} className="flex flex-wrap gap-1">
+          {options.map((room) => (
+            <button
+              key={room.code}
+              type="button"
+              className="rounded border border-[#cbd5e1] px-2 py-1 text-[12px] font-semibold text-[#334155] hover:bg-[#f8fafc]"
+              aria-label={`Use ${room.label} for stay ${stayNumber}, room ${roomIndex + 1}`}
+              onClick={() => {
+                if (availabilityViewState(current!) !== 'ready') {
+                  setLoad({ key, view: current! });
+                  return;
+                }
+                onPatchGroup?.(row.id, {
+                  roomPreference: room.code,
+                  roomTypeCode: knownRoomCode(room.code) ?? undefined,
+                  roomTypeSuggestions: [],
+                  roomCodes: undefined,
+                  rateCode: undefined,
+                });
+              }}
+            >
+              {`Use ${room.label} for stay ${stayNumber}, room ${roomIndex + 1}`}
+            </button>
+          ))}
+        </div>
+      ) : null)}
+      {!hasOptions ? <p className="text-[12px] text-[#64748b]">No configured available room options. Continue with manual room selection.</p> : null}
+    </div>
+  );
+}
+
 export function QuoteStayStep({
   session,
   stays,
@@ -73,6 +232,7 @@ export function QuoteStayStep({
   mealPlanForStay,
   setMealPlanFilters,
   paneConfig,
+  availabilityReader,
   paneRoomTypes,
   strictRoomTypes,
   paneBoards,
@@ -89,6 +249,7 @@ export function QuoteStayStep({
   mealPlanForStay: (stayId: string, rows: StayGroupRequirement[]) => QuoteBoard | 'all';
   setMealPlanFilters: Dispatch<SetStateAction<Record<string, QuoteBoard | 'all'>>>;
   paneConfig?: QuotePaneConfig | null;
+  availabilityReader?: PaneStayAvailabilityReader | null;
   paneRoomTypes: QuotePaneRoomType[];
   strictRoomTypes: boolean;
   paneBoards?: QuotePaneBoard[];
@@ -134,6 +295,14 @@ export function QuoteStayStep({
             onPatch={onPatchGroup}
             onStayAction={onStayAction}
             evidence={session.analysis?.luna?.evidence}
+          />
+          <StayAvailabilityPanel
+            session={session}
+            stay={stay}
+            stayNumber={index + 1}
+            paneConfig={paneConfig}
+            reader={availabilityReader}
+            onPatchGroup={onPatchGroup}
           />
         </div>
       ))}
