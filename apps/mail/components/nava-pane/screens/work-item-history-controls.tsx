@@ -2,8 +2,8 @@ import { SecondaryButton } from '../pane-ui';
 
 /** A refreshed J1 server snapshot. Callers pass null while history is loading or stale. */
 export type WorkItemHistoryCursor = {
-  cursor: number;
-  latestCursor: number;
+  revision: number;
+  revisionHead: number;
 };
 
 /**
@@ -19,18 +19,18 @@ export function WorkItemHistoryControls({
 }: {
   workItemId: string;
   serverCursor: WorkItemHistoryCursor | null;
-  onUndo: (workItemId: string) => void;
-  onRedo: (workItemId: string) => void;
+  onUndo: (workItemId: string, expectedRevision: number) => void;
+  onRedo: (workItemId: string, expectedRevision: number) => void;
   /** Keep controls disabled through the mutation and cursor refresh. */
   pending?: boolean;
 }) {
   if (
     !workItemId.trim()
     || !serverCursor
-    || !Number.isSafeInteger(serverCursor.cursor)
-    || !Number.isSafeInteger(serverCursor.latestCursor)
-    || serverCursor.cursor < 0
-    || serverCursor.latestCursor < serverCursor.cursor
+    || !Number.isSafeInteger(serverCursor.revision)
+    || !Number.isSafeInteger(serverCursor.revisionHead)
+    || serverCursor.revision < 0
+    || serverCursor.revisionHead < serverCursor.revision
   ) {
     return null;
   }
@@ -42,14 +42,14 @@ export function WorkItemHistoryControls({
       className="flex flex-wrap items-center gap-1.5"
     >
       <SecondaryButton
-        onClick={() => onUndo(workItemId)}
-        disabled={pending || serverCursor.cursor === 0}
+        onClick={() => onUndo(workItemId, serverCursor.revision)}
+        disabled={pending || serverCursor.revision === 0}
       >
         Undo
       </SecondaryButton>
       <SecondaryButton
-        onClick={() => onRedo(workItemId)}
-        disabled={pending || serverCursor.cursor === serverCursor.latestCursor}
+        onClick={() => onRedo(workItemId, serverCursor.revision)}
+        disabled={pending || serverCursor.revision === serverCursor.revisionHead}
       >
         Redo
       </SecondaryButton>
