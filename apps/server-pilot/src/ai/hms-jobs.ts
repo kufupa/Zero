@@ -203,7 +203,7 @@ const JOB_RETRY_MS = 30_000;
 const JOB_YIELD_MS = 30_000;
 const STAFF_QUOTE_RESULT_TTL_MS = 6 * 60 * 60_000;
 const PREFETCH_PER_MAIL_MAX = 3;
-const PREFETCH_WINDOW_MS = 60 * 60_000;
+export const PREFETCH_WINDOW_MS = 60 * 60_000;
 const PARTY_USER_PER_HOUR = 12;
 const PARTY_READBACK_FRESH_MS = 24 * 60 * 60_000;
 const ISO_DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
@@ -675,7 +675,7 @@ type HmsMailCopies = {
 };
 
 /** The existing transport/header index finds every persisted copy of this RFC Message-ID at one hotel. */
-async function hmsMailCopiesForMessage(
+export async function hmsMailCopiesForMessage(
   db: DB,
   transportId: string,
   messageId: string,
@@ -722,7 +722,7 @@ function hmsMailReadRequestKey(request: HmsJobRequest): string {
     : hmsRequestKey(request);
 }
 
-function hmsMailReadIdempotencyKey(
+export function hmsMailReadIdempotencyKey(
   propertyCode: string,
   messageIdHeader: string,
   request: HmsJobRequest,
@@ -1835,7 +1835,7 @@ export async function enqueueHmsBatch(
 }
 
 // Each prefetch kind has its own hourly budget, so reads of one kind never use another kind's cap.
-async function countRecentPrefetches(
+export async function countRecentPrefetches(
   db: DB,
   transportId: string,
   kind: 'find' | 'search_guest' | 'party' | 'availability' | 'staff_quote',
@@ -1864,64 +1864,14 @@ async function countRecentPrefetches(
   return Number(row?.n ?? 0);
 }
 
-/** Serializes prepared-quote cap checks/inserts across workers for one mailbox. Live digests remain idempotent. */
-async function enqueuePreparedQuoteWithinCap(
+/** Compatibility export: load the moved helper after this module finishes initializing. */
+export async function enqueuePreparedQuoteWithinCap(
   db: DB,
   input: Parameters<typeof enqueueHmsJob>[0],
   perHour: number,
 ): Promise<boolean> {
-  return db.transaction(async (tx) => {
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(
-        ${'hms-prefetch:staff_quote:' + input.transportId}, 0
-      ))`,
-    );
-    const scoped = tx as unknown as DB;
-    const copies = await hmsMailCopiesForMessage(scoped, input.transportId, input.triggerMessageId);
-    const storedIdentity =
-      copies.propertyCode && copies.messageIdHeader
-        ? hmsMailReadIdempotencyKey(
-            copies.propertyCode,
-            copies.messageIdHeader,
-            input.request,
-            input.createdAt ?? new Date(),
-            input.idempotencyKey,
-            input.threadId,
-          )
-        : input.idempotencyKey;
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(
-        ${'hms-prefetch:staff_quote_identity:' + storedIdentity}, 0
-      ))`,
-    );
-    const existing = await scoped
-      .select({ state: aiWorkflowRun.state })
-      .from(aiWorkflowRun)
-      .where(
-        and(
-          sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
-          sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
-          sql`left(${aiWorkflowRun.idempotencyKey}, length(${storedIdentity})) = ${storedIdentity}`,
-        ),
-      );
-    if (existing.some((run) => run.state !== 'dead_letter' && run.state !== 'superseded')) {
-      // Let enqueueHmsJob attach this mailbox to an active shared result for run-id polling.
-      await enqueueHmsJob(input, scoped);
-      return false;
-    }
-    const used = await countRecentPrefetches(
-      scoped,
-      input.transportId,
-      'staff_quote',
-      new Date(Date.now() - PREFETCH_WINDOW_MS),
-    );
-    if (used >= perHour) return false;
-    const retryInput = existing.length
-      ? { ...input, idempotencyKey: `${storedIdentity}:retry:${randomUUID()}` }
-      : input;
-    const queued = await enqueueHmsJob(retryInput, scoped);
-    return queued.created;
-  });
+  const { enqueuePreparedQuoteWithinCap: enqueue } = await import('./prepared-quote-queue.js');
+  return enqueue(db, input, perHour);
 }
 
 /** Serializes the guest-search count and insert per transport so concurrent extractions cannot overspend the cap. */
