@@ -1362,4 +1362,30 @@ describe('pane stay preview persist', () => {
     expect(second.clickedSave).toBe(false);
     expect(spawned).toEqual(['preview', 'commit', 'preview']);
   });
+
+  it('same-process commit with work-item ids still uses the in-memory preview grant', async () => {
+    enableSave();
+    paneStaySaveLoaders.previewPersist = {
+      record: () => undefined,
+      take: () => false,
+    };
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    expect(preview).toMatchObject({
+      status: 'ok',
+      outcome: 'previewed',
+      clickedSave: false,
+      previewDigest: paneStayDigest(labStay),
+    });
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: labStay,
+        owner,
+        workItemId: randomUUID(),
+        stayId: 's_1',
+        previewDigest: preview.previewDigest as string,
+      }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
+  });
 });

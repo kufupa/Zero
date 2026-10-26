@@ -452,9 +452,12 @@ async function takeBoundPreview(input: {
       digest: input.digest,
       now: input.now,
     });
-    takePanePreview(input.owner, input.digest, input.now);
-    return taken;
+    if (taken) {
+      takePanePreview(input.owner, input.digest, input.now);
+      return true;
+    }
   }
+  // Preview today may omit work-item ids (memory only). Commit still sends them; honour the same-process grant.
   return takePanePreview(input.owner, input.digest, input.now);
 }
 
@@ -654,7 +657,7 @@ export async function runPaneStay(input: {
         if (status === 'busy') return { refusal: 'refused_lock_busy' };
         if (status === 'duplicate') return { refusal: 'osress_duplicate' };
         // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-        // Bound work-item grants are the durable source of truth; memory is consumed either way.
+        // Durable work-item grant wins; if none, the in-memory grant still covers same-process preview.
         if (
           !(await takeBoundPreview({
             owner: input.owner,
