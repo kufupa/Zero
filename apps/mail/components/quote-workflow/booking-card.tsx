@@ -888,7 +888,7 @@ export function BookingCards({
     if (!input?.key || input.inputKey !== inputKey) return;
     const { stayId } = input;
     const key = input.key;
-    previewReceipt.clear(workItemId, stayId);
+    const generation = previewReceipt.begin(workItemId, stayId, inputKey);
     patchSave(roomKey, { preview: { status: 'running', key }, commit: undefined });
     let preview: PreviewView;
     try {
@@ -901,18 +901,22 @@ export function BookingCards({
       preview = { status: 'refused', key, message: PANE_PREVIEW_FAILED_COPY };
     }
     const currentInput = previewInputsRef.current[roomKey];
-    if (currentInput?.key !== key) {
+    const isCurrentInput = currentInput?.key === key;
+    const receipt =
+      isCurrentInput && preview.status === 'ready'
+        ? {
+            key: inputKey,
+            digest: preview.digest,
+            runId: preview.runId,
+            screenshots: preview.screenshots,
+          }
+        : undefined;
+    const accepted = previewReceipt.finish(workItemId, stayId, inputKey, generation, receipt);
+    if (!isCurrentInput) {
       patchSave(roomKey, { preview: { status: 'stale', key } });
       return;
     }
-    if (preview.status === 'ready') {
-      previewReceipt.remember(workItemId, stayId, {
-        key: inputKey,
-        digest: preview.digest,
-        runId: preview.runId,
-        screenshots: preview.screenshots,
-      });
-    }
+    if (!accepted) return;
     patchSave(roomKey, { preview });
   }
 
