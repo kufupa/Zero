@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { MAIL_KINDS, workEvent, workItem } from '../db/schema/work.js';
 import type { QuoteSalesStrategy, QuoteSalesStrategyCode } from '../hms/rate-catalogue.js';
@@ -156,7 +156,13 @@ export async function loadStaffRatePicks(db: DB, property: string): Promise<Logg
     .select({ evidence: workEvent.evidence, at: workEvent.at })
     .from(workEvent)
     .innerJoin(workItem, eq(workItem.id, workEvent.workItemId))
-    .where(and(eq(workEvent.type, 'quote.prepared'), inArray(workItem.transportId, transports)))
+    .where(
+      and(
+        eq(workEvent.type, 'quote.prepared'),
+        inArray(workItem.transportId, transports),
+        sql`${workEvent.evidence} -> 'ratePick' is not null`,
+      ),
+    )
     .orderBy(desc(workEvent.at))
     .limit(500);
   return rows.flatMap((row) => {
