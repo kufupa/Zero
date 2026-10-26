@@ -1572,7 +1572,7 @@ async function messageFor(db: DB, input: { transportId: string; internetMessageI
 
 type ReadyRead = NonNullable<Awaited<ReturnType<typeof succeededRead>>>;
 
-const FIELD_PROVENANCE_EVENT_TYPES = ['field.seed', 'field.edit', 'field.accept', 'field.reject'] as const;
+const FIELD_PROVENANCE_EVENT_TYPES = ['field.seed', 'field.edit', 'field.accept', 'field.reject', 'field.reset'] as const;
 
 function fieldProvenanceSource(event: {
   actorKind: string;
@@ -1582,6 +1582,7 @@ function fieldProvenanceSource(event: {
   if (event.actorKind === 'ai') return 'ai';
   if (event.actorKind !== 'user') return 'unknown';
   if (event.type === 'field.accept') return event.aiSource?.trim() ? 'ai' : 'unknown';
+  if (event.type === 'field.reset') return event.aiSource?.trim() ? 'ai' : 'unknown';
   if (event.type === 'field.edit' || event.type === 'field.reject') return 'staff';
   return 'unknown';
 }
@@ -1957,7 +1958,7 @@ export async function acceptUneditedFields(
       .where(
         and(
           eq(workEvent.workItemId, input.workItemId),
-          inArray(workEvent.type, ['field.edit', 'field.reject', 'field.accept']),
+          inArray(workEvent.type, ['field.edit', 'field.reject', 'field.accept', 'field.reset']),
           inArray(workEvent.fieldPath, paths),
         ),
       );
@@ -2153,6 +2154,69 @@ export async function listWorkItems(
       ...row,
       chip: NEEDS_YOU_CHIPS[rank] ?? 'needs_you',
     }));
+}
+
+export type WorkItemSection = { type: 'contact' } | { type: 'stay'; stayId: string };
+export type ResetWorkSectionResult =
+  | { status: 'not_found' }
+  | { status: 'invalid_section' }
+  | { status: 'recorded'; reset: number };
+
+/** Restores extraction-backed overrides in one contact or stay section and logs each cleared field atomically. */
+export async function resetWorkSection(
+  db: DB,
+  input: { transportId: string; workItemId: string; userId: string; section: WorkItemSection },
+): Promise<ResetWorkSectionResult> {
+  if (input.section.type === 'stay' && !STAY_ID_PATTERN.test(input.section.stayId)) {
+    return { status: 'invalid_section' };
+  }
+  return db.transaction(async (tx) => {
+    const [item] = await tx
+      .select({ extractionId: workItem.extractionId, state: workItem.state })
+      .from(workItem)
+      .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
+      .limit(1)
+      .for('update');
+    if (!item) return { status: 'not_found' as const };
+
+    const paths = Object.keys(item.state).filter((fieldPath) => {
+      if (input.section.type === 'contact') return contactFieldOf(fieldPath) !== null;
+      return parseFieldPath(fieldPath)?.stayId === input.section.stayId;
+    });
+    if (!paths.length) return { status: 'recorded' as const, reset: 0 };
+
+    const [read] = item.extractionId
+      ? await tx
+          .select({ payload: mailExtraction.payload, version: mailExtraction.extractorVersion })
+          .from(mailExtraction)
+          .where(eq(mailExtraction.id, item.extractionId))
+          .limit(1)
+      : [];
+    const resets = paths
+      .map((fieldPath) => ({
+        fieldPath,
+        aiValue: aiValueAt(read?.payload as MailExtractionPayload | null | undefined, fieldPath),
+      }))
+      .filter((field) => field.aiValue !== null && field.aiValue !== undefined);
+    if (!resets.length) return { status: 'recorded' as const, reset: 0 };
+
+    await tx.insert(workEvent).values(
+      resets.map(({ fieldPath, aiValue }) => ({
+        workItemId: input.workItemId,
+        actorKind: 'user',
+        actorUserId: input.userId,
+        type: 'field.reset' as const,
+        fieldPath,
+        aiValue,
+        value: aiValue,
+        aiSource: read?.version ?? null,
+      })),
+    );
+    const state = { ...item.state };
+    for (const { fieldPath } of resets) delete state[fieldPath];
+    await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+    return { status: 'recorded' as const, reset: resets.length };
+  });
 }
 
 export {

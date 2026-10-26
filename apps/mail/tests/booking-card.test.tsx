@@ -972,6 +972,22 @@ function paneClient(overrides: Partial<PaneStayClient> = {}) {
   return { client, preview, commit, screenshot };
 }
 
+function previewableDraft(track = 'COR'): BookingDraftReady {
+  const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+  const request = draft.draft.rooms[0]!.request;
+  request.track = track;
+  request.sourceOfBusiness = 'E-Mail';
+  request.guaranteeType = 'Confirmation Received';
+  return draft;
+}
+
+function bookingSessionForPreview(draft: BookingDraftReady, selectionEpoch: number): QuoteSession {
+  const session = quotedSession(draft);
+  session.groups = session.groups.map((group) => ({ ...group, stayId: 'stay-preview-1' }));
+  if (session.binding) session.binding = { ...session.binding, selectionEpoch };
+  return session;
+}
+
 // The first room has no track, source or guarantee until the staff pick them.
 function pickRoomChoices(index: number) {
   fireEvent.change(screen.getAllByLabelText('Track')[index]!, { target: { value: 'COR' } });
@@ -1136,6 +1152,118 @@ describe('booking card pane save', () => {
     expect(screen.getByText('You changed the booking – preview again.')).toBeDefined();
     expect(bookButton(0)).toHaveProperty('disabled', true);
     expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+  });
+
+  it('restores the same work-item Stay preview after the booking card remounts without saving', async () => {
+    const { client, preview, commit } = paneClient();
+    const workItemId = '22222222-2222-4222-8222-222222222222';
+    const host = (session: QuoteSession) => (
+      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+    );
+    const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
+
+    fireEvent.click(previewButton(0));
+    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 'stay-preview-1_1' }));
+    expect(commit).not.toHaveBeenCalled();
+
+    rerender(host(bookingSessionForPreview(previewableDraft(), 2)));
+
+    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
+    expect(bookButton(0)).toHaveProperty('disabled', false);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('clears a cached preview when the same work-item Stay digest changes', async () => {
+    const { client, preview, commit } = paneClient();
+    const workItemId = '33333333-3333-4333-8333-333333333333';
+    const host = (session: QuoteSession) => (
+      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+    );
+    const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
+
+    fireEvent.click(previewButton(0));
+    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
+
+    rerender(host(bookingSessionForPreview(previewableDraft('BAR'), 2)));
+
+    expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+
+    rerender(host(bookingSessionForPreview(previewableDraft(), 3)));
+
+    expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+  });
+
+  it('does not restore a preview that resolves after a newer input remount', async () => {
+    const pending = deferred<PaneStayResult>();
+    const preview = vi.fn<PaneStayClient['preview']>().mockReturnValueOnce(pending.promise);
+    const { client, commit } = paneClient({ preview });
+    const workItemId = '44444444-4444-4444-8444-444444444444';
+    const host = (session: QuoteSession) => (
+      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+    );
+    const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
+
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledTimes(1);
+
+    rerender(host(bookingSessionForPreview(previewableDraft('BAR'), 2)));
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+
+    await act(async () => pending.resolve(PREVIEW_OK));
+    rerender(host(bookingSessionForPreview(previewableDraft(), 3)));
+
+    expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('settles an invalidated preview when staff restore the original input', async () => {
+    const pending = deferred<PaneStayResult>();
+    const preview = vi.fn<PaneStayClient['preview']>().mockReturnValueOnce(pending.promise);
+    const { client, commit } = paneClient({ preview });
+    const workItemId = '55555555-5555-4555-8555-555555555555';
+    render(
+      <QuoteBookingHost
+        session={bookingSessionForPreview(previewableDraft(), 1)}
+        paneSave={client}
+        workItemId={workItemId}
+      />,
+    );
+
+    fireEvent.click(previewButton(0));
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'BAR' } });
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'COR' } });
+
+    await act(async () => pending.resolve(PREVIEW_OK));
+
+    expect(screen.getByText('You changed the booking – preview again.')).toBeDefined();
+    expect(previewButton(0)).toHaveProperty('disabled', false);
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('keeps the running preview notice visible after staff edit the booking', async () => {
+    const pending = deferred<PaneStayResult>();
+    const preview = vi.fn<PaneStayClient['preview']>().mockReturnValueOnce(pending.promise);
+    const { client } = paneClient({ preview });
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
+
+    fireEvent.click(previewButton(0));
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'BAR' } });
+
+    expect(screen.getByRole('status').textContent).toBe('Nava is filling the booking in HMS… (about 2 minutes)');
+    expect(screen.queryByText('You changed the booking – preview again.')).toBeNull();
+    expect(previewButton(0)).toHaveProperty('disabled', true);
+
+    await act(async () => pending.resolve(PREVIEW_OK));
   });
 
   it('after a save, shows only the after-save screenshot', async () => {

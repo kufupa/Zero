@@ -15,6 +15,7 @@ import {
   openStoredWork,
   recordFieldEvent,
   redoWorkItemRevision,
+  resetWorkSection,
   storedTranslation,
   storedWorkFor,
   undoWorkItemRevision,
@@ -396,6 +397,29 @@ export const workItemsRouter = router({
         expectedSeq: input.expectedSeq,
       });
       return historyMoveResult(result);
+    }),
+  resetSection: mailboxProcedure
+    .input(
+      z
+        .object({
+          workItemId: z.string().uuid(),
+          section: z.discriminatedUnion('type', [
+            z.object({ type: z.literal('contact') }).strict(),
+            z.object({ type: z.literal('stay'), stayId: z.string().min(1).max(40) }).strict(),
+          ]),
+        })
+        .strict(),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const result = await resetWorkSection(getDb(), {
+        transportId: ctx.activeTransportId,
+        workItemId: input.workItemId,
+        userId: ctx.sessionUser.id,
+        section: input.section,
+      });
+      if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+      if (result.status === 'invalid_section') throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown section.' });
+      return { reset: result.reset };
     }),
 });
 
