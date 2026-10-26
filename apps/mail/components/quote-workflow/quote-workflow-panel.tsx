@@ -1333,14 +1333,17 @@ export function QuoteWorkflowPanel({
                             selection={session.roomRateBoardSelections?.[group.id]}
                             onSelect={(selection) => {
                               onStayAction?.({ type: 'room_rate_board_selected', groupId: group.id, selection });
-                              const match = (session.rateOptions ?? []).find(
-                                (option) =>
-                                  option.incomplete !== true &&
-                                  option.groupId === group.id &&
-                                  option.roomCode === selection.roomCode &&
-                                  option.rateCode === selection.rateCode &&
-                                  option.board === selection.board,
-                              );
+                              const board = quoteBoardFromGrid(selection.board);
+                              const match = board
+                                ? (session.rateOptions ?? []).find(
+                                    (option) =>
+                                      option.incomplete !== true &&
+                                      option.groupId === group.id &&
+                                      option.roomCode === selection.roomCode &&
+                                      option.rateCode === selection.rateCode &&
+                                      option.board === board,
+                                  )
+                                : undefined;
                               const picked = rateOptionForGridPick(group.id, selection, match);
                               if (picked) pickRate(picked);
                             }}
@@ -1523,6 +1526,31 @@ export function QuoteWorkflowPanel({
   );
 }
 
+/** HMS grid rows keep the native meal label. Rate cards and stay pins use the quote board. */
+const GRID_BOARD_BB = new Set([
+  'bb',
+  'bed & breakfast r',
+  'bed & breakfast nr',
+]);
+const GRID_BOARD_ROOM = new Set(['room_only', 'room only', 'room only r', 'room only nr']);
+const GRID_BOARD_DINNER = new Set([
+  'dinner_bb',
+  'dinner bed & breakfast r',
+  'dinner bed & breakfast nr',
+  'dinner, bed & breakfast r',
+  'dinner, bed & breakfast nr',
+  'dinner, bed, breakfast & beverage r',
+  'dinner, bed, breakfast & beverage nr',
+]);
+
+function quoteBoardFromGrid(board: string): RateOption['board'] | null {
+  const key = board.trim().replace(/\s+/g, ' ').toLowerCase();
+  if (GRID_BOARD_BB.has(key)) return 'bb';
+  if (GRID_BOARD_ROOM.has(key)) return 'room_only';
+  if (GRID_BOARD_DINNER.has(key)) return 'dinner_bb';
+  return null;
+}
+
 /** Grid click uses the rate-card pick. An unknown board is not a rate, so it does not pin or re-price. */
 function rateOptionForGridPick(
   groupId: string,
@@ -1530,11 +1558,12 @@ function rateOptionForGridPick(
   match: RateOption | undefined,
 ): RateOption | null {
   if (match) return match;
-  if (selection.board !== 'room_only' && selection.board !== 'bb' && selection.board !== 'dinner_bb') return null;
+  const board = quoteBoardFromGrid(selection.board);
+  if (!board) return null;
   return {
-    id: `grid:${groupId}:${selection.roomCode}:${selection.rateCode}:${selection.board}`,
+    id: `grid:${groupId}:${selection.roomCode}:${selection.rateCode}:${board}`,
     groupId,
-    board: selection.board,
+    board,
     boardLabel: selection.board,
     rateCode: selection.rateCode,
     rateLabel: selection.rateCode,

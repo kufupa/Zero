@@ -218,7 +218,7 @@ function gridPickSession(): QuoteSession {
         roomLabel: 'Standard Twin',
         rateCode: 'FLEX',
         rateLabel: 'Flexible',
-        board: 'bb',
+        board: 'Bed & Breakfast R',
         boardLabel: 'Bed and breakfast',
         nightlyPriceMinor: 120_000,
         roomsLeft: 3,
@@ -270,7 +270,7 @@ describe('StayRateGrid in the quote panel', () => {
     expect(seen.session?.roomRateBoardSelections?.[initial.groups[0]!.id]).toEqual({
       roomCode: 'STWN',
       rateCode: 'FLEX',
-      board: 'bb',
+      board: 'Bed & Breakfast R',
     });
   });
 });
