@@ -2,6 +2,7 @@ import { ROOM_TYPE_NAMES } from '../ai/room-types.js';
 import {
   PROFILE_SALES_STRATEGY_CODES,
   profileFor,
+  type PropertyProfile,
 } from '../../tooling/playwright-quote/property-profile.mjs';
 
 export type CenturionRateBoard =
@@ -68,9 +69,7 @@ export type QuoteSalesStrategy = {
   requestValue: QuoteSalesStrategyCode | 'Government';
 };
 
-const KNOWN_SALES_STRATEGY_CODES = new Set<QuoteSalesStrategyCode>(
-  PROFILE_SALES_STRATEGY_CODES as readonly QuoteSalesStrategyCode[],
-);
+const KNOWN_SALES_STRATEGY_CODES = new Set<QuoteSalesStrategyCode>(PROFILE_SALES_STRATEGY_CODES);
 
 export type PropertyQuotePaneConfig = {
   transportId: string;
@@ -83,22 +82,10 @@ export type PropertyQuotePaneConfig = {
   eventRateCodes: string[];
 };
 
-type RegistryQuoteProfile = {
-  rooms?: Record<string, { label: string }>;
-  ratePlans?: Record<string, {
-    label: string;
-    board: string;
-    contract?: boolean;
-    government?: boolean;
-    event?: boolean;
-  }>;
-  salesStrategies?: Array<{ value: string; display: string }>;
-};
-
 const PANE_BOARD_ORDER: readonly QuotePaneBoard[] = ['room_only', 'bb', 'dinner_bb'];
 
-function registeredProfile(propertyCode: string): RegistryQuoteProfile | null {
-  return profileFor(propertyCode) as RegistryQuoteProfile | null;
+function registeredProfile(propertyCode: string): PropertyProfile | null {
+  return profileFor(propertyCode);
 }
 
 /** Only registry-listed native codes become pane choices. BAR is pinned first when the registry offers it. */
