@@ -48,3 +48,4 @@ Read conclusions and the evidence for the current decision, not every archive. `
 - Keep private mail, PDFs, guest identities, raw model responses, credentials and full transcripts outside git. Commit conclusions, provenance and sanitized observations.
 - Refresh price/inventory facts, runtime state and current adoption when needed. Historical scores do not certify live readiness.
 - Add a dated report and source-index row when findings materially change. Update ACTIVE.md for living state rather than growing an all-purpose root context file.
+- [2026-10-26 Da Vinci readiness for Faith call](2026-10-26-dv-faith-readiness.md) — quote outage cause/fix (#614), DV rate gates (scope/5-row cap/NR/terms doc), create+return gaps, amend/cancel state, suggestions, Centurion login
