@@ -51,7 +51,8 @@ collect() {
     elif [[ ${statuses[i]} == starting ]]; then ((active_count+=1)); fi
   done
   for i in "${!ids[@]}"; do
-    [[ ${statuses[i]} == running || ${statuses[i]} == starting || ${statuses[i]} == merged ]] && continue
+    # Only pending/todo rows start; review/held/failed rows wait for the orchestrator.
+    [[ ${statuses[i]} == pending || ${statuses[i]} == todo ]] || continue
     ready=1
     if [[ -n ${deps[i]} && ${deps[i]} != - ]]; then
       IFS=, read -r -a required <<<"${deps[i]}"
@@ -64,7 +65,7 @@ collect() {
     ((ready)) || continue
     conflict=0
     for j in "${!ids[@]}"; do
-      if [[ ${statuses[j]} == running || ${statuses[j]} == starting ]] && shares_file "${files[i]}" "${files[j]}"; then conflict=1; break; fi
+      if [[ ${statuses[j]} == running || ${statuses[j]} == starting || ${statuses[j]} == review ]] && shares_file "${files[i]}" "${files[j]}"; then conflict=1; break; fi
     done
     ((conflict == 0)) && startable+=("$i")
   done

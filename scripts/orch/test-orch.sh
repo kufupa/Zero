@@ -84,6 +84,10 @@ check "$rc" 3 'idle-check should flag one lane with work startable'
 printf '%s\n' merged >"$tmp/dispatch/state/base.status"
 out=$(OR2_ROOT="$tmp/dispatch" "$script_dir/dispatch.sh")
 [[ $out == *'startable id=child'* ]] || { printf 'FAIL: merged dependency did not unlock child\n' >&2; exit 1; }
+printf '%s\n' review >"$tmp/dispatch/state/different.status"
+out=$(OR2_ROOT="$tmp/dispatch" "$script_dir/dispatch.sh")
+[[ $out != *'startable id=different'* ]] || { printf 'FAIL: review unit was relaunched\n' >&2; exit 1; }
+printf '%s\n' pending >"$tmp/dispatch/state/different.status"
 export LAUNCH_LOG="$tmp/launched"
 out=$(OR2_ROOT="$tmp/dispatch" MAX_LANES=2 LAUNCH_CMD='printf "%s\n" "$ID" >>"$LAUNCH_LOG"' "$script_dir/dispatch.sh" --launch)
 [[ $(<"$LAUNCH_LOG") == child && $(<"$tmp/dispatch/state/child.status") == starting ]] || { printf 'FAIL: launch did not count starting against MAX_LANES\n' >&2; exit 1; }
