@@ -1468,6 +1468,55 @@ exports[`NavaPane screen states > welcome: a first run shows the account step an
         </time>
       </section>
       <div
+        class="mx-3 mt-2 shrink-0"
+      >
+        <section
+          aria-label="Nava reads this as: Quote"
+          class="flex shrink-0 flex-col gap-2 rounded-[4px] border border-[#bfdbfe] bg-[#eff6ff] px-3 py-2.5"
+          role="status"
+        >
+          <div
+            class="flex flex-wrap items-center justify-between gap-2"
+          >
+            <div
+              class="flex min-w-0 flex-wrap items-center gap-1.5 text-[12.5px] text-[#1e293b]"
+            >
+              <span
+                class="font-semibold"
+              >
+                Nava reads this as:
+              </span>
+              <span
+                class="rounded-full bg-white px-2 py-0.5 text-[11.5px] font-bold text-[#1d4ed8]"
+                data-read-as="quote"
+              >
+                Quote
+              </span>
+            </div>
+          </div>
+          <label
+            class="flex flex-col gap-1 text-[11px] font-semibold text-[#475569]"
+          >
+            Change how Nava reads this email
+            <select
+              aria-label="Change how Nava reads this email"
+              class="h-8 w-full rounded-[3px] border border-[#cbd5e1] bg-white px-2.5 text-[13px] text-[#1e293b] outline-none transition-colors focus:border-[#0066cc] disabled:bg-[#f8fafc] disabled:text-[#64748b] max-w-[15rem] bg-white"
+            >
+              <option
+                value="quote"
+              >
+                Quote
+              </option>
+              <option
+                value="create_booking"
+              >
+                New booking
+              </option>
+            </select>
+          </label>
+        </section>
+      </div>
+      <div
         class="mx-3 mt-2 flex flex-col gap-2"
       >
         <p

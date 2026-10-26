@@ -99,7 +99,10 @@ vi.mock('react-router', () => ({
   useSearchParams: () => [new URLSearchParams('thread=thread-7')],
 }));
 vi.mock('nuqs', () => ({
+  parseAsString: {},
   useQueryState: (key: string) => [key === 'threadId' ? mocks.threadId : null, vi.fn()],
+  // DS2-S5 516304d2f: MailLayoutContent reads threadId + sourceMessageId together.
+  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: null }, vi.fn()],
 }));
 vi.mock('react-hotkeys-hook', () => ({
   useHotkeys: vi.fn(),

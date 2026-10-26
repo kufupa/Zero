@@ -773,7 +773,13 @@ describe('NavaPane screen states', () => {
 
   /** Radix menu ids change with prior mounts; snapshots keep a stable placeholder. */
   const stabilizePaneSnapshot = (root: HTMLElement) => {
-    root.querySelectorAll('[id^="radix-"]').forEach((el) => el.setAttribute('id', 'radix-stable'));
+    root.querySelectorAll('*').forEach((el) => {
+      for (const attr of [...el.attributes]) {
+        if (attr.value.includes('radix-')) {
+          el.setAttribute(attr.name, attr.value.replace(/radix-[^\s"]+/g, 'radix-stable'));
+        }
+      }
+    });
   };
 
   it('welcome: a first run shows the account step and the four-step bar', async () => {
@@ -794,6 +800,7 @@ describe('NavaPane screen states', () => {
     expect(screen.getByRole('button', { name: '4. Quote Tool' })).toBeDefined();
     expect(screen.queryByRole('main')).toBeNull();
     await settle();
+    expect(await screen.findByRole('status', { name: 'Nava reads this as: Quote' })).toBeDefined();
     stabilizePaneSnapshot(container);
     expect(container).toMatchSnapshot();
   });
@@ -1519,13 +1526,16 @@ describe('NavaPane screen states', () => {
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'updated@example.invalid' } });
     await prepareReviewedQuote(null);
 
-    expect(qualifiedQuotePdfMutate).toHaveBeenCalledWith(
+    expect(qualifiedQuotePdfMutate.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
         attention: 'Updated Contact',
         clientEmail: 'updated@example.invalid',
         clientTelephone: '',
       }),
     );
+    expect(qualifiedQuotePdfMutate.mock.calls[0]?.[1]).toEqual({
+      context: { activeTransportId: 'transport-1' },
+    });
     const expectedHtml = quoteWrapperHtml('Updated Contact', 'R Opperman', { propertyCode: 'HRCEN' });
     expect(reviewedReplyHtml()).toBe(expectedHtml);
     fireEvent.click(screen.getByRole('button', { name: 'Draft quotation into email reply' }));
