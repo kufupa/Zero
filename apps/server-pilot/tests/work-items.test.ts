@@ -241,7 +241,7 @@ describe('stored read for the pane', () => {
       expect(work.analysis.groups[2]!.arrivalDate).toBe('2027-11-17');
       expect(work.refs[ROW_TWIN]).toEqual({ stayId: STAY_ONE, rowId: ROW_TWIN });
       expect(work.analysis.groups.map((group) => group.stayId)).toEqual([STAY_ONE, STAY_ONE, STAY_TWO]);
-      expect(work.analysis.reviewItems?.map((item) => item.id)).toContain('missing:rooms:0');
+      expect(work.analysis.reviewItems?.map((item) => item.id)).not.toContain('missing:rooms:0');
       expect(work.workItemStatus).toBe('needs_you');
     }));
 
@@ -1127,7 +1127,8 @@ describe('field events', () => {
 
       const after = await readyWork(db, 'e2');
       expect(after.analysis.groups[0]).toMatchObject({ quantity: 2 });
-      expect(after.analysis.groups[0]!.departureDate).toBeUndefined();
+      expect(after.analysis.groups[0]!.departureDate).toBe('2027-10-27');
+      expect(after.analysis.groups[0]!.fields.departureDate).toBe('staff_corrected');
       expect(await eventsFor(db, work.workItemId)).toHaveLength(3);
     }));
 
@@ -3660,7 +3661,10 @@ describe('trusted POP3 delivery clock (KTD-1)', () => {
       if (stored.kind !== 'stored') throw new Error(`expected stored, got ${stored.kind}`);
       const [row] = await db.select().from(message).where(eq(message.id, messageId));
 
-      expect(row?.sourceProvenance).toEqual({ deliveredAt: '2026-10-06T10:00:00.000Z' });
+      expect(row?.sourceProvenance).toEqual({
+        deliveredAt: '2026-10-06T10:00:00.000Z',
+        stampRoute: 'stamp_corroborated',
+      });
       expect(row?.receivedAt).toEqual(new Date('2026-10-06T07:00:00.000Z'));
     }));
 
