@@ -2,46 +2,24 @@
  * @vitest-environment happy-dom
  */
 import {
+  NeedsYouEntry,
   NeedsYouScreen,
   NeedsYouWebControl,
   NEEDS_YOU_UNDO_MS,
   useNeedsYou,
 } from '../components/nava-pane/screens/needs-you';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
-import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import type { NeedsYouRow } from '../lib/quote-workflow/backend-bind';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
-import { NavaPane } from '../components/nava-pane/nava-pane';
-import { trpcClient } from '../providers/query-provider';
 
-const { listQuery, dismissMutate, pingMutate, toastMock, toastDismissMock, silent } = vi.hoisted(() => {
-  // A route this file does not exercise never answers, so the pane waits on it instead of failing.
-  const silent = (): unknown =>
-    new Proxy(() => new Promise<never>(() => {}), { get: () => silent() });
+const { listQuery, dismissMutate, toastMock, toastDismissMock } = vi.hoisted(() => {
   return {
     listQuery: vi.fn(),
     dismissMutate: vi.fn(),
-    pingMutate: vi.fn().mockResolvedValue({ status: 'ok', serverTime: '2026-10-09T12:00:00Z' }),
     toastMock: vi.fn(),
     toastDismissMock: vi.fn(),
-    silent,
-  };
-});
-
-// Only the work-items list and dismiss routes, plus the ping the pane sends on mount.
-vi.mock('../providers/query-provider', () => {
-  const routes: Record<PropertyKey, unknown> = {
-    workstation: { ping: { mutate: pingMutate } },
-    get workItems() {
-      return { list: { query: listQuery }, dismiss: { mutate: dismissMutate } };
-    },
-  };
-  return {
-    trpcClient: new Proxy(routes, {
-      get: (target, key) => (key in target ? Reflect.get(target, key) : silent()),
-    }),
   };
 });
 
@@ -54,32 +32,9 @@ vi.mock('sonner', () => ({
   }),
 }));
 
-vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../lib/workstation/pane-release-watch')>()),
-  reloadPane: vi.fn(),
-}));
-
-vi.mock('../lib/auth-client', () => ({
-  useSession: () => ({
-    data: {
-      user: { id: 'staff-1', email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
-      session: { id: 's-1' },
-    },
-    isLoading: false,
-  }),
-  signIn: { email: vi.fn() },
-}));
-
-vi.mock('../hooks/use-connections', () => ({
-  useActiveConnection: () => ({
-    data: { id: 'transport-1', email: 'ropperman@legacyhotels.co.za' },
-    isLoading: false,
-  }),
-}));
-
-vi.mock('@/hooks/use-pilot-capabilities', () => ({
-  usePilotCapabilities: () => ({ paneSave: false }),
-}));
+const needsYouClient = {
+  workItems: { list: { query: listQuery }, dismiss: { mutate: dismissMutate } },
+};
 
 function row(overrides: Partial<NeedsYouRow> & Pick<NeedsYouRow, 'id'>): NeedsYouRow {
   return {
@@ -114,19 +69,26 @@ function Harness({
 }: {
   host: 'web' | 'outlook';
   client?: unknown;
-  onOpenThread?: (threadId: string) => void;
+  onOpenThread?: (threadId: string, ...sourceMessageId: string[]) => void;
 }) {
-  const list = useNeedsYou(
-    client ?? { workItems: { list: { query: listQuery }, dismiss: { mutate: dismissMutate } } },
-  );
+  const list = useNeedsYou(client ?? needsYouClient);
   return <NeedsYouScreen list={list} host={host} onOpenThread={onOpenThread} />;
+}
+
+function ControlsHarness() {
+  const list = useNeedsYou(needsYouClient);
+  return (
+    <>
+      <NeedsYouEntry list={list} onOpen={() => {}} />
+      <NeedsYouScreen list={list} host="web" />
+      <NeedsYouWebControl trpc={needsYouClient} onOpenThread={() => {}} />
+    </>
+  );
 }
 
 /** The screen with a button that starts a reload, so a test can hold one in flight across a dismiss. */
 function ReloadingHarness() {
-  const list = useNeedsYou({
-    workItems: { list: { query: listQuery }, dismiss: { mutate: dismissMutate } },
-  });
+  const list = useNeedsYou(needsYouClient);
   return (
     <>
       <button type="button" onClick={list.reload}>
@@ -136,36 +98,6 @@ function ReloadingHarness() {
     </>
   );
 }
-
-// Same bridge values as the fake bridge in nava-pane-render.test.tsx, with no email selected.
-const v4Capabilities = {
-  bridgeProtocolVersion: 4,
-  addinVersion: '1.0.12',
-  outlookVersion: '16.0',
-  runtime: 'Classic Outlook for Windows',
-  newOutlookSupported: false,
-  interactiveProfileRequired: true,
-  maxPageSize: 200,
-  maxFolderDepth: 64,
-  maxFolderCount: 5000,
-  maxFolderSnapshotItems: 5000,
-  supportedActions: [
-    'GET_CAPABILITIES',
-    'GET_ACTIVE_EMAIL',
-    'CREATE_REPLY_DRAFT',
-    'ADD_ATTACHMENT_TO_DRAFT',
-  ],
-};
-
-const fakeBridge = {
-  isConnected: true,
-  workstationInfo: { addinVersion: '1.0.12', bridgeProtocolVersion: 4, paired: true },
-  capabilities: v4Capabilities,
-  supportsAction: (action: string) => v4Capabilities.supportedActions.includes(action),
-  activeEmail: null,
-  sendCommand: vi.fn(async () => null),
-  pairDevice: vi.fn(async () => {}),
-} as unknown as PaneBridge;
 
 beforeEach(() => {
   localStorage.setItem('nava_onboarding_completed', 'true');
@@ -183,6 +115,7 @@ afterEach(() => {
   localStorage.clear();
   cleanup();
   setMailCacheScope({ userId: null, activeTransportId: null });
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -261,12 +194,54 @@ describe('Needs-you list', () => {
     expect(await screen.findByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
   });
 
-  it('webmail opens the thread of a row', async () => {
+  it('webmail passes the exact source message ID with its thread ID', async () => {
     const onOpenThread = vi.fn();
+    listQuery.mockResolvedValue([
+      row({ id: 'wi-exact', threadId: 'thread-exact', sourceMessageId: 'message-exact' }),
+    ]);
     render(<Harness host="web" onOpenThread={onOpenThread} />);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Confirm booking' }));
-    expect(onOpenThread).toHaveBeenCalledWith('thread-wi-2');
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Rooms request' }));
+    expect(onOpenThread).toHaveBeenCalledOnce();
+    expect(onOpenThread).toHaveBeenCalledWith('thread-exact', 'message-exact');
+  });
+
+  it('webmail offers manual search instead of opening a thread without its exact source ID', async () => {
+    const onOpenThread = vi.fn();
+    listQuery.mockResolvedValue([
+      row({ id: 'wi-no-source', threadId: 'thread-no-source', sourceMessageId: null }),
+    ]);
+    render(<Harness host="web" onOpenThread={onOpenThread} />);
+
+    expect(await screen.findByText('Find this email in webmail by its sender and subject.')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Open Rooms request' })).toBeNull();
+    expect(onOpenThread).not.toHaveBeenCalled();
+  });
+
+  it('Outlook opens only the exact native entry ID when its host API is available', async () => {
+    const displayMessageForm = vi.fn();
+    vi.stubGlobal('Office', { context: { mailbox: { displayMessageForm } } });
+    listQuery.mockResolvedValue([
+      row({ id: 'wi-outlook', outlookEntryId: 'outlook-entry-exact' }),
+    ]);
+    render(<Harness host="outlook" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Rooms request' }));
+    expect(displayMessageForm).toHaveBeenCalledOnce();
+    expect(displayMessageForm).toHaveBeenCalledWith('outlook-entry-exact');
+  });
+
+  it('Outlook offers manual search when its host API or exact entry ID is unavailable', async () => {
+    vi.stubGlobal('Office', { context: { mailbox: {} } });
+    listQuery.mockResolvedValue([
+      row({ id: 'wi-no-entry', outlookEntryId: null }),
+    ]);
+    render(<Harness host="outlook" />);
+
+    expect(
+      await screen.findByText('Find each email in your Outlook inbox by its sender and subject.'),
+    ).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Open Rooms request' })).toBeNull();
   });
 
   it('Outlook has no open action, and says how to find each email', async () => {
@@ -466,112 +441,12 @@ describe('Needs-you rows mark guest details for the preview gate (H6b)', () => {
   });
 });
 
-describe('Needs-you entry on the pane', () => {
-  it('the Outlook pane opens the list from its entry, and Back returns to the quoting tool', async () => {
-    render(<NavaPane bridge={fakeBridge} />);
+describe('Needs-you controls', () => {
+  it('hides both entry controls by default while keeping the list and Dismiss action available', async () => {
+    render(<ControlsHarness />);
 
-    const entry = await screen.findByRole('button', { name: 'Needs you (2)' });
-    expect(entry.className).toMatch(/max-w-\[96px\].*truncate.*whitespace-nowrap/);
-    expect(entry.closest('header')).not.toBeNull();
-    fireEvent.click(entry);
     expect(await screen.findByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
-    expect(
-      screen.getByText('Find each email in your Outlook inbox by its sender and subject.'),
-    ).toBeDefined();
-
-    // The quoting tool stays mounted behind the list, so its state survives.
-    expect(document.querySelector<HTMLElement>('main.nava-pane-scroll')?.style.display).toBe(
-      'none',
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Back to quotes' }));
-    expect(screen.queryByRole('heading', { name: 'Needs you (2)' })).toBeNull();
-    expect(await screen.findByRole('button', { name: 'Needs you (2)' })).toBeDefined();
-    expect(document.querySelector<HTMLElement>('main.nava-pane-scroll')?.style.display).toBe('');
-  });
-
-  it('Back reloads the pane count, so a dismiss made on the list shows on the entry', async () => {
-    render(<NavaPane bridge={fakeBridge} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (2)' }));
-    listQuery.mockResolvedValue([TWO_OPEN[1]!]);
-    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Rooms request' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Back to quotes' }));
-    expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeDefined();
-  });
-
-  it('a dismiss on the list moves the entry count at once, with the list still open', async () => {
-    render(<NavaPane bridge={fakeBridge} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (2)' }));
-    listQuery.mockResolvedValue([TWO_OPEN[1]!]);
-    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Rooms request' }));
-    expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeDefined();
-    expect(screen.getByRole('heading', { name: 'Needs you (1)' })).toBeDefined();
-    expect(screen.getByRole('button', { name: 'Back to quotes' })).toBeDefined();
-  });
-
-  it('the webmail pane opens a row thread through the webmail callback', async () => {
-    const onOpenThread = vi.fn();
-    render(<NavaPane bridge={fakeBridge} preview onOpenThread={onOpenThread} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (2)' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Rooms request' }));
-    expect(onOpenThread).toHaveBeenCalledWith('thread-wi-1');
-  });
-});
-
-describe('Needs-you webmail control', () => {
-  it('does not render a dead entry when the list route is unavailable', async () => {
-    render(<NeedsYouWebControl trpc={{}} onOpenThread={() => {}} />);
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Needs you' })).toBeNull());
-  });
-
-  it('the header button shows the count, opens the list in a dialog, and a row opens its thread and closes the dialog', async () => {
-    const onOpenThread = vi.fn();
-    render(<NeedsYouWebControl trpc={trpcClient} onOpenThread={onOpenThread} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (2)' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Open Rooms request' }));
-    expect(onOpenThread).toHaveBeenCalledWith('thread-wi-1');
-    await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Open Rooms request' })).toBeNull(),
-    );
-  });
-
-  it('closing the dialog reloads the count, so a dismiss made inside it shows on the button', async () => {
-    render(<NeedsYouWebControl trpc={trpcClient} onOpenThread={() => {}} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (2)' }));
-    listQuery.mockResolvedValue([TWO_OPEN[1]!]);
-    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss Rooms request' }));
-    fireEvent.keyDown(document.body, { key: 'Escape' });
-    expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeDefined();
-  });
-
-  it('the dialog Close button closes it, and the count reloads', async () => {
-    render(<NeedsYouWebControl trpc={trpcClient} onOpenThread={() => {}} />);
-
-    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (2)' }));
-    listQuery.mockResolvedValue([TWO_OPEN[1]!]);
-    fireEvent.click(await screen.findByRole('button', { name: 'Close' }));
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Close' })).toBeNull());
-    expect(await screen.findByRole('button', { name: 'Needs you (1)' })).toBeDefined();
-  });
-
-  it('opening the dialog re-reads the list, so mail that arrived while it was closed shows', async () => {
-    render(<NeedsYouWebControl trpc={trpcClient} onOpenThread={() => {}} />);
-    const button = await screen.findByRole('button', { name: 'Needs you (2)' });
-    listQuery.mockResolvedValue([...TWO_OPEN, row({ id: 'wi-new', subject: 'New arrival' })]);
-    fireEvent.click(button);
-    expect(await screen.findByRole('button', { name: 'Open New arrival' })).toBeDefined();
-  });
-
-  it('a full list reads 200+ on the webmail count', async () => {
-    listQuery.mockResolvedValue(
-      Array.from({ length: 200 }, (_, i) => row({ id: `wi-${i}`, subject: `Item ${i}` })),
-    );
-    render(<NeedsYouWebControl trpc={trpcClient} onOpenThread={() => {}} />);
-
-    expect(await screen.findByRole('button', { name: 'Needs you (200+)' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Needs you (2)' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Dismiss Rooms request' })).toBeDefined();
   });
 });
