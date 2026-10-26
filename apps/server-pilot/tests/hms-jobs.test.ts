@@ -3382,9 +3382,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       ] as const;
 
       for (const row of rows) {
+        const agency = `Agency ${row.name}`;
         const seeded = await seedAdmittedPartyMail(db, {
           kind: row.kind,
           admissionSnapshotId: row.admission ? undefined : null,
+          payload: { ...quoteExtractionPayload(), agency },
         });
         expect(await hmsJobs.prefetchPartyForExtraction(seeded.run, db, env), row.name).toBe(row.queued);
         const [extraction] = await db
@@ -3415,7 +3417,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
             transportId: TRANSPORT_ID,
             threadId: seeded.threadId,
             kind: 'party',
-            name: 'Acme Lodging Holdings',
+            name: agency,
           },
           db,
         );
@@ -3438,7 +3440,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
             transportId: TRANSPORT_ID,
             threadId: seeded.threadId,
             kind: 'party',
-            name: 'Acme Lodging Holdings',
+            name: agency,
           },
           db,
         );
