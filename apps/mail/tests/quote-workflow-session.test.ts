@@ -120,6 +120,75 @@ describe('quote session', () => {
     expect(changed.staffQuote).toBeNull();
     expect(reduceQuoteSession(session, { type: 'reset' })).toEqual(initialQuoteSession());
   });
+  it('round-trips a staff room/rate/board selection without changing quote evidence', () => {
+    const group = quoteAnalysis.groups[0]!;
+    const stayKey = stayKeyForGroup(group);
+    const boardRow = {
+      groupId: group.id,
+      roomCode: 'ROOM-17',
+      roomLabel: 'Room 17',
+      rateCode: 'RATE-8',
+      rateLabel: 'Flexible',
+      board: 'BOARD-5',
+      boardLabel: 'Meal plan',
+      nightlyPriceMinor: 12345,
+      roomsLeft: 4,
+      rateScope: 'unknown' as const,
+    };
+    const allocation = {
+      workflowRunId: 'run-grid',
+      revisionRef: 'revision-grid',
+      factRefs: [],
+      messageId: 'message-grid',
+      threadId: 'thread-grid',
+      sourceHash: STAFF_HASH,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      inputDigest: 'digest-grid',
+      totalMinor: 12345,
+      currency: 'TEST',
+      quoteRequestKey: stayKey,
+      approvedHeader: {
+        salesStrategy: 'BAR' as const,
+        company: '',
+        agency: '',
+        attention: '',
+        clientEmail: '',
+        clientTelephone: '',
+      },
+      availabilityBoard: [boardRow],
+    } satisfies StaffQuoteAllocation;
+    const session = {
+      ...initialQuoteSession(),
+      groups: [group],
+      selectedStayKey: stayKey,
+      staffQuote: allocation,
+      staffQuotes: { [stayKey]: allocation },
+    };
+    const tuple = { roomCode: boardRow.roomCode, rateCode: boardRow.rateCode, board: boardRow.board };
+    const selected = reduceQuoteSession(session, {
+      type: 'room_rate_board_selected',
+      groupId: group.id,
+      selection: boardRow,
+    });
+    const reloaded = JSON.parse(JSON.stringify(selected)) as typeof selected;
+
+    expect(reloaded.roomRateBoardSelections).toEqual({
+      [group.id]: tuple,
+    });
+    expect(
+      reduceQuoteSession(session, {
+        type: 'room_rate_board_selected',
+        groupId: group.id,
+        selection: { ...tuple, roomCode: 'UNKNOWN-ROOM' },
+      }),
+    ).toBe(session);
+    expect(reloaded.staffQuote).toEqual(allocation);
+    expect(reloaded.staffQuotes).toEqual(session.staffQuotes);
+    expect(reloaded.rateOptions).toEqual(session.rateOptions);
+    expect(reloaded.evidence).toEqual(session.evidence);
+    expect(reloaded.phase).toBe(session.phase);
+  });
   it('invalidates quote evidence and advances revision when late analysis changes requirements', () => {
     const ready = reduceQuoteSession({ ...initialQuoteSession(), binding: bind() }, { type: 'analysis_ready', analysis: quoteAnalysis });
     const quoted = { ...ready, pdf: { fileName: 'old.pdf', bytesBase64: 'JVBERi0=' }, selectedOfferIds: ['old'], offers: [authorisedOffer] };

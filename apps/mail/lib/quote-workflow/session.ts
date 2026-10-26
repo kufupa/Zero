@@ -20,6 +20,7 @@ import type {
   QuotePdf,
   QuoteSalesStrategyCode,
   QuoteStrategyRow,
+  QuoteRoomRateBoardSelection,
 } from './types';
 import {
   emptyStaffQuoteHeader,
@@ -544,6 +545,7 @@ export function initialQuoteSession(): QuoteWorkflowSession {
     staffQuotes: {},
     stayPdfs: {},
     rateOptions: [],
+    roomRateBoardSelections: {},
     staffHeader: emptyStaffQuoteHeader(),
     staffActions: [],
     selectedStayKey: null,
@@ -1882,6 +1884,40 @@ export function reduceQuoteSession(
         ? [...pending, action.kind]
         : pending.filter((kind) => kind !== action.kind);
       return { ...session, pendingPartyKinds };
+    }
+    case 'room_rate_board_selected': {
+      const group = session.groups.find((item) => item.id === action.groupId);
+      if (!group) return session;
+      const quote = staffQuoteForStay(session, stayKeyForGroup(group));
+      const knownRow = quote?.availabilityBoard?.some(
+        (row) =>
+          row.groupId === action.groupId &&
+          row.roomCode === action.selection.roomCode &&
+          row.rateCode === action.selection.rateCode &&
+          row.board === action.selection.board,
+      );
+      if (!knownRow) return session;
+
+      const previous = session.roomRateBoardSelections?.[action.groupId];
+      if (
+        previous?.roomCode === action.selection.roomCode &&
+        previous.rateCode === action.selection.rateCode &&
+        previous.board === action.selection.board
+      ) {
+        return session;
+      }
+      // Keep this as staff intent only: a grid choice does not create or validate a quote.
+      return {
+        ...session,
+        roomRateBoardSelections: {
+          ...(session.roomRateBoardSelections ?? {}),
+          [action.groupId]: {
+            roomCode: action.selection.roomCode,
+            rateCode: action.selection.rateCode,
+            board: action.selection.board,
+          },
+        },
+      };
     }
     case 'patch_staff_header': {
       // Field errors alone do not change the quote, so they neither bump the input revision nor clear results.
