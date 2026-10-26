@@ -208,11 +208,7 @@ vi.mock('react-hotkeys-hook', () => ({
 vi.mock('../hooks/use-media-query', () => ({ useMediaQuery: () => true }));
 vi.mock('../hooks/use-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('../paraglide/messages', () => ({ m: new Proxy({}, { get: () => () => '' }) }));
-vi.mock(
-  '@/paraglide/messages',
-  () => ({ m: new Proxy({}, { get: () => () => '' }) }),
-  { virtual: true },
-);
+vi.mock('@/paraglide/messages', () => ({ m: new Proxy({}, { get: () => () => '' }) }));
 
 import { MailLayout } from '../components/mail/mail';
 
