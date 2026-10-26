@@ -2101,6 +2101,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it('still reads a fresh prepared quote after a newer user price expires', () =>
     withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId } = await seedThread(db);
       const { run: priced } = await enqueueStaffQuoteJob(db, threadId, messageId);
       const preparedInput = staffQuoteInput.parse({
@@ -2156,7 +2158,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
             userId: CENTURION_USER_ID,
             messageId,
             kind: 'staff_quote',
-            input: { ...STAFF_QUOTE_INPUT, messageId },
+            input: preparedInput,
           },
           db,
         ),
