@@ -3192,10 +3192,13 @@ describe('NavaPane contact and translation on both surfaces', () => {
       expect(contact.compareDocumentPosition(translation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it(`${surface}: labels a new booking Contact, not Quote contact`, async () => {
+    it(`${surface}: labels a new booking Contact without a duplicate in People`, async () => {
       bridgeMockState.storedWork = { ...STORED_FRENCH, kind: 'booking' };
       render(<NavaPane bridge={fakeBridge} preview={preview} />);
       expect(await screen.findByRole('region', { name: 'Contact' })).toBeDefined();
+      expect(screen.getByRole('region', { name: 'People' })).toBeDefined();
+      expect(screen.getAllByRole('region', { name: 'Contact' })).toHaveLength(1);
+      expect(screen.queryByRole('group', { name: 'Quote contact — printed on the PDF' })).toBeNull();
     });
 
     it(surface + ': uses the external sender as a name and email fallback while the read is unavailable', async () => {
