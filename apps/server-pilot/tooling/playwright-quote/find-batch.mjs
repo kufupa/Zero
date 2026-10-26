@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Sequential, resumable, read-only confirmation lookup batch. It logs in once and reads commercial fields from each
 // successfully opened Guest Stay record. --include-history sweeps earlier 60-day quick-search windows, up to five years.
-// Usage: node find-batch.mjs --input confs.json --out finds.jsonl [--cap N] [--pause-ms 1500] [--include-history]
+// Usage: node find-batch.mjs --property CODE --input confs.json --out finds.jsonl [--cap N] [--pause-ms 1500] [--include-history]
 import { appendFile, chmod, mkdir, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { checkCdpEnv, windowCovers } from './cancel-stay-rules.mjs';
 import { openGuestStay, readWindow, setQuickWindow } from './cancel-stay.mjs';
 import { findOnOpenGuestStay } from './stay-lookup.mjs';
@@ -14,6 +14,10 @@ import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import {
   historySweepStarts, parseFindBatchArgs, parseFindBatchInput, remainingConfirmations,
 } from './find-batch-rules.mjs';
+import { parseStayProperty } from './property-profile.mjs';
+import { withReadCliPage } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage };
 
 const CONNECT_TIMEOUT_MS = 25_000;
 const PAGE_TIMEOUT_MS = 20_000;
@@ -114,8 +118,13 @@ async function appendRow(path, row) {
   await appendFile(path, `${JSON.stringify(row)}\n`, { mode: 0o600 });
 }
 
-async function main(argv = process.argv.slice(2), env = process.env) {
-  const parsed = parseFindBatchArgs(argv);
+export async function main(argv = process.argv.slice(2), env = process.env) {
+  const property = parseStayProperty(argv);
+  if (!property.ok) {
+    process.stderr.write(`${property.error}\n`);
+    return property.exitCode ?? 2;
+  }
+  const parsed = parseFindBatchArgs(property.rest);
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
     return 2;
@@ -155,45 +164,51 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   let processed = 0;
   try {
     await installReadOnlyGuard(context);
-    page = await createStayPage(context, null, { open: false });
-    await login(page, secret, env);
-    const shellUrl = page.url();
-    await openGuestStay(page);
-    await page.waitForTimeout(1500);
-    const baselineWindow = parsed.args.includeHistory ? await readWindow(page) : null;
-    if (parsed.args.includeHistory && !baselineWindow) throw new Error('HISTORY_WINDOW_UNREADABLE');
+    await withReadCliPage({
+      propertyCode: property.propertyCode, secret, context, browser, env,
+    }, async ({ page: leased }) => {
+      leased.setDefaultTimeout?.(PAGE_TIMEOUT_MS);
+      page = leased;
+      const shellUrl = page.url();
+      await openGuestStay(page);
+      await page.waitForTimeout(1500);
+      const baselineWindow = parsed.args.includeHistory ? await readWindow(page) : null;
+      if (parsed.args.includeHistory && !baselineWindow) throw new Error('HISTORY_WINDOW_UNREADABLE');
 
-    for (let index = 0; index < pending.length; index += 1) {
-      const conf = pending[index];
-      const args = {
-        mode: 'find', confirmation: conf, arrival: null, departure: null, lastName: null, debugHtml: false,
-      };
-      const ctx = { page, args, dir: dirname(outputPath), result: null, started: Date.now(), secret };
-      let timedOut = false;
-      let result;
-      try {
-        const completed = await withTimeout(
-          () => findWithHistory(ctx, parsed.args.includeHistory, baselineWindow),
-          parsed.args.includeHistory ? HISTORY_ITEM_TIMEOUT_MS : ITEM_TIMEOUT_MS,
-        );
-        timedOut = completed.timedOut;
-        result = completed.value;
-      } catch (error) {
-        const message = String(error?.message ?? error);
-        result = { outcome: message.startsWith('AMBIGUOUS_') ? 'ambiguous' : 'execution_failure' };
+      for (let index = 0; index < pending.length; index += 1) {
+        const conf = pending[index];
+        const args = {
+          mode: 'find', confirmation: conf, arrival: null, departure: null, lastName: null, debugHtml: false,
+        };
+        const ctx = { page, args, dir: dirname(outputPath), result: null, started: Date.now(), secret };
+        let result;
+        try {
+          const completed = await withTimeout(
+            () => findWithHistory(ctx, parsed.args.includeHistory, baselineWindow),
+            parsed.args.includeHistory ? HISTORY_ITEM_TIMEOUT_MS : ITEM_TIMEOUT_MS,
+          );
+          result = completed.value;
+        } catch (error) {
+          const message = String(error?.message ?? error);
+          result = { outcome: message.startsWith('AMBIGUOUS_') ? 'ambiguous' : 'execution_failure' };
+        }
+        const row = batchRow(conf, result);
+        await appendRow(outputPath, row);
+        processed += 1;
+        process.stdout.write(`${JSON.stringify({
+          outcome: row.outcome, processed, remaining: pending.length - processed,
+        })}\n`);
+
+        // A fresh page per later confirmation: returning to the Guest Stay list in place
+        // proved unreliable on the live UI. Never close the leased shell — boundPage must stay live.
+        if (index + 1 < pending.length) {
+          if (page !== leased) await page.close().catch(() => {});
+          page = await createStayPage(context, shellUrl);
+          if (parsed.args.pauseMs > 0) await delay(parsed.args.pauseMs);
+        }
       }
-      const row = batchRow(conf, result);
-      await appendRow(outputPath, row);
-      processed += 1;
-      process.stdout.write(`${JSON.stringify({
-        outcome: row.outcome, processed, remaining: pending.length - processed,
-      })}\n`);
-
-      // A fresh page per confirmation: returning to the Guest Stay list in place proved unreliable on the live UI.
-      await page.close().catch(() => {});
-      page = await createStayPage(context, shellUrl);
-      if (index + 1 < pending.length && parsed.args.pauseMs > 0) await delay(parsed.args.pauseMs);
-    }
+      if (page !== leased) await page.close().catch(() => {});
+    });
   } finally {
     await Promise.race([context.close().catch(() => {}), delay(5000)]);
     try {
