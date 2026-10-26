@@ -404,7 +404,8 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     render(<OutlookPanePage />);
     await prepareReviewedQuote(null);
 
-    const expectedHtml = quoteWrapperHtml('David Miller', 'R Opperman');
+    // 9dcf9c48e (#540): reply uses the mailbox property from rateCatalogue, not the generic "the hotel".
+    const expectedHtml = quoteWrapperHtml('David Miller', 'R Opperman', { propertyCode: 'HRCEN' });
     expect(reviewedReplyHtml()).toBe(expectedHtml);
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
 
