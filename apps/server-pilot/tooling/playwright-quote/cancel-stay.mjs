@@ -13,7 +13,7 @@
 // (refused_penalty): it is recorded and left open; nothing is clicked on it. On a Labtest commit the open HMS
 // record is re-read (surname Labtest + arrival ≥ 2027); Waive is clicked if present, else OK.
 // --allow-real-guest lifts the Labtest guard for one run (on mode). The server passes it; it is never read from the env.
-// Usage: node cancel-stay.mjs --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--property HRCEN|HRDAV] [--reason "Test Reservations"] [--last-name Labtest] [--allow-real-guest]
+// Usage: node cancel-stay.mjs --property CODE --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"] [--last-name Labtest] [--allow-real-guest]
 // --last-name is optional: when the confirmation does not show in the header quick search, the surname is typed and the row with the exact confirmation is used.
 // Exit: 0 preview_ok|cancelled|already_cancelled; 2 refused_* or usage; 1 other outcome (also writes failure.png).
 // Read-only lookups (find, search-guest) live in stay-lookup.mjs, which imports the helpers exported here.
@@ -21,7 +21,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import {
   arrivalReport, chooseStaySource, checkCdpEnv, exitCodeFor, formPairsFromSnapshot, hmsDateToIso, identityCheck,
   isCancelledStatus, normalizeReasons, outcomeAfterFailure, parseBalanceValue, parseCancelArgs, parseDateWindowLabel,
@@ -31,6 +31,9 @@ import {
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
 import { snapshotRecordForm } from './stay-lookup-dom.mjs';
 import { parseStayProperty, propertySecretRefusal } from './property-profile.mjs';
+import { withWriteCliPage } from './write-cli-lease.mjs';
+
+export { withWriteCliPage as withLeasedWritePage };
 
 const MAX_PICKER_CLICKS = 60;
 const QUICK_WAIT_MS = 8000;
@@ -711,7 +714,7 @@ function dialogIo(ctx, dialog) {
 
 async function run(ctx) {
   const { page, args, result } = ctx;
-  await login(page, ctx.secret);
+  // Lease already logged in or reused the authenticated shell.
   mark(ctx, 'login');
   await openGuestStay(page);
   await page.waitForTimeout(1500);
@@ -844,9 +847,13 @@ async function drive(ctx) {
     if (hotelMismatch) throw new Error(hotelMismatch);
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
     context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
-    ctx.page = await context.newPage();
-    ctx.page.setDefaultTimeout(20000);
-    await run(ctx);
+    await withWriteCliPage({
+      propertyCode: ctx.args.property, secret: ctx.secret, context, browser, env: process.env,
+    }, async ({ page: leased }) => {
+      ctx.page = leased;
+      ctx.page.setDefaultTimeout?.(20000);
+      await run(ctx);
+    });
   } catch (error) {
     ctx.result.error = squash(error?.message || error).slice(0, 300);
   }
@@ -860,8 +867,8 @@ async function drive(ctx) {
   if (browser && typeof browser.disconnect === 'function') browser.disconnect();
 }
 
-async function main() {
-  const property = parseStayProperty(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)) {
+  const property = parseStayProperty(argv);
   if (!property.ok) {
     process.stderr.write(`${property.error}\n`);
     return property.exitCode;
