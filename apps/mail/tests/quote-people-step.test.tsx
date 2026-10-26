@@ -169,4 +169,49 @@ describe('QuotePeopleStep', () => {
     const sameMessageGuest = screen.getByLabelText('Guest') as HTMLInputElement;
     expect(sameMessageGuest.value).toBe('Staff-entered value');
   });
+
+  it('keeps a guest edit when the contact editor key changes for the same message', () => {
+    const agentContact: StoredContact = {
+      name: 'Agent sender',
+      company: null,
+      endClient: null,
+      email: null,
+      phone: null,
+    };
+    const props = {
+      session: {
+        binding: {
+          transportId: 'mailbox-1',
+          mailboxEmail: 'mailbox@example.invalid',
+          storeId: 'store-1',
+          folderEntryId: 'folder-entry-1',
+          entryId: 'entry-1',
+          internetMessageId: 'message-1',
+          selectionEpoch: 1,
+          scopeEpoch: 1,
+        },
+        staffSource: null,
+        groups: [],
+        analysis: {
+          luna: {
+            party: { kind: 'agency' },
+            groups: [{ guestNames: [] }],
+          },
+        },
+      } as unknown as QuoteSession,
+      partyState: 'Optional' as const,
+      header: emptyStaffQuoteHeader(),
+      contact: agentContact,
+      contactEditorKey: 'mailbox-1::message-1|reading',
+      scrollToStep: vi.fn(),
+    } as unknown as Parameters<typeof QuotePeopleStep>[0];
+
+    const readingRender = render(<QuotePeopleStep {...props} />);
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Staff-entered value' } });
+    readingRender.unmount();
+
+    render(<QuotePeopleStep {...props} contactEditorKey="mailbox-1::message-1|ready:work-item-1" />);
+
+    expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('Staff-entered value');
+  });
 });
