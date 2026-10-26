@@ -33,6 +33,7 @@ import {
 } from '../ui/dropdown-menu';
 import { cn, formatDate, formatMessageHeaderDate, formatTime, shouldShowSeparateTime } from '@/lib/utils';
 import { useTimezone } from '@/hooks/use-timezone';
+import { shouldAutoScrollToLatestMessage } from '@/lib/mail/source-message-navigation';
 import { memo, useEffect, useMemo, useState, useRef, useCallback, type MouseEvent } from 'react';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
@@ -133,6 +134,7 @@ type Props = {
   isLoading: boolean;
   index: number;
   totalEmails?: number;
+  suppressLatestAutoScroll?: boolean;
   demo?: boolean;
   subject?: string;
   onReply?: () => void;
@@ -482,7 +484,13 @@ const openAttachment = async (
   }
 };
 
-const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
+const MailDisplay = ({
+  emailData,
+  index,
+  totalEmails,
+  suppressLatestAutoScroll,
+  demo,
+}: Props) => {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
   const timezone = useTimezone();
   const { data: threadData } = useThread(emailData.threadId ?? null);
@@ -683,13 +691,15 @@ const MailDisplay = ({ emailData, index, totalEmails, demo }: Props) => {
 
   // Separate from collapse/reply toggles so mid-thread reply does not yank viewport to newest.
   useEffect(() => {
-    if (!demo && isLastEmail && totalEmails && totalEmails > 5) {
-      setTimeout(() => {
-        const element = document.getElementById(`mail-${emailData.id}`);
-        element?.scrollIntoView({ behavior: 'smooth' });
-      }, 100);
-    }
-  }, [demo, emailData.id, isLastEmail, totalEmails]);
+    if (
+      !shouldAutoScrollToLatestMessage({ demo, suppressLatestAutoScroll, isLastEmail, totalEmails })
+    ) return;
+    const timeout = setTimeout(() => {
+      const element = document.getElementById(`mail-${emailData.id}`);
+      element?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+    return () => clearTimeout(timeout);
+  }, [demo, emailData.id, isLastEmail, suppressLatestAutoScroll, totalEmails]);
 
   //   const listUnsubscribeAction = useMemo(
   //     () =>
