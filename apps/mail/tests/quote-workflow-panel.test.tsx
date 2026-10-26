@@ -21,6 +21,7 @@ import type {
   QuoteSession,
   RateOption,
   RatePlanCatalogueEntry,
+  StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 import { defaultStaffStayExtras, HRDAV_PROPERTY_CODE } from '../lib/quote-workflow/types';
 import { CENTURION_RATE_PLANS } from '../../server-pilot/src/hms/rate-catalogue';
@@ -2136,6 +2137,7 @@ describe('the Find in HMS picker in the quote header', () => {
         session={value}
         availabilityReader={readAvailability}
         paneConfig={paneConfig}
+        onPatchGroup={vi.fn()}
       />
     );
     const { rerender } = render(panel(session));
