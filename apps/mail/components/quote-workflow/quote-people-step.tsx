@@ -1,0 +1,161 @@
+import { Field, Section, SecondaryButton, StepState, paneFieldClass } from '@/components/nava-pane/pane-ui';
+import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
+import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
+import type { QuoteSession, StaffQuoteHeader } from '@/lib/quote-workflow/types';
+import { PartyPicker } from './party-picker';
+
+/** Editing a field away from its picked name drops that pick, so the quote never sends a party the text no longer names. */
+function pickClearedBy(kind: 'company' | 'agency', header: StaffQuoteHeader, text: string): Partial<StaffQuoteHeader> {
+  const picked = header.parties?.[kind];
+  if (!picked || text === picked.name) return {};
+  return { parties: { ...header.parties, [kind]: undefined } };
+}
+
+/** Rate plan filters returned options. Contract eligibility still comes only from each HMS result. */
+function StaffPartyFields({
+  header,
+  onPatch,
+  onFieldEdit,
+  findParty,
+  partySuggestions,
+  partyIndex,
+  partyJobTransport,
+  threadId,
+  sourceMessageId,
+  onPartyLookupPending,
+}: {
+  header: StaffQuoteHeader;
+  onPatch?: (header: Partial<StaffQuoteHeader>) => void;
+  onFieldEdit?: (kind: 'company' | 'agency') => void;
+  /** Find in HMS. Null or absent keeps the company and agency as plain text, as before. */
+  findParty?: PartyFinder | null;
+  /** Suggestions from the email. The top name is preselected when V2 has not bound a party. */
+  partySuggestions?: PartySuggestion[];
+  /** The HMS list searched while staff type. Null or absent leaves only the live search. */
+  partyIndex?: PartyIndexSearcher | null;
+  partyJobTransport?: HmsJobTransport | null;
+  threadId?: string | null;
+  sourceMessageId?: string | null;
+  /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
+  onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
+}) {
+  const partyPicker = (kind: 'company' | 'agency') => {
+    const label = kind === 'agency' ? 'Agency' : 'Company';
+    const value = kind === 'agency' ? header.agency : header.company;
+    const id = `quote-${kind}-name`;
+    if (!findParty) {
+      return (
+        <Field label={label} htmlFor={id}>
+          <input
+            id={id}
+            aria-label={label}
+            className={paneFieldClass}
+            value={value}
+            onChange={(event) => {
+              const searched = event.target.value;
+              onFieldEdit?.(kind);
+              onPatch?.({
+                ...(kind === 'company' ? { company: searched } : { agency: searched }),
+                ...pickClearedBy(kind, header, searched),
+              });
+            }}
+          />
+        </Field>
+      );
+    }
+    return (
+      <PartyPicker
+        autoLookup
+        kind={kind}
+        name={value}
+        parties={header.parties ?? {}}
+        find={findParty}
+        jobTransport={partyJobTransport}
+        threadId={threadId}
+        sourceMessageId={sourceMessageId}
+        suggestions={partySuggestions}
+        indexSearch={partyIndex}
+        onLookupPending={(pending) => onPartyLookupPending?.(kind, pending)}
+        onPick={(party) => {
+          onFieldEdit?.(kind);
+          return onPatch?.({
+            parties:
+              party.kind === 'company'
+                ? { ...header.parties, company: party }
+                : { ...header.parties, agency: party },
+            ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }),
+          });
+        }}
+        onClear={(cleared) => {
+          onFieldEdit?.(cleared);
+          return onPatch?.({
+            parties:
+              cleared === 'company'
+                ? { ...header.parties, company: undefined }
+                : { ...header.parties, agency: undefined },
+          });
+        }}
+        onSearchName={(searched, searchKind) => {
+          onFieldEdit?.(searchKind);
+          return onPatch?.({
+            ...(searchKind === 'company' ? { company: searched } : { agency: searched }),
+            ...pickClearedBy(searchKind, header, searched),
+          });
+        }}
+      />
+    );
+  };
+  return (
+    <div className="flex flex-col gap-2.5">
+      {partyPicker('agency')}
+      <div aria-hidden="true" className="border-t border-[#e2e8f0]" />
+      {partyPicker('company')}
+    </div>
+  );
+}
+
+export function QuotePeopleStep({
+  session,
+  partyState,
+  header,
+  onPatchStaffHeader,
+  onFieldEdit,
+  findParty,
+  partySuggestions,
+  partyIndex,
+  partyJobTransport,
+  onPartyLookupPending,
+  scrollToStep,
+}: {
+  session: QuoteSession;
+  partyState: 'Done' | 'Pending' | 'Optional' | 'Looking up';
+  header: StaffQuoteHeader;
+  onPatchStaffHeader?: (header: Partial<StaffQuoteHeader>, options?: { staffEdit?: boolean }) => void;
+  onFieldEdit?: (kind: 'company' | 'agency') => void;
+  findParty?: PartyFinder | null;
+  partySuggestions?: PartySuggestion[];
+  partyIndex?: PartyIndexSearcher | null;
+  partyJobTransport?: HmsJobTransport | null;
+  onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
+  scrollToStep: (id: string) => void;
+}) {
+  return (
+    <Section step={1} title="Agency & company" id="quote-party" action={<StepState state={partyState} />}>
+      <StaffPartyFields
+        header={header}
+        onPatch={(header) => onPatchStaffHeader?.(header, { staffEdit: true })}
+        onFieldEdit={onFieldEdit}
+        findParty={findParty}
+        partySuggestions={partySuggestions}
+        partyIndex={partyIndex}
+        partyJobTransport={partyJobTransport}
+        threadId={session.staffSource?.threadId ?? null}
+        sourceMessageId={session.staffSource?.messageId ?? null}
+        onPartyLookupPending={onPartyLookupPending}
+      />
+      <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-authority')}>
+        Continue to HMS notes
+      </SecondaryButton>
+    </Section>
+  );
+}
