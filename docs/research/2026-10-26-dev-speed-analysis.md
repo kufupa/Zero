@@ -51,3 +51,30 @@ About 60% of wall time was the U5→U6b→U13 chain. It was serial because each 
 | 7 | Cursor CLI `cursor-grok-4.6-high` (subscription) + Luna → 6–8 coder lanes, cost no longer limiting | API spend |
 
 Estimate (not measured): per unit ~25–35 min wall (code 10–20 + gates ~5). Longest chain after the split: A→F→G→H→I→J ≈ 6 units ≈ 3–3.5 h. Tier 1+2 (14 units) ≈ 2.5–3 h, everything (22) ≈ 3.5–4 h at 6 wide, vs 16–20 h last-night style. Risk: P1 rounds (6 of 16 PRs last night) push it out.
+
+## 4. Root causes in the method (owner: "what are we fundamentally doing wrong")
+
+| # | Finding | Number | Source |
+|---|---|---|---|
+| F1 | Lanes were mostly not running | 30 lane sessions = 44.5 lane-hours over 18.6 h → **2.4 busy lanes on average** | R1.md lane wall times |
+| F2 | Coding waits on review, merge and deploy: the next unit started only after the previous one merged (plan start table) | U6b/U7/U11b "gated on #538" 3 h; U6b chain serial 5 h 54 | state.md tick 8, retro §2b |
+| F3 | Each lane is a full PR lifecycle: cold start (read rules + plan + codegraph), code, gates, local review, wait for Apex, fix, repeat | **89 min per lane session** for ~150 product lines | R1.md: 2,670 min / 30 sessions |
+| F4 | Tests and docs outweigh product code | 10-25 diff: product +4,576, tests +5,563, docs +1,529 | git diff origin/main |
+| F5 | Coordination is done by LLMs reading state files: orchestrator + Opus watchdog + 6 handoffs | orch $9.6, watchdog $14.8, docs lane Sol $24.5 = 40% of $123 | retro §3 |
+| F6 | Planning before the run is long | shape + plan 2026-10-24 ≈ 12 h, 400-line plan | git log of plan file |
+| F7 | Live HMS proof sits on the critical path | proofs 14:29–15:56 + G9 reruns | retro §2b |
+| F8 | Every lane loads ~7.7k words of rules + a 400-line plan | wc -w | — |
+
+Daily output is steady regardless of method: 10-19 52 PRs, 10-22 30, 10-23 35, 10-25 26 (gh). That is a process ceiling, not a model ceiling.
+
+## 5. Proposed method change
+
+1. **Never block coding on review.** One long-lived lane per area keeps coding the next slice on top of its open PR (stacked PRs, GA on GitHub 2026-10-06). Review fixes go in as their own commits later.
+2. **Lanes per area, not per unit** (pane-cards, server-prefetch, HMS-session, booking). No cold start per unit; ≤4 areas with disjoint files → 4 always-busy lanes instead of 2.4.
+3. **Split the 3 monolith files first** (30 min) so areas don't collide.
+4. **Script, not LLM, for coordination:** dispatcher + merge-gate + deploy-on-merge. No watchdog LLM; Opus checks hourly.
+5. **Tests: one test per behaviour, at the seam.** No snapshot-of-UI tests; the target ratio is ≤0.7× product.
+6. **Planning ≤1 h:** a slice list + file ownership + acceptance per slice. No 400-line plan.
+7. **Proof off the critical path:** background canary lane per hotel after each deploy.
+
+Expected (inference, not measured): 4 busy lanes × ~3× less lane overhead ≈ 4–6× throughput, if P1 rounds stay low. No 2026 source shows a sustained 10×.
