@@ -25,10 +25,16 @@ function sharedPartyJob(status: HmsJobView['status'], sourceMessageId: string): 
   };
 }
 
-function partyFields(jobTransport: HmsJobTransport, sourceMessageId: string) {
+function partyFields(
+  jobTransport: HmsJobTransport,
+  sourceMessageId: string,
+  agencySelected = false,
+) {
   const shared = {
     name: 'Example Group',
-    parties: {},
+    parties: agencySelected
+      ? { agency: { kind: 'agency' as const, nativeId: 'agency-1', name: 'Example Agency' } }
+      : {},
     find: vi.fn(),
     jobTransport,
     threadId: 'thread-1',
@@ -46,7 +52,7 @@ function partyFields(jobTransport: HmsJobTransport, sourceMessageId: string) {
 }
 
 describe('PartyPicker shared job status', () => {
-  it('announces one shared lookup and retains its failure and Retry state', async () => {
+  it('announces one shared lookup and retains failure and Retry when Agency is already picked', async () => {
     let view = sharedPartyJob('running', 'message-1');
     const pendingReadbacks: Array<(result: HmsJobView | null) => void> = [];
     const jobTransport: HmsJobTransport = {
@@ -71,9 +77,9 @@ describe('PartyPicker shared job status', () => {
     );
 
     view = sharedPartyJob('failed', 'message-2');
-    rerender(partyFields(jobTransport, 'message-2'));
+    rerender(partyFields(jobTransport, 'message-2', true));
 
-    await waitFor(() => expect(pendingReadbacks).toHaveLength(2));
+    await waitFor(() => expect(pendingReadbacks).toHaveLength(1));
     await act(async () => {
       pendingReadbacks.splice(0).forEach((resolve) => resolve(view));
     });
