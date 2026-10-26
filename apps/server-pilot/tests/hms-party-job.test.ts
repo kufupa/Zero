@@ -206,7 +206,7 @@ describe('party prefetch selection', () => {
     ).toEqual({ kind: 'party', name: 'Horizon Trail Tours' });
   });
 
-  it('falls back to the top email party suggestion and skips non-quote mail', () => {
+  it('falls back to the top email party suggestion and skips kinds outside Needs-you', () => {
     expect(
       selectPartyPrefetchRequest({
         kind: 'quote',
@@ -222,18 +222,6 @@ describe('party prefetch selection', () => {
         sender: 'sender@example.test',
         body: '',
       }),
-    ).toBeNull();
-    expect(
-      selectPartyPrefetchRequest({
-        kind: 'booking',
-        payload: {
-          agency: 'Sample Agency',
-          confirmationNumbers: [],
-          stays: [{ id: 'stay-1' }],
-        },
-        sender: 'sender@example.test',
-        body: '',
-      }),
     ).toEqual({ kind: 'party', name: 'Sample Agency' });
     expect(
       selectPartyPrefetchRequest({
@@ -243,6 +231,14 @@ describe('party prefetch selection', () => {
           confirmationNumbers: ['57291630-1'],
           stays: [{ id: 'stay-1' }],
         },
+        sender: 'sender@example.test',
+        body: '',
+      }),
+    ).toEqual({ kind: 'party', name: 'Sample Agency' });
+    expect(
+      selectPartyPrefetchRequest({
+        kind: 'other',
+        payload: { agency: 'Sample Agency' },
         sender: 'sender@example.test',
         body: '',
       }),
@@ -417,8 +413,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
 
         const spam = await seedQuote(db, 'quote', 'Spam Travel', true);
         expect(await prefetchPartyForExtraction(spam, db, env)).toBe(0);
-        const booking = await seedQuote(db, 'booking', 'No Quote Agency');
-        expect(await prefetchPartyForExtraction(booking, db, env)).toBe(0);
+        const other = await seedQuote(db, 'other', 'No Quote Agency');
+        expect(await prefetchPartyForExtraction(other, db, env)).toBe(0);
         const noAction = await seedQuote(db, 'quote', 'Already Handled Tours', false, {}, 'no_action');
         expect(await prefetchPartyForExtraction(noAction, db, env)).toBe(0);
 

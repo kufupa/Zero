@@ -107,7 +107,7 @@ import {
   resolvePropertyTransport,
 } from '../../tooling/playwright-quote/property-registry.mjs';
 import { extractVoucherGuest, surnameFrom } from './voucher-find.js';
-import { isStaffSender, knownSenders } from './work-items.js';
+import { isStaffSender, knownSenders, NEEDS_YOU_KINDS } from './work-items.js';
 import {
   staffQuoteInput,
   staffQuoteSourceHash,
@@ -215,7 +215,27 @@ const STAFF_QUOTE_RESULT_TTL_MS = 6 * 60 * 60_000;
 const PREFETCH_PER_MAIL_MAX = 3;
 export const PREFETCH_WINDOW_MS = 60 * 60_000;
 const PARTY_USER_PER_HOUR = 12;
-const PARTY_READBACK_FRESH_MS = 24 * 60 * 60_000;
+const PARTY_PREFETCH_KINDS: ReadonlySet<string> = new Set(NEEDS_YOU_KINDS);
+const PARTY_PREFETCH_REASONS = new Set([
+  'disabled',
+  'not_inbound_extraction',
+  'source_not_found',
+  'extraction_not_succeeded',
+  'not_eligible_kind',
+  'spam',
+  'history_copy',
+  'not_inbound',
+  'no_action',
+  'channel_or_ota',
+  'mailbox_sender',
+  'staff_sender',
+  'no_live_admission',
+  'target_refused',
+  'no_candidate',
+  'cap_exhausted',
+  'queued',
+  'unknown',
+]);
 const ISO_DAY = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
 // Same shape amend-find.ts accepts for an HMS confirmation number. Prefetch takes only numbers in this shape.
@@ -486,7 +506,12 @@ export function partyPrefetchV2IdempotencyKey(
   return `hms-job:prefetch-party-v2:${property}${transportId}:${digest}`;
 }
 
-/** A quote's extracted agency wins; otherwise use the first unverified email hint.
+/** Closed skip token when the extraction kind is outside the Needs-you baseline. */
+export function partyPrefetchKindReason(kind: string | null | undefined): 'not_eligible_kind' | null {
+  return kind && PARTY_PREFETCH_KINDS.has(kind) ? null : 'not_eligible_kind';
+}
+
+/** A Needs-you extraction's agency wins; otherwise use the first unverified email hint.
  * Never infer a party id.
  */
 export function selectPartyPrefetchRequest(input: {
@@ -496,7 +521,7 @@ export function selectPartyPrefetchRequest(input: {
   body: string | null;
   propertyCode?: string | null;
 }): Extract<HmsJobRequest, { kind: 'party' }> | null {
-  if (quotePrepareKindReason({ kind: input.kind, payload: input.payload }) === 'not_quote') return null;
+  if (partyPrefetchKindReason(input.kind)) return null;
   const payload = objectRecord(input.payload);
   const agency = typeof payload.agency === 'string' ? payload.agency.trim() : '';
   if (agency.length > 0 && agency.length <= 256)
@@ -520,11 +545,7 @@ export function selectPartyMatchV2PrefetchRequest(input: {
   allowLearnedSenderHistory?: boolean;
   historyPropertyCode?: string | null;
 }): Extract<HmsJobRequest, { kind: 'party' }> | null {
-  if (
-    quotePrepareKindReason({ kind: input.kind, payload: input.payload, subject: input.subject }) === 'not_quote'
-  ) {
-    return null;
-  }
+  if (partyPrefetchKindReason(input.kind)) return null;
   const candidates = buildPartyMatchCandidates({
     payload: input.payload,
     fromAddress: input.sender,
@@ -2181,16 +2202,85 @@ export function scheduleAvailabilityPrefetch(
   void prefetchAvailabilityForExtraction(run).catch(() => undefined);
 }
 
-/** One background company/agency search for a successful quote extraction,
- * under the normal mail-prefetch cap.
+type PartyPrefetchRun = Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'> &
+  Partial<Pick<AiWorkflowRun, 'admissionSnapshotId'>>;
+
+async function livePartyAdmissionSnapshotId(run: PartyPrefetchRun, db: DB): Promise<string | null> {
+  if (typeof run.admissionSnapshotId === 'string' && run.admissionSnapshotId.trim()) {
+    return run.admissionSnapshotId.trim();
+  }
+  if (run.admissionSnapshotId === null) return null;
+  const [row] = await db
+    .select({ admissionSnapshotId: aiWorkflowRun.admissionSnapshotId })
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.transportId, run.transportId),
+        eq(aiWorkflowRun.triggerMessageId, run.triggerMessageId),
+        eq(aiWorkflowRun.runKind, 'inbound_extraction'),
+        like(aiWorkflowRun.idempotencyKey, 'inbound-extraction:%'),
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+    .limit(1);
+  return row?.admissionSnapshotId ?? null;
+}
+
+async function recordPartyPrefetchDecision(
+  db: DB,
+  run: PartyPrefetchRun,
+  decision: { outcome: 'skipped' | 'queued'; reason: string; queued?: number },
+): Promise<void> {
+  const reason = PARTY_PREFETCH_REASONS.has(decision.reason) ? decision.reason : 'unknown';
+  const partyPrefetch: Record<string, unknown> = {
+    at: new Date().toISOString(),
+    outcome: decision.outcome,
+    reason,
+  };
+  if (decision.outcome === 'queued' && Number.isInteger(decision.queued) && (decision.queued as number) >= 0) {
+    partyPrefetch.queued = decision.queued;
+  }
+  try {
+    const [row] = await db
+      .select({ id: aiWorkflowRun.id, metrics: aiWorkflowRun.metrics })
+      .from(aiWorkflowRun)
+      .where(
+        and(
+          eq(aiWorkflowRun.transportId, run.transportId),
+          eq(aiWorkflowRun.triggerMessageId, run.triggerMessageId),
+          eq(aiWorkflowRun.runKind, 'inbound_extraction'),
+        ),
+      )
+      .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+      .limit(1);
+    if (!row) return;
+    await db
+      .update(aiWorkflowRun)
+      .set({
+        metrics: { ...objectRecord(row.metrics), partyPrefetch },
+        updatedAt: new Date(),
+      })
+      .where(eq(aiWorkflowRun.id, row.id));
+  } catch {
+    return;
+  }
+}
+
+/** One background company/agency search for a successful Needs-you extraction,
+ * under the normal mail-prefetch cap. Missing live admission never starts an HMS read.
  */
 export async function prefetchPartyForExtraction(
-  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
+  run: PartyPrefetchRun,
   db: DB = getDb(),
   env = parseEnv(process.env as Record<string, string | undefined>),
 ): Promise<number> {
-  if (!env.HMS_PREFETCH_ENABLED || !hmsJobQueueEnabled() || run.runKind !== 'inbound_extraction')
+  const skip = async (reason: string) => {
+    await recordPartyPrefetchDecision(db, run, { outcome: 'skipped', reason });
     return 0;
+  };
+  if (!env.HMS_PREFETCH_ENABLED || !hmsJobQueueEnabled()) return skip('disabled');
+  if (run.runKind !== 'inbound_extraction') return skip('not_inbound_extraction');
+  if (!(await livePartyAdmissionSnapshotId(run, db))) return skip('no_live_admission');
   const [source] = await db
     .select({
       threadId: message.threadId,
@@ -2222,38 +2312,32 @@ export async function prefetchPartyForExtraction(
     )
     .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
     .limit(1);
-  if (
-    !source ||
-    source.extractionStatus !== 'succeeded' ||
-    quotePrepareKindReason({ kind: source.kind, payload: source.payload, subject: source.subject }) ===
-      'not_quote' ||
-    source.spamAt ||
-    source.threadHistoryOnly ||
-    source.historyOnly ||
-    source.direction !== 'inbound' ||
-    objectRecord(source.payload).action === 'no_action'
-  ) {
-    return 0;
-  }
+  if (!source) return skip('source_not_found');
+  if (source.extractionStatus !== 'succeeded') return skip('extraction_not_succeeded');
+  if (partyPrefetchKindReason(source.kind)) return skip('not_eligible_kind');
+  if (source.spamAt) return skip('spam');
+  if (source.threadHistoryOnly || source.historyOnly) return skip('history_copy');
+  if (source.direction !== 'inbound') return skip('not_inbound');
+  if (objectRecord(source.payload).action === 'no_action') return skip('no_action');
   const sourceClassification = classifyMailSource({
     fromAddress: source.fromAddress,
     subject: source.subject,
     bodyText: source.textBody ?? source.htmlBody,
   });
-  if (sourceClassification.kind !== 'direct') return 0;
+  if (sourceClassification.kind !== 'direct') return skip('channel_or_ota');
   const from = normalizeEmailAddress(source.fromAddress);
   const mailbox = normalizeEmailAddress(source.mailboxEmail);
-  if (from === mailbox) return 0;
+  if (from === mailbox) return skip('mailbox_sender');
   const resolved = await resolveHmsReadJobTarget({
     transportId: run.transportId,
     threadId: source.threadId,
     messageId: run.triggerMessageId,
   });
-  if (!resolved.ok) return 0;
+  if (!resolved.ok) return skip('target_refused');
   const target = resolved.target;
   if (isStaffSender(source.fromAddress, source.mailboxEmail)) {
     const sentFrom = await knownSenders(db, run.transportId, [source.fromAddress]);
-    if (sentFrom.has(from)) return 0;
+    if (sentFrom.has(from)) return skip('staff_sender');
   }
 
   const request = env.PARTY_MATCH_V2
@@ -2273,7 +2357,8 @@ export async function prefetchPartyForExtraction(
         body: source.textBody,
         propertyCode: partyHistoryPropertyCode(target),
       });
-  if (!request || env.HMS_PREFETCH_PER_HOUR <= 0) return 0;
+  if (!request) return skip('no_candidate');
+  if (env.HMS_PREFETCH_PER_HOUR <= 0) return skip('cap_exhausted');
   const queued = await enqueuePartyPrefetchWithinCap(
     db,
     {
@@ -2301,15 +2386,15 @@ export async function prefetchPartyForExtraction(
     },
     env.HMS_PREFETCH_PER_HOUR,
   );
-  return queued ? 1 : 0;
+  if (!queued) return 0;
+  await recordPartyPrefetchDecision(db, run, { outcome: 'queued', reason: 'queued', queued: 1 });
+  return 1;
 }
 
 /** Fire-and-forget after a successful quote extraction.
  * Off unless the queue and HMS_PREFETCH_ENABLED are on.
  */
-export function schedulePartyPrefetch(
-  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
-): void {
+export function schedulePartyPrefetch(run: PartyPrefetchRun): void {
   void prefetchPartyForExtraction(run).catch(() => undefined);
 }
 
@@ -2784,11 +2869,7 @@ async function executePartyMatchV2(input: {
   if (
     !source ||
     source.extractionStatus !== 'succeeded' ||
-    quotePrepareKindReason({
-      kind: source.extractionKind,
-      payload: source.payload,
-      subject: source.subject,
-    }) === 'not_quote' ||
+    partyPrefetchKindReason(source.extractionKind) ||
     source.direction !== 'inbound' ||
     source.historyOnly ||
     source.threadHistoryOnly ||
@@ -2810,7 +2891,7 @@ async function executePartyMatchV2(input: {
   });
   if (!resolved.ok) {
     return {
-      ...partyMatchV2NoMatch('Da Vinci mailbox origin is not bound to Centurion HMS'),
+      ...partyMatchV2NoMatch(resolved.message),
       outcome: 'refused_origin_mismatch',
     };
   }
@@ -4199,9 +4280,6 @@ export async function readHmsJobView(
               ),
               scope,
               sql`${aiWorkflowRun.readRequest}->>'kind' = ${input.kind}`,
-              ...(input.kind === 'party'
-                ? [gte(aiWorkflowRun.createdAt, new Date(Date.now() - PARTY_READBACK_FRESH_MS))]
-                : []),
               ...(input.confirmation
                 ? [sql`${aiWorkflowRun.readRequest}->>'confirmation' = ${input.confirmation}`]
                 : []),
