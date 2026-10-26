@@ -143,7 +143,7 @@ describe('deployment retention scripts', () => {
     expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
   });
 
-  it('archives old run directories only after count verification and skips recent evidence', () => {
+  it('archives stale leaf runs by file age and preserves fresh siblings and parents', () => {
     const root = tempRoot();
     const bin = join(root, 'bin');
     const evidenceRoot = join(root, 'private', 'playwright-quote');
@@ -157,7 +157,9 @@ describe('deployment retention scripts', () => {
     mkdirSync(nestedContainer);
     const nestedRun = addEvidenceDir(nestedContainer, 'nested-run', 15, ['trace.zip', 'result.json']);
     const nestedRecent = addEvidenceDir(nestedContainer, 'nested-recent', 1, ['trace.zip']);
-    const containerMtime = new Date(Date.now() - DAY_MS);
+    const oldLeafDirectoryMtime = new Date();
+    utimesSync(nestedRun, oldLeafDirectoryMtime, oldLeafDirectoryMtime);
+    const containerMtime = new Date(Date.now() - 30 * DAY_MS);
     utimesSync(nestedContainer, containerMtime, containerMtime);
     writeExecutable(
       join(bin, 'aws'),
@@ -212,6 +214,7 @@ describe('deployment retention scripts', () => {
     expect(firstCalls).toContain(
       's3://nava-zero-mail-845242190536-af-south-1/ops-dumps/hms-evidence/matched-run/',
     );
+    expect(firstCalls).not.toContain(`s3 sync ${nestedContainer} `);
 
     const recreatedRun = addEvidenceDir(nestedContainer, 'nested-run', 16, ['trace.zip', 'result.json']);
     utimesSync(nestedContainer, containerMtime, containerMtime);
