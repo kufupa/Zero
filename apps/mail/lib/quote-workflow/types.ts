@@ -349,6 +349,9 @@ export type AvailabilityBoardRow = {
   rateScope?: 'public' | 'contextual' | 'unknown';
 };
 
+/** Staff's exact grid choice. It carries no price, availability, or quote-validity evidence. */
+export type QuoteRoomRateBoardSelection = Pick<AvailabilityBoardRow, 'roomCode' | 'rateCode' | 'board'>;
+
 /** What one row was charged on its last run: HMS's nightly rates, the rates charged, and for an override its HMS comment. */
 export type StaffRowRate = {
   groupId: string;
@@ -800,6 +803,8 @@ export type QuoteSession = {
   handledReviewItemIds: string[];
   /** Rate cards for the latest run of each room group. Kept while a pinned re-run is pending. */
   rateOptions?: RateOption[];
+  /** Staff's exact room/rate/board choice, keyed by room-group id. Optional for older saved sessions. */
+  roomRateBoardSelections?: Record<string, QuoteRoomRateBoardSelection>;
   /** U8 booking cards, one per stay whose matching prepareBookingDraft result has arrived. */
   bookingDrafts: Record<string, BookingDraftReady>;
   /** Staff override that re-runs analyseSelection as quote or booking. */
@@ -868,6 +873,7 @@ export type QuoteSessionAction =
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
   | { type: 'patch_staff_stay_extras'; stayKey: string; extras: Partial<StaffStayExtras> }
   | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }
+  | { type: 'room_rate_board_selected'; groupId: string; selection: QuoteRoomRateBoardSelection }
   | { type: 'select_stay_key'; stayKey: string }
   | {
       type: 'staff_quote_ready';
