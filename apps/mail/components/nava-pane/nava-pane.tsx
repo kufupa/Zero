@@ -2242,6 +2242,7 @@ export function NavaPane({
             {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
             <QuoteWorkflowPanel
               session={quoteSession}
+              workItemId={paneWorkItemId ?? undefined}
               quoteStrategyRows={quoteSession.quoteStrategyRows}
               onSelectQuoteStrategy={(stayKey, strategyCode) =>
                 dispatchQuote({ type: 'quote_strategy_selected', stayKey, strategyCode })
