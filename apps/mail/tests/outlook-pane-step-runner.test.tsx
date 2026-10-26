@@ -109,6 +109,18 @@ vi.mock('../providers/query-provider', () => ({
       },
     },
     quoteWorkflow: {
+      // 12f451bd6 (#536) loads mailbox pane choices via rateCatalogue.query on mount.
+      rateCatalogue: {
+        query: async () => ({
+          transportId: 'transport-shared',
+          propertyCode: 'HRCEN',
+          roomTypes: [],
+          ratePlans: [],
+          boards: [],
+          overrideRateCodes: [],
+          eventRateCodes: [],
+        }),
+      },
       analyseSelection: {
         mutate: async () => ({
           status: 'ready' as const,
@@ -191,7 +203,7 @@ describe('mounted pane step runner and current inputs', () => {
   it('runs the explicit step control with the current stay facts and revision', async () => {
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
-    const perStep = await screen.findByRole('button', { name: /^Run Search availability 2026-11-12 → 2026-11-14/i });
+    const perStep = await screen.findByRole('button', { name: /^Search availability$/i });
     expect((perStep as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(perStep);
     await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
@@ -221,7 +233,7 @@ describe('mounted pane step runner and current inputs', () => {
     await fillStayFacts('2026-11-12', '2026-11-14');
     fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-12-01' } });
     fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-12-03' } });
-    const perStep = await screen.findByRole('button', { name: /Run Search availability 2026-12-01 → 2026-12-03/i });
+    const perStep = await screen.findByRole('button', { name: /^Search availability$/i });
     fireEvent.click(perStep);
     await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
     const request = executeStaffQuoteMutateMock.mock.calls[0]?.[0] as {
@@ -238,7 +250,7 @@ describe('mounted pane step runner and current inputs', () => {
   it('has no separate party lookup: the stay search runs from the stay facts alone', async () => {
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
-    const stay = await screen.findByRole('button', { name: /^Run Search availability/i });
+    const stay = await screen.findByRole('button', { name: /^Search availability$/i });
     expect((stay as HTMLButtonElement).disabled).toBe(false);
     expect(screen.queryByRole('button', { name: /Look up organisation/i })).toBeNull();
     fireEvent.click(stay);
@@ -250,14 +262,14 @@ describe('mounted pane step runner and current inputs', () => {
     panePartyFindMock.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
-    fireEvent.change(screen.getByLabelText('Company (end client)'), { target: { value: 'Acme Travel' } });
+    fireEvent.change(screen.getByLabelText('Search company in HMS'), { target: { value: 'Acme Travel' } });
     expect((await screen.findAllByText('Finding the company in HMS…')).length).toBeGreaterThan(0);
-    const run = await screen.findByRole('button', { name: /^Run Search availability/i });
+    const run = await screen.findByRole('button', { name: /^Search availability$/i });
     expect((run as HTMLButtonElement).disabled).toBe(true);
     await waitFor(() => expect(panePartyFindMock).toHaveBeenCalledTimes(1));
     answer({ outcome: 'resolved', results: [], truncated: false, best: null, searchedFor: null });
     await waitFor(() => expect(screen.queryAllByText('Finding the company in HMS…')).toHaveLength(0));
-    const released = await screen.findByRole('button', { name: /^Run Search availability/i });
+    const released = await screen.findByRole('button', { name: /^Search availability$/i });
     expect((released as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -273,7 +285,7 @@ describe('mounted pane step runner and current inputs', () => {
     });
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
-    fireEvent.click(await screen.findByRole('button', { name: /^Run Search availability/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Search availability$/i }));
     await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
     fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-15' } });
     finish();
@@ -288,9 +300,9 @@ describe('mounted pane step runner and current inputs', () => {
     executeStaffQuoteMutateMock.mockRejectedValueOnce(new Error('executeStaffQuote network down'));
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
-    fireEvent.click(await screen.findByRole('button', { name: /^Run Search availability/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Search availability$/i }));
     await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(1));
-    const retry = await screen.findByRole('button', { name: /^Run Search availability/i });
+    const retry = await screen.findByRole('button', { name: /^Search availability$/i });
     expect((retry as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(retry);
     await waitFor(() => expect(executeStaffQuoteMutateMock).toHaveBeenCalledTimes(2));
@@ -361,7 +373,7 @@ describe('Re-quote after an expired prior quote', () => {
     panePartyFindMock.mockImplementationOnce(() => new Promise(() => {}));
     render(<OutlookPanePage />);
     await fillStayFacts('2026-11-12', '2026-11-14');
-    fireEvent.change(screen.getByLabelText('Company (end client)'), { target: { value: 'Acme Travel' } });
+    fireEvent.change(screen.getByLabelText('Search company in HMS'), { target: { value: 'Acme Travel' } });
     expect((await screen.findAllByText('Finding the company in HMS…')).length).toBeGreaterThan(0);
     const requote = await waitFor(() => requoteAction());
     requote();
@@ -383,7 +395,7 @@ describe('Re-quote after an expired prior quote', () => {
     const requote = await waitFor(() => requoteAction());
     requote();
     await waitFor(() => expect(getPriorQueryMock).toHaveBeenCalledTimes(1));
-    fireEvent.change(screen.getByLabelText('Company (end client)'), { target: { value: 'Acme Travel' } });
+    fireEvent.change(screen.getByLabelText('Search company in HMS'), { target: { value: 'Acme Travel' } });
     await waitFor(() => expect(panePartyFindMock).toHaveBeenCalledTimes(1), { timeout: 3000 });
     loaded();
     await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('Finding the company in HMS…'));
