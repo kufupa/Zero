@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import {
@@ -19,6 +19,7 @@ import { trpcClient } from '@/providers/query-provider';
 
 type MutableRef<T> = { current: T };
 type QuoteStepRunner = (stepId: string, autoStart?: boolean, readBack?: boolean) => void;
+const STAFF_QUOTE_AUTO_START_DEBOUNCE_MS = 250;
 
 type UseStaffQuoteAutostartArgs = {
   isNonActionableMessage: boolean;
@@ -59,6 +60,13 @@ export function useStaffQuoteAutostart({
   autoStaffQuoteSuppressed,
   staffQuoteAttemptKey,
 }: UseStaffQuoteAutostartArgs): void {
+  const autoStartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cancelAutoStartTimer = () => {
+    if (autoStartTimerRef.current === null) return;
+    clearTimeout(autoStartTimerRef.current);
+    autoStartTimerRef.current = null;
+  };
+
   const autoStartStaffQuoteStep = () => {
     if (
       isNonActionableMessage ||
@@ -119,11 +127,19 @@ export function useStaffQuoteAutostart({
     staffQuoteAutoAttempted.current.add(attemptKey);
     runQuoteStep(step.id, true, readBack);
   };
-  autoStartStaffQuoteStepRef.current = autoStartStaffQuoteStep;
+  const scheduleAutoStartStaffQuoteStep = () => {
+    cancelAutoStartTimer();
+    autoStartTimerRef.current = setTimeout(() => {
+      autoStartTimerRef.current = null;
+      autoStartStaffQuoteStep();
+    }, STAFF_QUOTE_AUTO_START_DEBOUNCE_MS);
+  };
+  autoStartStaffQuoteStepRef.current = scheduleAutoStartStaffQuoteStep;
 
   useEffect(() => {
     if (staffQuoteQueueMode !== 'on') return;
     autoStartStaffQuoteStepRef.current();
+    return cancelAutoStartTimer;
   }, [
     quoteSession,
     quoteRunPending,
