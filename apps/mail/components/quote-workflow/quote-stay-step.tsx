@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Dispatch, SetStateAction } from 'react';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import { Section, SecondaryButton, StepState } from '@/components/nava-pane/pane-ui';
 import { knownRoomCode } from '@/lib/quote-workflow/room-types';
 import {
@@ -22,9 +22,9 @@ import type {
   QuotePaneConfig,
   QuotePaneRoomType,
   QuoteSession,
+  QuoteStayAction,
   StaffQuoteHeader,
   StaffStayExtras,
-  StayEditAction,
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
 import { StayExtrasFields } from './stay-extras-fields';
@@ -267,6 +267,7 @@ export function QuoteStayStep({
   onStayAction,
   onPatchStayExtras,
   onSelectStayKey,
+  children,
 }: {
   session: QuoteSession;
   stays: Array<{ id: string; rows: StayGroupRequirement[] }>;
@@ -281,9 +282,10 @@ export function QuoteStayStep({
   strictRoomTypes: boolean;
   paneBoards?: QuotePaneBoard[];
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
-  onStayAction?: (action: StayEditAction) => void;
+  onStayAction?: (action: QuoteStayAction) => void;
   onPatchStayExtras?: (stayKey: string, extras: Partial<StaffStayExtras>) => void;
   onSelectStayKey?: (stayKey: string) => void;
+  children?: ReactNode;
 }) {
   return (
     <Section step={3} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
@@ -344,6 +346,7 @@ export function QuoteStayStep({
         </SecondaryButton>
         <p className="text-center text-[13px] text-[#64748b]">Each date range is searched and priced independently.</p>
       </div>
+      {children}
     </Section>
   );
 }

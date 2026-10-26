@@ -114,8 +114,15 @@ function primaryActions(container: HTMLElement): HTMLButtonElement[] {
   );
 }
 
-function EditableStayPanel({ initial }: { initial: QuoteSession }) {
+function EditableStayPanel({
+  initial,
+  seen,
+}: {
+  initial: QuoteSession;
+  seen?: { latest: QuoteSession | null };
+}) {
   const [session, setSession] = useState(initial);
+  if (seen) seen.latest = session;
   return (
     <QuoteWorkflowPanel
       session={session}
@@ -361,30 +368,30 @@ describe('QuoteWorkflowPanel', () => {
       'quote-party',
       'quote-authority',
       'quote-stay',
-      'quote-rates',
       'quote-quote',
     ]);
     expect(steps.map((step) => step.getAttribute('aria-label'))).toEqual([
       'People',
       'HMS notes',
       'Stay',
-      'Availability & rates',
       'Documents',
     ]);
-    expect(steps.map((step) => step.querySelector('h3 span')?.textContent)).toEqual(['1', '2', '3', '4', '5']);
+    expect(steps.map((step) => step.querySelector('h3 span')?.textContent)).toEqual(['1', '2', '3', '4']);
     expect(screen.queryByRole('region', { name: 'Extras & alternatives' })).toBeNull();
     expect(within(steps[0]!).getByRole('button', { name: 'Continue to HMS notes' })).toBeDefined();
     expect(within(steps[1]!).queryByLabelText('Rate plan')).toBeNull();
     expect(within(steps[1]!).getByText('HMS notes (optional)')).toBeDefined();
     expect(within(steps[1]!).getByTestId('quote-step-state').textContent).toBe('Optional');
-    const ratesStep = steps[3]!;
+    const ratesStep = container.querySelector<HTMLElement>('#quote-rates');
+    if (!ratesStep) throw new Error('Expected the nested Availability & rates controls.');
+    expect(steps[2]!.contains(ratesStep)).toBe(true);
     const ratePlanSelect = within(ratesStep).getByLabelText('Rate plan');
     const searchHeading = within(ratesStep).getByText('Search availability & room rates');
     expect(
       ratePlanSelect.compareDocumentPosition(searchHeading) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     for (const step of steps) {
-      expect(within(step).getByTestId('quote-step-state')).toBeDefined();
+      expect(within(step).getAllByTestId('quote-step-state').length).toBeGreaterThan(0);
     }
     expect(within(steps[0]!).queryByText(/Optional if none in email/)).toBeNull();
     expect(primaryActions(container)).toHaveLength(1);
@@ -1686,7 +1693,7 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(session.rateOptions ?? []).toHaveLength(0);
     const { container } = render(<QuoteWorkflowPanel session={session} />);
     const ratesStep = container.querySelector<HTMLElement>('#quote-rates');
-    if (!ratesStep) throw new Error('Expected the Availability & rates step.');
+    if (!ratesStep) throw new Error('Expected the nested Availability & rates controls.');
     const planSelect = within(ratesStep).getByLabelText('Rate plan');
     const searchAction = within(ratesStep).getByRole('button', { name: 'Search availability' });
     expect(
@@ -1763,49 +1770,69 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(screen.getByRole('option', { name: 'All government rates' })).toBeDefined();
   });
 
-  it('renders a read-only BAR grid before room cards and keeps unpriced rows as not checked', () => {
+  it('stores the exact room, rate and board tuple selected for its Stay', () => {
     const base = sessionFromFixture('public-single');
-    const groupId = base.groups[0]!.id;
-    const stayKey = '2026-11-12:2026-11-14';
-    const priced: RateOption = {
-      id: `${groupId}:BAR`,
-      groupId,
-      board: 'bb',
-      boardLabel: 'Bed & Breakfast',
-      rateCode: 'BAR',
-      rateLabel: 'Best Available Rate',
-      roomCode: 'STQN',
-      roomLabel: 'Standard Queen',
-      contract: false,
-      onlyContract: false,
-      matchesRequest: true,
-      perNightMinor: 100_000,
-      roomsLeft: 4,
+    const firstGroupId = 'grid-stay-first';
+    const selectedGroupId = 'grid-stay-selected';
+    const firstStayKey = '2026-11-12:2026-11-14';
+    const selectedStayKey = '2026-12-12:2026-12-14';
+    const sourceGroup = base.groups[0]!;
+    const firstGroup = {
+      ...sourceGroup,
+      id: firstGroupId,
+      stayId: firstGroupId,
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+    };
+    const selectedGroup = {
+      ...sourceGroup,
+      id: selectedGroupId,
+      stayId: selectedGroupId,
+      arrivalDate: '2026-12-12',
+      departureDate: '2026-12-14',
+    };
+    const quoteBase = base.staffQuote ?? base.staffQuotes[firstStayKey] ?? {
+      workflowRunId: 'run-1',
+      revisionRef: 'rev-1',
+      factRefs: [],
+      messageId: 'mail-1',
+      threadId: 'thread-1',
+      sourceHash: 'ab'.repeat(32),
+      selectionEpoch: 1,
+      inputRevision: 1,
+      inputDigest: 'digest',
       totalMinor: 200_000,
       currency: 'ZAR',
-      priced: 'summary',
-      selected: true,
+      quoteRequestKey: firstStayKey,
+      approvedHeader: base.staffHeader,
     };
-    const staffQuote = {
-      ...(base.staffQuote ?? base.staffQuotes[stayKey] ?? {
-        workflowRunId: 'run-1',
-        revisionRef: 'rev-1',
-        factRefs: [],
-        messageId: 'mail-1',
-        threadId: 'thread-1',
-        sourceHash: 'ab'.repeat(32),
-        selectionEpoch: 1,
-        inputRevision: 1,
-        inputDigest: 'digest',
-        totalMinor: 200_000,
-        currency: 'ZAR',
-        quoteRequestKey: stayKey,
-        approvedHeader: base.staffHeader,
-      }),
-      rateOptions: [priced],
+    const firstQuote = {
+      ...quoteBase,
+      quoteRequestKey: firstStayKey,
+      rateOptions: [],
+      availabilityTruncated: false,
       availabilityBoard: [
         {
-          groupId,
+          groupId: firstGroupId,
+          roomCode: 'STQN',
+          roomLabel: 'Standard Queen',
+          rateCode: 'BAR',
+          rateLabel: 'Best Available Rate',
+          board: 'bb',
+          boardLabel: 'Bed & Breakfast',
+          nightlyPriceMinor: 100_000,
+          roomsLeft: 4,
+        },
+      ],
+    };
+    const selectedQuote = {
+      ...quoteBase,
+      quoteRequestKey: selectedStayKey,
+      rateOptions: [],
+      availabilityTruncated: true,
+      availabilityBoard: [
+        {
+          groupId: selectedGroupId,
           roomCode: 'STQN',
           roomLabel: 'Standard Queen',
           rateCode: 'BAR',
@@ -1816,38 +1843,53 @@ describe('the Find in HMS picker in the quote header', () => {
           roomsLeft: 4,
         },
         {
-          groupId,
+          groupId: selectedGroupId,
           roomCode: 'STWN',
           roomLabel: 'Standard Twin',
-          rateCode: 'BAR',
-          rateLabel: 'Best Available Rate',
-          board: 'bb',
-          boardLabel: 'Bed & Breakfast',
+          rateCode: 'FLEX',
+          rateLabel: 'Flexible Rate',
+          board: 'dinner_bb',
+          boardLabel: 'Dinner B&B',
           nightlyPriceMinor: null,
           roomsLeft: null,
         },
       ],
-      availabilityTruncated: true,
     };
-    const { container } = render(
-      <QuoteWorkflowPanel
-        session={{
+    const seen = { latest: null as QuoteSession | null };
+    render(
+      <EditableStayPanel
+        seen={seen}
+        initial={{
           ...base,
-          rateOptions: [priced],
-          staffQuote,
-          staffQuotes: { ...base.staffQuotes, [stayKey]: staffQuote },
+          groups: [firstGroup, selectedGroup],
+          selectedStayKey: firstStayKey,
+          rateOptions: [],
+          staffQuote: firstQuote,
+          staffQuotes: {
+            ...base.staffQuotes,
+            [firstStayKey]: firstQuote,
+            [selectedStayKey]: selectedQuote,
+          },
         }}
       />,
     );
-    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
-    const roomCards = screen.getByRole('group', { name: 'Room rates from HMS' });
-    expect(grid.compareDocumentPosition(roomCards) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(grid).getByText('Standard Queen (STQN)')).toBeDefined();
-    expect(within(grid).getByText('Standard Twin (STWN)')).toBeDefined();
-    expect(within(grid).getAllByText('not checked').length).toBeGreaterThan(0);
-    expect(screen.getByText('More room options exist than this grid shows.')).toBeDefined();
-    expect(grid.querySelector('button')).toBeNull();
-    expect(container.querySelector('[aria-label="Room rates from HMS"]')).toBeTruthy();
+    const grids = screen.getAllByRole('group', { name: 'Room, rate and board choices' });
+    expect(grids).toHaveLength(2);
+    const grid = grids[1]!;
+    const queen = within(grid).getByRole('button', {
+      name: /Select Standard Queen \(STQN\), Best Available Rate \(BAR\)/,
+    });
+    const twin = within(grid).getByRole('button', {
+      name: /Select Standard Twin \(STWN\), Flexible Rate \(FLEX\)/,
+    });
+
+    fireEvent.click(twin);
+
+    expect(seen.latest?.roomRateBoardSelections).toEqual({
+      [selectedGroupId]: { roomCode: 'STWN', rateCode: 'FLEX', board: 'dinner_bb' },
+    });
+    expect(queen.getAttribute('aria-pressed')).toBe('false');
+    expect(twin.getAttribute('aria-pressed')).toBe('true');
   });
 
   it('binds admitted all-room availability only to the matching Stay', async () => {
@@ -2404,7 +2446,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const { container } = render(<FilterHarness />);
     assertRatePlanVisible();
     const ratesStep = container.querySelector<HTMLElement>('#quote-rates');
-    if (!ratesStep) throw new Error('Expected the Availability & rates step.');
+    if (!ratesStep) throw new Error('Expected the nested Availability & rates controls.');
     const planSelect = within(ratesStep).getByLabelText('Rate plan') as HTMLSelectElement;
     const barCard = within(ratesStep).getByRole('button', { name: /Best Available Rate BAR/ });
     expect(planSelect.compareDocumentPosition(barCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

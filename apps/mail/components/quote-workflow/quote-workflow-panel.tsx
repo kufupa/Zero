@@ -36,7 +36,7 @@ import type {
   StaffStayExtras,
   QuoteSalesStrategyCode,
   QuoteStrategyRow,
-  StayEditAction,
+  QuoteStayAction,
   StayGroupRequirement,
   QuotePaneConfig,
 } from '@/lib/quote-workflow/types';
@@ -69,7 +69,7 @@ import { NotSupportedList } from './not-supported-list';
 import { PaneStatusLine } from './pane-status-line';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
 import { projectBarGrid, RateCards } from './rate-cards';
-import { RatesBarGrid } from './rates-bar-grid';
+import { StayRateGrid } from './stay-rate-grid';
 import { filteredRateOptions, ratePlanChoices, RatePlanSelect } from './rate-plan-select';
 import {
   CopyHmsNotesButton,
@@ -92,6 +92,13 @@ const TELL_NAVA_ENABLED = false;
 
 function analysingCopy(session: QuoteSession): string {
   return session.staffNote ? 'Nava is re-reading with your note…' : 'Nava is reading the email…';
+}
+
+/** Contract tags need the existing staff_quote read for a confirmed party. No new HMS read. */
+function confirmedPartyRead(header: StaffQuoteHeader, stayFound: boolean): boolean {
+  return (
+    stayFound && Boolean(header.parties?.company?.nativeId || header.parties?.agency?.nativeId)
+  );
 }
 
 /**
@@ -145,13 +152,6 @@ function CorrectionNote({
         </form>
       ) : null}
     </div>
-  );
-}
-
-/** Contract tags need the existing staff_quote read for a confirmed party. No new HMS read. */
-function confirmedPartyRead(header: StaffQuoteHeader, stayFound: boolean): boolean {
-  return (
-    stayFound && Boolean(header.parties?.company?.nativeId || header.parties?.agency?.nativeId)
   );
 }
 
@@ -512,8 +512,8 @@ export function QuoteWorkflowPanel({
   /** Null means the mailbox config is loading or was refused; undefined preserves legacy CEN-only callers. */
   paneConfig?: QuotePaneConfig | null;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
-  /** Adds, duplicates or removes a room or a stay. The shell keeps a removed stay for Undo. */
-  onStayAction?: (action: StayEditAction) => void;
+  /** Emits room/stay edits and staff room/rate/board selections. The shell keeps removed stays for Undo. */
+  onStayAction?: (action: QuoteStayAction) => void;
   onRunNext?: () => void;
   onRunStep?: (stepId: string) => void;
   onSelectOffer?: (offerId: string) => void;
@@ -1123,10 +1123,12 @@ export function QuoteWorkflowPanel({
           onStayAction={onStayAction}
           onPatchStayExtras={onPatchStayExtras}
           onSelectStayKey={onSelectStayKey}
-        />
-      ) : null}
-      {showWorkspace ? (
-        <Section step={4} title="Availability & rates" id="quote-rates" action={<StepState state={ratesState} />}>
+        >
+        <div id="quote-rates" className="flex flex-col gap-3 border-t border-[#e2e8f0] pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-[13px] font-semibold text-[#475569]">Availability &amp; rates</h4>
+            <StepState state={ratesState} />
+          </div>
           <RatePlanSelect
             ratePlans={ratePlans}
             ratePlan={ratePlan}
@@ -1402,10 +1404,15 @@ export function QuoteWorkflowPanel({
                               }}
                             />
                           </Field>
-                          <RatesBarGrid
+                          <StayRateGrid
+                            groupId={group.id}
                             cells={projectBarGrid(stayBoard.filter((row) => row.groupId === group.id))}
                             contractChecked={contractChecked}
                             plans={ratePlans}
+                            selection={session.roomRateBoardSelections?.[group.id]}
+                            onSelect={(selection) =>
+                              onStayAction?.({ type: 'room_rate_board_selected', groupId: group.id, selection })
+                            }
                           />
                           {rateGroup?.options.length ? (
                             <RateCards
@@ -1535,7 +1542,8 @@ export function QuoteWorkflowPanel({
               )}
             </div>
           ) : null}
-        </Section>
+        </div>
+        </QuoteStayStep>
       ) : null}
       {showWorkspace ? (
         <QuoteDocumentsStep

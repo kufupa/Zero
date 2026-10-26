@@ -936,3 +936,8 @@ export type QuoteSessionAction =
   | { type: 'set_reviewed_reply'; html: string; source?: 'missing_quote_details' | 'quote_decline'; staffEdited?: boolean }
   | { type: 'select_offers'; offerIds: string[] }
   | { type: 'mailbox_status'; status: QuoteMailboxStatus | null };
+
+/** Actions emitted by controls nested in the Stay step, including an exact grid tuple choice. */
+export type QuoteStayAction =
+  | StayEditAction
+  | Extract<QuoteSessionAction, { type: 'room_rate_board_selected' }>;
