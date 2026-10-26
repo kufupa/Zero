@@ -18,7 +18,7 @@ const HRCEN_CONFIRMATION=/We have pleasure in confirming your reservation at The
 // Placeholder until the DV confirmation-letter probe writes /tmp/g1023/dv-letter-identity.txt.
 const HRDAV_HOTEL=/Da Vinci Hotel and Suites/;
 const HRDAV_CONFIRMATION=/We have pleasure in confirming your reservation at Da Vinci Hotel and Suites/;
-function letterIdentity(propertyCode:string):{hotel:RegExp;confirmation:RegExp}|null{
+export function letterIdentity(propertyCode:string):{hotel:RegExp;confirmation:RegExp}|null{
  if(propertyCode==='HRCEN')return{hotel:HRCEN_HOTEL,confirmation:HRCEN_CONFIRMATION};
  if(propertyCode==='HRDAV')return{hotel:HRDAV_HOTEL,confirmation:HRDAV_CONFIRMATION};
  return null;
