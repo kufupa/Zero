@@ -44,7 +44,7 @@ import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
-import { overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
+import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
 import { sectionHasStaffEdit, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import { WorkItemHistoryControls } from './screens/work-item-history-controls';
 import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
@@ -647,6 +647,9 @@ export function NavaPane({
     if (storedWork.historyEpoch === 0) return;
     setContactCorrection(null);
     pendingContactCorrections.current = null;
+    const transportId = quoteSession.binding?.transportId;
+    const messageKey = quoteSession.binding?.internetMessageId ?? activeEmail?.internetMessageId;
+    if (transportId && messageKey) forgetPaneEdits(paneEditKey(transportId, messageKey));
   }, [storedWork.historyEpoch]);
   const workItemPane =
     storedWork.pane.state === 'ready' && storedWork.pane.fieldProvenance && storedWork.pane.workItemId

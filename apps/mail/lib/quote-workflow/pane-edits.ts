@@ -44,6 +44,16 @@ export function overlayRememberedGroups(
   return kept;
 }
 
+/** Drops remembered stay edits for one mail so a history refresh can show the server values. */
+export function forgetPaneEdits(key: string): void {
+  memory.delete(key);
+  try {
+    sessionStorage.removeItem(`${STORAGE_PREFIX}${key}`);
+  } catch {
+    // In-memory copy is gone even when sessionStorage is blocked.
+  }
+}
+
 export function resetPaneEditsForTests(options?: { keepSession?: boolean }): void {
   memory.clear();
   if (options?.keepSession) return;

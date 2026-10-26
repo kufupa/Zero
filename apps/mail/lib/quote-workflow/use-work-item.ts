@@ -330,6 +330,7 @@ export function useStoredWork(args: {
   const [historyCursor, setHistoryCursor] = useState<HistorySeqCursor | null>(null);
   const [historyPending, setHistoryPending] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  const [cursorEpoch, setCursorEpoch] = useState(0);
   const trpcRef = useRef(trpc);
 
   useEffect(() => {
@@ -355,6 +356,7 @@ export function useStoredWork(args: {
         const pinned = inMailbox(entry.transportId);
         await (pinned ? recordEvent.mutate(input, pinned) : recordEvent.mutate(input));
         if (latest.current.get(key) === entry) latest.current.delete(key);
+        setCursorEpoch((n) => n + 1);
       } catch {
         if (latest.current.get(key) !== entry) return;
         if (!retried) {
@@ -408,6 +410,11 @@ export function useStoredWork(args: {
     // send() deletes the entry it flushes, which a Map iterator allows.
     for (const key of pending.current.keys()) send(key);
   }, [send]);
+
+  const dropQueuedSaves = useCallback(() => {
+    for (const entry of pending.current.values()) clearTimeout(entry.timer);
+    pending.current.clear();
+  }, []);
 
   const schedule = useCallback(
     (path: string, workItemId: string, transportId: string | null, value: RecordFieldEventInput['value']) => {
@@ -527,11 +534,19 @@ export function useStoredWork(args: {
   const recordGroups = useCallback(
     (before: StayGroupRequirement[], after: StayGroupRequirement[]) => {
       if (!readyRefs || !readyWorkItemId) return;
-      for (const event of fieldEventsBetween(readyRefs, before, after)) {
+      const events = fieldEventsBetween(readyRefs, before, after);
+      if (events.length) {
+        setLookup((prev) =>
+          prev && prev.key === lookupKey && prev.result?.status === 'ready'
+            ? { ...prev, result: withStaffPaths(prev.result, events) }
+            : prev,
+        );
+      }
+      for (const event of events) {
         schedule(event.path, readyWorkItemId, readyTransportId, event.value);
       }
     },
-    [readyRefs, readyWorkItemId, readyTransportId, schedule],
+    [lookupKey, readyRefs, readyWorkItemId, readyTransportId, schedule],
   );
 
   /** Logs one contact edit as a `contact.<field>` event. Nothing is logged until the mail has a stored read. */
@@ -540,7 +555,13 @@ export function useStoredWork(args: {
       // The stored read takes the edit at once, so the HMS notes agree with the Contact block before the save lands.
       setLookup((prev) =>
         prev && prev.key === lookupKey && prev.result?.status === 'ready'
-          ? { ...prev, result: { ...prev.result, contact: { ...prev.result.contact, [field]: value } } }
+          ? {
+              ...prev,
+              result: withStaffPaths(
+                { ...prev.result, contact: { ...prev.result.contact, [field]: value } },
+                [{ path: `contact.${field}`, value }],
+              ),
+            }
           : prev,
       );
       if (!readyWorkItemId) return;
@@ -622,6 +643,7 @@ export function useStoredWork(args: {
     setHistoryEpoch(0);
     setHistoryCursor(null);
     setHistoryError(null);
+    setCursorEpoch(0);
   }, [lookupKey]);
 
   useEffect(() => {
@@ -651,7 +673,7 @@ export function useStoredWork(args: {
     return () => {
       current = false;
     };
-  }, [readyWorkItemId, readyTransportId, historyEpoch]);
+  }, [readyWorkItemId, readyTransportId, historyEpoch, cursorEpoch]);
 
   const runHistoryMove = useCallback(
     (mutate: HistoryMutate | undefined, message: string) => {
@@ -659,9 +681,14 @@ export function useStoredWork(args: {
       if (!readyWorkItemId || !mutate || seq === undefined) return;
       setHistoryPending(true);
       setHistoryError(null);
+      dropQueuedSaves();
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, expectedSeq: seq };
-      void (pinned ? mutate(input, pinned) : mutate(input))
+      void Promise.allSettled([...inFlight.current.values()])
+        .then(() => {
+          dropQueuedSaves();
+          return pinned ? mutate(input, pinned) : mutate(input);
+        })
         .then((result) => {
           if (result && typeof result === 'object' && 'seq' in result) {
             const next = result as HistorySeqCursor;
@@ -676,7 +703,7 @@ export function useStoredWork(args: {
           setHistoryPending(false);
         });
     },
-    [historyCursor, readyWorkItemId, readyTransportId, refetchStored],
+    [dropQueuedSaves, historyCursor, readyWorkItemId, readyTransportId, refetchStored],
   );
 
   const undo = useCallback(
@@ -699,9 +726,14 @@ export function useStoredWork(args: {
       if (!readyWorkItemId || !mutate) return;
       setHistoryPending(true);
       setHistoryError(null);
+      dropQueuedSaves();
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, section };
-      void (pinned ? mutate(input, pinned) : mutate(input))
+      void Promise.allSettled([...inFlight.current.values()])
+        .then(() => {
+          dropQueuedSaves();
+          return pinned ? mutate(input, pinned) : mutate(input);
+        })
         .then(() => refetchStored())
         .catch(() => {
           setHistoryError("Couldn't reset — try again");
@@ -710,7 +742,7 @@ export function useStoredWork(args: {
           setHistoryPending(false);
         });
     },
-    [readyWorkItemId, readyTransportId, refetchStored],
+    [dropQueuedSaves, readyWorkItemId, readyTransportId, refetchStored],
   );
 
   return {
@@ -742,6 +774,15 @@ export function useStoredWork(args: {
     redo,
     resetSection,
   };
+}
+
+function withStaffPaths(stored: StoredWork, events: FieldEvent[]): StoredWork {
+  if (stored.status !== 'ready' || !events.length) return stored;
+  const fieldProvenance: WorkItemProvenanceMap = { ...(provenanceOf(stored) ?? {}) };
+  for (const event of events) {
+    fieldProvenance[event.path] = { source: 'staff', value: event.value };
+  }
+  return { ...stored, fieldProvenance } as StoredWork;
 }
 
 function provenanceOf(stored: StoredWork): WorkItemProvenanceMap | null {
