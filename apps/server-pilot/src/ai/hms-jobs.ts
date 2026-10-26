@@ -3520,6 +3520,7 @@ export async function executeHmsJob(input: {
     await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, db);
     return 'dead_letter';
   }
+  let preparedQuoteLockWaitStart = run.createdAt;
   if (systemPreparedQuote && metrics.prefetchDeferred === true) {
     const admitted = await db.transaction(async (tx) => {
       await tx.execute(
@@ -3536,7 +3537,7 @@ export async function executeHmsJob(input: {
       });
       if (capacity.action === 'disable') {
         await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, scoped);
-        return 'dead_letter' as const;
+        return { status: 'dead_letter' as const };
       }
       if (capacity.action === 'defer') {
         await requeueRun(scoped, mark, {
@@ -3545,12 +3546,13 @@ export async function executeHmsJob(input: {
           failureClass: 'POLICY_BLOCK',
           lastError: preparedQuoteYieldLastError(run, 'prefetch_capacity_deferred'),
         });
-        return 'retry_wait' as const;
+        return { status: 'retry_wait' as const };
       }
-      await occupyPrefetchReservation(scoped, run.id);
-      return 'admit' as const;
+      const occupied = await occupyPrefetchReservation(scoped, run.id);
+      return { status: 'admit' as const, admittedAt: occupied.admittedAt };
     });
-    if (admitted !== 'admit') return admitted;
+    if (admitted.status !== 'admit') return admitted.status;
+    preparedQuoteLockWaitStart = admitted.admittedAt;
     const extraction = await loadQuotePrepareSourceRun(db, {
       transportId: run.transportId,
       triggerMessageId: run.triggerMessageId,
@@ -3685,7 +3687,7 @@ export async function executeHmsJob(input: {
       }
       if (isPropertyReadLockDeadline(error)) {
         // A prepared quote waits out a busy lock for a while, then gives up so staff never stay pinned to it.
-        if (systemPreparedQuote && Date.now() - run.createdAt.getTime() >= PREPARED_QUOTE_LOCK_WAIT_MS) {
+        if (systemPreparedQuote && Date.now() - preparedQuoteLockWaitStart.getTime() >= PREPARED_QUOTE_LOCK_WAIT_MS) {
           await markAiRunDeadLetter(
             { ...mark, lastError: 'prepared_quote_lock_busy', failureClass: 'HMS_LOCK_BUSY' },
             db,
@@ -4006,7 +4008,7 @@ async function latestStaffQuoteRunFor(
     if (!reusable(userRun)) {
       // Newest matching price is stale: do not fall back to an older refusal.
       const stored = userRun.readResult as { status?: unknown } | null;
-      if (sameTerms && stored?.status === 'ready') return [];
+      if (sameTerms && stored?.status === 'ready') break;
       continue;
     }
     if (sameTerms) return [userRun];

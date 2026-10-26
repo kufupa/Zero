@@ -126,14 +126,50 @@ export async function reservePrefetchCapacity(
   });
 }
 
-/** Stamp the waking job into the current hour so it occupies a slot before HMS work starts. */
+export type OccupiedPrefetchReservation = {
+  admittedAt: Date;
+  stamped: boolean;
+};
+
+function metricsRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? { ...(value as Record<string, unknown>) }
+    : {};
+}
+
+function admittedAtFromMetrics(metrics: Record<string, unknown>, fallback: Date): Date {
+  const raw = metrics.prefetchAdmittedAt;
+  if (typeof raw !== 'string') return fallback;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? new Date(parsed) : fallback;
+}
+
+/**
+ * Stamp the waking job into the current hour once. Keep `createdAt` stable after the first
+ * stamp so the prepared-quote busy-lock timeout can still give up.
+ */
 export async function occupyPrefetchReservation(
   db: DB,
   runId: string,
   now: Date = new Date(),
-): Promise<void> {
+): Promise<OccupiedPrefetchReservation> {
+  const [row] = await db
+    .select({ createdAt: aiWorkflowRun.createdAt, metrics: aiWorkflowRun.metrics })
+    .from(aiWorkflowRun)
+    .where(eq(aiWorkflowRun.id, runId))
+    .limit(1);
+  if (!row) return { admittedAt: now, stamped: false };
+  const metrics = metricsRecord(row.metrics);
+  const admittedAt = admittedAtFromMetrics(metrics, now);
+  const since = new Date(now.getTime() - PREFETCH_CAPACITY_WINDOW_MS);
+  const stamped = row.createdAt.getTime() <= since.getTime();
   await db
     .update(aiWorkflowRun)
-    .set({ createdAt: now, updatedAt: now })
+    .set({
+      ...(stamped ? { createdAt: now } : {}),
+      updatedAt: now,
+      metrics: { ...metrics, prefetchAdmittedAt: admittedAt.toISOString() },
+    })
     .where(eq(aiWorkflowRun.id, runId));
+  return { admittedAt, stamped };
 }

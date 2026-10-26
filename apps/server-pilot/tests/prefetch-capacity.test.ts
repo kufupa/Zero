@@ -465,5 +465,16 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
           since,
         }),
       ).toMatchObject({ used: 1 });
+      const [firstStamp] = await db
+        .select({ createdAt: aiWorkflowRun.createdAt })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.id, job.id));
+      await occupyPrefetchReservation(db, job.id);
+      const [secondStamp] = await db
+        .select({ createdAt: aiWorkflowRun.createdAt, metrics: aiWorkflowRun.metrics })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.id, job.id));
+      expect(secondStamp?.createdAt.getTime()).toBe(firstStamp?.createdAt.getTime());
+      expect(secondStamp?.metrics).toMatchObject({ prefetchAdmittedAt: expect.any(String) });
     }));
 });

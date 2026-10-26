@@ -2099,6 +2099,70 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       ).resolves.toBeNull();
     }));
 
+  it('still reads a fresh prepared quote after a newer user price expires', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId } = await seedThread(db);
+      const { run: priced } = await enqueueStaffQuoteJob(db, threadId, messageId);
+      const preparedInput = staffQuoteInput.parse({
+        ...STAFF_QUOTE_INPUT,
+        messageId,
+        selectionEpoch: 0,
+        inputRevision: 0,
+      });
+      const { run: prepared } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'staff_quote', input: preparedInput },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: `hms-job:staff-quote-prepared:fresh-after-user:${randomUUID()}`,
+          extraMetrics: { quotePrepared: true },
+        },
+        db,
+      );
+      const now = Date.now();
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: { kind: 'staff_quote', status: 'ready', freshUntil: new Date(now - 60_000).toISOString() },
+          readResultExpiresAt: new Date(now - 60_000),
+          createdAt: new Date(now - 20 * 60_000),
+        })
+        .where(eq(aiWorkflowRun.id, priced.id));
+      await db
+        .update(aiWorkflowRun)
+        .set({
+          state: 'succeeded',
+          readResult: {
+            kind: 'staff_quote',
+            status: 'ready',
+            messageId,
+            asOf: new Date(now).toISOString(),
+          },
+          finishedAt: new Date(now),
+          readResultExpiresAt: new Date(now + 15 * 60_000),
+          createdAt: new Date(now - 10 * 60_000),
+        })
+        .where(eq(aiWorkflowRun.id, prepared.id));
+
+      await expect(
+        readHmsJobView(
+          {
+            transportId: TRANSPORT_ID,
+            userId: CENTURION_USER_ID,
+            messageId,
+            kind: 'staff_quote',
+            input: { ...STAFF_QUOTE_INPUT, messageId },
+          },
+          db,
+        ),
+      ).resolves.toMatchObject({ runId: prepared.id });
+    }));
+
   it('does not read back an expired staff quote result by owner-scoped run id', () =>
     withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
