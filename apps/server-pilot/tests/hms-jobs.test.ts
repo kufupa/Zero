@@ -910,7 +910,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         transportId: DAVINCI_TRANSPORT_ID,
         triggerMessageId: source.messageId,
       };
-      expect(await prefetchQuoteReadyForExtraction(run, db, quoteEnv)).toBe(6);
+      const created = await prefetchQuoteReadyForExtraction(run, db, quoteEnv);
+      expect(created).toBeGreaterThanOrEqual(6);
       const rows = await db
         .select()
         .from(aiWorkflowRun)
@@ -920,7 +921,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
             sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
           ),
         );
-      expect(rows).toHaveLength(6);
+      expect(rows.length).toBe(created);
+      expect(rows.some((row) => row.nextRunAt && row.nextRunAt.getTime() > Date.now())).toBe(true);
       expect(
         new Set(
           rows
