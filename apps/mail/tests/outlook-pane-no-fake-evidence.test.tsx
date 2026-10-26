@@ -4,6 +4,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
+import { toast } from 'sonner';
 import { fillStayFactsMatchingAuthorisedOffer } from './helpers/prepare-reviewed-quote';
 
 const sendCommandMock = vi.fn();
@@ -73,6 +74,18 @@ vi.mock('../providers/query-provider', () => ({
       quoteProposalPdf: { mutate: vi.fn() },
     },
     quoteWorkflow: {
+      // 12f451bd6 (#536) loads mailbox pane choices via rateCatalogue.query on mount.
+      rateCatalogue: {
+        query: async () => ({
+          transportId: 'transport-1',
+          propertyCode: 'HRCEN',
+          roomTypes: [],
+          ratePlans: [],
+          boards: [],
+          overrideRateCodes: [],
+          eventRateCodes: [],
+        }),
+      },
       analyseSelection: {
         mutate: async () => ({
           status: 'ready' as const,
@@ -116,8 +129,16 @@ describe('production pane never synthesizes quote evidence', () => {
     await fillStayFactsMatchingAuthorisedOffer();
     fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'STQN' } });
     fireEvent.click(await screen.findByRole('button', { name: /^Search availability$/i }));
+    // a88bfc9bf / 2c396ef94: bind refuses with toast.warning when executeStaffQuote is not wired; the copy may not
+    // also land as a pane status line.
+    const unavailableCopy =
+      /not available here|not owned by this quoting UI|integration unavailable|not ready yet|not connected to this pane/i;
     await waitFor(() => {
-      expect(screen.getAllByText(/not available here|not owned by this quoting UI|integration unavailable|not ready yet|not connected to this pane/i).length).toBeGreaterThan(0);
+      const onScreen = screen.queryAllByText(unavailableCopy).length;
+      const toasted = vi
+        .mocked(toast.warning)
+        .mock.calls.some((call) => unavailableCopy.test(String(call[0] ?? '')));
+      expect(onScreen > 0 || toasted).toBe(true);
     });
     expect(screen.queryByText(/Allocation/)).toBeNull();
     expect(screen.queryByText(/R2\s*720/)).toBeNull();

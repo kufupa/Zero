@@ -29,14 +29,6 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
               Nava Reservationist
             </h1>
           </div>
-          <button
-            aria-label="Needs you (0)"
-            class="max-w-[96px] shrink-0 truncate whitespace-nowrap text-[11.5px] font-semibold text-[#0066cc] underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
-            title="Needs you (0)"
-            type="button"
-          >
-            Needs you (0)
-          </button>
         </div>
         <div
           class="flex h-8 min-w-0 items-center gap-1.5 border-t border-[#f1f5f9] bg-[#f8fafc] px-3.5 text-[11px] font-medium text-[#475569]"
@@ -442,7 +434,7 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r7g»"
+          id="radix-stable"
           type="button"
         >
           <svg
@@ -509,14 +501,6 @@ exports[`NavaPane screen states > diagnostics: the connection step after a succe
               Nava Reservationist
             </h1>
           </div>
-          <button
-            aria-label="Needs you (0)"
-            class="max-w-[96px] shrink-0 truncate whitespace-nowrap text-[11.5px] font-semibold text-[#0066cc] underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
-            title="Needs you (0)"
-            type="button"
-          >
-            Needs you (0)
-          </button>
         </div>
         <div
           class="flex h-8 min-w-0 items-center gap-1.5 border-t border-[#f1f5f9] bg-[#f8fafc] px-3.5 text-[11px] font-medium text-[#475569]"
@@ -878,7 +862,7 @@ exports[`NavaPane screen states > diagnostics: the connection step after a succe
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«rb2»"
+          id="radix-stable"
           type="button"
         >
           <svg
@@ -945,14 +929,6 @@ exports[`NavaPane screen states > tour: the first slide of the feature tour, ope
               Nava Reservationist
             </h1>
           </div>
-          <button
-            aria-label="Needs you (0)"
-            class="max-w-[96px] shrink-0 truncate whitespace-nowrap text-[11.5px] font-semibold text-[#0066cc] underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
-            title="Needs you (0)"
-            type="button"
-          >
-            Needs you (0)
-          </button>
         </div>
         <div
           class="flex h-8 min-w-0 items-center gap-1.5 border-t border-[#f1f5f9] bg-[#f8fafc] px-3.5 text-[11px] font-medium text-[#475569]"
@@ -1342,7 +1318,7 @@ exports[`NavaPane screen states > tour: the first slide of the feature tour, ope
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«rb4»"
+          id="radix-stable"
           type="button"
         >
           <svg
@@ -1409,14 +1385,6 @@ exports[`NavaPane screen states > welcome: a first run shows the account step an
               Nava Reservationist
             </h1>
           </div>
-          <button
-            aria-label="Needs you (0)"
-            class="max-w-[96px] shrink-0 truncate whitespace-nowrap text-[11.5px] font-semibold text-[#0066cc] underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
-            title="Needs you (0)"
-            type="button"
-          >
-            Needs you (0)
-          </button>
         </div>
         <div
           class="flex h-8 min-w-0 items-center gap-1.5 border-t border-[#f1f5f9] bg-[#f8fafc] px-3.5 text-[11px] font-medium text-[#475569]"
@@ -1503,7 +1471,7 @@ exports[`NavaPane screen states > welcome: a first run shows the account step an
         class="mx-3 mt-2 shrink-0"
       >
         <section
-          aria-label="Nava reads this as: New booking"
+          aria-label="Nava reads this as: Quote"
           class="flex shrink-0 flex-col gap-2 rounded-[4px] border border-[#bfdbfe] bg-[#eff6ff] px-3 py-2.5"
           role="status"
         >
@@ -1520,9 +1488,9 @@ exports[`NavaPane screen states > welcome: a first run shows the account step an
               </span>
               <span
                 class="rounded-full bg-white px-2 py-0.5 text-[11.5px] font-bold text-[#1d4ed8]"
-                data-read-as="new_booking"
+                data-read-as="quote"
               >
-                New booking
+                Quote
               </span>
             </div>
           </div>
@@ -1730,7 +1698,7 @@ exports[`NavaPane screen states > welcome: a first run shows the account step an
           aria-label="More"
           class="flex h-8 w-8 items-center justify-center rounded-xs text-[#64748b] hover:bg-[#f1f5f9] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#0066cc]"
           data-state="closed"
-          id="radix-«r68»"
+          id="radix-stable"
           type="button"
         >
           <svg
