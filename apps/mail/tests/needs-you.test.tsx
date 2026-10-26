@@ -462,7 +462,7 @@ describe('Needs-you list', () => {
 });
 
 describe('Work item history controls', () => {
-  it('uses the refreshed server cursor for Undo and Redo boundaries', () => {
+  it('binds actions and disables them at refreshed server cursor boundaries', () => {
     const props = {
       workItemId: 'work-item-1',
       onUndo: vi.fn(),
@@ -487,6 +487,9 @@ describe('Work item history controls', () => {
     expect(
       (screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement).disabled,
     ).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Redo' }));
+    expect(props.onRedo).toHaveBeenCalledWith(props.workItemId);
+    expect(props.onUndo).not.toHaveBeenCalled();
 
     rerender(
       <WorkItemHistoryControls
@@ -500,6 +503,24 @@ describe('Work item history controls', () => {
     expect(
       (screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement).disabled,
     ).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(props.onUndo).toHaveBeenCalledWith(props.workItemId);
+
+    rerender(
+      <WorkItemHistoryControls
+        {...props}
+        pending
+        serverCursor={{ cursor: 1, latestCursor: 2 }}
+      />,
+    );
+    const undo = screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement;
+    const redo = screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement;
+    expect(undo.disabled).toBe(true);
+    expect(redo.disabled).toBe(true);
+    fireEvent.click(undo);
+    fireEvent.click(redo);
+    expect(props.onUndo).toHaveBeenCalledTimes(1);
+    expect(props.onRedo).toHaveBeenCalledTimes(1);
   });
 });
 
