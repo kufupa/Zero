@@ -20,3 +20,4 @@ evidence: docs/research/2026-10-26-dev-speed-analysis.md, docs/research/2026-10-
 | 10 | Rates: shop all 9 strategies, likely-first; log staff picks for a tally | 11–16 HMS-min/day for all 9 (§1.4 shape) | yes |
 | 11 | No hard deadline; run until the slice list is empty (9–10 UK fine) | — | yes |
 | 12 | Architecture changes allowed when best/fastest; log them here | — | yes |
+| 13 | Orchestrator: extensive kickoff prompt + rule re-injection on every compaction/handoff (state file + rules digest re-read via hook/resume prompt) + script gates so rules do not depend on memory | 10-25: orch merged before Apex 2×, idle 3×, after 6 handoffs (retro) | yes (ask 228) |
