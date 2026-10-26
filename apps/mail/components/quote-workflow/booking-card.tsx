@@ -541,7 +541,7 @@ function RoomTextField({
   roomLabel: string;
   value: string;
   disabled: boolean;
-  maxLength: number;
+  maxLength?: number;
   multiline?: boolean;
   pii?: boolean;
   required?: boolean;
@@ -586,6 +586,8 @@ function RoomTextField({
 type RoomChoice = {
   track: string;
   sourceOfBusiness: string;
+  marketSegment: string;
+  guestoptin4: boolean;
   guaranteeType: string;
   firstName: string;
   lastName: string;
@@ -597,6 +599,8 @@ type RoomChoice = {
 const NO_CHOICE: RoomChoice = {
   track: '',
   sourceOfBusiness: '',
+  marketSegment: '',
+  guestoptin4: false,
   guaranteeType: '',
   firstName: '',
   lastName: '',
@@ -726,6 +730,7 @@ export function BookingCards({
     () => readSelectedGuestName(guestEditorKey, guestName),
   );
   const guestSplit = splitStayingGuestName(selectedGuestName);
+  const previousSelectedGuestName = useRef(selectedGuestName);
   const guestNamesEdited = useRef<Record<string, boolean>>({});
   const [choices, setChoices] = useState<Record<string, RoomChoice>>(
     () =>
@@ -744,6 +749,9 @@ export function BookingCards({
                 room.request.sourceOfBusiness,
                 draft.options.sourceOfBusiness,
               ),
+              marketSegment: '',
+              // Guest consent must come from an explicit staff action, never from mail or a hotel default.
+              guestoptin4: false,
               guaranteeType: textValue(room.request.guaranteeType),
               firstName: names.firstName,
               lastName: names.lastName,
@@ -765,28 +773,55 @@ export function BookingCards({
     stayBookingRef.current = false;
   }, []);
   useEffect(() => {
+    const selectedGuestChanged = previousSelectedGuestName.current !== selectedGuestName;
+    previousSelectedGuestName.current = selectedGuestName;
     setChoices((current) => {
       let changed = false;
       const next = { ...current };
       for (const room of draft.draft.rooms) {
         const key = `${room.groupId}:${room.roomIndex}`;
         const choice = current[key];
-        if (!choice || guestNamesEdited.current[key]) continue;
+        if (!choice) continue;
+        let nextChoice = choice;
+        if (selectedGuestChanged && choice.guestoptin4) {
+          nextChoice = { ...choice, guestoptin4: false };
+          next[key] = nextChoice;
+          changed = true;
+        }
         const commitStatus = saves[key]?.commit?.status;
         if (stayBooking || commitStatus === 'running' || commitStatus === 'booked') continue;
+        if (guestNamesEdited.current[key]) continue;
         const names = guestSplit.ambiguous
           ? {
               firstName: textValue(room.request.firstName),
               lastName: textValue(room.request.lastName),
             }
           : { firstName: guestSplit.firstName, lastName: guestSplit.lastName };
-        if (choice.firstName === names.firstName && choice.lastName === names.lastName) continue;
-        next[key] = { ...choice, firstName: names.firstName, lastName: names.lastName };
+        if (
+          nextChoice.firstName === names.firstName &&
+          nextChoice.lastName === names.lastName &&
+          !selectedGuestChanged
+        ) continue;
+        next[key] = {
+          ...nextChoice,
+          firstName: names.firstName,
+          lastName: names.lastName,
+          // Consent is guest-specific; a People change needs a fresh explicit opt-in.
+          guestoptin4: false,
+        };
         changed = true;
       }
       return changed ? next : current;
     });
-  }, [draft.draft.rooms, guestSplit.ambiguous, guestSplit.firstName, guestSplit.lastName, saves, stayBooking]);
+  }, [
+    draft.draft.rooms,
+    guestSplit.ambiguous,
+    guestSplit.firstName,
+    guestSplit.lastName,
+    saves,
+    selectedGuestName,
+    stayBooking,
+  ]);
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const requested = textValue(room.request.roomType);
@@ -941,10 +976,20 @@ export function BookingCards({
         const key = roomKeyOf(room);
         const choice = choices[key] ?? NO_CHOICE;
         const setChoice = (patch: Partial<RoomChoice>) =>
-          setChoices((current) => ({
-            ...current,
-            [key]: { ...(current[key] ?? NO_CHOICE), ...patch },
-          }));
+          setChoices((current) => {
+            const currentChoice = current[key] ?? NO_CHOICE;
+            const guestChanged =
+              (patch.firstName !== undefined && patch.firstName !== currentChoice.firstName) ||
+              (patch.lastName !== undefined && patch.lastName !== currentChoice.lastName);
+            return {
+              ...current,
+              [key]: {
+                ...currentChoice,
+                ...patch,
+                ...(guestChanged ? { guestoptin4: false } : {}),
+              },
+            };
+          });
         // Once create is running or saved, freeze its create-only fields until staff checks the result.
         const commitStatus = saves[key]?.commit?.status;
         const locked = stayBooking || commitStatus === 'running' || commitStatus === 'booked';
@@ -1053,6 +1098,26 @@ export function BookingCards({
                 </select>
               </label>
               <CopyButton label="Track" roomLabel={roomLabel} value={choice.track} />
+            </div>
+            <RoomTextField
+              roomLabel={roomLabel}
+              label="Market Segment"
+              value={choice.marketSegment}
+              disabled={locked}
+              onChange={(value) => setChoice({ marketSegment: value })}
+            />
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
+                <input
+                  type="checkbox"
+                  aria-label="Guest opt-in"
+                  checked={choice.guestoptin4}
+                  disabled={locked}
+                  onChange={(event) => setChoice({ guestoptin4: event.target.checked })}
+                />
+                <span>Guest opt-in</span>
+              </label>
+              <p className="text-[11px] text-[#64748b]">Select only if the guest explicitly opted in.</p>
             </div>
             <div className="flex items-end gap-2">
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">

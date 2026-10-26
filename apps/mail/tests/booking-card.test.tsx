@@ -7,6 +7,7 @@ import { unmaskedPii } from './helpers/pii-marks';
 import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
 import { ContactBlock } from '../components/nava-pane/blocks/contact-block';
 import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step';
+import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-host';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import type { StoredContact } from '../lib/quote-workflow/backend-bind';
 import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
@@ -264,6 +265,48 @@ describe('booking cards', () => {
     expect(screen.getAllByLabelText('Track')).toHaveLength(2);
     expect(screen.getAllByLabelText('Source of business')).toHaveLength(2);
     expect(screen.getAllByLabelText('Guarantee')).toHaveLength(2);
+    expect(screen.getAllByLabelText('Market Segment')).toHaveLength(2);
+    expect(screen.getAllByRole('checkbox', { name: 'Guest opt-in' })).toHaveLength(2);
+  });
+
+  it('keeps guest opt-in unchecked until staff selects it and sends generic Market Segment', async () => {
+    const { client, preview } = paneClient();
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    const session = quotedSession(draft);
+    const workItemId = '11111111-1111-1111-1111-111111111111';
+    const host = (currentSession: QuoteSession) => (
+      <QuoteBookingHost session={currentSession} paneSave={client} workItemId={workItemId} />
+    );
+    const { rerender } = render(host(session));
+
+    const marketSegment = screen.getByLabelText('Market Segment') as HTMLInputElement;
+    const guestOptIn = screen.getByRole('checkbox', { name: 'Guest opt-in' }) as HTMLInputElement;
+    expect(marketSegment.value).toBe('');
+    expect(guestOptIn.checked).toBe(false);
+
+    fireEvent.change(marketSegment, { target: { value: 'Leisure' } });
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await waitFor(() =>
+      expect(preview).toHaveBeenCalledWith(
+        expect.objectContaining({ marketSegment: 'Leisure', guestoptin4: false }),
+      ),
+    );
+
+    fireEvent.click(guestOptIn);
+    expect(guestOptIn.checked).toBe(true);
+    fireEvent.click(previewButton(0));
+    await waitFor(() =>
+      expect(preview).toHaveBeenLastCalledWith(
+        expect.objectContaining({ marketSegment: 'Leisure', guestoptin4: true }),
+      ),
+    );
+
+    const nextSession = quotedSession(draft);
+    nextSession.binding = { ...nextSession.binding!, entryId: 'e2', selectionEpoch: 2 };
+    rerender(host(nextSession));
+    expect((screen.getByLabelText('Market Segment') as HTMLInputElement).value).toBe('');
+    expect((screen.getByRole('checkbox', { name: 'Guest opt-in' }) as HTMLInputElement).checked).toBe(false);
   });
 
   it('builds the HMS preview from the current Stay group instead of stale draft values', () => {
@@ -642,6 +685,7 @@ describe('booking card staying-guest prefill', () => {
     draft.draft.rooms[0]!.request.firstName = 'Draft';
     draft.draft.rooms[0]!.request.lastName = 'Name';
     draft.draft.rooms[0]!.request.bookerName = 'Agent Booker';
+    const { client, preview } = paneClient();
     const session = {
       staffSource: null,
       groups: [],
@@ -663,11 +707,15 @@ describe('booking card staying-guest prefill', () => {
           contactEditorKey={guestEditorKey}
           scrollToStep={() => undefined}
         />
-        <BookingCards draft={draft} contact={contact} guestEditorKey={guestEditorKey} />
+        <BookingCards draft={draft} paneSave={client} contact={contact} guestEditorKey={guestEditorKey} />
       </>
     );
 
     const firstPass = render(view('guest-prefill-unambiguous'));
+    const guestOptIn = screen.getByRole('checkbox', { name: 'Guest opt-in' }) as HTMLInputElement;
+    expect(guestOptIn.checked).toBe(false);
+    fireEvent.click(guestOptIn);
+    expect(guestOptIn.checked).toBe(true);
     fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Ada Example' } });
     const firstName = screen.getByLabelText('First name') as HTMLInputElement;
     const lastName = screen.getByLabelText('Last name') as HTMLInputElement;
@@ -677,8 +725,20 @@ describe('booking card staying-guest prefill', () => {
     expect(lastName).toHaveProperty('disabled', false);
     expect(firstName.value).not.toBe('Agent');
     expect(lastName.value).not.toBe('Booker');
+    expect(guestOptIn.checked).toBe(false);
+    fireEvent.click(guestOptIn);
+    expect(guestOptIn.checked).toBe(true);
     fireEvent.change(firstName, { target: { value: 'Bea' } });
     expect(firstName.value).toBe('Bea');
+    expect(guestOptIn.checked).toBe(false);
+    fireEvent.click(guestOptIn);
+    expect(guestOptIn.checked).toBe(true);
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Cara Example' } });
+    expect(firstName.value).toBe('Bea');
+    expect(guestOptIn.checked).toBe(false);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ firstName: 'Bea', guestoptin4: false }));
     firstPass.unmount();
 
     resetGuestNameCacheForTests();
@@ -987,6 +1047,7 @@ describe('booking card pane save', () => {
       roomType: 'STQN',
       ratePlan: 'TAXYZ',
       track: 'COR',
+      guestoptin4: false,
       guaranteeType: 'Confirmation Received',
       bookingAgency: { name: 'XYZ TRAVEL' },
     });
@@ -1320,25 +1381,35 @@ describe('booking card pane save', () => {
     expect((screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('sends stayId and workItemId with Book so the server can persist the confirmation', async () => {
+  it('passes work item and saved Stay through QuoteBookingHost to Book', async () => {
     const { client, commit } = paneClient();
-    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    const draft = draftReady();
+    const session = quotedSession(draft);
+    session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
     render(
-      <BookingCards
-        draft={draft}
-        groups={[{ ...g1, stayId: 's_aaaa1111' }]}
+      <QuoteBookingHost
+        session={session}
         paneSave={client}
         workItemId="11111111-1111-1111-1111-111111111111"
+        savedStays={{
+          s_aaaa1111_1: {
+            confirmationNumber: 'TEST-123',
+            status: 'booked',
+            screenshotRef: null,
+          },
+        }}
       />,
     );
-    pickRoomChoices(0);
+    expect(screen.getByText('Booked in HMS – confirmation TEST-123')).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(1);
+    pickRoomChoices(1);
     fireEvent.click(previewButton(0));
-    await screen.findByText(JOHN_SMITH_PREVIEW);
+    await screen.findByText(/Nothing is saved until you press Create provisional booking/);
     fireEvent.click(bookButton(0));
     await screen.findByText('Booked in HMS – confirmation 98765-1');
     expect(commit).toHaveBeenCalledWith(
       expect.objectContaining({
-        stayId: 's_aaaa1111_1',
+        stayId: 's_aaaa1111_2',
         workItemId: '11111111-1111-1111-1111-111111111111',
       }),
       PANE_DIGEST,
