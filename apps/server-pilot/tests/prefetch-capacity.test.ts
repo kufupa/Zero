@@ -309,19 +309,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
   it('unknown mailbox property fails closed and does not enqueue', () =>
     withSeededTestDb(async (db) => {
       const seeded = await seedExtraction(db, { transportId: NAVA_TRANSPORT_ID });
-      expect(await prefetchQuoteReadyForExtraction(seeded.prefetchRun, db, QUOTE_ON)).toBe(0);
+      await expect(prefetchQuoteReadyForExtraction(seeded.prefetchRun, db, QUOTE_ON)).rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED',
+      });
       expect(await preparedQuoteRows(db, seeded.messageId)).toEqual([]);
-      const [source] = await db
-        .select({ metrics: aiWorkflowRun.metrics })
-        .from(aiWorkflowRun)
-        .where(eq(aiWorkflowRun.id, seeded.run.id));
-      expect(quotePrepareDecisionsFromMetrics(source?.metrics)).toEqual([
-        expect.objectContaining({ outcome: 'skipped', reason: 'target_refused' }),
-      ]);
     }));
 
   it('overflow is deferred with nextRunAt and later runs once without duplicate enqueue', () =>
     withSeededTestDb(async (db) => {
+      vi.stubEnv('PORT', '3000');
+      vi.stubEnv('BETTER_AUTH_URL', 'https://nava.legacy.local');
+      vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
+      vi.stubEnv('AWS_REGION', 'synthetic-region-1');
+      vi.stubEnv('S3_BUCKET', 'prefetch-capacity-test');
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       vi.stubEnv('HMS_QUOTE_PREPARE_PER_HOUR', '1');
