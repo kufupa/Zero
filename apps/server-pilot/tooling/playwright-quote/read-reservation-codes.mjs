@@ -5,7 +5,11 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { parseStayProperty } from './property-profile.mjs';
+import { withReadCliPage } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage };
 
 const FIELD_NAMES = [
   'confirmationnumber',
@@ -297,7 +301,13 @@ async function writeCrosstab(dir, jsonlPath) {
 }
 
 async function main() {
-  const parsed = parseArgs(process.argv.slice(2));
+  const property = parseStayProperty(process.argv.slice(2));
+  if (!property.ok) {
+    process.stderr.write(`${property.error}\n`);
+    process.exitCode = property.exitCode ?? 2;
+    return;
+  }
+  const parsed = parseArgs(property.rest);
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
     process.exitCode = 2;
@@ -322,12 +332,15 @@ async function main() {
     viewport: { width: 1600, height: 1000 },
   });
   await installReadOnlyGuard(context);
-  const page = await context.newPage();
-  page.setDefaultTimeout(20000);
+  const page = await withReadCliPage({
+    propertyCode: property.propertyCode, secret, context, browser,
+  }, ({ page: leased }) => {
+    leased.setDefaultTimeout?.(20000);
+    return leased;
+  });
   let reads = 0;
   let failures = 0;
   try {
-    await login(page, secret);
     const listSearch = page.waitForResponse(
       (response) => response.request().method() === 'POST' && /OSRESS\.search/i.test(response.url()),
       { timeout: 25000 },

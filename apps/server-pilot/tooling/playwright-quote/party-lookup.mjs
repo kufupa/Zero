@@ -4,7 +4,10 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createAudit } from './audit.mjs';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage };
 
 const KINDS = ['organization', 'bookingAgency', 'guest', 'arAccount'];
 const KIND_SET = new Set(KINDS);
@@ -179,14 +182,12 @@ function normalizeOneSearch(item) {
   return { kind: item.kind, query, name: String(item.name).trim() };
 }
 
-const PARTY_LOOKUP_PROPERTIES = new Set(['HRCEN', 'HRDAV']);
-
-/** HRCEN when omitted. Null when the code is not a known property — never Centurion fallback. */
+/** Explicit registered property only. Omitted or unknown codes are an input gap — never a hotel fallback. */
 export function partyLookupPropertyCode(request) {
-  if (request == null || typeof request !== 'object' || Array.isArray(request)) return 'HRCEN';
-  if (request.propertyCode == null || String(request.propertyCode).trim() === '') return 'HRCEN';
+  if (request == null || typeof request !== 'object' || Array.isArray(request)) return null;
+  if (request.propertyCode == null || String(request.propertyCode).trim() === '') return null;
   const code = String(request.propertyCode).trim().toUpperCase();
-  return PARTY_LOOKUP_PROPERTIES.has(code) ? code : null;
+  return lookupActiveProperty(code)?.propertyCode ?? null;
 }
 
 export function assertPartyLookupAccount(secret, propertyCode) {
@@ -1138,12 +1139,13 @@ export async function lookupParty({ requestPath, outputDir, env = process.env } 
       }, env),
       new Promise((_, reject) => setTimeout(() => reject(new Error('CONTEXT_TIMEOUT')), CONNECT_MS)),
     ]);
-    page = await context.newPage();
-    page.setDefaultTimeout(20000);
     timed.connect = Date.now() - connectStarted;
     audit = await createAudit(directory, { trace: false });
     const loginStarted = Date.now();
-    await login(page, secret, env);
+    page = await withReadCliPage({ propertyCode, secret, context, browser, env }, ({ page: leased }) => {
+      leased.setDefaultTimeout?.(20000);
+      return leased;
+    });
     timed.login = Date.now() - loginStarted;
     await audit.start(page, [secret.password, secret.username, secret.loginUrl]);
     const navStarted = Date.now();

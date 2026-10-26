@@ -54,11 +54,11 @@ test('propertySecretRefusal refuses a secret for the other hotel before login', 
   assert.equal(propertySecretRefusal({ expectedPropertyCode: 'HRCEN' }, 'HRFAKE'), 'PROPERTY_HRFAKE_REQUIRED');
 });
 
-test('parseStayProperty defaults HRCEN, accepts HRDAV, strips the flag, refuses unknown', () => {
+test('parseStayProperty requires --property, accepts a registered code, refuses unknown', () => {
   assert.deepEqual(parseStayProperty(['--mode', 'preview']), {
-    ok: true,
-    propertyCode: 'HRCEN',
-    rest: ['--mode', 'preview'],
+    ok: false,
+    exitCode: 2,
+    error: 'PROPERTY_REQUIRED',
   });
   assert.deepEqual(parseStayProperty(['--property', 'HRDAV', '--mode', 'preview']), {
     ok: true,

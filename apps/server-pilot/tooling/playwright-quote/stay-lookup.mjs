@@ -30,6 +30,10 @@ import {
   snapshotStayFormRecord,
 } from './commercial-fields.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
+import { parseStayProperty } from './property-profile.mjs';
+import { withReadCliPage } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage };
 
 const QUICK_WAIT_MS = 8000;
 const PANEL_FOOTER = /Records:\s*\d+\s+of\s+\d+/i;
@@ -275,8 +279,12 @@ async function drive(ctx) {
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
     context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
     await installReadOnlyGuard(context);
-    ctx.page = await context.newPage();
-    ctx.page.setDefaultTimeout(20000);
+    ctx.page = await withReadCliPage({
+      propertyCode: ctx.propertyCode, secret: ctx.secret, context, browser,
+    }, ({ page: leased }) => {
+      leased.setDefaultTimeout?.(20000);
+      return leased;
+    });
     if (ctx.args.mode === 'find') await runFind(ctx);
     else await runSearchGuest(ctx);
   } catch (error) {
@@ -295,7 +303,12 @@ async function drive(ctx) {
 }
 
 async function main() {
-  const parsed = parseLookupArgs(process.argv.slice(2));
+  const property = parseStayProperty(process.argv.slice(2));
+  if (!property.ok) {
+    process.stderr.write(`${property.error}\n`);
+    return property.exitCode ?? 2;
+  }
+  const parsed = parseLookupArgs(property.rest);
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
     return parsed.exitCode;
@@ -303,6 +316,7 @@ async function main() {
   const { args } = parsed;
   const ctx = {
     args,
+    propertyCode: property.propertyCode,
     dir: resolve(args.out),
     result: newLookupResult(args),
     started: Date.now(),

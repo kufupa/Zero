@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { PROPERTY_REGISTRY } from './property-registry.mjs';
+import { lookupActiveProperty } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage } from './read-cli-lease.mjs';
 
 // Verified room profiles keyed by HMS property code. A property without an entry has no profile, so its quotes stay unknown.
 const PROFILE_FILES = new Map(
@@ -90,12 +93,12 @@ export function amendRoomTypes(propertyCode) {
   return profile ? Object.keys(profile.roomCapacity) : [];
 }
 
-/** Optional `--property CODE`. Defaults HRCEN. Strips the flag so other parsers never see it. */
+/** Required `--property CODE` of an active registered hotel. Strips the flag so other parsers never see it. */
 export function parseStayProperty(argv) {
   const index = argv.indexOf('--property');
-  if (index === -1) return { ok: true, propertyCode: 'HRCEN', rest: argv };
+  if (index === -1) return { ok: false, exitCode: 2, error: 'PROPERTY_REQUIRED' };
   const value = argv[index + 1];
-  if (!PROFILE_FILES.has(value)) return { ok: false, exitCode: 2, error: 'PROPERTY_UNKNOWN' };
+  if (!lookupActiveProperty(value)) return { ok: false, exitCode: 2, error: 'PROPERTY_UNKNOWN' };
   return { ok: true, propertyCode: value, rest: argv.slice(0, index).concat(argv.slice(index + 2)) };
 }
 

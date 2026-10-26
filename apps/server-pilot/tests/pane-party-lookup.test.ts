@@ -935,11 +935,9 @@ describe('one name normalization for the runner and the server', () => {
 });
 
 describe('party-lookup CLI property', () => {
-  it('defaults to HRCEN, accepts HRDAV, and never falls back from an unknown code', () => {
-    expect(runner.partyLookupPropertyCode(undefined)).toBe('HRCEN');
-    expect(runner.partyLookupPropertyCode({ kind: 'organization', query: { organizationName: 'ACME' } })).toBe(
-      'HRCEN',
-    );
+  it('requires an explicit registered property and never falls back from an unknown code', () => {
+    expect(runner.partyLookupPropertyCode(undefined)).toBeNull();
+    expect(runner.partyLookupPropertyCode({ kind: 'organization', query: { organizationName: 'ACME' } })).toBeNull();
     expect(runner.partyLookupPropertyCode({ propertyCode: 'hrdav' })).toBe('HRDAV');
     expect(runner.partyLookupPropertyCode({ propertyCode: 'HROTH' })).toBeNull();
   });

@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // Sequential, resumable, read-only confirmation lookup batch. It logs in once and reads commercial fields from each
 // successfully opened Guest Stay record. --include-history sweeps earlier 60-day quick-search windows, up to five years.
-// Usage: node find-batch.mjs --input confs.json --out finds.jsonl [--cap N] [--pause-ms 1500] [--include-history]
+// Usage: node find-batch.mjs --property CODE --input confs.json --out finds.jsonl [--cap N] [--pause-ms 1500] [--include-history]
 import { appendFile, chmod, mkdir, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { checkCdpEnv, windowCovers } from './cancel-stay-rules.mjs';
 import { openGuestStay, readWindow, setQuickWindow } from './cancel-stay.mjs';
 import { findOnOpenGuestStay } from './stay-lookup.mjs';
@@ -14,6 +14,10 @@ import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import {
   historySweepStarts, parseFindBatchArgs, parseFindBatchInput, remainingConfirmations,
 } from './find-batch-rules.mjs';
+import { parseStayProperty } from './property-profile.mjs';
+import { withReadCliPage } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage };
 
 const CONNECT_TIMEOUT_MS = 25_000;
 const PAGE_TIMEOUT_MS = 20_000;
@@ -115,7 +119,12 @@ async function appendRow(path, row) {
 }
 
 async function main(argv = process.argv.slice(2), env = process.env) {
-  const parsed = parseFindBatchArgs(argv);
+  const property = parseStayProperty(argv);
+  if (!property.ok) {
+    process.stderr.write(`${property.error}\n`);
+    return property.exitCode ?? 2;
+  }
+  const parsed = parseFindBatchArgs(property.rest);
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
     return 2;
@@ -155,8 +164,12 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   let processed = 0;
   try {
     await installReadOnlyGuard(context);
-    page = await createStayPage(context, null, { open: false });
-    await login(page, secret, env);
+    page = await withReadCliPage({
+      propertyCode: property.propertyCode, secret, context, browser, env,
+    }, async ({ page: leased }) => {
+      leased.setDefaultTimeout?.(PAGE_TIMEOUT_MS);
+      return leased;
+    });
     const shellUrl = page.url();
     await openGuestStay(page);
     await page.waitForTimeout(1500);

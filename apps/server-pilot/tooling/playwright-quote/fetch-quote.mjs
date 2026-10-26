@@ -11,6 +11,9 @@ import { createAudit } from './audit.mjs';
 import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 import { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
+import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage };
 
 export { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath };
 
@@ -858,6 +861,7 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       searchCompleteness:{status:'not_started',searchCount:0}});
     else {
       const request=normalized.request;
+      if(!lookupActiveProperty(request.propertyCode)) throw new Error('PROPERTY_UNKNOWN');
       await saveEvidence(directory,'request.json',request);
       event('configuration');
       const url=new URL(env.HMS_STAGEHAND_CDP_URL);
@@ -878,9 +882,9 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
         });
         browser=attached.browser;
         context=attached.context;
-        page=attached.page;
+        page=await withReadCliPage({propertyCode:request.propertyCode,secret,context,browser,env},({page:leased})=>leased);
       });
-      event('login'); await clock.time('login',()=>login(page,secret,env));
+      event('login'); await clock.time('login',()=>Promise.resolve());
       event('audit_start'); await audit.start(page,[secret.password,secret.username,secret.loginUrl]);
       await audit.checkpoint('login-complete');
       event('hotel_availability'); await clock.time('nav',()=>openHotelAvailability(page));
