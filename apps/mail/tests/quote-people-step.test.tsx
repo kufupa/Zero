@@ -2,14 +2,19 @@
  * @vitest-environment happy-dom
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step';
 import type { ContactField, StoredContact } from '../lib/quote-workflow/backend-bind';
+import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import type { PartyFindReply } from '../lib/quote-workflow/party-lookup';
 import { emptyStaffQuoteHeader } from '../lib/quote-workflow/types';
 import type { QuoteSession, StaffQuoteParty } from '../lib/quote-workflow/types';
 
-afterEach(() => cleanup());
+beforeEach(() => resetGuestNameCacheForTests());
+afterEach(() => {
+  cleanup();
+  resetGuestNameCacheForTests();
+});
 
 const agency: StaffQuoteParty = {
   kind: 'agency',
@@ -159,6 +164,7 @@ describe('QuotePeopleStep', () => {
     expect(otherGuest.getAttribute('placeholder')).toBe('Guest name?');
     otherMessage.unmount();
 
+    resetGuestNameCacheForTests({ keepSession: true });
     render(<QuotePeopleStep {...props} />);
     const sameMessageGuest = screen.getByLabelText('Guest') as HTMLInputElement;
     expect(sameMessageGuest.value).toBe('Staff-entered value');

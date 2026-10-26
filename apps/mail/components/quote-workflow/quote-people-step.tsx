@@ -3,6 +3,7 @@ import { Field, Section, SecondaryButton, StepState, paneFieldClass } from '@/co
 import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
+import { recalledGuestName, rememberGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type { QuoteSession, StaffQuoteHeader } from '@/lib/quote-workflow/types';
 import { PartyPicker } from './party-picker';
@@ -30,11 +31,13 @@ function inferredGuestName(session: QuoteSession, contact?: StoredContact | null
 function GuestNameField({
   session,
   contact,
+  guestEditorKey,
 }: {
   session: QuoteSession;
   contact?: StoredContact | null;
+  guestEditorKey: string;
 }) {
-  const [editedName, setEditedName] = useState<string | null>(null);
+  const [editedName, setEditedName] = useState<string | null>(() => recalledGuestName(guestEditorKey));
   const guestName = editedName ?? inferredGuestName(session, contact);
   const needsPrompt = guestName.trim().length === 0;
 
@@ -46,7 +49,11 @@ function GuestNameField({
         className={paneFieldClass}
         value={guestName}
         placeholder={needsPrompt ? 'Guest name?' : undefined}
-        onChange={(event) => setEditedName(event.target.value)}
+        onChange={(event) => {
+          const name = event.target.value;
+          rememberGuestName(guestEditorKey, name);
+          setEditedName(name);
+        }}
       />
       {needsPrompt ? (
         <p id="quote-guest-name-prompt" className="text-[11px] text-[#64748b]">
@@ -209,7 +216,12 @@ export function QuotePeopleStep({
       {onContactEdit ? (
         <ContactBlock embedded key={contactEditorKey} contact={contact ?? null} onEdit={onContactEdit} />
       ) : null}
-      <GuestNameField key={guestEditorKey} session={session} contact={contact} />
+      <GuestNameField
+        key={`guest:${guestEditorKey}`}
+        session={session}
+        contact={contact}
+        guestEditorKey={guestEditorKey}
+      />
       <StaffPartyFields
         header={header}
         onPatch={(header) => onPatchStaffHeader?.(header, { staffEdit: true })}
