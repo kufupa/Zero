@@ -148,7 +148,7 @@ const NIGHTLY_REQUEST: AvailabilityRequest = {
   rooms: [{ roomType: 'All room types', quantity: 2, adults: 1, childAges: [] }],
 };
 const nightlyDates = ['2026-09-24', '2026-09-25', '2026-09-26'];
-const NIGHTLY_TOOL_REQUEST = quoteRequestFor(NIGHTLY_REQUEST) as unknown as ReaderRequest;
+const NIGHTLY_TOOL_REQUEST = quoteRequestFor(NIGHTLY_REQUEST, CENTURION_HMS_READ_TARGET) as unknown as ReaderRequest;
 
 function nightlyQuoteResultFromSavedFixture(): QuoteEnvelope {
   const source = quoteFixtures.manyRoomSource(24);
@@ -224,10 +224,11 @@ function probeEnv(overrides: Record<string, string> = {}): Record<string, string
   return { ...process.env, HMS_JOB_QUEUE: 'on', HMS_AVAILABILITY_PREFETCH: 'on', ...overrides } as Record<string, string>;
 }
 
-const EXTRACTION_RUN = (messageId: string) => ({
+const EXTRACTION_RUN = (messageId: string, admissionSnapshotId: string | null = `snapshot-${randomUUID()}`) => ({
   runKind: 'inbound_extraction' as const,
   transportId: TRANSPORT_ID,
   triggerMessageId: messageId,
+  admissionSnapshotId,
 });
 
 async function seedThread(db: DB): Promise<{ threadId: string; messageId: string }> {
@@ -355,10 +356,10 @@ describe('U10 availability probe (pure)', () => {
 
   it('sends the quote tool a v2 request with the session property, dates and occupancy, and no rate or room codes', () => {
     const [request] = availabilityRequestsFor(PAYLOAD) as AvailabilityRequest[];
-    const quote = quoteRequestFor(request!);
+    const quote = quoteRequestFor(request!, CENTURION_HMS_READ_TARGET);
     expect(quote).toEqual({
       schemaVersion: 2,
-      propertyCode: 'HRCEN',
+      propertyCode: CENTURION_HMS_READ_TARGET.propertyCode,
       arrivalDate: '2026-10-26',
       departureDate: '2026-10-27',
       details: 'summary',
@@ -371,7 +372,7 @@ describe('U10 availability probe (pure)', () => {
     // The quote tool's own normalizer accepts it, so a probe is never refused as input_gap.
     expect(normalizer.normalizeQuoteRequest(quote).ok).toBe(true);
     // A child's age reaches the request as a child, not as an adult.
-    const withChild = quoteRequestFor(availabilityRequestsFor(PAYLOAD)[1]!);
+    const withChild = quoteRequestFor(availabilityRequestsFor(PAYLOAD)[1]!, CENTURION_HMS_READ_TARGET);
     expect(withChild).toMatchObject({ rooms: [{ id: 'group-1', adults: 2, children: 1, childAges: [6] }] });
     expect(normalizer.normalizeQuoteRequest(withChild).ok).toBe(true);
   });
@@ -405,7 +406,7 @@ describe('U10 availability probe (pure)', () => {
 
   it('carries board on each option, requests 200 options, and flags truncation', () => {
     const [request] = availabilityRequestsFor(PAYLOAD) as AvailabilityRequest[];
-    expect(quoteRequestFor(request!).maxOptionsPerGroup).toBe(200);
+    expect(quoteRequestFor(request!, CENTURION_HMS_READ_TARGET).maxOptionsPerGroup).toBe(200);
     const snapshot = availabilitySnapshotOf({
       outcome: 'partial',
       groups: [
@@ -724,6 +725,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       expect(await prefetchAvailabilityForExtraction(run, db, probeEnv({ HMS_AVAILABILITY_PREFETCH: '' }))).toBe(0);
       expect(await prefetchAvailabilityForExtraction(run, db, probeEnv({ HMS_JOB_QUEUE: 'off' }))).toBe(0);
       expect(await prefetchAvailabilityForExtraction({ ...run, runKind: 'inbound_triage' }, db, probeEnv())).toBe(0);
+      expect(await availabilityRuns(db)).toHaveLength(0);
+    }));
+
+  it('denied admission creates zero jobs', () =>
+    withSeededTestDb(async (db) => {
+      const { messageId } = await seedThread(db);
+      await seedExtraction(db, messageId, 'quote');
+      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId, null), db, probeEnv())).toBe(0);
       expect(await availabilityRuns(db)).toHaveLength(0);
     }));
 

@@ -2125,17 +2125,49 @@ export function schedulePrefetchForInbound(run: AiWorkflowRun): void {
   void prefetchHmsConfirmations(run).catch(() => undefined);
 }
 
+type AvailabilityPrefetchRun = Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'> &
+  Partial<Pick<AiWorkflowRun, 'admissionSnapshotId'>>;
+
+/**
+ * Live inbound extraction stamps an admission snapshot. Backfill, imports, and an explicit null never start an HMS
+ * read. Missing snapshot on the run looks up the source inbound-extraction row; unknown mail fails closed.
+ */
+async function liveHotelReadAdmissionSnapshotId(
+  run: Pick<AiWorkflowRun, 'transportId' | 'triggerMessageId'> & Partial<Pick<AiWorkflowRun, 'admissionSnapshotId'>>,
+  db: DB,
+): Promise<string | null> {
+  if (typeof run.admissionSnapshotId === 'string' && run.admissionSnapshotId.trim()) {
+    return run.admissionSnapshotId.trim();
+  }
+  if (run.admissionSnapshotId === null) return null;
+  const [row] = await db
+    .select({ admissionSnapshotId: aiWorkflowRun.admissionSnapshotId })
+    .from(aiWorkflowRun)
+    .where(
+      and(
+        eq(aiWorkflowRun.transportId, run.transportId),
+        eq(aiWorkflowRun.triggerMessageId, run.triggerMessageId),
+        eq(aiWorkflowRun.runKind, 'inbound_extraction'),
+        like(aiWorkflowRun.idempotencyKey, 'inbound-extraction:%'),
+      ),
+    )
+    .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
+    .limit(1);
+  return row?.admissionSnapshotId ?? null;
+}
+
 /**
  * Availability probes for an admitted quote's stored extraction: one per complete stay, at prefetch priority and under
  * their own hourly cap (HMS_AVAILABILITY_PER_HOUR), separate from confirmation prefetch. Only quote mail, never spam. The same stay on the same day is one job, whichever mail carried
  * it. Returns how many jobs were created.
  */
 export async function prefetchAvailabilityForExtraction(
-  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
+  run: AvailabilityPrefetchRun,
   db: DB = getDb(),
   env: NodeJS.Dict<string> = process.env,
 ): Promise<number> {
   if (!availabilityPrefetchEnabled(env) || run.runKind !== 'inbound_extraction') return 0;
+  if (!(await liveHotelReadAdmissionSnapshotId(run, db))) return 0;
   const [extraction] = await db
     .select({
       threadId: message.threadId,
@@ -2196,35 +2228,13 @@ export async function prefetchAvailabilityForExtraction(
 }
 
 /** Fire-and-forget from the worker after a quote extraction is stored. Off unless HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on. */
-export function scheduleAvailabilityPrefetch(
-  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
-): void {
+export function scheduleAvailabilityPrefetch(run: AvailabilityPrefetchRun): void {
+  if (!run.admissionSnapshotId) return;
   void prefetchAvailabilityForExtraction(run).catch(() => undefined);
 }
 
 type PartyPrefetchRun = Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'> &
   Partial<Pick<AiWorkflowRun, 'admissionSnapshotId'>>;
-
-async function livePartyAdmissionSnapshotId(run: PartyPrefetchRun, db: DB): Promise<string | null> {
-  if (typeof run.admissionSnapshotId === 'string' && run.admissionSnapshotId.trim()) {
-    return run.admissionSnapshotId.trim();
-  }
-  if (run.admissionSnapshotId === null) return null;
-  const [row] = await db
-    .select({ admissionSnapshotId: aiWorkflowRun.admissionSnapshotId })
-    .from(aiWorkflowRun)
-    .where(
-      and(
-        eq(aiWorkflowRun.transportId, run.transportId),
-        eq(aiWorkflowRun.triggerMessageId, run.triggerMessageId),
-        eq(aiWorkflowRun.runKind, 'inbound_extraction'),
-        like(aiWorkflowRun.idempotencyKey, 'inbound-extraction:%'),
-      ),
-    )
-    .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id))
-    .limit(1);
-  return row?.admissionSnapshotId ?? null;
-}
 
 async function recordPartyPrefetchDecision(
   db: DB,
@@ -2280,7 +2290,7 @@ export async function prefetchPartyForExtraction(
   };
   if (!env.HMS_PREFETCH_ENABLED || !hmsJobQueueEnabled()) return skip('disabled');
   if (run.runKind !== 'inbound_extraction') return skip('not_inbound_extraction');
-  if (!(await livePartyAdmissionSnapshotId(run, db))) return skip('no_live_admission');
+  if (!(await liveHotelReadAdmissionSnapshotId(run, db))) return skip('no_live_admission');
   const [source] = await db
     .select({
       threadId: message.threadId,
