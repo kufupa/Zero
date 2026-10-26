@@ -574,8 +574,10 @@ export function PartyPicker({
       currentJobView.request?.kind === 'party' &&
       !currentJobView.request.partyKind,
   );
-  // QuotePeopleStep renders Agency before Company; that first field owns a shared kind-less prefetch line.
-  const showJobStatus = !sharedPrefetch || !kind || kind === 'agency';
+  // Agency renders first and owns shared prefetch by default.
+  // If it is already picked, its hook does not resume the job, so Company owns the line.
+  const showJobStatus =
+    !sharedPrefetch || !kind || kind === 'agency' || Boolean(parties.agency);
   const jobStatusKind = sharedPrefetch ? undefined : kind;
   const v2JobScopeKey = JSON.stringify([
     threadId ?? null,
