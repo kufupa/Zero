@@ -5,7 +5,11 @@ import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { parseStayProperty } from './property-profile.mjs';
+import { withReadCliPage } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage };
 
 const FIELDS = [
   'confirmationnumber', 'status', 'arrivaldate', 'departuredate', 'nights', 'adults', 'children',
@@ -383,7 +387,7 @@ async function post(page, origin, path, form) {
   );
 }
 
-async function readOne(page, origin, conf) {
+async function readOne(page, origin, conf, propertyCode) {
   const searchText = await post(page, origin, '/web/base/OSRESS.search', searchBody(conf));
   const sessionStub = /loadLocalizedPage/i.test(searchText) && searchText.length < 2000;
   const data = pageData(searchText);
@@ -399,7 +403,7 @@ async function readOne(page, origin, conf) {
   const row = exact[0];
   const form = {
     confirmationnumber: conf,
-    propertycode: 'HRCEN',
+    propertycode: propertyCode,
     MENU_MODULE_KEY: '0',
     removescreenflows: 'yes',
     SYSTEM_FUNCTION_NAME: 'OSRESV',
@@ -428,7 +432,13 @@ async function readOne(page, origin, conf) {
 }
 
 async function main() {
-  const { input, out, cap } = args(process.argv.slice(2));
+  const property = parseStayProperty(process.argv.slice(2));
+  if (!property.ok) {
+    process.stderr.write(`${property.error}\n`);
+    process.exitCode = property.exitCode ?? 2;
+    return;
+  }
+  const { input, out, cap } = args(property.rest);
   process.umask(0o077);
   await mkdir(dirname(out), { recursive: true, mode: 0o700 });
   const confs = queueConfirmations(JSON.parse(await readFile(input, 'utf8')).slice(0, cap));
@@ -449,35 +459,37 @@ async function main() {
     }
     return route.continue();
   });
-  const page = await ctx.newPage();
   const counts = {};
   try {
-    await login(page, secret);
-    const origin = new URL(page.url()).origin;
-    await navigateGuestStay(page, { ...NAV_TIMEOUTS, origin });
-    for (const conf of confs.filter((c) => !done.has(c))) {
-      const positiveControl = conf === SEP15_POSITIVE_CONTROL;
-      let row;
-      try {
-        row = await readOne(page, origin, conf);
-      } catch (error) {
-        row = { conf, outcome: 'error', error: String(error.message || error).slice(0, 160), envelope: { type: 'error' } };
+    await withReadCliPage({
+      propertyCode: property.propertyCode, secret, context: ctx, browser, env: process.env,
+    }, async ({ page }) => {
+      const origin = new URL(page.url()).origin;
+      await navigateGuestStay(page, { ...NAV_TIMEOUTS, origin });
+      for (const conf of confs.filter((c) => !done.has(c))) {
+        const positiveControl = conf === SEP15_POSITIVE_CONTROL;
+        let row;
+        try {
+          row = await readOne(page, origin, conf, property.propertyCode);
+        } catch (error) {
+          row = { conf, outcome: 'error', error: String(error.message || error).slice(0, 160), envelope: { type: 'error' } };
+        }
+        if (positiveControl) row.role = 'positive_control';
+        counts[row.outcome] = (counts[row.outcome] ?? 0) + 1;
+        await appendFile(out, `${JSON.stringify(row)}\n`, { mode: 0o600 });
+        process.stdout.write(`${JSON.stringify(stdoutPayload({
+          phase: 'search',
+          outcome: row.outcome,
+          rowCount: row.rowCount ?? 0,
+          envelope: row.envelope,
+          positiveControl,
+          counts,
+        }))}\n`);
+        if (row.outcome === 'session_stub') break;
+        if (positiveControl && row.outcome !== 'read' && row.outcome !== 'thin') break;
+        await delay(PAUSE_MS);
       }
-      if (positiveControl) row.role = 'positive_control';
-      counts[row.outcome] = (counts[row.outcome] ?? 0) + 1;
-      await appendFile(out, `${JSON.stringify(row)}\n`, { mode: 0o600 });
-      process.stdout.write(`${JSON.stringify(stdoutPayload({
-        phase: 'search',
-        outcome: row.outcome,
-        rowCount: row.rowCount ?? 0,
-        envelope: row.envelope,
-        positiveControl,
-        counts,
-      }))}\n`);
-      if (row.outcome === 'session_stub') break;
-      if (positiveControl && row.outcome !== 'read' && row.outcome !== 'thin') break;
-      await delay(PAUSE_MS);
-    }
+    });
   } finally {
     await Promise.race([ctx.close().catch(() => {}), delay(5_000)]);
     try {

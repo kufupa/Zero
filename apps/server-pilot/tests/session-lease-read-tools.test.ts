@@ -9,17 +9,23 @@ import {
 import { spawnEnvWithHeldLock } from '../src/ai/staff-quote-installation.js';
 import { staffQuoteChildEnv } from '../src/ai/staff-quote-run.js';
 import { createSlotSession } from '../src/hms/slot-session.js';
-import { runDeeplinkProbe } from '../tooling/playwright-quote/hms-deeplink-probe.mjs';
-import { partyLookupPropertyCode } from '../tooling/playwright-quote/party-lookup.mjs';
-import { parseStayProperty } from '../tooling/playwright-quote/property-profile.mjs';
+import { withLeasedReadPage as createPreflightLease } from '../tooling/playwright-quote/create-preflight.mjs';
+import { withLeasedReadPage as fetchQuoteLease } from '../tooling/playwright-quote/fetch-quote.mjs';
+import { main as findBatchMain, withLeasedReadPage as findBatchLease } from '../tooling/playwright-quote/find-batch.mjs';
+import { runDeeplinkProbe, withLeasedReadPage as deeplinkLease } from '../tooling/playwright-quote/hms-deeplink-probe.mjs';
+import { partyLookupPropertyCode, withLeasedReadPage as partyLookupLease } from '../tooling/playwright-quote/party-lookup.mjs';
+import { parseStayProperty, withLeasedReadPage as propertyProfileLease } from '../tooling/playwright-quote/property-profile.mjs';
 import {
   lookupActiveProperty,
   prepareReadCliInput,
+  READ_CLI_TOOLS,
   resetSharedReadCliLease,
   sharedReadCliLease,
   withReadCliPage,
 } from '../tooling/playwright-quote/read-cli-lease.mjs';
-import { main as stayLookupMain } from '../tooling/playwright-quote/stay-lookup.mjs';
+import { withLeasedReadPage as readCodesLease } from '../tooling/playwright-quote/read-reservation-codes.mjs';
+import { withLeasedReadPage as readFieldsLease } from '../tooling/playwright-quote/read-reservation-fields.mjs';
+import { main as stayLookupMain, withLeasedReadPage as stayLookupLease } from '../tooling/playwright-quote/stay-lookup.mjs';
 import { describe, expect, it, vi } from 'vitest';
 
 const GENERIC_PROPERTY = 'HTLAA';
@@ -28,13 +34,35 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TOOLING = join(ROOT, 'tooling/playwright-quote');
 const SRC = join(ROOT, 'src/ai');
 
-const ARGV_CLIS = ['stay-lookup', 'create-preflight', 'hms-deeplink-probe'] as const;
+const ARGV_CLIS = [
+  'stay-lookup',
+  'create-preflight',
+  'hms-deeplink-probe',
+  'find-batch',
+  'read-reservation-codes',
+  'read-reservation-fields',
+] as const;
 
 const OMITTED_ARGV: Record<(typeof ARGV_CLIS)[number], string[]> = {
   'stay-lookup': ['--mode', 'find', '--confirmation', '1-1', '--out', '/tmp'],
   'create-preflight': ['--request', 'x.json'],
   'hms-deeplink-probe': ['--conf', '1-1'],
+  'find-batch': ['--input', 'x.json', '--out', 'y.jsonl'],
+  'read-reservation-codes': ['--input', 'x.json'],
+  'read-reservation-fields': ['--input', 'x.json', '--out', 'y.jsonl'],
 };
+
+const SHARED_LEASES = [
+  fetchQuoteLease,
+  partyLookupLease,
+  propertyProfileLease,
+  findBatchLease,
+  stayLookupLease,
+  readCodesLease,
+  readFieldsLease,
+  createPreflightLease,
+  deeplinkLease,
+];
 
 function sourceOf(dir: string, name: string) {
   return readFileSync(join(dir, name), 'utf8');
@@ -71,6 +99,23 @@ describe('read CLI session lease', () => {
       });
     }
     expect(await stayLookupMain(OMITTED_ARGV['stay-lookup'])).toBe(2);
+    expect(await findBatchMain(OMITTED_ARGV['find-batch'])).toBe(2);
+
+    expect(READ_CLI_TOOLS).toEqual([
+      'fetch-quote',
+      'party-lookup',
+      'property-profile',
+      'find-batch',
+      'stay-lookup',
+      'read-reservation-codes',
+      'read-reservation-fields',
+      'create-preflight',
+      'hms-deeplink-probe',
+    ]);
+    for (const name of READ_CLI_TOOLS) {
+      expect(sourceOf(TOOLING, `${name}.mjs`)).toContain('withReadCliPage');
+    }
+    for (const lease of SHARED_LEASES) expect(lease).toBe(withReadCliPage);
 
     expect(sourceOf(SRC, 'pane-stay-lookup.ts')).toContain("'--property'");
     expect(sourceOf(SRC, 'pane-stay-save.ts')).toMatch(/return code \? \['--property', code\] : \[\]/);
@@ -84,6 +129,11 @@ describe('read CLI session lease', () => {
     expect(partyLookupPropertyCode({ propertyCode: 'HTLZZ' })).toBeNull();
     expect(lookupActiveProperty('')).toBeNull();
     expect(lookupActiveProperty('HTLZZ')).toBeNull();
+    expect(parseStayProperty(['--property', 'HTLZZ'])).toMatchObject({
+      ok: false,
+      error: 'PROPERTY_UNKNOWN',
+      exitCode: 2,
+    });
     expect(sourceOf(TOOLING, 'fetch-quote.mjs')).toContain('lookupActiveProperty(request.propertyCode)');
 
     await expect(

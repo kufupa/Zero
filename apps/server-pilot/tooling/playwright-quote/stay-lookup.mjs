@@ -4,8 +4,8 @@
 // opened and its record form read; no row is not_found.
 // search-guest: header search by surname, with the panel window moved to cover --arrival first. Every panel row is
 // read and none is opened. A capped panel (Records: N of M with N < M) is ambiguous_capped.
-// Usage: node stay-lookup.mjs --property CODE --mode find --confirmation 57291630-1 [--arrival 2027-09-14] [--last-name Labtest] --out <dir> [--debug-html]
-//        node stay-lookup.mjs --property CODE --mode search-guest --last-name Labtest --arrival 2027-09-14 [--departure 2027-09-15] --out <dir> [--debug-html]
+// Usage: node stay-lookup.mjs --mode find --confirmation 57291630-1 [--arrival 2027-09-14] [--last-name Labtest] --out <dir> [--debug-html]
+//        node stay-lookup.mjs --mode search-guest --last-name Labtest --arrival 2027-09-14 [--departure 2027-09-15] --out <dir> [--debug-html]
 // Exit: 0 found|not_found|ok; 1 ambiguous|ambiguous_capped|execution_failure (also writes failure.png); 2 usage.
 // Writes result.json and screenshots (record.png, panel.png, failure.png) into --out. An unreadable panel is dumped to
 // panel.html; --debug-html also writes record-form.html (find) and panel.html (search) on every run.
@@ -13,7 +13,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import {
   arrivalReport, checkCdpEnv, hmsDateToIso, lookupExitCode, parseLookupArgs, parsePanelSnapshot,
   parseRecordsFooter, sameStayRows, searchGuestOutcome, squash, stayIdentityVerdict, windowCovers,
@@ -30,7 +30,10 @@ import {
   snapshotStayFormRecord,
 } from './commercial-fields.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
-import { parseStayProperty } from './property-profile.mjs';
+import { parseStayProperty, propertySecretRefusal } from './property-profile.mjs';
+import { withReadCliPage } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage };
 
 const QUICK_WAIT_MS = 8000;
 const PANEL_FOOTER = /Records:\s*\d+\s+of\s+\d+/i;
@@ -200,7 +203,7 @@ export async function findOnOpenGuestStay(ctx, { captureScreenshots = true } = {
 }
 
 async function runFind(ctx) {
-  await login(ctx.page, ctx.secret);
+  // Lease already logged in or reused the authenticated shell.
   mark(ctx, 'login');
   await openGuestStay(ctx.page);
   await ctx.page.waitForTimeout(1500);
@@ -259,7 +262,7 @@ export async function searchGuestOnOpenGuestStay(ctx) {
 }
 
 async function runSearchGuest(ctx) {
-  await login(ctx.page, ctx.secret);
+  // Lease already logged in or reused the authenticated shell.
   mark(ctx, 'login');
   await openGuestStay(ctx.page);
   await ctx.page.waitForTimeout(1500);
@@ -273,13 +276,19 @@ async function drive(ctx) {
     const cdp = checkCdpEnv(process.env);
     if (!cdp.ok) throw new Error(cdp.error);
     ctx.secret = await readSecret();
+    const mismatch = propertySecretRefusal(ctx.secret, ctx.propertyCode);
+    if (mismatch) throw new Error(mismatch);
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
     context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
     await installReadOnlyGuard(context);
-    ctx.page = await context.newPage();
-    ctx.page.setDefaultTimeout(20000);
-    if (ctx.args.mode === 'find') await runFind(ctx);
-    else await runSearchGuest(ctx);
+    await withReadCliPage({
+      propertyCode: ctx.propertyCode, secret: ctx.secret, context, browser, env: process.env,
+    }, async ({ page: leased }) => {
+      leased.setDefaultTimeout?.(20000);
+      ctx.page = leased;
+      if (ctx.args.mode === 'find') await runFind(ctx);
+      else await runSearchGuest(ctx);
+    });
   } catch (error) {
     const message = squash(error?.message || error);
     ctx.result.error = message.slice(0, 300);
@@ -309,6 +318,7 @@ export async function main(argv = process.argv.slice(2)) {
   const { args } = parsed;
   const ctx = {
     args,
+    propertyCode: property.propertyCode,
     dir: resolve(args.out),
     result: newLookupResult(args),
     started: Date.now(),

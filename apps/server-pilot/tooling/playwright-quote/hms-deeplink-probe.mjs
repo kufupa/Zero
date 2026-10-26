@@ -9,9 +9,11 @@ import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
-import { parseStayProperty } from './property-profile.mjs';
-import { lookupActiveProperty } from './read-cli-lease.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { parseStayProperty, propertySecretRefusal } from './property-profile.mjs';
+import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage };
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
 const PRIVATE_QUOTE_ROOT = resolve(REPO_ROOT, '.private/playwright-quote');
@@ -190,6 +192,8 @@ export async function runDeeplinkProbe({
   const runDir = await makeRunDir(runRoot);
   const evidence = relative(REPO_ROOT, runDir);
   const secret = await readSecret(env);
+  const mismatch = propertySecretRefusal(secret, propertyCode);
+  if (mismatch) throw new Error(mismatch);
   const origin = new URL(secret.loginUrl).origin;
   const records = [];
   const browser = await playwright().chromium.connectOverCDP(cdp, { timeout: 20000 });
@@ -197,22 +201,19 @@ export async function runDeeplinkProbe({
   try {
     // A new context inside the borrowed browser. ignoreHTTPSErrors stays off, like the staff tools.
     context = await newBorrowedContext(browser, { viewport: { width: 1600, height: 1000 } }, env);
-    const seed = await context.newPage();
-    try {
-      await login(seed, secret, env);
-    } finally {
-      await seed.close().catch(() => {});
-    }
-    for (const [id, url] of probePlan({ origin, conf, stayId })) {
-      const page = await context.newPage();
-      try {
-        const record = await observe(page, { id, url, conf, runDir, evidence });
-        records.push(record);
-        emit(record);
-      } finally {
-        await page.close().catch(() => {});
+    await withReadCliPage({ propertyCode, secret, context, browser, env }, async () => {
+      // Keep the leased shell. Probe URLs on extra pages so boundPage stays live.
+      for (const [id, url] of probePlan({ origin, conf, stayId })) {
+        const page = await context.newPage();
+        try {
+          const record = await observe(page, { id, url, conf, runDir, evidence });
+          records.push(record);
+          emit(record);
+        } finally {
+          await page.close().catch(() => {});
+        }
       }
-    }
+    });
   } finally {
     await context?.close().catch(() => {});
     // Pinned Playwright connectOverCDP closes its transport, not the owner's Chromium (see fetch-quote.mjs).
