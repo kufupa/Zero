@@ -2,17 +2,90 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, render, screen } from '@testing-library/react';
-import { useEffect, useState } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
-import { initialQuoteSession, reduceQuoteSession } from '@/lib/quote-workflow/session';
-import type { QuoteAnalysis, QuoteSelectionBinding } from '@/lib/quote-workflow/types';
-import {
-  STORED_LOOKUP_TIMEOUT_MS,
-  storedDecision,
-  useStoredWork,
-} from '@/lib/quote-workflow/use-work-item';
+import type { QuoteAnalysis } from '@/lib/quote-workflow/types';
+import { NavaPane } from '@/components/nava-pane/nava-pane';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { STORED_LOOKUP_TIMEOUT_MS } from '@/lib/quote-workflow/use-work-item';
+
+const mocks = vi.hoisted(() => ({
+  storedQuery: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
+  analyseSelection: vi.fn(async (..._args: unknown[]): Promise<unknown> => null),
+  ping: vi.fn(async () => ({ status: 'ok', serverTime: '2026-10-26T00:00:00Z' })),
+  sendCommand: vi.fn(async () => ({ success: true })),
+}));
+
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
+
+vi.mock('@/lib/auth-client', () => ({
+  useSession: () => ({
+    data: {
+      user: { id: 'test-user', email: 'nava-test@example.invalid', name: 'Test Staff' },
+      session: { id: 'test-session' },
+    },
+    isLoading: false,
+  }),
+  signIn: { email: vi.fn() },
+}));
+
+vi.mock('@/hooks/use-connections', () => ({
+  useActiveConnection: () => ({
+    data: { id: 'test-mailbox', email: 'nava-test@example.invalid' },
+    isLoading: false,
+  }),
+}));
+
+vi.mock('@/hooks/use-pilot-capabilities', () => ({ usePilotCapabilities: () => ({ paneSave: false }) }));
+
+vi.mock('@/providers/query-provider', () => {
+  let missingProcedure: object;
+  missingProcedure = new Proxy(
+    {},
+    {
+      get: (_target, key) => {
+        if (key === 'query' || key === 'mutate') return async () => null;
+        if (key === 'then') return undefined;
+        return missingProcedure;
+      },
+    },
+  );
+  const withFallback = (routes: Record<string, unknown>): Record<string, unknown> =>
+    new Proxy(
+      Object.fromEntries(
+        Object.entries(routes).map(([key, value]) => [
+          key,
+          value && typeof value === 'object' ? withFallback(value as Record<string, unknown>) : value,
+        ]),
+      ),
+      {
+        get: (target, key) =>
+          key === 'then' ? undefined : Reflect.has(target, key) ? Reflect.get(target, key) : missingProcedure,
+      },
+    );
+
+  return {
+    trpcClient: withFallback({
+      workstation: {
+        ping: { mutate: mocks.ping },
+        outlookSync: { statusForActiveMailbox: { query: async () => ({ state: 'not_applicable' }) } },
+      },
+      quoteWorkflow: {
+        rateCatalogue: { query: async () => null },
+        analyseSelection: { mutate: (...args: unknown[]) => mocks.analyseSelection(...args) },
+      },
+      workItems: {
+        getByMessage: { query: (...args: unknown[]) => mocks.storedQuery(...args) },
+        list: { query: async () => [] },
+        open: { mutate: async () => ({ status: 'unavailable' }) },
+        recordEvent: { mutate: async () => ({}) },
+        acceptFields: { mutate: async () => ({}) },
+        retryTranslation: { mutate: async () => ({ status: 'capped', translation: null }) },
+      },
+      drafts: { savedReply: { query: async () => null }, saveReply: { mutate: async () => null } },
+    }),
+  };
+});
 
 const ANALYSIS: QuoteAnalysis = {
   intent: 'quote',
@@ -46,46 +119,41 @@ const STORED_READY = {
   translation: null,
 } as unknown as Extract<StoredWork, { status: 'ready' }>;
 
-const BINDING: QuoteSelectionBinding = {
-  transportId: 'test-mailbox',
-  mailboxEmail: 'nava-test@example.invalid',
-  storeId: 'test-store',
-  folderEntryId: 'test-inbox',
-  entryId: 'test-entry',
-  internetMessageId: 'test-message',
-  selectionEpoch: 1,
-  scopeEpoch: 1,
-};
-
-const liveRead = vi.fn();
-
-function StoredReadHost({ trpc }: { trpc: unknown }) {
-  const storedWork = useStoredWork({ trpc, internetMessageId: 'test-message' });
-  const [session, setSession] = useState(() =>
-    reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: BINDING }),
-  );
-
-  useEffect(() => {
-    const decision = storedDecision(storedWork.pane, false);
-    setSession((current) => reduceQuoteSession(current, { type: 'analysis_started' }));
-    if (decision.kind === 'ready') {
-      setSession((current) => reduceQuoteSession(current, { type: 'analysis_ready', analysis: decision.analysis }));
-    } else if (decision.kind === 'failed') {
-      setSession((current) => reduceQuoteSession(current, { type: 'analysis_failed', message: decision.reason }));
-    } else if (decision.kind === 'live') {
-      liveRead();
-    }
-    // The production host uses this same stable gate: pane is represented by its lookup key.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [storedWork.key]);
-
-  return <QuoteWorkflowPanel session={session} paneConfig={null} makeQuote={false} />;
+function bridge(): PaneBridge {
+  return {
+    isConnected: true,
+    workstationInfo: { addinVersion: '1.0.17', bridgeProtocolVersion: 4 },
+    capabilities: null,
+    updateRequired: false,
+    requiresRelogin: false,
+    authorizationUnavailable: false,
+    selectionOutsideMailbox: false,
+    activeEmail: {
+      entryId: 'test-entry',
+      storeId: 'test-store',
+      folderEntryId: 'test-inbox',
+      subject: 'Availability request',
+      senderEmail: 'requester@example.invalid',
+      senderName: 'Requester',
+      receivedTime: '2026-10-26T00:00:00Z',
+      internetMessageId: 'test-message',
+      bodyText: 'Please check these dates.',
+      bodyHtml: '<p>Please check these dates.</p>',
+    },
+    supportsAction: () => true,
+    sendCommand: mocks.sendCommand,
+    pairDevice: vi.fn(),
+    refreshAuthorization: vi.fn(),
+    activateMailboxSync: vi.fn(),
+  } as unknown as PaneBridge;
 }
 
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
-  liveRead.mockClear();
+  localStorage.clear();
+  mocks.storedQuery.mockReset();
+  mocks.analyseSelection.mockReset();
 });
 
 describe('late stored quote reads', () => {
@@ -95,16 +163,20 @@ describe('late stored quote reads', () => {
     const pendingStored = new Promise<typeof STORED_READY>((resolve) => {
       resolveStored = resolve;
     });
-    const query = vi.fn(() => pendingStored);
-    const trpc = { workItems: { getByMessage: { query } } };
+    let resolveLive!: (result: unknown) => void;
+    const pendingLive = new Promise<unknown>((resolve) => {
+      resolveLive = resolve;
+    });
+    mocks.storedQuery.mockReturnValue(pendingStored);
+    mocks.analyseSelection.mockReturnValue(pendingLive);
 
-    render(<StoredReadHost trpc={trpc} />);
-    expect(liveRead).not.toHaveBeenCalled();
+    render(<NavaPane bridge={bridge()} preview />);
+    expect(mocks.analyseSelection).not.toHaveBeenCalled();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(STORED_LOOKUP_TIMEOUT_MS);
     });
-    expect(liveRead).toHaveBeenCalledTimes(1);
+    expect(mocks.analyseSelection).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       resolveStored(STORED_READY);
@@ -113,7 +185,9 @@ describe('late stored quote reads', () => {
     });
 
     expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-03');
-    expect(liveRead).toHaveBeenCalledTimes(1);
-    expect(query).toHaveBeenCalledTimes(1);
+    expect(mocks.analyseSelection).toHaveBeenCalledTimes(1);
+    expect(mocks.storedQuery).toHaveBeenCalledTimes(1);
+
+    resolveLive(null);
   });
 });
