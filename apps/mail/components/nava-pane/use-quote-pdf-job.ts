@@ -267,14 +267,14 @@ export function useQuotePdfJob({
         job &&
         (job.state === 'queued' || job.state === 'claimed' || job.state === 'running' || job.state === 'retry_wait')
       ) {
+        restoreInFlight.current = true;
+        setPdfRestoring(true);
         if (++polls < PDF_JOB_MAX_POLLS) timer = setTimeout(() => void poll(), PDF_JOB_POLL_MS);
         else finishRestore();
         return;
       }
       finishRestore();
     };
-    restoreInFlight.current = true;
-    setPdfRestoring(true);
     void poll();
     return () => {
       cancelled = true;
