@@ -148,6 +148,11 @@ import {
   quotePrepareErrorClass,
   recordQuotePrepareDecision,
 } from './quote-prepare-ledger.js';
+import {
+  countPrefetchReservations,
+  occupyPrefetchReservation,
+  reservePrefetchCapacity,
+} from './prefetch-capacity.js';
 
 /**
  * The queued pane path. Only the exact value `on` enables it. Off (the default), pane finds and searches run
@@ -1846,27 +1851,8 @@ export async function countRecentPrefetches(
   kind: 'find' | 'search_guest' | 'party' | 'availability' | 'staff_quote',
   since: Date,
 ): Promise<number> {
-  const [row] = await db
-    .select({ n: sql<number>`count(*)::int` })
-    .from(aiWorkflowRun)
-    .where(
-      and(
-        eq(aiWorkflowRun.transportId, transportId),
-        eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
-        // Live prefill budgets only: dev/eval runs (lower tiers) must not use up the hourly cap for real mail.
-        eq(aiWorkflowRun.priority, HMS_JOB_PRIORITY_PREFETCH),
-        // Staff batch rows share the prefetch priority but carry batchId: they neither use nor are capped by these budgets.
-        sql`${aiWorkflowRun.metrics}->>'batchId' IS NULL`,
-        ...(kind === 'staff_quote'
-          ? [
-              sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
-            ]
-          : []),
-        sql`${aiWorkflowRun.readRequest}->>'kind' = ${kind}`,
-        gt(aiWorkflowRun.createdAt, since),
-      ),
-    );
-  return Number(row?.n ?? 0);
+  const counted = await countPrefetchReservations(db, { transportId, kind, since });
+  return counted.used;
 }
 
 /** Compatibility export: load the moved helper after this module finishes initializing. */
@@ -1874,7 +1860,7 @@ export async function enqueuePreparedQuoteWithinCap(
   db: DB,
   input: Parameters<typeof enqueueHmsJob>[0],
   perHour: number,
-): Promise<boolean> {
+): Promise<{ created: boolean; deferred: boolean }> {
   const { enqueuePreparedQuoteWithinCap: enqueue } = await import('./prepared-quote-queue.js');
   return enqueue(db, input, perHour);
 }
@@ -2612,6 +2598,7 @@ export async function prefetchQuoteReadyForExtraction(
       return 0;
     }
     let created = 0;
+    let deferred = 0;
     for (const shop of shops) {
       const digest = createHash('sha256').update(JSON.stringify(shop.input)).digest('hex');
       const queued = await enqueuePreparedQuoteWithinCap(
@@ -2629,11 +2616,18 @@ export async function prefetchQuoteReadyForExtraction(
         },
         perHour,
       );
-      if (queued) created += 1;
+      if (queued.created) {
+        created += 1;
+        if (queued.deferred) deferred += 1;
+      }
     }
     if (created === 0) {
       await record({ outcome: 'skipped', reason: 'not_queued' });
       return 0;
+    }
+    if (deferred === created) {
+      await record({ outcome: 'queued', reason: 'deferred', queued: created });
+      return created;
     }
     await record({ outcome: 'queued', reason: 'queued', queued: created });
     return created;
@@ -3515,6 +3509,7 @@ export async function executeHmsJob(input: {
     owner?: string;
     staffQuoteUser?: unknown;
     quotePrepared?: boolean;
+    prefetchDeferred?: boolean;
   };
   const systemPreparedQuote =
     request.kind === 'staff_quote' &&
@@ -3524,6 +3519,59 @@ export async function executeHmsJob(input: {
   if (systemPreparedQuote && !quotePreparationEnabled()) {
     await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, db);
     return 'dead_letter';
+  }
+  let preparedQuoteLockWaitStart = run.createdAt;
+  if (systemPreparedQuote && metrics.prefetchDeferred === true) {
+    const admitted = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(
+          ${'hms-prefetch:staff_quote:' + run.transportId}, 0
+        ))`,
+      );
+      const scoped = tx as unknown as DB;
+      const capacity = await reservePrefetchCapacity(scoped, {
+        transportId: run.transportId,
+        kind: 'staff_quote',
+        perHour: quotePreparationPerHour(),
+        excludeRunId: run.id,
+      });
+      if (capacity.action === 'disable') {
+        await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, scoped);
+        return { status: 'dead_letter' as const };
+      }
+      if (capacity.action === 'defer') {
+        await requeueRun(scoped, mark, {
+          attempts: run.attempts,
+          delayMs: Math.max(JOB_YIELD_MS, capacity.nextRunAt.getTime() - Date.now()),
+          failureClass: 'POLICY_BLOCK',
+          lastError: preparedQuoteYieldLastError(run, 'prefetch_capacity_deferred'),
+        });
+        return { status: 'retry_wait' as const };
+      }
+      const occupied = await occupyPrefetchReservation(scoped, run.id);
+      return { status: 'admit' as const, admittedAt: occupied.admittedAt };
+    });
+    if (admitted.status !== 'admit') return admitted.status;
+    preparedQuoteLockWaitStart = admitted.admittedAt;
+    const extraction = await loadQuotePrepareSourceRun(db, {
+      transportId: run.transportId,
+      triggerMessageId: run.triggerMessageId,
+    });
+    if (!extraction?.admissionSnapshotId) {
+      await markAiRunPolicyRefused({ ...mark, lastError: 'no_live_admission' }, db);
+      return 'dead_letter';
+    }
+    const evaluation = await evaluateQuoteReadyForMessage(
+      { messageId: run.triggerMessageId, transportId: run.transportId },
+      db,
+    );
+    if (!evaluation.plan) {
+      await markAiRunPolicyRefused(
+        { ...mark, lastError: evaluation.reason ?? 'source_not_found' },
+        db,
+      );
+      return 'dead_letter';
+    }
   }
   if (
     systemPreparedQuote &&
@@ -3639,7 +3687,7 @@ export async function executeHmsJob(input: {
       }
       if (isPropertyReadLockDeadline(error)) {
         // A prepared quote waits out a busy lock for a while, then gives up so staff never stay pinned to it.
-        if (systemPreparedQuote && Date.now() - run.createdAt.getTime() >= PREPARED_QUOTE_LOCK_WAIT_MS) {
+        if (systemPreparedQuote && Date.now() - preparedQuoteLockWaitStart.getTime() >= PREPARED_QUOTE_LOCK_WAIT_MS) {
           await markAiRunDeadLetter(
             { ...mark, lastError: 'prepared_quote_lock_busy', failureClass: 'HMS_LOCK_BUSY' },
             db,
@@ -3947,20 +3995,23 @@ async function latestStaffQuoteRunFor(
     if (
       userRun.triggerMessageId !== messageId ||
       userMetrics.userId !== userId ||
-      (userMetrics.devEval === true && !includeDevEval) ||
-      !reusable(userRun)
+      (userMetrics.devEval === true && !includeDevEval)
     ) {
       continue;
     }
     const parsed = hmsJobRequestSchema.safeParse(userRun.readRequest);
-    if (
+    const sameTerms =
       parsed.success &&
       parsed.data.kind === 'staff_quote' &&
       parsed.data.input.messageId === messageId &&
-      staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput)
-    ) {
-      return [userRun];
+      staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput);
+    if (!reusable(userRun)) {
+      // Newest matching price is stale: do not fall back to an older refusal.
+      const stored = userRun.readResult as { status?: unknown } | null;
+      if (sameTerms && stored?.status === 'ready') break;
+      continue;
     }
+    if (sameTerms) return [userRun];
   }
 
   // System-prepared quotes are independent per stay. Look for the newest prepared price for these terms rather than

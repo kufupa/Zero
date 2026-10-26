@@ -81,7 +81,13 @@ function preparedQuoteInput(
 
 async function preparedRows(db: DB, transportId: string) {
   return db
-    .select({ id: aiWorkflowRun.id, state: aiWorkflowRun.state, idempotencyKey: aiWorkflowRun.idempotencyKey })
+    .select({
+      id: aiWorkflowRun.id,
+      state: aiWorkflowRun.state,
+      idempotencyKey: aiWorkflowRun.idempotencyKey,
+      nextRunAt: aiWorkflowRun.nextRunAt,
+      metrics: aiWorkflowRun.metrics,
+    })
     .from(aiWorkflowRun)
     .where(
       and(
@@ -106,7 +112,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote queue cap seam
         const firstKey = `hms-job:staff-quote-prepared:${transportId}:${first.messageId}:${randomUUID()}`;
         const secondKey = `hms-job:staff-quote-prepared:${transportId}:${second.messageId}:${randomUUID()}`;
 
-        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 2)).toBe(true);
+        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 2)).toEqual({
+          created: true,
+          deferred: false,
+        });
         const afterFirst = await preparedRows(db, transportId);
         expect(afterFirst).toHaveLength(1);
         if (registeredProperty) {
@@ -115,7 +124,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote queue cap seam
           expect(afterFirst[0]?.idempotencyKey).toBe(firstKey);
         }
 
-        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 2)).toBe(false);
+        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 2)).toEqual({
+          created: false,
+          deferred: false,
+        });
         expect(await preparedRows(db, transportId)).toHaveLength(1);
 
         await db
@@ -123,15 +135,30 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote queue cap seam
           .set({ state: 'dead_letter', finishedAt: new Date(), updatedAt: new Date() })
           .where(eq(aiWorkflowRun.id, afterFirst[0]!.id));
 
-        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 2)).toBe(true);
+        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 2)).toEqual({
+          created: true,
+          deferred: false,
+        });
         const afterRetry = await preparedRows(db, transportId);
         expect(afterRetry).toHaveLength(2);
         expect(afterRetry.some((row) => row.idempotencyKey.includes(':retry:'))).toBe(true);
 
-        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(second, transportId, secondKey), 2)).toBe(
-          false,
+        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(second, transportId, secondKey), 2)).toEqual({
+          created: true,
+          deferred: true,
+        });
+        const afterOverflow = await preparedRows(db, transportId);
+        expect(afterOverflow).toHaveLength(3);
+        const overflow = afterOverflow.filter(
+          (row) => (row.metrics as { prefetchDeferred?: boolean } | null)?.prefetchDeferred === true,
         );
-        expect(await preparedRows(db, transportId)).toHaveLength(2);
+        expect(overflow.length).toBeGreaterThanOrEqual(1);
+        expect(overflow.every((row) => row.nextRunAt && row.nextRunAt.getTime() > Date.now())).toBe(true);
+        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(second, transportId, secondKey), 2)).toEqual({
+          created: false,
+          deferred: false,
+        });
+        expect(await preparedRows(db, transportId)).toHaveLength(3);
       }
     }));
 });
