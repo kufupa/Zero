@@ -14,8 +14,7 @@ import {
   type PaneVersion,
 } from '@/lib/workstation/pane-release-watch';
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
-import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
-import { withContactLines } from '@/lib/quote-workflow/document-contact';
+import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import {
   missingQuoteDetailsWrapperHtml,
   quoteDeclineReplyHtml,
@@ -78,13 +77,11 @@ import {
   bindHmsQueueStatus,
   bindReadBackStaffQuote,
   bindQuoteRunScreenshot,
-  bindQualifiedStaffProposalPdf,
   bindStaffQuoteStrategies,
   bindStaffActions,
   bindStaffQuoteSource,
   staffQuoteFromTrpc,
   isStaffQuoteRefusal,
-  canBuildStaffQuoteRequest,
   type BoundExecuteStaffQuote,
   type StaffQuoteJobQuery,
 } from '@/lib/quote-workflow/staff-quote-bind';
@@ -94,13 +91,9 @@ import {
   admissionKey,
   analysisRetryKey,
   DRAFT_GROUP_ID,
-  canCreatePdf,
   canRunQuoteStep,
-  dinnerAddOnInputProblem,
-  dinnerAllowanceStillRequired,
   missingQuoteDetailsReplyOnly,
   missingQuoteReplyFieldsForGroups,
-  evidenceMatchesSession,
   autoRunHeader,
   groupsForQuoteStep,
   isMultiStay,
@@ -117,7 +110,6 @@ import {
   reduceQuoteSession,
   removedStayFor,
   quoteStrategyStayRevision,
-  staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { OutlookPaneSignIn } from '@/app/(routes)/outlook-pane/outlook-pane-sign-in';
@@ -141,6 +133,8 @@ import { SystemCheckResultsBlock } from './blocks/system-check-results';
 import { ReplyBody } from './reply-body';
 import { useInsertAiDraft } from './use-insert-ai-draft';
 import { useSavedReply } from './use-saved-reply';
+import { useQuotePdfJob } from './use-quote-pdf-job';
+import { useStaffQuoteAutostart } from './use-staff-quote-autostart';
 import { useSystemCheck } from './use-system-check';
 import { classifyMailSource } from '../../../server-pilot/src/ai/mail-source.js';
 import { isSelfSentPreStayInformationMail } from '../../../server-pilot/src/ai/existing-stay-information.js';
@@ -303,6 +297,7 @@ export function NavaPane({
   const staffQuoteReadBackInFlight = useRef(false);
   const staffQuoteReadBackGeneration = useRef(0);
   const autoStartStaffQuoteStepRef = useRef<() => void>(() => undefined);
+  const runQuoteStepRef = useRef<(stepId: string, autoStart?: boolean, readBack?: boolean) => void>(() => undefined);
   const {
     isConnected,
     activeEmail,
@@ -1313,20 +1308,25 @@ export function NavaPane({
     };
   }, [priorQuoteKey, isNonActionableMessage, staffQuoteQueueMode, activePaneConfig?.transportId]);
 
-  useEffect(() => {
-    if (staffQuoteQueueMode !== 'on') return;
-    autoStartStaffQuoteStepRef.current();
-  }, [
-    quoteSession,
-    quoteRunPending,
-    staffQuoteQueueMode,
-    contactMessageKey,
-    isLoading,
-    session?.user?.id,
-    requiresRelogin,
+  useStaffQuoteAutostart({
     isNonActionableMessage,
-    activePaneConfig?.transportId,
-  ]);
+    staffQuoteQueueMode,
+    isLoading,
+    session,
+    requiresRelogin,
+    activeEmail,
+    contactMessageKey,
+    quoteRunPending,
+    staffQuoteReadBackInFlight,
+    quoteSession,
+    staffQuoteAutoSuppressed,
+    staffQuoteAutoAttempted,
+    activePaneConfig,
+    autoStartStaffQuoteStepRef,
+    runQuoteStep: (stepId, autoStart, readBack) => runQuoteStepRef.current(stepId, autoStart, readBack),
+    autoStaffQuoteSuppressed,
+    staffQuoteAttemptKey,
+  });
 
   // Onboarding & Screen State
   const [currentScreen, setCurrentScreen] = useState<PaneScreen>(() => {
@@ -1432,9 +1432,15 @@ export function NavaPane({
   // stays disabled until the export settles. The server call is a tRPC mutation, so it also counts as in flight.
   const [workbookPending, setWorkbookPending] = useState(false);
   const workbookInFlight = useRef(false);
-  // Only one quote PDF request at a time, for single- and multi-stay quotes.
-  const pdfInFlight = useRef(false);
-  const [pdfPending, setPdfPending] = useState(false);
+  const { pdfPending, preparePdfFor } = useQuotePdfJob({
+    quoteSessionRef,
+    documentContactRef,
+    dispatchQuote,
+    activeEmail,
+    staffSignerName,
+    activePaneConfig,
+    replyGreetingName,
+  });
   const downloadWorkbook = () => {
     if (workbookInFlight.current) return;
     workbookInFlight.current = true;
@@ -1898,214 +1904,7 @@ export function NavaPane({
     }
     void runNoticed(run).then(applyStaffQuoteResult);
   };
-
-  const autoStartStaffQuoteStep = () => {
-    if (
-      isNonActionableMessage ||
-      staffQuoteQueueMode !== 'on' ||
-      isLoading ||
-      !session?.user ||
-      requiresRelogin ||
-      !activeEmail ||
-      !contactMessageKey ||
-      isQuoteFixturePreview() ||
-      quoteRunPending ||
-      staffQuoteReadBackInFlight.current ||
-      quoteSession.runningStepId ||
-      quoteSession.analysis?.intent !== 'quote' ||
-      !quoteSession.binding ||
-      (quoteSession.binding.internetMessageId ?? null) !== (activeEmail.internetMessageId ?? null) ||
-      !staffSourceReady(quoteSession) ||
-      partyLookupWaitReason(quoteSession) ||
-      staffQuoteAutoSuppressed.current.has(contactMessageKey) ||
-      autoStaffQuoteSuppressed(contactMessageKey)
-    ) {
-      return;
-    }
-    const source = quoteSession.staffSource;
-    const binding = quoteSession.binding;
-    if (!source || !binding) return;
-    const staff = staffQuoteFromTrpc(trpcClient);
-    if (!staff.workstation.queueStaffQuote?.mutate || !staff.workstation.staffQuoteJob?.query) return;
-    const step = quoteSession.steps.find((candidate) => {
-      if (
-        candidate.kind !== 'quote_stay' ||
-        candidate.status !== 'ready' ||
-        !candidate.shareKey ||
-        !canRunQuoteStep(candidate, quoteSession.steps, quoteSession.runningStepId) ||
-        quoteSession.staffQuotes[candidate.shareKey] ||
-        quoteRunBlockReason(quoteSession, candidate)
-      ) {
-        return false;
-      }
-      return canBuildStaffQuoteRequest({
-        source,
-        selectionEpoch: binding.selectionEpoch,
-        inputRevision: quoteSession.inputRevision,
-        groups: groupsForQuoteStep(quoteSession, candidate),
-        header: autoRunHeader(quoteSession),
-        propertyCode: activePaneConfig?.propertyCode,
-        stayKey: candidate.shareKey,
-      });
-    });
-    if (!step?.shareKey) return;
-    const attemptKey = staffQuoteAttemptKey(
-      binding.transportId,
-      source.messageId,
-      source.sourceHash,
-      step.shareKey,
-    );
-    const readBack = staffQuoteAutoAttempted.current.has(attemptKey);
-    staffQuoteAutoAttempted.current.add(attemptKey);
-    runQuoteStep(step.id, true, readBack);
-  };
-  autoStartStaffQuoteStepRef.current = autoStartStaffQuoteStep;
-
-  /**
-   * Builds the quotation PDF for one date option from that option's own run.
-   * A null stayKey means the selected option (the "Prepare quotation PDF" button).
-   */
-  const preparePdfFor = (stayKey: string | null) => {
-    if (pdfInFlight.current) return;
-    const session = quoteSessionRef.current;
-    // The PDF is recorded on the item it was made for, even if staff open another mail while it builds.
-    const owner = currentPaneOwner();
-    if (dinnerAllowanceStillRequired(session)) {
-      toast.warning(dinnerAddOnInputProblem(session) ?? 'Dinner price — enter amount.');
-      return;
-    }
-    if (isMultiStay(session)) {
-      // One combined document for every stay. Until each stay is rated, the request says how many are.
-      const request = combinedDocumentRequest(session);
-      if (request.status === 'unavailable') {
-        toast.warning(request.reason);
-        return;
-      }
-      pdfInFlight.current = true;
-      setPdfPending(true);
-      const selectionEpoch = session.binding?.selectionEpoch ?? 0;
-      const inputRevision = session.inputRevision;
-      // The combined PDF is bound to the stays' runs, not to the selected option, so selecting another option while it
-      // builds keeps it.
-      const selectedOfferIds = [
-        request.input.revisionRef,
-        ...(request.input.additionalStays ?? []).map((stay) => stay.revisionRef),
-      ];
-      const staff = staffQuoteFromTrpc(trpcClient);
-      void bindQualifiedStaffProposalPdf({
-        mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
-        input: withContactLines(request.input, documentContactRef.current),
-        expectedTotalMinor: request.expectedTotalMinor,
-      }).then((remote) => {
-        if (remote.status === 'unavailable') {
-          toast.warning(remote.reason);
-          return;
-        }
-        dispatchQuote({
-          type: 'pdf_ready',
-          pdf: {
-            fileName: remote.pdf.fileName,
-            bytesBase64: remote.pdf.pdfBase64,
-            pdfHash: remote.pdf.pdfHash,
-            revisionId: remote.pdf.revisionId,
-            totalMinor: remote.pdf.totalMinor,
-          },
-          selectionEpoch,
-          inputRevision,
-          selectedOfferIds,
-        });
-        trackPaneAction({ type: 'pdf.created', kind: 'combined' }, owner);
-      }).finally(() => {
-        pdfInFlight.current = false;
-        setPdfPending(false);
-      });
-      return;
-    }
-    const key = stayKey ?? session.selectedStayKey;
-    const quote = key ? (session.staffQuotes[key] ?? null) : null;
-    const source = session.staffSource;
-    const authorised =
-      staffSourceReady(session) &&
-      session.evidence?.kind === 'authorised' &&
-      evidenceMatchesSession(session);
-    if (!quote || !key) {
-      toast.warning('The quote is not ready for a PDF yet. Run the search again, then prepare the PDF.');
-      return;
-    }
-    if (isQuoteFixturePreview() || !authorised) {
-      toast.warning('This is sample data, so no PDF can be made. Open a live email to continue.');
-      return;
-    }
-    if (key === session.selectedStayKey && !canCreatePdf(session)) {
-      toast.warning('Pick a room option from the HMS results before making the PDF.');
-      return;
-    }
-    if (!source || quote.totalMinor <= 0) {
-      toast.warning('The quote is not ready for a PDF yet. Run the search again, then prepare the PDF.');
-      return;
-    }
-    const header = quote.approvedHeader;
-    if (!header) {
-      toast.warning('The quote header was not saved with this quote. Run the search again, then prepare the PDF.');
-      return;
-    }
-    if (key !== session.selectedStayKey) dispatchQuote({ type: 'select_stay_key', stayKey: key });
-    const selectionEpoch = session.binding?.selectionEpoch ?? 0;
-    const inputRevision = session.inputRevision;
-    const selectedOfferIds = [quote.revisionRef];
-    const greetingName = replyGreetingName(documentContactRef.current?.name, activeEmail);
-    const reviewedReplyHtml = session.analysis?.intent === 'quote'
-      ? quoteWrapperHtml(greetingName, staffSignerName, {
-          ...(quote.dinnerAddOn ? { dinnerAddOn: quote.dinnerAddOn } : {}),
-          totalMinor: quote.totalMinor,
-          propertyCode: activePaneConfig?.propertyCode,
-        })
-      : undefined;
-    const staff = staffQuoteFromTrpc(trpcClient);
-    pdfInFlight.current = true;
-    setPdfPending(true);
-    void bindQualifiedStaffProposalPdf({
-      mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
-      input: {
-        workflowRunId: quote.workflowRunId,
-        revisionRef: quote.revisionRef,
-        messageId: source.messageId,
-        outlookEmail: session.binding?.mailboxEmail ?? '',
-        factRefs: quote.factRefs,
-        company: header.company,
-        agency: header.agency,
-        ...withContactLines(
-          { attention: header.attention, clientEmail: header.clientEmail, clientTelephone: header.clientTelephone },
-          documentContactRef.current,
-        ),
-        ...(header.notes ? { notes: header.notes } : {}),
-      },
-      expectedTotalMinor: quote.totalMinor,
-    }).then((remote) => {
-      if (remote.status === 'unavailable') {
-        toast.warning(remote.reason);
-        return;
-      }
-      dispatchQuote({
-        type: 'pdf_ready',
-        pdf: {
-          fileName: remote.pdf.fileName,
-          bytesBase64: remote.pdf.pdfBase64,
-          pdfHash: remote.pdf.pdfHash,
-          revisionId: remote.pdf.revisionId,
-          totalMinor: remote.pdf.totalMinor,
-        },
-        selectionEpoch,
-        inputRevision,
-        selectedOfferIds,
-        reviewedReplyHtml,
-      });
-      trackPaneAction({ type: 'pdf.created', kind: 'option' }, owner);
-    }).finally(() => {
-      pdfInFlight.current = false;
-      setPdfPending(false);
-    });
-  };
+  runQuoteStepRef.current = runQuoteStep;
 
   // Only quote and booking mail gets Nava's suggestions and the numbered reply step. Other mail gets neither.
   const quoteOrBookingEmail =
