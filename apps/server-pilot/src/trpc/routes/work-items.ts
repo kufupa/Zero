@@ -411,6 +411,13 @@ function historyMoveResult(
       message: 'This work item changed. Reload, then undo or redo.',
     });
   }
+  if (result.status === 'history_stale') {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: 'The mail reading changed. Reload, then undo or redo.',
+      cause: { code: 'history_stale' },
+    });
+  }
   if (result.status === 'at_boundary') {
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Nothing left to undo or redo.' });
   }

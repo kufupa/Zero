@@ -4229,4 +4229,89 @@ describe('pane revision undo/redo', () => {
       expect(stale).toMatchObject({ status: 'stale', revision: 1, revisionHead: 1, seq: 3 });
       expect(await eventsFor(db, work.workItemId)).toHaveLength(events.length);
     }));
+
+  it('undo then relink then redo rejects history_stale and leaves state unchanged', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'rev-stale-1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'rev-stale-1');
+      const path = `stays[${STAY_ONE}].requested.arrival`;
+      await recordFieldEvent(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        type: 'field.edit',
+        fieldPath: path,
+        value: '2027-10-25',
+      });
+      const undone = await undoWorkItemRevision(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        expectedSeq: 1,
+      });
+      expect(undone).toMatchObject({ status: 'applied', revision: 0, revisionHead: 1, seq: 2 });
+
+      const relinked: MailExtractionPayload = {
+        ...payload(),
+        stays: [
+          payload().stays[1]!,
+          {
+            id: STAY_ONE,
+            hotel: 'Grand Hotel',
+            requested: { arrival: '2027-12-01', departure: '2027-12-03' },
+            booked: null,
+            totalRooms: null,
+            rows: [
+              { id: 'r_dec_reused', roomType: 'Double/Twin', rooms: 4, adultsPerRoom: 2, childAges: [], board: null },
+            ],
+          },
+        ],
+      };
+      const second = await insertRead(db, messageId, { version: 'extract-v2', payload: relinked });
+      const moved = await ensureWorkItem(db, {
+        transportId: CENTURION,
+        threadId: 'thread-rev-stale-1',
+        messageId,
+        kind: 'quote',
+        extractionId: second,
+      });
+      expect(moved.extractionId).toBe(second);
+
+      const [beforeRedo] = await db
+        .select({
+          state: workItem.state,
+          revision: workItem.revision,
+          revisionHead: workItem.revisionHead,
+          revisionSeq: workItem.revisionSeq,
+          extractionId: workItem.extractionId,
+        })
+        .from(workItem)
+        .where(eq(workItem.id, work.workItemId))
+        .limit(1);
+      const eventsBefore = await eventsFor(db, work.workItemId);
+
+      const redone = await redoWorkItemRevision(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        expectedSeq: 2,
+      });
+      expect(redone).toMatchObject({ status: 'history_stale', revision: 0, revisionHead: 1, seq: 2 });
+
+      const [afterRedo] = await db
+        .select({
+          state: workItem.state,
+          revision: workItem.revision,
+          revisionHead: workItem.revisionHead,
+          revisionSeq: workItem.revisionSeq,
+          extractionId: workItem.extractionId,
+        })
+        .from(workItem)
+        .where(eq(workItem.id, work.workItemId))
+        .limit(1);
+      expect(afterRedo).toEqual(beforeRedo);
+      expect(await eventsFor(db, work.workItemId)).toHaveLength(eventsBefore.length);
+      expect(afterRedo?.state[path]).toBeUndefined();
+    }));
 });

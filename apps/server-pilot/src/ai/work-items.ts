@@ -1829,6 +1829,7 @@ export async function recordFieldEvent(
       seq: item.revisionSeq,
       previousState: item.state,
       nextState: state,
+      extractionId: item.extractionId,
     });
     await tx.insert(workEvent).values({
       workItemId: input.workItemId,

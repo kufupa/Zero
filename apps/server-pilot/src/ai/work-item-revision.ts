@@ -11,6 +11,7 @@ export type PaneRevisionCursor = { revision: number; revisionHead: number; seq: 
 export type PaneRevisionResult =
   | { status: 'not_found' }
   | { status: 'stale'; revision: number; revisionHead: number; seq: number }
+  | { status: 'history_stale'; revision: number; revisionHead: number; seq: number }
   | { status: 'at_boundary'; revision: number; revisionHead: number; seq: number }
   | { status: 'applied'; revision: number; revisionHead: number; seq: number; restored: PaneState };
 
@@ -19,6 +20,7 @@ export type PaneRevisionEvidence = {
   paneSeq: number;
   paneState: PaneState;
   previousPaneState: PaneState;
+  extractionId: string | null;
 };
 
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
@@ -53,6 +55,7 @@ export function advancePaneRevision(input: {
   seq: number;
   previousState: PaneState;
   nextState: PaneState;
+  extractionId: string | null;
 }): { revision: number; revisionHead: number; evidence: PaneRevisionEvidence } {
   const revision = Math.max(0, input.revision) + 1;
   const paneSeq = Math.max(0, input.seq) + 1;
@@ -64,6 +67,7 @@ export function advancePaneRevision(input: {
       paneSeq,
       paneState: paneStateOf(input.nextState),
       previousPaneState: paneStateOf(input.previousState),
+      extractionId: input.extractionId,
     },
   };
 }
@@ -105,7 +109,16 @@ async function latestEvidence(
     paneSeq: asRevision(evidence.paneSeq) ?? 0,
     paneState: paneStateOf(asState(evidence.paneState)),
     previousPaneState: paneStateOf(asState(evidence.previousPaneState)),
+    extractionId: asExtractionId(evidence.extractionId),
   };
+}
+
+function asExtractionId(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function extractionMatches(stored: string | null, current: string | null): boolean {
+  return stored !== null && stored === current;
 }
 
 async function applyHistoryMove(
@@ -125,6 +138,7 @@ async function applyHistoryMove(
         revision: workItem.revision,
         revisionHead: workItem.revisionHead,
         revisionSeq: workItem.revisionSeq,
+        extractionId: workItem.extractionId,
       })
       .from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
@@ -143,6 +157,9 @@ async function applyHistoryMove(
     }
     const snapshot = await latestEvidence(tx, input.workItemId, undo ? revision : revision + 1);
     if (!snapshot) return { status: 'at_boundary' as const, revision, revisionHead, seq };
+    if (!extractionMatches(snapshot.extractionId, item.extractionId)) {
+      return { status: 'history_stale' as const, revision, revisionHead, seq };
+    }
     const restored = undo ? snapshot.previousPaneState : snapshot.paneState;
     const nextRevision = undo ? revision - 1 : revision + 1;
     const nextSeq = seq + 1;
@@ -153,7 +170,7 @@ async function applyHistoryMove(
       actorUserId: input.userId,
       type: undo ? 'history.undo' : 'history.redo',
       value: restored,
-      evidence: { fromRevision: revision, toRevision: nextRevision },
+      evidence: { fromRevision: revision, toRevision: nextRevision, extractionId: item.extractionId },
     });
     await tx
       .update(workItem)
