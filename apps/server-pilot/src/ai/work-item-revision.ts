@@ -4,20 +4,23 @@ import { workEvent, workItem } from '../db/schema/work.js';
 
 /** Nested HMS commits. Same key as STAY_COMMITS_KEY in work-items.ts. Undo never touches it. */
 const STAY_COMMITS_KEY = 'stays';
-const SOURCE_TYPES = ['field.edit', 'field.reject', 'field.accept'] as const;
+const SOURCE_TYPES = ['field.edit', 'field.reject', 'field.accept', 'field.reset'] as const;
 
 export type PaneState = Record<string, unknown>;
 export type PaneRevisionCursor = { revision: number; revisionHead: number; seq: number };
 export type PaneRevisionResult =
   | { status: 'not_found' }
   | { status: 'stale'; revision: number; revisionHead: number; seq: number }
+  | { status: 'history_stale'; revision: number; revisionHead: number; seq: number }
   | { status: 'at_boundary'; revision: number; revisionHead: number; seq: number }
   | { status: 'applied'; revision: number; revisionHead: number; seq: number; restored: PaneState };
 
 export type PaneRevisionEvidence = {
   paneRevision: number;
+  paneSeq: number;
   paneState: PaneState;
   previousPaneState: PaneState;
+  extractionId: string | null;
 };
 
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
@@ -49,17 +52,22 @@ export function withPaneState(state: PaneState, pane: PaneState): PaneState {
 export function advancePaneRevision(input: {
   revision: number;
   revisionHead: number;
+  seq: number;
   previousState: PaneState;
   nextState: PaneState;
+  extractionId: string | null;
 }): { revision: number; revisionHead: number; evidence: PaneRevisionEvidence } {
   const revision = Math.max(0, input.revision) + 1;
+  const paneSeq = Math.max(0, input.seq) + 1;
   return {
     revision,
     revisionHead: revision,
     evidence: {
       paneRevision: revision,
+      paneSeq,
       paneState: paneStateOf(input.nextState),
       previousPaneState: paneStateOf(input.previousState),
+      extractionId: input.extractionId,
     },
   };
 }
@@ -90,7 +98,7 @@ async function latestEvidence(
         sql`(${workEvent.evidence} ->> 'paneRevision') = ${String(paneRevision)}`,
       ),
     )
-    .orderBy(desc(workEvent.at), desc(workEvent.id))
+    .orderBy(desc(sql`coalesce((${workEvent.evidence} ->> 'paneSeq')::int, 0)`), desc(workEvent.id))
     .limit(1);
   const raw = row?.evidence;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -98,9 +106,19 @@ async function latestEvidence(
   if (asRevision(evidence.paneRevision) !== paneRevision) return null;
   return {
     paneRevision,
+    paneSeq: asRevision(evidence.paneSeq) ?? 0,
     paneState: paneStateOf(asState(evidence.paneState)),
     previousPaneState: paneStateOf(asState(evidence.previousPaneState)),
+    extractionId: asExtractionId(evidence.extractionId),
   };
+}
+
+function asExtractionId(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function extractionMatches(stored: string | null, current: string | null): boolean {
+  return stored !== null && stored === current;
 }
 
 async function applyHistoryMove(
@@ -120,6 +138,7 @@ async function applyHistoryMove(
         revision: workItem.revision,
         revisionHead: workItem.revisionHead,
         revisionSeq: workItem.revisionSeq,
+        extractionId: workItem.extractionId,
       })
       .from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
@@ -138,6 +157,9 @@ async function applyHistoryMove(
     }
     const snapshot = await latestEvidence(tx, input.workItemId, undo ? revision : revision + 1);
     if (!snapshot) return { status: 'at_boundary' as const, revision, revisionHead, seq };
+    if (!extractionMatches(snapshot.extractionId, item.extractionId)) {
+      return { status: 'history_stale' as const, revision, revisionHead, seq };
+    }
     const restored = undo ? snapshot.previousPaneState : snapshot.paneState;
     const nextRevision = undo ? revision - 1 : revision + 1;
     const nextSeq = seq + 1;
@@ -148,7 +170,7 @@ async function applyHistoryMove(
       actorUserId: input.userId,
       type: undo ? 'history.undo' : 'history.redo',
       value: restored,
-      evidence: { fromRevision: revision, toRevision: nextRevision },
+      evidence: { fromRevision: revision, toRevision: nextRevision, extractionId: item.extractionId },
     });
     await tx
       .update(workItem)

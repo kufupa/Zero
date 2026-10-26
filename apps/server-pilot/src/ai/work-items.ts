@@ -66,8 +66,8 @@ import {
 } from './workflow-classifier/index.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
-import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
 import { advancePaneRevision } from './work-item-revision.js';
+import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -1827,8 +1827,10 @@ export async function recordFieldEvent(
     const advanced = advancePaneRevision({
       revision: item.revision,
       revisionHead: item.revisionHead,
+      seq: item.revisionSeq,
       previousState: item.state,
       nextState: state,
+      extractionId: item.extractionId,
     });
     await tx.insert(workEvent).values({
       workItemId: input.workItemId,
@@ -2170,7 +2172,13 @@ export async function resetWorkSection(
   }
   return db.transaction(async (tx) => {
     const [item] = await tx
-      .select({ extractionId: workItem.extractionId, state: workItem.state })
+      .select({
+        extractionId: workItem.extractionId,
+        state: workItem.state,
+        revision: workItem.revision,
+        revisionHead: workItem.revisionHead,
+        revisionSeq: workItem.revisionSeq,
+      })
       .from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
       .limit(1)
@@ -2198,6 +2206,16 @@ export async function resetWorkSection(
       .filter((field) => field.aiValue !== null && field.aiValue !== undefined);
     if (!resets.length) return { status: 'recorded' as const, reset: 0 };
 
+    const state = { ...item.state };
+    for (const { fieldPath } of resets) delete state[fieldPath];
+    const advanced = advancePaneRevision({
+      revision: item.revision,
+      revisionHead: item.revisionHead,
+      seq: item.revisionSeq,
+      previousState: item.state,
+      nextState: state,
+      extractionId: item.extractionId,
+    });
     await tx.insert(workEvent).values(
       resets.map(({ fieldPath, aiValue }) => ({
         workItemId: input.workItemId,
@@ -2208,11 +2226,19 @@ export async function resetWorkSection(
         aiValue,
         value: aiValue,
         aiSource: read?.version ?? null,
+        evidence: advanced.evidence,
       })),
     );
-    const state = { ...item.state };
-    for (const { fieldPath } of resets) delete state[fieldPath];
-    await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+    await tx
+      .update(workItem)
+      .set({
+        state,
+        revision: advanced.revision,
+        revisionHead: advanced.revisionHead,
+        revisionSeq: item.revisionSeq + 1,
+        updatedAt: new Date(),
+      })
+      .where(eq(workItem.id, input.workItemId));
     return { status: 'recorded' as const, reset: resets.length };
   });
 }

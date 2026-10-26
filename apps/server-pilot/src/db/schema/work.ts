@@ -66,6 +66,8 @@ export const WORK_EVENT_TYPES = [
   'item.dismissed',
   'note.staff',
   'admin_review',
+  'history.undo',
+  'history.redo',
   'field.reset',
   'history.undo',
   'history.redo',

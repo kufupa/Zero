@@ -14,8 +14,8 @@ import {
   loadPaneRevisionCursor,
   openStoredWork,
   recordFieldEvent,
-  resetWorkSection,
   redoWorkItemRevision,
+  resetWorkSection,
   storedTranslation,
   storedWorkFor,
   undoWorkItemRevision,
@@ -362,29 +362,6 @@ export const workItemsRouter = router({
       }
       return { status: 'dismissed' as const };
     }),
-  resetSection: mailboxProcedure
-    .input(
-      z
-        .object({
-          workItemId: z.string().uuid(),
-          section: z.discriminatedUnion('type', [
-            z.object({ type: z.literal('contact') }).strict(),
-            z.object({ type: z.literal('stay'), stayId: z.string().min(1).max(40) }).strict(),
-          ]),
-        })
-        .strict(),
-    )
-    .mutation(async ({ input, ctx }) => {
-      const result = await resetWorkSection(getDb(), {
-        transportId: ctx.activeTransportId,
-        workItemId: input.workItemId,
-        userId: ctx.sessionUser.id,
-        section: input.section,
-      });
-      if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
-      if (result.status === 'invalid_section') throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown section.' });
-      return { reset: result.reset };
-    }),
   revisionCursor: mailboxProcedure
     .input(z.object({ workItemId: z.string().uuid() }).strict())
     .query(async ({ input, ctx }) => {
@@ -421,6 +398,29 @@ export const workItemsRouter = router({
       });
       return historyMoveResult(result);
     }),
+  resetSection: mailboxProcedure
+    .input(
+      z
+        .object({
+          workItemId: z.string().uuid(),
+          section: z.discriminatedUnion('type', [
+            z.object({ type: z.literal('contact') }).strict(),
+            z.object({ type: z.literal('stay'), stayId: z.string().min(1).max(40) }).strict(),
+          ]),
+        })
+        .strict(),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const result = await resetWorkSection(getDb(), {
+        transportId: ctx.activeTransportId,
+        workItemId: input.workItemId,
+        userId: ctx.sessionUser.id,
+        section: input.section,
+      });
+      if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+      if (result.status === 'invalid_section') throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown section.' });
+      return { reset: result.reset };
+    }),
 });
 
 function historyMoveResult(
@@ -433,6 +433,13 @@ function historyMoveResult(
     throw new TRPCError({
       code: 'CONFLICT',
       message: 'This work item changed. Reload, then undo or redo.',
+    });
+  }
+  if (result.status === 'history_stale') {
+    throw new TRPCError({
+      code: 'CONFLICT',
+      message: 'The mail reading changed. Reload, then undo or redo.',
+      cause: { code: 'history_stale' },
     });
   }
   if (result.status === 'at_boundary') {
