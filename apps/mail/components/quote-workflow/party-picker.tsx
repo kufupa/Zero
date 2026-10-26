@@ -882,6 +882,10 @@ export function PartyPicker({
       shown.status === 'idle' &&
       (!autoReply || (!autoBest && autoRows.length === 0)),
   );
+  const hasAutoResults = Boolean(autoBest || autoRows.length);
+  const showAutoResults = Boolean(
+    autoMemoKey && !pickedHere && shown.status === 'idle' && autoReply && hasAutoResults,
+  );
   const showJobReadBackPending = Boolean(
     jobReadBackStatusOwner &&
       jobReadBackPending &&
@@ -891,12 +895,14 @@ export function PartyPicker({
       !currentJobView &&
       !autoStatusHasLine,
   );
-  const showAutoStatus =
-    Boolean(autoMemoKey) &&
-    !pickedHere &&
-    shown.status === 'idle' &&
-    !jobStatusSurface &&
-    !showJobReadBackPending;
+  const showAutoProgress = Boolean(
+    autoMemoKey &&
+      !pickedHere &&
+      shown.status === 'idle' &&
+      !showAutoResults &&
+      !jobStatusSurface &&
+      !showJobReadBackPending,
+  );
   const jobBusy = Boolean(
     partyJob.queuing || (jobResume && !partyJob.readBackSettled),
   );
@@ -1051,7 +1057,7 @@ export function PartyPicker({
         ) : (
           searchForm
         )}
-        {showAutoStatus ? (
+        {showAutoProgress ? (
           autoReply ? (
             autoBest || autoRows.length ? null : (
               <Notice
@@ -1151,41 +1157,42 @@ export function PartyPicker({
       {Boolean(autoMemoKey) && pickedHere && autoRows.length ? (
         <ResultChips label="Also in HMS:" rows={autoRows} onPick={pickRow} />
       ) : null}
-      {showAutoStatus ? (
-        autoReply ? (
-          <div className="flex flex-col gap-1">
-            {autoBest ? (
-              <div className="flex flex-col gap-1" aria-label="Suggested match from HMS">
-                <p>{PARTY_PREFETCH_HINT}</p>
-                <button
-                  type="button"
-                  className="w-fit rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
-                  aria-label={`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
-                  title={autoBest.nativeId}
-                  onClick={() => pickRow(autoBest)}
-                >
-                  {`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
-                </button>
-                {autoOtherRows.length ? (
-                  <ResultChips
-                    label="Other matches in HMS:"
-                    rows={autoOtherRows}
-                    allRows={autoRows}
-                    onPick={pickRow}
-                  />
-                ) : null}
-              </div>
-            ) : autoRows.length ? (
-              <ResultChips label="Found in HMS:" rows={autoRows} onPick={pickRow} />
-            ) : (
-              <Notice
-                tone={autoReply.outcome === 'no_match' && !autoReply.truncated ? 'info' : 'warn'}
-                role="status"
+      {showAutoResults ? (
+        <div className="flex flex-col gap-1">
+          {autoBest ? (
+            <div className="flex flex-col gap-1" aria-label="Suggested match from HMS">
+              <p>{PARTY_PREFETCH_HINT}</p>
+              <button
+                type="button"
+                className="w-fit rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
+                aria-label={`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
+                title={autoBest.nativeId}
+                onClick={() => pickRow(autoBest)}
               >
-                {noCandidateNote(autoReply, kind, query)}
-              </Notice>
-            )}
-          </div>
+                {`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
+              </button>
+              {autoOtherRows.length ? (
+                <ResultChips
+                  label="Other matches in HMS:"
+                  rows={autoOtherRows}
+                  allRows={autoRows}
+                  onPick={pickRow}
+                />
+              ) : null}
+            </div>
+          ) : (
+            <ResultChips label="Found in HMS:" rows={autoRows} onPick={pickRow} />
+          )}
+        </div>
+      ) : null}
+      {showAutoProgress ? (
+        autoReply ? (
+          <Notice
+            tone={autoReply.outcome === 'no_match' && !autoReply.truncated ? 'info' : 'warn'}
+            role="status"
+          >
+            {noCandidateNote(autoReply, kind, query)}
+          </Notice>
         ) : (
           <HmsLookupProgress
             pending

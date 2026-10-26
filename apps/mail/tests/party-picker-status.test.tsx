@@ -135,4 +135,44 @@ describe('PartyPicker shared job status', () => {
       pendingReadbacks[0](null);
     });
   });
+
+  it('keeps inline match confirmation and failed read-back Retry visible together', async () => {
+    const candidate = { kind: 'company' as const, nativeId: 'company-1', name: 'Example Company' };
+    const find = vi.fn(async () => ({
+      outcome: 'resolved' as const,
+      results: [candidate],
+      truncated: false,
+      best: candidate,
+      searchedFor: 'Example Company',
+    }));
+    const onPick = vi.fn();
+    const jobTransport: HmsJobTransport = {
+      queue: vi.fn(async () => ({ runId: 'retry-run' })),
+      jobQueueEnabled: vi.fn(async () => false),
+      status: vi.fn(async () => {
+        throw new Error('background read-back failed');
+      }),
+    };
+
+    render(
+      <PartyPicker
+        autoLookup
+        name="Example Company"
+        kind="company"
+        parties={{}}
+        find={find}
+        jobTransport={jobTransport}
+        threadId="thread-1"
+        sourceMessageId="message-1"
+        onPick={onPick}
+        onClear={vi.fn()}
+      />,
+    );
+
+    expect(await screen.findByRole('button', { name: 'Confirm Example Company' })).toBeTruthy();
+    expect(screen.getByRole('alert').textContent).toContain("Couldn't reach HMS.");
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(screen.queryByText('Searching HMS for "Example Company" (company)')).toBeNull();
+    expect(onPick).not.toHaveBeenCalled();
+  });
 });
