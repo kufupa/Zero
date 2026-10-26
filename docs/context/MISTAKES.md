@@ -4,6 +4,11 @@ One entry per lesson: trigger, what happened, rule. Newest first. Add an entry w
 
 | Date | Trigger | What happened | Rule |
 |---|---|---|---|
+| 2026-10-26 | Owner: "terrible u should always check it against ETA ledger" | Quoted #607 ETA as a "rough guess, not checked against the ledger" | Every ETA: run the ledger jq + measured part times (Apex check-run p50, deploy log) first; never send an "unchecked" ETA |
+| 2026-10-26 | `ops-deploy.sh --migrate` for 0054 | drizzle-kit `SELF_SIGNED_CERT_IN_CHAIN`; nothing applied, deploy rc=70 | Migrate step must trust `deploy/rds-ca-global.pem` (`NODE_EXTRA_CA_CERTS`); fix the script before the next migration |
+| 2026-10-26 | Parallel lanes shared one DB test container/port (`sr2-pg:55432`) | DS4-I and J1 gates failed with ECONNREFUSED / auth errors | Per-run DB container name + random port in the DB test wrapper |
+| 2026-10-26 | DS4-WIRE stacked on unmerged J1 and fixed P1s one field at a time | 3 Greptile P1 rounds (~3.5 h, ratio 2.97); stay edits silently dropped while history refresh ran | Hold *all* editors of a section with one wrapper (`<fieldset disabled>`), not per field; don't stack UI on an unmerged server PR |
+| 2026-10-26 | Remote typecheck `--baseline` run in parallel with the remote test script on the same EC2 checkout | Test saw a different tree; misleading failure | Run remote gates for one worktree serially (the remote test script already typechecks) |
 | 2026-10-25 | mh1024 #532/#534 merged while Greptile Apex was still running (2nd after M24 was written) | #533 fix +35 m; validation after merge | Merge only through `merge-gate.sh` (until it lands: orchestrator checks all four by hand and logs them) (Apex SUCCESS on head.sha, 0 open P1, ≤500 product LOC, remote tests on head). A rule in a brief is not a gate |
 | 2026-10-25 | U5 #538 562 and U6b draft 822 changed lines | 2 h 37 and ~6 h review/split loops; ~60% of the 18.6 h run | Size every unit at planning; estimate >400 lines → split before coding. Count + and − |
 | 2026-10-25 | U6a "6 strategies = 6 jobs" assumed, not tested end to end | Found by Greptile on #546 9 h later; #547 follow-up | Fan-out units ship a property × strategy × stay matrix test of emitted jobs |

@@ -31,7 +31,7 @@ import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction } from '../src/db/schema/work.js';
-import type { DB } from '../src/db/client.js';
+import { __setDbForTests, type DB } from '../src/db/client.js';
 import { appRouter } from '../src/trpc/router.js';
 import { createPropertyReadLock, PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
@@ -148,7 +148,7 @@ const NIGHTLY_REQUEST: AvailabilityRequest = {
   rooms: [{ roomType: 'All room types', quantity: 2, adults: 1, childAges: [] }],
 };
 const nightlyDates = ['2026-09-24', '2026-09-25', '2026-09-26'];
-const NIGHTLY_TOOL_REQUEST = quoteRequestFor(NIGHTLY_REQUEST) as unknown as ReaderRequest;
+const NIGHTLY_TOOL_REQUEST = quoteRequestFor(NIGHTLY_REQUEST, CENTURION_HMS_READ_TARGET) as unknown as ReaderRequest;
 
 function nightlyQuoteResultFromSavedFixture(): QuoteEnvelope {
   const source = quoteFixtures.manyRoomSource(24);
@@ -224,11 +224,14 @@ function probeEnv(overrides: Record<string, string> = {}): Record<string, string
   return { ...process.env, HMS_JOB_QUEUE: 'on', HMS_AVAILABILITY_PREFETCH: 'on', ...overrides } as Record<string, string>;
 }
 
-const EXTRACTION_RUN = (messageId: string) => ({
-  runKind: 'inbound_extraction' as const,
-  transportId: TRANSPORT_ID,
-  triggerMessageId: messageId,
-});
+function extractionRun(messageId: string) {
+  return {
+    runKind: 'inbound_extraction' as const,
+    transportId: TRANSPORT_ID,
+    triggerMessageId: messageId,
+    admissionSnapshotId: `snapshot-${randomUUID()}`,
+  };
+}
 
 async function seedThread(db: DB): Promise<{ threadId: string; messageId: string }> {
   const threadId = `thread-${randomUUID()}`;
@@ -259,6 +262,17 @@ async function seedExtraction(
     status: 'succeeded',
     kind,
     payload: payload as Record<string, unknown>,
+  });
+}
+
+async function withProbeDb<T>(cb: (db: DB) => Promise<T>): Promise<T> {
+  return withSeededTestDb(async (db) => {
+    __setDbForTests({ db, conn: null as never });
+    try {
+      return await cb(db);
+    } finally {
+      __setDbForTests(null);
+    }
   });
 }
 
@@ -305,6 +319,39 @@ async function runClaimedJob(db: DB, run: AiWorkflowRun) {
 }
 
 describe('U10 availability probe (pure)', () => {
+  it('denied admission creates zero jobs and does not query', async () => {
+    const db = { select: vi.fn(() => { throw new Error('denied admission must not query'); }) };
+    await expect(
+      prefetchAvailabilityForExtraction(
+        {
+          runKind: 'inbound_extraction',
+          transportId: TRANSPORT_ID,
+          triggerMessageId: 'msg-denied',
+          admissionSnapshotId: null,
+        },
+        db as never,
+        { HMS_JOB_QUEUE: 'on', HMS_AVAILABILITY_PREFETCH: 'on' },
+      ),
+    ).resolves.toBe(0);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('admitted snapshot proceeds past the admission gate', async () => {
+    const db = { select: vi.fn(() => { throw new Error('reached-extraction'); }) };
+    await expect(
+      prefetchAvailabilityForExtraction(
+        {
+          runKind: 'inbound_extraction',
+          transportId: TRANSPORT_ID,
+          triggerMessageId: 'msg-admitted',
+          admissionSnapshotId: 'snapshot-live',
+        },
+        db as never,
+        { HMS_JOB_QUEUE: 'on', HMS_AVAILABILITY_PREFETCH: 'on' },
+      ),
+    ).rejects.toThrow('reached-extraction');
+  });
+
   it('turns the probe on only when HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on', () => {
     expect(availabilityPrefetchEnabled({})).toBe(false);
     expect(availabilityPrefetchEnabled({ HMS_AVAILABILITY_PREFETCH: 'on' })).toBe(false);
@@ -355,10 +402,10 @@ describe('U10 availability probe (pure)', () => {
 
   it('sends the quote tool a v2 request with the session property, dates and occupancy, and no rate or room codes', () => {
     const [request] = availabilityRequestsFor(PAYLOAD) as AvailabilityRequest[];
-    const quote = quoteRequestFor(request!);
+    const quote = quoteRequestFor(request!, CENTURION_HMS_READ_TARGET);
     expect(quote).toEqual({
       schemaVersion: 2,
-      propertyCode: 'HRCEN',
+      propertyCode: CENTURION_HMS_READ_TARGET.propertyCode,
       arrivalDate: '2026-10-26',
       departureDate: '2026-10-27',
       details: 'summary',
@@ -371,7 +418,7 @@ describe('U10 availability probe (pure)', () => {
     // The quote tool's own normalizer accepts it, so a probe is never refused as input_gap.
     expect(normalizer.normalizeQuoteRequest(quote).ok).toBe(true);
     // A child's age reaches the request as a child, not as an adult.
-    const withChild = quoteRequestFor(availabilityRequestsFor(PAYLOAD)[1]!);
+    const withChild = quoteRequestFor(availabilityRequestsFor(PAYLOAD)[1]!, CENTURION_HMS_READ_TARGET);
     expect(withChild).toMatchObject({ rooms: [{ id: 'group-1', adults: 2, children: 1, childAges: [6] }] });
     expect(normalizer.normalizeQuoteRequest(withChild).ok).toBe(true);
   });
@@ -405,7 +452,7 @@ describe('U10 availability probe (pure)', () => {
 
   it('carries board on each option, requests 200 options, and flags truncation', () => {
     const [request] = availabilityRequestsFor(PAYLOAD) as AvailabilityRequest[];
-    expect(quoteRequestFor(request!).maxOptionsPerGroup).toBe(200);
+    expect(quoteRequestFor(request!, CENTURION_HMS_READ_TARGET).maxOptionsPerGroup).toBe(200);
     const snapshot = availabilitySnapshotOf({
       outcome: 'partial',
       groups: [
@@ -716,10 +763,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
   });
 
   it('flag off → nothing: no probe is queued unless HMS_JOB_QUEUE and HMS_AVAILABILITY_PREFETCH are both on', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
-      const run = EXTRACTION_RUN(messageId);
+      const run = extractionRun(messageId);
       expect(await prefetchAvailabilityForExtraction(run, db, probeEnv({ HMS_AVAILABILITY_PREFETCH: 'off' }))).toBe(0);
       expect(await prefetchAvailabilityForExtraction(run, db, probeEnv({ HMS_AVAILABILITY_PREFETCH: '' }))).toBe(0);
       expect(await prefetchAvailabilityForExtraction(run, db, probeEnv({ HMS_JOB_QUEUE: 'off' }))).toBe(0);
@@ -727,29 +774,43 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       expect(await availabilityRuns(db)).toHaveLength(0);
     }));
 
+  it('denied admission queues no availability jobs when the extraction is otherwise eligible', () =>
+    withProbeDb(async (db) => {
+      const { messageId } = await seedThread(db);
+      await seedExtraction(db, messageId, 'quote');
+      expect(
+        await prefetchAvailabilityForExtraction(
+          { ...extractionRun(messageId), admissionSnapshotId: null },
+          db,
+          probeEnv(),
+        ),
+      ).toBe(0);
+      expect(await availabilityRuns(db)).toHaveLength(0);
+    }));
+
   it('only a succeeded quote extraction queues probes: booking mail and spam do not', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const booking = await seedThread(db);
       await seedExtraction(db, booking.messageId, 'booking');
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(booking.messageId), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(booking.messageId), db, probeEnv())).toBe(0);
 
       const spam = await seedThread(db);
       await seedExtraction(db, spam.messageId, 'quote');
       await db.update(mailThread).set({ spamAt: new Date() }).where(eq(mailThread.id, spam.threadId));
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(spam.messageId), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(spam.messageId), db, probeEnv())).toBe(0);
       expect(await availabilityRuns(db)).toHaveLength(0);
     }));
 
   it('queues one probe per complete stay, and a repeat of the same stays on the same day is no new job', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const first = await seedThread(db);
       await seedExtraction(db, first.messageId, 'quote');
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(first.messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(first.messageId), db, probeEnv())).toBe(2);
 
       // The same stays from a second mail: deduplicated by the stay's digest and the day.
       const second = await seedThread(db);
       await seedExtraction(db, second.messageId, 'quote');
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(second.messageId), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(second.messageId), db, probeEnv())).toBe(0);
 
       const rows = await availabilityRuns(db);
       expect(rows).toHaveLength(2);
@@ -757,19 +818,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('the hourly cap stops the probes at HMS_AVAILABILITY_PER_HOUR, 6 by default', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       expect(availabilityProbesPerHour({})).toBe(6);
       expect(availabilityProbesPerHour({ HMS_AVAILABILITY_PER_HOUR: 'many' })).toBe(6);
       expect(availabilityProbesPerHour({ HMS_AVAILABILITY_PER_HOUR: '0' })).toBe(0);
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       const capped = probeEnv({ HMS_AVAILABILITY_PER_HOUR: '1' });
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, capped)).toBe(1);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, capped)).toBe(1);
       expect(await availabilityRuns(db)).toHaveLength(1);
     }));
 
   it('confirmation prefetch has its own cap: a full HMS_PREFETCH_PER_HOUR does not stop the probes', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       await enqueueHmsJob(
@@ -786,13 +847,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
         db,
       );
       expect(
-        await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv({ HMS_PREFETCH_PER_HOUR: '1' })),
+        await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv({ HMS_PREFETCH_PER_HOUR: '1' })),
       ).toBe(2);
       expect(await availabilityRuns(db)).toHaveLength(2);
     }));
 
   it('a staff quote in flight holds the probe: it yields without the lock and without reading HMS', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       await db.insert(aiDraftGeneration).values({
@@ -808,7 +869,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       paneStayLookupLoaders.lock = { withLock: takeLock } as unknown as PaneStayLock;
       const spawn = vi.fn(async () => QUOTE_RESULT);
       availabilityProbeLoaders.spawn = spawn;
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv())).toBe(2);
 
       const claimed = await claimJob(db);
       expect(await runClaimedJob(db, claimed)).toBe('retry_wait');
@@ -824,13 +885,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('a busy property lock requeues the probe without using an attempt, and reads nothing', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       paneStayLookupLoaders.lock = lockWith(false);
       const spawn = vi.fn(async () => QUOTE_RESULT);
       availabilityProbeLoaders.spawn = spawn;
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv())).toBe(2);
 
       const claimed = await claimJob(db);
       expect(await runClaimedJob(db, claimed)).toBe('retry_wait');
@@ -843,12 +904,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('a finished probe is a snapshot with its as-of time, and each stay reads back its own by dates', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       paneStayLookupLoaders.lock = lockWith(true);
       availabilityProbeLoaders.spawn = vi.fn(async () => QUOTE_RESULT);
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv())).toBe(2);
 
       // Both queued probes run, in whichever order the lane claims them.
       const before = Date.now();
@@ -897,17 +958,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('a probe shared by a second thread on the same day reads back on that thread too', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const first = await seedThread(db);
       await seedExtraction(db, first.messageId, 'quote');
       const second = await seedThread(db);
       await seedExtraction(db, second.messageId, 'quote');
       paneStayLookupLoaders.lock = lockWith(true);
       availabilityProbeLoaders.spawn = vi.fn(async () => QUOTE_RESULT);
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(first.messageId), db, probeEnv())).toBe(2);
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(second.messageId), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(first.messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(second.messageId), db, probeEnv())).toBe(0);
       // A repeat from the same thread does not list it twice.
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(second.messageId), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(second.messageId), db, probeEnv())).toBe(0);
       expect(await runClaimedJob(db, await claimJob(db))).toBe('succeeded');
       expect(await runClaimedJob(db, await claimJob(db))).toBe('succeeded');
       const stay = { kind: 'availability' as const, arrival: '2026-10-26', departure: '2026-10-27' };
@@ -920,11 +981,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('two stays on the same dates with different rooms each read back their own snapshot by rooms', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const twin = { ...STAY_A, id: 's_dddd4444', rows: [STAY_A.rows[1]!] };
       await seedExtraction(db, messageId, 'quote', { ...PAYLOAD, stays: [STAY_A, twin] });
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv())).toBe(2);
       const [a, b] = availabilityRequestsFor({ stays: [STAY_A, twin] });
       const view = (rooms: AvailabilityRequest['rooms']) =>
         readHmsJobView(
@@ -936,14 +997,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('a probe whose read fails is retried, and its snapshot is not stored', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       paneStayLookupLoaders.lock = lockWith(true);
       availabilityProbeLoaders.spawn = vi.fn(async () => {
         throw new Error('quote tool exited');
       });
-      expect(await prefetchAvailabilityForExtraction(EXTRACTION_RUN(messageId), db, probeEnv())).toBe(2);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId), db, probeEnv())).toBe(2);
 
       const claimed = await claimJob(db);
       expect(await runClaimedJob(db, claimed)).toBe('retry_wait');

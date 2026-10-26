@@ -15,10 +15,10 @@ const sha=(body:Uint8Array)=>createHash('sha256').update(body).digest('hex');
 const boards:Record<string,Board>={'Room Only R':'room_only','Bed & Breakfast R':'breakfast','Dinner Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed, Breakfast & Beverage R':'dinner_bed_breakfast'};
 const HRCEN_HOTEL=/The Centurion Hotel/;
 const HRCEN_CONFIRMATION=/We have pleasure in confirming your reservation at The Centurion Hotel, Centurion/;
-// Placeholder until the DV confirmation-letter probe writes /tmp/g1023/dv-letter-identity.txt.
-const HRDAV_HOTEL=/Da Vinci Hotel and Suites/;
-const HRDAV_CONFIRMATION=/We have pleasure in confirming your reservation at Da Vinci Hotel and Suites/;
-function letterIdentity(propertyCode:string):{hotel:RegExp;confirmation:RegExp}|null{
+// Live HRDAV letters (2026-10-26 probe): letterhead "Davinci Hotel & Suites", body "…reservation at The Davinci Hotel and Suites, Sandton".
+const HRDAV_HOTEL=/Da ?Vinci Hotel (?:&|and) Suites/i;
+const HRDAV_CONFIRMATION=/We have pleasure in confirming your reservation at (?:The )?Da ?Vinci Hotel (?:&|and) Suites/i;
+export function letterIdentity(propertyCode:string):{hotel:RegExp;confirmation:RegExp}|null{
  if(propertyCode==='HRCEN')return{hotel:HRCEN_HOTEL,confirmation:HRCEN_CONFIRMATION};
  if(propertyCode==='HRDAV')return{hotel:HRDAV_HOTEL,confirmation:HRDAV_CONFIRMATION};
  return null;

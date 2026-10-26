@@ -4,12 +4,16 @@
 // Screenshots can show guest data, so they go to a private run directory under .private/playwright-quote/.
 // Normally run by scripts/v8-live-checks.ts (deeplink). Directly:
 //   HMS_STAGEHAND_CDP_URL=http://127.0.0.1:<port> HMS_STAGEHAND_BROWSER_OWNERSHIP=borrowed \
-//   HMS_QUOTE_SECRET_PATH=<secret.json> node hms-deeplink-probe.mjs --conf <labtest confirmation> [--stay-id <id>]
+//   HMS_QUOTE_SECRET_PATH=<secret.json> node hms-deeplink-probe.mjs --property CODE --conf <labtest confirmation> [--stay-id <id>]
 import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { parseStayProperty, propertySecretRefusal } from './property-profile.mjs';
+import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
+
+export { withReadCliPage as withLeasedReadPage };
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
 const PRIVATE_QUOTE_ROOT = resolve(REPO_ROOT, '.private/playwright-quote');
@@ -174,6 +178,7 @@ export async function runDeeplinkProbe({
   env = process.env,
   conf = '',
   stayId = '',
+  propertyCode = '',
   runRoot = DEFAULT_RUN_ROOT,
   emit = (record) => process.stdout.write(`${JSON.stringify(record)}\n`),
 } = {}) {
@@ -182,10 +187,13 @@ export async function runDeeplinkProbe({
   if (env.HMS_STAGEHAND_BROWSER_OWNERSHIP !== 'borrowed') throw new Error('BORROWED_OWNERSHIP_REQUIRED');
   if (!CONFIRMATION.test(conf)) throw new Error('CONFIRMATION_REQUIRED');
   if (stayId && !STAY_ID.test(stayId)) throw new Error('STAY_ID_INVALID');
+  if (!lookupActiveProperty(propertyCode)) throw new Error('PROPERTY_REQUIRED');
   process.umask(0o077);
   const runDir = await makeRunDir(runRoot);
   const evidence = relative(REPO_ROOT, runDir);
   const secret = await readSecret(env);
+  const mismatch = propertySecretRefusal(secret, propertyCode);
+  if (mismatch) throw new Error(mismatch);
   const origin = new URL(secret.loginUrl).origin;
   const records = [];
   const browser = await playwright().chromium.connectOverCDP(cdp, { timeout: 20000 });
@@ -193,22 +201,19 @@ export async function runDeeplinkProbe({
   try {
     // A new context inside the borrowed browser. ignoreHTTPSErrors stays off, like the staff tools.
     context = await newBorrowedContext(browser, { viewport: { width: 1600, height: 1000 } }, env);
-    const seed = await context.newPage();
-    try {
-      await login(seed, secret, env);
-    } finally {
-      await seed.close().catch(() => {});
-    }
-    for (const [id, url] of probePlan({ origin, conf, stayId })) {
-      const page = await context.newPage();
-      try {
-        const record = await observe(page, { id, url, conf, runDir, evidence });
-        records.push(record);
-        emit(record);
-      } finally {
-        await page.close().catch(() => {});
+    await withReadCliPage({ propertyCode, secret, context, browser, env }, async () => {
+      // Keep the leased shell. Probe URLs on extra pages so boundPage stays live.
+      for (const [id, url] of probePlan({ origin, conf, stayId })) {
+        const page = await context.newPage();
+        try {
+          const record = await observe(page, { id, url, conf, runDir, evidence });
+          records.push(record);
+          emit(record);
+        } finally {
+          await page.close().catch(() => {});
+        }
       }
-    }
+    });
   } finally {
     await context?.close().catch(() => {});
     // Pinned Playwright connectOverCDP closes its transport, not the owner's Chromium (see fetch-quote.mjs).
@@ -224,12 +229,23 @@ function argValue(args, name) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
-  runDeeplinkProbe({ env: process.env, conf: argValue(args, '--conf'), stayId: argValue(args, '--stay-id') })
-    .then(() => {
-      process.exitCode = 0;
+  const property = parseStayProperty(args);
+  if (!property.ok) {
+    console.error(property.error);
+    process.exitCode = property.exitCode ?? 2;
+  } else {
+    runDeeplinkProbe({
+      env: process.env,
+      conf: argValue(property.rest, '--conf'),
+      stayId: argValue(property.rest, '--stay-id'),
+      propertyCode: property.propertyCode,
     })
-    .catch((error) => {
-      console.error(`deeplink probe failed: ${scrubNavError(error?.message ?? error) ?? 'unknown'}`);
-      process.exitCode = 2;
-    });
+      .then(() => {
+        process.exitCode = 0;
+      })
+      .catch((error) => {
+        console.error(`deeplink probe failed: ${scrubNavError(error?.message ?? error) ?? 'unknown'}`);
+        process.exitCode = 2;
+      });
+  }
 }

@@ -28,12 +28,15 @@ import type { QuoteAttachmentRow, SyncedQuoteAttachment } from '../../ai/quote-w
 import {
   PANE_BOOKER_EMAIL_MAX,
   PANE_BOOKER_NAME_MAX,
+  PANE_MARKET_SEGMENT_MAX,
   PANE_PARTY_NAME_MAX,
   PANE_PARTY_NATIVE_ID_MAX,
+  PANE_PREVIEW_TTL_MS,
   PANE_RESERVATION_NOTE_MAX,
   runPaneStay,
   type PaneStayResult,
 } from '../../ai/pane-stay-save.js';
+import { createWorkItemPreviewPersist } from '../../ai/pane-stay-preview-persist.js';
 import { isNoReplyAddress } from '../../mail/conversation-signals.js';
 import { recordStaffNote } from '../../ai/work-events.js';
 import {
@@ -78,6 +81,8 @@ const paneStayInput = z.object({
   ratePlan: z.string().min(1),
   track: z.string().min(1),
   guaranteeType: z.string().min(1),
+  marketSegment: paneOptionalText(PANE_MARKET_SEGMENT_MAX),
+  guestoptin4: z.boolean().optional(),
   childAges: z.array(z.number().int()).max(16).optional(),
   propertyCode: z.string().min(1).optional(),
   bookingAgency: paneParty.optional(),
@@ -279,11 +284,19 @@ export const quoteWorkflowRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-    const { stayId: _stayId, workItemId: _workItemId, ...stay } = input;
+    const { stayId, workItemId, ...stay } = input;
+    const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
+    const previewPersist =
+      workItemId && stayId
+        ? createWorkItemPreviewPersist(getDb(), ctx.activeTransportId, PANE_PREVIEW_TTL_MS)
+        : undefined;
     return runPaneStay({
       mode: 'preview',
       stay,
-      owner: `${ctx.sessionUser.id}:${ctx.activeTransportId}`,
+      owner,
+      workItemId,
+      stayId,
+      previewPersist,
     });
   }),
   commitStay: mailboxProcedure
@@ -303,6 +316,10 @@ export const quoteWorkflowRouter = router({
     .mutation(async ({ input, ctx }) => {
       const { previewDigest, stayId, workItemId, ...stay } = input;
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
+      const previewPersist =
+        workItemId && stayId
+          ? createWorkItemPreviewPersist(getDb(), ctx.activeTransportId, PANE_PREVIEW_TTL_MS)
+          : undefined;
       if (workItemId && stayId) {
         const existing = await loadStayCommit(getDb(), {
           transportId: ctx.activeTransportId,
@@ -319,6 +336,9 @@ export const quoteWorkflowRouter = router({
         stay,
         previewDigest,
         owner,
+        workItemId,
+        stayId,
+        previewPersist,
       });
       if (workItemId && stayId) {
         const record = stayCommitFromPaneResult(result);

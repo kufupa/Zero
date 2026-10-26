@@ -41,6 +41,7 @@ export const STAFF_QUOTE_PILOT_MISSING = {
 export type AnalyseSelectionInput = {
   internetMessageId?: string;
   storeId: string;
+  /** The Outlook store's native EntryID; distinct from the canonical webmail sourceMessageId. */
   entryId: string;
   folderEntryId: string;
   selectionEpoch: number;
@@ -231,6 +232,10 @@ export type NeedsYouRow = {
   status: 'needs_you' | 'review' | 'done' | 'dismissed';
   chip: 'needs_you' | 'queued' | 'in_hms' | 'review';
   threadId: string | null;
+  /** Canonical Zero message row ID, distinct from the Outlook-native EntryID. */
+  sourceMessageId?: string | null;
+  /** Exact Outlook EntryID when present; current responses use null for legacy/non-Outlook rows. */
+  outlookEntryId?: string | null;
   sender: string | null;
   subject: string | null;
   receivedAt: Date | null;

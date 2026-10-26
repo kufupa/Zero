@@ -90,7 +90,7 @@ export function HmsQueueStatusLine({
       </span>
       <span>{` · ${formatQueueElapsed(elapsed)} elapsed`}</span>
       <span>{` · ${queueLabel}`}</span>
-      {elapsed >= 30_000 ? <span>Still working — you can keep going</span> : null}
+      {elapsed >= 30_000 ? <span> · Still working — you can keep going</span> : null}
     </p>
   );
 }
@@ -141,6 +141,7 @@ export function HmsJobStatusLine({
   queuing,
   detail,
   onRetry,
+  visible = true,
   statusFailed = false,
   queueFailed = false,
   failureMessage = 'Could not check for an existing HMS lookup.',
@@ -152,6 +153,8 @@ export function HmsJobStatusLine({
   /** Says what is running, such as "Nava is looking up the booking in HMS…". */
   detail: string;
   onRetry: () => void;
+  /** Hides a duplicate line when another field announces the same shared job. */
+  visible?: boolean;
   statusFailed?: boolean;
   queueFailed?: boolean;
   failureMessage?: string;
@@ -159,7 +162,11 @@ export function HmsJobStatusLine({
   queueFailureMessage?: string;
 }) {
   const label = hmsJobLabel(view, queuing);
-  const elapsedMs = usePendingElapsed(Boolean(label && label !== 'Failed'), view?.createdAt);
+  const elapsedMs = usePendingElapsed(
+    visible && Boolean(label && label !== 'Failed'),
+    view?.createdAt,
+  );
+  if (!visible) return null;
   if (statusFailed || queueFailed) {
     return (
       <div

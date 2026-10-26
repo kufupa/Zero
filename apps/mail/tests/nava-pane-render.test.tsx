@@ -2,16 +2,27 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useRef, useState } from 'react';
 import { observable } from '@trpc/server/observable';
 import { countMutationsLink } from '../lib/workstation/mutations-in-flight';
 import { reloadPane } from '../lib/workstation/pane-release-watch';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { toast } from 'sonner';
 import { NavaPane } from '../components/nava-pane/nava-pane';
+import { useStaffQuoteAutostart } from '../components/nava-pane/use-staff-quote-autostart';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
+import { initialQuoteSession, planQuoteSteps } from '../lib/quote-workflow/session';
+import {
+  HRDAV_PROPERTY_CODE,
+  type QuotePaneConfig,
+  type QuoteSelectionBinding,
+  type QuoteSession,
+  type StayGroupRequirement,
+} from '../lib/quote-workflow/types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote, reviewedReplyHtml, setReviewedReply } from './helpers/prepare-reviewed-quote';
 import { VOUCHER_COPY } from '../lib/quote-workflow/voucher-find';
+import { AMEND_SAVE_COPY } from '../lib/quote-workflow/amend-cancel';
 import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
@@ -703,9 +714,11 @@ describe('NavaPane', () => {
  * Characterisation for the block split: each first-run and tool state, asserted on what staff see and kept as a
  * DOM snapshot. The split must leave every snapshot unchanged.
  */
-describe('NavaPane screen states', () => {
+  describe('NavaPane screen states', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    sessionStorage.clear();
+    bridgeMockState.analysisOverride = null;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
@@ -760,6 +773,17 @@ describe('NavaPane screen states', () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     });
 
+  /** Radix menu ids change with prior mounts; snapshots keep a stable placeholder. */
+  const stabilizePaneSnapshot = (root: HTMLElement) => {
+    root.querySelectorAll('*').forEach((el) => {
+      for (const attr of [...el.attributes]) {
+        if (attr.value.includes('radix-')) {
+          el.setAttribute(attr.name, attr.value.replace(/radix-[^\s"]+/g, 'radix-stable'));
+        }
+      }
+    });
+  };
+
   it('welcome: a first run shows the account step and the four-step bar', async () => {
     localStorage.removeItem('nava_onboarding_completed');
     const { container } = render(<NavaPane bridge={fakeBridge} />);
@@ -770,13 +794,16 @@ describe('NavaPane screen states', () => {
       ),
     ).toBeDefined();
     expect(
-      await within(container.querySelector('header') as HTMLElement).findByRole('button', {
-        name: 'Needs you (0)',
+      within(container.querySelector('header') as HTMLElement).queryByRole('button', {
+        name: /Needs you/,
       }),
-    ).toBeDefined();
+    ).toBeNull();
     expect(screen.getByRole('button', { name: 'Confirm Account & Connect' })).toBeDefined();
     expect(screen.getByRole('button', { name: '4. Quote Tool' })).toBeDefined();
     expect(screen.queryByRole('main')).toBeNull();
+    await settle();
+    expect(await screen.findByRole('status', { name: /Nava reads this as:/ })).toBeDefined();
+    stabilizePaneSnapshot(container);
     expect(container).toMatchSnapshot();
   });
 
@@ -793,7 +820,7 @@ describe('NavaPane screen states', () => {
     expect(screen.queryByRole('button', { name: 'Find this booking' })).toBeNull();
   });
 
-  it.each([320, 380])('keeps the mailbox, sync and Needs-you count in the header at %ipx', async (width) => {
+  it.each([320, 380])('keeps the mailbox and sync in the header at %ipx while Needs-you stays gated off', async (width) => {
     const { container } = render(
       <div style={{ width: `${width}px`, maxWidth: `${width}px` }}>
         <NavaPane bridge={fakeBridge} />
@@ -802,13 +829,11 @@ describe('NavaPane screen states', () => {
     const header = container.querySelector('header');
     expect(header).not.toBeNull();
     const title = header!.querySelector('h1');
-    const needsYou = await within(header as HTMLElement).findByRole('button', { name: 'Needs you (0)' });
     const mailbox = within(header as HTMLElement).getByLabelText('Connected mailbox: ropperman@legacyhotels.co.za');
-    const elements = [...header!.querySelectorAll('h1, button, span')];
-    expect(elements.indexOf(title!)).toBeLessThan(elements.indexOf(needsYou));
-    expect(elements.indexOf(needsYou)).toBeLessThan(elements.indexOf(mailbox));
+    const elements = [...header!.querySelectorAll('h1, span')];
+    expect(within(header as HTMLElement).queryByRole('button', { name: /Needs you/ })).toBeNull();
+    expect(elements.indexOf(title!)).toBeLessThan(elements.indexOf(mailbox));
     expect(title!.className).toMatch(/truncate|whitespace-nowrap/);
-    expect(needsYou.className).toMatch(/truncate|whitespace-nowrap/);
     expect(title!.parentElement?.className).toMatch(/min-w-0/);
     expect(header!.children[0]?.className).toMatch(/min-w-0/);
     expect(header!.children[1]?.className).toMatch(/min-w-0/);
@@ -816,7 +841,6 @@ describe('NavaPane screen states', () => {
     expect(header!.textContent).toContain('Nava Reservationist');
     expect(header!.textContent).not.toContain('Centurion');
     expect(header!.textContent).toMatch(/sync|checking/i);
-    expect(needsYou.textContent).toBe('Needs you (0)');
     expect(container.firstElementChild?.getAttribute('style')).toContain(`width: ${width}px`);
   });
 
@@ -842,6 +866,7 @@ describe('NavaPane screen states', () => {
     expect(card.textContent).toContain('Add the night of 31 Oct');
     expect(card.textContent).toContain('57291630-1');
     await settle();
+    stabilizePaneSnapshot(container);
     expect(container).toMatchSnapshot();
   });
 
@@ -1094,7 +1119,7 @@ describe('NavaPane screen states', () => {
       file: null,
       unreadPdfs: 1,
     });
-    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    render(<NavaPane bridge={fakeBridge} />);
     const card = await screen.findByRole('region', { name: VOUCHER_COPY.heading }, { timeout: 5000 });
     expect(card.textContent).not.toContain(VOUCHER_COPY.missingGuest);
     // No warning list: the quote panel names the unreadable file once.
@@ -1117,8 +1142,9 @@ describe('NavaPane screen states', () => {
     const { container } = render(<NavaPane bridge={fakeBridge} />);
     fireEvent.click(screen.getByRole('button', { name: 'Confirm Account & Connect' }));
     expect(await screen.findByText(/API server pinged at/)).toBeDefined();
-    expect(await screen.findByRole('button', { name: 'Needs you (0)' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
     await settle();
+    stabilizePaneSnapshot(container);
     expect(container).toMatchSnapshot();
   });
 
@@ -1129,8 +1155,9 @@ describe('NavaPane screen states', () => {
     await screen.findByText(/API server pinged at/);
     fireEvent.click(screen.getByRole('button', { name: 'Next: 60-Second Feature Tour' }));
     expect(screen.getByRole('heading', { name: '1. Automatic Email Sync' })).toBeDefined();
-    expect(await screen.findByRole('button', { name: 'Needs you (0)' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
     await settle();
+    stabilizePaneSnapshot(container);
     expect(container).toMatchSnapshot();
   });
 
@@ -1501,13 +1528,16 @@ describe('NavaPane screen states', () => {
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'updated@example.invalid' } });
     await prepareReviewedQuote(null);
 
-    expect(qualifiedQuotePdfMutate).toHaveBeenCalledWith(
+    expect(qualifiedQuotePdfMutate.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
         attention: 'Updated Contact',
         clientEmail: 'updated@example.invalid',
         clientTelephone: '',
       }),
     );
+    expect(qualifiedQuotePdfMutate.mock.calls[0]?.[1]).toEqual({
+      context: { activeTransportId: 'transport-1' },
+    });
     const expectedHtml = quoteWrapperHtml('Updated Contact', 'R Opperman', { propertyCode: 'HRCEN' });
     expect(reviewedReplyHtml()).toBe(expectedHtml);
     fireEvent.click(screen.getByRole('button', { name: 'Draft quotation into email reply' }));
@@ -1872,7 +1902,7 @@ describe('NavaPane screen states', () => {
     rerender(<NavaPane bridge={fakeBridge} preview />);
 
     await waitFor(() => {
-      const contact = screen.getByRole('region', { name: 'Quote contact — printed on the PDF' });
+      const contact = screen.getByRole('group', { name: 'Quote contact — printed on the PDF' });
       expect(within(contact).getByText('Second Mailbox Guest')).toBeDefined();
     });
     openContactCorrections();
@@ -2192,6 +2222,154 @@ describe('NavaPane screen states', () => {
 
     expect(screen.queryByText('Available')).toBeNull();
     expect(bridgeMockState.prepareBookingDraftMutation).not.toHaveBeenCalled();
+  });
+
+  it('debounces staff quote auto-start until a complete date pair settles', async () => {
+    const testMessageId = 'staff-quote-date-debounce-test';
+    const binding = {
+      transportId: 'transport-1',
+      mailboxEmail: 'test-mailbox',
+      storeId: 'store-1',
+      folderEntryId: 'folder-inbox',
+      entryId: 'entry-1',
+      internetMessageId: testMessageId,
+      selectionEpoch: 1,
+      scopeEpoch: 1,
+    } satisfies QuoteSelectionBinding;
+    const source = { messageId: testMessageId, threadId: 'test-thread', sourceHash: 'ab'.repeat(32) };
+    const group = {
+      id: 'test-stay-row',
+      arrivalDate: '',
+      departureDate: '',
+      quantity: 2,
+      adults: 2,
+      childrenAges: [],
+      board: 'bb',
+      specialRequests: [],
+      fields: { arrivalDate: 'extracted', departureDate: 'missing' },
+    } satisfies StayGroupRequirement;
+    const initialSession: QuoteSession = {
+      ...initialQuoteSession(),
+      phase: 'requirements',
+      binding,
+      analysis: { intent: 'quote', groups: [group], secondaryAsks: [], alternatives: [] },
+      groups: [group],
+      steps: planQuoteSteps([group], {}),
+      staffSource: source,
+    };
+    const activeEmail = { ...fakeBridge.activeEmail!, internetMessageId: testMessageId };
+    const paneConfig: QuotePaneConfig = {
+      transportId: binding.transportId,
+      propertyCode: HRDAV_PROPERTY_CODE,
+      roomTypes: [],
+      ratePlans: [],
+      boards: ['bb'],
+      salesStrategies: [],
+      overrideRateCodes: [],
+      eventRateCodes: [],
+    };
+    bridgeMockState.queueStaffQuoteMutation.mockImplementation((input: Record<string, unknown>) => {
+      bridgeMockState.lastStaffQuoteInput = input;
+      return Promise.resolve({ runId: 'staff-job-date-debounce' });
+    });
+
+    function AutoStartHarness() {
+      const [quoteSession, setQuoteSession] = useState(initialSession);
+      const staffQuoteReadBackInFlight = useRef(false);
+      const staffQuoteAutoSuppressed = useRef(new Set<string>());
+      const staffQuoteAutoAttempted = useRef(new Set<string>());
+      const autoStartStaffQuoteStepRef = useRef<() => void>(() => undefined);
+
+      const patchDates = (patch: { arrivalDate?: string; departureDate?: string }) => {
+        setQuoteSession((session) => {
+          const groups = session.groups.map((current) => ({ ...current, ...patch }));
+          return {
+            ...session,
+            inputRevision: session.inputRevision + 1,
+            analysis: session.analysis ? { ...session.analysis, groups } : null,
+            groups,
+            steps: planQuoteSteps(groups, session.staffQuotes),
+          };
+        });
+      };
+      const runQuoteStep = (stepId: string, autoStart?: boolean) => {
+        if (!autoStart || !quoteSession.steps.some((candidate) => candidate.id === stepId)) return;
+        void bridgeMockState.queueStaffQuoteMutation({
+          autoStart: true,
+          groups: quoteSession.groups.map(({ arrivalDate, departureDate }) => ({ arrivalDate, departureDate })),
+        });
+      };
+
+      // The pane's staff date-edit handler suppresses auto-start; exercise the extracted hook with settled session updates.
+      useStaffQuoteAutostart({
+        isNonActionableMessage: false,
+        staffQuoteQueueMode: 'on',
+        isLoading: false,
+        session: { user: { id: 'staff-1' } },
+        requiresRelogin: false,
+        activeEmail,
+        contactMessageKey: testMessageId,
+        quoteRunPending: false,
+        staffQuoteReadBackInFlight,
+        quoteSession,
+        staffQuoteAutoSuppressed,
+        staffQuoteAttemptKey: (transportId, messageId, sourceHash, stayKey) =>
+          [transportId, messageId, sourceHash, stayKey].join(':'),
+        staffQuoteAutoAttempted,
+        activePaneConfig: paneConfig,
+        autoStartStaffQuoteStepRef,
+        runQuoteStep,
+        autoStaffQuoteSuppressed: () => false,
+      });
+
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => patchDates({ arrivalDate: '2026-11-03' })}
+          >
+            Set check-in
+          </button>
+          <button
+            type="button"
+            onClick={() => patchDates({ departureDate: '2026-11-05' })}
+          >
+            Set departure
+          </button>
+          <button
+            type="button"
+            onClick={() => patchDates({ arrivalDate: '2026-11-04' })}
+          >
+            Change arrival
+          </button>
+          <button type="button" onClick={() => autoStartStaffQuoteStepRef.current()}>
+            Read-back settled
+          </button>
+        </>
+      );
+    }
+
+    render(<AutoStartHarness />);
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 350));
+    });
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set check-in' }));
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 350));
+    });
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set departure' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Change arrival' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Read-back settled' }));
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({
+      groups: [expect.objectContaining({ arrivalDate: '2026-11-04', departureDate: '2026-11-05' })],
+    });
   });
 
   it('auto-queues a complete stay and reports the rate run in the pane notice system', async () => {
@@ -2669,7 +2847,7 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.lastStaffQuoteInput).not.toHaveProperty('autoStart');
   });
 
-  it('keeps the completed rate notice global across Needs you and channel mail', async () => {
+  it('keeps the completed rate notice global when Needs-you is gated off and on channel mail', async () => {
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.holdStaffQuote = true;
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);
@@ -2693,12 +2871,9 @@ describe('NavaPane screen states', () => {
       expect.objectContaining({ messageId: 'mail-1' }),
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (0)' }));
-    const needsYouNotice = screen.getByTestId('hms-job-notice-banner');
-    expect(needsYouNotice.textContent).toContain('Rates ready');
-    expect(needsYouNotice.closest('main')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
+    expect(notice.closest('main')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back to quotes' }));
     const channelBridge = {
       ...fakeBridge,
       activeEmail: {
@@ -2835,7 +3010,7 @@ describe('NavaPane screen states', () => {
     expect(card.querySelector('[data-testid="amend-changes"]')).toBeNull();
     expect(within(card).getByRole('button', { name: 'Copy confirmation' })).toBeDefined();
     expect(within(card).queryByRole('button', { name: 'Run' })).toBeNull();
-    expect(within(card).getByText(/This booking is not unpaid. Change it in HMS yourself/)).toBeTruthy();
+    expect(within(card).getByText(AMEND_SAVE_COPY.handleInHms)).toBeTruthy();
   });
 
   it('amendment: right column shows only the requested departure difference', async () => {
@@ -2987,23 +3162,28 @@ describe('NavaPane contact and translation on both surfaces', () => {
     ['the Outlook pane', false],
     ['the webmail panel', true],
   ] as const) {
-    it(`${surface}: keeps the five numbered quote sections in reservationist order`, async () => {
+    it(`${surface}: keeps the numbered quote sections in reservationist order with rates inside Stay`, async () => {
       bridgeMockState.storedWork = STORED_FRENCH;
       const { container } = render(<NavaPane bridge={fakeBridge} preview={preview} />);
       await waitFor(() => expect(container.querySelector('#quote-quote')).not.toBeNull(), { timeout: 5000 });
       const steps = [
         'quote-party',
-        'quote-authority',
         'quote-stay',
-        'quote-rates',
         'quote-quote',
       ].map((id) => container.querySelector(`#${id}`));
+      const rates = container.querySelector('#quote-rates');
+      const stay = steps[1] as HTMLElement;
+      const documents = steps[2] as HTMLElement;
       expect(container.querySelector('#quote-extras')).toBeNull();
+      expect(container.querySelector('#quote-authority')).toBeNull();
       expect(steps.every(Boolean)).toBe(true);
+      expect(rates).not.toBeNull();
+      expect(stay.contains(rates)).toBe(true);
+      expect(documents.querySelector('h3 span')?.textContent).toBe('3');
       for (let index = 1; index < steps.length; index += 1) {
         expect(steps[index - 1]!.compareDocumentPosition(steps[index]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       }
-      expect(within(steps[4] as HTMLElement).getByText('Reply text · PDF · Excel')).toBeDefined();
+      expect(within(documents).getByText('Reply text · PDF · Excel')).toBeDefined();
     });
 
     it(`${surface}: shows mailbox and selected email first, with the quote contact before translation`, async () => {
@@ -3028,15 +3208,19 @@ describe('NavaPane contact and translation on both surfaces', () => {
       openContactCorrections();
       expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('marie.dupont@example.fr');
       expect(screen.getByRole('button', { name: 'Done' })).toBeDefined();
-      const contact = screen.getByRole('region', { name: 'Quote contact — printed on the PDF' });
+      expect(screen.getAllByRole('group', { name: 'Quote contact — printed on the PDF' })).toHaveLength(1);
+      const contact = screen.getByRole('group', { name: 'Quote contact — printed on the PDF' });
       expect(selectedEmail!.compareDocumentPosition(contact) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(contact.compareDocumentPosition(translation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it(`${surface}: labels a new booking Contact, not Quote contact`, async () => {
+    it(`${surface}: labels a new booking Contact without a duplicate in People`, async () => {
       bridgeMockState.storedWork = { ...STORED_FRENCH, kind: 'booking' };
       render(<NavaPane bridge={fakeBridge} preview={preview} />);
       expect(await screen.findByRole('region', { name: 'Contact' })).toBeDefined();
+      expect(screen.getByRole('region', { name: 'People' })).toBeDefined();
+      expect(screen.getAllByRole('region', { name: 'Contact' })).toHaveLength(1);
+      expect(screen.queryByRole('group', { name: 'Quote contact — printed on the PDF' })).toBeNull();
     });
 
     it(surface + ': uses the external sender as a name and email fallback while the read is unavailable', async () => {
@@ -3203,6 +3387,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(notice.textContent).toContain('57291630-1');
     expect(screen.getByRole('status', { name: 'Nava reads this as: Not for Nava' })).toBeDefined();
     expect(screen.queryByText('New booking')).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Quote contact — printed on the PDF' })).toBeNull();
     expect(screen.queryByRole('region', { name: 'Quote contact — printed on the PDF' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Draft quotation into email reply' })).toBeNull();
     expect(screen.queryByLabelText('Arrival')).toBeNull();
@@ -3242,6 +3427,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(screen.getByTestId('mail-source-no-action').textContent).toContain(
       'Payment lookup below only reads HMS.',
     );
+    expect(screen.queryByRole('group', { name: 'Quote contact — printed on the PDF' })).toBeNull();
     expect(screen.queryByRole('region', { name: 'Quote contact — printed on the PDF' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Draft quotation into email reply' })).toBeNull();
     expect(screen.queryByRole('region', { name: 'Change to an existing booking' })).toBeNull();
@@ -3301,7 +3487,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(screen.getAllByTestId('mail-source-no-action')).toHaveLength(1);
   });
 
-  it('keeps a single no-action notice visible while Needs you is open', async () => {
+  it('keeps a single no-action notice visible while the Needs-you header entry is gated off', async () => {
     const channelBridge = {
       ...fakeBridge,
       activeEmail: {
@@ -3313,9 +3499,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
     } as unknown as PaneBridge;
 
     render(<NavaPane bridge={channelBridge} />);
-    fireEvent.click(screen.getByRole('button', { name: /Needs you/ }));
-
-    expect(await screen.findByRole('region', { name: 'Needs you' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
     expect(await screen.findByTestId('mail-source-no-action')).toBeDefined();
     expect(screen.getAllByTestId('mail-source-no-action')).toHaveLength(1);
   });

@@ -35,7 +35,7 @@ describe('account switch cache', () => {
       nextTransportId: 't-new',
     });
     const newScope = { userId: 'u1', activeTransportId: 't-new' };
-    const deleteIdbKey = vi.fn(async () => undefined);
+    const deleteIdbKey = vi.fn(async (_key: string) => undefined);
     const queryClient = { clear: vi.fn() };
 
     await runAccountSwitchCacheCleanup({

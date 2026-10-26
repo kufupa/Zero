@@ -110,6 +110,18 @@ vi.mock('../providers/query-provider', () => ({
       },
     },
     quoteWorkflow: {
+      // 12f451bd6 (#536) loads mailbox pane choices via rateCatalogue.query on mount.
+      rateCatalogue: {
+        query: async () => ({
+          transportId: 'transport-shared',
+          propertyCode: 'HRCEN',
+          roomTypes: [],
+          ratePlans: [],
+          boards: [],
+          overrideRateCodes: [],
+          eventRateCodes: [],
+        }),
+      },
       analyseSelection: {
         mutate: async () => ({
           status: 'ready' as const,

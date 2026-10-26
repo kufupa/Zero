@@ -308,8 +308,9 @@ describe('row price controls in the quote panel', () => {
     const session = withSelectedRate(readySession());
     render(<PinnedPanel initial={session} rates={rates} runs={runs} seen={seen} />);
     fireEvent.click(screen.getByRole('button', { name: 'Special price' }));
-    const picker = screen.getByLabelText('Saved rate for Standard Twin ×1') as HTMLSelectElement;
-    await waitFor(() => expect(within(picker).getByRole('option', { name: /Standard summer/ })).toBeDefined());
+    const pickerElement = screen.getByLabelText('Saved rate for Standard Twin ×1');
+    const picker = pickerElement as unknown as HTMLSelectElement;
+    await waitFor(() => expect(within(pickerElement).getByRole('option', { name: /Standard summer/ })).toBeDefined());
 
     fireEvent.change(picker, { target: { value: SUMMER.id } });
 

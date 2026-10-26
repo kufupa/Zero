@@ -218,6 +218,15 @@ export function optionalPartyAndNoteFills(stay) {
   };
 }
 
+/** Native Book fills. guestoptin4 is emitted only when staff opted in; never inferred true. */
+export function bookFieldFills(stay) {
+  const marketsegment = typeof stay?.marketSegment === 'string' ? stay.marketSegment.trim() : '';
+  return {
+    ...(marketsegment ? { marketsegment } : {}),
+    ...(stay?.guestoptin4 === true ? { guestoptin4: true } : {}),
+  };
+}
+
 export function validateCreateRequest(data, schema) {
   return validate(schema.$defs.request, data, schema);
 }

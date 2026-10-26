@@ -3,7 +3,7 @@
 // --allow-real-guest lifts the Labtest guard for one run (on mode). The server passes it; it is never read from the env.
 // The flow finds the stay, checks identity on the open record, opens Documents, uploads through Create/Upload Document,
 // and reads the document list back.
-// Usage: node attach-document.mjs --confirmation 57291630-1 --arrival 2027-09-14 --file <path.pdf> --document-name <name>.pdf --out <dir> [--property HRCEN] [--allow-real-guest]
+// Usage: node attach-document.mjs --property CODE --confirmation 57291630-1 --arrival 2027-09-14 --file <path.pdf> --document-name <name>.pdf --out <dir> [--allow-real-guest]
 // Exit: 0 attached; 2 refused_* or not_found or usage; 1 any other outcome.
 // ATTACH_VERIFIED=true in the environment arms the driver. It is unset everywhere until U28-H2 captures the Documents
 // flow on a live Labtest stay, and H2 sets it for its own run only. While it is unset the driver refuses before any
@@ -15,7 +15,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { findStay, openGuestStay, openRecord, readRecord, shot } from './cancel-stay.mjs';
 import {
   ALLOW_REAL_GUEST_FLAG,
@@ -26,6 +26,9 @@ import {
   squash,
 } from './cancel-stay-rules.mjs';
 import { parseStayProperty, propertySecretRefusal } from './property-profile.mjs';
+import { withWriteCliPage } from './write-cli-lease.mjs';
+
+export { withWriteCliPage as withLeasedWritePage };
 
 // The read path's cap (ARTIFACT_MAX_INPUT_BYTES in src/mail/artifacts/read-artifact.ts). A TS test pins the equality.
 export const ATTACH_MAX_BYTES = 20 * 1024 * 1024;
@@ -425,24 +428,27 @@ async function attachLive(args, dir) {
       }
       return route.abort('blockedbyclient');
     });
-    ctx.page = await context.newPage();
-    ctx.page.setDefaultTimeout(20000);
-    await login(ctx.page, ctx.secret);
-    await openGuestStay(ctx.page);
-    await ctx.page.waitForTimeout(1500);
-    const found = await findStay(ctx, { evidence: false });
-    if (!found) {
-      state.refusal ??= 'not_found';
-    } else {
-      if (found.locator) await openRecord(ctx.page, found.locator);
-      const verdict = identityCheck(args, await readRecord(ctx.page));
-      if (!verdict.ok) {
-        state.refusal ??= verdict.outcome;
-      } else if (!state.refusal) {
-        await shot(ctx, 'opened.png');
-        await uploadDocument(ctx, args, state);
+    await withWriteCliPage({
+      propertyCode: args.property, secret: ctx.secret, context, browser, env: process.env,
+    }, async ({ page: leased }) => {
+      ctx.page = leased;
+      ctx.page.setDefaultTimeout?.(20000);
+      await openGuestStay(ctx.page);
+      await ctx.page.waitForTimeout(1500);
+      const found = await findStay(ctx, { evidence: false });
+      if (!found) {
+        state.refusal ??= 'not_found';
+      } else {
+        if (found.locator) await openRecord(ctx.page, found.locator);
+        const verdict = identityCheck(args, await readRecord(ctx.page));
+        if (!verdict.ok) {
+          state.refusal ??= verdict.outcome;
+        } else if (!state.refusal) {
+          await shot(ctx, 'opened.png');
+          await uploadDocument(ctx, args, state);
+        }
       }
-    }
+    });
   } catch (error) {
     state.error = squash(error?.message || error).slice(0, 300);
   }
@@ -470,8 +476,8 @@ export async function attachDocument(args, dir, env = process.env) {
   return attachLive(args, dir);
 }
 
-async function main() {
-  const parsed = parseAttachArgs(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)) {
+  const parsed = parseAttachArgs(argv);
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
     return parsed.exitCode;

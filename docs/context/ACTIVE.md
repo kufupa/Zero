@@ -1,6 +1,15 @@
 # Active context
 
-Updated 2026-10-26 after Run 2 plan synthesis. No product/runtime changes or live checks were performed; dated research is evidence, not automatically current state.
+Updated 2026-10-26 15:50Z after or2 (overnight run 2, speed mode) closeout. Dated research is evidence, not automatically current state.
+
+## or2 closeout — 2026-10-26 (Opus coordinator)
+
+- **Live: `f70fbae67`** (train deploy 15:42Z; health 200, 4 pm2 online). Last-good before: `60c52d376`. Migration **0054** (`work_item.revision/revision_head/revision_seq`, int default 0) applied 14:40Z with owner approval in chat; columns verified read-only. `/proc` flags unchanged since 12:45Z (save `lab`, Da Vinci reads/quote/create `on`, create `on`, cancel-unpaid `on`, amend/cancel-paid `lab`).
+- All T1/T2 units merged except **R-SEED (held)**: needs a DS1-P3b follow-up owning a source-aware append-only `staff_rate_pick` store + reader (migration); never seed via synthetic work items.
+- Today on prod: DS4 work-item history (J1 #597 undo/redo revisions, J2 #599, WIRE #607 pane Undo/Redo + Reset to AI + AI/Edited markers + stay/contact hold during refresh), green-main (#605 #606 #608 #609 #610), mail.send approval fix (#611: Azure-route and reservationist `resultDigest` tokens were rejected by the wire schema).
+- Pane bundle `nava-pane-DACG_mgw.js` carries Reset to AI/Redo; **no nginx load yet** (staff off the pane until 2026-10-27) → pane bar not passed. Approved-draft send of an Azure draft not live-proven (needs a staff send).
+- Next acceptance: owner/staff opens one quote mail, edits a field, sees Undo + AI/Edited; nginx load of `DACG_mgw` after 15:42Z.
+- Follow-ups (next run): `ops-deploy --migrate` fails `SELF_SIGNED_CERT_IN_CHAIN` (drizzle-kit lacks `deploy/rds-ca-global.pem`; 1-line `NODE_EXTRA_CA_CERTS` fix); #607 P2 (switching mail mid-Undo holds B's editors until A settles); stay date/room AI markers; 6 `rate-controls`/`rate-cards` test failures on clean main (UI moved to StayRateGrid / BookingCard fixtures); R-SEED. Retro: [or2 retro](ledger/2026-10-26-or2-retro.md); handoff: [session handoff](../plans/2026-10-26-005-session-handoff.md).
 
 ## Overnight run 2 plan handoff — 2026-10-26
 
@@ -8,6 +17,15 @@ Updated 2026-10-26 after Run 2 plan synthesis. No product/runtime changes or liv
 - Verified state: plan and dispatch artifacts are prepared; no product code was changed, no live environment was inspected, and no deployment, flag flip, mail requeue, or HMS action was performed.
 - Next acceptance: run T0 (`S0-PANE` before `S0-PANEL`; `S0-JOBS` and `R-CORPUS` independent), then start T1 only against merged S0 heads; keep `R-SEED` last in T1. Require same-head gates and specified canaries per plan.
 - Holds: T2 only after all T1 gates pass; T3 M1/M2 and XLSX parsing stay out tonight. P0 runtime enable/requeue requires the plan's EC2/SSM preflight and current-session authority; no real-guest writes or email sends. Original asks 223–228 remain in `OWNER-ASKS.md`.
+=======
+Updated 2026-10-26 for the dev-speed scripts handoff. Product-runtime checkpoint remains the 2026-10-25 19:00Z U13-dedup `#550` deploy; dated research is evidence, not automatically current state.
+
+## Dev-speed orchestration scripts — 2026-10-26
+
+- Branch `ops/speed-mode-scripts` adds merge-gate, deploy-train and dispatch scripts plus a fake-`gh` Bash self-test. `bash -n` and `scripts/orch/test-orch.sh` pass; `shellcheck` is unavailable. No remote typecheck/tests, gate record, merge or deploy were run in this lane; the PR remains unmerged.
+- Next acceptance: after remote typecheck and targeted remote tests pass, the lane writes `/tmp/or2/gates/<pr>-<headsha>.ok`; confirm Greptile success and zero unresolved Greptile P0/P1 threads before using `merge-gate.sh`. Run the deployment train only from a clean `recover-parse-failure` worktree when a deploy is separately needed.
+- Holds: no merge or production deploy from this coding lane; the deploy-train self-test is dry-run only.
+>>>>>>> origin/main
 
 ## Multi-hotel overnight — 2026-10-25 (Grok orch, plan 2026-10-24-001)
 

@@ -3,6 +3,7 @@ import { mailExtractionPayloadSchema } from './extraction/schema.js';
 import { addDays } from './stay-date-anchoring.js';
 import { applyPartyBindRule, buildPartyMatchCandidates, type PartyMatchRow } from './party-match-v2.js';
 import { matchRoomType } from './room-types.js';
+import { rankQuoteSalesStrategies, type StaffRateRankContext } from './staff-rate-pick-history.js';
 import { staffQuoteInput, type StaffQuoteInput, type StaffQuoteParties } from './staff-quote-workflow.js';
 
 export type PreparedStaffQuoteStay = {
@@ -22,29 +23,19 @@ export type QuoteShopJob = {
   input: StaffQuoteInput;
 };
 
-/** One shop per allowed registry strategy per stay. Primaries first, then extras with BAR first. */
+/** One shop per configured strategy per stay. Ranked list; empty catalogue fails closed. */
 export function quoteShopJobsForPlan(
   plan: PreparedStaffQuotePlan,
   strategies: readonly QuoteSalesStrategy[] = [],
+  rank?: StaffRateRankContext,
 ): QuoteShopJob[] {
-  if (strategies.length === 0) {
-    return plan.inputs.map((input) => ({ input }));
-  }
-  const ordered = [...strategies].sort(
-    (left, right) => Number(right.code === 'BAR') - Number(left.code === 'BAR'),
+  const ranked = rankQuoteSalesStrategies(strategies, rank);
+  if (ranked.length === 0) return [];
+  return ranked.flatMap((strategy) =>
+    plan.inputs.map((input) => ({
+      input: { ...input, salesStrategy: strategy.requestValue },
+    })),
   );
-  const allowed = new Set(ordered.map((strategy) => strategy.requestValue));
-  const primary = plan.inputs
-    .filter((input) => allowed.has(input.salesStrategy))
-    .map((input) => ({ input }));
-  const extras = plan.inputs.flatMap((input) =>
-    ordered
-      .filter((strategy) => strategy.requestValue !== input.salesStrategy)
-      .map((strategy) => ({
-        input: { ...input, salesStrategy: strategy.requestValue },
-      })),
-  );
-  return [...primary, ...extras];
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -265,10 +256,6 @@ export function buildPreparedStaffQuotePlan(input: {
   }
   const payload = parsedPayload.data;
   const today = (input.now ?? new Date()).toISOString().slice(0, 10);
-  // A Dinner B&B ask prices on Government (every DBB booking read from HMS is NGOVDB). The strategy is one per mail,
-  // as in the pane header, so a mixed DBB + B&B mail stays on BAR.
-  const rows = payload.stays.flatMap((stay) => stay.rows);
-  const salesStrategy = rows.length > 0 && rows.every((row) => row.board === 'dbb') ? 'Government' : 'BAR';
   const stays: PreparedStaffQuoteStay[] = payload.stays.map((stay) => {
     const groupResult = groupForStay(stay, today, payload.missing);
     if (groupResult.reason) return { stayId: stay.id, reason: groupResult.reason };
@@ -278,7 +265,6 @@ export function buildPreparedStaffQuotePlan(input: {
       selectionEpoch: 0,
       inputRevision: 0,
       groups: groupResult.groups,
-      salesStrategy,
       company: payload.endClient ?? '',
       agency: payload.agency ?? '',
       attention: payload.contact.name ?? '',

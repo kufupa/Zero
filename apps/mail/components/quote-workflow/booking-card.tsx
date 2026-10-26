@@ -1,18 +1,23 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type {
   BookingDraftReady,
   BookingRateCheck,
+  QuoteSession,
   StaffQuoteParties,
   StaffQuoteParty,
   StayGroupRequirement,
 } from '@/lib/quote-workflow/types';
+import { prefillReservationNote, reservationNoteForGroup } from '@/lib/quote-workflow/reservation-note';
 import { HmsLinkActions } from './hms-link-actions';
 import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
 import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
+import { recalledGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
+import { subscribeStayingGuestName } from './quote-people-step';
+import { usePaneStayPreview } from './use-pane-stay-preview';
 import {
   commitOutcome,
   PANE_BOOKER_NAME_MAX,
@@ -118,6 +123,33 @@ async function writeClipboard(value: string): Promise<boolean> {
 export const ROOM_TYPE_CHANGED_COPY =
   'Room type changed from the quote, so the price check no longer applies. Quote again to check the price for this room.';
 
+export const AMBIGUOUS_GUEST_NAME_COPY = 'Enter first and last name for the staying guest.';
+
+// Exactly two tokens is a first + last split. One token or three-plus is ambiguous, so staff type the fields.
+function splitStayingGuestName(name: string): { firstName: string; lastName: string; ambiguous: boolean } {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 2) {
+    return { firstName: parts[0]!, lastName: parts[1]!, ambiguous: false };
+  }
+  return { firstName: '', lastName: '', ambiguous: true };
+}
+
+function namesFromSelectedGuest(
+  selectedGuestName: string,
+  request: { firstName?: unknown; lastName?: unknown },
+): { firstName: string; lastName: string } {
+  const split = splitStayingGuestName(selectedGuestName);
+  if (!split.ambiguous) {
+    return { firstName: split.firstName, lastName: split.lastName };
+  }
+  return { firstName: textValue(request.firstName), lastName: textValue(request.lastName) };
+}
+
+function readSelectedGuestName(guestEditorKey?: string, guestName?: string): string {
+  const recalled = guestEditorKey ? recalledGuestName(guestEditorKey) : null;
+  return recalled ?? guestName ?? '';
+}
+
 function missingFactLabel(question: string): string {
   return question.replace(/\s+for this booking\??$/i, '').replace(/\?$/, '');
 }
@@ -196,9 +228,12 @@ const textareaClass =
   'outline-hidden w-full rounded-xs border border-[#cbd5e1] bg-white px-2 py-1 text-[12.5px] text-[#1e293b] focus:border-[#0066cc]';
 
 type PreviewView =
-  | { status: 'running'; key: string }
+  | { status: 'running'; key: string; requestId: symbol }
   | { status: 'ready'; key: string; digest: string; runId?: string; screenshots: string[] }
-  | { status: 'refused'; key: string; message: string };
+  | { status: 'refused'; key: string; message: string }
+  | { status: 'stale'; key: string };
+
+type PreviewInput = { key: string | null; inputKey: string | null; stayId: string };
 
 type CommitView =
   | { status: 'running'; key: string }
@@ -229,6 +264,10 @@ function stayIdForRoom(
     groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
   const stay = group?.stayId ?? room.groupId;
   return `${stay}_${room.roomIndex}`;
+}
+
+function paneStayPreviewKey(workItemId: string | undefined, stayId: string, inputKey: string): string {
+  return JSON.stringify([workItemId?.trim() || null, stayId.trim(), inputKey]);
 }
 
 function commitViewFromSaved(
@@ -364,6 +403,7 @@ function PaneScreenshot({
 // Preview and Book for one room. Book unlocks only for the preview of these exact fields.
 function RoomSave({
   stay,
+  previewKey,
   missing,
   save,
   screenshot,
@@ -373,6 +413,7 @@ function RoomSave({
   onBook,
 }: {
   stay: PaneStayInput | null;
+  previewKey: string | null;
   missing: string[];
   save: RoomSaveState;
   screenshot: PaneStayClient['screenshot'];
@@ -382,10 +423,11 @@ function RoomSave({
   onBook: (stay: PaneStayInput, previewDigest: string) => void;
 }) {
   const { preview, commit } = save;
-  const key = stay ? paneStayKey(stay) : null;
   const busy = frozen || preview?.status === 'running' || commit?.status === 'running';
-  const fresh = stay && preview?.status === 'ready' && preview.key === key ? preview : null;
-  const changed = preview?.status === 'ready' && preview.key !== key;
+  const fresh = stay && preview?.status === 'ready' && preview.key === previewKey ? preview : null;
+  const changed =
+    preview?.status === 'stale' ||
+    ((preview?.status === 'running' || preview?.status === 'ready') && preview.key !== previewKey);
 
   if (commit?.status === 'booked') {
     const savedShot = commit.screenshots.includes(SAVED_SHOT) ? SAVED_SHOT : null;
@@ -424,12 +466,12 @@ function RoomSave({
           Nava is filling the booking in HMS… (about 2 minutes)
         </p>
       ) : null}
-      {preview?.status === 'refused' ? (
+      {preview?.status === 'refused' && preview.key === previewKey ? (
         <p role="alert" className="text-[11.5px] text-amber-900">
           {preview.message}
         </p>
       ) : null}
-      {changed ? (
+      {changed && preview?.status !== 'running' ? (
         <p role="alert" className="text-[11.5px] text-amber-900">
           You changed the booking – preview again.
         </p>
@@ -512,7 +554,7 @@ function RoomTextField({
   roomLabel: string;
   value: string;
   disabled: boolean;
-  maxLength: number;
+  maxLength?: number;
   multiline?: boolean;
   pii?: boolean;
   required?: boolean;
@@ -557,6 +599,8 @@ function RoomTextField({
 type RoomChoice = {
   track: string;
   sourceOfBusiness: string;
+  marketSegment: string;
+  guestoptin4: boolean;
   guaranteeType: string;
   firstName: string;
   lastName: string;
@@ -568,6 +612,8 @@ type RoomChoice = {
 const NO_CHOICE: RoomChoice = {
   track: '',
   sourceOfBusiness: '',
+  marketSegment: '',
+  guestoptin4: false,
   guaranteeType: '',
   firstName: '',
   lastName: '',
@@ -664,6 +710,10 @@ export function BookingCards({
   contact = null,
   workItemId,
   savedStays,
+  guestName,
+  guestEditorKey,
+  session,
+  propertyCode,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -677,6 +727,14 @@ export function BookingCards({
   workItemId?: string;
   /** Last HMS commit per stay, read back on mount so a reload still shows the confirmation. */
   savedStays?: Record<string, SavedStayCommit>;
+  /** Selected staying Guest from People. Prefills first/last; never the Contact/booker. */
+  guestName?: string;
+  /** People-step cache key so a Guest edit updates Book first/last while both stay mounted. */
+  guestEditorKey?: string;
+  /** Current quote session. Used to build the generated Reservation note; omitted leaves the field manual. */
+  session?: QuoteSession;
+  /** Active mailbox property. Unknown or missing codes fail closed (no generated note). */
+  propertyCode?: string | null;
 }) {
   const client = paneSave;
   const contactRef = useRef(contact);
@@ -685,11 +743,25 @@ export function BookingCards({
   // off keeps the card copy-only. A client whose mode is not read yet is labelled as lab, the narrower mode.
   const mode: PaneSaveMode = client ? (client.mode?.() ?? 'lab') : 'off';
   const savesOn = mode !== 'off';
+  const selectedGuestName = useSyncExternalStore(
+    subscribeStayingGuestName,
+    () => readSelectedGuestName(guestEditorKey, guestName),
+    () => readSelectedGuestName(guestEditorKey, guestName),
+  );
+  const guestSplit = splitStayingGuestName(selectedGuestName);
+  const previousSelectedGuestName = useRef(selectedGuestName);
+  const guestNamesEdited = useRef<Record<string, boolean>>({});
+  const reservationNoteDirty = useRef<Record<string, boolean>>({});
   const [choices, setChoices] = useState<Record<string, RoomChoice>>(
     () =>
       Object.fromEntries(
         draft.draft.rooms.map((room) => {
           const key = `${room.groupId}:${room.roomIndex}`;
+          const names = namesFromSelectedGuest(
+            readSelectedGuestName(guestEditorKey, guestName),
+            room.request,
+          );
+          const generated = session ? reservationNoteForGroup(session, propertyCode, room.groupId) : null;
           return [
             key,
             {
@@ -698,12 +770,19 @@ export function BookingCards({
                 room.request.sourceOfBusiness,
                 draft.options.sourceOfBusiness,
               ),
+              marketSegment: '',
+              // Guest consent must come from an explicit staff action, never from mail or a hotel default.
+              guestoptin4: false,
               guaranteeType: textValue(room.request.guaranteeType),
-              firstName: textValue(room.request.firstName),
-              lastName: textValue(room.request.lastName),
+              firstName: names.firstName,
+              lastName: names.lastName,
               bookingAgency: textValue(room.request.agency) || pickedName(parties?.agency),
               organization: textValue(room.request.organization) || pickedName(parties?.company),
-              reservationNote: textValue(room.request.reservationNote),
+              reservationNote: prefillReservationNote(
+                textValue(room.request.reservationNote),
+                generated,
+                false,
+              ),
             },
           ];
         }),
@@ -713,11 +792,85 @@ export function BookingCards({
   const [saves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
     savesFromSavedStays(draft, groups, savedStays),
   );
+  const previewReceipt = usePaneStayPreview();
+  const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
   const stayBookingRef = useRef(false);
   useEffect(() => () => {
     stayBookingRef.current = false;
   }, []);
+  useEffect(() => {
+    const selectedGuestChanged = previousSelectedGuestName.current !== selectedGuestName;
+    previousSelectedGuestName.current = selectedGuestName;
+    setChoices((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const room of draft.draft.rooms) {
+        const key = `${room.groupId}:${room.roomIndex}`;
+        const choice = current[key];
+        if (!choice) continue;
+        let nextChoice = choice;
+        if (selectedGuestChanged && choice.guestoptin4) {
+          nextChoice = { ...choice, guestoptin4: false };
+          next[key] = nextChoice;
+          changed = true;
+        }
+        const commitStatus = saves[key]?.commit?.status;
+        if (stayBooking || commitStatus === 'running' || commitStatus === 'booked') continue;
+        if (guestNamesEdited.current[key]) continue;
+        const names = guestSplit.ambiguous
+          ? {
+              firstName: textValue(room.request.firstName),
+              lastName: textValue(room.request.lastName),
+            }
+          : { firstName: guestSplit.firstName, lastName: guestSplit.lastName };
+        if (
+          nextChoice.firstName === names.firstName &&
+          nextChoice.lastName === names.lastName &&
+          !selectedGuestChanged
+        ) continue;
+        next[key] = {
+          ...nextChoice,
+          firstName: names.firstName,
+          lastName: names.lastName,
+          // Consent is guest-specific; a People change needs a fresh explicit opt-in.
+          guestoptin4: false,
+        };
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [
+    draft.draft.rooms,
+    guestSplit.ambiguous,
+    guestSplit.firstName,
+    guestSplit.lastName,
+    saves,
+    selectedGuestName,
+    stayBooking,
+  ]);
+  useEffect(() => {
+    if (!session) return;
+    setChoices((current) => {
+      let changed = false;
+      const next = { ...current };
+      for (const room of draft.draft.rooms) {
+        const key = `${room.groupId}:${room.roomIndex}`;
+        const choice = current[key];
+        if (!choice) continue;
+        const generated = reservationNoteForGroup(session, propertyCode, room.groupId);
+        const bound = prefillReservationNote(
+          choice.reservationNote,
+          generated,
+          reservationNoteDirty.current[key] === true,
+        );
+        if (bound === choice.reservationNote) continue;
+        next[key] = { ...choice, reservationNote: bound };
+        changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, [draft.draft.rooms, propertyCode, session]);
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const requested = textValue(room.request.roomType);
@@ -729,19 +882,59 @@ export function BookingCards({
     setSaves((current) => ({ ...current, [roomKey]: { ...current[roomKey], ...patch } }));
   }
 
+  function finishPreviewIfRunning(
+    roomKey: string,
+    requestId: symbol,
+    preview: Exclude<PreviewView, { status: 'running' }>,
+  ) {
+    setSaves((current) => {
+      const save = current[roomKey];
+      const active = save?.preview;
+      if (!save || active?.status !== 'running' || active.requestId !== requestId) return current;
+      return { ...current, [roomKey]: { ...save, preview } };
+    });
+  }
+
   async function previewRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput) {
-    const key = paneStayKey(stay);
-    patchSave(roomKey, { preview: { status: 'running', key }, commit: undefined });
-    let preview: PreviewView;
+    const inputKey = paneStayKey(stay);
+    const input = previewInputsRef.current[roomKey];
+    if (!input?.key || input.inputKey !== inputKey) return;
+    const { stayId } = input;
+    const key = input.key;
+    const requestId = Symbol();
+    const generation = previewReceipt.begin(workItemId, stayId, inputKey);
+    patchSave(roomKey, { preview: { status: 'running', key, requestId }, commit: undefined });
+    let preview: Exclude<PreviewView, { status: 'running' }>;
     try {
-      const outcome = previewOutcome(await pane.preview(stay));
+      const previewInput = workItemId ? { ...stay, stayId, workItemId } : stay;
+      const outcome = previewOutcome(await pane.preview(previewInput));
       preview = outcome.ok
         ? { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots }
         : { status: 'refused', key, message: outcome.message };
     } catch {
       preview = { status: 'refused', key, message: PANE_PREVIEW_FAILED_COPY };
     }
-    patchSave(roomKey, { preview });
+    const currentInput = previewInputsRef.current[roomKey];
+    const isCurrentInput = currentInput?.key === key;
+    const receipt =
+      isCurrentInput && preview.status === 'ready'
+        ? {
+            key: inputKey,
+            digest: preview.digest,
+            runId: preview.runId,
+            screenshots: preview.screenshots,
+          }
+        : undefined;
+    const accepted = previewReceipt.finish(workItemId, stayId, inputKey, generation, receipt);
+    if (!isCurrentInput) {
+      finishPreviewIfRunning(roomKey, requestId, { status: 'stale', key });
+      return;
+    }
+    if (!accepted) {
+      finishPreviewIfRunning(roomKey, requestId, { status: 'stale', key });
+      return;
+    }
+    finishPreviewIfRunning(roomKey, requestId, preview);
   }
 
   function roomKeyOf(room: BookingDraftReady['draft']['rooms'][number]): string {
@@ -764,11 +957,68 @@ export function BookingCards({
     );
   }
 
+  function previewKeyForRoom(
+    room: BookingDraftReady['draft']['rooms'][number],
+    stay: PaneStayInput | null,
+  ): string | null {
+    return stay
+      ? paneStayPreviewKey(workItemId, stayIdForRoom(room, groups), paneStayKey(stay))
+      : null;
+  }
+
+  const previewInputs = Object.fromEntries(
+    draft.draft.rooms.map((room) => {
+      const stayId = stayIdForRoom(room, groups);
+      const built = roomBuilt(room);
+      const inputKey = built.stay ? paneStayKey(built.stay) : null;
+      return [
+        roomKeyOf(room),
+        {
+          key: inputKey ? paneStayPreviewKey(workItemId, stayId, inputKey) : null,
+          inputKey,
+          stayId,
+        },
+      ];
+    }),
+  );
+  previewInputsRef.current = previewInputs;
+  const previewInputSignature = JSON.stringify(
+    Object.entries(previewInputs).map(([roomKey, input]) => [roomKey, input.key, input.stayId]),
+  );
+
+  useEffect(() => {
+    const inputs = Object.entries(previewInputsRef.current);
+    const restored: Record<string, PreviewView> = {};
+    for (const [roomKey, input] of inputs) {
+      if (!input.key || !input.inputKey) {
+        previewReceipt.clear(workItemId, input.stayId);
+        continue;
+      }
+      const cached = previewReceipt.restore(workItemId, input.stayId, input.inputKey);
+      if (cached) restored[roomKey] = { ...cached, status: 'ready', key: input.key };
+    }
+    setSaves((current) => {
+      let next = current;
+      for (const [roomKey, input] of inputs) {
+        const existing = current[roomKey]?.preview;
+        const cached = restored[roomKey];
+        const preview = cached ?? (
+          existing && existing.status !== 'stale' && existing.status !== 'running' && existing.key !== input.key
+            ? { status: 'stale' as const, key: existing.key }
+            : existing
+        );
+        if (preview !== existing) next = { ...next, [roomKey]: { ...next[roomKey], preview } };
+      }
+      return next;
+    });
+  }, [previewInputSignature, previewReceipt, workItemId]);
+
   function roomPreviewReady(room: BookingDraftReady['draft']['rooms'][number]): { stay: PaneStayInput; digest: string } | null {
     const built = roomBuilt(room);
     if (!built.stay) return null;
     const preview = saves[roomKeyOf(room)]?.preview;
-    return preview?.status === 'ready' && preview.key === paneStayKey(built.stay)
+    const key = paneStayPreviewKey(workItemId, stayIdForRoom(room, groups), paneStayKey(built.stay));
+    return preview?.status === 'ready' && preview.key === key
       ? { stay: built.stay, digest: preview.digest }
       : null;
   }
@@ -800,10 +1050,11 @@ export function BookingCards({
 
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
     const key = paneStayKey(stay);
+    const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
+    if (room) previewReceipt.clear(workItemId, stayIdForRoom(room, groups));
     patchSave(roomKey, { commit: { status: 'running', key } });
     let commit: CommitView;
     try {
-      const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
       const persist =
         workItemId && room
           ? { stayId: stayIdForRoom(room, groups), workItemId }
@@ -872,15 +1123,26 @@ export function BookingCards({
         const key = roomKeyOf(room);
         const choice = choices[key] ?? NO_CHOICE;
         const setChoice = (patch: Partial<RoomChoice>) =>
-          setChoices((current) => ({
-            ...current,
-            [key]: { ...(current[key] ?? NO_CHOICE), ...patch },
-          }));
+          setChoices((current) => {
+            const currentChoice = current[key] ?? NO_CHOICE;
+            const guestChanged =
+              (patch.firstName !== undefined && patch.firstName !== currentChoice.firstName) ||
+              (patch.lastName !== undefined && patch.lastName !== currentChoice.lastName);
+            return {
+              ...current,
+              [key]: {
+                ...currentChoice,
+                ...patch,
+                ...(guestChanged ? { guestoptin4: false } : {}),
+              },
+            };
+          });
         // Once create is running or saved, freeze its create-only fields until staff checks the result.
         const commitStatus = saves[key]?.commit?.status;
         const locked = stayBooking || commitStatus === 'running' || commitStatus === 'booked';
         const request = room.request;
         const group = roomGroupFor(room, groups);
+        const generatedNote = session ? reservationNoteForGroup(session, propertyCode, room.groupId) : null;
         const built = roomBuilt(room);
         const price = group?.rowPrice;
         const override = price?.source === 'override' ? price : null;
@@ -907,7 +1169,10 @@ export function BookingCards({
               disabled={locked}
               maxLength={PANE_BOOKER_NAME_MAX}
               pii
-              onChange={(value) => setChoice({ lastName: value })}
+              onChange={(value) => {
+                guestNamesEdited.current[key] = true;
+                setChoice({ lastName: value });
+              }}
             />
             <RoomTextField
               roomLabel={roomLabel}
@@ -916,8 +1181,16 @@ export function BookingCards({
               disabled={locked}
               maxLength={PANE_BOOKER_NAME_MAX}
               pii
-              onChange={(value) => setChoice({ firstName: value })}
+              onChange={(value) => {
+                guestNamesEdited.current[key] = true;
+                setChoice({ firstName: value });
+              }}
             />
+            {selectedGuestName.trim() && guestSplit.ambiguous ? (
+              <p role="status" className="text-[11px] text-[#64748b]">
+                {AMBIGUOUS_GUEST_NAME_COPY}
+              </p>
+            ) : null}
             <RoomTextField
               roomLabel={roomLabel}
               label="Booking agency"
@@ -974,6 +1247,26 @@ export function BookingCards({
               </label>
               <CopyButton label="Track" roomLabel={roomLabel} value={choice.track} />
             </div>
+            <RoomTextField
+              roomLabel={roomLabel}
+              label="Market Segment"
+              value={choice.marketSegment}
+              disabled={locked}
+              onChange={(value) => setChoice({ marketSegment: value })}
+            />
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
+                <input
+                  type="checkbox"
+                  aria-label="Guest opt-in"
+                  checked={choice.guestoptin4}
+                  disabled={locked}
+                  onChange={(event) => setChoice({ guestoptin4: event.target.checked })}
+                />
+                <span>Guest opt-in</span>
+              </label>
+              <p className="text-[11px] text-[#64748b]">Select only if the guest explicitly opted in.</p>
+            </div>
             <div className="flex items-end gap-2">
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
                 Guarantee
@@ -1004,8 +1297,22 @@ export function BookingCards({
               required={requiredCreateFields.some(
                 (field) => field.trim().toLowerCase().replace(/[^a-z0-9]/g, '') === 'reservationnote',
               )}
-              onChange={(value) => setChoice({ reservationNote: value })}
+              onChange={(value) => {
+                reservationNoteDirty.current[key] = true;
+                setChoice({ reservationNote: value });
+              }}
             />
+            {generatedNote && generatedNote !== choice.reservationNote ? (
+              <SecondaryButton
+                disabled={locked}
+                onClick={() => {
+                  reservationNoteDirty.current[key] = false;
+                  setChoice({ reservationNote: generatedNote });
+                }}
+              >
+                Regenerate reservation note
+              </SecondaryButton>
+            ) : null}
             <CopyHmsNotesButton
               block={hmsNotesBlock({
                 booker: contact ? textValue(contact.name) : textValue(request.bookerName),
@@ -1038,6 +1345,7 @@ export function BookingCards({
             {childCount === 0 && client && savesOn ? (
               <RoomSave
                 stay={built.stay}
+                previewKey={previewKeyForRoom(room, built.stay)}
                 missing={built.missing}
                 save={saves[key] ?? {}}
                 screenshot={client.screenshot}
@@ -1058,7 +1366,7 @@ export function BookingCards({
         <StayBookBar
           rooms={draft.draft.rooms}
           saves={saves}
-          buildForRoom={roomBuilt}
+          isPreviewReady={(room) => roomPreviewReady(room) !== null}
           childCountForRoom={(room) => childCountForRoom(room, groups)}
           pane={client}
           stayBooking={stayBooking}
@@ -1072,7 +1380,7 @@ export function BookingCards({
 function StayBookBar({
   rooms,
   saves,
-  buildForRoom,
+  isPreviewReady,
   childCountForRoom,
   pane,
   stayBooking,
@@ -1080,7 +1388,7 @@ function StayBookBar({
 }: {
   rooms: BookingDraftReady['draft']['rooms'];
   saves: Record<string, RoomSaveState>;
-  buildForRoom: (room: BookingDraftReady['draft']['rooms'][number]) => ReturnType<typeof paneStayInputForConfiguredRoom>;
+  isPreviewReady: (room: BookingDraftReady['draft']['rooms'][number]) => boolean;
   childCountForRoom: (room: BookingDraftReady['draft']['rooms'][number]) => number;
   pane: PaneStayClient;
   stayBooking: boolean;
@@ -1099,12 +1407,7 @@ function StayBookBar({
       const save = saves[`${room.groupId}:${room.roomIndex}`];
       return save?.preview?.status === 'running' || save?.commit?.status === 'running';
     });
-  const allPreviewed = pending.every((room) => {
-    const key = `${room.groupId}:${room.roomIndex}`;
-    const built = buildForRoom(room);
-    const preview = saves[key]?.preview;
-    return Boolean(built.stay && preview?.status === 'ready' && preview.key === paneStayKey(built.stay));
-  });
+  const allPreviewed = pending.every(isPreviewReady);
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       {numbers.length > 0 ? (

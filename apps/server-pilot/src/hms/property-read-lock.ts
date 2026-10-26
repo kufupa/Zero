@@ -88,6 +88,16 @@ function lockError(cause?: unknown): Error & { code: string; cause?: unknown } {
   return error;
 }
 
+/** Fail closed when a caller is about to touch HMS without the property lock. */
+export function assertPropertyReadConnectionHeld(
+  connection: PropertyReadConnection | undefined,
+  key: string,
+): void {
+  if (!connection || !isPropertyReadConnectionHeld(connection, key)) {
+    throw lockError();
+  }
+}
+
 function acquisitionDeadlineAt(options: PropertyReadLockAcquisitionOptions): number | undefined {
   if (options.deadlineAt !== undefined) return options.deadlineAt;
   const signal = options.signal as

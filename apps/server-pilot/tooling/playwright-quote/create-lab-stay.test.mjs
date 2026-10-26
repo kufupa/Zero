@@ -40,7 +40,7 @@ test('offline create request test does not opt into pilot RDS', () => {
 });
 
 test('adults 0 fails before any browser work', async () => {
-  const loaded = await withRequest(requiredRequest({ adults: 0 }), (path) => loadCreateRequest(['--request', path]));
+  const loaded = await withRequest(requiredRequest({ adults: 0 }), (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
   assert.equal(loaded.ok, false);
   assert.notEqual(loaded.exitCode, 0);
   assert.match(loaded.error, /adults/);
@@ -48,7 +48,7 @@ test('adults 0 fails before any browser work', async () => {
 
 test('valid required request passes', async () => {
   const request = requiredRequest();
-  const loaded = await withRequest(request, (path) => loadCreateRequest(['--request', path]));
+  const loaded = await withRequest(request, (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
   assert.equal(loaded.ok, true, loaded.error);
   assert.equal(loaded.exitCode, 0);
   assert.deepEqual(loaded.request, request);
@@ -62,7 +62,7 @@ test('optional agency, organization, arAccount, billingReference, profileId pass
     billingReference: 'PO-1',
     profileId: 42,
   });
-  const loaded = await withRequest(request, (path) => loadCreateRequest(['--request', path]));
+  const loaded = await withRequest(request, (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
   assert.equal(loaded.ok, true, loaded.error);
   assert.deepEqual(loaded.request, request);
 });
@@ -70,19 +70,19 @@ test('optional agency, organization, arAccount, billingReference, profileId pass
 test('guest nativeId normalizes to profileId before browser fill', async () => {
   const loaded = await withRequest(requiredRequest({
     profileId: { nativeId: '55', kind: 'guest' },
-  }), (path) => loadCreateRequest(['--request', path]));
+  }), (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
   assert.equal(loaded.ok, true, loaded.error);
   assert.equal(loaded.request.profileId, 55);
   const wrongKind = await withRequest(requiredRequest({
     profileId: { nativeId: '49', kind: 'organization' },
-  }), (path) => loadCreateRequest(['--request', path]));
+  }), (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
   assert.equal(wrongKind.ok, false);
   assert.match(wrongKind.error, /profileId/);
 });
 
 test('nativeId on name lookup fields is refused, never typed as text', async () => {
   for (const field of ['agency', 'organization', 'arAccount']) {
-    const loaded = await withRequest(requiredRequest({ [field]: { nativeId: '49', kind: 'organization' } }), (path) => loadCreateRequest(['--request', path]));
+    const loaded = await withRequest(requiredRequest({ [field]: { nativeId: '49', kind: 'organization' } }), (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
     assert.equal(loaded.ok, false, `${field} must not accept nativeId`);
     assert.notEqual(loaded.exitCode, 0);
     assert.match(loaded.error, new RegExp(field));
@@ -92,21 +92,21 @@ test('nativeId on name lookup fields is refused, never typed as text', async () 
 test('missing guaranteeType fails', async () => {
   const request = requiredRequest();
   delete request.guaranteeType;
-  const loaded = await withRequest(request, (path) => loadCreateRequest(['--request', path]));
+  const loaded = await withRequest(request, (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
   assert.equal(loaded.ok, false);
   assert.notEqual(loaded.exitCode, 0);
   assert.match(loaded.error, /guaranteeType/);
 });
 
 test('boardBasis fails', async () => {
-  const loaded = await withRequest(requiredRequest({ boardBasis: 'breakfast' }), (path) => loadCreateRequest(['--request', path]));
+  const loaded = await withRequest(requiredRequest({ boardBasis: 'breakfast' }), (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
   assert.equal(loaded.ok, false);
   assert.notEqual(loaded.exitCode, 0);
   assert.match(loaded.error, /boardBasis/);
 });
 
 test('guestName fails', async () => {
-  const loaded = await withRequest(requiredRequest({ guestName: 'Pat Lee' }), (path) => loadCreateRequest(['--request', path]));
+  const loaded = await withRequest(requiredRequest({ guestName: 'Pat Lee' }), (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
   assert.equal(loaded.ok, false);
   assert.notEqual(loaded.exitCode, 0);
   assert.match(loaded.error, /guestName/);
@@ -116,7 +116,7 @@ test('room and track descriptions normalize to codes', async () => {
   const loaded = await withRequest(requiredRequest({
     roomType: 'Standard Queen',
     track: 'Best Available',
-  }), (path) => loadCreateRequest(['--request', path]));
+  }), (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
   assert.equal(loaded.ok, true, loaded.error);
   assert.equal(loaded.request.roomType, 'STQN');
   assert.equal(loaded.request.track, 'BAR');
@@ -211,7 +211,7 @@ test('proof mode is guarded before browser work and wires read-only reconciliati
   const browserCall = source.indexOf('connectOverCDP');
   assert.ok(proofGuard !== -1 && proofGuard < createDir && createDir < browserCall);
   assert.match(source, /argv\.includes\('--proof'\)/);
-  assert.match(source, /PROPERTY_HRCEN_REQUIRED/);
+  assert.match(source, /propertySecretRefusal\(secret, propertyCode\)/);
   assert.match(source, /installReadOnlyGuard/);
   assert.match(source, /await import\('\.\/stay-lookup\.mjs'\)/);
   assert.doesNotMatch(source, /import \{ findOnOpenGuestStay, searchGuestOnOpenGuestStay \} from '\.\/stay-lookup\.mjs'/);
@@ -229,10 +229,10 @@ test('proof mode is guarded before browser work and wires read-only reconciliati
 test('childAges passes and --shop returns BAR rows without a row click', async () => {
   assert.equal(parseShop(['--request', 'x.json', '--shop']), true);
   assert.equal(parseShop(['--request', 'x.json']), false);
-  const loaded = await withRequest(requiredRequest({ childAges: [5] }), (path) => loadCreateRequest(['--request', path, '--shop']));
+  const loaded = await withRequest(requiredRequest({ childAges: [5] }), (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path, '--shop']));
   assert.equal(loaded.ok, true, loaded.error);
   assert.deepEqual(loaded.request.childAges, [5]);
-  const rejected = await withRequest(requiredRequest({ childAges: [100] }), (path) => loadCreateRequest(['--request', path]));
+  const rejected = await withRequest(requiredRequest({ childAges: [100] }), (path) => loadCreateRequest(['--property', 'HRCEN', '--request', path]));
   assert.equal(rejected.ok, false);
   assert.match(rejected.error, /childAges/);
   const shop = shopResult([], ['STQN', 'BAR Best Available Rate', 'Current Rates']);
@@ -304,8 +304,8 @@ test('proof mode captures parsed search rows before Save', async () => {
 
 test('JS dialogs are dismissed and a vanished dialog does not crash', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
-  const writePage = source.lastIndexOf('const page = await context.newPage()');
-  const dialogOn = source.indexOf("page.on('dialog'", writePage);
+  const writePage = source.indexOf('await withWriteCliPage({');
+  const dialogOn = source.indexOf("page.on?.('dialog'", writePage);
   assert.ok(writePage !== -1);
   assert.ok(dialogOn > writePage, 'write page must install a dialog listener');
   const handler = source.slice(dialogOn, dialogOn + 220);
@@ -314,20 +314,19 @@ test('JS dialogs are dismissed and a vanished dialog does not crash', async () =
   assert.doesNotMatch(source, /dialog\.accept\(/);
 });
 
-test('HRCEN property check runs on every write, not only proof', async () => {
+test('property check runs on every write, not only proof', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
   const secret = source.indexOf('const secret = await readSecret()');
-  const propertyCheck = source.indexOf('secret.expectedPropertyCode !== propertyCode');
+  const propertyCheck = source.indexOf('propertySecretRefusal(secret, propertyCode)');
   const browserCall = source.indexOf('connectOverCDP');
   assert.ok(secret !== -1 && propertyCheck > secret && propertyCheck < browserCall);
   assert.equal(source.includes('proofMode && secret.expectedPropertyCode'), false);
-  assert.match(source, /PROPERTY_HRCEN_REQUIRED/);
-  assert.match(source, /PROPERTY_HRDAV_REQUIRED/);
+  assert.match(source, /propertySecretRefusal\(secret, propertyCode\)/);
   assert.equal(source.includes('PROOF_PROPERTY_HRCEN_REQUIRED'), false);
 });
 
-test('--property defaults to HRCEN, accepts HRDAV, refuses unknown', () => {
-  assert.deepEqual(parseCreateProperty([]), { ok: true, propertyCode: 'HRCEN' });
+test('--property requires a registered code and refuses unknown', () => {
+  assert.deepEqual(parseCreateProperty([]), { ok: false, exitCode: 2, error: 'PROPERTY_REQUIRED' });
   assert.deepEqual(parseCreateProperty(['--property', 'HRDAV']), { ok: true, propertyCode: 'HRDAV' });
   assert.deepEqual(parseCreateProperty(['--property', 'OTHER']), {
     ok: false,

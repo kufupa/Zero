@@ -19,8 +19,9 @@ import {
 } from '../hms/property-read-lock.js';
 import type { ExtractionRow, ExtractionStay } from './extraction/schema.js';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { type PaneStayLock } from './pane-stay-save.js';
-import { CENTURION_HMS_READ_TARGET, type HmsReadTarget } from '../hms/hms-read-target.js';
+import { type HmsReadTarget } from '../hms/hms-read-target.js';
 
 const execFileAsync = promisify(execFile);
 const QUOTE_TOOL = fileURLToPath(new URL('../../tooling/playwright-quote/fetch-quote.mjs', import.meta.url));
@@ -100,17 +101,16 @@ export function availabilityRequestsFor(payload: unknown): AvailabilityRequest[]
   });
 }
 
-/** Return cap for an all-room BAR probe. Matches quote-contract MAX_OPTIONS. */
+/** Return cap for an all-room probe. Matches quote-contract MAX_OPTIONS. */
 export const AVAILABILITY_MAX_OPTIONS_PER_GROUP = 200;
 
 /** The quote tool's v2 request for one probe. Groups carry no room or rate codes, so every room type is read. */
-export function quoteRequestFor(
-  request: AvailabilityRequest,
-  target: HmsReadTarget = CENTURION_HMS_READ_TARGET,
-): Record<string, unknown> {
+export function quoteRequestFor(request: AvailabilityRequest, target: HmsReadTarget): Record<string, unknown> {
+  const propertyCode = target.propertyCode.trim();
+  if (!propertyCode) throw new Error('availability_probe_property_unknown');
   return {
     schemaVersion: 2,
-    propertyCode: target.propertyCode,
+    propertyCode,
     arrivalDate: request.arrival,
     departureDate: request.departure,
     details: 'summary',
@@ -215,7 +215,10 @@ export type AvailabilitySnapshot = {
 
 export type AvailabilityProbeResult =
   | ({ outcome: 'read' } & AvailabilitySnapshot)
-  | { outcome: 'execution_failure' | 'refused_lock_busy' | 'refused_lock_unavailable' | 'refused_input_invalid' };
+  | {
+      outcome: 'execution_failure' | 'refused_lock_busy' | 'refused_lock_unavailable' | 'refused_input_invalid';
+      error?: string;
+    };
 
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
@@ -607,10 +610,14 @@ export async function probeAvailability(
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { outcome: 'refused_lock_busy' };
     warnPaneStaySpawnFailed('availability', error);
-    return { outcome: 'execution_failure' };
+    const loginCode = classifyHmsLoginOutage(error) ? 'AUTHENTICATED_SHELL_TIMEOUT' : undefined;
+    return { outcome: 'execution_failure', ...(loginCode ? { error: loginCode } : {}) };
   }
   const searchOutcome = text(result.outcome);
   if (searchOutcome === 'input_gap') return { outcome: 'refused_input_invalid' };
-  if (!searchOutcome || searchOutcome === 'execution_failure') return { outcome: 'execution_failure' };
+  if (!searchOutcome || searchOutcome === 'execution_failure') {
+    const loginCode = classifyHmsLoginOutage(result) ? 'AUTHENTICATED_SHELL_TIMEOUT' : undefined;
+    return { outcome: 'execution_failure', ...(loginCode ? { error: loginCode } : {}) };
+  }
   return { outcome: 'read', ...availabilitySnapshotOf(result, request) };
 }

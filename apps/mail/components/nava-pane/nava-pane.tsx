@@ -14,8 +14,7 @@ import {
   type PaneVersion,
 } from '@/lib/workstation/pane-release-watch';
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
-import { combinedDocumentRequest, downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
-import { withContactLines } from '@/lib/quote-workflow/document-contact';
+import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
 import {
   missingQuoteDetailsWrapperHtml,
   quoteDeclineReplyHtml,
@@ -24,7 +23,7 @@ import {
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { hideQuoteWorkspace, QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { WorkflowBadge } from '@/components/quote-workflow/workflow-badge';
 import {
   HmsJobNoticeBanner,
@@ -45,8 +44,9 @@ import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
-import { overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
-import { storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
+import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
+import { sectionHasStaffEdit, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
+import { WorkItemHistoryControls } from './screens/work-item-history-controls';
 import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
 import { bindPaneTelemetry, currentPaneOwner, setPaneTelemetryScope, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import {
@@ -78,13 +78,11 @@ import {
   bindHmsQueueStatus,
   bindReadBackStaffQuote,
   bindQuoteRunScreenshot,
-  bindQualifiedStaffProposalPdf,
   bindStaffQuoteStrategies,
   bindStaffActions,
   bindStaffQuoteSource,
   staffQuoteFromTrpc,
   isStaffQuoteRefusal,
-  canBuildStaffQuoteRequest,
   type BoundExecuteStaffQuote,
   type StaffQuoteJobQuery,
 } from '@/lib/quote-workflow/staff-quote-bind';
@@ -94,13 +92,9 @@ import {
   admissionKey,
   analysisRetryKey,
   DRAFT_GROUP_ID,
-  canCreatePdf,
   canRunQuoteStep,
-  dinnerAddOnInputProblem,
-  dinnerAllowanceStillRequired,
   missingQuoteDetailsReplyOnly,
   missingQuoteReplyFieldsForGroups,
-  evidenceMatchesSession,
   autoRunHeader,
   groupsForQuoteStep,
   isMultiStay,
@@ -117,7 +111,6 @@ import {
   reduceQuoteSession,
   removedStayFor,
   quoteStrategyStayRevision,
-  staffSourceReady,
 } from '@/lib/quote-workflow/session';
 import { useActiveConnection } from '@/hooks/use-connections';
 import { OutlookPaneSignIn } from '@/app/(routes)/outlook-pane/outlook-pane-sign-in';
@@ -141,6 +134,8 @@ import { SystemCheckResultsBlock } from './blocks/system-check-results';
 import { ReplyBody } from './reply-body';
 import { useInsertAiDraft } from './use-insert-ai-draft';
 import { useSavedReply } from './use-saved-reply';
+import { useQuotePdfJob } from './use-quote-pdf-job';
+import { useStaffQuoteAutostart } from './use-staff-quote-autostart';
 import { useSystemCheck } from './use-system-check';
 import { classifyMailSource } from '../../../server-pilot/src/ai/mail-source.js';
 import { isSelfSentPreStayInformationMail } from '../../../server-pilot/src/ai/existing-stay-information.js';
@@ -303,6 +298,7 @@ export function NavaPane({
   const staffQuoteReadBackInFlight = useRef(false);
   const staffQuoteReadBackGeneration = useRef(0);
   const autoStartStaffQuoteStepRef = useRef<() => void>(() => undefined);
+  const runQuoteStepRef = useRef<(stepId: string, autoStart?: boolean, readBack?: boolean) => void>(() => undefined);
   const {
     isConnected,
     activeEmail,
@@ -616,6 +612,11 @@ export function NavaPane({
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
   const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
+  const contactEditorKey = `${contactCorrectionKey}|${
+    storedWork.pane.state === 'ready'
+      ? `ready:${storedWork.pane.workItemId ?? ''}${storedWork.historyEpoch ? `:h${storedWork.historyEpoch}` : ''}`
+      : storedWork.pane.state
+  }`;
   const senderFallback =
     storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
   const sourceContact: StoredContact | null =
@@ -642,7 +643,30 @@ export function NavaPane({
     : normalizedContact;
   const documentContactRef = useRef(documentContact);
   documentContactRef.current = documentContact;
+  useEffect(() => {
+    if (storedWork.historyEpoch === 0) return;
+    setContactCorrection(null);
+    pendingContactCorrections.current = null;
+    const transportId = quoteSession.binding?.transportId;
+    const messageKey = quoteSession.binding?.internetMessageId ?? activeEmail?.internetMessageId;
+    if (transportId && messageKey) forgetPaneEdits(paneEditKey(transportId, messageKey));
+  }, [storedWork.historyEpoch]);
+  const workItemPane =
+    storedWork.pane.state === 'ready' && storedWork.pane.fieldProvenance && storedWork.pane.workItemId
+      ? {
+          fieldProvenance: storedWork.pane.fieldProvenance,
+          refs: storedWork.pane.refs ?? {},
+          onResetContact: storedWork.resetAvailable
+            ? () => storedWork.resetSection({ type: 'contact' })
+            : undefined,
+          onResetStay: storedWork.resetAvailable
+            ? (stayId: string) => storedWork.resetSection({ type: 'stay', stayId })
+            : undefined,
+          resetPending: storedWork.historyPending || storedWork.historyNeedsReload,
+        }
+      : null;
   const recordContact = (field: ContactField, value: string | null) => {
+    if (storedWork.historyPending || storedWork.historyNeedsReload) return;
     const previous = documentContactRef.current ?? {
       name: null,
       company: null,
@@ -760,8 +784,11 @@ export function NavaPane({
       rememberPaneEdits(paneEditKey(after.binding.transportId, messageKey), after.groups);
     }
   };
-  // With a treat-as or note the read is live, so only Retry read (its count) re-runs it, not a stored-read change.
-  const storedGate = storedOverridden ? `override|${storedWork.retryCount}` : storedWork.key;
+  // Keep the lookup deadline separate from its payload: a late ready result changes the decision to stored, not to
+  // another live read. With a treat-as or note, only Retry read (its count) re-runs the live analysis.
+  const storedGate = storedOverridden
+    ? `override|${storedWork.retryCount}`
+    : `${storedWork.key}|timed-out:${storedWork.lookupTimedOut}`;
   useEffect(() => {
     if (isNonActionableMessage) return;
     const binding = quoteSession.binding;
@@ -1313,20 +1340,25 @@ export function NavaPane({
     };
   }, [priorQuoteKey, isNonActionableMessage, staffQuoteQueueMode, activePaneConfig?.transportId]);
 
-  useEffect(() => {
-    if (staffQuoteQueueMode !== 'on') return;
-    autoStartStaffQuoteStepRef.current();
-  }, [
-    quoteSession,
-    quoteRunPending,
-    staffQuoteQueueMode,
-    contactMessageKey,
-    isLoading,
-    session?.user?.id,
-    requiresRelogin,
+  useStaffQuoteAutostart({
     isNonActionableMessage,
-    activePaneConfig?.transportId,
-  ]);
+    staffQuoteQueueMode,
+    isLoading,
+    session,
+    requiresRelogin,
+    activeEmail,
+    contactMessageKey,
+    quoteRunPending,
+    staffQuoteReadBackInFlight,
+    quoteSession,
+    staffQuoteAutoSuppressed,
+    staffQuoteAutoAttempted,
+    activePaneConfig,
+    autoStartStaffQuoteStepRef,
+    runQuoteStep: (stepId, autoStart, readBack) => runQuoteStepRef.current(stepId, autoStart, readBack),
+    autoStaffQuoteSuppressed,
+    staffQuoteAttemptKey,
+  });
 
   // Onboarding & Screen State
   const [currentScreen, setCurrentScreen] = useState<PaneScreen>(() => {
@@ -1357,6 +1389,9 @@ export function NavaPane({
   const readAs = isNonActionableMailSource
     ? (classifiedReadAs === 'payment' ? 'payment' : 'not_for_nava')
     : classifiedReadAs;
+  const contactInPeople =
+    (readAs === 'quote' || readAs === 'group') &&
+    !hideQuoteWorkspace(quoteSession.phase);
   const mailSourceNoActionNotice = nonActionableMailSource ? (
     <MailSourceNoActionCard
       kind={nonActionableMailSource.kind}
@@ -1432,9 +1467,20 @@ export function NavaPane({
   // stays disabled until the export settles. The server call is a tRPC mutation, so it also counts as in flight.
   const [workbookPending, setWorkbookPending] = useState(false);
   const workbookInFlight = useRef(false);
-  // Only one quote PDF request at a time, for single- and multi-stay quotes.
-  const pdfInFlight = useRef(false);
-  const [pdfPending, setPdfPending] = useState(false);
+  const { pdfPending, preparePdfFor } = useQuotePdfJob({
+    quoteSession,
+    quoteSessionRef,
+    documentContact,
+    documentContactRef,
+    dispatchQuote,
+    activeEmail,
+    activeTransportId: activeConnection?.id ?? null,
+    staffSignerName,
+    activePaneConfig,
+    replyGreetingName,
+    workItemId: paneWorkItemId,
+    transportId: paneTransportId,
+  });
   const downloadWorkbook = () => {
     if (workbookInFlight.current) return;
     workbookInFlight.current = true;
@@ -1898,214 +1944,7 @@ export function NavaPane({
     }
     void runNoticed(run).then(applyStaffQuoteResult);
   };
-
-  const autoStartStaffQuoteStep = () => {
-    if (
-      isNonActionableMessage ||
-      staffQuoteQueueMode !== 'on' ||
-      isLoading ||
-      !session?.user ||
-      requiresRelogin ||
-      !activeEmail ||
-      !contactMessageKey ||
-      isQuoteFixturePreview() ||
-      quoteRunPending ||
-      staffQuoteReadBackInFlight.current ||
-      quoteSession.runningStepId ||
-      quoteSession.analysis?.intent !== 'quote' ||
-      !quoteSession.binding ||
-      (quoteSession.binding.internetMessageId ?? null) !== (activeEmail.internetMessageId ?? null) ||
-      !staffSourceReady(quoteSession) ||
-      partyLookupWaitReason(quoteSession) ||
-      staffQuoteAutoSuppressed.current.has(contactMessageKey) ||
-      autoStaffQuoteSuppressed(contactMessageKey)
-    ) {
-      return;
-    }
-    const source = quoteSession.staffSource;
-    const binding = quoteSession.binding;
-    if (!source || !binding) return;
-    const staff = staffQuoteFromTrpc(trpcClient);
-    if (!staff.workstation.queueStaffQuote?.mutate || !staff.workstation.staffQuoteJob?.query) return;
-    const step = quoteSession.steps.find((candidate) => {
-      if (
-        candidate.kind !== 'quote_stay' ||
-        candidate.status !== 'ready' ||
-        !candidate.shareKey ||
-        !canRunQuoteStep(candidate, quoteSession.steps, quoteSession.runningStepId) ||
-        quoteSession.staffQuotes[candidate.shareKey] ||
-        quoteRunBlockReason(quoteSession, candidate)
-      ) {
-        return false;
-      }
-      return canBuildStaffQuoteRequest({
-        source,
-        selectionEpoch: binding.selectionEpoch,
-        inputRevision: quoteSession.inputRevision,
-        groups: groupsForQuoteStep(quoteSession, candidate),
-        header: autoRunHeader(quoteSession),
-        propertyCode: activePaneConfig?.propertyCode,
-        stayKey: candidate.shareKey,
-      });
-    });
-    if (!step?.shareKey) return;
-    const attemptKey = staffQuoteAttemptKey(
-      binding.transportId,
-      source.messageId,
-      source.sourceHash,
-      step.shareKey,
-    );
-    const readBack = staffQuoteAutoAttempted.current.has(attemptKey);
-    staffQuoteAutoAttempted.current.add(attemptKey);
-    runQuoteStep(step.id, true, readBack);
-  };
-  autoStartStaffQuoteStepRef.current = autoStartStaffQuoteStep;
-
-  /**
-   * Builds the quotation PDF for one date option from that option's own run.
-   * A null stayKey means the selected option (the "Prepare quotation PDF" button).
-   */
-  const preparePdfFor = (stayKey: string | null) => {
-    if (pdfInFlight.current) return;
-    const session = quoteSessionRef.current;
-    // The PDF is recorded on the item it was made for, even if staff open another mail while it builds.
-    const owner = currentPaneOwner();
-    if (dinnerAllowanceStillRequired(session)) {
-      toast.warning(dinnerAddOnInputProblem(session) ?? 'Dinner price — enter amount.');
-      return;
-    }
-    if (isMultiStay(session)) {
-      // One combined document for every stay. Until each stay is rated, the request says how many are.
-      const request = combinedDocumentRequest(session);
-      if (request.status === 'unavailable') {
-        toast.warning(request.reason);
-        return;
-      }
-      pdfInFlight.current = true;
-      setPdfPending(true);
-      const selectionEpoch = session.binding?.selectionEpoch ?? 0;
-      const inputRevision = session.inputRevision;
-      // The combined PDF is bound to the stays' runs, not to the selected option, so selecting another option while it
-      // builds keeps it.
-      const selectedOfferIds = [
-        request.input.revisionRef,
-        ...(request.input.additionalStays ?? []).map((stay) => stay.revisionRef),
-      ];
-      const staff = staffQuoteFromTrpc(trpcClient);
-      void bindQualifiedStaffProposalPdf({
-        mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
-        input: withContactLines(request.input, documentContactRef.current),
-        expectedTotalMinor: request.expectedTotalMinor,
-      }).then((remote) => {
-        if (remote.status === 'unavailable') {
-          toast.warning(remote.reason);
-          return;
-        }
-        dispatchQuote({
-          type: 'pdf_ready',
-          pdf: {
-            fileName: remote.pdf.fileName,
-            bytesBase64: remote.pdf.pdfBase64,
-            pdfHash: remote.pdf.pdfHash,
-            revisionId: remote.pdf.revisionId,
-            totalMinor: remote.pdf.totalMinor,
-          },
-          selectionEpoch,
-          inputRevision,
-          selectedOfferIds,
-        });
-        trackPaneAction({ type: 'pdf.created', kind: 'combined' }, owner);
-      }).finally(() => {
-        pdfInFlight.current = false;
-        setPdfPending(false);
-      });
-      return;
-    }
-    const key = stayKey ?? session.selectedStayKey;
-    const quote = key ? (session.staffQuotes[key] ?? null) : null;
-    const source = session.staffSource;
-    const authorised =
-      staffSourceReady(session) &&
-      session.evidence?.kind === 'authorised' &&
-      evidenceMatchesSession(session);
-    if (!quote || !key) {
-      toast.warning('The quote is not ready for a PDF yet. Run the search again, then prepare the PDF.');
-      return;
-    }
-    if (isQuoteFixturePreview() || !authorised) {
-      toast.warning('This is sample data, so no PDF can be made. Open a live email to continue.');
-      return;
-    }
-    if (key === session.selectedStayKey && !canCreatePdf(session)) {
-      toast.warning('Pick a room option from the HMS results before making the PDF.');
-      return;
-    }
-    if (!source || quote.totalMinor <= 0) {
-      toast.warning('The quote is not ready for a PDF yet. Run the search again, then prepare the PDF.');
-      return;
-    }
-    const header = quote.approvedHeader;
-    if (!header) {
-      toast.warning('The quote header was not saved with this quote. Run the search again, then prepare the PDF.');
-      return;
-    }
-    if (key !== session.selectedStayKey) dispatchQuote({ type: 'select_stay_key', stayKey: key });
-    const selectionEpoch = session.binding?.selectionEpoch ?? 0;
-    const inputRevision = session.inputRevision;
-    const selectedOfferIds = [quote.revisionRef];
-    const greetingName = replyGreetingName(documentContactRef.current?.name, activeEmail);
-    const reviewedReplyHtml = session.analysis?.intent === 'quote'
-      ? quoteWrapperHtml(greetingName, staffSignerName, {
-          ...(quote.dinnerAddOn ? { dinnerAddOn: quote.dinnerAddOn } : {}),
-          totalMinor: quote.totalMinor,
-          propertyCode: activePaneConfig?.propertyCode,
-        })
-      : undefined;
-    const staff = staffQuoteFromTrpc(trpcClient);
-    pdfInFlight.current = true;
-    setPdfPending(true);
-    void bindQualifiedStaffProposalPdf({
-      mutate: staff.workstation.qualifiedQuoteProposalPdf?.mutate,
-      input: {
-        workflowRunId: quote.workflowRunId,
-        revisionRef: quote.revisionRef,
-        messageId: source.messageId,
-        outlookEmail: session.binding?.mailboxEmail ?? '',
-        factRefs: quote.factRefs,
-        company: header.company,
-        agency: header.agency,
-        ...withContactLines(
-          { attention: header.attention, clientEmail: header.clientEmail, clientTelephone: header.clientTelephone },
-          documentContactRef.current,
-        ),
-        ...(header.notes ? { notes: header.notes } : {}),
-      },
-      expectedTotalMinor: quote.totalMinor,
-    }).then((remote) => {
-      if (remote.status === 'unavailable') {
-        toast.warning(remote.reason);
-        return;
-      }
-      dispatchQuote({
-        type: 'pdf_ready',
-        pdf: {
-          fileName: remote.pdf.fileName,
-          bytesBase64: remote.pdf.pdfBase64,
-          pdfHash: remote.pdf.pdfHash,
-          revisionId: remote.pdf.revisionId,
-          totalMinor: remote.pdf.totalMinor,
-        },
-        selectionEpoch,
-        inputRevision,
-        selectedOfferIds,
-        reviewedReplyHtml,
-      });
-      trackPaneAction({ type: 'pdf.created', kind: 'option' }, owner);
-    }).finally(() => {
-      pdfInFlight.current = false;
-      setPdfPending(false);
-    });
-  };
+  runQuoteStepRef.current = runQuoteStep;
 
   // Only quote and booking mail gets Nava's suggestions and the numbered reply step. Other mail gets neither.
   const quoteOrBookingEmail =
@@ -2252,7 +2091,7 @@ export function NavaPane({
         <HmsJobNoticeBanner onReveal={() => setCurrentScreen('tool')} />
         <SelectedEmailBlock activeEmail={activeEmail} />
         {readAs ? (
-          <div className="mx-3 mt-2 shrink-0">
+          <div className="mx-3 mt-2 flex shrink-0 flex-col gap-1.5">
             <WorkflowBadge
               analysis={quoteSession.analysis}
               kind={selectedReadKind}
@@ -2275,6 +2114,30 @@ export function NavaPane({
                 dispatchQuote({ type: 'treat_as', treatAs });
               }}
             />
+            {storedWork.historyAvailable && paneWorkItemId ? (
+              <WorkItemHistoryControls
+                workItemId={paneWorkItemId}
+                serverCursor={storedWork.historyCursor}
+                onUndo={storedWork.undo}
+                onRedo={storedWork.redo}
+                pending={storedWork.historyPending || storedWork.historyNeedsReload}
+              />
+            ) : null}
+            {storedWork.historyError ? (
+              <p role="status" className="flex flex-wrap items-center gap-1 px-1 text-[11px] text-[#64748b]">
+                <span>{storedWork.historyError}</span>
+                {storedWork.historyNeedsReload ? (
+                  <button
+                    type="button"
+                    disabled={storedWork.historyPending}
+                    onClick={storedWork.reloadHistory}
+                    className="rounded-[3px] text-[11px] font-semibold text-[#64748b] hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:text-[#94a3b8]"
+                  >
+                    Reload
+                  </button>
+                ) : null}
+              </p>
+            ) : null}
           </div>
         ) : null}
 
@@ -2398,15 +2261,23 @@ export function NavaPane({
               </div>
             ) : (
               <>
-            {/* Contact is the first selected-message context. Extraction values win; only an external sender can fill its early fallback. */}
-            {activeEmail ? (
+            {/* Quote contact lives in People when that step is visible; other mail and hidden workspaces keep this pane fallback. */}
+            {activeEmail && !contactInPeople ? (
               <ContactBlock
                 // ContactBlock takes `contact` once, at mount. The key moves when the read or mailbox changes, so the
                 // current request's contact fills the fields without carrying a correction across mailboxes.
-                key={`${contactCorrectionKey}|${storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state}`}
+                key={contactEditorKey}
                 contact={documentContact}
                 quote={readAs === 'quote' || readAs === 'group'}
                 onEdit={recordContact}
+                fieldProvenance={workItemPane?.fieldProvenance ?? null}
+                onResetToAi={
+                  workItemPane?.onResetContact &&
+                  sectionHasStaffEdit(workItemPane.fieldProvenance, { type: 'contact' })
+                    ? workItemPane.onResetContact
+                    : undefined
+                }
+                resetPending={workItemPane?.resetPending}
               />
             ) : null}
             <div className="flex flex-col gap-2">{mailboxWarnings}</div>
@@ -2429,14 +2300,19 @@ export function NavaPane({
             {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
             <QuoteWorkflowPanel
               session={quoteSession}
+              workItemId={paneWorkItemId ?? undefined}
               quoteStrategyRows={quoteSession.quoteStrategyRows}
               onSelectQuoteStrategy={(stayKey, strategyCode) =>
                 dispatchQuote({ type: 'quote_strategy_selected', stayKey, strategyCode })
               }
               rateCatalogue={activePaneConfig?.ratePlans ?? []}
               paneConfig={activePaneConfig}
+              availabilityReader={PANE_STAY_CLIENT.readAvailability}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={documentContact}
+              contactEditorKey={contactEditorKey}
+              onContactEdit={contactInPeople ? recordContact : undefined}
+              workItemPane={workItemPane}
               findParty={PANE_PARTY_FINDER}
               partySuggestions={partySuggestions}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}

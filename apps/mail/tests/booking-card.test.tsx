@@ -6,8 +6,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
 import { ContactBlock } from '../components/nava-pane/blocks/contact-block';
+import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step';
+import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-host';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import type { StoredContact } from '../lib/quote-workflow/backend-bind';
+import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import { trackPaneAction } from '../lib/quote-workflow/pane-telemetry';
 import {
   bindGetPriorStaffQuoteRequote,
@@ -41,7 +44,10 @@ import {
   type PaneStayResult,
 } from '../lib/quote-workflow/pane-stay-bind';
 import { hasStaffStayEdits, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
+import { reservationNoteForGroup } from '../lib/quote-workflow/reservation-note';
 import {
+  emptyStaffQuoteHeader,
+  HRDAV_PROPERTY_CODE,
   HRCEN_PROPERTY_CODE,
   type BookingDraftReady,
   type LunaAnalysisWire,
@@ -246,6 +252,60 @@ function quotedSession(
   });
 }
 
+const GENERATED_NOTE_STAY_KEY = '2026-11-12:2026-11-14';
+
+function sessionWithGeneratedNote(booking: BookingDraftReady): QuoteSession {
+  const session = quotedSession(booking);
+  const quote = session.staffQuotes[GENERATED_NOTE_STAY_KEY];
+  if (!quote) throw new Error('expected staff quote');
+  return {
+    ...session,
+    groups: [{ ...session.groups[0]!, roomCodes: ['STWN'], rateCode: 'NCOR1B', board: 'bb' }],
+    staffQuotes: {
+      ...session.staffQuotes,
+      [GENERATED_NOTE_STAY_KEY]: {
+        ...quote,
+        availabilityBoard: [
+          {
+            groupId: 'g1',
+            roomCode: 'STWN',
+            roomLabel: 'Standard Twin',
+            rateCode: 'NCOR1B',
+            rateLabel: 'Corporate negotiated',
+            board: 'bb',
+            boardLabel: 'Bed & breakfast',
+            nightlyPriceMinor: 220000,
+            roomsLeft: 2,
+            rateScope: 'public',
+          },
+        ],
+        rowRates: [
+          {
+            groupId: 'g1',
+            source: 'hms',
+            hmsNightlyMinor: [215000, 225000],
+            nightlyMinor: [215000, 225000],
+            rateCode: 'NCOR1B',
+          },
+        ],
+      },
+    },
+  };
+}
+
+function sessionWithBoardRoomLabel(session: QuoteSession, roomLabel: string): QuoteSession {
+  const quote = session.staffQuotes[GENERATED_NOTE_STAY_KEY];
+  const row = quote?.availabilityBoard?.[0];
+  if (!quote || !row) throw new Error('expected availability row');
+  return {
+    ...session,
+    staffQuotes: {
+      ...session.staffQuotes,
+      [GENERATED_NOTE_STAY_KEY]: { ...quote, availabilityBoard: [{ ...row, roomLabel }] },
+    },
+  };
+}
+
 describe('booking cards', () => {
   it('keeps the create action without repeating Stay, room, board or rate controls', () => {
     const { client } = paneClient();
@@ -261,6 +321,48 @@ describe('booking cards', () => {
     expect(screen.getAllByLabelText('Track')).toHaveLength(2);
     expect(screen.getAllByLabelText('Source of business')).toHaveLength(2);
     expect(screen.getAllByLabelText('Guarantee')).toHaveLength(2);
+    expect(screen.getAllByLabelText('Market Segment')).toHaveLength(2);
+    expect(screen.getAllByRole('checkbox', { name: 'Guest opt-in' })).toHaveLength(2);
+  });
+
+  it('keeps guest opt-in unchecked until staff selects it and sends generic Market Segment', async () => {
+    const { client, preview } = paneClient();
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    const session = quotedSession(draft);
+    const workItemId = '11111111-1111-1111-1111-111111111111';
+    const host = (currentSession: QuoteSession) => (
+      <QuoteBookingHost session={currentSession} paneSave={client} workItemId={workItemId} />
+    );
+    const { rerender } = render(host(session));
+
+    const marketSegment = screen.getByLabelText('Market Segment') as HTMLInputElement;
+    const guestOptIn = screen.getByRole('checkbox', { name: 'Guest opt-in' }) as HTMLInputElement;
+    expect(marketSegment.value).toBe('');
+    expect(guestOptIn.checked).toBe(false);
+
+    fireEvent.change(marketSegment, { target: { value: 'Leisure' } });
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await waitFor(() =>
+      expect(preview).toHaveBeenCalledWith(
+        expect.objectContaining({ marketSegment: 'Leisure', guestoptin4: false }),
+      ),
+    );
+
+    fireEvent.click(guestOptIn);
+    expect(guestOptIn.checked).toBe(true);
+    fireEvent.click(previewButton(0));
+    await waitFor(() =>
+      expect(preview).toHaveBeenLastCalledWith(
+        expect.objectContaining({ marketSegment: 'Leisure', guestoptin4: true }),
+      ),
+    );
+
+    const nextSession = quotedSession(draft);
+    nextSession.binding = { ...nextSession.binding!, entryId: 'e2', selectionEpoch: 2 };
+    rerender(host(nextSession));
+    expect((screen.getByLabelText('Market Segment') as HTMLInputElement).value).toBe('');
+    expect((screen.getByRole('checkbox', { name: 'Guest opt-in' }) as HTMLInputElement).checked).toBe(false);
   });
 
   it('builds the HMS preview from the current Stay group instead of stale draft values', () => {
@@ -624,6 +726,94 @@ describe('booking cards', () => {
   });
 });
 
+describe('booking card staying-guest prefill', () => {
+  afterEach(() => resetGuestNameCacheForTests());
+
+  it('prefills editable first and last names from the selected Guest, not Contact', () => {
+    const contact: StoredContact = {
+      name: 'Agent Booker',
+      company: null,
+      endClient: null,
+      email: 'agent@example.invalid',
+      phone: null,
+    };
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    draft.draft.rooms[0]!.request.firstName = 'Draft';
+    draft.draft.rooms[0]!.request.lastName = 'Name';
+    draft.draft.rooms[0]!.request.bookerName = 'Agent Booker';
+    const { client, preview } = paneClient();
+    const session = {
+      staffSource: null,
+      groups: [],
+      analysis: {
+        luna: {
+          party: { kind: 'agency' },
+          groups: [{ guestNames: [] }],
+        },
+      },
+    } as unknown as QuoteSession;
+
+    const view = (guestEditorKey: string) => (
+      <>
+        <QuotePeopleStep
+          session={session}
+          partyState="Optional"
+          header={emptyStaffQuoteHeader()}
+          contact={contact}
+          contactEditorKey={guestEditorKey}
+          scrollToStep={() => undefined}
+        />
+        <BookingCards draft={draft} paneSave={client} contact={contact} guestEditorKey={guestEditorKey} />
+      </>
+    );
+
+    const firstPass = render(view('guest-prefill-unambiguous'));
+    const guestOptIn = screen.getByRole('checkbox', { name: 'Guest opt-in' }) as HTMLInputElement;
+    expect(guestOptIn.checked).toBe(false);
+    fireEvent.click(guestOptIn);
+    expect(guestOptIn.checked).toBe(true);
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Ada Example' } });
+    const firstName = screen.getByLabelText('First name') as HTMLInputElement;
+    const lastName = screen.getByLabelText('Last name') as HTMLInputElement;
+    expect(firstName.value).toBe('Ada');
+    expect(lastName.value).toBe('Example');
+    expect(firstName).toHaveProperty('disabled', false);
+    expect(lastName).toHaveProperty('disabled', false);
+    expect(firstName.value).not.toBe('Agent');
+    expect(lastName.value).not.toBe('Booker');
+    expect(guestOptIn.checked).toBe(false);
+    fireEvent.click(guestOptIn);
+    expect(guestOptIn.checked).toBe(true);
+    fireEvent.change(firstName, { target: { value: 'Bea' } });
+    expect(firstName.value).toBe('Bea');
+    expect(guestOptIn.checked).toBe(false);
+    fireEvent.click(guestOptIn);
+    expect(guestOptIn.checked).toBe(true);
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Cara Example' } });
+    expect(firstName.value).toBe('Bea');
+    expect(guestOptIn.checked).toBe(false);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ firstName: 'Bea', guestoptin4: false }));
+    firstPass.unmount();
+
+    resetGuestNameCacheForTests();
+    render(view('guest-prefill-ambiguous'));
+    const guest = screen.getByLabelText('Guest');
+    fireEvent.change(guest, { target: { value: 'Ada' } });
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Draft');
+    expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('Name');
+    fireEvent.change(guest, { target: { value: 'Ada Marie' } });
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Ada');
+    expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('Marie');
+    fireEvent.change(guest, { target: { value: 'Ada Marie Example' } });
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Draft');
+    expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('Name');
+    expect((screen.getByLabelText('First name') as HTMLInputElement).disabled).toBe(false);
+    expect(screen.getByText('Enter first and last name for the staying guest.')).toBeDefined();
+  });
+});
+
 describe('booking card copy buttons', () => {
   function stubClipboard() {
     const writeText = vi.fn((_text: string) => Promise.resolve());
@@ -782,6 +972,22 @@ function paneClient(overrides: Partial<PaneStayClient> = {}) {
   return { client, preview, commit, screenshot };
 }
 
+function previewableDraft(track = 'COR'): BookingDraftReady {
+  const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+  const request = draft.draft.rooms[0]!.request;
+  request.track = track;
+  request.sourceOfBusiness = 'E-Mail';
+  request.guaranteeType = 'Confirmation Received';
+  return draft;
+}
+
+function bookingSessionForPreview(draft: BookingDraftReady, selectionEpoch: number): QuoteSession {
+  const session = quotedSession(draft);
+  session.groups = session.groups.map((group) => ({ ...group, stayId: 'stay-preview-1' }));
+  if (session.binding) session.binding = { ...session.binding, selectionEpoch };
+  return session;
+}
+
 // The first room has no track, source or guarantee until the staff pick them.
 function pickRoomChoices(index: number) {
   fireEvent.change(screen.getAllByLabelText('Track')[index]!, { target: { value: 'COR' } });
@@ -913,6 +1119,7 @@ describe('booking card pane save', () => {
       roomType: 'STQN',
       ratePlan: 'TAXYZ',
       track: 'COR',
+      guestoptin4: false,
       guaranteeType: 'Confirmation Received',
       bookingAgency: { name: 'XYZ TRAVEL' },
     });
@@ -945,6 +1152,118 @@ describe('booking card pane save', () => {
     expect(screen.getByText('You changed the booking – preview again.')).toBeDefined();
     expect(bookButton(0)).toHaveProperty('disabled', true);
     expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+  });
+
+  it('restores the same work-item Stay preview after the booking card remounts without saving', async () => {
+    const { client, preview, commit } = paneClient();
+    const workItemId = '22222222-2222-4222-8222-222222222222';
+    const host = (session: QuoteSession) => (
+      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+    );
+    const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
+
+    fireEvent.click(previewButton(0));
+    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 'stay-preview-1_1' }));
+    expect(commit).not.toHaveBeenCalled();
+
+    rerender(host(bookingSessionForPreview(previewableDraft(), 2)));
+
+    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
+    expect(bookButton(0)).toHaveProperty('disabled', false);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('clears a cached preview when the same work-item Stay digest changes', async () => {
+    const { client, preview, commit } = paneClient();
+    const workItemId = '33333333-3333-4333-8333-333333333333';
+    const host = (session: QuoteSession) => (
+      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+    );
+    const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
+
+    fireEvent.click(previewButton(0));
+    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
+
+    rerender(host(bookingSessionForPreview(previewableDraft('BAR'), 2)));
+
+    expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+
+    rerender(host(bookingSessionForPreview(previewableDraft(), 3)));
+
+    expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+  });
+
+  it('does not restore a preview that resolves after a newer input remount', async () => {
+    const pending = deferred<PaneStayResult>();
+    const preview = vi.fn<PaneStayClient['preview']>().mockReturnValueOnce(pending.promise);
+    const { client, commit } = paneClient({ preview });
+    const workItemId = '44444444-4444-4444-8444-444444444444';
+    const host = (session: QuoteSession) => (
+      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+    );
+    const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
+
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledTimes(1);
+
+    rerender(host(bookingSessionForPreview(previewableDraft('BAR'), 2)));
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+
+    await act(async () => pending.resolve(PREVIEW_OK));
+    rerender(host(bookingSessionForPreview(previewableDraft(), 3)));
+
+    expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('settles an invalidated preview when staff restore the original input', async () => {
+    const pending = deferred<PaneStayResult>();
+    const preview = vi.fn<PaneStayClient['preview']>().mockReturnValueOnce(pending.promise);
+    const { client, commit } = paneClient({ preview });
+    const workItemId = '55555555-5555-4555-8555-555555555555';
+    render(
+      <QuoteBookingHost
+        session={bookingSessionForPreview(previewableDraft(), 1)}
+        paneSave={client}
+        workItemId={workItemId}
+      />,
+    );
+
+    fireEvent.click(previewButton(0));
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'BAR' } });
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'COR' } });
+
+    await act(async () => pending.resolve(PREVIEW_OK));
+
+    expect(screen.getByText('You changed the booking – preview again.')).toBeDefined();
+    expect(previewButton(0)).toHaveProperty('disabled', false);
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('keeps the running preview notice visible after staff edit the booking', async () => {
+    const pending = deferred<PaneStayResult>();
+    const preview = vi.fn<PaneStayClient['preview']>().mockReturnValueOnce(pending.promise);
+    const { client } = paneClient({ preview });
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
+
+    fireEvent.click(previewButton(0));
+    fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'BAR' } });
+
+    expect(screen.getByRole('status').textContent).toBe('Nava is filling the booking in HMS… (about 2 minutes)');
+    expect(screen.queryByText('You changed the booking – preview again.')).toBeNull();
+    expect(previewButton(0)).toHaveProperty('disabled', true);
+
+    await act(async () => pending.resolve(PREVIEW_OK));
   });
 
   it('after a save, shows only the after-save screenshot', async () => {
@@ -1246,25 +1565,35 @@ describe('booking card pane save', () => {
     expect((screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('sends stayId and workItemId with Book so the server can persist the confirmation', async () => {
+  it('passes work item and saved Stay through QuoteBookingHost to Book', async () => {
     const { client, commit } = paneClient();
-    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    const draft = draftReady();
+    const session = quotedSession(draft);
+    session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
     render(
-      <BookingCards
-        draft={draft}
-        groups={[{ ...g1, stayId: 's_aaaa1111' }]}
+      <QuoteBookingHost
+        session={session}
         paneSave={client}
         workItemId="11111111-1111-1111-1111-111111111111"
+        savedStays={{
+          s_aaaa1111_1: {
+            confirmationNumber: 'TEST-123',
+            status: 'booked',
+            screenshotRef: null,
+          },
+        }}
       />,
     );
-    pickRoomChoices(0);
+    expect(screen.getByText('Booked in HMS – confirmation TEST-123')).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(1);
+    pickRoomChoices(1);
     fireEvent.click(previewButton(0));
-    await screen.findByText(JOHN_SMITH_PREVIEW);
+    await screen.findByText(/Nothing is saved until you press Create provisional booking/);
     fireEvent.click(bookButton(0));
     await screen.findByText('Booked in HMS – confirmation 98765-1');
     expect(commit).toHaveBeenCalledWith(
       expect.objectContaining({
-        stayId: 's_aaaa1111_1',
+        stayId: 's_aaaa1111_2',
         workItemId: '11111111-1111-1111-1111-111111111111',
       }),
       PANE_DIGEST,
@@ -1416,6 +1745,37 @@ describe('booking card save modes and the note fields', () => {
     expect(previewButton(0)).toHaveProperty('disabled', true);
     expect(screen.getByText('Set agency name (100 characters at most) before you preview.')).toBeDefined();
     expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('prefills Book Reservation note from the generated stay note and keeps a dirty staff edit', () => {
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    const session = sessionWithGeneratedNote(draft);
+    const note = reservationNoteForGroup(session, HRDAV_PROPERTY_CODE, 'g1');
+    expect(note).toBeTruthy();
+
+    const view = (current: QuoteSession) => (
+      <BookingCards
+        draft={draft}
+        groups={current.groups}
+        session={current}
+        propertyCode={HRDAV_PROPERTY_CODE}
+      />
+    );
+    const { rerender } = render(view(session));
+    const field = screen.getByLabelText('Reservation note') as HTMLTextAreaElement;
+    expect(field.value).toBe(note);
+
+    fireEvent.change(field, { target: { value: 'Staff override' } });
+    expect(field.value).toBe('Staff override');
+
+    const changed = sessionWithBoardRoomLabel(session, 'Deluxe Twin');
+    const nextNote = reservationNoteForGroup(changed, HRDAV_PROPERTY_CODE, 'g1');
+    expect(nextNote).not.toBe(note);
+    rerender(view(changed));
+    expect((screen.getByLabelText('Reservation note') as HTMLTextAreaElement).value).toBe('Staff override');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Regenerate reservation note' }));
+    expect((screen.getByLabelText('Reservation note') as HTMLTextAreaElement).value).toBe(nextNote);
   });
 });
 

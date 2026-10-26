@@ -71,7 +71,7 @@ describe('stay and room builder', () => {
   it('names each room type with its HMS code, e.g. Standard Queen (STQN)', () => {
     renderPanel(requestSession([row('a1', dateA, { roomPreference: 'STQN' })]));
     expect(screen.getByRole('option', { name: 'Standard Queen (STQN)' })).toBeTruthy();
-    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('STQN');
+    expect((screen.getByLabelText('Room type') as unknown as HTMLSelectElement).value).toBe('STQN');
   });
 
   it('shows the unknown room code the email asked for and still allows search on dates and occupancy', () => {
@@ -96,14 +96,14 @@ describe('stay and room builder', () => {
 
   it('hands stay actions to the shell: duplicate, remove and add', () => {
     const { onStayAction } = renderPanel(requestSession([row('a1', dateA), row('b1', dateB)]));
-    fireEvent.click(screen.getAllByRole('button', { name: 'Copy stay' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Duplicate stay' })[0]!);
     expect(onStayAction).toHaveBeenLastCalledWith({
       type: 'duplicate_stay',
-      stayId: 'd:2026-11-12:2026-11-14',
+      stayId: '2026-11-12:2026-11-14',
       token: expect.any(String),
     });
     fireEvent.click(screen.getAllByRole('button', { name: 'Remove' })[1]!);
-    expect(onStayAction).toHaveBeenLastCalledWith({ type: 'remove_stay', stayId: 'd:2026-12-01:2026-12-03' });
+    expect(onStayAction).toHaveBeenLastCalledWith({ type: 'remove_stay', stayId: '2026-12-01:2026-12-03' });
     fireEvent.click(screen.getByRole('button', { name: '+ Add another date range' }));
     expect(onStayAction).toHaveBeenLastCalledWith({ type: 'add_stay', token: expect.any(String) });
   });

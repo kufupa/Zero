@@ -22,6 +22,7 @@ import {
   type QuoteResult,
 } from '../scripts/v8-live-checks.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
+import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 
 const TODAY = '2026-10-09';
@@ -421,8 +422,8 @@ describe('main', () => {
     });
     expect(await main(['party', 'Acme'], h.deps)).toBe(0);
     expect(requests).toEqual([
-      { kind: 'organization', query: { organizationName: 'Acme' } },
-      { kind: 'bookingAgency', query: { bookingAgencyName: 'Acme' } },
+      { propertyCode: CENTURION_HMS_READ_TARGET.propertyCode, kind: 'organization', query: { organizationName: 'Acme' } },
+      { propertyCode: CENTURION_HMS_READ_TARGET.propertyCode, kind: 'bookingAgency', query: { bookingAgencyName: 'Acme' } },
     ]);
     expect(h.parsed()).toEqual([
       expect.objectContaining({ check: 'party', kind: 'company', results: [{ kind: 'company', nativeId: '77', name: 'Acme Ltd' }], ok: true }),
@@ -441,7 +442,9 @@ describe('main', () => {
       },
       runCli: async (file, args): Promise<CliRun> => {
         expect(file.endsWith('stay-lookup.mjs')).toBe(true);
-        expect(args.slice(0, 4)).toEqual(['--mode', 'find', '--confirmation', '61143613-1']);
+        expect(args.slice(0, 6)).toEqual([
+          '--property', CENTURION_HMS_READ_TARGET.propertyCode, '--mode', 'find', '--confirmation', '61143613-1',
+        ]);
         outDir = args[args.indexOf('--out') + 1] ?? '';
         await writeFile(
           join(outDir, 'result.json'),
@@ -556,7 +559,9 @@ describe('main', () => {
     const h = harness({
       runCli: async (file, args): Promise<CliRun> => {
         expect(file.endsWith('hms-deeplink-probe.mjs')).toBe(true);
-        expect(args).toEqual(['--conf', '61143613-1', '--stay-id', '987']);
+        expect(args).toEqual([
+          '--property', CENTURION_HMS_READ_TARGET.propertyCode, '--conf', '61143613-1', '--stay-id', '987',
+        ]);
         return { code: 0, stdout: `${stdout}\n` };
       },
     });

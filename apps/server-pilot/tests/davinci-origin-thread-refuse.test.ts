@@ -312,7 +312,12 @@ describe('Da Vinci mixed-origin thread refuse', () => {
     ]);
     await expect(
       prefetchAvailabilityForExtraction(
-        { runKind: 'inbound_extraction', transportId: TRANSPORT_ID, triggerMessageId: TRIGGER_ID },
+        {
+          runKind: 'inbound_extraction',
+          transportId: TRANSPORT_ID,
+          triggerMessageId: TRIGGER_ID,
+          admissionSnapshotId: 'snapshot-1',
+        },
         db,
         { HMS_JOB_QUEUE: 'on', HMS_AVAILABILITY_PREFETCH: 'on' },
       ),

@@ -14,6 +14,7 @@ import {
   type HmsReadTarget,
 } from '../hms/hms-read-target.js';
 import { getPropertyRegistration, resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
+import { profileFor, stayBookFieldRefusal } from '../../tooling/playwright-quote/property-profile.mjs';
 import {
   acquisitionWithin,
   createPostgresPropertyReadLock,
@@ -46,6 +47,7 @@ export const PANE_PARTY_NAME_MAX = 100; // ta1 Primary Booking Agency, company O
 export const PANE_PARTY_NATIVE_ID_MAX = 40;
 export const PANE_BOOKER_NAME_MAX = 50; // caller
 export const PANE_BOOKER_EMAIL_MAX = 80; // udfchar06 Booker Contact
+export const PANE_MARKET_SEGMENT_MAX = 80; // marketsegment
 
 /** A party as the pane sends it. The runner types name into the lookup. nativeId is carried, not selected by. */
 export type PaneStayParty = { nativeId?: string; name: string };
@@ -68,6 +70,8 @@ export type PaneStay = {
   reservationNote?: string;
   bookerName?: string;
   bookerEmail?: string;
+  marketSegment?: string;
+  guestoptin4?: boolean;
 };
 
 export type PaneStayMode = 'preview' | 'commit';
@@ -167,6 +171,22 @@ export type PaneStayLock = {
   withLock: <T>(fn: () => Promise<T>, acquisition?: PropertyReadLockAcquisitionOptions) => Promise<T>;
 };
 
+/** Work-item + stay digest grant. Source of truth across restarts; never a reusable token. */
+export type PaneStayPreviewPersist = {
+  record: (input: {
+    workItemId: string;
+    stayId: string;
+    digest: string;
+    now: number;
+  }) => Promise<void> | void;
+  take: (input: {
+    workItemId: string;
+    stayId: string;
+    digest: string;
+    now: number;
+  }) => Promise<boolean> | boolean;
+};
+
 export const paneStaySaveLoaders: {
   spawn: ((input: PaneStaySpawnInput) => Promise<PaneStaySpawnResult>) | null;
   lock: PaneStayLock | null;
@@ -180,12 +200,14 @@ export const paneStaySaveLoaders: {
     | null;
   mode: (() => PaneSaveMode) | null;
   now: (() => number) | null;
+  previewPersist: PaneStayPreviewPersist | null;
 } = {
   spawn: null,
   lock: null,
   osressGuestDatesSearch: null,
   mode: null,
   now: null,
+  previewPersist: null,
 };
 
 // Shared with the cancel path, so tests drive one clock for both.
@@ -293,10 +315,10 @@ export function paneStayCreateTarget(input: {
   return { ok: true, target };
 }
 
-/** Non-Centurion targets pass `--property`; Centurion omits it (CLI default HRCEN). */
+/** Every target passes `--property`. The create CLI refuses an omitted code. */
 export function paneStayCreatePropertyArgs(target?: HmsReadTarget | null): string[] {
-  const code = target?.propertyCode;
-  return code && code !== 'HRCEN' ? ['--property', code] : [];
+  const code = typeof target?.propertyCode === 'string' ? target.propertyCode.trim() : '';
+  return code ? ['--property', code] : [];
 }
 
 /** CDP + secret for create-lab-stay. HRDAV never inherits the Centurion slot. */
@@ -381,6 +403,62 @@ export function takePanePreview(owner: string, digest: string, now: number): boo
   const expiresAt = panePreviews.get(key);
   panePreviews.delete(key);
   return expiresAt !== undefined && expiresAt > now;
+}
+
+/** Drops in-memory grants. Durable work-item rows survive; used to simulate a service restart. */
+export function clearPanePreviewMemory(): void {
+  panePreviews.clear();
+}
+
+function boundPreviewPersist(
+  input: { previewPersist?: PaneStayPreviewPersist | null; workItemId?: string; stayId?: string },
+): PaneStayPreviewPersist | null {
+  if (!input.workItemId || !input.stayId) return null;
+  return input.previewPersist ?? paneStaySaveLoaders.previewPersist;
+}
+
+async function recordBoundPreview(input: {
+  owner: string;
+  digest: string;
+  now: number;
+  workItemId?: string;
+  stayId?: string;
+  previewPersist?: PaneStayPreviewPersist | null;
+}): Promise<void> {
+  recordPanePreview(input.owner, input.digest, input.now);
+  const persist = boundPreviewPersist(input);
+  if (!persist || !input.workItemId || !input.stayId) return;
+  await persist.record({
+    workItemId: input.workItemId,
+    stayId: input.stayId,
+    digest: input.digest,
+    now: input.now,
+  });
+}
+
+async function takeBoundPreview(input: {
+  owner: string;
+  digest: string;
+  now: number;
+  workItemId?: string;
+  stayId?: string;
+  previewPersist?: PaneStayPreviewPersist | null;
+}): Promise<boolean> {
+  const persist = boundPreviewPersist(input);
+  if (persist && input.workItemId && input.stayId) {
+    const taken = await persist.take({
+      workItemId: input.workItemId,
+      stayId: input.stayId,
+      digest: input.digest,
+      now: input.now,
+    });
+    if (taken) {
+      takePanePreview(input.owner, input.digest, input.now);
+      return true;
+    }
+  }
+  // Preview today may omit work-item ids (memory only). Commit still sends them; honour the same-process grant.
+  return takePanePreview(input.owner, input.digest, input.now);
 }
 
 // Run directories whose screenshots the owner can fetch. Expired runs are removed from disk.
@@ -514,6 +592,9 @@ export async function runPaneStay(input: {
   owner: string;
   previewDigest?: string;
   transportId?: string;
+  workItemId?: string;
+  stayId?: string;
+  previewPersist?: PaneStayPreviewPersist | null;
 }): Promise<PaneStayResult> {
   // Runs that outlived their retention window are removed here too, not only when a screenshot is read.
   await pruneExpiredPaneRuns(paneStayClock());
@@ -536,6 +617,10 @@ export async function runPaneStay(input: {
     } catch (error) {
       return { status: 'refused', reason: (error as Error).message };
     }
+  }
+  const bookRefusal = stayBookFieldRefusal(input.stay, profileFor(target.propertyCode));
+  if (bookRefusal) {
+    return { status: 'refused', reason: bookRefusal };
   }
   const digest = paneStayDigest(input.stay);
   if (input.mode === 'commit') {
@@ -572,7 +657,17 @@ export async function runPaneStay(input: {
         if (status === 'busy') return { refusal: 'refused_lock_busy' };
         if (status === 'duplicate') return { refusal: 'osress_duplicate' };
         // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-        if (!takePanePreview(input.owner, digest, paneStayClock())) {
+        // Durable work-item grant wins; if none, the in-memory grant still covers same-process preview.
+        if (
+          !(await takeBoundPreview({
+            owner: input.owner,
+            digest,
+            now: paneStayClock(),
+            workItemId: input.workItemId,
+            stayId: input.stayId,
+            previewPersist: input.previewPersist,
+          }))
+        ) {
           return { refusal: 'pane_save_preview_required' };
         }
       }
@@ -613,7 +708,24 @@ export async function runPaneStay(input: {
     };
   }
   const previewed = input.mode === 'preview' && spawned.outcome === 'previewed';
-  if (previewed) recordPanePreview(input.owner, digest, paneStayClock());
+  if (previewed) {
+    try {
+      await recordBoundPreview({
+        owner: input.owner,
+        digest,
+        now: paneStayClock(),
+        workItemId: input.workItemId,
+        stayId: input.stayId,
+        previewPersist: input.previewPersist,
+      });
+    } catch (error) {
+      console.warn('stay_preview_persist_failed', {
+        stayId: input.stayId,
+        workItemId: input.workItemId,
+        error,
+      });
+    }
+  }
   if (spawned.runId && spawned.runDir) {
     registerPaneRun({
       runId: spawned.runId,

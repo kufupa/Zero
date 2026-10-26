@@ -125,7 +125,7 @@ function mailboxCaller() {
       email: 'ropperman@legacyhotels.co.za',
       name: 'R Opperman',
     },
-    activeTransportId: 'transport-1',
+    activeTransportId: 'transport-centurion',
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);
@@ -634,7 +634,7 @@ describe('panePartyLookup router origin guard', () => {
       message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
     });
     expect(loadThreadOrigin).toHaveBeenCalledWith({
-      transportId: 'transport-1',
+      transportId: 'transport-centurion',
       threadId: 'thread-mixed',
       messageId: 'msg-older-dv',
     });
@@ -935,11 +935,9 @@ describe('one name normalization for the runner and the server', () => {
 });
 
 describe('party-lookup CLI property', () => {
-  it('defaults to HRCEN, accepts HRDAV, and never falls back from an unknown code', () => {
-    expect(runner.partyLookupPropertyCode(undefined)).toBe('HRCEN');
-    expect(runner.partyLookupPropertyCode({ kind: 'organization', query: { organizationName: 'ACME' } })).toBe(
-      'HRCEN',
-    );
+  it('requires an explicit registered property and never falls back from an unknown code', () => {
+    expect(runner.partyLookupPropertyCode(undefined)).toBeNull();
+    expect(runner.partyLookupPropertyCode({ kind: 'organization', query: { organizationName: 'ACME' } })).toBeNull();
     expect(runner.partyLookupPropertyCode({ propertyCode: 'hrdav' })).toBe('HRDAV');
     expect(runner.partyLookupPropertyCode({ propertyCode: 'HROTH' })).toBeNull();
   });

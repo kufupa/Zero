@@ -109,6 +109,15 @@ import {
   staffQuoteResultReusable,
 } from '../../ai/hms-jobs.js';
 import { HMS_JOB_PROMPT_VERSION } from '../../ai/run-ledger.js';
+import {
+  enqueueQuotePdfJob,
+  persistQuotePdfResult,
+  quotePdfJobIdentity,
+  quotePdfResultOf,
+  readQuotePdfJob,
+  type QuotePdfRequest,
+  type QuotePdfResult,
+} from '../../ai/quote-pdf-jobs.js';
 
 export {
   insufficientInventoryMessage,
@@ -241,6 +250,7 @@ export const qualifiedProposalInput = z
     notes: z.string().trim().max(1000).optional(),
     // Empty for one stay. A combined quote lists its other stays here; the first stay stays in the fields above.
     additionalStays: z.array(qualifiedStayInput).max(62).default([]),
+    workItemId: z.string().uuid().optional(),
   })
   .strict();
 export function resolveLedgerProposal(
@@ -719,6 +729,78 @@ function stayNotes(stays: ProposalStay[]): string | undefined {
     ),
   ];
   return notes.length ? notes.join('\n') : undefined;
+}
+
+async function buildQualifiedQuotePdf(
+  input: z.infer<typeof qualifiedProposalInput>,
+  ctx: { activeTransportId: string; sessionUser: { id: string; email: string; name: string | null } },
+  fromAddress: string | null | undefined,
+): Promise<QuotePdfResult> {
+  const stays = await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
+  const url = process.env.GOTENBERG_URL?.trim();
+  if (!url) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'GOTENBERG_URL missing' });
+  let result: Awaited<ReturnType<typeof buildStaysProposalPdf>>;
+  try {
+    result = await buildStaysProposalPdf(
+      stays,
+      {
+        attention: input.attention,
+        company: input.company,
+        clientEmail: input.clientEmail,
+        clientTelephone: input.clientTelephone,
+        agency: input.agency,
+        signerName: ctx.sessionUser.name ?? '',
+        signerEmail: ctx.sessionUser.email,
+        notes: stayNotes(stays),
+      },
+      { url },
+    );
+  } catch (error) {
+    if (error instanceof WorkbookRefusalError)
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: error.message });
+    if (error instanceof ProposalPdfUnavailableError)
+      throw new TRPCError({ code: 'BAD_GATEWAY', message: error.message, cause: error });
+    throw error;
+  }
+  await proposalStaysFor(input, ctx, 'Proposal evidence expired during conversion');
+  const party = quotePdfPartyName(
+    input.agency,
+    input.company,
+    input.attention,
+    quotePdfSenderDisplayName(fromAddress),
+  );
+  return {
+    kind: 'quote_pdf',
+    revisionId: result.revisionId,
+    pdfHash: result.pdfHash,
+    fileName: retargetQuotePdfFileName(
+      result.fileName,
+      party,
+      quotePdfPartyName(input.agency, input.company),
+    ),
+    totalMinor: result.totalMinor,
+    pdfBase64: Buffer.from(result.pdf).toString('base64'),
+  };
+}
+
+/** Worker rebuild after HTTP disconnect. Missing payload fails closed. */
+export async function generateQuotePdfFromLedger(request: QuotePdfRequest): Promise<QuotePdfResult> {
+  if (!request.proposal || !request.transportId || !request.userId || request.signerEmail == null) {
+    throw new Error('quote_pdf_proposal_missing');
+  }
+  const input = qualifiedProposalInput.parse(request.proposal);
+  return buildQualifiedQuotePdf(
+    input,
+    {
+      activeTransportId: request.transportId,
+      sessionUser: {
+        id: request.userId,
+        email: request.signerEmail,
+        name: request.signerName ?? null,
+      },
+    },
+    undefined,
+  );
 }
 
 export const quoteRunScreenshotInput = z
@@ -1423,58 +1505,73 @@ export const workstationRouter = router({
       await awaitPendingStaffQuote(input.workflowRunId);
       if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
         throw new TRPCError({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' });
-      const stays = await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
-      const url = process.env.GOTENBERG_URL?.trim();
-      if (!url)
-        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'GOTENBERG_URL missing' });
-      let result: Awaited<ReturnType<typeof buildStaysProposalPdf>>;
-      try {
-        result = await buildStaysProposalPdf(
-          stays,
-          {
-            attention: input.attention,
-            company: input.company,
-            clientEmail: input.clientEmail,
-            clientTelephone: input.clientTelephone,
-            agency: input.agency,
-            signerName: ctx.sessionUser.name ?? '',
-            signerEmail: ctx.sessionUser.email,
-            // Fresh staff runs use their attested note; prepared prices carry the pane's reviewed header note.
-            notes: stayNotes(stays),
-          },
-          { url },
-        );
-      } catch (error) {
-        if (error instanceof WorkbookRefusalError)
-          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: error.message });
-        if (error instanceof ProposalPdfUnavailableError)
-          throw new TRPCError({ code: 'BAD_GATEWAY', message: error.message, cause: error });
-        throw error;
-      }
-      await proposalStaysFor(input, ctx, 'Proposal evidence expired during conversion');
+      const documentKey = quotePdfJobIdentity(input);
+      const asPdf = (artifact: QuotePdfResult) => ({
+        revisionId: artifact.revisionId,
+        documentKey,
+        pdfHash: artifact.pdfHash,
+        fileName: artifact.fileName,
+        totalMinor: artifact.totalMinor,
+        pdfBase64: artifact.pdfBase64,
+      });
       const [mail] = await getDb()
-        .select({ fromAddress: message.fromAddress })
+        .select({ fromAddress: message.fromAddress, threadId: message.threadId })
         .from(message)
         .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
         .limit(1);
-      const party = quotePdfPartyName(
-        input.agency,
-        input.company,
-        input.attention,
-        quotePdfSenderDisplayName(mail?.fromAddress),
-      );
-      return {
-        revisionId: result.revisionId,
-        pdfHash: result.pdfHash,
-        fileName: retargetQuotePdfFileName(
-          result.fileName,
-          party,
-          quotePdfPartyName(input.agency, input.company),
-        ),
-        totalMinor: result.totalMinor,
-        pdfBase64: Buffer.from(result.pdf).toString('base64'),
-      };
+      let jobRun: Awaited<ReturnType<typeof enqueueQuotePdfJob>>['run'] | undefined;
+      if (input.workItemId) {
+        if (!mail) throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
+        await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
+        const stored = await readQuotePdfJob({
+          transportId: ctx.activeTransportId,
+          workItemId: input.workItemId,
+          revisionId: documentKey,
+        });
+        if (stored?.result) return asPdf(stored.result);
+        const enqueued = await enqueueQuotePdfJob({
+          transportId: ctx.activeTransportId,
+          threadId: mail.threadId,
+          triggerMessageId: input.messageId,
+          workItemId: input.workItemId,
+          revisionId: documentKey,
+          propertyCode: hmsReadTargetForTransport(ctx.activeTransportId).propertyCode,
+          userId: ctx.sessionUser.id,
+          signerName: ctx.sessionUser.name ?? '',
+          signerEmail: ctx.sessionUser.email,
+          proposal: input,
+        });
+        jobRun = enqueued.run;
+        const already = quotePdfResultOf(enqueued.run);
+        if (already) return asPdf(already);
+      }
+      const artifact = await buildQualifiedQuotePdf(input, ctx, mail?.fromAddress);
+      if (jobRun) return asPdf(await persistQuotePdfResult(jobRun.id, artifact));
+      return asPdf(artifact);
     }),
+  quotePdfJob: mailboxProcedure
+    .input(
+      z
+        .object({
+          workItemId: z.string().uuid(),
+          revisionRef: z.string().min(1),
+          additionalStays: z.array(qualifiedStayInput).max(62).default([]),
+          attention: z.string().max(256).default(''),
+          company: z.string().max(256).default(''),
+          clientEmail: z.string().max(256).default(''),
+          clientTelephone: z.string().max(128).default(''),
+          agency: z.string().max(256).default('Quote'),
+          notes: z.string().trim().max(1000).optional(),
+        })
+        .strict(),
+    )
+    .query(({ input, ctx }) =>
+      readQuotePdfJob({
+        transportId: ctx.activeTransportId,
+        workItemId: input.workItemId,
+        revisionId: quotePdfJobIdentity(input),
+      }),
+    ),
   /**
    * Excel twin of qualifiedQuoteProposalPdf: the same ownership, transport and currency checks, then every approved
    * stay's revision and authorised extras written into the staff quotation template.

@@ -46,6 +46,7 @@ import { ReservationistTaskEvidenceUnavailable } from './reservationist-executio
 import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js';
 import { mailExtraction } from '../db/schema/work.js';
 import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
+import { buildStaffRatePick } from './staff-rate-pick-history.js';
 import { otherBoardContractNotes, type RateOption } from './rate-options.js';
 import type { AvailabilityBoardRow } from './hms-availability.js';
 import { quoteWorkItemIdFor, recordRateEvents } from './work-events.js';
@@ -59,12 +60,26 @@ import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { HMS_OUTAGE_STAFF_COPY } from '../hms/property-outage.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { TRPCError } from '@trpc/server';
 import { randomUUID } from 'node:crypto';
 
 export { staffQuoteRoomAlternatives, type StaffQuoteRoomAlternative };
+
+/** Spawn env for a quote/party child while this process holds the property lock. */
+export function staffQuoteChildEnv(
+  tenantId: string,
+  propertyCode: string,
+  env: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  return {
+    ...env,
+    HMS_PROPERTY_LOCK_HELD: propertyReadLockKey(tenantId, propertyCode),
+    PANE_STAY_TENANT_ID: tenantId,
+  };
+}
 
 const HMS_NOT_RESPONDED_MESSAGE =
   "HMS didn't respond as expected. Try again; if it fails twice, quote in HMS directly.";
@@ -382,6 +397,7 @@ export function staffQuoteFailureMessage(
   context: { salesStrategy?: string; dinnerRequested?: boolean } = {},
 ): string {
   const code = staffQuoteFailureCode(error);
+  if (code === 'HMS_OUTAGE') return HMS_OUTAGE_STAFF_COPY;
   if (code === 'native_quote_no_matching_rate') return nativeNoMatchingRateMessage(context);
   if (
     code === 'native_quote_business_evidence_unavailable' &&
@@ -440,6 +456,7 @@ const PARTY_VERIFY_COPY: Record<string, string> = {
   refused_lock_busy: 'HMS is busy with another run. Try again in a minute.',
   refused_lock_unavailable: "Nava can't reach HMS right now. Tell the Nava team.",
   refused_flag_off: PARTY_LOOKUP_OFF_NOTE,
+  HMS_OUTAGE: HMS_OUTAGE_STAFF_COPY,
 };
 
 function refuseQuote(
@@ -749,6 +766,7 @@ export async function runStaffQuote(
         async () => {
           await assertPreparedQuoteCanContinue(db, systemPrepared);
           queued.setPhase(1);
+          const childEnv = staffQuoteChildEnv(config.tenantId, scope.propertyCode);
           // One attempt is one approval, with its own services and authorization. A party rate HMS cannot price is
           // quoted once more at public rates, and the review says so.
           const quoteAt = (attempt: ReturnType<typeof prepareStaffQuote>) => {
@@ -758,6 +776,7 @@ export async function runStaffQuote(
                 authorizeContext: async (c) => c === attempt.context && (await stillCurrent()),
                 signer,
                 propertyCode: quoteTarget.target.propertyCode,
+                childEnv,
                 onEvidenceDirectory: (directory) => {
                   evidence.directory = directory;
                 },
@@ -992,7 +1011,7 @@ export async function runStaffQuote(
         const outcomeWorkItemId = await ensureQuoteOutcomeWorkItem(tx as unknown as DB, {
           transportId: scope.transportId, threadId: scope.threadId, sourceMessageId: mail.id,
         });
-        const [extraction] = await tx.select({ payload: mailExtraction.payload }).from(mailExtraction)
+        const [extraction] = await tx.select({ payload: mailExtraction.payload, kind: mailExtraction.kind }).from(mailExtraction)
           .where(and(eq(mailExtraction.messageId, mail.id), eq(mailExtraction.status, 'succeeded')))
           .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
         const extractedFields = extraction?.payload ?? null;
@@ -1019,9 +1038,19 @@ export async function runStaffQuote(
           lines: preparedLines, totalMinor: revision.totalMinor, currency: revision.currency };
         const staffVersion = { ...preparedVersion, fields: staffFields, party: effectiveQuoteInput.parties ?? null,
           lines: staffLines, totalMinor: pricedRoomTotal(revision, rowPrices) + extraTotal };
+        const ratePick = identity.user
+          ? buildStaffRatePick({
+              strategy: effectiveQuoteInput.salesStrategy,
+              property: scope.propertyCode,
+              transportId: scope.transportId,
+              parties: effectiveQuoteInput.parties,
+              actorUserId: identity.user.id,
+              mailKind: extraction?.kind ?? 'quote',
+            })
+          : null;
         await recordPreparedQuoteOutcome(tx as unknown as DB, { workItemId: outcomeWorkItemId,
           actorUserId: identity.user?.id ?? null, workflowRunId, sourceMessageId: mail.id,
-          prepared: preparedVersion, staffFinal: staffVersion });
+          prepared: preparedVersion, staffFinal: staffVersion, ratePick });
         if (
           options.commitQueuedResult &&
           !(await options.commitQueuedResult(quoteResult, tx as unknown as DB))

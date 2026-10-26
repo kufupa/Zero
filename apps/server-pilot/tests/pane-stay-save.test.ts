@@ -18,6 +18,7 @@ import {
   paneStaySaveEnabled,
   paneStaySaveLoaders,
   paneWriteMode,
+  clearPanePreviewMemory,
   paneWriteModes,
   paneStayCreatePropertyArgs,
   paneStayCreateSpawnEnv,
@@ -32,6 +33,7 @@ import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE, propertyReadLockKey } from '../src
 import {
   PANE_BOOKER_EMAIL_MAX,
   PANE_BOOKER_NAME_MAX,
+  PANE_MARKET_SEGMENT_MAX,
   PANE_PARTY_NAME_MAX,
   PANE_PARTY_NATIVE_ID_MAX,
   PANE_RESERVATION_NOTE_MAX,
@@ -39,10 +41,16 @@ import {
   paneStaySaveMode,
 } from '../src/ai/pane-stay-save.js';
 import {
+  bookFieldFills,
   loadCreateToolSchema,
   optionalPartyAndNoteFills,
   validateCreateRequest,
 } from '../tooling/playwright-quote/create-request.mjs';
+import {
+  marketSegmentOptions,
+  profileFor,
+  stayBookFieldRefusal,
+} from '../tooling/playwright-quote/property-profile.mjs';
 import {
   PANE_STAY_ALREADY_BOOKED,
   stayCommitFromPaneResult,
@@ -50,6 +58,12 @@ import {
   stayCommitOf,
   withStayCommit,
 } from '../src/ai/work-items.js';
+import {
+  stayPreviewGrantOf,
+  stayPreviewOf,
+  withStayPreview,
+  withoutStayPreview,
+} from '../src/ai/pane-stay-preview-persist.js';
 
 const labStay = {
   firstName: 'Pat',
@@ -110,6 +124,8 @@ afterEach(() => {
   paneStaySaveLoaders.osressGuestDatesSearch = null;
   paneStaySaveLoaders.mode = null;
   paneStaySaveLoaders.now = null;
+  paneStaySaveLoaders.previewPersist = null;
+  clearPanePreviewMemory();
   vi.unstubAllEnvs();
 });
 
@@ -890,7 +906,13 @@ describe('pane stay save modes', () => {
 });
 
 describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
-  const davinciStay = { ...labStay, propertyCode: 'HRDAV' as const };
+  const davinciSegment = marketSegmentOptions(profileFor('HRDAV'))?.[0] ?? '';
+  const davinciStay = {
+    ...labStay,
+    propertyCode: 'HRDAV' as const,
+    marketSegment: davinciSegment,
+    guestoptin4: true,
+  };
 
   it('is off unless HMS_DAVINCI_CREATE is lab or on, same as PANE_WRITE_CREATE', () => {
     expect(hmsDavinciCreateMode({})).toBe('off');
@@ -1021,9 +1043,9 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
     );
   });
 
-  it('passes --property HRDAV only for the Da Vinci target', () => {
+  it('passes --property for every HMS target', () => {
     expect(paneStayCreatePropertyArgs(DAVINCI_HMS_READ_TARGET)).toEqual(['--property', 'HRDAV']);
-    expect(paneStayCreatePropertyArgs(CENTURION_HMS_READ_TARGET)).toEqual([]);
+    expect(paneStayCreatePropertyArgs(CENTURION_HMS_READ_TARGET)).toEqual(['--property', 'HRCEN']);
     expect(paneStayCreatePropertyArgs(null)).toEqual([]);
   });
 
@@ -1107,6 +1129,7 @@ describe('create request schema for the pane fields', () => {
     expect(request.reservationNote.maxLength).toBe(PANE_RESERVATION_NOTE_MAX);
     expect(request.bookerName.maxLength).toBe(PANE_BOOKER_NAME_MAX);
     expect(request.bookerEmail.maxLength).toBe(PANE_BOOKER_EMAIL_MAX);
+    expect(request.marketSegment.maxLength).toBe(PANE_MARKET_SEGMENT_MAX);
     expect(schema.$defs.partyRef.properties.name.maxLength).toBe(PANE_PARTY_NAME_MAX);
     expect(schema.$defs.partyRef.properties.nativeId.maxLength).toBe(PANE_PARTY_NATIVE_ID_MAX);
   });
@@ -1160,6 +1183,60 @@ describe('create request schema for the pane fields', () => {
       udfchar06: '',
     });
   });
+
+  it('missing required field refuses before spawn and valid fields survive serialization', async () => {
+    expect(stayBookFieldRefusal(labStay, null)).toBe('property_profile_required');
+    expect(stayBookFieldRefusal(labStay, { createForm: { requiredMarkers: {} } })).toBeNull();
+    expect(
+      stayBookFieldRefusal(labStay, {
+        createForm: { requiredMarkers: { marketsegment: { required: true } } },
+      }),
+    ).toBe('pane_save_market_segment_required');
+    expect(
+      stayBookFieldRefusal(
+        { ...labStay, marketSegment: 'Wholesale', guestoptin4: false },
+        { createForm: { requiredMarkers: { guestoptin4: { required: true } } } },
+      ),
+    ).toBe('pane_save_guest_opt_in_required');
+
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
+    enableSave();
+    const profile = profileFor('HRDAV');
+    const options = marketSegmentOptions(profile);
+    expect(options?.length).toBeGreaterThan(0);
+    const marketSegment = options![0];
+    const locked: string[] = [];
+    paneStaySaveLoaders.lock = passingLock(locked);
+    paneStaySaveLoaders.spawn = async () => {
+      throw new Error('must not spawn');
+    };
+    await expect(
+      runPaneStay({
+        mode: 'preview',
+        stay: { ...labStay, propertyCode: 'HRDAV' },
+        owner: freshOwner('transport-davinci'),
+      }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_market_segment_required' });
+    expect(locked).toEqual([]);
+
+    const valid = { ...labStay, propertyCode: 'HRDAV' as const, marketSegment, guestoptin4: true };
+    const seen: PaneStaySpawnInput[] = [];
+    paneStaySaveLoaders.lock = passingLock();
+    paneStaySaveLoaders.spawn = async (input) => {
+      seen.push(input);
+      return cliSpawn(input);
+    };
+    await expect(
+      runPaneStay({ mode: 'preview', stay: valid, owner: freshOwner('transport-davinci') }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'previewed', clickedSave: false });
+    expect(seen[0]?.stay).toMatchObject({ marketSegment, guestoptin4: true });
+    const body = paneStayRequestBody(valid);
+    expect(body).toMatchObject({ marketSegment, guestoptin4: true });
+    expect(body).not.toHaveProperty('propertyCode');
+    expect(validateCreateRequest(body, await loadCreateToolSchema())).toMatchObject({ ok: true });
+    expect(bookFieldFills(valid)).toEqual({ marketsegment: marketSegment, guestoptin4: true });
+    expect(bookFieldFills({ ...valid, guestoptin4: false })).toEqual({ marketsegment: marketSegment });
+  });
 });
 
 describe('stay commit persist/reload', () => {
@@ -1212,5 +1289,103 @@ describe('stay commit persist/reload', () => {
       status: 'unknown',
       screenshotRef: booked.screenshotRef,
     });
+  });
+});
+
+describe('pane stay preview persist', () => {
+  it('preview survives service restart and digest change invalidates it', async () => {
+    enableSave();
+    let state: Record<string, unknown> = {};
+    paneStaySaveLoaders.previewPersist = {
+      record: ({ stayId, digest, now }) => {
+        state = withStayPreview(state, stayId, {
+          digest,
+          status: 'previewed',
+          expiresAt: now + PANE_PREVIEW_TTL_MS,
+        });
+      },
+      take: ({ stayId, digest, now }) => {
+        const grant = stayPreviewGrantOf(stayPreviewOf(state, stayId), digest, now);
+        state = withoutStayPreview(state, stayId);
+        return Boolean(grant);
+      },
+    };
+    const spawned: string[] = [];
+    paneStaySaveLoaders.spawn = async (input) => {
+      spawned.push(input.paneCommit ? 'commit' : 'preview');
+      if (!input.paneCommit) {
+        expect(input.stopBefore).toBe('save');
+        expect(input.paneCommit).toBeFalsy();
+      }
+      return cliSpawn(input);
+    };
+    const workItemId = randomUUID();
+    const stayId = 's_1';
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner, workItemId, stayId });
+    expect(preview).toMatchObject({
+      status: 'ok',
+      outcome: 'previewed',
+      clickedSave: false,
+      previewDigest: paneStayDigest(labStay),
+    });
+    expect(spawned).toEqual(['preview']);
+    expect(stayPreviewOf(state, stayId)?.digest).toBe(paneStayDigest(labStay));
+
+    clearPanePreviewMemory();
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: labStay,
+        owner,
+        workItemId,
+        stayId,
+        previewDigest: preview.previewDigest as string,
+      }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
+    expect(stayPreviewOf(state, stayId)).toBeUndefined();
+
+    const second = await runPaneStay({ mode: 'preview', stay: labStay, owner, workItemId, stayId });
+    clearPanePreviewMemory();
+    const changed = { ...labStay, roomType: 'DBL' };
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: changed,
+        owner,
+        workItemId,
+        stayId,
+        previewDigest: paneStayDigest(changed),
+      }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required' });
+    expect(stayPreviewOf(state, stayId)).toBeUndefined();
+    expect(second.clickedSave).toBe(false);
+    expect(spawned).toEqual(['preview', 'commit', 'preview']);
+  });
+
+  it('same-process commit with work-item ids still uses the in-memory preview grant', async () => {
+    enableSave();
+    paneStaySaveLoaders.previewPersist = {
+      record: () => undefined,
+      take: () => false,
+    };
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    expect(preview).toMatchObject({
+      status: 'ok',
+      outcome: 'previewed',
+      clickedSave: false,
+      previewDigest: paneStayDigest(labStay),
+    });
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: labStay,
+        owner,
+        workItemId: randomUUID(),
+        stayId: 's_1',
+        previewDigest: preview.previewDigest as string,
+      }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
   });
 });

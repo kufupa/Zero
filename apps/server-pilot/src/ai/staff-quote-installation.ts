@@ -19,7 +19,11 @@ import {
   bindCenturionHmsMailboxProperty,
   type MailboxHmsOriginFields,
 } from '../hms/mailbox-hms-origin-bind.js';
-import { staffQuoteInstallationEnvName } from '../hms/hms-read-target.js';
+import {
+  ownerRefBelongsToProperty,
+  staffQuoteInstallationEnvName,
+} from '../hms/hms-read-target.js';
+import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
 import {
   PROVISIONAL_QUOTE_SCRIPT,
   quoteTraceAsyncEnabled,
@@ -54,6 +58,8 @@ const configurationSchema = z
       .strict(),
     outputDir: z.string().min(1),
     ratePolicyConfigurationPath: z.string().min(1),
+    // Multi-mailbox hotels: one policy file per registered transport. Missing key fails closed.
+    ratePolicyByOwnerRef: z.record(z.string().min(1), z.string().min(1)).optional(),
     // Optional hotel/staff-approved dinner pricing; Centurion's default is applied during validation below.
     dinnerAddOn: z
       .object({
@@ -85,7 +91,27 @@ export type InstalledStaffQuoteServiceOptions = Pick<
   mailboxOrigin?: MailboxHmsOriginFields;
   /** Selects the HRDAV install when quoting Da Vinci. Omitted keeps Centurion. */
   propertyCode?: string;
+  /**
+   * Spawn env snapped while the parent holds this property lock.
+   * Must include HMS_PROPERTY_LOCK_HELD and PANE_STAY_TENANT_ID.
+   * Unset when this process is the lock owner.
+   */
+  childEnv?: NodeJS.ProcessEnv;
 };
+
+/** Copy the parent-held lock token and tenant into a quote child env. */
+export function spawnEnvWithHeldLock(
+  env: NodeJS.ProcessEnv,
+  childEnv: NodeJS.ProcessEnv | undefined,
+): NodeJS.ProcessEnv {
+  if (!childEnv) return env;
+  const held = childEnv.HMS_PROPERTY_LOCK_HELD;
+  if (!held) return env;
+  const next: NodeJS.ProcessEnv = { ...env, HMS_PROPERTY_LOCK_HELD: held };
+  const tenantId = childEnv.PANE_STAY_TENANT_ID;
+  if (typeof tenantId === 'string' && tenantId) next.PANE_STAY_TENANT_ID = tenantId;
+  return next;
+}
 
 /** Provisional mode: the final result must match the provisional capture the reader accepted. */
 async function verifyProvisionalQuoteFinal(evidenceDirectory: string): Promise<void> {
@@ -140,7 +166,8 @@ export function validateStaffQuoteInstallationConfiguration(
     url.hash ||
     !isAbsolute(configuration.owner.secretPath) ||
     !inside(join(privateRoot, 'playwright-quote'), configuration.outputDir) ||
-    !inside(privateRoot, configuration.ratePolicyConfigurationPath)
+    !inside(privateRoot, configuration.ratePolicyConfigurationPath) ||
+    !ratePolicyOwnerRefMapValid(configuration)
   )
     throw new Error('staff_quote_installation_invalid');
   return configuration.owner.propertyCode === 'HRCEN' && !configuration.dinnerAddOn
@@ -156,15 +183,65 @@ function staffQuoteConfigurationEnvName(propertyCode?: string): string {
   return staffQuoteInstallationEnvName(propertyCode ?? 'HRCEN');
 }
 
+function ratePolicyOwnerRefMapValid(
+  configuration: StaffQuoteInstallationConfiguration,
+): boolean {
+  const map = configuration.ratePolicyByOwnerRef;
+  if (!map) return true;
+  const transports = getPropertyTransportIds(configuration.owner.propertyCode);
+  const keys = Object.keys(map);
+  return (
+    transports.length > 0 &&
+    keys.length === transports.length &&
+    transports.every(
+      (ownerRef) =>
+        typeof map[ownerRef] === 'string' &&
+        inside(privateRoot, map[ownerRef]!),
+    )
+  );
+}
+
+/**
+ * Pick the policy file for this mailbox. HRCEN keeps the single-path default.
+ * Any other hotel needs a complete ratePolicyByOwnerRef; Centurion is never a fallback.
+ */
+export function resolveStaffQuoteRatePolicyPath(
+  configuration: StaffQuoteInstallationConfiguration,
+  ownerRef: string,
+): string {
+  const owner = ownerRef.trim();
+  if (!ownerRefBelongsToProperty(owner, configuration.owner.propertyCode)) {
+    throw new Error('staff_quote_policy_scope_invalid');
+  }
+  const mapped = configuration.ratePolicyByOwnerRef?.[owner];
+  if (mapped) return mapped;
+  if (configuration.owner.propertyCode === 'HRCEN') {
+    return configuration.ratePolicyConfigurationPath;
+  }
+  throw new Error('staff_quote_policy_scope_invalid');
+}
+
+function assertInstalledPropertyCode(
+  configuration: StaffQuoteInstallationConfiguration,
+  propertyCode?: string,
+): void {
+  const expectedPropertyCode = propertyCode ?? 'HRCEN';
+  if (configuration.owner.propertyCode !== expectedPropertyCode) {
+    throw new Error('staff_quote_installation_unavailable');
+  }
+}
+
 /** Reads only the installed descriptor, never credentials or a browser. */
 export function readInstalledStaffQuoteConfiguration(
   propertyCode?: string,
 ): StaffQuoteInstallationConfiguration {
   const path = process.env[staffQuoteConfigurationEnvName(propertyCode)];
   if (!path) throw new Error('staff_quote_installation_unavailable');
-  return validateStaffQuoteInstallationConfiguration(
+  const configuration = validateStaffQuoteInstallationConfiguration(
     JSON.parse(checkedPrivateFile(path, 1024 * 1024).toString()),
   );
+  assertInstalledPropertyCode(configuration, propertyCode);
+  return configuration;
 }
 
 // The same installed, networkless Poppler sandbox used by the original source owner.
@@ -374,6 +451,20 @@ const originalRowSchema = z
   })
   .passthrough();
 
+/** HRCEN keeps the historical corpus default. Every other property must name its own paths. */
+function ratePolicyCorpusPaths(
+  configuration: z.infer<typeof rateConfigurationSchema>,
+): string[] {
+  if (configuration.corpusPaths?.length) return configuration.corpusPaths;
+  if (configuration.propertyCode === 'HRCEN') {
+    return [
+      '.private/reservationist-backtest/corpus/messages.jsonl',
+      '.private/connected-mailbox-corpus/centurion-nine-day-4a8bb7ad-2d78-4d9a-92b2-9a5f31d2dd67/messages.jsonl',
+    ];
+  }
+  throw new Error('staff_quote_policy_scope_invalid');
+}
+
 /** Promoted original-document ownership checks; installed paths are trusted, requests never provide locators. */
 export function createStaffQuoteRatePolicyDocumentReader(options: {
   configurationPath: string;
@@ -403,10 +494,7 @@ export function createStaffQuoteRatePolicyDocumentReader(options: {
       configuration.propertyCode !== ctx.input.propertyCode
     )
       throw new Error('staff_quote_policy_scope_invalid');
-    const paths = configuration.corpusPaths ?? [
-      '.private/reservationist-backtest/corpus/messages.jsonl',
-      '.private/connected-mailbox-corpus/centurion-nine-day-4a8bb7ad-2d78-4d9a-92b2-9a5f31d2dd67/messages.jsonl',
-    ];
+    const paths = ratePolicyCorpusPaths(configuration);
     const rows = new Map<string, z.infer<typeof originalRowSchema>>(),
       originals = new Map<string, string>();
     for (const configuredPath of paths) {
@@ -569,6 +657,7 @@ export function getInstalledStaffQuoteServices(
   const bytes = checkedPrivateFile(path, 1024 * 1024),
     identity = sha(bytes);
   const configuration = validateStaffQuoteInstallationConfiguration(JSON.parse(bytes.toString()));
+  assertInstalledPropertyCode(configuration, options.propertyCode);
   const guard = () => {
     if (
       process.env[envName] !== path ||
@@ -609,7 +698,7 @@ export function getInstalledStaffQuoteServices(
             request.args[2]!,
             configuration.outputDir,
           ],
-          env: request.env,
+          env: spawnEnvWithHeldLock(request.env, options.childEnv),
           signal: request.signal,
           timeoutMs: request.timeout,
           resultPath,
@@ -645,7 +734,7 @@ export function getInstalledStaffQuoteServices(
             configuration.outputDir,
           ],
           {
-            env: request.env,
+            env: spawnEnvWithHeldLock(request.env, options.childEnv),
             signal: request.signal,
             timeout: request.timeout,
             maxBuffer: 1024 * 1024,
@@ -681,6 +770,7 @@ export function getInstalledStaffQuoteServices(
     await writeFile(
       requestPath,
       JSON.stringify({
+        propertyCode: configuration.owner.propertyCode,
         kind,
         query: { [kind === 'organization' ? 'organizationName' : 'bookingAgencyName']: query },
       }),
@@ -704,7 +794,7 @@ export function getInstalledStaffQuoteServices(
           timeout: 300000,
           maxBuffer: 1024 * 1024,
           env: {
-            ...process.env,
+            ...(options.childEnv ?? process.env),
             HMS_STAGEHAND_CDP_URL: configuration.owner.cdpUrl,
             HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
             HMS_QUOTE_SECRET_PATH: configuration.owner.secretPath,
@@ -763,10 +853,14 @@ export function getInstalledStaffQuoteServices(
       resolvePolicy: async () => null,
       resolveSelectedPolicy: createReservationistSelectedRatePolicyResolver({
         authorizeContext,
-        readDocuments: createStaffQuoteRatePolicyDocumentReader({
-          configurationPath: configuration.ratePolicyConfigurationPath,
-          authorizeContext,
-        }),
+        readDocuments: (ctx, family) => {
+          const ownerRef = ctx.input.authorizationScope?.ownerRef;
+          if (!ownerRef) throw new Error('staff_quote_policy_scope_invalid');
+          return createStaffQuoteRatePolicyDocumentReader({
+            configurationPath: resolveStaffQuoteRatePolicyPath(configuration, ownerRef),
+            authorizeContext,
+          })(ctx, family);
+        },
       }),
     },
     staffApproval,

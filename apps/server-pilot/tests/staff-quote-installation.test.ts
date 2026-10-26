@@ -4,8 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CENTURION_DINNER_ADD_ON,
   readInstalledStaffQuoteConfiguration,
+  resolveStaffQuoteRatePolicyPath,
   validateStaffQuoteInstallationConfiguration,
 } from '../src/ai/staff-quote-installation.js';
+import { DAVINCI_STAFF_TRANSPORT_IDS } from '../src/hms/hms-read-target.js';
 
 const repo = fileURLToPath(new URL('../../../', import.meta.url));
 const privateRoot = resolve(repo, '.private');
@@ -102,5 +104,76 @@ describe('readInstalledStaffQuoteConfiguration property install', () => {
     expect(() => readInstalledStaffQuoteConfiguration('HRBAK')).toThrow(
       'staff_quote_installation_unavailable',
     );
+  });
+});
+
+describe('staff quote rate policy by transport', () => {
+  it('transport selects its matching policy and never falls back to Centurion', () => {
+    const centurionPolicy = resolve(privateRoot, 'centurion-rate-policy.json');
+    const byOwnerRef = Object.fromEntries(
+      DAVINCI_STAFF_TRANSPORT_IDS.map((ownerRef) => [
+        ownerRef,
+        resolve(privateRoot, `hrdav-rate-policy-${ownerRef}.json`),
+      ]),
+    );
+    const hrdav = validateStaffQuoteInstallationConfiguration({
+      ...configuration('HRDAV'),
+      ratePolicyConfigurationPath: centurionPolicy,
+      ratePolicyByOwnerRef: byOwnerRef,
+    });
+    const hrcen = validateStaffQuoteInstallationConfiguration(configuration('HRCEN'));
+
+    for (const ownerRef of DAVINCI_STAFF_TRANSPORT_IDS) {
+      expect(resolveStaffQuoteRatePolicyPath(hrdav, ownerRef)).toBe(byOwnerRef[ownerRef]);
+      expect(resolveStaffQuoteRatePolicyPath(hrdav, ownerRef)).not.toBe(centurionPolicy);
+    }
+    expect(() => resolveStaffQuoteRatePolicyPath(hrdav, 'transport-centurion')).toThrow(
+      'staff_quote_policy_scope_invalid',
+    );
+    expect(() => resolveStaffQuoteRatePolicyPath(hrdav, 'transport-unknown')).toThrow(
+      'staff_quote_policy_scope_invalid',
+    );
+    expect(() =>
+      resolveStaffQuoteRatePolicyPath(
+        validateStaffQuoteInstallationConfiguration(configuration('HRDAV')),
+        'transport-faith',
+      ),
+    ).toThrow('staff_quote_policy_scope_invalid');
+    expect(resolveStaffQuoteRatePolicyPath(hrcen, 'transport-centurion')).toBe(
+      hrcen.ratePolicyConfigurationPath,
+    );
+    expect(() => resolveStaffQuoteRatePolicyPath(hrcen, 'transport-faith')).toThrow(
+      'staff_quote_policy_scope_invalid',
+    );
+  });
+
+  it('rejects an incomplete or out-of-private ratePolicyByOwnerRef map', () => {
+    const complete = Object.fromEntries(
+      DAVINCI_STAFF_TRANSPORT_IDS.map((ownerRef) => [
+        ownerRef,
+        resolve(privateRoot, `hrdav-rate-policy-${ownerRef}.json`),
+      ]),
+    );
+    const missingFaith = { ...complete };
+    delete missingFaith['transport-faith'];
+    const outsidePrivate = Object.fromEntries(
+      DAVINCI_STAFF_TRANSPORT_IDS.map((ownerRef) => [
+        ownerRef,
+        resolve('/tmp', `hrdav-rate-policy-${ownerRef}.json`),
+      ]),
+    );
+
+    expect(() =>
+      validateStaffQuoteInstallationConfiguration({
+        ...configuration('HRDAV'),
+        ratePolicyByOwnerRef: missingFaith,
+      }),
+    ).toThrow('staff_quote_installation_invalid');
+    expect(() =>
+      validateStaffQuoteInstallationConfiguration({
+        ...configuration('HRDAV'),
+        ratePolicyByOwnerRef: outsidePrivate,
+      }),
+    ).toThrow('staff_quote_installation_invalid');
   });
 });

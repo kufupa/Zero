@@ -1,6 +1,7 @@
 import { format, isValid, parseISO } from 'date-fns';
 import { Copy, Info, Trash2 } from 'lucide-react';
 import { useEffect, useId, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 
 import {
   Field,
@@ -136,12 +137,14 @@ export function StayCard({
   rows,
   index,
   stayCount,
+  extras,
   requestedRoomsTotal,
   mealPlan,
   onMealPlanChange,
   onPatch,
   onStayAction,
   evidence,
+  headerExtra,
   propertyCode = HRCEN_PROPERTY_CODE,
   roomTypes: configuredRoomTypes,
   strictRoomTypes: configuredStrictRoomTypes,
@@ -151,6 +154,7 @@ export function StayCard({
   rows: StayGroupRequirement[];
   index: number;
   stayCount: number;
+  extras?: ReactNode;
   /** The email's stay-level room total, retained when the extracted rows are split by type. */
   requestedRoomsTotal?: number;
   /** This UI-only filter highlights returned rate cards; it never patches a room row. */
@@ -159,6 +163,7 @@ export function StayCard({
   onPatch?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onStayAction?: (action: StayEditAction) => void;
   evidence?: Array<{ field: string; quote: string; source?: 'staff_note' }>;
+  headerExtra?: ReactNode;
   /** HRDAV uses only exact codes/labels; absent keeps legacy HRCEN matching for older callers. */
   propertyCode?: HmsQuotePropertyCode;
   roomTypes?: QuotePaneRoomType[];
@@ -206,14 +211,15 @@ export function StayCard({
             </span>
           </div>
           <div className="flex items-center gap-3">
+            {headerExtra}
             <button
               type="button"
-              title="Create another stay with the same dates and rooms."
+              title="Duplicate this stay with the same dates and rooms."
               className="inline-flex items-center gap-1 rounded-[3px] text-[13px] font-semibold text-[#0066cc] hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
               onClick={() => onStayAction?.({ type: 'duplicate_stay', stayId, token: newQuoteToken() })}
             >
               <Copy aria-hidden="true" className="h-3.5 w-3.5" />
-              Copy stay
+              Duplicate stay
             </button>
             <button
               type="button"
@@ -302,6 +308,7 @@ export function StayCard({
             + Add room type
           </SecondaryButton>
         </section>
+        {extras}
       </div>
     </article>
   );

@@ -10,6 +10,9 @@ import type { RowPriceChoice, StaffRowRate, StayGroupRequirement } from '@/lib/q
 import { copyText } from './hms-link-actions';
 import { CRICKET_RATE_HINT } from './rate-cards';
 
+export { formatReservationNote, reservationNoteForGroup } from '@/lib/quote-workflow/reservation-note';
+export type { ReservationNoteInput } from '@/lib/quote-workflow/reservation-note';
+
 /** A saved rate for this transport. Amounts are ZAR minor units (cents). */
 export type SavedRate = { id: string; name: string; amountMinor: number; currency?: string };
 

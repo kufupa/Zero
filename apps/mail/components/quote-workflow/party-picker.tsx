@@ -21,13 +21,21 @@ import { Check, Pencil, Search, Sparkles } from 'lucide-react';
 import { LinkButton, Notice, SecondaryButton } from '../nava-pane/pane-ui';
 import { preconditionFailedMessage, useHmsJob } from '../../lib/quote-workflow/use-hms-job';
 import { useEffect, useId, useReducer, useRef, useState } from 'react';
-import { HmsJobStatusLine, HmsLookupProgress } from './hms-queue-status';
+import { HmsAsOf, HmsJobStatusLine, HmsLookupProgress } from './hms-queue-status';
 
 export const PARTY_PICKER_HINT = 'Takes ~30–40 s. Keep filling the stay below.';
 
 export const PARTY_PICKER_BUSY = 'Searching HMS for companies and agencies.';
 
 const PARTY_PREFETCH_HINT = 'Suggested match from HMS. Confirm before any rate is used.';
+
+export const PARTY_NO_MATCH_CLOSEST = 'No match found. Closest:';
+
+/** Staff-facing stored-match copy. Profile details belong in `name`; matcher `reason` is optional. */
+export function partyRecommendationLabel(name: string, reason?: string | null): string {
+  const trimmed = reason?.trim();
+  return trimmed ? `Recommended: ${name} — because ${trimmed}` : `Recommended: ${name}`;
+}
 
 /** How long the typing rests before the HMS list is searched. The list is local, so this only spares the server a call per key. */
 export const PARTY_INDEX_DEBOUNCE_MS = 250;
@@ -244,6 +252,43 @@ function partyJobIsV2(view: HmsJobView | null): boolean {
   );
 }
 
+function trimmedPropertyCode(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const code = value.trim();
+  return code.length ? code : null;
+}
+
+function storedPartyPropertyCode(result: Record<string, unknown> | null | undefined): string | null {
+  return trimmedPropertyCode(result?.propertyCode);
+}
+
+/**
+ * Bind only when pane and stored result name the same property. One side missing = unknown = stay unbound.
+ * Both missing is the thread-scoped legacy job: S1 already isolated that read, so confirm may bind.
+ */
+function partyPropertyAllowsBind(
+  paneProperty: string | null | undefined,
+  storedProperty: string | null | undefined,
+): boolean {
+  const pane = trimmedPropertyCode(paneProperty);
+  const stored = trimmedPropertyCode(storedProperty);
+  if (!pane && !stored) return true;
+  if (!pane || !stored) return false;
+  return pane === stored;
+}
+
+function partySnapshotStamp(view: HmsJobView | null | undefined): string | null {
+  const asOf = typeof view?.asOf === 'string' ? view.asOf : null;
+  const createdAt = typeof view?.createdAt === 'string' ? view.createdAt : null;
+  return asOf ?? createdAt;
+}
+
+function partyMatchReason(result: Record<string, unknown> | null | undefined): string | null {
+  if (typeof result?.reason !== 'string') return null;
+  const reason = result.reason.trim();
+  return reason.length ? reason : null;
+}
+
 /** The stored read receipt is the same party-search reply the inline route returns. */
 function partyReplyFromJob(
   view: HmsJobView | null,
@@ -417,7 +462,9 @@ export function PartyPicker({
   jobTransport,
   threadId,
   sourceMessageId,
+  propertyCode,
   autoLookup = false,
+  jobReadBackStatusOwner = true,
   onLookupPending,
 }: {
   /** The text to search for: this field's company or agency name. */
@@ -440,8 +487,12 @@ export function PartyPicker({
   threadId?: string | null;
   /** The selected email whose party prefetch may be resumed. */
   sourceMessageId?: string | null;
+  /** Active pane property. Unknown or mismatched stored property stays unbound. */
+  propertyCode?: string | null;
   /** Search HMS by itself for this field's name and pick the best match. Needs a kind. Off, the field keeps Find in HMS. */
   autoLookup?: boolean;
+  /** Which adjacent field owns the shared read-back loading line. A standalone picker owns it by default. */
+  jobReadBackStatusOwner?: boolean;
   /** Told whether this field's automatic search still has to decide its pick. The pane holds a rates run until it does. */
   onLookupPending?: (pending: boolean) => void;
 }) {
@@ -453,8 +504,6 @@ export function PartyPicker({
   const indexToken = useRef(0);
   // Each manual search takes the next number, and only the latest number may write a reply. A name change takes one too.
   const latest = useRef(0);
-  // A stored high-confidence V2 binding is applied once per run. Clearing/changing it must not silently reapply it.
-  const appliedV2Bindings = useRef(new Set<string>());
   const [v2JobCache, setV2JobCache] = useState<
     { scope: string; query: string; view: HmsJobView } | null
   >(null);
@@ -497,7 +546,9 @@ export function PartyPicker({
     (query.length >= MANUAL_LOOKUP_MIN_CHARS || kind)
       ? {
           kind: 'party' as const,
-          ...(query && !(autoLookup && queueMode === 'on') ? { name: query } : {}),
+          ...(query && !(autoLookup && (queueMode === 'on' || kind === 'agency'))
+            ? { name: query }
+            : {}),
           ...(kind ? { partyKind: kind } : {}),
         }
       : null;
@@ -513,16 +564,29 @@ export function PartyPicker({
   });
   const viewRequest = partyJob.view?.request;
   const v2Prefetch = Boolean(partyJob.view?.prefetch && partyJobIsV2(partyJob.view));
+  const sharedPrefetchView = Boolean(
+    partyJob.view?.prefetch && viewRequest?.kind === 'party' && !viewRequest.partyKind,
+  );
   const sourceMatches =
-    !v2Prefetch ||
+    (!v2Prefetch && !sharedPrefetchView) ||
     sourceMessageId === undefined ||
     (sourceMessageId !== null && partyJob.view?.sourceMessageId === sourceMessageId);
   const currentJobView =
     sourceMatches && viewRequest?.kind === 'party' &&
-    (!query || v2Prefetch || sameJobName(viewRequest.name, query)) &&
+    (!query || v2Prefetch || sharedPrefetchView || sameJobName(viewRequest.name, query)) &&
     (!kind || viewRequest.partyKind === kind || (partyJob.view?.prefetch && !viewRequest.partyKind))
       ? partyJob.view
       : null;
+  const sharedPrefetch = Boolean(
+    currentJobView?.prefetch &&
+      currentJobView.request?.kind === 'party' &&
+      !currentJobView.request.partyKind,
+  );
+  // Agency renders first and owns shared prefetch by default.
+  // If it is already picked, its hook does not resume the job, so Company owns the line.
+  const showJobStatus =
+    !sharedPrefetch || !kind || kind === 'agency' || Boolean(parties.agency);
+  const jobStatusKind = sharedPrefetch ? undefined : kind;
   const v2JobScopeKey = JSON.stringify([
     threadId ?? null,
     sourceMessageId ?? null,
@@ -645,17 +709,15 @@ export function PartyPicker({
   const indexDuplicateNames = duplicateCandidateNames(indexResults);
   const v2PartyJob = Boolean(v2DisplayJobView?.prefetch);
   const v2Result = v2PartyJob ? v2DisplayJobView?.result : null;
+  const v2PropertyOk = partyPropertyAllowsBind(propertyCode, storedPartyPropertyCode(v2Result));
   const v2MatchStatus = v2Result?.matchStatus === 'bound' || v2Result?.matchStatus === 'needs_pick'
     ? v2Result.matchStatus
     : null;
   const v2BoundParty = isPartyCandidate(v2Result?.boundParty) ? v2Result.boundParty : null;
-  const v2BoundKey =
-    v2DisplayJobView?.runId && v2BoundParty
-      ? `${v2DisplayJobView.runId}:${v2BoundParty.kind}:${v2BoundParty.nativeId}`
-      : null;
-  const v2BoundWasApplied = Boolean(v2BoundKey && appliedV2Bindings.current.has(v2BoundKey));
-  const v2ResultRows = uniqueCandidates(partyCandidatesFrom(v2Result?.results) ?? []).filter(inScope);
-  const v2PartyToOmit = selectedParty ?? (v2BoundWasApplied ? null : v2BoundParty);
+  const v2ResultRows = v2PropertyOk
+    ? uniqueCandidates(partyCandidatesFrom(v2Result?.results) ?? []).filter(inScope)
+    : [];
+  const v2PartyToOmit = selectedParty ?? v2BoundParty;
   const v2Alternatives = v2ResultRows.filter(
     (row) =>
       !v2PartyToOmit ||
@@ -663,17 +725,18 @@ export function PartyPicker({
       row.nativeId !== v2PartyToOmit.nativeId,
   );
   const v2BoundForField =
-    !pickedHere && v2MatchStatus === 'bound' && v2BoundParty && inScope(v2BoundParty)
+    v2PropertyOk &&
+    !pickedHere &&
+    v2MatchStatus === 'bound' &&
+    v2BoundParty &&
+    inScope(v2BoundParty)
       ? v2BoundParty
       : null;
   const v2NeedsPick = Boolean(
-    v2PartyJob &&
-      !pickedHere &&
-      (kind
-        ? v2MatchStatus === 'needs_pick' && v2ResultRows.length > 0
-        : v2MatchStatus === 'needs_pick' ||
-          (v2MatchStatus === 'bound' && v2BoundParty && v2BoundWasApplied)),
+    v2PartyJob && !pickedHere && v2MatchStatus === 'needs_pick' && v2ResultRows.length > 0,
   );
+  const v2RecommendationReason = partyMatchReason(v2Result);
+  const v2RecommendationStamp = partySnapshotStamp(v2DisplayJobView);
 
   useEffect(() => {
     if (
@@ -691,22 +754,6 @@ export function PartyPicker({
       );
     }
   }, [currentJobView, v2JobScopeKey]);
-
-  useEffect(() => {
-    if (!v2BoundForField || !v2BoundKey || !v2DisplayJobView || pickedHere) return;
-    if (appliedV2Bindings.current.has(v2BoundKey)) return;
-    appliedV2Bindings.current.add(v2BoundKey);
-    setV2JobCache({
-      scope: v2JobScopeKey,
-      query: searchKey(v2BoundForField.name),
-      view: v2DisplayJobView,
-    });
-    onPick({
-      kind: v2BoundForField.kind,
-      nativeId: v2BoundForField.nativeId,
-      name: v2BoundForField.name,
-    });
-  }, [v2BoundKey, v2DisplayJobView, v2JobScopeKey, onPick, pickedHere, v2BoundForField]);
 
   const rankedSuggestions = rankPartySuggestions(suggestions);
   const topSuggestion = !pickedHere
@@ -735,7 +782,9 @@ export function PartyPicker({
       inScope(row) &&
       !picked.some((party) => party.kind === row.kind && party.nativeId === row.nativeId),
   );
-  const jobResults = uniqueCandidates(jobReply?.results.filter(inScope) ?? []);
+  const jobResults = uniqueCandidates(
+    v2PartyJob && !v2PropertyOk ? [] : (jobReply?.results.filter(inScope) ?? []),
+  );
   const autoDuplicateNames = duplicateCandidateNames(autoRows);
   const jobDuplicateNames = duplicateCandidateNames(jobResults);
   const autoBest =
@@ -810,17 +859,49 @@ export function PartyPicker({
     appliedSuggestionPick.current.add(key);
     onPick({ kind: candidate.kind, nativeId: candidate.nativeId, name: candidate.name });
   }, [autoBest, onPick, pickedHere, prefetchedBest, query, topSuggestion]);
-  const showAutoStatus =
-    Boolean(autoMemoKey) && !pickedHere && shown.status === 'idle';
   const jobFailureOutcome = jobReply?.outcome ?? 'execution_failure';
   const partySearchTimedOut = currentJobView?.failureClass === 'PARTY_SEARCH_TIMEOUT';
   const timeoutMessage = 'Party search timed out after four minutes. You can retry.';
   const jobName = currentJobView?.request?.kind === 'party' ? currentJobView.request.name : query;
-  const jobDisplayName = query || jobName;
-  const partyType = kind ? partyKindLabel(kind).toLowerCase() : 'company or agency';
+  const jobDisplayName = sharedPrefetch ? jobName : query || jobName;
+  const partyType = jobStatusKind ? partyKindLabel(jobStatusKind).toLowerCase() : 'company or agency';
   const jobDetail = `Searching for the ${partyType} in HMS.`;
+  const jobStatusSurface = Boolean(
+    showJobStatus &&
+      (partyJob.queuing ||
+        partyJob.queueFailed ||
+        partyJob.statusFailed ||
+        (currentJobView && currentJobView.status !== 'done')),
+  );
   const jobReadBackPending = Boolean(
     jobTransport && jobResume && !partyJob.readBackSettled && !partyJob.statusFailed,
+  );
+  const autoStatusHasLine = Boolean(
+    autoMemoKey &&
+      !pickedHere &&
+      shown.status === 'idle' &&
+      (!autoReply || (!autoBest && autoRows.length === 0)),
+  );
+  const hasAutoResults = Boolean(autoBest || autoRows.length);
+  const showAutoResults = Boolean(
+    autoMemoKey && !pickedHere && shown.status === 'idle' && autoReply && hasAutoResults,
+  );
+  const showJobReadBackPending = Boolean(
+    jobReadBackStatusOwner &&
+      jobReadBackPending &&
+      !partyJob.queuing &&
+      !partyJob.queueFailed &&
+      !partyJob.statusFailed &&
+      !currentJobView &&
+      !autoStatusHasLine,
+  );
+  const showAutoProgress = Boolean(
+    autoMemoKey &&
+      !pickedHere &&
+      shown.status === 'idle' &&
+      !showAutoResults &&
+      !jobStatusSurface &&
+      !showJobReadBackPending,
   );
   const jobBusy = Boolean(
     partyJob.queuing || (jobResume && !partyJob.readBackSettled),
@@ -879,6 +960,20 @@ export function PartyPicker({
         className="flex flex-col gap-1.5 text-[12.5px] text-[#64748b]"
       >
         <span className="text-[12.5px] font-semibold text-[#334155]">{label}</span>
+        {v2BoundForField && !pickedHere && !confirmed ? (
+          <div className="flex flex-col gap-0.5" aria-label="Recommended match from HMS">
+            <p className="text-[12.5px] font-semibold text-[#334155]">
+              {partyRecommendationLabel(
+                candidateDisplayLabel(v2BoundForField),
+                v2RecommendationReason,
+              )}
+            </p>
+            <HmsAsOf asOf={v2RecommendationStamp} />
+          </div>
+        ) : null}
+        {!fieldPreset && v2NeedsPick ? (
+          <p className="text-[10.5px] font-semibold text-[#334155]">{PARTY_NO_MATCH_CLOSEST}</p>
+        ) : null}
         {confirmed && fieldPreset ? (
           <div className="flex min-w-0 items-center gap-1.5 text-[12.5px] font-semibold text-[#166534]">
             <Check aria-hidden="true" className="h-4 w-4 shrink-0" />
@@ -944,6 +1039,7 @@ export function PartyPicker({
                   title={`Confirm ${label}`}
                   className="rounded-[3px] p-1 text-[#166534] hover:bg-[#f0fdf4]"
                   onClick={() => {
+                    if (v2PartyJob && !v2PropertyOk) return;
                     onPick({
                       kind: fieldPreset.kind,
                       nativeId: fieldPreset.nativeId,
@@ -961,7 +1057,7 @@ export function PartyPicker({
         ) : (
           searchForm
         )}
-        {showAutoStatus ? (
+        {showAutoProgress ? (
           autoReply ? (
             autoBest || autoRows.length ? null : (
               <Notice
@@ -978,19 +1074,24 @@ export function PartyPicker({
             />
           )
         ) : null}
-        {jobReadBackPending ? <p role="status">Checking for a background HMS lookup…</p> : null}
+        {showJobReadBackPending ? <p role="status">Checking for a background HMS lookup…</p> : null}
         {jobTransport ? (
           <HmsJobStatusLine
             view={currentJobView}
             queuing={partyJob.queuing}
             detail={jobDetail}
             onRetry={partyJob.retry}
+            visible={showJobStatus}
             statusFailed={partyJob.statusFailed}
             queueFailed={partyJob.queueFailed}
-            failureMessage={partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
-            failedMessage={partySearchTimedOut ? timeoutMessage : partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
+            failureMessage={partyNoCandidateNote(jobFailureOutcome, jobStatusKind, jobDisplayName)}
+            failedMessage={
+              partySearchTimedOut
+                ? timeoutMessage
+                : partyNoCandidateNote(jobFailureOutcome, jobStatusKind, jobDisplayName)
+            }
             queueFailureMessage={
-              partyJob.queueFailureMessage ?? partyNoCandidateNote('execution_failure', kind, query)
+              partyJob.queueFailureMessage ?? partyNoCandidateNote('execution_failure', jobStatusKind, query)
             }
           />
         ) : null}
@@ -1056,41 +1157,42 @@ export function PartyPicker({
       {Boolean(autoMemoKey) && pickedHere && autoRows.length ? (
         <ResultChips label="Also in HMS:" rows={autoRows} onPick={pickRow} />
       ) : null}
-      {showAutoStatus ? (
-        autoReply ? (
-          <div className="flex flex-col gap-1">
-            {autoBest ? (
-              <div className="flex flex-col gap-1" aria-label="Suggested match from HMS">
-                <p>{PARTY_PREFETCH_HINT}</p>
-                <button
-                  type="button"
-                  className="w-fit rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
-                  aria-label={`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
-                  title={autoBest.nativeId}
-                  onClick={() => pickRow(autoBest)}
-                >
-                  {`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
-                </button>
-                {autoOtherRows.length ? (
-                  <ResultChips
-                    label="Other matches in HMS:"
-                    rows={autoOtherRows}
-                    allRows={autoRows}
-                    onPick={pickRow}
-                  />
-                ) : null}
-              </div>
-            ) : autoRows.length ? (
-              <ResultChips label="Found in HMS:" rows={autoRows} onPick={pickRow} />
-            ) : (
-              <Notice
-                tone={autoReply.outcome === 'no_match' && !autoReply.truncated ? 'info' : 'warn'}
-                role="status"
+      {showAutoResults ? (
+        <div className="flex flex-col gap-1">
+          {autoBest ? (
+            <div className="flex flex-col gap-1" aria-label="Suggested match from HMS">
+              <p>{PARTY_PREFETCH_HINT}</p>
+              <button
+                type="button"
+                className="w-fit rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
+                aria-label={`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
+                title={autoBest.nativeId}
+                onClick={() => pickRow(autoBest)}
               >
-                {noCandidateNote(autoReply, kind, query)}
-              </Notice>
-            )}
-          </div>
+                {`Confirm ${candidateChoiceLabel(autoBest, autoDuplicateNames)}`}
+              </button>
+              {autoOtherRows.length ? (
+                <ResultChips
+                  label="Other matches in HMS:"
+                  rows={autoOtherRows}
+                  allRows={autoRows}
+                  onPick={pickRow}
+                />
+              ) : null}
+            </div>
+          ) : (
+            <ResultChips label="Found in HMS:" rows={autoRows} onPick={pickRow} />
+          )}
+        </div>
+      ) : null}
+      {showAutoProgress ? (
+        autoReply ? (
+          <Notice
+            tone={autoReply.outcome === 'no_match' && !autoReply.truncated ? 'info' : 'warn'}
+            role="status"
+          >
+            {noCandidateNote(autoReply, kind, query)}
+          </Notice>
         ) : (
           <HmsLookupProgress
             pending
@@ -1098,25 +1200,50 @@ export function PartyPicker({
           />
         )
       ) : null}
-      {jobReadBackPending ? <p role="status">Checking for a background HMS lookup…</p> : null}
+      {showJobReadBackPending ? <p role="status">Checking for a background HMS lookup…</p> : null}
       {jobTransport ? (
         <HmsJobStatusLine
           view={currentJobView}
           queuing={partyJob.queuing}
           detail={jobDetail}
           onRetry={partyJob.retry}
+          visible={showJobStatus}
           statusFailed={partyJob.statusFailed}
           queueFailed={partyJob.queueFailed}
-          failureMessage={partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
-          failedMessage={partySearchTimedOut ? timeoutMessage : partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
+          failureMessage={partyNoCandidateNote(jobFailureOutcome, jobStatusKind, jobDisplayName)}
+          failedMessage={
+            partySearchTimedOut
+              ? timeoutMessage
+              : partyNoCandidateNote(jobFailureOutcome, jobStatusKind, jobDisplayName)
+          }
           queueFailureMessage={
-            partyJob.queueFailureMessage ?? partyNoCandidateNote('execution_failure', kind, query)
+            partyJob.queueFailureMessage ?? partyNoCandidateNote('execution_failure', jobStatusKind, query)
           }
         />
       ) : null}
+      {v2BoundForField ? (
+        <div className="flex flex-col gap-1" aria-label="Recommended match from HMS">
+          <p className="text-[12.5px] font-semibold text-[#334155]">
+            {partyRecommendationLabel(
+              candidateDisplayLabel(v2BoundForField),
+              v2RecommendationReason,
+            )}
+          </p>
+          <HmsAsOf asOf={v2RecommendationStamp} />
+          <button
+            type="button"
+            className="w-fit rounded-[3px] border border-[#0066cc] bg-white px-2 py-0.5 text-[12.5px] font-semibold text-[#0066cc] hover:bg-[#eff6ff]"
+            aria-label={`Confirm ${candidateChoiceLabel(v2BoundForField, duplicateCandidateNames(v2ResultRows))}`}
+            title={v2BoundForField.nativeId}
+            onClick={() => pickRow(v2BoundForField)}
+          >
+            {`Confirm ${candidateChoiceLabel(v2BoundForField, duplicateCandidateNames(v2ResultRows))}`}
+          </button>
+        </div>
+      ) : null}
       {v2NeedsPick ? (
         <div className="flex flex-col gap-1" aria-label="Party match needs a pick">
-          <p className="text-[10.5px] font-semibold text-[#334155]">Pick the company/agency</p>
+          <p className="text-[10.5px] font-semibold text-[#334155]">{PARTY_NO_MATCH_CLOSEST}</p>
           {v2Alternatives.length ? (
             <PartyAlternatives
               key={v2DisplayJobView?.runId}

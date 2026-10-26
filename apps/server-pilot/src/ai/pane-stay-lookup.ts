@@ -6,6 +6,7 @@ import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import {
   acquisitionWithin,
@@ -124,6 +125,8 @@ export type PaneStayGuestSearchResult = {
   /** File names only. The files stay in the lookup run directory. */
   screenshots: string[];
   runId: string | null;
+  /** Login-phase failure code for queue parking. Absent on ordinary search results. */
+  error?: string;
 };
 
 /** What one stay-lookup.mjs run reports in its result.json. Screenshots are absolute paths. */
@@ -261,14 +264,24 @@ export function isGuestSurname(value: string): boolean {
   return value.length >= 2 && value.length <= 40 && GUEST_SURNAME_PATTERN.test(value);
 }
 
-export function buildStayLookupArgs(input: PaneStayLookupSpawnInput, outDir: string): string[] {
+export function buildStayLookupArgs(
+  input: PaneStayLookupSpawnInput,
+  outDir: string,
+  propertyCode: string,
+): string[] {
+  const code = typeof propertyCode === 'string' ? propertyCode.trim() : '';
+  if (!code) throw new Error('PROPERTY_REQUIRED');
   if (input.mode === 'find') {
-    const args = [STAY_LOOKUP, '--mode', 'find', '--confirmation', input.confirmation, '--out', outDir];
+    const args = [
+      STAY_LOOKUP, '--property', code, '--mode', 'find', '--confirmation', input.confirmation, '--out', outDir,
+    ];
     if (input.arrival) args.push('--arrival', input.arrival);
     return args;
   }
   const args = [
     STAY_LOOKUP,
+    '--property',
+    code,
     '--mode',
     'search-guest',
     '--last-name',
@@ -293,6 +306,10 @@ function refused(outcome: PaneStayFindResult['outcome']): PaneStayFindResult {
     screenshots: [],
     runId: null,
   };
+}
+
+function lookupLoginOutageCode(value: unknown): string | null {
+  return classifyHmsLoginOutage(value) ? 'AUTHENTICATED_SHELL_TIMEOUT' : null;
 }
 
 const FIND_OUTCOMES: ReadonlySet<string> = new Set(['found', 'not_found', 'ambiguous', 'execution_failure']);
@@ -379,7 +396,7 @@ async function defaultSpawn(
   await mkdir(dir, { mode: 0o700 });
   let runError: unknown = null;
   try {
-    await execFileAsync('node', buildStayLookupArgs(input, dir), {
+    await execFileAsync('node', buildStayLookupArgs(input, dir, target.propertyCode), {
       timeout: LOOKUP_TIMEOUT_MS,
       env: paneStaySpawnEnv(process.env, undefined, target),
     });
@@ -398,9 +415,11 @@ async function defaultSpawn(
     const cliError = (result as { error?: string }).error ?? 'pane_lookup_execution_failure';
     warnPaneStaySpawnFailed(input.mode, new Error(cliError));
   }
+  const cliError = (result as { error?: string }).error;
+  const loginCode = lookupLoginOutageCode(cliError) ?? lookupLoginOutageCode(result);
   return {
     outcome: result.outcome ?? 'execution_failure',
-    reason: result.reason ?? null,
+    reason: result.reason ?? loginCode ?? null,
     stay: result.stay ?? null,
     ...(result.commercial ? { commercial: result.commercial } : {}),
     rows: result.rows ?? [],
@@ -437,6 +456,8 @@ export async function findStay(input: PaneStayFindInput, deps: PaneStayLookupDep
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return refused('refused_lock_busy');
     warnPaneStaySpawnFailed('find', error);
+    const loginCode = lookupLoginOutageCode(error);
+    if (loginCode) return { ...refused('execution_failure'), reason: loginCode };
     return refused('execution_failure');
   }
   if (run.runId && run.runDir) deps.onRun?.({ runId: run.runId, dir: run.runDir });
@@ -529,15 +550,19 @@ export async function searchGuest(
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return refusedSearch('refused_lock_busy');
     warnPaneStaySpawnFailed('search-guest', error);
+    const loginCode = lookupLoginOutageCode(error);
+    if (loginCode) return { ...refusedSearch('execution_failure'), error: loginCode };
     return refusedSearch('execution_failure');
   }
   if (run.runId && run.runDir) deps.onRun?.({ runId: run.runId, dir: run.runDir });
   const outcome = toSearchOutcome(run.outcome);
+  const loginCode = lookupLoginOutageCode(run.reason) ?? lookupLoginOutageCode(run);
   return {
     outcome,
     rows: outcome === 'ok' ? rowsOnRequestedDates(toPanelRows(run.rows), input) : [],
     screenshots: run.screenshots.map((path) => basename(path)),
     runId: run.runId ?? null,
+    ...(loginCode ? { error: loginCode } : {}),
   };
 }
 

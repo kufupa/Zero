@@ -1,6 +1,7 @@
-// Pane side of the HMS save path. Preview fills the stay in HMS and checks availability; Book saves it.
-// The server answers only when RESERVATIONIST_PANE_SAVE is lab or on (brain.getCapabilities.paneSave). Every
-// refusal the server can return is mapped here to plain words plus the next step.
+// Pane bindings for saved availability reads and the HMS stay-save path. Save calls require the pane-save mode;
+// availability reads only return an already-stored admission result and never start an HMS read.
+
+import type { StayGroupRequirement } from './types';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -71,7 +72,7 @@ export type PaneSaveMode = 'off' | 'lab' | 'on';
 
 export type PaneStayParty = { nativeId?: string; name: string };
 
-// The stay as the server takes it (paneStayInput). Key order is fixed so the field key is stable.
+// The client Book fields. Key order is fixed so edits invalidate the matching preview.
 export type PaneStayInput = {
   firstName: string;
   lastName: string;
@@ -83,6 +84,8 @@ export type PaneStayInput = {
   roomType: string;
   ratePlan: string;
   track: string;
+  marketSegment?: string;
+  guestoptin4: boolean;
   guaranteeType: string;
   bookingAgency?: PaneStayParty;
   organization?: PaneStayParty;
@@ -102,6 +105,53 @@ export type PaneStayResult = {
   screenshots?: string[];
 };
 
+export type PaneStayAvailabilityRequest = {
+  threadId: string;
+  kind: 'availability';
+  arrival: string;
+  departure: string;
+  rooms: Array<{ roomType: string; quantity: number; adults: number; childAges: number[] }>;
+};
+
+export type PaneStayAvailabilityJobView = {
+  status: 'queued' | 'running' | 'retrying' | 'done' | 'failed';
+  asOf: string | null;
+  result: Record<string, unknown> | null;
+};
+
+/** Reads the already-stored admission result; it never starts or polls an HMS read. */
+export type PaneStayAvailabilityReader = (
+  request: PaneStayAvailabilityRequest,
+) => Promise<PaneStayAvailabilityJobView | null>;
+
+/** The job route keys an admitted snapshot by thread, dates, and the ordered room groups. */
+export function paneStayAvailabilityRequestFor(
+  threadId: string | undefined,
+  rows: readonly StayGroupRequirement[],
+): PaneStayAvailabilityRequest | null {
+  const first = rows[0];
+  const arrival = first?.arrivalDate;
+  const departure = first?.departureDate;
+  if (!threadId?.trim() || !arrival || !departure || rows.length === 0 || rows.length > 8) return null;
+  if (!DATE_PATTERN.test(arrival) || !DATE_PATTERN.test(departure)) return null;
+
+  const rooms: PaneStayAvailabilityRequest['rooms'] = [];
+  for (const row of rows) {
+    const { quantity, adults, childrenAges, roomPreference } = row;
+    if (
+      row.arrivalDate !== arrival ||
+      row.departureDate !== departure ||
+      !roomPreference?.trim() ||
+      typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity < 1 ||
+      typeof adults !== 'number' || !Number.isInteger(adults) || adults < 1 ||
+      !Array.isArray(childrenAges)
+    ) return null;
+    rooms.push({ roomType: roomPreference, quantity, adults, childAges: childrenAges });
+  }
+
+  return { threadId, kind: 'availability', arrival, departure, rooms };
+}
+
 export type PaneStayClient = {
   preview: (stay: PaneStayInput) => Promise<PaneStayResult>;
   commit: (stay: PaneStayInput, previewDigest: string) => Promise<PaneStayResult>;
@@ -109,6 +159,7 @@ export type PaneStayClient = {
   screenshot: (runId: string, name: string) => Promise<string | null>;
   /** The mode the server reported through this client's readPaneSaveFlag. null until that read has answered. */
   mode?: () => PaneSaveMode | null;
+  readAvailability?: PaneStayAvailabilityReader;
 };
 
 type PaneStayTrpc = {
@@ -134,6 +185,9 @@ type PaneStayTrpc = {
         paneWrite?: { create?: unknown };
       }>;
     };
+  };
+  paneStayLookup?: {
+    jobStatus?: { query: PaneStayAvailabilityReader };
   };
 };
 
@@ -165,6 +219,10 @@ export function paneSaveModeOf(
 export function paneStayFromTrpc(trpc: unknown): PaneStayClient {
   const row = (trpc ?? {}) as PaneStayTrpc;
   return {
+    readAvailability: async (input) => {
+      const status = row.paneStayLookup?.jobStatus;
+      return status ? status.query(input) : null;
+    },
     preview: async (stay) => {
       const previewStay = row.quoteWorkflow?.previewStay;
       if (!previewStay) throw new Error('pane_save_client_missing');
@@ -202,6 +260,8 @@ export type PaneStayChoice = {
   roomType: string;
   track: string;
   sourceOfBusiness: string;
+  marketSegment?: string;
+  guestoptin4?: boolean;
   guaranteeType: string;
   ratePlan?: string;
   firstName?: string;
@@ -227,6 +287,7 @@ export function paneStayInputForRoom(
   const departure = text(request.departure);
   const roomType = text(choice.roomType);
   const ratePlan = text(choice.ratePlan ?? request.ratePlan);
+  const marketSegment = text(choice.marketSegment);
   const adultsRaw = request.adults;
   const adults =
     typeof adultsRaw === 'number'
@@ -279,6 +340,8 @@ export function paneStayInputForRoom(
       roomType,
       ratePlan,
       track: choice.track,
+      ...(marketSegment ? { marketSegment } : {}),
+      guestoptin4: choice.guestoptin4 === true,
       guaranteeType: choice.guaranteeType,
       ...(bookingAgency ? { bookingAgency: { name: bookingAgency } } : {}),
       ...(organization ? { organization: { name: organization } } : {}),

@@ -249,6 +249,7 @@ export type AiFailureClass =
   | 'HMS_LOCK_BUSY'
   | 'STAFF_QUOTE_ACTIVE'
   | 'WORKER_SHUTDOWN'
+  | 'HMS_OUTAGE'
   | 'UNKNOWN';
 
 const RETRYABLE_FAILURE_CLASSES: ReadonlySet<AiFailureClass> = new Set([
@@ -706,6 +707,10 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         candidate.readRequest && typeof candidate.readRequest === 'object' && !Array.isArray(candidate.readRequest)
           ? (candidate.readRequest as Record<string, unknown>)
           : null;
+      // Staff-clicked quotes: a 10-min wait is useless to someone at the pane.
+      // Background-prepared (`quotePrepared`) wait on a serial HMS lane (~60–100s
+      // each); a 9-strategy plan cannot fit that TTL. Source-hash/stillCurrent
+      // still refuse stale prepared work at run time. deadlineAt still applies.
       if (
         candidate.runKind === READ_TOOL_RUN_KIND &&
         candidate.executorLane === 'hms' &&
@@ -714,7 +719,9 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         candidate.state === 'queued' &&
         candidate.claimedAt === null &&
         candidate.attempts === 0 &&
-        candidate.createdAt.getTime() <= now.getTime() - HMS_STAFF_QUOTE_QUEUE_TTL_MS
+        (candidate.nextRunAt ?? candidate.createdAt).getTime() <=
+          now.getTime() - HMS_STAFF_QUOTE_QUEUE_TTL_MS &&
+        candidate.metrics?.quotePrepared !== true
       ) {
         await tx
           .update(aiWorkflowRun)

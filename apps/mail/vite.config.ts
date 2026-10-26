@@ -66,7 +66,8 @@ const plugins = [
 
 export default defineConfig({
   envDir: monorepoRoot,
-  plugins: [...plugins],
+  // Duplicate @types/node peers give Vite plugins incompatible type identities.
+  plugins: [...plugins] as unknown as import('vite').PluginOption[],
   define: {
     // One id per build. root.tsx writes it into index.html; the release script reads it and nginx serves
     // it, so an open pane can tell that a newer build is live (see lib/workstation/pane-release-watch.ts).

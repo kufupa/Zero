@@ -9,23 +9,18 @@ import {
   draftStayGroup,
   groupStays,
   isMultiStay,
-  newQuoteToken,
   partyLookupWaitReason,
   quoteRunBlockReason,
   requestedQuoteKeys,
   rowRoomCode,
   stayAskAction,
-  stayAskActionLabel,
-  stayAskGuests,
-  stayIdOf,
   stayKeyForGroup,
   staffSourceReady,
   stayTotals,
 } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
-import { EXTRA_AMOUNT_FORMAT_MESSAGE, parseCountInput, parseZarInput } from '@/lib/quote-workflow/zar-input';
-import { draftMoney } from '@/lib/quote-workflow/multi-option-draft';
-import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE, staffStayExtrasFor } from '@/lib/quote-workflow/types';
+import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE } from '@/lib/quote-workflow/types';
+import type { WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type {
@@ -35,23 +30,18 @@ import type {
   QuoteSession,
   QuoteToolStep,
   QuoteBoard,
-  RatePlanBoard,
   RatePlanCatalogueEntry,
   RateOption,
   RowPriceChoice,
   StaffQuoteHeader,
-  StaffExtraField,
-  StaffQuoteOtherUnit,
   StaffStayExtras,
   QuoteSalesStrategyCode,
   QuoteStrategyRow,
-  DinnerAddOnUnit,
-  StayEditAction,
+  QuoteStayAction,
   StayGroupRequirement,
   QuotePaneConfig,
 } from '@/lib/quote-workflow/types';
 import {
-  Disclosure,
   Field,
   LinkButton,
   Notice,
@@ -62,11 +52,13 @@ import {
   paneTextareaClass,
   StepState,
 } from '@/components/nava-pane/pane-ui';
-import { BOARD_LABELS, BookingCards } from './booking-card';
-import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
-import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
-import { PartyPicker } from './party-picker';
-import { DocumentReview, pdfBlockReason } from './document-review';
+import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
+import type { PaneStayAvailabilityReader, PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
+import { pdfBlockReason } from './document-review';
+import { QuoteBookingHost } from './quote-booking-host';
+import { QuoteDocumentsStep, type CurrentQuoteAction } from './quote-documents-step';
+import { QuotePeopleStep } from './quote-people-step';
+import { QuoteStayStep, StayAskChrome } from './quote-stay-step';
 import { useFailedHmsJobNoticeMessage } from './hms-job-notices';
 import { HmsQueueStatusLine } from './hms-queue-status';
 import { HmsTodoCard } from './hms-todo-card';
@@ -75,17 +67,17 @@ import { NeedsAnswerList } from './needs-answer-list';
 import { NotSupportedList } from './not-supported-list';
 import { PaneStatusLine } from './pane-status-line';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
-import { projectBarGrid, RateCards, type BarGridCell } from './rate-cards';
+import { projectBarGrid, RateCards } from './rate-cards';
+import { StayRateGrid } from './stay-rate-grid';
+import { filteredRateOptions, ratePlanChoices, RatePlanSelect } from './rate-plan-select';
 import {
-  CopyHmsNotesButton,
-  hmsNotesBlock,
   RowRateControls,
   savedPrice,
   useSavedRates,
   type SavedRate,
   type SavedRatesClient,
 } from './rate-controls';
-import { DEFAULT_ROOM_TYPES, StayCard } from './requirement-card';
+import { DEFAULT_ROOM_TYPES } from './requirement-card';
 import { ToolStepList } from './tool-step-list';
 import {
   matchConfiguredRoomType,
@@ -97,6 +89,13 @@ const TELL_NAVA_ENABLED = false;
 
 function analysingCopy(session: QuoteSession): string {
   return session.staffNote ? 'Nava is re-reading with your note…' : 'Nava is reading the email…';
+}
+
+/** Contract tags need the existing staff_quote read for a confirmed party. No new HMS read. */
+function confirmedPartyRead(header: StaffQuoteHeader, stayFound: boolean): boolean {
+  return (
+    stayFound && Boolean(header.parties?.company?.nativeId || header.parties?.agency?.nativeId)
+  );
 }
 
 /**
@@ -149,769 +148,6 @@ function CorrectionNote({
           </div>
         </form>
       ) : null}
-    </div>
-  );
-}
-
-/** Guests, action badge, and Find this booking. Quote stays still use StayCard under this; amend/cancel do not. */
-function StayAskChrome({
-  session,
-  stay,
-  onSelectStayKey,
-}: {
-  session: QuoteSession;
-  stay: { id: string; rows: StayGroupRequirement[] };
-  onSelectStayKey?: (stayKey: string) => void;
-}) {
-  const guests = stayAskGuests(session, stay.id);
-  const askAction = stayAskAction(session, stay.id);
-  const askLabel = stayAskActionLabel(askAction);
-  return (
-    <div className="flex flex-col gap-2">
-      {askLabel ? (
-        <span
-          aria-label="Stay action"
-          className="rounded-full bg-[#eaf4ee] px-2 py-0.5 text-[10.5px] font-semibold text-[#1a4332]"
-        >
-          {askLabel}
-        </span>
-      ) : null}
-      {guests.length ? (
-        <ul aria-label="Stay guests" className="flex flex-col gap-0.5 text-[13px] text-[#1e293b]">
-          {guests.map((guest, guestIndex) => (
-            <li key={`${stay.id}-guest-${guestIndex}`}>
-              {guest.name}
-              {guest.confirmationNumber ? ` · ${guest.confirmationNumber}` : ''}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-      {askAction === 'amend' || askAction === 'cancel' ? (
-        <SecondaryButton className="w-auto self-start" onClick={() => onSelectStayKey?.(stay.id)}>
-          Find this booking
-        </SecondaryButton>
-      ) : null}
-    </div>
-  );
-}
-
-function formatZarMinor(minor: number | undefined): string {
-  return minor !== undefined && minor > 0 ? (minor / 100).toFixed(2).replace(/\.00$/, '') : '';
-}
-
-/**
- * A rand amount typed by staff. Text that cannot be read, or an amount over the cap, stays on screen with an
- * inline message and is reported to the quote gate. The saved amount is not changed by it.
- */
-function ZarMinorInput({
-  ariaLabel,
-  minor,
-  disabled = false,
-  onMinorChange,
-  onErrorChange,
-}: {
-  ariaLabel: string;
-  minor: number | undefined;
-  disabled?: boolean;
-  onMinorChange: (minor: number | undefined) => void;
-  /** Reports unreadable or over-cap text to the quote gate; null once the text reads cleanly. */
-  onErrorChange?: (message: string | null) => void;
-}) {
-  const formatted = formatZarMinor(minor);
-  const [draft, setDraft] = useState(formatted);
-  const [focused, setFocused] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const report = (message: string | null) => {
-    setError(message);
-    onErrorChange?.(message);
-  };
-  useEffect(() => {
-    if (!focused && !error) setDraft(formatted);
-  }, [formatted, focused, error]);
-  const apply = (raw: string) => {
-    const result = parseZarInput(raw);
-    if (result.status === 'ok') {
-      report(null);
-      onMinorChange(result.minor);
-    } else if (result.status === 'empty') {
-      report(null);
-      onMinorChange(undefined);
-    } else {
-      report(result.status === 'partial' ? EXTRA_AMOUNT_FORMAT_MESSAGE : result.message);
-    }
-  };
-  return (
-    <>
-      <input
-        aria-label={ariaLabel}
-        disabled={disabled}
-        aria-invalid={error ? true : undefined}
-        className={paneFieldClass}
-        inputMode="decimal"
-        value={focused || error ? draft : formatted}
-        onFocus={() => {
-          setDraft(formatted);
-          setFocused(true);
-        }}
-        onBlur={() => {
-          setFocused(false);
-          apply(draft.replace(/\.$/, ''));
-        }}
-        onChange={(event) => {
-          setDraft(event.target.value);
-          apply(event.target.value);
-        }}
-      />
-      {error ? <span className="mt-0.5 block text-[13px] font-normal text-[#b45309]">{error}</span> : null}
-    </>
-  );
-}
-
-/** A whole number of trips or days, up to max. Anything else is reported to the quote gate and not saved. */
-function CountInput({
-  ariaLabel,
-  value,
-  max,
-  placeholder,
-  onValueChange,
-  onErrorChange,
-}: {
-  ariaLabel: string;
-  value: number | undefined;
-  max: number;
-  placeholder?: string;
-  onValueChange: (value: number | undefined) => void;
-  onErrorChange?: (message: string | null) => void;
-}) {
-  const formatted = value === undefined ? '' : String(value);
-  const [draft, setDraft] = useState(formatted);
-  const [focused, setFocused] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const report = (message: string | null) => {
-    setError(message);
-    onErrorChange?.(message);
-  };
-  useEffect(() => {
-    if (!focused && !error) setDraft(formatted);
-  }, [formatted, focused, error]);
-  const apply = (raw: string) => {
-    const result = parseCountInput(raw, max);
-    if (result.status === 'ok') {
-      report(null);
-      onValueChange(result.count);
-    } else if (result.status === 'empty') {
-      report(null);
-      onValueChange(undefined);
-    } else {
-      report(result.message);
-    }
-  };
-  return (
-    <>
-      <input
-        aria-label={ariaLabel}
-        aria-invalid={error ? true : undefined}
-        className={paneFieldClass}
-        inputMode="numeric"
-        placeholder={placeholder}
-        value={focused || error ? draft : formatted}
-        onFocus={() => {
-          setDraft(formatted);
-          setFocused(true);
-        }}
-        onBlur={() => {
-          setFocused(false);
-          apply(draft);
-        }}
-        onChange={(event) => {
-          setDraft(event.target.value);
-          apply(event.target.value);
-        }}
-      />
-      {error ? <span className="mt-0.5 block text-[13px] font-normal text-[#b45309]">{error}</span> : null}
-    </>
-  );
-}
-
-function withoutFieldErrors(
-  errors: Partial<Record<StaffExtraField, string>> | undefined,
-  fields: StaffExtraField[],
-): Partial<Record<StaffExtraField, string>> {
-  const kept = { ...errors };
-  for (const field of fields) delete kept[field];
-  return kept;
-}
-
-/** Editing a field away from its picked name drops that pick, so the quote never sends a party the text no longer names. */
-function pickClearedBy(kind: 'company' | 'agency', header: StaffQuoteHeader, text: string): Partial<StaffQuoteHeader> {
-  const picked = header.parties?.[kind];
-  if (!picked || text === picked.name) return {};
-  return { parties: { ...header.parties, [kind]: undefined } };
-}
-
-type RatePlanCategory = 'public' | 'contract' | 'government' | 'other';
-type RatePlanChoice = RatePlanCatalogueEntry & {
-  category: RatePlanCategory;
-  readByNava: boolean;
-};
-
-const RATE_OPTION_BOARD: Record<RateOption['board'], RatePlanBoard> = {
-  room_only: 'room_only',
-  bb: 'bed_breakfast',
-  dinner_bb: 'dinner_bed_breakfast',
-};
-
-function ratePlanCategory(entry: RatePlanCatalogueEntry): RatePlanCategory {
-  if (entry.event) return 'other';
-  if (entry.government) return 'government';
-  if (entry.contract) return 'contract';
-  return 'public';
-}
-
-const PUBLIC_RATE_CODES = new Set(['BAR', 'BARRO']);
-const GRID_TAG_LABEL: Record<Exclude<RatePlanCategory, 'other'>, string> = {
-  public: 'Public',
-  government: 'Government',
-  contract: 'Contract',
-};
-
-/** Contract tags need the existing staff_quote read for a confirmed party. No new HMS read. */
-function confirmedPartyRead(header: StaffQuoteHeader, stayFound: boolean): boolean {
-  return (
-    stayFound && Boolean(header.parties?.company?.nativeId || header.parties?.agency?.nativeId)
-  );
-}
-
-/**
- * Grid tag from facts already on the board cell. Contract only when the party read ran and this
- * cell's rateScope is contextual. Never from a public code or the catalogue contract flag.
- */
-function gridRateTag(
-  rateCode: string,
-  rateScope: BarGridCell['rateScope'],
-  args: {
-    contractChecked: boolean;
-    plans: readonly RatePlanChoice[];
-  },
-): Exclude<RatePlanCategory, 'other'> | null {
-  const code = rateCode.trim().toUpperCase();
-  if (!code) return null;
-  const plan = args.plans.find((item) => item.code === code);
-  if (args.contractChecked && rateScope === 'contextual') return 'contract';
-  if (plan?.category === 'government') return 'government';
-  if (rateScope === 'public' || PUBLIC_RATE_CODES.has(code) || plan?.category === 'public') return 'public';
-  return null;
-}
-
-/** Add HMS-only codes without treating their labels or flags as static catalogue facts. */
-function ratePlanChoices(
-  catalogue: readonly RatePlanCatalogueEntry[],
-  hmsOptions: readonly RateOption[],
-): RatePlanChoice[] {
-  const readByNavaCodes = new Set(
-    hmsOptions.map((option) => option.rateCode.trim().toUpperCase()).filter(Boolean),
-  );
-  const choices = new Map<string, RatePlanChoice>();
-  for (const entry of catalogue) {
-    const code = entry.code.trim().toUpperCase();
-    if (code) {
-      choices.set(code, {
-        ...entry,
-        code,
-        category: ratePlanCategory(entry),
-        readByNava: readByNavaCodes.has(code),
-      });
-    }
-  }
-  for (const option of hmsOptions) {
-    const code = option.rateCode.trim().toUpperCase();
-    if (!code || choices.has(code)) continue;
-    const event = option.hint === 'event_rate';
-    choices.set(code, {
-      code,
-      name: code,
-      board: RATE_OPTION_BOARD[option.board],
-      ...(event ? { event: true } : {}),
-      ...(option.contract ? { contract: true } : {}),
-      category: event ? 'other' : option.contract ? 'contract' : 'other',
-      readByNava: true,
-    });
-  }
-  return [...choices.values()];
-}
-
-function filteredRateOptions(
-  options: RateOption[],
-  selectedPlan: string,
-  choices: RatePlanChoice[],
-): RateOption[] {
-  if (selectedPlan === 'all') return options;
-  if (selectedPlan === 'government' || selectedPlan === 'public') {
-    // Public (BAR) is every code that is not a government code, so it still filters with no catalogue.
-    const governmentCodes = new Set(
-      choices.filter((choice) => choice.category === 'government').map((choice) => choice.code),
-    );
-    // No government category is known (the catalogue query failed, or HMS-only codes): the search already
-    // priced under Government, so show what HMS returned instead of hiding every rate.
-    if (selectedPlan === 'government' && governmentCodes.size === 0) return options;
-    const wantGovernment = selectedPlan === 'government';
-    return options.filter(
-      (option) => governmentCodes.has(option.rateCode.trim().toUpperCase()) === wantGovernment,
-    );
-  }
-  const selected = selectedPlan.toUpperCase();
-  return options.filter((option) => option.rateCode.trim().toUpperCase() === selected);
-}
-
-/** Rate plan filters returned options. Contract eligibility still comes only from each HMS result. */
-function StaffPartyFields({
-  header,
-  onPatch,
-  onFieldEdit,
-  findParty,
-  partySuggestions,
-  partyIndex,
-  partyJobTransport,
-  threadId,
-  sourceMessageId,
-  onPartyLookupPending,
-}: {
-  header: StaffQuoteHeader;
-  onPatch?: (header: Partial<StaffQuoteHeader>) => void;
-  onFieldEdit?: (kind: 'company' | 'agency') => void;
-  /** Find in HMS. Null or absent keeps the company and agency as plain text, as before. */
-  findParty?: PartyFinder | null;
-  /** Suggestions from the email. The top name is preselected when V2 has not bound a party. */
-  partySuggestions?: PartySuggestion[];
-  /** The HMS list searched while staff type. Null or absent leaves only the live search. */
-  partyIndex?: PartyIndexSearcher | null;
-  partyJobTransport?: HmsJobTransport | null;
-  threadId?: string | null;
-  sourceMessageId?: string | null;
-  /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
-  onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
-}) {
-  const partyPicker = (kind: 'company' | 'agency') => {
-    const label = kind === 'agency' ? 'Agency' : 'Company';
-    const value = kind === 'agency' ? header.agency : header.company;
-    const id = `quote-${kind}-name`;
-    if (!findParty) {
-      return (
-        <Field label={label} htmlFor={id}>
-          <input
-            id={id}
-            aria-label={label}
-            className={paneFieldClass}
-            value={value}
-            onChange={(event) => {
-              const searched = event.target.value;
-              onFieldEdit?.(kind);
-              onPatch?.({
-                ...(kind === 'company' ? { company: searched } : { agency: searched }),
-                ...pickClearedBy(kind, header, searched),
-              });
-            }}
-          />
-        </Field>
-      );
-    }
-    return (
-      <PartyPicker
-        autoLookup
-        kind={kind}
-        name={value}
-        parties={header.parties ?? {}}
-        find={findParty}
-        jobTransport={partyJobTransport}
-        threadId={threadId}
-        sourceMessageId={sourceMessageId}
-        suggestions={partySuggestions}
-        indexSearch={partyIndex}
-        onLookupPending={(pending) => onPartyLookupPending?.(kind, pending)}
-        onPick={(party) => {
-          onFieldEdit?.(kind);
-          return onPatch?.({
-            parties:
-              party.kind === 'company'
-                ? { ...header.parties, company: party }
-                : { ...header.parties, agency: party },
-            ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }),
-          });
-        }}
-        onClear={(cleared) => {
-          onFieldEdit?.(cleared);
-          return onPatch?.({
-            parties:
-              cleared === 'company'
-                ? { ...header.parties, company: undefined }
-                : { ...header.parties, agency: undefined },
-          });
-        }}
-        onSearchName={(searched, searchKind) => {
-          onFieldEdit?.(searchKind);
-          return onPatch?.({
-            ...(searchKind === 'company' ? { company: searched } : { agency: searched }),
-            ...pickClearedBy(searchKind, header, searched),
-          });
-        }}
-      />
-    );
-  };
-  return (
-    <div className="flex flex-col gap-2.5">
-      {partyPicker('agency')}
-      <div aria-hidden="true" className="border-t border-[#e2e8f0]" />
-      {partyPicker('company')}
-    </div>
-  );
-}
-
-/** Reports one stay extra's unreadable value without treating validation as a quote edit. */
-function stayFieldErrorReporter(
-  extras: StaffStayExtras,
-  onPatch: ((stayKey: string, extras: Partial<StaffStayExtras>) => void) | undefined,
-  stayKey: string,
-  field: StaffExtraField,
-) {
-  return (message: string | null) => {
-    const current = extras.fieldErrors ?? {};
-    if ((current[field] ?? null) === message) return;
-    const next: Partial<Record<StaffExtraField, string>> = { ...current };
-    if (message) next[field] = message;
-    else delete next[field];
-    onPatch?.(stayKey, { fieldErrors: next });
-  };
-}
-
-function StayExtrasFields({
-  header,
-  stayKey,
-  stayNumber,
-  onPatch,
-}: {
-  header: StaffQuoteHeader;
-  stayKey: string;
-  stayNumber: number;
-  onPatch?: (stayKey: string, extras: Partial<StaffStayExtras>) => void;
-}) {
-  const extras = staffStayExtrasFor(header, stayKey);
-  const patch = (values: Partial<StaffStayExtras>) => onPatch?.(stayKey, values);
-  const clearedErrors = (...fields: StaffExtraField[]) => withoutFieldErrors(extras.fieldErrors, fields);
-  const otherNeedsLabel = Boolean(extras.otherEnabled && extras.other?.amountMinor) && !extras.other?.label?.trim();
-  const chargeLine = (
-    label: 'Shuttle' | 'Lunch allowance' | 'Dinner allowance' | 'Other',
-    enabled: boolean,
-    onEnabled: (checked: boolean) => void,
-    amountLabel: string,
-    amount: number | undefined,
-    onAmountChange: (minor: number | undefined) => void,
-    errorField: StaffExtraField,
-    required = false,
-  ) => (
-    <div className="grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-x-2 gap-y-1.5 border-t border-[#e2e8f0] pt-2 first:border-t-0 first:pt-0">
-      <label className="flex min-w-0 items-center gap-2 text-[13px] font-semibold text-[#475569]">
-        <input
-          type="checkbox"
-          aria-label={label}
-          checked={enabled}
-          disabled={required}
-          onChange={(event) => onEnabled(event.target.checked)}
-        />
-        <span>{label}</span>
-      </label>
-      <ZarMinorInput
-        ariaLabel={amountLabel}
-        minor={amount}
-        disabled={!enabled}
-        onMinorChange={onAmountChange}
-        onErrorChange={stayFieldErrorReporter(extras, onPatch, stayKey, errorField)}
-      />
-      {label === 'Shuttle' && enabled ? (
-        <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
-          <span>Trips</span>
-          <CountInput
-            ariaLabel="Shuttle trips"
-            value={extras.shuttleTrips}
-            max={50}
-            placeholder="1"
-            onValueChange={(shuttleTrips) => patch({ shuttleTrips })}
-            onErrorChange={stayFieldErrorReporter(extras, onPatch, stayKey, 'shuttleTrips')}
-          />
-        </label>
-      ) : null}
-      {label === 'Lunch allowance' && enabled ? (
-        <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
-          <span>Note (optional)</span>
-          <input
-            aria-label="Lunch label"
-            className={paneFieldClass}
-            maxLength={120}
-            value={extras.lunchAllowanceLabel ?? ''}
-            onChange={(event) => patch({ lunchAllowanceLabel: event.target.value })}
-          />
-        </label>
-      ) : null}
-      {label === 'Dinner allowance' && enabled ? (
-        <>
-          <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
-            <span>Charging unit</span>
-            <select
-              aria-label="Dinner add-on unit"
-              className={paneFieldClass}
-              value={extras.dinnerAllowanceUnit ?? ''}
-              onChange={(event) => patch({ dinnerAllowanceUnit: event.target.value as DinnerAddOnUnit | undefined })}
-            >
-              <option value="">Choose a unit</option>
-              <option value="per_person_per_night">Per person per night</option>
-              <option value="per_room_per_night">Per room per night</option>
-              <option value="per_person">Per person</option>
-            </select>
-          </label>
-          <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
-            <span>Label (optional)</span>
-            <input
-              aria-label="Dinner label"
-              className={paneFieldClass}
-              maxLength={120}
-              value={extras.dinnerAllowanceLabel ?? ''}
-              onChange={(event) => patch({ dinnerAllowanceLabel: event.target.value })}
-            />
-          </label>
-        </>
-      ) : null}
-      {label === 'Other' ? (
-        <>
-          <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
-            <span>Label</span>
-            <input
-              aria-label="Other label"
-              aria-invalid={otherNeedsLabel || undefined}
-              className={paneFieldClass}
-              disabled={!enabled}
-              maxLength={120}
-              placeholder="e.g. Parking"
-              value={extras.other?.label ?? ''}
-              onChange={(event) =>
-                patch({ other: { unit: extras.other?.unit ?? 'item', ...extras.other, label: event.target.value } })
-              }
-            />
-          </label>
-          <label className="col-span-2 grid grid-cols-[minmax(0,1fr)_minmax(6rem,8rem)] items-center gap-2 text-[13px] text-[#64748b]">
-            <span>Unit</span>
-            <select
-              aria-label="Other unit"
-              className={paneFieldClass}
-              disabled={!enabled}
-              value={extras.other?.unit ?? 'item'}
-              onChange={(event) =>
-                patch({
-                  other: {
-                    label: extras.other?.label ?? '',
-                    amountMinor: extras.other?.amountMinor,
-                    unit: event.target.value as StaffQuoteOtherUnit,
-                  },
-                })
-              }
-            >
-              <option value="per_person_night">R per person per night</option>
-              <option value="per_person">R per person</option>
-              <option value="per_trip">R per trip</option>
-              <option value="item">R once (item)</option>
-            </select>
-          </label>
-          {otherNeedsLabel ? <p className="col-span-2 text-[13px] text-[#b45309]">Add a label for this amount.</p> : null}
-        </>
-      ) : null}
-      {label === 'Dinner allowance' && required ? (
-        <p className="col-span-2 text-[13px] text-[#475569]">
-          {!(amount && amount > 0)
-            ? 'Dinner price — enter amount'
-            : !extras.dinnerAllowanceUnit
-              ? 'Choose how the dinner price is charged.'
-              : 'Run Get rates again to apply the dinner price before documents can be made.'}
-        </p>
-      ) : null}
-    </div>
-  );
-
-  return (
-    <section role="group" aria-label={`Extras for Stay ${stayNumber}`} className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2.5">
-      <h5 className="text-[13px] font-semibold text-[#475569]">Extras</h5>
-      {chargeLine(
-        'Shuttle',
-        extras.shuttleEnabled,
-        (shuttleEnabled) =>
-          patch({ shuttleEnabled, ...(!shuttleEnabled ? { fieldErrors: clearedErrors('shuttleAmount', 'shuttleTrips') } : {}) }),
-        'Shuttle amount',
-        extras.shuttleMinor,
-        (shuttleMinor) => patch({ shuttleMinor }),
-        'shuttleAmount',
-      )}
-      {chargeLine(
-        'Lunch allowance',
-        extras.lunchEnabled,
-        (lunchEnabled) => patch({ lunchEnabled, ...(!lunchEnabled ? { fieldErrors: clearedErrors('lunchAllowance') } : {}) }),
-        'Lunch allowance amount',
-        extras.lunchAllowanceMinor,
-        (lunchAllowanceMinor) => patch({ lunchAllowanceMinor }),
-        'lunchAllowance',
-      )}
-      {chargeLine(
-        'Dinner allowance',
-        extras.dinnerEnabled,
-        (dinnerEnabled) => patch({ dinnerEnabled, ...(!dinnerEnabled ? { fieldErrors: clearedErrors('dinnerAllowance') } : {}) }),
-        'Dinner allowance amount',
-        extras.dinnerAllowanceMinor,
-        (dinnerAllowanceMinor) => patch({ dinnerAllowanceMinor }),
-        'dinnerAllowance',
-        Boolean(extras.dinnerAllowanceRequired),
-      )}
-      {chargeLine(
-        'Other',
-        extras.otherEnabled,
-        (otherEnabled) => patch({ otherEnabled, ...(!otherEnabled ? { fieldErrors: clearedErrors('otherAmount') } : {}) }),
-        'Other amount',
-        extras.other?.amountMinor,
-        (amountMinor) => patch({ other: { label: extras.other?.label ?? '', unit: extras.other?.unit ?? 'item', amountMinor } }),
-        'otherAmount',
-      )}
-    </section>
-  );
-}
-
-function RatePlanSelect({
-  ratePlans,
-  ratePlan,
-  onRatePlanChange,
-}: {
-  ratePlans: RatePlanChoice[];
-  ratePlan: string;
-  onRatePlanChange: (value: string) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-3">
-      <Field label="Showing rates for" htmlFor="quote-rate-plan">
-        <select
-          id="quote-rate-plan"
-          aria-label="Rate plan"
-          className={paneFieldClass}
-          value={ratePlan}
-          onChange={(event) => onRatePlanChange(event.target.value)}
-        >
-          <option value="all">All rates</option>
-          {(['public', 'contract', 'government', 'other'] as const).map((category) => {
-            const plans = ratePlans
-              .filter((entry) => entry.category === category)
-              .sort((left, right) => Number(right.readByNava) - Number(left.readByNava));
-            // Public (BAR) and government keep their "All" choice even when the catalogue is down.
-            if (!plans.length && category !== 'government' && category !== 'public') return null;
-            const label = category === 'other' ? 'Other HMS rates' : `${category[0]!.toUpperCase()}${category.slice(1)}`;
-            return (
-              <optgroup key={category} label={label}>
-                {category === 'public' ? <option value="public">All public rates (BAR)</option> : null}
-                {category === 'government' ? <option value="government">All government rates</option> : null}
-                {plans.map((plan) => (
-                  <option key={plan.code} value={plan.code}>
-                    {plan.name === plan.code ? plan.code : `${plan.code}: ${plan.name}`}
-                    {plan.readByNava ? ' (read by Nava)' : ''}
-                  </option>
-                ))}
-              </optgroup>
-            );
-          })}
-        </select>
-        <span className="mt-0.5 block text-[13px] font-normal text-[#64748b]">
-          All rates shows every code HMS returned. Choosing a plan filters the cards below.
-        </span>
-      </Field>
-    </div>
-  );
-}
-
-/** Read-only BAR table with public / government / contract tags from the existing read. */
-function RatesBarGrid({
-  cells,
-  contractChecked,
-  plans,
-}: {
-  cells: BarGridCell[];
-  contractChecked: boolean;
-  plans: readonly RatePlanChoice[];
-}) {
-  if (!cells.length) return null;
-  return (
-    <div className="flex flex-col gap-1.5">
-      <h5 className="text-[13px] font-semibold text-[#475569]">BAR by room, rate and board</h5>
-      {contractChecked ? null : (
-        <p className="text-[12px] text-[#64748b]">Public rates — contract not checked</p>
-      )}
-      <table className="w-full border-collapse text-[12px]" aria-label="BAR by room, rate and board">
-        <thead>
-          <tr className="border-b border-[#e2e8f0] text-left text-[11px] font-semibold uppercase tracking-wide text-[#64748b]">
-            <th className="py-1 pr-2 font-semibold">Room</th>
-            <th className="py-1 pr-2 font-semibold">Rate</th>
-            <th className="py-1 pr-2 font-semibold">Board</th>
-            <th className="py-1 pr-2 font-semibold">Nightly</th>
-            <th className="py-1 pr-2 font-semibold">Rooms left</th>
-            <th className="py-1 font-semibold">Tag</th>
-          </tr>
-        </thead>
-        <tbody>
-          {cells.map((cell) => {
-            const tag = gridRateTag(cell.rateCode, cell.rateScope, { contractChecked, plans });
-            return (
-              <tr
-                key={`${cell.groupId}|${cell.roomCode}|${cell.rateCode}|${cell.board}`}
-                className="border-b border-[#f1f5f9] text-[#1e293b]"
-              >
-                <td className="py-1 pr-2">{`${cell.roomLabel} (${cell.roomCode})`}</td>
-                <td className="py-1 pr-2">{cell.rateCode}</td>
-                <td className="py-1 pr-2">{cell.boardLabel}</td>
-                <td className="py-1 pr-2">
-                  {cell.nightlyPriceMinor === null ? 'not checked' : draftMoney(cell.nightlyPriceMinor)}
-                </td>
-                <td className="py-1 pr-2">{cell.roomsLeft === null ? 'not checked' : String(cell.roomsLeft)}</td>
-                <td className="py-1">
-                  {tag ? (
-                    <span className="rounded-[2px] bg-[#eff6ff] px-1 py-px text-[10px] font-semibold text-[#0066cc]">
-                      {GRID_TAG_LABEL[tag]}
-                    </span>
-                  ) : null}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function HmsNotesFields({
-  notesBlock,
-  notes,
-  onNotesChange,
-}: {
-  notesBlock: string;
-  /** The staff note for HMS, stored on the quote header so it survives the pane and goes to the booking. */
-  notes: string;
-  onNotesChange: (value: string) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-3">
-      <Disclosure summary={<span>HMS notes (optional)</span>}>
-        <Field label="Notes for HMS" htmlFor="quote-hms-notes">
-          <textarea
-            id="quote-hms-notes"
-            aria-label="Notes for HMS"
-            className={paneTextareaClass}
-            placeholder="Add a staff note for the HMS handoff"
-            value={notes}
-            onChange={(event) => onNotesChange(event.target.value)}
-          />
-        </Field>
-        <CopyHmsNotesButton block={notesBlock} />
-      </Disclosure>
     </div>
   );
 }
@@ -992,7 +228,7 @@ function OfferCard({
   );
 }
 
-function hideQuoteWorkspace(phase: QuoteSession['phase']): boolean {
+export function hideQuoteWorkspace(phase: QuoteSession['phase']): boolean {
   return (
     phase === 'idle' ||
     phase === 'unsynced' ||
@@ -1117,50 +353,9 @@ function stayRatesBlockReason(
 /** A row price or rate change waiting to reach the session. Once every `check` has landed, the stay re-runs. */
 type PinRun = { stepId: string; changes: { groupId: string; check: Partial<StayGroupRequirement> }[] };
 type QueuedStayRun = { stepId: string; selectionEpoch: number };
-type CurrentQuoteAction =
-  | { kind: 'scroll'; targetId: string; label: string }
-  | { kind: 'search'; label: string }
-  | { kind: 'documents'; label: string };
-
 /** Equal for a session check. A cleared price (undefined) matches a row with no price. */
 function sameValue(current: unknown, wanted: unknown): boolean {
   return JSON.stringify(current) === JSON.stringify(wanted);
-}
-
-/** The generated room/rate summary remains available to copy alongside the editable handoff note. */
-function quoteNotesBlock(
-  session: QuoteSession,
-  rowLabels: ReadonlyMap<string, string>,
-  contact: StoredContact | null | undefined,
-): string {
-  const confirmation = session.analysis?.amendment?.confirmationNumber;
-  return hmsNotesBlock({
-    booker: contact?.name,
-    company: contact?.company,
-    confirmations: confirmation ? [confirmation] : [],
-    rooms: session.groups.map((group) => {
-      const rowRate = session.staffQuotes[stayKeyForGroup(group)]?.rowRates?.find((item) => item.groupId === group.id);
-      const override = group.rowPrice?.source === 'override' ? group.rowPrice : null;
-      const saved = group.rowPrice?.source === 'saved' ? group.rowPrice : null;
-      const code = rowRate?.rateCode ?? override?.rateCode ?? group.rateCode;
-      const option = (session.rateOptions ?? []).find((item) => item.groupId === group.id && item.rateCode === code);
-      return {
-        label: rowLabels.get(group.id) ?? 'Room',
-        specialRequests: group.specialRequests,
-        authorisedBy: override?.note,
-        rate: {
-          code,
-          label: rowRate?.customRateName ?? saved?.name ?? option?.rateLabel,
-          nightlyMinor: rowRate?.nightlyMinor ?? (group.rowPrice ? [group.rowPrice.amountMinor] : undefined),
-          stay:
-            group.arrivalDate && group.departureDate
-              ? { arrival: group.arrivalDate, departure: group.departureDate }
-              : null,
-          board: BOARD_LABELS[group.board],
-        },
-      };
-    }),
-  });
 }
 
 function stayDisplayTotal(session: QuoteSession, stayKey: string): number | null {
@@ -1215,19 +410,32 @@ export function QuoteWorkflowPanel({
   hmsQueue,
   onLoadRunScreenshot,
   paneSave,
+  workItemId,
+  availabilityReader,
   partySuggestions,
   partyIndex,
   rates,
   rateCatalogue,
   paneConfig,
   contact,
+  contactEditorKey,
+  onContactEdit,
   makeQuote = true,
+  workItemPane = null,
 }: {
   session: QuoteSession;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
   paneSave?: PaneStayClient | null;
+  /** Work item owning the Book preview receipt and any resulting commit. */
+  workItemId?: string;
+  /** Read-only stored availability lookup; independent of whether saving to HMS is enabled. */
+  availabilityReader?: PaneStayAvailabilityReader | null;
   /** The stored read's contact (booker and company) for the HMS notes. Null while the mail has no stored read. */
   contact?: StoredContact | null;
+  /** Key keeps Contact corrections scoped to the selected request/work item. */
+  contactEditorKey?: string;
+  /** Saves PDF contact corrections to this request, not an HMS party profile. */
+  onContactEdit?: (field: ContactField, value: string | null) => void;
   partySuggestions?: PartySuggestion[];
   /** The HMS list searched while staff type. Null or absent leaves only the live search. */
   partyIndex?: PartyIndexSearcher | null;
@@ -1240,8 +448,8 @@ export function QuoteWorkflowPanel({
   /** Null means the mailbox config is loading or was refused; undefined preserves legacy CEN-only callers. */
   paneConfig?: QuotePaneConfig | null;
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
-  /** Adds, duplicates or removes a room or a stay. The shell keeps a removed stay for Undo. */
-  onStayAction?: (action: StayEditAction) => void;
+  /** Emits room/stay edits and staff room/rate/board selections. The shell keeps removed stays for Undo. */
+  onStayAction?: (action: QuoteStayAction) => void;
   onRunNext?: () => void;
   onRunStep?: (stepId: string) => void;
   onSelectOffer?: (offerId: string) => void;
@@ -1281,6 +489,7 @@ export function QuoteWorkflowPanel({
   onLoadRunScreenshot?: LoadRunScreenshot;
   /** Server-backed Make quote. False disables Search availability / Make quote. Default true. */
   makeQuote?: boolean;
+  workItemPane?: WorkItemPaneControls | null;
 }) {
   const currentEmailKey = session.binding?.internetMessageId ?? session.binding?.entryId ?? null;
   const failedRatesNotice = useFailedHmsJobNoticeMessage('quote-rates', currentEmailKey);
@@ -1724,7 +933,7 @@ export function QuoteWorkflowPanel({
   )[0]?.item;
   const currentAction: CurrentQuoteAction = firstMissingAnswer
     ? missingQuestionPriority(firstMissingAnswer.field) === 0
-      ? { kind: 'scroll', targetId: 'quote-party', label: 'Review agency & company' }
+      ? { kind: 'scroll', targetId: 'quote-party', label: 'Review people' }
       : missingQuestionPriority(firstMissingAnswer.field) === 1
         ? { kind: 'scroll', targetId: 'quote-rates', label: 'Choose rate plan' }
         : missingQuestionPriority(firstMissingAnswer.field) === 2
@@ -1798,95 +1007,49 @@ export function QuoteWorkflowPanel({
         </div>
       ) : null}
       {showWorkspace ? (
-        <Section step={1} title="Agency & company" id="quote-party" action={<StepState state={partyState} />}>
-          <StaffPartyFields
-            header={header}
-            onPatch={(header) => onPatchStaffHeader?.(header, { staffEdit: true })}
-            onFieldEdit={markPartyFieldEdited}
-            findParty={findParty}
-            partySuggestions={partySuggestions}
-            partyIndex={partyIndex}
-            partyJobTransport={partyJobTransport}
-            threadId={session.staffSource?.threadId ?? null}
-            sourceMessageId={session.staffSource?.messageId ?? null}
-            onPartyLookupPending={onPartyLookupPending}
-          />
-          <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-authority')}>
-            Continue to HMS notes
-          </SecondaryButton>
-        </Section>
+        <QuotePeopleStep
+          session={session}
+          partyState={partyState}
+          header={header}
+          onPatchStaffHeader={onPatchStaffHeader}
+          onFieldEdit={markPartyFieldEdited}
+          findParty={findParty}
+          partySuggestions={partySuggestions}
+          partyIndex={partyIndex}
+          partyJobTransport={partyJobTransport}
+          contact={contact}
+          contactEditorKey={contactEditorKey}
+          onContactEdit={onContactEdit}
+          onPartyLookupPending={onPartyLookupPending}
+          scrollToStep={scrollToStep}
+          workItemPane={workItemPane}
+        />
       ) : null}
       {showWorkspace ? (
-        <Section
-          step={2}
-          title="HMS notes"
-          id="quote-authority"
-          action={<StepState state={header.notes?.trim() ? 'Done' : 'Optional'} />}
+        <QuoteStayStep
+          session={session}
+          stays={stays}
+          stayReady={stayReady}
+          roomTotals={roomTotals}
+          header={header}
+          mealPlanForStay={mealPlanForStay}
+          setMealPlanFilters={setMealPlanFilters}
+          paneConfig={paneConfig}
+          availabilityReader={availabilityReader}
+          paneRoomTypes={paneRoomTypes}
+          strictRoomTypes={strictRoomTypes}
+          paneBoards={paneBoards}
+          onPatchGroup={onPatchGroup}
+          onStayAction={onStayAction}
+          onPatchStayExtras={onPatchStayExtras}
+          onSelectStayKey={onSelectStayKey}
+          workItemPane={workItemPane}
         >
-          <HmsNotesFields
-            key={selectionEpoch}
-            notesBlock={quoteNotesBlock(session, rowLabels, contact)}
-            notes={header.notes ?? ''}
-            onNotesChange={(value) => onPatchStaffHeader?.({ notes: value }, { staffEdit: true })}
-          />
-          <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-stay')}>
-            Continue to Stay
-          </SecondaryButton>
-        </Section>
-      ) : null}
-      {showWorkspace ? (
-        <Section step={3} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
-          {stays.map((stay, index) => (
-            <div key={stay.rows[0]?.id ?? stay.id} className="flex flex-col gap-2">
-              <StayAskChrome session={session} stay={stay} onSelectStayKey={onSelectStayKey} />
-              <StayCard
-                stayId={stay.id}
-                rows={stay.rows}
-                index={index}
-                stayCount={stays.length}
-                requestedRoomsTotal={
-                  [...new Set(stay.rows.map(stayIdOf))].reduce(
-                    (total, id) => total + (session.analysis?.requestedRoomsByStay?.[id] ?? 0),
-                    0,
-                  ) || session.analysis?.requestedRoomsByStay?.[stay.id]
-                }
-                mealPlan={mealPlanForStay(stay.id, stay.rows)}
-                propertyCode={paneConfig?.propertyCode}
-                roomTypes={paneRoomTypes}
-                strictRoomTypes={strictRoomTypes}
-                boards={paneBoards}
-                onMealPlanChange={(value) =>
-                  setMealPlanFilters((current) => ({ ...current, [stay.id]: value }))
-                }
-                onPatch={onPatchGroup}
-                onStayAction={onStayAction}
-                evidence={session.analysis?.luna?.evidence}
-              />
-              {stay.rows[0] ? (
-                <StayExtrasFields
-                  header={header}
-                  stayKey={stayKeyForGroup(stay.rows[0])}
-                  stayNumber={index + 1}
-                  onPatch={onPatchStayExtras}
-                />
-              ) : null}
-            </div>
-          ))}
-          {session.groups.length ? (
-            <p className="text-center text-[12.5px] font-semibold text-[#475569]">
-              {`${roomTotals.rooms} ${roomTotals.rooms === 1 ? 'room' : 'rooms'} · ${roomTotals.guests} ${roomTotals.guests === 1 ? 'guest' : 'guests'}`}
-            </p>
-          ) : null}
-          <div className="flex flex-col gap-1">
-            <SecondaryButton className="w-full" onClick={() => onStayAction?.({ type: 'add_stay', token: newQuoteToken() })}>
-              + Add another date range
-            </SecondaryButton>
-            <p className="text-center text-[13px] text-[#64748b]">Each date range is searched and priced independently.</p>
+        <div id="quote-rates" className="flex flex-col gap-3 border-t border-[#e2e8f0] pt-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="text-[13px] font-semibold text-[#475569]">Availability &amp; rates</h4>
+            <StepState state={ratesState} />
           </div>
-        </Section>
-      ) : null}
-      {showWorkspace ? (
-        <Section step={4} title="Availability & rates" id="quote-rates" action={<StepState state={ratesState} />}>
           <RatePlanSelect
             ratePlans={ratePlans}
             ratePlan={ratePlan}
@@ -2162,10 +1325,15 @@ export function QuoteWorkflowPanel({
                               }}
                             />
                           </Field>
-                          <RatesBarGrid
+                          <StayRateGrid
+                            groupId={group.id}
                             cells={projectBarGrid(stayBoard.filter((row) => row.groupId === group.id))}
                             contractChecked={contractChecked}
                             plans={ratePlans}
+                            selection={session.roomRateBoardSelections?.[group.id]}
+                            onSelect={(selection) =>
+                              onStayAction?.({ type: 'room_rate_board_selected', groupId: group.id, selection })
+                            }
                           />
                           {rateGroup?.options.length ? (
                             <RateCards
@@ -2295,37 +1463,22 @@ export function QuoteWorkflowPanel({
               )}
             </div>
           ) : null}
-        </Section>
+        </div>
+        </QuoteStayStep>
       ) : null}
       {showWorkspace ? (
-        <Section step={5} title="Documents" id="quote-quote" action={<StepState state={quoteState} />}>
-          <p className="text-[12px] font-semibold text-[#64748b]">Reply text · PDF · Excel</p>
-          {showReply ? (
-            <DocumentReview
-              session={session}
-              onReplyChange={onReplyChange}
-              onPreparePdf={onPreparePdf}
-              onDownloadWorkbook={onDownloadWorkbook}
-              workbookPending={workbookPending}
-              pdfPending={pdfPending}
-              primaryAction={false}
-            />
-          ) : (
-            <>
-              {currentAction.kind === 'documents' ? (
-                <PrimaryButton disabled disabledReason="Complete Rates first to prepare a reply, PDF or Excel file.">
-                  Prepare PDF
-                </PrimaryButton>
-              ) : (
-                <SecondaryButton disabled disabledReason="Complete Rates first to prepare a reply, PDF or Excel file.">
-                  Prepare PDF
-                </SecondaryButton>
-              )}
-              <p className="text-[13px] text-[#64748b]">Complete Rates first to prepare a reply, PDF or Excel file.</p>
-            </>
-          )}
-          {replyContent}
-        </Section>
+        <QuoteDocumentsStep
+          session={session}
+          showReply={showReply}
+          currentAction={currentAction}
+          quoteState={quoteState}
+          onReplyChange={onReplyChange}
+          onPreparePdf={onPreparePdf}
+          onDownloadWorkbook={onDownloadWorkbook}
+          workbookPending={workbookPending}
+          pdfPending={pdfPending}
+          replyContent={replyContent}
+        />
       ) : replyContent ? (
         <div className="flex flex-col gap-2.5">{replyContent}</div>
       ) : null}
@@ -2349,22 +1502,13 @@ export function QuoteWorkflowPanel({
           />
         </>
       ) : null}
-      {requestedQuoteKeys(session.groups)
-        .filter((key) => session.bookingDrafts[key])
-        .map((key) => (
-          <Fragment key={key}>
-            {isMultiStay(session) ? (
-              <p className="text-[13px] font-semibold text-[#475569]">Booking for {key.replace(':', ' → ')}</p>
-            ) : null}
-            <BookingCards
-              draft={session.bookingDrafts[key]!}
-              groups={session.groups}
-              paneSave={paneSave}
-              contact={contact}
-              parties={session.staffHeader.parties}
-            />
-          </Fragment>
-        ))}
+      <QuoteBookingHost
+        session={session}
+        paneSave={paneSave}
+        contact={contact}
+        workItemId={workItemId}
+        propertyCode={paneConfig?.propertyCode ?? null}
+      />
     </div>
   );
 }
