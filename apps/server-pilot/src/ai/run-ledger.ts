@@ -714,7 +714,8 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
         candidate.state === 'queued' &&
         candidate.claimedAt === null &&
         candidate.attempts === 0 &&
-        candidate.createdAt.getTime() <= now.getTime() - HMS_STAFF_QUOTE_QUEUE_TTL_MS
+        (candidate.nextRunAt ?? candidate.createdAt).getTime() <=
+          now.getTime() - HMS_STAFF_QUOTE_QUEUE_TTL_MS
       ) {
         await tx
           .update(aiWorkflowRun)

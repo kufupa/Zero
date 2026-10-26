@@ -148,7 +148,11 @@ import {
   quotePrepareErrorClass,
   recordQuotePrepareDecision,
 } from './quote-prepare-ledger.js';
-import { countPrefetchReservations, reservePrefetchCapacity } from './prefetch-capacity.js';
+import {
+  countPrefetchReservations,
+  occupyPrefetchReservation,
+  reservePrefetchCapacity,
+} from './prefetch-capacity.js';
 
 /**
  * The queued pane path. Only the exact value `on` enables it. Off (the default), pane finds and searches run
@@ -3517,24 +3521,36 @@ export async function executeHmsJob(input: {
     return 'dead_letter';
   }
   if (systemPreparedQuote && metrics.prefetchDeferred === true) {
-    const capacity = await reservePrefetchCapacity(db, {
-      transportId: run.transportId,
-      kind: 'staff_quote',
-      perHour: quotePreparationPerHour(),
-      excludeRunId: run.id,
-    });
-    if (capacity.action === 'disable') {
-      await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, db);
-      return 'dead_letter';
-    }
-    if (capacity.action === 'defer') {
-      return requeueRun(db, mark, {
-        attempts: run.attempts,
-        delayMs: Math.max(JOB_YIELD_MS, capacity.nextRunAt.getTime() - Date.now()),
-        failureClass: 'POLICY_BLOCK',
-        lastError: preparedQuoteYieldLastError(run, 'prefetch_capacity_deferred'),
+    const admitted = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(
+          ${'hms-prefetch:staff_quote:' + run.transportId}, 0
+        ))`,
+      );
+      const scoped = tx as unknown as DB;
+      const capacity = await reservePrefetchCapacity(scoped, {
+        transportId: run.transportId,
+        kind: 'staff_quote',
+        perHour: quotePreparationPerHour(),
+        excludeRunId: run.id,
       });
-    }
+      if (capacity.action === 'disable') {
+        await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, scoped);
+        return 'dead_letter' as const;
+      }
+      if (capacity.action === 'defer') {
+        await requeueRun(scoped, mark, {
+          attempts: run.attempts,
+          delayMs: Math.max(JOB_YIELD_MS, capacity.nextRunAt.getTime() - Date.now()),
+          failureClass: 'POLICY_BLOCK',
+          lastError: preparedQuoteYieldLastError(run, 'prefetch_capacity_deferred'),
+        });
+        return 'retry_wait' as const;
+      }
+      await occupyPrefetchReservation(scoped, run.id);
+      return 'admit' as const;
+    });
+    if (admitted !== 'admit') return admitted;
     const extraction = await loadQuotePrepareSourceRun(db, {
       transportId: run.transportId,
       triggerMessageId: run.triggerMessageId,

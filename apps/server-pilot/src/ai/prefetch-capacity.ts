@@ -125,3 +125,15 @@ export async function reservePrefetchCapacity(
     oldestCreatedAt: counted.oldestCreatedAt,
   });
 }
+
+/** Stamp the waking job into the current hour so it occupies a slot before HMS work starts. */
+export async function occupyPrefetchReservation(
+  db: DB,
+  runId: string,
+  now: Date = new Date(),
+): Promise<void> {
+  await db
+    .update(aiWorkflowRun)
+    .set({ createdAt: now, updatedAt: now })
+    .where(eq(aiWorkflowRun.id, runId));
+}

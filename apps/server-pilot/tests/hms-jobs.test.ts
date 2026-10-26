@@ -2142,7 +2142,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const createdAt = new Date(now.getTime() - 10 * 60_000 - 1);
       await db
         .update(aiWorkflowRun)
-        .set({ createdAt, updatedAt: createdAt })
+        .set({ createdAt, nextRunAt: createdAt, updatedAt: createdAt })
         .where(eq(aiWorkflowRun.id, run.id));
 
       const claimed = await claimNextAiRun({
@@ -2158,6 +2158,64 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(claimed).toBeNull();
       expect(expired).toMatchObject({ state: 'superseded', lastError: 'staff_quote_queue_expired' });
       expect(expired?.claimedAt).toBeNull();
+    }));
+
+  it('does not expire a deferred prepared quote before nextRunAt', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId } = await seedThread(db, 'Quote request');
+      const now = new Date();
+      const createdAt = new Date(now.getTime() - 15 * 60_000);
+      const nextRunAt = new Date(now.getTime() + 45 * 60_000);
+      const preparedInput = staffQuoteInput.parse({
+        ...STAFF_QUOTE_INPUT,
+        messageId,
+        selectionEpoch: 0,
+        inputRevision: 0,
+      });
+      const { run } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'staff_quote', input: preparedInput },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: `hms-job:staff-quote-prepared:deferred-ttl:${randomUUID()}`,
+          extraMetrics: { quotePrepared: true, prefetchDeferred: true },
+          nextRunAt,
+        },
+        db,
+      );
+      await db
+        .update(aiWorkflowRun)
+        .set({ createdAt, nextRunAt, updatedAt: createdAt })
+        .where(eq(aiWorkflowRun.id, run.id));
+
+      const claimedEarly = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        now,
+        db,
+      });
+      const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(claimedEarly?.id).not.toBe(run.id);
+      expect(stored).toMatchObject({ state: 'queued', lastError: null });
+
+      const claimedDue = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        now: nextRunAt,
+        db,
+      });
+      expect(claimedDue?.id).toBe(run.id);
+      expect(claimedDue?.state).not.toBe('superseded');
     }));
 
   it('stores a staff quote business refusal as a successful job with its real message', () =>

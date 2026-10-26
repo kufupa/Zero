@@ -2,7 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import {
+  countPrefetchReservations,
   decidePrefetchCapacity,
+  occupyPrefetchReservation,
   PREFETCH_CAPACITY_WINDOW_MS,
 } from '../src/ai/prefetch-capacity.js';
 import {
@@ -424,5 +426,35 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
 
       expect(await prefetchQuoteReadyForExtraction(second.prefetchRun, db, env)).toBe(0);
       expect(await preparedQuoteRows(db, second.messageId)).toHaveLength(afterFirstOverflow.length);
+    }));
+
+  it('occupying a waking job counts it against the current hour', () =>
+    withSeededTestDb(async (db) => {
+      const env = { ...QUOTE_ON, HMS_QUOTE_PREPARE_PER_HOUR: '1' };
+      const seeded = await seedExtraction(db);
+      expect(await prefetchQuoteReadyForExtraction(seeded.prefetchRun, db, env)).toBeGreaterThanOrEqual(1);
+      const rows = await preparedQuoteRows(db, seeded.messageId);
+      const job = rows[0];
+      if (!job) throw new Error('expected a prepared quote');
+      const aged = new Date(Date.now() - 2 * PREFETCH_CAPACITY_WINDOW_MS);
+      for (const row of rows) {
+        await db.update(aiWorkflowRun).set({ createdAt: aged, updatedAt: aged }).where(eq(aiWorkflowRun.id, row.id));
+      }
+      const since = new Date(Date.now() - PREFETCH_CAPACITY_WINDOW_MS);
+      expect(
+        await countPrefetchReservations(db, {
+          transportId: DAVINCI_TRANSPORT_ID,
+          kind: 'staff_quote',
+          since,
+        }),
+      ).toMatchObject({ used: 0 });
+      await occupyPrefetchReservation(db, job.id);
+      expect(
+        await countPrefetchReservations(db, {
+          transportId: DAVINCI_TRANSPORT_ID,
+          kind: 'staff_quote',
+          since,
+        }),
+      ).toMatchObject({ used: 1 });
     }));
 });
