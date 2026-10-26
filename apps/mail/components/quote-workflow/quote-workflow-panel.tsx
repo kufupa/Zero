@@ -94,6 +94,13 @@ function analysingCopy(session: QuoteSession): string {
   return session.staffNote ? 'Nava is re-reading with your note…' : 'Nava is reading the email…';
 }
 
+/** Contract tags need the existing staff_quote read for a confirmed party. No new HMS read. */
+function confirmedPartyRead(header: StaffQuoteHeader, stayFound: boolean): boolean {
+  return (
+    stayFound && Boolean(header.parties?.company?.nativeId || header.parties?.agency?.nativeId)
+  );
+}
+
 /**
  * Staff's correction to what Nava read. Closed unless a note is already set. Submitting re-reads the email with the
  * note, and the note wins over the email.
@@ -1173,6 +1180,7 @@ export function QuoteWorkflowPanel({
                   ? preparedAt.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
                   : null;
                 const stayBoard = stayQuote?.availabilityBoard ?? [];
+                const contractChecked = confirmedPartyRead(header, stayFound);
                 const comparisonRows = salesStrategies.map((strategy) => {
                   const row = quoteStrategyRows?.[stayKey]?.[strategy.code];
                   const unique = (values: string[]) => [...new Set(values.filter(Boolean))].join(', ') || '—';
@@ -1399,6 +1407,8 @@ export function QuoteWorkflowPanel({
                           <StayRateGrid
                             groupId={group.id}
                             cells={projectBarGrid(stayBoard.filter((row) => row.groupId === group.id))}
+                            contractChecked={contractChecked}
+                            plans={ratePlans}
                             selection={session.roomRateBoardSelections?.[group.id]}
                             onSelect={(selection) =>
                               onStayAction?.({ type: 'room_rate_board_selected', groupId: group.id, selection })

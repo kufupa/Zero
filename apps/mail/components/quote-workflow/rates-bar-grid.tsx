@@ -3,7 +3,7 @@ import type { RatePlanCategory, RatePlanChoice } from './rate-plan-select';
 import type { BarGridCell } from './rate-cards';
 
 const PUBLIC_RATE_CODES = new Set(['BAR', 'BARRO']);
-const GRID_TAG_LABEL: Record<Exclude<RatePlanCategory, 'other'>, string> = {
+export const GRID_TAG_LABEL: Record<Exclude<RatePlanCategory, 'other'>, string> = {
   public: 'Public',
   government: 'Government',
   contract: 'Contract',
@@ -13,7 +13,7 @@ const GRID_TAG_LABEL: Record<Exclude<RatePlanCategory, 'other'>, string> = {
  * Grid tag from facts already on the board cell. Contract only when the party read ran and this
  * cell's rateScope is contextual. Never from a public code or the catalogue contract flag.
  */
-function gridRateTag(
+export function gridRateTag(
   rateCode: string,
   rateScope: BarGridCell['rateScope'],
   args: {

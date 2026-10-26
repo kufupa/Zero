@@ -335,7 +335,6 @@ export function QuoteStayStep({
           />
         </div>
       ))}
-      {children}
       {session.groups.length ? (
         <p className="text-center text-[12.5px] font-semibold text-[#475569]">
           {`${roomTotals.rooms} ${roomTotals.rooms === 1 ? 'room' : 'rooms'} · ${roomTotals.guests} ${roomTotals.guests === 1 ? 'guest' : 'guests'}`}
@@ -347,6 +346,7 @@ export function QuoteStayStep({
         </SecondaryButton>
         <p className="text-center text-[13px] text-[#64748b]">Each date range is searched and priced independently.</p>
       </div>
+      {children}
     </Section>
   );
 }

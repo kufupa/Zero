@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { StayRateGrid } from '../components/quote-workflow/stay-rate-grid';
 import type { BarGridCell } from '../components/quote-workflow/rate-cards';
+import type { RatePlanChoice } from '../components/quote-workflow/rate-plan-select';
 import { draftMoney } from '../lib/quote-workflow/multi-option-draft';
 
 afterEach(cleanup);
@@ -49,7 +50,15 @@ describe('StayRateGrid', () => {
       },
     ];
 
-    render(<StayRateGrid groupId="stay-a" cells={cells} onSelect={onSelect} />);
+    render(
+      <StayRateGrid
+        groupId="stay-a"
+        cells={cells}
+        contractChecked={false}
+        plans={[]}
+        onSelect={onSelect}
+      />,
+    );
 
     const grid = screen.getByRole('group', { name: 'Room, rate and board choices' });
     const selectedCell = within(grid).getByRole('button', { name: /RATE-2/ });
@@ -61,5 +70,94 @@ describe('StayRateGrid', () => {
     expect(within(selectedCell).getByText('Rooms left: 2')).toBeDefined();
     expect(screen.getByText(/reference only/i)).toBeDefined();
     expect(within(grid).queryByText(draftMoney(180_000))).toBeNull();
+  });
+
+  it('preserves rate category tags and warns until contract context is checked', () => {
+    const onSelect = vi.fn();
+    const cells: BarGridCell[] = [
+      {
+        groupId: 'stay-a',
+        roomCode: 'ROOM1',
+        roomLabel: 'Room One',
+        rateCode: 'BAR',
+        rateLabel: 'Best Available Rate',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
+        nightlyPriceMinor: null,
+        roomsLeft: null,
+        rateScope: 'public',
+      },
+      {
+        groupId: 'stay-a',
+        roomCode: 'ROOM1',
+        roomLabel: 'Room One',
+        rateCode: 'GOV1',
+        rateLabel: 'Government plan',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
+        nightlyPriceMinor: null,
+        roomsLeft: null,
+        rateScope: 'unknown',
+      },
+      {
+        groupId: 'stay-a',
+        roomCode: 'ROOM1',
+        roomLabel: 'Room One',
+        rateCode: 'CON1',
+        rateLabel: 'PRESET plan',
+        board: 'bb',
+        boardLabel: 'Bed & breakfast',
+        nightlyPriceMinor: null,
+        roomsLeft: null,
+        rateScope: 'contextual',
+      },
+    ];
+    const plans = [
+      {
+        code: 'GOV1',
+        name: 'Government plan',
+        board: 'bed_breakfast',
+        government: true,
+        category: 'government',
+        readByNava: true,
+      },
+      {
+        code: 'CON1',
+        name: 'PRESET plan',
+        board: 'bed_breakfast',
+        contract: true,
+        category: 'contract',
+        readByNava: true,
+      },
+    ] satisfies RatePlanChoice[];
+    const { rerender } = render(
+      <StayRateGrid
+        groupId="stay-a"
+        cells={cells}
+        contractChecked={false}
+        plans={plans}
+        onSelect={onSelect}
+      />,
+    );
+    const grid = screen.getByRole('group', { name: 'Room, rate and board choices' });
+
+    expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
+    expect(within(grid).getByText('Public')).toBeDefined();
+    expect(within(grid).getByText('Government')).toBeDefined();
+    expect(within(grid).queryByText('Contract')).toBeNull();
+
+    rerender(
+      <StayRateGrid
+        groupId="stay-a"
+        cells={cells}
+        contractChecked={true}
+        plans={plans}
+        onSelect={onSelect}
+      />,
+    );
+
+    expect(screen.queryByText('Public rates — contract not checked')).toBeNull();
+    const checkedGrid = screen.getByRole('group', { name: 'Room, rate and board choices' });
+    expect(within(checkedGrid).getByText('Contract')).toBeDefined();
   });
 });

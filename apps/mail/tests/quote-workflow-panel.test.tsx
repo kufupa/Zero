@@ -1877,10 +1877,10 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(grids).toHaveLength(2);
     const grid = grids[1]!;
     const queen = within(grid).getByRole('button', {
-      name: /Select Standard Queen \(STQN\), Best Available Rate \(BAR\), Bed & Breakfast/,
+      name: /Select Standard Queen \(STQN\), Best Available Rate \(BAR\)/,
     });
     const twin = within(grid).getByRole('button', {
-      name: /Select Standard Twin \(STWN\), Flexible Rate \(FLEX\), Dinner B&B/,
+      name: /Select Standard Twin \(STWN\), Flexible Rate \(FLEX\)/,
     });
 
     fireEvent.click(twin);
