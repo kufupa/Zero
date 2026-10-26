@@ -228,8 +228,13 @@ describe('deployment retention scripts', () => {
     expect(calls).toContain('--region af-south-1');
   });
 
-  it('prunes after nginx reload and only after rollback is retired', () => {
+  it('serializes deploys and prunes after nginx reload and rollback retirement', () => {
     const deploy = readFileSync(deployEc2Script, 'utf8');
+    const lockPath = deploy.indexOf('DEPLOY_LOCK=/home/ubuntu/.nava-deploy.lock');
+    const lockOpen = deploy.indexOf('exec 9>>"$DEPLOY_LOCK"');
+    const lockAcquire = deploy.indexOf('flock -x 9');
+    const install = deploy.indexOf('echo "== pnpm install =="');
+    const stage = deploy.indexOf('echo "== stage immutable mail release =="');
     const reload = deploy.indexOf('sudo systemctl reload nginx');
     const start = deploy.indexOf('  finalize_nginx_release() {');
     const end = deploy.indexOf('\n  # All handlers exist', start);
@@ -238,6 +243,11 @@ describe('deployment retention scripts', () => {
     const backupCleanup = finalize.indexOf('cleanup_nginx_backup');
     const prune = finalize.indexOf('prune-web-releases.sh');
 
+    expect(lockPath).toBeGreaterThan(-1);
+    expect(lockOpen).toBeGreaterThan(lockPath);
+    expect(lockAcquire).toBeGreaterThan(lockOpen);
+    expect(lockAcquire).toBeLessThan(install);
+    expect(lockAcquire).toBeLessThan(stage);
     expect(start).toBeGreaterThan(-1);
     expect(end).toBeGreaterThan(start);
     expect(reload).toBeGreaterThan(-1);

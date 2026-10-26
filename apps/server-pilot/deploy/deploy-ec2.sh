@@ -35,6 +35,11 @@ for arg in "$@"; do
   esac
 done
 
+# Serialize staging, nginx activation, and retention pruning across deploys.
+DEPLOY_LOCK=/home/ubuntu/.nava-deploy.lock
+exec 9>>"$DEPLOY_LOCK"
+flock -x 9
+
 echo "== deploy: repo ${REPO_ROOT} =="
 cd "$REPO_ROOT"
 
