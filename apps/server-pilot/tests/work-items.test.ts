@@ -22,6 +22,7 @@ import {
   recordStayActionResult,
   recordStayCommit,
   refreshThreadWork,
+  resetWorkSection,
   savedStayPicksOf,
   stayCommitGuard,
   stayCommitOf,
@@ -4434,5 +4435,66 @@ describe('pane revision undo/redo', () => {
       expect(afterRedo).toEqual(beforeRedo);
       expect(await eventsFor(db, work.workItemId)).toHaveLength(eventsBefore.length);
       expect(afterRedo?.state[path]).toBeUndefined();
+    }));
+
+  it('undo after a stay edit leaves a prior contact reset in place', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'rev-reset-1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'rev-reset-1');
+      const company = 'contact.company';
+      const arrival = `stays[${STAY_ONE}].requested.arrival`;
+
+      expect(
+        await recordFieldEvent(db, {
+          transportId: CENTURION,
+          workItemId: work.workItemId,
+          userId: USER,
+          type: 'field.edit',
+          fieldPath: company,
+          value: 'New Frontiers Tours',
+        }),
+      ).toMatchObject({ status: 'recorded' });
+
+      expect(
+        await resetWorkSection(db, {
+          transportId: CENTURION,
+          workItemId: work.workItemId,
+          userId: USER,
+          section: { type: 'contact' },
+        }),
+      ).toEqual({ status: 'recorded', reset: 1 });
+      expect((await readyWork(db, 'rev-reset-1')).contact.company).toBe('Horizon Trail Tours');
+
+      expect(
+        await recordFieldEvent(db, {
+          transportId: CENTURION,
+          workItemId: work.workItemId,
+          userId: USER,
+          type: 'field.edit',
+          fieldPath: arrival,
+          value: '2027-10-25',
+        }),
+      ).toMatchObject({ status: 'recorded' });
+
+      const undoneStay = await undoWorkItemRevision(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        expectedSeq: 3,
+      });
+      expect(undoneStay).toMatchObject({ status: 'applied', revision: 2, revisionHead: 3, seq: 4 });
+      const afterStayUndo = await readyWork(db, 'rev-reset-1');
+      expect(afterStayUndo.analysis.groups[0]!.arrivalDate).toBe('2027-10-26');
+      expect(afterStayUndo.contact.company).toBe('Horizon Trail Tours');
+
+      const undoneReset = await undoWorkItemRevision(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        expectedSeq: 4,
+      });
+      expect(undoneReset).toMatchObject({ status: 'applied', revision: 1, revisionHead: 3, seq: 5 });
+      expect((await readyWork(db, 'rev-reset-1')).contact.company).toBe('New Frontiers Tours');
     }));
 });

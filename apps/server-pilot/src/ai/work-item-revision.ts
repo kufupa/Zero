@@ -4,7 +4,7 @@ import { workEvent, workItem } from '../db/schema/work.js';
 
 /** Nested HMS commits. Same key as STAY_COMMITS_KEY in work-items.ts. Undo never touches it. */
 const STAY_COMMITS_KEY = 'stays';
-const SOURCE_TYPES = ['field.edit', 'field.reject', 'field.accept'] as const;
+const SOURCE_TYPES = ['field.edit', 'field.reject', 'field.accept', 'field.reset'] as const;
 
 export type PaneState = Record<string, unknown>;
 export type PaneRevisionCursor = { revision: number; revisionHead: number; seq: number };
