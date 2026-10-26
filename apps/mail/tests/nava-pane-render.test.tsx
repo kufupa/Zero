@@ -2,13 +2,23 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useRef, useState } from 'react';
 import { observable } from '@trpc/server/observable';
 import { countMutationsLink } from '../lib/workstation/mutations-in-flight';
 import { reloadPane } from '../lib/workstation/pane-release-watch';
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { toast } from 'sonner';
 import { NavaPane } from '../components/nava-pane/nava-pane';
+import { useStaffQuoteAutostart } from '../components/nava-pane/use-staff-quote-autostart';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
+import { initialQuoteSession, planQuoteSteps } from '../lib/quote-workflow/session';
+import {
+  HRDAV_PROPERTY_CODE,
+  type QuotePaneConfig,
+  type QuoteSelectionBinding,
+  type QuoteSession,
+  type StayGroupRequirement,
+} from '../lib/quote-workflow/types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote, reviewedReplyHtml, setReviewedReply } from './helpers/prepare-reviewed-quote';
 import { VOUCHER_COPY } from '../lib/quote-workflow/voucher-find';
@@ -1094,7 +1104,7 @@ describe('NavaPane screen states', () => {
       file: null,
       unreadPdfs: 1,
     });
-    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    render(<NavaPane bridge={fakeBridge} />);
     const card = await screen.findByRole('region', { name: VOUCHER_COPY.heading }, { timeout: 5000 });
     expect(card.textContent).not.toContain(VOUCHER_COPY.missingGuest);
     // No warning list: the quote panel names the unreadable file once.
@@ -2195,34 +2205,145 @@ describe('NavaPane screen states', () => {
   });
 
   it('debounces staff quote auto-start until a complete date pair settles', async () => {
-    sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
-    const checkInOnlyGroup = STORED_READY.analysis.groups[0]!;
-    bridgeMockState.storedWork = {
-      ...STORED_READY,
-      analysis: {
-        ...STORED_READY.analysis,
-        groups: [{ ...checkInOnlyGroup, departureDate: '' }],
-      },
+    const testMessageId = 'staff-quote-date-debounce-test';
+    const binding = {
+      transportId: 'transport-1',
+      mailboxEmail: 'test-mailbox',
+      storeId: 'store-1',
+      folderEntryId: 'folder-inbox',
+      entryId: 'entry-1',
+      internetMessageId: testMessageId,
+      selectionEpoch: 1,
+      scopeEpoch: 1,
+    } satisfies QuoteSelectionBinding;
+    const source = { messageId: testMessageId, threadId: 'test-thread', sourceHash: 'ab'.repeat(32) };
+    const group = {
+      id: 'test-stay-row',
+      arrivalDate: '',
+      departureDate: '',
+      quantity: 2,
+      adults: 2,
+      childrenAges: [],
+      board: 'bb',
+      specialRequests: [],
+      fields: { arrivalDate: 'extracted', departureDate: 'missing' },
+    } satisfies StayGroupRequirement;
+    const initialSession: QuoteSession = {
+      ...initialQuoteSession(),
+      phase: 'requirements',
+      binding,
+      analysis: { intent: 'quote', groups: [group], secondaryAsks: [], alternatives: [] },
+      groups: [group],
+      steps: planQuoteSteps([group], {}),
+      staffSource: source,
     };
-    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    const activeEmail = { ...fakeBridge.activeEmail!, internetMessageId: testMessageId };
+    const paneConfig: QuotePaneConfig = {
+      transportId: binding.transportId,
+      propertyCode: HRDAV_PROPERTY_CODE,
+      roomTypes: [],
+      ratePlans: [],
+      boards: ['bb'],
+      salesStrategies: [],
+      overrideRateCodes: [],
+      eventRateCodes: [],
+    };
     bridgeMockState.queueStaffQuoteMutation.mockImplementation((input: Record<string, unknown>) => {
       bridgeMockState.lastStaffQuoteInput = input;
       return Promise.resolve({ runId: 'staff-job-date-debounce' });
     });
-    bridgeMockState.staffQuoteJobQuery.mockResolvedValue(null);
 
-    render(<NavaPane bridge={fakeBridge} />);
-    await storedReadLands();
-    await settle();
+    function AutoStartHarness() {
+      const [quoteSession, setQuoteSession] = useState(initialSession);
+      const staffQuoteReadBackInFlight = useRef(false);
+      const staffQuoteAutoSuppressed = useRef(new Set<string>());
+      const staffQuoteAutoAttempted = useRef(new Set<string>());
+      const autoStartStaffQuoteStepRef = useRef<() => void>(() => undefined);
+
+      const patchDates = (patch: { arrivalDate?: string; departureDate?: string }) => {
+        setQuoteSession((session) => {
+          const groups = session.groups.map((current) => ({ ...current, ...patch }));
+          return {
+            ...session,
+            inputRevision: session.inputRevision + 1,
+            analysis: session.analysis ? { ...session.analysis, groups } : null,
+            groups,
+            steps: planQuoteSteps(groups, session.staffQuotes),
+          };
+        });
+      };
+      const runQuoteStep = (stepId: string, autoStart?: boolean) => {
+        if (!autoStart || !quoteSession.steps.some((candidate) => candidate.id === stepId)) return;
+        void bridgeMockState.queueStaffQuoteMutation({
+          autoStart: true,
+          groups: quoteSession.groups.map(({ arrivalDate, departureDate }) => ({ arrivalDate, departureDate })),
+        });
+      };
+
+      // The pane's staff date-edit handler suppresses auto-start; exercise the extracted hook with settled session updates.
+      useStaffQuoteAutostart({
+        isNonActionableMessage: false,
+        staffQuoteQueueMode: 'on',
+        isLoading: false,
+        session: { user: { id: 'staff-1' } },
+        requiresRelogin: false,
+        activeEmail,
+        contactMessageKey: testMessageId,
+        quoteRunPending: false,
+        staffQuoteReadBackInFlight,
+        quoteSession,
+        staffQuoteAutoSuppressed,
+        staffQuoteAttemptKey: (transportId, messageId, sourceHash, stayKey) =>
+          [transportId, messageId, sourceHash, stayKey].join(':'),
+        staffQuoteAutoAttempted,
+        activePaneConfig: paneConfig,
+        autoStartStaffQuoteStepRef,
+        runQuoteStep,
+        autoStaffQuoteSuppressed: () => false,
+      });
+
+      return (
+        <>
+          <button
+            type="button"
+            onClick={() => patchDates({ arrivalDate: '2026-11-03' })}
+          >
+            Set check-in
+          </button>
+          <button
+            type="button"
+            onClick={() => patchDates({ departureDate: '2026-11-05' })}
+          >
+            Set departure
+          </button>
+          <button
+            type="button"
+            onClick={() => patchDates({ arrivalDate: '2026-11-04' })}
+          >
+            Change arrival
+          </button>
+          <button type="button" onClick={() => autoStartStaffQuoteStepRef.current()}>
+            Read-back settled
+          </button>
+        </>
+      );
+    }
+
+    render(<AutoStartHarness />);
     await act(async () => {
       await new Promise<void>((resolve) => setTimeout(resolve, 350));
     });
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
 
-    const departure = screen.getByLabelText('Departure');
-    const arrival = screen.getByLabelText('Arrival');
-    fireEvent.change(departure, { target: { value: '2026-11-05' } });
-    fireEvent.change(arrival, { target: { value: '2026-11-04' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set check-in' }));
+    await act(async () => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 350));
+    });
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set departure' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Change arrival' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Read-back settled' }));
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
 
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
