@@ -143,6 +143,11 @@ import {
   markAiRunSucceeded,
   NOT_APPLICABLE_MODEL_ID,
 } from './run-ledger.js';
+import {
+  loadQuotePrepareSourceRun,
+  quotePrepareErrorClass,
+  recordQuotePrepareDecision,
+} from './quote-prepare-ledger.js';
 
 /**
  * The queued pane path. Only the exact value `on` enables it. Off (the default), pane finds and searches run
@@ -2554,54 +2559,107 @@ export async function evaluateQuoteReadyForMessage(
   };
 }
 
+type QuotePrepareExtractionRun = Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'> &
+  Partial<Pick<AiWorkflowRun, 'id' | 'admissionSnapshotId'>>;
+
 /** One userless, low-priority staff-quote read per allowed registry strategy per complete future stay. */
 export async function prefetchQuoteReadyForExtraction(
-  run: Pick<AiWorkflowRun, 'runKind' | 'transportId' | 'triggerMessageId'>,
+  run: QuotePrepareExtractionRun,
   db: DB = getDb(),
   env: NodeJS.Dict<string> = process.env,
   now: Date = new Date(),
   priority: number = HMS_JOB_PRIORITY_PREFETCH,
 ): Promise<number> {
-  if (run.runKind !== 'inbound_extraction' || !quotePreparationEnabled(env)) return 0;
-  const evaluation = await evaluateQuoteReadyForMessage(
-    { messageId: run.triggerMessageId, transportId: run.transportId },
-    db,
-    env,
-    now,
-  );
-  if (!evaluation.plan?.inputs.length || !evaluation.transportId || !evaluation.threadId) return 0;
-  // Prepare runs where Make quote may run: Centurion, or Da Vinci only with HMS_DAVINCI_MAKE_QUOTE=on.
-  const target = await resolveHmsQuoteJobTarget({
-    transportId: evaluation.transportId,
-    threadId: evaluation.threadId,
-    messageId: evaluation.messageId,
-    env,
-  });
-  if (!target.ok) return 0;
-  const paneConfig = await quotePaneConfigForProperty(target.target.propertyCode, evaluation.transportId);
-  const workItemId = await latestWorkItemId(db, evaluation.transportId, evaluation.threadId);
-  const perHour = quotePreparationPerHour(env);
-  let created = 0;
-  for (const shop of quoteShopJobsForPlan(evaluation.plan, paneConfig?.salesStrategies ?? [])) {
-    const digest = createHash('sha256').update(JSON.stringify(shop.input)).digest('hex');
-    const queued = await enqueuePreparedQuoteWithinCap(
+  if (run.runKind !== 'inbound_extraction') return 0;
+  const record = (decision: Parameters<typeof recordQuotePrepareDecision>[2]) =>
+    recordQuotePrepareDecision(db, run, decision);
+  try {
+    if (!quotePreparationEnabled(env)) {
+      await record({ outcome: 'skipped', reason: 'disabled' });
+      return 0;
+    }
+    const evaluation = await evaluateQuoteReadyForMessage(
+      { messageId: run.triggerMessageId, transportId: run.transportId },
       db,
-      {
-        transportId: evaluation.transportId,
-        threadId: evaluation.threadId,
-        triggerMessageId: evaluation.messageId,
-        workItemId,
-        userId: null,
-        request: { kind: 'staff_quote', input: shop.input },
-        priority,
-        idempotencyKey: `hms-job:staff-quote-prepared:${evaluation.transportId}:${evaluation.messageId}:${digest}`,
-        extraMetrics: { quotePrepared: true },
-      },
-      perHour,
+      env,
+      now,
     );
-    if (queued) created += 1;
+    if (!evaluation.plan?.inputs.length || !evaluation.transportId || !evaluation.threadId) {
+      await record({ outcome: 'skipped', reason: evaluation.reason ?? 'empty_plan' });
+      return 0;
+    }
+    // Prepare runs where Make quote may run: registered hotels, or Da Vinci only with HMS_DAVINCI_MAKE_QUOTE=on.
+    const target = await resolveHmsQuoteJobTarget({
+      transportId: evaluation.transportId,
+      threadId: evaluation.threadId,
+      messageId: evaluation.messageId,
+      env,
+    });
+    if (!target.ok) {
+      await record({ outcome: 'skipped', reason: 'target_refused' });
+      return 0;
+    }
+    const paneConfig = await quotePaneConfigForProperty(target.target.propertyCode, evaluation.transportId);
+    const workItemId = await latestWorkItemId(db, evaluation.transportId, evaluation.threadId);
+    const perHour = quotePreparationPerHour(env);
+    if (perHour <= 0) {
+      await record({ outcome: 'skipped', reason: 'cap_exhausted' });
+      return 0;
+    }
+    const shops = quoteShopJobsForPlan(evaluation.plan, paneConfig?.salesStrategies ?? []);
+    if (shops.length === 0) {
+      await record({ outcome: 'skipped', reason: 'empty_plan' });
+      return 0;
+    }
+    let created = 0;
+    for (const shop of shops) {
+      const digest = createHash('sha256').update(JSON.stringify(shop.input)).digest('hex');
+      const queued = await enqueuePreparedQuoteWithinCap(
+        db,
+        {
+          transportId: evaluation.transportId,
+          threadId: evaluation.threadId,
+          triggerMessageId: evaluation.messageId,
+          workItemId,
+          userId: null,
+          request: { kind: 'staff_quote', input: shop.input },
+          priority,
+          idempotencyKey: `hms-job:staff-quote-prepared:${evaluation.transportId}:${evaluation.messageId}:${digest}`,
+          extraMetrics: { quotePrepared: true },
+        },
+        perHour,
+      );
+      if (queued) created += 1;
+    }
+    if (created === 0) {
+      await record({ outcome: 'skipped', reason: 'not_queued' });
+      return 0;
+    }
+    await record({ outcome: 'queued', reason: 'queued', queued: created });
+    return created;
+  } catch (error) {
+    await record({ outcome: 'error', reason: 'error', errorClass: quotePrepareErrorClass(error) });
+    throw error;
   }
-  return created;
+}
+
+/** Reloads the source extraction's live-admission stamp before unblocking quote preparation. */
+export async function prefetchQuoteReadyAfterPartyMatch(
+  run: Pick<AiWorkflowRun, 'transportId' | 'triggerMessageId'> & Partial<Pick<AiWorkflowRun, 'id'>>,
+  db: DB = getDb(),
+  env: NodeJS.Dict<string> = process.env,
+  now: Date = new Date(),
+): Promise<number> {
+  const extraction = await loadQuotePrepareSourceRun(db, run);
+  if (!extraction) return 0;
+  if (!extraction.admissionSnapshotId) {
+    await recordQuotePrepareDecision(db, extraction, {
+      outcome: 'skipped',
+      reason: 'no_live_admission',
+    });
+    return 0;
+  }
+  return prefetchQuoteReadyForExtraction(extraction, db, env, now);
 }
 
 /**
@@ -2625,9 +2683,7 @@ export function scheduleQuotePreparationForExtraction(
 export function scheduleQuotePreparationAfterPartyMatch(
   run: Pick<AiWorkflowRun, 'transportId' | 'triggerMessageId'>,
 ): void {
-  void prefetchQuoteReadyForExtraction(
-    { runKind: 'inbound_extraction', transportId: run.transportId, triggerMessageId: run.triggerMessageId },
-  ).catch(() => undefined);
+  void prefetchQuoteReadyAfterPartyMatch(run).catch(() => undefined);
 }
 
 type PartyMatchV2JobResult = PanePartyFindResult & {
