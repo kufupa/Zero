@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   classifyObservation, loopbackCdpUrl, probePlan, runDeeplinkProbe, scrubNavError, shapeOf,
 } from './hms-deeplink-probe.mjs';
+import { PROPERTY_REGISTRY } from './property-registry.mjs';
 
 const ORIGIN = 'https://hms.example.test';
+const REGISTERED = PROPERTY_REGISTRY.properties.find((property) => property.active)?.propertyCode;
 
 test('loopbackCdpUrl accepts only loopback http or ws without credentials, query or fragment', () => {
   assert.equal(loopbackCdpUrl('http://127.0.0.1:9222'), 'http://127.0.0.1:9222/');
@@ -72,8 +74,9 @@ test('runDeeplinkProbe refuses bad input before it creates a directory, reads a 
   await assert.rejects(runDeeplinkProbe({ env: good, conf: '' }), /CONFIRMATION_REQUIRED/);
   await assert.rejects(runDeeplinkProbe({ env: good, conf: 'ABC' }), /CONFIRMATION_REQUIRED/);
   await assert.rejects(runDeeplinkProbe({ env: good, conf: '1-1', stayId: 'x1' }), /STAY_ID_INVALID/);
+  await assert.rejects(runDeeplinkProbe({ env: good, conf: '1-1' }), /PROPERTY_REQUIRED/);
   await assert.rejects(
-    runDeeplinkProbe({ env: good, conf: '1-1', runRoot: '/tmp/not-private' }),
+    runDeeplinkProbe({ env: good, conf: '1-1', propertyCode: REGISTERED, runRoot: '/tmp/not-private' }),
     /OUTPUT_MUST_BE_PRIVATE_PLAYWRIGHT_QUOTE_DIRECTORY/,
   );
 });
