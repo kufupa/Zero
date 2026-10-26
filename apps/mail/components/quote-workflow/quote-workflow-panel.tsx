@@ -19,7 +19,6 @@ import {
   stayTotals,
 } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
-import { draftMoney } from '@/lib/quote-workflow/multi-option-draft';
 import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE } from '@/lib/quote-workflow/types';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
@@ -30,7 +29,6 @@ import type {
   QuoteSession,
   QuoteToolStep,
   QuoteBoard,
-  RatePlanBoard,
   RatePlanCatalogueEntry,
   RateOption,
   RowPriceChoice,
@@ -54,10 +52,11 @@ import {
   paneTextareaClass,
   StepState,
 } from '@/components/nava-pane/pane-ui';
-import { BOARD_LABELS, BookingCards } from './booking-card';
+import { BOARD_LABELS } from './booking-card';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { pdfBlockReason } from './document-review';
+import { QuoteBookingHost } from './quote-booking-host';
 import { QuoteDocumentsStep, type CurrentQuoteAction } from './quote-documents-step';
 import { QuotePeopleStep } from './quote-people-step';
 import { QuoteStayStep, StayAskChrome } from './quote-stay-step';
@@ -69,7 +68,9 @@ import { NeedsAnswerList } from './needs-answer-list';
 import { NotSupportedList } from './not-supported-list';
 import { PaneStatusLine } from './pane-status-line';
 import { QuoteAuditScreenshot, type LoadRunScreenshot } from './quote-audit-screenshot';
-import { projectBarGrid, RateCards, type BarGridCell } from './rate-cards';
+import { projectBarGrid, RateCards } from './rate-cards';
+import { RatesBarGrid } from './rates-bar-grid';
+import { filteredRateOptions, ratePlanChoices, RatePlanSelect } from './rate-plan-select';
 import {
   CopyHmsNotesButton,
   hmsNotesBlock,
@@ -147,226 +148,10 @@ function CorrectionNote({
   );
 }
 
-type RatePlanCategory = 'public' | 'contract' | 'government' | 'other';
-type RatePlanChoice = RatePlanCatalogueEntry & {
-  category: RatePlanCategory;
-  readByNava: boolean;
-};
-
-const RATE_OPTION_BOARD: Record<RateOption['board'], RatePlanBoard> = {
-  room_only: 'room_only',
-  bb: 'bed_breakfast',
-  dinner_bb: 'dinner_bed_breakfast',
-};
-
-function ratePlanCategory(entry: RatePlanCatalogueEntry): RatePlanCategory {
-  if (entry.event) return 'other';
-  if (entry.government) return 'government';
-  if (entry.contract) return 'contract';
-  return 'public';
-}
-
-const PUBLIC_RATE_CODES = new Set(['BAR', 'BARRO']);
-const GRID_TAG_LABEL: Record<Exclude<RatePlanCategory, 'other'>, string> = {
-  public: 'Public',
-  government: 'Government',
-  contract: 'Contract',
-};
-
 /** Contract tags need the existing staff_quote read for a confirmed party. No new HMS read. */
 function confirmedPartyRead(header: StaffQuoteHeader, stayFound: boolean): boolean {
   return (
     stayFound && Boolean(header.parties?.company?.nativeId || header.parties?.agency?.nativeId)
-  );
-}
-
-/**
- * Grid tag from facts already on the board cell. Contract only when the party read ran and this
- * cell's rateScope is contextual. Never from a public code or the catalogue contract flag.
- */
-function gridRateTag(
-  rateCode: string,
-  rateScope: BarGridCell['rateScope'],
-  args: {
-    contractChecked: boolean;
-    plans: readonly RatePlanChoice[];
-  },
-): Exclude<RatePlanCategory, 'other'> | null {
-  const code = rateCode.trim().toUpperCase();
-  if (!code) return null;
-  const plan = args.plans.find((item) => item.code === code);
-  if (args.contractChecked && rateScope === 'contextual') return 'contract';
-  if (plan?.category === 'government') return 'government';
-  if (rateScope === 'public' || PUBLIC_RATE_CODES.has(code) || plan?.category === 'public') return 'public';
-  return null;
-}
-
-/** Add HMS-only codes without treating their labels or flags as static catalogue facts. */
-function ratePlanChoices(
-  catalogue: readonly RatePlanCatalogueEntry[],
-  hmsOptions: readonly RateOption[],
-): RatePlanChoice[] {
-  const readByNavaCodes = new Set(
-    hmsOptions.map((option) => option.rateCode.trim().toUpperCase()).filter(Boolean),
-  );
-  const choices = new Map<string, RatePlanChoice>();
-  for (const entry of catalogue) {
-    const code = entry.code.trim().toUpperCase();
-    if (code) {
-      choices.set(code, {
-        ...entry,
-        code,
-        category: ratePlanCategory(entry),
-        readByNava: readByNavaCodes.has(code),
-      });
-    }
-  }
-  for (const option of hmsOptions) {
-    const code = option.rateCode.trim().toUpperCase();
-    if (!code || choices.has(code)) continue;
-    const event = option.hint === 'event_rate';
-    choices.set(code, {
-      code,
-      name: code,
-      board: RATE_OPTION_BOARD[option.board],
-      ...(event ? { event: true } : {}),
-      ...(option.contract ? { contract: true } : {}),
-      category: event ? 'other' : option.contract ? 'contract' : 'other',
-      readByNava: true,
-    });
-  }
-  return [...choices.values()];
-}
-
-function filteredRateOptions(
-  options: RateOption[],
-  selectedPlan: string,
-  choices: RatePlanChoice[],
-): RateOption[] {
-  if (selectedPlan === 'all') return options;
-  if (selectedPlan === 'government' || selectedPlan === 'public') {
-    // Public (BAR) is every code that is not a government code, so it still filters with no catalogue.
-    const governmentCodes = new Set(
-      choices.filter((choice) => choice.category === 'government').map((choice) => choice.code),
-    );
-    // No government category is known (the catalogue query failed, or HMS-only codes): the search already
-    // priced under Government, so show what HMS returned instead of hiding every rate.
-    if (selectedPlan === 'government' && governmentCodes.size === 0) return options;
-    const wantGovernment = selectedPlan === 'government';
-    return options.filter(
-      (option) => governmentCodes.has(option.rateCode.trim().toUpperCase()) === wantGovernment,
-    );
-  }
-  const selected = selectedPlan.toUpperCase();
-  return options.filter((option) => option.rateCode.trim().toUpperCase() === selected);
-}
-
-/** Rate plan filters returned options. Contract eligibility still comes only from each HMS result. */
-function RatePlanSelect({
-  ratePlans,
-  ratePlan,
-  onRatePlanChange,
-}: {
-  ratePlans: RatePlanChoice[];
-  ratePlan: string;
-  onRatePlanChange: (value: string) => void;
-}) {
-  return (
-    <div className="flex flex-col gap-3">
-      <Field label="Showing rates for" htmlFor="quote-rate-plan">
-        <select
-          id="quote-rate-plan"
-          aria-label="Rate plan"
-          className={paneFieldClass}
-          value={ratePlan}
-          onChange={(event) => onRatePlanChange(event.target.value)}
-        >
-          <option value="all">All rates</option>
-          {(['public', 'contract', 'government', 'other'] as const).map((category) => {
-            const plans = ratePlans
-              .filter((entry) => entry.category === category)
-              .sort((left, right) => Number(right.readByNava) - Number(left.readByNava));
-            // Public (BAR) and government keep their "All" choice even when the catalogue is down.
-            if (!plans.length && category !== 'government' && category !== 'public') return null;
-            const label = category === 'other' ? 'Other HMS rates' : `${category[0]!.toUpperCase()}${category.slice(1)}`;
-            return (
-              <optgroup key={category} label={label}>
-                {category === 'public' ? <option value="public">All public rates (BAR)</option> : null}
-                {category === 'government' ? <option value="government">All government rates</option> : null}
-                {plans.map((plan) => (
-                  <option key={plan.code} value={plan.code}>
-                    {plan.name === plan.code ? plan.code : `${plan.code}: ${plan.name}`}
-                    {plan.readByNava ? ' (read by Nava)' : ''}
-                  </option>
-                ))}
-              </optgroup>
-            );
-          })}
-        </select>
-        <span className="mt-0.5 block text-[13px] font-normal text-[#64748b]">
-          All rates shows every code HMS returned. Choosing a plan filters the cards below.
-        </span>
-      </Field>
-    </div>
-  );
-}
-
-/** Read-only BAR table with public / government / contract tags from the existing read. */
-function RatesBarGrid({
-  cells,
-  contractChecked,
-  plans,
-}: {
-  cells: BarGridCell[];
-  contractChecked: boolean;
-  plans: readonly RatePlanChoice[];
-}) {
-  if (!cells.length) return null;
-  return (
-    <div className="flex flex-col gap-1.5">
-      <h5 className="text-[13px] font-semibold text-[#475569]">BAR by room, rate and board</h5>
-      {contractChecked ? null : (
-        <p className="text-[12px] text-[#64748b]">Public rates — contract not checked</p>
-      )}
-      <table className="w-full border-collapse text-[12px]" aria-label="BAR by room, rate and board">
-        <thead>
-          <tr className="border-b border-[#e2e8f0] text-left text-[11px] font-semibold uppercase tracking-wide text-[#64748b]">
-            <th className="py-1 pr-2 font-semibold">Room</th>
-            <th className="py-1 pr-2 font-semibold">Rate</th>
-            <th className="py-1 pr-2 font-semibold">Board</th>
-            <th className="py-1 pr-2 font-semibold">Nightly</th>
-            <th className="py-1 pr-2 font-semibold">Rooms left</th>
-            <th className="py-1 font-semibold">Tag</th>
-          </tr>
-        </thead>
-        <tbody>
-          {cells.map((cell) => {
-            const tag = gridRateTag(cell.rateCode, cell.rateScope, { contractChecked, plans });
-            return (
-              <tr
-                key={`${cell.groupId}|${cell.roomCode}|${cell.rateCode}|${cell.board}`}
-                className="border-b border-[#f1f5f9] text-[#1e293b]"
-              >
-                <td className="py-1 pr-2">{`${cell.roomLabel} (${cell.roomCode})`}</td>
-                <td className="py-1 pr-2">{cell.rateCode}</td>
-                <td className="py-1 pr-2">{cell.boardLabel}</td>
-                <td className="py-1 pr-2">
-                  {cell.nightlyPriceMinor === null ? 'not checked' : draftMoney(cell.nightlyPriceMinor)}
-                </td>
-                <td className="py-1 pr-2">{cell.roomsLeft === null ? 'not checked' : String(cell.roomsLeft)}</td>
-                <td className="py-1">
-                  {tag ? (
-                    <span className="rounded-[2px] bg-[#eff6ff] px-1 py-px text-[10px] font-semibold text-[#0066cc]">
-                      {GRID_TAG_LABEL[tag]}
-                    </span>
-                  ) : null}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
   );
 }
 
@@ -1775,22 +1560,7 @@ export function QuoteWorkflowPanel({
           />
         </>
       ) : null}
-      {requestedQuoteKeys(session.groups)
-        .filter((key) => session.bookingDrafts[key])
-        .map((key) => (
-          <Fragment key={key}>
-            {isMultiStay(session) ? (
-              <p className="text-[13px] font-semibold text-[#475569]">Booking for {key.replace(':', ' → ')}</p>
-            ) : null}
-            <BookingCards
-              draft={session.bookingDrafts[key]!}
-              groups={session.groups}
-              paneSave={paneSave}
-              contact={contact}
-              parties={session.staffHeader.parties}
-            />
-          </Fragment>
-        ))}
+      <QuoteBookingHost session={session} paneSave={paneSave} contact={contact} />
     </div>
   );
 }
