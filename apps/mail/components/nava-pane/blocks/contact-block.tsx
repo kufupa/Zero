@@ -1,6 +1,9 @@
 import { useState } from 'react';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
+import type { WorkItemProvenanceMap } from '@/lib/quote-workflow/use-work-item';
 import { Field, paneFieldClass, Section } from '../pane-ui';
+import { WorkItemFieldProvenance } from '../screens/work-item-field-provenance';
+import { WorkItemResetButton } from '../screens/work-item-reset-button';
 
 const FIELDS: Array<{ field: ContactField; label: string; pii: boolean }> = [
   { field: 'name', label: 'Name', pii: true },
@@ -23,6 +26,9 @@ export function ContactBlock({
   quote = true,
   embedded = false,
   onEdit,
+  fieldProvenance = null,
+  onResetToAi,
+  resetPending = false,
 }: {
   contact: StoredContact | null;
   /** Only a quote prints this contact on a PDF; other mail types show it as the plain contact. */
@@ -31,6 +37,9 @@ export function ContactBlock({
   embedded?: boolean;
   senderFallback?: Pick<StoredContact, 'name' | 'email'> | null;
   onEdit: (field: ContactField, value: string | null) => void;
+  fieldProvenance?: WorkItemProvenanceMap | null;
+  onResetToAi?: () => void;
+  resetPending?: boolean;
 }) {
   const [values, setValues] = useState<StoredContact>(() => ({
     ...NO_CONTACT,
@@ -51,20 +60,28 @@ export function ContactBlock({
               <dt className="text-[11.5px] font-semibold text-[#64748b]">{label}</dt>
               <dd data-pii={pii || undefined} className="flex min-w-0 items-start gap-1 text-[13px] text-[#1e293b]">
                 <span className="min-w-0 break-words">{value || '—'}</span>
+                <WorkItemFieldProvenance
+                  fieldValue={values[field]}
+                  provenance={fieldProvenance?.[`contact.${field}`]}
+                />
               </dd>
             </div>
           );
         })}
       </dl>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#e2e8f0] pt-2">
-        <button
-          type="button"
-          aria-expanded={correcting}
-          onClick={() => setCorrecting((open) => !open)}
-          className="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline"
-        >
-          {correcting ? 'Done' : 'Edit'}
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            aria-expanded={correcting}
+            disabled={resetPending}
+            onClick={() => setCorrecting((open) => !open)}
+            className="rounded-[3px] text-[12.5px] font-semibold text-[#0066cc] hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:text-[#94a3b8]"
+          >
+            {correcting ? 'Done' : 'Edit'}
+          </button>
+          {onResetToAi ? <WorkItemResetButton onClick={onResetToAi} pending={resetPending} /> : null}
+        </div>
         <p className="text-[11.5px] text-[#64748b]">Corrections save to this request only. HMS is not changed.</p>
       </div>
       {correcting ? (
@@ -76,6 +93,7 @@ export function ContactBlock({
                 data-pii={pii || undefined}
                 className={paneFieldClass}
                 maxLength={200}
+                disabled={resetPending}
                 value={values[field] ?? ''}
                 onChange={(event) => {
                   const next = event.target.value;

@@ -20,6 +20,7 @@ import {
 } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE } from '@/lib/quote-workflow/types';
+import type { WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type {
@@ -420,6 +421,7 @@ export function QuoteWorkflowPanel({
   contactEditorKey,
   onContactEdit,
   makeQuote = true,
+  workItemPane = null,
 }: {
   session: QuoteSession;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
@@ -487,6 +489,7 @@ export function QuoteWorkflowPanel({
   onLoadRunScreenshot?: LoadRunScreenshot;
   /** Server-backed Make quote. False disables Search availability / Make quote. Default true. */
   makeQuote?: boolean;
+  workItemPane?: WorkItemPaneControls | null;
 }) {
   const currentEmailKey = session.binding?.internetMessageId ?? session.binding?.entryId ?? null;
   const failedRatesNotice = useFailedHmsJobNoticeMessage('quote-rates', currentEmailKey);
@@ -1019,6 +1022,7 @@ export function QuoteWorkflowPanel({
           onContactEdit={onContactEdit}
           onPartyLookupPending={onPartyLookupPending}
           scrollToStep={scrollToStep}
+          workItemPane={workItemPane}
         />
       ) : null}
       {showWorkspace ? (
@@ -1039,6 +1043,7 @@ export function QuoteWorkflowPanel({
           onStayAction={onStayAction}
           onPatchStayExtras={onPatchStayExtras}
           onSelectStayKey={onSelectStayKey}
+          workItemPane={workItemPane}
         >
         <div id="quote-rates" className="flex flex-col gap-3 border-t border-[#e2e8f0] pt-3">
           <div className="flex flex-wrap items-center justify-between gap-2">

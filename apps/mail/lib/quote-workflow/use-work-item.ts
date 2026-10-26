@@ -44,6 +44,9 @@ export type StoredPane =
       contact: StoredContact;
       language: string | null;
       translation: StoredTranslation;
+      /** Latest per-path source from getByMessage. Null when the older server omits it. */
+      fieldProvenance?: WorkItemProvenanceMap | null;
+      refs?: Record<string, { stayId: string; rowId: string | null }>;
     };
 
 export type StoredDecision =
@@ -84,6 +87,122 @@ type FieldSend = {
 type PendingEvent = FieldSend & { timer: ReturnType<typeof setTimeout> };
 export type FieldEvent = { path: string; value: RecordFieldEventInput['value'] };
 type Refs = Record<string, { stayId: string; rowId: string | null }>;
+export type WorkItemProvenanceSource = 'ai' | 'staff' | 'unknown';
+export type WorkItemProvenanceEntry = { source: WorkItemProvenanceSource; value: unknown };
+export type WorkItemProvenanceMap = Record<string, WorkItemProvenanceEntry>;
+export type WorkItemSection = { type: 'contact' } | { type: 'stay'; stayId: string };
+export type WorkItemHistoryCursor = { revision: number; revisionHead: number };
+export type WorkItemPaneControls = {
+  fieldProvenance: WorkItemProvenanceMap;
+  refs: Record<string, { stayId: string; rowId: string | null }>;
+  onResetContact?: () => void;
+  onResetStay?: (stayId: string) => void;
+  resetPending?: boolean;
+};
+
+type HistorySeqCursor = WorkItemHistoryCursor & { seq: number };
+type HistoryMutate = (
+  input: { workItemId: string; expectedSeq: number },
+  opts?: ReturnType<typeof inMailbox>,
+) => Promise<unknown>;
+type ResetMutate = (
+  input: { workItemId: string; section: WorkItemSection },
+  opts?: ReturnType<typeof inMailbox>,
+) => Promise<unknown>;
+type CursorQuery = (
+  input: { workItemId: string },
+  opts?: ReturnType<typeof inMailbox>,
+) => Promise<HistorySeqCursor>;
+
+const HISTORY_STALE = 'history_stale';
+const HISTORY_STALE_COPY = "This email was re-read, so older changes can't be undone.";
+const HISTORY_REFRESH_COPY = "Saved, but couldn't refresh —";
+/** J1 CONFLICT copy. The formatter does not send `cause.code`. */
+const HISTORY_STALE_SERVER = 'The mail reading changed. Reload, then undo or redo.';
+
+function messageOf(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+/** J1 may throw or return this typed error while that PR is still landing. */
+function historyStaleOf(value: unknown): boolean {
+  if (value === HISTORY_STALE) return true;
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  const data =
+    record.data && typeof record.data === 'object' && !Array.isArray(record.data)
+      ? (record.data as Record<string, unknown>)
+      : null;
+  const shape =
+    record.shape && typeof record.shape === 'object' && !Array.isArray(record.shape)
+      ? (record.shape as Record<string, unknown>)
+      : null;
+  const shapeData =
+    shape?.data && typeof shape.data === 'object' && !Array.isArray(shape.data)
+      ? (shape.data as Record<string, unknown>)
+      : null;
+  const messages = [record.message, shape?.message, record.error].map(messageOf);
+  if (messages.some((message) => message === HISTORY_STALE_SERVER || message.includes('mail reading changed'))) {
+    return true;
+  }
+  return [
+    record.error,
+    record.message,
+    record.code,
+    data?.code,
+    data?.error,
+    shape?.message,
+    shapeData?.code,
+  ].some((token) => token === HISTORY_STALE);
+}
+
+function historyMoveErrorCopy(error: unknown, fallback: string): string {
+  return historyStaleOf(error) ? HISTORY_STALE_COPY : fallback;
+}
+
+/** Older servers omit these routes; the pane hides the controls then. */
+function historyRoutesFrom(trpc: unknown): {
+  revisionCursor: { query: CursorQuery } | null;
+  undoRevision: { mutate: HistoryMutate } | null;
+  redoRevision: { mutate: HistoryMutate } | null;
+  resetSection: { mutate: ResetMutate } | null;
+} {
+  const workItems = (trpc as {
+    workItems?: {
+      revisionCursor?: { query?: CursorQuery };
+      undoRevision?: { mutate?: HistoryMutate };
+      redoRevision?: { mutate?: HistoryMutate };
+      resetSection?: { mutate?: ResetMutate };
+    };
+  } | null)?.workItems;
+  const query = workItems?.revisionCursor?.query;
+  const undo = workItems?.undoRevision?.mutate;
+  const redo = workItems?.redoRevision?.mutate;
+  const reset = workItems?.resetSection?.mutate;
+  return {
+    revisionCursor: typeof query === 'function' ? { query } : null,
+    undoRevision: typeof undo === 'function' ? { mutate: undo } : null,
+    redoRevision: typeof redo === 'function' ? { mutate: redo } : null,
+    resetSection: typeof reset === 'function' ? { mutate: reset } : null,
+  };
+}
+
+export function sectionHasStaffEdit(
+  provenance: WorkItemProvenanceMap | null | undefined,
+  section: WorkItemSection,
+): boolean {
+  if (!provenance) return false;
+  for (const [path, entry] of Object.entries(provenance)) {
+    if (fieldPathInSection(path, section) && entry.source === 'staff') return true;
+  }
+  return false;
+}
+
+function fieldPathInSection(path: string, section: WorkItemSection): boolean {
+  if (section.type === 'contact') return path.startsWith('contact.');
+  const prefix = `stays[${section.stayId}]`;
+  return path === prefix || path.startsWith(`${prefix}.`);
+}
 
 /** The pane's board as the extraction names it. Unknown is no board stated. */
 function extractionBoard(board: QuoteBoard): string | null {
@@ -258,7 +377,15 @@ export function useStoredWork(args: {
   const [saveFailed, setSaveFailed] = useState(false);
   // The work item whose translation is being asked for again, so "Translating…" shows for that mail only.
   const [translating, setTranslating] = useState<string | null>(null);
+  const [historyEpoch, setHistoryEpoch] = useState(0);
+  const [historyCursor, setHistoryCursor] = useState<HistorySeqCursor | null>(null);
+  const [historyPending, setHistoryPending] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [historyNeedsReload, setHistoryNeedsReload] = useState(false);
+  const [cursorEpoch, setCursorEpoch] = useState(0);
   const trpcRef = useRef(trpc);
+  const lookupKeyRef = useRef(lookupKey);
+  lookupKeyRef.current = lookupKey;
 
   useEffect(() => {
     trpcRef.current = trpc;
@@ -283,6 +410,7 @@ export function useStoredWork(args: {
         const pinned = inMailbox(entry.transportId);
         await (pinned ? recordEvent.mutate(input, pinned) : recordEvent.mutate(input));
         if (latest.current.get(key) === entry) latest.current.delete(key);
+        setCursorEpoch((n) => n + 1);
       } catch {
         if (latest.current.get(key) !== entry) return;
         if (!retried) {
@@ -336,6 +464,14 @@ export function useStoredWork(args: {
     // send() deletes the entry it flushes, which a Map iterator allows.
     for (const key of pending.current.keys()) send(key);
   }, [send]);
+
+  const dropQueuedSaves = useCallback((section?: WorkItemSection) => {
+    for (const [key, entry] of pending.current) {
+      if (section && !fieldPathInSection(entry.path, section)) continue;
+      clearTimeout(entry.timer);
+      pending.current.delete(key);
+    }
+  }, []);
 
   const schedule = useCallback(
     (path: string, workItemId: string, transportId: string | null, value: RecordFieldEventInput['value']) => {
@@ -421,6 +557,8 @@ export function useStoredWork(args: {
       contact: stored.contact,
       language: stored.language,
       translation: stored.translation,
+      fieldProvenance: provenanceOf(stored),
+      refs: stored.refs,
     };
   } else if (stored?.status === 'failed' && retried === 0) {
     pane = { state: 'failed', reason: stored.reason };
@@ -434,6 +572,7 @@ export function useStoredWork(args: {
     pane.state === 'ready' ? (pane.workItemId ?? '') : '',
     pane.state === 'failed' ? pane.reason : '',
     String(retried),
+    String(historyEpoch),
   ].join('|');
 
   const readyRefs = stored?.status === 'ready' ? stored.refs : null;
@@ -451,27 +590,43 @@ export function useStoredWork(args: {
   /** Logs one edit (a field patch or a stay/row action) as field events. Only a stored read has a work item. */
   const recordGroups = useCallback(
     (before: StayGroupRequirement[], after: StayGroupRequirement[]) => {
+      if (historyPending || historyNeedsReload) return;
       if (!readyRefs || !readyWorkItemId) return;
-      for (const event of fieldEventsBetween(readyRefs, before, after)) {
+      const events = fieldEventsBetween(readyRefs, before, after);
+      if (events.length) {
+        setLookup((prev) =>
+          prev && prev.key === lookupKey && prev.result?.status === 'ready'
+            ? { ...prev, result: withStaffPaths(prev.result, events) }
+            : prev,
+        );
+      }
+      for (const event of events) {
         schedule(event.path, readyWorkItemId, readyTransportId, event.value);
       }
     },
-    [readyRefs, readyWorkItemId, readyTransportId, schedule],
+    [historyNeedsReload, historyPending, lookupKey, readyRefs, readyWorkItemId, readyTransportId, schedule],
   );
 
   /** Logs one contact edit as a `contact.<field>` event. Nothing is logged until the mail has a stored read. */
   const recordContact = useCallback(
     (field: ContactField, value: string | null) => {
+      if (historyPending || historyNeedsReload) return;
       // The stored read takes the edit at once, so the HMS notes agree with the Contact block before the save lands.
       setLookup((prev) =>
         prev && prev.key === lookupKey && prev.result?.status === 'ready'
-          ? { ...prev, result: { ...prev.result, contact: { ...prev.result.contact, [field]: value } } }
+          ? {
+              ...prev,
+              result: withStaffPaths(
+                { ...prev.result, contact: { ...prev.result.contact, [field]: value } },
+                [{ path: `contact.${field}`, value }],
+              ),
+            }
           : prev,
       );
       if (!readyWorkItemId) return;
       schedule(`contact.${field}`, readyWorkItemId, readyTransportId, value);
     },
-    [lookupKey, readyWorkItemId, readyTransportId, schedule],
+    [historyNeedsReload, historyPending, lookupKey, readyWorkItemId, readyTransportId, schedule],
   );
 
   /**
@@ -524,6 +679,164 @@ export function useStoredWork(args: {
     }, settle);
   }, [readyWorkItemId]);
 
+  const refetchStored = useCallback(() => {
+    const getByMessage = workItemsFromTrpc(trpcRef.current).getByMessage;
+    const messageId = internetMessageId;
+    const keyNow = lookupKey;
+    if (!getByMessage || !messageId || !keyNow) return Promise.resolve();
+    const pinned = inMailbox(readyTransportId);
+    const input = { internetMessageId: messageId };
+    return (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input))
+      .then((result) => {
+        if (lookupKeyRef.current !== keyNow) return;
+        setLookup((prev) => (prev && prev.key === keyNow ? { ...prev, result } : prev));
+        setHistoryEpoch((n) => n + 1);
+        setHistoryError(null);
+        setHistoryNeedsReload(false);
+      })
+      .catch(() => {
+        if (lookupKeyRef.current !== keyNow) return;
+        setHistoryError(HISTORY_REFRESH_COPY);
+        setHistoryNeedsReload(true);
+      });
+  }, [internetMessageId, lookupKey, readyTransportId]);
+
+  const historyRoutes = historyRoutesFrom(trpc);
+  const historyAvailable = Boolean(readyWorkItemId && historyRoutes.undoRevision && historyRoutes.redoRevision);
+  const resetAvailable = Boolean(readyWorkItemId && historyRoutes.resetSection);
+
+  useEffect(() => {
+    setHistoryEpoch(0);
+    setHistoryCursor(null);
+    setHistoryError(null);
+    setHistoryNeedsReload(false);
+    setCursorEpoch(0);
+  }, [lookupKey]);
+
+  useEffect(() => {
+    const routes = historyRoutesFrom(trpcRef.current);
+    if (!readyWorkItemId || !routes.revisionCursor) {
+      setHistoryCursor(null);
+      return;
+    }
+    let current = true;
+    const pinned = inMailbox(readyTransportId);
+    const input = { workItemId: readyWorkItemId };
+    void (pinned ? routes.revisionCursor.query(input, pinned) : routes.revisionCursor.query(input))
+      .then((result) => {
+        if (
+          current &&
+          result &&
+          Number.isSafeInteger(result.revision) &&
+          Number.isSafeInteger(result.revisionHead) &&
+          Number.isSafeInteger(result.seq)
+        ) {
+          setHistoryCursor(result);
+        }
+      })
+      .catch(() => {
+        if (current) setHistoryCursor(null);
+      });
+    return () => {
+      current = false;
+    };
+  }, [readyWorkItemId, readyTransportId, historyEpoch, cursorEpoch]);
+
+  const runHistoryMove = useCallback(
+    (mutate: HistoryMutate | undefined, message: string) => {
+      const seq = historyCursor?.seq;
+      if (!readyWorkItemId || !mutate || seq === undefined) return;
+      const keyNow = lookupKey;
+      setHistoryPending(true);
+      setHistoryError(null);
+      setHistoryNeedsReload(false);
+      dropQueuedSaves();
+      const pinned = inMailbox(readyTransportId);
+      const input = { workItemId: readyWorkItemId, expectedSeq: seq };
+      void Promise.allSettled([...inFlight.current.values()])
+        .then(() => {
+          if (lookupKeyRef.current !== keyNow) return;
+          dropQueuedSaves();
+          return pinned ? mutate(input, pinned) : mutate(input);
+        })
+        .then((result) => {
+          if (lookupKeyRef.current !== keyNow) return;
+          if (historyStaleOf(result)) {
+            setHistoryError(HISTORY_STALE_COPY);
+            return;
+          }
+          if (result && typeof result === 'object' && 'seq' in result) {
+            const next = result as HistorySeqCursor;
+            if (Number.isSafeInteger(next.revision) && Number.isSafeInteger(next.seq)) setHistoryCursor(next);
+          }
+          return refetchStored();
+        })
+        .catch((error) => {
+          setHistoryError(historyMoveErrorCopy(error, message));
+        })
+        .finally(() => {
+          setHistoryPending(false);
+        });
+    },
+    [dropQueuedSaves, historyCursor, lookupKey, readyWorkItemId, readyTransportId, refetchStored],
+  );
+
+  const undo = useCallback(
+    (_workItemId: string, _expectedRevision: number) => {
+      runHistoryMove(historyRoutesFrom(trpcRef.current).undoRevision?.mutate, "Couldn't undo — try again");
+    },
+    [runHistoryMove],
+  );
+
+  const redo = useCallback(
+    (_workItemId: string, _expectedRevision: number) => {
+      runHistoryMove(historyRoutesFrom(trpcRef.current).redoRevision?.mutate, "Couldn't redo — try again");
+    },
+    [runHistoryMove],
+  );
+
+  const resetSection = useCallback(
+    (section: WorkItemSection) => {
+      const mutate = historyRoutesFrom(trpcRef.current).resetSection?.mutate;
+      if (!readyWorkItemId || !mutate) return;
+      const keyNow = lookupKey;
+      setHistoryPending(true);
+      setHistoryError(null);
+      setHistoryNeedsReload(false);
+      dropQueuedSaves(section);
+      const pinned = inMailbox(readyTransportId);
+      const input = { workItemId: readyWorkItemId, section };
+      void Promise.allSettled([...inFlight.current.values()])
+        .then(() => {
+          if (lookupKeyRef.current !== keyNow) return;
+          dropQueuedSaves(section);
+          return pinned ? mutate(input, pinned) : mutate(input);
+        })
+        .then((result) => {
+          if (lookupKeyRef.current !== keyNow) return;
+          if (historyStaleOf(result)) {
+            setHistoryError(HISTORY_STALE_COPY);
+            return;
+          }
+          return refetchStored();
+        })
+        .catch((error) => {
+          setHistoryError(historyMoveErrorCopy(error, "Couldn't reset — try again"));
+        })
+        .finally(() => {
+          setHistoryPending(false);
+        });
+    },
+    [dropQueuedSaves, lookupKey, readyWorkItemId, readyTransportId, refetchStored],
+  );
+
+  const reloadHistory = useCallback(() => {
+    setHistoryPending(true);
+    void refetchStored().finally(() => {
+      setHistoryPending(false);
+    });
+  }, [refetchStored]);
+
   return {
     pane,
     key,
@@ -541,5 +854,41 @@ export function useStoredWork(args: {
     translationBusy: translating !== null && translating === readyWorkItemId,
     saveFailed,
     retrySave,
+    historyEpoch,
+    historyCursor: historyCursor
+      ? { revision: historyCursor.revision, revisionHead: historyCursor.revisionHead }
+      : null,
+    historyPending,
+    historyError,
+    historyNeedsReload,
+    historyAvailable,
+    resetAvailable,
+    undo,
+    redo,
+    resetSection,
+    reloadHistory,
   };
+}
+
+function withStaffPaths(stored: StoredWork, events: FieldEvent[]): StoredWork {
+  if (stored.status !== 'ready' || !events.length) return stored;
+  const fieldProvenance: WorkItemProvenanceMap = { ...(provenanceOf(stored) ?? {}) };
+  for (const event of events) {
+    fieldProvenance[event.path] = { source: 'staff', value: event.value };
+  }
+  return { ...stored, fieldProvenance } as StoredWork;
+}
+
+function provenanceOf(stored: StoredWork): WorkItemProvenanceMap | null {
+  if (stored.status !== 'ready') return null;
+  const raw = (stored as { fieldProvenance?: unknown }).fieldProvenance;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const provenance: WorkItemProvenanceMap = {};
+  for (const [path, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const source = (entry as { source?: unknown }).source;
+    if (source !== 'ai' && source !== 'staff' && source !== 'unknown') continue;
+    provenance[path] = { source, value: (entry as { value?: unknown }).value };
+  }
+  return provenance;
 }

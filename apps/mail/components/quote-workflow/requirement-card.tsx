@@ -144,6 +144,7 @@ export function StayCard({
   onPatch,
   onStayAction,
   evidence,
+  headerExtra,
   propertyCode = HRCEN_PROPERTY_CODE,
   roomTypes: configuredRoomTypes,
   strictRoomTypes: configuredStrictRoomTypes,
@@ -162,6 +163,7 @@ export function StayCard({
   onPatch?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
   onStayAction?: (action: StayEditAction) => void;
   evidence?: Array<{ field: string; quote: string; source?: 'staff_note' }>;
+  headerExtra?: ReactNode;
   /** HRDAV uses only exact codes/labels; absent keeps legacy HRCEN matching for older callers. */
   propertyCode?: HmsQuotePropertyCode;
   roomTypes?: QuotePaneRoomType[];
@@ -209,6 +211,7 @@ export function StayCard({
             </span>
           </div>
           <div className="flex items-center gap-3">
+            {headerExtra}
             <button
               type="button"
               title="Duplicate this stay with the same dates and rooms."

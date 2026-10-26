@@ -29,6 +29,8 @@ import type {
 } from '@/lib/quote-workflow/types';
 import { StayExtrasFields } from './stay-extras-fields';
 import { StayCard } from './requirement-card';
+import { WorkItemResetButton } from '@/components/nava-pane/screens/work-item-reset-button';
+import { sectionHasStaffEdit, type WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 
 /** Guests, action badge, and Find this booking. Quote stays still use StayCard under this; amend/cancel do not. */
 export function StayAskChrome({
@@ -268,6 +270,7 @@ export function QuoteStayStep({
   onPatchStayExtras,
   onSelectStayKey,
   children,
+  workItemPane = null,
 }: {
   session: QuoteSession;
   stays: Array<{ id: string; rows: StayGroupRequirement[] }>;
@@ -286,9 +289,12 @@ export function QuoteStayStep({
   onPatchStayExtras?: (stayKey: string, extras: Partial<StaffStayExtras>) => void;
   onSelectStayKey?: (stayKey: string) => void;
   children?: ReactNode;
+  workItemPane?: WorkItemPaneControls | null;
 }) {
   return (
     <Section step={2} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
+      {/* Hold every stay control while Undo/Reset refreshes; edits made then would be dropped. */}
+      <fieldset disabled={workItemPane?.resetPending ?? false} className="contents">
       {stays.map((stay, index) => (
         <div key={stay.rows[0]?.id ?? stay.id} className="flex flex-col gap-2">
           <StayAskChrome session={session} stay={stay} onSelectStayKey={onSelectStayKey} />
@@ -324,6 +330,7 @@ export function QuoteStayStep({
             onPatch={onPatchGroup}
             onStayAction={onStayAction}
             evidence={session.analysis?.luna?.evidence}
+            headerExtra={stayResetControl(stay.rows, workItemPane)}
           />
           <StayAvailabilityPanel
             session={session}
@@ -347,6 +354,30 @@ export function QuoteStayStep({
         <p className="text-center text-[13px] text-[#64748b]">Each date range is searched and priced independently.</p>
       </div>
       {children}
+      </fieldset>
     </Section>
+  );
+}
+
+function extractionStayId(
+  rows: StayGroupRequirement[],
+  refs: WorkItemPaneControls['refs'] | null | undefined,
+): string | null {
+  for (const row of rows) {
+    const stayId = refs?.[row.id]?.stayId ?? row.stayId;
+    if (stayId && !stayId.startsWith('d:')) return stayId;
+  }
+  return null;
+}
+
+function stayResetControl(rows: StayGroupRequirement[], workItemPane: WorkItemPaneControls | null) {
+  const stayId = extractionStayId(rows, workItemPane?.refs);
+  if (!stayId || !workItemPane?.onResetStay) return null;
+  if (!sectionHasStaffEdit(workItemPane.fieldProvenance, { type: 'stay', stayId })) return null;
+  return (
+    <WorkItemResetButton
+      onClick={() => workItemPane.onResetStay?.(stayId)}
+      pending={workItemPane.resetPending}
+    />
   );
 }
