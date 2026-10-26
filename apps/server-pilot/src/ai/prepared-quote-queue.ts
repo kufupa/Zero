@@ -3,19 +3,25 @@ import { and, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun } from '../db/schema/mail.js';
 import {
-  countRecentPrefetches,
   enqueueHmsJob,
   hmsMailCopiesForMessage,
   hmsMailReadIdempotencyKey,
-  PREFETCH_WINDOW_MS,
 } from './hms-jobs.js';
+import { reservePrefetchCapacity } from './prefetch-capacity.js';
+
+export type PreparedQuoteCapResult = {
+  created: boolean;
+  deferred: boolean;
+};
+
+const NOT_QUEUED: PreparedQuoteCapResult = { created: false, deferred: false };
 
 /** Serializes prepared-quote cap checks/inserts across workers for one mailbox. Live digests remain idempotent. */
 export async function enqueuePreparedQuoteWithinCap(
   db: DB,
   input: Parameters<typeof enqueueHmsJob>[0],
   perHour: number,
-): Promise<boolean> {
+): Promise<PreparedQuoteCapResult> {
   return db.transaction(async (tx) => {
     await tx.execute(
       sql`select pg_advisory_xact_lock(hashtextextended(
@@ -53,19 +59,31 @@ export async function enqueuePreparedQuoteWithinCap(
     if (existing.some((run) => run.state !== 'dead_letter' && run.state !== 'superseded')) {
       // Let enqueueHmsJob attach this mailbox to an active shared result for run-id polling.
       await enqueueHmsJob(input, scoped);
-      return false;
+      return NOT_QUEUED;
     }
-    const used = await countRecentPrefetches(
-      scoped,
-      input.transportId,
-      'staff_quote',
-      new Date(Date.now() - PREFETCH_WINDOW_MS),
-    );
-    if (used >= perHour) return false;
+    const capacity = await reservePrefetchCapacity(scoped, {
+      transportId: input.transportId,
+      kind: 'staff_quote',
+      perHour,
+      now: input.createdAt,
+    });
+    if (capacity.action === 'disable') return NOT_QUEUED;
+    // A dead-letter retry while the hour is full must not spawn another reserved row.
+    if (capacity.action === 'defer' && existing.length) return NOT_QUEUED;
     const retryInput = existing.length
       ? { ...input, idempotencyKey: `${storedIdentity}:retry:${randomUUID()}` }
       : input;
-    const queued = await enqueueHmsJob(retryInput, scoped);
-    return queued.created;
+    const queued = await enqueueHmsJob(
+      {
+        ...retryInput,
+        nextRunAt: capacity.nextRunAt,
+        extraMetrics: {
+          ...retryInput.extraMetrics,
+          ...(capacity.action === 'defer' ? { prefetchDeferred: true } : {}),
+        },
+      },
+      scoped,
+    );
+    return { created: queued.created, deferred: queued.created && capacity.action === 'defer' };
   });
 }

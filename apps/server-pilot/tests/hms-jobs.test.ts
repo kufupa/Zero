@@ -1355,30 +1355,134 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       }
     }));
 
-  it('caps prepared quotes per transport per hour', () =>
+  it('defers cap overflow with nextRunAt and later runs once without duplicate enqueue', () =>
     withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      vi.stubEnv('HMS_QUOTE_PREPARE_PER_HOUR', '1');
       const env = { ...QUOTE_PREPARE_ENV, HMS_QUOTE_PREPARE_PER_HOUR: '1' };
       const first = await seedQuoteExtraction(db);
       const second = await seedQuoteExtraction(db);
+      await db.insert(aiWorkflowRun).values({
+        id: randomUUID(),
+        transportId: TRANSPORT_ID,
+        threadId: second.threadId,
+        triggerMessageId: second.messageId,
+        runKind: 'inbound_extraction',
+        idempotencyKey: `inbound-extraction:${second.messageId}`,
+        modelId: 'not_applicable',
+        promptVersion: 'triage-v6',
+        admissionSnapshotId: `snapshot-${randomUUID()}`,
+        state: 'succeeded',
+        executorLane: 'default',
+        priority: 0,
+        metrics: {},
+      });
 
-      expect(await prefetchQuoteReadyForExtraction(first.run, db, env)).toBe(1);
+      expect(await prefetchQuoteReadyForExtraction(first.run, db, env)).toBeGreaterThanOrEqual(1);
+      const overflowed = await prefetchQuoteReadyForExtraction(second.run, db, env);
+      expect(overflowed).toBeGreaterThanOrEqual(1);
+      const secondRows = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, second.messageId),
+            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+          ),
+        );
+      expect(secondRows.some((row) => row.nextRunAt && row.nextRunAt.getTime() > Date.now())).toBe(true);
+      expect(await prefetchQuoteReadyForExtraction(second.run, db, env)).toBe(0);
+      expect(
+        await db
+          .select({ id: aiWorkflowRun.id })
+          .from(aiWorkflowRun)
+          .where(
+            and(
+              eq(aiWorkflowRun.triggerMessageId, second.messageId),
+              sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+            ),
+          ),
+      ).toHaveLength(secondRows.length);
+
+      const aged = new Date(Date.now() - 2 * 60 * 60_000);
+      await db
+        .update(aiWorkflowRun)
+        .set({ state: 'succeeded', createdAt: aged, finishedAt: aged, nextRunAt: null, updatedAt: aged })
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, first.messageId),
+            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+          ),
+        );
+      const deferred = secondRows.filter(
+        (row) => (row.metrics as { prefetchDeferred?: boolean } | null)?.prefetchDeferred === true,
+      );
+      expect(deferred.length).toBeGreaterThanOrEqual(1);
+      const [target, ...siblings] = deferred;
+      const later = new Date(Date.now() + 60 * 60_000);
+      for (const job of siblings) {
+        await db.update(aiWorkflowRun).set({ createdAt: aged, nextRunAt: later, updatedAt: aged }).where(eq(aiWorkflowRun.id, job.id));
+      }
+      await db.update(aiWorkflowRun).set({ nextRunAt: new Date(), updatedAt: new Date() }).where(eq(aiWorkflowRun.id, target!.id));
+
+      staffQuoteRunner.run.mockResolvedValue({
+        status: 'ready',
+        workflowRunId: target!.id,
+        revisionRef: 'overflow-1',
+        messageId: second.messageId,
+        factRefs: [],
+        selectionEpoch: 0,
+        inputRevision: 0,
+        inputDigest: 'd'.repeat(64),
+        totalMinor: 1,
+        currency: 'ZAR',
+      });
+      const claimed = await claimJob(db);
+      expect(claimed.id).toBe(target!.id);
+      expect(await runClaimedJob(db, claimed)).toBe('succeeded');
+      expect(staffQuoteRunner.run).toHaveBeenCalledTimes(1);
       expect(await prefetchQuoteReadyForExtraction(second.run, db, env)).toBe(0);
     }));
 
   it.each(['dead_letter', 'superseded'] as const)(
-    'counts a prepared %s run against the hourly cap',
+    'does not retry a prepared %s run while the hourly cap is full',
     (state) => withSeededTestDb(async (db) => {
       const env = { ...QUOTE_PREPARE_ENV, HMS_QUOTE_PREPARE_PER_HOUR: '1' };
       const { messageId, run } = await seedQuoteExtraction(db);
-      expect(await prefetchQuoteReadyForExtraction(run, db, env)).toBe(1);
-      const [first] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      await db.update(aiWorkflowRun).set({ state, finishedAt: new Date(), updatedAt: new Date() })
-        .where(eq(aiWorkflowRun.id, first!.id));
+      expect(await prefetchQuoteReadyForExtraction(run, db, env)).toBeGreaterThanOrEqual(1);
+      const prepared = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, messageId),
+            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+          ),
+        );
+      expect(prepared.length).toBeGreaterThanOrEqual(1);
+      await db
+        .update(aiWorkflowRun)
+        .set({ state, finishedAt: new Date(), updatedAt: new Date() })
+        .where(
+          inArray(
+            aiWorkflowRun.id,
+            prepared.map((row) => row.id),
+          ),
+        );
 
       expect(await prefetchQuoteReadyForExtraction(run, db, env)).toBe(0);
-      const prepared = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
-      expect(prepared).toHaveLength(1);
-      expect(prepared[0]?.id).toBe(first!.id);
+      const after = await db
+        .select()
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, messageId),
+            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+          ),
+        );
+      expect(after).toHaveLength(prepared.length);
+      expect(after.map((row) => row.id).sort()).toEqual(prepared.map((row) => row.id).sort());
     }),
   );
 
