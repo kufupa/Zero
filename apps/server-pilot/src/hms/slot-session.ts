@@ -17,6 +17,8 @@ export class SlotSessionClosedError extends Error {
 
 export type SlotSession = {
   readonly phase: SlotSessionPhase;
+  /** Increments on every recover/reset so in-flight leases can fail closed. */
+  readonly generation: number;
   recover: () => Promise<void>;
   reset: () => Promise<void>;
   withRead: <T>(run: () => Promise<T>) => Promise<T>;
@@ -29,6 +31,9 @@ export function createSlotSession(input: { owner: SlotOwner }): SlotSession {
   const session: SlotSession = {
     get phase() {
       return phase;
+    },
+    get generation() {
+      return generation;
     },
     async recover() {
       phase = 'recovering';

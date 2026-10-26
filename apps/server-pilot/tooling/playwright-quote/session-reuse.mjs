@@ -111,6 +111,14 @@ async function shellReadyOrFalse(page, secret) {
   }
 }
 
+/** First already-authenticated page for this property, or null. Does not login or create a page. */
+export async function findReusableAuthenticatedPage(pages, secret) {
+  for (const page of pages ?? []) {
+    if (page && (await shellReadyOrFalse(page, secret))) return page;
+  }
+  return null;
+}
+
 async function loginFormVisible(page) {
   try {
     // Infor's login page renders the password box as type=text name=password (live HRDAV DOM, 2026-10-19).
