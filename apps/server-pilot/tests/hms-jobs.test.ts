@@ -2413,6 +2413,53 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(expired?.claimedAt).toBeNull();
     }));
 
+  it('claims a prepared staff quote that stayed queued for more than ten minutes', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId } = await seedThread(db, 'Quote request');
+      const preparedInput = staffQuoteInput.parse({
+        ...STAFF_QUOTE_INPUT,
+        messageId,
+        selectionEpoch: 0,
+        inputRevision: 0,
+      });
+      const { run } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'staff_quote', input: preparedInput },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: `hms-job:staff-quote-prepared:queue-ttl:${randomUUID()}`,
+          extraMetrics: { quotePrepared: true },
+        },
+        db,
+      );
+      const now = new Date(Date.now() + 1_000);
+      const createdAt = new Date(now.getTime() - 11 * 60_000);
+      await db
+        .update(aiWorkflowRun)
+        .set({ createdAt, nextRunAt: createdAt, updatedAt: createdAt })
+        .where(eq(aiWorkflowRun.id, run.id));
+
+      const claimed = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        now,
+        db,
+      });
+      const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+
+      expect(claimed?.id).toBe(run.id);
+      expect(stored).toMatchObject({ state: 'claimed', lastError: null });
+      expect(stored?.claimedAt).not.toBeNull();
+    }));
+
   it('does not expire a deferred prepared quote before nextRunAt', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
