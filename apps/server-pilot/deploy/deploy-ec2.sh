@@ -35,6 +35,11 @@ for arg in "$@"; do
   esac
 done
 
+# Serialize staging, nginx activation, and retention pruning across deploys.
+DEPLOY_LOCK=/home/ubuntu/.nava-deploy.lock
+exec 9>>"$DEPLOY_LOCK"
+flock -x 9
+
 echo "== deploy: repo ${REPO_ROOT} =="
 cd "$REPO_ROOT"
 
@@ -534,6 +539,10 @@ if command -v nginx >/dev/null 2>&1; then
       trap - EXIT INT TERM
     else
       echo "nginx activated but temporary backup cleanup failed" >&2
+      return 1
+    fi
+    if ! WEB_ROOT="$WEB_ROOT" bash "${SERVER_PILOT}/deploy/prune-web-releases.sh"; then
+      echo "web release pruning failed after nginx commit" >&2
       return 1
     fi
   }

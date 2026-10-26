@@ -59,6 +59,8 @@ import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 
 const CENTURION = 'transport-centurion';
 const OTHER = 'transport-other';
+const CENTURION_EMAIL = 'centurion@legacyhotels.co.za';
+const OTHER_EMAIL = 'other@legacyhotels.co.za';
 const DAVINCI = DAVINCI_TRANSPORT_ID;
 const FAITH = FAITH_TRANSPORT_ID;
 const USER = 'user-ropperman';
@@ -128,19 +130,19 @@ function withDb(run: (db: DB) => Promise<void>) {
 async function addOtherTransport(db: DB) {
   await db.insert(mailboxTransport).values({
     id: OTHER,
-    email: 'other@legacyhotels.co.za',
-    ownerHeaderValue: 'other@legacyhotels.co.za',
+    email: OTHER_EMAIL,
+    ownerHeaderValue: OTHER_EMAIL,
     mailboxType: 'personal',
     sendFromConfig: { aliases: [] },
   });
 }
 
-/** One inbound mail with a Message-ID of `<id>@example.com`. Returns the message id. */
-async function seedMail(db: DB, id: string, transportId = CENTURION): Promise<string> {
+/** One inbound mail with a Message-ID of `<id>@example.com` for an explicit mailbox. */
+async function seedMailForTransport(db: DB, id: string, transportId: string, transportEmail: string): Promise<string> {
   await seedInboxThread(db, {
     threadId: `thread-${id}`,
     transportId,
-    transportEmail: 'centurion@legacyhotels.co.za',
+    transportEmail,
     messageId: `msg-${id}`,
     fromAddress: 'sender@example.com',
     subject: 'Rooms request',
@@ -148,6 +150,11 @@ async function seedMail(db: DB, id: string, transportId = CENTURION): Promise<st
     messageIdHeader: `${id}@example.com`,
   });
   return `msg-${id}`;
+}
+
+/** One inbound mail for the legacy test mailbox. */
+async function seedMail(db: DB, id: string): Promise<string> {
+  return seedMailForTransport(db, id, CENTURION, CENTURION_EMAIL);
 }
 
 /** Inserts one read for a message, as the inbound run would store it. */
@@ -193,15 +200,19 @@ async function eventsFor(db: DB, workItemId: string) {
   return db.select().from(workEvent).where(eq(workEvent.workItemId, workItemId));
 }
 
-function centurionCaller(activeTransportId = CENTURION) {
+function callerForTransport(activeTransportId: string, transportEmail: string) {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
     sessionUser: { id: USER, email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
     activeTransportId,
-    transportEmail: 'centurion@legacyhotels.co.za',
+    transportEmail,
     accessRole: 'owner',
   } as never);
+}
+
+function centurionCaller(activeTransportId = CENTURION) {
+  return callerForTransport(activeTransportId, CENTURION_EMAIL);
 }
 
 describe('stored read for the pane', () => {
@@ -230,7 +241,7 @@ describe('stored read for the pane', () => {
       expect(work.analysis.groups[2]!.arrivalDate).toBe('2027-11-17');
       expect(work.refs[ROW_TWIN]).toEqual({ stayId: STAY_ONE, rowId: ROW_TWIN });
       expect(work.analysis.groups.map((group) => group.stayId)).toEqual([STAY_ONE, STAY_ONE, STAY_TWO]);
-      expect(work.analysis.reviewItems?.map((item) => item.id)).toContain('missing:rooms:0');
+      expect(work.analysis.reviewItems?.map((item) => item.id)).not.toContain('missing:rooms:0');
       expect(work.workItemStatus).toBe('needs_you');
     }));
 
@@ -1116,7 +1127,8 @@ describe('field events', () => {
 
       const after = await readyWork(db, 'e2');
       expect(after.analysis.groups[0]).toMatchObject({ quantity: 2 });
-      expect(after.analysis.groups[0]!.departureDate).toBeUndefined();
+      expect(after.analysis.groups[0]!.departureDate).toBe('2027-10-27');
+      expect(after.analysis.groups[0]!.fields.departureDate).toBe('staff_corrected');
       expect(await eventsFor(db, work.workItemId)).toHaveLength(3);
     }));
 
@@ -1441,6 +1453,123 @@ describe('contact edits', () => {
     }));
 });
 
+describe('section reset', () => {
+  it('restores only each selected section and logs fields with extraction values', () =>
+    withDb(async (db) => {
+      await addOtherTransport(db);
+      const messageId = await seedMail(db, 'reset1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'reset1');
+      const arrival = `stays[${STAY_ONE}].requested.arrival`;
+      const count = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`;
+      const noAiValue = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].board`;
+      const otherStay = `stays[${STAY_TWO}].requested.arrival`;
+      const addedRow = `stays[${STAY_ONE}].rows[r_user01].count`;
+      const company = 'contact.company';
+      const edits: Array<[string, string | number]> = [
+        [arrival, '2027-10-25'],
+        [count, 5],
+        [noAiValue, 'bb'],
+        [otherStay, '2027-11-16'],
+        [addedRow, 4],
+        [company, 'Edited company'],
+      ];
+      for (const [fieldPath, value] of edits) {
+        expect(
+          await recordFieldEvent(db, {
+            transportId: CENTURION,
+            workItemId: work.workItemId,
+            userId: USER,
+            type: 'field.edit',
+            fieldPath,
+            value,
+          }),
+        ).toMatchObject({ status: 'recorded' });
+      }
+
+      expect(
+        await centurionCaller().workItems.resetSection({
+          workItemId: work.workItemId,
+          section: { type: 'contact' },
+        }),
+      ).toEqual({ reset: 1 });
+      const [afterContactReset] = await db
+        .select({ state: workItem.state })
+        .from(workItem)
+        .where(eq(workItem.id, work.workItemId));
+      expect(afterContactReset?.state).toEqual({
+        [arrival]: '2027-10-25',
+        [count]: 5,
+        [noAiValue]: 'bb',
+        [otherStay]: '2027-11-16',
+        [addedRow]: 4,
+      });
+
+      await expect(
+        callerForTransport(OTHER, OTHER_EMAIL).workItems.resetSection({
+          workItemId: work.workItemId,
+          section: { type: 'stay', stayId: STAY_ONE },
+        }),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+      expect(
+        await centurionCaller().workItems.resetSection({
+          workItemId: work.workItemId,
+          section: { type: 'stay', stayId: STAY_ONE },
+        }),
+      ).toEqual({ reset: 2 });
+
+      const [stored] = await db.select({ state: workItem.state }).from(workItem).where(eq(workItem.id, work.workItemId));
+      expect(stored?.state).toEqual({
+        [noAiValue]: 'bb',
+        [otherStay]: '2027-11-16',
+        [addedRow]: 4,
+      });
+      const resetEvents = (await eventsFor(db, work.workItemId)).filter((event) => event.type === 'field.reset');
+      expect(resetEvents).toHaveLength(3);
+      expect(resetEvents.map((event) => event.fieldPath).sort()).toEqual([arrival, count, company].sort());
+      expect(resetEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            actorKind: 'user',
+            actorUserId: USER,
+            fieldPath: company,
+            aiValue: 'Horizon Trail Tours',
+            value: 'Horizon Trail Tours',
+            aiSource: 'extract-v1',
+          }),
+          expect.objectContaining({
+            actorKind: 'user',
+            actorUserId: USER,
+            fieldPath: arrival,
+            aiValue: '2027-10-26',
+            value: '2027-10-26',
+            aiSource: 'extract-v1',
+          }),
+          expect.objectContaining({
+            actorKind: 'user',
+            actorUserId: USER,
+            fieldPath: count,
+            aiValue: 2,
+            value: 2,
+            aiSource: 'extract-v1',
+          }),
+        ]),
+      );
+
+      const after = await centurionCaller().workItems.getByMessage({ internetMessageId: '<reset1@example.com>' });
+      if (after.status !== 'ready') throw new Error('expected a ready work item');
+      expect(after.analysis.groups.find((group) => group.id === ROW_SINGLE)).toMatchObject({
+        arrivalDate: '2027-10-26',
+        quantity: 2,
+      });
+      expect(after.analysis.groups.find((group) => group.id === ROW_STAY_TWO)?.arrivalDate).toBe('2027-11-16');
+      expect(after.fieldProvenance[company]).toEqual({ source: 'ai', value: 'Horizon Trail Tours' });
+      expect(after.fieldProvenance[arrival]).toEqual({ source: 'ai', value: '2027-10-26' });
+      expect(after.fieldProvenance[otherStay]).toEqual({ source: 'staff', value: '2027-11-16' });
+    }));
+});
+
 describe('field paths and values', () => {
   it('parses stay and row paths and refuses anything else', () => {
     expect(parseFieldPath(`stays[${STAY_ONE}].requested.arrival`)).toEqual({
@@ -1536,6 +1665,84 @@ describe('work item route', () => {
       await expect(other.dismiss({ workItemId: work.workItemId })).rejects.toMatchObject({ code: 'NOT_FOUND' });
       expect(await eventsFor(db, work.workItemId)).toHaveLength(0);
       expect((await centurionCaller().workItems.list({})).map((item) => item.id)).toEqual([work.workItemId]);
+    }));
+
+  it('returns the latest event source and value per field for the active mailbox', () =>
+    withDb(async (db) => {
+      await addOtherTransport(db);
+      const messageId = await seedMailForTransport(db, 'provenance1', OTHER, OTHER_EMAIL);
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const opened = await openStoredWork(db, {
+        transportId: OTHER,
+        internetMessageId: '<provenance1@example.com>',
+      });
+      if (opened.status !== 'ready' || !opened.workItemId) throw new Error('expected a ready work item');
+
+      const arrival = `stays[${STAY_ONE}].requested.arrival`;
+      const departure = `stays[${STAY_ONE}].requested.departure`;
+      const count = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`;
+      await db.insert(workEvent).values([
+        {
+          id: '00000000-0000-4000-8000-000000000001',
+          workItemId: opened.workItemId,
+          actorKind: 'user',
+          actorUserId: USER,
+          type: 'field.accept',
+          fieldPath: arrival,
+          aiValue: '2027-11-01',
+          value: '2027-11-01',
+          aiSource: 'extract-v1',
+          at: new Date('2026-10-01T10:00:00Z'),
+        },
+        {
+          id: '00000000-0000-4000-8000-000000000002',
+          workItemId: opened.workItemId,
+          actorKind: 'user',
+          actorUserId: USER,
+          type: 'field.edit',
+          fieldPath: arrival,
+          aiValue: '2027-11-01',
+          value: '2027-11-03',
+          aiSource: 'extract-v1',
+          at: new Date('2026-10-01T10:00:00Z'),
+        },
+        {
+          workItemId: opened.workItemId,
+          actorKind: 'user',
+          actorUserId: USER,
+          type: 'field.accept',
+          fieldPath: departure,
+          aiValue: '2027-11-05',
+          value: '2027-11-05',
+          aiSource: 'extract-v2',
+          at: new Date('2026-10-01T10:02:00Z'),
+        },
+        {
+          workItemId: opened.workItemId,
+          actorKind: 'system',
+          type: 'field.seed',
+          fieldPath: count,
+          aiValue: 4,
+          value: 7,
+          at: new Date('2026-10-01T10:03:00Z'),
+        },
+      ]);
+      await db.update(workItem).set({ state: { [count]: 9 } }).where(eq(workItem.id, opened.workItemId));
+
+      const work = await callerForTransport(OTHER, OTHER_EMAIL).workItems.getByMessage({
+        internetMessageId: '<provenance1@example.com>',
+      });
+      expect(work.status).toBe('ready');
+      expect(work).toHaveProperty('fieldProvenance', {
+        [arrival]: { source: 'staff', value: '2027-11-03' },
+        [departure]: { source: 'ai', value: '2027-11-05' },
+        [count]: { source: 'unknown', value: 7 },
+      });
+      expect(
+        await callerForTransport(CENTURION, CENTURION_EMAIL).workItems.getByMessage({
+          internetMessageId: '<provenance1@example.com>',
+        }),
+      ).toEqual({ status: 'none' });
     }));
 
   it('records a contact edit through the route', () =>
@@ -3571,7 +3778,10 @@ describe('trusted POP3 delivery clock (KTD-1)', () => {
       if (stored.kind !== 'stored') throw new Error(`expected stored, got ${stored.kind}`);
       const [row] = await db.select().from(message).where(eq(message.id, messageId));
 
-      expect(row?.sourceProvenance).toEqual({ deliveredAt: '2026-10-06T10:00:00.000Z' });
+      expect(row?.sourceProvenance).toEqual({
+        deliveredAt: '2026-10-06T10:00:00.000Z',
+        stampRoute: 'stamp_corroborated',
+      });
       expect(row?.receivedAt).toEqual(new Date('2026-10-06T07:00:00.000Z'));
     }));
 

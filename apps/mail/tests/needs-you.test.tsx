@@ -9,6 +9,10 @@ import {
   useNeedsYou,
 } from '../components/nava-pane/screens/needs-you';
 import { WorkItemHistoryControls } from '../components/nava-pane/screens/work-item-history-controls';
+import {
+  WorkItemFieldProvenance,
+  type WorkItemFieldProvenanceEntry,
+} from '../components/nava-pane/screens/work-item-field-provenance';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
@@ -599,5 +603,41 @@ describe('webmail exact-message reader selection', () => {
         Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
       }
     }
+  });
+});
+
+describe('Needs-you field provenance (DS4-H2)', () => {
+  it('follows AI, staff edit and reset-to-AI source/value through reopen', () => {
+    const ai = { source: 'ai', value: '2027-04-14' } satisfies WorkItemFieldProvenanceEntry;
+    const edited = { source: 'staff', value: '2027-04-15' } satisfies WorkItemFieldProvenanceEntry;
+    const unknown = { source: 'unknown', value: '2027-04-14' } satisfies WorkItemFieldProvenanceEntry;
+    const marker = (value: string, provenance?: WorkItemFieldProvenanceEntry) => (
+      <label>
+        Arrival
+        <input readOnly value={value} />
+        <WorkItemFieldProvenance fieldValue={value} provenance={provenance} />
+      </label>
+    );
+
+    const view = render(marker(ai.value, ai));
+    expect(screen.getByText('AI')).toBeDefined();
+
+    view.rerender(marker(edited.value, edited));
+    expect(screen.getByText('Edited')).toBeDefined();
+    expect(screen.queryByText('AI')).toBeNull();
+
+    const resetValue = ai.value;
+    view.rerender(marker(resetValue, ai));
+    expect(screen.getByText('AI')).toBeDefined();
+
+    view.unmount();
+    const reopened = render(marker(resetValue, ai));
+    expect(screen.getByText('AI')).toBeDefined();
+
+    reopened.rerender(marker(resetValue, unknown));
+    expect(screen.queryByText('AI')).toBeNull();
+    expect(screen.queryByText('Edited')).toBeNull();
+    reopened.rerender(marker(edited.value, ai));
+    expect(screen.queryByText('AI')).toBeNull();
   });
 });
