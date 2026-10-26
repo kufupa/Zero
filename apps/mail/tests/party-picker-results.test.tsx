@@ -567,7 +567,10 @@ describe('PartyPicker prefetched party jobs', () => {
         onClear={vi.fn()}
       />,
     );
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy());
+    await waitFor(() => {
+      expect(screen.getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy();
+      expect(screen.queryByRole('combobox', { name: 'Company from HMS' })).toBeNull();
+    });
     expect(mismatchPick).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Confirm Company' })).toBeNull();
     expect(screen.queryByText(/Recommended:/)).toBeNull();
@@ -589,7 +592,10 @@ describe('PartyPicker prefetched party jobs', () => {
         onClear={vi.fn()}
       />,
     );
-    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy());
+    await waitFor(() => {
+      expect(screen.getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy();
+      expect(screen.queryByRole('combobox', { name: 'Company from HMS' })).toBeNull();
+    });
     expect(unknownPick).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Confirm Company' })).toBeNull();
   });

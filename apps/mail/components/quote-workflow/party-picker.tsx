@@ -764,7 +764,9 @@ export function PartyPicker({
       inScope(row) &&
       !picked.some((party) => party.kind === row.kind && party.nativeId === row.nativeId),
   );
-  const jobResults = uniqueCandidates(jobReply?.results.filter(inScope) ?? []);
+  const jobResults = uniqueCandidates(
+    v2PartyJob && !v2PropertyOk ? [] : (jobReply?.results.filter(inScope) ?? []),
+  );
   const autoDuplicateNames = duplicateCandidateNames(autoRows);
   const jobDuplicateNames = duplicateCandidateNames(jobResults);
   const autoBest =
@@ -784,7 +786,6 @@ export function PartyPicker({
   );
   // A row staff pick, in this field's search, is theirs: the search does not pick over it.
   const pickRow = (row: PartyCandidate) => {
-    if (v2PartyJob && !v2PropertyOk) return;
     if (
       v2PartyJob &&
       v2DisplayJobView &&
