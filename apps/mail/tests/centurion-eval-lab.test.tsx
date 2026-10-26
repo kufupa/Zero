@@ -3,6 +3,7 @@
  */
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { ReactNode } from 'react';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -10,7 +11,7 @@ vi.mock('virtua', async () => {
   const { createElement, forwardRef } = await import('react');
   return {
     VList: forwardRef(
-      (props: { count: number; children: (index: number) => unknown }, _ref) =>
+      (props: { count: number; children: (index: number) => ReactNode }, _ref) =>
         createElement(
           'div',
           { 'data-testid': 'lab-vlist' },

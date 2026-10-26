@@ -108,7 +108,7 @@ describe('WorkflowGoldLabel', () => {
     mocks.ownerActionResult = 'cancel';
     renderGoldLabel();
 
-    const picker = await screen.findByRole('combobox', { name: 'Nava reads this as' }) as HTMLSelectElement;
+    const picker = await screen.findByRole('combobox', { name: 'Nava reads this as' }) as unknown as HTMLSelectElement;
     await waitFor(() => expect(picker.value).toBe('cancel'));
 
     expect(screen.getByText('Saved as gold · Cancellation')).toBeDefined();
@@ -118,7 +118,7 @@ describe('WorkflowGoldLabel', () => {
   it('offers every action and saves the synced message id and selected gold label', async () => {
     renderGoldLabel();
 
-    const picker = await screen.findByRole('combobox', { name: 'Nava reads this as' }) as HTMLSelectElement;
+    const picker = await screen.findByRole('combobox', { name: 'Nava reads this as' }) as unknown as HTMLSelectElement;
     expect(Array.from(picker.options).map(({ value, text }) => [value, text])).toEqual([
       ['no_action', 'Not for Nava'],
       ['quote_availability', 'Quote'],
@@ -161,7 +161,7 @@ describe('WorkflowGoldLabel', () => {
 
   it('lets the owner replace a saved gold label', async () => {
     renderGoldLabel();
-    const picker = await screen.findByRole('combobox', { name: 'Nava reads this as' }) as HTMLSelectElement;
+    const picker = await screen.findByRole('combobox', { name: 'Nava reads this as' }) as unknown as HTMLSelectElement;
     const saveButton = screen.getByRole('button', { name: 'Save as gold' });
     await waitFor(() => expect((saveButton as HTMLButtonElement).disabled).toBe(false));
 

@@ -181,11 +181,12 @@ export function useAdminDashboardExport(queryInput?: AdminDashboardQueryInput): 
   const exportQueryOptions = trpc.adminDashboard.getMetrics.queryOptions(exportInput, {
     enabled: false,
   });
+  // Report version and viewer scope extend this same tRPC query key.
   const exportQueryKey = [
     ...(exportQueryOptions.queryKey as readonly unknown[]),
     ADMIN_DASHBOARD_REPORT_VERSION,
     viewerScopeKey,
-  ] as typeof exportQueryOptions.queryKey;
+  ] as unknown as typeof exportQueryOptions.queryKey;
   const exportQuery = useQuery({ ...exportQueryOptions, queryKey: exportQueryKey });
   const clearCachedExport = () => {
     queryClient.removeQueries({ queryKey: exportQueryKey, exact: true });

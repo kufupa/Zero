@@ -59,14 +59,16 @@ const draftApprovalInput = z
     recipientDigest: z.string(),
     attachmentDigest: z.string(),
     evidenceDigest: z.string(),
+    resultDigest: z.string().optional(),
     routeBinding: z
       .object({
         routeId: z.string(),
         modelId: z.string(),
         purpose: z.literal('draft'),
-        protocol: z.literal('in_process'),
+        // Mirrors draftApprovalSchema in ai/draft-approval.ts: local or installed Azure draft route.
+        protocol: z.enum(['in_process', 'azure-foundry-responses']),
         access: z.literal('current_app'),
-        egress: z.literal('none'),
+        egress: z.enum(['none', 'azure-foundry']),
         retention: z.literal('bounded'),
         usage: z.literal('reported'),
         release: z
@@ -84,6 +86,9 @@ const draftApprovalInput = z
           .strict(),
       })
       .strict()
+      .refine((value) =>
+        value.protocol === 'in_process' ? value.egress === 'none' : value.egress === 'azure-foundry',
+      )
       .optional(),
     fingerprint: z.string(),
     signature: z.string(),

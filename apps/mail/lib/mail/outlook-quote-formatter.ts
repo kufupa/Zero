@@ -67,7 +67,7 @@ export function constructOutlookReplyHtml(
 ): string {
   let formattedMessage = '';
   let originalDate: string | Date | number = '';
-  let originalSender: Sender | undefined;
+  let originalSender: Sender | null | undefined;
   let toRecipients: Sender[] = [];
   let ccRecipients: Sender[] = [];
   let subject = '';

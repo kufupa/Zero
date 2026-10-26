@@ -4,9 +4,25 @@ import { useReducer } from 'react';
 import { QuoteWorkflowPanel } from '../../components/quote-workflow/quote-workflow-panel';
 import { initialQuoteSession, reduceQuoteSession, canCreateNativeDraft } from '../../lib/quote-workflow/session';
 import { bindExecuteStaffQuote, bindQualifiedStaffProposalPdf } from '../../lib/quote-workflow/staff-quote-bind';
+import type { QualifiedStaffPdfResult } from '../../lib/quote-workflow/staff-quote-bind';
 import { HRCEN_PROPERTY_CODE } from '../../lib/quote-workflow/types';
+import type { StayGroupRequirement } from '../../lib/quote-workflow/types';
 
-const proof = await fetch('/recorded-proof').then(r => r.json());
+type RecordedProof = {
+  approved: {
+    messageId: string;
+    sourceHash: string;
+    groups: StayGroupRequirement[];
+    company: string;
+  };
+  artifact: Omit<QualifiedStaffPdfResult, 'pdfBase64'>;
+  revision: { scopeDigest: string };
+  pdfBase64: string;
+};
+
+const proof = await fetch('/recorded-proof').then((response) =>
+  response.json() as Promise<RecordedProof>,
+);
 const source = { messageId: proof.approved.messageId, threadId: 'recorded-thread', sourceHash: proof.approved.sourceHash };
 let seed = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: {
   transportId: 'recorded-transport', mailboxEmail: 'recorded@example.invalid', storeId: 'recorded-store',

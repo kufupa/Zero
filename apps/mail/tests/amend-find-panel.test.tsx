@@ -1856,7 +1856,7 @@ describe('AmendLookupPanel cancel from the pane', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel booking in HMS' }));
     expect(await screen.findByText('HMS did not accept that reason. Pick another and try again.')).toBeTruthy();
     expect((screen.getByRole('button', { name: 'Cancel booking in HMS' }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByLabelText('Cancellation reason') as HTMLSelectElement).selectedIndex).toBe(0);
+    expect((screen.getByLabelText('Cancellation reason') as unknown as HTMLSelectElement).selectedIndex).toBe(0);
   });
 
   it('reports a failed preview call and leaves the preview button in place', async () => {

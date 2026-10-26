@@ -274,10 +274,9 @@ export const useThreads = () => {
       .filter((thread): thread is ThreadListItem => Boolean(thread))
       .filter((thread) => !isInQueue(`thread:${thread.id}`));
 
-    return buildConversationPrimaryListRows(flattened).map((row) => ({
-      ...row,
-      linkedStubs: row.linkedStubs,
-    }));
+    const primaryRows = buildConversationPrimaryListRows(flattened);
+    // Safe: the builder spreads each input row and only adds linkedStubs; its return type erases ThreadListItem fields.
+    return primaryRows as unknown as ThreadListItem[];
   }, [activeThreadsQuery.data, activeThreadsQuery.dataUpdatedAt, isInQueue, backgroundQueue]);
 
   const isEmpty = useMemo(() => threads.length === 0, [threads]);

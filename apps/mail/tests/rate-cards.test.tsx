@@ -616,14 +616,14 @@ describe('rate cards in the quote panel', () => {
 
   it('keeps every rate code visible while the stay meal plan only highlights matching cards', async () => {
     render(<QuoteWorkflowPanel session={await quotedSession([NCOR, BAR, BARRO])} />);
-    const mealPlan = screen.getByLabelText('Meal plan') as HTMLSelectElement;
+    const mealPlan = screen.getByLabelText('Meal plan') as unknown as HTMLSelectElement;
     expect(mealPlan.value).toBe('bb');
     expect(rateCards()).toHaveLength(3);
     expect(screen.getAllByText('Meal plan match')).toHaveLength(2);
 
     fireEvent.change(mealPlan, { target: { value: 'room_only' } });
 
-    expect((screen.getByLabelText('Meal plan') as HTMLSelectElement).value).toBe('room_only');
+    expect((screen.getByLabelText('Meal plan') as unknown as HTMLSelectElement).value).toBe('room_only');
     expect(rateCards()).toHaveLength(3);
     expect(screen.getAllByText('Meal plan match')).toHaveLength(1);
     expect(within(rateCards()[2]!).getByText('Meal plan match')).toBeDefined();
@@ -648,7 +648,7 @@ describe('rate cards in the quote panel', () => {
       />,
     );
 
-    const select = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    const select = screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement;
     expect(select.value).toBe('all');
     expect([...select.options].map((option) => option.value)).toContain('UNSEEN9');
     const cards = rateCards();

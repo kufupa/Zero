@@ -8,6 +8,7 @@ import {
   NEEDS_YOU_UNDO_MS,
   useNeedsYou,
 } from '../components/nava-pane/screens/needs-you';
+import { WorkItemHistoryControls } from '../components/nava-pane/screens/work-item-history-controls';
 import {
   WorkItemFieldProvenance,
   type WorkItemFieldProvenanceEntry,
