@@ -199,7 +199,9 @@ vi.mock('react-router', () => ({
   useParams: () => ({ folder: mocks.folder }),
 }));
 vi.mock('nuqs', () => ({
+  parseAsString: {},
   useQueryState: (key: string) => [key === 'threadId' ? mocks.threadId : null, vi.fn()],
+  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: null }, vi.fn()],
 }));
 vi.mock('react-hotkeys-hook', () => ({
   useHotkeys: vi.fn(),
