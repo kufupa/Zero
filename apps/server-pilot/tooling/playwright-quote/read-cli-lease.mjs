@@ -3,14 +3,14 @@
  * Unknown, inactive, or omitted property fails closed before a page is created.
  * No hotel default.
  *
- * Parent already holds the postgres property lock. A second postgres lock in the
- * child deadlocks staff-quote (DATABASE_URL is spread into the child). Pane spawn
- * strips DATABASE_URL for the same reason. CLI uses a process-local held lock so
- * the lease WeakMap is set without touching postgres.
+ * Standalone CLI with a database URL takes the real postgres property lock.
+ * Pane/staff children receive spawn env with DATABASE_URL stripped — a second
+ * postgres lock would deadlock the parent — so those use a process-local held
+ * lock so the lease WeakMap is set without touching postgres.
  */
 import { createExclusivePageLease, SlotLeaseRefusedError } from './hms-slot-lease.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
-import { createPropertyReadLock } from '../../src/hms/property-read-lock.ts';
+import { createPostgresPropertyReadLock, createPropertyReadLock } from '../../src/hms/property-read-lock.ts';
 import { createSlotSession } from '../../src/hms/slot-session.ts';
 
 export { SlotLeaseRefusedError };
@@ -82,7 +82,15 @@ export async function prepareReadCliInput(input, env = process.env) {
     await session.recover();
   }
   const lock = input.lock
-    || (input.lockConnection ? null : childHeldLock(tenantId, code));
+    || (input.lockConnection
+      ? null
+      : resolvedEnv.DATABASE_URL
+        ? createPostgresPropertyReadLock({
+          tenantId,
+          propertyCode: code,
+          databaseUrl: resolvedEnv.DATABASE_URL,
+        })
+        : childHeldLock(tenantId, code));
   return { ...input, propertyCode: code, tenantId, session, lock, env: resolvedEnv };
 }
 
