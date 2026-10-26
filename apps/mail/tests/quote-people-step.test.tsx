@@ -117,5 +117,8 @@ describe('QuotePeopleStep', () => {
     expect(guest.value).toBe('');
     expect(guest.getAttribute('placeholder')).toBe('Guest name?');
     expect(within(people).getByText('Agent sender')).toBeDefined();
+
+    fireEvent.change(guest, { target: { value: 'Staff-entered value' } });
+    expect(guest.value).toBe('Staff-entered value');
   });
 });
