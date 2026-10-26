@@ -1565,6 +1565,7 @@ describe('work item route', () => {
       const count = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`;
       await db.insert(workEvent).values([
         {
+          id: '00000000-0000-4000-8000-000000000001',
           workItemId: opened.workItemId,
           actorKind: 'user',
           actorUserId: USER,
@@ -1576,6 +1577,7 @@ describe('work item route', () => {
           at: new Date('2026-10-01T10:00:00Z'),
         },
         {
+          id: '00000000-0000-4000-8000-000000000002',
           workItemId: opened.workItemId,
           actorKind: 'user',
           actorUserId: USER,
@@ -1584,7 +1586,7 @@ describe('work item route', () => {
           aiValue: '2027-11-01',
           value: '2027-11-03',
           aiSource: 'extract-v1',
-          at: new Date('2026-10-01T10:01:00Z'),
+          at: new Date('2026-10-01T10:00:00Z'),
         },
         {
           workItemId: opened.workItemId,
