@@ -733,9 +733,7 @@ describe('booking card staying-guest prefill', () => {
     expect(guestOptIn.checked).toBe(false);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
-    await waitFor(() =>
-      expect(preview).toHaveBeenCalledWith(expect.objectContaining({ firstName: 'Bea', guestoptin4: false })),
-    );
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ firstName: 'Bea', guestoptin4: false }));
     firstPass.unmount();
 
     resetGuestNameCacheForTests();
