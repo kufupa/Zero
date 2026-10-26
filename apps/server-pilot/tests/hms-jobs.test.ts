@@ -57,7 +57,7 @@ import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { runHmsJobOnce } from '../src/ai/worker.js';
 import { ensureWorkItemForMessage } from '../src/ai/work-items.js';
 import { admitLiveMessage } from '../src/mail/ingest/live-admission.js';
-import { __setDbForTests, type DB } from '../src/db/client.js';
+import type { DB } from '../src/db/client.js';
 import { parseEnv } from '../src/env.js';
 import { createPropertyReadLock, PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import {
@@ -71,18 +71,6 @@ import {
   TRANSPORT_ID,
 } from '../src/db/seed.js';
 import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
-
-/** Origin scans call getDb(); point that handle at the rolled-back seed tx. */
-async function withHmsJobsDb<T>(cb: (db: DB) => Promise<T>): Promise<T> {
-  return withSeededTestDb(async (db) => {
-    __setDbForTests({ db, conn: null as never });
-    try {
-      return await cb(db);
-    } finally {
-      __setDbForTests(null);
-    }
-  });
-}
 
 const staffQuoteRunner = vi.hoisted(() => ({ run: vi.fn() }));
 vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => ({
@@ -708,13 +696,24 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
     vi.stubEnv('AWS_REGION', 'synthetic-region-1');
     vi.stubEnv('S3_BUCKET', 'u23-synthetic-bucket');
+    const davinciIds = new Set([DAVINCI_TRANSPORT_ID, FAITH_TRANSPORT_ID, AYANDA_TRANSPORT_ID]);
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async (input) => {
+      const toAddresses = davinciIds.has(input.transportId)
+        ? [DAVINCI_TRANSPORT_EMAIL]
+        : [TRANSPORT_EMAIL];
+      return {
+        selected: { toAddresses },
+        selectedFound: true,
+        inbounds: [{ toAddresses }],
+      };
+    };
   });
 
   it.each([
     ['prefetch', HMS_JOB_PRIORITY_PREFETCH],
     ['dev', HMS_JOB_PRIORITY_DEV],
   ] as const)('prepares and reuses one future quote at %s priority', (_tier, priority) =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
@@ -764,7 +763,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('keeps a shared prepared quote read-back bound to its original message', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const messageIdHeader = 'u5-shared-readback@example.test';
@@ -811,7 +810,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('enqueues one primary shop per stay under the default hour cap', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const first = quoteExtractionPayload();
@@ -851,7 +850,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('shops HRCEN BAR and Government per stay', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const bar = await seedQuoteExtraction(db);
@@ -883,7 +882,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('keeps each stay primary under the default hour cap before extra strategies', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const quoteEnv = {
@@ -936,7 +935,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('does not reuse a queued dev-eval quote for a later staff quote', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId } = await seedThread(db);
@@ -954,7 +953,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('claims staff, prefill, dev, and refresh tiers in descending priority order', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_DEV_GATE', 'off');
       const { threadId, messageId } = await seedThread(db);
       const now = new Date('2099-05-10T10:00:00Z');
@@ -993,7 +992,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     ['outside staff hours', new Date('2099-05-10T16:00:00Z'), true, 'on', true],
     ['gate disabled', new Date('2099-05-10T10:00:00Z'), true, 'off', true],
   ] as const)('dev gate: %s', async (_case, now, queuePrefill, gate, shouldClaim) =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_DEV_GATE', gate);
       vi.stubEnv('HMS_DEV_GATE_START_HOUR_UTC', '5');
       vi.stubEnv('HMS_DEV_GATE_END_HOUR_UTC', '16');
@@ -1025,7 +1024,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('claims a prepared quote with the staff quote read budget', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_RUN_DEADLINE_MS', '150000');
       const { run } = await seedQuoteExtraction(db);
       expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(HRCEN_PREPARED_SHOPS);
@@ -1044,7 +1043,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('retries a dead-lettered shared prepared quote from its stored identity', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const messageIdHeader = 'u5-quote-retry@example.test';
       const quoteEnv = {
@@ -1103,7 +1102,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('yields a prepared quote without charging it while a user quote is queued', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
@@ -1125,7 +1124,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it.each(['dead_letter', 'superseded'] as const)(
     'starts a user quote instead of reusing a prepared %s run',
-    (state) => withHmsJobsDb(async (db) => {
+    (state) => withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
@@ -1150,7 +1149,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   );
 
   it('starts a user quote instead of reusing a prepared run when quote preparation is disabled', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
@@ -1173,7 +1172,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('starts a user quote when the pane changes a prepared price field', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
@@ -1197,7 +1196,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('starts a user quote when a newer staff approval makes the prepared price unexportable', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
@@ -1224,7 +1223,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('does not reuse a prepared result from a changed source message', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
@@ -1250,7 +1249,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     ['channel sender', { channel: true }],
     ['no_action', { payload: { ...quoteExtractionPayload(), action: 'no_action', needsAction: false } }],
   ] as const)('does not prepare quote extraction with %s', (_reason, fixture) =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { messageId, run } = await seedQuoteExtraction(db, fixture);
 
       expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(0);
@@ -1259,7 +1258,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('records an early quote-prepare skip under lock without PII', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId, run } = await seedQuoteExtraction(db, { spam: true });
       const extraction = await insertInboundExtraction(db, threadId, messageId);
       expect(
@@ -1288,7 +1287,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('does not prepare when the quote request is missing required room occupancy', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const payload = quoteExtractionPayload() as ReturnType<typeof quoteExtractionPayload>;
       payload.stays[0]!.rows[0]!.adultsPerRoom = null as unknown as number;
       const { messageId, run } = await seedQuoteExtraction(db, { payload });
@@ -1298,7 +1297,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('carries a party only for a confident V2 bound result; unbound and ambiguous results stay public BAR', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const party = { kind: 'agency', nativeId: 'agency-43', name: 'Acme Lodging Holdings' };
       const cases = [
         {
@@ -1368,7 +1367,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('defers cap overflow with nextRunAt and later runs once without duplicate enqueue', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       vi.stubEnv('HMS_QUOTE_PREPARE_PER_HOUR', '1');
@@ -1477,7 +1476,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it.each(['dead_letter', 'superseded'] as const)(
     'does not retry a prepared %s run while the hourly cap is full',
-    (state) => withHmsJobsDb(async (db) => {
+    (state) => withSeededTestDb(async (db) => {
       const env = { ...QUOTE_PREPARE_ENV, HMS_QUOTE_PREPARE_PER_HOUR: '1' };
       const { messageId, run } = await seedQuoteExtraction(db);
       expect(await prefetchQuoteReadyForExtraction(run, db, env)).toBeGreaterThanOrEqual(1);
@@ -1518,7 +1517,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it.each(['queued', 'claimed', 'running', 'retry_wait'] as const)(
     'auto-start reuses a matching %s staff quote regardless of age and selection counters',
-    (state) => withHmsJobsDb(async (db) => {
+    (state) => withSeededTestDb(async (db) => {
       expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
       const { threadId, messageId } = await seedThread(db);
       const request = autoStaffQuoteRequest(threadId, messageId);
@@ -1541,7 +1540,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   );
 
   it.each([true, false])('auto-start reuses a fresh succeeded staff quote with ok=%s', (ok) =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
@@ -1558,7 +1557,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('auto-start reuses a 3 h-old priced result and enqueues after 25 h', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
       const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60_000);
@@ -1592,7 +1591,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it.each(['dead_letter', 'superseded'] as const)(
     'auto-start reuses a %s staff quote until six hours after it finishes',
-    (state) => withHmsJobsDb(async (db) => {
+    (state) => withSeededTestDb(async (db) => {
       expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
@@ -1610,7 +1609,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it.each(['succeeded', 'dead_letter', 'superseded'] as const)(
     'auto-start creates a new run after a %s staff quote expires',
-    (state) => withHmsJobsDb(async (db) => {
+    (state) => withSeededTestDb(async (db) => {
       expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
@@ -1636,7 +1635,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   );
 
   it('auto-start uses updatedAt when a terminal failure has no finishedAt', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
@@ -1652,7 +1651,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it.each(['dead_letter', 'superseded'] as const)(
     'remount readback expires a %s staff quote after six hours',
-    (state) => withHmsJobsDb(async (db) => {
+    (state) => withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
       const expiredAt = new Date(Date.now() - 7 * 60 * 60_000);
@@ -1668,7 +1667,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   // Superseded (Greptile P1, 2026-10-13): only the newest staff quote on a message holds the current approval.
   it.skip('auto-start matches an older fresh request even after twenty different semantic requests', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
@@ -1687,7 +1686,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
 
   it.each(['user', 'transport', 'message', 'input'] as const)(
     'auto-start does not reuse a staff quote with different %s scope',
-    (scope) => withHmsJobsDb(async (db) => {
+    (scope) => withSeededTestDb(async (db) => {
       expect(hmsJobs.queueAutoStaffQuoteHmsJob).toBeTypeOf('function');
       const { threadId, messageId } = await seedThread(db);
       const request = autoStaffQuoteRequest(threadId, messageId);
@@ -1747,7 +1746,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   });
 
   it('AE5: a queued find completes and its status and result come back from the database after remount', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       paneStayLookupLoaders.lock = lockWith(true);
       paneStayLookupLoaders.spawn = vi.fn(async () => FOUND);
       const { threadId } = await seedThread(db);
@@ -1773,7 +1772,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('runs a queued staff quote as a user-priority job and stores the complete quote result', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HITL_LEDGER', 'on');
       const { threadId, messageId } = await seedThread(db);
       const staffQuoteUser = {
@@ -1856,7 +1855,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     [1, 'retry_wait'],
     [20, 'dead_letter'],
   ] as const)('a prepared quote %i minutes old that meets a busy property lock ends %s', (ageMinutes, outcome) =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId } = await seedThread(db, 'Quote request');
@@ -1883,7 +1882,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('runs a prepared quote without a staff identity and keeps only the userless priced snapshot', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       vi.stubEnv('HITL_LEDGER', 'on');
@@ -1961,7 +1960,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('ends a queued prepared quote superseded while quote preparation is disabled', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'false');
       const { threadId, messageId } = await seedThread(db, 'Quote request');
@@ -1994,7 +1993,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('dead-letters an already-attempted prepared quote as exhausted', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId } = await seedThread(db, 'Quote request');
@@ -2027,7 +2026,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('does not read back an expired staff quote result for matching inputs', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
       const expiredAt = new Date(Date.now() - 1);
@@ -2057,7 +2056,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('does not let an older refusal answer once a newer price has expired', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run: refused } = await enqueueStaffQuoteJob(db, threadId, messageId);
       const { run: priced } = await enqueueStaffQuoteJob(db, threadId, messageId);
@@ -2096,7 +2095,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('does not read back an expired staff quote result by owner-scoped run id', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
       const expiredAt = new Date(Date.now() - 1);
@@ -2124,7 +2123,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('anchors staff quote matching readback to the indexed trigger message', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const wanted = await seedThread(db);
       const other = await seedThread(db);
       const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId: wanted.messageId });
@@ -2165,7 +2164,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('supersedes a staff quote that stayed queued for more than ten minutes without being claimed', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
       const now = new Date(Date.now() + 1_000);
@@ -2191,7 +2190,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('does not expire a deferred prepared quote before nextRunAt', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId } = await seedThread(db, 'Quote request');
@@ -2249,7 +2248,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('stores a staff quote business refusal as a successful job with its real message', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
       const alternatives = [
@@ -2277,7 +2276,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('retries only a staff quote whose failure chain proves the property lock was busy', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
       staffQuoteRunner.run.mockRejectedValue(
@@ -2296,7 +2295,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('retries transient native staff quote failures', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run } = await enqueueStaffQuoteJob(db, threadId, messageId);
       staffQuoteRunner.run.mockRejectedValueOnce(new Error('native session ECONNRESET'));
@@ -2310,7 +2309,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('gives staff_quote five-minute work budget without widening ordinary HMS read deadlines', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_RUN_DEADLINE_MS', '150000');
       const { threadId, messageId } = await seedThread(db);
       const { run: staffQuoteRun } = await enqueueStaffQuoteJob(db, threadId, messageId);
@@ -2344,7 +2343,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a remount on a thread with two guests reads back the search for the asked surname, whatever its case', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       const search = (lastName: string) =>
         queueUserHmsJob(
@@ -2366,7 +2365,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a remount reads back the party job for the asked name and field kind', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       const queue = (partyKind: 'company' | 'agency') =>
         queueUserHmsJob(
@@ -2392,7 +2391,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('reads a kind-less prefetched party job for either field, but not a party job older than 24 hours', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const queued = await enqueueHmsJob(
         {
@@ -2427,7 +2426,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a party search shared by dedupe stays readable by run id for another staff member', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       const shared = await queueUserPartyHmsJob(
         {
@@ -2446,7 +2445,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('does not dedupe or supersede a staff party request with a dev-eval read', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       const request = { kind: 'party' as const, name: 'Horizon Trail Tours', partyKind: 'company' as const };
       const dev = await queueUserPartyHmsJob({
@@ -2469,7 +2468,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('deduplicates user party searches per transport, normalized name, kind and day; a new field Find preserves jobs shared with another thread', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const firstThread = await seedThread(db);
       const secondThread = await seedThread(db);
       const queue = (threadId: string, name: string, partyKind: 'company' | 'agency', retry = false) =>
@@ -2535,7 +2534,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('caps user party jobs at twelve per transport per hour while reusing duplicate requests', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       const queue = (name: string) =>
         queueUserPartyHmsJob(
@@ -2555,7 +2554,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a Da Vinci party search without propertyCode uses the HRDAV slot, not HRCEN', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID);
       const run = await queueUserPartyHmsJob(
         {
@@ -2575,7 +2574,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a Centurion party search without propertyCode stays on the HRCEN slot', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       const run = await queueUserPartyHmsJob(
         {
@@ -2591,7 +2590,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('refuses an unknown propertyCode with cause class property_unknown before HMS', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       await expect(
         queueUserPartyHmsJob(
@@ -2611,7 +2610,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a Da Vinci user find without an explicit target uses the HRDAV slot', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db, 'Amend booking', DAVINCI_TRANSPORT_ID);
       const run = await queueUserHmsJob(
         {
@@ -2630,7 +2629,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('prefetches a Da Vinci confirmation onto the HRDAV slot when HMS_DAVINCI_READS is on', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_DAVINCI_READS', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1', DAVINCI_TRANSPORT_ID);
@@ -2659,7 +2658,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('does not prefetch a Da Vinci confirmation when HMS_DAVINCI_READS is off', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_DAVINCI_READS', 'off');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1', DAVINCI_TRANSPORT_ID);
@@ -2679,7 +2678,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('queues a Da Vinci batch item even when queueBatch marked it origin-refused', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_DAVINCI_READS', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1', DAVINCI_TRANSPORT_ID);
@@ -2712,7 +2711,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('reuses a property-prefixed confirmation prefetch instead of a fresh batch read', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
         selected: { toAddresses: ['centurion@legacyhotels.co.za'] },
@@ -2769,7 +2768,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('reuses a batch read across same-property Message-ID copies and records mailbox batch membership', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_DAVINCI_READS', 'on');
       const copies: Array<{ transportId: string; workItemId: string; messageId: string }> = [];
@@ -2833,7 +2832,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('does not share one HMS job across hotels for the same confirmation in one batch', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_DAVINCI_READS', 'on');
       const origins = new Map<string, string[]>();
@@ -2890,7 +2889,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a Da Vinci staff quote without installation refuses not_set_up before HMS', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
       vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '');
       const { threadId, messageId } = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID);
@@ -2922,7 +2921,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('queued user jobs report their position in the lane', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       const first = await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
@@ -2942,7 +2941,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a restart moves a read run that a dead worker held to retry_wait, and leaves a live worker alone', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       const job = await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
@@ -2966,7 +2965,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a job requeued after a restart past its run deadline is claimed again, not dead-lettered', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       const job = await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
@@ -2990,7 +2989,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a requeued job gets a fresh run deadline on its next claim', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       const job = await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
@@ -3024,7 +3023,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('prefetch never takes the lock while a staff quote is in flight', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       await db.insert(aiDraftGeneration).values({
         id: randomUUID(),
@@ -3059,7 +3058,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('prefetch yields to an active staff_quote job before the staff generation row exists', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       await enqueueStaffQuoteJob(db, threadId, messageId);
       const staffClaim = await claimJob(db);
@@ -3095,7 +3094,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a background run that finds the property lock busy requeues without using an attempt', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       paneStayLookupLoaders.lock = lockWith(false);
       const spawn = vi.fn(async () => FOUND);
       paneStayLookupLoaders.spawn = spawn;
@@ -3124,7 +3123,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a user run that waits out a busy property lock is retried, not dropped', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       paneStayLookupLoaders.lock = {
         withLock: async () => {
           throw new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE);
@@ -3145,7 +3144,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a user job is claimed before an older prefetch', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run: prefetch } = await enqueueHmsJob(
         {
@@ -3171,7 +3170,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('claims a later staff_quote before earlier party and find user jobs at the same priority', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const { run: party } = await enqueueHmsJob(
         {
@@ -3219,7 +3218,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('with HMS_LANE_PAUSED=1 the hms lane claims nothing, and resumes when unset', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
@@ -3235,7 +3234,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a prefetch snapshot records when it was taken, so the pane can show its age', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       paneStayLookupLoaders.lock = lockWith(true);
       paneStayLookupLoaders.spawn = vi.fn(async () => FOUND);
       const { threadId, messageId } = await seedThread(db);
@@ -3262,7 +3261,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('prefetches a party for a system notice from a direct agent sender', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { run } = await seedQuoteExtraction(db, {
         fromAddress: 'agent@agency.example.test',
@@ -3274,7 +3273,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('prefetches a party for a direct agent quote', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { messageId, run } = await seedQuoteExtraction(db, { fromAddress: 'agent@agency.example.test' });
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
@@ -3293,7 +3292,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('shares one same-property prefetch result across three mailbox copies without merging their to-dos', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_DAVINCI_READS', 'on');
       vi.stubEnv('PARTY_MATCH_V2', 'true');
@@ -3458,7 +3457,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('keeps null-Message-ID reads per copy and the same Message-ID distinct across properties', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_DAVINCI_READS', 'on');
       const env = {
@@ -3509,7 +3508,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('collector live admission persists mail without creating a to-do, extraction, or AI/HMS run', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { messageId } = await seedThread(db, 'Collector request', NAVA_TRANSPORT_ID);
       await admitLiveMessage(db, {
         transportId: NAVA_TRANSPORT_ID,
@@ -3524,7 +3523,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('skips party prefetch for a known channel sender', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { messageId, run } = await seedQuoteExtraction(db, { channel: true });
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
@@ -3543,7 +3542,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('prefetches for a direct sender in an automated-channel thread', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, run } = await seedQuoteExtraction(db, { fromAddress: 'agent@agency.example.test' });
       const [existingCategory] = await db
@@ -3567,7 +3566,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('prefetches from the successful extraction rather than the classifier run or a sent copy', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
       const triage = await insertInboundExtraction(db, threadId, messageId, 'inbound_triage');
@@ -3583,7 +3582,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('a duplicate prefetch is a no-op, and the hourly cap holds per transport', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1 and 7654321-2');
       const inbound = await insertInboundExtraction(db, threadId, messageId);
@@ -3606,7 +3605,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('availability probes in the hour do not use the confirmation prefetch cap (U10)', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
       const inbound = await insertInboundExtraction(db, threadId, messageId);
@@ -3636,7 +3635,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('prefetch stays off unless HMS_PREFETCH_ENABLED is set, and never runs for backfill', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
       const inbound = await insertInboundExtraction(db, threadId, messageId);
@@ -3650,7 +3649,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('prefetch needs the job queue on, and skips mail on a spam thread', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
       const inbound = await insertInboundExtraction(db, threadId, messageId);
       await insertStoredExtraction(db, messageId, 'booking', {
@@ -3666,7 +3665,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('uses an extraction confirmation even when the number is absent from the mail body', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking request');
       await db.update(message).set({ textBody: 'Please confirm the booking.' }).where(eq(message.id, messageId));
@@ -3685,7 +3684,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('queues one stable guest search from explicit guest and extraction arrival when no confirmation exists', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking request');
       await db
@@ -3724,7 +3723,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('reuses the prefetched stable key when the pane auto-starts the same guest request', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking request');
       await insertStoredExtraction(db, messageId, 'booking', {
@@ -3766,7 +3765,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('does not guess a guest surname from an agency booker contact or conflicting guest labels', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
       const cases = [
@@ -3794,7 +3793,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('queues guest search from endClient person and booked arrival when mail has no confirmation or guest label', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Please amend the stay');
       await db
@@ -3825,7 +3824,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('queues guest search from a private-sender contact name when endClient is absent', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Please cancel my stay');
       await db.update(message).set({ textBody: 'Please cancel this booking.' }).where(eq(message.id, messageId));
@@ -3848,7 +3847,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it.each(['quote', 'spam', 'other'] as const)('does not prefetch guest or confirmation reads for extraction kind %s', (kind) =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking 1234567-1');
       await db.update(message).set({ textBody: 'Guest: John Smith' }).where(eq(message.id, messageId));
@@ -3862,7 +3861,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('keeps a search_guest budget separate and capped per transport per hour', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const env = {
         ...parseEnv(process.env as Record<string, string | undefined>),
@@ -4046,7 +4045,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   });
 
   it('uses the current message work item, not an older superseded thread item', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Current booking request');
       const oldMessageId = `old-${randomUUID()}`;
@@ -4099,7 +4098,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('waits for the matching triage result before queueing, and skips spam decided by triage', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking request');
       const snapshotId = `snapshot-${randomUUID()}`;
@@ -4120,7 +4119,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('queues after extraction and triage both succeed, regardless of which succeeds last', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking request');
       const snapshotId = `snapshot-${randomUUID()}`;
@@ -4140,7 +4139,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it.each(['done', 'dismissed'] as const)('skips a thread whose latest work item is %s', (status) =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db, 'Booking request');
       await db.update(message).set({ textBody: 'Guest: John Smith' }).where(eq(message.id, messageId));
@@ -4162,7 +4161,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('skips staff-sent, outbound sent-copy, and history-only mail', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
       for (const condition of ['staff', 'verified-staff-alias', 'sent', 'message-history', 'thread-history'] as const) {
@@ -4195,7 +4194,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('the ai-worker claimer claims nothing while HMS_JOB_QUEUE is off', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId } = await seedThread(db);
       await queueUserHmsJob(
         { transportId: TRANSPORT_ID, userId: CENTURION_USER_ID, threadId, request: { kind: 'find', confirmation: CONFIRMATION } },
@@ -4207,7 +4206,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('AE5 through the ai-worker claimer: queue, unmount, the worker runs the job, remount reads the result', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       paneStayLookupLoaders.lock = lockWith(true);
       paneStayLookupLoaders.spawn = vi.fn(async () => ({
@@ -4280,7 +4279,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('the ai-worker claimer takes only pane job runs on the hms lane, and nothing while the lane is paused', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       const { threadId, messageId } = await seedThread(db);
       const base = {
@@ -4313,7 +4312,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     }));
 
   it('stale reclaim never takes an hms_write run, but still reclaims a stale read job', () =>
-    withHmsJobsDb(async (db) => {
+    withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const stale = new Date(Date.now() - 3 * 60 * 60_000);
       const writeId = randomUUID();
