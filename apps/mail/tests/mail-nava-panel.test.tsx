@@ -53,6 +53,9 @@ vi.mock('../components/mail/mail-list', () => ({
 }));
 vi.mock('../components/mail/mail-search-bar', () => ({ MailSearchBar: () => null }));
 vi.mock('../components/ui/sidebar-toggle', () => ({ SidebarToggle: () => null }));
+vi.mock('../components/mail/workflow-folder-done-button', () => ({
+  WorkflowFolderDoneButton: () => null,
+}));
 
 vi.mock('../hooks/use-media-query', () => ({
   useMediaQuery: (query: string) => (query === '(min-width: 1024px)' ? mocks.wide : true),
