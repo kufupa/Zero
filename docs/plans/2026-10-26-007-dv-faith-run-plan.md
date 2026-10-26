@@ -121,7 +121,7 @@ deploy: drop duplicate pnpm install; migrate step trusts rds CA (1 line)
 ### I. Shuttle (Jarat Tours)
 ```
 corpus (read-only, prod DB + snapshot) over ALL 5 DV mailboxes (davinci@, adladla, fkhumalo, kmgidi, epick) -> outbound to jarattours.co.za / jaratbookings.co.za
-  -> .private/templates/jarat-outbound.md (fields, variants, examples anonymised)   # never committed
+  -> /home/ubuntu/projects/zero/.private/templates/jarat-outbound.md (shared absolute path for every worktree; gitignored; anonymised)
 pane: "Draft shuttle request" -> Outlook draft to Jarat (staff edit + send) ; HMS: transfer details into reservation note
 temporary HMS Add-On (as in owner images) = Pomerado lane (J), not here
 ```
