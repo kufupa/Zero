@@ -174,6 +174,18 @@ vi.mock('../providers/query-provider', () => {
         list: { query: async () => [] },
       },
       quoteWorkflow: {
+        // 12f451bd6 (#536) loads mailbox pane choices via rateCatalogue.query on mount.
+        rateCatalogue: {
+          query: async () => ({
+            transportId: 'transport-shared',
+            propertyCode: 'HRCEN',
+            roomTypes: [],
+            ratePlans: [],
+            boards: [],
+            overrideRateCodes: [],
+            eventRateCodes: [],
+          }),
+        },
         analyseSelection: {
           mutate: async () => ({
             status: 'ready' as const,
@@ -209,13 +221,25 @@ vi.mock('../providers/query-provider', () => {
 const COMBINED_REPLY = 'Draft quotation into email reply';
 
 /**
- * Runs one date option's staff search from its own stay card and waits for that card to show its rate
- * (the Available badge). The date options are stay cards now, not a separate picker.
+ * Runs the next unrated date option (top Search availability) and waits for that stay card's Available chip.
+ * The stay-card button exists as soon as stays exist; the mailbox catalogue (12f451bd6) can still be loading,
+ * so the enabled top control is the same path step-runner already uses.
  */
 async function runOption(arrival: string): Promise<void> {
-  const run = await screen.findByRole('button', { name: new RegExp(`^Run Search availability ${arrival}`) });
-  const stayCard = run.closest('article') as HTMLElement;
-  fireEvent.click(run);
+  await waitFor(() => {
+    if (!screen.queryByText(/Nava reads this as/i) || screen.queryByText(/Nava is (re-)?reading/i)) {
+      throw new Error('Nava is still reading the email');
+    }
+  });
+  // c7ab6b579 / 22704188b: per-stay search is on the stay card, not the Details "Run {title}" control.
+  const stayIndex = OPTIONS.findIndex((option) => option.arrivalDate === arrival) + 1;
+  const staySearch = await screen.findByRole('button', {
+    name: `Search this date range for Stay ${stayIndex}`,
+  });
+  const stayCard = staySearch.closest('article') as HTMLElement;
+  const search = await screen.findByRole('button', { name: /^Search availability$/i });
+  await waitFor(() => expect((search as HTMLButtonElement).disabled).toBe(false));
+  fireEvent.click(search);
   await waitFor(() => expect(within(stayCard).getByText('Available')).toBeDefined());
 }
 

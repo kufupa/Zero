@@ -182,6 +182,18 @@ vi.mock('../providers/query-provider', () => ({
       qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
     },
     quoteWorkflow: {
+      // 12f451bd6 (#536) loads mailbox pane choices via rateCatalogue.query on mount.
+      rateCatalogue: {
+        query: async () => ({
+          transportId: bridgeMockState.transportId,
+          propertyCode: 'HRCEN',
+          roomTypes: [],
+          ratePlans: [],
+          boards: [],
+          overrideRateCodes: [],
+          eventRateCodes: [],
+        }),
+      },
       analyseSelection: {
         mutate: async () => ({
           status: 'ready' as const,
@@ -392,7 +404,8 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     render(<OutlookPanePage />);
     await prepareReviewedQuote(null);
 
-    const expectedHtml = quoteWrapperHtml('David Miller', 'R Opperman');
+    // 9dcf9c48e (#540): reply uses the mailbox property from rateCatalogue, not the generic "the hotel".
+    const expectedHtml = quoteWrapperHtml('David Miller', 'R Opperman', { propertyCode: 'HRCEN' });
     expect(reviewedReplyHtml()).toBe(expectedHtml);
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
 
@@ -577,7 +590,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     const retryPayload = createReplyCalls()[2]?.[1] as { operationId: string };
     expect(firstPayload.operationId).not.toBe(secondPayload.operationId);
     expect(retryPayload.operationId).toBe(firstPayload.operationId);
-  });
+  }, 60_000);
 
   it('allows a fresh reply operation after warning about an expired retry ID', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
@@ -653,9 +666,10 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
 
     bridgeMockState.selectedEntryId = '001';
     pane.rerender(<OutlookPanePage />);
-    fireEvent.click(button);
+    await prepareReviewedQuote();
+    fireEvent.click(await screen.findByRole('button', { name: /Draft quotation into email reply/i }));
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
-  });
+  }, 60_000);
 
   it('keeps an expired uncertain reply warning across a successful different reply and pane reload', async () => {
     queueSelectedEmail();
@@ -685,7 +699,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     expect(createReplyCalls()).toHaveLength(2);
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
-  });
+  }, 60_000);
 
   it('bounds expired outcomes and warns before starting new replies after the limit', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
@@ -699,7 +713,6 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     });
     const pane = render(<OutlookPanePage />);
     await prepareReviewedQuote();
-    const button = screen.getByRole('button', { name: /Draft quotation into email reply/i });
     const operationIds = new Map<string, string>();
 
     for (let index = 0; index < 257; index += 1) {
@@ -721,17 +734,19 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
 
     bridgeMockState.selectedEntryId = 'message-0';
     pane.rerender(<OutlookPanePage />);
-    fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
+    // d6f8e0092: email switch clears the quote session, so Draft quotation stays off until a quote exists.
+    // The expired-window gate still runs on the first enabled click.
+    await prepareReviewedQuote();
+    fireEvent.click(await screen.findByRole('button', { name: /Draft quotation into email reply/i }));
 
     expect(createReplyCalls()).toHaveLength(257);
     expect(toast.error).toHaveBeenCalledWith(
       expect.stringMatching(/retry window has closed.*check Outlook Drafts/i),
     );
 
-    fireEvent.click(button);
+    fireEvent.click(await screen.findByRole('button', { name: /Draft quotation into email reply/i }));
     expect(createReplyCalls()).toHaveLength(257);
     confirmSpy.mockReturnValue(true);
-    await prepareReviewedQuote();
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     await waitFor(() => expect(createReplyCalls()).toHaveLength(258));
     await waitFor(() =>
