@@ -8,6 +8,7 @@ import {
   NEEDS_YOU_UNDO_MS,
   useNeedsYou,
 } from '../components/nava-pane/screens/needs-you';
+import { WorkItemHistoryControls } from '../components/nava-pane/screens/work-item-history-controls';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
@@ -457,6 +458,48 @@ describe('Needs-you list', () => {
     expect(screen.getByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
     expect(screen.getByText('Finished', { selector: '[data-chip]' })).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Dismiss Completed quote' })).toBeNull();
+  });
+});
+
+describe('Work item history controls', () => {
+  it('uses the refreshed server cursor for Undo and Redo boundaries', () => {
+    const props = {
+      workItemId: 'work-item-1',
+      onUndo: vi.fn(),
+      onRedo: vi.fn(),
+    };
+    const { rerender } = render(
+      <WorkItemHistoryControls {...props} serverCursor={null} />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Redo' })).toBeNull();
+
+    rerender(
+      <WorkItemHistoryControls
+        {...props}
+        serverCursor={{ cursor: 0, latestCursor: 2 }}
+      />,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+
+    rerender(
+      <WorkItemHistoryControls
+        {...props}
+        serverCursor={{ cursor: 2, latestCursor: 2 }}
+      />,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(
+      (screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
   });
 });
 
