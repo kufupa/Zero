@@ -13,7 +13,6 @@ import {
   WorkItemFieldProvenance,
   type WorkItemFieldProvenanceEntry,
 } from '../components/nava-pane/screens/work-item-field-provenance';
-import { WorkItemHistoryControls } from '../components/nava-pane/screens/work-item-history-controls';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
