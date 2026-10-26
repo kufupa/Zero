@@ -7,6 +7,7 @@ import { createStaffQuoteRatePolicyDocumentReader } from '../src/ai/staff-quote-
 import {
   installRateTermsPolicy,
   parseInstallRateTermsArgs,
+  scoreHotelRateTermsLetter,
   type OutboundPdfCandidate,
 } from '../scripts/install-rate-terms-policy.js';
 
@@ -308,5 +309,20 @@ describe('install-rate-terms-policy', () => {
         family,
       ),
     ).rejects.toThrow('staff_quote_policy_scope_invalid');
+  });
+});
+
+describe('HRDAV letter identity matches the live letter wording', () => {
+  it('accepts the live "The Davinci Hotel and Suites, Sandton" letter and the legacy spelling', () => {
+    const vatLevy =
+      '\n1. All rates are quoted in ZAR and include Value Added Tax (VAT) at the prevailing rate.\n2. Average Rate per night includes the 1% Tourism Levy per room per night.';
+    const live =
+      'Davinci Hotel & Suites\nWe have pleasure in confirming your reservation at The Davinci Hotel and Suites, Sandton for the following guest.' +
+      vatLevy;
+    expect(scoreHotelRateTermsLetter('HRDAV', live).score).toBe(5);
+    expect(scoreHotelRateTermsLetter('HRDAV', DAVINCI_TEXT).score).toBe(5);
+    const centurion =
+      'The Centurion Hotel\nWe have pleasure in confirming your reservation at The Centurion Hotel, Centurion' + vatLevy;
+    expect(scoreHotelRateTermsLetter('HRDAV', centurion).score).toBeLessThan(5);
   });
 });
