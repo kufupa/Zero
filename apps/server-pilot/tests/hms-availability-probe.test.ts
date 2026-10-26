@@ -734,7 +734,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     withSeededTestDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
-      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId, null), db, probeEnv())).toBe(0);
+      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId, false), db, probeEnv())).toBe(0);
       expect(await availabilityRuns(db)).toHaveLength(0);
     }));
 
