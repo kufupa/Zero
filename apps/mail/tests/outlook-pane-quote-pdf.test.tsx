@@ -7,7 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { useQuotePdfJob } from '../components/nava-pane/use-quote-pdf-job';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
-import { emptyStaffQuoteHeader, type QuoteSession } from '../lib/quote-workflow/types';
+import {
+  emptyStaffQuoteHeader,
+  type QuoteSession,
+  type QuoteSessionAction,
+} from '../lib/quote-workflow/types';
 import type { StoredContact } from '../lib/quote-workflow/backend-bind';
 import { toast } from 'sonner';
 import { findReadStayArrival, prepareReviewedQuote, setReviewedReply } from './helpers/prepare-reviewed-quote';
@@ -296,6 +300,10 @@ function QuotePdfJobHarness({
     (action: QuoteSessionAction) => setQuoteSession((current) => reduceQuoteSession(current, action)),
     [],
   );
+  const replyGreetingName = useCallback(
+    (contactName: string | null | undefined) => contactName ?? 'there',
+    [],
+  );
   useEffect(() => setQuoteSession(session), [session]);
   const quoteSessionRef = useRef(quoteSession);
   quoteSessionRef.current = quoteSession;
@@ -321,7 +329,7 @@ function QuotePdfJobHarness({
     activeTransportId,
     staffSignerName: 'Staff',
     activePaneConfig: null,
-    replyGreetingName: (contactName) => contactName ?? 'there',
+    replyGreetingName,
     workItemId,
     transportId,
   });
