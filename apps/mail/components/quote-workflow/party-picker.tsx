@@ -569,6 +569,14 @@ export function PartyPicker({
     (!kind || viewRequest.partyKind === kind || (partyJob.view?.prefetch && !viewRequest.partyKind))
       ? partyJob.view
       : null;
+  const sharedPrefetch = Boolean(
+    currentJobView?.prefetch &&
+      currentJobView.request?.kind === 'party' &&
+      !currentJobView.request.partyKind,
+  );
+  // QuotePeopleStep renders Agency before Company; that first field owns a shared kind-less prefetch line.
+  const showJobStatus = !sharedPrefetch || !kind || kind === 'agency';
+  const jobStatusKind = sharedPrefetch ? undefined : kind;
   const v2JobScopeKey = JSON.stringify([
     threadId ?? null,
     sourceMessageId ?? null,
@@ -848,7 +856,7 @@ export function PartyPicker({
   const timeoutMessage = 'Party search timed out after four minutes. You can retry.';
   const jobName = currentJobView?.request?.kind === 'party' ? currentJobView.request.name : query;
   const jobDisplayName = query || jobName;
-  const partyType = kind ? partyKindLabel(kind).toLowerCase() : 'company or agency';
+  const partyType = jobStatusKind ? partyKindLabel(jobStatusKind).toLowerCase() : 'company or agency';
   const jobDetail = `Searching for the ${partyType} in HMS.`;
   const jobReadBackPending = Boolean(
     jobTransport && jobResume && !partyJob.readBackSettled && !partyJob.statusFailed,
@@ -1031,12 +1039,17 @@ export function PartyPicker({
             queuing={partyJob.queuing}
             detail={jobDetail}
             onRetry={partyJob.retry}
+            visible={showJobStatus}
             statusFailed={partyJob.statusFailed}
             queueFailed={partyJob.queueFailed}
-            failureMessage={partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
-            failedMessage={partySearchTimedOut ? timeoutMessage : partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
+            failureMessage={partyNoCandidateNote(jobFailureOutcome, jobStatusKind, jobDisplayName)}
+            failedMessage={
+              partySearchTimedOut
+                ? timeoutMessage
+                : partyNoCandidateNote(jobFailureOutcome, jobStatusKind, jobDisplayName)
+            }
             queueFailureMessage={
-              partyJob.queueFailureMessage ?? partyNoCandidateNote('execution_failure', kind, query)
+              partyJob.queueFailureMessage ?? partyNoCandidateNote('execution_failure', jobStatusKind, query)
             }
           />
         ) : null}
@@ -1151,12 +1164,17 @@ export function PartyPicker({
           queuing={partyJob.queuing}
           detail={jobDetail}
           onRetry={partyJob.retry}
+          visible={showJobStatus}
           statusFailed={partyJob.statusFailed}
           queueFailed={partyJob.queueFailed}
-          failureMessage={partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
-          failedMessage={partySearchTimedOut ? timeoutMessage : partyNoCandidateNote(jobFailureOutcome, kind, jobDisplayName)}
+          failureMessage={partyNoCandidateNote(jobFailureOutcome, jobStatusKind, jobDisplayName)}
+          failedMessage={
+            partySearchTimedOut
+              ? timeoutMessage
+              : partyNoCandidateNote(jobFailureOutcome, jobStatusKind, jobDisplayName)
+          }
           queueFailureMessage={
-            partyJob.queueFailureMessage ?? partyNoCandidateNote('execution_failure', kind, query)
+            partyJob.queueFailureMessage ?? partyNoCandidateNote('execution_failure', jobStatusKind, query)
           }
         />
       ) : null}
