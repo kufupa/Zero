@@ -652,7 +652,7 @@ export function NavaPane({
     storedWork.pane.state === 'ready' && storedWork.pane.fieldProvenance && storedWork.pane.workItemId
       ? {
           fieldProvenance: storedWork.pane.fieldProvenance,
-          refs: storedWork.pane.refs,
+          refs: storedWork.pane.refs ?? {},
           onResetContact: storedWork.resetAvailable
             ? () => storedWork.resetSection({ type: 'contact' })
             : undefined,
