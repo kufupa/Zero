@@ -161,6 +161,8 @@ export const workItem = pgTable(
     /** Applied pane-field revisions. Undo/redo move this cursor; work_event rows stay append-only. */
     revision: integer('revision').notNull().default(0),
     revisionHead: integer('revision_head').notNull().default(0),
+    /** Monotonic occupancy token. Increases on every edit/undo/redo; never reused. */
+    revisionSeq: integer('revision_seq').notNull().default(0),
   },
   (t) => [
     uniqueIndex('work_item_thread_kind_source_uidx').on(t.threadId, t.kind, t.sourceMessageId),

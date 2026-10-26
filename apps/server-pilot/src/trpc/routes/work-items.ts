@@ -373,27 +373,27 @@ export const workItemsRouter = router({
     }),
   undoRevision: mailboxProcedure
     .input(
-      z.object({ workItemId: z.string().uuid(), expectedRevision: z.number().int().min(0) }).strict(),
+      z.object({ workItemId: z.string().uuid(), expectedSeq: z.number().int().min(0) }).strict(),
     )
     .mutation(async ({ input, ctx }) => {
       const result = await undoWorkItemRevision(getDb(), {
         transportId: ctx.activeTransportId,
         workItemId: input.workItemId,
         userId: ctx.sessionUser.id,
-        expectedRevision: input.expectedRevision,
+        expectedSeq: input.expectedSeq,
       });
       return historyMoveResult(result);
     }),
   redoRevision: mailboxProcedure
     .input(
-      z.object({ workItemId: z.string().uuid(), expectedRevision: z.number().int().min(0) }).strict(),
+      z.object({ workItemId: z.string().uuid(), expectedSeq: z.number().int().min(0) }).strict(),
     )
     .mutation(async ({ input, ctx }) => {
       const result = await redoWorkItemRevision(getDb(), {
         transportId: ctx.activeTransportId,
         workItemId: input.workItemId,
         userId: ctx.sessionUser.id,
-        expectedRevision: input.expectedRevision,
+        expectedSeq: input.expectedSeq,
       });
       return historyMoveResult(result);
     }),
@@ -401,7 +401,7 @@ export const workItemsRouter = router({
 
 function historyMoveResult(
   result: Awaited<ReturnType<typeof undoWorkItemRevision>>,
-): { revision: number; revisionHead: number } {
+): { revision: number; revisionHead: number; seq: number } {
   if (result.status === 'not_found') {
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
   }
@@ -414,5 +414,5 @@ function historyMoveResult(
   if (result.status === 'at_boundary') {
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Nothing left to undo or redo.' });
   }
-  return { revision: result.revision, revisionHead: result.revisionHead };
+  return { revision: result.revision, revisionHead: result.revisionHead, seq: result.seq };
 }

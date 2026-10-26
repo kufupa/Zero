@@ -416,6 +416,24 @@ const workMigrationDdl = readFileSync(
   fileURLToPath(new URL('../drizzle/0047_nava_work_items.sql', import.meta.url)),
   'utf8',
 );
+const workItemRevisionDdl = readFileSync(
+  fileURLToPath(new URL('../drizzle/0054_work_item_revision.sql', import.meta.url)),
+  'utf8',
+);
+
+/** 0047 CREATE TABLE plus later ADD COLUMN migrations that keep existing DBs in step. */
+function workItemDdlWithLaterColumns(ddl: string, laterDdl: string): string {
+  let next = ddl;
+  for (const match of laterDdl.matchAll(
+    /ALTER TABLE "work_item" ADD COLUMN IF NOT EXISTS ("[^"]+" [^;]+)/g,
+  )) {
+    next = next.replace(
+      /\n  CONSTRAINT "work_item_kind_check"/,
+      `\n  ${match[1]},\n  CONSTRAINT "work_item_kind_check"`,
+    );
+  }
+  return next;
+}
 
 describe('Nava work item schema', () => {
   const workTables = {
@@ -426,7 +444,9 @@ describe('Nava work item schema', () => {
   };
 
   it('keeps the 0047 DDL in step with every new Drizzle table, definition by definition', () => {
-    expect(definitionDrift(workMigrationDdl, Object.values(workTables))).toEqual([]);
+    expect(
+      definitionDrift(workItemDdlWithLaterColumns(workMigrationDdl, workItemRevisionDdl), Object.values(workTables)),
+    ).toEqual([]);
     for (const table of Object.values(workTables)) {
       const config = getTableConfig(table);
       for (const check of config.checks) {

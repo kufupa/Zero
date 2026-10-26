@@ -1725,6 +1725,7 @@ export async function recordFieldEvent(
         state: workItem.state,
         revision: workItem.revision,
         revisionHead: workItem.revisionHead,
+        revisionSeq: workItem.revisionSeq,
       })
       .from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
@@ -1771,6 +1772,7 @@ export async function recordFieldEvent(
         state,
         revision: advanced.revision,
         revisionHead: advanced.revisionHead,
+        revisionSeq: item.revisionSeq + 1,
         updatedAt: new Date(),
       })
       .where(eq(workItem.id, input.workItemId));

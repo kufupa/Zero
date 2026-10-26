@@ -7,11 +7,12 @@ const STAY_COMMITS_KEY = 'stays';
 const SOURCE_TYPES = ['field.edit', 'field.reject', 'field.accept'] as const;
 
 export type PaneState = Record<string, unknown>;
+export type PaneRevisionCursor = { revision: number; revisionHead: number; seq: number };
 export type PaneRevisionResult =
   | { status: 'not_found' }
-  | { status: 'stale'; revision: number; revisionHead: number }
-  | { status: 'at_boundary'; revision: number; revisionHead: number }
-  | { status: 'applied'; revision: number; revisionHead: number; restored: PaneState };
+  | { status: 'stale'; revision: number; revisionHead: number; seq: number }
+  | { status: 'at_boundary'; revision: number; revisionHead: number; seq: number }
+  | { status: 'applied'; revision: number; revisionHead: number; seq: number; restored: PaneState };
 
 export type PaneRevisionEvidence = {
   paneRevision: number;
@@ -21,19 +22,27 @@ export type PaneRevisionEvidence = {
 
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
+function isPaneFieldKey(key: string): boolean {
+  return key.startsWith('stays[') || key.startsWith('contact.') || key === 'followUp.draft';
+}
+
 export function paneStateOf(state: PaneState): PaneState {
   const pane: PaneState = {};
   for (const [key, value] of Object.entries(state)) {
-    if (key !== STAY_COMMITS_KEY) pane[key] = value;
+    if (isPaneFieldKey(key)) pane[key] = value;
   }
   return pane;
 }
 
 export function withPaneState(state: PaneState, pane: PaneState): PaneState {
-  const next = paneStateOf(pane);
-  if (Object.hasOwn(state, STAY_COMMITS_KEY)) {
-    next[STAY_COMMITS_KEY] = state[STAY_COMMITS_KEY];
+  const next: PaneState = {};
+  for (const [key, value] of Object.entries(state)) {
+    if (!isPaneFieldKey(key)) next[key] = value;
   }
+  for (const [key, value] of Object.entries(paneStateOf(pane))) {
+    next[key] = value;
+  }
+  if (Object.hasOwn(state, STAY_COMMITS_KEY)) next[STAY_COMMITS_KEY] = state[STAY_COMMITS_KEY];
   return next;
 }
 
@@ -100,7 +109,7 @@ async function applyHistoryMove(
     transportId: string;
     workItemId: string;
     userId: string;
-    expectedRevision?: number;
+    expectedSeq?: number;
     direction: 'undo' | 'redo';
   },
 ): Promise<PaneRevisionResult> {
@@ -110,6 +119,7 @@ async function applyHistoryMove(
         state: workItem.state,
         revision: workItem.revision,
         revisionHead: workItem.revisionHead,
+        revisionSeq: workItem.revisionSeq,
       })
       .from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
@@ -118,17 +128,19 @@ async function applyHistoryMove(
     if (!item) return { status: 'not_found' as const };
     const revision = item.revision;
     const revisionHead = item.revisionHead;
-    if (input.expectedRevision !== undefined && input.expectedRevision !== revision) {
-      return { status: 'stale' as const, revision, revisionHead };
+    const seq = item.revisionSeq;
+    if (input.expectedSeq !== undefined && input.expectedSeq !== seq) {
+      return { status: 'stale' as const, revision, revisionHead, seq };
     }
     const undo = input.direction === 'undo';
     if (undo ? revision <= 0 : revision >= revisionHead) {
-      return { status: 'at_boundary' as const, revision, revisionHead };
+      return { status: 'at_boundary' as const, revision, revisionHead, seq };
     }
     const snapshot = await latestEvidence(tx, input.workItemId, undo ? revision : revision + 1);
-    if (!snapshot) return { status: 'at_boundary' as const, revision, revisionHead };
+    if (!snapshot) return { status: 'at_boundary' as const, revision, revisionHead, seq };
     const restored = undo ? snapshot.previousPaneState : snapshot.paneState;
     const nextRevision = undo ? revision - 1 : revision + 1;
+    const nextSeq = seq + 1;
     const state = withPaneState(item.state, restored);
     await tx.insert(workEvent).values({
       workItemId: input.workItemId,
@@ -140,22 +152,22 @@ async function applyHistoryMove(
     });
     await tx
       .update(workItem)
-      .set({ state, revision: nextRevision, updatedAt: new Date() })
+      .set({ state, revision: nextRevision, revisionSeq: nextSeq, updatedAt: new Date() })
       .where(eq(workItem.id, input.workItemId));
-    return { status: 'applied' as const, revision: nextRevision, revisionHead, restored };
+    return { status: 'applied' as const, revision: nextRevision, revisionHead, seq: nextSeq, restored };
   });
 }
 
 export async function undoWorkItemRevision(
   db: DB,
-  input: { transportId: string; workItemId: string; userId: string; expectedRevision?: number },
+  input: { transportId: string; workItemId: string; userId: string; expectedSeq?: number },
 ): Promise<PaneRevisionResult> {
   return applyHistoryMove(db, { ...input, direction: 'undo' });
 }
 
 export async function redoWorkItemRevision(
   db: DB,
-  input: { transportId: string; workItemId: string; userId: string; expectedRevision?: number },
+  input: { transportId: string; workItemId: string; userId: string; expectedSeq?: number },
 ): Promise<PaneRevisionResult> {
   return applyHistoryMove(db, { ...input, direction: 'redo' });
 }
@@ -163,9 +175,13 @@ export async function redoWorkItemRevision(
 export async function loadPaneRevisionCursor(
   db: DB,
   input: { transportId: string; workItemId: string },
-): Promise<{ revision: number; revisionHead: number } | null> {
+): Promise<PaneRevisionCursor | null> {
   const [item] = await db
-    .select({ revision: workItem.revision, revisionHead: workItem.revisionHead })
+    .select({
+      revision: workItem.revision,
+      revisionHead: workItem.revisionHead,
+      seq: workItem.revisionSeq,
+    })
     .from(workItem)
     .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
     .limit(1);
