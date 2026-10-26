@@ -1,4 +1,20 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, lt, ne, notExists, or, sql, type SQL } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  ne,
+  notExists,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { sqlList } from '../db/schema/hitl.js';
@@ -1483,6 +1499,9 @@ export function storedTranslation(raw: unknown): StoredTranslation {
   return { status: 'succeeded', segments, truncated: stored.truncated === true };
 }
 
+export type FieldProvenanceSource = 'ai' | 'staff' | 'unknown';
+export type FieldProvenance = Record<string, { source: FieldProvenanceSource; value: unknown }>;
+
 export type StoredWork =
   | { status: 'none' }
   | { status: 'failed'; reason: string }
@@ -1509,6 +1528,8 @@ export type StoredWork =
       stays: Record<string, StayCommitRecord>;
       /** Last Book preview grant per stay. Digest-bound status, never a reusable token. */
       stayPreviews: Record<string, StayPreviewRecord>;
+      /** Latest append-only field event per path, scoped to this transport and work item. */
+      fieldProvenance: FieldProvenance;
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
       translation: StoredTranslation;
@@ -1549,6 +1570,52 @@ async function messageFor(db: DB, input: { transportId: string; internetMessageI
 }
 
 type ReadyRead = NonNullable<Awaited<ReturnType<typeof succeededRead>>>;
+
+const FIELD_PROVENANCE_EVENT_TYPES = ['field.seed', 'field.edit', 'field.accept', 'field.reject'] as const;
+
+function fieldProvenanceSource(event: {
+  actorKind: string;
+  type: string;
+  aiSource: string | null;
+}): FieldProvenanceSource {
+  if (event.actorKind === 'ai') return 'ai';
+  if (event.actorKind !== 'user') return 'unknown';
+  if (event.type === 'field.accept') return event.aiSource?.trim() ? 'ai' : 'unknown';
+  if (event.type === 'field.edit' || event.type === 'field.reject') return 'staff';
+  return 'unknown';
+}
+
+async function latestFieldProvenance(
+  db: DB,
+  input: { transportId: string; workItemId: string | null },
+): Promise<FieldProvenance> {
+  if (!input.workItemId) return {};
+  const events = await db
+    .selectDistinctOn([workEvent.fieldPath], {
+      actorKind: workEvent.actorKind,
+      type: workEvent.type,
+      fieldPath: workEvent.fieldPath,
+      value: workEvent.value,
+      aiSource: workEvent.aiSource,
+    })
+    .from(workEvent)
+    .innerJoin(workItem, eq(workItem.id, workEvent.workItemId))
+    .where(
+      and(
+        eq(workItem.id, input.workItemId),
+        eq(workItem.transportId, input.transportId),
+        isNotNull(workEvent.fieldPath),
+        inArray(workEvent.type, FIELD_PROVENANCE_EVENT_TYPES),
+      ),
+    )
+    .orderBy(asc(workEvent.fieldPath), desc(workEvent.at), desc(workEvent.id));
+  const provenance: FieldProvenance = {};
+  for (const event of events) {
+    if (event.fieldPath === null) continue;
+    provenance[event.fieldPath] = { source: fieldProvenanceSource(event), value: event.value };
+  }
+  return provenance;
+}
 
 /** The pane's ready view of a read with her saved values. The item can stay on an earlier read (see ensureWorkItem). */
 async function readyView(
@@ -1619,6 +1686,10 @@ async function readyView(
     contact: storedContact(read.payload, state),
     stays: stayCommitsOf(state),
     stayPreviews: stayPreviewsOf(state),
+    fieldProvenance: await latestFieldProvenance(db, {
+      transportId,
+      workItemId: paneItem?.id ?? null,
+    }),
     language: read.language,
     translation: storedTranslation(read.translation),
   };
