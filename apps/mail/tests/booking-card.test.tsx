@@ -972,6 +972,22 @@ function paneClient(overrides: Partial<PaneStayClient> = {}) {
   return { client, preview, commit, screenshot };
 }
 
+function previewableDraft(track = 'COR'): BookingDraftReady {
+  const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+  const request = draft.draft.rooms[0]!.request;
+  request.track = track;
+  request.sourceOfBusiness = 'E-Mail';
+  request.guaranteeType = 'Confirmation Received';
+  return draft;
+}
+
+function bookingSessionForPreview(draft: BookingDraftReady, selectionEpoch: number): QuoteSession {
+  const session = quotedSession(draft);
+  session.groups = session.groups.map((group) => ({ ...group, stayId: 'stay-preview-1' }));
+  if (session.binding) session.binding = { ...session.binding, selectionEpoch };
+  return session;
+}
+
 // The first room has no track, source or guarantee until the staff pick them.
 function pickRoomChoices(index: number) {
   fireEvent.change(screen.getAllByLabelText('Track')[index]!, { target: { value: 'COR' } });
@@ -1136,6 +1152,51 @@ describe('booking card pane save', () => {
     expect(screen.getByText('You changed the booking – preview again.')).toBeDefined();
     expect(bookButton(0)).toHaveProperty('disabled', true);
     expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+  });
+
+  it('restores the same work-item Stay preview after the booking card remounts without saving', async () => {
+    const { client, preview, commit } = paneClient();
+    const workItemId = 'work-item-preview-restore';
+    const host = (session: QuoteSession) => (
+      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+    );
+    const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
+
+    fireEvent.click(previewButton(0));
+    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+
+    rerender(host(bookingSessionForPreview(previewableDraft(), 2)));
+
+    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
+    expect(bookButton(0)).toHaveProperty('disabled', false);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('clears a cached preview when the same work-item Stay digest changes', async () => {
+    const { client, preview, commit } = paneClient();
+    const workItemId = 'work-item-preview-digest';
+    const host = (session: QuoteSession) => (
+      <QuoteBookingHost session={session} paneSave={client} workItemId={workItemId} />
+    );
+    const { rerender } = render(host(bookingSessionForPreview(previewableDraft(), 1)));
+
+    fireEvent.click(previewButton(0));
+    expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
+
+    rerender(host(bookingSessionForPreview(previewableDraft('BAR'), 2)));
+
+    expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+
+    rerender(host(bookingSessionForPreview(previewableDraft(), 3)));
+
+    expect(screen.queryByText(JOHN_SMITH_PREVIEW)).toBeNull();
+    expect(bookButton(0)).toHaveProperty('disabled', true);
   });
 
   it('after a save, shows only the after-save screenshot', async () => {
