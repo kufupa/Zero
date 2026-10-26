@@ -174,6 +174,18 @@ vi.mock('../providers/query-provider', () => {
         list: { query: async () => [] },
       },
       quoteWorkflow: {
+        // 12f451bd6 (#536) loads mailbox pane choices via rateCatalogue.query on mount.
+        rateCatalogue: {
+          query: async () => ({
+            transportId: 'transport-shared',
+            propertyCode: 'HRCEN',
+            roomTypes: [],
+            ratePlans: [],
+            boards: [],
+            overrideRateCodes: [],
+            eventRateCodes: [],
+          }),
+        },
         analyseSelection: {
           mutate: async () => ({
             status: 'ready' as const,
@@ -213,7 +225,9 @@ const COMBINED_REPLY = 'Draft quotation into email reply';
  * (the Available badge). The date options are stay cards now, not a separate picker.
  */
 async function runOption(arrival: string): Promise<void> {
-  const run = await screen.findByRole('button', { name: new RegExp(`^Run Search availability ${arrival}`) });
+  // c7ab6b579 / 22704188b: per-stay search is on the stay card, not the Details "Run {title}" control.
+  const stayIndex = OPTIONS.findIndex((option) => option.arrivalDate === arrival) + 1;
+  const run = await screen.findByRole('button', { name: `Search this date range for Stay ${stayIndex}` });
   const stayCard = run.closest('article') as HTMLElement;
   fireEvent.click(run);
   await waitFor(() => expect(within(stayCard).getByText('Available')).toBeDefined());

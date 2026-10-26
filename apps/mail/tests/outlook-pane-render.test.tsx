@@ -182,6 +182,18 @@ vi.mock('../providers/query-provider', () => ({
       qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
     },
     quoteWorkflow: {
+      // 12f451bd6 (#536) loads mailbox pane choices via rateCatalogue.query on mount.
+      rateCatalogue: {
+        query: async () => ({
+          transportId: bridgeMockState.transportId,
+          propertyCode: 'HRCEN',
+          roomTypes: [],
+          ratePlans: [],
+          boards: [],
+          overrideRateCodes: [],
+          eventRateCodes: [],
+        }),
+      },
       analyseSelection: {
         mutate: async () => ({
           status: 'ready' as const,
