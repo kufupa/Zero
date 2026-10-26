@@ -105,11 +105,16 @@ describe('write CLI session lease', () => {
       exitCode: 2,
     });
 
-    expect(await createLabStayMain(OMITTED_ARGV['create-lab-stay'])).toBe(2);
-    expect(await amendStayMain(OMITTED_ARGV['amend-stay'])).toBe(2);
-    expect(await cancelStayMain(OMITTED_ARGV['cancel-stay'])).toBe(2);
-    expect(await cancelLabStayMain(OMITTED_ARGV['cancel-lab-stay'])).toBe(2);
-    expect(await attachDocumentMain(OMITTED_ARGV['attach-document'])).toBe(2);
+    const previousExit = process.exitCode;
+    try {
+      expect(await createLabStayMain(OMITTED_ARGV['create-lab-stay'])).toBe(2);
+      expect(await amendStayMain(OMITTED_ARGV['amend-stay'])).toBe(2);
+      expect(await cancelStayMain(OMITTED_ARGV['cancel-stay'])).toBe(2);
+      expect(await cancelLabStayMain(OMITTED_ARGV['cancel-lab-stay'])).toBe(2);
+      expect(await attachDocumentMain(OMITTED_ARGV['attach-document'])).toBe(2);
+    } finally {
+      process.exitCode = previousExit;
+    }
 
     expect(WRITE_CLI_TOOLS).toEqual([
       'create-lab-stay',

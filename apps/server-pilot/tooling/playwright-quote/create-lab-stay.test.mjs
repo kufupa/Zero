@@ -304,8 +304,8 @@ test('proof mode captures parsed search rows before Save', async () => {
 
 test('JS dialogs are dismissed and a vanished dialog does not crash', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
-  const writePage = source.lastIndexOf('const page = await context.newPage()');
-  const dialogOn = source.indexOf("page.on('dialog'", writePage);
+  const writePage = source.indexOf('await withWriteCliPage({');
+  const dialogOn = source.indexOf("page.on?.('dialog'", writePage);
   assert.ok(writePage !== -1);
   assert.ok(dialogOn > writePage, 'write page must install a dialog listener');
   const handler = source.slice(dialogOn, dialogOn + 220);
@@ -317,11 +317,11 @@ test('JS dialogs are dismissed and a vanished dialog does not crash', async () =
 test('property check runs on every write, not only proof', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
   const secret = source.indexOf('const secret = await readSecret()');
-  const propertyCheck = source.indexOf('propertySecretRefusal');
+  const propertyCheck = source.indexOf('propertySecretRefusal(secret, propertyCode)');
   const browserCall = source.indexOf('connectOverCDP');
   assert.ok(secret !== -1 && propertyCheck > secret && propertyCheck < browserCall);
   assert.equal(source.includes('proofMode && secret.expectedPropertyCode'), false);
-  assert.match(source, /propertySecretRefusal/);
+  assert.match(source, /propertySecretRefusal\(secret, propertyCode\)/);
   assert.equal(source.includes('PROOF_PROPERTY_HRCEN_REQUIRED'), false);
 });
 
