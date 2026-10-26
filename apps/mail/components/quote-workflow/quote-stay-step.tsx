@@ -107,6 +107,16 @@ export function QuoteStayStep({
             rows={stay.rows}
             index={index}
             stayCount={stays.length}
+            extras={
+              stay.rows[0] ? (
+                <StayExtrasFields
+                  header={header}
+                  stayKey={stayKeyForGroup(stay.rows[0])}
+                  stayNumber={index + 1}
+                  onPatch={onPatchStayExtras}
+                />
+              ) : null
+            }
             requestedRoomsTotal={
               [...new Set(stay.rows.map(stayIdOf))].reduce(
                 (total, id) => total + (session.analysis?.requestedRoomsByStay?.[id] ?? 0),
@@ -125,14 +135,6 @@ export function QuoteStayStep({
             onStayAction={onStayAction}
             evidence={session.analysis?.luna?.evidence}
           />
-          {stay.rows[0] ? (
-            <StayExtrasFields
-              header={header}
-              stayKey={stayKeyForGroup(stay.rows[0])}
-              stayNumber={index + 1}
-              onPatch={onPatchStayExtras}
-            />
-          ) : null}
         </div>
       ))}
       {session.groups.length ? (

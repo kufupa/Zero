@@ -1271,8 +1271,8 @@ describe('QuoteWorkflowPanel', () => {
     }
     const firstStayCard = screen.getByRole('article', { name: 'Stay 1 details' });
     const secondStayCard = screen.getByRole('article', { name: 'Stay 2 details' });
-    expect(firstStayCard.parentElement?.contains(extras[0]!)).toBe(true);
-    expect(secondStayCard.parentElement?.contains(extras[1]!)).toBe(true);
+    expect(firstStayCard.contains(extras[0]!)).toBe(true);
+    expect(secondStayCard.contains(extras[1]!)).toBe(true);
     expect(screen.queryByRole('region', { name: 'Extras & alternatives' })).toBeNull();
     const stayKeys = [...new Set(session.groups.map((group) => `${group.arrivalDate}:${group.departureDate}`))];
     expect(stayKeys).toHaveLength(2);
@@ -1304,6 +1304,23 @@ describe('QuoteWorkflowPanel', () => {
 
     assertRatePlanVisible();
     expect(screen.getByText('HMS notes (optional)')).toBeDefined();
+  });
+
+  it('labels stay duplication and preserves the duplicate_stay action', () => {
+    const session = staggeredDatesSession();
+    const onStayAction = vi.fn();
+    render(<QuoteWorkflowPanel session={session} onStayAction={onStayAction} />);
+
+    const firstStayCard = screen.getByRole('article', { name: 'Stay 1 details' });
+    fireEvent.click(within(firstStayCard).getByRole('button', { name: 'Duplicate stay' }));
+
+    expect(onStayAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'duplicate_stay',
+        stayId: expect.any(String),
+        token: expect.any(String),
+      }),
+    );
   });
 
   it('renders the required dinner price and charging unit before quote documents', () => {
@@ -2326,10 +2343,11 @@ describe('quote strategy comparison', () => {
     const chooseWholesale = screen.getByRole('button', { name: /use wholesale \(WS\) rates/i });
     expect(chooseWholesale.hasAttribute('disabled')).toBe(true);
 
+    const wholesaleRow = strategyRows[stayKey]?.WS;
     const completedRows = Object.fromEntries(strategies.map((strategy) => [
       strategy.code,
       strategy.code === 'WS'
-        ? strategyRows[stayKey]?.WS!
+        ? wholesaleRow!
         : { status: 'not_offered' as const, message: 'No rooms for these dates.' },
     ]));
     rendered.rerender(

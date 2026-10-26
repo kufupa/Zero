@@ -112,7 +112,7 @@ describe('StayCard rooms', () => {
     expect(screen.getByRole('heading', { name: /Stay 2 of 2/ })).toBeTruthy();
   });
 
-  it('shows stay guidance as an info tooltip and keeps copy/remove actions wired', () => {
+  it('shows stay guidance as an info tooltip and keeps duplicate/remove actions wired', () => {
     const { onStayAction } = renderStay([
       stay(),
       stay({ id: 'g2', roomPreference: 'STWN' }),
@@ -120,11 +120,11 @@ describe('StayCard rooms', () => {
     const info = screen.getByRole('button', { name: 'Stay information' });
     expect(info.getAttribute('title')).toBe('One stay = one date range = one HMS booking.');
     expect(screen.queryByText(/Separate HMS booking/)).toBeNull();
-    expect(screen.getByRole('button', { name: 'Copy stay' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Duplicate stay' })).toBeTruthy();
     expect(screen.getAllByRole('button', { name: 'Copy room' })).toHaveLength(2);
     expect(screen.getAllByRole('button', { name: 'Remove' })).toHaveLength(3);
 
-    fireEvent.click(screen.getByTitle('Create another stay with the same dates and rooms.'));
+    fireEvent.click(screen.getByTitle('Duplicate this stay with the same dates and rooms.'));
     expect(onStayAction).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: 'duplicate_stay', stayId: 's1', token: expect.any(String) }),
     );
