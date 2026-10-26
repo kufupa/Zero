@@ -60,6 +60,7 @@ import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
 import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
+import { HMS_OUTAGE_STAFF_COPY } from '../hms/property-outage.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { TRPCError } from '@trpc/server';
@@ -396,6 +397,7 @@ export function staffQuoteFailureMessage(
   context: { salesStrategy?: string; dinnerRequested?: boolean } = {},
 ): string {
   const code = staffQuoteFailureCode(error);
+  if (code === 'HMS_OUTAGE') return HMS_OUTAGE_STAFF_COPY;
   if (code === 'native_quote_no_matching_rate') return nativeNoMatchingRateMessage(context);
   if (
     code === 'native_quote_business_evidence_unavailable' &&
@@ -454,6 +456,7 @@ const PARTY_VERIFY_COPY: Record<string, string> = {
   refused_lock_busy: 'HMS is busy with another run. Try again in a minute.',
   refused_lock_unavailable: "Nava can't reach HMS right now. Tell the Nava team.",
   refused_flag_off: PARTY_LOOKUP_OFF_NOTE,
+  HMS_OUTAGE: HMS_OUTAGE_STAFF_COPY,
 };
 
 function refuseQuote(
