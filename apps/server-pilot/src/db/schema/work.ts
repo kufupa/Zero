@@ -69,8 +69,6 @@ export const WORK_EVENT_TYPES = [
   'history.undo',
   'history.redo',
   'field.reset',
-  'history.undo',
-  'history.redo',
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
 /**
