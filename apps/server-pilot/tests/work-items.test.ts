@@ -1452,6 +1452,123 @@ describe('contact edits', () => {
     }));
 });
 
+describe('section reset', () => {
+  it('restores only each selected section and logs fields with extraction values', () =>
+    withDb(async (db) => {
+      await addOtherTransport(db);
+      const messageId = await seedMail(db, 'reset1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'reset1');
+      const arrival = `stays[${STAY_ONE}].requested.arrival`;
+      const count = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`;
+      const noAiValue = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].board`;
+      const otherStay = `stays[${STAY_TWO}].requested.arrival`;
+      const addedRow = `stays[${STAY_ONE}].rows[r_user01].count`;
+      const company = 'contact.company';
+      const edits: Array<[string, string | number]> = [
+        [arrival, '2027-10-25'],
+        [count, 5],
+        [noAiValue, 'bb'],
+        [otherStay, '2027-11-16'],
+        [addedRow, 4],
+        [company, 'Edited company'],
+      ];
+      for (const [fieldPath, value] of edits) {
+        expect(
+          await recordFieldEvent(db, {
+            transportId: CENTURION,
+            workItemId: work.workItemId,
+            userId: USER,
+            type: 'field.edit',
+            fieldPath,
+            value,
+          }),
+        ).toMatchObject({ status: 'recorded' });
+      }
+
+      expect(
+        await centurionCaller().workItems.resetSection({
+          workItemId: work.workItemId,
+          section: { type: 'contact' },
+        }),
+      ).toEqual({ reset: 1 });
+      const [afterContactReset] = await db
+        .select({ state: workItem.state })
+        .from(workItem)
+        .where(eq(workItem.id, work.workItemId));
+      expect(afterContactReset?.state).toEqual({
+        [arrival]: '2027-10-25',
+        [count]: 5,
+        [noAiValue]: 'bb',
+        [otherStay]: '2027-11-16',
+        [addedRow]: 4,
+      });
+
+      await expect(
+        callerForTransport(OTHER, OTHER_EMAIL).workItems.resetSection({
+          workItemId: work.workItemId,
+          section: { type: 'stay', stayId: STAY_ONE },
+        }),
+      ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+      expect(
+        await centurionCaller().workItems.resetSection({
+          workItemId: work.workItemId,
+          section: { type: 'stay', stayId: STAY_ONE },
+        }),
+      ).toEqual({ reset: 2 });
+
+      const [stored] = await db.select({ state: workItem.state }).from(workItem).where(eq(workItem.id, work.workItemId));
+      expect(stored?.state).toEqual({
+        [noAiValue]: 'bb',
+        [otherStay]: '2027-11-16',
+        [addedRow]: 4,
+      });
+      const resetEvents = (await eventsFor(db, work.workItemId)).filter((event) => event.type === 'field.reset');
+      expect(resetEvents).toHaveLength(3);
+      expect(resetEvents.map((event) => event.fieldPath).sort()).toEqual([arrival, count, company].sort());
+      expect(resetEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            actorKind: 'user',
+            actorUserId: USER,
+            fieldPath: company,
+            aiValue: 'Horizon Trail Tours',
+            value: 'Horizon Trail Tours',
+            aiSource: 'extract-v1',
+          }),
+          expect.objectContaining({
+            actorKind: 'user',
+            actorUserId: USER,
+            fieldPath: arrival,
+            aiValue: '2027-10-26',
+            value: '2027-10-26',
+            aiSource: 'extract-v1',
+          }),
+          expect.objectContaining({
+            actorKind: 'user',
+            actorUserId: USER,
+            fieldPath: count,
+            aiValue: 2,
+            value: 2,
+            aiSource: 'extract-v1',
+          }),
+        ]),
+      );
+
+      const after = await centurionCaller().workItems.getByMessage({ internetMessageId: '<reset1@example.com>' });
+      if (after.status !== 'ready') throw new Error('expected a ready work item');
+      expect(after.analysis.groups.find((group) => group.id === ROW_SINGLE)).toMatchObject({
+        arrivalDate: '2027-10-26',
+        quantity: 2,
+      });
+      expect(after.analysis.groups.find((group) => group.id === ROW_STAY_TWO)?.arrivalDate).toBe('2027-11-16');
+      expect(after.fieldProvenance[company]).toEqual({ source: 'ai', value: 'Horizon Trail Tours' });
+      expect(after.fieldProvenance[arrival]).toEqual({ source: 'ai', value: '2027-10-26' });
+      expect(after.fieldProvenance[otherStay]).toEqual({ source: 'staff', value: '2027-11-16' });
+    }));
+});
+
 describe('field paths and values', () => {
   it('parses stay and row paths and refuses anything else', () => {
     expect(parseFieldPath(`stays[${STAY_ONE}].requested.arrival`)).toEqual({
