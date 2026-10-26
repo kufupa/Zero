@@ -72,7 +72,7 @@ export type PaneSaveMode = 'off' | 'lab' | 'on';
 
 export type PaneStayParty = { nativeId?: string; name: string };
 
-// The stay as the server takes it (paneStayInput). Key order is fixed so the field key is stable.
+// The client Book fields. Key order is fixed so edits invalidate the matching preview.
 export type PaneStayInput = {
   firstName: string;
   lastName: string;
@@ -84,6 +84,8 @@ export type PaneStayInput = {
   roomType: string;
   ratePlan: string;
   track: string;
+  marketSegment?: string;
+  guestoptin4: boolean;
   guaranteeType: string;
   bookingAgency?: PaneStayParty;
   organization?: PaneStayParty;
@@ -258,6 +260,8 @@ export type PaneStayChoice = {
   roomType: string;
   track: string;
   sourceOfBusiness: string;
+  marketSegment?: string;
+  guestoptin4?: boolean;
   guaranteeType: string;
   ratePlan?: string;
   firstName?: string;
@@ -283,6 +287,7 @@ export function paneStayInputForRoom(
   const departure = text(request.departure);
   const roomType = text(choice.roomType);
   const ratePlan = text(choice.ratePlan ?? request.ratePlan);
+  const marketSegment = text(choice.marketSegment);
   const adultsRaw = request.adults;
   const adults =
     typeof adultsRaw === 'number'
@@ -335,6 +340,8 @@ export function paneStayInputForRoom(
       roomType,
       ratePlan,
       track: choice.track,
+      ...(marketSegment ? { marketSegment } : {}),
+      guestoptin4: choice.guestoptin4 === true,
       guaranteeType: choice.guaranteeType,
       ...(bookingAgency ? { bookingAgency: { name: bookingAgency } } : {}),
       ...(organization ? { organization: { name: organization } } : {}),

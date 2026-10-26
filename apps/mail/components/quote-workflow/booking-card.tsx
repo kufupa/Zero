@@ -541,7 +541,7 @@ function RoomTextField({
   roomLabel: string;
   value: string;
   disabled: boolean;
-  maxLength: number;
+  maxLength?: number;
   multiline?: boolean;
   pii?: boolean;
   required?: boolean;
@@ -586,6 +586,8 @@ function RoomTextField({
 type RoomChoice = {
   track: string;
   sourceOfBusiness: string;
+  marketSegment: string;
+  guestoptin4: boolean;
   guaranteeType: string;
   firstName: string;
   lastName: string;
@@ -597,6 +599,8 @@ type RoomChoice = {
 const NO_CHOICE: RoomChoice = {
   track: '',
   sourceOfBusiness: '',
+  marketSegment: '',
+  guestoptin4: false,
   guaranteeType: '',
   firstName: '',
   lastName: '',
@@ -744,6 +748,9 @@ export function BookingCards({
                 room.request.sourceOfBusiness,
                 draft.options.sourceOfBusiness,
               ),
+              marketSegment: '',
+              // Guest consent must come from an explicit staff action, never from mail or a hotel default.
+              guestoptin4: false,
               guaranteeType: textValue(room.request.guaranteeType),
               firstName: names.firstName,
               lastName: names.lastName,
@@ -1053,6 +1060,26 @@ export function BookingCards({
                 </select>
               </label>
               <CopyButton label="Track" roomLabel={roomLabel} value={choice.track} />
+            </div>
+            <RoomTextField
+              roomLabel={roomLabel}
+              label="Market Segment"
+              value={choice.marketSegment}
+              disabled={locked}
+              onChange={(value) => setChoice({ marketSegment: value })}
+            />
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
+                <input
+                  type="checkbox"
+                  aria-label="Guest opt-in"
+                  checked={choice.guestoptin4}
+                  disabled={locked}
+                  onChange={(event) => setChoice({ guestoptin4: event.target.checked })}
+                />
+                <span>Guest opt-in</span>
+              </label>
+              <p className="text-[11px] text-[#64748b]">Select only if the guest explicitly opted in.</p>
             </div>
             <div className="flex items-end gap-2">
               <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
