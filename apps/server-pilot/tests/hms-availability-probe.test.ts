@@ -31,7 +31,7 @@ import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { CENTURION_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction } from '../src/db/schema/work.js';
-import type { DB } from '../src/db/client.js';
+import { __setDbForTests, type DB } from '../src/db/client.js';
 import { appRouter } from '../src/trpc/router.js';
 import { createPropertyReadLock, PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
@@ -262,6 +262,17 @@ async function seedExtraction(
     status: 'succeeded',
     kind,
     payload: payload as Record<string, unknown>,
+  });
+}
+
+async function withProbeDb<T>(cb: (db: DB) => Promise<T>): Promise<T> {
+  return withSeededTestDb(async (db) => {
+    __setDbForTests({ db, conn: null as never });
+    try {
+      return await cb(db);
+    } finally {
+      __setDbForTests(null);
+    }
   });
 }
 
@@ -752,7 +763,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
   });
 
   it('flag off → nothing: no probe is queued unless HMS_JOB_QUEUE and HMS_AVAILABILITY_PREFETCH are both on', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       const run = extractionRun(messageId);
@@ -764,7 +775,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('denied admission queues no availability jobs when the extraction is otherwise eligible', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       expect(
@@ -778,7 +789,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('only a succeeded quote extraction queues probes: booking mail and spam do not', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const booking = await seedThread(db);
       await seedExtraction(db, booking.messageId, 'booking');
       expect(await prefetchAvailabilityForExtraction(extractionRun(booking.messageId), db, probeEnv())).toBe(0);
@@ -791,7 +802,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('queues one probe per complete stay, and a repeat of the same stays on the same day is no new job', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const first = await seedThread(db);
       await seedExtraction(db, first.messageId, 'quote');
       expect(await prefetchAvailabilityForExtraction(extractionRun(first.messageId), db, probeEnv())).toBe(2);
@@ -807,7 +818,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('the hourly cap stops the probes at HMS_AVAILABILITY_PER_HOUR, 6 by default', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       expect(availabilityProbesPerHour({})).toBe(6);
       expect(availabilityProbesPerHour({ HMS_AVAILABILITY_PER_HOUR: 'many' })).toBe(6);
       expect(availabilityProbesPerHour({ HMS_AVAILABILITY_PER_HOUR: '0' })).toBe(0);
@@ -819,7 +830,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('confirmation prefetch has its own cap: a full HMS_PREFETCH_PER_HOUR does not stop the probes', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       await enqueueHmsJob(
@@ -842,7 +853,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('a staff quote in flight holds the probe: it yields without the lock and without reading HMS', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       await db.insert(aiDraftGeneration).values({
@@ -874,7 +885,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('a busy property lock requeues the probe without using an attempt, and reads nothing', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       paneStayLookupLoaders.lock = lockWith(false);
@@ -893,7 +904,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('a finished probe is a snapshot with its as-of time, and each stay reads back its own by dates', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       paneStayLookupLoaders.lock = lockWith(true);
@@ -947,7 +958,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('a probe shared by a second thread on the same day reads back on that thread too', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const first = await seedThread(db);
       await seedExtraction(db, first.messageId, 'quote');
       const second = await seedThread(db);
@@ -970,7 +981,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('two stays on the same dates with different rooms each read back their own snapshot by rooms', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const twin = { ...STAY_A, id: 's_dddd4444', rows: [STAY_A.rows[1]!] };
       await seedExtraction(db, messageId, 'quote', { ...PAYLOAD, stays: [STAY_A, twin] });
@@ -986,7 +997,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     }));
 
   it('a probe whose read fails is retried, and its snapshot is not stored', () =>
-    withSeededTestDb(async (db) => {
+    withProbeDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
       paneStayLookupLoaders.lock = lockWith(true);
