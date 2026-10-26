@@ -1822,6 +1822,7 @@ export async function recordFieldEvent(
     const advanced = advancePaneRevision({
       revision: item.revision,
       revisionHead: item.revisionHead,
+      seq: item.revisionSeq,
       previousState: item.state,
       nextState: state,
     });

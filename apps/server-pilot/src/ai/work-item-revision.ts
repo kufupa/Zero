@@ -16,6 +16,7 @@ export type PaneRevisionResult =
 
 export type PaneRevisionEvidence = {
   paneRevision: number;
+  paneSeq: number;
   paneState: PaneState;
   previousPaneState: PaneState;
 };
@@ -49,15 +50,18 @@ export function withPaneState(state: PaneState, pane: PaneState): PaneState {
 export function advancePaneRevision(input: {
   revision: number;
   revisionHead: number;
+  seq: number;
   previousState: PaneState;
   nextState: PaneState;
 }): { revision: number; revisionHead: number; evidence: PaneRevisionEvidence } {
   const revision = Math.max(0, input.revision) + 1;
+  const paneSeq = Math.max(0, input.seq) + 1;
   return {
     revision,
     revisionHead: revision,
     evidence: {
       paneRevision: revision,
+      paneSeq,
       paneState: paneStateOf(input.nextState),
       previousPaneState: paneStateOf(input.previousState),
     },
@@ -90,7 +94,7 @@ async function latestEvidence(
         sql`(${workEvent.evidence} ->> 'paneRevision') = ${String(paneRevision)}`,
       ),
     )
-    .orderBy(desc(workEvent.at), desc(workEvent.id))
+    .orderBy(desc(sql`coalesce((${workEvent.evidence} ->> 'paneSeq')::int, 0)`), desc(workEvent.id))
     .limit(1);
   const raw = row?.evidence;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -98,6 +102,7 @@ async function latestEvidence(
   if (asRevision(evidence.paneRevision) !== paneRevision) return null;
   return {
     paneRevision,
+    paneSeq: asRevision(evidence.paneSeq) ?? 0,
     paneState: paneStateOf(asState(evidence.paneState)),
     previousPaneState: paneStateOf(asState(evidence.previousPaneState)),
   };
