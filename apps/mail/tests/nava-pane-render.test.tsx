@@ -1882,7 +1882,7 @@ describe('NavaPane screen states', () => {
     rerender(<NavaPane bridge={fakeBridge} preview />);
 
     await waitFor(() => {
-      const contact = screen.getByRole('region', { name: 'Quote contact — printed on the PDF' });
+      const contact = screen.getByRole('group', { name: 'Quote contact — printed on the PDF' });
       expect(within(contact).getByText('Second Mailbox Guest')).toBeDefined();
     });
     openContactCorrections();
@@ -3186,15 +3186,19 @@ describe('NavaPane contact and translation on both surfaces', () => {
       openContactCorrections();
       expect((screen.getByLabelText('Email') as HTMLInputElement).value).toBe('marie.dupont@example.fr');
       expect(screen.getByRole('button', { name: 'Done' })).toBeDefined();
-      const contact = screen.getByRole('region', { name: 'Quote contact — printed on the PDF' });
+      expect(screen.getAllByRole('group', { name: 'Quote contact — printed on the PDF' })).toHaveLength(1);
+      const contact = screen.getByRole('group', { name: 'Quote contact — printed on the PDF' });
       expect(selectedEmail!.compareDocumentPosition(contact) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(contact.compareDocumentPosition(translation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it(`${surface}: labels a new booking Contact, not Quote contact`, async () => {
+    it(`${surface}: labels a new booking Contact without a duplicate in People`, async () => {
       bridgeMockState.storedWork = { ...STORED_FRENCH, kind: 'booking' };
       render(<NavaPane bridge={fakeBridge} preview={preview} />);
       expect(await screen.findByRole('region', { name: 'Contact' })).toBeDefined();
+      expect(screen.getByRole('region', { name: 'People' })).toBeDefined();
+      expect(screen.getAllByRole('region', { name: 'Contact' })).toHaveLength(1);
+      expect(screen.queryByRole('group', { name: 'Quote contact — printed on the PDF' })).toBeNull();
     });
 
     it(surface + ': uses the external sender as a name and email fallback while the read is unavailable', async () => {
@@ -3361,6 +3365,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(notice.textContent).toContain('57291630-1');
     expect(screen.getByRole('status', { name: 'Nava reads this as: Not for Nava' })).toBeDefined();
     expect(screen.queryByText('New booking')).toBeNull();
+    expect(screen.queryByRole('group', { name: 'Quote contact — printed on the PDF' })).toBeNull();
     expect(screen.queryByRole('region', { name: 'Quote contact — printed on the PDF' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Draft quotation into email reply' })).toBeNull();
     expect(screen.queryByLabelText('Arrival')).toBeNull();
@@ -3400,6 +3405,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(screen.getByTestId('mail-source-no-action').textContent).toContain(
       'Payment lookup below only reads HMS.',
     );
+    expect(screen.queryByRole('group', { name: 'Quote contact — printed on the PDF' })).toBeNull();
     expect(screen.queryByRole('region', { name: 'Quote contact — printed on the PDF' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Draft quotation into email reply' })).toBeNull();
     expect(screen.queryByRole('region', { name: 'Change to an existing booking' })).toBeNull();

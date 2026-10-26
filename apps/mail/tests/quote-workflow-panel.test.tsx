@@ -324,10 +324,10 @@ describe('QuoteWorkflowPanel', () => {
     expect(roomsAfterEdit[2]?.value).toBe(originalCode);
   });
 
-  it('has one Agency & company step with agency and company fields', () => {
+  it('has one People step with distinct agency and company fields', () => {
     render(<QuoteWorkflowPanel session={sessionFromFixture('agency-contract')} />);
     expect(
-      screen.getAllByRole('region', { name: 'Agency & company' }),
+      screen.getAllByRole('region', { name: 'People' }),
     ).toHaveLength(1);
     expect(screen.getByLabelText('Agency')).toBeTruthy();
     expect(screen.getByLabelText('Company')).toBeTruthy();
@@ -364,7 +364,7 @@ describe('QuoteWorkflowPanel', () => {
       'quote-quote',
     ]);
     expect(steps.map((step) => step.getAttribute('aria-label'))).toEqual([
-      'Agency & company',
+      'People',
       'HMS notes',
       'Stay',
       'Availability & rates',
@@ -411,7 +411,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(within(ask).getByText('Confirm the company or agency for contract rates.')).toBeDefined();
     expect(within(ask).queryByText('What arrival and departure dates should be quoted?')).toBeNull();
     expect(primaryActions(container)).toHaveLength(1);
-    expect(primaryActions(container)[0]?.textContent).toBe('Review agency & company');
+    expect(primaryActions(container)[0]?.textContent).toBe('Review people');
   });
 
   it('does not route a missing client email to the agency and company step', () => {
@@ -580,13 +580,13 @@ describe('QuoteWorkflowPanel', () => {
     expect(screen.getByText(/^Prepared by Nava · /)).toBeDefined();
   });
 
-  it('marks Agency & company as looking up while an HMS party search is pending', () => {
+  it('marks People as looking up while an HMS party search is pending', () => {
     const session = { ...sessionFromFixture('public-single'), pendingPartyKinds: ['company' as const] };
     render(<QuoteWorkflowPanel session={session} />);
     expect(
       within(
         screen.getByRole('region', {
-          name: 'Agency & company',
+          name: 'People',
         }),
       ).getByTestId('quote-step-state').textContent,
     ).toBe('Looking up');
@@ -2062,7 +2062,7 @@ describe('the Find in HMS picker in the quote header', () => {
       <QuoteWorkflowPanel session={headerSession({ company: 'Acme Travel', agency: 'Travel Hub' })} findParty={find} />,
     );
     await waitFor(() => expect(find).toHaveBeenCalledTimes(2), { timeout: 3000 });
-    expect(screen.getAllByRole('region', { name: 'Agency & company' })).toHaveLength(1);
+    expect(screen.getAllByRole('region', { name: 'People' })).toHaveLength(1);
     expect(
       screen.getByLabelText('Search agency in HMS').compareDocumentPosition(screen.getByLabelText('Search company in HMS')) &
         Node.DOCUMENT_POSITION_FOLLOWING,

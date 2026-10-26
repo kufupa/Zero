@@ -1,5 +1,7 @@
 import { Field, Section, SecondaryButton, StepState, paneFieldClass } from '@/components/nava-pane/pane-ui';
+import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
+import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type { QuoteSession, StaffQuoteHeader } from '@/lib/quote-workflow/types';
 import { PartyPicker } from './party-picker';
@@ -124,6 +126,9 @@ export function QuotePeopleStep({
   partySuggestions,
   partyIndex,
   partyJobTransport,
+  contact,
+  contactEditorKey,
+  onContactEdit,
   onPartyLookupPending,
   scrollToStep,
 }: {
@@ -136,11 +141,17 @@ export function QuotePeopleStep({
   partySuggestions?: PartySuggestion[];
   partyIndex?: PartyIndexSearcher | null;
   partyJobTransport?: HmsJobTransport | null;
+  contact?: StoredContact | null;
+  contactEditorKey?: string;
+  onContactEdit?: (field: ContactField, value: string | null) => void;
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
   scrollToStep: (id: string) => void;
 }) {
   return (
-    <Section step={1} title="Agency & company" id="quote-party" action={<StepState state={partyState} />}>
+    <Section step={1} title="People" id="quote-party" action={<StepState state={partyState} />}>
+      {onContactEdit ? (
+        <ContactBlock embedded key={contactEditorKey} contact={contact ?? null} onEdit={onContactEdit} />
+      ) : null}
       <StaffPartyFields
         header={header}
         onPatch={(header) => onPatchStaffHeader?.(header, { staffEdit: true })}
