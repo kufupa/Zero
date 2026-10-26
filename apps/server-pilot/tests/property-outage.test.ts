@@ -50,6 +50,12 @@ describe('property HMS outage pause', () => {
         error: 'AUTHENTICATED_SHELL_TIMEOUT',
       }),
     ).toBe(true);
+    expect(
+      classifyHmsLoginOutage({
+        outcome: 'execution_failure',
+        reason: 'AUTHENTICATED_SHELL_TIMEOUT',
+      }),
+    ).toBe(true);
     expect(classifyHmsLoginOutage(new Error('ECONNRESET'))).toBe(false);
     expect(classifyHmsLoginOutage({ code: 'EXECUTION_FAILURE' })).toBe(false);
     expect(HMS_OUTAGE_FAILURE_CLASS).toBe('HMS_OUTAGE');
