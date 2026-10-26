@@ -780,10 +780,10 @@ describe('NavaPane screen states', () => {
       ),
     ).toBeDefined();
     expect(
-      await within(container.querySelector('header') as HTMLElement).findByRole('button', {
-        name: 'Needs you (0)',
+      within(container.querySelector('header') as HTMLElement).queryByRole('button', {
+        name: /Needs you/,
       }),
-    ).toBeDefined();
+    ).toBeNull();
     expect(screen.getByRole('button', { name: 'Confirm Account & Connect' })).toBeDefined();
     expect(screen.getByRole('button', { name: '4. Quote Tool' })).toBeDefined();
     expect(screen.queryByRole('main')).toBeNull();
@@ -803,7 +803,7 @@ describe('NavaPane screen states', () => {
     expect(screen.queryByRole('button', { name: 'Find this booking' })).toBeNull();
   });
 
-  it.each([320, 380])('keeps the mailbox, sync and Needs-you count in the header at %ipx', async (width) => {
+  it.each([320, 380])('keeps the mailbox and sync in the header at %ipx while Needs-you stays gated off', async (width) => {
     const { container } = render(
       <div style={{ width: `${width}px`, maxWidth: `${width}px` }}>
         <NavaPane bridge={fakeBridge} />
@@ -812,13 +812,11 @@ describe('NavaPane screen states', () => {
     const header = container.querySelector('header');
     expect(header).not.toBeNull();
     const title = header!.querySelector('h1');
-    const needsYou = await within(header as HTMLElement).findByRole('button', { name: 'Needs you (0)' });
     const mailbox = within(header as HTMLElement).getByLabelText('Connected mailbox: ropperman@legacyhotels.co.za');
-    const elements = [...header!.querySelectorAll('h1, button, span')];
-    expect(elements.indexOf(title!)).toBeLessThan(elements.indexOf(needsYou));
-    expect(elements.indexOf(needsYou)).toBeLessThan(elements.indexOf(mailbox));
+    const elements = [...header!.querySelectorAll('h1, span')];
+    expect(within(header as HTMLElement).queryByRole('button', { name: /Needs you/ })).toBeNull();
+    expect(elements.indexOf(title!)).toBeLessThan(elements.indexOf(mailbox));
     expect(title!.className).toMatch(/truncate|whitespace-nowrap/);
-    expect(needsYou.className).toMatch(/truncate|whitespace-nowrap/);
     expect(title!.parentElement?.className).toMatch(/min-w-0/);
     expect(header!.children[0]?.className).toMatch(/min-w-0/);
     expect(header!.children[1]?.className).toMatch(/min-w-0/);
@@ -826,7 +824,6 @@ describe('NavaPane screen states', () => {
     expect(header!.textContent).toContain('Nava Reservationist');
     expect(header!.textContent).not.toContain('Centurion');
     expect(header!.textContent).toMatch(/sync|checking/i);
-    expect(needsYou.textContent).toBe('Needs you (0)');
     expect(container.firstElementChild?.getAttribute('style')).toContain(`width: ${width}px`);
   });
 
@@ -1127,7 +1124,7 @@ describe('NavaPane screen states', () => {
     const { container } = render(<NavaPane bridge={fakeBridge} />);
     fireEvent.click(screen.getByRole('button', { name: 'Confirm Account & Connect' }));
     expect(await screen.findByText(/API server pinged at/)).toBeDefined();
-    expect(await screen.findByRole('button', { name: 'Needs you (0)' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
     await settle();
     expect(container).toMatchSnapshot();
   });
@@ -1139,7 +1136,7 @@ describe('NavaPane screen states', () => {
     await screen.findByText(/API server pinged at/);
     fireEvent.click(screen.getByRole('button', { name: 'Next: 60-Second Feature Tour' }));
     expect(screen.getByRole('heading', { name: '1. Automatic Email Sync' })).toBeDefined();
-    expect(await screen.findByRole('button', { name: 'Needs you (0)' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
     await settle();
     expect(container).toMatchSnapshot();
   });
@@ -2827,7 +2824,7 @@ describe('NavaPane screen states', () => {
     expect(bridgeMockState.lastStaffQuoteInput).not.toHaveProperty('autoStart');
   });
 
-  it('keeps the completed rate notice global across Needs you and channel mail', async () => {
+  it('keeps the completed rate notice global when Needs-you is gated off and on channel mail', async () => {
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.holdStaffQuote = true;
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);
@@ -2851,12 +2848,9 @@ describe('NavaPane screen states', () => {
       expect.objectContaining({ messageId: 'mail-1' }),
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Needs you (0)' }));
-    const needsYouNotice = screen.getByTestId('hms-job-notice-banner');
-    expect(needsYouNotice.textContent).toContain('Rates ready');
-    expect(needsYouNotice.closest('main')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
+    expect(notice.closest('main')).toBeNull();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Back to quotes' }));
     const channelBridge = {
       ...fakeBridge,
       activeEmail: {
@@ -3470,7 +3464,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
     expect(screen.getAllByTestId('mail-source-no-action')).toHaveLength(1);
   });
 
-  it('keeps a single no-action notice visible while Needs you is open', async () => {
+  it('keeps a single no-action notice visible while the Needs-you header entry is gated off', async () => {
     const channelBridge = {
       ...fakeBridge,
       activeEmail: {
@@ -3482,9 +3476,7 @@ describe('NavaPane contact and translation on both surfaces', () => {
     } as unknown as PaneBridge;
 
     render(<NavaPane bridge={channelBridge} />);
-    fireEvent.click(screen.getByRole('button', { name: /Needs you/ }));
-
-    expect(await screen.findByRole('region', { name: 'Needs you' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
     expect(await screen.findByTestId('mail-source-no-action')).toBeDefined();
     expect(screen.getAllByTestId('mail-source-no-action')).toHaveLength(1);
   });

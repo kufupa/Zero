@@ -29,14 +29,6 @@ exports[`NavaPane screen states > booking: an amendment email shows the change c
               Nava Reservationist
             </h1>
           </div>
-          <button
-            aria-label="Needs you (0)"
-            class="max-w-[96px] shrink-0 truncate whitespace-nowrap text-[11.5px] font-semibold text-[#0066cc] underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
-            title="Needs you (0)"
-            type="button"
-          >
-            Needs you (0)
-          </button>
         </div>
         <div
           class="flex h-8 min-w-0 items-center gap-1.5 border-t border-[#f1f5f9] bg-[#f8fafc] px-3.5 text-[11px] font-medium text-[#475569]"
@@ -509,14 +501,6 @@ exports[`NavaPane screen states > diagnostics: the connection step after a succe
               Nava Reservationist
             </h1>
           </div>
-          <button
-            aria-label="Needs you (0)"
-            class="max-w-[96px] shrink-0 truncate whitespace-nowrap text-[11.5px] font-semibold text-[#0066cc] underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
-            title="Needs you (0)"
-            type="button"
-          >
-            Needs you (0)
-          </button>
         </div>
         <div
           class="flex h-8 min-w-0 items-center gap-1.5 border-t border-[#f1f5f9] bg-[#f8fafc] px-3.5 text-[11px] font-medium text-[#475569]"
@@ -945,14 +929,6 @@ exports[`NavaPane screen states > tour: the first slide of the feature tour, ope
               Nava Reservationist
             </h1>
           </div>
-          <button
-            aria-label="Needs you (0)"
-            class="max-w-[96px] shrink-0 truncate whitespace-nowrap text-[11.5px] font-semibold text-[#0066cc] underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
-            title="Needs you (0)"
-            type="button"
-          >
-            Needs you (0)
-          </button>
         </div>
         <div
           class="flex h-8 min-w-0 items-center gap-1.5 border-t border-[#f1f5f9] bg-[#f8fafc] px-3.5 text-[11px] font-medium text-[#475569]"
@@ -1409,14 +1385,6 @@ exports[`NavaPane screen states > welcome: a first run shows the account step an
               Nava Reservationist
             </h1>
           </div>
-          <button
-            aria-label="Needs you (0)"
-            class="max-w-[96px] shrink-0 truncate whitespace-nowrap text-[11.5px] font-semibold text-[#0066cc] underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#0066cc]"
-            title="Needs you (0)"
-            type="button"
-          >
-            Needs you (0)
-          </button>
         </div>
         <div
           class="flex h-8 min-w-0 items-center gap-1.5 border-t border-[#f1f5f9] bg-[#f8fafc] px-3.5 text-[11px] font-medium text-[#475569]"

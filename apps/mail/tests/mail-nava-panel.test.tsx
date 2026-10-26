@@ -331,12 +331,11 @@ describe('shared WebPanePanel', () => {
 });
 
 describe('Needs-you link in the webmail list header', () => {
-  it('keeps the mail-list Needs you control separate from the pane header entry', async () => {
+  it('hides the mail-list Needs you control while the rollout gate is off', async () => {
     mocks.threadId = 'thread-42';
     render(<MailLayout />);
-    const entry = screen.getByRole('button', { name: 'Needs you' });
     expect(await screen.findByTestId('nava-pane')).toBeDefined();
-    expect(entry.closest('[data-preview-pane]')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
   });
 });
 
