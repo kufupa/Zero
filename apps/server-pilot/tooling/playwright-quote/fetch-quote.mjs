@@ -11,9 +11,7 @@ import { createAudit } from './audit.mjs';
 import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 import { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
-import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
-
-export { withReadCliPage as withLeasedReadPage };
+import { lookupActiveProperty } from './read-cli-lease.mjs';
 
 export { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath };
 
@@ -874,7 +872,6 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       event('attach');
       await clock.time('cdp',async()=>{
         // Trace only our isolated context, never the borrowed owner's tabs.
-        // Lease creates the only page; attachBorrowedSession's blank page is unused.
         const attached=await attachBorrowedSession({
           href:url.href,
           env,
@@ -883,26 +880,21 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
         });
         browser=attached.browser;
         context=attached.context;
-        await attached.page.close().catch(()=>{});
+        page=attached.page;
       });
-      result=await withReadCliPage({propertyCode:request.propertyCode,secret,context,browser,env},async({page:leased})=>{
-        page=leased;
-        page.setDefaultTimeout?.(20000);
-        event('login'); await clock.time('login',()=>Promise.resolve());
-        event('audit_start'); await audit.start(page,[secret.password,secret.username,secret.loginUrl]);
-        await audit.checkpoint('login-complete');
-        event('hotel_availability'); await clock.time('nav',()=>openHotelAvailability(page));
-        await audit.checkpoint('hotel-availability');
-        if(propertyRegistration)
-          await installRegisteredAvailabilityReadOnlyGuard(context,propertyRegistration.transportId,new URL(secret.loginUrl).origin);
-        const next=await runInPage(page,request,directory,event,audit.checkpoint,clock);
-        event(`result_${next.outcome}`);
-        if(onCaptured&&quoteTraceAsyncEnabled(env)) {
-          const provisional=provisionalQuoteCapture({result:{...next,phaseMs:{...clock.ms}},audit,directory,started});
-          if(provisional){await saveEvidence(directory,'result.provisional.json',provisional);onCaptured(provisional);}
-        }
-        return next;
-      });
+      event('login'); await clock.time('login',()=>login(page,secret,env));
+      event('audit_start'); await audit.start(page,[secret.password,secret.username,secret.loginUrl]);
+      await audit.checkpoint('login-complete');
+      event('hotel_availability'); await clock.time('nav',()=>openHotelAvailability(page));
+      await audit.checkpoint('hotel-availability');
+      if(propertyRegistration)
+        await installRegisteredAvailabilityReadOnlyGuard(context,propertyRegistration.transportId,new URL(secret.loginUrl).origin);
+      result=await runInPage(page,request,directory,event,audit.checkpoint,clock);
+      event(`result_${result.outcome}`);
+      if(onCaptured&&quoteTraceAsyncEnabled(env)) {
+        const provisional=provisionalQuoteCapture({result:{...result,phaseMs:{...clock.ms}},audit,directory,started});
+        if(provisional){await saveEvidence(directory,'result.provisional.json',provisional);onCaptured(provisional);}
+      }
     }
   } catch(error) {
     result=executionFailure(error,phase,secret);

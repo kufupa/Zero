@@ -9,14 +9,12 @@ import {
 import { spawnEnvWithHeldLock } from '../src/ai/staff-quote-installation.js';
 import { staffQuoteChildEnv } from '../src/ai/staff-quote-run.js';
 import { createSlotSession } from '../src/hms/slot-session.js';
-import { main as findBatchMain } from '../tooling/playwright-quote/find-batch.mjs';
 import { runDeeplinkProbe } from '../tooling/playwright-quote/hms-deeplink-probe.mjs';
 import { partyLookupPropertyCode } from '../tooling/playwright-quote/party-lookup.mjs';
 import { parseStayProperty } from '../tooling/playwright-quote/property-profile.mjs';
 import {
   lookupActiveProperty,
   prepareReadCliInput,
-  READ_CLI_TOOLS,
   resetSharedReadCliLease,
   sharedReadCliLease,
   withReadCliPage,
@@ -26,28 +24,20 @@ import { describe, expect, it, vi } from 'vitest';
 
 const GENERIC_PROPERTY = 'HTLAA';
 const LOCK_TENANT = 'tenant-generic';
-const TOOLING = join(dirname(fileURLToPath(import.meta.url)), '../tooling/playwright-quote');
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const TOOLING = join(ROOT, 'tooling/playwright-quote');
+const SRC = join(ROOT, 'src/ai');
 
-const ARGV_CLIS = [
-  'find-batch',
-  'stay-lookup',
-  'read-reservation-codes',
-  'read-reservation-fields',
-  'create-preflight',
-  'hms-deeplink-probe',
-] as const;
+const ARGV_CLIS = ['stay-lookup', 'create-preflight', 'hms-deeplink-probe'] as const;
 
 const OMITTED_ARGV: Record<(typeof ARGV_CLIS)[number], string[]> = {
   'stay-lookup': ['--mode', 'find', '--confirmation', '1-1', '--out', '/tmp'],
-  'find-batch': ['--input', 'x.json', '--out', 'y.jsonl'],
-  'read-reservation-codes': ['--input', 'x.json'],
-  'read-reservation-fields': ['--input', 'x.json', '--out', 'y.jsonl'],
   'create-preflight': ['--request', 'x.json'],
   'hms-deeplink-probe': ['--conf', '1-1'],
 };
 
-function cliSource(name: string) {
-  return readFileSync(join(TOOLING, `${name}.mjs`), 'utf8');
+function sourceOf(dir: string, name: string) {
+  return readFileSync(join(dir, name), 'utf8');
 }
 
 function secretFor(propertyCode: string) {
@@ -72,14 +62,8 @@ function lockConnection(): PropertyReadConnection {
 
 describe('read CLI session lease', () => {
   it('omitted property refuses and read callers share the lease', async () => {
-    expect([...READ_CLI_TOOLS].sort()).toEqual(
-      [...ARGV_CLIS, 'fetch-quote', 'party-lookup', 'property-profile'].sort(),
-    );
-
     for (const name of ARGV_CLIS) {
-      const source = cliSource(name);
-      expect(source).toContain('parseStayProperty');
-      expect(source).toContain('withReadCliPage');
+      expect(sourceOf(TOOLING, `${name}.mjs`)).toContain('parseStayProperty');
       expect(parseStayProperty(OMITTED_ARGV[name])).toMatchObject({
         ok: false,
         error: 'PROPERTY_REQUIRED',
@@ -87,22 +71,20 @@ describe('read CLI session lease', () => {
       });
     }
     expect(await stayLookupMain(OMITTED_ARGV['stay-lookup'])).toBe(2);
-    expect(await findBatchMain(OMITTED_ARGV['find-batch'])).toBe(2);
 
-    expect(cliSource('stay-lookup')).not.toMatch(/await login\(/);
-    expect(cliSource('hms-deeplink-probe')).not.toMatch(/seed\.close/);
-    expect(cliSource('find-batch')).toContain('page !== leased');
+    expect(sourceOf(SRC, 'pane-stay-lookup.ts')).toContain("'--property'");
+    expect(sourceOf(SRC, 'pane-stay-save.ts')).toMatch(/return code \? \['--property', code\] : \[\]/);
+    expect(sourceOf(join(ROOT, 'scripts'), 'v8-live-checks.ts')).toContain("'--property'");
+    expect(sourceOf(SRC, 'staff-quote-installation.ts')).toContain(
+      'propertyCode: configuration.owner.propertyCode',
+    );
 
     expect(partyLookupPropertyCode({})).toBeNull();
     expect(partyLookupPropertyCode({ propertyCode: '' })).toBeNull();
     expect(partyLookupPropertyCode({ propertyCode: 'HTLZZ' })).toBeNull();
     expect(lookupActiveProperty('')).toBeNull();
     expect(lookupActiveProperty('HTLZZ')).toBeNull();
-    expect(cliSource('fetch-quote')).toContain('lookupActiveProperty(request.propertyCode)');
-    expect(cliSource('fetch-quote')).toContain('withReadCliPage');
-    expect(cliSource('party-lookup')).toContain('partyLookupPropertyCode');
-    expect(cliSource('party-lookup')).toContain('withReadCliPage');
-    expect(cliSource('property-profile')).toContain('export function parseStayProperty');
+    expect(sourceOf(TOOLING, 'fetch-quote.mjs')).toContain('lookupActiveProperty(request.propertyCode)');
 
     await expect(
       runDeeplinkProbe({

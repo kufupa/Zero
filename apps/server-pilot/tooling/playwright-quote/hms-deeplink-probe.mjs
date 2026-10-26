@@ -9,11 +9,9 @@ import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import { parseStayProperty } from './property-profile.mjs';
-import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
-
-export { withReadCliPage as withLeasedReadPage };
+import { lookupActiveProperty } from './read-cli-lease.mjs';
 
 const REPO_ROOT = resolve(fileURLToPath(new URL('../../../../', import.meta.url)));
 const PRIVATE_QUOTE_ROOT = resolve(REPO_ROOT, '.private/playwright-quote');
@@ -199,19 +197,22 @@ export async function runDeeplinkProbe({
   try {
     // A new context inside the borrowed browser. ignoreHTTPSErrors stays off, like the staff tools.
     context = await newBorrowedContext(browser, { viewport: { width: 1600, height: 1000 } }, env);
-    await withReadCliPage({ propertyCode, secret, context, browser, env }, async () => {
-      // Keep the leased shell. Probe URLs on extra pages so boundPage stays live.
-      for (const [id, url] of probePlan({ origin, conf, stayId })) {
-        const page = await context.newPage();
-        try {
-          const record = await observe(page, { id, url, conf, runDir, evidence });
-          records.push(record);
-          emit(record);
-        } finally {
-          await page.close().catch(() => {});
-        }
+    const seed = await context.newPage();
+    try {
+      await login(seed, secret, env);
+    } finally {
+      await seed.close().catch(() => {});
+    }
+    for (const [id, url] of probePlan({ origin, conf, stayId })) {
+      const page = await context.newPage();
+      try {
+        const record = await observe(page, { id, url, conf, runDir, evidence });
+        records.push(record);
+        emit(record);
+      } finally {
+        await page.close().catch(() => {});
       }
-    });
+    }
   } finally {
     await context?.close().catch(() => {});
     // Pinned Playwright connectOverCDP closes its transport, not the owner's Chromium (see fetch-quote.mjs).

@@ -7,14 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { INFORMATIONAL_NO_ROOMS_MESSAGE, waitHmsMaskCleared } from './create-lab-stay.mjs';
 import { loadCreateRequest, optionalPartyAndNoteFills, parseOutDir, shopResult } from './create-request.mjs';
 import { parseStayProperty, profileFor, propertySecretRefusal } from './property-profile.mjs';
-import { withReadCliPage } from './read-cli-lease.mjs';
 import { searchGuestOnOpenGuestStay } from './stay-lookup.mjs';
 import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { installReadOnlyGuard, shouldAbortReadOnlyRequest } from './hms-read-only-guard.mjs';
-import { displayDate, newBorrowedContext, openHotelAvailability, playwright, readSecret, search } from './fetch-quote.mjs';
+import { displayDate, login, newBorrowedContext, openHotelAvailability, playwright, readSecret, search } from './fetch-quote.mjs';
 import { checkCdpEnv } from './cancel-stay-rules.mjs';
-
-export { withReadCliPage as withLeasedReadPage };
 
 const NAV_WATCH = ['Front Desk', 'Availability', 'Hotel Availability', 'Guest Stay', 'New Record'];
 
@@ -326,18 +323,14 @@ async function main(argv = process.argv.slice(2)) {
   if (hotelMismatch) throw new Error(hotelMismatch);
   const browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
   const context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
+  const page = await context.newPage();
+  page.setDefaultTimeout(20000);
+  page.on('dialog', (dialog) => { dialog.dismiss().catch(() => {}); });
   try {
-    await withReadCliPage({
-      propertyCode, secret, context, browser, env: process.env,
-    }, async ({ page: leased }) => {
-      leased.setDefaultTimeout?.(20000);
-      leased.on?.('dialog', (dialog) => { dialog.dismiss().catch(() => {}); });
-      const result = await runCreatePreflight({
-        context, page: leased, stay: loaded.request, propertyCode, profile, outDir: dir,
-      });
-      process.stdout.write(`${JSON.stringify({ blockers: result.blockerLabels, clickedSave: false })}\n`);
-      process.exitCode = preflightExitCode(result);
-    });
+    await login(page, secret);
+    const result = await runCreatePreflight({ context, page, stay: loaded.request, propertyCode, profile, outDir: dir });
+    process.stdout.write(`${JSON.stringify({ blockers: result.blockerLabels, clickedSave: false })}\n`);
+    process.exitCode = preflightExitCode(result);
   } catch (error) {
     const payload = {
       propertyCode,
