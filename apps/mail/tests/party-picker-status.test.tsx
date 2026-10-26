@@ -44,8 +44,20 @@ function partyFields(
 
   return (
     <>
-      <PartyPicker {...shared} autoLookup name="Example Agency" kind="agency" />
-      <PartyPicker {...shared} autoLookup name="Example Group" kind="company" />
+      <PartyPicker
+        {...shared}
+        autoLookup
+        jobReadBackStatusOwner
+        name="Example Agency"
+        kind="agency"
+      />
+      <PartyPicker
+        {...shared}
+        autoLookup
+        jobReadBackStatusOwner={agencySelected}
+        name="Example Group"
+        kind="company"
+      />
     </>
   );
 }

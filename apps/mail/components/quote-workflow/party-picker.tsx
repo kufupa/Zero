@@ -464,6 +464,7 @@ export function PartyPicker({
   sourceMessageId,
   propertyCode,
   autoLookup = false,
+  jobReadBackStatusOwner = true,
   onLookupPending,
 }: {
   /** The text to search for: this field's company or agency name. */
@@ -490,6 +491,8 @@ export function PartyPicker({
   propertyCode?: string | null;
   /** Search HMS by itself for this field's name and pick the best match. Needs a kind. Off, the field keeps Find in HMS. */
   autoLookup?: boolean;
+  /** Which adjacent field owns the shared read-back loading line. A standalone picker owns it by default. */
+  jobReadBackStatusOwner?: boolean;
   /** Told whether this field's automatic search still has to decide its pick. The pane holds a rates run until it does. */
   onLookupPending?: (pending: boolean) => void;
 }) {
@@ -543,7 +546,9 @@ export function PartyPicker({
     (query.length >= MANUAL_LOOKUP_MIN_CHARS || kind)
       ? {
           kind: 'party' as const,
-          ...(query && !(autoLookup && queueMode === 'on') ? { name: query } : {}),
+          ...(query && !(autoLookup && (queueMode === 'on' || kind === 'agency'))
+            ? { name: query }
+            : {}),
           ...(kind ? { partyKind: kind } : {}),
         }
       : null;
@@ -559,13 +564,16 @@ export function PartyPicker({
   });
   const viewRequest = partyJob.view?.request;
   const v2Prefetch = Boolean(partyJob.view?.prefetch && partyJobIsV2(partyJob.view));
+  const sharedPrefetchView = Boolean(
+    partyJob.view?.prefetch && viewRequest?.kind === 'party' && !viewRequest.partyKind,
+  );
   const sourceMatches =
-    !v2Prefetch ||
+    (!v2Prefetch && !sharedPrefetchView) ||
     sourceMessageId === undefined ||
     (sourceMessageId !== null && partyJob.view?.sourceMessageId === sourceMessageId);
   const currentJobView =
     sourceMatches && viewRequest?.kind === 'party' &&
-    (!query || v2Prefetch || sameJobName(viewRequest.name, query)) &&
+    (!query || v2Prefetch || sharedPrefetchView || sameJobName(viewRequest.name, query)) &&
     (!kind || viewRequest.partyKind === kind || (partyJob.view?.prefetch && !viewRequest.partyKind))
       ? partyJob.view
       : null;
@@ -851,18 +859,44 @@ export function PartyPicker({
     appliedSuggestionPick.current.add(key);
     onPick({ kind: candidate.kind, nativeId: candidate.nativeId, name: candidate.name });
   }, [autoBest, onPick, pickedHere, prefetchedBest, query, topSuggestion]);
-  const showAutoStatus =
-    Boolean(autoMemoKey) && !pickedHere && shown.status === 'idle';
   const jobFailureOutcome = jobReply?.outcome ?? 'execution_failure';
   const partySearchTimedOut = currentJobView?.failureClass === 'PARTY_SEARCH_TIMEOUT';
   const timeoutMessage = 'Party search timed out after four minutes. You can retry.';
   const jobName = currentJobView?.request?.kind === 'party' ? currentJobView.request.name : query;
-  const jobDisplayName = query || jobName;
+  const jobDisplayName = sharedPrefetch ? jobName : query || jobName;
   const partyType = jobStatusKind ? partyKindLabel(jobStatusKind).toLowerCase() : 'company or agency';
   const jobDetail = `Searching for the ${partyType} in HMS.`;
+  const jobStatusSurface = Boolean(
+    showJobStatus &&
+      (partyJob.queuing ||
+        partyJob.queueFailed ||
+        partyJob.statusFailed ||
+        (currentJobView && currentJobView.status !== 'done')),
+  );
   const jobReadBackPending = Boolean(
     jobTransport && jobResume && !partyJob.readBackSettled && !partyJob.statusFailed,
   );
+  const autoStatusHasLine = Boolean(
+    autoMemoKey &&
+      !pickedHere &&
+      shown.status === 'idle' &&
+      (!autoReply || (!autoBest && autoRows.length === 0)),
+  );
+  const showJobReadBackPending = Boolean(
+    jobReadBackStatusOwner &&
+      jobReadBackPending &&
+      !partyJob.queuing &&
+      !partyJob.queueFailed &&
+      !partyJob.statusFailed &&
+      !currentJobView &&
+      !autoStatusHasLine,
+  );
+  const showAutoStatus =
+    Boolean(autoMemoKey) &&
+    !pickedHere &&
+    shown.status === 'idle' &&
+    !jobStatusSurface &&
+    !showJobReadBackPending;
   const jobBusy = Boolean(
     partyJob.queuing || (jobResume && !partyJob.readBackSettled),
   );
@@ -1034,7 +1068,7 @@ export function PartyPicker({
             />
           )
         ) : null}
-        {jobReadBackPending ? <p role="status">Checking for a background HMS lookup…</p> : null}
+        {showJobReadBackPending ? <p role="status">Checking for a background HMS lookup…</p> : null}
         {jobTransport ? (
           <HmsJobStatusLine
             view={currentJobView}
@@ -1159,7 +1193,7 @@ export function PartyPicker({
           />
         )
       ) : null}
-      {jobReadBackPending ? <p role="status">Checking for a background HMS lookup…</p> : null}
+      {showJobReadBackPending ? <p role="status">Checking for a background HMS lookup…</p> : null}
       {jobTransport ? (
         <HmsJobStatusLine
           view={currentJobView}

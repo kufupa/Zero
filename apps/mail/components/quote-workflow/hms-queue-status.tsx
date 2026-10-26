@@ -90,7 +90,7 @@ export function HmsQueueStatusLine({
       </span>
       <span>{` · ${formatQueueElapsed(elapsed)} elapsed`}</span>
       <span>{` · ${queueLabel}`}</span>
-      {elapsed >= 30_000 ? <span>Still working — you can keep going</span> : null}
+      {elapsed >= 30_000 ? <span> · Still working — you can keep going</span> : null}
     </p>
   );
 }
