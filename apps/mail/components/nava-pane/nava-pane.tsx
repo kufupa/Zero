@@ -758,8 +758,11 @@ export function NavaPane({
       rememberPaneEdits(paneEditKey(after.binding.transportId, messageKey), after.groups);
     }
   };
-  // With a treat-as or note the read is live, so only Retry read (its count) re-runs it, not a stored-read change.
-  const storedGate = storedOverridden ? `override|${storedWork.retryCount}` : storedWork.key;
+  // Keep the lookup deadline separate from its payload: a late ready result changes the decision to stored, not to
+  // another live read. With a treat-as or note, only Retry read (its count) re-runs the live analysis.
+  const storedGate = storedOverridden
+    ? `override|${storedWork.retryCount}`
+    : `${storedWork.key}|timed-out:${storedWork.lookupTimedOut}`;
   useEffect(() => {
     if (isNonActionableMessage) return;
     const binding = quoteSession.binding;

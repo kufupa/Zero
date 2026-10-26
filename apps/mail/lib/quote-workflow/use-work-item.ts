@@ -23,7 +23,7 @@ import type { QuoteAnalysis, QuoteBoard, StayGroupRequirement } from './types';
 export const WORK_EVENT_DEBOUNCE_MS = 800;
 /** Wait before the one automatic re-send of a failed field event. */
 export const WORK_EVENT_RETRY_MS = 1500;
-/** A lookup slower than this reads live, so a slow lookup cannot hold the pane on its reading copy. */
+/** Start the live read after this deadline without discarding a ready stored result that arrives later. */
 export const STORED_LOOKUP_TIMEOUT_MS = 4000;
 const MAX_MS_SINCE_OPEN = 86_400_000;
 
@@ -65,7 +65,14 @@ export function storedDecision(pane: StoredPane, overridden: boolean): StoredDec
 }
 
 /** One mail's lookup, and the mailbox it was made in: edits to its work item are saved there. */
-type Lookup = { key: string; transportId: string | null; result: StoredWork | { status: 'unavailable' } };
+type LookupResult = StoredWork | { status: 'unavailable' };
+type Lookup = {
+  key: string;
+  transportId: string | null;
+  /** The stored payload can arrive after the deadline; it does not own the live-read timeout state. */
+  result: LookupResult | null;
+  timedOut: boolean;
+};
 type FieldSend = {
   workItemId: string;
   /** The mailbox that owns the work item. A save queued across a mailbox switch still goes there. */
@@ -356,17 +363,28 @@ export function useStoredWork(args: {
     if (!internetMessageId || !lookupKey || !canLookUp) return;
     let current = true;
     let settled = false;
+    let timedOut = false;
     // The lookup goes out under the active mailbox, so its work item lives there.
     const transportId = getMailCacheScope().activeTransportId;
-    const settle = (result: Lookup['result']) => {
+    const settle = (result: LookupResult) => {
       if (!current || settled) return;
+      // A timeout starts the live read. Only a late ready payload can supersede that fallback; a late miss or
+      // transport failure leaves the current live-read state alone and keeps Retry available there.
+      if (timedOut && result.status !== 'ready') {
+        settled = true;
+        return;
+      }
       settled = true;
       clearTimeout(timer);
       if (result.status === 'ready') readyAt.current = Date.now();
-      setLookup({ key: lookupKey, transportId, result });
+      setLookup({ key: lookupKey, transportId, result, timedOut });
     };
-    const timer = setTimeout(() => settle({ status: 'unavailable' }), STORED_LOOKUP_TIMEOUT_MS);
-    setLookup(null);
+    const timer = setTimeout(() => {
+      if (!current || settled) return;
+      timedOut = true;
+      setLookup({ key: lookupKey, transportId, result: null, timedOut: true });
+    }, STORED_LOOKUP_TIMEOUT_MS);
+    setLookup({ key: lookupKey, transportId, result: null, timedOut: false });
     const routes = workItemsFromTrpc(trpcRef.current);
     // The deadline covers the stored read. Once it is in, a slow open shows that read rather than reading live.
     void bindStoredWork({
@@ -385,12 +403,13 @@ export function useStoredWork(args: {
     };
   }, [internetMessageId, lookupKey, canLookUp, openMissingWorkItem, flushAll]);
 
-  const stored = lookup && lookup.key === lookupKey ? lookup.result : null;
+  const currentLookup = lookup && lookup.key === lookupKey ? lookup : null;
+  const stored = currentLookup?.result ?? null;
   const retried = retries.messageId === internetMessageId ? retries.count : 0;
   let pane: StoredPane;
   if (!internetMessageId || !canLookUp) pane = { state: 'reading' };
-  else if (!stored) pane = { state: 'loading' };
-  else if (stored.status === 'ready') {
+  else if (!currentLookup) pane = { state: 'loading' };
+  else if (stored?.status === 'ready') {
     pane = {
       state: 'ready',
       analysis: quoteAnalysisOf(stored.analysis),
@@ -403,9 +422,10 @@ export function useStoredWork(args: {
       language: stored.language,
       translation: stored.translation,
     };
-  } else if (stored.status === 'failed' && retried === 0) {
+  } else if (stored?.status === 'failed' && retried === 0) {
     pane = { state: 'failed', reason: stored.reason };
-  } else pane = { state: 'reading' };
+  } else if (currentLookup.timedOut || stored) pane = { state: 'reading' };
+  else pane = { state: 'loading' };
 
   // Changes when the stored read changes or a retry is asked for, so the pane's analysis effect re-runs on it.
   const key = [
@@ -418,7 +438,7 @@ export function useStoredWork(args: {
 
   const readyRefs = stored?.status === 'ready' ? stored.refs : null;
   const readyWorkItemId = stored?.status === 'ready' ? stored.workItemId : null;
-  const readyTransportId = lookup && lookup.key === lookupKey ? lookup.transportId : null;
+  const readyTransportId = currentLookup?.transportId ?? null;
 
   const retry = useCallback(() => {
     if (!internetMessageId) return;
@@ -444,7 +464,7 @@ export function useStoredWork(args: {
     (field: ContactField, value: string | null) => {
       // The stored read takes the edit at once, so the HMS notes agree with the Contact block before the save lands.
       setLookup((prev) =>
-        prev && prev.key === lookupKey && prev.result.status === 'ready'
+        prev && prev.key === lookupKey && prev.result?.status === 'ready'
           ? { ...prev, result: { ...prev.result, contact: { ...prev.result.contact, [field]: value } } }
           : prev,
       );
@@ -497,7 +517,7 @@ export function useStoredWork(args: {
       settle();
       if (result.status !== 'done') return;
       setLookup((prev) =>
-        prev && prev.result.status === 'ready' && prev.result.workItemId === workItemId
+        prev && prev.result?.status === 'ready' && prev.result.workItemId === workItemId
           ? { ...prev, result: { ...prev.result, translation: result.translation ?? null } }
           : prev,
       );
@@ -507,6 +527,8 @@ export function useStoredWork(args: {
   return {
     pane,
     key,
+    /** True when the stored lookup missed its deadline, independent of whether a ready payload later arrives. */
+    lookupTimedOut: currentLookup?.timedOut ?? false,
     /** The mailbox the shown read was looked up in, which owns its work item. Null while no read is shown. */
     transportId: readyWorkItemId ? readyTransportId : null,
     /** How many times the person asked to read this mail again. A live read with a treat-as re-runs on it. */
