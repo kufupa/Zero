@@ -65,11 +65,13 @@ describe('QuotePeopleStep', () => {
     });
     expect(within(contactBlock).getByText('Corrections save to this request only. HMS is not changed.')).toBeDefined();
 
-    const agencyPicker = within(people).getByLabelText('Agency from HMS') as HTMLSelectElement;
-    const companyPicker = within(people).getByLabelText('Company from HMS') as HTMLSelectElement;
-    expect(agencyPicker.options[agencyPicker.selectedIndex]?.title).toBe(agency.nativeId);
-    expect(companyPicker.options[companyPicker.selectedIndex]?.title).toBe(company.nativeId);
-    expect(agencyPicker.value).not.toBe(companyPicker.value);
+    const agencyPicker = within(people).getByLabelText('Agency from HMS');
+    const companyPicker = within(people).getByLabelText('Company from HMS');
+    const selectedAgency = within(agencyPicker).getByRole('option', { selected: true });
+    const selectedCompany = within(companyPicker).getByRole('option', { selected: true });
+    expect(selectedAgency.getAttribute('title')).toBe(agency.nativeId);
+    expect(selectedCompany.getAttribute('title')).toBe(company.nativeId);
+    expect(selectedAgency.getAttribute('title')).not.toBe(selectedCompany.getAttribute('title'));
 
     fireEvent.click(within(contactBlock).getByRole('button', { name: 'Edit' }));
     fireEvent.change(within(contactBlock).getByLabelText('Email'), {
@@ -78,7 +80,7 @@ describe('QuotePeopleStep', () => {
 
     expect(onContactEdit).toHaveBeenLastCalledWith('email', 'updated@example.invalid');
     expect(onPatchStaffHeader).not.toHaveBeenCalled();
-    expect(agencyPicker.options[agencyPicker.selectedIndex]?.title).toBe(agency.nativeId);
-    expect(companyPicker.options[companyPicker.selectedIndex]?.title).toBe(company.nativeId);
+    expect(selectedAgency.getAttribute('title')).toBe(agency.nativeId);
+    expect(selectedCompany.getAttribute('title')).toBe(company.nativeId);
   });
 });
