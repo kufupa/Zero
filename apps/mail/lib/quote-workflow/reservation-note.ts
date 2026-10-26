@@ -166,7 +166,8 @@ export function formatReservationNote(input: ReservationNoteInput): string | nul
     `Rate: ${selection.rateCode} — ${rateName}, ${boardName}`,
   ];
   if (chargedRate.source === 'saved') {
-    lines.push(`Price source: Saved rate — ${chargedRate.customRateName?.trim() || input.rowPrice?.name.trim()}`);
+    const savedName = input.rowPrice?.source === 'saved' ? input.rowPrice.name.trim() : '';
+    lines.push(`Price source: Saved rate — ${chargedRate.customRateName?.trim() || savedName}`);
   } else if (chargedRate.source === 'one_off') {
     lines.push('Price source: One-off rate');
   } else if (chargedRate.source === 'override') {
