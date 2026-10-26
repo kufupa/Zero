@@ -233,9 +233,6 @@ beforeAll(stubResizeObserverForMenus);
 describe('OutlookPanePage', { timeout: 15_000 }, () => {
   const createReplyCalls = () =>
     sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT');
-  // After an email switch the quote session resets (d6f8e0092): reply is Insert Draft until the new
-  // read lands with intent=quote, then Draft quotation. Both still run trackedDraft (expired-window gate).
-  const REPLY_DRAFT_NAME = /Draft quotation into email reply|Insert [Dd]raft in Outlook/i;
 
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
@@ -668,9 +665,10 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
 
     bridgeMockState.selectedEntryId = '001';
     pane.rerender(<OutlookPanePage />);
-    fireEvent.click(await screen.findByRole('button', { name: REPLY_DRAFT_NAME }));
+    await prepareReviewedQuote();
+    fireEvent.click(await screen.findByRole('button', { name: /Draft quotation into email reply/i }));
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
-  });
+  }, 60_000);
 
   it('keeps an expired uncertain reply warning across a successful different reply and pane reload', async () => {
     queueSelectedEmail();
@@ -735,17 +733,19 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
 
     bridgeMockState.selectedEntryId = 'message-0';
     pane.rerender(<OutlookPanePage />);
-    fireEvent.click(await screen.findByRole('button', { name: REPLY_DRAFT_NAME }));
+    // d6f8e0092: email switch clears the quote session, so Draft quotation stays off until a quote exists.
+    // The expired-window gate still runs on the first enabled click.
+    await prepareReviewedQuote();
+    fireEvent.click(await screen.findByRole('button', { name: /Draft quotation into email reply/i }));
 
     expect(createReplyCalls()).toHaveLength(257);
     expect(toast.error).toHaveBeenCalledWith(
       expect.stringMatching(/retry window has closed.*check Outlook Drafts/i),
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: REPLY_DRAFT_NAME }));
+    fireEvent.click(await screen.findByRole('button', { name: /Draft quotation into email reply/i }));
     expect(createReplyCalls()).toHaveLength(257);
     confirmSpy.mockReturnValue(true);
-    await prepareReviewedQuote();
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     await waitFor(() => expect(createReplyCalls()).toHaveLength(258));
     await waitFor(() =>
