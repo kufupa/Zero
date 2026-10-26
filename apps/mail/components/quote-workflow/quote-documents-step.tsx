@@ -32,7 +32,7 @@ export function QuoteDocumentsStep({
   replyContent?: ReactNode;
 }) {
   return (
-    <Section step={5} title="Documents" id="quote-quote" action={<StepState state={quoteState} />}>
+    <Section step={4} title="Documents" id="quote-quote" action={<StepState state={quoteState} />}>
       <p className="text-[12px] font-semibold text-[#64748b]">Reply text · PDF · Excel</p>
       {showReply ? (
         <DocumentReview
