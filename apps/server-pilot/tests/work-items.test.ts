@@ -30,6 +30,8 @@ import {
   withStayCommit,
   storedTranslation,
   storedWorkFor,
+  undoWorkItemRevision,
+  redoWorkItemRevision,
   validFieldValue,
   workItemIdForMail,
 } from '../src/ai/work-items.js';
@@ -4251,5 +4253,97 @@ describe('saved stay picks for later amend/cancel', () => {
         status: 'booked',
         screenshotRef: shot,
       });
+    }));
+});
+
+describe('pane revision undo/redo', () => {
+  it('undo then redo restores values and appends two events', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'rev-undo-1');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const work = await readyWork(db, 'rev-undo-1');
+      const booked = {
+        confirmationNumber: '46184891-1',
+        status: 'booked' as const,
+        screenshotRef: { runId: '11111111-2222-3333-4444-555555555555', name: 'saved.png' },
+      };
+      await recordStayCommit(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        stayId: STAY_ONE,
+        record: booked,
+      });
+      const path = `stays[${STAY_ONE}].requested.arrival`;
+      await recordFieldEvent(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        type: 'field.edit',
+        fieldPath: path,
+        value: '2027-10-25',
+      });
+      const before = await eventsFor(db, work.workItemId);
+      const edit = before.find((event) => event.type === 'field.edit');
+      expect(edit).toMatchObject({ type: 'field.edit', value: '2027-10-25' });
+
+      const snapshot = { digest: 'lab', readAt: '2027-01-01T00:00:00.000Z' };
+      const [row] = await db
+        .select({ state: workItem.state })
+        .from(workItem)
+        .where(eq(workItem.id, work.workItemId))
+        .limit(1);
+      await db
+        .update(workItem)
+        .set({ state: { ...row!.state, hmsSnapshot: snapshot } })
+        .where(eq(workItem.id, work.workItemId));
+
+      const undone = await undoWorkItemRevision(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        expectedSeq: 1,
+      });
+      expect(undone).toMatchObject({ status: 'applied', revision: 0, revisionHead: 1, seq: 2 });
+      const afterUndo = await readyWork(db, 'rev-undo-1');
+      expect(afterUndo.analysis.groups[0]!.arrivalDate).toBe('2027-10-26');
+      expect(afterUndo.stays[STAY_ONE]).toEqual(booked);
+      expect(
+        (
+          await db
+            .select({ state: workItem.state })
+            .from(workItem)
+            .where(eq(workItem.id, work.workItemId))
+            .limit(1)
+        )[0]?.state.hmsSnapshot,
+      ).toEqual(snapshot);
+
+      const redone = await redoWorkItemRevision(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        expectedSeq: 2,
+      });
+      expect(redone).toMatchObject({ status: 'applied', revision: 1, revisionHead: 1, seq: 3 });
+      const afterRedo = await readyWork(db, 'rev-undo-1');
+      expect(afterRedo.analysis.groups[0]!.arrivalDate).toBe('2027-10-25');
+      expect(afterRedo.stays[STAY_ONE]).toEqual(booked);
+
+      const events = await eventsFor(db, work.workItemId);
+      expect(events.filter((event) => event.type === 'history.undo')).toHaveLength(1);
+      expect(events.filter((event) => event.type === 'history.redo')).toHaveLength(1);
+      expect(events.find((event) => event.id === edit!.id)).toMatchObject({
+        type: 'field.edit',
+        value: '2027-10-25',
+        fieldPath: path,
+      });
+
+      const stale = await undoWorkItemRevision(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        expectedSeq: 0,
+      });
+      expect(stale).toMatchObject({ status: 'stale', revision: 1, revisionHead: 1, seq: 3 });
+      expect(await eventsFor(db, work.workItemId)).toHaveLength(events.length);
     }));
 });

@@ -67,6 +67,7 @@ import {
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
+import { advancePaneRevision } from './work-item-revision.js';
 
 /**
  * Work items for the Nava pane (U4). One work item is one person's job on one mail. Its `state` holds only the field
@@ -1795,7 +1796,13 @@ export async function recordFieldEvent(
   if (input.type !== 'field.accept' && !fits) return { status: 'invalid_value' };
   return db.transaction(async (tx) => {
     const [item] = await tx
-      .select({ extractionId: workItem.extractionId, state: workItem.state })
+      .select({
+        extractionId: workItem.extractionId,
+        state: workItem.state,
+        revision: workItem.revision,
+        revisionHead: workItem.revisionHead,
+        revisionSeq: workItem.revisionSeq,
+      })
       .from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
       .limit(1)
@@ -1813,6 +1820,16 @@ export async function recordFieldEvent(
       input.fieldPath,
     );
     const value = input.type === 'field.accept' ? aiValue : personValue;
+    // state holds only a person's values. An accept clears the path, so the AI value shows as the extraction.
+    const state = { ...item.state };
+    if (input.type === 'field.accept') delete state[input.fieldPath];
+    else state[input.fieldPath] = value;
+    const advanced = advancePaneRevision({
+      revision: item.revision,
+      revisionHead: item.revisionHead,
+      previousState: item.state,
+      nextState: state,
+    });
     await tx.insert(workEvent).values({
       workItemId: input.workItemId,
       actorKind: 'user',
@@ -1823,12 +1840,18 @@ export async function recordFieldEvent(
       value,
       aiSource: read?.version ?? null,
       msSinceOpen: input.msSinceOpen ?? null,
+      evidence: advanced.evidence,
     });
-    // state holds only a person's values. An accept clears the path, so the AI value shows as the extraction.
-    const state = { ...item.state };
-    if (input.type === 'field.accept') delete state[input.fieldPath];
-    else state[input.fieldPath] = value;
-    await tx.update(workItem).set({ state, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
+    await tx
+      .update(workItem)
+      .set({
+        state,
+        revision: advanced.revision,
+        revisionHead: advanced.revisionHead,
+        revisionSeq: item.revisionSeq + 1,
+        updatedAt: new Date(),
+      })
+      .where(eq(workItem.id, input.workItemId));
     return { status: 'recorded' as const, aiValue, value };
   });
 }
@@ -2193,3 +2216,10 @@ export async function resetWorkSection(
     return { status: 'recorded' as const, reset: resets.length };
   });
 }
+
+export {
+  advancePaneRevision,
+  loadPaneRevisionCursor,
+  redoWorkItemRevision,
+  undoWorkItemRevision,
+} from './work-item-revision.js';
