@@ -1645,6 +1645,36 @@ describe('needs-you list', () => {
       expect(rows[0]!.receivedAt?.toISOString()).toBe('2026-10-05T09:00:00.000Z');
     }));
 
+  it('returns Outlook EntryID and canonical source ID separately; missing locator is null', () =>
+    withDb(async (db) => {
+      const outlookItemId = await openItem(db, 'outlook-source', '2026-10-05T09:00:00Z');
+      const legacyItemId = await openItem(db, 'legacy-source', '2026-10-04T09:00:00Z');
+      const exactEntryId = 'outlook-entry-id-exact';
+      await db
+        .update(message)
+        .set({ sourceProvenance: { evidence: { locator: { entryId: exactEntryId } } } })
+        .where(eq(message.id, 'msg-outlook-source'));
+      await db
+        .update(message)
+        .set({ sourceProvenance: { deliveredAt: '2026-10-04T09:00:00.000Z' } })
+        .where(eq(message.id, 'msg-legacy-source'));
+
+      const rows = await openList(db);
+      const outlook = rows.find((row) => row.id === outlookItemId);
+      const legacy = rows.find((row) => row.id === legacyItemId);
+
+      expect(outlook).toMatchObject({
+        sourceMessageId: 'msg-outlook-source',
+        outlookEntryId: exactEntryId,
+      });
+      expect(outlook?.sourceMessageId).not.toBe(outlook?.outlookEntryId);
+      expect(outlook).not.toHaveProperty('sourceProvenance');
+      expect(legacy).toMatchObject({
+        sourceMessageId: 'msg-legacy-source',
+        outlookEntryId: null,
+      });
+    }));
+
   it('filters the Needs-you route by source-mail received time, inclusively, when the pilot cutoff is set', () =>
     withDb(async (db) => {
       const before = await openItem(db, 'nys-before', '2026-10-07T23:59:59.999Z');
