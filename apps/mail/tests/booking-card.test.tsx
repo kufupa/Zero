@@ -1030,6 +1030,7 @@ describe('booking card pane save', () => {
       roomType: 'STQN',
       ratePlan: 'TAXYZ',
       track: 'COR',
+      guestoptin4: false,
       guaranteeType: 'Confirmation Received',
       bookingAgency: { name: 'XYZ TRAVEL' },
     });
