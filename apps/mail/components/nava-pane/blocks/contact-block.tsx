@@ -21,11 +21,14 @@ export function ContactBlock({
   contact,
   senderFallback,
   quote = true,
+  embedded = false,
   onEdit,
 }: {
   contact: StoredContact | null;
   /** Only a quote prints this contact on a PDF; other mail types show it as the plain contact. */
   quote?: boolean;
+  /** Keeps an existing card boundary when this editor is part of a larger workflow card. */
+  embedded?: boolean;
   senderFallback?: Pick<StoredContact, 'name' | 'email'> | null;
   onEdit: (field: ContactField, value: string | null) => void;
 }) {
@@ -36,12 +39,10 @@ export function ContactBlock({
     email: contact?.email ?? senderFallback?.email ?? null,
   }));
   const [correcting, setCorrecting] = useState(false);
+  const title = quote ? 'Quote contact — printed on the PDF' : 'Contact';
 
-  return (
-    <Section
-      title={quote ? 'Quote contact — printed on the PDF' : 'Contact'}
-      id="quote-contact"
-    >
+  const content = (
+    <>
       <dl className="grid grid-cols-2 gap-x-2.5 gap-y-2">
         {FIELDS.map(({ field, label, pii }) => {
           const value = values[field]?.trim() ?? '';
@@ -86,6 +87,17 @@ export function ContactBlock({
           ))}
         </div>
       ) : null}
+    </>
+  );
+
+  return embedded ? (
+    <div id="quote-contact" role="group" aria-label={title} className="flex flex-col gap-3.5">
+      <h4 className="text-[12px] font-semibold text-[#475569]">{title}</h4>
+      <div className="flex flex-col gap-3.5">{content}</div>
+    </div>
+  ) : (
+    <Section title={title} id="quote-contact">
+      {content}
     </Section>
   );
 }

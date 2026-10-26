@@ -53,7 +53,7 @@ import {
   StepState,
 } from '@/components/nava-pane/pane-ui';
 import { BOARD_LABELS } from './booking-card';
-import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
+import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { pdfBlockReason } from './document-review';
 import { QuoteBookingHost } from './quote-booking-host';
@@ -260,7 +260,7 @@ function OfferCard({
   );
 }
 
-function hideQuoteWorkspace(phase: QuoteSession['phase']): boolean {
+export function hideQuoteWorkspace(phase: QuoteSession['phase']): boolean {
   return (
     phase === 'idle' ||
     phase === 'unsynced' ||
@@ -484,6 +484,8 @@ export function QuoteWorkflowPanel({
   rateCatalogue,
   paneConfig,
   contact,
+  contactEditorKey,
+  onContactEdit,
   makeQuote = true,
 }: {
   session: QuoteSession;
@@ -491,6 +493,10 @@ export function QuoteWorkflowPanel({
   paneSave?: PaneStayClient | null;
   /** The stored read's contact (booker and company) for the HMS notes. Null while the mail has no stored read. */
   contact?: StoredContact | null;
+  /** Key keeps Contact corrections scoped to the selected request/work item. */
+  contactEditorKey?: string;
+  /** Saves PDF contact corrections to this request, not an HMS party profile. */
+  onContactEdit?: (field: ContactField, value: string | null) => void;
   partySuggestions?: PartySuggestion[];
   /** The HMS list searched while staff type. Null or absent leaves only the live search. */
   partyIndex?: PartyIndexSearcher | null;
@@ -987,7 +993,7 @@ export function QuoteWorkflowPanel({
   )[0]?.item;
   const currentAction: CurrentQuoteAction = firstMissingAnswer
     ? missingQuestionPriority(firstMissingAnswer.field) === 0
-      ? { kind: 'scroll', targetId: 'quote-party', label: 'Review agency & company' }
+      ? { kind: 'scroll', targetId: 'quote-party', label: 'Review people' }
       : missingQuestionPriority(firstMissingAnswer.field) === 1
         ? { kind: 'scroll', targetId: 'quote-rates', label: 'Choose rate plan' }
         : missingQuestionPriority(firstMissingAnswer.field) === 2
@@ -1071,6 +1077,9 @@ export function QuoteWorkflowPanel({
           partySuggestions={partySuggestions}
           partyIndex={partyIndex}
           partyJobTransport={partyJobTransport}
+          contact={contact}
+          contactEditorKey={contactEditorKey}
+          onContactEdit={onContactEdit}
           onPartyLookupPending={onPartyLookupPending}
           scrollToStep={scrollToStep}
         />

@@ -60,7 +60,7 @@ describe('QuotePeopleStep', () => {
     render(<QuotePeopleStep {...props} />);
 
     const people = screen.getByRole('region', { name: 'People' });
-    const contactBlock = within(people).getByRole('region', {
+    const contactBlock = within(people).getByRole('group', {
       name: 'Quote contact — printed on the PDF',
     });
     expect(within(contactBlock).getByText('Corrections save to this request only. HMS is not changed.')).toBeDefined();

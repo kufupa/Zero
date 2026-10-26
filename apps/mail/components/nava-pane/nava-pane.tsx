@@ -23,7 +23,7 @@ import {
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
-import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { hideQuoteWorkspace, QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { WorkflowBadge } from '@/components/quote-workflow/workflow-badge';
 import {
   HmsJobNoticeBanner,
@@ -611,6 +611,12 @@ export function NavaPane({
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
   const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
+  const contactEditorKey = `${contactCorrectionKey}|${
+    storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state
+  }`;
+  const contactInPeople =
+    (readAs === 'quote' || readAs === 'group') &&
+    !hideQuoteWorkspace(quoteSession.phase);
   const senderFallback =
     storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
   const sourceContact: StoredContact | null =
@@ -2197,12 +2203,12 @@ export function NavaPane({
               </div>
             ) : (
               <>
-            {/* Contact is the first selected-message context. Extraction values win; only an external sender can fill its early fallback. */}
-            {activeEmail ? (
+            {/* Quote contact lives in People when that step is visible; other mail and hidden workspaces keep this pane fallback. */}
+            {activeEmail && !contactInPeople ? (
               <ContactBlock
                 // ContactBlock takes `contact` once, at mount. The key moves when the read or mailbox changes, so the
                 // current request's contact fills the fields without carrying a correction across mailboxes.
-                key={`${contactCorrectionKey}|${storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state}`}
+                key={contactEditorKey}
                 contact={documentContact}
                 quote={readAs === 'quote' || readAs === 'group'}
                 onEdit={recordContact}
@@ -2236,6 +2242,8 @@ export function NavaPane({
               paneConfig={activePaneConfig}
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={documentContact}
+              contactEditorKey={contactEditorKey}
+              onContactEdit={recordContact}
               findParty={PANE_PARTY_FINDER}
               partySuggestions={partySuggestions}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}
