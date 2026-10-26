@@ -142,15 +142,40 @@ function StayAvailabilityPanel({
     [requestKey],
   );
   const transportMatches = Boolean(paneConfig && session.binding?.transportId === paneConfig.transportId);
-  const canRead = Boolean(reader && request && paneConfig && paneConfig.roomTypes.length && transportMatches);
-  const key = JSON.stringify([stay.id, paneConfig?.transportId, paneConfig?.propertyCode, request]);
+  // Room preference is editable when staff pick an available option; it must not detach the
+  // all-room snapshot from the same Stay. Dates and occupancy still invalidate that snapshot.
+  const key = JSON.stringify([
+    stay.id,
+    threadId ?? null,
+    paneConfig?.transportId ?? null,
+    paneConfig?.propertyCode ?? null,
+    request !== null,
+    stay.rows.map(({ id, arrivalDate, departureDate, quantity, adults, childrenAges }) => [
+      id,
+      arrivalDate ?? null,
+      departureDate ?? null,
+      quantity ?? null,
+      adults ?? null,
+      childrenAges ?? null,
+    ]),
+  ]);
+  const [boundRequest, setBoundRequest] = useState<{ key: string; request: PaneStayAvailabilityRequest | null }>(
+    () => ({ key, request }),
+  );
+  const stayRequest = boundRequest.key === key ? boundRequest.request : request;
+  const canRead = Boolean(reader && stayRequest && paneConfig && paneConfig.roomTypes.length && transportMatches);
   const [load, setLoad] = useState<{ key: string; view: PaneStayAvailabilityJobView | null } | null>(null);
 
   useEffect(() => {
-    if (!canRead || !reader || !request) return;
+    if (boundRequest.key === key) return;
+    setBoundRequest({ key, request });
+  }, [boundRequest.key, key, request]);
+
+  useEffect(() => {
+    if (!canRead || !reader || !stayRequest) return;
     let active = true;
     setLoad(null);
-    void reader(request)
+    void reader(stayRequest)
       .then((view) => {
         if (active) setLoad({ key, view });
       })
@@ -158,13 +183,13 @@ function StayAvailabilityPanel({
         if (active) setLoad({ key, view: null });
       });
     return () => { active = false; };
-  }, [canRead, key, reader, request]);
+  }, [canRead, key, reader, stayRequest]);
 
   if (paneConfig === undefined) return null;
   if (paneConfig === null || !transportMatches || !paneConfig.roomTypes.length) {
     return <p className="text-[12px] text-[#64748b]">Availability room options are unavailable for this property.</p>;
   }
-  if (!request || !reader) {
+  if (!stayRequest || !reader) {
     return <p className="text-[12px] text-[#64748b]">No admitted availability snapshot for this stay. Continue with manual room selection.</p>;
   }
   const current = load?.key === key ? load.view : undefined;
