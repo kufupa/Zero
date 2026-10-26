@@ -140,8 +140,12 @@ export function formatReservationNote(input: ReservationNoteInput): string | nul
   ) return null;
   if (
     !validMinorList(chargedRate.hmsNightlyMinor, nights) ||
-    !validMinorList(chargedRate.nightlyMinor, nights) ||
-    chargedRate.hmsNightlyMinor.some((amount) => amount !== availability.nightlyPriceMinor)
+    !validMinorList(chargedRate.nightlyMinor, nights)
+  ) return null;
+  const hmsTotalMinor = chargedRate.hmsNightlyMinor.reduce((sum, amount) => sum + amount, 0);
+  if (
+    !Number.isSafeInteger(hmsTotalMinor) ||
+    Math.round(hmsTotalMinor / nights) !== availability.nightlyPriceMinor
   ) return null;
   if (input.rowPrice) {
     if (chargedRate.source !== input.rowPrice.source) return null;
@@ -187,6 +191,13 @@ export function formatReservationNote(input: ReservationNoteInput): string | nul
   return note.length <= PANE_RESERVATION_NOTE_MAX ? note : null;
 }
 
+function selectedRateForGroup(group: StayGroupRequirement): QuoteRoomRateBoardSelection | null {
+  const roomCode = group.roomCodes?.length === 1 ? group.roomCodes[0]?.trim() : '';
+  const rateCode = group.rateCode?.trim();
+  if (!roomCode || !rateCode || group.board === 'unknown') return null;
+  return { roomCode, rateCode, board: group.board };
+}
+
 /** Build from this group's current run only; a missing or stale value leaves the existing manual note path intact. */
 export function reservationNoteForGroup(
   session: QuoteSession,
@@ -197,7 +208,7 @@ export function reservationNoteForGroup(
   if (!group) return null;
   const stayKey = stayKeyForGroup(group);
   const run = currentStayRun(session, stayKey);
-  const selection = session.roomRateBoardSelections?.[groupId];
+  const selection = selectedRateForGroup(group);
   if (!run || !selection || staffHeaderFieldProblem(session.staffHeader, stayKey)) return null;
   const matches = (row: { groupId: string; roomCode: string; rateCode: string; board: string }) =>
     row.groupId === groupId &&

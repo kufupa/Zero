@@ -28,6 +28,8 @@ const stay: StayGroupRequirement = {
   adults: 2,
   childrenAges: [],
   roomPreference: 'STWN',
+  roomCodes: ['STWN'],
+  rateCode: 'NCOR1B',
   board: 'bb',
   specialRequests: [],
   fields: {},
@@ -40,15 +42,15 @@ const boardRow: AvailabilityBoardRow = {
   rateLabel: 'Corporate negotiated',
   board: 'bb',
   boardLabel: 'Bed & breakfast',
-  nightlyPriceMinor: 215000,
+  nightlyPriceMinor: 220000,
   roomsLeft: 2,
   rateScope: 'public',
 };
 const rowRate: StaffRowRate = {
   groupId: 'g1',
   source: 'hms',
-  hmsNightlyMinor: [215000, 215000],
-  nightlyMinor: [215000, 215000],
+  hmsNightlyMinor: [215000, 225000],
+  nightlyMinor: [215000, 225000],
   rateCode: 'NCOR1B',
 };
 const ready: ExecuteStaffQuoteResult = {
@@ -61,7 +63,7 @@ const ready: ExecuteStaffQuoteResult = {
   selectionEpoch: 1,
   inputRevision: 1,
   inputDigest: 'digest',
-  totalMinor: 860000,
+  totalMinor: 880000,
   currency: 'ZAR',
   arrivalDate: '2026-11-12',
   departureDate: '2026-11-14',
@@ -75,6 +77,11 @@ async function currentSession() {
     analysis: { intent: 'quote', groups: [stay], secondaryAsks: [], alternatives: [] },
   });
   session = reduceQuoteSession(session, { type: 'staff_source_ready', source });
+  session = reduceQuoteSession(session, {
+    type: 'patch_group',
+    groupId: 'g1',
+    patch: { roomCodes: ['STWN'], rateCode: 'NCOR1B', board: 'bb' },
+  });
   const stayKey = '2026-11-12:2026-11-14';
   session = reduceQuoteSession(session, {
     type: 'patch_staff_stay_extras',
@@ -114,11 +121,7 @@ async function currentSession() {
     inputRevision: session.inputRevision,
     approvedHeader: session.staffHeader,
   });
-  return reduceQuoteSession(session, {
-    type: 'room_rate_board_selected',
-    groupId: 'g1',
-    selection: { roomCode: 'STWN', rateCode: 'NCOR1B', board: 'bb' },
-  });
+  return session;
 }
 
 describe('reservation note', () => {
@@ -126,6 +129,7 @@ describe('reservation note', () => {
     const session = await currentSession();
     const note = reservationNoteForGroup(session, HRDAV_PROPERTY_CODE, 'g1');
     expect(reservationNoteForGroup(session, HRCEN_PROPERTY_CODE, 'g1')).toBe(note);
+    expect(session.roomRateBoardSelections?.g1).toBeUndefined();
 
     expect(note).toContain('Standard Twin');
     expect(note).toContain('STWN');
@@ -133,6 +137,7 @@ describe('reservation note', () => {
     expect(note).toContain('Corporate negotiated');
     expect(note).toContain('Bed & breakfast');
     expect(note).toContain('ZAR 2150.00');
+    expect(note).toContain('ZAR 2250.00');
     expect(note).toContain('Shuttle');
     expect(note).toContain('ZAR 125.00');
     expect(note).toContain('2 trips');
