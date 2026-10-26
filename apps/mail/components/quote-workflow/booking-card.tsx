@@ -730,6 +730,7 @@ export function BookingCards({
     () => readSelectedGuestName(guestEditorKey, guestName),
   );
   const guestSplit = splitStayingGuestName(selectedGuestName);
+  const previousSelectedGuestName = useRef(selectedGuestName);
   const guestNamesEdited = useRef<Record<string, boolean>>({});
   const [choices, setChoices] = useState<Record<string, RoomChoice>>(
     () =>
@@ -772,6 +773,8 @@ export function BookingCards({
     stayBookingRef.current = false;
   }, []);
   useEffect(() => {
+    const selectedGuestChanged = previousSelectedGuestName.current !== selectedGuestName;
+    previousSelectedGuestName.current = selectedGuestName;
     setChoices((current) => {
       let changed = false;
       const next = { ...current };
@@ -787,13 +790,31 @@ export function BookingCards({
               lastName: textValue(room.request.lastName),
             }
           : { firstName: guestSplit.firstName, lastName: guestSplit.lastName };
-        if (choice.firstName === names.firstName && choice.lastName === names.lastName) continue;
-        next[key] = { ...choice, firstName: names.firstName, lastName: names.lastName };
+        if (
+          choice.firstName === names.firstName &&
+          choice.lastName === names.lastName &&
+          !selectedGuestChanged
+        ) continue;
+        next[key] = {
+          ...choice,
+          firstName: names.firstName,
+          lastName: names.lastName,
+          // Consent is guest-specific; a People change needs a fresh explicit opt-in.
+          guestoptin4: false,
+        };
         changed = true;
       }
       return changed ? next : current;
     });
-  }, [draft.draft.rooms, guestSplit.ambiguous, guestSplit.firstName, guestSplit.lastName, saves, stayBooking]);
+  }, [
+    draft.draft.rooms,
+    guestSplit.ambiguous,
+    guestSplit.firstName,
+    guestSplit.lastName,
+    saves,
+    selectedGuestName,
+    stayBooking,
+  ]);
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const requested = textValue(room.request.roomType);
@@ -948,10 +969,20 @@ export function BookingCards({
         const key = roomKeyOf(room);
         const choice = choices[key] ?? NO_CHOICE;
         const setChoice = (patch: Partial<RoomChoice>) =>
-          setChoices((current) => ({
-            ...current,
-            [key]: { ...(current[key] ?? NO_CHOICE), ...patch },
-          }));
+          setChoices((current) => {
+            const currentChoice = current[key] ?? NO_CHOICE;
+            const guestChanged =
+              (patch.firstName !== undefined && patch.firstName !== currentChoice.firstName) ||
+              (patch.lastName !== undefined && patch.lastName !== currentChoice.lastName);
+            return {
+              ...current,
+              [key]: {
+                ...currentChoice,
+                ...patch,
+                ...(guestChanged ? { guestoptin4: false } : {}),
+              },
+            };
+          });
         // Once create is running or saved, freeze its create-only fields until staff checks the result.
         const commitStatus = saves[key]?.commit?.status;
         const locked = stayBooking || commitStatus === 'running' || commitStatus === 'booked';

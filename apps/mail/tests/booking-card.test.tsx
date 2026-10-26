@@ -685,6 +685,7 @@ describe('booking card staying-guest prefill', () => {
     draft.draft.rooms[0]!.request.firstName = 'Draft';
     draft.draft.rooms[0]!.request.lastName = 'Name';
     draft.draft.rooms[0]!.request.bookerName = 'Agent Booker';
+    const { client, preview } = paneClient();
     const session = {
       staffSource: null,
       groups: [],
@@ -706,11 +707,15 @@ describe('booking card staying-guest prefill', () => {
           contactEditorKey={guestEditorKey}
           scrollToStep={() => undefined}
         />
-        <BookingCards draft={draft} contact={contact} guestEditorKey={guestEditorKey} />
+        <BookingCards draft={draft} paneSave={client} contact={contact} guestEditorKey={guestEditorKey} />
       </>
     );
 
     const firstPass = render(view('guest-prefill-unambiguous'));
+    const guestOptIn = screen.getByRole('checkbox', { name: 'Guest opt-in' }) as HTMLInputElement;
+    expect(guestOptIn.checked).toBe(false);
+    fireEvent.click(guestOptIn);
+    expect(guestOptIn.checked).toBe(true);
     fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Ada Example' } });
     const firstName = screen.getByLabelText('First name') as HTMLInputElement;
     const lastName = screen.getByLabelText('Last name') as HTMLInputElement;
@@ -720,8 +725,17 @@ describe('booking card staying-guest prefill', () => {
     expect(lastName).toHaveProperty('disabled', false);
     expect(firstName.value).not.toBe('Agent');
     expect(lastName.value).not.toBe('Booker');
+    expect(guestOptIn.checked).toBe(false);
+    fireEvent.click(guestOptIn);
+    expect(guestOptIn.checked).toBe(true);
     fireEvent.change(firstName, { target: { value: 'Bea' } });
     expect(firstName.value).toBe('Bea');
+    expect(guestOptIn.checked).toBe(false);
+    pickRoomChoices(0);
+    fireEvent.click(previewButton(0));
+    await waitFor(() =>
+      expect(preview).toHaveBeenCalledWith(expect.objectContaining({ firstName: 'Bea', guestoptin4: false })),
+    );
     firstPass.unmount();
 
     resetGuestNameCacheForTests();
