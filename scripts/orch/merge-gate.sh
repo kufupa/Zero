@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-usage() { printf 'usage: %s <pr-number>\nChecks Greptile, unresolved P0/P1 threads, product-line cap, and /tmp/or2 gate record; then squash-merges.\n' "${0##*/}"; }
+usage() { printf 'usage: %s <pr-number>\nChecks Greptile, unresolved P0/P1 threads, product-line cap (PURE_MOVE=1 skips it), and /tmp/or2 gate record; then squash-merges.\n' "${0##*/}"; }
 if [[ ${1:-} == -h || ${1:-} == --help ]]; then usage; exit 0; fi
 blocked() { printf 'BLOCKED pr=%s reason=%s\n' "${pr:-unknown}" "$1"; exit 1; }
 pr=${1:-unknown}
@@ -48,15 +48,19 @@ product_lines=$(jq -sr '
     (.filename | test("(^|/)(tests?|fixtures?|__tests__|__fixtures__)(/|$)"; "i")) or
     (.filename | test("(^|/)(test|tests)[_-][^/]+\\.[^/]+$"; "i")) or
     (.filename | test("(^|/)[^/]+[-_]test\\.[^/]+$"; "i")) or
-    (.filename | test("\\.(test|spec)\\.[^.]+$"; "i"));
+    (.filename | test("\\.(test|spec)\\.[^.]+$"; "i")) or
+    (.filename | test("\\.md$"; "i"));
   [.[] | (if type == "array" then .[] else . end)
    | select(excluded | not) | (.additions + .deletions)] | add // 0
 ' <<<"$files_json" 2>/dev/null) || blocked invalid-changed-files
 [[ $product_lines =~ ^[0-9]+$ ]] || blocked invalid-product-line-count
-(( product_lines <= limit_num )) || blocked product-line-limit
+# PURE_MOVE=1: coordinator-verified file moves (split monoliths) skip the line cap only.
+[[ ${PURE_MOVE:-0} == 1 ]] || (( product_lines <= limit_num )) || blocked product-line-limit
 
 or2_root=${OR2_ROOT:-/tmp/or2}
-[[ -f "$or2_root/gates/$pr-$sha.ok" ]] || blocked gate-record-missing
+gate_dir="$or2_root/gates"; gate_file="$gate_dir/$pr-$sha.ok"
+[[ -d $gate_dir && ! -L $gate_dir && -O $gate_dir ]] || blocked gate-dir-untrusted
+[[ -f $gate_file && ! -L $gate_file && -O $gate_file ]] || blocked gate-record-missing
 if $gh_bin pr merge "$pr" --squash --match-head-commit "$sha" >/dev/null 2>&1; then
   printf 'PASS pr=%s head=%s product_lines=%s\n' "$pr" "$sha" "$product_lines"
 else

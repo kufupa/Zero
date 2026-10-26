@@ -68,6 +68,7 @@ collect() {
     done
     ((conflict == 0)) && startable+=("$i")
   done
+  return 0
 }
 write_status() {
   local id=$1 status=$2 tmp
@@ -75,6 +76,14 @@ write_status() {
   tmp=$(mktemp "$state_dir/.$id.status.XXXXXX") || return 1
   printf '%s\n' "$status" >"$tmp" && mv -f -- "$tmp" "$state_dir/$id.status" || { rm -f -- "$tmp"; return 1; }
 }
+if [[ $mode == launch ]]; then
+  # Serialize launch decisions so overlapping runs cannot pick the same unit.
+  command -v flock >/dev/null 2>&1 || { printf 'BLOCKED reason=flock-unavailable\n'; exit 1; }
+  [[ ! -L $root/dispatch.lock ]] || { printf 'BLOCKED reason=lock-symlink\n'; exit 1; }
+  exec {dispatch_fd}<>"$root/dispatch.lock"
+  flock "$dispatch_fd"
+  for i in "${!ids[@]}"; do [[ -f $state_dir/${ids[i]}.status ]] && statuses[i]=$(<"$state_dir/${ids[i]}.status"); done
+fi
 collect
 if [[ $mode == launch ]]; then
   if ((active_count < max && ${#startable[@]} > 0)) && [[ -z ${LAUNCH_CMD:-} ]]; then printf 'BLOCKED reason=launcher-not-configured\n'; exit 1; fi

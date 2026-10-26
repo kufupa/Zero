@@ -62,10 +62,20 @@ for scenario in pending threads over-limit; do
   out=$(run_gate 1 "$scenario" "$gate_root")
   [[ $out == BLOCKED* ]] && ! grep -q '^pr merge ' "$FAKE_GH_LOG"
 done
+: >"$FAKE_GH_LOG"
+out=$(GH="$fake" FAKE_GH_SCENARIO=over-limit OR2_ROOT="$gate_root" PURE_MOVE=1 "$script_dir/merge-gate.sh" 123)
+[[ $out == PASS* ]] || { printf 'FAIL: PURE_MOVE did not skip the line cap\n' >&2; exit 1; }
+rm -f -- "$gate_root/gates/123-$sha.ok"
+ln -s /dev/null "$gate_root/gates/123-$sha.ok"
+out=$(run_gate 1 success "$gate_root")
+[[ $out == BLOCKED* ]] || { printf 'FAIL: symlinked gate record passed\n' >&2; exit 1; }
 rm -f -- "$gate_root/gates/123-$sha.ok"
 out=$(run_gate 1 success "$gate_root")
 [[ $out == BLOCKED* ]] || { printf 'FAIL: missing gate record passed\n' >&2; exit 1; }
 
+mkdir -p "$tmp/lastrow"
+printf 'a\tmail\t-\tapps/x.ts\tluna\t/tmp/a.md\trunning\nb\tmail\t-\tapps/x.ts\tluna\t/tmp/b.md\tpending\n' >"$tmp/lastrow/units.tsv"
+out=$(OR2_ROOT="$tmp/lastrow" "$script_dir/dispatch.sh") || { printf 'FAIL: conflicting last row aborted dispatch\n' >&2; exit 1; }
 mkdir -p "$tmp/dispatch/state"
 printf 'base\tmail\t-\tapps/a.ts\tluna\t/tmp/base.md\tpending\nchild\tmail\tbase\tapps/c.ts\tluna\t/tmp/child.md\tpending\nlive\tmail\t-\tapps/l.ts\tluna\t/tmp/live.md\trunning\nconflict\tmail\t-\tapps/l.ts\tluna\t/tmp/conflict.md\tpending\ndifferent\tmail\t-\tapps/d.ts\tluna\t/tmp/different.md\tpending\n' >"$tmp/dispatch/units.tsv"
 if out=$(OR2_ROOT="$tmp/dispatch" "$script_dir/dispatch.sh" --idle-check 2>&1); then rc=0; else rc=$?; fi

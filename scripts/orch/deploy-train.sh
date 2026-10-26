@@ -19,7 +19,9 @@ command -v flock >/dev/null 2>&1 || { printf 'BLOCKED reason=flock-unavailable\n
 or2_root=${OR2_ROOT:-/tmp/or2}
 deploy_dir="$or2_root/deploy"
 mkdir -p "$deploy_dir"
-exec {lock_fd}>"$deploy_dir/lock"
+[[ ! -L $deploy_dir && -O $deploy_dir ]] || { printf 'BLOCKED reason=deploy-dir-untrusted\n'; exit 1; }
+[[ ! -L $deploy_dir/lock ]] || { printf 'BLOCKED reason=lock-symlink\n'; exit 1; }
+exec {lock_fd}<>"$deploy_dir/lock"
 flock -n "$lock_fd" || { printf 'SKIP reason=deploy-lock-held\n'; exit 0; }
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -69,18 +71,27 @@ run_once() {
   [[ $current == "$main_sha" ]] || { printf 'BLOCKED sha=%s reason=deploy-head-mismatch\n' "$main_sha"; return 1; }
   if output=$(cd "$tree" && bash apps/server-pilot/deploy/ops-deploy.sh 2>&1); then rc=0; else rc=$?; fi
   timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+  local attempt_log="$deploy_dir/attempt-${timestamp//:/}-${main_sha:0:12}.log"
+  printf '%s\n' "$output" >"$attempt_log" || true
   printf '%s\t%s\t%s\n' "$main_sha" "$timestamp" "$rc" >>"$log_file" || { printf 'BLOCKED sha=%s reason=log-write-failed\n' "$main_sha"; return 1; }
   local deploy_ok=0
   if ((rc == 0)); then deploy_ok=1
-  elif ((rc == 1)) && deadletter_only "$output"; then deploy_ok=1; fi
+  elif ((rc == 1)) && deadletter_only "$output"; then
+    # ops-deploy exits at readiness before its VPN assert and last-good marker; run the VPN assert here.
+    if (cd "$tree" && bash apps/server-pilot/deploy/ssm-run-command.sh 'bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/vpn-health-assert.sh') >>"$attempt_log" 2>&1; then
+      deploy_ok=1; printf 'NOTE sha=%s reason=deadletter-gate vpn=ok marker=not-recorded\n' "$main_sha"
+    else
+      printf 'FAILED sha=%s reason=vpn-assert-after-deadletter log=%s\n' "$main_sha" "$attempt_log"; return 1
+    fi
+  fi
   if ((deploy_ok)); then
     tmp=$(mktemp "$deploy_dir/.last-sha.XXXXXX") || { printf 'BLOCKED sha=%s reason=state-write-failed\n' "$main_sha"; return 1; }
     printf '%s\n' "$main_sha" >"$tmp" && mv -f -- "$tmp" "$last_file" || { rm -f -- "$tmp"; printf 'BLOCKED sha=%s reason=state-write-failed\n' "$main_sha"; return 1; }
     last_sha=$main_sha
-    printf 'DEPLOYED sha=%s rc=%s\n' "$main_sha" "$rc"
+    printf 'DEPLOYED sha=%s rc=%s log=%s\n' "$main_sha" "$rc" "$attempt_log"
     return 0
   fi
-  printf 'FAILED sha=%s rc=%s\n' "$main_sha" "$rc"
+  printf 'FAILED sha=%s rc=%s log=%s\n' "$main_sha" "$rc" "$attempt_log"
   return 1
 }
 
