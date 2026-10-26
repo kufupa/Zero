@@ -614,9 +614,6 @@ export function NavaPane({
   const contactEditorKey = `${contactCorrectionKey}|${
     storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state
   }`;
-  const contactInPeople =
-    (readAs === 'quote' || readAs === 'group') &&
-    !hideQuoteWorkspace(quoteSession.phase);
   const senderFallback =
     storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
   const sourceContact: StoredContact | null =
@@ -1363,6 +1360,9 @@ export function NavaPane({
   const readAs = isNonActionableMailSource
     ? (classifiedReadAs === 'payment' ? 'payment' : 'not_for_nava')
     : classifiedReadAs;
+  const contactInPeople =
+    (readAs === 'quote' || readAs === 'group') &&
+    !hideQuoteWorkspace(quoteSession.phase);
   const mailSourceNoActionNotice = nonActionableMailSource ? (
     <MailSourceNoActionCard
       kind={nonActionableMailSource.kind}
