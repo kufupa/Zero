@@ -5,11 +5,7 @@ import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
-import { parseStayProperty } from './property-profile.mjs';
-import { withReadCliPage } from './read-cli-lease.mjs';
-
-export { withReadCliPage as withLeasedReadPage };
+import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 
 const FIELD_NAMES = [
   'confirmationnumber',
@@ -301,13 +297,7 @@ async function writeCrosstab(dir, jsonlPath) {
 }
 
 async function main() {
-  const property = parseStayProperty(process.argv.slice(2));
-  if (!property.ok) {
-    process.stderr.write(`${property.error}\n`);
-    process.exitCode = property.exitCode ?? 2;
-    return;
-  }
-  const parsed = parseArgs(property.rest);
+  const parsed = parseArgs(process.argv.slice(2));
   if (!parsed.ok) {
     process.stderr.write(`${parsed.error}\n`);
     process.exitCode = 2;
@@ -332,40 +322,37 @@ async function main() {
     viewport: { width: 1600, height: 1000 },
   });
   await installReadOnlyGuard(context);
+  const page = await context.newPage();
+  page.setDefaultTimeout(20000);
   let reads = 0;
   let failures = 0;
   try {
-    await withReadCliPage({
-      propertyCode: property.propertyCode, secret, context, browser, env: process.env,
-    }, async ({ page: leased }) => {
-      leased.setDefaultTimeout?.(20000);
-      const page = leased;
-      const listSearch = page.waitForResponse(
-        (response) => response.request().method() === 'POST' && /OSRESS\.search/i.test(response.url()),
-        { timeout: 25000 },
-      ).catch(() => null);
-      await openGuestStayScreen(page);
-      await page.getByPlaceholder(/Search by Name, Confirmation/i).first().waitFor({ timeout: 20000 });
-      await listSearch;
-      await page.waitForTimeout(1500);
-      for (const confirmation of pending) {
-        let row;
-        try {
-          row = await Promise.race([
-            readOne(page, confirmation),
-            delay(PER_RESERVATION_MS).then(() => ({ confirmation, outcome: 'timeout' })),
-          ]);
-        } catch (error) {
-          row = { confirmation, outcome: 'execution_failure', error: String(error.message || error).slice(0, 180) };
-        }
-        if (row.outcome === 'read') reads += 1;
-        else failures += 1;
-        await appendFile(jsonlPath, `${JSON.stringify(row)}\n`, { mode: 0o600 });
-        process.stdout.write(`mined reads=${reads} other=${failures} remaining=${pending.length - reads - failures}\n`);
-        await returnToList(page).catch(() => {});
-        await delay(PAUSE_MS);
+    await login(page, secret);
+    const listSearch = page.waitForResponse(
+      (response) => response.request().method() === 'POST' && /OSRESS\.search/i.test(response.url()),
+      { timeout: 25000 },
+    ).catch(() => null);
+    await openGuestStayScreen(page);
+    await page.getByPlaceholder(/Search by Name, Confirmation/i).first().waitFor({ timeout: 20000 });
+    await listSearch;
+    await page.waitForTimeout(1500);
+    for (const confirmation of pending) {
+      let row;
+      try {
+        row = await Promise.race([
+          readOne(page, confirmation),
+          delay(PER_RESERVATION_MS).then(() => ({ confirmation, outcome: 'timeout' })),
+        ]);
+      } catch (error) {
+        row = { confirmation, outcome: 'execution_failure', error: String(error.message || error).slice(0, 180) };
       }
-    });
+      if (row.outcome === 'read') reads += 1;
+      else failures += 1;
+      await appendFile(jsonlPath, `${JSON.stringify(row)}\n`, { mode: 0o600 });
+      process.stdout.write(`mined reads=${reads} other=${failures} remaining=${pending.length - reads - failures}\n`);
+      await returnToList(page).catch(() => {});
+      await delay(PAUSE_MS);
+    }
   } finally {
     await writeCrosstab(dir, jsonlPath).catch(() => {});
     await context.close().catch(() => {});

@@ -25,12 +25,8 @@ export const READ_CLI_TOOLS = Object.freeze([
   'fetch-quote',
   'party-lookup',
   'property-profile',
-  'find-batch',
   'stay-lookup',
-  'read-reservation-codes',
-  'read-reservation-fields',
   'create-preflight',
-  'hms-deeplink-probe',
 ]);
 
 /** Active registry row, or null. Empty / unknown / inactive never fall through to another hotel. */

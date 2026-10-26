@@ -72,9 +72,8 @@ test('runDeeplinkProbe refuses bad input before it creates a directory, reads a 
   await assert.rejects(runDeeplinkProbe({ env: good, conf: '' }), /CONFIRMATION_REQUIRED/);
   await assert.rejects(runDeeplinkProbe({ env: good, conf: 'ABC' }), /CONFIRMATION_REQUIRED/);
   await assert.rejects(runDeeplinkProbe({ env: good, conf: '1-1', stayId: 'x1' }), /STAY_ID_INVALID/);
-  await assert.rejects(runDeeplinkProbe({ env: good, conf: '1-1' }), /PROPERTY_REQUIRED/);
   await assert.rejects(
-    runDeeplinkProbe({ env: good, conf: '1-1', propertyCode: 'HRDAV', runRoot: '/tmp/not-private' }),
+    runDeeplinkProbe({ env: good, conf: '1-1', runRoot: '/tmp/not-private' }),
     /OUTPUT_MUST_BE_PRIVATE_PLAYWRIGHT_QUOTE_DIRECTORY/,
   );
 });

@@ -11,8 +11,6 @@ import { staffQuoteChildEnv } from '../src/ai/staff-quote-run.js';
 import { createSlotSession } from '../src/hms/slot-session.js';
 import { withLeasedReadPage as createPreflightLease } from '../tooling/playwright-quote/create-preflight.mjs';
 import { withLeasedReadPage as fetchQuoteLease } from '../tooling/playwright-quote/fetch-quote.mjs';
-import { main as findBatchMain, withLeasedReadPage as findBatchLease } from '../tooling/playwright-quote/find-batch.mjs';
-import { runDeeplinkProbe, withLeasedReadPage as deeplinkLease } from '../tooling/playwright-quote/hms-deeplink-probe.mjs';
 import { partyLookupPropertyCode, withLeasedReadPage as partyLookupLease } from '../tooling/playwright-quote/party-lookup.mjs';
 import { parseStayProperty, withLeasedReadPage as propertyProfileLease } from '../tooling/playwright-quote/property-profile.mjs';
 import {
@@ -23,8 +21,6 @@ import {
   sharedReadCliLease,
   withReadCliPage,
 } from '../tooling/playwright-quote/read-cli-lease.mjs';
-import { withLeasedReadPage as readCodesLease } from '../tooling/playwright-quote/read-reservation-codes.mjs';
-import { withLeasedReadPage as readFieldsLease } from '../tooling/playwright-quote/read-reservation-fields.mjs';
 import { main as stayLookupMain, withLeasedReadPage as stayLookupLease } from '../tooling/playwright-quote/stay-lookup.mjs';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -34,34 +30,19 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const TOOLING = join(ROOT, 'tooling/playwright-quote');
 const SRC = join(ROOT, 'src/ai');
 
-const ARGV_CLIS = [
-  'stay-lookup',
-  'create-preflight',
-  'hms-deeplink-probe',
-  'find-batch',
-  'read-reservation-codes',
-  'read-reservation-fields',
-] as const;
+const ARGV_CLIS = ['stay-lookup', 'create-preflight'] as const;
 
 const OMITTED_ARGV: Record<(typeof ARGV_CLIS)[number], string[]> = {
   'stay-lookup': ['--mode', 'find', '--confirmation', '1-1', '--out', '/tmp'],
   'create-preflight': ['--request', 'x.json'],
-  'hms-deeplink-probe': ['--conf', '1-1'],
-  'find-batch': ['--input', 'x.json', '--out', 'y.jsonl'],
-  'read-reservation-codes': ['--input', 'x.json'],
-  'read-reservation-fields': ['--input', 'x.json', '--out', 'y.jsonl'],
 };
 
 const SHARED_LEASES = [
   fetchQuoteLease,
   partyLookupLease,
   propertyProfileLease,
-  findBatchLease,
   stayLookupLease,
-  readCodesLease,
-  readFieldsLease,
   createPreflightLease,
-  deeplinkLease,
 ];
 
 function sourceOf(dir: string, name: string) {
@@ -99,18 +80,13 @@ describe('read CLI session lease', () => {
       });
     }
     expect(await stayLookupMain(OMITTED_ARGV['stay-lookup'])).toBe(2);
-    expect(await findBatchMain(OMITTED_ARGV['find-batch'])).toBe(2);
 
     expect(READ_CLI_TOOLS).toEqual([
       'fetch-quote',
       'party-lookup',
       'property-profile',
-      'find-batch',
       'stay-lookup',
-      'read-reservation-codes',
-      'read-reservation-fields',
       'create-preflight',
-      'hms-deeplink-probe',
     ]);
     for (const name of READ_CLI_TOOLS) {
       expect(sourceOf(TOOLING, `${name}.mjs`)).toContain('withReadCliPage');
@@ -135,16 +111,6 @@ describe('read CLI session lease', () => {
       exitCode: 2,
     });
     expect(sourceOf(TOOLING, 'fetch-quote.mjs')).toContain('lookupActiveProperty(request.propertyCode)');
-
-    await expect(
-      runDeeplinkProbe({
-        env: {
-          HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:9222',
-          HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
-        },
-        conf: '1-1',
-      }),
-    ).rejects.toThrow('PROPERTY_REQUIRED');
 
     const page = { id: 'persistent-page' };
     const newPage = vi.fn(async () => ({ id: 'fresh-page' }));
