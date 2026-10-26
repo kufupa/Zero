@@ -83,7 +83,7 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.inputs[0]?.salesStrategy).toBe('BAR');
   });
 
-  it('routes an explicit dinner B&B ask to Government without inventing an allowance', () => {
+  it('keeps an explicit dinner B&B ask on dinner board without defaulting Government', () => {
     const plan = build({
       stays: [
         {
@@ -100,7 +100,7 @@ describe('prepared quote input from stored extraction', () => {
     });
 
     expect(plan.inputs[0]?.groups[0]?.board).toBe('dinner_bb');
-    expect(plan.inputs[0]?.salesStrategy).toBe('Government');
+    expect(plan.inputs[0]?.salesStrategy).toBe('BAR');
     expect(plan.inputs[0]).not.toHaveProperty('dinnerAllowanceMinor');
   });
 
@@ -661,15 +661,15 @@ describe('quote shop jobs per registry strategy', () => {
     expect(jobs.map((job) => job.input.groups[0]?.id)).toEqual(['row-1', 'row-2', 'row-1', 'row-2']);
   });
 
-  it('shops Government plus BAR for an all-dbb HRCEN stay', () => {
+  it('shops BAR then Government for an all-dbb HRCEN stay', () => {
     const stay = payload().stays[0]!;
     const plan = build({
       stays: [{ ...stay, rows: stay.rows.map((row) => ({ ...row, board: 'dbb' })) }],
     });
-    expect(plan.inputs[0]?.salesStrategy).toBe('Government');
+    expect(plan.inputs[0]?.salesStrategy).toBe('BAR');
     expect(quoteShopJobsForPlan(plan, HRCEN_STRATEGIES).map((job) => job.input.salesStrategy)).toEqual([
-      'Government',
       'BAR',
+      'Government',
     ]);
   });
 
@@ -699,7 +699,7 @@ describe('quote shop jobs per registry strategy', () => {
     const plan = build({
       stays: [{ ...stay, rows: stay.rows.map((row) => ({ ...row, board: 'dbb' })) }],
     });
-    expect(plan.inputs[0]?.salesStrategy).toBe('Government');
+    expect(plan.inputs[0]?.salesStrategy).toBe('BAR');
     const jobs = quoteShopJobsForPlan(plan, [
       { code: 'WS', label: 'Wholesale', requestValue: 'WS' },
       { code: 'BAR', label: 'BAR', requestValue: 'BAR' },

@@ -122,6 +122,7 @@ import {
   staffQuoteInputsPriceEquivalent,
   type PreparedStaffQuotePlan,
 } from './quote-ready.js';
+import { loadStaffRatePicks, opaquePartyRef } from './staff-rate-pick-history.js';
 import {
   runStaffQuote,
   staffQuoteFailureCode,
@@ -2687,7 +2688,16 @@ export async function prefetchQuoteReadyForExtraction(
       await record({ outcome: 'skipped', reason: 'cap_exhausted' });
       return 0;
     }
-    const shops = quoteShopJobsForPlan(evaluation.plan, paneConfig?.salesStrategies ?? []);
+    const strategies = paneConfig?.salesStrategies ?? [];
+    const picks = strategies.length
+      ? await loadStaffRatePicks(db, target.target.propertyCode)
+      : [];
+    const shops = quoteShopJobsForPlan(evaluation.plan, strategies, {
+      property: target.target.propertyCode,
+      transportId: evaluation.transportId,
+      partyRef: opaquePartyRef(evaluation.plan.inputs[0]?.parties),
+      picks,
+    });
     if (shops.length === 0) {
       await record({ outcome: 'skipped', reason: 'empty_plan' });
       return 0;

@@ -46,6 +46,7 @@ import { ReservationistTaskEvidenceUnavailable } from './reservationist-executio
 import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js';
 import { mailExtraction } from '../db/schema/work.js';
 import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
+import { buildStaffRatePick } from './staff-rate-pick-history.js';
 import { otherBoardContractNotes, type RateOption } from './rate-options.js';
 import type { AvailabilityBoardRow } from './hms-availability.js';
 import { quoteWorkItemIdFor, recordRateEvents } from './work-events.js';
@@ -1007,7 +1008,7 @@ export async function runStaffQuote(
         const outcomeWorkItemId = await ensureQuoteOutcomeWorkItem(tx as unknown as DB, {
           transportId: scope.transportId, threadId: scope.threadId, sourceMessageId: mail.id,
         });
-        const [extraction] = await tx.select({ payload: mailExtraction.payload }).from(mailExtraction)
+        const [extraction] = await tx.select({ payload: mailExtraction.payload, kind: mailExtraction.kind }).from(mailExtraction)
           .where(and(eq(mailExtraction.messageId, mail.id), eq(mailExtraction.status, 'succeeded')))
           .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
         const extractedFields = extraction?.payload ?? null;
@@ -1034,9 +1035,19 @@ export async function runStaffQuote(
           lines: preparedLines, totalMinor: revision.totalMinor, currency: revision.currency };
         const staffVersion = { ...preparedVersion, fields: staffFields, party: effectiveQuoteInput.parties ?? null,
           lines: staffLines, totalMinor: pricedRoomTotal(revision, rowPrices) + extraTotal };
+        const ratePick = identity.user
+          ? buildStaffRatePick({
+              strategy: effectiveQuoteInput.salesStrategy,
+              property: scope.propertyCode,
+              transportId: scope.transportId,
+              parties: effectiveQuoteInput.parties,
+              actorUserId: identity.user.id,
+              mailKind: extraction?.kind ?? 'quote',
+            })
+          : null;
         await recordPreparedQuoteOutcome(tx as unknown as DB, { workItemId: outcomeWorkItemId,
           actorUserId: identity.user?.id ?? null, workflowRunId, sourceMessageId: mail.id,
-          prepared: preparedVersion, staffFinal: staffVersion });
+          prepared: preparedVersion, staffFinal: staffVersion, ratePick });
         if (
           options.commitQueuedResult &&
           !(await options.commitQueuedResult(quoteResult, tx as unknown as DB))

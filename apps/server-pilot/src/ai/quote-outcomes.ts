@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import type { DB } from '../db/client.js';
 import { mailExtraction } from '../db/schema/work.js';
 import { workEvent, workItem } from '../db/schema/work.js';
+import { parseStaffRatePick, staffRatePickEvidence, type StaffRatePick } from './staff-rate-pick-history.js';
 
 export type QuoteOutcomeVersion = {
   version: 1; sourceMessageId: string; workflowRunId: string; revisionRef: string; action: 'quote_availability';
@@ -179,12 +180,16 @@ export async function recordPreparedQuoteOutcome(
     sourceMessageId: string;
     prepared: QuoteOutcomeVersion;
     staffFinal: QuoteOutcomeVersion;
+    ratePick?: StaffRatePick | null;
   },
 ): Promise<void> {
+  const ratePick = input.ratePick ? parseStaffRatePick(input.ratePick) : null;
+  const ratePickEvidence = ratePick ? staffRatePickEvidence(ratePick) : null;
   const payloadHash = createHash('sha256').update(stableJson({
     workflowRunId: input.workflowRunId,
     prepared: input.prepared,
     staffFinal: input.staffFinal,
+    ...(ratePickEvidence ? { ratePick: ratePickEvidence } : {}),
   })).digest('hex');
   const [seen] = await db.select({ id: workEvent.id }).from(workEvent).where(and(
     eq(workEvent.workItemId, input.workItemId),
@@ -201,7 +206,11 @@ export async function recordPreparedQuoteOutcome(
     value: input.staffFinal,
     aiSource: input.workflowRunId,
     payloadHash,
-    evidence: { sourceMessageId: input.sourceMessageId, workflowRunId: input.workflowRunId },
+    evidence: {
+      sourceMessageId: input.sourceMessageId,
+      workflowRunId: input.workflowRunId,
+      ...(ratePickEvidence ? { ratePick: ratePickEvidence } : {}),
+    },
   });
 }
 
