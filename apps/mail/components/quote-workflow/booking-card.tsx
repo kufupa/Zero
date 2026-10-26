@@ -726,7 +726,7 @@ export function BookingCards({
     () => readSelectedGuestName(guestEditorKey, guestName),
   );
   const guestSplit = splitStayingGuestName(selectedGuestName);
-  const guestNamesEdited = useRef(false);
+  const guestNamesEdited = useRef<Record<string, boolean>>({});
   const [choices, setChoices] = useState<Record<string, RoomChoice>>(
     () =>
       Object.fromEntries(
@@ -765,18 +765,28 @@ export function BookingCards({
     stayBookingRef.current = false;
   }, []);
   useEffect(() => {
-    if (guestNamesEdited.current || guestSplit.ambiguous) return;
     setChoices((current) => {
       let changed = false;
       const next = { ...current };
-      for (const [key, choice] of Object.entries(current)) {
-        if (choice.firstName === guestSplit.firstName && choice.lastName === guestSplit.lastName) continue;
-        next[key] = { ...choice, firstName: guestSplit.firstName, lastName: guestSplit.lastName };
+      for (const room of draft.draft.rooms) {
+        const key = `${room.groupId}:${room.roomIndex}`;
+        const choice = current[key];
+        if (!choice || guestNamesEdited.current[key]) continue;
+        const commitStatus = saves[key]?.commit?.status;
+        if (stayBooking || commitStatus === 'running' || commitStatus === 'booked') continue;
+        const names = guestSplit.ambiguous
+          ? {
+              firstName: textValue(room.request.firstName),
+              lastName: textValue(room.request.lastName),
+            }
+          : { firstName: guestSplit.firstName, lastName: guestSplit.lastName };
+        if (choice.firstName === names.firstName && choice.lastName === names.lastName) continue;
+        next[key] = { ...choice, firstName: names.firstName, lastName: names.lastName };
         changed = true;
       }
       return changed ? next : current;
     });
-  }, [guestSplit.ambiguous, guestSplit.firstName, guestSplit.lastName]);
+  }, [draft.draft.rooms, guestSplit.ambiguous, guestSplit.firstName, guestSplit.lastName, saves, stayBooking]);
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const requested = textValue(room.request.roomType);
@@ -967,7 +977,7 @@ export function BookingCards({
               maxLength={PANE_BOOKER_NAME_MAX}
               pii
               onChange={(value) => {
-                guestNamesEdited.current = true;
+                guestNamesEdited.current[key] = true;
                 setChoice({ lastName: value });
               }}
             />
@@ -979,7 +989,7 @@ export function BookingCards({
               maxLength={PANE_BOOKER_NAME_MAX}
               pii
               onChange={(value) => {
-                guestNamesEdited.current = true;
+                guestNamesEdited.current[key] = true;
                 setChoice({ firstName: value });
               }}
             />

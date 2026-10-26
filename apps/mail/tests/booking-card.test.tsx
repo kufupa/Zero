@@ -683,7 +683,14 @@ describe('booking card staying-guest prefill', () => {
 
     resetGuestNameCacheForTests();
     render(view('guest-prefill-ambiguous'));
-    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Ada Marie Example' } });
+    const guest = screen.getByLabelText('Guest');
+    fireEvent.change(guest, { target: { value: 'Ada' } });
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Draft');
+    expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('Name');
+    fireEvent.change(guest, { target: { value: 'Ada Marie' } });
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Ada');
+    expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('Marie');
+    fireEvent.change(guest, { target: { value: 'Ada Marie Example' } });
     expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Draft');
     expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('Name');
     expect((screen.getByLabelText('First name') as HTMLInputElement).disabled).toBe(false);
