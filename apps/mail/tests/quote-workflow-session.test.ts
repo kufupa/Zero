@@ -165,6 +165,7 @@ describe('quote session', () => {
       staffQuote: allocation,
       staffQuotes: { [stayKey]: allocation },
     };
+    delete session.roomRateBoardSelections;
     const tuple = { roomCode: boardRow.roomCode, rateCode: boardRow.rateCode, board: boardRow.board };
     const selected = reduceQuoteSession(session, {
       type: 'room_rate_board_selected',
@@ -176,13 +177,27 @@ describe('quote session', () => {
     expect(reloaded.roomRateBoardSelections).toEqual({
       [group.id]: tuple,
     });
-    expect(
-      reduceQuoteSession(session, {
+    const invalidSelections: QuoteSessionAction[] = [
+      {
         type: 'room_rate_board_selected',
         groupId: group.id,
         selection: { ...tuple, roomCode: 'UNKNOWN-ROOM' },
-      }),
-    ).toBe(session);
+      },
+      {
+        type: 'room_rate_board_selected',
+        groupId: group.id,
+        selection: { ...tuple, rateCode: 'UNKNOWN-RATE' },
+      },
+      {
+        type: 'room_rate_board_selected',
+        groupId: group.id,
+        selection: { ...tuple, board: 'UNKNOWN-BOARD' },
+      },
+      { type: 'room_rate_board_selected', groupId: 'UNKNOWN-GROUP', selection: tuple },
+    ];
+    for (const invalidSelection of invalidSelections) {
+      expect(reduceQuoteSession(session, invalidSelection)).toBe(session);
+    }
     expect(reloaded.staffQuote).toEqual(allocation);
     expect(reloaded.staffQuotes).toEqual(session.staffQuotes);
     expect(reloaded.rateOptions).toEqual(session.rateOptions);

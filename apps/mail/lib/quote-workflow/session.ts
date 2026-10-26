@@ -20,7 +20,6 @@ import type {
   QuotePdf,
   QuoteSalesStrategyCode,
   QuoteStrategyRow,
-  QuoteRoomRateBoardSelection,
 } from './types';
 import {
   emptyStaffQuoteHeader,
