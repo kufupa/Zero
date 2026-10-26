@@ -85,7 +85,20 @@ export type InstalledStaffQuoteServiceOptions = Pick<
   mailboxOrigin?: MailboxHmsOriginFields;
   /** Selects the HRDAV install when quoting Da Vinci. Omitted keeps Centurion. */
   propertyCode?: string;
+  /**
+   * Spawn env snapped while the parent holds this property lock.
+   * Must include HMS_PROPERTY_LOCK_HELD. Unset when this process is the lock owner.
+   */
+  childEnv?: NodeJS.ProcessEnv;
 };
+
+function spawnEnvWithHeldLock(
+  env: NodeJS.ProcessEnv,
+  childEnv: NodeJS.ProcessEnv | undefined,
+): NodeJS.ProcessEnv {
+  const held = childEnv?.HMS_PROPERTY_LOCK_HELD;
+  return held ? { ...env, HMS_PROPERTY_LOCK_HELD: held } : env;
+}
 
 /** Provisional mode: the final result must match the provisional capture the reader accepted. */
 async function verifyProvisionalQuoteFinal(evidenceDirectory: string): Promise<void> {
@@ -609,7 +622,7 @@ export function getInstalledStaffQuoteServices(
             request.args[2]!,
             configuration.outputDir,
           ],
-          env: request.env,
+          env: spawnEnvWithHeldLock(request.env, options.childEnv),
           signal: request.signal,
           timeoutMs: request.timeout,
           resultPath,
@@ -645,7 +658,7 @@ export function getInstalledStaffQuoteServices(
             configuration.outputDir,
           ],
           {
-            env: request.env,
+            env: spawnEnvWithHeldLock(request.env, options.childEnv),
             signal: request.signal,
             timeout: request.timeout,
             maxBuffer: 1024 * 1024,
@@ -705,7 +718,7 @@ export function getInstalledStaffQuoteServices(
           timeout: 300000,
           maxBuffer: 1024 * 1024,
           env: {
-            ...process.env,
+            ...(options.childEnv ?? process.env),
             HMS_STAGEHAND_CDP_URL: configuration.owner.cdpUrl,
             HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
             HMS_QUOTE_SECRET_PATH: configuration.owner.secretPath,

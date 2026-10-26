@@ -1,4 +1,8 @@
-import { createPropertyReadLock, type PropertyReadConnection } from '../src/hms/property-read-lock.js';
+import {
+  createPropertyReadLock,
+  propertyReadLockKey,
+  type PropertyReadConnection,
+} from '../src/hms/property-read-lock.js';
 import { createSlotSession } from '../src/hms/slot-session.js';
 import { withLeasedReadPage as createPreflightPage } from '../tooling/playwright-quote/create-preflight.mjs';
 import { withLeasedReadPage as fetchQuotePage } from '../tooling/playwright-quote/fetch-quote.mjs';
@@ -6,7 +10,12 @@ import { withLeasedReadPage as findBatchPage } from '../tooling/playwright-quote
 import { withLeasedReadPage as deeplinkPage } from '../tooling/playwright-quote/hms-deeplink-probe.mjs';
 import { withLeasedReadPage as partyLookupPage } from '../tooling/playwright-quote/party-lookup.mjs';
 import { withLeasedReadPage as profilePage } from '../tooling/playwright-quote/property-profile.mjs';
-import { READ_CLI_TOOLS, resetSharedReadCliLease, sharedReadCliLease } from '../tooling/playwright-quote/read-cli-lease.mjs';
+import {
+  prepareReadCliInput,
+  READ_CLI_TOOLS,
+  resetSharedReadCliLease,
+  sharedReadCliLease,
+} from '../tooling/playwright-quote/read-cli-lease.mjs';
 import { withLeasedReadPage as readCodesPage } from '../tooling/playwright-quote/read-reservation-codes.mjs';
 import { withLeasedReadPage as readFieldsPage } from '../tooling/playwright-quote/read-reservation-fields.mjs';
 import { withLeasedReadPage as stayLookupPage } from '../tooling/playwright-quote/stay-lookup.mjs';
@@ -125,5 +134,45 @@ describe('read CLI session lease', () => {
     expect(pages[0]).toBe(page);
     expect(newPage).not.toHaveBeenCalled();
     expect(loginPage).not.toHaveBeenCalled();
+  });
+
+  it('resolves the parent-held lock token before DATABASE_URL', async () => {
+    const lookupProperty = (code: string) =>
+      code === GENERIC_PROPERTY ? { propertyCode: GENERIC_PROPERTY } : null;
+    const held = propertyReadLockKey(LOCK_TENANT, GENERIC_PROPERTY);
+    const otherProperty = propertyReadLockKey(LOCK_TENANT, 'HTLBB');
+    const databaseUrl = 'postgres://lock-matrix.invalid/unused';
+    const prepare = (env: NodeJS.ProcessEnv) =>
+      prepareReadCliInput({
+        propertyCode: GENERIC_PROPERTY,
+        tenantId: LOCK_TENANT,
+        lookupProperty,
+        env,
+      });
+
+    const matched = await prepare({
+      HMS_PROPERTY_LOCK_HELD: held,
+      DATABASE_URL: databaseUrl,
+    });
+    expect(matched.lockSource).toBe('parent-token');
+    await expect(matched.lock.withLock(async (connection) => connection.query('SELECT 1'))).resolves.toEqual([
+      { pg_try_advisory_lock: true },
+    ]);
+
+    await expect(
+      prepare({
+        HMS_PROPERTY_LOCK_HELD: otherProperty,
+        DATABASE_URL: databaseUrl,
+      }),
+    ).rejects.toMatchObject({ name: 'SlotLeaseRefusedError', code: 'lock_token_mismatch' });
+
+    const standalone = await prepare({ DATABASE_URL: databaseUrl });
+    expect(standalone.lockSource).toBe('postgres');
+
+    const local = await prepare({});
+    expect(local.lockSource).toBe('process-local');
+    await expect(local.lock.withLock(async (connection) => connection.query('SELECT 1'))).resolves.toEqual([
+      { pg_try_advisory_lock: true },
+    ]);
   });
 });

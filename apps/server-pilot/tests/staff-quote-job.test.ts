@@ -94,7 +94,10 @@ vi.mock('../src/hms/mailbox-hms-origin-bind.js', async (importOriginal) => ({
 }));
 
 import { executeHmsJob, hmsJobRequestSchema, HMS_JOB_PRIORITY_USER } from '../src/ai/hms-jobs.js';
-import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
+import {
+  PROPERTY_READ_LOCK_DEADLINE_MESSAGE,
+  propertyReadLockKey,
+} from '../src/hms/property-read-lock.js';
 import { HMS_JOB_PROMPT_VERSION } from '../src/ai/run-ledger.js';
 
 const STAFF_QUOTE_INPUT = {
@@ -1359,6 +1362,55 @@ describe('runStaffQuote property installation', () => {
     expect(quoteRunMocks.readConfiguration.mock.calls).toEqual([['HRDAV']]);
     expect(quoteRunMocks.getServices).toHaveBeenCalledWith(
       expect.objectContaining({ propertyCode: 'HRDAV' }),
+      expect.anything(),
+    );
+  });
+
+  it('puts the parent lock key on the quote child env', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
+      '../src/ai/staff-quote-run.js',
+    );
+    const mail = mailFor('transport-davinci');
+    const input = staffQuoteInput.parse({
+      ...STAFF_QUOTE_INPUT,
+      sourceHash: staffQuoteSourceHash(mail),
+    });
+    const tenantId = 'synthetic-hotel';
+    const propertyCode = 'HRDAV';
+    const lockKey = propertyReadLockKey(tenantId, propertyCode);
+    quoteRunMocks.readConfiguration.mockReturnValue({
+      tenantId,
+      owner: { propertyCode },
+      outputDir: '/tmp/synthetic-staff-quote',
+    });
+    quoteRunMocks.snapshotRowPrices.mockResolvedValue([]);
+    quoteRunMocks.createPropertyReadLock.mockReturnValue({
+      key: lockKey,
+      withLock: (callback: () => Promise<unknown>) => callback(),
+    });
+    quoteRunMocks.getServices.mockReturnValue({});
+    workflowMocks.executeStaffQuote.mockResolvedValue({
+      id: 'revision-1',
+      authorizationId: 'auth-1',
+      totalMinor: 240_000,
+      currency: 'ZAR',
+      groups: [
+        {
+          arrivalDate: input.groups[0]!.arrivalDate,
+          departureDate: input.groups[0]!.departureDate,
+          context: {},
+        },
+      ],
+    });
+    await actual
+      .runStaffQuote(input, { transportId: 'transport-davinci', user }, staffQuoteRunDb(mail).db)
+      .catch(() => undefined);
+    expect(quoteRunMocks.getServices).toHaveBeenCalledWith(
+      expect.objectContaining({
+        childEnv: expect.objectContaining({ HMS_PROPERTY_LOCK_HELD: lockKey }),
+      }),
       expect.anything(),
     );
   });

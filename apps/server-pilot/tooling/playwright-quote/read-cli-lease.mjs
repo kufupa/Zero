@@ -3,14 +3,20 @@
  * Unknown, inactive, or omitted property fails closed before a page is created.
  * No hotel default.
  *
- * Standalone CLI with a database URL takes the real postgres property lock.
- * Pane/staff children receive spawn env with DATABASE_URL stripped — a second
- * postgres lock would deadlock the parent — so those use a process-local held
- * lock so the lease WeakMap is set without touching postgres.
+ * Lock ownership, in order:
+ * 1. Caller already passed lock / lockConnection.
+ * 2. HMS_PROPERTY_LOCK_HELD matches this property — parent holds postgres; child
+ *    uses a process-local held lock. A mismatch refuses (never falls through).
+ * 3. DATABASE_URL — standalone CLI takes the real postgres property lock.
+ * 4. Else process-local held lock (local dev, no DB).
  */
 import { createExclusivePageLease, SlotLeaseRefusedError } from './hms-slot-lease.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
-import { createPostgresPropertyReadLock, createPropertyReadLock } from '../../src/hms/property-read-lock.ts';
+import {
+  createPostgresPropertyReadLock,
+  createPropertyReadLock,
+  propertyReadLockKey,
+} from '../../src/hms/property-read-lock.ts';
 import { createSlotSession } from '../../src/hms/slot-session.ts';
 
 export { SlotLeaseRefusedError };
@@ -64,6 +70,36 @@ function childHeldLock(tenantId, propertyCode) {
   });
 }
 
+function heldLockToken(env) {
+  return typeof env?.HMS_PROPERTY_LOCK_HELD === 'string' ? env.HMS_PROPERTY_LOCK_HELD.trim() : '';
+}
+
+function resolveReadCliLock(input, env, tenantId, propertyCode) {
+  if (input.lock) return { lock: input.lock, lockSource: 'provided' };
+  if (input.lockConnection) return { lock: null, lockSource: 'provided' };
+  const token = heldLockToken(env);
+  if (token) {
+    if (token !== propertyReadLockKey(tenantId, propertyCode)) {
+      throw new SlotLeaseRefusedError('lock_token_mismatch', 'lock token mismatch');
+    }
+    return { lock: childHeldLock(tenantId, propertyCode), lockSource: 'parent-token' };
+  }
+  if (env.DATABASE_URL) {
+    return {
+      lock: createPostgresPropertyReadLock({
+        tenantId,
+        propertyCode,
+        databaseUrl: env.DATABASE_URL,
+      }),
+      lockSource: 'postgres',
+    };
+  }
+  // ponytail: no token and no DATABASE_URL is the local-dev ceiling (process-local
+  // WeakMap lock). Production staff/CLI always set a token or a database URL.
+  // Do not add a third lock backend.
+  return { lock: childHeldLock(tenantId, propertyCode), lockSource: 'process-local' };
+}
+
 export async function prepareReadCliInput(input, env = process.env) {
   const code = typeof input?.propertyCode === 'string' ? input.propertyCode.trim() : '';
   const lookup = input.lookupProperty ?? lookupActiveProperty;
@@ -81,17 +117,8 @@ export async function prepareReadCliInput(input, env = process.env) {
     session = createSlotSession({ owner: { login: async () => {}, wipeProfile: async () => {} } });
     await session.recover();
   }
-  const lock = input.lock
-    || (input.lockConnection
-      ? null
-      : resolvedEnv.DATABASE_URL
-        ? createPostgresPropertyReadLock({
-          tenantId,
-          propertyCode: code,
-          databaseUrl: resolvedEnv.DATABASE_URL,
-        })
-        : childHeldLock(tenantId, code));
-  return { ...input, propertyCode: code, tenantId, session, lock, env: resolvedEnv };
+  const { lock, lockSource } = resolveReadCliLock(input, resolvedEnv, tenantId, code);
+  return { ...input, propertyCode: code, tenantId, session, lock, lockSource, env: resolvedEnv };
 }
 
 /**

@@ -749,6 +749,10 @@ export async function runStaffQuote(
         async () => {
           await assertPreparedQuoteCanContinue(db, systemPrepared);
           queued.setPhase(1);
+          const childEnv = {
+            ...process.env,
+            HMS_PROPERTY_LOCK_HELD: propertyReadLockKey(config.tenantId, scope.propertyCode),
+          };
           // One attempt is one approval, with its own services and authorization. A party rate HMS cannot price is
           // quoted once more at public rates, and the review says so.
           const quoteAt = (attempt: ReturnType<typeof prepareStaffQuote>) => {
@@ -758,6 +762,7 @@ export async function runStaffQuote(
                 authorizeContext: async (c) => c === attempt.context && (await stillCurrent()),
                 signer,
                 propertyCode: quoteTarget.target.propertyCode,
+                childEnv,
                 onEvidenceDirectory: (directory) => {
                   evidence.directory = directory;
                 },
