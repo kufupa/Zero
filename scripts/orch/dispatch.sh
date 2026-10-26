@@ -92,7 +92,7 @@ if [[ $mode == launch ]]; then
     i=${startable[0]}; id=${ids[i]}
     write_status "$id" starting || { printf 'BLOCKED id=%s reason=status-write-failed\n' "$id"; exit 1; }
     statuses[i]=starting
-    if ID="$id" AREA="${areas[i]}" DEPENDS="${deps[i]}" FILES="${files[i]}" CODER="${coders[i]}" BRIEF_PATH="${briefs[i]}" bash -c "$LAUNCH_CMD" >/dev/null 2>&1; then
+    if ID="$id" AREA="${areas[i]}" DEPENDS="${deps[i]}" FILES="${files[i]}" CODER="${coders[i]}" BRIEF_PATH="${briefs[i]}" bash -c "$LAUNCH_CMD" >/dev/null 2>&1 {dispatch_fd}>&-; then
       printf 'LAUNCHED id=%s\n' "$id"
     else
       write_status "$id" failed || true
