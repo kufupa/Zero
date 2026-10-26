@@ -1573,7 +1573,12 @@ export function QuoteWorkflowPanel({
           />
         </>
       ) : null}
-      <QuoteBookingHost session={session} paneSave={paneSave} contact={contact} />
+      <QuoteBookingHost
+        session={session}
+        paneSave={paneSave}
+        contact={contact}
+        propertyCode={paneConfig?.propertyCode ?? null}
+      />
     </div>
   );
 }
