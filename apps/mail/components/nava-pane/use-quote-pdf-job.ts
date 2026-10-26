@@ -38,6 +38,7 @@ type UseQuotePdfJobArgs = {
   documentContactRef: MutableRef<StoredContact | null>;
   dispatchQuote: Dispatch<QuoteSessionAction>;
   activeEmail: PaneBridge['activeEmail'];
+  activeTransportId: string | null;
   staffSignerName: string;
   activePaneConfig: QuotePaneConfig | null;
   replyGreetingName: ReplyGreetingName;
@@ -77,11 +78,11 @@ function emailKey(email: PaneBridge['activeEmail']): string {
 function bindingMatchesEmail(
   session: QuoteSession,
   activeEmail: PaneBridge['activeEmail'],
-  transportId: string | null,
+  activeTransportId: string | null,
 ): boolean {
   const binding = session.binding;
   return Boolean(
-    binding && activeEmail && binding.transportId === transportId && binding.entryId === activeEmail.entryId &&
+    binding && activeEmail && binding.transportId === activeTransportId && binding.entryId === activeEmail.entryId &&
       (!activeEmail.storeId || binding.storeId === activeEmail.storeId) &&
       (!activeEmail.folderEntryId || binding.folderEntryId === activeEmail.folderEntryId) &&
       (!activeEmail.internetMessageId || binding.internetMessageId === activeEmail.internetMessageId),
@@ -155,6 +156,7 @@ export function useQuotePdfJob({
   documentContactRef,
   dispatchQuote,
   activeEmail,
+  activeTransportId,
   staffSignerName,
   activePaneConfig,
   replyGreetingName,
@@ -167,13 +169,13 @@ export function useQuotePdfJob({
   const [pdfRestoring, setPdfRestoring] = useState(false);
   const restoreInFlight = useRef(false);
   const lastPdfKey = useRef<string | null>(null);
-  const latest = useRef({ workItemId, transportId, quoteSessionRef, documentContactRef, activeEmail });
-  latest.current = { workItemId, transportId, quoteSessionRef, documentContactRef, activeEmail };
+  const latest = useRef({ workItemId, transportId, quoteSessionRef, documentContactRef, activeEmail, activeTransportId });
+  latest.current = { workItemId, transportId, quoteSessionRef, documentContactRef, activeEmail, activeTransportId };
 
   const stillCurrent = (snapshot: string): boolean => {
     const current = latest.current;
     const session = current.quoteSessionRef.current;
-    if (!bindingMatchesEmail(session, current.activeEmail, current.transportId)) return false;
+    if (!bindingMatchesEmail(session, current.activeEmail, current.activeTransportId)) return false;
     const currentRequest = workbookRequestFor(session);
     if (currentRequest.status !== 'ok') return false;
     const currentInput = withContactLines(currentRequest.input, current.documentContactRef.current);
@@ -184,7 +186,11 @@ export function useQuotePdfJob({
     setPdfRestoring(false);
     restoreInFlight.current = false;
     const owner = workItemId && transportId ? { workItemId, transportId } : null;
-    if (!owner || !bindingMatchesEmail(quoteSession, activeEmail, transportId)) return;
+    if (
+      !owner ||
+      owner.transportId !== activeTransportId ||
+      !bindingMatchesEmail(quoteSession, activeEmail, activeTransportId)
+    ) return;
     const request = workbookRequestFor(quoteSession);
     if (request.status !== 'ok') return;
     const contact = documentContactRef.current;
@@ -275,6 +281,8 @@ export function useQuotePdfJob({
       }
       finishRestore();
     };
+    restoreInFlight.current = true;
+    setPdfRestoring(true);
     void poll();
     return () => {
       cancelled = true;
@@ -296,6 +304,7 @@ export function useQuotePdfJob({
     activeEmail?.internetMessageId,
     activeEmail?.senderName,
     activeEmail?.senderEmail,
+    activeTransportId,
     staffSignerName,
     activePaneConfig?.propertyCode,
     replyGreetingName,
@@ -334,7 +343,7 @@ export function useQuotePdfJob({
       const input = withContactLines(request.input, documentContactRef.current);
       const snapshot = pdfScopeKey(session, input, workItemId, transportId, activeEmail);
       void bindQualifiedStaffProposalPdf({
-        mutate: qualifiedPdfMutation(owner, transportId),
+        mutate: qualifiedPdfMutation(owner, activeTransportId),
         input,
         expectedTotalMinor: request.expectedTotalMinor,
       }).then((remote) => {
@@ -423,7 +432,7 @@ export function useQuotePdfJob({
     pdfInFlight.current = true;
     setPdfPending(true);
     void bindQualifiedStaffProposalPdf({
-      mutate: qualifiedPdfMutation(owner, transportId),
+      mutate: qualifiedPdfMutation(owner, activeTransportId),
       input,
       expectedTotalMinor: quote.totalMinor,
     }).then((remote) => {

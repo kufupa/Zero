@@ -1439,6 +1439,7 @@ export function NavaPane({
     documentContactRef,
     dispatchQuote,
     activeEmail,
+    activeTransportId: activeConnection?.id ?? null,
     staffSignerName,
     activePaneConfig,
     replyGreetingName,

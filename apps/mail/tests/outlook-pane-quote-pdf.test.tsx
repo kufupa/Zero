@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { useReducer, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { useQuotePdfJob } from '../components/nava-pane/use-quote-pdf-job';
@@ -284,12 +284,19 @@ function QuotePdfJobHarness({
   session,
   workItemId,
   transportId,
+  activeTransportId = transportId,
 }: {
   session: QuoteSession;
-  workItemId: string;
-  transportId: string;
+  workItemId: string | null;
+  transportId: string | null;
+  activeTransportId?: string | null;
 }) {
-  const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, session);
+  const [quoteSession, setQuoteSession] = useState(session);
+  const dispatchQuote = useCallback(
+    (action: QuoteSessionAction) => setQuoteSession((current) => reduceQuoteSession(current, action)),
+    [],
+  );
+  useEffect(() => setQuoteSession(session), [session]);
   const quoteSessionRef = useRef(quoteSession);
   quoteSessionRef.current = quoteSession;
   const documentContactRef = useRef<StoredContact | null>(null);
@@ -299,11 +306,11 @@ function QuotePdfJobHarness({
     documentContact: null,
     documentContactRef,
     dispatchQuote,
-    activeEmail: quoteSession.binding ? {
-      entryId: quoteSession.binding.entryId,
-      storeId: quoteSession.binding.storeId,
-      folderEntryId: quoteSession.binding.folderEntryId,
-      internetMessageId: quoteSession.binding.internetMessageId,
+    activeEmail: session.binding ? {
+      entryId: session.binding.entryId,
+      storeId: session.binding.storeId,
+      folderEntryId: session.binding.folderEntryId,
+      internetMessageId: session.binding.internetMessageId,
       subject: '',
       senderEmail: '',
       senderName: '',
@@ -311,6 +318,7 @@ function QuotePdfJobHarness({
       bodyText: '',
       bodyHtml: '',
     } : null,
+    activeTransportId,
     staffSignerName: 'Staff',
     activePaneConfig: null,
     replyGreetingName: (contactName) => contactName ?? 'there',
@@ -328,6 +336,7 @@ function QuotePdfJobHarness({
       >
         {quoteSession.pdf?.fileName ?? ''}
       </output>
+      <output data-testid="current-quote-owner" data-entry-id={quoteSession.binding?.entryId ?? ''} />
     </div>
   );
 }
@@ -373,7 +382,12 @@ describe('Outlook pane quote proposal PDF', () => {
     const session = reviewedQuoteSession();
     const otherSession = reviewedQuoteSession('other');
     const pane = (workItemId: string, quoteSession: QuoteSession) => (
-      <QuotePdfJobHarness key={workItemId} session={quoteSession} workItemId={workItemId} transportId="transport-test" />
+      <QuotePdfJobHarness
+        session={quoteSession}
+        workItemId={workItemId}
+        transportId="transport-test"
+        activeTransportId="transport-test"
+      />
     );
     const view = render(pane(PDF_WORK_ITEM_ID, session));
 
@@ -407,6 +421,92 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(qualifiedQuotePdfMutateMock).toHaveBeenCalledTimes(1);
     expect(sendCommandMock).not.toHaveBeenCalled();
   }, 15_000);
+
+  it('accepts a validated PDF for the active quote when stored work has no owner', async () => {
+    const jobPdf = { ...AUTHORISED_QUOTE_PDF, revisionId: 'revision-one' };
+    qualifiedQuotePdfMutateMock.mockResolvedValue(jobPdf);
+    render(
+      <QuotePdfJobHarness
+        session={reviewedQuoteSession()}
+        workItemId={null}
+        transportId={null}
+        activeTransportId="transport-test"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare PDF' }));
+    await waitFor(() =>
+      expect(screen.getByTestId('rehydrated-pdf').textContent).toBe(jobPdf.fileName),
+    );
+
+    expect(screen.getByTestId('rehydrated-pdf').getAttribute('data-revision-id')).toBe('revision-one');
+    expect(qualifiedQuotePdfMutateMock).toHaveBeenCalledTimes(1);
+    expect(qualifiedQuotePdfMutateMock.mock.calls[0]?.[0]).not.toHaveProperty('workItemId');
+    expect(qualifiedQuotePdfMutateMock.mock.calls[0]?.[1]).toEqual({
+      context: { activeTransportId: 'transport-test' },
+    });
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a late generated PDF after the active quote switches to another mail', async () => {
+    const jobPdf = { ...AUTHORISED_QUOTE_PDF, revisionId: 'revision-one' };
+    let resolvePdf: ((value: typeof jobPdf) => void) | undefined;
+    qualifiedQuotePdfMutateMock.mockImplementation(
+      () => new Promise((resolve) => { resolvePdf = resolve; }),
+    );
+    const session = reviewedQuoteSession();
+    const otherSession = reviewedQuoteSession('other');
+    const pane = (quoteSession: QuoteSession) => (
+      <QuotePdfJobHarness
+        session={quoteSession}
+        workItemId={null}
+        transportId={null}
+        activeTransportId="transport-test"
+      />
+    );
+    const view = render(pane(session));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare PDF' }));
+    await waitFor(() => expect(qualifiedQuotePdfMutateMock).toHaveBeenCalledTimes(1));
+    view.rerender(pane(otherSession));
+    await waitFor(() =>
+      expect(screen.getByTestId('current-quote-owner').getAttribute('data-entry-id')).toBe('entry-other'),
+    );
+    await act(async () => {
+      resolvePdf?.(jobPdf);
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Prepare PDF' }).hasAttribute('disabled')).toBe(false),
+    );
+    expect(screen.getByTestId('rehydrated-pdf').textContent).toBe('');
+    expect(screen.getByTestId('rehydrated-pdf').getAttribute('data-revision-id')).toBe('');
+    expect(sendCommandMock).not.toHaveBeenCalled();
+  });
+
+  it('waits for the initial work-item lookup before allowing another PDF build', async () => {
+    let resolveJob: ((value: null) => void) | undefined;
+    quotePdfJobQueryMock.mockImplementation(
+      () => new Promise<null>((resolve) => { resolveJob = resolve; }),
+    );
+    render(
+      <QuotePdfJobHarness
+        session={reviewedQuoteSession()}
+        workItemId={PDF_WORK_ITEM_ID}
+        transportId="transport-test"
+        activeTransportId="transport-test"
+      />,
+    );
+
+    const prepareButton = screen.getByRole('button', { name: 'Prepare PDF' });
+    await waitFor(() => expect(prepareButton.hasAttribute('disabled')).toBe(true));
+    fireEvent.click(prepareButton);
+    expect(qualifiedQuotePdfMutateMock).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveJob?.(null);
+    });
+    await waitFor(() => expect(prepareButton.hasAttribute('disabled')).toBe(false));
+  });
 
   it('requires a fresh quote after the staff session changes on the same selected message', async () => {
     const view = render(<OutlookPanePage />);
