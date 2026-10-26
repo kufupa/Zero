@@ -3866,17 +3866,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     const setup = openTestDbSession();
     const left = openTestDbSession();
     const right = openTestDbSession();
-    const suffix = randomUUID();
-    const transportId = `guest-cap-transport-${suffix}`;
-    const mailbox = `guest-cap-${suffix}@zero.test`;
+    const transportId = TRANSPORT_ID;
+    const threadIds: string[] = [];
     const messageIds: string[] = [];
     try {
-      await setup.db
-        .insert(mailboxTransport)
-        .values({ id: transportId, email: mailbox, ownerHeaderValue: mailbox, isActive: true });
       const makeRequest = async (lastName: string): Promise<AiWorkflowRun> => {
         const threadId = `guest-cap-thread-${randomUUID()}`;
         const messageId = `guest-cap-msg-${randomUUID()}`;
+        threadIds.push(threadId);
         messageIds.push(messageId);
         await setup.db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
         await setup.db.insert(message).values({
@@ -3981,13 +3978,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(rows).toHaveLength(1);
     } finally {
       try {
-        await setup.db.delete(aiWorkflowRun).where(eq(aiWorkflowRun.transportId, transportId));
         if (messageIds.length > 0) {
+          await setup.db.delete(aiWorkflowRun).where(inArray(aiWorkflowRun.triggerMessageId, messageIds));
           await setup.db.delete(mailExtraction).where(inArray(mailExtraction.messageId, messageIds));
+          await setup.db.delete(message).where(inArray(message.id, messageIds));
         }
-        await setup.db.delete(message).where(eq(message.transportId, transportId));
-        await setup.db.delete(mailThread).where(eq(mailThread.transportId, transportId));
-        await setup.db.delete(mailboxTransport).where(eq(mailboxTransport.id, transportId));
+        if (threadIds.length > 0) {
+          await setup.db.delete(mailThread).where(inArray(mailThread.id, threadIds));
+        }
       } finally {
         await Promise.all([setup.close(), left.close(), right.close()]);
       }
