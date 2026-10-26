@@ -31,6 +31,12 @@ export function staffQuoteInstallationEnvName(propertyCode: string): string {
     : `RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_${propertyCode}`;
 }
 
+/** True only when ownerRef is a registered transport of that property. Unknown/empty fail closed. */
+export function ownerRefBelongsToProperty(ownerRef: string, propertyCode: string): boolean {
+  const id = ownerRef.trim();
+  return id.length > 0 && getPropertyTransportIds(propertyCode).includes(id);
+}
+
 function asReadBrowserSlot(slot: string): HmsReadBrowserSlot | null {
   return slot === 'centurion' || slot === 'davinci' ? slot : null;
 }
