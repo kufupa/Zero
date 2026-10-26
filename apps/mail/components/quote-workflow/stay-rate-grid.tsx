@@ -16,8 +16,6 @@ function rowKey(cell: BarGridCell): string {
     cell.roomCode,
     cell.rateCode,
     cell.board,
-    cell.nightlyPriceMinor ?? 'unpriced',
-    cell.roomsLeft ?? 'unknown-inventory',
   ].join('|');
 }
 
