@@ -287,3 +287,99 @@ Batch: one deploy after the A lanes merge, one after B. Not per PR. The train al
 - HRDAV HMS lock: L2 lookup, L7, L9 and live checks share one browser; run them serially in one canary lane.
 - Quote bar may still be < 10 rows (pool was ~12 threads on 10-20; prices may have moved).
 - 13 lanes = 13 Greptile reviews and ~13 Cursor sessions in parallel; VPS rule bans local tsc/vitest, all gates remote.
+
+---
+
+## Revision 2 — 2026-10-26 16:30Z: after Grok 4.7 xhigh review + live disk check (supersedes Revision 16:00Z where they differ)
+
+Grok 4.7 xhigh verdict (read-only, full output kept privately): "do not start as written". P0s: L7 writes before a DOM read; HRDAV lock shared by L2/L7/L9/live checks; 35-min ETA repeats or2 optimism; deploy + disk not handled. All accepted below except "drop L10–L13" (owner: everything this run; the lanes own disjoint files and do not lengthen the critical chain).
+
+### EC2 disk: measured 16:15Z (read-only SSM)
+
+| Item | Now | Note |
+|---|---:|---|
+| Root | **47 / 96 GB (49%)** | was 85% at 09:50 (or2 retro §6.7); pruned by #600 + owner-approved cleanup |
+| `.private/playwright-quote` | **17 GB**, +7.96 GB in last 24 h | 331 trace zips = 7.45 GB of that |
+| Web releases | 250 MB, 3 kept | #600 prune works |
+| Mastra dir | 6.9 MB | rotated 11:28Z; growth not the driver now |
+| Docker / pnpm store / cache / tmp | 2.6 / 3.3 / 1.3 / 0.9 GB | stable |
+| `nava-hms-artifact-purge.timer` | runs hourly, `removed=0` | purges credential-grade files only, not traces |
+
+Cause: `createAudit` defaults `trace=true` on main (`apps/server-pilot/tooling/playwright-quote/audit.mjs:8`), so every quote writes a ~22 MB zip. The 10-18 fix (`trace: 'on-failure'`, worktree `.worktrees/ec2-disk-retention`, never merged) is the cure. At ~8 GB/day, 75% is ~3 days away and 100% ~6 days. More quote runs this run make it faster.
+
+**Unit L15 (disk), first in the run:** port trace on-failure from that worktree (`audit.mjs`, `fetch-quote.mjs` + their tests, ~25 product lines). Add a 3-day age cap for `.private/playwright-quote` zips to `archive-hms-evidence.sh` (~10 lines). Deploy preflight refuses at ≥75% (train already pauses at 85%; lower it). Test: `fetch-quote.test.mjs`, `audit.test.mjs`, `deploy-retention.test.ts`. After it merges, the `ec2-disk-retention` worktree's Mastra part stays parked (not the driver) and the worktree can be removed.
+
+### Deploy: faster, not more often
+
+Measured: 7.5 min per deploy (15:42Z run, other chat); 19 closed ledger deploys, ratio median 0.83. Serial steps: husky chmod → `pnpm install` (ops-deploy) → `pnpm install` again (`deploy-ec2.sh:153`) → build server → build SPA → rsync release → pm2 restart → health → VPN assert → readiness.
+
+| Idea | Saves | Risk | Verdict |
+|---|---|---|---|
+| **Batch: deploy only when a live check needs it** (train already SKIPs deployed SHAs) | 7.5 min × (merges − deploys) | none | **do**: 3 deploys planned (A-fix, A-rest+L10/L13/L15, B) |
+| **Drop the duplicate install** (`ops-deploy.sh:91–93`; deploy-ec2 installs anyway) | one install, unmeasured (~30–60 s ballpark) | migrate needs deps: move install inside the `--migrate` branch only | do, in L14 |
+| **Pane-only fast path**: diff touches only `apps/mail/**` → skip server build + pm2 restart, keep SPA build, release, health, VPN | server build + restart, unmeasured | wrong diff detection ships stale server: compute from `git diff --name-only last-good..HEAD`, any non-mail path = full deploy | do, in L14 |
+| **Per-step timestamps** in the deploy log | gives the evidence we lack today | none | do, in L14 (2 lines) |
+| Build on VPS, ship artifact | tsc/build on VPS banned (AGENTS VPS rule) | VPS freeze | **no** |
+| Blue/green EC2 | big | infra project | no |
+
+L14 = ~40 product lines in `ops-deploy.sh`/`deploy-ec2.sh`, test `deploy-retention.test.ts` style shell test. Ships before the A-rest deploy so that deploy measures it. Deploy scripts are edited only via PR in a main-based lane; the deploy itself still runs from `.worktrees/recover-parse-failure` after it pulls main.
+
+### Lane changes from the review
+
+| Change | Why |
+|---|---|
+| L7 starts with a **read-only Add-On DOM dump** on HRDAV Labtest (item codes, dialog, remove path, Guest Details Arrival Type/Time fields). Mint only after it | Grok P0; Pomerado mint writes once, no runtime authority check |
+| **One HRDAV canary queue** (canary lane, not coordinator): L2 room-count read → L7 DOM read → A-fix live quote → L7 mints → DV PDF K2 check. L9 (confirmation probe) and L11 replays run on **HRCEN** (separate lock) | Grok P0 lock contention |
+| Pomerado runs on EC2 (VPN) in its own dir with its own Node 24 (EC2 is 22.23); pm2 Node untouched | Pomerado needs ≥24.21 |
+| A0a match = exact label after stripping `room/rooms`, case-fold; one match or refuse with a dropdown | Grok P2: "contains" binds `King` inside longer labels |
+| A2 keeps `matchesProfile` tight; capacities change only from the L2 read | Grok P2 |
+| L11 publishes raw → unique → plannable → priced counts first; < 10 = "measured delta", not pass. Price truth = same-day grid or staff quote ≤ 3 days old | MISTAKES 10-25 DoD 2 |
+| L13 migrate fix = set `NODE_EXTRA_CA_CERTS` to the RDS bundle in the migrate step, proven by one `--migrate` dry run, not "1 line" | Grok P1; rc=70 at 14:20Z |
+| L12 (login reuse) = scope lane now; build only after L7 frees HRDAV | HMS lock |
+| B4 (Jarat Tours draft): kept per owner, **last** lane, DV only, draft for staff to edit/send. Template from 1 outbound + call fields (flight, pick-up time, pax). Flagged overfit risk (n=1) | owner "everything now" vs Grok P1 |
+| DV PDF (DS4-K2): code merged #567 04:50Z and live since; the live canary was "prepared, not run" (`/tmp/or2/fix/DS4-K2.live.md`). Run it in the HRDAV canary queue (read-only, ~5 min) | owner thought done: code yes, proof no |
+
+### Failure cases (per lane) and what each costs
+
+| Lane | Likely failure | Detect | Response | ETA hit |
+|---|---|---|---|---|
+| L1 A0a | Label list differs from HMS labels on other rooms | unit test over all 9 HRDAV labels + staff spellings | add alias rows, no fuzzy | +10 |
+| L2 A2 | Room master ≠ sellable inventory | L2 read shows both | keep max(inventory) floor; log | +20 |
+| L3 A4 | Prefill map breaks HRCEN | existing HRCEN prefill tests | property-keyed map, HRCEN unchanged | +15 |
+| L4–L6 pane | Rebase conflicts in `quote-workflow-panel.tsx` / `booking-card.tsx` | merge-gate | append-only; rebase after each merge (~5 min each) | +5–20 |
+| any PR | Greptile P1 round | Apex | lane fixes; round 3 = split | +15–30 per round |
+| L7 Pomerado | Azure client override fails | B0 first call | stop L7 (no fallback by owner choice), report | track B blocked |
+| L7 | Pomerado's login kicks the prod HRDAV slot (same user) | prod slot health after first login | run mints now (after SAST hours); if kicked, restart slot via systemd and mint only off-hours | +20 |
+| L7 | Add-On DOM differs from screenshot / remove fails | DOM dump + readback | 2 live loops max, then written DOM diagnosis, park (G4) | +60–120 |
+| L8 | Minted op signature changes after mint | stacked branch on mint output | L8 waits for the mint's final signature | +20 |
+| L9 C1 | Infor sends nothing for Labtest | Labtest create on HRCEN | C2 dropped; staff copy says "forward manually" | 0 |
+| L10 queue | Idempotency key change re-prepares old mail | test with dead-lettered key | epoch in key only for dead letters | +15 |
+| L11 | < 10 plannable future-arrival threads | count table first | report delta; owner decides bar | 0 (honest) |
+| L14 deploy | Diff detection wrong → stale server | first fast deploy checks `/health` build stamp vs SHA | fall back to full deploy flag | +10 |
+| L15 disk | Trace off hides a failure we need | traces still on failure | — | 0 |
+| deploy | dead-letter gate rc=1 | known (prod gotcha) | treat as pass when health/VPN OK | 0 |
+| deploy | `--migrate` CA fail rc=70 | known | L13 lands before any migrate deploy | +15 |
+| HMS | HRCEN/HRDAV login 404 / maintenance | login probe | queue pauses; not an incident | wait |
+
+### ETA (ledger actuals: code-ui p50 41 / p75 75, code-server 43 / 75, deploy 7 / 14, live-hms 22 / 85; or2 ~50 min per chain link)
+
+| Milestone | p50 | p75 | Chain |
+|---|---:|---:|---|
+| **DV toast + profile fix live** (L1, L2, L15 → deploy → HRDAV quote) | **75 min** | **140** | 1 link 45 + deploy 8 + live 22 (p75 75 + 14 + 50) |
+| A-rest pane UX + L3/L10/L13/L14 live | 120 | 200 | 1 link + 4 merge rebases + 2nd deploy + viewer run |
+| Quote bar n≥10 scored (L11, HRCEN) | 70 | 130 | research 26/52 + replay queue |
+| Pomerado Add-On add/remove/arrival on Labtest (L7) | 180 | 300 | B0 30 + DOM read 22 + first Labtest Save floor 140–184 (MISTAKES 10-25) |
+| Add-On in pane, deployed, Labtest canary (L8 → deploy 3) | 270 | 420 | L7 + 2 stacked PRs + deploy + canary |
+| B4 draft, L12 build | +45 after their parents | +75 | single link each |
+
+Whole run p50 ~4.5 h, p75 ~7 h; Pomerado is the long pole. Everything else lands in the first ~2 h.
+
+### Cost (ballpark, $ at API prices; subscriptions marked)
+
+| Who | What | $ |
+|---|---|---:|
+| Cursor `auto` | 12 coding lanes | subscription |
+| Codex Luna max | L11 quote bar, L12 scope | subscription |
+| Greptile Apex | ~16 PRs | subscription |
+| Azure GPT-6.1 Sol / Luna | Pomerado mints | ballpark < $10, unmeasured |
+| Opus coordinator | ~4.5 h, scripts do dispatch/gates/deploy | ballpark $30–60 (or2 was ~$82 with coordinator doing live work) |
