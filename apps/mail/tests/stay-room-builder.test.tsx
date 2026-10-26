@@ -71,7 +71,7 @@ describe('stay and room builder', () => {
   it('names each room type with its HMS code, e.g. Standard Queen (STQN)', () => {
     renderPanel(requestSession([row('a1', dateA, { roomPreference: 'STQN' })]));
     expect(screen.getByRole('option', { name: 'Standard Queen (STQN)' })).toBeTruthy();
-    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('STQN');
+    expect((screen.getByLabelText('Room type') as unknown as HTMLSelectElement).value).toBe('STQN');
   });
 
   it('shows the unknown room code the email asked for and still allows search on dates and occupancy', () => {

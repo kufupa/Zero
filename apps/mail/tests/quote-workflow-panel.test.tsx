@@ -323,10 +323,10 @@ describe('QuoteWorkflowPanel', () => {
     const originalCode = initial.groups[0]?.roomTypeCode ?? initial.groups[0]?.roomPreference;
     render(<EditableStayPanel initial={initial} />);
     fireEvent.click(screen.getAllByRole('button', { name: 'Copy room' })[0]!);
-    const roomsBeforeEdit = screen.getAllByLabelText('Room type') as HTMLSelectElement[];
+    const roomsBeforeEdit = screen.getAllByLabelText('Room type') as unknown as HTMLSelectElement[];
     expect(roomsBeforeEdit).toHaveLength(3);
     fireEvent.change(roomsBeforeEdit[0]!, { target: { value: 'LUXKNG' } });
-    const roomsAfterEdit = screen.getAllByLabelText('Room type') as HTMLSelectElement[];
+    const roomsAfterEdit = screen.getAllByLabelText('Room type') as unknown as HTMLSelectElement[];
     expect(roomsAfterEdit[0]?.value).toBe('LUXKNG');
     expect(roomsAfterEdit[1]?.value).toBe('single');
     expect(roomsAfterEdit[2]?.value).toBe(originalCode);
@@ -354,7 +354,7 @@ describe('QuoteWorkflowPanel', () => {
         offers: [],
         rateOptions: [],
         selectedOfferIds: [],
-        steps: base.steps.map((step) => ({ ...step, status: 'pending' })),
+        steps: base.steps.map((step) => ({ ...step, status: 'pending' as const })),
       },
       [],
     );
@@ -530,7 +530,7 @@ describe('QuoteWorkflowPanel', () => {
         offers: [],
         rateOptions: [],
         selectedOfferIds: [],
-        steps: base.steps.map((step) => ({ ...step, status: 'pending' })),
+        steps: base.steps.map((step) => ({ ...step, status: 'pending' as const })),
       },
       [],
     );
@@ -813,7 +813,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(alternativeGroup?.parentElement?.querySelector('h5')?.textContent).toMatch(/rates$/);
     const useThis = within(alternativeGroup as HTMLElement).getByRole('button', { name: 'Use this' });
     expect(useThis.className).toContain('min-h-11');
-    expect((screen.getByLabelText('Room type') as HTMLSelectElement).value).toBe('SKNG');
+    expect((screen.getByLabelText('Room type') as unknown as HTMLSelectElement).value).toBe('SKNG');
     expect(onPatchGroup).not.toHaveBeenCalled();
     expect(onRunStep).not.toHaveBeenCalled();
 
@@ -982,7 +982,7 @@ describe('QuoteWorkflowPanel', () => {
       <QuoteWorkflowPanel session={session} onRunStep={onRunStep} onPatchGroup={onPatchGroup} />,
     );
 
-    const roomTypes = screen.getAllByLabelText('Room type') as HTMLSelectElement[];
+    const roomTypes = screen.getAllByLabelText('Room type') as unknown as HTMLSelectElement[];
     expect(roomTypes.every((input) => !input.disabled)).toBe(true);
     const searchButton = screen.getByRole('button', { name: 'Search availability' }) as HTMLButtonElement;
     expect(searchButton.disabled).toBe(true);
@@ -1351,7 +1351,7 @@ describe('QuoteWorkflowPanel', () => {
     expect(within(extraGroup).getByText('Dinner price — enter amount')).toBeDefined();
     expect((within(extraGroup).getByLabelText('Dinner allowance amount') as HTMLInputElement).disabled).toBe(false);
     expect(['per_person_per_night', 'per_room_per_night', 'per_person']).not.toContain(
-      (within(extraGroup).getByLabelText('Dinner add-on unit') as HTMLSelectElement).value,
+      (within(extraGroup).getByLabelText('Dinner add-on unit') as unknown as HTMLSelectElement).value,
     );
     expect((screen.getByRole('button', { name: 'Prepare PDF' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: 'Download Excel' }) as HTMLButtonElement).disabled).toBe(true);
@@ -1707,7 +1707,7 @@ describe('the Find in HMS picker in the quote header', () => {
       <QuoteWorkflowPanel session={session} rateCatalogue={rateCatalogue as never} />,
     );
     assertRatePlanVisible();
-    const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    const planSelect = screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement;
     const values = [...planSelect.options].map((option) => option.value);
     // The fixture asks Dinner B&B on every row, so the plan defaults to Government.
     expect(planSelect.value).toBe('government');
@@ -1742,7 +1742,7 @@ describe('the Find in HMS picker in the quote header', () => {
     expect(governmentSession.staffHeader.salesStrategy).toBe('Government');
     render(<QuoteWorkflowPanel session={governmentSession} rateCatalogue={rateCatalogue as never} />);
     assertRatePlanVisible();
-    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government');
+    expect((screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement).value).toBe('government');
     expect(screen.getByRole('option', { name: 'All government rates' })).toBeDefined();
   });
 
@@ -2423,7 +2423,7 @@ describe('the Find in HMS picker in the quote header', () => {
     assertRatePlanVisible();
     const ratesStep = container.querySelector<HTMLElement>('#quote-rates');
     if (!ratesStep) throw new Error('Expected the nested Availability & rates controls.');
-    const planSelect = within(ratesStep).getByLabelText('Rate plan') as HTMLSelectElement;
+    const planSelect = within(ratesStep).getByLabelText('Rate plan') as unknown as HTMLSelectElement;
     const barCard = within(ratesStep).getByRole('button', { name: /Best Available Rate BAR/ });
     expect(planSelect.compareDocumentPosition(barCard) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(planSelect.querySelector('option[value="BAR"]')?.textContent).toContain('(read by Nava)');
@@ -2463,7 +2463,7 @@ describe('the Find in HMS picker in the quote header', () => {
       <QuoteWorkflowPanel session={governmentSession} rateCatalogue={rateCatalogue} onPatchStaffHeader={onPatchStaffHeader} />,
     );
     assertRatePlanVisible();
-    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('government');
+    expect((screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement).value).toBe('government');
     fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'BAR' } });
     expect(onPatchStaffHeader).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' }, { staffEdit: true });
   });
@@ -2492,7 +2492,7 @@ describe('the Find in HMS picker in the quote header', () => {
   it('catalogue down: All rates restores BAR after a government pick, and public is offered', () => {
     const onPatchStaffHeader = vi.fn();
     render(<RatePlanGate initial={sessionFromFixture('public-single')} onPatch={onPatchStaffHeader} />);
-    const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    const planSelect = screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement;
     expect([...planSelect.options].map((option) => option.value)).toEqual(
       expect.arrayContaining(['all', 'public', 'government']),
     );
@@ -2527,7 +2527,7 @@ describe('the Find in HMS picker in the quote header', () => {
     });
     expect(governmentSession.staffHeader.salesStrategy).toBe('Government');
     render(<RatePlanGate initial={governmentSession} onPatch={onPatchStaffHeader} />);
-    const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    const planSelect = screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement;
     expect(planSelect.value).toBe('government');
     fireEvent.change(planSelect, { target: { value: 'all' } });
     expect(onPatchStaffHeader).not.toHaveBeenCalledWith(expect.objectContaining({ salesStrategy: 'BAR' }));
@@ -2557,7 +2557,7 @@ describe('the Find in HMS picker in the quote header', () => {
     const dinnerSession = reduceQuoteSession(base, { type: 'analysis_ready', analysis });
 
     render(<RatePlanGate initial={dinnerSession} onPatch={onPatch} />);
-    const planSelect = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    const planSelect = screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement;
     expect(planSelect.value).toBe('government');
     fireEvent.change(planSelect, { target: { value: 'public' } });
     expect(onPatch).toHaveBeenLastCalledWith({ salesStrategy: 'BAR' });
