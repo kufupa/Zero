@@ -1,13 +1,17 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { useState } from 'react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import { StayRateGrid } from '../components/quote-workflow/stay-rate-grid';
 import type { BarGridCell } from '../components/quote-workflow/rate-cards';
 import type { RatePlanChoice } from '../components/quote-workflow/rate-plan-select';
 import { draftMoney } from '../lib/quote-workflow/multi-option-draft';
+import { initialQuoteSession, reduceQuoteSession, stayKeyForGroup } from '../lib/quote-workflow/session';
+import type { QuoteSession, StaffQuoteAllocation, StayGroupRequirement } from '../lib/quote-workflow/types';
 
 afterEach(cleanup);
 
@@ -159,5 +163,114 @@ describe('StayRateGrid', () => {
     expect(screen.queryByText('Public rates — contract not checked')).toBeNull();
     const checkedGrid = screen.getByRole('group', { name: 'Room, rate and board choices' });
     expect(within(checkedGrid).getByText('Contract')).toBeDefined();
+  });
+});
+
+const GRID_STAY: StayGroupRequirement = {
+  id: 'row-1',
+  arrivalDate: '2026-11-12',
+  departureDate: '2026-11-14',
+  quantity: 1,
+  adults: 2,
+  childrenAges: [],
+  board: 'bb',
+  specialRequests: [],
+  fields: {},
+};
+
+function gridPickSession(): QuoteSession {
+  let session = reduceQuoteSession(initialQuoteSession(), {
+    type: 'selection',
+    binding: {
+      transportId: 't1',
+      mailboxEmail: 'desk@example.test',
+      storeId: 'store',
+      folderEntryId: 'inbox',
+      entryId: 'e1',
+      selectionEpoch: 1,
+      scopeEpoch: 1,
+    },
+  });
+  session = reduceQuoteSession(session, {
+    type: 'analysis_ready',
+    analysis: { intent: 'quote', groups: [GRID_STAY], secondaryAsks: [], alternatives: [] },
+  });
+  const group = session.groups[0]!;
+  const stayKey = stayKeyForGroup(group);
+  const quote = {
+    workflowRunId: 'run-1',
+    revisionRef: 'rev-1',
+    factRefs: [],
+    messageId: 'mail-1',
+    threadId: 'thread-1',
+    sourceHash: 'ab'.repeat(32),
+    selectionEpoch: 1,
+    inputRevision: session.inputRevision,
+    inputDigest: 'digest',
+    totalMinor: 120_000,
+    currency: 'ZAR',
+    quoteRequestKey: stayKey,
+    approvedHeader: session.staffHeader,
+    availabilityBoard: [
+      {
+        groupId: group.id,
+        roomCode: 'STWN',
+        roomLabel: 'Standard Twin',
+        rateCode: 'FLEX',
+        rateLabel: 'Flexible',
+        board: 'bb',
+        boardLabel: 'Bed and breakfast',
+        nightlyPriceMinor: 120_000,
+        roomsLeft: 3,
+      },
+    ],
+  } satisfies StaffQuoteAllocation;
+  return {
+    ...session,
+    staffQuote: quote,
+    staffQuotes: { ...session.staffQuotes, [stayKey]: quote },
+  };
+}
+
+function WiredGridPanel({
+  initial,
+  onRunStep,
+  seen,
+}: {
+  initial: QuoteSession;
+  onRunStep: (stepId: string) => void;
+  seen: { session: QuoteSession | null };
+}) {
+  const [session, setSession] = useState(initial);
+  seen.session = session;
+  return (
+    <QuoteWorkflowPanel
+      session={session}
+      onStayAction={(action) => setSession((current) => reduceQuoteSession(current, action))}
+      onPatchGroup={(groupId, patch) =>
+        setSession((current) => reduceQuoteSession(current, { type: 'patch_group', groupId, patch }))
+      }
+      onRunStep={onRunStep}
+    />
+  );
+}
+
+describe('StayRateGrid in the quote panel', () => {
+  it('pins the clicked room, rate and board and re-runs that stay', async () => {
+    const onRunStep = vi.fn();
+    const seen = { session: null as QuoteSession | null };
+    const initial = gridPickSession();
+    const stayKey = stayKeyForGroup(initial.groups[0]!);
+    render(<WiredGridPanel initial={initial} onRunStep={onRunStep} seen={seen} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Select Standard Twin \(STWN\), Flexible \(FLEX\)/ }));
+
+    await waitFor(() => expect(onRunStep).toHaveBeenCalledWith(`quote-stay-${stayKey}`));
+    expect(seen.session?.groups[0]).toMatchObject({ roomCodes: ['STWN'], rateCode: 'FLEX', board: 'bb' });
+    expect(seen.session?.roomRateBoardSelections?.[initial.groups[0]!.id]).toEqual({
+      roomCode: 'STWN',
+      rateCode: 'FLEX',
+      board: 'bb',
+    });
   });
 });

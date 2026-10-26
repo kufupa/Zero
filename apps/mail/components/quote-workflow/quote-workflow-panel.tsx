@@ -1331,9 +1331,19 @@ export function QuoteWorkflowPanel({
                             contractChecked={contractChecked}
                             plans={ratePlans}
                             selection={session.roomRateBoardSelections?.[group.id]}
-                            onSelect={(selection) =>
-                              onStayAction?.({ type: 'room_rate_board_selected', groupId: group.id, selection })
-                            }
+                            onSelect={(selection) => {
+                              onStayAction?.({ type: 'room_rate_board_selected', groupId: group.id, selection });
+                              const match = (session.rateOptions ?? []).find(
+                                (option) =>
+                                  option.incomplete !== true &&
+                                  option.groupId === group.id &&
+                                  option.roomCode === selection.roomCode &&
+                                  option.rateCode === selection.rateCode &&
+                                  option.board === selection.board,
+                              );
+                              const picked = rateOptionForGridPick(group.id, selection, match);
+                              if (picked) pickRate(picked);
+                            }}
                           />
                           {rateGroup?.options.length ? (
                             <RateCards
@@ -1511,4 +1521,32 @@ export function QuoteWorkflowPanel({
       />
     </div>
   );
+}
+
+/** Grid click uses the rate-card pick. An unknown board is not a rate, so it does not pin or re-price. */
+function rateOptionForGridPick(
+  groupId: string,
+  selection: { roomCode: string; rateCode: string; board: string },
+  match: RateOption | undefined,
+): RateOption | null {
+  if (match) return match;
+  if (selection.board !== 'room_only' && selection.board !== 'bb' && selection.board !== 'dinner_bb') return null;
+  return {
+    id: `grid:${groupId}:${selection.roomCode}:${selection.rateCode}:${selection.board}`,
+    groupId,
+    board: selection.board,
+    boardLabel: selection.board,
+    rateCode: selection.rateCode,
+    rateLabel: selection.rateCode,
+    roomCode: selection.roomCode,
+    roomLabel: selection.roomCode,
+    contract: false,
+    onlyContract: false,
+    matchesRequest: false,
+    perNightMinor: 0,
+    totalMinor: 0,
+    currency: '',
+    priced: 'summary',
+    selected: false,
+  };
 }
