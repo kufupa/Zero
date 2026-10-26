@@ -31,7 +31,6 @@ function partyFields(
   agencySelected = false,
 ) {
   const shared = {
-    name: 'Example Group',
     parties: agencySelected
       ? { agency: { kind: 'agency' as const, nativeId: 'agency-1', name: 'Example Agency' } }
       : {},
@@ -45,8 +44,8 @@ function partyFields(
 
   return (
     <>
-      <PartyPicker {...shared} kind="agency" />
-      <PartyPicker {...shared} kind="company" />
+      <PartyPicker {...shared} autoLookup name="Example Agency" kind="agency" />
+      <PartyPicker {...shared} autoLookup name="Example Group" kind="company" />
     </>
   );
 }
@@ -57,6 +56,7 @@ describe('PartyPicker shared job status', () => {
     const pendingReadbacks: Array<(result: HmsJobView | null) => void> = [];
     const jobTransport: HmsJobTransport = {
       queue: vi.fn(async () => ({ runId: 'retry-run' })),
+      jobQueueEnabled: vi.fn(() => new Promise<boolean>(() => {})),
       status: vi.fn((request: Parameters<HmsJobTransport['status']>[0]) =>
         'runId' in request
           ? Promise.resolve(view)
@@ -66,6 +66,7 @@ describe('PartyPicker shared job status', () => {
     const { rerender } = render(partyFields(jobTransport, 'message-1'));
 
     await waitFor(() => expect(pendingReadbacks).toHaveLength(2));
+    expect(screen.getAllByRole('status')).toHaveLength(1);
     await act(async () => {
       pendingReadbacks.splice(0).forEach((resolve) => resolve(view));
     });
@@ -87,5 +88,39 @@ describe('PartyPicker shared job status', () => {
     expect(screen.getAllByRole('alert')).toHaveLength(1);
     expect(screen.getByRole('alert').textContent).toContain("Couldn't reach HMS.");
     expect(screen.getAllByRole('button', { name: 'Retry' })).toHaveLength(1);
+  });
+
+  it('keeps inline lookup progress as the single status while job read-back is pending', async () => {
+    const pendingReadbacks: Array<(result: HmsJobView | null) => void> = [];
+    const jobTransport: HmsJobTransport = {
+      queue: vi.fn(async () => ({ runId: 'retry-run' })),
+      status: vi.fn(() => new Promise<HmsJobView | null>((resolve) => pendingReadbacks.push(resolve))),
+    };
+
+    render(
+      <PartyPicker
+        autoLookup
+        name="Example Company"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={jobTransport}
+        threadId="thread-1"
+        sourceMessageId="message-1"
+        onPick={vi.fn()}
+        onClear={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(pendingReadbacks).toHaveLength(1));
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    expect(screen.getByRole('status').textContent).toContain(
+      'Searching HMS for "Example Company" (company)',
+    );
+    expect(screen.queryByText('Checking for a background HMS lookup…')).toBeNull();
+
+    await act(async () => {
+      pendingReadbacks[0](null);
+    });
   });
 });
