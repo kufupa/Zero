@@ -1,41 +1,54 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createPropertyReadLock,
   propertyReadLockKey,
   type PropertyReadConnection,
 } from '../src/hms/property-read-lock.js';
+import { spawnEnvWithHeldLock } from '../src/ai/staff-quote-installation.js';
 import { staffQuoteChildEnv } from '../src/ai/staff-quote-run.js';
 import { createSlotSession } from '../src/hms/slot-session.js';
-import { withLeasedReadPage as createPreflightPage } from '../tooling/playwright-quote/create-preflight.mjs';
-import { withLeasedReadPage as fetchQuotePage } from '../tooling/playwright-quote/fetch-quote.mjs';
-import { withLeasedReadPage as findBatchPage } from '../tooling/playwright-quote/find-batch.mjs';
-import { withLeasedReadPage as deeplinkPage } from '../tooling/playwright-quote/hms-deeplink-probe.mjs';
-import { withLeasedReadPage as partyLookupPage } from '../tooling/playwright-quote/party-lookup.mjs';
-import { withLeasedReadPage as profilePage } from '../tooling/playwright-quote/property-profile.mjs';
+import { main as findBatchMain } from '../tooling/playwright-quote/find-batch.mjs';
+import { runDeeplinkProbe } from '../tooling/playwright-quote/hms-deeplink-probe.mjs';
+import { partyLookupPropertyCode } from '../tooling/playwright-quote/party-lookup.mjs';
+import { parseStayProperty } from '../tooling/playwright-quote/property-profile.mjs';
 import {
+  lookupActiveProperty,
   prepareReadCliInput,
   READ_CLI_TOOLS,
   resetSharedReadCliLease,
   sharedReadCliLease,
+  withReadCliPage,
 } from '../tooling/playwright-quote/read-cli-lease.mjs';
-import { withLeasedReadPage as readCodesPage } from '../tooling/playwright-quote/read-reservation-codes.mjs';
-import { withLeasedReadPage as readFieldsPage } from '../tooling/playwright-quote/read-reservation-fields.mjs';
-import { withLeasedReadPage as stayLookupPage } from '../tooling/playwright-quote/stay-lookup.mjs';
+import { main as stayLookupMain } from '../tooling/playwright-quote/stay-lookup.mjs';
 import { describe, expect, it, vi } from 'vitest';
 
 const GENERIC_PROPERTY = 'HTLAA';
 const LOCK_TENANT = 'tenant-generic';
+const TOOLING = join(dirname(fileURLToPath(import.meta.url)), '../tooling/playwright-quote');
 
-const CALLERS = {
-  'fetch-quote': fetchQuotePage,
-  'party-lookup': partyLookupPage,
-  'property-profile': profilePage,
-  'find-batch': findBatchPage,
-  'stay-lookup': stayLookupPage,
-  'read-reservation-codes': readCodesPage,
-  'read-reservation-fields': readFieldsPage,
-  'create-preflight': createPreflightPage,
-  'hms-deeplink-probe': deeplinkPage,
-} as const;
+const ARGV_CLIS = [
+  'find-batch',
+  'stay-lookup',
+  'read-reservation-codes',
+  'read-reservation-fields',
+  'create-preflight',
+  'hms-deeplink-probe',
+] as const;
+
+const OMITTED_ARGV: Record<(typeof ARGV_CLIS)[number], string[]> = {
+  'stay-lookup': ['--mode', 'find', '--confirmation', '1-1', '--out', '/tmp'],
+  'find-batch': ['--input', 'x.json', '--out', 'y.jsonl'],
+  'read-reservation-codes': ['--input', 'x.json'],
+  'read-reservation-fields': ['--input', 'x.json', '--out', 'y.jsonl'],
+  'create-preflight': ['--request', 'x.json'],
+  'hms-deeplink-probe': ['--conf', '1-1'],
+};
+
+function cliSource(name: string) {
+  return readFileSync(join(TOOLING, `${name}.mjs`), 'utf8');
+}
 
 function secretFor(propertyCode: string) {
   return {
@@ -59,7 +72,47 @@ function lockConnection(): PropertyReadConnection {
 
 describe('read CLI session lease', () => {
   it('omitted property refuses and read callers share the lease', async () => {
-    expect(Object.keys(CALLERS).sort()).toEqual([...READ_CLI_TOOLS].sort());
+    expect([...READ_CLI_TOOLS].sort()).toEqual(
+      [...ARGV_CLIS, 'fetch-quote', 'party-lookup', 'property-profile'].sort(),
+    );
+
+    for (const name of ARGV_CLIS) {
+      const source = cliSource(name);
+      expect(source).toContain('parseStayProperty');
+      expect(source).toContain('withReadCliPage');
+      expect(parseStayProperty(OMITTED_ARGV[name])).toMatchObject({
+        ok: false,
+        error: 'PROPERTY_REQUIRED',
+        exitCode: 2,
+      });
+    }
+    expect(await stayLookupMain(OMITTED_ARGV['stay-lookup'])).toBe(2);
+    expect(await findBatchMain(OMITTED_ARGV['find-batch'])).toBe(2);
+
+    expect(cliSource('stay-lookup')).not.toMatch(/await login\(/);
+    expect(cliSource('hms-deeplink-probe')).not.toMatch(/seed\.close/);
+    expect(cliSource('find-batch')).toContain('page !== leased');
+
+    expect(partyLookupPropertyCode({})).toBeNull();
+    expect(partyLookupPropertyCode({ propertyCode: '' })).toBeNull();
+    expect(partyLookupPropertyCode({ propertyCode: 'HTLZZ' })).toBeNull();
+    expect(lookupActiveProperty('')).toBeNull();
+    expect(lookupActiveProperty('HTLZZ')).toBeNull();
+    expect(cliSource('fetch-quote')).toContain('lookupActiveProperty(request.propertyCode)');
+    expect(cliSource('fetch-quote')).toContain('withReadCliPage');
+    expect(cliSource('party-lookup')).toContain('partyLookupPropertyCode');
+    expect(cliSource('party-lookup')).toContain('withReadCliPage');
+    expect(cliSource('property-profile')).toContain('export function parseStayProperty');
+
+    await expect(
+      runDeeplinkProbe({
+        env: {
+          HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:9222',
+          HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
+        },
+        conf: '1-1',
+      }),
+    ).rejects.toThrow('PROPERTY_REQUIRED');
 
     const page = { id: 'persistent-page' };
     const newPage = vi.fn(async () => ({ id: 'fresh-page' }));
@@ -93,26 +146,24 @@ describe('read CLI session lease', () => {
       context,
     };
 
-    for (const caller of Object.values(CALLERS)) {
-      await expect(caller({ ...omitted, propertyCode: '' }, run)).rejects.toMatchObject({
-        name: 'SlotLeaseRefusedError',
-        code: 'property_unknown',
-        payload: undefined,
-      });
-      await expect(caller({ ...omitted }, run)).rejects.toMatchObject({
-        code: 'property_unknown',
-        payload: undefined,
-      });
-    }
+    await expect(withReadCliPage({ ...omitted, propertyCode: '' }, run)).rejects.toMatchObject({
+      name: 'SlotLeaseRefusedError',
+      code: 'property_unknown',
+      payload: undefined,
+    });
+    await expect(withReadCliPage({ ...omitted }, run)).rejects.toMatchObject({
+      code: 'property_unknown',
+      payload: undefined,
+    });
     expect(newPage).not.toHaveBeenCalled();
     expect(loginPage).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
 
     const pages = await lock.withLock(async (connection) => {
       const seen: unknown[] = [];
-      for (const caller of Object.values(CALLERS)) {
+      for (let i = 0; i < 2; i += 1) {
         seen.push(
-          await caller(
+          await withReadCliPage(
             {
               propertyCode: GENERIC_PROPERTY,
               tenantId: LOCK_TENANT,
@@ -142,6 +193,7 @@ describe('read CLI session lease', () => {
       code === GENERIC_PROPERTY ? { propertyCode: GENERIC_PROPERTY } : null;
     const otherProperty = propertyReadLockKey(LOCK_TENANT, 'HTLBB');
     const databaseUrl = 'postgres://lock-matrix.invalid/unused';
+    const legacyTenant = 'HMS_LEGACY';
     const prepare = (env: NodeJS.ProcessEnv) =>
       prepareReadCliInput({
         propertyCode: GENERIC_PROPERTY,
@@ -150,10 +202,30 @@ describe('read CLI session lease', () => {
         env,
       });
 
+    const child = staffQuoteChildEnv(LOCK_TENANT, GENERIC_PROPERTY, {
+      DATABASE_URL: databaseUrl,
+      HMS_EXPECTED_TENANT: legacyTenant,
+    });
+    const requestEnv = {
+      DATABASE_URL: databaseUrl,
+      HMS_EXPECTED_TENANT: legacyTenant,
+    };
+    const lockOnly = spawnEnvWithHeldLock(requestEnv, {
+      HMS_PROPERTY_LOCK_HELD: child.HMS_PROPERTY_LOCK_HELD,
+    });
+    await expect(
+      prepareReadCliInput({
+        propertyCode: GENERIC_PROPERTY,
+        lookupProperty,
+        env: lockOnly,
+      }),
+    ).rejects.toMatchObject({ name: 'SlotLeaseRefusedError', code: 'lock_token_mismatch' });
+
+    const forwarded = spawnEnvWithHeldLock(requestEnv, child);
     const matched = await prepareReadCliInput({
       propertyCode: GENERIC_PROPERTY,
       lookupProperty,
-      env: staffQuoteChildEnv(LOCK_TENANT, GENERIC_PROPERTY, { DATABASE_URL: databaseUrl }),
+      env: forwarded,
     });
     expect(matched.lockSource).toBe('parent-token');
     expect(matched.tenantId).toBe(LOCK_TENANT);

@@ -199,8 +199,8 @@ export async function runDeeplinkProbe({
   try {
     // A new context inside the borrowed browser. ignoreHTTPSErrors stays off, like the staff tools.
     context = await newBorrowedContext(browser, { viewport: { width: 1600, height: 1000 } }, env);
-    await withReadCliPage({ propertyCode, secret, context, browser, env }, async ({ page: seed }) => {
-      await seed.close().catch(() => {});
+    await withReadCliPage({ propertyCode, secret, context, browser, env }, async () => {
+      // Keep the leased shell. Probe URLs on extra pages so boundPage stays live.
       for (const [id, url] of probePlan({ origin, conf, stayId })) {
         const page = await context.newPage();
         try {

@@ -118,7 +118,7 @@ async function appendRow(path, row) {
   await appendFile(path, `${JSON.stringify(row)}\n`, { mode: 0o600 });
 }
 
-async function main(argv = process.argv.slice(2), env = process.env) {
+export async function main(argv = process.argv.slice(2), env = process.env) {
   const property = parseStayProperty(argv);
   if (!property.ok) {
     process.stderr.write(`${property.error}\n`);
@@ -199,11 +199,15 @@ async function main(argv = process.argv.slice(2), env = process.env) {
           outcome: row.outcome, processed, remaining: pending.length - processed,
         })}\n`);
 
-        // A fresh page per confirmation: returning to the Guest Stay list in place proved unreliable on the live UI.
-        await page.close().catch(() => {});
-        page = await createStayPage(context, shellUrl);
-        if (index + 1 < pending.length && parsed.args.pauseMs > 0) await delay(parsed.args.pauseMs);
+        // A fresh page per later confirmation: returning to the Guest Stay list in place
+        // proved unreliable on the live UI. Never close the leased shell — boundPage must stay live.
+        if (index + 1 < pending.length) {
+          if (page !== leased) await page.close().catch(() => {});
+          page = await createStayPage(context, shellUrl);
+          if (parsed.args.pauseMs > 0) await delay(parsed.args.pauseMs);
+        }
       }
+      if (page !== leased) await page.close().catch(() => {});
     });
   } finally {
     await Promise.race([context.close().catch(() => {}), delay(5000)]);

@@ -1021,9 +1021,9 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
     );
   });
 
-  it('passes --property HRDAV only for the Da Vinci target', () => {
+  it('passes --property for every HMS target', () => {
     expect(paneStayCreatePropertyArgs(DAVINCI_HMS_READ_TARGET)).toEqual(['--property', 'HRDAV']);
-    expect(paneStayCreatePropertyArgs(CENTURION_HMS_READ_TARGET)).toEqual([]);
+    expect(paneStayCreatePropertyArgs(CENTURION_HMS_READ_TARGET)).toEqual(['--property', 'HRCEN']);
     expect(paneStayCreatePropertyArgs(null)).toEqual([]);
   });
 

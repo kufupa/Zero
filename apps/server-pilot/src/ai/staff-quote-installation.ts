@@ -87,17 +87,24 @@ export type InstalledStaffQuoteServiceOptions = Pick<
   propertyCode?: string;
   /**
    * Spawn env snapped while the parent holds this property lock.
-   * Must include HMS_PROPERTY_LOCK_HELD. Unset when this process is the lock owner.
+   * Must include HMS_PROPERTY_LOCK_HELD and PANE_STAY_TENANT_ID.
+   * Unset when this process is the lock owner.
    */
   childEnv?: NodeJS.ProcessEnv;
 };
 
-function spawnEnvWithHeldLock(
+/** Copy the parent-held lock token and tenant into a quote child env. */
+export function spawnEnvWithHeldLock(
   env: NodeJS.ProcessEnv,
   childEnv: NodeJS.ProcessEnv | undefined,
 ): NodeJS.ProcessEnv {
-  const held = childEnv?.HMS_PROPERTY_LOCK_HELD;
-  return held ? { ...env, HMS_PROPERTY_LOCK_HELD: held } : env;
+  if (!childEnv) return env;
+  const held = childEnv.HMS_PROPERTY_LOCK_HELD;
+  if (!held) return env;
+  const next: NodeJS.ProcessEnv = { ...env, HMS_PROPERTY_LOCK_HELD: held };
+  const tenantId = childEnv.PANE_STAY_TENANT_ID;
+  if (typeof tenantId === 'string' && tenantId) next.PANE_STAY_TENANT_ID = tenantId;
+  return next;
 }
 
 /** Provisional mode: the final result must match the provisional capture the reader accepted. */

@@ -13,7 +13,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
-import { login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
 import {
   arrivalReport, checkCdpEnv, hmsDateToIso, lookupExitCode, parseLookupArgs, parsePanelSnapshot,
   parseRecordsFooter, sameStayRows, searchGuestOutcome, squash, stayIdentityVerdict, windowCovers,
@@ -203,7 +203,7 @@ export async function findOnOpenGuestStay(ctx, { captureScreenshots = true } = {
 }
 
 async function runFind(ctx) {
-  await login(ctx.page, ctx.secret);
+  // Lease already logged in or reused the authenticated shell.
   mark(ctx, 'login');
   await openGuestStay(ctx.page);
   await ctx.page.waitForTimeout(1500);
@@ -262,7 +262,7 @@ export async function searchGuestOnOpenGuestStay(ctx) {
 }
 
 async function runSearchGuest(ctx) {
-  await login(ctx.page, ctx.secret);
+  // Lease already logged in or reused the authenticated shell.
   mark(ctx, 'login');
   await openGuestStay(ctx.page);
   await ctx.page.waitForTimeout(1500);
@@ -302,8 +302,8 @@ async function drive(ctx) {
   if (browser && typeof browser.disconnect === 'function') browser.disconnect();
 }
 
-async function main() {
-  const property = parseStayProperty(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)) {
+  const property = parseStayProperty(argv);
   if (!property.ok) {
     process.stderr.write(`${property.error}\n`);
     return property.exitCode ?? 2;
