@@ -326,17 +326,18 @@ async function main(argv = process.argv.slice(2)) {
   if (hotelMismatch) throw new Error(hotelMismatch);
   const browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
   const context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
-  const page = await withReadCliPage({
-    propertyCode, secret, context, browser,
-  }, ({ page: leased }) => {
-    leased.setDefaultTimeout?.(20000);
-    leased.on?.('dialog', (dialog) => { dialog.dismiss().catch(() => {}); });
-    return leased;
-  });
   try {
-    const result = await runCreatePreflight({ context, page, stay: loaded.request, propertyCode, profile, outDir: dir });
-    process.stdout.write(`${JSON.stringify({ blockers: result.blockerLabels, clickedSave: false })}\n`);
-    process.exitCode = preflightExitCode(result);
+    await withReadCliPage({
+      propertyCode, secret, context, browser, env: process.env,
+    }, async ({ page: leased }) => {
+      leased.setDefaultTimeout?.(20000);
+      leased.on?.('dialog', (dialog) => { dialog.dismiss().catch(() => {}); });
+      const result = await runCreatePreflight({
+        context, page: leased, stay: loaded.request, propertyCode, profile, outDir: dir,
+      });
+      process.stdout.write(`${JSON.stringify({ blockers: result.blockerLabels, clickedSave: false })}\n`);
+      process.exitCode = preflightExitCode(result);
+    });
   } catch (error) {
     const payload = {
       propertyCode,

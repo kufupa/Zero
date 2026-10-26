@@ -332,40 +332,40 @@ async function main() {
     viewport: { width: 1600, height: 1000 },
   });
   await installReadOnlyGuard(context);
-  const page = await withReadCliPage({
-    propertyCode: property.propertyCode, secret, context, browser,
-  }, ({ page: leased }) => {
-    leased.setDefaultTimeout?.(20000);
-    return leased;
-  });
   let reads = 0;
   let failures = 0;
   try {
-    const listSearch = page.waitForResponse(
-      (response) => response.request().method() === 'POST' && /OSRESS\.search/i.test(response.url()),
-      { timeout: 25000 },
-    ).catch(() => null);
-    await openGuestStayScreen(page);
-    await page.getByPlaceholder(/Search by Name, Confirmation/i).first().waitFor({ timeout: 20000 });
-    await listSearch;
-    await page.waitForTimeout(1500);
-    for (const confirmation of pending) {
-      let row;
-      try {
-        row = await Promise.race([
-          readOne(page, confirmation),
-          delay(PER_RESERVATION_MS).then(() => ({ confirmation, outcome: 'timeout' })),
-        ]);
-      } catch (error) {
-        row = { confirmation, outcome: 'execution_failure', error: String(error.message || error).slice(0, 180) };
+    await withReadCliPage({
+      propertyCode: property.propertyCode, secret, context, browser, env: process.env,
+    }, async ({ page: leased }) => {
+      leased.setDefaultTimeout?.(20000);
+      const page = leased;
+      const listSearch = page.waitForResponse(
+        (response) => response.request().method() === 'POST' && /OSRESS\.search/i.test(response.url()),
+        { timeout: 25000 },
+      ).catch(() => null);
+      await openGuestStayScreen(page);
+      await page.getByPlaceholder(/Search by Name, Confirmation/i).first().waitFor({ timeout: 20000 });
+      await listSearch;
+      await page.waitForTimeout(1500);
+      for (const confirmation of pending) {
+        let row;
+        try {
+          row = await Promise.race([
+            readOne(page, confirmation),
+            delay(PER_RESERVATION_MS).then(() => ({ confirmation, outcome: 'timeout' })),
+          ]);
+        } catch (error) {
+          row = { confirmation, outcome: 'execution_failure', error: String(error.message || error).slice(0, 180) };
+        }
+        if (row.outcome === 'read') reads += 1;
+        else failures += 1;
+        await appendFile(jsonlPath, `${JSON.stringify(row)}\n`, { mode: 0o600 });
+        process.stdout.write(`mined reads=${reads} other=${failures} remaining=${pending.length - reads - failures}\n`);
+        await returnToList(page).catch(() => {});
+        await delay(PAUSE_MS);
       }
-      if (row.outcome === 'read') reads += 1;
-      else failures += 1;
-      await appendFile(jsonlPath, `${JSON.stringify(row)}\n`, { mode: 0o600 });
-      process.stdout.write(`mined reads=${reads} other=${failures} remaining=${pending.length - reads - failures}\n`);
-      await returnToList(page).catch(() => {});
-      await delay(PAUSE_MS);
-    }
+    });
   } finally {
     await writeCrosstab(dir, jsonlPath).catch(() => {});
     await context.close().catch(() => {});

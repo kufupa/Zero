@@ -164,49 +164,47 @@ async function main(argv = process.argv.slice(2), env = process.env) {
   let processed = 0;
   try {
     await installReadOnlyGuard(context);
-    page = await withReadCliPage({
+    await withReadCliPage({
       propertyCode: property.propertyCode, secret, context, browser, env,
     }, async ({ page: leased }) => {
       leased.setDefaultTimeout?.(PAGE_TIMEOUT_MS);
-      return leased;
-    });
-    const shellUrl = page.url();
-    await openGuestStay(page);
-    await page.waitForTimeout(1500);
-    const baselineWindow = parsed.args.includeHistory ? await readWindow(page) : null;
-    if (parsed.args.includeHistory && !baselineWindow) throw new Error('HISTORY_WINDOW_UNREADABLE');
+      page = leased;
+      const shellUrl = page.url();
+      await openGuestStay(page);
+      await page.waitForTimeout(1500);
+      const baselineWindow = parsed.args.includeHistory ? await readWindow(page) : null;
+      if (parsed.args.includeHistory && !baselineWindow) throw new Error('HISTORY_WINDOW_UNREADABLE');
 
-    for (let index = 0; index < pending.length; index += 1) {
-      const conf = pending[index];
-      const args = {
-        mode: 'find', confirmation: conf, arrival: null, departure: null, lastName: null, debugHtml: false,
-      };
-      const ctx = { page, args, dir: dirname(outputPath), result: null, started: Date.now(), secret };
-      let timedOut = false;
-      let result;
-      try {
-        const completed = await withTimeout(
-          () => findWithHistory(ctx, parsed.args.includeHistory, baselineWindow),
-          parsed.args.includeHistory ? HISTORY_ITEM_TIMEOUT_MS : ITEM_TIMEOUT_MS,
-        );
-        timedOut = completed.timedOut;
-        result = completed.value;
-      } catch (error) {
-        const message = String(error?.message ?? error);
-        result = { outcome: message.startsWith('AMBIGUOUS_') ? 'ambiguous' : 'execution_failure' };
+      for (let index = 0; index < pending.length; index += 1) {
+        const conf = pending[index];
+        const args = {
+          mode: 'find', confirmation: conf, arrival: null, departure: null, lastName: null, debugHtml: false,
+        };
+        const ctx = { page, args, dir: dirname(outputPath), result: null, started: Date.now(), secret };
+        let result;
+        try {
+          const completed = await withTimeout(
+            () => findWithHistory(ctx, parsed.args.includeHistory, baselineWindow),
+            parsed.args.includeHistory ? HISTORY_ITEM_TIMEOUT_MS : ITEM_TIMEOUT_MS,
+          );
+          result = completed.value;
+        } catch (error) {
+          const message = String(error?.message ?? error);
+          result = { outcome: message.startsWith('AMBIGUOUS_') ? 'ambiguous' : 'execution_failure' };
+        }
+        const row = batchRow(conf, result);
+        await appendRow(outputPath, row);
+        processed += 1;
+        process.stdout.write(`${JSON.stringify({
+          outcome: row.outcome, processed, remaining: pending.length - processed,
+        })}\n`);
+
+        // A fresh page per confirmation: returning to the Guest Stay list in place proved unreliable on the live UI.
+        await page.close().catch(() => {});
+        page = await createStayPage(context, shellUrl);
+        if (index + 1 < pending.length && parsed.args.pauseMs > 0) await delay(parsed.args.pauseMs);
       }
-      const row = batchRow(conf, result);
-      await appendRow(outputPath, row);
-      processed += 1;
-      process.stdout.write(`${JSON.stringify({
-        outcome: row.outcome, processed, remaining: pending.length - processed,
-      })}\n`);
-
-      // A fresh page per confirmation: returning to the Guest Stay list in place proved unreliable on the live UI.
-      await page.close().catch(() => {});
-      page = await createStayPage(context, shellUrl);
-      if (index + 1 < pending.length && parsed.args.pauseMs > 0) await delay(parsed.args.pauseMs);
-    }
+    });
   } finally {
     await Promise.race([context.close().catch(() => {}), delay(5000)]);
     try {

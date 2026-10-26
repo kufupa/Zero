@@ -681,6 +681,7 @@ export function getInstalledStaffQuoteServices(
     await writeFile(
       requestPath,
       JSON.stringify({
+        propertyCode: configuration.owner.propertyCode,
         kind,
         query: { [kind === 'organization' ? 'organizationName' : 'bookingAgencyName']: query },
       }),

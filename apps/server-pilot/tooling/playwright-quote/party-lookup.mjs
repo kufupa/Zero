@@ -1142,48 +1142,47 @@ export async function lookupParty({ requestPath, outputDir, env = process.env } 
     timed.connect = Date.now() - connectStarted;
     audit = await createAudit(directory, { trace: false });
     const loginStarted = Date.now();
-    page = await withReadCliPage({ propertyCode, secret, context, browser, env }, ({ page: leased }) => {
+    result = await withReadCliPage({ propertyCode, secret, context, browser, env }, async ({ page: leased }) => {
       leased.setDefaultTimeout?.(20000);
-      return leased;
-    });
-    timed.login = Date.now() - loginStarted;
-    await audit.start(page, [secret.password, secret.username, secret.loginUrl]);
-    const navStarted = Date.now();
-    await openGuestStayScreen(page);
-    await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
-    await page.locator('input[name="company"]:visible').waitFor();
-    timed.navigate = Date.now() - navStarted;
-    await audit.checkpoint('criteria');
-    const foundSearches = await runNormalizedSearches(normalized.searches, {
-      stopOnFirstHit: normalized.stopOnFirstHit,
-      search: async (item) => {
-        await closeLookupDialog(page).catch(() => {});
-        return searchKind(page, { kind: item.kind, query: item.query });
-      },
-    });
-    await audit.checkpoint('results');
-    await dismissUnsaved(page);
-    const screenshots = {
-      criteria: 'screenshots/criteria.png',
-      results: 'screenshots/results.png',
-    };
-    const phaseMs = partyLookupJobPhaseMs({ ...timed, searches: foundSearches });
-    if (normalized.single) {
-      result = applyScreenshotContract(resultEnvelope({
-        ...foundSearches[0],
-        screenshots,
-        evidenceDirectory: directory,
-        phaseMs,
-      }));
-    } else {
-      result = {
+      page = leased;
+      timed.login = Date.now() - loginStarted;
+      await audit.start(page, [secret.password, secret.username, secret.loginUrl]);
+      const navStarted = Date.now();
+      await openGuestStayScreen(page);
+      await page.locator('[data-qtip="New Record (Ctrl+N)"]').click();
+      await page.locator('input[name="company"]:visible').waitFor();
+      timed.navigate = Date.now() - navStarted;
+      await audit.checkpoint('criteria');
+      const foundSearches = await runNormalizedSearches(normalized.searches, {
+        stopOnFirstHit: normalized.stopOnFirstHit,
+        search: async (item) => {
+          await closeLookupDialog(page).catch(() => {});
+          return searchKind(page, { kind: item.kind, query: item.query });
+        },
+      });
+      await audit.checkpoint('results');
+      await dismissUnsaved(page);
+      const screenshots = {
+        criteria: 'screenshots/criteria.png',
+        results: 'screenshots/results.png',
+      };
+      const phaseMs = partyLookupJobPhaseMs({ ...timed, searches: foundSearches });
+      if (normalized.single) {
+        return applyScreenshotContract(resultEnvelope({
+          ...foundSearches[0],
+          screenshots,
+          evidenceDirectory: directory,
+          phaseMs,
+        }));
+      }
+      return {
         outcome: overallSearchOutcome(foundSearches),
         searches: foundSearches.map((item) => applyScreenshotContract({ ...item, screenshots })),
         screenshots,
         evidenceDirectory: directory,
         phaseMs,
       };
-    }
+    });
   } catch (error) {
     result = resultEnvelope({
       outcome: 'execution_failure',

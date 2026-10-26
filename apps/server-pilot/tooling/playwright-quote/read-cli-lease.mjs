@@ -2,10 +2,15 @@
  * Shared exclusive page lease for every HMS read CLI.
  * Unknown, inactive, or omitted property fails closed before a page is created.
  * No hotel default.
+ *
+ * Parent already holds the postgres property lock. A second postgres lock in the
+ * child deadlocks staff-quote (DATABASE_URL is spread into the child). Pane spawn
+ * strips DATABASE_URL for the same reason. CLI uses a process-local held lock so
+ * the lease WeakMap is set without touching postgres.
  */
 import { createExclusivePageLease, SlotLeaseRefusedError } from './hms-slot-lease.mjs';
 import { getPropertyRegistration } from './property-registry.mjs';
-import { createPostgresPropertyReadLock } from '../../src/hms/property-read-lock.ts';
+import { createPropertyReadLock } from '../../src/hms/property-read-lock.ts';
 import { createSlotSession } from '../../src/hms/slot-session.ts';
 
 export { SlotLeaseRefusedError };
@@ -47,6 +52,18 @@ export function sharedReadCliLease(options) {
   return sharedLease;
 }
 
+/** Process-local lock so lease assertLockHeld sees a WeakMap-held connection. Never postgres. */
+function childHeldLock(tenantId, propertyCode) {
+  return createPropertyReadLock({
+    tenantId,
+    propertyCode,
+    connectionFactory: async () => ({
+      query: async () => [{ pg_try_advisory_lock: true }],
+      close: async () => {},
+    }),
+  });
+}
+
 export async function prepareReadCliInput(input, env = process.env) {
   const code = typeof input?.propertyCode === 'string' ? input.propertyCode.trim() : '';
   const lookup = input.lookupProperty ?? lookupActiveProperty;
@@ -54,33 +71,27 @@ export async function prepareReadCliInput(input, env = process.env) {
   if (!code || !property || property.propertyCode !== code) {
     throw new SlotLeaseRefusedError('property_unknown', 'unknown property refused');
   }
+  const resolvedEnv = input.env ?? env;
   const tenantId =
     typeof input.tenantId === 'string' && input.tenantId
       ? input.tenantId
-      : env.PANE_STAY_TENANT_ID || env.HMS_EXPECTED_TENANT || property.expectedTenant || '';
+      : resolvedEnv.PANE_STAY_TENANT_ID || resolvedEnv.HMS_EXPECTED_TENANT || property.expectedTenant || '';
   let session = input.session;
   if (!session) {
     session = createSlotSession({ owner: { login: async () => {}, wipeProfile: async () => {} } });
     await session.recover();
   }
   const lock = input.lock
-    || (input.lockConnection
-      ? null
-      : env.DATABASE_URL
-        ? createPostgresPropertyReadLock({
-          tenantId,
-          propertyCode: code,
-          databaseUrl: env.DATABASE_URL,
-        })
-        : null);
-  return { ...input, propertyCode: code, tenantId, session, lock };
+    || (input.lockConnection ? null : childHeldLock(tenantId, code));
+  return { ...input, propertyCode: code, tenantId, session, lock, env: resolvedEnv };
 }
 
 /**
  * One lease for every read CLI. Refuses omitted/unknown/inactive property before newPage/login.
+ * Callers must run HMS work inside `run` — the lock is released when `run` returns.
  */
 export async function withReadCliPage(input, run) {
-  const prepared = await prepareReadCliInput(input);
+  const prepared = await prepareReadCliInput(input, input.env ?? process.env);
   const lease = prepared.lease ?? sharedReadCliLease(prepared.leaseOptions);
   const invoke = (lockConnection, lockKey) =>
     lease.withPage(
@@ -94,6 +105,7 @@ export async function withReadCliPage(input, run) {
         context: prepared.context,
         browser: prepared.browser,
         generation: prepared.generation,
+        env: prepared.env,
       },
       run,
     );

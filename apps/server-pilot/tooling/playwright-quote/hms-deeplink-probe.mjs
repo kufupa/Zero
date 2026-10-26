@@ -199,18 +199,19 @@ export async function runDeeplinkProbe({
   try {
     // A new context inside the borrowed browser. ignoreHTTPSErrors stays off, like the staff tools.
     context = await newBorrowedContext(browser, { viewport: { width: 1600, height: 1000 } }, env);
-    const seed = await withReadCliPage({ propertyCode, secret, context, browser, env }, ({ page }) => page);
-    await seed.close().catch(() => {});
-    for (const [id, url] of probePlan({ origin, conf, stayId })) {
-      const page = await context.newPage();
-      try {
-        const record = await observe(page, { id, url, conf, runDir, evidence });
-        records.push(record);
-        emit(record);
-      } finally {
-        await page.close().catch(() => {});
+    await withReadCliPage({ propertyCode, secret, context, browser, env }, async ({ page: seed }) => {
+      await seed.close().catch(() => {});
+      for (const [id, url] of probePlan({ origin, conf, stayId })) {
+        const page = await context.newPage();
+        try {
+          const record = await observe(page, { id, url, conf, runDir, evidence });
+          records.push(record);
+          emit(record);
+        } finally {
+          await page.close().catch(() => {});
+        }
       }
-    }
+    });
   } finally {
     await context?.close().catch(() => {});
     // Pinned Playwright connectOverCDP closes its transport, not the owner's Chromium (see fetch-quote.mjs).

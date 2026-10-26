@@ -279,14 +279,14 @@ async function drive(ctx) {
     browser = await playwright().chromium.connectOverCDP(cdp.href, { timeout: 20000 });
     context = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, viewport: { width: 1600, height: 1000 } });
     await installReadOnlyGuard(context);
-    ctx.page = await withReadCliPage({
-      propertyCode: ctx.propertyCode, secret: ctx.secret, context, browser,
-    }, ({ page: leased }) => {
+    await withReadCliPage({
+      propertyCode: ctx.propertyCode, secret: ctx.secret, context, browser, env: process.env,
+    }, async ({ page: leased }) => {
       leased.setDefaultTimeout?.(20000);
-      return leased;
+      ctx.page = leased;
+      if (ctx.args.mode === 'find') await runFind(ctx);
+      else await runSearchGuest(ctx);
     });
-    if (ctx.args.mode === 'find') await runFind(ctx);
-    else await runSearchGuest(ctx);
   } catch (error) {
     const message = squash(error?.message || error);
     ctx.result.error = message.slice(0, 300);

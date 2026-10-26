@@ -459,36 +459,37 @@ async function main() {
     }
     return route.continue();
   });
-  const page = await withReadCliPage({
-    propertyCode: property.propertyCode, secret, context: ctx, browser,
-  }, ({ page: leased }) => leased);
   const counts = {};
   try {
-    const origin = new URL(page.url()).origin;
-    await navigateGuestStay(page, { ...NAV_TIMEOUTS, origin });
-    for (const conf of confs.filter((c) => !done.has(c))) {
-      const positiveControl = conf === SEP15_POSITIVE_CONTROL;
-      let row;
-      try {
-        row = await readOne(page, origin, conf, property.propertyCode);
-      } catch (error) {
-        row = { conf, outcome: 'error', error: String(error.message || error).slice(0, 160), envelope: { type: 'error' } };
+    await withReadCliPage({
+      propertyCode: property.propertyCode, secret, context: ctx, browser, env: process.env,
+    }, async ({ page }) => {
+      const origin = new URL(page.url()).origin;
+      await navigateGuestStay(page, { ...NAV_TIMEOUTS, origin });
+      for (const conf of confs.filter((c) => !done.has(c))) {
+        const positiveControl = conf === SEP15_POSITIVE_CONTROL;
+        let row;
+        try {
+          row = await readOne(page, origin, conf, property.propertyCode);
+        } catch (error) {
+          row = { conf, outcome: 'error', error: String(error.message || error).slice(0, 160), envelope: { type: 'error' } };
+        }
+        if (positiveControl) row.role = 'positive_control';
+        counts[row.outcome] = (counts[row.outcome] ?? 0) + 1;
+        await appendFile(out, `${JSON.stringify(row)}\n`, { mode: 0o600 });
+        process.stdout.write(`${JSON.stringify(stdoutPayload({
+          phase: 'search',
+          outcome: row.outcome,
+          rowCount: row.rowCount ?? 0,
+          envelope: row.envelope,
+          positiveControl,
+          counts,
+        }))}\n`);
+        if (row.outcome === 'session_stub') break;
+        if (positiveControl && row.outcome !== 'read' && row.outcome !== 'thin') break;
+        await delay(PAUSE_MS);
       }
-      if (positiveControl) row.role = 'positive_control';
-      counts[row.outcome] = (counts[row.outcome] ?? 0) + 1;
-      await appendFile(out, `${JSON.stringify(row)}\n`, { mode: 0o600 });
-      process.stdout.write(`${JSON.stringify(stdoutPayload({
-        phase: 'search',
-        outcome: row.outcome,
-        rowCount: row.rowCount ?? 0,
-        envelope: row.envelope,
-        positiveControl,
-        counts,
-      }))}\n`);
-      if (row.outcome === 'session_stub') break;
-      if (positiveControl && row.outcome !== 'read' && row.outcome !== 'thin') break;
-      await delay(PAUSE_MS);
-    }
+    });
   } finally {
     await Promise.race([ctx.close().catch(() => {}), delay(5_000)]);
     try {
