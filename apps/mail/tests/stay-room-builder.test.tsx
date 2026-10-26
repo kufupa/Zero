@@ -96,7 +96,7 @@ describe('stay and room builder', () => {
 
   it('hands stay actions to the shell: duplicate, remove and add', () => {
     const { onStayAction } = renderPanel(requestSession([row('a1', dateA), row('b1', dateB)]));
-    fireEvent.click(screen.getAllByRole('button', { name: 'Copy stay' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Duplicate stay' })[0]!);
     expect(onStayAction).toHaveBeenLastCalledWith({
       type: 'duplicate_stay',
       stayId: 'd:2026-11-12:2026-11-14',
