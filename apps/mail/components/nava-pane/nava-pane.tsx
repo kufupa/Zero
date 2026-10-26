@@ -45,7 +45,8 @@ import {
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
 import { overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
-import { storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
+import { sectionHasStaffEdit, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
+import { WorkItemHistoryControls } from './screens/work-item-history-controls';
 import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
 import { bindPaneTelemetry, currentPaneOwner, setPaneTelemetryScope, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
 import {
@@ -612,7 +613,9 @@ export function NavaPane({
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
   const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
   const contactEditorKey = `${contactCorrectionKey}|${
-    storedWork.pane.state === 'ready' ? `ready:${storedWork.pane.workItemId ?? ''}` : storedWork.pane.state
+    storedWork.pane.state === 'ready'
+      ? `ready:${storedWork.pane.workItemId ?? ''}${storedWork.historyEpoch ? `:h${storedWork.historyEpoch}` : ''}`
+      : storedWork.pane.state
   }`;
   const senderFallback =
     storedWork.pane.state === 'ready' ? null : externalSenderFallback(activeEmail, activeConnection?.email);
@@ -640,6 +643,25 @@ export function NavaPane({
     : normalizedContact;
   const documentContactRef = useRef(documentContact);
   documentContactRef.current = documentContact;
+  useEffect(() => {
+    if (storedWork.historyEpoch === 0) return;
+    setContactCorrection(null);
+    pendingContactCorrections.current = null;
+  }, [storedWork.historyEpoch]);
+  const workItemPane =
+    storedWork.pane.state === 'ready' && storedWork.pane.fieldProvenance && storedWork.pane.workItemId
+      ? {
+          fieldProvenance: storedWork.pane.fieldProvenance,
+          refs: storedWork.pane.refs,
+          onResetContact: storedWork.resetAvailable
+            ? () => storedWork.resetSection({ type: 'contact' })
+            : undefined,
+          onResetStay: storedWork.resetAvailable
+            ? (stayId: string) => storedWork.resetSection({ type: 'stay', stayId })
+            : undefined,
+          resetPending: storedWork.historyPending,
+        }
+      : null;
   const recordContact = (field: ContactField, value: string | null) => {
     const previous = documentContactRef.current ?? {
       name: null,
@@ -2065,7 +2087,7 @@ export function NavaPane({
         <HmsJobNoticeBanner onReveal={() => setCurrentScreen('tool')} />
         <SelectedEmailBlock activeEmail={activeEmail} />
         {readAs ? (
-          <div className="mx-3 mt-2 shrink-0">
+          <div className="mx-3 mt-2 flex shrink-0 flex-col gap-1.5">
             <WorkflowBadge
               analysis={quoteSession.analysis}
               kind={selectedReadKind}
@@ -2088,6 +2110,20 @@ export function NavaPane({
                 dispatchQuote({ type: 'treat_as', treatAs });
               }}
             />
+            {storedWork.historyAvailable && paneWorkItemId ? (
+              <WorkItemHistoryControls
+                workItemId={paneWorkItemId}
+                serverCursor={storedWork.historyCursor}
+                onUndo={storedWork.undo}
+                onRedo={storedWork.redo}
+                pending={storedWork.historyPending}
+              />
+            ) : null}
+            {storedWork.historyError ? (
+              <p role="status" className="px-1 text-[11px] text-[#64748b]">
+                {storedWork.historyError}
+              </p>
+            ) : null}
           </div>
         ) : null}
 
@@ -2220,6 +2256,14 @@ export function NavaPane({
                 contact={documentContact}
                 quote={readAs === 'quote' || readAs === 'group'}
                 onEdit={recordContact}
+                fieldProvenance={workItemPane?.fieldProvenance ?? null}
+                onResetToAi={
+                  workItemPane?.onResetContact &&
+                  sectionHasStaffEdit(workItemPane.fieldProvenance, { type: 'contact' })
+                    ? workItemPane.onResetContact
+                    : undefined
+                }
+                resetPending={workItemPane?.resetPending}
               />
             ) : null}
             <div className="flex flex-col gap-2">{mailboxWarnings}</div>
@@ -2253,6 +2297,7 @@ export function NavaPane({
               contact={documentContact}
               contactEditorKey={contactEditorKey}
               onContactEdit={contactInPeople ? recordContact : undefined}
+              workItemPane={workItemPane}
               findParty={PANE_PARTY_FINDER}
               partySuggestions={partySuggestions}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}

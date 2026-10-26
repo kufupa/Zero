@@ -7,6 +7,7 @@ import { recalledGuestName, rememberGuestName } from '@/lib/quote-workflow/guest
 import { paneEditKey } from '@/lib/quote-workflow/pane-edits';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type { QuoteSession, StaffQuoteHeader } from '@/lib/quote-workflow/types';
+import { sectionHasStaffEdit, type WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 import { PartyPicker } from './party-picker';
 
 const stayingGuestListeners = new Set<() => void>();
@@ -226,6 +227,7 @@ export function QuotePeopleStep({
   onContactEdit,
   onPartyLookupPending,
   scrollToStep,
+  workItemPane = null,
 }: {
   session: QuoteSession;
   partyState: 'Done' | 'Pending' | 'Optional' | 'Looking up';
@@ -241,13 +243,27 @@ export function QuotePeopleStep({
   onContactEdit?: (field: ContactField, value: string | null) => void;
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
   scrollToStep: (id: string) => void;
+  workItemPane?: WorkItemPaneControls | null;
 }) {
   const guestEditorKey = guestEditorKeyFor(session, contactEditorKey);
 
   return (
     <Section step={1} title="People" id="quote-party" action={<StepState state={partyState} />}>
       {onContactEdit ? (
-        <ContactBlock embedded key={contactEditorKey} contact={contact ?? null} onEdit={onContactEdit} />
+        <ContactBlock
+          embedded
+          key={contactEditorKey}
+          contact={contact ?? null}
+          onEdit={onContactEdit}
+          fieldProvenance={workItemPane?.fieldProvenance ?? null}
+          onResetToAi={
+            workItemPane?.onResetContact &&
+            sectionHasStaffEdit(workItemPane.fieldProvenance, { type: 'contact' })
+              ? workItemPane.onResetContact
+              : undefined
+          }
+          resetPending={workItemPane?.resetPending}
+        />
       ) : null}
       <GuestNameField
         key={`guest:${guestEditorKey}`}

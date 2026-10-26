@@ -29,6 +29,8 @@ import type {
 } from '@/lib/quote-workflow/types';
 import { StayExtrasFields } from './stay-extras-fields';
 import { StayCard } from './requirement-card';
+import { WorkItemResetButton } from '@/components/nava-pane/screens/work-item-reset-button';
+import { sectionHasStaffEdit, type WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 
 /** Guests, action badge, and Find this booking. Quote stays still use StayCard under this; amend/cancel do not. */
 export function StayAskChrome({
@@ -268,6 +270,7 @@ export function QuoteStayStep({
   onPatchStayExtras,
   onSelectStayKey,
   children,
+  workItemPane = null,
 }: {
   session: QuoteSession;
   stays: Array<{ id: string; rows: StayGroupRequirement[] }>;
@@ -286,6 +289,7 @@ export function QuoteStayStep({
   onPatchStayExtras?: (stayKey: string, extras: Partial<StaffStayExtras>) => void;
   onSelectStayKey?: (stayKey: string) => void;
   children?: ReactNode;
+  workItemPane?: WorkItemPaneControls | null;
 }) {
   return (
     <Section step={2} title="Stay" id="quote-stay" action={<StepState state={stayReady ? 'Done' : 'Pending'} />}>
@@ -324,6 +328,7 @@ export function QuoteStayStep({
             onPatch={onPatchGroup}
             onStayAction={onStayAction}
             evidence={session.analysis?.luna?.evidence}
+            headerExtra={stayResetControl(stay.rows, workItemPane)}
           />
           <StayAvailabilityPanel
             session={session}
@@ -348,5 +353,28 @@ export function QuoteStayStep({
       </div>
       {children}
     </Section>
+  );
+}
+
+function extractionStayId(
+  rows: StayGroupRequirement[],
+  refs: WorkItemPaneControls['refs'] | null | undefined,
+): string | null {
+  for (const row of rows) {
+    const stayId = refs?.[row.id]?.stayId ?? row.stayId;
+    if (stayId && !stayId.startsWith('d:')) return stayId;
+  }
+  return null;
+}
+
+function stayResetControl(rows: StayGroupRequirement[], workItemPane: WorkItemPaneControls | null) {
+  const stayId = extractionStayId(rows, workItemPane?.refs);
+  if (!stayId || !workItemPane?.onResetStay) return null;
+  if (!sectionHasStaffEdit(workItemPane.fieldProvenance, { type: 'stay', stayId })) return null;
+  return (
+    <WorkItemResetButton
+      onClick={() => workItemPane.onResetStay?.(stayId)}
+      pending={workItemPane.resetPending}
+    />
   );
 }

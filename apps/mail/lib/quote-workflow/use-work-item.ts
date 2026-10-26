@@ -44,6 +44,9 @@ export type StoredPane =
       contact: StoredContact;
       language: string | null;
       translation: StoredTranslation;
+      /** Latest per-path source from getByMessage. Null when the older server omits it. */
+      fieldProvenance: WorkItemProvenanceMap | null;
+      refs: Record<string, { stayId: string; rowId: string | null }>;
     };
 
 export type StoredDecision =
@@ -84,6 +87,71 @@ type FieldSend = {
 type PendingEvent = FieldSend & { timer: ReturnType<typeof setTimeout> };
 export type FieldEvent = { path: string; value: RecordFieldEventInput['value'] };
 type Refs = Record<string, { stayId: string; rowId: string | null }>;
+export type WorkItemProvenanceSource = 'ai' | 'staff' | 'unknown';
+export type WorkItemProvenanceEntry = { source: WorkItemProvenanceSource; value: unknown };
+export type WorkItemProvenanceMap = Record<string, WorkItemProvenanceEntry>;
+export type WorkItemSection = { type: 'contact' } | { type: 'stay'; stayId: string };
+export type WorkItemHistoryCursor = { revision: number; revisionHead: number };
+export type WorkItemPaneControls = {
+  fieldProvenance: WorkItemProvenanceMap;
+  refs: Record<string, { stayId: string; rowId: string | null }>;
+  onResetContact?: () => void;
+  onResetStay?: (stayId: string) => void;
+  resetPending?: boolean;
+};
+
+type HistorySeqCursor = WorkItemHistoryCursor & { seq: number };
+type HistoryMutate = (
+  input: { workItemId: string; expectedSeq: number },
+  opts?: ReturnType<typeof inMailbox>,
+) => Promise<unknown>;
+type ResetMutate = (
+  input: { workItemId: string; section: WorkItemSection },
+  opts?: ReturnType<typeof inMailbox>,
+) => Promise<unknown>;
+type CursorQuery = (
+  input: { workItemId: string },
+  opts?: ReturnType<typeof inMailbox>,
+) => Promise<HistorySeqCursor>;
+
+/** Older servers omit these routes; the pane hides the controls then. */
+function historyRoutesFrom(trpc: unknown): {
+  revisionCursor: { query: CursorQuery } | null;
+  undoRevision: { mutate: HistoryMutate } | null;
+  redoRevision: { mutate: HistoryMutate } | null;
+  resetSection: { mutate: ResetMutate } | null;
+} {
+  const workItems = (trpc as {
+    workItems?: {
+      revisionCursor?: { query?: CursorQuery };
+      undoRevision?: { mutate?: HistoryMutate };
+      redoRevision?: { mutate?: HistoryMutate };
+      resetSection?: { mutate?: ResetMutate };
+    };
+  } | null)?.workItems;
+  const query = workItems?.revisionCursor?.query;
+  const undo = workItems?.undoRevision?.mutate;
+  const redo = workItems?.redoRevision?.mutate;
+  const reset = workItems?.resetSection?.mutate;
+  return {
+    revisionCursor: typeof query === 'function' ? { query } : null,
+    undoRevision: typeof undo === 'function' ? { mutate: undo } : null,
+    redoRevision: typeof redo === 'function' ? { mutate: redo } : null,
+    resetSection: typeof reset === 'function' ? { mutate: reset } : null,
+  };
+}
+
+export function sectionHasStaffEdit(
+  provenance: WorkItemProvenanceMap | null | undefined,
+  section: WorkItemSection,
+): boolean {
+  if (!provenance) return false;
+  const prefix = section.type === 'contact' ? 'contact.' : `stays[${section.stayId}]`;
+  for (const [path, entry] of Object.entries(provenance)) {
+    if (path.startsWith(prefix) && entry.source === 'staff') return true;
+  }
+  return false;
+}
 
 /** The pane's board as the extraction names it. Unknown is no board stated. */
 function extractionBoard(board: QuoteBoard): string | null {
@@ -258,6 +326,10 @@ export function useStoredWork(args: {
   const [saveFailed, setSaveFailed] = useState(false);
   // The work item whose translation is being asked for again, so "Translating…" shows for that mail only.
   const [translating, setTranslating] = useState<string | null>(null);
+  const [historyEpoch, setHistoryEpoch] = useState(0);
+  const [historyCursor, setHistoryCursor] = useState<HistorySeqCursor | null>(null);
+  const [historyPending, setHistoryPending] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const trpcRef = useRef(trpc);
 
   useEffect(() => {
@@ -421,6 +493,8 @@ export function useStoredWork(args: {
       contact: stored.contact,
       language: stored.language,
       translation: stored.translation,
+      fieldProvenance: provenanceOf(stored),
+      refs: stored.refs,
     };
   } else if (stored?.status === 'failed' && retried === 0) {
     pane = { state: 'failed', reason: stored.reason };
@@ -434,6 +508,7 @@ export function useStoredWork(args: {
     pane.state === 'ready' ? (pane.workItemId ?? '') : '',
     pane.state === 'failed' ? pane.reason : '',
     String(retried),
+    String(historyEpoch),
   ].join('|');
 
   const readyRefs = stored?.status === 'ready' ? stored.refs : null;
@@ -524,6 +599,120 @@ export function useStoredWork(args: {
     }, settle);
   }, [readyWorkItemId]);
 
+  const refetchStored = useCallback(() => {
+    const getByMessage = workItemsFromTrpc(trpcRef.current).getByMessage;
+    const messageId = internetMessageId;
+    const keyNow = lookupKey;
+    if (!getByMessage || !messageId || !keyNow) return Promise.resolve();
+    const pinned = inMailbox(readyTransportId);
+    const input = { internetMessageId: messageId };
+    return (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input))
+      .then((result) => {
+        setLookup((prev) => (prev && prev.key === keyNow ? { ...prev, result } : prev));
+        setHistoryEpoch((n) => n + 1);
+      })
+      .catch(() => undefined);
+  }, [internetMessageId, lookupKey, readyTransportId]);
+
+  const historyRoutes = historyRoutesFrom(trpc);
+  const historyAvailable = Boolean(readyWorkItemId && historyRoutes.undoRevision && historyRoutes.redoRevision);
+  const resetAvailable = Boolean(readyWorkItemId && historyRoutes.resetSection);
+
+  useEffect(() => {
+    setHistoryEpoch(0);
+    setHistoryCursor(null);
+    setHistoryError(null);
+  }, [lookupKey]);
+
+  useEffect(() => {
+    const routes = historyRoutesFrom(trpcRef.current);
+    if (!readyWorkItemId || !routes.revisionCursor) {
+      setHistoryCursor(null);
+      return;
+    }
+    let current = true;
+    const pinned = inMailbox(readyTransportId);
+    const input = { workItemId: readyWorkItemId };
+    void (pinned ? routes.revisionCursor.query(input, pinned) : routes.revisionCursor.query(input))
+      .then((result) => {
+        if (
+          current &&
+          result &&
+          Number.isSafeInteger(result.revision) &&
+          Number.isSafeInteger(result.revisionHead) &&
+          Number.isSafeInteger(result.seq)
+        ) {
+          setHistoryCursor(result);
+        }
+      })
+      .catch(() => {
+        if (current) setHistoryCursor(null);
+      });
+    return () => {
+      current = false;
+    };
+  }, [readyWorkItemId, readyTransportId, historyEpoch]);
+
+  const runHistoryMove = useCallback(
+    (mutate: HistoryMutate | undefined, message: string) => {
+      const seq = historyCursor?.seq;
+      if (!readyWorkItemId || !mutate || seq === undefined) return;
+      setHistoryPending(true);
+      setHistoryError(null);
+      const pinned = inMailbox(readyTransportId);
+      const input = { workItemId: readyWorkItemId, expectedSeq: seq };
+      void (pinned ? mutate(input, pinned) : mutate(input))
+        .then((result) => {
+          if (result && typeof result === 'object' && 'seq' in result) {
+            const next = result as HistorySeqCursor;
+            if (Number.isSafeInteger(next.revision) && Number.isSafeInteger(next.seq)) setHistoryCursor(next);
+          }
+          return refetchStored();
+        })
+        .catch(() => {
+          setHistoryError(message);
+        })
+        .finally(() => {
+          setHistoryPending(false);
+        });
+    },
+    [historyCursor, readyWorkItemId, readyTransportId, refetchStored],
+  );
+
+  const undo = useCallback(
+    (_workItemId: string, _expectedRevision: number) => {
+      runHistoryMove(historyRoutesFrom(trpcRef.current).undoRevision?.mutate, "Couldn't undo — try again");
+    },
+    [runHistoryMove],
+  );
+
+  const redo = useCallback(
+    (_workItemId: string, _expectedRevision: number) => {
+      runHistoryMove(historyRoutesFrom(trpcRef.current).redoRevision?.mutate, "Couldn't redo — try again");
+    },
+    [runHistoryMove],
+  );
+
+  const resetSection = useCallback(
+    (section: WorkItemSection) => {
+      const mutate = historyRoutesFrom(trpcRef.current).resetSection?.mutate;
+      if (!readyWorkItemId || !mutate) return;
+      setHistoryPending(true);
+      setHistoryError(null);
+      const pinned = inMailbox(readyTransportId);
+      const input = { workItemId: readyWorkItemId, section };
+      void (pinned ? mutate(input, pinned) : mutate(input))
+        .then(() => refetchStored())
+        .catch(() => {
+          setHistoryError("Couldn't reset — try again");
+        })
+        .finally(() => {
+          setHistoryPending(false);
+        });
+    },
+    [readyWorkItemId, readyTransportId, refetchStored],
+  );
+
   return {
     pane,
     key,
@@ -541,5 +730,30 @@ export function useStoredWork(args: {
     translationBusy: translating !== null && translating === readyWorkItemId,
     saveFailed,
     retrySave,
+    historyEpoch,
+    historyCursor: historyCursor
+      ? { revision: historyCursor.revision, revisionHead: historyCursor.revisionHead }
+      : null,
+    historyPending,
+    historyError,
+    historyAvailable,
+    resetAvailable,
+    undo,
+    redo,
+    resetSection,
   };
+}
+
+function provenanceOf(stored: StoredWork): WorkItemProvenanceMap | null {
+  if (stored.status !== 'ready') return null;
+  const raw = (stored as { fieldProvenance?: unknown }).fieldProvenance;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const provenance: WorkItemProvenanceMap = {};
+  for (const [path, entry] of Object.entries(raw as Record<string, unknown>)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const source = (entry as { source?: unknown }).source;
+    if (source !== 'ai' && source !== 'staff' && source !== 'unknown') continue;
+    provenance[path] = { source, value: (entry as { value?: unknown }).value };
+  }
+  return provenance;
 }
