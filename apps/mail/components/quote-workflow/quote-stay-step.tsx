@@ -135,9 +135,11 @@ function StayAvailabilityPanel({
   onPatchGroup?: (groupId: string, patch: Partial<StayGroupRequirement>) => void;
 }) {
   const threadId = session.binding?.threadId;
+  const requestedAvailability = paneStayAvailabilityRequestFor(threadId, stay.rows);
+  const requestKey = requestedAvailability ? JSON.stringify(requestedAvailability) : null;
   const request = useMemo(
-    () => paneStayAvailabilityRequestFor(threadId, stay.rows),
-    [threadId, stay.rows],
+    () => requestKey === null ? null : JSON.parse(requestKey) as PaneStayAvailabilityRequest,
+    [requestKey],
   );
   const transportMatches = Boolean(paneConfig && session.binding?.transportId === paneConfig.transportId);
   const canRead = Boolean(reader && request && paneConfig && paneConfig.roomTypes.length && transportMatches);
