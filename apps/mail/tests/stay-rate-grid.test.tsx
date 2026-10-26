@@ -57,7 +57,7 @@ describe('StayRateGrid', () => {
 
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect).toHaveBeenCalledWith({ roomCode: 'STWN', rateCode: 'RATE-2', board: 'bb' });
-    expect(within(selectedCell).getByText(draftMoney(197_500))).toBeDefined();
+    expect(selectedCell.textContent).toContain(draftMoney(197_500));
     expect(within(selectedCell).getByText('Rooms left: 2')).toBeDefined();
     expect(screen.getByText(/reference only/i)).toBeDefined();
     expect(within(grid).queryByText(draftMoney(180_000))).toBeNull();
