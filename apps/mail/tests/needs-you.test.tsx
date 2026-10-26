@@ -8,6 +8,7 @@ import {
   NEEDS_YOU_UNDO_MS,
   useNeedsYou,
 } from '../components/nava-pane/screens/needs-you';
+import { WorkItemHistoryControls } from '../components/nava-pane/screens/work-item-history-controls';
 import {
   WorkItemFieldProvenance,
   type WorkItemFieldProvenanceEntry,
@@ -461,6 +462,69 @@ describe('Needs-you list', () => {
     expect(screen.getByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
     expect(screen.getByText('Finished', { selector: '[data-chip]' })).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Dismiss Completed quote' })).toBeNull();
+  });
+});
+
+describe('Work item history controls', () => {
+  it('binds actions to the refreshed J1 revision and disables them at its boundaries', () => {
+    const props = {
+      workItemId: 'work-item-1',
+      onUndo: vi.fn(),
+      onRedo: vi.fn(),
+    };
+    const { rerender } = render(
+      <WorkItemHistoryControls {...props} serverCursor={null} />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Redo' })).toBeNull();
+
+    rerender(
+      <WorkItemHistoryControls
+        {...props}
+        serverCursor={{ revision: 0, revisionHead: 2 }}
+      />,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    fireEvent.click(screen.getByRole('button', { name: 'Redo' }));
+    expect(props.onRedo).toHaveBeenCalledWith(props.workItemId, 0);
+    expect(props.onUndo).not.toHaveBeenCalled();
+
+    rerender(
+      <WorkItemHistoryControls
+        {...props}
+        serverCursor={{ revision: 2, revisionHead: 2 }}
+      />,
+    );
+    expect(
+      (screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(
+      (screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    expect(props.onUndo).toHaveBeenCalledWith(props.workItemId, 2);
+
+    rerender(
+      <WorkItemHistoryControls
+        {...props}
+        pending
+        serverCursor={{ revision: 1, revisionHead: 2 }}
+      />,
+    );
+    const undo = screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement;
+    const redo = screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement;
+    expect(undo.disabled).toBe(true);
+    expect(redo.disabled).toBe(true);
+    fireEvent.click(undo);
+    fireEvent.click(redo);
+    expect(props.onUndo).toHaveBeenCalledTimes(1);
+    expect(props.onRedo).toHaveBeenCalledTimes(1);
   });
 });
 
