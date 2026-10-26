@@ -90,7 +90,7 @@ export async function countPrefetchReservations(
           : []),
         sql`${aiWorkflowRun.readRequest}->>'kind' = ${input.kind}`,
         gt(aiWorkflowRun.createdAt, input.since),
-        input.excludeRunId ? ne(aiWorkflowRun.id, input.excludeRunId) : undefined,
+        ...(input.excludeRunId ? [ne(aiWorkflowRun.id, input.excludeRunId)] : []),
       ),
     );
   const oldest = row?.oldest ? new Date(row.oldest) : null;
