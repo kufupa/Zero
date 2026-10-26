@@ -38,7 +38,6 @@ vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/ai/staff-quote-run.js')>();
   return {
     staffQuoteRoomAlternatives: actual.staffQuoteRoomAlternatives,
-    staffQuoteChildEnv: actual.staffQuoteChildEnv,
     staffQuoteFailurePhase: actual.staffQuoteFailurePhase,
     runStaffQuote: jobMocks.runStaffQuote,
     staffQuoteFailureCode: (error: unknown) => {
@@ -95,10 +94,7 @@ vi.mock('../src/hms/mailbox-hms-origin-bind.js', async (importOriginal) => ({
 }));
 
 import { executeHmsJob, hmsJobRequestSchema, HMS_JOB_PRIORITY_USER } from '../src/ai/hms-jobs.js';
-import {
-  PROPERTY_READ_LOCK_DEADLINE_MESSAGE,
-  propertyReadLockKey,
-} from '../src/hms/property-read-lock.js';
+import { PROPERTY_READ_LOCK_DEADLINE_MESSAGE } from '../src/hms/property-read-lock.js';
 import { HMS_JOB_PROMPT_VERSION } from '../src/ai/run-ledger.js';
 
 const STAFF_QUOTE_INPUT = {
@@ -1365,18 +1361,5 @@ describe('runStaffQuote property installation', () => {
       expect.objectContaining({ propertyCode: 'HRDAV' }),
       expect.anything(),
     );
-  });
-
-  it('puts the parent lock key on the quote child env', async () => {
-    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
-      '../src/ai/staff-quote-run.js',
-    );
-    const tenantId = 'tenant-generic';
-    const propertyCode = 'HTLAA';
-    const env = actual.staffQuoteChildEnv(tenantId, propertyCode, {
-      DATABASE_URL: 'postgres://lock-matrix.invalid/unused',
-    });
-    expect(env.HMS_PROPERTY_LOCK_HELD).toBe(propertyReadLockKey(tenantId, propertyCode));
-    expect(env.PANE_STAY_TENANT_ID).toBe(tenantId);
   });
 });

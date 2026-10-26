@@ -125,7 +125,7 @@ function mailboxCaller() {
       email: 'ropperman@legacyhotels.co.za',
       name: 'R Opperman',
     },
-    activeTransportId: 'transport-1',
+    activeTransportId: 'transport-centurion',
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);
@@ -634,7 +634,7 @@ describe('panePartyLookup router origin guard', () => {
       message: CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
     });
     expect(loadThreadOrigin).toHaveBeenCalledWith({
-      transportId: 'transport-1',
+      transportId: 'transport-centurion',
       threadId: 'thread-mixed',
       messageId: 'msg-older-dv',
     });
