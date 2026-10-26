@@ -229,6 +229,7 @@ function extractionRun(messageId: string) {
     runKind: 'inbound_extraction' as const,
     transportId: TRANSPORT_ID,
     triggerMessageId: messageId,
+    admissionSnapshotId: `snapshot-${randomUUID()}`,
   };
 }
 
@@ -327,6 +328,39 @@ async function runClaimedJob(db: DB, run: AiWorkflowRun) {
 }
 
 describe('U10 availability probe (pure)', () => {
+  it('denied admission creates zero jobs and does not query', async () => {
+    const db = { select: vi.fn(() => { throw new Error('denied admission must not query'); }) };
+    await expect(
+      prefetchAvailabilityForExtraction(
+        {
+          runKind: 'inbound_extraction',
+          transportId: TRANSPORT_ID,
+          triggerMessageId: 'msg-denied',
+          admissionSnapshotId: null,
+        },
+        db as never,
+        { HMS_JOB_QUEUE: 'on', HMS_AVAILABILITY_PREFETCH: 'on' },
+      ),
+    ).resolves.toBe(0);
+    expect(db.select).not.toHaveBeenCalled();
+  });
+
+  it('admitted snapshot proceeds past the admission gate', async () => {
+    const db = { select: vi.fn(() => { throw new Error('reached-extraction'); }) };
+    await expect(
+      prefetchAvailabilityForExtraction(
+        {
+          runKind: 'inbound_extraction',
+          transportId: TRANSPORT_ID,
+          triggerMessageId: 'msg-admitted',
+          admissionSnapshotId: 'snapshot-live',
+        },
+        db as never,
+        { HMS_JOB_QUEUE: 'on', HMS_AVAILABILITY_PREFETCH: 'on' },
+      ),
+    ).rejects.toThrow('reached-extraction');
+  });
+
   it('turns the probe on only when HMS_JOB_QUEUE=on and HMS_AVAILABILITY_PREFETCH=on', () => {
     expect(availabilityPrefetchEnabled({})).toBe(false);
     expect(availabilityPrefetchEnabled({ HMS_AVAILABILITY_PREFETCH: 'on' })).toBe(false);
