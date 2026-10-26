@@ -28,7 +28,7 @@ import { useIsMobile } from '@/hooks/use-mobile';
 import { Button } from '@/components/ui/button';
 import { useSession } from '@/lib/auth-client';
 import { m } from '@/paraglide/messages';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { cn } from '@/lib/utils';
 import {
   getHotelFolderPresentation,
@@ -411,7 +411,10 @@ function MailLayoutContent() {
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const isWideSplit = useMediaQuery('(min-width: 1024px)');
 
-  const [threadId, setThreadId] = useQueryState('threadId');
+  const [{ threadId }, setMailSelection] = useQueryStates({
+    threadId: parseAsString,
+    sourceMessageId: parseAsString,
+  });
   const sourceThreadId =
     isWorkflowFolderNavId(folder.toLowerCase()) && searchList?.isValid === true && searchList.folder !== 'all'
       ? threadId ?? undefined
@@ -420,12 +423,12 @@ function MailLayoutContent() {
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
   // Opening a list row leaves the compose the same way a thread link in the list does.
-  const openListThread = (id: string) => {
+  const openListThread = (id: string, sourceMessageId?: string) => {
     void runComposeLeaveFlush(flushComposeBeforeLeave, async () => {
       setMode(null);
       setActiveReplyId(null);
       setDraftId(null);
-    }).then(() => setThreadId(id));
+    }).then(() => setMailSelection({ threadId: id, sourceMessageId: sourceMessageId ?? null }));
   };
   const [navaSidePanelOpen] = useAtom(navaSidePanelAtom);
   const [listCollapsed, setListCollapsed] = useState(false);

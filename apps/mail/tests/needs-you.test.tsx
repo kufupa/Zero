@@ -234,27 +234,23 @@ describe('Needs-you list', () => {
   it('Outlook offers manual search when its host API or exact entry ID is unavailable', async () => {
     vi.stubGlobal('Office', { context: { mailbox: {} } });
     listQuery.mockResolvedValue([
-      row({ id: 'wi-no-entry', outlookEntryId: null }),
+      row({ id: 'wi-no-api', outlookEntryId: 'outlook-entry-no-api' }),
     ]);
-    render(<Harness host="outlook" />);
+    const { unmount } = render(<Harness host="outlook" />);
 
     expect(
       await screen.findByText('Find each email in your Outlook inbox by its sender and subject.'),
     ).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Open Rooms request' })).toBeNull();
-  });
 
-  it('Outlook has no open action, and says how to find each email', async () => {
+    unmount();
+    vi.stubGlobal('Office', { context: { mailbox: { displayMessageForm: vi.fn() } } });
+    listQuery.mockResolvedValue([row({ id: 'wi-no-entry', outlookEntryId: null })]);
     render(<Harness host="outlook" />);
-
-    expect(await screen.findByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'Open Rooms request' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Open Confirm booking' })).toBeNull();
     expect(
-      screen.getByText('Find each email in your Outlook inbox by its sender and subject.'),
+      await screen.findByText('Find each email in your Outlook inbox by its sender and subject.'),
     ).toBeDefined();
-    expect(screen.getAllByText(/david@example\.com/).length).toBeGreaterThan(0);
-    expect(screen.getAllByRole('listitem')[0]!.querySelector('time')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Open Rooms request' })).toBeNull();
   });
 
   it('offers Undo before saving a dismissal, and Undo restores the row without a server write', async () => {

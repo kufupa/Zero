@@ -17,6 +17,8 @@ import { Button } from '@/components/ui/button';
 export const NEEDS_YOU_LIMIT = 200;
 /** Time to cancel a dismissal before the existing server mutation is sent. */
 export const NEEDS_YOU_UNDO_MS = 5000;
+/** Temporary rollout gate for the Needs-you entry controls. */
+const NEEDS_YOU_CONTROLS_ENABLED = false;
 
 export type NeedsYouFilter = 'open' | 'finished';
 export type NeedsYouStatus = 'loading' | 'ready' | 'failed' | 'unavailable';
@@ -269,21 +271,33 @@ function reopenReasonOf(row: NeedsYouRow): string | null {
   return trimmed || null;
 }
 
+function hasExactId(value: string | null | undefined): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function officeDisplayMessageForm(): ((entryId: string) => void) | undefined {
+  const mailbox = (globalThis as {
+    Office?: { context?: { mailbox?: { displayMessageForm?: (entryId: string) => void } } };
+  }).Office?.context?.mailbox;
+  return typeof mailbox?.displayMessageForm === 'function'
+    ? (entryId) => mailbox.displayMessageForm!(entryId)
+    : undefined;
+}
+
 function NeedsYouRowView({
   row,
   finished,
-  onOpenThread,
+  onOpen,
   onDismiss,
 }: {
   row: NeedsYouRow;
   finished: boolean;
-  onOpenThread?: (threadId: string) => void;
+  onOpen?: () => void;
   onDismiss?: (workItemId: string) => void;
 }) {
   const subject = row.subject?.trim() || '(no subject)';
   const sender = row.sender?.trim() || 'Unknown sender';
   const when = whenOf(row.receivedAt);
-  const threadId = row.threadId;
   const reopenReason = reopenReasonOf(row);
   const stateLabel = finished ? 'Finished' : NAVA_WORK_STATE_LABEL[row.chip];
   const stateClass = finished ? 'bg-[#f1f5f9] text-[#475569]' : CHIP_CLASS[row.chip];
@@ -316,8 +330,8 @@ function NeedsYouRowView({
       </p>
       {reopenReason ? <p className="text-[11.5px] text-[#92400e]">{reopenReason}</p> : null}
       <div className="flex items-center gap-3">
-        {onOpenThread && threadId ? (
-          <SecondaryButton onClick={() => onOpenThread(threadId)}>
+        {onOpen ? (
+          <SecondaryButton onClick={onOpen}>
             Open
             <span className="sr-only"> {subject}</span>
           </SecondaryButton>
@@ -337,7 +351,7 @@ function NeedsYouRowView({
   );
 }
 
-/** The open/Finished list for both pane and webmail. Outlook has no deep navigation, so rows identify the email. */
+/** The open/Finished list for both pane and webmail. Exact host IDs open the source; missing IDs fall back to search. */
 export function NeedsYouScreen({
   list,
   host,
@@ -349,9 +363,30 @@ export function NeedsYouScreen({
   host: 'web' | 'outlook';
   onBack?: () => void;
   onClose?: () => void;
-  onOpenThread?: (threadId: string) => void;
+  onOpenThread?: (threadId: string, sourceMessageId: string) => void;
 }) {
   const { status, filter, rows, openCount, openLoaded, notice, reload, dismiss, canDismiss, setFilter } = list;
+  const displayMessageForm = host === 'outlook' ? officeDisplayMessageForm() : undefined;
+  const rowsWithActions = rows.map((row) => {
+    if (host === 'outlook') {
+      const entryId = row.outlookEntryId;
+      return {
+        row,
+        onOpen: displayMessageForm && hasExactId(entryId) ? displayMessageForm.bind(null, entryId) : undefined,
+      };
+    }
+    const threadId = row.threadId;
+    const sourceMessageId = row.sourceMessageId;
+    const openThread = onOpenThread;
+    return {
+      row,
+      onOpen:
+        openThread && hasExactId(threadId) && hasExactId(sourceMessageId)
+          ? openThread.bind(null, threadId, sourceMessageId)
+          : undefined,
+    };
+  });
+  const needsManualSearch = rowsWithActions.some(({ onOpen }) => !onOpen);
   return (
     <section
       aria-label="Needs you"
@@ -418,18 +453,20 @@ export function NeedsYouScreen({
         </div>
       ) : (
         <>
-          {host === 'outlook' && filter === 'open' ? (
+          {needsManualSearch ? (
             <p className="text-[11.5px] text-[#64748b]">
-              Find each email in your Outlook inbox by its sender and subject.
+              {host === 'outlook'
+                ? 'Find each email in your Outlook inbox by its sender and subject.'
+                : 'Find this email in webmail by its sender and subject.'}
             </p>
           ) : null}
           <ul aria-label={filter === 'open' ? 'Open items' : 'Finished items'} className="flex flex-col gap-2">
-            {rows.map((row) => (
+            {rowsWithActions.map(({ row, onOpen }) => (
               <NeedsYouRowView
                 key={row.id}
                 row={row}
                 finished={filter === 'finished' || row.status === 'done' || row.status === 'dismissed'}
-                onOpenThread={onOpenThread}
+                onOpen={onOpen}
                 onDismiss={canDismiss ? dismiss : undefined}
               />
             ))}
@@ -440,7 +477,7 @@ export function NeedsYouScreen({
   );
 }
 
-/** The Outlook pane's Needs-you entry. Hidden when this build has no list route. */
+/** The Outlook pane's Needs-you entry, temporarily gated by the default-off rollout flag. */
 export function NeedsYouEntry({
   list,
   onOpen,
@@ -450,7 +487,7 @@ export function NeedsYouEntry({
   onOpen: () => void;
   compact?: boolean;
 }) {
-  if (list.status === 'unavailable') return null;
+  if (!NEEDS_YOU_CONTROLS_ENABLED || list.status === 'unavailable') return null;
   const label = list.openLoaded ? `Needs you (${countLabel(list.openCount)})` : 'Needs you';
   if (compact) {
     return (
@@ -480,7 +517,7 @@ export function NeedsYouView({
   host: 'web' | 'outlook';
   onBack?: () => void;
   onClose?: () => void;
-  onOpenThread?: (threadId: string) => void;
+  onOpenThread?: (threadId: string, sourceMessageId: string) => void;
 }) {
   const list = useNeedsYou(trpc);
   return <NeedsYouScreen list={list} host={host} onBack={onBack} onClose={onClose} onOpenThread={onOpenThread} />;
@@ -492,7 +529,18 @@ export function NeedsYouWebControl({
   onOpenThread,
 }: {
   trpc: unknown;
-  onOpenThread: (threadId: string) => void;
+  onOpenThread: (threadId: string, sourceMessageId: string) => void;
+}) {
+  if (!NEEDS_YOU_CONTROLS_ENABLED) return null;
+  return <NeedsYouWebControlContent trpc={trpc} onOpenThread={onOpenThread} />;
+}
+
+function NeedsYouWebControlContent({
+  trpc,
+  onOpenThread,
+}: {
+  trpc: unknown;
+  onOpenThread: (threadId: string, sourceMessageId: string) => void;
 }) {
   const list = useNeedsYou(trpc);
   const [open, setOpen] = useState(false);
@@ -533,9 +581,9 @@ export function NeedsYouWebControl({
               list={list}
               host="web"
               onClose={close}
-              onOpenThread={(threadId) => {
+              onOpenThread={(threadId, sourceMessageId) => {
                 close();
-                onOpenThread(threadId);
+                onOpenThread(threadId, sourceMessageId);
               }}
             />
           </div>
