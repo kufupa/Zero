@@ -159,7 +159,7 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(screen.queryByText('Agency & company')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Make quote' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Find this booking' }));
-    expect(onSelectStayKey).toHaveBeenCalledWith('stay-a');
+    expect(onSelectStayKey).toHaveBeenCalledWith('2026-11-01:2026-11-06');
   });
 
   it('shows cancel stay cards on a stored non_quote analysis', () => {
@@ -583,8 +583,10 @@ vi.mock('../providers/query-provider', () => ({
       },
     },
     quoteWorkflow: {
+      rateCatalogue: { query: async () => null },
       analyseSelection: { mutate: (...args: unknown[]) => analyseMutate(...args) },
     },
+    drafts: { savedReply: { query: async () => null } },
   },
 }));
 
