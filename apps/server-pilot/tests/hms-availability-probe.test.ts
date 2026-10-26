@@ -783,7 +783,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
       expect(await availabilityRuns(db)).toHaveLength(0);
     }));
 
-  it('denied admission creates zero jobs', () =>
+  it('denied admission queues no availability jobs when the extraction is otherwise eligible', () =>
     withSeededTestDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
