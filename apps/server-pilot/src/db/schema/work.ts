@@ -66,6 +66,7 @@ export const WORK_EVENT_TYPES = [
   'item.dismissed',
   'note.staff',
   'admin_review',
+  'field.reset',
 ] as const;
 export type WorkEventType = (typeof WORK_EVENT_TYPES)[number];
 /**
