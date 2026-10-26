@@ -345,6 +345,41 @@ async function seedQuoteExtraction(
   return { threadId, messageId, run: { runKind: 'inbound_extraction' as const, transportId: TRANSPORT_ID, triggerMessageId: messageId } };
 }
 
+async function seedAdmittedPartyMail(
+  db: DB,
+  input: {
+    kind?: Parameters<typeof insertStoredExtraction>[2];
+    admissionSnapshotId?: string | null;
+    fromAddress?: string;
+    payload?: Record<string, unknown>;
+    transportId?: string;
+  } = {},
+) {
+  const transportId = input.transportId ?? TRANSPORT_ID;
+  const { threadId, messageId } = await seedThread(db, 'Party request', transportId);
+  await db
+    .update(message)
+    .set({ fromAddress: input.fromAddress ?? 'agent@agency.example.test' })
+    .where(eq(message.id, messageId));
+  await insertStoredExtraction(
+    db,
+    messageId,
+    input.kind ?? 'quote',
+    input.payload ?? quoteExtractionPayload(),
+  );
+  const snapshot =
+    input.admissionSnapshotId === undefined ? `snapshot-${randomUUID()}` : input.admissionSnapshotId;
+  const run = await insertInboundExtraction(
+    db,
+    threadId,
+    messageId,
+    'inbound_extraction',
+    snapshot,
+    transportId,
+  );
+  return { threadId, messageId, run };
+}
+
 async function seedPartyMatchV2(
   db: DB,
   input: { threadId: string; messageId: string; readResult: Record<string, unknown> },
@@ -2461,7 +2496,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(await resume('Another Agency', 'agency')).toBeNull();
     }));
 
-  it('reads a kind-less prefetched party job for either field, but not a party job older than 24 hours', () =>
+  it('reads a kind-less prefetched party job for either field, including a party job older than 24 hours', () =>
     withSeededTestDb(async (db) => {
       const { threadId, messageId } = await seedThread(db);
       const queued = await enqueueHmsJob(
@@ -2490,7 +2525,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         .update(aiWorkflowRun)
         .set({ createdAt: new Date(Date.now() - 25 * 60 * 60_000) })
         .where(eq(aiWorkflowRun.id, queued.run.id));
-      expect(await resume('company')).toBeNull();
+      expect((await resume('company'))?.runId).toBe(queued.run.id);
       expect((await readHmsJobView({ transportId: TRANSPORT_ID, runId: queued.run.id }, db))?.runId).toBe(
         queued.run.id,
       );
@@ -3331,11 +3366,95 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(asOf).toBeLessThanOrEqual(Date.now() + 1000);
     }));
 
+  it('eligible admitted mail persists a timestamped party readback; missing snapshot skips', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
+      const observedAt = '2026-10-01T08:15:00.000Z';
+      const rows = [
+        { name: 'quote', kind: 'quote' as const, admission: true, queued: 1, skip: null },
+        { name: 'booking', kind: 'booking' as const, admission: true, queued: 1, skip: null },
+        { name: 'amendment', kind: 'amendment' as const, admission: true, queued: 1, skip: null },
+        { name: 'cancellation', kind: 'cancellation' as const, admission: true, queued: 1, skip: null },
+        { name: 'voucher_pop', kind: 'voucher_pop' as const, admission: true, queued: 1, skip: null },
+        { name: 'missing snapshot', kind: 'quote' as const, admission: false, queued: 0, skip: 'no_live_admission' },
+        { name: 'unknown kind', kind: 'other' as const, admission: true, queued: 0, skip: 'not_eligible_kind' },
+      ] as const;
+
+      for (const row of rows) {
+        const seeded = await seedAdmittedPartyMail(db, {
+          kind: row.kind,
+          admissionSnapshotId: row.admission ? undefined : null,
+        });
+        expect(await hmsJobs.prefetchPartyForExtraction(seeded.run, db, env), row.name).toBe(row.queued);
+        const [extraction] = await db
+          .select({ metrics: aiWorkflowRun.metrics })
+          .from(aiWorkflowRun)
+          .where(eq(aiWorkflowRun.id, seeded.run.id));
+        if (row.skip) {
+          expect(extraction?.metrics, row.name).toMatchObject({
+            partyPrefetch: { outcome: 'skipped', reason: row.skip },
+          });
+          const jobs = await db
+            .select({ id: aiWorkflowRun.id })
+            .from(aiWorkflowRun)
+            .where(
+              and(
+                eq(aiWorkflowRun.triggerMessageId, seeded.messageId),
+                eq(aiWorkflowRun.runKind, 'read_tool'),
+              ),
+            );
+          expect(jobs, row.name).toHaveLength(0);
+          continue;
+        }
+        expect(extraction?.metrics, row.name).toMatchObject({
+          partyPrefetch: { outcome: 'queued', reason: 'queued', queued: 1 },
+        });
+        const view = await readHmsJobView(
+          {
+            transportId: TRANSPORT_ID,
+            threadId: seeded.threadId,
+            kind: 'party',
+            name: 'Acme Lodging Holdings',
+          },
+          db,
+        );
+        expect(view, row.name).toMatchObject({
+          status: 'queued',
+          prefetch: true,
+          createdAt: expect.any(String),
+        });
+        await db
+          .update(aiWorkflowRun)
+          .set({
+            state: 'succeeded',
+            createdAt: new Date(Date.now() - 25 * 60 * 60_000),
+            readResult: { outcome: 'resolved', asOf: observedAt },
+            finishedAt: new Date(),
+          })
+          .where(eq(aiWorkflowRun.id, view!.runId));
+        const aged = await readHmsJobView(
+          {
+            transportId: TRANSPORT_ID,
+            threadId: seeded.threadId,
+            kind: 'party',
+            name: 'Acme Lodging Holdings',
+          },
+          db,
+        );
+        expect(aged, row.name).toMatchObject({
+          runId: view!.runId,
+          status: 'done',
+          asOf: observedAt,
+          createdAt: expect.any(String),
+        });
+      }
+    }));
+
   it('prefetches a party for a system notice from a direct agent sender', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
-      const { run } = await seedQuoteExtraction(db, {
-        fromAddress: 'agent@agency.example.test',
+      const { run } = await seedAdmittedPartyMail(db, {
         payload: { ...quoteExtractionPayload(), origin: 'system_notice' },
       });
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
@@ -3346,7 +3465,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   it('prefetches a party for a direct agent quote', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
-      const { messageId, run } = await seedQuoteExtraction(db, { fromAddress: 'agent@agency.example.test' });
+      const { messageId, run } = await seedAdmittedPartyMail(db);
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
 
       expect(await hmsJobs.prefetchPartyForExtraction(run, db, env)).toBe(1);
@@ -3384,6 +3503,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           'fanout-u5@example.test',
         );
         await insertStoredExtraction(db, messageId, 'quote', quoteExtractionPayload());
+        await insertInboundExtraction(db, threadId, messageId, 'inbound_extraction', undefined, transportId);
         const item = await ensureWorkItemForMessage(db, { transportId, messageId });
         expect(item).not.toBeNull();
         copies.push({ transportId, threadId, messageId, workItemId: item!.id });
@@ -3537,8 +3657,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       };
       const copies: Array<{ transportId: string; messageId: string }> = [];
       for (const transportId of [DAVINCI_TRANSPORT_ID, FAITH_TRANSPORT_ID]) {
-        const { messageId } = await seedThread(db, 'Quote request', transportId, null);
+        const { threadId, messageId } = await seedThread(db, 'Quote request', transportId, null);
         await insertStoredExtraction(db, messageId, 'quote', quoteExtractionPayload());
+        await insertInboundExtraction(db, threadId, messageId, 'inbound_extraction', undefined, transportId);
         copies.push({ transportId, messageId });
       }
       for (const [transportId, messageId] of [
@@ -3559,6 +3680,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           receivedAt: new Date(),
         });
         await insertStoredExtraction(db, messageId, 'quote', quoteExtractionPayload());
+        await insertInboundExtraction(db, threadId, messageId, 'inbound_extraction', undefined, transportId);
         copies.push({ transportId, messageId });
       }
 
@@ -3596,7 +3718,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   it('skips party prefetch for a known channel sender', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
-      const { messageId, run } = await seedQuoteExtraction(db, { channel: true });
+      const { threadId, messageId } = await seedThread(db, 'Quote request');
+      await db.update(message).set({ fromAddress: 'reservations@booking.com' }).where(eq(message.id, messageId));
+      await insertStoredExtraction(db, messageId, 'quote', quoteExtractionPayload());
+      const run = await insertInboundExtraction(db, threadId, messageId);
       const env = { ...parseEnv(process.env as Record<string, string | undefined>), HMS_PREFETCH_ENABLED: true };
 
       expect(await hmsJobs.prefetchPartyForExtraction(run, db, env)).toBe(0);
@@ -3615,7 +3740,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   it('prefetches for a direct sender in an automated-channel thread', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
-      const { threadId, run } = await seedQuoteExtraction(db, { fromAddress: 'agent@agency.example.test' });
+      const { threadId, run } = await seedAdmittedPartyMail(db);
       const [existingCategory] = await db
         .select({ id: mailCategory.id })
         .from(mailCategory)
@@ -4421,7 +4546,7 @@ async function insertInboundExtraction(
   threadId: string,
   messageId: string,
   kind: 'inbound_extraction' | 'inbound_triage' = 'inbound_extraction',
-  admissionSnapshotId = `snapshot-${randomUUID()}`,
+  admissionSnapshotId: string | null = `snapshot-${randomUUID()}`,
   transportId = TRANSPORT_ID,
 ): Promise<AiWorkflowRun> {
   const [row] = await db
