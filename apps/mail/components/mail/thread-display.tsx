@@ -1262,7 +1262,7 @@ interface MessageListProps {
   onOpenLinkedThread?: (threadId: string) => void;
 }
 
-const MessageList = ({
+export const MessageList = ({
   messages,
   sourceMessageId,
   isFullscreen,
@@ -1279,12 +1279,23 @@ const MessageList = ({
   const timezone = useTimezone();
   const displayMessages = orderMessagesNewestFirst(messages || []);
   const sourceMessageRef = useRef<HTMLDivElement>(null);
+  const lastFocusedSourceMessageId = useRef<string | null>(null);
   const linkedThreadCount = (linkedThreadIds?.length ?? 0) + 1;
 
   useEffect(() => {
-    if (!sourceMessageId || !messages.some((message) => message.id === sourceMessageId)) return;
+    if (!sourceMessageId) {
+      lastFocusedSourceMessageId.current = null;
+      return;
+    }
+    if (
+      lastFocusedSourceMessageId.current === sourceMessageId ||
+      !messages.some((message) => message.id === sourceMessageId)
+    ) {
+      return;
+    }
     const selectedMessage = sourceMessageRef.current;
     if (!selectedMessage) return;
+    lastFocusedSourceMessageId.current = sourceMessageId;
     selectedMessage.focus({ preventScroll: true });
     selectedMessage.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [messages, sourceMessageId]);
@@ -1388,6 +1399,7 @@ const MessageList = ({
                   isLoading={false}
                   index={index}
                   totalEmails={totalReplies}
+                  suppressLatestAutoScroll={Boolean(sourceMessageId)}
                 />
               </div>
             </div>

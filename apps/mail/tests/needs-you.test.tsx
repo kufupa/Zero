@@ -13,13 +13,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import type { NeedsYouRow } from '../lib/quote-workflow/backend-bind';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
+import { MessageList } from '../components/mail/thread-display';
+import { shouldAutoScrollToLatestMessage } from '../components/mail/mail-display';
+import type { ParsedMessage } from '../types';
 
-const { listQuery, dismissMutate, toastMock, toastDismissMock } = vi.hoisted(() => {
+const { listQuery, dismissMutate, toastMock, toastDismissMock, mailDisplayProps } = vi.hoisted(() => {
   return {
     listQuery: vi.fn(),
     dismissMutate: vi.fn(),
     toastMock: vi.fn(),
     toastDismissMock: vi.fn(),
+    mailDisplayProps: vi.fn(),
   };
 });
 
@@ -31,6 +35,20 @@ vi.mock('sonner', () => ({
     warning: vi.fn(),
   }),
 }));
+
+vi.mock('../components/mail/mail-display', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../components/mail/mail-display')>();
+  return {
+    ...actual,
+    default: (props: unknown) => {
+      mailDisplayProps(props);
+      return null;
+    },
+    ThreadAttachments: () => null,
+  };
+});
+
+vi.mock('../hooks/use-timezone', () => ({ useTimezone: () => 'UTC' }));
 
 const needsYouClient = {
   workItems: { list: { query: listQuery }, dismiss: { mutate: dismissMutate } },
@@ -109,6 +127,7 @@ beforeEach(() => {
   toastMock.mockReset();
   toastMock.mockReturnValue('needs-you-dismissal');
   toastDismissMock.mockReset();
+  mailDisplayProps.mockReset();
 });
 
 afterEach(() => {
@@ -444,5 +463,74 @@ describe('Needs-you controls', () => {
     expect(await screen.findByRole('heading', { name: 'Needs you (2)' })).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Needs you (2)' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Dismiss Rooms request' })).toBeDefined();
+  });
+});
+
+describe('webmail exact-message reader selection', () => {
+  it('does not schedule a competing latest-message scroll for an exact source selection', () => {
+    expect(
+      shouldAutoScrollToLatestMessage({
+        demo: false,
+        suppressLatestAutoScroll: true,
+        isLastEmail: true,
+        totalEmails: 6,
+      }),
+    ).toBe(false);
+    expect(
+      shouldAutoScrollToLatestMessage({
+        demo: false,
+        isLastEmail: true,
+        totalEmails: 6,
+      }),
+    ).toBe(true);
+  });
+
+  it('opens and retains focus on the exact source despite latest-message auto-scroll and new mail', () => {
+    const previousScrollIntoView = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      'scrollIntoView',
+    );
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    const message = (id: string) => ({ id, threadId: 'thread-exact' }) as ParsedMessage;
+    const messages = [message('message-exact'), message('message-latest')];
+    const props = {
+      sourceMessageId: 'message-exact',
+      isFullscreen: false,
+      isMobile: false,
+      totalReplies: 6,
+      leading: <input data-testid="reply-editor" />,
+    };
+
+    try {
+      const { container, rerender } = render(<MessageList {...props} messages={messages} />);
+      const selectedMessage = container.querySelector('[data-selected-source-message]');
+      expect(selectedMessage?.getAttribute('aria-current')).toBe('true');
+      expect(document.activeElement).toBe(selectedMessage);
+      expect(scrollIntoView).toHaveBeenCalledOnce();
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' });
+      expect(mailDisplayProps).toHaveBeenCalledWith(
+        expect.objectContaining({
+          emailData: expect.objectContaining({ id: 'message-latest' }),
+          suppressLatestAutoScroll: true,
+        }),
+      );
+
+      const replyEditor = screen.getByTestId('reply-editor') as HTMLInputElement;
+      replyEditor.focus();
+      rerender(<MessageList {...props} messages={[...messages, message('message-new')]} />);
+
+      expect(document.activeElement).toBe(replyEditor);
+      expect(scrollIntoView).toHaveBeenCalledOnce();
+    } finally {
+      if (previousScrollIntoView) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', previousScrollIntoView);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
   });
 });
