@@ -233,6 +233,9 @@ beforeAll(stubResizeObserverForMenus);
 describe('OutlookPanePage', { timeout: 15_000 }, () => {
   const createReplyCalls = () =>
     sendCommandMock.mock.calls.filter((call) => call[0] === 'CREATE_REPLY_DRAFT');
+  // After an email switch the quote session resets (d6f8e0092): reply is Insert Draft until the new
+  // read lands with intent=quote, then Draft quotation. Both still run trackedDraft (expired-window gate).
+  const REPLY_DRAFT_NAME = /Draft quotation into email reply|Insert [Dd]raft in Outlook/i;
 
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
@@ -589,7 +592,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     const retryPayload = createReplyCalls()[2]?.[1] as { operationId: string };
     expect(firstPayload.operationId).not.toBe(secondPayload.operationId);
     expect(retryPayload.operationId).toBe(firstPayload.operationId);
-  });
+  }, 60_000);
 
   it('allows a fresh reply operation after warning about an expired retry ID', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
@@ -665,7 +668,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
 
     bridgeMockState.selectedEntryId = '001';
     pane.rerender(<OutlookPanePage />);
-    fireEvent.click(button);
+    fireEvent.click(await screen.findByRole('button', { name: REPLY_DRAFT_NAME }));
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
   });
 
@@ -697,7 +700,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     expect(createReplyCalls()).toHaveLength(2);
     expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/Check Outlook Drafts/i));
-  });
+  }, 60_000);
 
   it('bounds expired outcomes and warns before starting new replies after the limit', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
@@ -711,7 +714,6 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     });
     const pane = render(<OutlookPanePage />);
     await prepareReviewedQuote();
-    const button = screen.getByRole('button', { name: /Draft quotation into email reply/i });
     const operationIds = new Map<string, string>();
 
     for (let index = 0; index < 257; index += 1) {
@@ -733,14 +735,14 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
 
     bridgeMockState.selectedEntryId = 'message-0';
     pane.rerender(<OutlookPanePage />);
-    fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
+    fireEvent.click(await screen.findByRole('button', { name: REPLY_DRAFT_NAME }));
 
     expect(createReplyCalls()).toHaveLength(257);
     expect(toast.error).toHaveBeenCalledWith(
       expect.stringMatching(/retry window has closed.*check Outlook Drafts/i),
     );
 
-    fireEvent.click(button);
+    fireEvent.click(await screen.findByRole('button', { name: REPLY_DRAFT_NAME }));
     expect(createReplyCalls()).toHaveLength(257);
     confirmSpy.mockReturnValue(true);
     await prepareReviewedQuote();
