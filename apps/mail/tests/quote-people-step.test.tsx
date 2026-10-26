@@ -41,7 +41,7 @@ describe('QuotePeopleStep', () => {
       truncated: false,
     }));
     const props = {
-      session: { staffSource: null, groups: [] } as QuoteSession,
+      session: { staffSource: null, groups: [] } as unknown as QuoteSession,
       partyState: 'Done' as const,
       header: {
         ...emptyStaffQuoteHeader(),
