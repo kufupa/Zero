@@ -519,6 +519,10 @@ if command -v nginx >/dev/null 2>&1; then
     if ! sudo systemctl reload nginx; then
       return 1
     fi
+    if ! WEB_ROOT="$WEB_ROOT" bash "${SERVER_PILOT}/deploy/prune-web-releases.sh"; then
+      echo "web release pruning failed after nginx activation" >&2
+      return 1
+    fi
   }
 
   finalize_nginx_release() {
