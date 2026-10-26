@@ -19,6 +19,7 @@ import {
 } from '../hms/property-read-lock.js';
 import type { ExtractionRow, ExtractionStay } from './extraction/schema.js';
 import { paneStaySpawnEnv, warnPaneStaySpawnFailed } from './pane-stay-spawn-env.js';
+import { classifyHmsLoginOutage } from '../hms/property-outage.js';
 import { type PaneStayLock } from './pane-stay-save.js';
 import { type HmsReadTarget } from '../hms/hms-read-target.js';
 
@@ -214,7 +215,10 @@ export type AvailabilitySnapshot = {
 
 export type AvailabilityProbeResult =
   | ({ outcome: 'read' } & AvailabilitySnapshot)
-  | { outcome: 'execution_failure' | 'refused_lock_busy' | 'refused_lock_unavailable' | 'refused_input_invalid' };
+  | {
+      outcome: 'execution_failure' | 'refused_lock_busy' | 'refused_lock_unavailable' | 'refused_input_invalid';
+      error?: string;
+    };
 
 function text(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;
@@ -606,10 +610,14 @@ export async function probeAvailability(
   } catch (error) {
     if (isPropertyReadLockDeadline(error)) return { outcome: 'refused_lock_busy' };
     warnPaneStaySpawnFailed('availability', error);
-    return { outcome: 'execution_failure' };
+    const loginCode = classifyHmsLoginOutage(error) ? 'AUTHENTICATED_SHELL_TIMEOUT' : undefined;
+    return { outcome: 'execution_failure', ...(loginCode ? { error: loginCode } : {}) };
   }
   const searchOutcome = text(result.outcome);
   if (searchOutcome === 'input_gap') return { outcome: 'refused_input_invalid' };
-  if (!searchOutcome || searchOutcome === 'execution_failure') return { outcome: 'execution_failure' };
+  if (!searchOutcome || searchOutcome === 'execution_failure') {
+    const loginCode = classifyHmsLoginOutage(result) ? 'AUTHENTICATED_SHELL_TIMEOUT' : undefined;
+    return { outcome: 'execution_failure', ...(loginCode ? { error: loginCode } : {}) };
+  }
   return { outcome: 'read', ...availabilitySnapshotOf(result, request) };
 }
