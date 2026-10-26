@@ -520,6 +520,15 @@ describe('tool-run ledger: classifiers by site', () => {
         cause: { reason: 'business_selected_scope_unavailable' },
       }),
     ).toBe('business_selected_scope_unavailable');
+    expect(
+      quoteRefusalReason({
+        code: 'PRECONDITION_FAILED',
+        cause: { reason: 'staff_quote_policy_pdf_unavailable' },
+      }),
+    ).toBe('staff_quote_policy_pdf_unavailable');
+    expect(
+      quoteRefusalReason({ code: 'PRECONDITION_FAILED', cause: { code: 'EXECUTION_FAILURE' } }),
+    ).toBe('hms_execution_failure');
     expect(quoteRefusalReason({ code: 'BAD_REQUEST', message: 'lastName Jane is not valid' })).toBe(
       'refused',
     );

@@ -1,9 +1,6 @@
 import {
   ARTIFACT_MAX_INPUT_BYTES,
-  ARTIFACT_MAX_OUTPUT_BYTES,
   extractEmbeddedPdfText,
-  type SandboxRunner,
-  type SandboxResult,
 } from '../mail/artifacts/read-artifact.js';
 import {
   createReservationistSelectedRatePolicyResolver,
@@ -29,11 +26,11 @@ import {
   quoteTraceAsyncEnabled,
   runProvisionalQuoteChild,
 } from './staff-quote-trace-async.js';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
-import { lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
+import { basename, isAbsolute, join, relative, resolve } from 'node:path';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { quoteDigest } from '../quote-proposal/quote-revision.js';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -41,6 +38,7 @@ import { z } from 'zod';
 
 type BusinessOptions = Parameters<typeof createReservationistBusinessServices>[0];
 type Context = Parameters<NonNullable<BusinessOptions['resolveSelectedPolicy']>>[0];
+const run = promisify(execFile);
 const repo = fileURLToPath(new URL('../../../../', import.meta.url));
 const privateRoot = resolve(repo, '.private');
 const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
@@ -244,153 +242,6 @@ export function readInstalledStaffQuoteConfiguration(
   return configuration;
 }
 
-// The same installed, networkless Poppler sandbox used by the original source owner.
-const pdfImage = 'sha256:f1c3376c26f2609ab9f29f71f824103fe2fcd8ee0346485cb6122a4f93df6f94';
-const run = promisify(execFile);
-const pdfRunner: SandboxRunner = async (tool, inputPath, signal) => {
-  signal?.throwIfAborted();
-  const uid = process.getuid?.(),
-    gid = process.getgid?.();
-  const [file, parent, canonical] = await Promise.all([
-    lstat(inputPath),
-    lstat(dirname(inputPath)),
-    realpath(inputPath),
-  ]);
-  if (
-    uid === undefined ||
-    gid === undefined ||
-    uid < 1 ||
-    gid < 1 ||
-    !/^\/tmp\/nava-pdf-[A-Za-z0-9_-]+\/document\.pdf$/.test(inputPath) ||
-    basename(inputPath) !== 'document.pdf' ||
-    file.isSymbolicLink() ||
-    !file.isFile() ||
-    file.uid !== uid ||
-    file.gid !== gid ||
-    file.mode & 0o077 ||
-    file.size < 1 ||
-    file.size > ARTIFACT_MAX_INPUT_BYTES ||
-    parent.isSymbolicLink() ||
-    !parent.isDirectory() ||
-    parent.uid !== uid ||
-    parent.mode & 0o077 ||
-    canonical !== inputPath
-  )
-    throw new Error('staff_quote_pdf_input_invalid');
-  const originalHash = sha(await readFile(inputPath)),
-    name = `reservationist-pdf-${randomUUID()}`;
-  const toolArgs =
-    tool === 'pdfinfo'
-      ? ['/input/document.pdf']
-      : ['-layout', '-enc', 'UTF-8', '-eol', 'unix', '/input/document.pdf', '-'];
-  const args = [
-    '-n',
-    '/usr/bin/docker',
-    'run',
-    '--rm',
-    '--pull=never',
-    '--name',
-    name,
-    '--network',
-    'none',
-    '--read-only',
-    '--cap-drop',
-    'ALL',
-    '--security-opt',
-    'no-new-privileges',
-    '--pids-limit',
-    '32',
-    '--memory',
-    '256m',
-    '--memory-swap',
-    '256m',
-    '--cpus',
-    '1',
-    '--user',
-    `${uid}:${gid}`,
-    '--mount',
-    'type=bind,src=/usr,dst=/usr,readonly',
-    '--mount',
-    'type=bind,src=/lib,dst=/lib,readonly',
-    '--mount',
-    'type=bind,src=/lib64,dst=/lib64,readonly',
-    '--mount',
-    `type=bind,src=${inputPath},dst=/input/document.pdf,readonly`,
-    '--tmpfs',
-    '/tmp:rw,noexec,nosuid,nodev,size=16777216,mode=1777',
-    '--workdir',
-    '/tmp',
-    '--entrypoint',
-    '/usr/bin/env',
-    pdfImage,
-    '-i',
-    'PATH=/usr/bin',
-    'LANG=C.UTF-8',
-    '/usr/bin/prlimit',
-    '--cpu=5:5',
-    '--as=536870912:536870912',
-    `--fsize=${ARTIFACT_MAX_OUTPUT_BYTES}:${ARTIFACT_MAX_OUTPUT_BYTES}`,
-    '--nofile=32:32',
-    '--nproc=16:16',
-    '--core=0:0',
-    '--',
-    `/usr/bin/${tool}`,
-    ...toolArgs,
-  ];
-  let result: SandboxResult | undefined;
-  let failed = false;
-  let failure: unknown;
-  try {
-    result = await new Promise<SandboxResult>((accept, reject) => {
-      const child = spawn('/usr/bin/sudo', args, {
-        shell: false,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: { PATH: '/usr/bin:/bin' },
-        signal,
-        timeout: 15000,
-      });
-      const stdout: Buffer[] = [],
-        stderr: Buffer[] = [];
-      let outSize = 0,
-        errSize = 0,
-        limited = false;
-      child.stdout.on('data', (chunk: Buffer) => {
-        outSize += chunk.length;
-        if (outSize > ARTIFACT_MAX_OUTPUT_BYTES) {
-          limited = true;
-          child.kill('SIGKILL');
-        } else stdout.push(chunk);
-      });
-      child.stderr.on('data', (chunk: Buffer) => {
-        errSize += chunk.length;
-        if (errSize > 65536) {
-          limited = true;
-          child.kill('SIGKILL');
-        } else stderr.push(chunk);
-      });
-      child.once('error', reject);
-      child.once('close', (code) =>
-        accept({
-          stdout: Buffer.concat(stdout),
-          stderr: Buffer.concat(stderr),
-          exitCode: limited ? -1 : (code ?? -1),
-        }),
-      );
-    });
-  } catch (error) {
-    failed = true;
-    failure = error;
-  } finally {
-    await run('/usr/bin/sudo', ['-n', '/usr/bin/docker', 'rm', '-f', name], {
-      timeout: 5000,
-      maxBuffer: 65536,
-    }).catch(() => undefined);
-  }
-  if (sha(await readFile(inputPath)) !== originalHash)
-    throw new Error('staff_quote_pdf_source_changed');
-  if (failed) throw failure;
-  return result!;
-};
 
 const documentSchema = z
   .object({
@@ -604,7 +455,7 @@ export function createStaffQuoteRatePolicyDocumentReader(options: {
           declaredMime: 'application/pdf',
           objectMime: 'application/pdf',
         },
-        { runner: pdfRunner, signal: ctx.signal },
+        { signal: ctx.signal },
       );
       if (extracted.data.reason !== 'text' || !extracted.data.text)
         throw new Error('staff_quote_policy_pdf_unavailable');
