@@ -112,7 +112,7 @@ import { HMS_JOB_PROMPT_VERSION } from '../../ai/run-ledger.js';
 import {
   enqueueQuotePdfJob,
   persistQuotePdfResult,
-  quotePdfDocumentKey,
+  quotePdfJobIdentity,
   quotePdfResultOf,
   readQuotePdfJob,
   type QuotePdfRequest,
@@ -1505,8 +1505,10 @@ export const workstationRouter = router({
       await awaitPendingStaffQuote(input.workflowRunId);
       if (!emailsMatch(ctx.transportEmail, input.outlookEmail))
         throw new TRPCError({ code: 'FORBIDDEN', message: 'OUTLOOK_EMAIL_MISMATCH' });
+      const documentKey = quotePdfJobIdentity(input);
       const asPdf = (artifact: QuotePdfResult) => ({
         revisionId: artifact.revisionId,
+        documentKey,
         pdfHash: artifact.pdfHash,
         fileName: artifact.fileName,
         totalMinor: artifact.totalMinor,
@@ -1517,14 +1519,6 @@ export const workstationRouter = router({
         .from(message)
         .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
         .limit(1);
-      const documentKey = quotePdfDocumentKey(input.revisionRef, input.additionalStays, {
-        attention: input.attention,
-        company: input.company,
-        clientEmail: input.clientEmail,
-        clientTelephone: input.clientTelephone,
-        agency: input.agency,
-        notes: input.notes ?? '',
-      });
       let jobRun: Awaited<ReturnType<typeof enqueueQuotePdfJob>>['run'] | undefined;
       if (input.workItemId) {
         if (!mail) throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
@@ -1561,6 +1555,13 @@ export const workstationRouter = router({
         .object({
           workItemId: z.string().uuid(),
           revisionRef: z.string().min(1),
+          additionalStays: z.array(qualifiedStayInput).max(62).default([]),
+          attention: z.string().max(256).default(''),
+          company: z.string().max(256).default(''),
+          clientEmail: z.string().max(256).default(''),
+          clientTelephone: z.string().max(128).default(''),
+          agency: z.string().max(256).default('Quote'),
+          notes: z.string().trim().max(1000).optional(),
         })
         .strict(),
     )
@@ -1568,7 +1569,7 @@ export const workstationRouter = router({
       readQuotePdfJob({
         transportId: ctx.activeTransportId,
         workItemId: input.workItemId,
-        revisionId: input.revisionRef,
+        revisionId: quotePdfJobIdentity(input),
       }),
     ),
   /**

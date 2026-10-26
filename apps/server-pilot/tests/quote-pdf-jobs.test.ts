@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   enqueueQuotePdfJob,
   executeQuotePdfJob,
+  quotePdfDocumentKey,
   quotePdfIdempotencyKey,
+  quotePdfJobIdentity,
   quotePdfResultOf,
   readQuotePdfJob,
 } from '../src/ai/quote-pdf-jobs.js';
@@ -12,6 +14,26 @@ import { workItem } from '../src/db/schema/work.js';
 import { DAVINCI_TRANSPORT_EMAIL, DAVINCI_TRANSPORT_ID } from '../src/db/seed.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
+
+describe('quote PDF document identity', () => {
+  it('enqueue and poll share one document key', () => {
+    const input = {
+      revisionRef: 'rev-primary',
+      additionalStays: [{ revisionRef: 'rev-extra' }],
+      attention: '',
+      company: '',
+      clientEmail: '',
+      clientTelephone: '',
+      agency: 'Quote',
+      notes: '',
+    };
+    const key = quotePdfJobIdentity(input);
+    expect(key).toBe(quotePdfDocumentKey(input.revisionRef, input.additionalStays, input));
+    expect(key).not.toBe(input.revisionRef);
+    expect(quotePdfJobIdentity({ ...input, additionalStays: [] })).not.toBe(key);
+    expect(quotePdfJobIdentity({ ...input, company: 'Other' })).not.toBe(key);
+  });
+});
 
 const reachable = await probeTestDb();
 

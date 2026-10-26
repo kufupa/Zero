@@ -54,16 +54,47 @@ export function quotePdfIdempotencyKey(workItemId: string, revisionId: string): 
   return `quote-pdf:${workItemId}:${revisionId}`;
 }
 
+export type QuotePdfDocumentIdentity = {
+  revisionRef: string;
+  additionalStays?: Array<{ revisionRef: string }>;
+  attention?: string;
+  company?: string;
+  clientEmail?: string;
+  clientTelephone?: string;
+  agency?: string;
+  notes?: string | null;
+};
+
+function quotePdfHeaderDigest(header: Omit<QuotePdfDocumentIdentity, 'revisionRef' | 'additionalStays'>): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        attention: header.attention ?? '',
+        company: header.company ?? '',
+        clientEmail: header.clientEmail ?? '',
+        clientTelephone: header.clientTelephone ?? '',
+        agency: header.agency ?? '',
+        notes: header.notes ?? '',
+      }),
+    )
+    .digest('hex')
+    .slice(0, 16);
+}
+
 /** Stay revisions (sorted) plus a header digest so combined quotes and contact edits do not collide. */
 export function quotePdfDocumentKey(
   revisionRef: string,
   additionalStays: Array<{ revisionRef: string }> = [],
-  header?: Record<string, unknown>,
+  header?: Omit<QuotePdfDocumentIdentity, 'revisionRef' | 'additionalStays'>,
 ): string {
   const revisions = [revisionRef, ...additionalStays.map((stay) => stay.revisionRef)].sort().join('\u001f');
   if (!header) return revisions;
-  const digest = createHash('sha256').update(JSON.stringify(header)).digest('hex').slice(0, 16);
-  return `${revisions}:${digest}`;
+  return `${revisions}:${quotePdfHeaderDigest(header)}`;
+}
+
+/** Enqueue and poll must share this identity or disconnect recovery misses the row. */
+export function quotePdfJobIdentity(input: QuotePdfDocumentIdentity): string {
+  return quotePdfDocumentKey(input.revisionRef, input.additionalStays ?? [], input);
 }
 
 export function isQuotePdfRun(run: { promptVersion?: string | null }): boolean {
