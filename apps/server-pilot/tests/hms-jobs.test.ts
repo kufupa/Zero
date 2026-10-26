@@ -1246,6 +1246,35 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(rows).toEqual([]);
     }));
 
+  it('records an early quote-prepare skip under lock without PII', () =>
+    withSeededTestDb(async (db) => {
+      const { threadId, messageId, run } = await seedQuoteExtraction(db, { spam: true });
+      const extraction = await insertInboundExtraction(db, threadId, messageId);
+      expect(
+        await prefetchQuoteReadyForExtraction({ ...run, id: extraction.id }, db, QUOTE_PREPARE_ENV),
+      ).toBe(0);
+      const [source] = await db
+        .select({ metrics: aiWorkflowRun.metrics })
+        .from(aiWorkflowRun)
+        .where(eq(aiWorkflowRun.id, extraction.id));
+      const decisions = (source?.metrics as { quotePrepareDecisions?: unknown } | null)?.quotePrepareDecisions;
+      expect(decisions).toEqual([expect.objectContaining({ outcome: 'skipped', reason: 'spam' })]);
+      const blob = JSON.stringify(source?.metrics);
+      expect(blob).not.toMatch(/Alex Guest/);
+      expect(blob).not.toMatch(/alex@example\.test/i);
+      expect(blob).not.toMatch(/guest@example\.test/i);
+      const prepared = await db
+        .select({ id: aiWorkflowRun.id })
+        .from(aiWorkflowRun)
+        .where(
+          and(
+            eq(aiWorkflowRun.triggerMessageId, messageId),
+            sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+          ),
+        );
+      expect(prepared).toEqual([]);
+    }));
+
   it('does not prepare when the quote request is missing required room occupancy', () =>
     withSeededTestDb(async (db) => {
       const payload = quoteExtractionPayload() as ReturnType<typeof quoteExtractionPayload>;
