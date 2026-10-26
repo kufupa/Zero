@@ -224,12 +224,11 @@ function probeEnv(overrides: Record<string, string> = {}): Record<string, string
   return { ...process.env, HMS_JOB_QUEUE: 'on', HMS_AVAILABILITY_PREFETCH: 'on', ...overrides } as Record<string, string>;
 }
 
-function extractionRun(messageId: string, admissionSnapshotId?: string | null) {
+function extractionRun(messageId: string) {
   return {
     runKind: 'inbound_extraction' as const,
     transportId: TRANSPORT_ID,
     triggerMessageId: messageId,
-    ...(admissionSnapshotId !== undefined ? { admissionSnapshotId } : {}),
   };
 }
 
@@ -754,7 +753,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U10 availability probe (lane 
     withSeededTestDb(async (db) => {
       const { messageId } = await seedThread(db);
       await seedExtraction(db, messageId, 'quote');
-      expect(await prefetchAvailabilityForExtraction(extractionRun(messageId, null), db, probeEnv())).toBe(0);
+      expect(
+        await prefetchAvailabilityForExtraction(
+          { ...extractionRun(messageId), admissionSnapshotId: null },
+          db,
+          probeEnv(),
+        ),
+      ).toBe(0);
       expect(await availabilityRuns(db)).toHaveLength(0);
     }));
 
