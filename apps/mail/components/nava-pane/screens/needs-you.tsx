@@ -372,7 +372,8 @@ export function NeedsYouScreen({
       const entryId = row.outlookEntryId;
       return {
         row,
-        onOpen: displayMessageForm && hasExactId(entryId) ? displayMessageForm.bind(null, entryId) : undefined,
+        onOpen:
+          displayMessageForm && hasExactId(entryId) ? () => displayMessageForm(entryId) : undefined,
       };
     }
     const threadId = row.threadId;
@@ -382,7 +383,7 @@ export function NeedsYouScreen({
       row,
       onOpen:
         openThread && hasExactId(threadId) && hasExactId(sourceMessageId)
-          ? openThread.bind(null, threadId, sourceMessageId)
+          ? () => openThread(threadId, sourceMessageId)
           : undefined,
     };
   });
