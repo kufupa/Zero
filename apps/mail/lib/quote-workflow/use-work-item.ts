@@ -146,11 +146,16 @@ export function sectionHasStaffEdit(
   section: WorkItemSection,
 ): boolean {
   if (!provenance) return false;
-  const prefix = section.type === 'contact' ? 'contact.' : `stays[${section.stayId}]`;
   for (const [path, entry] of Object.entries(provenance)) {
-    if (path.startsWith(prefix) && entry.source === 'staff') return true;
+    if (fieldPathInSection(path, section) && entry.source === 'staff') return true;
   }
   return false;
+}
+
+function fieldPathInSection(path: string, section: WorkItemSection): boolean {
+  if (section.type === 'contact') return path.startsWith('contact.');
+  const prefix = `stays[${section.stayId}]`;
+  return path === prefix || path.startsWith(`${prefix}.`);
 }
 
 /** The pane's board as the extraction names it. Unknown is no board stated. */
@@ -332,6 +337,8 @@ export function useStoredWork(args: {
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [cursorEpoch, setCursorEpoch] = useState(0);
   const trpcRef = useRef(trpc);
+  const lookupKeyRef = useRef(lookupKey);
+  lookupKeyRef.current = lookupKey;
 
   useEffect(() => {
     trpcRef.current = trpc;
@@ -411,9 +418,12 @@ export function useStoredWork(args: {
     for (const key of pending.current.keys()) send(key);
   }, [send]);
 
-  const dropQueuedSaves = useCallback(() => {
-    for (const entry of pending.current.values()) clearTimeout(entry.timer);
-    pending.current.clear();
+  const dropQueuedSaves = useCallback((section?: WorkItemSection) => {
+    for (const [key, entry] of pending.current) {
+      if (section && !fieldPathInSection(entry.path, section)) continue;
+      clearTimeout(entry.timer);
+      pending.current.delete(key);
+    }
   }, []);
 
   const schedule = useCallback(
@@ -629,6 +639,7 @@ export function useStoredWork(args: {
     const input = { internetMessageId: messageId };
     return (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input))
       .then((result) => {
+        if (lookupKeyRef.current !== keyNow) return;
         setLookup((prev) => (prev && prev.key === keyNow ? { ...prev, result } : prev));
         setHistoryEpoch((n) => n + 1);
       })
@@ -679,6 +690,7 @@ export function useStoredWork(args: {
     (mutate: HistoryMutate | undefined, message: string) => {
       const seq = historyCursor?.seq;
       if (!readyWorkItemId || !mutate || seq === undefined) return;
+      const keyNow = lookupKey;
       setHistoryPending(true);
       setHistoryError(null);
       dropQueuedSaves();
@@ -686,10 +698,12 @@ export function useStoredWork(args: {
       const input = { workItemId: readyWorkItemId, expectedSeq: seq };
       void Promise.allSettled([...inFlight.current.values()])
         .then(() => {
+          if (lookupKeyRef.current !== keyNow) return;
           dropQueuedSaves();
           return pinned ? mutate(input, pinned) : mutate(input);
         })
         .then((result) => {
+          if (lookupKeyRef.current !== keyNow) return;
           if (result && typeof result === 'object' && 'seq' in result) {
             const next = result as HistorySeqCursor;
             if (Number.isSafeInteger(next.revision) && Number.isSafeInteger(next.seq)) setHistoryCursor(next);
@@ -703,7 +717,7 @@ export function useStoredWork(args: {
           setHistoryPending(false);
         });
     },
-    [dropQueuedSaves, historyCursor, readyWorkItemId, readyTransportId, refetchStored],
+    [dropQueuedSaves, historyCursor, lookupKey, readyWorkItemId, readyTransportId, refetchStored],
   );
 
   const undo = useCallback(
@@ -724,17 +738,22 @@ export function useStoredWork(args: {
     (section: WorkItemSection) => {
       const mutate = historyRoutesFrom(trpcRef.current).resetSection?.mutate;
       if (!readyWorkItemId || !mutate) return;
+      const keyNow = lookupKey;
       setHistoryPending(true);
       setHistoryError(null);
-      dropQueuedSaves();
+      dropQueuedSaves(section);
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, section };
       void Promise.allSettled([...inFlight.current.values()])
         .then(() => {
-          dropQueuedSaves();
+          if (lookupKeyRef.current !== keyNow) return;
+          dropQueuedSaves(section);
           return pinned ? mutate(input, pinned) : mutate(input);
         })
-        .then(() => refetchStored())
+        .then(() => {
+          if (lookupKeyRef.current !== keyNow) return;
+          return refetchStored();
+        })
         .catch(() => {
           setHistoryError("Couldn't reset — try again");
         })
@@ -742,7 +761,7 @@ export function useStoredWork(args: {
           setHistoryPending(false);
         });
     },
-    [dropQueuedSaves, readyWorkItemId, readyTransportId, refetchStored],
+    [dropQueuedSaves, lookupKey, readyWorkItemId, readyTransportId, refetchStored],
   );
 
   return {
