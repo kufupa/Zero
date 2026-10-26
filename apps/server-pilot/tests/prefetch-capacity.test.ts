@@ -13,17 +13,17 @@ import {
   executeHmsJob,
   HMS_JOB_PRIORITY_PREFETCH,
 } from '../src/ai/hms-jobs.js';
-import {
-  claimNextAiRun,
-  HMS_JOB_PROMPT_VERSION,
-  markAiRunRunning,
-  type AiWorkflowRun,
-} from '../src/ai/run-ledger.js';
+import { claimNextAiRun, HMS_JOB_PROMPT_VERSION, markAiRunRunning } from '../src/ai/run-ledger.js';
 import { quotePrepareDecisionsFromMetrics } from '../src/ai/quote-prepare-ledger.js';
 import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
-import { DAVINCI_TRANSPORT_EMAIL, DAVINCI_TRANSPORT_ID, NAVA_TRANSPORT_ID } from '../src/db/seed.js';
+import {
+  DAVINCI_TRANSPORT_EMAIL,
+  DAVINCI_TRANSPORT_ID,
+  NAVA_TRANSPORT_ID,
+  TRANSPORT_ID,
+} from '../src/db/seed.js';
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
 const reachable = await probeTestDb();
@@ -328,8 +328,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
       vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
       vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-quote.json');
       const env = { ...QUOTE_ON, HMS_QUOTE_PREPARE_PER_HOUR: '1' };
-      const first = await seedExtraction(db);
-      const second = await seedExtraction(db);
+      const first = await seedExtraction(db, { transportId: TRANSPORT_ID });
+      const second = await seedExtraction(db, { transportId: TRANSPORT_ID });
       expect(await prefetchQuoteReadyForExtraction(first.prefetchRun, db, env)).toBeGreaterThanOrEqual(1);
       const firstCreated = await preparedQuoteRows(db, first.messageId);
       expect(await prefetchQuoteReadyForExtraction(second.prefetchRun, db, env)).toBeGreaterThanOrEqual(1);
@@ -377,9 +377,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
       vi.stubEnv('HITL_LEDGER', 'on');
       staffQuoteRunner.run.mockImplementation(async (...args: unknown[]) => {
         const quoteInput = args[0] as { messageId: string };
-        return {
+        const transaction = args[2] as DB;
+        const options = args[3] as {
+          commitQueuedResult?: (result: Record<string, unknown>, transaction: DB) => Promise<boolean>;
+        };
+        const quoteResult = {
           status: 'ready',
-          workflowRunId: 'prepared-overflow',
+          workflowRunId: target.id,
           revisionRef: 'prepared-overflow',
           messageId: quoteInput.messageId,
           factRefs: [],
@@ -389,6 +393,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
           totalMinor: 1,
           currency: 'ZAR',
         };
+        await options.commitQueuedResult?.(quoteResult, transaction);
+        return quoteResult;
       });
 
       const claimed = await claimNextAiRun({
@@ -400,19 +406,22 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
       });
       if (!claimed) throw new Error('expected deferred prepared quote to be claimable');
       expect(claimed.id).toBe(target.id);
-      const running = await markAiRunRunning(
-        {
-          runId: claimed.id,
-          claimOwner: claimed.claimOwner!,
-          claimToken: claimed.claimToken!,
-          deadlineAt: claimed.deadlineAt!,
-        },
-        db,
-      );
-      if (!running) throw new Error('markAiRunRunning fenced out');
+      if (
+        !(await markAiRunRunning(
+          {
+            runId: claimed.id,
+            claimOwner: claimed.claimOwner!,
+            claimToken: claimed.claimToken!,
+            deadlineAt: claimed.deadlineAt!,
+          },
+          db,
+        ))
+      ) {
+        throw new Error('markAiRunRunning fenced out');
+      }
       expect(
         await executeHmsJob({
-          run: running as AiWorkflowRun,
+          run: claimed,
           fence: {
             runId: claimed.id,
             claimOwner: claimed.claimOwner!,

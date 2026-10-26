@@ -1363,21 +1363,30 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       const env = { ...QUOTE_PREPARE_ENV, HMS_QUOTE_PREPARE_PER_HOUR: '1' };
       const first = await seedQuoteExtraction(db);
       const second = await seedQuoteExtraction(db);
-      await db.insert(aiWorkflowRun).values({
-        id: randomUUID(),
-        transportId: TRANSPORT_ID,
-        threadId: second.threadId,
-        triggerMessageId: second.messageId,
-        runKind: 'inbound_extraction',
-        idempotencyKey: `inbound-extraction:${second.messageId}`,
-        modelId: 'not_applicable',
-        promptVersion: 'triage-v6',
-        admissionSnapshotId: `snapshot-${randomUUID()}`,
-        state: 'succeeded',
-        executorLane: 'default',
-        priority: 0,
-        metrics: {},
-      });
+      const seedInbound = async (seeded: typeof second) => {
+        const [run] = await db
+          .insert(aiWorkflowRun)
+          .values({
+            id: randomUUID(),
+            transportId: TRANSPORT_ID,
+            threadId: seeded.threadId,
+            triggerMessageId: seeded.messageId,
+            runKind: 'inbound_extraction',
+            idempotencyKey: `inbound-extraction:${seeded.messageId}`,
+            modelId: 'not_applicable',
+            promptVersion: 'triage-v6',
+            admissionSnapshotId: `snapshot-${randomUUID()}`,
+            state: 'succeeded',
+            executorLane: 'default',
+            priority: 0,
+            metrics: { keep: true },
+          })
+          .returning();
+        if (!run) throw new Error('inbound extraction seed failed');
+        return run;
+      };
+      await seedInbound(first);
+      await seedInbound(second);
 
       expect(await prefetchQuoteReadyForExtraction(first.run, db, env)).toBeGreaterThanOrEqual(1);
       const overflowed = await prefetchQuoteReadyForExtraction(second.run, db, env);
@@ -1426,17 +1435,26 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       }
       await db.update(aiWorkflowRun).set({ nextRunAt: new Date(), updatedAt: new Date() }).where(eq(aiWorkflowRun.id, target!.id));
 
-      staffQuoteRunner.run.mockResolvedValue({
-        status: 'ready',
-        workflowRunId: target!.id,
-        revisionRef: 'overflow-1',
-        messageId: second.messageId,
-        factRefs: [],
-        selectionEpoch: 0,
-        inputRevision: 0,
-        inputDigest: 'd'.repeat(64),
-        totalMinor: 1,
-        currency: 'ZAR',
+      vi.stubEnv('HITL_LEDGER', 'on');
+      staffQuoteRunner.run.mockImplementation(async (...args: unknown[]) => {
+        const transaction = args[2] as DB;
+        const options = args[3] as {
+          commitQueuedResult?: (result: Record<string, unknown>, transaction: DB) => Promise<boolean>;
+        };
+        const quoteResult = {
+          status: 'ready',
+          workflowRunId: target!.id,
+          revisionRef: 'overflow-1',
+          messageId: second.messageId,
+          factRefs: [],
+          selectionEpoch: 0,
+          inputRevision: 0,
+          inputDigest: 'd'.repeat(64),
+          totalMinor: 1,
+          currency: 'ZAR',
+        };
+        await options.commitQueuedResult?.(quoteResult, transaction);
+        return quoteResult;
       });
       const claimed = await claimJob(db);
       expect(claimed.id).toBe(target!.id);
@@ -3870,6 +3888,15 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
     const threadIds: string[] = [];
     const messageIds: string[] = [];
     try {
+      await setup.db
+        .insert(mailboxTransport)
+        .values({
+          id: TRANSPORT_ID,
+          email: TRANSPORT_EMAIL,
+          ownerHeaderValue: TRANSPORT_EMAIL,
+          isActive: true,
+        })
+        .onConflictDoNothing();
       const makeRequest = async (lastName: string): Promise<AiWorkflowRun> => {
         const threadId = `guest-cap-thread-${randomUUID()}`;
         const messageId = `guest-cap-msg-${randomUUID()}`;
@@ -3945,14 +3972,26 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       let queued: number[] = [];
       try {
         await locked;
-        const first = prefetchHmsConfirmations(firstRun, left.db, env).then((count) => {
-          settledWhileHeld += 1;
-          return count;
-        });
-        const second = prefetchHmsConfirmations(secondRun, right.db, env).then((count) => {
-          settledWhileHeld += 1;
-          return count;
-        });
+        const first = prefetchHmsConfirmations(firstRun, left.db, env).then(
+          (count) => {
+            settledWhileHeld += 1;
+            return count;
+          },
+          (error) => {
+            settledWhileHeld += 1;
+            throw error;
+          },
+        );
+        const second = prefetchHmsConfirmations(secondRun, right.db, env).then(
+          (count) => {
+            settledWhileHeld += 1;
+            return count;
+          },
+          (error) => {
+            settledWhileHeld += 1;
+            throw error;
+          },
+        );
         await new Promise((resolve) => setTimeout(resolve, 500));
         doneWhileHeld = settledWhileHeld;
         releaseLock();
