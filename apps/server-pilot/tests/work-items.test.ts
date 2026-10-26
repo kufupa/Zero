@@ -61,6 +61,8 @@ import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 
 const CENTURION = 'transport-centurion';
 const OTHER = 'transport-other';
+const CENTURION_EMAIL = 'centurion@legacyhotels.co.za';
+const OTHER_EMAIL = 'other@legacyhotels.co.za';
 const DAVINCI = DAVINCI_TRANSPORT_ID;
 const FAITH = FAITH_TRANSPORT_ID;
 const USER = 'user-ropperman';
@@ -130,19 +132,19 @@ function withDb(run: (db: DB) => Promise<void>) {
 async function addOtherTransport(db: DB) {
   await db.insert(mailboxTransport).values({
     id: OTHER,
-    email: 'other@legacyhotels.co.za',
-    ownerHeaderValue: 'other@legacyhotels.co.za',
+    email: OTHER_EMAIL,
+    ownerHeaderValue: OTHER_EMAIL,
     mailboxType: 'personal',
     sendFromConfig: { aliases: [] },
   });
 }
 
-/** One inbound mail with a Message-ID of `<id>@example.com`. Returns the message id. */
-async function seedMail(db: DB, id: string, transportId = CENTURION): Promise<string> {
+/** One inbound mail with a Message-ID of `<id>@example.com` for an explicit mailbox. */
+async function seedMailForTransport(db: DB, id: string, transportId: string, transportEmail: string): Promise<string> {
   await seedInboxThread(db, {
     threadId: `thread-${id}`,
     transportId,
-    transportEmail: 'centurion@legacyhotels.co.za',
+    transportEmail,
     messageId: `msg-${id}`,
     fromAddress: 'sender@example.com',
     subject: 'Rooms request',
@@ -150,6 +152,11 @@ async function seedMail(db: DB, id: string, transportId = CENTURION): Promise<st
     messageIdHeader: `${id}@example.com`,
   });
   return `msg-${id}`;
+}
+
+/** One inbound mail for the legacy test mailbox. */
+async function seedMail(db: DB, id: string): Promise<string> {
+  return seedMailForTransport(db, id, CENTURION, CENTURION_EMAIL);
 }
 
 /** Inserts one read for a message, as the inbound run would store it. */
@@ -195,15 +202,19 @@ async function eventsFor(db: DB, workItemId: string) {
   return db.select().from(workEvent).where(eq(workEvent.workItemId, workItemId));
 }
 
-function centurionCaller(activeTransportId = CENTURION) {
+function callerForTransport(activeTransportId: string, transportEmail: string) {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
     sessionUser: { id: USER, email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
     activeTransportId,
-    transportEmail: 'centurion@legacyhotels.co.za',
+    transportEmail,
     accessRole: 'owner',
   } as never);
+}
+
+function centurionCaller(activeTransportId = CENTURION) {
+  return callerForTransport(activeTransportId, CENTURION_EMAIL);
 }
 
 describe('stored read for the pane', () => {
@@ -1538,6 +1549,84 @@ describe('work item route', () => {
       await expect(other.dismiss({ workItemId: work.workItemId })).rejects.toMatchObject({ code: 'NOT_FOUND' });
       expect(await eventsFor(db, work.workItemId)).toHaveLength(0);
       expect((await centurionCaller().workItems.list({})).map((item) => item.id)).toEqual([work.workItemId]);
+    }));
+
+  it('returns the latest event source and value per field for the active mailbox', () =>
+    withDb(async (db) => {
+      await addOtherTransport(db);
+      const messageId = await seedMailForTransport(db, 'provenance1', OTHER, OTHER_EMAIL);
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const opened = await openStoredWork(db, {
+        transportId: OTHER,
+        internetMessageId: '<provenance1@example.com>',
+      });
+      if (opened.status !== 'ready' || !opened.workItemId) throw new Error('expected a ready work item');
+
+      const arrival = `stays[${STAY_ONE}].requested.arrival`;
+      const departure = `stays[${STAY_ONE}].requested.departure`;
+      const count = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`;
+      await db.insert(workEvent).values([
+        {
+          id: '00000000-0000-4000-8000-000000000001',
+          workItemId: opened.workItemId,
+          actorKind: 'user',
+          actorUserId: USER,
+          type: 'field.accept',
+          fieldPath: arrival,
+          aiValue: '2027-11-01',
+          value: '2027-11-01',
+          aiSource: 'extract-v1',
+          at: new Date('2026-10-01T10:00:00Z'),
+        },
+        {
+          id: '00000000-0000-4000-8000-000000000002',
+          workItemId: opened.workItemId,
+          actorKind: 'user',
+          actorUserId: USER,
+          type: 'field.edit',
+          fieldPath: arrival,
+          aiValue: '2027-11-01',
+          value: '2027-11-03',
+          aiSource: 'extract-v1',
+          at: new Date('2026-10-01T10:00:00Z'),
+        },
+        {
+          workItemId: opened.workItemId,
+          actorKind: 'user',
+          actorUserId: USER,
+          type: 'field.accept',
+          fieldPath: departure,
+          aiValue: '2027-11-05',
+          value: '2027-11-05',
+          aiSource: 'extract-v2',
+          at: new Date('2026-10-01T10:02:00Z'),
+        },
+        {
+          workItemId: opened.workItemId,
+          actorKind: 'system',
+          type: 'field.seed',
+          fieldPath: count,
+          aiValue: 4,
+          value: 7,
+          at: new Date('2026-10-01T10:03:00Z'),
+        },
+      ]);
+      await db.update(workItem).set({ state: { [count]: 9 } }).where(eq(workItem.id, opened.workItemId));
+
+      const work = await callerForTransport(OTHER, OTHER_EMAIL).workItems.getByMessage({
+        internetMessageId: '<provenance1@example.com>',
+      });
+      expect(work.status).toBe('ready');
+      expect(work).toHaveProperty('fieldProvenance', {
+        [arrival]: { source: 'staff', value: '2027-11-03' },
+        [departure]: { source: 'ai', value: '2027-11-05' },
+        [count]: { source: 'unknown', value: 7 },
+      });
+      expect(
+        await callerForTransport(CENTURION, CENTURION_EMAIL).workItems.getByMessage({
+          internetMessageId: '<provenance1@example.com>',
+        }),
+      ).toEqual({ status: 'none' });
     }));
 
   it('records a contact edit through the route', () =>
