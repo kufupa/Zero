@@ -1992,6 +1992,8 @@ export async function listWorkItems(
       status: workItem.status,
       threadId: workItem.threadId,
       sourceMessageId: workItem.sourceMessageId,
+      outlookEntryId:
+        sql<string | null>`${message.sourceProvenance} #>> '{evidence,locator,entryId}'`,
       updatedAt: workItem.updatedAt,
       sender: message.fromAddress,
       subject: message.subject,
