@@ -1932,7 +1932,7 @@ describe('the Find in HMS picker in the quote header', () => {
       roomTypes: [{ code: 'DVQ', label: 'Property Queen' }],
       ratePlans: [],
       boards: ['bb'],
-      salesStrategies: ['BAR'],
+      salesStrategies: [{ code: 'BAR', label: 'Best Available Rate', requestValue: 'BAR' }],
       overrideRateCodes: [],
       eventRateCodes: [],
     };
@@ -2127,7 +2127,7 @@ describe('the Find in HMS picker in the quote header', () => {
       roomTypes: [{ code: 'DVQ', label: 'Property Queen' }],
       ratePlans: [],
       boards: ['bb'],
-      salesStrategies: ['BAR'],
+      salesStrategies: [{ code: 'BAR', label: 'Best Available Rate', requestValue: 'BAR' }],
       overrideRateCodes: [],
       eventRateCodes: [],
     };
