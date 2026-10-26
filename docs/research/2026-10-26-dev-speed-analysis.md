@@ -104,3 +104,18 @@ Last night's longest dependency chain: U1→U3a→U3b→U6a→U5→U6b(3 PRs)→
 - `agy -p` likely draws the same pool; 2026 GitHub issues report Pro lockouts after 2 prompts and 168 h weekly lockouts (antigravity-cli #56, #234).
 - At the limit: wait for refresh, or AI-credit overage if enabled. No automatic fallback.
 - Use: adversarial review + at most 1 lane for the hardest slice; check `/usage` interactively after the first reviews.
+
+## 10. Did the Opus watchdog help? (owner question 2026-10-26)
+
+Opus watchdog cost $14.8 over 15 h (12% of $123), 21 steers. The other 28% of the "40%" was the Grok orchestrator ($9.6) and a Sol docs lane ($24.5) — not watchdog.
+
+| Steer | What it caught | Script could catch? |
+|---|---|---|
+| 02:51 | #532 merged before Apex finished → real P1 (DV batches blocked) | Yes: merge-gate.sh (a) |
+| 03:50 | U6a startable 30 min, orch at 250K context | Yes: dispatch.sh --idle-check; context = handoff rule |
+| 06:51 | Orch about to merge #538 with 3 real P1s as "follow-up" | Yes: merge-gate.sh (b) |
+| 09:50 | #543 3 P1s untriaged 10 min, 605 lines over cap | Yes: merge-gate.sh (b,c) |
+| 14:38 | Relayed owner design ask into U13 | No — owner relay (Opus chat stays) |
+| 15:51 | Orch polling one lane while 3 units startable | Yes: dispatch.sh --idle-check |
+
+Verdict: the watchdog **did help** (it prevented 2 P1 merges and broke 3 idle gaps), but almost every catch is a mechanical rule. Replace with merge-gate.sh + dispatch.sh (script, $0), keep a cheap Opus hourly check for judgement calls only.
