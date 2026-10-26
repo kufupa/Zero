@@ -33,21 +33,22 @@ const QUOTE_ON = {
 function quotePayload(arrival = '2099-11-12', departure = '2099-11-14') {
   return {
     origin: 'person',
-    contact: { name: 'Alex Guest', email: 'alex@example.test', phone: '+27000000000' },
+    contact: { name: 'Alex Guest', email: 'alex@example.test', phone: null },
     agency: 'Acme Lodging Holdings',
     endClient: 'Example Client',
     confirmationNumbers: [],
     stays: [
       {
         id: 's_12345678',
+        hotel: null,
         requested: { arrival, departure },
         booked: null,
-        totalRooms: 1,
+        totalRooms: 2,
         rows: [
           {
             id: 'r_12345678',
             roomType: 'Standard King',
-            rooms: 1,
+            rooms: 2,
             adultsPerRoom: 2,
             childAges: [],
             board: null,
