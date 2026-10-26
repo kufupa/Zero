@@ -731,6 +731,11 @@ describe('booking card staying-guest prefill', () => {
     fireEvent.change(firstName, { target: { value: 'Bea' } });
     expect(firstName.value).toBe('Bea');
     expect(guestOptIn.checked).toBe(false);
+    fireEvent.click(guestOptIn);
+    expect(guestOptIn.checked).toBe(true);
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Cara Example' } });
+    expect(firstName.value).toBe('Bea');
+    expect(guestOptIn.checked).toBe(false);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     expect(preview).toHaveBeenCalledWith(expect.objectContaining({ firstName: 'Bea', guestoptin4: false }));

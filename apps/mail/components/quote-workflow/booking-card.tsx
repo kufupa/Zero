@@ -781,9 +781,16 @@ export function BookingCards({
       for (const room of draft.draft.rooms) {
         const key = `${room.groupId}:${room.roomIndex}`;
         const choice = current[key];
-        if (!choice || guestNamesEdited.current[key]) continue;
+        if (!choice) continue;
+        let nextChoice = choice;
+        if (selectedGuestChanged && choice.guestoptin4) {
+          nextChoice = { ...choice, guestoptin4: false };
+          next[key] = nextChoice;
+          changed = true;
+        }
         const commitStatus = saves[key]?.commit?.status;
         if (stayBooking || commitStatus === 'running' || commitStatus === 'booked') continue;
+        if (guestNamesEdited.current[key]) continue;
         const names = guestSplit.ambiguous
           ? {
               firstName: textValue(room.request.firstName),
@@ -791,12 +798,12 @@ export function BookingCards({
             }
           : { firstName: guestSplit.firstName, lastName: guestSplit.lastName };
         if (
-          choice.firstName === names.firstName &&
-          choice.lastName === names.lastName &&
+          nextChoice.firstName === names.firstName &&
+          nextChoice.lastName === names.lastName &&
           !selectedGuestChanged
         ) continue;
         next[key] = {
-          ...choice,
+          ...nextChoice,
           firstName: names.firstName,
           lastName: names.lastName,
           // Consent is guest-specific; a People change needs a fresh explicit opt-in.
