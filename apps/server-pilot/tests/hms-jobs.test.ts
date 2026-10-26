@@ -2063,6 +2063,47 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       });
     }));
 
+  it('executes a prepared quote that already used one transient attempt', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId } = await seedThread(db, 'Quote request');
+      const { run } = await enqueueHmsJob({
+        transportId: TRANSPORT_ID,
+        threadId,
+        triggerMessageId: messageId,
+        workItemId: null,
+        userId: null,
+        request: {
+          kind: 'staff_quote',
+          input: staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId, selectionEpoch: 0, inputRevision: 0 }),
+        },
+        priority: HMS_JOB_PRIORITY_PREFETCH,
+        idempotencyKey: `hms-job:staff-quote-prepared:retry-again:${randomUUID()}`,
+        extraMetrics: { quotePrepared: true },
+      }, db);
+      await db
+        .update(aiWorkflowRun)
+        .set({ attempts: 1, lastError: 'staff quote execution failed' })
+        .where(eq(aiWorkflowRun.id, run.id));
+      staffQuoteRunner.run.mockRejectedValueOnce(new Error('native session ECONNRESET'));
+
+      const claimed = await claimJob(db);
+      expect(await runClaimedJob(db, {
+        ...claimed,
+        attempts: 1,
+        lastError: 'staff quote execution failed',
+      })).toBe('retry_wait');
+      expect(staffQuoteRunner.run).toHaveBeenCalledOnce();
+      const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(stored).toMatchObject({
+        state: 'retry_wait',
+        attempts: 2,
+        failureClass: 'TRANSIENT_NETWORK',
+        lastError: 'staff quote execution failed',
+      });
+    }));
+
   it('stores a prepared quote precondition refusal without retrying', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
