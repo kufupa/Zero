@@ -53,12 +53,24 @@ vi.mock('../components/mail/mail-list', () => ({
 }));
 vi.mock('../components/mail/mail-search-bar', () => ({ MailSearchBar: () => null }));
 vi.mock('../components/ui/sidebar-toggle', () => ({ SidebarToggle: () => null }));
+vi.mock('@/components/mail/workflow-folder-done-button', () => ({
+  WorkflowFolderDoneButton: () => null,
+}));
 
 vi.mock('../hooks/use-media-query', () => ({
   useMediaQuery: (query: string) => (query === '(min-width: 1024px)' ? mocks.wide : true),
 }));
 vi.mock('../hooks/use-mobile', () => ({ useIsMobile: () => false }));
 vi.mock('../hooks/use-threads', () => ({
+  useThreads: () => [
+    { isFetching: false, refetch: vi.fn() },
+    [],
+    false,
+    vi.fn(),
+    { isValid: true, folder: mocks.searchListFolder },
+  ],
+}));
+vi.mock('@/hooks/use-threads', () => ({
   useThreads: () => [
     { isFetching: false, refetch: vi.fn() },
     [],
@@ -99,7 +111,10 @@ vi.mock('react-router', () => ({
   useSearchParams: () => [new URLSearchParams('thread=thread-7')],
 }));
 vi.mock('nuqs', () => ({
+  parseAsString: {},
   useQueryState: (key: string) => [key === 'threadId' ? mocks.threadId : null, vi.fn()],
+  // DS2-S5 516304d2f: MailLayoutContent reads threadId + sourceMessageId together.
+  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: null }, vi.fn()],
 }));
 vi.mock('react-hotkeys-hook', () => ({
   useHotkeys: vi.fn(),
@@ -119,6 +134,15 @@ vi.mock('@tanstack/react-query', () => ({
     isLoading: false,
     isError: false,
   }),
+  useInfiniteQuery: () => ({
+    data: { pages: [] },
+    isLoading: false,
+    hasNextPage: false,
+    isFetchingNextPage: false,
+    fetchNextPage: vi.fn(),
+  }),
+  useMutation: () => ({ mutate: vi.fn(), isPending: false }),
+  useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 }));
 vi.mock('@/lib/auth-proxy', () => ({ authProxy: {} }));
 
@@ -331,12 +355,11 @@ describe('shared WebPanePanel', () => {
 });
 
 describe('Needs-you link in the webmail list header', () => {
-  it('keeps the mail-list Needs you control separate from the pane header entry', async () => {
+  it('hides the mail-list Needs you control while the rollout gate is off', async () => {
     mocks.threadId = 'thread-42';
     render(<MailLayout />);
-    const entry = screen.getByRole('button', { name: 'Needs you' });
     expect(await screen.findByTestId('nava-pane')).toBeDefined();
-    expect(entry.closest('[data-preview-pane]')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Needs you/ })).toBeNull();
   });
 });
 
