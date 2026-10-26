@@ -120,4 +120,47 @@ describe('QuotePeopleStep', () => {
     fireEvent.change(guest, { target: { value: 'Staff-entered value' } });
     expect(guest.value).toBe('Staff-entered value');
   });
+
+  it('keeps guest edits for the same message without leaking them to another message', () => {
+    const agentContact: StoredContact = {
+      name: 'Agent sender',
+      company: null,
+      endClient: null,
+      email: null,
+      phone: null,
+    };
+    const props = {
+      session: {
+        staffSource: null,
+        groups: [],
+        analysis: {
+          luna: {
+            party: { kind: 'agency' },
+            groups: [{ guestNames: [] }],
+          },
+        },
+      } as unknown as QuoteSession,
+      partyState: 'Optional' as const,
+      header: emptyStaffQuoteHeader(),
+      contact: agentContact,
+      contactEditorKey: 'agent-message-cache-test',
+      scrollToStep: vi.fn(),
+    } as unknown as Parameters<typeof QuotePeopleStep>[0];
+
+    const firstRender = render(<QuotePeopleStep {...props} />);
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Staff-entered value' } });
+    firstRender.unmount();
+
+    const otherMessage = render(
+      <QuotePeopleStep {...props} contactEditorKey="different-agent-message" />,
+    );
+    const otherGuest = screen.getByLabelText('Guest') as HTMLInputElement;
+    expect(otherGuest.value).toBe('');
+    expect(otherGuest.getAttribute('placeholder')).toBe('Guest name?');
+    otherMessage.unmount();
+
+    render(<QuotePeopleStep {...props} />);
+    const sameMessageGuest = screen.getByLabelText('Guest') as HTMLInputElement;
+    expect(sameMessageGuest.value).toBe('Staff-entered value');
+  });
 });
