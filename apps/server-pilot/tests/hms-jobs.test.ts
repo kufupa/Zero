@@ -1289,7 +1289,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
   it('does not prepare when the quote request is missing required room occupancy', () =>
     withSeededTestDb(async (db) => {
       const payload = quoteExtractionPayload() as ReturnType<typeof quoteExtractionPayload>;
-      payload.stays[0]!.rows[0]!.adultsPerRoom = null as unknown as number;
+      payload.stays[0]!.rows[0]!.adultsPerRoom = 0;
       const { messageId, run } = await seedQuoteExtraction(db, { payload });
 
       expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(0);
@@ -1699,7 +1699,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
         const other = await seedThread(db);
         await db.update(aiWorkflowRun).set({ triggerMessageId: other.messageId }).where(eq(aiWorkflowRun.id, run.id));
       } else {
-        request.request.input = { ...request.request.input, company: 'Different Company' };
+        request.request.input = {
+          ...request.request.input,
+          salesStrategy: request.request.input.salesStrategy === 'BAR' ? 'GOV' : 'BAR',
+        };
       }
 
       const queued = await hmsJobs.queueAutoStaffQuoteHmsJob(request, db);
