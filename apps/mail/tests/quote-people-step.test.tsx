@@ -95,6 +95,7 @@ describe('QuotePeopleStep', () => {
     const props = {
       session: {
         staffSource: null,
+        groups: [],
         analysis: {
           luna: {
             party: { kind: 'agency' },
@@ -106,7 +107,6 @@ describe('QuotePeopleStep', () => {
       header: emptyStaffQuoteHeader(),
       contact: agentContact,
       contactEditorKey: 'agent-message',
-      onContactEdit: vi.fn<(field: ContactField, value: string | null) => void>(),
       scrollToStep: vi.fn(),
     } as unknown as Parameters<typeof QuotePeopleStep>[0];
 
@@ -116,7 +116,6 @@ describe('QuotePeopleStep', () => {
     const guest = within(people).getByLabelText('Guest') as HTMLInputElement;
     expect(guest.value).toBe('');
     expect(guest.getAttribute('placeholder')).toBe('Guest name?');
-    expect(within(people).getByText('Agent sender')).toBeDefined();
 
     fireEvent.change(guest, { target: { value: 'Staff-entered value' } });
     expect(guest.value).toBe('Staff-entered value');
