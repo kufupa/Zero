@@ -9,6 +9,19 @@ import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quo
 import type { QuoteSession, StaffQuoteHeader } from '@/lib/quote-workflow/types';
 import { PartyPicker } from './party-picker';
 
+const stayingGuestListeners = new Set<() => void>();
+
+export function subscribeStayingGuestName(onStoreChange: () => void): () => void {
+  stayingGuestListeners.add(onStoreChange);
+  return () => {
+    stayingGuestListeners.delete(onStoreChange);
+  };
+}
+
+function notifyStayingGuestName(): void {
+  stayingGuestListeners.forEach((listener) => listener());
+}
+
 function inferredGuestName(session: QuoteSession, contact?: StoredContact | null): string {
   const storedGuestNames = session.groups.flatMap((group) =>
     'guestNames' in group && Array.isArray(group.guestNames)
@@ -27,6 +40,27 @@ function inferredGuestName(session: QuoteSession, contact?: StoredContact | null
   if (uniqueGuestNames.length > 1) return '';
   if (session.analysis?.luna?.party?.kind === 'private') return contact?.name?.trim() ?? '';
   return '';
+}
+
+export function guestEditorKeyFor(session: QuoteSession, fallback?: string | null): string {
+  const guestMessageKey = session.binding?.internetMessageId?.trim() || session.binding?.entryId;
+  return (
+    (session.binding && guestMessageKey
+      ? paneEditKey(session.binding.transportId, guestMessageKey)
+      : null) ??
+    fallback ??
+    session.staffSource?.messageId ??
+    'quote-guest'
+  );
+}
+
+export function stayingGuestName(
+  session: QuoteSession,
+  contact?: StoredContact | null,
+  editorKey?: string,
+): string {
+  const key = editorKey ?? guestEditorKeyFor(session);
+  return recalledGuestName(key) ?? inferredGuestName(session, contact);
 }
 
 function GuestNameField({
@@ -53,6 +87,7 @@ function GuestNameField({
         onChange={(event) => {
           const name = event.target.value;
           rememberGuestName(guestEditorKey, name);
+          notifyStayingGuestName();
           setEditedName(name);
         }}
       />
@@ -206,14 +241,7 @@ export function QuotePeopleStep({
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
   scrollToStep: (id: string) => void;
 }) {
-  const guestMessageKey = session.binding?.internetMessageId?.trim() || session.binding?.entryId;
-  const guestEditorKey =
-    (session.binding && guestMessageKey
-      ? paneEditKey(session.binding.transportId, guestMessageKey)
-      : null) ??
-    contactEditorKey ??
-    session.staffSource?.messageId ??
-    'quote-guest';
+  const guestEditorKey = guestEditorKeyFor(session, contactEditorKey);
 
   return (
     <Section step={1} title="People" id="quote-party" action={<StepState state={partyState} />}>

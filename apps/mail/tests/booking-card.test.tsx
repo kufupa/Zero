@@ -6,8 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
 import { ContactBlock } from '../components/nava-pane/blocks/contact-block';
+import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import type { StoredContact } from '../lib/quote-workflow/backend-bind';
+import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import { trackPaneAction } from '../lib/quote-workflow/pane-telemetry';
 import {
   bindGetPriorStaffQuoteRequote,
@@ -42,6 +44,7 @@ import {
 } from '../lib/quote-workflow/pane-stay-bind';
 import { hasStaffStayEdits, initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import {
+  emptyStaffQuoteHeader,
   HRCEN_PROPERTY_CODE,
   type BookingDraftReady,
   type LunaAnalysisWire,
@@ -621,6 +624,77 @@ describe('booking cards', () => {
     render(<QuoteWorkflowPanel session={quotedSession(bareDraft(), PICKED)} />);
     expect(fieldValues('Organization')).toEqual(['Woolworths Holdings', 'Woolworths Holdings']);
     expect(fieldValues('Booking agency')).toEqual(['Woolworths Travel', 'Woolworths Travel']);
+  });
+});
+
+describe('booking card staying-guest prefill', () => {
+  afterEach(() => resetGuestNameCacheForTests());
+
+  it('prefills editable first and last names from the selected Guest, not Contact', () => {
+    const contact: StoredContact = {
+      name: 'Agent Booker',
+      company: null,
+      endClient: null,
+      email: 'agent@example.invalid',
+      phone: null,
+    };
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    draft.draft.rooms[0]!.request.firstName = 'Draft';
+    draft.draft.rooms[0]!.request.lastName = 'Name';
+    draft.draft.rooms[0]!.request.bookerName = 'Agent Booker';
+    const session = {
+      staffSource: null,
+      groups: [],
+      analysis: {
+        luna: {
+          party: { kind: 'agency' },
+          groups: [{ guestNames: [] }],
+        },
+      },
+    } as unknown as QuoteSession;
+
+    const view = (guestEditorKey: string) => (
+      <>
+        <QuotePeopleStep
+          session={session}
+          partyState="Optional"
+          header={emptyStaffQuoteHeader()}
+          contact={contact}
+          contactEditorKey={guestEditorKey}
+          scrollToStep={() => undefined}
+        />
+        <BookingCards draft={draft} contact={contact} guestEditorKey={guestEditorKey} />
+      </>
+    );
+
+    const firstPass = render(view('guest-prefill-unambiguous'));
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Ada Example' } });
+    const firstName = screen.getByLabelText('First name') as HTMLInputElement;
+    const lastName = screen.getByLabelText('Last name') as HTMLInputElement;
+    expect(firstName.value).toBe('Ada');
+    expect(lastName.value).toBe('Example');
+    expect(firstName).toHaveProperty('disabled', false);
+    expect(lastName).toHaveProperty('disabled', false);
+    expect(firstName.value).not.toBe('Agent');
+    expect(lastName.value).not.toBe('Booker');
+    fireEvent.change(firstName, { target: { value: 'Bea' } });
+    expect(firstName.value).toBe('Bea');
+    firstPass.unmount();
+
+    resetGuestNameCacheForTests();
+    render(view('guest-prefill-ambiguous'));
+    const guest = screen.getByLabelText('Guest');
+    fireEvent.change(guest, { target: { value: 'Ada' } });
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Draft');
+    expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('Name');
+    fireEvent.change(guest, { target: { value: 'Ada Marie' } });
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Ada');
+    expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('Marie');
+    fireEvent.change(guest, { target: { value: 'Ada Marie Example' } });
+    expect((screen.getByLabelText('First name') as HTMLInputElement).value).toBe('Draft');
+    expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('Name');
+    expect((screen.getByLabelText('First name') as HTMLInputElement).disabled).toBe(false);
+    expect(screen.getByText('Enter first and last name for the staying guest.')).toBeDefined();
   });
 });
 
