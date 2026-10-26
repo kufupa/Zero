@@ -5,9 +5,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useState, type ReactElement } from 'react';
 import {
+  PARTY_NO_MATCH_CLOSEST,
   PARTY_PICKER_HINT,
   PARTY_SEARCH_DEADLINE_MS,
   PartyPicker,
+  partyRecommendationLabel,
   resetPartyAutoLookupForTests,
 } from '../components/quote-workflow/party-picker';
 import type { HmsJobTransport, HmsJobView } from '../lib/quote-workflow/amend-find';
@@ -462,7 +464,7 @@ describe('PartyPicker prefetched party jobs', () => {
     expect(screen.queryByRole('button', { name: 'Confirm ABCD Travel' })).toBeNull();
   });
 
-  it('auto-binds a V2 high-precision job result and presents it for staff confirmation', async () => {
+  it('shows a V2 recommendation without auto-binding until staff confirm', async () => {
     const onPick = vi.fn();
     const jobTransport: HmsJobTransport = {
       queue: vi.fn(),
@@ -481,9 +483,115 @@ describe('PartyPicker prefetched party jobs', () => {
         onClear={vi.fn()}
       />,
     );
-    await waitFor(() => expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL));
     expect(((await screen.findByRole('combobox', { name: 'Company from HMS' })) as unknown as HTMLSelectElement).value).toBe('company:4411');
-    expect(screen.getByRole('button', { name: 'Confirm Company' })).toBeTruthy();
+    expect(screen.getByText(partyRecommendationLabel('ABC Travel', 'Unique exact name.'))).toBeTruthy();
+    expect(screen.getByTestId('hms-as-of').textContent).toMatch(/Looked up in HMS/);
+    expect(onPick).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Company' }));
+    expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL);
+  });
+
+  it('keeps stale or missing results unbound and binds only a confirmed property-matched choice', async () => {
+    const paneProperty = 'PROP-NORTH';
+    const otherProperty = 'PROP-SOUTH';
+    const staleAsOf = '2026-09-01T08:00:00.000Z';
+
+    const missingTransport: HmsJobTransport = {
+      queue: vi.fn(),
+      status: vi.fn(async () => null),
+    };
+    const missingPick = vi.fn();
+    const { unmount: unmountMissing } = render(
+      <PartyPicker
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={missingTransport}
+        threadId="thread-missing"
+        sourceMessageId="message-1"
+        propertyCode={paneProperty}
+        onPick={missingPick}
+        onClear={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(missingTransport.status).toHaveBeenCalled());
+    expect(missingPick).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Confirm Company' })).toBeNull();
+    unmountMissing();
+
+    const staleView: HmsJobView = {
+      ...v2PartyView('bound'),
+      asOf: staleAsOf,
+      createdAt: staleAsOf,
+      result: { ...v2PartyView('bound').result, propertyCode: paneProperty },
+    };
+    const stalePick = vi.fn();
+    const { unmount: unmountStale } = render(
+      <PartyPicker
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={{ queue: vi.fn(), status: vi.fn(async () => staleView) }}
+        threadId="thread-stale"
+        sourceMessageId="message-1"
+        propertyCode={paneProperty}
+        onPick={stalePick}
+        onClear={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText(partyRecommendationLabel('ABC Travel', 'Unique exact name.'))).toBeTruthy();
+    expect(screen.getByTestId('hms-as-of').textContent).toMatch(/Looked up in HMS/);
+    expect(stalePick).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm Company' }));
+    expect(stalePick).toHaveBeenCalledWith(ABC_TRAVEL);
+    unmountStale();
+
+    const mismatchView: HmsJobView = {
+      ...v2PartyView('bound'),
+      result: { ...v2PartyView('bound').result, propertyCode: otherProperty },
+    };
+    const mismatchPick = vi.fn();
+    const { unmount: unmountMismatch } = render(
+      <PartyPicker
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={{ queue: vi.fn(), status: vi.fn(async () => mismatchView) }}
+        threadId="thread-mismatch"
+        sourceMessageId="message-1"
+        propertyCode={paneProperty}
+        onPick={mismatchPick}
+        onClear={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy());
+    expect(mismatchPick).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Confirm Company' })).toBeNull();
+    expect(screen.queryByText(/Recommended:/)).toBeNull();
+    unmountMismatch();
+
+    const unknownStored: HmsJobView = v2PartyView('bound');
+    const unknownPick = vi.fn();
+    render(
+      <PartyPicker
+        name="ABC Travel"
+        kind="company"
+        parties={{}}
+        find={vi.fn()}
+        jobTransport={{ queue: vi.fn(), status: vi.fn(async () => unknownStored) }}
+        threadId="thread-unknown"
+        sourceMessageId="message-1"
+        propertyCode={paneProperty}
+        onPick={unknownPick}
+        onClear={vi.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy());
+    expect(unknownPick).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Confirm Company' })).toBeNull();
   });
 
   it('ignores a V2 bound result created for a different message in the same thread', async () => {
@@ -570,6 +678,7 @@ describe('PartyPicker prefetched party jobs', () => {
     const select = (await screen.findByRole('combobox', { name: 'Company from HMS' })) as unknown as HTMLSelectElement;
     expect(select.options[0]?.textContent).toBe('Choose company (2 found)');
     expect(Array.from(select.options).filter((option) => option.value.startsWith('company:'))).toHaveLength(2);
+    expect(screen.getByText(PARTY_NO_MATCH_CLOSEST)).toBeTruthy();
     expect(screen.queryByText('Pick the company/agency')).toBeNull();
     expect(screen.queryByText('Two rows have an equal claim.')).toBeNull();
     fireEvent.change(select, { target: { value: 'company:4412' } });
@@ -646,7 +755,10 @@ describe('PartyPicker prefetched party jobs', () => {
     );
 
     const agency = await screen.findByRole('combobox', { name: 'Agency from HMS' });
-    await waitFor(() => expect(onAgencyPick).toHaveBeenCalledWith(expect.objectContaining({ kind: 'agency', nativeId: 'A-1', name: 'Nexus Travel' })));
+    expect(onAgencyPick).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(partyRecommendationLabel('Nexus Travel · IATA 12345 · Pretoria · 1 Main Road', 'Private matcher rationale must not be shown.')),
+    ).toBeTruthy();
     const agencyOptions = Array.from((agency as unknown as HTMLSelectElement).options);
     expect(agencyOptions.filter((option) => option.value.startsWith('agency:'))).toHaveLength(5);
     expect(agencyOptions.map((option) => option.textContent).join(' ')).toContain('IATA 12345 · Pretoria · 1 Main Road');
@@ -657,7 +769,7 @@ describe('PartyPicker prefetched party jobs', () => {
     const companyGroup = screen.getByRole('group', { name: 'Company lookup in HMS' });
     expect(within(companyGroup).queryByText(/Nexus Travel/)).toBeNull();
     expect(within(companyGroup).getByRole('textbox', { name: 'Search company in HMS' })).toBeTruthy();
-    expect(screen.queryByText('Private matcher rationale must not be shown.')).toBeNull();
+    expect(within(companyGroup).queryByText('Private matcher rationale must not be shown.')).toBeNull();
 
     onAgencyPick.mockClear();
     fireEvent.change(agency, { target: { value: 'agency:A-4' } });
@@ -704,6 +816,7 @@ describe('PartyPicker prefetched party jobs', () => {
     expect(select.value).toBe('__choose__');
     expect(select.options[0]?.textContent).toBe('Choose agency (3 found)');
     expect(Array.from(select.options).filter((option) => option.value.startsWith('agency:'))).toHaveLength(3);
+    expect(screen.getByText(PARTY_NO_MATCH_CLOSEST)).toBeTruthy();
     expect(screen.queryByText('Pick the company/agency')).toBeNull();
     expect(screen.queryByText('Private matcher rationale must not be shown.')).toBeNull();
 
@@ -1155,9 +1268,11 @@ describe('PartyPicker duplicate-name choices', () => {
     };
     render(<Harness />);
 
-    await waitFor(() => expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL));
-    expect(screen.queryByText('Internal matcher rationale must not be shown.')).toBeNull();
     const select = (await screen.findByRole('combobox', { name: 'Company from HMS' })) as unknown as HTMLSelectElement;
+    expect(onPick).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(partyRecommendationLabel('ABC Travel', 'Internal matcher rationale must not be shown.')),
+    ).toBeTruthy();
     expect(Array.from(select.options).filter((option) => option.value.startsWith('company:'))).toHaveLength(6);
     expect(select.textContent).not.toContain('#4411');
 
@@ -1262,9 +1377,11 @@ describe('PartyPicker duplicate-name choices', () => {
     };
     render(<Harness />);
 
+    const select = (await screen.findByRole('combobox', { name: 'Company from HMS' })) as unknown as HTMLSelectElement;
+    expect(onPick).not.toHaveBeenCalled();
+    fireEvent.change(select, { target: { value: 'company:4411' } });
     await waitFor(() => expect(onPick).toHaveBeenCalledWith(ABC_TRAVEL));
-    const select = screen.getByRole('combobox', { name: 'Company from HMS' });
-    expect(Array.from((select as unknown as HTMLSelectElement).options).filter((option) => option.value.startsWith('company:'))).toHaveLength(2);
+    expect(Array.from(select.options).filter((option) => option.value.startsWith('company:'))).toHaveLength(2);
     fireEvent.change(select, { target: { value: '__search_hms__' } });
     await waitFor(() => expect(findButton().disabled).toBe(false));
 
