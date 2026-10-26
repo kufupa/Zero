@@ -892,7 +892,8 @@ export function BookingCards({
     patchSave(roomKey, { preview: { status: 'running', key }, commit: undefined });
     let preview: PreviewView;
     try {
-      const outcome = previewOutcome(await pane.preview(stay));
+      const previewInput = workItemId ? { ...stay, stayId, workItemId } : stay;
+      const outcome = previewOutcome(await pane.preview(previewInput));
       preview = outcome.ok
         ? { status: 'ready', key, digest: outcome.digest, runId: outcome.runId, screenshots: outcome.screenshots }
         : { status: 'refused', key, message: outcome.message };
