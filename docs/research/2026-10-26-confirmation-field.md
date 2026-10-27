@@ -2,13 +2,13 @@
 
 Live HRDAV Guest Stay, 2026-10-27 00:50–01:27Z. Labtest only. No Email/Send click. No guest addresses in this file.
 
-**Answer: Save does not auto-mail.** Filling Guest Stay `emailaddress` with the Nava collector and saving a Labtest stay did not produce an inbound on `transport-nava` (or a Da Vinci outbound confirmation) within 15 minutes.
+**Answer: Save does not auto-mail** (no confirmation observed within 15 minutes; POP3 ingest can lag). Filling Guest Stay `emailaddress` with the Nava collector and saving a Labtest stay produced 0 inbound on `transport-nava` and 0 Da Vinci outbound confirmation in that window. Automatic sending beyond 15 min is unverified.
 
 ## Method
 
 1. Offline fixture `apps/server-pilot/tooling/playwright-quote/fixtures/stay-lookup/record-form-live.html` (121 named inputs).
 2. Read-only New Record DOM dump on live HRDAV (166 named inputs; values as shapes only). CRS Confirm-to-Email was not on this screen; not opened (CRS Check Availability creates a stay; Confirm-to-Email is a send).
-3. One Labtest create via `create-lab-stay.mjs` (`--property HRDAV --pane-commit`). Only `emailaddress` got the `transport-nava` collector (domain `legacyhotels.co.za`, length 25). Other email fields left blank. `udfchkbox04` CMS Send Mail left unchecked.
+3. One Labtest create from a `/tmp` copy of `create-lab-stay.mjs` (`--property HRDAV --pane-commit`). After `optionalPartyAndNoteFills`, the copy called `fillNamed(page, 'emailaddress', collector)` once (committed script has no `emailaddress` fill). Only that field got the `transport-nava` collector (domain `legacyhotels.co.za`, length 25). Other email fields left blank. `udfchkbox04` CMS Send Mail left unchecked. Fill ran before Save.
 4. Read-only find of the saved stay. Prod SQL read-only: inbound on `transport-nava` and outbound on `transport-davinci` from 01:11Z, subject class / confirmation-id presence only.
 
 Stay left Reserved for F3 cancel after deploy: confirmation `13201076-1`, arrival 2027-07-22, STKNG BAR, status Reserved, lastName Labtest.
@@ -52,7 +52,7 @@ POP3 ingest can lag past 15 min; this run used the brief's window. No hotel-mail
 
 ## Implication for E2
 
-- Persist the staff-chosen recipient on `emailaddress` (proven to stick). Optionally also `udfchar13` (CMS Booker Email) — unread in this experiment.
+- `emailaddress` is the guest email field and **sticks** after Save. This run did not prove it routes the confirmation letter. `udfchar13` (CMS Booker Email) was not filled. Letter-routing field stays unresolved until delivery is shown.
 - Do **not** treat Save as sending a letter.
 - `udfchkbox04` CMS Send Mail is the on-form send control; checking it is a send. Plan 007 dropped Email/Send clicks. Letter send stays a separate approved action (or staff forwards).
 - CRS Confirm-to-Email is not on Guest Stay New Record.
@@ -233,7 +233,7 @@ vis = Y visible / n not. valueShape never holds an address. Labels blank when Ex
 
 ## Appendix B — fixture vs live
 
-Fixture `record-form-live.html` (opened stay, 121 names) already had `emailaddress`, `emailtypecode`, `udfchar06`, `udfchar13` (CMS Booker Email), `autoemailfolio`. Live New Record added CMS Send Mail (`udfchkbox04`) and omitted `autoemailfolio`.
+Fixture `record-form-live.html` (opened stay, 121 names) already had `emailaddress`, `emailtypecode`, `udfchar06`, `udfchar13` (CMS Booker Email), `udfchkbox04` (CMS Send Mail), and `autoemailfolio`. Live New Record omitted `autoemailfolio`.
 
 ## Sources
 
