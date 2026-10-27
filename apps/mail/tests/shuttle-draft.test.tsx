@@ -1,8 +1,9 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readShuttleProviderConfig } from '../../server-pilot/src/ai/shuttle-draft.js';
 import { ShuttleDraft } from '../components/quote-workflow/shuttle-draft';
 
 const { createDraftMutate, sendMutate, invalidateQueries } = vi.hoisted(() => ({
@@ -28,6 +29,14 @@ vi.mock('../providers/query-provider', () => ({
 
 const provider = { provider: 'Jarat Tours', to: ['shuttle@example.test'] };
 const transportId = 'transport-1';
+const malformedProviderSettings: Array<[string, unknown]> = [
+  ['mixed valid and invalid recipients', { provider: 'Jarat Tours', to: ['shuttle@example.test', 'bad-address'] }],
+  ['empty recipients', { provider: 'Jarat Tours', to: [] }],
+  ['non-array recipients', { provider: 'Jarat Tours', to: 'shuttle@example.test' }],
+  ['non-string recipient', { provider: 'Jarat Tours', to: ['shuttle@example.test', 7] }],
+  ['empty provider', { provider: '  ', to: ['shuttle@example.test'] }],
+  ['provider with a control character', { provider: 'Jarat\nTours', to: ['shuttle@example.test'] }],
+];
 
 function fillDetails() {
   fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-11-21' } });
@@ -80,6 +89,25 @@ describe('shuttle request drafts', () => {
     expect(screen.getByRole('status').textContent).toContain('not set up');
     expect(screen.queryByLabelText('Pickup location')).toBeNull();
     expect(createDraftMutate).not.toHaveBeenCalled();
+  });
+
+  it.each(malformedProviderSettings)('rejects %s shuttle settings', (_caseName, settings) => {
+    expect(readShuttleProviderConfig(settings)).toBeNull();
+  });
+
+  it('locks transfer details while saving the unsent draft', async () => {
+    let completeSave = () => {};
+    createDraftMutate.mockImplementationOnce(() => new Promise((resolve) => {
+      completeSave = () => resolve({ id: 'draft-1' });
+    }));
+    render(<ShuttleDraft config={provider} transportId={transportId} />);
+    const pickup = screen.getByLabelText('Pickup location') as HTMLInputElement;
+    fireEvent.change(pickup, { target: { value: 'Hotel entrance' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
+
+    await waitFor(() => expect(pickup.disabled).toBe(true));
+    await act(async () => completeSave());
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Saved as an unsent draft'));
   });
 
   it('shows a plain mailbox error when saving fails and keeps the draft unsent', async () => {
