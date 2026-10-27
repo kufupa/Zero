@@ -151,10 +151,11 @@ async function fillOneField(page, field, value) {
   await input.scrollIntoViewIfNeeded().catch(() => {});
   const shown = field === 'arrival' || field === 'departure' ? displayDate(value) : String(value);
   const iso = field === 'arrival' || field === 'departure' ? value : null;
-  const numeric = field === 'adults' || field === 'children' ? Number(value) : null;
+  const combo = isComboAmendField(field) ? value : null;
   // Playwright fill updates the DOM but ExtJS Guest Stay discards it on Save unless the
   // component is setValue'd and then blurred. Occupancy is a combobox (uxcombobox *-inputEl);
   // dates are uxdate. Live fixture: tooling/playwright-quote/fixtures/stay-lookup/record-form-live.html.
+  // HRDAV adults store values are strings ("0","1","2"); setValue(2) leaves getValue null.
   await input.evaluate((el, payload) => {
     const id = el.id?.replace(/-inputEl$/, '');
     const cmp = typeof Ext !== 'undefined' && id ? Ext.getCmp(id) : null;
@@ -162,8 +163,21 @@ async function fillOneField(page, field, value) {
       if (payload.iso) {
         const [year, month, day] = payload.iso.split('-').map(Number);
         cmp.setValue(new Date(year, month - 1, day));
-      } else if (payload.numeric != null && Number.isFinite(payload.numeric)) {
-        cmp.setValue(payload.numeric);
+      } else if (payload.combo != null) {
+        const vf = cmp.valueField || 'value';
+        const store = cmp.store;
+        let chosen = String(payload.combo);
+        if (store && typeof store.getCount === 'function') {
+          for (let i = 0; i < store.getCount(); i += 1) {
+            const rec = store.getAt(i);
+            const v = rec && typeof rec.get === 'function' ? rec.get(vf) : rec?.[vf];
+            if (String(v) === String(payload.combo)) {
+              chosen = rec;
+              break;
+            }
+          }
+        }
+        cmp.setValue(chosen);
       } else {
         cmp.setValue(payload.shown);
       }
@@ -172,7 +186,7 @@ async function fillOneField(page, field, value) {
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
-  }, { shown, iso, numeric });
+  }, { shown, iso, combo });
 }
 
 async function blurOneField(page, field) {
@@ -190,12 +204,16 @@ async function readOneField(page, field) {
   return input.evaluate((el) => {
     const id = el.id?.replace(/-inputEl$/, '');
     const cmp = typeof Ext !== 'undefined' && id ? Ext.getCmp(id) : null;
-    const got = typeof cmp?.getValue === 'function' ? cmp.getValue() : el.value;
+    let got = typeof cmp?.getValue === 'function' ? cmp.getValue() : el.value;
     if (got instanceof Date && !Number.isNaN(got.getTime())) {
       const year = got.getFullYear();
       const month = String(got.getMonth() + 1).padStart(2, '0');
       const day = String(got.getDate()).padStart(2, '0');
       return `${year}-${month}-${day}`;
+    }
+    if (got && typeof got === 'object') {
+      const vf = cmp.valueField || 'value';
+      got = typeof got.get === 'function' ? got.get(vf) : got[vf];
     }
     return got;
   });

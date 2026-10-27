@@ -11,6 +11,9 @@ import {
   classifyAmendPayment,
   amendFieldIso,
   amendFieldMatches,
+  applyComboSetValue,
+  comboReadValue,
+  comboStoreRecord,
   comboUnsupportedFieldReason,
   comboWritableFromPage,
   commitAndVerifyFields,
@@ -279,6 +282,30 @@ test('date fill that leaves the previous Ext Date is a mismatch, even when that 
   assert.equal(await commitAndVerifyFields(io, { arrival: '2027-09-15' }), 'arrival');
 });
 
+test('occupancy combo setValue uses the string store record, not a number', () => {
+  const recs = ['0', '1', '2', '3', '4'].map((value) => ({
+    get: (field) => (field === 'value' || field === 'display' ? value : null),
+  }));
+  const set = [];
+  const cmp = {
+    valueField: 'value',
+    displayField: 'display',
+    store: { getCount: () => recs.length, getAt: (i) => recs[i] },
+    setValue: (v) => set.push(v),
+    getValue: () => set.at(-1),
+  };
+  assert.equal(comboStoreRecord(cmp.store, 'value', 2), recs[2]);
+  assert.equal(applyComboSetValue(cmp, 2), recs[2]);
+  assert.equal(set[0], recs[2]);
+  assert.equal(comboReadValue(cmp, null), '2');
+  assert.equal(amendFieldMatches('adults', 2, comboReadValue({
+    valueField: 'value',
+    getValue: () => recs[2],
+  }, null)), true);
+  assert.equal(amendFieldMatches('adults', 2, comboReadValue({ getValue: () => '2' }, null)), true);
+  assert.equal(applyComboSetValue({ setValue: (v) => set.push(v) }, 2), '2');
+});
+
 test('occupancy that never blurs keeps the old count and fails closed', async () => {
   let adults = 1;
   const io = {
@@ -378,6 +405,8 @@ test('amend-stay closes the app drawer before filling changed fields', async () 
   assert.match(fill, /commitAndVerifyFields/);
   assert.match(source, /Ext\.getCmp\(id\)/);
   assert.match(source, /setValue/);
+  assert.match(source, /store\.getAt/);
+  assert.match(source, /payload\.combo/);
   assert.match(source, /got instanceof Date/);
   assert.match(source, /fireEvent\('blur'/);
   assert.ok(fill.indexOf('closeAppDrawer') < fill.indexOf('commitAndVerifyFields'));
