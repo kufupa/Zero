@@ -4,7 +4,9 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BookingCards } from '../components/quote-workflow/booking-card';
+import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-host';
 import type { PaneStayClient } from '../lib/quote-workflow/pane-stay-bind';
+import { initialQuoteSession } from '../lib/quote-workflow/session';
 import type { BookingDraftReady, StayGroupRequirement } from '../lib/quote-workflow/types';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
@@ -114,5 +116,65 @@ describe('booking card reload', () => {
       expect(screenshot).toHaveBeenCalledWith(RUN, 'saved.png');
     });
     expect(screenshot).not.toHaveBeenCalledWith(RUN, 'filled.png');
+  });
+
+  it('does not mark every row booked when two rows share one saved stay id', () => {
+    const client: PaneStayClient = {
+      preview: vi.fn(),
+      commit: vi.fn(),
+      screenshot: vi.fn(async () => null),
+      mode: () => 'on',
+    };
+    const draft = bookedDraft();
+    draft.draft.rooms.push({
+      ...draft.draft.rooms[0]!,
+      groupId: 'g2',
+      roomIndex: 1,
+    });
+    const shared = { ...group, id: 'g1' };
+    render(
+      <BookingCards
+        draft={draft}
+        groups={[shared, { ...group, id: 'g2' }]}
+        paneSave={client}
+        savedStays={{
+          s_aaaa1111_1: {
+            confirmationNumber: '98765-1',
+            status: 'booked',
+            screenshotRef: null,
+          },
+        }}
+      />,
+    );
+    expect(screen.queryByText('Booked in HMS – confirmation 98765-1')).toBeNull();
+    expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(2);
+  });
+
+  it('shows a stored booking when the mail has no booking draft', () => {
+    const client: PaneStayClient = {
+      preview: vi.fn(),
+      commit: vi.fn(),
+      screenshot: vi.fn(async () => null),
+      mode: () => 'on',
+    };
+    render(
+      <QuoteBookingHost
+        session={initialQuoteSession()}
+        paneSave={client}
+        savedStays={{
+          s_aaaa1111_1: {
+            confirmationNumber: '98765-1',
+            status: 'booked',
+            screenshotRef: null,
+            runId: RUN,
+            shots: [{ name: 'saved.png', sha256: 'c'.repeat(64), at: SHOT_AT }],
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText('Booked')).toBeDefined();
+    expect(screen.getByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'View HMS screenshots' })).toBeDefined();
   });
 });

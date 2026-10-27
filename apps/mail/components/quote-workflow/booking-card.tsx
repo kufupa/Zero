@@ -278,15 +278,45 @@ export type SavedStayCommit = {
   shots?: HmsShotRecord[];
 };
 
-function stayIdForRoom(
+const STAY_RECORD_ID = /^[A-Za-z0-9_-]{1,40}$/;
+
+function stayLabel(
   room: { groupId: string; roomIndex: number },
   groups: StayGroupRequirement[],
 ): string {
   const group =
     groups.find((item) => item.id === room.groupId) ??
     groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
-  const stay = group?.stayId ?? room.groupId;
-  return `${stay}_${room.roomIndex}`;
+  return group?.stayId ?? room.groupId;
+}
+
+/** Older saves used stay plus room index. Two rows in one stay can share that id. */
+function legacyStayId(
+  room: { groupId: string; roomIndex: number },
+  groups: StayGroupRequirement[],
+): string {
+  return `${stayLabel(room, groups)}_${room.roomIndex}`;
+}
+
+/** Stay plus the row id plus the room index, when that still fits the server stay-id rule. */
+function stayIdForRoom(
+  room: { groupId: string; roomIndex: number },
+  groups: StayGroupRequirement[],
+): string {
+  const precise = `${stayLabel(room, groups)}_${room.groupId}_${room.roomIndex}`;
+  if (STAY_RECORD_ID.test(precise)) return precise;
+  const legacy = legacyStayId(room, groups);
+  return STAY_RECORD_ID.test(legacy) ? legacy : legacy.slice(0, 40);
+}
+
+/** Ids a room may already be stored under. The precise id is what a new save writes. */
+export function draftStayLookupIds(draft: BookingDraftReady, groups: StayGroupRequirement[]): string[] {
+  const ids = new Set<string>();
+  for (const room of draft.draft.rooms) {
+    ids.add(stayIdForRoom(room, groups));
+    ids.add(legacyStayId(room, groups));
+  }
+  return [...ids];
 }
 
 function paneStayPreviewKey(workItemId: string | undefined, stayId: string, inputKey: string): string {
@@ -334,9 +364,17 @@ function savesFromSavedStays(
   savedStays: Record<string, SavedStayCommit> | undefined,
 ): Record<string, RoomSaveState> {
   if (!savedStays) return {};
+  const legacyClaims = new Map<string, number>();
+  for (const room of draft.draft.rooms) {
+    const legacy = legacyStayId(room, groups);
+    legacyClaims.set(legacy, (legacyClaims.get(legacy) ?? 0) + 1);
+  }
   const saves: Record<string, RoomSaveState> = {};
   for (const room of draft.draft.rooms) {
-    const saved = savedStays[stayIdForRoom(room, groups)];
+    const precise = stayIdForRoom(room, groups);
+    const legacy = legacyStayId(room, groups);
+    const saved =
+      savedStays[precise] ?? (legacyClaims.get(legacy) === 1 ? savedStays[legacy] : undefined);
     if (!saved) continue;
     saves[`${room.groupId}:${room.roomIndex}`] = { commit: commitViewFromSaved(saved, room.request) };
   }
@@ -462,8 +500,14 @@ function RoomSave({
     const durableShots = commit.shots ?? [];
     return (
       <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
-        <span className="w-fit rounded-xs bg-emerald-100 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-900">
-          Booked
+        <span
+          className={
+            commit.unverified
+              ? 'w-fit rounded-xs bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-950'
+              : 'w-fit rounded-xs bg-emerald-100 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-900'
+          }
+        >
+          {commit.unverified ? 'Check HMS' : 'Booked'}
         </span>
         <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
           {commit.unverified
@@ -743,6 +787,47 @@ function paneStayInputForConfiguredRoom(
     missing.push('required hotel field');
   }
   return { stay: missing.length ? null : built.stay, missing };
+}
+
+/** Book state from the work item when this mail has no booking draft to hang it on. */
+export function SavedStayReceipt({
+  saved,
+  screenshot,
+}: {
+  saved: SavedStayCommit;
+  screenshot?: PaneStayClient['screenshot'] | null;
+}) {
+  const runId = saved.runId ?? saved.screenshotRef?.runId;
+  const shots = visibleStayShots(saved.shots ?? []);
+  const confirmed = Boolean(saved.confirmationNumber) && saved.status !== 'unknown';
+  return (
+    <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+      <span
+        className={
+          confirmed
+            ? 'w-fit rounded-xs bg-emerald-100 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-900'
+            : 'w-fit rounded-xs bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-950'
+        }
+      >
+        {confirmed ? 'Booked' : 'Check HMS'}
+      </span>
+      {saved.confirmationNumber && saved.status !== 'unknown' ? (
+        <p className="text-[12.5px] font-semibold text-emerald-800">
+          {`Booked in HMS – confirmation ${saved.confirmationNumber}`}
+        </p>
+      ) : (
+        <p role="alert" className="text-[11.5px] text-amber-900">
+          {saved.status === 'unknown' && saved.confirmationNumber
+            ? PANE_SAVE_UNVERIFIED_COPY
+            : 'HMS may have saved this booking. Check HMS before trying again.'}
+        </p>
+      )}
+      {saved.confirmationNumber ? <HmsLinkActions confirmation={saved.confirmationNumber} /> : null}
+      {runId && shots.length > 0 && screenshot ? (
+        <HmsShotsViewer runId={runId} shots={shots} screenshot={screenshot} />
+      ) : null}
+    </div>
+  );
 }
 
 export function BookingCards({

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export type HmsShotRecord = { name: string; sha256: string; at: string };
 
@@ -26,7 +26,18 @@ export function HmsShotsViewer({
   const shown = visibleStayShots(shots);
   const [open, setOpen] = useState(false);
   const [images, setImages] = useState<Record<string, string | null | undefined>>({});
+  const closeRef = useRef<HTMLButtonElement>(null);
   const shotKey = shown.map((shot) => shot.name).join(',');
+
+  useEffect(() => {
+    if (!open) return;
+    closeRef.current?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -66,6 +77,7 @@ export function HmsShotsViewer({
         >
           <div className="flex justify-end">
             <button
+              ref={closeRef}
               type="button"
               onClick={() => setOpen(false)}
               className="h-8 rounded-xs bg-white px-3 text-[12px] font-semibold text-[#1e293b]"
