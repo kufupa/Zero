@@ -11,6 +11,7 @@ import { readSaveSnapshot, SAVE_POLL_MS, SAVE_WAIT_MS } from './save-wait.mjs';
 import {
   amendCommitAllowed,
   amendPreviewDigest,
+  commitAndVerifyFields,
   compareChangedFields,
   dangerousDialogKind,
   parseAmendArgs,
@@ -107,33 +108,72 @@ async function checkAvailability(page) {
   return true;
 }
 
-async function fillChangedFields(page, fields) {
-  await closeAppDrawer(page);
-  for (const [field, value] of Object.entries(fields)) {
-    const input = page.locator(`input[name="${SELECTOR_BY_FIELD[field]}"]:visible`).first();
-    const shown = field === 'arrival' || field === 'departure' ? displayDate(value) : String(value);
-    await input.scrollIntoViewIfNeeded().catch(() => {});
-    // Playwright fill updates the DOM but ExtJS Guest Stay discards it on Save.
-    // party-lookup: setValue on Ext.getCmp(inputEl id).
-    const ok = await input.evaluate((el, v) => {
-      const id = el.id?.replace(/-inputEl$/, '');
-      const cmp = typeof Ext !== 'undefined' && id ? Ext.getCmp(id) : null;
-      if (cmp?.setValue) {
-        cmp.setValue(v);
-        const got = cmp.getValue?.();
-        if (got == null || got === '') return false;
-        // Date fields return a Date; adults can return a number.
-        if (got instanceof Date) return !Number.isNaN(got.getTime());
-        return String(got) === String(v);
+function fieldInput(page, field) {
+  return page.locator(`input[name="${SELECTOR_BY_FIELD[field]}"]:visible`).first();
+}
+
+async function fillOneField(page, field, value) {
+  const input = fieldInput(page, field);
+  await input.scrollIntoViewIfNeeded().catch(() => {});
+  const shown = field === 'arrival' || field === 'departure' ? displayDate(value) : String(value);
+  const iso = field === 'arrival' || field === 'departure' ? value : null;
+  const numeric = field === 'adults' || field === 'children' ? Number(value) : null;
+  // Playwright fill updates the DOM but ExtJS Guest Stay discards it on Save unless the
+  // component is setValue'd and then blurred. Occupancy is a combobox (uxcombobox *-inputEl);
+  // dates are uxdate. Live fixture: tooling/playwright-quote/fixtures/stay-lookup/record-form-live.html.
+  await input.evaluate((el, payload) => {
+    const id = el.id?.replace(/-inputEl$/, '');
+    const cmp = typeof Ext !== 'undefined' && id ? Ext.getCmp(id) : null;
+    if (cmp?.setValue) {
+      if (payload.iso) {
+        const [year, month, day] = payload.iso.split('-').map(Number);
+        cmp.setValue(new Date(year, month - 1, day));
+      } else if (payload.numeric != null && Number.isFinite(payload.numeric)) {
+        cmp.setValue(payload.numeric);
+      } else {
+        cmp.setValue(payload.shown);
       }
-      el.value = v;
+    } else {
+      el.value = payload.shown;
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
-      return el.value === v;
-    }, shown);
-    if (!ok) return field;
-  }
-  return null;
+    }
+  }, { shown, iso, numeric });
+}
+
+async function blurOneField(page, field) {
+  const input = fieldInput(page, field);
+  await input.evaluate((el) => {
+    const id = el.id?.replace(/-inputEl$/, '');
+    const cmp = typeof Ext !== 'undefined' && id ? Ext.getCmp(id) : null;
+    if (cmp?.fireEvent) cmp.fireEvent('blur', cmp);
+    el.dispatchEvent(new FocusEvent('blur', { bubbles: true }));
+  });
+}
+
+async function readOneField(page, field) {
+  const input = fieldInput(page, field);
+  return input.evaluate((el) => {
+    const id = el.id?.replace(/-inputEl$/, '');
+    const cmp = typeof Ext !== 'undefined' && id ? Ext.getCmp(id) : null;
+    const got = typeof cmp?.getValue === 'function' ? cmp.getValue() : el.value;
+    if (got instanceof Date && !Number.isNaN(got.getTime())) {
+      const year = got.getFullYear();
+      const month = String(got.getMonth() + 1).padStart(2, '0');
+      const day = String(got.getDate()).padStart(2, '0');
+      return `${year}-${month}-${day}`;
+    }
+    return got;
+  });
+}
+
+async function fillChangedFields(page, fields) {
+  await closeAppDrawer(page);
+  return commitAndVerifyFields({
+    fill: (field, value) => fillOneField(page, field, value),
+    blur: (field) => blurOneField(page, field),
+    read: (field) => readOneField(page, field),
+  }, fields);
 }
 
 async function waitForSaveToSettle(page) {
@@ -258,6 +298,13 @@ async function run(ctx, request) {
     if ((request.fields.arrival || request.fields.departure) && !(await checkAvailability(ctx.page))) {
       ctx.result.outcome = 'refused_save_control_missing';
       ctx.result.reason = 'check_availability_missing';
+      return;
+    }
+    const afterAvailabilityDialog = await dangerousDialog(ctx.page);
+    if (afterAvailabilityDialog) {
+      ctx.result.outcome = 'refused_dangerous_dialog';
+      ctx.result.reason = 'dangerous_dialog_after_availability';
+      ctx.result.refusal = afterAvailabilityDialog;
       return;
     }
     ctx.result.saveAttempted = true;
