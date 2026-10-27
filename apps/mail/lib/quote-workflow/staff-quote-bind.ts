@@ -37,7 +37,7 @@ import {
   staffHeaderFieldProblem,
   staffStayExtrasFor,
 } from './types';
-import { knownRoomCode, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
+import { knownRoomCode, normaliseRoomLabel, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
@@ -424,15 +424,6 @@ export function qualifiedPdfFailureReason(error: unknown): string {
   if (error instanceof Error && EXPIRED_STAFF_QUOTE_SERVER_MESSAGES.has(error.message.trim()))
     return EXPIRED_STAFF_QUOTE_COPY;
   return rejectionReason(error);
-}
-
-function normaliseRoomLabel(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/&/g, ' and ')
-    .replace(/\brooms?\b/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 function hrdavKnownCode(raw: string): string | null {
