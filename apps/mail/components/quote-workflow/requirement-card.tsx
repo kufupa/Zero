@@ -164,7 +164,7 @@ export function StayCard({
   onStayAction?: (action: StayEditAction) => void;
   evidence?: Array<{ field: string; quote: string; source?: 'staff_note' }>;
   headerExtra?: ReactNode;
-  /** HRDAV uses only exact codes/labels; absent keeps legacy HRCEN matching for older callers. */
+  /** HRDAV uses the active property's codes and normalized labels; absent keeps legacy HRCEN matching for older callers. */
   propertyCode?: HmsQuotePropertyCode;
   roomTypes?: QuotePaneRoomType[];
   /** Callers with a merged option list can preserve legacy matching separately. */

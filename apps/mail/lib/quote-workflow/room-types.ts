@@ -5,6 +5,16 @@ export { ROOM_TYPE_NAMES };
 export type RoomTypeCode = keyof typeof ROOM_TYPE_NAMES;
 export type RoomTypeMatch = { code?: RoomTypeCode; suggestions: RoomTypeCode[] };
 
+/** Normalize staff-entered labels before matching them to the active property's configured room list. */
+export function normaliseRoomLabel(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/\brooms?\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 /** Match configured codes/labels; opt in when a profile should also accept legacy Centurion-name aliases. */
 export function matchConfiguredRoomType<T extends { code: string; label: string }>(
   candidates: readonly (string | undefined)[],
@@ -16,9 +26,9 @@ export function matchConfiguredRoomType<T extends { code: string; label: string 
     if (!raw) continue;
     const code = raw.replace(/[^a-z0-9]/gi, '').toUpperCase();
     const knownCode = options.allowCenturionRoomAliases ? knownRoomCode(raw) : null;
-    const label = raw.toLowerCase().replace(/\s+/g, ' ');
+    const label = normaliseRoomLabel(raw);
     const room = roomTypes.find(
-      (item) => item.code === code || item.code === knownCode || item.label.toLowerCase() === label,
+      (item) => item.code === code || item.code === knownCode || normaliseRoomLabel(item.label) === label,
     );
     if (room) return room;
   }

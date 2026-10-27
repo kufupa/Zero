@@ -300,7 +300,7 @@ describe('StayCard rooms', () => {
     expect([...mealPlan.querySelectorAll('option')].map((option) => option.value)).toEqual(['all', 'room_only', 'bb']);
   });
 
-  it('does not preselect an unbindable HRDAV room-name variant', () => {
+  it('normalizes an HRDAV room-name variant consistently in the picker and quote binder', () => {
     const roomTypes = Object.entries(HRDAV_ROOM_NAMES).map(([code, label]) => ({ code, label }));
     const unlistedPreference = 'standard twin room';
     const props: ComponentProps<typeof StayCard> = {
@@ -318,12 +318,9 @@ describe('StayCard rooms', () => {
     const roomType = selectByLabel('Room type');
     expect(
       resolveNativeRoomCodes({ roomPreference: unlistedPreference, propertyCode: HRDAV_PROPERTY_CODE }),
-    ).toEqual({
-      status: 'unresolved',
-      label: unlistedPreference,
-    });
-    expect(roomType.value).toBe(unlistedPreference);
-    expect(screen.getByRole('option', { name: 'Email request' })).toBeTruthy();
+    ).toEqual({ status: 'codes', codes: ['STWN'] });
+    expect(roomType.value).toBe('STWN');
+    expect(screen.queryByRole('option', { name: 'Email request' })).toBeNull();
 
     cleanup();
     const exactPreference = 'Standard Twin';
