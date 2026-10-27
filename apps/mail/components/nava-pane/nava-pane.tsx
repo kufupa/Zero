@@ -2302,6 +2302,7 @@ export function NavaPane({
             <ConfirmationSourcesBridge userEmail={session?.user?.email ?? ''}>
             <QuoteWorkflowPanel
               session={quoteSession}
+              bridge={bridge}
               workItemId={paneWorkItemId ?? undefined}
               quoteStrategyRows={quoteSession.quoteStrategyRows}
               onSelectQuoteStrategy={(stayKey, strategyCode) =>
