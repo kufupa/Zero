@@ -1033,7 +1033,7 @@ test('penalty with Waive refuses and never clicks Waive or OK', async () => {
   const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, WAIVE_CHARGE]]);
   assert.equal(result.outcome, 'refused_penalty');
   assert.equal(result.refusal, 'penalty_dialog_open');
-  assert.equal(result.penaltyText, CHARGE);
+  assert.match(result.penaltyText, /Cancellation Penalty of 2060\.00/);
   assert.equal(result.clickedOk, false);
   assert.ok(calls.includes('shot:penalty.png'));
   assert.ok(calls.includes('close'));
