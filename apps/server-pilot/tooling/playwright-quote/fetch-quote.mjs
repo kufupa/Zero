@@ -12,6 +12,7 @@ import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard,
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 import { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
 import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
+import { profileFor } from './property-profile.mjs';
 
 export { withReadCliPage as withLeasedReadPage };
 
@@ -495,10 +496,41 @@ function rateAvailability(rate,nightly,departure,quantity,nights) {
   return {status:'available'};
 }
 
+const SEARCH_STRATEGY_CODES = Object.freeze({
+  BAR: 'BAR', Preset: 'PRESET', Promotions: 'PROMO', Wholesale: 'WS',
+  Government: 'GOV', 'Airline Crews': 'AIR', 'Domestic Leisure': 'DOML',
+  Other: 'OTHER', 'Negoticated Contracted': 'NC', 'Negotiated Contracted': 'NC',
+});
+
+function profileStrategyCode(request) {
+  const label = request.search?.salesStrategy;
+  if (typeof label !== 'string' || !label) return '';
+  return SEARCH_STRATEGY_CODES[label] ?? label.trim().toUpperCase();
+}
+
+/** rateScope stays public|contextual|unknown. classifyRate 'government' is only used for eligibility. */
+function quoteRateScope(profile, code, strategy, isNegotiatedRate) {
+  if (!profile) return 'unknown';
+  const classified = profile.classifyRate(code, strategy, isNegotiatedRate);
+  if (classified === 'public') return 'public';
+  if (classified === 'contextual') return 'contextual';
+  return 'unknown';
+}
+
+function strategyPartyKind(profile, strategy, code) {
+  const row = profile?.rates?.strategies?.[strategy];
+  if (!row || !Array.isArray(row.plans) || !row.plans.includes(code)) return null;
+  if (row.scope === 'agency') return 'agency';
+  if (row.scope === 'company') return 'organization';
+  return null;
+}
+
 // Merge only native/visible observations. An invalid row is isolated, never a
 // reason to throw away verified siblings or manufacture a sold-out response.
 export function extractOptions(request,room,windows,resolvedContext={}) {
   const issues=[],candidates=new Map(),wanted=[...stayDates(request),request.departureDate],seenStarts=new Set();
+  const profile = profileFor(request.propertyCode);
+  const strategyCode = profileStrategyCode(request);
   for (const [windowIndex,window] of windows.entries()) {
     const {data,calendar}=window;
     if (!data || !calendar || !Array.isArray(data.children) || !Array.isArray(data.datesList)) {
@@ -541,7 +573,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
         option={id,room:{code:nativeRoom.code,label:nativeRoom.desc,buildingCode:nativeRoom.buildingCode??null},
           rate:{code:rate.code,label:rate.desc,...(nativeBundleLabels(rate.nonroombundleslist).length?{bundleLabels:nativeBundleLabels(rate.nonroombundleslist)}:{})},roomCode:nativeRoom.code,rateCode:rate.code,board:null,
           nightly:[],observations:new Map(),issues:[],held:false,_rate:rate,_nativeRoom:nativeRoom,
-          sourceCurrency:property.currency,rateScope:['BAR','BARRO','WAL'].includes(rate.code)?'public':rate.isNegotiatedRate===true?'contextual':'unknown'};
+          sourceCurrency:property.currency,rateScope:quoteRateScope(profile,rate.code,strategyCode,rate.isNegotiatedRate)};
         candidates.set(id,option);
       }
       if(windowIds.has(id))option.issues.push(issue('AMBIGUOUS_NATIVE_ID',id,'Multiple native rows share this identity.'));
@@ -598,11 +630,13 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     const availability=invalid?{status:'unknown'}:rateAvailability(option._rate,option.nightly,option.departure,room.quantity,wanted.length-1);
     option.availability=availability.status;
     if(availability.reason)option.availabilityReason=availability.reason;
-    const governmentFamily=request.search?.salesStrategy==='Government'&&!contextRequested.length&&windows.every(w=>w.criteria?.salesStrategy==='GOV')&&option._rate.isNegotiatedRate===false&&/^Local Government Rate (?:Breakfast|Dinner|Room Only)$/.test(option.rate.label);
-    option.eligibility=invalid?'unknown':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified?'verified':'conditional';
+    const governmentFamily=!contextRequested.length&&windows.every(w=>w.criteria?.salesStrategy==='GOV')&&profile?.classifyRate(option.rate.code,strategyCode,option._rate.isNegotiatedRate,option.rate.label)==='government';
+    const requiredKind=strategyPartyKind(profile,strategyCode,option.rate.code);
+    const strategyContextOk=!requiredKind||(contextVerified&&contextRequested.includes(requiredKind));
+    option.eligibility=invalid?'unknown':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified&&strategyContextOk?'verified':'conditional';
     if (option.availability==='restricted') option.eligibility='conditional';
     Object.assign(option,assessConstraints(room,sourceFacts(option)));
-    if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified)) {
+    if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified&&strategyContextOk)) {
       // ponytail: a verified party's public row stays bookable as the BAR it is; an unverified context keeps it unresolved.
       if(contextVerified&&option.rateScope==='public') {
         option.conditions.push({kind:'preferred',field:'rateContext',status:'unsatisfied',requested:request.rateContext,evidence:null,reason:noSpecialRates?'No special rates for this party; public BAR is returned.':'Public rate for this party; any contract rate is reported separately.'});
