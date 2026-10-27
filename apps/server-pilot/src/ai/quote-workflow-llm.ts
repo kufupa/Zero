@@ -92,6 +92,8 @@ export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
   // One-date stays now default to one night, so cached analyses without a checkout must be remapped.
   .update('\none-night-default/1')
   .update('\naop-quote-spine/1')
+  // Property-aware room matching changes extracted vs defaulted without changing the model prompt.
+  .update('\nproperty-room-match/1')
   .digest('hex')
   .slice(0, 16);
 
@@ -439,7 +441,7 @@ function aopQuoteSpineOf(
 /** Pane mapping. Does not read `tasks` (K14: measured/displayed only). */
 export function mapLlmDecision(
   analysis: LunaAnalysis,
-  options?: { treatAs?: QuoteTreatAs; dateAnchor?: StayDateAnchorContext; channel?: AopQuoteChannel },
+  options?: { treatAs?: QuoteTreatAs; dateAnchor?: StayDateAnchorContext; channel?: AopQuoteChannel; propertyCode?: string },
 ): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
   const staffQuote = Boolean(options?.treatAs);
@@ -525,7 +527,7 @@ export function mapLlmDecision(
     const quantity = group.rooms ?? (quantityDefaulted ? 1 : undefined);
     const adults = group.adultsPerRoom ?? (adultsDefaulted ? 2 : undefined);
     const roomPreference = group.roomPreference?.trim() || undefined;
-    const roomMatch = roomPreference ? matchRoomType(roomPreference) : null;
+    const roomMatch = roomPreference ? matchRoomType(roomPreference, options?.propertyCode) : null;
     const roomPreferenceDefaulted = quoteDefaults && !roomMatch?.code;
     const boardDefaulted = group.board === null;
     const board: MappedQuoteDecision['groups'][number]['board'] = mapStatedOrDefaultBoard(

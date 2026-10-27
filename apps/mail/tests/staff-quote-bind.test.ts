@@ -72,6 +72,22 @@ describe('HRDAV native room and board maps', () => {
       status: 'codes',
       codes: ['DLXKNG'],
     });
+    expect(resolveNativeRoomCodes({ roomPreference: 'STD TWN', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['STWN'],
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Deluxe Patio', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['DLXPAT'],
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'STD SGL', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'unresolved',
+      label: 'STD SGL',
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Standard King', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['STKNG'],
+    });
     expect(
       resolveNativeRoomCodes({ roomPreference: 'Standard & Queen Rooms', propertyCode: HRCEN_PROPERTY_CODE }),
     ).toEqual({ status: 'codes', codes: ['STQN'] });
@@ -156,6 +172,26 @@ describe('HRDAV native room and board maps', () => {
       status: 'codes',
       codes: ['STWN'],
     });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Std. Twin', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['STWN'],
+    });
+    expect(
+      resolveNativeRoomCodes({
+        roomPreference: 'Standard Twin Rooms - double occupancy',
+        propertyCode: HRDAV_PROPERTY_CODE,
+      }),
+    ).toEqual({ status: 'codes', codes: ['STWN'] });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Deluxe Twin', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'unresolved',
+      label: 'Deluxe Twin',
+    });
+    const allRooms = staffQuoteGroupsFromStay(
+      [stay({ roomPreference: 'Twin', fields: { roomPreference: 'defaulted' } })],
+      HRDAV_PROPERTY_CODE,
+    );
+    expect(allRooms).toMatchObject({ ok: [{ id: 'g1' }] });
+    if ('ok' in allRooms) expect(allRooms.ok[0]).not.toHaveProperty('roomCodes');
   });
 
   it('does not inherit a Centurion-only room alias on HRDAV', () => {

@@ -1,4 +1,5 @@
 import * as roomTypes from '../lib/quote-workflow/room-types';
+import { HRDAV_ROOM_NAMES } from '../lib/quote-workflow/types';
 import { describe, expect, it } from 'vitest';
 
 type RoomTypeMatch = { code?: string; suggestions: string[] };
@@ -37,6 +38,8 @@ describe('room type name matching', () => {
     ['standard twin room (with two double beds)', { code: 'STWN', suggestions: [] }],
     ['Standard Twin with two beds and double occupancy per person', { code: 'STWN', suggestions: [] }],
     ['Executive King room', { code: 'EXKNG', suggestions: [] }],
+    ['Luxury room', { code: 'LUXKNG', suggestions: [] }],
+    ['Executive room', { code: 'EXKNG', suggestions: [] }],
     ['deluxe twin', { code: 'DLXTWN', suggestions: [] }],
     ['luxury king', { code: 'LUXKNG', suggestions: [] }],
     ['double', { suggestions: ['STQN', 'SKNG', 'EXKNG'] }],
@@ -61,5 +64,13 @@ describe('room type name matching', () => {
 
   it('caps ambiguous suggestions at three ranked room types', () => {
     expect(matchRoomType?.('king').suggestions).toHaveLength(3);
+  });
+
+  it('matches HRDAV labels and abbreviations against that property list', () => {
+    const rooms = Object.entries(HRDAV_ROOM_NAMES).map(([code, label]) => ({ code, label }));
+    expect(roomTypes.matchConfiguredRoomType(['STD TWN'], rooms)?.code).toBe('STWN');
+    expect(roomTypes.matchConfiguredRoomType(['Deluxe Patio'], rooms)?.code).toBe('DLXPAT');
+    expect(roomTypes.matchConfiguredRoomType(['Standard King'], rooms)?.code).toBe('STKNG');
+    expect(roomTypes.matchConfiguredRoomType(['STD SGL'], rooms)).toBeNull();
   });
 });

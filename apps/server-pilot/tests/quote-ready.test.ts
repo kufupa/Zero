@@ -163,6 +163,69 @@ describe('prepared quote input from stored extraction', () => {
     },
   );
 
+  it('maps HRDAV room labels onto that profile and leaves STD SGL unmatched', () => {
+    const stay = payload().stays[0]!;
+    const plan = buildPreparedStaffQuotePlan({
+      messageId,
+      sourceHash,
+      payload: payload({
+        stays: [
+          {
+            ...stay,
+            rows: [
+              { ...stay.rows[0]!, id: 'row-twn', roomType: 'STD TWN' },
+              { ...stay.rows[0]!, id: 'row-sgl', roomType: 'STD SGL', rooms: 1, adultsPerRoom: 1 },
+              { ...stay.rows[0]!, id: 'row-pat', roomType: 'Deluxe Patio', rooms: 1 },
+              { ...stay.rows[0]!, id: 'row-dlxtwn', roomType: 'Deluxe Twin', rooms: 1 },
+              { ...stay.rows[0]!, id: 'row-kng', roomType: 'Standard King', rooms: 1 },
+            ],
+          },
+        ],
+      }),
+      now: new Date('2026-10-14T12:00:00.000Z'),
+      propertyCode: 'HRDAV',
+    });
+
+    const codes = Object.fromEntries(
+      (plan.inputs[0]?.groups ?? []).map((group) => [group.id, group.roomCodes]),
+    );
+    expect(codes).toEqual({
+      'row-twn': ['STWN'],
+      'row-sgl': undefined,
+      'row-pat': ['DLXPAT'],
+      'row-dlxtwn': undefined,
+      'row-kng': ['STKNG'],
+    });
+  });
+
+  it('does not shop abbreviated Deluxe Twin as Standard Twin on HRDAV', () => {
+    const stay = payload().stays[0]!;
+    const plan = buildPreparedStaffQuotePlan({
+      messageId,
+      sourceHash,
+      payload: payload({
+        stays: [{ ...stay, rows: [{ ...stay.rows[0]!, roomType: 'DLX Twin' }] }],
+      }),
+      now: new Date('2026-10-14T12:00:00.000Z'),
+      propertyCode: 'HRDAV',
+    });
+    expect(plan.inputs[0]?.groups[0]?.roomCodes).toBeUndefined();
+  });
+
+  it('still prices an unpicked twin as Standard Twin on HRCEN', () => {
+    const stay = payload().stays[0]!;
+    const plan = buildPreparedStaffQuotePlan({
+      messageId,
+      sourceHash,
+      payload: payload({
+        stays: [{ ...stay, rows: [{ ...stay.rows[0]!, roomType: 'twin' }] }],
+      }),
+      now: new Date('2026-10-14T12:00:00.000Z'),
+      propertyCode: 'HRCEN',
+    });
+    expect(plan.inputs[0]?.groups[0]?.roomCodes).toEqual(['STWN']);
+  });
+
   it('defaults missing occupancy to two adults per room', () => {
     const stay = payload().stays[0]!;
     const plan = build({

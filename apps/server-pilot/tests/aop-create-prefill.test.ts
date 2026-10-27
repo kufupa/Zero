@@ -82,6 +82,18 @@ describe('buildCreatePrefill', () => {
     expect(named.requests[0]).toMatchObject({ roomType: 'STQN' });
     expect(named.missing.filter((row) => row.field === 'roomType')).toEqual([]);
 
+    const centurionKing = await buildCreatePrefill(
+      stay({ rooms: [{ adults: 1, childAges: [], roomTypeText: 'Standard King', guestName: GUEST }] }),
+    );
+    expect(centurionKing.requests[0]).toMatchObject({ roomType: 'SKNG' });
+    const hrdavKing = await buildCreatePrefill(
+      stay({
+        propertyCode: 'HRDAV',
+        rooms: [{ adults: 1, childAges: [], roomTypeText: 'Standard King', guestName: GUEST }],
+      }),
+    );
+    expect(hrdavKing.requests[0]).toMatchObject({ roomType: 'STKNG' });
+
     const miss = await buildCreatePrefill(
       stay({ rooms: [{ adults: 1, childAges: [], roomTypeText: 'penthouse loft', guestName: GUEST }] }),
     );

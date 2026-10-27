@@ -43,6 +43,7 @@ import {
 import { attachmentMattersForReview, unreadReasonWords } from './quote-attachment-review.js';
 import { stayDateSourceText, stayDateYearEvidenceText } from './stay-date-anchoring.js';
 import { aopQuoteChannelFromSender } from './aop-playbook.js';
+import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 
 /**
  * Luna analyse of a synced mail, shared by the pane route and the inbound
@@ -424,6 +425,7 @@ export async function hmsTodoCardFromLuna(
   luna: LunaAnalysis | HmsTodoCardInput | null | undefined,
   attachments: SyncedQuoteAttachment[],
   sourceText = '',
+  propertyCode?: string,
 ) {
   if (!luna) return null;
   const workflow = luna.workflow?.trim().toLowerCase();
@@ -468,6 +470,7 @@ export async function hmsTodoCardFromLuna(
           party?.kind === 'agency' || party?.kind === 'organization' || party?.kind === 'government'
             ? { track: null, sourceOfBusiness: null, guaranteeType: null }
             : { ...DIRECT_BOOKING_DEFAULTS },
+        ...(propertyCode ? { propertyCode } : {}),
       });
     } catch {
       prefill = null;
@@ -494,9 +497,10 @@ async function hmsTodoCardFromCached(
   luna: unknown,
   attachments: SyncedQuoteAttachment[],
   sourceText = '',
+  propertyCode?: string,
 ) {
   if (!luna || typeof luna !== 'object' || Array.isArray(luna)) return null;
-  return hmsTodoCardFromLuna(luna as HmsTodoCardInput, attachments, sourceText);
+  return hmsTodoCardFromLuna(luna as HmsTodoCardInput, attachments, sourceText, propertyCode);
 }
 
 /**
@@ -509,6 +513,8 @@ export async function analyseSyncedSelection(
 ) {
   const { cacheDir, internetMessageId, treatAs, staffNote } = options;
   const started = Date.now();
+  const resolvedProperty = resolvePropertyTransport(options.transportId);
+  const propertyCode = resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined;
   let sourceHashMemo: string | undefined;
   const sourceHash = () => (sourceHashMemo ??= hashSyncedQuoteSelection(synced, { staffNote }));
   const ledger = ledgerContextFor(synced, options, sourceHash);
@@ -536,6 +542,7 @@ export async function analyseSyncedSelection(
           cached.luna,
           synced.attachments,
           currentSourceText(synced),
+          propertyCode,
         ),
       };
       const analysisRunId = ledger
@@ -605,6 +612,9 @@ export async function analyseSyncedSelection(
         subject: synced.subject,
         bodyText: synced.bodyText,
       }),
+      ...(resolvedProperty.kind === 'property'
+        ? { propertyCode: resolvedProperty.property.propertyCode }
+        : {}),
     });
     const dated = lunaWithMappedDates(luna, mapped);
     const payload = {
@@ -620,7 +630,7 @@ export async function analyseSyncedSelection(
       luna: dated,
       workflow: luna.workflow,
       amendment: amendmentFromAnalysis(luna),
-      hmsTodoCard: await hmsTodoCardFromLuna(dated, synced.attachments, currentSourceText(synced)),
+      hmsTodoCard: await hmsTodoCardFromLuna(dated, synced.attachments, currentSourceText(synced), propertyCode),
       sourceRevision: options.selectionEpoch,
       ratePlan: mapped.ratePlan,
       delivery: mapped.delivery,
@@ -692,6 +702,7 @@ export async function analyseSyncedSelection(
       override.luna,
       synced.attachments,
       currentSourceText(synced),
+      propertyCode,
     ),
     sourceRevision: options.selectionEpoch,
   };

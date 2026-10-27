@@ -234,7 +234,7 @@ export async function buildCreatePrefill(
       adults: room.adults,
       childAges: [...room.childAges],
     };
-    const mapped = matchRoomType(room.roomTypeText ?? undefined).code;
+    const mapped = matchRoomType(room.roomTypeText ?? undefined, parsed.propertyCode).code;
     const roomType =
       matchEnum(room.roomTypeText, options.roomType) ??
       (mapped && options.roomType.includes(mapped) ? mapped : null);

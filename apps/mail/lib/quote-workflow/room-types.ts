@@ -1,4 +1,4 @@
-import { ROOM_TYPE_NAMES, ROOM_WORD_ALIASES } from '../../config/room-types.js';
+import { ROOM_ABBREVIATIONS, ROOM_TYPE_NAMES, ROOM_WORD_ALIASES } from '../../config/room-types.js';
 
 export { ROOM_TYPE_NAMES };
 
@@ -11,8 +11,45 @@ export function normaliseRoomLabel(value: string): string {
     .toLowerCase()
     .replace(/&/g, ' and ')
     .replace(/\brooms?\b/g, ' ')
+    .split(/\s+/)
+    .map((word) => ROOM_ABBREVIATIONS[word] ?? word)
+    .join(' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function occupancyAliases(names: Record<string, string>): Record<string, string[]> {
+  const codes = Object.keys(names);
+  const withWord = (word: string) =>
+    codes.filter((code) => names[code]!.toLowerCase().split(/\s+/).includes(word));
+  return {
+    double: [...withWord('queen'), ...withWord('king')],
+    single: [...withWord('twin'), ...withWord('king')],
+  };
+}
+
+function uniqueCatalogueMatch(
+  raw: string,
+  names: Record<string, string>,
+): string | undefined {
+  const aliases = occupancyAliases(names);
+  const codes = Object.keys(names);
+  const matchable = new Set([
+    ...Object.values(names).flatMap((name) => name.toLowerCase().split(' ')),
+    ...Object.keys(aliases),
+  ]);
+  const words = roomWords(stripRoomCountPrefix(raw));
+  if (!words.length || words.some((word) => !matchable.has(word))) return undefined;
+  const aliasWords = words.filter((word) => Object.hasOwn(aliases, word));
+  const nameOnly = words.filter((word) => !Object.hasOwn(aliases, word));
+  const candidates = codes.filter((candidate) => {
+    if (!nameOnly.length) return aliasWords.some((word) => aliases[word]!.includes(candidate));
+    const nameWords = names[candidate]!.toLowerCase().split(' ');
+    return nameOnly.every((word) => nameWords.includes(word));
+  });
+  if (candidates.length !== 1) return undefined;
+  const nameWords = names[candidates[0]!]!.toLowerCase().split(' ');
+  return nameWords.every((word) => nameOnly.includes(word)) ? candidates[0] : undefined;
 }
 
 /** Match configured codes/labels; opt in when a profile should also accept legacy Centurion-name aliases. */
@@ -21,16 +58,19 @@ export function matchConfiguredRoomType<T extends { code: string; label: string 
   roomTypes: readonly T[],
   options: { allowCenturionRoomAliases?: boolean } = {},
 ): T | null {
+  const names = Object.fromEntries(roomTypes.map((item) => [item.code, item.label]));
   for (const candidate of candidates) {
     const raw = candidate?.trim();
     if (!raw) continue;
     const code = raw.replace(/[^a-z0-9]/gi, '').toUpperCase();
     const knownCode = options.allowCenturionRoomAliases ? knownRoomCode(raw) : null;
-    const label = normaliseRoomLabel(raw);
+    const label = normaliseRoomLabel(stripRoomCountPrefix(raw));
     const room = roomTypes.find(
       (item) => item.code === code || item.code === knownCode || normaliseRoomLabel(item.label) === label,
     );
     if (room) return room;
+    const unique = uniqueCatalogueMatch(raw, names);
+    if (unique) return roomTypes.find((item) => item.code === unique) ?? null;
   }
   return null;
 }
@@ -80,6 +120,7 @@ function roomWords(raw: string): string[] {
     .split(/\s+/)
     .filter(Boolean)
     .map(singularRoomWord)
+    .map((word) => ROOM_ABBREVIATIONS[word] ?? word)
     .filter((word) => !IGNORED_ROOM_WORDS.has(word));
 }
 
@@ -127,10 +168,11 @@ export function knownRoomCode(raw: string | undefined): RoomTypeCode | null {
   return Object.hasOwn(ROOM_TYPE_NAMES, code) ? (code as RoomTypeCode) : (matchRoomType(raw).code ?? null);
 }
 
-/** Twin / 2 beds with no staff pick → Standard Twin. Unique names still win via matchRoomType. */
+/** Twin / 2 beds with no staff pick → Standard Twin. A named other type (Deluxe Twin) stays unresolved. */
 export function unpickedTwinRoomCode(raw: string | undefined): 'STWN' | undefined {
   if (!raw) return undefined;
   const text = raw.normalize('NFKD').toLowerCase();
+  if (/\b(?:deluxe|executive|junior|standard|king|queen|suite|accessible|patio)\b/.test(text)) return undefined;
   if (/\btwin\b/.test(text) || /\b(?:2|two)\s*beds?\b/.test(text)) return 'STWN';
   return undefined;
 }
