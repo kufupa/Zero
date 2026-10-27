@@ -212,11 +212,11 @@ describe('HRDAV rate room and board mappings',()=>{
   const dinner=ctx();dinner.input.propertyCode='HRDAV';
   expect(()=>deriveReservationistQuoteRequest(dinner)).toThrow('business_board_unavailable');
  });
- it('leaves Bed & Breakfast NR unknown instead of rewriting it to R',()=>{
+ it('maps Bed & Breakfast NR to breakfast the same as R (D7 Non-Rewardable)',()=>{
   const c=ctx();c.input.propertyCode='HRDAV';c.input.messages[0].text=c.input.messages[0].text.replace('dinner, bed & breakfast','bed and breakfast');c.facts=c.facts.map((f:any)=>f.kind==='board'?{...f,value:'Bed & Breakfast NR'}:f);
-  expect(()=>deriveReservationistQuoteRequest(c)).toThrow('business_board_unavailable');
+  expect(deriveReservationistQuoteRequest(c).rooms[0].required).toEqual({boardBases:['breakfast'],roomCodes:['STKNG','STWN']});
  });
- it('leaves a blank BARRO board and NR breakfast unknown instead of rewriting them',async()=>{
+ it('refuses a blank BARRO board and selects NR breakfast as breakfast (D7 Non-Rewardable)',async()=>{
   const {profileFor}=await import('../tooling/playwright-quote/property-profile.mjs' as string);
   const profile=profileFor('HRDAV');
   expect(profile.propertyCode).toBe('HRDAV');
@@ -229,6 +229,8 @@ describe('HRDAV rate room and board mappings',()=>{
   expect(()=>selectReservationistQuoteOptions(source,true)).toThrow('business_selected_price_unavailable');
   const bbRequest={...request,rooms:[{...request.rooms[0],required:{boardBases:['breakfast']}}]};
   const bbSource={...source,request:bbRequest,result:{...source.result,groups:[{...source.result.groups[0],request:bbRequest.rooms[0]}]}};
-  expect(()=>selectReservationistQuoteOptions(bbSource,true)).toThrow('business_selected_price_unavailable');
+  const selected=selectReservationistQuoteOptions(bbSource,true);
+  expect(selected).toEqual([{sourceRef:'native:hrdav',groupId:'1',optionId:'HRDAV:STKNG:BAR'}]);
+  expect(bbSource.result.groups[0].options.find((o: {id:string})=>o.id===selected[0]!.optionId)?.nightly[0].price.amount).toBe('6300.00');
  });
 });

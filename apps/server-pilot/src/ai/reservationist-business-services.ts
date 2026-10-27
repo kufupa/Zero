@@ -32,7 +32,7 @@ function requestedRoomCodes(propertyCode:string,text:string):string[]|undefined{
 function mapRequestedBoard(propertyCode:string,raw:string):Board|undefined{
  const key=norm(raw);
  if(propertyCode==='HRDAV'){
-  if(['breakfast','bb','b&b','bed & breakfast','bed and breakfast','bed & breakfast r'].includes(key))return'breakfast';
+  if(['breakfast','bb','b&b','bed & breakfast','bed and breakfast','bed & breakfast r','bed & breakfast nr'].includes(key))return'breakfast';
   if(['ro','room_only','room only','room only r'].includes(key))return'room_only';
   return undefined;
  }
