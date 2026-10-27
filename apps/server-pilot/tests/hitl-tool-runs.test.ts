@@ -126,7 +126,7 @@ function memorySink(behaviour: 'records' | 'throws' | 'hangs' = 'records') {
   return { rows, recorder };
 }
 
-function caller(userId = 'user-1', transportId = 'transport-centurion') {
+function caller(userId = 'user-1', transportId = 'transport-1') {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
@@ -1000,7 +1000,7 @@ describe('tool-run ledger: route sites', () => {
     const sink = memorySink();
     toolRunLoaders.recorder = sink.recorder;
     mocks.findStay.mockResolvedValue({ outcome: 'execution_failure' });
-    await caller().paneStayLookup.findStay({ confirmation: '57291630-1' });
+    await caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' });
     expect(sink.rows[0]).toMatchObject({
       kind: 'stay_lookup',
       status: 'failed',
@@ -1015,7 +1015,7 @@ describe('tool-run ledger: route sites', () => {
     const sink = memorySink();
     toolRunLoaders.recorder = sink.recorder;
     mocks.searchGuest.mockResolvedValue({ outcome: 'execution_failure', rows: [] });
-    await caller().paneStayLookup.searchGuest({ lastName: 'Doe', arrival: '2027-09-14' });
+    await caller('user-1', 'transport-centurion').paneStayLookup.searchGuest({ lastName: 'Doe', arrival: '2027-09-14' });
     expect(sink.rows[0]).toMatchObject({
       kind: 'guest_search',
       status: 'failed',
@@ -1032,7 +1032,7 @@ describe('tool-run ledger: route sites', () => {
     mocks.findStay.mockRejectedValue(
       Object.assign(new Error('<html>Guest Jane Doe password=hunter2</html>'), { code: 'HMS_NAV_FAILED' }),
     );
-    await expect(caller().paneStayLookup.findStay({ confirmation: '57291630-1' })).rejects.toThrow();
+    await expect(caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' })).rejects.toThrow();
     expect(sink.rows[0]).toMatchObject({
       kind: 'stay_lookup',
       status: 'failed',
@@ -1051,7 +1051,7 @@ describe('tool-run ledger: route sites', () => {
     toolRunLoaders.recorder = sink.recorder;
     mocks.findStay.mockResolvedValue({ outcome: 'found' });
     const request = { confirmation: '57291630-1', arrival: '2027-09-14' };
-    await caller().paneStayLookup.findStay(request);
+    await caller('user-1', 'transport-centurion').paneStayLookup.findStay(request);
     expect(sink.rows[0]).toMatchObject({
       kind: 'stay_lookup',
       status: 'ok',
@@ -1065,7 +1065,7 @@ describe('tool-run ledger: route sites', () => {
     const sink = memorySink();
     toolRunLoaders.recorder = sink.recorder;
     mocks.searchGuest.mockResolvedValue({ outcome: 'ok', rows: [{ name: 'Jane Doe' }, { name: 'John Doe' }] });
-    await caller().paneStayLookup.searchGuest({ lastName: 'Doe', arrival: '2027-09-14' });
+    await caller('user-1', 'transport-centurion').paneStayLookup.searchGuest({ lastName: 'Doe', arrival: '2027-09-14' });
     expect(sink.rows[0]).toMatchObject({
       kind: 'guest_search',
       status: 'ok',
@@ -1080,7 +1080,7 @@ describe('tool-run ledger: route sites', () => {
     mocks.findStay.mockRejectedValue(
       new TRPCError({ code: 'BAD_REQUEST', message: 'confirmation 57291630-1 is not valid' }),
     );
-    await expect(caller().paneStayLookup.findStay({ confirmation: '57291630-1' })).rejects.toThrow('not valid');
+    await expect(caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' })).rejects.toThrow('not valid');
     expect(sink.rows[0]).toMatchObject({ kind: 'stay_lookup', status: 'refused', errorCode: 'BAD_REQUEST' });
     expect(JSON.stringify(sink.rows)).not.toContain('57291630');
   });
@@ -1089,7 +1089,7 @@ describe('tool-run ledger: route sites', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     toolRunLoaders.recorder = memorySink('throws').recorder;
     mocks.findStay.mockResolvedValue({ outcome: 'not_found' });
-    await expect(caller().paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
+    await expect(caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
       outcome: 'not_found',
     });
   });
@@ -1099,7 +1099,7 @@ describe('tool-run ledger: route sites', () => {
     const sink = memorySink();
     toolRunLoaders.recorder = sink.recorder;
     mocks.findStay.mockResolvedValue({ outcome: 'found' });
-    await expect(caller().paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
+    await expect(caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
       outcome: 'found',
     });
     expect(sink.rows).toEqual([]);
@@ -1189,7 +1189,7 @@ describe('tool-run ledger: a stalled write', () => {
     mocks.getDb.mockReturnValueOnce(stalledLedgerDb() as never);
     mocks.findStay.mockResolvedValue({ outcome: 'found' });
     const started = Date.now();
-    await expect(caller().paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
+    await expect(caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
       outcome: 'found',
     });
     expect(Date.now() - started).toBeLessThan(2_000);
