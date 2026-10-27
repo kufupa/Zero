@@ -198,4 +198,30 @@ describe('confirmation recipient', () => {
     expect((screen.getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement).disabled).toBe(true);
     expect(missingClient.preview).not.toHaveBeenCalled();
   });
+
+  it('uses an explicit pick when the saved choice is unreadable or the read fails', async () => {
+    const invalid = renderHost({ userEmail: STAFF, setting: null, invalidSetting: true });
+    expect(screen.getByRole('alert').textContent).toContain('not set up');
+    expect((screen.getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'self' } });
+    const invalidPreview = screen.getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement;
+    await waitFor(() => expect(invalidPreview.disabled).toBe(false));
+    fireEvent.click(invalidPreview);
+    await waitFor(() => expect(invalid.preview).toHaveBeenCalledTimes(1));
+    expect(invalid.preview.mock.calls[0]?.[0]).toMatchObject({
+      confirmationRecipient: { mode: 'self', address: STAFF },
+    });
+
+    cleanup();
+    const failed = renderHost({ userEmail: STAFF, setting: { mode: 'client' }, load: 'failed' });
+    expect(screen.getByRole('alert').textContent).toContain('not set up');
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'client' } });
+    const failedPreview = screen.getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement;
+    await waitFor(() => expect(failedPreview.disabled).toBe(false));
+    fireEvent.click(failedPreview);
+    await waitFor(() => expect(failed.preview).toHaveBeenCalledTimes(1));
+    expect(failed.preview.mock.calls[0]?.[0]).toMatchObject({
+      confirmationRecipient: { mode: 'client', address: CLIENT },
+    });
+  });
 });

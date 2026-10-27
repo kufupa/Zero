@@ -18,8 +18,13 @@ export type ConfirmationRecipientPayload = {
 export type ConfirmationSources = {
   userEmail: string;
   setting: ConfirmationSetting | null;
-  /** Saved confirmation could not be read. Fail closed. */
+  /** Saved confirmation could not be read. Fail closed until staff pick. */
   invalidSetting?: boolean;
+  /**
+   * pending: read in flight. failed: read threw. ready: row parsed.
+   * absent: this pane has no settings route, so the default applies.
+   */
+  load?: 'pending' | 'ready' | 'failed' | 'absent';
 };
 
 const ConfirmationSourcesContext = createContext<ConfirmationSources | null>(null);
@@ -62,8 +67,10 @@ export function resolveConfirmationRecipient(input: {
   userEmail: string;
   clientEmail: string;
   invalidSetting?: boolean;
+  /** Staff changed the control for this booking. That pick replaces a bad saved choice. */
+  staffChose?: boolean;
 }): ResolvedConfirmation {
-  if (input.invalidSetting) {
+  if (input.invalidSetting && !input.staffChose) {
     return {
       ok: false,
       message: 'The saved confirmation choice is not set up. Pick who should get the HMS confirmation.',
@@ -135,6 +142,7 @@ export function ConfirmationRecipient({
   clientEmail,
   disabled,
   error,
+  unconfirmed,
   onMode,
   onCustomAddress,
 }: {
@@ -144,6 +152,8 @@ export function ConfirmationRecipient({
   clientEmail: string;
   disabled?: boolean;
   error?: string | null;
+  /** Blank the control until staff pick. A bad save or a failed read uses this. */
+  unconfirmed?: boolean;
   onMode: (mode: ConfirmationMode) => void;
   onCustomAddress: (address: string) => void;
 }) {
@@ -157,9 +167,13 @@ export function ConfirmationRecipient({
           aria-label="Send HMS confirmation to"
           className={paneFieldClass}
           disabled={disabled}
-          value={mode}
-          onChange={(event) => onMode(event.target.value as ConfirmationMode)}
+          value={unconfirmed ? '' : mode}
+          onChange={(event) => {
+            const next = event.target.value;
+            if (next === 'self' || next === 'client' || next === 'custom') onMode(next);
+          }}
         >
+          {unconfirmed ? <option value="">Choose</option> : null}
           <option value="self">{optionLabel('self', user)}</option>
           <option value="client">{optionLabel('client', client)}</option>
           <option value="custom">Other…</option>
@@ -206,6 +220,7 @@ export function ConfirmationSourcesBridge({
 }) {
   const [setting, setSetting] = useState<ConfirmationSetting | null>(null);
   const [invalidSetting, setInvalidSetting] = useState(false);
+  const [load, setLoad] = useState<NonNullable<ConfirmationSources['load']>>('pending');
 
   useEffect(() => {
     let cancelled = false;
@@ -213,14 +228,18 @@ export function ConfirmationSourcesBridge({
       try {
         const { trpcClient } = await import('@/providers/query-provider');
         const query = (trpcClient as SettingsClient).settings?.get?.query;
-        if (!query) return;
+        if (!query) {
+          if (!cancelled) setLoad('absent');
+          return;
+        }
         const row = await query();
         if (cancelled) return;
         const parsed = confirmationSettingFromRow(row);
         setSetting(parsed.setting);
         setInvalidSetting(parsed.invalid);
+        setLoad('ready');
       } catch {
-        if (!cancelled) setInvalidSetting(false);
+        if (!cancelled) setLoad('failed');
       }
     })();
     return () => {
@@ -229,8 +248,8 @@ export function ConfirmationSourcesBridge({
   }, [userEmail]);
 
   const value = useMemo(
-    () => ({ userEmail, setting, invalidSetting }),
-    [userEmail, setting, invalidSetting],
+    () => ({ userEmail, setting, invalidSetting, load }),
+    [userEmail, setting, invalidSetting, load],
   );
   return <ConfirmationSourcesProvider value={value}>{children}</ConfirmationSourcesProvider>;
 }

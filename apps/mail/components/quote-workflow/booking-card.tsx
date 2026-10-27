@@ -825,15 +825,28 @@ export function BookingCards({
     if (sources.setting.mode === 'custom') setCustomAddress(sources.setting.address ?? '');
   }, [sources]);
   const clientEmail = contact ? textValue(contact.email) : '';
-  const resolvedRecipient = sources
-    ? resolveConfirmationRecipient({
-        mode: recipientMode,
-        customAddress,
-        userEmail: sources.userEmail,
-        clientEmail,
-        invalidSetting: sources.invalidSetting,
-      })
-    : null;
+  const staffChose = recipientDirty.current;
+  const holdMessage = !sources || staffChose
+    ? null
+    : sources.load === 'pending'
+      ? 'Nava is still reading the saved confirmation choice.'
+      : sources.load === 'failed'
+        ? 'Nava could not read the saved confirmation choice (not set up). Pick who should get the HMS confirmation.'
+        : sources.invalidSetting
+          ? 'The saved confirmation choice is not set up. Pick who should get the HMS confirmation.'
+          : null;
+  const resolvedRecipient = !sources
+    ? null
+    : holdMessage
+      ? { ok: false as const, message: holdMessage }
+      : resolveConfirmationRecipient({
+          mode: recipientMode,
+          customAddress,
+          userEmail: sources.userEmail,
+          clientEmail,
+          invalidSetting: sources.invalidSetting,
+          staffChose,
+        });
   useEffect(() => () => {
     stayBookingRef.current = false;
   }, []);
@@ -1148,6 +1161,7 @@ export function BookingCards({
           userEmail={sources.userEmail}
           clientEmail={clientEmail}
           disabled={stayBooking}
+          unconfirmed={Boolean(holdMessage) && sources?.load !== 'pending'}
           error={resolvedRecipient && !resolvedRecipient.ok ? resolvedRecipient.message : null}
           onMode={(next) => {
             recipientDirty.current = true;
