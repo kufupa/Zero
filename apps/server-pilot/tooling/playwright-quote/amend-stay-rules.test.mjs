@@ -11,8 +11,11 @@ import {
   classifyAmendPayment,
   amendFieldIso,
   amendFieldMatches,
+  applyComboSelect,
   applyComboSetValue,
   comboReadValue,
+  owningAmendForm,
+  syncComboBoundRecord,
   comboStoreRecord,
   comboUnsupportedFieldReason,
   comboWritableFromPage,
@@ -304,6 +307,65 @@ test('occupancy combo setValue uses the string store record, not a number', () =
   }, null)), true);
   assert.equal(amendFieldMatches('adults', 2, comboReadValue({ getValue: () => '2' }, null)), true);
   assert.equal(applyComboSetValue({ setValue: (v) => set.push(v) }, 2), '2');
+});
+
+test('combo select plus updateRecord copies occupancy onto the bound form record', () => {
+  const recs = ['0', '1', '2'].map((value) => ({
+    get: (field) => (field === 'value' || field === 'display' ? value : null),
+  }));
+  const record = {
+    data: { adults: '1' },
+    get: (field) => record.data[field],
+    set: (field, value) => {
+      record.data[field] = value;
+    },
+  };
+  const events = [];
+  let comboValue = recs[1];
+  const form = {
+    getRecord: () => record,
+    updateRecord: (target) => {
+      const rec = target || record;
+      const got = comboValue && typeof comboValue.get === 'function' ? comboValue.get('value') : comboValue;
+      rec.set('adults', got);
+    },
+  };
+  const cmp = {
+    name: 'adults',
+    valueField: 'value',
+    store: { getCount: () => recs.length, getAt: (i) => recs[i] },
+    setValue: (v) => {
+      comboValue = v;
+    },
+    getValue: () => comboValue,
+    fireEvent: (...args) => events.push(args),
+    up: (xtype) => (xtype === 'form' || xtype === 'recordview' ? form : null),
+  };
+  const chosen = applyComboSetValue(cmp, 2);
+  assert.equal(chosen, recs[2]);
+  assert.equal(applyComboSelect(cmp, chosen), true);
+  assert.equal(events[0][0], 'select');
+  assert.equal(events[0][2], recs[2]);
+  assert.equal(owningAmendForm(cmp), form);
+  assert.equal(record.get('adults'), '1');
+  assert.equal(syncComboBoundRecord(cmp, chosen), '2');
+  assert.equal(record.get('adults'), '2');
+});
+
+test('amend-stay occupancy fill fires select and updates the bound record', async () => {
+  const source = await readFile(new URL('./amend-stay.mjs', import.meta.url), 'utf8');
+  const at = source.indexOf('async function fillOneField');
+  assert.ok(at > 0);
+  const body = source.slice(at, source.indexOf('async function blurOneField'));
+  assert.match(body, /fireEvent\('select'/);
+  assert.match(body, /updateRecord/);
+  assert.match(body, /rec\.set/);
+  assert.match(body, /payload\.fieldName/);
+  assert.ok(body.indexOf("fireEvent('select'") > body.indexOf('cmp.setValue(chosen)'));
+  const previewAt = source.indexOf("ctx.result.outcome = 'previewed'");
+  const availAt = source.indexOf('await checkAvailability(ctx.page)');
+  assert.ok(previewAt > 0 && availAt > previewAt);
+  assert.equal(/request\.fields\.arrival/.test(source.slice(previewAt, availAt)), false);
 });
 
 test('occupancy that never blurs keeps the old count and fails closed', async () => {

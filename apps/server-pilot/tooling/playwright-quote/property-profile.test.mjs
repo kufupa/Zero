@@ -44,6 +44,14 @@ test('an unknown property has no profile', () => {
   assert.equal(profileFor(undefined), null);
 });
 
+test('HRDAV Accessible rooms are not auto-quoted unless staff requested that code', () => {
+  const hrdav = profileFor('HRDAV');
+  const hrcen = profileFor('HRCEN');
+  assert.equal(hrdav.rooms.ACCES.autoQuote, false);
+  assert.equal(hrdav.rooms.STKNG.autoQuote, undefined);
+  assert.equal(hrcen.rooms, undefined);
+});
+
 test('HRDAV profile lists EXKNGB and requires reservationnote; HRCEN does not', () => {
   const hrdav = profileFor('HRDAV');
   const hrcen = profileFor('HRCEN');

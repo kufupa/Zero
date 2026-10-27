@@ -41,7 +41,7 @@ export function isPartyRateFailure(error: unknown): boolean {
 }
 
 /** Search issues that mean HMS did not show every calendar page or every matching row. */
-const COVERAGE_ISSUE_CODES: ReadonlySet<string> = new Set([
+export const COVERAGE_ISSUE_CODES: ReadonlySet<string> = new Set([
   'NULL_OR_INVALID_CALENDAR',
   'CHANGED_CALENDAR_HEADERS',
   'STALE_CALENDAR_PAGE',

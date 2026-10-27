@@ -122,6 +122,9 @@ function validateRooms(rooms, capacity) {
         seen.add(key);
       }
     }
+    if (Object.prototype.hasOwnProperty.call(room, 'autoQuote') && typeof room.autoQuote !== 'boolean') {
+      invalid(`rooms.${code}.autoQuote must be a boolean`);
+    }
   }
 }
 
