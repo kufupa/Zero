@@ -26,13 +26,13 @@ The database scan applied these case-insensitive patterns (`~*`) to the concaten
 
 | Cue | Pattern |
 |---|---|
-| Flight / airline | `flight|airline` |
-| Pickup / drop-off | `pickup|pick-up|pick up|dropoff|drop-off|drop off` |
+| Flight / airline | `flight\|airline` |
+| Pickup / drop-off | `pickup\|pick-up\|pick up\|dropoff\|drop-off\|drop off` |
 | Airport | `airport` |
-| Pax / passenger / person / guest | `pax|passenger|person|guest` |
-| Explicit guest-name label | `guest name|passenger name|traveller name|traveler name` |
-| Confirmation / booking reference | `confirm|booking (no|number|ref)|reference` |
-| Price / rate / cost / amount / currency token | `price|rate|cost|amount|zar|r[[:space:]]*[0-9]` |
+| Pax / passenger / person / guest | `pax\|passenger\|person\|guest` |
+| Explicit guest-name label | `guest name\|passenger name\|traveller name\|traveler name` |
+| Confirmation / booking reference | `confirm\|booking (no\|number\|ref)\|reference` |
+| Price / rate / cost / amount / currency token | `price\|rate\|cost\|amount\|zar\|r[[:space:]]*[0-9]` |
 
 | Keyword cue | Epick | Kmgidi |
 |---|---:|---:|
