@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {describe,it,expect,vi} from 'vitest';
-import {createReservationistSelectedRatePolicyResolver} from '../src/ai/reservationist-rate-policy-source.js';
+import {createReservationistSelectedRatePolicyResolver,letterIdentity} from '../src/ai/reservationist-rate-policy-source.js';
 const hash=(v:Uint8Array)=>createHash('sha256').update(v).digest('hex');
 function setup(){
  const ctx:any={input:{propertyCode:'HRCEN',authorizationScope:{ownerRef:'synthetic-owner',threadId:'synthetic-current-thread'},clock:{causalAt:'2026-10-01T00:00:00Z',sourceAt:'2026-10-05T14:00:00Z',sourceMode:'current_read'},capabilities:{pmsWrite:false,emailSend:false}},task:{id:'quote',kind:'quote'},facts:[],signal:new AbortController().signal};
@@ -17,6 +17,18 @@ describe('source-owned selected rate-family policy',()=>{
  it('preserves native original continuation rows with monetary columns between package words',async()=>{const s=setup();s.d.pages[0]=s.d.pages[0].replace('Package Dinner + Bed n\nBreakfast Rewardable;','Package Dinner + Bed n        1,478.26  1,478.26  7501 15.00% 221.74 1,700.00\n                         Breakfast Rewardable;');expect(await s.invoke()).not.toBeNull();});
  it.each(['Package Bed n Breakfast Rewardable','Package Bed n        1,643.48  1,643.48  7501 15.00% 246.52 1,890.00\n                         Breakfast Rewardable'])('qualifies the exact native B&B package layout %s',async clause=>{const s=setup();s.source.result.groups[0].options[0].board='Bed & Breakfast R';s.d.board='breakfast';s.d.pages[0]=s.d.pages[0].replace('Package Dinner + Bed n\nBreakfast Rewardable;',clause);const p=await s.resolver(s.ctx,s.source,s.selections,'HRCEN','SYNDB','breakfast');expect(p).toMatchObject({families:[{rateCode:'SYNDB',board:'breakfast'}],vat:'included',levy:'included',sourceHashes:[s.d.sourceHash]});expect(JSON.stringify(p)).not.toContain('1,890.00');});
  it('preserves the original non-rewardable B&B continuation without treating loyalty as meal entitlement',async()=>{const s=setup();s.source.result.groups[0].options[0].board='Bed & Breakfast R';s.d.board='breakfast';s.d.pages[0]=s.d.pages[0].replace('Package Dinner + Bed n\nBreakfast Rewardable;','Package Bed n        1,393.04  1,393.04  7501 15.00% 208.96 1,602.00\n                         Breakfast Non-\n                         Rewardable');const p=await s.resolver(s.ctx,s.source,s.selections,'HRCEN','SYNDB','breakfast');expect(p).toMatchObject({families:[{rateCode:'SYNDB',board:'breakfast'}],vat:'included',levy:'included'});expect(p).not.toHaveProperty('childMealEntitlement');});
+ it('maps a Non-Rewardable breakfast HMS label from the property profile',async()=>{
+  const s=setup();
+  s.ctx.input.propertyCode='HRDAV';
+  s.source.request.propertyCode='HRDAV';
+  s.source.result.propertyCode='HRDAV';
+  s.source.result.groups[0].options[0].board='Bed & Breakfast NR';
+  s.d.propertyCode='HRDAV';
+  s.d.board='breakfast';
+  s.d.pages[0]=s.d.pages[0].replaceAll('The Centurion Hotel','Da Vinci Hotel and Suites').replace('Package Dinner + Bed n\nBreakfast Rewardable;','Package Bed n Breakfast Rewardable');
+  const p=await s.resolver(s.ctx,s.source,s.selections,'HRDAV','SYNDB','breakfast');
+  expect(p).toMatchObject({propertyCode:'HRDAV',families:[{rateCode:'SYNDB',board:'breakfast'}],vat:'included',levy:'included'});
+ });
  it.each(['Package Bed n        1,643.48  1,643.48  7501 15.00% 246.52 1,890.00\n 27-AUG-2026 1 Breakfast Rewardable 100.00','Package Bed n        1,643.48\n Other Package Room Only\n Breakfast Rewardable','Package Bed n        Other Package Dinner\n Breakfast Rewardable','Package Bed n\n Breakfast Rewardable\nRate Plan OTHER'])('keeps unrelated B&B continuation evidence unavailable: %s',async clause=>{const s=setup();s.source.result.groups[0].options[0].board='Bed & Breakfast R';s.d.board='breakfast';s.d.pages[0]=s.d.pages[0].replace('Package Dinner + Bed n\nBreakfast Rewardable;',clause);expect(await s.resolver(s.ctx,s.source,s.selections,'HRCEN','SYNDB','breakfast')).toBeNull();});
  it.each(['levy','vat','board','date','invoice','code'])('does not qualify absent or incompatible original %s evidence',async key=>{const s=setup();const before=s.d.pages[0];s.d.pages[0]=key==='levy'?before.replace('Tourism Levy Included','Tourism Levy Excluded'):key==='vat'?before.replace('VAT 15% 15.00%','Tax No. 15.00%'):key==='board'?before.replace('Package Dinner + Bed n','Unknown package'):key==='date'?before.replace('09-SEP-2026','10-SEP-2026'):key==='invoice'?before.replace('Tax Invoice','Customer Voucher'):before.replace('Rate Plan SYNDB','Rate Plan OTHER');expect(await s.invoke()).toBeNull();});
  it.each(['owner','future','hash','property','inbound'])('rejects invalid original %s binding',async key=>{const s=setup();if(key==='owner')s.d.ownerRef='foreign';if(key==='future')s.d.messageAt='2026-10-02T00:00:00Z';if(key==='hash')s.d.body[0]^=1;if(key==='property')s.d.propertyCode='OTHER';if(key==='inbound')s.d.direction='inbound';await expect(s.invoke()).rejects.toThrow('rate_policy_document_identity_invalid');});
@@ -46,6 +58,15 @@ describe('explicit original hotel rate terms',()=>{
   s.d.pages[0]='Da Vinci Hotel and Suites\nWe have pleasure in confirming your reservation at Da Vinci Hotel and Suites for the following guest.';
   const p=await s.resolver(s.ctx,s.source,s.selections,'HRDAV','BAR','breakfast');
   expect(p).toMatchObject({propertyCode:'HRDAV',families:[{rateCode:'BAR',board:'breakfast'}],vat:'included',levy:'included'});
+ });
+ it('reads letter regexes from the property profile and fails closed when unknown',()=>{
+  expect(letterIdentity('UNKNOWN')).toBeNull();
+  const known=letterIdentity('HRCEN');
+  expect(known?.hotel.test('The Centurion Hotel')).toBe(true);
+  expect(known?.confirmation.test('We have pleasure in confirming your reservation at The Centurion Hotel, Centurion')).toBe(true);
+  const other=letterIdentity('HRDAV');
+  expect(other?.hotel.test('Da Vinci Hotel and Suites')).toBe(true);
+  expect(other?.confirmation.test('We have pleasure in confirming your reservation at Da Vinci Hotel and Suites')).toBe(true);
  });
  it('does not qualify a Centurion letter for Da Vinci terms',async()=>{
   const s=hotelTermsSetup();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRateOptions, otherBoardContractNotes, type RateOption } from '../src/ai/rate-options.js';
+import { boardsFor, buildRateOptions, otherBoardContractNotes, type RateOption } from '../src/ai/rate-options.js';
 import type { NativeOption, QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
 
 const ARRIVAL = '2026-10-11';
@@ -266,6 +266,16 @@ describe('HMS event rates (U13)', () => {
     expect(cards.find((card) => card.rateCode === 'GNC3B')?.hint).toBe('event_rate');
     expect(cards.find((card) => card.rateCode === 'BAR')).not.toHaveProperty('hint');
   });
+});
+
+it('maps a Non-Rewardable breakfast label from the property profile', () => {
+  expect(boardsFor('HRDAV')['bed & breakfast nr']).toBe('breakfast');
+  expect(boardsFor('UNKNOWN')['bed & breakfast nr']).toBeUndefined();
+  const nr = row({ id: 'STKNG:BWS1B', room: 'STKNG', rate: 'BWS1B', board: 'Bed & Breakfast NR', scope: 'contextual', amount: '2500.00' });
+  const base = source([nr], { roomCodes: ['STKNG'], boardBases: ['breakfast'] });
+  const cards = buildRateOptions({ ...base, request: { ...base.request, propertyCode: 'HRDAV' } }, []);
+  expect(cards).toHaveLength(1);
+  expect(cards[0]).toMatchObject({ rateCode: 'BWS1B', board: 'bb', priced: 'summary' });
 });
 
 it('does not quote a cheaper unread leftover row', () => {
