@@ -56,6 +56,7 @@ import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-b
 import type { PaneStayAvailabilityReader, PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { pdfBlockReason } from './document-review';
 import { QuoteBookingHost } from './quote-booking-host';
+import { ShuttleDraft } from './shuttle-draft';
 import { QuoteDocumentsStep, type CurrentQuoteAction } from './quote-documents-step';
 import { QuotePeopleStep } from './quote-people-step';
 import { QuoteStayStep, StayAskChrome } from './quote-stay-step';
@@ -492,6 +493,15 @@ export function QuoteWorkflowPanel({
   workItemPane?: WorkItemPaneControls | null;
 }) {
   const currentEmailKey = session.binding?.internetMessageId ?? session.binding?.entryId ?? null;
+  const shuttleDraft = session.binding && paneConfig !== undefined ? (
+    <ShuttleDraft
+      key={`${session.binding.transportId}:${session.binding.entryId}:${session.binding.selectionEpoch}`}
+      config={
+        paneConfig?.transportId === session.binding.transportId ? paneConfig.shuttle ?? null : null
+      }
+      transportId={session.binding.transportId}
+    />
+  ) : null;
   const failedRatesNotice = useFailedHmsJobNoticeMessage('quote-rates', currentEmailKey);
   // A row price or rate tapped and waiting for its pin to reach the session. The re-run starts once every pin is there, so it reads them.
   const [pinRun, setPinRun] = useState<PinRun | null>(null);
@@ -615,13 +625,17 @@ export function QuoteWorkflowPanel({
     return (
       <div className="flex flex-col gap-3">
         <StatusNote>This email has not finished syncing yet. Wait a moment, then select it again.</StatusNote>
+        {shuttleDraft}
         {replyContent ? <div className="flex flex-col gap-2.5">{replyContent}</div> : null}
       </div>
     );
   }
   if (session.phase === 'unsupported') {
     return (
-      <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
+      <div className="flex flex-col gap-3">
+        <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
+        {shuttleDraft}
+      </div>
     );
   }
   const amendment = amendmentOf(session);
@@ -642,6 +656,7 @@ export function QuoteWorkflowPanel({
         {TELL_NAVA_ENABLED ? (
           <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         ) : null}
+        {shuttleDraft}
         {amendStays.map((stay) => (
           <StayAskChrome key={stay.id} session={session} stay={stay} onSelectStayKey={onSelectStayKey} />
         ))}
@@ -971,6 +986,7 @@ export function QuoteWorkflowPanel({
       ) : null}
       {session.phase === 'analysing' ? <StatusNote>{analysingCopy(session)}</StatusNote> : null}
       <PaneStatusLine session={session} />
+      {shuttleDraft}
       {session.analysis?.alternatives.length ? (
         <StatusNote>The email also mentions: {session.analysis.alternatives.join(', ')}. These are not quoted yet.</StatusNote>
       ) : null}

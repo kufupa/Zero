@@ -5,9 +5,14 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ShuttleDraft } from '../components/quote-workflow/shuttle-draft';
 
-const { createDraftMutate, sendMutate } = vi.hoisted(() => ({
+const { createDraftMutate, sendMutate, invalidateQueries } = vi.hoisted(() => ({
   createDraftMutate: vi.fn(),
   sendMutate: vi.fn(),
+  invalidateQueries: vi.fn(),
+}));
+
+vi.mock('@tanstack/react-query', () => ({
+  useQueryClient: () => ({ invalidateQueries }),
 }));
 
 vi.mock('../providers/query-provider', () => ({
@@ -15,13 +20,18 @@ vi.mock('../providers/query-provider', () => ({
     drafts: { create: { mutate: createDraftMutate } },
     mail: { send: { mutate: sendMutate } },
   },
+  useTRPC: () => ({
+    drafts: { list: { queryKey: () => ['drafts', 'list'] } },
+    mail: { unreadCounts: { queryKey: () => ['mail', 'unreadCounts'] } },
+  }),
 }));
 
 const provider = { provider: 'Jarat Tours', to: ['shuttle@example.test'] };
+const transportId = 'transport-1';
 
 function fillDetails() {
   fireEvent.change(screen.getByLabelText('Service date'), { target: { value: '2026-11-21' } });
-  fireEvent.change(screen.getByLabelText('Pickup location'), { target: { value: 'Hotel entrance' } });
+  fireEvent.change(screen.getByLabelText('Pickup location'), { target: { value: 'Hotel <main>' } });
   fireEvent.change(screen.getByLabelText('Drop-off location'), { target: { value: 'Airport' } });
   fireEvent.change(screen.getByLabelText('Pickup time'), { target: { value: '09:30' } });
   fireEvent.change(screen.getByLabelText('Flight'), { target: { value: 'SA123' } });
@@ -32,13 +42,14 @@ function fillDetails() {
 beforeEach(() => {
   createDraftMutate.mockReset().mockResolvedValue({ id: 'draft-1' });
   sendMutate.mockReset();
+  invalidateQueries.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(cleanup);
 
 describe('shuttle request drafts', () => {
   it('saves staff-entered transfer details as a standalone unsent draft and note text', async () => {
-    render(<ShuttleDraft config={provider} />);
+    render(<ShuttleDraft config={provider} transportId={transportId} />);
     fillDetails();
 
     const note = screen.getByLabelText('Reservation note for HMS') as HTMLTextAreaElement;
@@ -54,15 +65,17 @@ describe('shuttle request drafts', () => {
       replyToMessageId: null,
       to: 'shuttle@example.test',
       subject: 'Shuttle request — 2026-11-21',
-      message: expect.stringContaining('SA123'),
-    }));
+      message: expect.stringMatching(/Hotel &lt;main&gt;[\s\S]*SA123/),
+    }, { context: { activeTransportId: transportId } }));
     expect(createDraftMutate).toHaveBeenCalledTimes(1);
     expect(sendMutate).not.toHaveBeenCalled();
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['drafts', 'list'] });
+    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['mail', 'unreadCounts'] });
     expect(screen.getByRole('status').textContent).toContain('Saved as an unsent draft');
   });
 
   it('fails closed when no provider is configured', () => {
-    render(<ShuttleDraft config={null} />);
+    render(<ShuttleDraft config={null} transportId={transportId} />);
 
     expect(screen.getByRole('status').textContent).toContain('not set up');
     expect(screen.queryByLabelText('Pickup location')).toBeNull();
@@ -71,7 +84,7 @@ describe('shuttle request drafts', () => {
 
   it('shows a plain mailbox error when saving fails and keeps the draft unsent', async () => {
     createDraftMutate.mockRejectedValueOnce(new Error('INTERNAL_SERVER_ERROR: mail store unavailable'));
-    render(<ShuttleDraft config={provider} />);
+    render(<ShuttleDraft config={provider} transportId={transportId} />);
     fireEvent.change(screen.getByLabelText('Pickup location'), { target: { value: 'Hotel entrance' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
 
