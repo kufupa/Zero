@@ -29,6 +29,7 @@ import type {
   QuoteSalesStrategyCode,
   QuoteSalesStrategyValue,
   QuoteStrategyRow,
+  QuoteFailureCauseClass,
 } from './types';
 import {
   HRCEN_PROPERTY_CODE,
@@ -37,15 +38,18 @@ import {
   staffHeaderFieldProblem,
   staffStayExtrasFor,
 } from './types';
-import { knownRoomCode, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
+import { knownRoomCode, normaliseRoomLabel, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
 export const KNOWN_NATIVE_ROOM_CODES: ReadonlySet<string> = new Set<string>(ROOM_TYPE_CODES);
 const HRDAV_NATIVE_ROOM_CODES: ReadonlySet<string> = new Set<string>(Object.keys(HRDAV_ROOM_NAMES));
+const EMPTY_NATIVE_ROOM_CODES: ReadonlySet<string> = new Set<string>();
 
 function nativeRoomCodeList(propertyCode?: string): ReadonlySet<string> {
-  return propertyCode === HRDAV_PROPERTY_CODE ? HRDAV_NATIVE_ROOM_CODES : KNOWN_NATIVE_ROOM_CODES;
+  if (propertyCode === HRDAV_PROPERTY_CODE) return HRDAV_NATIVE_ROOM_CODES;
+  if (propertyCode === undefined || propertyCode === HRCEN_PROPERTY_CODE) return KNOWN_NATIVE_ROOM_CODES;
+  return EMPTY_NATIVE_ROOM_CODES;
 }
 
 export type NativeRoomCodeResolution =
@@ -426,16 +430,19 @@ export function qualifiedPdfFailureReason(error: unknown): string {
 function hrdavKnownCode(raw: string): string | null {
   const code = raw.trim().replace(/[^a-z0-9]/gi, '').toUpperCase();
   if (HRDAV_NATIVE_ROOM_CODES.has(code)) return code;
-  const needle = raw.trim().toLowerCase().replace(/\s+/g, ' ');
+  const needle = normaliseRoomLabel(raw);
   const matches = (Object.entries(HRDAV_ROOM_NAMES) as Array<[string, string]>).filter(
-    ([, label]) => label.toLowerCase() === needle,
+    ([code, label]) => normaliseRoomLabel(code) === needle || normaliseRoomLabel(label) === needle,
   );
   return matches.length === 1 ? matches[0]![0] : null;
 }
 
 function knownNativeCode(raw: string, propertyCode?: string): string | null {
   if (propertyCode === HRDAV_PROPERTY_CODE) return hrdavKnownCode(raw);
-  return knownRoomCode(raw);
+  if (propertyCode === HRCEN_PROPERTY_CODE || propertyCode === undefined) {
+    return knownRoomCode(normaliseRoomLabel(raw)) ?? knownRoomCode(raw);
+  }
+  return null;
 }
 
 export function resolveNativeRoomCodes(input: {
@@ -454,7 +461,11 @@ export function resolveNativeRoomCodes(input: {
   }
   const raw = input.roomPreference?.trim() ?? '';
   if (!raw) return { status: 'omitted' };
-  const twin = input.propertyCode === HRDAV_PROPERTY_CODE ? null : unpickedTwinRoomCode(raw);
+  const twin =
+    input.propertyCode === HRDAV_PROPERTY_CODE ||
+    (input.propertyCode !== undefined && input.propertyCode !== HRCEN_PROPERTY_CODE)
+      ? null
+      : unpickedTwinRoomCode(raw);
   const code = knownNativeCode(raw, input.propertyCode) ?? twin ?? null;
   if (code) return { status: 'codes', codes: [code] };
   return { status: 'unresolved', label: raw };
@@ -481,6 +492,13 @@ export function staffQuoteGroupsFromStay(
   groups: readonly StayGroupRequirement[],
   propertyCode?: string,
 ): { ok: StaffQuoteGroupInput[] } | { error: string } {
+  if (
+    propertyCode !== undefined &&
+    propertyCode !== HRCEN_PROPERTY_CODE &&
+    propertyCode !== HRDAV_PROPERTY_CODE
+  ) {
+    return { error: 'Could not identify the hotel for this mailbox. Refresh the pane before running the quote.' };
+  }
   const out: StaffQuoteGroupInput[] = [];
   for (const group of groups) {
     if (!group.arrivalDate || !group.departureDate) {
@@ -502,7 +520,7 @@ export function staffQuoteGroupsFromStay(
     // Ambiguous mail wording stays visible/editable, but its defaulted provenance means any type.
     if (rooms.status === 'unresolved' && group.fields.roomPreference !== 'defaulted') {
       return {
-        error: `Room type "${rooms.label}" is not one HMS knows. Choose one of: ${[...nativeRoomCodeList(propertyCode)].join(', ')}.`,
+        error: `Not in this hotel's room list: "${rooms.label}". Choose one of: ${[...nativeRoomCodeList(propertyCode)].join(', ')}.`,
       };
     }
     out.push({
@@ -1521,11 +1539,16 @@ const QUOTE_STRATEGY_VALUES: ReadonlySet<string> = new Set([
 function failedQuoteStrategy(
   strategyCode: QuoteSalesStrategyCode,
   message: string,
+  causeClass: QuoteFailureCauseClass,
   retryable = false,
 ): BoundStaffQuoteStrategy {
   return {
     strategyCode,
-    row: { status: 'failed', message },
+    row: {
+      status: 'failed',
+      message,
+      causeClass,
+    },
     ...(retryable ? { retryable: true as const } : {}),
   };
 }
@@ -1540,7 +1563,11 @@ function rowForBoundStrategy(
   if (!groups.length || groups.some((group) => !selectedGroupIds.has(group.id))) {
     return {
       strategyCode,
-      row: { status: 'not_offered', message: 'No room option was returned for this strategy and stay.' },
+      row: {
+        status: 'not_offered',
+        message: 'No room option was returned for this strategy and stay.',
+        causeClass: 'not_found',
+      },
     };
   }
   return {
@@ -1565,18 +1592,20 @@ export async function bindStaffQuoteStrategy(
     return failedQuoteStrategy(
       args.strategyCode,
       'This rate strategy is not configured for the selected hotel; no search was run.',
+      'not_set_up',
     );
   }
   if (!args.staffQuoteJob) {
     return failedQuoteStrategy(
       args.strategyCode,
       'The quote comparison queue is disabled or unavailable; no search was run.',
+      'not_set_up',
     );
   }
 
   try {
     const request = staffQuoteRequest({ ...args, strategyRequestValue: strategy.requestValue });
-    if ('error' in request) return failedQuoteStrategy(args.strategyCode, request.error);
+    if ('error' in request) return failedQuoteStrategy(args.strategyCode, request.error, 'needs_staff');
     const query: StaffQuoteJobQuery = async (lookup, options) => {
       const view = await args.staffQuoteJob!(lookup, options);
       if (
@@ -1594,6 +1623,7 @@ export async function bindStaffQuoteStrategy(
       return failedQuoteStrategy(
         args.strategyCode,
         'No prepared comparison job was found. The queue may be disabled; no search was run.',
+        'not_set_up',
         true,
       );
     }
@@ -1604,6 +1634,7 @@ export async function bindStaffQuoteStrategy(
         row: {
           status: notOffered ? 'not_offered' : 'failed',
           message: bound.reason,
+          causeClass: notOffered ? 'not_found' : causeClassForBoundReason(bound.reason),
         },
       };
     }
@@ -1611,12 +1642,28 @@ export async function bindStaffQuoteStrategy(
       return failedQuoteStrategy(
         args.strategyCode,
         'The comparison job was not prepared by Nava; its result was not bound.',
+        'not_set_up',
       );
     }
     return rowForBoundStrategy(args.strategyCode, bound, args.groups);
   } catch (error) {
-    return failedQuoteStrategy(args.strategyCode, rejectionReason(error));
+    const message = rejectionReason(error);
+    return failedQuoteStrategy(args.strategyCode, message, causeClassForBoundReason(message));
   }
+}
+
+function causeClassForBoundReason(reason: string): QuoteFailureCauseClass {
+  const text = reason.toLowerCase();
+  if (text.includes('busy')) return 'busy';
+  if (
+    text.includes("didn't answer") ||
+    text.includes('did not return') ||
+    text.includes('could not be completed') ||
+    text.includes('could not read its status')
+  ) return 'hms_down';
+  if (text.includes('not configured') || text.includes('disabled') || text.includes('not prepared')) return 'not_set_up';
+  if (text.includes('no rate') || text.includes('no room') || text.includes('not found')) return 'not_found';
+  return 'needs_staff';
 }
 
 /** Binds all active registry strategies independently; one failed or unavailable row cannot hide the others. */

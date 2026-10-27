@@ -12,6 +12,10 @@ export declare const PROFILE_SALES_STRATEGY_CODES: readonly [
 
 export declare const BOOK_NATIVE_FIELDS: readonly ['marketsegment', 'guestoptin4'];
 
+export type ProfileBoardBase = 'room_only' | 'breakfast' | 'dinner_bed_breakfast';
+export type ProfileRateScope = 'public' | 'government' | 'contextual' | 'unknown';
+export type ProfileStrategyScope = 'agency' | 'company' | 'public';
+
 export type PropertyProfile = {
   propertyCode: string;
   publishedRooms: number;
@@ -19,7 +23,7 @@ export type PropertyProfile = {
   roomCapacity: Record<string, number>;
   requiredCreateFields: string[];
   salesStrategies?: Array<{ value: string; display: string }>;
-  rooms?: Record<string, { label: string }>;
+  rooms?: Record<string, { label: string; aliases?: string[] }>;
   ratePlans?: Record<string, {
     label: string;
     board: string;
@@ -27,6 +31,14 @@ export type PropertyProfile = {
     government?: boolean;
     event?: boolean;
   }>;
+  rates?: {
+    public?: string[];
+    government?: { codes?: string[]; labelPattern?: string };
+    strategies?: Record<string, { plans: string[]; scope: ProfileStrategyScope }>;
+  };
+  boards?: Record<string, ProfileBoardBase> | string[];
+  letter?: { hotel: string; confirmation: string };
+  cancellation?: { noticeHours: number };
   createForm?: {
     requiredMarkers?: Record<string, { required?: boolean }>;
     options?: Record<string, {
@@ -34,7 +46,18 @@ export type PropertyProfile = {
     }>;
   };
   digest: string;
+  classifyRate: (
+    code: string,
+    strategy?: string | null,
+    isNegotiatedRate?: boolean,
+    label?: string,
+  ) => ProfileRateScope;
 };
+
+export declare function getProfileRates(propertyCode: string): NonNullable<PropertyProfile['rates']>;
+export declare function getProfileBoards(propertyCode: string): Record<string, ProfileBoardBase>;
+export declare function getProfileLetter(propertyCode: string): { hotel: RegExp; confirmation: RegExp };
+export declare function getProfileCancellation(propertyCode: string): { noticeHours: number };
 
 export declare function validateProfile(raw: unknown, propertyCode: string): PropertyProfile;
 export declare function profileFor(propertyCode: string): PropertyProfile | null;

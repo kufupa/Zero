@@ -357,10 +357,31 @@ test('date paging merges a genuine overlap and covers departure exactly once',()
   assert.deepEqual(result.options[0].nightly.map(n=>n.date),stayDates(request));
   assert.equal(result.options[0].departure.combClosedToDeparture,false);
 });
-test('summary opens no detail panels; full requires at most five narrowed identities',()=>{
+test('summary opens no detail panels; full reads every identity',()=>{
   assert.deepEqual(quote.detailCandidates?.('summary',[{id:'a'}]),[]);
   assert.equal(quote.detailCandidates('full',[{id:'a'},{id:'b'}]).length,2);
-  assert.deepEqual(quote.detailCandidates('full',Array.from({length:6},(_,i)=>({id:String(i)}))),[]);
+  assert.equal(quote.detailCandidates('full',Array.from({length:17},(_,i)=>({id:String(i)}))).length,17);
+});
+test('full-mode 17-row wholesale window stays quote with unread leftover details',()=>{
+  assert.equal(quote.detailReadBudgetMs({}),90_000);
+  assert.equal(quote.detailReadBudgetMs({QUOTE_DETAIL_BUDGET_MS:'15000'}),15_000);
+  const wsPlans=['BWS1B','BWS2B','BWS3B','NG139B','NGD73B','NGD77B','NGD90B','NGDS1B','NGDS2B','NGDS8B','NGDTSB','WSF1B','WSF2B','WSF3B','WSG5B','WSG5DB','BWS4B'];
+  const open={israteavailable:true,restricted:false,combClosed:false,combClosedToArrival:false,combClosedToDeparture:false,combMinLOSToArrival:0,combMinLOSToDeparture:0,combMaxLOSToArrival:null,combMaxLOSToDeparture:null,combMinLOSToThrough:null,combMaxLOSToThrough:null};
+  const columns=Object.fromEntries([1,2].map(n=>[`col${n}`,{...open,value:2500}]));
+  const stay={propertyCode:'HRDAV',arrivalDate:'2027-02-16',departureDate:'2027-02-17',details:'full',rooms:[{quantity:1,adults:1,children:0,childAges:[]}],search:{salesStrategy:'Wholesale'},rateContext:{agency:{name:'Example Agency'}}};
+  const data={datesList:['02/16/2027','02/17/2027'],children:[{isprop:true,issummary:false,code:'HRDAV',currency:'ZAR',children:[{code:'STKNG',desc:'Standard King',buildingCode:null,children:wsPlans.map(code=>({code,desc:`Wholesale ${code}`,currency:'ZAR',isNegotiatedRate:code==='BWS4B',restricted:false,minLOS:null,maxLOS:null,minLeadTime:null,maxLeadTime:null,haspolicies:true,columns})),columns:Object.fromEntries([1,2].map(n=>[`col${n}`,{value:84}]))}]}]};
+  const calendar={headers:['16-FEB-2027Tuesday','17-FEB-2027Wednesday'],options:wsPlans.map(code=>({room:{code:'STKNG',inventory:['84','84']},rate:`${code}: Wholesale ${code}`,board:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}))};
+  const result=quote.extractOptions(stay,stay.rooms[0],[{data,calendar,criteria:{salesStrategy:'WS',travelAgencyID:'23'}}],{agency:{id:'23'}});
+  assert.equal(result.options.length,17);
+  const nights=quote.stayDates(stay);
+  for(const [index,option] of result.options.entries()) {
+    option.details=index<3?{status:'complete',nightly:nights.map(date=>({date}))}:quote.unreadDetails();
+  }
+  const grouped=quote.groupOutcomeFromOptions(result.options,{details:'full',searchComplete:true});
+  assert.equal(grouped.outcome,'quote');
+  assert.equal(grouped.requiredFacts,'complete');
+  assert.equal(grouped.eligible.length,3);
+  assert.equal(result.options.filter(o=>o.details.status==='not_read').length,14);
 });
 test('driver validation consumes contract date limits and v2 constraints',()=>{
   assert.ok(quote.validateRequest({...request,departureDate:'2026-11-10'}).length);
@@ -591,4 +612,17 @@ test('Hotel Availability menu stops after four Availability clicks and fails whe
   const menu=hotelMenuPage({revealOnClick:Infinity});
   await assert.rejects(quote.openHotelAvailability(menu.page),/TimeoutError/);
   assert.equal(menu.availabilityClicks(),4);
+});
+test('HRDAV wholesale BWS1B with a verified agency is contextual and verified',()=>{
+  // Codes/labels from HRDAV observedStrategyRatePlans.WS (wholesale-shop.png, docs/research/2026-10-25-hrdav-dom-read.md). Amounts are fixture, not live prices.
+  const open={israteavailable:true,restricted:false,combClosed:false,combClosedToArrival:false,combClosedToDeparture:false,combMinLOSToArrival:0,combMinLOSToDeparture:0,combMaxLOSToArrival:null,combMaxLOSToDeparture:null,combMinLOSToThrough:null,combMaxLOSToThrough:null};
+  const columns=Object.fromEntries([1,2].map(n=>[`col${n}`,{...open,value:2500}]));
+  const stay={propertyCode:'HRDAV',arrivalDate:'2027-02-16',departureDate:'2027-02-17',rooms:[{quantity:1,adults:1,children:0,childAges:[]}],search:{salesStrategy:'Wholesale'},rateContext:{agency:{name:'Example Agency'}}};
+  const data={datesList:['02/16/2027','02/17/2027'],children:[{isprop:true,issummary:false,code:'HRDAV',currency:'ZAR',children:[{code:'STKNG',desc:'Standard King',buildingCode:null,children:[{code:'BWS1B',desc:'Wholesale Best Available Rate 1',currency:'ZAR',isNegotiatedRate:false,restricted:false,minLOS:null,maxLOS:null,minLeadTime:null,maxLeadTime:null,haspolicies:true,columns}],columns:Object.fromEntries([1,2].map(n=>[`col${n}`,{value:84}]))}]}]};
+  const calendar={headers:['16-FEB-2027Tuesday','17-FEB-2027Wednesday'],options:[{room:{code:'STKNG',inventory:['84','84']},rate:'BWS1B: Wholesale Best Available Rate 1',board:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}]};
+  const result=quote.extractOptions(stay,stay.rooms[0],[{data,calendar,criteria:{salesStrategy:'WS',travelAgencyID:'23'}}],{agency:{id:'23'}});
+  const option=result.options.find(o=>o.rate.code==='BWS1B');
+  assert.equal(option.rateScope,'contextual');
+  assert.equal(option.eligibility,'verified');
+  assert.equal(option.matchStatus,'match');
 });

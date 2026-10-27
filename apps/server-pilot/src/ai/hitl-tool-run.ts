@@ -266,6 +266,31 @@ const QUOTE_REFUSAL_ALIASES: Record<string, string> = {
   QUOTE_DAVINCI_DISABLED: 'quote_davinci_disabled',
 };
 
+export type QuoteFailureCauseClass = 'not_set_up' | 'hms_down' | 'busy' | 'not_found' | 'needs_staff';
+
+/** Closed map. A reason that is not listed is needs_staff, never a guessed HMS outage. */
+const QUOTE_CAUSE_CLASS: Record<string, QuoteFailureCauseClass> = {
+  quote_davinci_disabled: 'not_set_up',
+  installation_unavailable: 'not_set_up',
+  refused_flag_off: 'not_set_up',
+  database_unavailable: 'not_set_up',
+  business_quote_policy_unavailable: 'not_set_up',
+  business_quote_clock_unavailable: 'not_set_up',
+  staff_quote_policy_pdf_unavailable: 'not_set_up',
+  hms_execution_failure: 'hms_down',
+  execution_failure: 'hms_down',
+  refused_lock_unavailable: 'hms_down',
+  business_party_lookup_unavailable: 'hms_down',
+  refused_lock_busy: 'busy',
+  not_found: 'not_found',
+  mail_not_found: 'not_found',
+  native_quote_no_matching_rate: 'not_found',
+};
+
+export function quoteFailureCauseClass(reason: string): QuoteFailureCauseClass {
+  return QUOTE_CAUSE_CLASS[reason] ?? 'needs_staff';
+}
+
 export function catalogQuoteRefusalReason(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   if (QUOTE_REFUSAL_REASONS.has(value)) return value;
@@ -302,15 +327,16 @@ function failedToolFields(code: string): ToolRunFields {
   return {
     status: 'failed',
     errorCode: code,
-    result: { code, message: toolErrorMessage(code) },
+    result: { code, message: toolErrorMessage(code), causeClass: quoteFailureCauseClass(code) },
   };
 }
 
 function refusedToolFields(errorCode: string, error: unknown): ToolRunFields {
+  const reason = quoteRefusalReason(error);
   return {
     status: 'refused',
     errorCode,
-    result: { reason: quoteRefusalReason(error) },
+    result: { reason, causeClass: quoteFailureCauseClass(reason) },
   };
 }
 
@@ -676,10 +702,11 @@ export function classifyStaffQuote(value: {
 }): ToolRunFields {
   if (value.status !== 'ready') {
     const status = identifierOr(value.status, 'not_ready');
+    const reason = catalogQuoteRefusalReason(status) ?? 'not_ready';
     return {
       status: 'refused',
       errorCode: status,
-      result: { reason: catalogQuoteRefusalReason(status) ?? 'not_ready' },
+      result: { reason, causeClass: quoteFailureCauseClass(reason) },
     };
   }
   return {

@@ -52,6 +52,51 @@ describe('HRDAV native room and board maps', () => {
     });
   });
 
+  it('normalizes each HRDAV room label as staff spellings and keeps HRCEN normalization', () => {
+    for (const [code, label] of Object.entries(HRDAV_ROOM_NAMES)) {
+      expect(
+        resolveNativeRoomCodes({
+          roomPreference: `  ${label.toUpperCase().replace(/ /g, '   ')} ROOMS `,
+          propertyCode: HRDAV_PROPERTY_CODE,
+        }),
+      ).toEqual({ status: 'codes', codes: [code] });
+    }
+    expect(
+      resolveNativeRoomCodes({ roomPreference: 'STANDARD TWIN ROOM', propertyCode: HRDAV_PROPERTY_CODE }),
+    ).toEqual({ status: 'codes', codes: ['STWN'] });
+    expect(resolveNativeRoomCodes({ roomCodes: ['DLX-KNG'], propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['DLXKNG'],
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'DLX KNG', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['DLXKNG'],
+    });
+    expect(
+      resolveNativeRoomCodes({ roomPreference: 'Standard & Queen Rooms', propertyCode: HRCEN_PROPERTY_CODE }),
+    ).toEqual({ status: 'codes', codes: ['STQN'] });
+    expect(
+      resolveNativeRoomCodes({ roomPreference: '2 rooms Deluxe Twin', propertyCode: HRCEN_PROPERTY_CODE }),
+    ).toEqual({ status: 'codes', codes: ['DLXTWN'] });
+    expect(
+      resolveNativeRoomCodes({ roomPreference: 'Standard RoomQueen Bed', propertyCode: HRCEN_PROPERTY_CODE }),
+    ).toEqual({ status: 'codes', codes: ['STQN'] });
+  });
+
+  it('does not use a hotel room list or twin fallback for an unknown property', () => {
+    expect(resolveNativeRoomCodes({ roomPreference: 'Standard Queen', propertyCode: 'UNKNOWN' })).toEqual({
+      status: 'unresolved',
+      label: 'Standard Queen',
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Twin', propertyCode: 'UNKNOWN' })).toEqual({
+      status: 'unresolved',
+      label: 'Twin',
+    });
+    expect(staffQuoteGroupsFromStay([stay()], 'UNKNOWN')).toEqual({
+      error: expect.stringMatching(/Could not identify the hotel/i),
+    });
+  });
+
   it('keeps shared DLXKNG and STWN codes on HRDAV without using the Centurion room list as a fallback', () => {
     expect(resolveNativeRoomCodes({ roomCodes: ['DLXKNG'], propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
       status: 'codes',
@@ -291,6 +336,42 @@ describe('staff quote strategy comparisons', () => {
       message: expect.stringMatching(/queue.*disabled.*no search was run/i),
     });
     expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it('classes a thrown comparison error as needs staff unless the message is an HMS outage', async () => {
+    const genericHeader = emptyStaffQuoteHeader();
+    Object.defineProperty(genericHeader, 'fieldErrors', {
+      get() {
+        throw new Error('The stay could not be qualified. Review the stay inputs.');
+      },
+    });
+    const generic = await bindStaffQuoteStrategy({
+      ...args,
+      strategyCode: 'BAR',
+      header: genericHeader,
+      staffQuoteJob: async () => null,
+    });
+    expect(generic.row).toMatchObject({
+      status: 'failed',
+      causeClass: 'needs_staff',
+    });
+
+    const outageHeader = emptyStaffQuoteHeader();
+    Object.defineProperty(outageHeader, 'fieldErrors', {
+      get() {
+        throw new Error("HMS didn't answer.");
+      },
+    });
+    const outage = await bindStaffQuoteStrategy({
+      ...args,
+      strategyCode: 'BAR',
+      header: outageHeader,
+      staffQuoteJob: async () => null,
+    });
+    expect(outage.row).toMatchObject({
+      status: 'failed',
+      causeClass: 'hms_down',
+    });
   });
 
   it('keeps the HRCEN BAR and Government request values unchanged', async () => {

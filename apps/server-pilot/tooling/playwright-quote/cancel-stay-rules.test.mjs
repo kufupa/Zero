@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
-  cancelNoteFor, penaltyRefusal, runCancelDialog, unpaidCommitRefusal,
+  cancelNoteFor, noticeWindowWarning, penaltyRefusal, runCancelDialog, unpaidCommitRefusal,
   chooseStaySource, checkCdpEnv, exitCodeFor, findReasonIndex, formLabelKey, formPairsFromSnapshot, hmsDateToIso,
   arrivalReport, identityCheck, isCancelledStatus, isStaleScreenError, labGuard, lookupExitCode, normalizeReasons, parseBalanceValue, parseCancelArgs,
-  parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty, penaltyHasWaive,
+  parseDateWindowLabel, parseIsoDate, parseLookupArgs, parsePanelRows, parsePanelSnapshot, parsePenalty, penaltyHasWaive, noticeHoursFromProfile,
   outcomeAfterFailure, pollUntil, SETTLE_BUDGET_MS, SETTLE_INTERVAL_MS, settleCancel, withStaleRecovery,
   parseQuickSearchRow, parseRecordsFooter, pickerMonthSteps, preflight, resolveOutcome, sameStayRows,
   searchGuestOutcome, stayChanges, stayFromFormPairs, stayIdentityVerdict, windowCovers,
@@ -867,6 +867,30 @@ test('a penalty dialog refuses the run as refused_penalty, exit 2, and nothing e
   assert.equal(exitCodeFor('refused_penalty'), 2);
 });
 
+test('notice window warning fires only when arrival is inside profile noticeHours; missing profile stays silent', () => {
+  const now = Date.parse('2026-10-26T12:00:00Z');
+  const profile = { cancellation: { noticeHours: 48 } };
+  assert.equal(noticeHoursFromProfile(profile), 48);
+  assert.equal(noticeHoursFromProfile(null), null);
+  assert.equal(noticeHoursFromProfile({ cancellation: { noticeHours: '48' } }), null);
+  assert.match(noticeWindowWarning({ arrival: '2026-10-27', profile, now }), /48-hour cancellation notice window/);
+  assert.match(noticeWindowWarning({ arrival: '27-OCT-2026', profile, now }), /48-hour/);
+  assert.equal(noticeWindowWarning({ arrival: '2027-09-14', profile, now }), null);
+  assert.equal(noticeWindowWarning({ arrival: '2026-10-27', profile: null, now }), null);
+  assert.equal(noticeWindowWarning({ arrival: '2026-10-27', profile: {}, now }), null);
+  assert.equal(noticeWindowWarning({ arrival: '2026-10-27', profile: { cancellation: {} }, now }), null);
+  assert.equal(noticeWindowWarning({ arrival: 'garbage', profile, now }), null);
+});
+
+test('runCancelDialog records a notice warning without refusing when the profile has noticeHours', async () => {
+  const now = Date.parse('2026-10-26T12:00:00Z');
+  const profile = { cancellation: { noticeHours: 36 } };
+  const near = { ...RECORD, arrival: '27-OCT-2026' };
+  const { result } = await runDialog(PREVIEW_ARGS, [[REASON_WINDOW]], { profile, now, record: near });
+  assert.equal(result.outcome, 'preview_ok');
+  assert.match(result.warning, /36-hour cancellation notice window/);
+});
+
 // ---- The cancel dialog run through a scripted dialog: the charge refusal, the single OK and the done line ----
 // Each test runs the real runCancelDialog. The scripted dialog answers the windows read and records every action, so a
 // test can prove what was and was not clicked. Nothing here touches a browser or HMS.
@@ -942,9 +966,17 @@ function scriptedDialog({
 }
 
 async function runDialog(args, windows, options = {}) {
-  const dialog = scriptedDialog({ windows, ...options });
+  const { profile, now, ...dialogOptions } = options;
+  const dialog = scriptedDialog({ windows, ...dialogOptions });
   const result = { outcome: null, reasons: [], clickedOk: false, penaltyText: null, penaltyAmount: null, penaltyPending: false, refusal: null };
-  await runCancelDialog({ args, record: RECORD, result, io: dialog.io });
+  await runCancelDialog({
+    args,
+    record: dialogOptions.record ?? RECORD,
+    result,
+    io: dialog.io,
+    profile,
+    now,
+  });
   return { result, calls: dialog.calls };
 }
 
@@ -954,20 +986,21 @@ test('penaltyHasWaive is the Waive button, not the word penalty', () => {
   assert.equal(penaltyHasWaive(['Cancellation Penalty of 2060.00 may be added to account.']), false);
 });
 
-test('a charge on the dialog at preview refuses the run: nothing is read, picked, closed or clicked', async () => {
+test('a charge on the dialog at preview refuses the run: nothing is read, picked or clicked', async () => {
   const { result, calls } = await runDialog(PREVIEW_ARGS, [[REASON_WINDOW, CHARGE]]);
   assert.equal(result.outcome, 'refused_penalty');
   assert.equal(result.refusal, 'penalty_dialog_open');
   assert.equal(result.penaltyText, CHARGE);
   assert.equal(result.penaltyAmount, '2060.00');
-  assert.deepEqual(calls, ['windows', 'shot:penalty.png']);
+  assert.deepEqual(calls, ['windows', 'shot:penalty.png', 'close']);
+  assert.equal(calls.some((call) => call.startsWith('clickPenalty')), false);
 });
 
-test('a real guest with a charge already open refuses the commit: dialog left, nothing clicked', async () => {
+test('a real guest with a charge already open refuses the commit: nothing clicked', async () => {
   const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, CHARGE]], { record: REAL_GUEST });
   assert.equal(result.outcome, 'refused_penalty');
   assert.equal(result.penaltyText, CHARGE);
-  assert.deepEqual(calls, ['windows', 'shot:penalty.png', 'readRecord']);
+  assert.deepEqual(calls, ['windows', 'shot:penalty.png', 'close']);
   assert.equal(calls.some((call) => call.startsWith('clickPenalty')), false);
   assert.equal(calls.includes('clickOk'), false);
 });
@@ -983,7 +1016,7 @@ test('a real guest charge between the reason pick and the OK refuses it, and no 
   assert.deepEqual(calls.filter((call) => call.startsWith('fillNote')), ['fillNote:Duplicate Booking']);
 });
 
-test('a real guest charge after the OK is pending: dialog left, nothing clicked after the OK', async () => {
+test('a real guest charge after the OK is pending: nothing clicked after the OK', async () => {
   const { result, calls } = await runDialog(ON_COMMIT_ARGS, [[REASON_WINDOW], [REASON_WINDOW], [CHARGE]], { record: REAL_GUEST });
   assert.equal(result.outcome, 'cancel_penalty_pending');
   assert.equal(exitCodeFor(result.outcome), 1);
@@ -992,36 +1025,41 @@ test('a real guest charge after the OK is pending: dialog left, nothing clicked 
   assert.equal(result.penaltyText, CHARGE);
   const afterOk = calls.slice(calls.indexOf('clickOk') + 1);
   assert.equal(afterOk.some((call) => call.startsWith('clickPenalty')), false);
-  assert.deepEqual(afterOk.filter((call) => /^(pick|clickOk|fillNote|close)/.test(call)), []);
+  assert.ok(afterOk.includes('close'));
+  assert.deepEqual(afterOk.filter((call) => /^(pick|clickOk|fillNote)/.test(call)), []);
 });
 
-test('Labtest + penalty with Waive clicks Waive, status Cancelled, balance 0', async () => {
-  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, WAIVE_CHARGE], [REASON_WINDOW]]);
-  assert.equal(result.outcome, 'cancelled');
-  assert.equal(result.statusAfter, 'Cancelled');
-  assert.equal(result.balance, '0.00');
-  assert.equal(result.penaltyPending, false);
-  assert.ok(calls.includes('clickPenalty:waive'));
-  assert.equal(calls.includes('clickPenalty:ok'), false);
-  assert.equal(calls.filter((call) => call === 'clickOk').length, 1);
-  assert.ok(calls.includes('readBalance'));
+test('penalty with Waive refuses and never clicks Waive or OK', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, WAIVE_CHARGE]]);
+  assert.equal(result.outcome, 'refused_penalty');
+  assert.equal(result.refusal, 'penalty_dialog_open');
+  assert.match(result.penaltyText, /Cancellation Penalty of 2060\.00/);
+  assert.equal(result.clickedOk, false);
+  assert.ok(calls.includes('shot:penalty.png'));
+  assert.ok(calls.includes('close'));
+  assert.equal(calls.some((call) => call === 'clickPenalty:waive' || call === 'clickPenalty:ok'), false);
+  assert.equal(calls.includes('clickOk'), false);
 });
 
-test('Labtest + penalty with no Waive clicks OK on the charge', async () => {
-  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, `${CHARGE} OK Cancel`], [REASON_WINDOW]]);
-  assert.equal(result.outcome, 'cancelled');
-  assert.ok(calls.includes('clickPenalty:ok'));
-  assert.equal(calls.includes('clickPenalty:waive'), false);
-  assert.equal(calls.filter((call) => call === 'clickOk').length, 1);
+test('penalty with OK only refuses and never clicks OK or Waive', async () => {
+  const { result, calls } = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, `${CHARGE} OK Cancel`]]);
+  assert.equal(result.outcome, 'refused_penalty');
+  assert.equal(result.refusal, 'penalty_dialog_open');
+  assert.equal(result.clickedOk, false);
+  assert.ok(calls.includes('shot:penalty.png'));
+  assert.ok(calls.includes('close'));
+  assert.equal(calls.some((call) => call.startsWith('clickPenalty')), false);
+  assert.equal(calls.includes('clickOk'), false);
 });
 
-test('penalty Labtest identity is the open HMS record, not the args record', async () => {
+test('Labtest identity does not lift the penalty refuse: Waive still not clicked', async () => {
   const liveGuest = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, WAIVE_CHARGE]], { record: REAL_GUEST });
   assert.equal(liveGuest.result.outcome, 'refused_penalty');
   assert.equal(liveGuest.calls.some((call) => call.startsWith('clickPenalty')), false);
-  const liveLab = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, WAIVE_CHARGE], [REASON_WINDOW]], { record: RECORD });
-  assert.equal(liveLab.result.outcome, 'cancelled');
-  assert.ok(liveLab.calls.includes('clickPenalty:waive'));
+  const liveLab = await runDialog(COMMIT_ARGS, [[REASON_WINDOW, WAIVE_CHARGE]], { record: RECORD });
+  assert.equal(liveLab.result.outcome, 'refused_penalty');
+  assert.equal(liveLab.calls.some((call) => call.startsWith('clickPenalty')), false);
+  assert.equal(liveLab.calls.includes('clickOk'), false);
 });
 
 test('an unpaid Labtest with no penalty dialog never invents a Waive click', async () => {

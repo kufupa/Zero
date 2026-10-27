@@ -12,6 +12,7 @@ import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard,
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 import { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
 import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
+import { profileFor } from './property-profile.mjs';
 
 export { withReadCliPage as withLeasedReadPage };
 
@@ -495,10 +496,41 @@ function rateAvailability(rate,nightly,departure,quantity,nights) {
   return {status:'available'};
 }
 
+const SEARCH_STRATEGY_CODES = Object.freeze({
+  BAR: 'BAR', Preset: 'PRESET', Promotions: 'PROMO', Wholesale: 'WS',
+  Government: 'GOV', 'Airline Crews': 'AIR', 'Domestic Leisure': 'DOML',
+  Other: 'OTHER', 'Negoticated Contracted': 'NC', 'Negotiated Contracted': 'NC',
+});
+
+function profileStrategyCode(request) {
+  const label = request.search?.salesStrategy;
+  if (typeof label !== 'string' || !label) return '';
+  return SEARCH_STRATEGY_CODES[label] ?? label.trim().toUpperCase();
+}
+
+/** rateScope stays public|contextual|unknown. classifyRate 'government' is only used for eligibility. */
+function quoteRateScope(profile, code, strategy, isNegotiatedRate) {
+  if (!profile) return 'unknown';
+  const classified = profile.classifyRate(code, strategy, isNegotiatedRate);
+  if (classified === 'public') return 'public';
+  if (classified === 'contextual') return 'contextual';
+  return 'unknown';
+}
+
+function strategyPartyKind(profile, strategy, code) {
+  const row = profile?.rates?.strategies?.[strategy];
+  if (!row || !Array.isArray(row.plans) || !row.plans.includes(code)) return null;
+  if (row.scope === 'agency') return 'agency';
+  if (row.scope === 'company') return 'organization';
+  return null;
+}
+
 // Merge only native/visible observations. An invalid row is isolated, never a
 // reason to throw away verified siblings or manufacture a sold-out response.
 export function extractOptions(request,room,windows,resolvedContext={}) {
   const issues=[],candidates=new Map(),wanted=[...stayDates(request),request.departureDate],seenStarts=new Set();
+  const profile = profileFor(request.propertyCode);
+  const strategyCode = profileStrategyCode(request);
   for (const [windowIndex,window] of windows.entries()) {
     const {data,calendar}=window;
     if (!data || !calendar || !Array.isArray(data.children) || !Array.isArray(data.datesList)) {
@@ -541,7 +573,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
         option={id,room:{code:nativeRoom.code,label:nativeRoom.desc,buildingCode:nativeRoom.buildingCode??null},
           rate:{code:rate.code,label:rate.desc,...(nativeBundleLabels(rate.nonroombundleslist).length?{bundleLabels:nativeBundleLabels(rate.nonroombundleslist)}:{})},roomCode:nativeRoom.code,rateCode:rate.code,board:null,
           nightly:[],observations:new Map(),issues:[],held:false,_rate:rate,_nativeRoom:nativeRoom,
-          sourceCurrency:property.currency,rateScope:['BAR','BARRO','WAL'].includes(rate.code)?'public':rate.isNegotiatedRate===true?'contextual':'unknown'};
+          sourceCurrency:property.currency,rateScope:quoteRateScope(profile,rate.code,strategyCode,rate.isNegotiatedRate)};
         candidates.set(id,option);
       }
       if(windowIds.has(id))option.issues.push(issue('AMBIGUOUS_NATIVE_ID',id,'Multiple native rows share this identity.'));
@@ -598,11 +630,13 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     const availability=invalid?{status:'unknown'}:rateAvailability(option._rate,option.nightly,option.departure,room.quantity,wanted.length-1);
     option.availability=availability.status;
     if(availability.reason)option.availabilityReason=availability.reason;
-    const governmentFamily=request.search?.salesStrategy==='Government'&&!contextRequested.length&&windows.every(w=>w.criteria?.salesStrategy==='GOV')&&option._rate.isNegotiatedRate===false&&/^Local Government Rate (?:Breakfast|Dinner|Room Only)$/.test(option.rate.label);
-    option.eligibility=invalid?'unknown':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified?'verified':'conditional';
+    const governmentFamily=!contextRequested.length&&windows.every(w=>w.criteria?.salesStrategy==='GOV')&&profile?.classifyRate(option.rate.code,strategyCode,option._rate.isNegotiatedRate,option.rate.label)==='government';
+    const requiredKind=strategyPartyKind(profile,strategyCode,option.rate.code);
+    const strategyContextOk=!requiredKind||(contextVerified&&contextRequested.includes(requiredKind));
+    option.eligibility=invalid?'unknown':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified&&strategyContextOk?'verified':'conditional';
     if (option.availability==='restricted') option.eligibility='conditional';
     Object.assign(option,assessConstraints(room,sourceFacts(option)));
-    if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified)) {
+    if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified&&strategyContextOk)) {
       // ponytail: a verified party's public row stays bookable as the BAR it is; an unverified context keeps it unresolved.
       if(contextVerified&&option.rateScope==='public') {
         option.conditions.push({kind:'preferred',field:'rateContext',status:'unsatisfied',requested:request.rateContext,evidence:null,reason:noSpecialRates?'No special rates for this party; public BAR is returned.':'Public rate for this party; any contract rate is reported separately.'});
@@ -654,8 +688,51 @@ export function reapplyBedAssessment(option,assessment) {
   return option;
 }
 
+export function detailReadBudgetMs(env=process.env) {
+  const raw=env?.QUOTE_DETAIL_BUDGET_MS;
+  if(raw===undefined||raw==='')return 90_000;
+  const n=Number(raw);
+  return Number.isFinite(n)&&n>=0?Math.floor(n):90_000;
+}
+
+export function unreadDetails() {
+  return {status:'not_read',nightly:[],
+    room:{status:'not_inspected'},rate:{status:'not_inspected'},
+    meal:{status:'not_inspected'},package:{status:'not_inspected'},
+    policy:{status:'not_inspected'}};
+}
+
 export function detailCandidates(mode,options) {
-  return mode==='full'&&options.length<=5?options:[];
+  return mode==='full'?[...options]:[];
+}
+
+export function isPricedDetailStatus(status) {
+  return status!=='not_read'&&status!=='partial';
+}
+
+export function pricedEligibleOptions(options) {
+  return options.filter(o=>o.matchStatus==='match'&&o.eligibility==='verified'&&o.availability==='available'&&isPricedDetailStatus(o.details?.status));
+}
+
+export function groupOutcomeFromOptions(options,{details='summary',searchComplete=true}={}) {
+  const eligible=pricedEligibleOptions(options);
+  let outcome=eligible.length?'quote':options.length&&options.every(o=>o.matchStatus==='alternative')?'no_match':
+    options.some(o=>o.matchStatus==='unresolved'||o.eligibility!=='verified')?'partial':
+    options.length&&options.every(o=>o.availability==='unavailable')?'unavailable':'partial';
+  const requiredPartial=(details==='full'&&options.some(o=>o.details?.status==='partial')&&!eligible.length)||
+    (options.some(o=>o.matchStatus==='unresolved')&&!eligible.length);
+  const requiredFacts=requiredPartial?'partial':'complete';
+  if(!searchComplete||requiredFacts!=='complete')outcome='partial';
+  return {outcome,eligible,requiredFacts};
+}
+
+/** Finish one in-progress option across the stay before starting others; skip/fail does not strand later matches. */
+export function detailReadOrder(options,detailsMap,stayDates) {
+  const got=id=>new Set((detailsMap.get(id)?.details??[]).map(d=>d.date));
+  const complete=id=>stayDates.every(d=>got(id).has(d));
+  const unfinished=options.filter(o=>detailsMap.has(o.id)&&!complete(o.id));
+  if(unfinished.length)return unfinished;
+  return options.filter(o=>!complete(o.id));
 }
 
 export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, cachedRoom) {
@@ -702,7 +779,7 @@ export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, 
 export async function runInPage(page, request, directory, event=()=>{}, checkpoint=async name=>{
   await mkdir(join(directory,'screenshots'),{recursive:true,mode:0o700});
   await page.screenshot({path:join(directory,'screenshots',`${name}.png`),fullPage:true,timeout:10000});
-}, clock=createPhaseClock()) {
+}, clock=createPhaseClock(), env=process.env) {
   if(!request.normalizedFrom) {
     const normalized=normalizeQuoteRequest(request);
     if(!normalized.ok)return resultEnvelope({outcome:'input_gap',issues:normalized.issues,
@@ -720,12 +797,19 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
       const reusedSource=Boolean(entry);
       if(!entry) {
         const details=new Map(),roomCache=new Map(),detailIssues=[];
-        let allowedDetails;
+        let allowedDetails,detailsStartedAt,detailsBudgetDone=false;
+        const detailBudgetMs=detailReadBudgetMs(env);
         const source=await searchCalendar(page,request,room,()=>checkpoint(`${prefix}-criteria-applied`),async(window,{resolvedContext,index:windowIndex})=>{
-          if(request.details!=='full')return;
+          if(request.details!=='full'||detailsBudgetDone)return;
+          if(detailsStartedAt===undefined)detailsStartedAt=performance.now();
           const partial=extractOptions(request,room,[window],resolvedContext);
           if(!allowedDetails)allowedDetails=new Set(detailCandidates('full',partial.options).map(o=>o.id));
-          for(const option of partial.options.filter(o=>allowedDetails.has(o.id))) {
+          const seenThisWindow=new Set();
+          while(true) {
+            if(performance.now()-detailsStartedAt>=detailBudgetMs){detailsBudgetDone=true;break;}
+            const option=detailReadOrder(partial.options.filter(o=>allowedDetails.has(o.id)),details,stayDates(request)).find(o=>!seenThisWindow.has(o.id));
+            if(!option)break;
+            seenThisWindow.add(option.id);
             const previous=details.get(option.id);
             const seen=new Set(previous?.details.map(d=>d.date)??[]);
             const observations=stayDates(request).filter(d=>!seen.has(d)).map(d=>option.observations.get(d)).filter(Boolean);
@@ -770,16 +854,21 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
         option.policies={configuredPolicies:option._rate.haspolicies,cancellation:null,payment:null,dateChanges:null,
           status:detail?'not_shown':'not_inspected'};
         if(request.details==='full') {
-          const complete=detail?.details.length===stayDates(request).length&&!detail.rowInformation?.rateInfoControlPresent&&option._rate.ispkg!==true;
-          option.details={status:complete?'complete':'partial',nightly:detail?.details??[],
-            room:{status:detail?'complete':'not_inspected',text:detail?.roomInformation??null},
-            rate:{status:detail&&!detail.rowInformation?.rateInfoControlPresent?'not_shown':'not_inspected',label:option.rate.label,
-              reason:detail?.rowInformation?.rateInfoControlPresent?'Additional information control requires inspection.':'No Rate Plan Information control exposed on inspected native row.'},
-            meal:{status:detail?'not_shown':'not_inspected',label:option.board,configured:option._rate.ismealplan,reason:'Native meal label shown; no separate detail view exposed.'},
-            package:{status:detail&&option._rate.ispkg!==true?'not_shown':'not_inspected',configured:option._rate.ispkg},
-            policy:{status:detail&&!detail.rowInformation?.rateInfoControlPresent?'not_shown':'not_inspected',configured:option._rate.haspolicies,exactText:null},
-            inlineEvidence:detail?.rowInformation??null};
-          if(!complete)option.issues.push(issue('DETAIL_COVERAGE_PARTIAL',option.id,'Full mode requires at most five narrowed offers, every requested night and inspection of any extra information/package controls.','Narrow native codes; inspect unresolved extra PMS information before promising terms.'));
+          if(!detail) {
+            // Unread leftover of the time budget; kept in evidence, excluded from pricing.
+            option.details=unreadDetails();
+          } else {
+            const complete=detail.details.length===stayDates(request).length&&!detail.rowInformation?.rateInfoControlPresent&&option._rate.ispkg!==true;
+            option.details={status:complete?'complete':'partial',nightly:detail.details,
+              room:{status:'complete',text:detail.roomInformation??null},
+              rate:{status:!detail.rowInformation?.rateInfoControlPresent?'not_shown':'not_inspected',label:option.rate.label,
+                reason:detail.rowInformation?.rateInfoControlPresent?'Additional information control requires inspection.':'No Rate Plan Information control exposed on inspected native row.'},
+              meal:{status:'not_shown',label:option.board,configured:option._rate.ismealplan,reason:'Native meal label shown; no separate detail view exposed.'},
+              package:{status:option._rate.ispkg!==true?'not_shown':'not_inspected',configured:option._rate.ispkg},
+              policy:{status:!detail.rowInformation?.rateInfoControlPresent?'not_shown':'not_inspected',configured:option._rate.haspolicies,exactText:null},
+              inlineEvidence:detail.rowInformation??null};
+            if(!complete)option.issues.push(issue('DETAIL_COVERAGE_PARTIAL',option.id,'Full mode requires every requested night and inspection of any extra information/package controls.','Inspect unresolved extra PMS information before promising terms.'));
+          }
         }
         option.evidence=[entry.sourceEvidence,`${prefix}-criteria.json`];
         delete option._rate;delete option._nativeRoom;delete option.observations;
@@ -787,19 +876,16 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
       // Assess all examined rows before applying output limits or hiding alternatives.
       // Restricted rows drop out of options unless asked for; a group closed on named nights keeps those nights for staff.
       const restrictedNights=restrictedNightsOf(parsed.options);
-      const eligible=parsed.options.filter(o=>o.matchStatus==='match'&&o.eligibility==='verified'&&o.availability==='available');
-      let outcome=eligible.length?'quote':parsed.options.length&&parsed.options.every(o=>o.matchStatus==='alternative')?'no_match':
-        parsed.options.some(o=>o.matchStatus==='unresolved'||o.eligibility!=='verified')?'partial':
-        parsed.options.length&&parsed.options.every(o=>o.availability==='unavailable')?'unavailable':'partial';
       const visible=orderOptions(parsed.options).filter(o=>(request.search.includeAlternatives||o.matchStatus!=='alternative')&&
         (request.search.includeRestricted||o.availability!=='restricted'));
       const {options,truncated,matchingRowsUnseen}=limitOptions(visible,request.maxOptionsPerGroup);
       const groupIssues=[...parsed.issues,...detailIssues,...parsed.options.flatMap(o=>o.issues.filter(i=>i.code==='DETAIL_COVERAGE_PARTIAL'))];
       if(truncated&&hiddenRowsMatter(visible,request.maxOptionsPerGroup))groupIssues.push(issue('OPTION_LIMIT',room.id,'Returned options truncated.','Narrow native room/rate codes or increase maxOptionsPerGroup.'));
-      const requiredPartial=request.details==='full'&&parsed.options.some(o=>o.details.status!=='complete')||
-        parsed.options.some(o=>o.matchStatus==='unresolved')&&!eligible.length;
+      const searchComplete=matchingRowsUnseen?false:parsed.completeness.search==='complete';
+      const grouped=groupOutcomeFromOptions(parsed.options,{details:request.details,searchComplete});
       const completeness={...parsed.completeness,returnedOptions:options.length,detailOptions:[...details.keys()].length,
-        search:matchingRowsUnseen?'truncated':parsed.completeness.search,requiredFacts:requiredPartial?'partial':parsed.completeness.requiredFacts,matchingRowsUnseen};
+        search:matchingRowsUnseen?'truncated':parsed.completeness.search,requiredFacts:grouped.requiredFacts==='partial'?'partial':parsed.completeness.requiredFacts,matchingRowsUnseen};
+      let outcome=grouped.outcome;
       if(completeness.search!=='complete'||completeness.requiredFacts!=='complete')outcome='partial';
       groups.push({id:room.id,request:room,requestedOccupancy:room,outcome,options,applied:source.windows.map(w=>w.criteria),
         resolvedContext:source.resolvedContext,sourceReused:reusedSource,productFilterMode:source.productFilterMode,completeness,issues:groupIssues,
@@ -895,7 +981,7 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
         await audit.checkpoint('hotel-availability');
         if(propertyRegistration)
           await installRegisteredAvailabilityReadOnlyGuard(context,propertyRegistration.transportId,new URL(secret.loginUrl).origin);
-        const next=await runInPage(page,request,directory,event,audit.checkpoint,clock);
+        const next=await runInPage(page,request,directory,event,audit.checkpoint,clock,env);
         event(`result_${next.outcome}`);
         if(onCaptured&&quoteTraceAsyncEnabled(env)) {
           const provisional=provisionalQuoteCapture({result:{...next,phaseMs:{...clock.ms}},audit,directory,started});

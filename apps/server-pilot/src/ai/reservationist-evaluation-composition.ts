@@ -240,6 +240,7 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
    const shortfall=normalize.shortfallsOf(source.groups,request.propertyCode)[0];
    if(shortfall)throw new ReservationistTaskEvidenceUnavailable('native_quote_insufficient_inventory',['room inventory for the requested stay'],undefined,{shortfall,alternatives:normalize.availableRoomAlternatives(source.groups,normalized.request)});
   }
+  // Quote captures may keep unread detail rows (details.status='not_read', time-budget leftover). Those rows stay in evidence and are excluded from pricing; they are not a completeness invalid.
   if(source.outcome!=='quote'&&!summaryPartial){
    const reading=source.outcome==='partial'?partyReadingOf(source.groups,request.rateContext):null;
    if(reading==='no_contract')throw new PartyRateFailure(PARTY_NO_CONTRACT_CODE);
