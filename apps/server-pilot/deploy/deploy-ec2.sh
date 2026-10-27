@@ -174,6 +174,9 @@ sudo install -d -o ubuntu -g ubuntu -m 0700 \
 if [ "$QUIESCED" != "1" ]; then
   echo "== build server-pilot =="
   pnpm --filter @zero/server build
+  echo "== install quote trace and HMS screenshot retention =="
+  REPO_ROOT="$REPO_ROOT" SERVER_PILOT="$SERVER_PILOT" \
+    bash "${SERVER_PILOT}/deploy/install-playwright-quote-purge.sh"
 fi
 
 echo "== build mail SPA =="
