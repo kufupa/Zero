@@ -1380,6 +1380,7 @@ export function NavaPane({
   const selectedReadKind = storedWork.pane.state === 'ready' ? storedWork.pane.kind : null;
   const existingStayConfirmationNumbers =
     storedWork.pane.state === 'ready' ? (storedWork.pane.confirmationNumbers ?? []) : [];
+  const savedStays = storedWork.pane.state === 'ready' ? storedWork.pane.savedStays : undefined;
   const classifiedReadAs = isExistingStayInformation
     ? 'not_for_nava'
     : readAsForAnalysis(quoteSession.analysis, {
@@ -2308,6 +2309,8 @@ export function NavaPane({
               session={quoteSession}
               bridge={bridge}
               workItemId={paneWorkItemId ?? undefined}
+              savedStays={savedStays}
+              screenshot={PANE_STAY_CLIENT.screenshot}
               quoteStrategyRows={quoteSession.quoteStrategyRows}
               onSelectQuoteStrategy={(stayKey, strategyCode) =>
                 dispatchQuote({ type: 'quote_strategy_selected', stayKey, strategyCode })

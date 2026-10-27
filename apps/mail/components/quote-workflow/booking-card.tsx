@@ -11,6 +11,7 @@ import type {
 } from '@/lib/quote-workflow/types';
 import { prefillReservationNote, reservationNoteForGroup } from '@/lib/quote-workflow/reservation-note';
 import { HmsLinkActions } from './hms-link-actions';
+import { HmsShotsViewer, visibleStayShots, type HmsShotRecord } from './hms-shots-viewer';
 import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
 import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
@@ -253,9 +254,18 @@ type CommitView =
       confirmationNumber: string;
       runId?: string;
       screenshots: string[];
+      shots?: HmsShotRecord[];
       unverified?: boolean;
     }
-  | { status: 'refused'; key: string; message: string; runId?: string; screenshots?: string[] };
+  | {
+      status: 'refused';
+      key: string;
+      message: string;
+      runId?: string;
+      screenshots?: string[];
+      shots?: HmsShotRecord[];
+      statusChip?: 'check';
+    };
 
 type RoomSaveState = { preview?: PreviewView; commit?: CommitView };
 
@@ -263,6 +273,9 @@ export type SavedStayCommit = {
   confirmationNumber: string | null;
   status: 'booked' | 'unknown';
   screenshotRef: { runId: string; name: string } | null;
+  /** Durable before/saved shots from the work-item stay record. */
+  runId?: string;
+  shots?: HmsShotRecord[];
 };
 
 function stayIdForRoom(
@@ -276,6 +289,22 @@ function stayIdForRoom(
   return `${stay}_${room.roomIndex}`;
 }
 
+/** Stay ids a draft actually shows. Rooms with children and ids shared by two rows are omitted so the receipt can still show the save once. */
+export function appliedSavedStayIds(
+  draft: BookingDraftReady,
+  groups: StayGroupRequirement[],
+  savedStays: Record<string, SavedStayCommit> | undefined,
+): string[] {
+  if (!savedStays) return [];
+  const claims = new Map<string, number>();
+  for (const room of draft.draft.rooms) {
+    if (childCountForRoom(room, groups) > 0) continue;
+    const id = stayIdForRoom(room, groups);
+    claims.set(id, (claims.get(id) ?? 0) + 1);
+  }
+  return [...claims.entries()].filter(([id, count]) => count === 1 && savedStays[id]).map(([id]) => id);
+}
+
 function paneStayPreviewKey(workItemId: string | undefined, stayId: string, inputKey: string): string {
   return JSON.stringify([workItemId?.trim() || null, stayId.trim(), inputKey]);
 }
@@ -284,8 +313,10 @@ function commitViewFromSaved(
   saved: SavedStayCommit,
   stay: { firstName?: string; lastName?: string; arrival?: string; departure?: string },
 ): CommitView {
-  const runId = saved.screenshotRef?.runId;
+  const runId = saved.runId ?? saved.screenshotRef?.runId;
   const screenshots = saved.screenshotRef ? [saved.screenshotRef.name] : [];
+  const shots = visibleStayShots(saved.shots ?? []);
+  const shotFields = shots.length > 0 ? { shots } : {};
   if (saved.confirmationNumber) {
     return {
       status: 'booked',
@@ -293,6 +324,7 @@ function commitViewFromSaved(
       confirmationNumber: saved.confirmationNumber,
       runId,
       screenshots,
+      ...shotFields,
       ...(saved.status === 'unknown' ? { unverified: true } : {}),
     };
   }
@@ -307,6 +339,8 @@ function commitViewFromSaved(
     }),
     runId,
     screenshots,
+    ...shotFields,
+    statusChip: 'check',
   };
 }
 
@@ -316,9 +350,12 @@ function savesFromSavedStays(
   savedStays: Record<string, SavedStayCommit> | undefined,
 ): Record<string, RoomSaveState> {
   if (!savedStays) return {};
+  const shown = new Set(appliedSavedStayIds(draft, groups, savedStays));
   const saves: Record<string, RoomSaveState> = {};
   for (const room of draft.draft.rooms) {
-    const saved = savedStays[stayIdForRoom(room, groups)];
+    const id = stayIdForRoom(room, groups);
+    if (!shown.has(id)) continue;
+    const saved = savedStays[id];
     if (!saved) continue;
     saves[`${room.groupId}:${room.roomIndex}`] = { commit: commitViewFromSaved(saved, room.request) };
   }
@@ -441,8 +478,18 @@ function RoomSave({
 
   if (commit?.status === 'booked') {
     const savedShot = commit.screenshots.includes(SAVED_SHOT) ? SAVED_SHOT : null;
+    const durableShots = commit.shots ?? [];
     return (
       <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+        <span
+          className={
+            commit.unverified
+              ? 'w-fit rounded-xs bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-950'
+              : 'w-fit rounded-xs bg-emerald-100 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-900'
+          }
+        >
+          {commit.unverified ? 'Check HMS' : 'Booked'}
+        </span>
         <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
           {commit.unverified
             ? PANE_SAVE_UNVERIFIED_COPY
@@ -455,7 +502,9 @@ function RoomSave({
             arrival={stay?.arrival}
           />
         ) : null}
-        {commit.runId && savedShot ? (
+        {commit.runId && durableShots.length > 0 ? (
+          <HmsShotsViewer key={commit.runId} runId={commit.runId} shots={durableShots} screenshot={screenshot} />
+        ) : commit.runId && savedShot ? (
           <PaneScreenshot
             caption="See what Nava saved in HMS"
             runId={commit.runId}
@@ -506,10 +555,17 @@ function RoomSave({
       ) : null}
       {commit?.status === 'refused' ? (
         <>
+          {commit.statusChip === 'check' ? (
+            <span className="w-fit rounded-xs bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-950">
+              Check HMS
+            </span>
+          ) : null}
           <p role="alert" className="text-[11.5px] text-amber-900">
             {commit.message}
           </p>
-          {commit.runId && refusedShot ? (
+          {commit.runId && (commit.shots?.length ?? 0) > 0 ? (
+            <HmsShotsViewer key={commit.runId} runId={commit.runId} shots={commit.shots ?? []} screenshot={screenshot} />
+          ) : commit.runId && refusedShot ? (
             <PaneScreenshot
               caption="See what Nava saved in HMS"
               runId={commit.runId}
@@ -714,6 +770,47 @@ function paneStayInputForConfiguredRoom(
   return { stay: missing.length ? null : built.stay, missing };
 }
 
+/** Book state from the work item when this mail has no booking draft to hang it on. */
+export function SavedStayReceipt({
+  saved,
+  screenshot,
+}: {
+  saved: SavedStayCommit;
+  screenshot?: PaneStayClient['screenshot'] | null;
+}) {
+  const runId = saved.runId ?? saved.screenshotRef?.runId;
+  const shots = visibleStayShots(saved.shots ?? []);
+  const confirmed = Boolean(saved.confirmationNumber) && saved.status !== 'unknown';
+  return (
+    <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+      <span
+        className={
+          confirmed
+            ? 'w-fit rounded-xs bg-emerald-100 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-900'
+            : 'w-fit rounded-xs bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-950'
+        }
+      >
+        {confirmed ? 'Booked' : 'Check HMS'}
+      </span>
+      {saved.confirmationNumber && saved.status !== 'unknown' ? (
+        <p className="text-[12.5px] font-semibold text-emerald-800">
+          {`Booked in HMS – confirmation ${saved.confirmationNumber}`}
+        </p>
+      ) : (
+        <p role="alert" className="text-[11.5px] text-amber-900">
+          {saved.status === 'unknown' && saved.confirmationNumber
+            ? PANE_SAVE_UNVERIFIED_COPY
+            : 'HMS may have saved this booking. Check HMS before trying again.'}
+        </p>
+      )}
+      {saved.confirmationNumber ? <HmsLinkActions confirmation={saved.confirmationNumber} /> : null}
+      {runId && shots.length > 0 && screenshot ? (
+        <HmsShotsViewer key={runId} runId={runId} shots={shots} screenshot={screenshot} />
+      ) : null}
+    </div>
+  );
+}
+
 export function BookingCards({
   draft,
   groups = [],
@@ -722,6 +819,7 @@ export function BookingCards({
   contact = null,
   workItemId,
   savedStays,
+  screenshot: shotReader,
   guestName,
   guestEditorKey,
   session,
@@ -741,6 +839,8 @@ export function BookingCards({
   workItemId?: string;
   /** Last HMS commit per stay, read back on mount so a reload still shows the confirmation. */
   savedStays?: Record<string, SavedStayCommit>;
+  /** Loads a stored HMS screenshot when Book writes are off and paneSave is absent. */
+  screenshot?: PaneStayClient['screenshot'] | null;
   /** Selected staying Guest from People. Prefills first/last; never the Contact/booker. */
   guestName?: string;
   /** People-step cache key so a Guest edit updates Book first/last while both stay mounted. */
@@ -1506,6 +1606,18 @@ export function BookingCards({
                 frozen={stayBooking}
                 onPreview={(stay) => void previewRoom(key, client, stay)}
                 onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
+              />
+            ) : childCount === 0 && saves[key]?.commit ? (
+              <RoomSave
+                stay={built.stay}
+                previewKey={previewKeyForRoom(room, built.stay)}
+                missing={built.missing}
+                save={saves[key] ?? {}}
+                screenshot={client?.screenshot ?? shotReader ?? (async () => null)}
+                bookLabel={CREATE_PROVISIONAL_LABEL}
+                frozen
+                onPreview={() => undefined}
+                onBook={() => undefined}
               />
             ) : childCount === 0 ? (
               <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">

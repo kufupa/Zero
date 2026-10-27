@@ -7,6 +7,7 @@ import {
   type ContactField,
   type RecordFieldEventInput,
   type StoredContact,
+  type StoredStayCommit,
   type StoredTranslation,
   type StoredWork,
 } from './backend-bind';
@@ -42,6 +43,8 @@ export type StoredPane =
       /** Null when the read has no work item (it could not be opened): the read shows, edits are not logged. */
       workItemId: string | null;
       contact: StoredContact;
+      /** Last HMS commits for this mail. The Book step shows them again after a reload. */
+      savedStays?: Record<string, StoredStayCommit>;
       language: string | null;
       translation: StoredTranslation;
       /** Latest per-path source from getByMessage. Null when the older server omits it. */
@@ -555,6 +558,7 @@ export function useStoredWork(args: {
       workItemStatus: stored.workItemStatus,
       workItemId: stored.workItemId,
       contact: stored.contact,
+      savedStays: stored.stays,
       language: stored.language,
       translation: stored.translation,
       fieldProvenance: provenanceOf(stored),
