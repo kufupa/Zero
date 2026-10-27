@@ -233,7 +233,8 @@ describe('reusable source-derived business services',()=>{
   f.options.readQuote=async(request:any)=>{
    calls.push(structuredClone(request));
    const normalized=(await import('../tooling/playwright-quote/quote-contract.mjs' as string)).normalizeQuoteRequest({schemaVersion:2,...request}).request;
-   return{ref:'native:'+calls.length,sha256:String(calls.length).repeat(64),toolVersion:'test',observedAt:f.c.input.clock.sourceAt,request:normalized,result:{outcome:'quote',propertyCode:'HRDAV',groups:normalized.rooms.map((room:any)=>({id:room.id,request:room,completeness:{search:'complete',requiredFacts:'complete'},options:all.filter(o=>!room.required?.roomCodes?.length||room.required.roomCodes.includes(o.room.code))}))}};
+   const appliedContext=Object.fromEntries(Object.entries(normalized.rateContext??{}).map(([kind,ref]:[string,any])=>[kind,{id:ref.nativeId,name:ref.name}]));
+   return{ref:'native:'+calls.length,sha256:String(calls.length).repeat(64),toolVersion:'test',observedAt:f.c.input.clock.sourceAt,request:normalized,result:{outcome:'quote',propertyCode:'HRDAV',groups:normalized.rooms.map((room:any)=>({id:room.id,request:room,completeness:{search:'complete',requiredFacts:'complete'},options:all.filter(o=>!room.required?.roomCodes?.length||room.required.roomCodes.includes(o.room.code)).map(o=>({...o,appliedContext}))}))}};
   };
   f.options.resolvePolicy=async()=>({ref:'p',propertyCode:'HRDAV',sourceHashes:['b'.repeat(64)],authoredDates:['2026-09-08'],families:[{rateCode:'BAR',board:'breakfast'}],vat:'included',levy:'included',restrictions:{status:'supported',sourceRefs:['p']}});
   const resolved=await createReservationistBusinessServices(f.options).resolveQuoteTask!(f.c);
