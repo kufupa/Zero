@@ -28,6 +28,14 @@ describe('original source facts bound to native revision',()=>{
  it('supports the explicit native board display labels without inventing room defaults',async()=>{
   const r=await syntheticRevision(['100.00'],'Bed & Breakfast R','STQN');expect(()=>assertRevision([fact('board','board','Bed & Breakfast R')],r)).not.toThrow();
  });
+ it.each([
+  ['Bed & Breakfast NR','breakfast'],
+  ['Room Only NR','room_only'],
+  ['Dinner Bed & Breakfast NR','dinner_bed_breakfast'],
+  ['Dinner, Bed & Breakfast NR','dinner_bed_breakfast'],
+ ])('maps %s through assertRevisionSourceFacts as %s (D7 Non-Rewardable)',(label,board)=>{
+  expect(()=>assertRevision([fact('board','board',label)],{groups:[{id:'g1',board}]} as any)).not.toThrow();
+ });
 });
 describe('explicit native acronym remains bound to selected quotation context',()=>{
  it('accepts an explicitly printed native suffix only for quotation facts',async()=>{const r=structuredClone(await syntheticRevision(['100.00'],'Room Only R','STQN')); r.groups[0]!.context={organization:{nativeId:'63',name:'Example Public Service - EPS'}};expect(()=>assertRevision([fact('party','party','EPS')],r)).not.toThrow();expect(()=>assertRevision([fact('party','party','EPS')],r,[])).toThrow('source_fact_party_mismatch');});
