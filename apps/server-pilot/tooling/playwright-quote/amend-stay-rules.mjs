@@ -189,8 +189,9 @@ export function amendPreviewDigest({ confirmation, expectedLastName, current, fi
 export const unsupportedFieldReason = (state) =>
   state?.count === 1 && state.disabled === false && state.readOnly === false ? null : 'unsupported_field';
 
-/** Combo (adults/children/roomType) writability from Ext, not HTML input.readOnly. */
-export function comboWritableState(input, Ext) {
+/** Combo writability from Ext. Playwright serializes this into the page; do not close over Node locals. */
+export function comboWritableFromPage(input) {
+  const Ext = typeof globalThis.Ext === 'undefined' ? null : globalThis.Ext;
   const cmpId = typeof input?.id === 'string' ? input.id.replace(/-inputEl$/, '') : '';
   const cmp = Ext && cmpId && typeof Ext.getCmp === 'function' ? Ext.getCmp(cmpId) : null;
   if (cmp) {

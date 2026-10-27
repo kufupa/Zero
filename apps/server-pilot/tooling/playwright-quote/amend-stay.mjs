@@ -12,6 +12,7 @@ import {
   amendCommitAllowed,
   amendPreviewDigest,
   comboUnsupportedFieldReason,
+  comboWritableFromPage,
   commitAndVerifyFields,
   compareChangedFields,
   dangerousDialogKind,
@@ -69,22 +70,7 @@ async function refuseUnsupportedFields(ctx, fields) {
     let reason;
     if (isComboAmendField(field)) {
       const state = count === 1
-        ? await locator.evaluate((input) => {
-            const cmp = typeof Ext !== 'undefined' && input.id
-              ? Ext.getCmp(input.id.replace(/-inputEl$/, ''))
-              : null;
-            if (cmp) {
-              const disabled = typeof cmp.isDisabled === 'function' ? cmp.isDisabled() : !!cmp.disabled;
-              return { exists: true, disabled: !!disabled, readOnly: cmp.readOnly === true };
-            }
-            const wrap = input.closest('.x-field');
-            if (!wrap) return { exists: false, disabled: true, readOnly: true };
-            return {
-              exists: true,
-              disabled: wrap.classList.contains('x-item-disabled'),
-              readOnly: false,
-            };
-          }).catch(() => null)
+        ? await locator.evaluate(comboWritableFromPage).catch(() => null)
         : null;
       reason = comboUnsupportedFieldReason({ count, ...(state || {}) });
     } else {
