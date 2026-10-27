@@ -277,6 +277,24 @@
           "maxLength": 80,
           "description": "Optional Booker Contact (udfchar06). HMS maxlength 80. Not required."
         },
+        "confirmationRecipient": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "address"],
+          "description": "Per-booking HMS confirmation letter recipient. Create types address into emailaddress (E0). Save does not send mail. Not required.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["self", "client", "custom"]
+            },
+            "address": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$"
+            }
+          }
+        },
         "arAccount": {
           "type": "string",
           "minLength": 1,
