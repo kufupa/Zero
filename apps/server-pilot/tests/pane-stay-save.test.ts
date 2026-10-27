@@ -652,6 +652,41 @@ describe('pane stay screenshots', () => {
     await expect(stat(runDir)).rejects.toThrow();
   });
 
+  it('serves saved.png from the durable dir after the in-memory run expires', async () => {
+    enableSave();
+    const shotsRoot = await mkdtemp(join(tmpdir(), 'hms-shots-test-'));
+    vi.stubEnv('HMS_SHOTS_DIR', shotsRoot);
+    const runDir = await mkdtemp(join(tmpdir(), 'pane-stay-test-'));
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    await writeFile(join(runDir, 'saved.png'), png);
+    const runId = randomUUID();
+    const workItemId = randomUUID();
+    const owner = freshOwner();
+    let now = 9_000_000;
+    paneStaySaveLoaders.now = () => now;
+    paneStaySaveLoaders.spawn = async () => ({
+      outcome: 'previewed',
+      clickedSave: false,
+      confirmationNumber: '',
+      runId,
+      runDir,
+      screenshots: ['saved.png'],
+    });
+    await runPaneStay({
+      mode: 'preview',
+      stay: labStay,
+      owner,
+      workItemId,
+    });
+    now += PANE_RUN_TTL_MS + 1;
+    await expect(readPaneStayScreenshot({ runId, name: 'saved.png', owner })).resolves.toEqual({
+      status: 'ok',
+      dataUrl: `data:image/png;base64,${png.toString('base64')}`,
+    });
+    await rm(shotsRoot, { recursive: true, force: true });
+    await rm(runDir, { recursive: true, force: true });
+  });
+
   it('a later save run removes an expired run directory even if nobody reads it', async () => {
     enableSave();
     const runDir = await mkdtemp(join(tmpdir(), 'pane-stay-test-'));
@@ -1288,6 +1323,7 @@ describe('stay commit persist/reload', () => {
       confirmationNumber: null,
       status: 'unknown',
       screenshotRef: booked.screenshotRef,
+      runId: booked.screenshotRef.runId,
     });
   });
 });

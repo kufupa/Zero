@@ -4211,6 +4211,25 @@ describe('saved stay picks for later amend/cancel', () => {
     expect(pickSavedStay([], STAY_ONE)).toBeNull();
   });
 
+  it('round-trips stay commit shots and runId next to screenshotRef', () => {
+    const record = {
+      confirmationNumber: '46184891-1',
+      status: 'booked' as const,
+      screenshotRef: shot,
+      runId: shot.runId,
+      shots: [
+        {
+          name: 'before.png',
+          sha256: 'a'.repeat(64),
+          at: '2026-10-26T00:00:00.000Z',
+        },
+        { name: 'saved.png', sha256: 'b'.repeat(64), at: '2026-10-26T00:00:01.000Z' },
+      ],
+    };
+    expect(stayCommitOf(withStayCommit({}, STAY_ONE, record), STAY_ONE)).toEqual(record);
+    expect(stayCommitOf(withStayCommit({}, STAY_ONE, bookedOne), STAY_ONE)).toEqual(bookedOne);
+  });
+
   it('stores an amend/cancel result on the chosen stay and leaves the other stay as it is', () => {
     const before = withStayCommit(withStayCommit({}, STAY_ONE, bookedOne), STAY_TWO, bookedTwo);
     const after = withStayActionResult(before, STAY_TWO, {
