@@ -239,13 +239,12 @@ type SettingsClient = {
 };
 
 type SettingsQueryClient = {
-  invalidateQueries: (filters: {
-    predicate: (query: { queryKey: readonly unknown[] }) => boolean;
-  }) => Promise<void>;
+  invalidateQueries: (filters: { queryKey: readonly unknown[] }) => Promise<void>;
 };
 
-/** Who the open pane is saving for. A finished save is ignored when this changes. */
-let activeConfirmationScope = '';
+/** Signed-in identity for the open pane. A finished save is dropped when either id changes. */
+let signedInUserId = '';
+let signedInMailbox = '';
 
 export function confirmationScopeKey(userId: string, mailbox: string): string {
   return `${userId}\0${mailbox}`;
@@ -257,15 +256,6 @@ function confirmationForSave(setting: ConfirmationSetting): ConfirmationSetting 
     : { mode: setting.mode };
 }
 
-async function invalidateSettingsGet(queryClient: SettingsQueryClient) {
-  await queryClient.invalidateQueries({
-    predicate: (query) => {
-      const keyText = JSON.stringify(query.queryKey);
-      return keyText.includes('settings') && keyText.includes('get');
-    },
-  });
-}
-
 /** Saves only the confirmation key. The settings route merges that key and leaves the rest of the row. */
 export async function saveConfirmationDefault(setting: ConfirmationSetting): Promise<void> {
   const provider = await import('@/providers/query-provider');
@@ -273,13 +263,22 @@ export async function saveConfirmationDefault(setting: ConfirmationSetting): Pro
   if (!save) {
     throw new Error('Could not save your default (not set up).');
   }
-  const started = activeConfirmationScope;
+  const startedUserId = signedInUserId;
+  const startedMailbox = signedInMailbox;
   const confirmation = confirmationForSave(setting);
   await save({ confirmation });
-  if (activeConfirmationScope !== started) return;
+  if (signedInUserId !== startedUserId || signedInMailbox !== startedMailbox) return;
   const getQueryClient = (provider as { getQueryClient?: () => SettingsQueryClient }).getQueryClient;
   if (!getQueryClient) return;
-  await invalidateSettingsGet(getQueryClient());
+  const utils = {
+    settings: {
+      get: {
+        invalidate: () =>
+          getQueryClient().invalidateQueries({ queryKey: [['settings', 'get']] }),
+      },
+    },
+  };
+  await utils.settings.get.invalidate();
 }
 
 /**
@@ -303,7 +302,8 @@ export function ConfirmationSourcesBridge({
   const scopeKey = confirmationScopeKey(userId, mailbox);
   const loadedKey = `${scopeKey}\0${userEmail}`;
   const [loadedFor, setLoadedFor] = useState(loadedKey);
-  activeConfirmationScope = scopeKey;
+  signedInUserId = userId;
+  signedInMailbox = mailbox;
 
   if (loadedFor !== loadedKey) {
     setLoadedFor(loadedKey);

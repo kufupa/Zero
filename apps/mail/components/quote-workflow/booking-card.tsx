@@ -829,9 +829,11 @@ export function BookingCards({
   const [savingDefault, setSavingDefault] = useState(false);
   const saveGeneration = useRef(0);
   const staffChoseRef = useRef(false);
-  const scopeKey = confirmationScopeKey(sources?.userId ?? '', sources?.mailbox ?? '');
-  const scopeRef = useRef(scopeKey);
-  scopeRef.current = scopeKey;
+  const signedInUserId = sources?.userId ?? '';
+  const signedInMailbox = sources?.mailbox ?? '';
+  const scopeKey = confirmationScopeKey(signedInUserId, signedInMailbox);
+  const scopeRef = useRef({ userId: signedInUserId, mailbox: signedInMailbox });
+  scopeRef.current = { userId: signedInUserId, mailbox: signedInMailbox };
   const [seenScope, setSeenScope] = useState(`${scopeKey}\0${sources?.userEmail ?? ''}`);
   if (sources && seenScope !== `${scopeKey}\0${sources.userEmail}`) {
     setSeenScope(`${scopeKey}\0${sources.userEmail}`);
@@ -1208,18 +1210,29 @@ export function BookingCards({
                   const setting: ConfirmationSetting =
                     mode === 'custom' ? { mode, address } : { mode };
                   const generation = ++saveGeneration.current;
-                  const startedScope = scopeRef.current;
+                  const startedUserId = scopeRef.current.userId;
+                  const startedMailbox = scopeRef.current.mailbox;
                   setDefaultError(null);
                   setSavingDefault(true);
                   void onSaveDefault(setting)
                     .then(() => {
                       if (saveGeneration.current !== generation) return;
-                      if (scopeRef.current !== startedScope) return;
+                      if (
+                        scopeRef.current.userId !== startedUserId ||
+                        scopeRef.current.mailbox !== startedMailbox
+                      ) {
+                        return;
+                      }
                       setDefaultSaved(true);
                     })
                     .catch(() => {
                       if (saveGeneration.current !== generation) return;
-                      if (scopeRef.current !== startedScope) return;
+                      if (
+                        scopeRef.current.userId !== startedUserId ||
+                        scopeRef.current.mailbox !== startedMailbox
+                      ) {
+                        return;
+                      }
                       setDefaultError('Could not save your default (not set up).');
                     })
                     .finally(() => {

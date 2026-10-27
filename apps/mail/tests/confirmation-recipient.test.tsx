@@ -34,9 +34,9 @@ vi.mock('@/providers/query-provider', () => ({
     },
   },
   getQueryClient: () => ({
-    invalidateQueries: async (filters: { predicate: (query: { queryKey: readonly unknown[] }) => boolean }) => {
-      const query = { queryKey: [['settings', 'get']] as const };
-      if (filters.predicate(query)) settingsDouble.invalidated.push('settings.get');
+    invalidateQueries: async (filters: { queryKey?: readonly unknown[] }) => {
+      const key = JSON.stringify(filters.queryKey ?? []);
+      if (key.includes('settings') && key.includes('get')) settingsDouble.invalidated.push('settings.get');
     },
   }),
 }));
