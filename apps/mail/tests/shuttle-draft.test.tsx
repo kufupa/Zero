@@ -26,6 +26,8 @@ const malformedProviderSettings: Array<[string, unknown]> = [
   ['empty recipients', { provider: 'Jarat Tours', to: [] }],
   ['non-array recipients', { provider: 'Jarat Tours', to: 'shuttle@example.test' }],
   ['non-string recipient', { provider: 'Jarat Tours', to: ['shuttle@example.test', 7] }],
+  ['recipient with a list separator', { provider: 'Jarat Tours', to: ['desk;shuttle@example.test'] }],
+  ['recipient with a control character', { provider: 'Jarat Tours', to: ['desk\u0000@example.test'] }],
   ['empty provider', { provider: '  ', to: ['shuttle@example.test'] }],
   ['provider with a control character', { provider: 'Jarat\nTours', to: ['shuttle@example.test'] }],
 ];
