@@ -97,7 +97,7 @@ function addEvidenceDir(root: string, name: string, ageDays: number, files: stri
 }
 
 describe('deployment retention scripts', () => {
-  it('keeps the live release and two newest others, honors dry-run, and leaves shared assets', () => {
+  it('keeps only the live release, honors dry-run, and leaves shared assets', () => {
     const root = tempRoot();
     const { webRoot, bin, dump } = webFixture(root);
     const live = addRelease(webRoot, 'live', 90);
@@ -117,11 +117,33 @@ describe('deployment retention scripts', () => {
     const pruned = runScript(pruneScript, bin, [], environment);
     expect(pruned.status, pruned.stderr || pruned.stdout).toBe(0);
     expect(existsSync(live)).toBe(true);
-    expect(existsSync(newest)).toBe(true);
-    expect(existsSync(second)).toBe(true);
+    expect(existsSync(newest)).toBe(false);
+    expect(existsSync(second)).toBe(false);
     expect(existsSync(older)).toBe(false);
     expect(existsSync(oldest)).toBe(false);
     expect(existsSync(sharedAsset)).toBe(true);
+  });
+
+  it('refuses multiple live release references before deleting any release', () => {
+    const root = tempRoot();
+    const { webRoot, bin, dump } = webFixture(root, 'live');
+    const live = addRelease(webRoot, 'live', 90);
+    const alsoReferenced = addRelease(webRoot, 'also-live', 1);
+    const stale = addRelease(webRoot, 'stale', 10);
+    writeFileSync(
+      dump,
+      `server {\n  alias ${webRoot}/releases/live/index.html;\n` +
+        '  try_files /releases/live$uri /releases/also-live$uri /index.html;\n}\n',
+    );
+
+    const result = runScript(pruneScript, bin, [], {
+      WEB_ROOT: webRoot,
+      NGINX_DUMP_FILE: dump,
+    });
+    expect(result.status).not.toBe(0);
+    expect(existsSync(live)).toBe(true);
+    expect(existsSync(alsoReferenced)).toBe(true);
+    expect(existsSync(stale)).toBe(true);
   });
 
   it('refuses a symlinked release path before deleting any release', () => {
@@ -259,5 +281,13 @@ describe('deployment retention scripts', () => {
     expect(prune).toBeGreaterThan(backupCleanup);
     expect(deploy.indexOf('prune-web-releases.sh')).toBeGreaterThan(reload);
     expect(deploy.match(/prune-web-releases\.sh/g)).toHaveLength(1);
+  });
+
+  it('never prunes all Docker images or runtime dependencies', () => {
+    const deploy = readFileSync(deployEc2Script, 'utf8');
+    const prune = readFileSync(pruneScript, 'utf8');
+
+    expect(`${deploy}\n${prune}`).not.toMatch(/docker\s+image\s+prune\s+-a\b/);
+    expect(prune).not.toMatch(/node_modules|playwright|chromium/i);
   });
 });

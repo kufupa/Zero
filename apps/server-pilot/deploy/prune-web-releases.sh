@@ -22,11 +22,19 @@ RELEASE_ROOT_REAL="$(sudo realpath -e -- "$RELEASE_ROOT")" || fail "release root
 [[ "$RELEASE_ROOT_REAL" == "${WEB_ROOT_REAL}/releases" ]] ||
   fail "release root resolves outside the web root"
 NGINX_CONFIG="$(sudo nginx -T 2>/dev/null)" || fail "active nginx configuration could not be read"
-ACTIVE_REFS="$(printf '%s\n' "$NGINX_CONFIG" |
+ACTIVE_CONFIG="$(printf '%s\n' "$NGINX_CONFIG" | sed '/^[[:space:]]*#/d' | sed 's/[[:space:]]#.*$//')"
+ACTIVE_REFS="$(printf '%s\n' "$ACTIVE_CONFIG" |
   grep -F "${RELEASE_ROOT}/" |
   grep -oE 'releases/[A-Za-z0-9._-]+' |
   sed 's#^releases/##' | sort -u)" ||
   fail "active nginx release reference was not found"
+RELATIVE_REFS="$(printf '%s\n' "$ACTIVE_CONFIG" |
+  grep -oE '/releases/[A-Za-z0-9._-]+' | sed 's#^.*/##' | sort -u || true)"
+REFERENCED_REFS="$(printf '%s\n%s\n' "$ACTIVE_REFS" "$RELATIVE_REFS" | sed '/^$/d' | sort -u)"
+mapfile -t referenced_ids <<<"$REFERENCED_REFS"
+(( ${#referenced_ids[@]} == 1 )) ||
+  fail "nginx references multiple releases; refusing release pruning"
+ACTIVE_ID="${referenced_ids[0]}"
 
 entries_file="$(mktemp "${TMPDIR:-/tmp}/nava-web-releases.XXXXXX")"
 trap 'rm -f -- "$entries_file"' EXIT
@@ -47,33 +55,8 @@ for entry in "${entries[@]}"; do
   present_ids["$id"]=1
 done
 
-keep_refs() {
-  local refs="$1" required="${2:-0}" id
-  while IFS= read -r id; do
-    [[ -n "$id" ]] || continue
-    if [[ -z "${present_ids[$id]+yes}" ]]; then
-      [[ "$required" == 0 ]] || fail "nginx references a missing release"
-    else
-      keep_set["$id"]=1
-    fi
-  done <<<"$refs"
-}
-keep_refs "$ACTIVE_REFS" 1
-RELATIVE_REFS="$(printf '%s\n' "$NGINX_CONFIG" |
-  grep -oE '/releases/[A-Za-z0-9._-]+' | sed 's#^.*/##' | sort -u || true)"
-keep_refs "$RELATIVE_REFS"
-
-sudo find "$RELEASE_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %f\0' |
-  sort -z -nr >"$entries_file" || fail "release timestamps could not be read"
-mapfile -d '' -t newest_first <"$entries_file"
-other_kept=0
-for record in "${newest_first[@]}"; do
-  id="${record#* }"
-  if [[ -z "${keep_set[$id]+yes}" ]] && ((other_kept < 2)); then
-    keep_set["$id"]=1
-    other_kept=$((other_kept + 1))
-  fi
-done
+[[ -n "${present_ids[$ACTIVE_ID]+yes}" ]] || fail "nginx references a missing release"
+keep_set["$ACTIVE_ID"]=1
 
 removed=0
 for id in "${release_ids[@]}"; do
@@ -87,4 +70,4 @@ for id in "${release_ids[@]}"; do
 done
 trap - EXIT
 rm -f -- "$entries_file"
-printf 'prune-web-releases: candidates=%d previous=%d dry_run=%d\n' "$removed" "$other_kept" "$DRY_RUN"
+printf 'prune-web-releases: candidates=%d kept=%d dry_run=%d\n' "$removed" "${#keep_set[@]}" "$DRY_RUN"

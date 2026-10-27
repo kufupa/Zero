@@ -13,7 +13,7 @@ async function fixture(t, options={}) {
   assert.equal(typeof capture.createAudit, 'function', 'private audit capture is implemented');
   const directory=await mkdtemp(join(tmpdir(),'quote-audit-test-'));
   t.after(()=>rm(directory,{recursive:true,force:true}));
-  const audit=await capture.createAudit(directory,options);
+  const audit=await capture.createAudit(directory,{diskUsage:async()=>10,...options});
   return {directory,audit};
 }
 
@@ -31,7 +31,7 @@ function browserPage({badTrace=false,badVideo=false}={}) {
     'screencast/page@1234-1789688535557.jpeg':Buffer.from([255,216,255,224,1,2,3,4]),
   });
   page.context=()=>({storageState:async()=>({cookies:[{value:'cookie-value'}],origins:[]}),
-    tracing:{start:async()=>{},stop:async({path})=>writeFile(path,badTrace?Buffer.from('invalid zip'):trace)}});
+    tracing:{start:async()=>{},stop:async(options={})=>options.path?writeFile(options.path,badTrace?Buffer.from('invalid zip'):trace):undefined}});
   page.screencast={start:async({path})=>{if(badVideo) throw new Error('secret-password');videoPath=path;},
     stop:async()=>{await writeFile(videoPath,Buffer.from('video bytes'));}};
   page.locator=()=>({count:async()=>0});
@@ -54,7 +54,7 @@ test('pre-auth runs retain events and explicitly mark recording not started',asy
 });
 
 test('authenticated capture saves named checkpoints and a sanitized trace with real hashes',async t=>{
-  const {directory,audit}=await fixture(t,{secrets:['secret-password']});
+  const {directory,audit}=await fixture(t,{secrets:['secret-password'],trace:true});
   const page=browserPage();
   await audit.start(page);
   page.emit('request',{postDataJSON:()=>({bookingSessionID:'booking-value'})});
@@ -86,7 +86,7 @@ test('video is opt-in and finalized into the same private bundle',async t=>{
 });
 
 test('failed trace sanitization deletes the raw archive and reports incomplete capture',async t=>{
-  const {directory,audit}=await fixture(t);
+  const {directory,audit}=await fixture(t,{trace:true});
   await audit.start(browserPage({badTrace:true}));
   const result=await audit.finish();
   assert.equal(result.status,'incomplete');
@@ -130,7 +130,7 @@ test('video registers its full-size frames before trace subscribes to the shared
 });
 
 test('snapshot reads a pending view without stopping, hashing or writing the trace',async t=>{
-  const {directory,audit}=await fixture(t);
+  const {directory,audit}=await fixture(t,{trace:true});
   const page=browserPage();
   await audit.start(page);
   await audit.checkpoint('login-complete');
