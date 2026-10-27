@@ -294,6 +294,9 @@ it('labels an unverified-party public BAR as public, never the party contract', 
     {},
   );
   expect(unverified.options.length).toBeGreaterThan(0);
+  expect(unverified.issues.some((row) => row.code === 'PARTY_RATES_NOT_CHECKED')).toBe(true);
+  expect(unverified.completeness.search).toBe('complete');
+  expect(unverified.completeness.requiredFacts).toBe('complete');
   for (const option of unverified.options) {
     expect(option.rateScope).toBe('public');
     expect(option.eligibility).toBe('verified');

@@ -456,6 +456,7 @@ test('a verified party keeps its public row bookable; an unverified party still 
   assert.ok(verified.options.length>0&&verified.options.every(o=>o.rateScope==='public'));
   assert.ok(verified.issues.some(i=>i.code==='NO_SPECIAL_RATES'));
   assert.match(verified.issues.find(i=>i.code==='NO_SPECIAL_RATES').action,/not a contracted rate/i);
+  assert.equal(verified.issues.some(i=>i.code==='PARTY_RATES_NOT_CHECKED'),false);
   for(const o of verified.options){
     assert.equal(o.matchStatus,'match');
     const cond=o.conditions.find(c=>c.field==='rateContext');
@@ -464,6 +465,11 @@ test('a verified party keeps its public row bookable; an unverified party still 
   }
   const unverified=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],{});
   assert.ok(unverified.options.length>0&&unverified.options.every(o=>o.rateScope==='public'));
+  assert.ok(unverified.issues.some(i=>i.code==='PARTY_RATES_NOT_CHECKED'));
+  assert.match(unverified.issues.find(i=>i.code==='PARTY_RATES_NOT_CHECKED').reason,/Party rates were not checked; public BAR shown/);
+  assert.equal(unverified.completeness.search,'complete');
+  assert.equal(unverified.completeness.requiredFacts,'complete');
+  assert.equal(unverified.issues.some(i=>i.code==='NO_SPECIAL_RATES'),false);
   for(const o of unverified.options){
     assert.equal(o.matchStatus,'match');
     assert.equal(o.eligibility,'verified');
@@ -569,6 +575,14 @@ test('summary states BAR is not a contracted rate when no special rates',()=>{
   assert.match(text,/Hotel Availability: quote/);
   assert.match(text,/no special rates/i);
   assert.match(text,/not a contracted rate/i);
+});
+test('summary states party rates were not checked when the party never verified',()=>{
+  const text=quote.summarize({
+    outcome:'quote',
+    groups:[{id:'group-1',options:[],issues:[{code:'PARTY_RATES_NOT_CHECKED',path:'rateContext',reason:'Party rates were not checked; public BAR shown.'}]}],
+  });
+  assert.match(text,/Hotel Availability: quote/);
+  assert.match(text,/Party rates were not checked; public BAR shown/);
 });
 test('empty grid cannot claim no special rates',()=>{
   const f=multipleSource();
