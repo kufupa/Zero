@@ -179,6 +179,12 @@ describe('reusable source-derived business services',()=>{
   const original=echo.request.rooms.map((room:any)=>({...room,required:{...room.required,roomCodes:['ACCES']}}));
   expect(selectReservationistQuoteOptions(echo,true,original).map(s=>s.optionId)).toEqual(['HRDAV:ACCES:BAR']);
  });
+ it('does not let a cheaper Standard King win when original roomCodes asked for Accessible',()=>{
+  const cheaperKing=[{code:'ACCES',amount:'5000.00',inventory:2},{code:'STKNG',amount:'4656.00',inventory:81},{code:'STWN',amount:'4656.00',inventory:26}];
+  const echo=profileRoomsSource([{id:'a',quantity:1}],cheaperKing);
+  const original=echo.request.rooms.map((room:any)=>({...room,required:{...room.required,roomCodes:['ACCES']}}));
+  expect(selectReservationistQuoteOptions(echo,true,original).map(s=>s.optionId)).toEqual(['HRDAV:ACCES:BAR']);
+ });
  it('joint-pools two groups onto Standard King instead of locking both onto Accessible',()=>{
   const tied=[{code:'ACCES',amount:'4656.00',inventory:2},{code:'STKNG',amount:'4656.00',inventory:81},{code:'STWN',amount:'4656.00',inventory:26}];
   expect(selectReservationistQuoteOptions(profileRoomsSource([{id:'a',quantity:1},{id:'b',quantity:2}],tied),true).map(s=>s.optionId)).toEqual(['HRDAV:STKNG:BAR','HRDAV:STKNG:BAR']);
