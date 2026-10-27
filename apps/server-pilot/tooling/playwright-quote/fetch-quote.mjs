@@ -726,14 +726,13 @@ export function groupOutcomeFromOptions(options,{details='summary',searchComplet
   return {outcome,eligible,requiredFacts};
 }
 
-/** Finish one option across the stay before starting others, so a later calendar window can still complete a quote. */
+/** Finish one in-progress option across the stay before starting others; skip/fail does not strand later matches. */
 export function detailReadOrder(options,detailsMap,stayDates) {
   const got=id=>new Set((detailsMap.get(id)?.details??[]).map(d=>d.date));
   const complete=id=>stayDates.every(d=>got(id).has(d));
   const unfinished=options.filter(o=>detailsMap.has(o.id)&&!complete(o.id));
   if(unfinished.length)return unfinished;
-  if(options.some(o=>complete(o.id)))return options.filter(o=>!complete(o.id));
-  return options.slice(0,1);
+  return options.filter(o=>!complete(o.id));
 }
 
 export async function readDetails(page, chosen, prefix, checkpoint=async()=>{}, cachedRoom) {
@@ -805,9 +804,12 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
           if(detailsStartedAt===undefined)detailsStartedAt=performance.now();
           const partial=extractOptions(request,room,[window],resolvedContext);
           if(!allowedDetails)allowedDetails=new Set(detailCandidates('full',partial.options).map(o=>o.id));
-          const ordered=detailReadOrder(partial.options.filter(o=>allowedDetails.has(o.id)),details,stayDates(request));
-          for(const option of ordered) {
+          const seenThisWindow=new Set();
+          while(true) {
             if(performance.now()-detailsStartedAt>=detailBudgetMs){detailsBudgetDone=true;break;}
+            const option=detailReadOrder(partial.options.filter(o=>allowedDetails.has(o.id)),details,stayDates(request)).find(o=>!seenThisWindow.has(o.id));
+            if(!option)break;
+            seenThisWindow.add(option.id);
             const previous=details.get(option.id);
             const seen=new Set(previous?.details.map(d=>d.date)??[]);
             const observations=stayDates(request).filter(d=>!seen.has(d)).map(d=>option.observations.get(d)).filter(Boolean);

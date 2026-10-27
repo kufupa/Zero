@@ -100,11 +100,13 @@ it('keeps a 17-row wholesale full read as quote when unread leftover rows stay i
 it('finishes one option across stay dates before starting the next', () => {
   const nights = ['2027-02-16', '2027-02-17', '2027-02-18'];
   const options = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
-  expect(detailReadOrder(options, new Map(), nights).map((option: { id: string }) => option.id)).toEqual(['a']);
+  expect(detailReadOrder(options, new Map(), nights).map((option: { id: string }) => option.id)).toEqual(['a', 'b', 'c']);
   const started = new Map([['a', { details: [{ date: '2027-02-16' }] }]]);
   expect(detailReadOrder(options, started, nights).map((option: { id: string }) => option.id)).toEqual(['a']);
   const done = new Map([['a', { details: nights.map((date) => ({ date })) }]]);
   expect(detailReadOrder(options, done, nights).map((option: { id: string }) => option.id)).toEqual(['b', 'c']);
+  const skipped = new Set(['a']);
+  expect(detailReadOrder(options, new Map(), nights).find((option: { id: string }) => !skipped.has(option.id))?.id).toBe('b');
 });
 
 it('keeps quote when a priced complete row exists beside partial leftovers', () => {
