@@ -432,7 +432,7 @@ describe('tool-run ledger: classifiers by site', () => {
     expect(classifyFind({ outcome: 'execution_failure' } as never)).toEqual({
       status: 'failed',
       errorCode: 'execution_failure',
-      result: { code: 'execution_failure', message: expect.any(String) },
+      result: { code: 'execution_failure', message: expect.any(String), causeClass: 'hms_down' },
     });
     expect(classifyFind({ outcome: 'execution_failure' } as never).result?.message).not.toBe('');
     expect(classifySearch({ outcome: 'execution_failure', rows: [] } as never)).toMatchObject({
