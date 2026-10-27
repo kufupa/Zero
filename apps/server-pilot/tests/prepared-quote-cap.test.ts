@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { countPrefetchReservations } from '../src/ai/prefetch-capacity.js';
 import { prefetchQuoteReadyForExtraction } from '../src/ai/hms-jobs.js';
 import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
@@ -16,6 +16,8 @@ import {
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
 
 const reachable = await probeTestDb();
+
+afterEach(() => vi.unstubAllEnvs());
 
 const QUOTE_ON = {
   HMS_JOB_QUEUE: 'on',
@@ -128,6 +130,14 @@ function preparedRows(db: DB, messageId: string) {
 }
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote profile cap', { timeout: 60_000 }, () => {
+  beforeEach(() => {
+    vi.stubEnv('PORT', '3000');
+    vi.stubEnv('BETTER_AUTH_URL', 'https://nava.legacy.local');
+    vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
+    vi.stubEnv('AWS_REGION', 'synthetic-region-1');
+    vi.stubEnv('S3_BUCKET', 'prepared-quote-cap-test');
+  });
+
   it.each(PROPERTY_TARGETS)('admits a complete profile strategy set as one batch for $transportId', async (target) =>
     withSeededTestDb(async (db) => {
       const config = await quotePaneConfigForProperty(target.propertyCode, target.transportId);

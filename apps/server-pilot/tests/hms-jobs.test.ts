@@ -917,7 +917,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(govJobs.map(shopSalesStrategy).sort()).toEqual(['BAR', 'Government']);
     }));
 
-  it('keeps each stay primary under the default hour cap before extra strategies', () =>
+  it('keeps each stay primary while admitting the full strategy batch into an empty hour', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
@@ -958,7 +958,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
           ),
         );
       expect(rows.length).toBe(created);
-      expect(rows.some((row) => row.nextRunAt && row.nextRunAt.getTime() > Date.now())).toBe(true);
+      expect(rows.some((row) => row.nextRunAt && row.nextRunAt.getTime() > Date.now())).toBe(false);
       expect(
         new Set(
           rows
