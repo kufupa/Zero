@@ -146,7 +146,7 @@ describe('confirmation recipient', () => {
       userEmail: STAFF,
       setting: { mode: 'client' },
     });
-    const select = screen.getByLabelText('Send HMS confirmation to') as HTMLSelectElement;
+    const select = screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement;
     expect(select.value).toBe('client');
     expect(screen.getByRole('option', { name: `Me (${STAFF})` })).toBeDefined();
     expect(screen.getByRole('option', { name: `Client (${CLIENT})` })).toBeDefined();
