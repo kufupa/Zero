@@ -214,7 +214,8 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  if(alternativeRequest)for(const v of candidates[0]!.totals){const board=boardsFor(request.propertyCode)[norm(v.o.board??'')];if(board){const key=board;if(!byPair.has(key))byPair.set(key,v);}}
  if(alternativeRequest&&(!byPair.size||byPair.size>5))missing('business_quote_alternatives_bound_unavailable',['at most five independently qualified selected board alternatives']);
  if(alternativeRequest&&ctx.facts.some(f=>f.kind==='rate_claim'))missing('business_quote_alternatives_claim_scope_unavailable',['the specific alternative to which the supplied rate claim applies']);
- const candidateGroups=summary.source.result.groups.map(group=>({...group,options:group.options.filter(option=>candidates.find(candidate=>candidate.request.id===group.id)?.totals.some(total=>total.o.id===option.id))}));
+ const candidateIds=new Set(candidates.flatMap(candidate=>candidate.totals.map(total=>total.o.id)));
+ const candidateGroups=summary.source.result.groups.map(group=>({...group,options:group.options.filter(option=>candidateIds.has(option.id))}));
  const selectionSets=alternativeRequest?[...byPair.values()].map(v=>[{sourceRef:summary.source.ref,groupId:request.rooms[0]!.id,optionId:v.o.id}]):[selectQuoteOptions(summary.source,false,normalize.profileHolds(summary.source.request.propertyCode,candidateGroups),request.rooms)];
  const results=[];
  for(const chosen of selectionSets){

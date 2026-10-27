@@ -269,6 +269,33 @@ describe('reusable source-derived business services',()=>{
   expect(calls[1].rooms.map((room:any)=>room.required.roomCodes)).toEqual([['STKNG'],['STKNG']]);
   expect(resolved.selections.map((s:any)=>s.optionId)).toEqual(['HRDAV:STKNG:BAR','HRDAV:STKNG:BAR']);
  });
+ it('does not let an off-profile alternative row skip null-building joint pools',async()=>{
+  const f=await organizationLookupFixture();
+  f.c.input.propertyCode='HRDAV';
+  const body='Please quote 1 room for 1 adult and 2 rooms for 1 adult. Bed and breakfast. Check in 11 October 2026, check out 12 October 2026.';
+  f.c.input.messages[0].text=body;
+  f.c.task.source={...source,quote:body,start:0,end:body.length,sourceHash:createHash('sha256').update(body).digest('hex')};
+  f.c.facts=[
+   {...fact('dates',{arrival:'2026-10-11',departure:'2026-10-12'}),source:f.c.task.source},
+   {...fact('room',{roomRef:'1',quantity:1,adults:1,childAges:[]}),id:'room-1',source:f.c.task.source},
+   {...fact('room',{roomRef:'2',quantity:2,adults:1,childAges:[]}),id:'room-2',source:f.c.task.source},
+   {...fact('board','bed and breakfast'),source:f.c.task.source},
+  ];
+  f.c.task.factIds=f.c.facts.map((v:any)=>v.id);
+  const dates=['2026-10-11'];
+  const option=(code:string,inventory:number,matchStatus:'match'|'alternative'='match')=>({id:`HRDAV:${code}:BAR`,room:{code,label:code,buildingCode:null},rate:{code:'BAR',label:'Best Available'},board:'Bed & Breakfast R',held:false,rateScope:'public',appliedContext:{},eligibility:'verified',availability:'available',matchStatus,totals:{taxInclusive:true},nightly:dates.map(date=>({date,inventory,price:{amount:'4656.00',currency:'ZAR'}}))});
+  const all=[option('STKNG',81),option('STWN',26),option('PENT',99,'alternative')];
+  const calls:any[]=[];
+  f.options.readQuote=async(request:any)=>{
+   calls.push(structuredClone(request));
+   const normalized=(await import('../tooling/playwright-quote/quote-contract.mjs' as string)).normalizeQuoteRequest({schemaVersion:2,...request}).request;
+   return{ref:'native:'+calls.length,sha256:String(calls.length).repeat(64),toolVersion:'test',observedAt:f.c.input.clock.sourceAt,request:normalized,result:{outcome:'quote',propertyCode:'HRDAV',groups:normalized.rooms.map((room:any)=>({id:room.id,request:room,completeness:{search:'complete',requiredFacts:'complete'},options:all.filter(o=>!room.required?.roomCodes?.length||room.required.roomCodes.includes(o.room.code))}))}};
+  };
+  f.options.resolvePolicy=async()=>({ref:'p',propertyCode:'HRDAV',sourceHashes:['b'.repeat(64)],authoredDates:['2026-09-08'],families:[{rateCode:'BAR',board:'breakfast'}],vat:'included',levy:'included',restrictions:{status:'supported',sourceRefs:['p']}});
+  const resolved=await createReservationistBusinessServices(f.options).resolveQuoteTask!(f.c);
+  expect(calls[1].rooms.map((room:any)=>room.required.roomCodes)).toEqual([['STKNG'],['STKNG']]);
+  expect(resolved.selections.map((s:any)=>s.optionId)).toEqual(['HRDAV:STKNG:BAR','HRDAV:STKNG:BAR']);
+ });
  it('derives government quote scope from actual facts without fixed dates/options/customer IDs',()=>{const request=deriveReservationistQuoteRequest(ctx());expect(request.arrivalDate).toBe('2026-10-11');expect(request.rooms[0]).toMatchObject({id:'1',quantity:1,adults:1,children:0,childAges:[],required:{boardBases:['dinner_bed_breakfast'],roomCodes:['STWN','STQN','SKNG']}});expect((request as any).search.salesStrategy).toBe('Government');expect(request.rateContext).toBeUndefined();});
  it('does not change an explicit quote into booking based on government class',()=>{const c=ctx();expect(deriveReservationistQuoteRequest(c)).toBeTruthy();expect(c.task.kind).toBe('quote');});
  it('refuses missing allocation and contradictory date scopes before any read',()=>{const c=ctx();c.facts=c.facts.filter((f:any)=>f.kind!=='room');expect(()=>deriveReservationistQuoteRequest(c)).toThrow('room');const d=ctx();d.facts.push(fact('dates',{arrival:'2026-10-12',departure:'2026-10-16'}));expect(()=>deriveReservationistQuoteRequest(d)).toThrow('dates');});
