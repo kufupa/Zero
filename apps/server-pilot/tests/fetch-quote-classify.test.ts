@@ -268,6 +268,18 @@ it('verifies public BAR/PROMO rows on a two-group shop and keeps unbound WS cond
   const promo = extractOptions(promotions, promotions.rooms[0], [
     windowFor('STKNG', [{ code: 'BAR', desc: 'Best Available Rate' }, { code: 'PMO1B', desc: 'Promotion Breakfast' }], 'PROMO'),
   ]);
-  expect(promo.options.find((row) => row.rate.code === 'PMO1B')?.rateScope).toBe('public');
-  expect(promo.options.find((row) => row.rate.code === 'PMO1B')?.eligibility).toBe('verified');
+  expect(promo.options.find((row) => row.rate.code === 'BAR')?.rateScope).toBe('public');
+  expect(promo.options.find((row) => row.rate.code === 'BAR')?.eligibility).toBe('verified');
+  expect(promo.options.find((row) => row.rate.code === 'PMO1B')?.rateScope).toBe('unknown');
+  expect(promo.options.find((row) => row.rate.code === 'PMO1B')?.eligibility).toBe('conditional');
+  const barShop = { ...wholesale, search: { salesStrategy: 'BAR' }, rateContext: { organization: { name: 'Example Company' } } };
+  const crossed = extractOptions(
+    barShop,
+    barShop.rooms[0],
+    [{ ...windowFor('STKNG', mixed, 'BAR'), criteria: { salesStrategy: 'BAR', organizationID: '1' } }],
+    { organization: { id: '1' } },
+  );
+  expect(crossed.options.find((row) => row.rate.code === 'BAR')?.eligibility).toBe('verified');
+  expect(crossed.options.find((row) => row.rate.code === 'BWS1B')?.eligibility).toBe('conditional');
+  expect(crossed.options.find((row) => row.rate.code === 'BWS1B')?.matchStatus).toBe('unresolved');
 });

@@ -518,10 +518,20 @@ function quoteRateScope(profile, code, strategy, isNegotiatedRate) {
 }
 
 function strategyPartyKind(profile, strategy, code) {
-  const row = profile?.rates?.strategies?.[strategy];
-  if (!row || !Array.isArray(row.plans) || !row.plans.includes(code)) return null;
-  if (row.scope === 'agency') return 'agency';
-  if (row.scope === 'company') return 'organization';
+  const strategies = profile?.rates?.strategies;
+  if (!strategies || typeof strategies !== 'object') return null;
+  const kindOf = (row) => {
+    if (!row || !Array.isArray(row.plans) || !row.plans.includes(code)) return null;
+    if (row.scope === 'agency') return 'agency';
+    if (row.scope === 'company') return 'organization';
+    return null;
+  };
+  const selected = kindOf(strategies[strategy]);
+  if (selected) return selected;
+  for (const row of Object.values(strategies)) {
+    const kind = kindOf(row);
+    if (kind) return kind;
+  }
   return null;
 }
 

@@ -111,8 +111,7 @@ test('both hotels load rates, boards and letter; unknown property throws', () =>
     hrcen.classifyRate('NGOVB', 'GOV', false, 'Local Government Rate Breakfast'),
     'government',
   );
-  assert.equal(hrcen.classifyRate('ZZZUNK', 'BAR', false), 'public');
-  assert.equal(hrcen.classifyRate('ZZZUNK', 'GOV', false), 'unknown');
+  assert.equal(hrcen.classifyRate('ZZZUNK', 'BAR', false), 'unknown');
   assert.equal(getProfileBoards('HRCEN')['bed & breakfast r'], 'breakfast');
   assert.match(getProfileLetter('HRCEN').hotel.source, /The Centurion Hotel/);
   assert.equal(hrcen.cancellation, undefined);
@@ -122,7 +121,7 @@ test('both hotels load rates, boards and letter; unknown property throws', () =>
   assert.ok(wsPlans.includes('BWS1B'));
   assert.equal(getProfileRates('HRDAV').strategies.WS.scope, 'agency');
   assert.equal(hrdav.classifyRate('BWS1B', 'WS', false), 'contextual');
-  assert.equal(hrdav.classifyRate('PMO1B', 'PROMO', false), 'public');
+  assert.equal(hrdav.classifyRate('BLRB', 'BAR', false), 'unknown');
   assert.equal(hrdav.classifyRate('ZZZUNK', 'WS', false), 'unknown');
   assert.equal(getProfileBoards('HRDAV')['bed & breakfast nr'], 'breakfast');
   assert.match(getProfileLetter('HRDAV').hotel.source, /Da \?Vinci Hotel/);

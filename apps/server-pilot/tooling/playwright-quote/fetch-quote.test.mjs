@@ -490,9 +490,15 @@ test('two-group public BAR/PROMO rows verify and compose; unbound WS stays condi
   }
   const promotions={...wholesale,search:{salesStrategy:'Promotions'},rateContext:undefined};
   const promo=quote.extractOptions(promotions,promotions.rooms[0],[windowFor('STKNG',barPromo,'PROMO')]);
-  const promoRow=promo.options.find(o=>o.rate.code==='PMO1B');
-  assert.equal(promoRow.rateScope,'public');
-  assert.equal(promoRow.eligibility,'verified');
+  assert.equal(promo.options.find(o=>o.rate.code==='BAR').rateScope,'public');
+  assert.equal(promo.options.find(o=>o.rate.code==='BAR').eligibility,'verified');
+  assert.equal(promo.options.find(o=>o.rate.code==='PMO1B').rateScope,'unknown');
+  assert.equal(promo.options.find(o=>o.rate.code==='PMO1B').eligibility,'conditional');
+  const barShop={...wholesale,search:{salesStrategy:'BAR'},rateContext:{organization:{name:'Example Company'}}};
+  const crossed=quote.extractOptions(barShop,barShop.rooms[0],[{...windowFor('STKNG',mixed,'BAR'),criteria:{salesStrategy:'BAR',organizationID:'1'}}],{organization:{id:'1'}});
+  assert.equal(crossed.options.find(o=>o.rate.code==='BAR').eligibility,'verified');
+  assert.equal(crossed.options.find(o=>o.rate.code==='BWS1B').eligibility,'conditional');
+  assert.equal(crossed.options.find(o=>o.rate.code==='BWS1B').matchStatus,'unresolved');
 });
 test('OPTION_LIMIT counts only a cut row that is not an alternative',()=>{
   const rows=[{id:0,matchStatus:'match'},{id:1,matchStatus:'alternative'},{id:2,matchStatus:'alternative'}];

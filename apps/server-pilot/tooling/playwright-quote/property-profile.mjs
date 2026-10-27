@@ -155,12 +155,6 @@ function classifyRateFor(profile, code, strategy, isNegotiatedRate, label) {
     return row.scope === 'public' ? 'public' : 'contextual';
   }
   if (isNegotiatedRate === true) return 'contextual';
-  if (strategyKey === 'GOV' || strategyKey === 'GOVERNMENT') return 'unknown';
-  const strat = strategies[strategyKey];
-  if (strat && (strat.scope === 'agency' || strat.scope === 'company')) return 'unknown';
-  const listed = Array.isArray(profile.salesStrategies)
-    && profile.salesStrategies.some((row) => typeof row?.value === 'string' && row.value.trim().toUpperCase() === strategyKey);
-  if (listed) return 'public';
   return 'unknown';
 }
 

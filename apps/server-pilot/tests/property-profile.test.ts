@@ -20,8 +20,7 @@ it('loads rates, boards and letter for both hotels and throws for an unknown pro
   expect(hrcen!.classifyRate('NGOVB', 'GOV', false, 'Local Government Rate Breakfast')).toBe(
     'government',
   );
-  expect(hrcen!.classifyRate('ZZZUNK', 'BAR', false)).toBe('public');
-  expect(hrcen!.classifyRate('ZZZUNK', 'GOV', false)).toBe('unknown');
+  expect(hrcen!.classifyRate('ZZZUNK', 'BAR', false)).toBe('unknown');
   expect(getProfileBoards('HRCEN')['bed & breakfast r']).toBe('breakfast');
   expect(getProfileLetter('HRCEN').hotel.source).toMatch(/The Centurion Hotel/);
   expect(hrcen!.cancellation).toBeUndefined();
@@ -30,7 +29,7 @@ it('loads rates, boards and letter for both hotels and throws for an unknown pro
   expect(getProfileRates('HRDAV').strategies?.WS?.plans).toContain('BWS1B');
   expect(getProfileRates('HRDAV').strategies?.WS?.scope).toBe('agency');
   expect(hrdav!.classifyRate('BWS1B', 'WS', false)).toBe('contextual');
-  expect(hrdav!.classifyRate('PMO1B', 'PROMO', false)).toBe('public');
+  expect(hrdav!.classifyRate('BLRB', 'BAR', false)).toBe('unknown');
   expect(hrdav!.classifyRate('ZZZUNK', 'WS', false)).toBe('unknown');
   expect(getProfileBoards('HRDAV')['bed & breakfast nr']).toBe('breakfast');
   expect(getProfileLetter('HRDAV').hotel.source).toMatch(/Da \?Vinci Hotel/);
