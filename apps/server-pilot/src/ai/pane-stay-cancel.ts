@@ -4,6 +4,7 @@ import {
   PANE_PROPERTY_LOCK_WAIT_MS,
 } from '../hms/property-read-lock.js';
 import {
+  PANE_PAID_BOOKING_COPY,
   PANE_SCREENSHOT_NAME_PATTERN,
   paneStayClock,
   paneStayPropertyLock,
@@ -56,7 +57,7 @@ export type PaneStayCancelResult = {
   statusAfter: string | null;
   reasons: string[];
   penaltyText: string | null;
-  /** Operator-facing line for outcomes that need one (see PANE_CANCEL_MESSAGES), otherwise null. */
+  /** Operator-facing line for outcomes that need one (see PANE_CANCEL_MESSAGES), or a notice-window warning. */
   message: string | null;
   /** The arrival was a hint: HMS holds another date for this booking. Both dates are returned for the pane's text. */
   arrivalMismatch: boolean;
@@ -79,7 +80,7 @@ export const PANE_CANCEL_MESSAGES: ReadonlyMap<string, string> = new Map([
     'cancel_penalty_pending',
     'A cancellation penalty is pending on this booking. Check HMS before anything else.',
   ],
-  ['refused_not_unpaid', 'This change may affect money already paid. Handle in Infor.'],
+  ['refused_not_unpaid', PANE_PAID_BOOKING_COPY],
 ]);
 
 export function paneCancelMessage(outcome: string): string | null {
@@ -122,6 +123,8 @@ export type PaneStayCancelSpawnResult = {
   runDir?: string;
   /** True once the reason dialog's OK was clicked. A failure after that leaves the cancel unconfirmed. */
   clickedOk?: boolean;
+  /** Notice-window warning from the CLI. Absent or blank stays silent. */
+  warning?: string | null;
 };
 
 export const paneStayCancelLoaders: {
@@ -257,6 +260,7 @@ export async function spawnPaneStayCancel(input: PaneStayCancelSpawnInput): Prom
     screenshots: result.screenshots ?? [],
     runDir: dir,
     clickedOk: result.clickedOk === true,
+    warning: typeof result.warning === 'string' && result.warning.trim() ? result.warning.trim() : null,
   };
 }
 
@@ -375,7 +379,9 @@ async function runPaneStayCancel(
       statusAfter: spawned.statusAfter,
       reasons: spawned.reasons,
       penaltyText: spawned.penaltyText,
-      message: paneCancelMessage(spawned.outcome),
+      message:
+        paneCancelMessage(spawned.outcome)
+        ?? (typeof spawned.warning === 'string' && spawned.warning.trim() ? spawned.warning.trim() : null),
       arrivalMismatch: spawned.arrivalMismatch === true,
       requestedArrival: spawned.requestedArrival ?? input.arrival ?? null,
       hmsArrival: spawned.hmsArrival ?? null,

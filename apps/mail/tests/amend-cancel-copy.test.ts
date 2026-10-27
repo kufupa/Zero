@@ -103,13 +103,26 @@ describe('cancel outcome copy', () => {
     expect(cancelOutcomeNote('refused_not_lab', CONFIRMATION)).toBe(AMEND_CANCEL_COPY.testOnly);
   });
 
-  it('a paid stay refused at commit tells staff to handle it in Infor', () => {
+  it('a paid stay refused at commit tells staff to handle it in HMS', () => {
     const unpaid = run({ outcome: 'refused_not_unpaid', previewDigest: null });
+    expect(AMEND_SAVE_COPY.handleInHms).toBe(
+      'Paid or guaranteed booking: handle in HMS (Nava only changes unpaid bookings for now)',
+    );
     expect(cancelOutcomeNote('refused_not_unpaid', CONFIRMATION)).toBe(AMEND_SAVE_COPY.handleInHms);
     expect(viewAfterCommit(unpaid, run(), CONFIRMATION)).toEqual({
       kind: 'idle',
       note: AMEND_SAVE_COPY.handleInHms,
       run: unpaid,
+    });
+  });
+
+  it('shows a notice-window warning as a plain line on a ready preview', () => {
+    const warned = run({ message: 'Arrival is inside the 48-hour cancellation notice window.' });
+    expect(viewAfterPreview(warned, CONFIRMATION)).toEqual({
+      kind: 'ready',
+      run: warned,
+      reason: '',
+      note: 'Arrival is inside the 48-hour cancellation notice window.',
     });
   });
 
