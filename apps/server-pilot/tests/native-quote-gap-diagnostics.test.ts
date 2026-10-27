@@ -457,3 +457,36 @@ describe('a sell restriction on a night names the room type and the night, not t
     );
   });
 });
+
+describe('a quote capture may keep unread detail rows in evidence', () => {
+  const unreadQuoteRequest = {
+    propertyCode: 'HRCEN',
+    arrivalDate: '2026-11-12',
+    departureDate: '2026-11-14',
+    requestedCurrency: 'ZAR',
+    details: 'full',
+    rooms: [{ id: 'room-1', quantity: 1, adults: 1, children: 0, childAges: [], required: { roomCodes: ['STQN'], rateCodes: ['BAR'] } }],
+  };
+
+  it('does not throw native_quote_capture_scope_or_completeness_invalid for priced verified rows plus not_read leftovers', async () => {
+    const evidence = await captureFor(unreadQuoteRequest, (rooms) => [
+      {
+        id: 'room-1',
+        request: rooms[0],
+        outcome: 'quote',
+        issues: [],
+        completeness: { search: 'complete', requiredFacts: 'complete' },
+        options: [
+          rowFor(standardQueen, 34, 'available'),
+          { ...rowFor(standardQueen, 34, 'available', 'BARRO'), id: 'HRCEN:STQN:BARRO', details: { status: 'not_read' } },
+        ],
+      },
+    ]);
+    const source = await readerFor(evidence, unreadQuoteRequest);
+    expect(source.result.outcome).toBe('quote');
+    expect(source.result.groups[0].options.map((option: { details?: { status: string } }) => option.details?.status)).toEqual([
+      'complete',
+      'not_read',
+    ]);
+  });
+});
