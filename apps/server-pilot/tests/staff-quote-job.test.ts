@@ -8,9 +8,10 @@ import { TRPCError } from '@trpc/server';
 import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
-import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
+import { CENTURION_USER_ID, DAVINCI_TRANSPORT_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
+import { DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
 
 const jobMocks = vi.hoisted(() => ({
   runStaffQuote: vi.fn(),
@@ -1286,6 +1287,11 @@ describe('staff_quote HMS job execution', () => {
 });
 
 describe('runStaffQuote property installation', () => {
+  function enableDavinciQuote() {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv(DAVINCI_HMS_READ_TARGET.installationEnvName, 'synthetic-installation');
+  }
+
   function mailFor(transportId: string) {
     return {
       id: STAFF_QUOTE_INPUT.messageId,
@@ -1300,7 +1306,7 @@ describe('runStaffQuote property installation', () => {
       createdAt: new Date('2026-10-12T08:00:00.000Z'),
       fromAddress: 'guest@example.invalid',
       toAddresses:
-        transportId === 'transport-davinci'
+        transportId === DAVINCI_TRANSPORT_ID
           ? ['davinci@legacyhotels.co.za']
           : ['centurion@legacyhotels.co.za'],
     };
@@ -1319,12 +1325,12 @@ describe('runStaffQuote property installation', () => {
   }
 
   it('uses the HRDAV installation for a Da Vinci transport when the quote flag is on', async () => {
-    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    enableDavinciQuote();
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel',
       owner: { propertyCode: 'HRDAV' },
     });
-    await expect(runOn('transport-davinci')).rejects.toMatchObject({
+    await expect(runOn(DAVINCI_TRANSPORT_ID)).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
       message: 'Staff quotation database unavailable',
     });
@@ -1332,12 +1338,12 @@ describe('runStaffQuote property installation', () => {
   });
 
   it('refuses a Da Vinci quote when the HRDAV install is missing and does not read Centurion', async () => {
-    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    enableDavinciQuote();
     quoteRunMocks.readConfiguration.mockImplementation((propertyCode?: string) => {
       if (propertyCode === 'HRDAV') throw new Error('staff_quote_installation_unavailable');
       return { tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRCEN' } };
     });
-    await expect(runOn('transport-davinci')).rejects.toMatchObject({
+    await expect(runOn(DAVINCI_TRANSPORT_ID)).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
       message: 'Staff quotation installation unavailable',
     });
@@ -1349,7 +1355,7 @@ describe('runStaffQuote property installation', () => {
       tenantId: 'synthetic-hotel',
       owner: { propertyCode: 'HRCEN' },
     });
-    await expect(runOn('transport-centurion')).rejects.toMatchObject({
+    await expect(runOn(TRANSPORT_ID)).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
       message: 'Staff quotation database unavailable',
     });
@@ -1357,12 +1363,12 @@ describe('runStaffQuote property installation', () => {
   });
 
   it('refuses when the loaded installation owner.propertyCode does not match the quote target', async () => {
-    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    enableDavinciQuote();
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel',
       owner: { propertyCode: 'HRCEN' },
     });
-    await expect(runOn('transport-davinci')).rejects.toMatchObject({
+    await expect(runOn(DAVINCI_TRANSPORT_ID)).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
       message: 'Staff quotation installation unavailable',
     });
@@ -1370,12 +1376,12 @@ describe('runStaffQuote property installation', () => {
   });
 
   it('reaches HRDAV staff quote services for a Da Vinci transport when the quote flag is on', async () => {
-    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    enableDavinciQuote();
     vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
     const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
       '../src/ai/staff-quote-run.js',
     );
-    const mail = mailFor('transport-davinci');
+    const mail = mailFor(DAVINCI_TRANSPORT_ID);
     const input = staffQuoteInput.parse({
       ...STAFF_QUOTE_INPUT,
       sourceHash: staffQuoteSourceHash(mail),
@@ -1404,7 +1410,7 @@ describe('runStaffQuote property installation', () => {
       ],
     });
     await actual
-      .runStaffQuote(input, { transportId: 'transport-davinci', user }, staffQuoteRunDb(mail).db)
+      .runStaffQuote(input, { transportId: DAVINCI_TRANSPORT_ID, user }, staffQuoteRunDb(mail).db)
       .catch(() => undefined);
     expect(quoteRunMocks.readConfiguration.mock.calls).toEqual([['HRDAV']]);
     expect(quoteRunMocks.getServices).toHaveBeenCalledWith(
