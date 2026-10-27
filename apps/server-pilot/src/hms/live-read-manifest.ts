@@ -507,7 +507,7 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
       resourceTypes: ['document'],
       fixedQuery: {},
       variableQuery: {
-        tenant: { pattern: 'HMS_LEGACY', maxLength: 32 },
+        tenant: { pattern: 'THECENTURION_PRD', maxLength: 32 },
       },
       fixedBody: {},
       variableBody: {},
@@ -552,7 +552,7 @@ export function buildLiveGuestStayFunctionalRules(origin: string): RequestRule[]
       fixedQuery: {},
       variableQuery: {},
       fixedBody: {
-        tenant: 'HMS_LEGACY',
+        tenant: 'THECENTURION_PRD',
       },
       variableBody: {
         userid: { pattern: '.{1,64}', maxLength: 64 },
@@ -1406,7 +1406,7 @@ export function buildLiveSentEmailFunctionalRules(origin: string): RequestRule[]
       resourceTypes: ['document'],
       fixedQuery: {},
       variableQuery: {
-        tenant: { pattern: 'HMS_LEGACY', maxLength: 32 },
+        tenant: { pattern: 'THECENTURION_PRD', maxLength: 32 },
       },
       fixedBody: {},
       variableBody: {},

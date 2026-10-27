@@ -85,7 +85,7 @@ function minimalLoginManifest(origin: string): RequestPolicyManifest {
       resourceTypes: ['document'],
       fixedQuery: {},
       variableQuery: {
-        tenant: { pattern: 'HMS_LEGACY', maxLength: 32 },
+        tenant: { pattern: 'THECENTURION_PRD', maxLength: 32 },
       },
       fixedBody: {},
       variableBody: {},

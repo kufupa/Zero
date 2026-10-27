@@ -118,7 +118,7 @@ module.exports = {
           process.env.HMS_RELEASE_ROOT ?? '/opt/nava/shared/hms-releases',
         HMS_HEALTH_STATUS_PATH:
           process.env.HMS_HEALTH_STATUS_PATH ?? '/tmp/nava-zero-hms-health.json',
-        HMS_EXPECTED_TENANT: process.env.HMS_EXPECTED_TENANT ?? 'HMS_LEGACY',
+        HMS_EXPECTED_TENANT: process.env.HMS_EXPECTED_TENANT ?? 'THECENTURION_PRD',
         HMS_EXPECTED_PROPERTY_CODE:
           process.env.HMS_EXPECTED_PROPERTY_CODE ?? 'HRCEN',
         HMS_EXPECTED_TRANSPORT_ID:

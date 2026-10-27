@@ -44,7 +44,7 @@ import { FakeS3Storage } from '../src/storage/s3.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 
-const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
+const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const NOW = '2026-08-06T12:00:00.000Z';
 const SCOPE = 'a'.repeat(64);
 const ACCOUNT = '12345';

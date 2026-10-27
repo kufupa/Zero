@@ -231,7 +231,7 @@ describe('HMS fixture server', () => {
       await fetch(`${server.origin}/web/reservation/search`, {
         method: 'POST',
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
-        body: 'action=search&tenant=HMS_LEGACY&property=centurion&confirmationNumber=X',
+        body: 'action=search&tenant=THECENTURION_PRD&property=centurion&confirmationNumber=X',
       });
       await fetch(`${server.origin}/availability/rooms?view=inventory&startDate=2099-01-01`);
       await fetch(`${server.origin}/availability/rates`);
@@ -1220,7 +1220,7 @@ describe('Task 2 production composition + browser guards', () => {
   it('live-shaped fixture exposes Infor login + Guest Stay + OSRESS.search', async () => {
     const server = await startHmsFixtureServer({ shape: 'live-infor' });
     cleanup.push(server.close);
-    const login = await fetch(`${server.origin}/web/base/logindisp?tenant=HMS_LEGACY`);
+    const login = await fetch(`${server.origin}/web/base/logindisp?tenant=THECENTURION_PRD`);
     const loginHtml = await login.text();
     expect(loginHtml).toMatch(/name="userid"/);
     expect(loginHtml).toMatch(/name="password"/);
@@ -1229,7 +1229,7 @@ describe('Task 2 production composition + browser guards', () => {
     const session = await fetch(`${server.origin}/web/base/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
-      body: 'tenant=HMS_LEGACY&userid=u&password=p&csrftckt=t',
+      body: 'tenant=THECENTURION_PRD&userid=u&password=p&csrftckt=t',
       redirect: 'manual',
     });
     expect(session.status).toBe(302);
@@ -1261,10 +1261,10 @@ describe('Task 2 production composition + browser guards', () => {
     const { createLiveGuestStayDriver } = await import('../src/hms/live-guest-stay-driver.js');
     const { buildLiveGuestStayReadManifest } = await import('../src/hms/live-read-manifest.js');
     const secret: HmsSecret = {
-      loginUrl: `${server.origin}/web/base/logindisp?tenant=HMS_LEGACY`,
+      loginUrl: `${server.origin}/web/base/logindisp?tenant=THECENTURION_PRD`,
       username: 'fixture-user',
       password: 'fixture-password',
-      expectedTenant: 'HMS_LEGACY',
+      expectedTenant: 'THECENTURION_PRD',
       expectedPropertyCode: 'HRCEN',
       expectedPropertyName: 'Centurion Hotel',
       mailboxTransportId: FIXTURE_IDS.transportId,
@@ -1307,10 +1307,10 @@ describe('Task 2 production composition + browser guards', () => {
     const { createLiveGuestStayDriver } = await import('../src/hms/live-guest-stay-driver.js');
     const { BLOCK_CODES } = await import('../src/hms/request-policy.js');
     const secret: HmsSecret = {
-      loginUrl: `${server.origin}/web/base/logindisp?tenant=HMS_LEGACY`,
+      loginUrl: `${server.origin}/web/base/logindisp?tenant=THECENTURION_PRD`,
       username: 'fixture-user',
       password: 'fixture-password',
-      expectedTenant: 'HMS_LEGACY',
+      expectedTenant: 'THECENTURION_PRD',
       expectedPropertyCode: 'HRCEN',
       expectedPropertyName: 'Centurion Hotel',
       mailboxTransportId: FIXTURE_IDS.transportId,
@@ -3452,7 +3452,7 @@ describe('HMS browser audit capture order', () => {
       loginUrl: `${CENTURION_HMS_PRODUCTION_ORIGIN}/login`,
       username: 'fixture-user',
       password: 'fixture-password',
-      expectedTenant: 'HMS_LEGACY',
+      expectedTenant: 'THECENTURION_PRD',
       expectedPropertyCode: 'HRCEN',
       expectedPropertyName: 'Centurion',
       mailboxTransportId: 'transport-centurion',
@@ -3463,7 +3463,7 @@ describe('HMS browser audit capture order', () => {
       chromiumExecutablePath: '/opt/nava/chromium/chrome',
       roleProofPath: proofPath,
       healthPath: join(dir, 'health.json'),
-      expectedTenant: 'HMS_LEGACY',
+      expectedTenant: 'THECENTURION_PRD',
       expectedPropertyCode: 'HRCEN' as const,
       expectedTransportId: 'transport-centurion',
       runDeadlineMs: 15_000,
@@ -3558,7 +3558,7 @@ describe('HMS browser audit capture order', () => {
       loginUrl: `${CENTURION_HMS_PRODUCTION_ORIGIN}/login`,
       username: 'fixture-user',
       password: 'fixture-password',
-      expectedTenant: 'HMS_LEGACY',
+      expectedTenant: 'THECENTURION_PRD',
       expectedPropertyCode: 'HRCEN',
       expectedPropertyName: 'Centurion',
       mailboxTransportId: 'transport-centurion',
@@ -3570,7 +3570,7 @@ describe('HMS browser audit capture order', () => {
       chromiumExecutablePath: '/opt/nava/chromium/chrome',
       roleProofPath: proofPath,
       healthPath: join(dir, 'health.json'),
-      expectedTenant: 'HMS_LEGACY',
+      expectedTenant: 'THECENTURION_PRD',
       expectedPropertyCode: 'HRCEN' as const,
       expectedTransportId: 'transport-centurion',
       runDeadlineMs: 15_000,

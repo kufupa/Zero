@@ -17,7 +17,7 @@
     "rules": [
       {
         "id": "live-login-css",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/HMS-min.css",
         "resourceTypes": ["stylesheet"],
@@ -30,7 +30,7 @@
       },
       {
         "id": "live-login-jquery",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/scripts/jquery-3.6.0.min.js",
         "resourceTypes": ["script"],
@@ -43,7 +43,7 @@
       },
       {
         "id": "live-login-jquery-json",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/scripts/jquery.json-2.3.min.js",
         "resourceTypes": ["script"],
@@ -56,7 +56,7 @@
       },
       {
         "id": "live-login-companyon",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/scripts/infor-companyon-client.js",
         "resourceTypes": ["script"],
@@ -69,7 +69,7 @@
       },
       {
         "id": "live-login-all-js",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/base/login-all.js",
         "resourceTypes": ["script"],
@@ -82,7 +82,7 @@
       },
       {
         "id": "live-login-error-svg",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/error-solid.svg",
         "resourceTypes": ["image"],
@@ -95,7 +95,7 @@
       },
       {
         "id": "live-login-logo-svg",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/shared/logo.svg",
         "resourceTypes": ["image"],
@@ -108,7 +108,7 @@
       },
       {
         "id": "live-login-shared-logo-svg",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/images/logo.svg",
         "resourceTypes": ["image", "other"],
@@ -121,7 +121,7 @@
       },
       {
         "id": "live-login-font-semibold",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Semibold.ttf",
         "resourceTypes": ["font"],
@@ -134,7 +134,7 @@
       },
       {
         "id": "live-login-font-regular",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Regular.ttf",
         "resourceTypes": ["font"],
@@ -147,7 +147,7 @@
       },
       {
         "id": "live-login-font-it",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-It.ttf",
         "resourceTypes": ["font"],
@@ -160,7 +160,7 @@
       },
       {
         "id": "live-login-font-black",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Black.ttf",
         "resourceTypes": ["font"],
@@ -173,7 +173,7 @@
       },
       {
         "id": "live-post-login-root",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/",
         "resourceTypes": ["document"],
@@ -186,7 +186,7 @@
       },
       {
         "id": "live-common-vault-utility",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/scripts/vault/vaultUtility.js",
         "resourceTypes": ["script"],
@@ -199,7 +199,7 @@
       },
       {
         "id": "live-common-parent-facade",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/scripts/vault/parentFacade.js",
         "resourceTypes": ["script"],
@@ -212,7 +212,7 @@
       },
       {
         "id": "live-common-parent-facade-impl",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/scripts/vault/parentFacadeImpl.js",
         "resourceTypes": ["script"],
@@ -225,7 +225,7 @@
       },
       {
         "id": "live-common-aes",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/scripts/cryptojs/aes.js",
         "resourceTypes": ["script"],
@@ -238,7 +238,7 @@
       },
       {
         "id": "live-common-pbkdf2",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/scripts/cryptojs/pbkdf2.js",
         "resourceTypes": ["script"],
@@ -251,7 +251,7 @@
       },
       {
         "id": "live-common-aes-util",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/scripts/cryptojs/AesUtil.js",
         "resourceTypes": ["script"],
@@ -264,7 +264,7 @@
       },
       {
         "id": "live-common-sha256",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/scripts/cryptojs/sha256-min.js",
         "resourceTypes": ["script"],
@@ -277,7 +277,7 @@
       },
       {
         "id": "live-common-all-classes",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/base/all-classes.js",
         "resourceTypes": ["script"],
@@ -290,7 +290,7 @@
       },
       {
         "id": "live-toolbar-dropdown",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/dropdown.svg",
         "resourceTypes": ["image"],
@@ -303,7 +303,7 @@
       },
       {
         "id": "live-toolbar-new-doc-icon",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/new-document.svg",
         "resourceTypes": ["image"],
@@ -316,7 +316,7 @@
       },
       {
         "id": "live-toolbar-user",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/user.svg",
         "resourceTypes": ["image", "other"],
@@ -329,7 +329,7 @@
       },
       {
         "id": "live-toolbar-help",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/help.svg",
         "resourceTypes": ["image", "other"],
@@ -342,7 +342,7 @@
       },
       {
         "id": "live-toolbar-info",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/info.svg",
         "resourceTypes": ["image", "other"],
@@ -355,7 +355,7 @@
       },
       {
         "id": "live-toolbar-logout",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/logout.svg",
         "resourceTypes": ["image", "other"],
@@ -368,7 +368,7 @@
       },
       {
         "id": "live-toolbar-overlay-line",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/overlay-line.svg",
         "resourceTypes": ["image", "other"],
@@ -381,7 +381,7 @@
       },
       {
         "id": "live-toolbar-settings",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/settings.svg",
         "resourceTypes": ["image", "other"],
@@ -394,7 +394,7 @@
       },
       {
         "id": "live-toolbar-save-icon",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/save.svg",
         "resourceTypes": ["image", "other"],
@@ -407,7 +407,7 @@
       },
       {
         "id": "live-toolbar-refresh",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/refresh.svg",
         "resourceTypes": ["image", "other"],
@@ -420,7 +420,7 @@
       },
       {
         "id": "live-toolbar-quick-access",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/quick-access.svg",
         "resourceTypes": ["image", "other"],
@@ -433,7 +433,7 @@
       },
       {
         "id": "live-toolbar-caret-down",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/caret-down.svg",
         "resourceTypes": ["image", "other"],
@@ -446,7 +446,7 @@
       },
       {
         "id": "live-toolbar-send-submit-icon",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/send-submit.svg",
         "resourceTypes": ["image", "other"],
@@ -459,7 +459,7 @@
       },
       {
         "id": "live-toolbar-bullet-list",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/bullet-list.svg",
         "resourceTypes": ["image", "other"],
@@ -472,7 +472,7 @@
       },
       {
         "id": "live-toolbar-expand-app-tray",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/expand-app-tray.svg",
         "resourceTypes": ["image", "other"],
@@ -485,7 +485,7 @@
       },
       {
         "id": "live-grid-hd-btn",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/grid/grid3-hd-btn.png",
         "resourceTypes": ["image", "other"],
@@ -498,7 +498,7 @@
       },
       {
         "id": "live-tree-caret-down",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/tree/caret-down.svg",
         "resourceTypes": ["image", "other"],
@@ -511,7 +511,7 @@
       },
       {
         "id": "live-tree-folder",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/tree/folder.svg",
         "resourceTypes": ["image", "other"],
@@ -524,7 +524,7 @@
       },
       {
         "id": "live-tree-open-folder",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/tree/open-folder.svg",
         "resourceTypes": ["image", "other"],
@@ -537,7 +537,7 @@
       },
       {
         "id": "live-tree-dot",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/tree/dot.svg",
         "resourceTypes": ["image", "other"],
@@ -550,7 +550,7 @@
       },
       {
         "id": "live-tree-plusminus-folder-closed",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/tree/plusminus-folder-closed.svg",
         "resourceTypes": ["image", "other"],
@@ -563,7 +563,7 @@
       },
       {
         "id": "live-toolbar-left-arrow",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/left-arrow.svg",
         "resourceTypes": ["image", "other"],
@@ -576,7 +576,7 @@
       },
       {
         "id": "live-toolbar-delete",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/delete.svg",
         "resourceTypes": ["image", "other"],
@@ -589,7 +589,7 @@
       },
       {
         "id": "live-toolbar-previous-page",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/previous-page.svg",
         "resourceTypes": ["image", "other"],
@@ -602,7 +602,7 @@
       },
       {
         "id": "live-toolbar-next-page",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/next-page.svg",
         "resourceTypes": ["image", "other"],
@@ -615,7 +615,7 @@
       },
       {
         "id": "live-toolbar-copy",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/copy.svg",
         "resourceTypes": ["image", "other"],
@@ -628,7 +628,7 @@
       },
       {
         "id": "live-toolbar-reset",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/reset.svg",
         "resourceTypes": ["image", "other"],
@@ -641,7 +641,7 @@
       },
       {
         "id": "live-toolbar-print",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/print.svg",
         "resourceTypes": ["image", "other"],
@@ -654,7 +654,7 @@
       },
       {
         "id": "live-toolbar-print-preview",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/print-preview.svg",
         "resourceTypes": ["image", "other"],
@@ -667,7 +667,7 @@
       },
       {
         "id": "live-toolbar-expand-left",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/expand-left.svg",
         "resourceTypes": ["image", "other"],
@@ -680,7 +680,7 @@
       },
       {
         "id": "live-toolbar-split-view",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/split-view.svg",
         "resourceTypes": ["image", "other"],
@@ -693,7 +693,7 @@
       },
       {
         "id": "live-toolbar-expand-right",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/expand-right.svg",
         "resourceTypes": ["image", "other"],
@@ -706,7 +706,7 @@
       },
       {
         "id": "live-toolbar-room-rate-availability",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/room-rate-availability.svg",
         "resourceTypes": ["image", "other"],
@@ -719,7 +719,7 @@
       },
       {
         "id": "live-toolbar-room-type-availability",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/room-type-availability.svg",
         "resourceTypes": ["image", "other"],
@@ -732,7 +732,7 @@
       },
       {
         "id": "live-toolbar-money",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/money.svg",
         "resourceTypes": ["image", "other"],
@@ -745,7 +745,7 @@
       },
       {
         "id": "live-toolbar-room-availability",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/room-availability.svg",
         "resourceTypes": ["image", "other"],
@@ -758,7 +758,7 @@
       },
       {
         "id": "live-toolbar-inventory",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/inventory.svg",
         "resourceTypes": ["image", "other"],
@@ -771,7 +771,7 @@
       },
       {
         "id": "live-toolbar-employee-directory",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/employee-directory.svg",
         "resourceTypes": ["image", "other"],
@@ -784,7 +784,7 @@
       },
       {
         "id": "live-toolbar-interface-status",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/interface-status.svg",
         "resourceTypes": ["image", "other"],
@@ -797,7 +797,7 @@
       },
       {
         "id": "live-toolbar-interface-error",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/hms/toolbar/interface-error.svg",
         "resourceTypes": ["image", "other"],
@@ -810,7 +810,7 @@
       },
       {
         "id": "live-toolbar-filter-contains",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/filter-contains.svg",
         "resourceTypes": ["image", "other"],
@@ -823,7 +823,7 @@
       },
       {
         "id": "live-toolbar-filter",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/filter.svg",
         "resourceTypes": ["image", "other"],
@@ -836,7 +836,7 @@
       },
       {
         "id": "live-toolbar-no-filter",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/no-filter.svg",
         "resourceTypes": ["image", "other"],
@@ -849,7 +849,7 @@
       },
       {
         "id": "live-toolbar-export-spreadsheet",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/export-spreadsheet.svg",
         "resourceTypes": ["image", "other"],
@@ -862,7 +862,7 @@
       },
       {
         "id": "live-util-splitter-drag",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/util/splitter/drag.svg",
         "resourceTypes": ["image", "other"],
@@ -875,7 +875,7 @@
       },
       {
         "id": "live-toolbar-close",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/close.svg",
         "resourceTypes": ["image", "other"],
@@ -888,7 +888,7 @@
       },
       {
         "id": "live-button-s-arrow-noline",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/button/s-arrow-noline.png",
         "resourceTypes": ["image", "other"],
@@ -901,7 +901,7 @@
       },
       {
         "id": "live-toolbar-filter-equals",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/filter-equals.svg",
         "resourceTypes": ["image", "other"],
@@ -914,7 +914,7 @@
       },
       {
         "id": "live-toolbar-filter-selected-notselected",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/filter-selected-notselected.svg",
         "resourceTypes": ["image", "other"],
@@ -927,7 +927,7 @@
       },
       {
         "id": "live-slider-bg",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/slider/slider-bg.png",
         "resourceTypes": ["image", "other"],
@@ -940,7 +940,7 @@
       },
       {
         "id": "live-slider-thumb",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/slider/slider-thumb.png",
         "resourceTypes": ["image", "other"],
@@ -953,7 +953,7 @@
       },
       {
         "id": "live-interface-status-alert",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/jsp/interfaceStatusAlert.jsp",
         "resourceTypes": ["xhr", "fetch", "document"],
@@ -971,7 +971,7 @@
       },
       {
         "id": "live-toolbar-mingle-share",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/inforhms/images/toolbar/mingle-share.svg",
         "resourceTypes": ["image", "other"],
@@ -984,7 +984,7 @@
       },
       {
         "id": "live-login-font-bold",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "GET",
         "path": "/web/resources/shared/css/SourceSansPro-font/SourceSansPro-Bold.ttf",
         "resourceTypes": ["font"],
@@ -997,7 +997,7 @@
       },
       {
         "id": "live-osrrav-open",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "POST",
         "path": "/web/base/OSRRAV",
         "resourceTypes": ["xhr", "fetch"],
@@ -1027,7 +1027,7 @@
       },
       {
         "id": "live-osrrav-hdr",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "POST",
         "path": "/web/base/OSRRAV.HDR",
         "resourceTypes": ["xhr", "fetch"],
@@ -1045,7 +1045,7 @@
       },
       {
         "id": "live-osrrav-search-exact",
-        "origin": "https://appsrv-1.legacyhotels.co.za",
+        "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
         "method": "POST",
         "path": "/web/base/OSRRAV.HDR.search",
         "resourceTypes": ["xhr", "fetch"],

@@ -11,19 +11,19 @@ import {
 import { evaluateObservedRequest } from '../src/hms/request-policy.js';
 import { requestPolicyManifestSchema } from '../src/hms/contracts.js';
 
-const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
+const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 
 describe('extractPropertyBindingFromDom (live + fixture)', () => {
   it('prefers fixture data-* attrs', () => {
     const html =
-      '<div data-tenant="HMS_LEGACY" data-property-code="HRCEN" data-property-name="Centurion Hotel"></div>';
+      '<div data-tenant="THECENTURION_PRD" data-property-code="HRCEN" data-property-name="Centurion Hotel"></div>';
     expect(
       extractPropertyBindingFromDom({
         html,
         title: 'Other title',
       }),
     ).toEqual({
-      tenant: 'HMS_LEGACY',
+      tenant: 'THECENTURION_PRD',
       propertyCode: 'HRCEN',
       propertyName: 'Centurion Hotel',
     });
@@ -31,14 +31,14 @@ describe('extractPropertyBindingFromDom (live + fixture)', () => {
 
   it('extracts live COMMON shell tenantid + title code', () => {
     const html =
-      '{"isdesigner": "false", "tenantid": "HMS_LEGACY", "property": "HRCEN", "userorg": "HRCEN"}' +
+      '{"isdesigner": "false", "tenantid": "THECENTURION_PRD", "property": "HRCEN", "userorg": "HRCEN"}' +
       '<div><b>Legacy - The Centurion Hotel&nbsp;</b></div>';
     const binding = extractPropertyBindingFromDom({
       html,
       title: 'Infor HMS - HRCEN',
       pageUrl: `${ORIGIN}/web/base/COMMON`,
     });
-    expect(binding.tenant).toBe('HMS_LEGACY');
+    expect(binding.tenant).toBe('THECENTURION_PRD');
     expect(binding.propertyCode).toBe('HRCEN');
     expect(binding.propertyName).toBeNull();
     expect(
@@ -74,7 +74,7 @@ describe('extractPropertyBindingFromDom (live + fixture)', () => {
             'page.content: Unable to retrieve content because the page is navigating and changing the content.',
           );
         }
-        return '<div data-tenant="HMS_LEGACY" data-property-code="HRCEN" data-property-name="Centurion Hotel"></div>';
+        return '<div data-tenant="THECENTURION_PRD" data-property-code="HRCEN" data-property-name="Centurion Hotel"></div>';
       },
       async title() {
         return 'Infor HMS - HRCEN';
@@ -86,7 +86,7 @@ describe('extractPropertyBindingFromDom (live + fixture)', () => {
     await waitForAuthenticatedShell(
       page,
       {
-        expectedTenant: 'HMS_LEGACY',
+        expectedTenant: 'THECENTURION_PRD',
         expectedPropertyCode: 'HRCEN',
         expectedPropertyName: 'Centurion Hotel',
       },
@@ -101,10 +101,10 @@ describe('extractPropertyBindingFromDom (live + fixture)', () => {
       async content() {
         calls += 1;
         if (calls < 3) {
-          return '{"tenantid":"HMS_LEGACY","property":"HRCEN"}';
+          return '{"tenantid":"THECENTURION_PRD","property":"HRCEN"}';
         }
         return (
-          '{"tenantid":"HMS_LEGACY","property":"HRCEN"}' +
+          '{"tenantid":"THECENTURION_PRD","property":"HRCEN"}' +
           '<b>Legacy - The Centurion Hotel&nbsp;</b>'
         );
       },
@@ -118,7 +118,7 @@ describe('extractPropertyBindingFromDom (live + fixture)', () => {
     await waitForAuthenticatedShell(
       page,
       {
-        expectedTenant: 'HMS_LEGACY',
+        expectedTenant: 'THECENTURION_PRD',
         expectedPropertyCode: 'HRCEN',
         expectedPropertyName: 'Centurion Hotel',
       },

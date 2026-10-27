@@ -49,7 +49,7 @@ export const PROPERTY_REGISTRY = Object.freeze({
       propertyCode: 'HRCEN',
       active: true,
       transportIds: Object.freeze(['transport-centurion']),
-      expectedTenant: 'HMS_LEGACY',
+      expectedTenant: 'THECENTURION_PRD',
       expectedPropertyName: 'Centurion Hotel',
       username: 'NAVAAI',
       mailboxTransportId: 'transport-centurion',

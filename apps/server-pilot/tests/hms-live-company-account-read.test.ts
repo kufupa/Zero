@@ -16,7 +16,7 @@ import { buildLiveFolioReadManifest } from '../src/hms/live-read-manifest.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
+const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const SCOPE = 'a'.repeat(64);
 
 function auth(

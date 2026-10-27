@@ -856,7 +856,7 @@ describe('live OSRESS GRIDRESULT parser', () => {
 });
 
 describe('live driver fail-closed boundaries', () => {
-  const productionOrigin = 'https://appsrv-1.legacyhotels.co.za';
+  const productionOrigin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 
   it('rejects an unsafe finalized audit receipt instead of returning a result', async () => {
     const unsafeReceipt = {

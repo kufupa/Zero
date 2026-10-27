@@ -32,7 +32,7 @@ import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
+const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const HEX = 'a'.repeat(64);
 
 function sha256(value: string): string {

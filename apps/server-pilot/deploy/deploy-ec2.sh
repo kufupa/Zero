@@ -195,7 +195,7 @@ unset VITE_PUBLIC_APP_URL
 # Near-realtime thread list poll (policy min 15s; default baked for pilot).
 export VITE_MAIL_POLL_MS="${VITE_MAIL_POLL_MS:-15000}"
 # Pane "Open HMS" link: staff open HMS in their own browser (hotel network). Login landing only; no record keys.
-export VITE_PUBLIC_HMS_LANDING_URL="${VITE_PUBLIC_HMS_LANDING_URL:-https://appsrv-1.legacyhotels.co.za/web/base/logindisp?tenant=HMS_LEGACY}"
+export VITE_PUBLIC_HMS_LANDING_URL="${VITE_PUBLIC_HMS_LANDING_URL:-https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/logindisp?tenant=THECENTURION_PRD}"
 pnpm --filter @zero/mail build
 
 echo "== assert SPA did not bake undefined/api =="

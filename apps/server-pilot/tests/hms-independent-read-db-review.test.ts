@@ -76,7 +76,7 @@ const READ_MANIFEST_SHA256 = 'a'.repeat(64);
 const QUOTE_REQUEST_TEXT =
   'Please quote arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room, room type STD, rate plan BAR, currency ZAR.';
 const GROUP_MANIFEST_SHA256 = createHash('sha256')
-  .update(JSON.stringify(buildLiveGroupBlockListManifest('https://appsrv-1.legacyhotels.co.za')))
+  .update(JSON.stringify(buildLiveGroupBlockListManifest('https://hmsweb.hms.eu1.inforcloudsuite.com')))
   .digest('hex');
 
 function crc32(input: Buffer): number {
@@ -156,7 +156,7 @@ async function createAuditedGroupRuntime(transport: string): Promise<{
       let closed = false;
       return {
         id: 'synthetic-group-session',
-        origin: 'https://appsrv-1.legacyhotels.co.za',
+        origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com',
         page: {
           postForm: async (url: string) => (url.endsWith('GSGRPB.LST') ? transport : ''),
           waitForCorrelatedResponse: async () => undefined,

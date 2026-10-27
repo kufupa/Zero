@@ -790,7 +790,7 @@ export function createFetchBrowserFactory(
           await this.postForm(url, {
             userid: creds.username,
             password: creds.password,
-            tenant: 'HMS_LEGACY',
+            tenant: 'THECENTURION_PRD',
             csrftckt: 'fixture',
             resetpassword: '',
             SYSTEM_FUNCTION_NAME: '',

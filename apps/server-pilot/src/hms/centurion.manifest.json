@@ -3,7 +3,7 @@
   "binding": {
     "transportId": "transport-centurion",
     "origin": "http://127.0.0.1:17888",
-    "tenantId": "HMS_LEGACY",
+    "tenantId": "THECENTURION_PRD",
     "propertyKey": "centurion",
     "expectedPropertyText": "Centurion Hotel"
   },
@@ -75,7 +75,7 @@
       "variableQuery": {},
       "fixedBody": {
         "action": "search",
-        "tenant": "HMS_LEGACY",
+        "tenant": "THECENTURION_PRD",
         "property": "centurion"
       },
       "variableBody": {
@@ -96,7 +96,7 @@
       "variableQuery": {},
       "fixedBody": {
         "action": "search",
-        "tenant": "HMS_LEGACY",
+        "tenant": "THECENTURION_PRD",
         "property": "centurion"
       },
       "variableBody": {
@@ -118,7 +118,7 @@
       "variableQuery": {},
       "fixedBody": {
         "action": "search",
-        "tenant": "HMS_LEGACY",
+        "tenant": "THECENTURION_PRD",
         "property": "centurion"
       },
       "variableBody": {

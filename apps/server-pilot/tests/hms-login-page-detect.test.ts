@@ -8,7 +8,7 @@ describe('looksLikeUnauthenticatedLoginPage', () => {
   it('treats logindisp as login even without password inputs', () => {
     expect(
       looksLikeUnauthenticatedLoginPage(
-        'https://hms.example/web/base/logindisp?tenant=HMS_LEGACY',
+        'https://hms.example/web/base/logindisp?tenant=THECENTURION_PRD',
         '<html><body>Sign in</body></html>',
       ),
     ).toBe(true);
@@ -19,7 +19,7 @@ describe('looksLikeUnauthenticatedLoginPage', () => {
       <html><body>
         <input name="userid" value="viewonly" />
         <input name="password" type="password" />
-        <div>"tenantid":"HMS_LEGACY","property":"HRCEN"</div>
+        <div>"tenantid":"THECENTURION_PRD","property":"HRCEN"</div>
       </body></html>`;
     expect(
       looksLikeUnauthenticatedLoginPage(

@@ -30,7 +30,7 @@ function rowHtml(conf: string): string {
 }
 
 function headerHtml(): string {
-  return `<header data-testid="property-header" data-tenant="HMS_LEGACY" data-property-code="centurion" data-property-name="Centurion Hotel"></header>`;
+  return `<header data-testid="property-header" data-tenant="THECENTURION_PRD" data-property-code="centurion" data-property-name="Centurion Hotel"></header>`;
 }
 
 function reservationRow(conf: string): string {
@@ -50,7 +50,7 @@ class FakePage implements HmsPage {
     return this.#html;
   }
   async readPropertyBinding() {
-    return { tenant: 'HMS_LEGACY', propertyCode: 'centurion', propertyName: 'Centurion Hotel' };
+    return { tenant: 'THECENTURION_PRD', propertyCode: 'centurion', propertyName: 'Centurion Hotel' };
   }
   async fillLogin(): Promise<void> {}
   async submitLogin(): Promise<void> {}

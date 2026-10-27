@@ -12,7 +12,7 @@ import {
 const toast = vi.hoisted(() => ({ success: vi.fn() }));
 vi.mock('sonner', () => ({ toast }));
 
-const LANDING = 'https://appsrv-1.legacyhotels.co.za/web/base/logindisp?tenant=HMS_LEGACY';
+const LANDING = 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/logindisp?tenant=THECENTURION_PRD';
 
 function setClipboard(value: unknown) {
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value });
@@ -36,7 +36,7 @@ describe('cleanLandingUrl', () => {
     expect(cleanLandingUrl(LANDING)).toBe(LANDING);
     expect(cleanLandingUrl(`  ${LANDING}  `)).toBe(LANDING);
     expect(cleanLandingUrl('javascript:alert(1)')).toBeNull();
-    expect(cleanLandingUrl('appsrv-1.legacyhotels.co.za/web/base/logindisp')).toBeNull();
+    expect(cleanLandingUrl('hmsweb.hms.eu1.inforcloudsuite.com/web/base/logindisp')).toBeNull();
     expect(cleanLandingUrl('   ')).toBeNull();
     expect(cleanLandingUrl(undefined)).toBeNull();
   });

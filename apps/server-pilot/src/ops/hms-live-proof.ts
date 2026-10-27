@@ -740,7 +740,7 @@ export function validateRequestRuleCounts(
 function liveProofAllowedRuleIds(): Set<string> {
   return new Set(
     buildExactOsressSearchManifest(
-      'https://appsrv-1.legacyhotels.co.za',
+      'https://hmsweb.hms.eu1.inforcloudsuite.com',
       liveNotFoundCanaryCandidate(),
     ).rules.map((rule) => rule.id),
   );

@@ -210,7 +210,7 @@ describe('phase-b-operation discovery + evidence gates', () => {
   it('aborts unknown requests and records only redacted structural signatures', () => {
     const aborted = abortUnknownRequest({
       method: 'POST',
-      origin: 'https://appsrv-1.legacyhotels.co.za',
+      origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com',
       path: '/unknown',
       resourceType: 'xhr',
       queryKeys: ['secret'],

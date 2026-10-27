@@ -41,7 +41,7 @@ describe('hmsReadTargetForTransport', () => {
       propertyCode: 'HRCEN',
       secretId: 'nava-zero/server-pilot/infor-hms-read',
       browserSlot: 'centurion',
-      origin: 'https://appsrv-1.legacyhotels.co.za',
+      origin: 'https://hmsweb.hms.eu1.inforcloudsuite.com',
       installationEnvName: 'RESERVATIONIST_STAFF_QUOTE_CONFIGURATION',
     });
   });
