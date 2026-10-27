@@ -343,6 +343,44 @@ function commitViewFromSaved(
   };
 }
 
+function sameBookedConfirmation(local: CommitView | undefined, incoming: CommitView | undefined): boolean {
+  return Boolean(
+    local?.status === 'booked' &&
+      incoming?.status === 'booked' &&
+      local.confirmationNumber === incoming.confirmationNumber,
+  );
+}
+
+/** Fold a later stored read into room save state. A local book stays until the stored read has that confirmation. */
+function mergeSavedRoomCommits(
+  current: Record<string, RoomSaveState>,
+  incoming: Record<string, RoomSaveState>,
+  localKeys: ReadonlySet<string>,
+): Record<string, RoomSaveState> {
+  let next = current;
+  for (const [roomKey, roomSave] of Object.entries(incoming)) {
+    if (!roomSave.commit) continue;
+    const local = current[roomKey]?.commit;
+    if (localKeys.has(roomKey)) {
+      if (local?.status === 'running') continue;
+      if (local?.status === 'booked' && !sameBookedConfirmation(local, roomSave.commit)) continue;
+    }
+    if (
+      local?.status === roomSave.commit.status &&
+      sameBookedConfirmation(local, roomSave.commit) &&
+      local.runId === roomSave.commit.runId &&
+      (local.shots?.length ?? 0) === (roomSave.commit.shots?.length ?? 0)
+    ) {
+      continue;
+    }
+    if (local?.status === 'refused' && roomSave.commit.status === 'refused' && local.message === roomSave.commit.message && local.runId === roomSave.commit.runId) {
+      continue;
+    }
+    next = { ...next, [roomKey]: { ...next[roomKey], commit: roomSave.commit } };
+  }
+  return next;
+}
+
 function savesFromSavedStays(
   draft: BookingDraftReady,
   groups: StayGroupRequirement[],
@@ -502,7 +540,7 @@ function RoomSave({
           />
         ) : null}
         {commit.runId && durableShots.length > 0 ? (
-          <HmsShotsViewer runId={commit.runId} shots={durableShots} screenshot={screenshot} />
+          <HmsShotsViewer key={commit.runId} runId={commit.runId} shots={durableShots} screenshot={screenshot} />
         ) : commit.runId && savedShot ? (
           <PaneScreenshot
             caption="See what Nava saved in HMS"
@@ -563,7 +601,7 @@ function RoomSave({
             {commit.message}
           </p>
           {commit.runId && (commit.shots?.length ?? 0) > 0 ? (
-            <HmsShotsViewer runId={commit.runId} shots={commit.shots ?? []} screenshot={screenshot} />
+            <HmsShotsViewer key={commit.runId} runId={commit.runId} shots={commit.shots ?? []} screenshot={screenshot} />
           ) : commit.runId && refusedShot ? (
             <PaneScreenshot
               caption="See what Nava saved in HMS"
@@ -804,7 +842,7 @@ export function SavedStayReceipt({
       )}
       {saved.confirmationNumber ? <HmsLinkActions confirmation={saved.confirmationNumber} /> : null}
       {runId && shots.length > 0 && screenshot ? (
-        <HmsShotsViewer runId={runId} shots={shots} screenshot={screenshot} />
+        <HmsShotsViewer key={runId} runId={runId} shots={shots} screenshot={screenshot} />
       ) : null}
     </div>
   );
@@ -912,6 +950,12 @@ export function BookingCards({
   const [saves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
     savesFromSavedStays(draft, groups, savedStays),
   );
+  const localCommitKeys = useRef(new Set<string>());
+  const savedStayMergeKey = JSON.stringify(savedStays ?? null);
+  useEffect(() => {
+    const incoming = savesFromSavedStays(draft, groups, savedStays);
+    setSaves((current) => mergeSavedRoomCommits(current, incoming, localCommitKeys.current));
+  }, [savedStayMergeKey, draft, groups, savedStays]);
   const previewReceipt = usePaneStayPreview();
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
@@ -1237,6 +1281,7 @@ export function BookingCards({
     const key = paneStayKey(stay);
     const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
     if (room) previewReceipt.clear(workItemId, stayIdForRoom(room, groups));
+    localCommitKeys.current.add(roomKey);
     patchSave(roomKey, { commit: { status: 'running', key } });
     let commit: CommitView;
     try {

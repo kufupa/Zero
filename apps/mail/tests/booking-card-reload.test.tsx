@@ -165,6 +165,37 @@ describe('booking card reload', () => {
     expect(screen.getAllByText('Booked in HMS – confirmation 98765-1')).toHaveLength(1);
   });
 
+  it('shows a saved booking that arrives after the card is already open', () => {
+    const client: PaneStayClient = {
+      preview: vi.fn(),
+      commit: vi.fn(),
+      screenshot: vi.fn(async () => null),
+      mode: () => 'on',
+    };
+    const stay = {
+      confirmationNumber: '98765-1',
+      status: 'booked' as const,
+      screenshotRef: null,
+      runId: RUN,
+      shots: [{ name: 'saved.png', sha256: 'c'.repeat(64), at: SHOT_AT }],
+    };
+    const view = (saved: boolean) => (
+      <BookingCards
+        draft={bookedDraft()}
+        groups={[group]}
+        paneSave={client}
+        savedStays={saved ? { s_aaaa1111_1: stay } : undefined}
+      />
+    );
+    const { rerender } = render(view(false));
+    expect(screen.queryByText('Booked in HMS – confirmation 98765-1')).toBeNull();
+    rerender(view(true));
+    expect(screen.getByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'View HMS screenshots' })).toBeDefined();
+    rerender(view(false));
+    expect(screen.getByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+  });
+
   it('shows a stored booking when the mail has no booking draft', () => {
     const client: PaneStayClient = {
       preview: vi.fn(),
