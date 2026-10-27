@@ -2,6 +2,13 @@
 
 Updated 2026-10-26 15:50Z after or2 (overnight run 2, speed mode) closeout. Dated research is evidence, not automatically current state.
 
+## dv-run-007 + Centurion cloud — 2026-10-27 (plan chat handoff)
+
+- **Live `92be0e5d2`** (#654 Book ticks HMS CMS Send Mail, 11:17Z; #653 multi-room HMS-inventory-wins, 11:10Z; #652 Centurion → Infor cloud, 10:21Z). Last-good before: `b9c6367b0`.
+- Centurion HMS moved to `hmsweb.hms.eu1.inforcloudsuite.com` tenant `THECENTURION_PRD`: login + guest search work; **quotes fail** (cloud date-range field) — paused by owner.
+- Proven DV: 1-room quote+PDF, agency WS, Labtest create+recipient, cancel (penalty refused), amend adults, shuttle draft. Unproven: #653 multi-room, #654 HMS send.
+- **Next chat: start at [dv-run-007 handoff](../plans/2026-10-27-001-dv-run-007-handoff.md).**
+
 ## or2 closeout — 2026-10-26 (Opus coordinator)
 
 - **Live: `f70fbae67`** (train deploy 15:42Z; health 200, 4 pm2 online). Last-good before: `60c52d376`. Migration **0054** (`work_item.revision/revision_head/revision_seq`, int default 0) applied 14:40Z with owner approval in chat; columns verified read-only. `/proc` flags unchanged since 12:45Z (save `lab`, Da Vinci reads/quote/create `on`, create `on`, cancel-unpaid `on`, amend/cancel-paid `lab`).
