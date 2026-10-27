@@ -212,6 +212,37 @@ export const comboUnsupportedFieldReason = (state) =>
   state?.count === 1 && state.exists === true && state.disabled === false && state.readOnly === false
     ? null
     : 'unsupported_field';
+
+/** Live occupancy uxcombobox store: valueField `value`, displayField `display`, records `"0"`.. as strings. */
+export function comboStoreRecord(store, valueField, wanted) {
+  if (!store || typeof store.getCount !== 'function') return null;
+  const vf = valueField || 'value';
+  const want = String(wanted);
+  const n = store.getCount();
+  for (let i = 0; i < n; i += 1) {
+    const rec = typeof store.getAt === 'function' ? store.getAt(i) : null;
+    const v = rec && typeof rec.get === 'function' ? rec.get(vf) : rec?.[vf];
+    if (String(v) === want) return rec;
+  }
+  return null;
+}
+
+export function applyComboSetValue(cmp, wanted) {
+  if (!cmp || typeof cmp.setValue !== 'function') return null;
+  const rec = comboStoreRecord(cmp.store, cmp.valueField, wanted);
+  const chosen = rec ?? String(wanted);
+  cmp.setValue(chosen);
+  return chosen;
+}
+
+export function comboReadValue(cmp, fallback) {
+  const got = typeof cmp?.getValue === 'function' ? cmp.getValue() : fallback;
+  if (got && typeof got === 'object' && !(got instanceof Date)) {
+    const vf = cmp.valueField || 'value';
+    return typeof got.get === 'function' ? got.get(vf) : got[vf];
+  }
+  return got;
+}
 export const dangerousDialogKind = (text) =>
   /\bpenalt(?:y|ies)\b/i.test(text) ? 'penalty' : /\bcharge(?:s)?\b/i.test(text) ? 'charge' : /\brate\b/i.test(text) ? 'rate' : null;
 const HMS_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
