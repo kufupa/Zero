@@ -10,6 +10,7 @@ import {isReservationistSignatureNoise} from './reservationist-attachment-input.
 import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partySearchCovered} from './party-rate-failure.js';
 import {boards,boardsFor,norm,buildRateOptions,requestMatches,sellable,type RateOption} from './rate-options.js';
 import {availabilityBoardOf,type AvailabilityBoardRow,type QuoteEnvelope} from './hms-availability.js';
+import {profileFor} from '../../tooling/playwright-quote/property-profile.mjs';
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
 export type NativeQuoteRequest=QuoteSourceRecord['request']&{search:{includeRestricted:false;includeAlternatives:boolean;salesStrategy:'Government'|'Preset'|'BAR'|'Promotions'|'Wholesale'|'Negoticated Contracted'|'Airline Crews'|'Domestic Leisure'|'Other'};details:'full';maxOptionsPerGroup:number};
 export type ReservationistPartyRead={ref:string;sha256:string;observedAt:string;kind:'organization'|'bookingAgency';query:string;outcome:'resolved'|'ambiguous'|'no_match';candidates:{nativeId:string;displayName:string;kind:string}[]};
@@ -120,8 +121,12 @@ export function selectReservationistQuoteOptions(source:QuoteSourceRecord,verifi
 }
 function quoteOptionCandidates(source:QuoteSourceRecord){
  if(!source.request.rooms.length||source.request.rooms.length>64||new Set(source.request.rooms.map(r=>r.id)).size!==source.request.rooms.length||source.result.groups.length!==source.request.rooms.length||new Set(source.result.groups.map(g=>g.id)).size!==source.result.groups.length)missing('business_selected_scope_unavailable',['all requested room groups']);
- const candidates=source.request.rooms.map(request=>{const group=source.result.groups.find(g=>g.id===request.id);if(!group||group.options.length>200||quoteDigest(group.request)!==quoteDigest(request)||group.completeness.search!=='complete'||group.completeness.requiredFacts!=='complete')missing('business_selected_scope_unavailable',['complete bounded native room source']);const qualified=partyContractChoice(source.request.rateContext,group.options.filter(o=>o.matchStatus==='match'&&requestMatches(request,o,source.request.propertyCode)&&sellable(source,request.quantity,o)));
- const totals=qualified.map(o=>({o,total:o.nightly.reduce((sum,n)=>sum+exactMinor(n.price.amount),0)*request.quantity})).filter(v=>Number.isSafeInteger(v.total)&&v.total>0).sort((a,b)=>a.total-b.total||a.o.id.localeCompare(b.o.id));if(!totals.length)missing('business_selected_price_unavailable',['qualified available option covering every requested room-night']);return{request,totals};});
+ const profile=profileFor(source.request.propertyCode);
+ const roomOrder=Object.keys(profile?.rooms??{});
+ const rank=(code:string)=>{const i=roomOrder.indexOf(code);return i<0?Number.MAX_SAFE_INTEGER:i;};
+ const autoQuoted=(code:string,requested:string[]|undefined)=>Boolean(requested?.includes(code))||profile?.rooms?.[code]?.autoQuote!==false;
+ const candidates=source.request.rooms.map(request=>{const group=source.result.groups.find(g=>g.id===request.id);if(!group||group.options.length>200||quoteDigest(group.request)!==quoteDigest(request)||group.completeness.search!=='complete'||group.completeness.requiredFacts!=='complete')missing('business_selected_scope_unavailable',['complete bounded native room source']);const qualified=partyContractChoice(source.request.rateContext,group.options.filter(o=>o.matchStatus==='match'&&requestMatches(request,o,source.request.propertyCode)&&sellable(source,request.quantity,o)&&autoQuoted(o.room.code,request.required?.roomCodes)));
+ const totals=qualified.map(o=>({o,total:o.nightly.reduce((sum,n)=>sum+exactMinor(n.price.amount),0)*request.quantity})).filter(v=>Number.isSafeInteger(v.total)&&v.total>0).sort((a,b)=>a.total-b.total||rank(a.o.room.code)-rank(b.o.room.code)||a.o.id.localeCompare(b.o.id));if(!totals.length)missing('business_selected_price_unavailable',['qualified available option covering every requested room-night']);return{request,totals};});
  return candidates;
 }
 function selectQuoteOptions(source:QuoteSourceRecord,forFullRead:boolean,verifiedProfile=false):{sourceRef:string;groupId:string;optionId:string}[]{
@@ -209,7 +214,7 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  if(alternativeRequest)for(const v of candidates[0]!.totals){const board=boardsFor(request.propertyCode)[norm(v.o.board??'')];if(board){const key=board;if(!byPair.has(key))byPair.set(key,v);}}
  if(alternativeRequest&&(!byPair.size||byPair.size>5))missing('business_quote_alternatives_bound_unavailable',['at most five independently qualified selected board alternatives']);
  if(alternativeRequest&&ctx.facts.some(f=>f.kind==='rate_claim'))missing('business_quote_alternatives_claim_scope_unavailable',['the specific alternative to which the supplied rate claim applies']);
- const selectionSets=alternativeRequest?[...byPair.values()].map(v=>[{sourceRef:summary.source.ref,groupId:request.rooms[0]!.id,optionId:v.o.id}]):[selectQuoteOptions(summary.source,true)];
+ const selectionSets=alternativeRequest?[...byPair.values()].map(v=>[{sourceRef:summary.source.ref,groupId:request.rooms[0]!.id,optionId:v.o.id}]):[selectQuoteOptions(summary.source,false,normalize.profileHolds(summary.source.request.propertyCode,summary.source.result.groups))];
  const results=[];
  for(const chosen of selectionSets){
  const selectedRequest={...request,rooms:request.rooms.map(room=>{const selection=chosen.find(s=>s.groupId===room.id),group=summary.source.result.groups.find(g=>g.id===room.id),option=group?.options.find(o=>o.id===selection?.optionId);if(!option)throw new Error('business_selected_source_missing');return{...room,required:{...room.required,roomCodes:[option.room.code],rateCodes:[option.rate.code],...(alternativeRequest||!room.required?.boardBases?.length?{boardBases:[boardsFor(request.propertyCode)[norm(option.board??'')]!]}:{})}};})};
