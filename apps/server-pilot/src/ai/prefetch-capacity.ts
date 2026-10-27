@@ -217,7 +217,9 @@ export async function occupyPrefetchReservation(
     .set({
       ...(stamped ? { createdAt: now } : {}),
       updatedAt: now,
-      metrics: { ...metrics, prefetchAdmittedAt: admittedAt.toISOString() },
+      metrics: sql`coalesce(${aiWorkflowRun.metrics}, '{}'::jsonb) || ${JSON.stringify({
+        prefetchAdmittedAt: admittedAt.toISOString(),
+      })}::jsonb`,
     })
     .where(eq(aiWorkflowRun.id, runId));
   return { admittedAt, stamped };

@@ -2007,6 +2007,40 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(stored).toMatchObject({ state: outcome, attempts: 0, failureClass: 'HMS_LOCK_BUSY' });
     }));
 
+  it('uses a prepared batch admission timestamp instead of an old createdAt for its busy-lock wait', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      const { threadId, messageId } = await seedThread(db, 'Quote request');
+      const preparedInput = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, messageId, selectionEpoch: 0, inputRevision: 0 });
+      const admittedAt = new Date();
+      const { run } = await enqueueHmsJob(
+        {
+          transportId: TRANSPORT_ID,
+          threadId,
+          triggerMessageId: messageId,
+          workItemId: null,
+          userId: null,
+          request: { kind: 'staff_quote', input: preparedInput },
+          priority: HMS_JOB_PRIORITY_PREFETCH,
+          idempotencyKey: `hms-job:staff-quote-prepared:admitted:${randomUUID()}`,
+          extraMetrics: {
+            quotePrepared: true,
+            prefetchBatchAdmittedAt: admittedAt.toISOString(),
+            prefetchAdmittedAt: admittedAt.toISOString(),
+          },
+        },
+        db,
+      );
+      const claimed = await claimJob(db);
+      staffQuoteRunner.run.mockRejectedValueOnce(new Error(PROPERTY_READ_LOCK_DEADLINE_MESSAGE));
+
+      const createdAt = new Date(admittedAt.getTime() - 20 * 60_000);
+      expect(await runClaimedJob(db, { ...claimed, createdAt })).toBe('retry_wait');
+      const [stored] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, run.id));
+      expect(stored).toMatchObject({ state: 'retry_wait', attempts: 0, failureClass: 'HMS_LOCK_BUSY' });
+    }));
+
   it('runs a prepared quote without a staff identity and keeps only the userless priced snapshot', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_JOB_QUEUE', 'on');

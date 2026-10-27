@@ -223,6 +223,69 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote queue cap seam
       ).toBe(true);
     }));
 
+  it('does not reuse an unmarked legacy strategy row as admission for a larger batch', () =>
+    withSeededTestDb(async (db) => {
+      const config = await quotePaneConfigForProperty(DAVINCI_HMS_READ_TARGET.propertyCode, DAVINCI_TRANSPORT_ID);
+      const strategies = config?.salesStrategies ?? [];
+      expect(strategies).toHaveLength(9);
+      const legacy = await seedMailboxMessage(db, DAVINCI_TRANSPORT_ID, `quote-legacy-${randomUUID()}@example.test`);
+      const legacyInput = preparedQuoteInput(
+        legacy,
+        DAVINCI_TRANSPORT_ID,
+        `quote-legacy:${legacy.messageId}:0`,
+        strategies[0]!.requestValue,
+      );
+      expect(await enqueuePreparedQuoteWithinCap(db, legacyInput, 6)).toEqual({ created: true, deferred: false });
+
+      const [legacyRow] = (await preparedRows(db, DAVINCI_TRANSPORT_ID)).filter(
+        (row) => row.triggerMessageId === legacy.messageId,
+      );
+      if (!legacyRow) throw new Error('expected a legacy prepared quote row');
+      const aged = new Date(Date.now() - 2 * 60 * 60_000);
+      await db
+        .update(aiWorkflowRun)
+        .set({ metrics: { quotePrepared: true }, createdAt: aged, updatedAt: aged })
+        .where(eq(aiWorkflowRun.id, legacyRow.id));
+
+      const other = await seedMailboxMessage(db, DAVINCI_TRANSPORT_ID, `quote-other-${randomUUID()}@example.test`);
+      for (const [index, strategy] of strategies.slice(0, 6).entries()) {
+        expect(
+          await enqueuePreparedQuoteWithinCap(
+            db,
+            preparedQuoteInput(
+              other,
+              DAVINCI_TRANSPORT_ID,
+              `quote-other:${other.messageId}:${index}`,
+              strategy.requestValue,
+            ),
+            6,
+          ),
+        ).toEqual({ created: true, deferred: false });
+      }
+
+      const nextLegacyInput = preparedQuoteInput(
+        legacy,
+        DAVINCI_TRANSPORT_ID,
+        `quote-legacy:${legacy.messageId}:1`,
+        strategies[1]!.requestValue,
+      );
+      expect(await enqueuePreparedQuoteWithinCap(db, nextLegacyInput, 6, strategies.length)).toEqual({
+        created: true,
+        deferred: true,
+      });
+      const legacyRows = (await preparedRows(db, DAVINCI_TRANSPORT_ID)).filter(
+        (row) => row.triggerMessageId === legacy.messageId,
+      );
+      const deferred = legacyRows.find(
+        (row) => (row.metrics as { prefetchBatchDecision?: string } | null)?.prefetchBatchDecision === 'deferred',
+      );
+      expect(deferred?.metrics).toMatchObject({
+        quotePrepared: true,
+        prefetchBatchDecision: 'deferred',
+        prefetchBatchSize: strategies.length,
+      });
+    }));
+
   it('charges only the extra slot for a single strategy retry', () =>
     withSeededTestDb(async (db) => {
       const config = await quotePaneConfigForProperty(DAVINCI_HMS_READ_TARGET.propertyCode, DAVINCI_TRANSPORT_ID);

@@ -23,6 +23,14 @@ function metricsRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function coversBatchSize(metrics: Record<string, unknown>, batchSize: number): boolean {
+  return (
+    typeof metrics.prefetchBatchSize === 'number' &&
+    Number.isSafeInteger(metrics.prefetchBatchSize) &&
+    metrics.prefetchBatchSize >= batchSize
+  );
+}
+
 /** Serializes prepared-quote cap checks/inserts across workers for one mailbox. Live digests remain idempotent. */
 export async function enqueuePreparedQuoteWithinCap(
   db: DB,
@@ -87,11 +95,17 @@ export async function enqueuePreparedQuoteWithinCap(
         : [];
     const admittedSibling = batchRows.find((row) => {
       const metrics = metricsRecord(row.metrics);
-      return metrics.prefetchBatchDecision === 'admitted' || metrics.prefetchDeferred !== true;
+      return (
+        metrics.prefetchBatchDecision === 'admitted' ||
+        (coversBatchSize(metrics, batchSize) && metrics.prefetchDeferred !== true)
+      );
     });
     const deferredSibling = batchRows.find((row) => {
       const metrics = metricsRecord(row.metrics);
-      return metrics.prefetchBatchDecision === 'deferred' || metrics.prefetchDeferred === true;
+      return (
+        metrics.prefetchBatchDecision === 'deferred' ||
+        (coversBatchSize(metrics, batchSize) && metrics.prefetchDeferred === true)
+      );
     });
     const reusedDecision = admittedSibling
       ? { action: 'admit' as const, used: 0, nextRunAt: now }

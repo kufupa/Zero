@@ -3674,6 +3674,9 @@ export async function executeHmsJob(input: {
     quotePrepared?: boolean;
     prefetchDeferred?: boolean;
     prefetchBatchSize?: number;
+    prefetchBatchDecision?: string;
+    prefetchBatchAdmittedAt?: string;
+    prefetchAdmittedAt?: string;
   };
   const systemPreparedQuote =
     request.kind === 'staff_quote' &&
@@ -3684,13 +3687,44 @@ export async function executeHmsJob(input: {
     await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, db);
     return 'dead_letter';
   }
+  const shouldValidatePreparedQuoteSource =
+    systemPreparedQuote &&
+    (metrics.prefetchDeferred === true ||
+      metrics.prefetchBatchDecision === 'admitted' ||
+      metrics.prefetchBatchDecision === 'deferred');
+  if (shouldValidatePreparedQuoteSource) {
+    const extraction = await loadQuotePrepareSourceRun(db, {
+      transportId: run.transportId,
+      triggerMessageId: run.triggerMessageId,
+    });
+    if (!extraction?.admissionSnapshotId) {
+      await markAiRunPolicyRefused({ ...mark, lastError: 'no_live_admission' }, db);
+      return 'dead_letter';
+    }
+    const evaluation = await evaluateQuoteReadyForMessage(
+      { messageId: run.triggerMessageId, transportId: run.transportId },
+      db,
+    );
+    if (!evaluation.plan) {
+      await markAiRunPolicyRefused(
+        { ...mark, lastError: evaluation.reason ?? 'source_not_found' },
+        db,
+      );
+      return 'dead_letter';
+    }
+  }
   const prefetchBatchSize =
     typeof metrics.prefetchBatchSize === 'number' &&
     Number.isSafeInteger(metrics.prefetchBatchSize) &&
     metrics.prefetchBatchSize > 0
       ? metrics.prefetchBatchSize
       : 1;
-  let preparedQuoteLockWaitStart = run.createdAt;
+  const recordedAdmissionAt = metrics.prefetchBatchAdmittedAt ?? metrics.prefetchAdmittedAt;
+  const parsedAdmissionAt =
+    typeof recordedAdmissionAt === 'string' ? Date.parse(recordedAdmissionAt) : Number.NaN;
+  let preparedQuoteLockWaitStart = Number.isFinite(parsedAdmissionAt)
+    ? new Date(parsedAdmissionAt)
+    : run.createdAt;
   if (systemPreparedQuote && metrics.prefetchDeferred === true) {
     const admitted = await db.transaction(async (tx) => {
       await tx.execute(
@@ -3713,12 +3747,24 @@ export async function executeHmsJob(input: {
         .select({ id: aiWorkflowRun.id, state: aiWorkflowRun.state, metrics: aiWorkflowRun.metrics })
         .from(aiWorkflowRun)
         .where(batchScope);
+      const wakeBatchSize = Math.max(
+        prefetchBatchSize,
+        batchRows.length,
+        ...batchRows.map((row) => {
+          const size = objectRecord(row.metrics).prefetchBatchSize;
+          return typeof size === 'number' && Number.isSafeInteger(size) && size > 0 ? size : 0;
+        }),
+      );
       const alreadyAdmitted = batchRows.find((row) => {
         const siblingMetrics = objectRecord(row.metrics);
-        return siblingMetrics.prefetchBatchDecision === 'admitted' || siblingMetrics.prefetchDeferred !== true;
+        return (
+          siblingMetrics.prefetchBatchDecision === 'admitted' ||
+          (siblingMetrics.prefetchDeferred !== true && siblingMetrics.prefetchBatchSize === wakeBatchSize)
+        );
       });
       const alreadyAdmittedMetrics = alreadyAdmitted ? objectRecord(alreadyAdmitted.metrics) : {};
-      const recordedAdmittedAt = alreadyAdmittedMetrics.prefetchBatchAdmittedAt;
+      const recordedAdmittedAt =
+        alreadyAdmittedMetrics.prefetchBatchAdmittedAt ?? alreadyAdmittedMetrics.prefetchAdmittedAt;
       const parsedAdmittedAt =
         typeof recordedAdmittedAt === 'string' ? Date.parse(recordedAdmittedAt) : Number.NaN;
       const admittedAt = Number.isFinite(parsedAdmittedAt) ? new Date(parsedAdmittedAt) : now;
@@ -3733,17 +3779,21 @@ export async function executeHmsJob(input: {
       ) => {
         for (const row of activeBatchRows) {
           const waiting = row.state === 'queued' || row.state === 'retry_wait';
+          const metricsPatch = {
+            prefetchBatchDecision: decision,
+            prefetchDeferred: decision === 'deferred',
+            prefetchBatchSize: wakeBatchSize,
+            ...(decision === 'admitted'
+              ? {
+                  prefetchBatchAdmittedAt: decisionAt.toISOString(),
+                  prefetchAdmittedAt: decisionAt.toISOString(),
+                }
+              : {}),
+          };
           await scoped
             .update(aiWorkflowRun)
             .set({
-              metrics: {
-                ...objectRecord(row.metrics),
-                prefetchBatchDecision: decision,
-                prefetchDeferred: decision === 'deferred',
-                ...(decision === 'admitted'
-                  ? { prefetchBatchAdmittedAt: decisionAt.toISOString() }
-                  : {}),
-              },
+              metrics: sql`coalesce(${aiWorkflowRun.metrics}, '{}'::jsonb) || ${JSON.stringify(metricsPatch)}::jsonb`,
               ...(decision === 'deferred' && nextRunAt
                 ? { nextRunAt }
                 : decision === 'admitted' && waiting
@@ -3763,7 +3813,7 @@ export async function executeHmsJob(input: {
         transportId: run.transportId,
         kind: 'staff_quote',
         perHour: quotePreparationPerHour(),
-        batchSize: prefetchBatchSize,
+        batchSize: wakeBatchSize,
         now,
         excludeRunId: run.id,
         excludeTriggerMessageId: run.triggerMessageId ?? undefined,
@@ -3789,25 +3839,6 @@ export async function executeHmsJob(input: {
     });
     if (admitted.status !== 'admit') return admitted.status;
     preparedQuoteLockWaitStart = admitted.admittedAt;
-    const extraction = await loadQuotePrepareSourceRun(db, {
-      transportId: run.transportId,
-      triggerMessageId: run.triggerMessageId,
-    });
-    if (!extraction?.admissionSnapshotId) {
-      await markAiRunPolicyRefused({ ...mark, lastError: 'no_live_admission' }, db);
-      return 'dead_letter';
-    }
-    const evaluation = await evaluateQuoteReadyForMessage(
-      { messageId: run.triggerMessageId, transportId: run.transportId },
-      db,
-    );
-    if (!evaluation.plan) {
-      await markAiRunPolicyRefused(
-        { ...mark, lastError: evaluation.reason ?? 'source_not_found' },
-        db,
-      );
-      return 'dead_letter';
-    }
   }
   if (
     systemPreparedQuote &&
