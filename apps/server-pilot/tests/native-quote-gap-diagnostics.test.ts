@@ -15,9 +15,10 @@ import {
 } from '../src/trpc/routes/workstation.js';
 
 /**
- * A staff quote with two room rows: HMS prices both with buildingCode null. At inventory 40 the STQN row is above that
- * type's profile capacity (34), so the room profile does not hold, composeAllocation reports it out of date, and the
- * capture stays partial. The block is deliberate; these tests pin only what the failure says about itself.
+ * A staff quote with two room rows: HMS prices both with buildingCode null. HMS also shows a PENT room type the
+ * verified profile does not list, so the room profile does not hold, composeAllocation reports it out of date, and the
+ * capture stays partial. Inventory above roomCapacity alone no longer voids the profile (HMS inventory is the truth).
+ * The block is deliberate; these tests pin only what the failure says about itself.
  */
 
 const contractPath = fileURLToPath(new URL('../tooling/playwright-quote/quote-contract.mjs', import.meta.url));
@@ -69,7 +70,7 @@ afterEach(async () => {
 });
 
 /** The capture fetch-quote leaves for this request: audited, complete, partial only because the allocation is unknown. */
-async function jointInventoryCapture(building: string | null, inventory = 40) {
+async function jointInventoryCapture(building: string | null, inventory = 40, offProfileRoom?: string) {
   const contract = (await import(contractPath)) as Contract;
   const normalized = contract.normalizeQuoteRequest({ schemaVersion: 2, ...request }).request;
   const groups = normalized.rooms.map((room, index) => ({
@@ -78,7 +79,10 @@ async function jointInventoryCapture(building: string | null, inventory = 40) {
     outcome: 'quote',
     issues: [],
     completeness: { search: 'complete', requiredFacts: 'complete' },
-    options: [option(index === 0 ? 'STQN' : 'STWN', building, inventory)],
+    options: [
+      option(index === 0 ? 'STQN' : 'STWN', building, inventory),
+      ...(index === 0 && offProfileRoom ? [{ ...option(offProfileRoom, building, 1), id: `HRCEN:${offProfileRoom}:BAR`, matchStatus: 'alternative' }] : []),
+    ],
   }));
   root = join(privateRoot, `test-${randomUUID()}`);
   const evidence = join(root, 'out', 'run-2026-11-12T08-00-00Z');
@@ -111,7 +115,7 @@ function readFrom(evidence: string) {
 }
 
 async function readerFailure(): Promise<unknown> {
-  const { evidence } = await jointInventoryCapture(null);
+  const { evidence } = await jointInventoryCapture(null, 40, 'PENT');
   return readFrom(evidence).then(
     () => null,
     (error: unknown) => error,
@@ -119,6 +123,13 @@ async function readerFailure(): Promise<unknown> {
 }
 
 describe('a capture inside the verified room profile', () => {
+  it('reads through as a quote when HMS reports more STQN rooms (40) than the profile capacity (34)', async () => {
+    const { evidence } = await jointInventoryCapture(null, 40);
+    const source = await readFrom(evidence);
+    expect(source.result.outcome).toBe('quote');
+    expect(source.result.groups).toHaveLength(2);
+  });
+
   it('reads through as a quote', async () => {
     const { evidence } = await jointInventoryCapture(null, 30);
     const source = await readFrom(evidence);
@@ -137,14 +148,14 @@ describe('a capture inside the verified room profile', () => {
 });
 
 describe('the joint-inventory block carries its diagnostics', () => {
-  it('stays blocked, and says the room profile is out of date because STQN is above its capacity and HMS gave no building', async () => {
+  it('stays blocked, and says the room profile is out of date because HMS shows an unprofiled room type and no building', async () => {
     const error = await readerFailure();
     expect(error).toBeInstanceOf(ReservationistTaskEvidenceUnavailable);
     const gap = error as ReservationistTaskEvidenceUnavailable;
     expect(gap.code).toBe('native_quote_business_evidence_unavailable');
     expect(gap.detail).toEqual({
       allocationStatus: 'unknown',
-      allocationReason: 'Room profile out of date: observed HMS room types, inventory or building codes no longer match the verified property profile.',
+      allocationReason: 'Room profile out of date: observed HMS room types or building codes no longer match the verified property profile.',
       sharedInventoryPoolGap: true,
       rows: [
         { row: 1, outcome: 'quote', roomCode: 'STQN', rateCode: 'BAR', buildingCode: 'null' },
