@@ -181,7 +181,6 @@ if [ "$QUIESCED" != "1" ]; then
     'curl -fsS http://127.0.0.1:8788/health && curl -fsS http://127.0.0.1:8789/health && curl --disable --noproxy "*" -fsS --connect-to "nava-admin.trynava.io:8443:172.31.12.112:8443" -H "Host: nava-admin.trynava.io" "http://nava-admin.trynava.io:8443/" >/dev/null'
 
   step_finish
-  echo "== ops-deploy: remote-admin lifecycle readiness =="
   echo "== ops-deploy: read last-good deploy marker =="
   step_mark 'ops-deploy: read last-good deploy marker'
   # A failed SSM read must not stop the deploy: the empty result falls back to the 24-hour window below.
@@ -256,8 +255,8 @@ NODE
     echo "ops-deploy: host clock unavailable; readiness boundary uses the operator clock minus 15 minutes"
   fi
   step_finish
-  echo "== ops-deploy: run remote-admin readiness =="
-  step_mark 'ops-deploy: run remote-admin readiness'
+  echo "== ops-deploy: remote-admin lifecycle readiness =="
+  step_mark 'ops-deploy: remote-admin lifecycle readiness'
   REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"
 fi
 
