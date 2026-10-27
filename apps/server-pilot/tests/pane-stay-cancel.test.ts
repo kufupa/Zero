@@ -11,6 +11,7 @@ import {
   type PaneStayCancelSpawnResult,
 } from '../src/ai/pane-stay-cancel.js';
 import {
+  PANE_PAID_BOOKING_COPY,
   PANE_PREVIEW_TTL_MS,
   PANE_RUN_ID_PATTERN,
   type PaneStayLock,
@@ -431,7 +432,7 @@ describe('pane stay cancel', () => {
       }),
     ).resolves.toMatchObject({
       outcome: 'refused_not_unpaid',
-      message: 'This change may affect money already paid. Handle in Infor.',
+      message: PANE_PAID_BOOKING_COPY,
       previewDigest: null,
       runId: null,
     });
@@ -448,6 +449,16 @@ describe('pane stay cancel', () => {
       }),
     ).resolves.toMatchObject({ outcome: 'cancelled' });
     expect(calls.map((call) => call.mode)).toEqual(['preview', 'preview', 'commit']);
+  });
+
+  it('surfaces a notice-window warning as the staff message on preview', async () => {
+    enableCancel({
+      preview: { warning: 'Arrival is inside the 48-hour cancellation notice window.' },
+    });
+    await expect(previewCancel({ ...stay, owner })).resolves.toMatchObject({
+      outcome: 'preview_ok',
+      message: 'Arrival is inside the 48-hour cancellation notice window.',
+    });
   });
 
   it('commit needs the preview digest of the same stay, then passes the trimmed reason', async () => {

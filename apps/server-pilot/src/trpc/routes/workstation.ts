@@ -975,6 +975,7 @@ export const workstationRouter = router({
         priority: devEval ? HMS_JOB_PRIORITY_DEV : HMS_JOB_PRIORITY_USER,
         extraMetrics: {
           staffQuoteUser,
+          ...(autoStart ? { autoStart: true } : {}),
           ...(devEval ? { devEval: true } : {}),
           ...hmsReadTargetJobMetrics(quoteTarget),
         },

@@ -123,6 +123,8 @@ export type CancelRun = {
   screenshots: string[];
   runId: string | null;
   previewDigest: string | null;
+  /** Notice-window warning from the cancel result, shown as a plain staff line. */
+  message?: string | null;
 };
 
 export type CancelView =
@@ -135,7 +137,10 @@ export type CancelView =
 export function viewAfterPreview(run: CancelRun, confirmation: string): CancelView {
   switch (run.outcome) {
     case 'preview_ok':
-      if (run.previewDigest) return { kind: 'ready', run, reason: '', note: null };
+      if (run.previewDigest) {
+        const note = typeof run.message === 'string' && run.message.trim() ? run.message.trim() : null;
+        return { kind: 'ready', run, reason: '', note };
+      }
       return { kind: 'idle', note: AMEND_CANCEL_COPY.failed, run };
     case 'already_cancelled':
       return { kind: 'done', run, text: AMEND_CANCEL_COPY.alreadyCancelled };
@@ -237,7 +242,7 @@ export const AMEND_SAVE_COPY = {
   unconfirmed: 'HMS may have saved this change. Check HMS before trying again.',
   failed: "Nava couldn't finish in HMS. Check HMS yourself.",
   done: 'Saved in HMS.',
-  handleInHms: 'This change may affect money already paid. Handle in Infor.',
+  handleInHms: 'Paid or guaranteed booking: handle in HMS (Nava only changes unpaid bookings for now)',
 } as const;
 
 export type AmendPaymentClass = 'unpaid' | 'paid' | 'guaranteed' | 'unknown';

@@ -15,7 +15,11 @@ import {
   CENTURION_HMS_ORIGIN_REFUSED_MESSAGE,
   mailboxHmsOriginBindLoaders,
 } from '../src/hms/mailbox-hms-origin-bind.js';
-import { DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import {
+  CENTURION_HMS_READ_TARGET,
+  DAVINCI_HMS_READ_TARGET,
+  DAVINCI_STAFF_TRANSPORT_IDS,
+} from '../src/hms/hms-read-target.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
@@ -116,7 +120,7 @@ function passingLock(seen: string[] = []): PaneStayLock {
   };
 }
 
-function mailboxCaller() {
+function mailboxCaller(activeTransportId = 'transport-centurion') {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
@@ -125,7 +129,7 @@ function mailboxCaller() {
       email: 'ropperman@legacyhotels.co.za',
       name: 'R Opperman',
     },
-    activeTransportId: 'transport-centurion',
+    activeTransportId,
     transportEmail: 'centurion@legacyhotels.co.za',
     accessRole: 'owner',
   } as never);
@@ -441,6 +445,36 @@ describe('panePartyLookup.suggest rank', () => {
           nativeId: null,
           idStatus: 'unverified',
         },
+      ],
+    });
+  });
+
+  it('uses the active property for learned sender suggestions', async () => {
+    replaceLearnedSenderMapForTests([
+      {
+        propertyCode: CENTURION_HMS_READ_TARGET.propertyCode,
+        host: 'agency.example',
+        kind: 'agency',
+        name: 'First property agency',
+        support: 4,
+      },
+      {
+        propertyCode: DAVINCI_HMS_READ_TARGET.propertyCode,
+        host: 'agency.example',
+        kind: 'agency',
+        name: 'Second property agency',
+        support: 4,
+      },
+    ]);
+
+    await expect(
+      mailboxCaller(DAVINCI_STAFF_TRANSPORT_IDS[0]!).panePartyLookup.suggest({
+        sender: 'ops@agency.example',
+        body: '',
+      }),
+    ).resolves.toEqual({
+      suggestions: [
+        { source: 'sender', kind: 'agency', name: 'Second property agency', nativeId: null, idStatus: 'unverified' },
       ],
     });
   });
