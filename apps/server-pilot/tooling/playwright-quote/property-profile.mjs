@@ -146,12 +146,27 @@ function classifyRateFor(profile, code, strategy, isNegotiatedRate, label) {
       }
     }
   }
-  const strat = rates.strategies?.[strategyKey];
-  if (strat && Array.isArray(strat.plans) && strat.plans.includes(codeStr)) {
-    return strat.scope === 'public' ? 'public' : 'contextual';
+  const strategies =
+    rates.strategies && typeof rates.strategies === 'object' && !Array.isArray(rates.strategies)
+      ? rates.strategies
+      : {};
+  for (const row of Object.values(strategies)) {
+    if (!row || !Array.isArray(row.plans) || !row.plans.includes(codeStr)) continue;
+    return row.scope === 'public' ? 'public' : 'contextual';
   }
   if (isNegotiatedRate === true) return 'contextual';
+  if (isNegotiatedRate === false && listedPublicSalesStrategy(profile, strategyKey)) return 'public';
   return 'unknown';
+}
+
+function listedPublicSalesStrategy(profile, strategyKey) {
+  if (!strategyKey) return false;
+  const rows = profile.salesStrategies;
+  if (!Array.isArray(rows)) return false;
+  return rows.some((row) => {
+    const value = typeof row?.value === 'string' ? row.value.trim().toUpperCase() : '';
+    return value === strategyKey && row.scope === 'public';
+  });
 }
 
 function requireProfile(propertyCode) {
@@ -174,6 +189,9 @@ function validateSalesStrategies(rows) {
     }
     if (!display || display.length > 80 || /[<>\u0000-\u001f\u007f]/.test(display)) {
       invalid(`sales strategy ${value} display is invalid`);
+    }
+    if (Object.prototype.hasOwnProperty.call(candidate, 'scope') && !STRATEGY_SCOPES.has(candidate.scope)) {
+      invalid(`sales strategy ${value} scope must be agency, company or public`);
     }
     if (seen.has(value)) invalid(`salesStrategies repeats ${value}`);
     seen.add(value);

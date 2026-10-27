@@ -20,15 +20,22 @@ it('loads rates, boards and letter for both hotels and throws for an unknown pro
   expect(hrcen!.classifyRate('NGOVB', 'GOV', false, 'Local Government Rate Breakfast')).toBe(
     'government',
   );
-  expect(hrcen!.classifyRate('ZZZUNK', 'BAR', false)).toBe('unknown');
+  expect(hrcen!.classifyRate('ZZZUNK', 'BAR', false)).toBe('public');
   expect(getProfileBoards('HRCEN')['bed & breakfast r']).toBe('breakfast');
   expect(getProfileLetter('HRCEN').hotel.source).toMatch(/The Centurion Hotel/);
   expect(hrcen!.cancellation).toBeUndefined();
 
   expect(getProfileRates('HRDAV').public).toEqual(['BAR', 'BARRO', 'WAL']);
+  expect(hrdav!.salesStrategies?.filter((row) => row.scope === 'public').map((row) => row.value)).toEqual([
+    'PROMO',
+    'BAR',
+  ]);
+  expect(hrcen!.salesStrategies?.filter((row) => row.scope === 'public').map((row) => row.value)).toEqual(['BAR']);
   expect(getProfileRates('HRDAV').strategies?.WS?.plans).toContain('BWS1B');
   expect(getProfileRates('HRDAV').strategies?.WS?.scope).toBe('agency');
   expect(hrdav!.classifyRate('BWS1B', 'WS', false)).toBe('contextual');
+  expect(hrdav!.classifyRate('BLRB', 'BAR', false)).toBe('public');
+  expect(hrdav!.classifyRate('ZZZUNK', 'WS', false)).toBe('unknown');
   expect(getProfileBoards('HRDAV')['bed & breakfast nr']).toBe('breakfast');
   expect(getProfileLetter('HRDAV').hotel.source).toMatch(/Da \?Vinci Hotel/);
   expect(hrdav!.cancellation?.noticeHours).toBe(48);
@@ -50,4 +57,30 @@ it('classifies a public-scoped strategy plan as public', async () => {
   raw.rates.strategies = { PROMO: { plans: ['BWKPB'], scope: 'public' } };
   const profile = validateProfile(raw, 'HRCEN');
   expect(profile.classifyRate('BWKPB', 'PROMO', false)).toBe('public');
+});
+
+it('classifies unlisted non-negotiated rates as public only on salesStrategies scope public', async () => {
+  const hrdav = profileFor('HRDAV');
+  const hrcen = profileFor('HRCEN');
+  expect(hrdav).not.toBeNull();
+  expect(hrcen).not.toBeNull();
+  expect(hrdav!.classifyRate('PMO1B', 'PROMO', false)).toBe('public');
+  expect(hrdav!.classifyRate('PMO1B', 'PROMO', true)).toBe('contextual');
+  expect(hrdav!.classifyRate('PMO1B', 'PROMO')).toBe('unknown');
+  expect(hrdav!.classifyRate('PMO1B', 'NC', false)).toBe('unknown');
+  expect(hrdav!.classifyRate('PMO1B', 'AIR', false)).toBe('unknown');
+  expect(hrdav!.classifyRate('PMO1B', 'PRESET', false)).toBe('unknown');
+  expect(hrdav!.classifyRate('PMO1B', 'DOML', false)).toBe('unknown');
+  expect(hrdav!.classifyRate('PMO1B', 'WS', false)).toBe('unknown');
+  expect(hrdav!.classifyRate('BWS1B', 'WS', false)).toBe('contextual');
+  expect(hrdav!.classifyRate('ZZZUNK', 'WS', false)).toBe('unknown');
+  expect(hrcen!.classifyRate('ZZZUNK', 'BAR', false)).toBe('public');
+
+  const raw = JSON.parse(await readFile(hrcenUrl, 'utf8')) as {
+    salesStrategies: Array<{ value: string; display: string; scope?: string }>;
+  };
+  raw.salesStrategies = [{ value: 'BAR', display: 'BAR' }];
+  expect(validateProfile(raw, 'HRCEN').classifyRate('ZZZUNK', 'BAR', false)).toBe('unknown');
+  raw.salesStrategies = [{ value: 'BAR', display: 'BAR', scope: 'retail' }];
+  expect(() => validateProfile(raw, 'HRCEN')).toThrow(/scope must be agency, company or public/);
 });

@@ -66,8 +66,8 @@
     ]
   },
   "salesStrategies": [
-    { "value": "PROMO", "display": "Promotions" },
-    { "value": "BAR", "display": "BAR" },
+    { "value": "PROMO", "display": "Promotions", "scope": "public" },
+    { "value": "BAR", "display": "BAR", "scope": "public" },
     { "value": "PRESET", "display": "Preset" },
     { "value": "WS", "display": "Wholesale" },
     { "value": "NC", "display": "Negoticated Contracted" },
