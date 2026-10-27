@@ -359,8 +359,7 @@ async function run(ctx, request) {
       ctx.result.outcome = 'previewed';
       return;
     }
-    if ((request.fields.arrival || request.fields.departure || request.fields.adults
-      || request.fields.children || request.fields.roomType) && !(await checkAvailability(ctx.page))) {
+    if (!(await checkAvailability(ctx.page))) {
       ctx.result.outcome = 'refused_save_control_missing';
       ctx.result.reason = 'check_availability_missing';
       return;

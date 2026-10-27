@@ -362,9 +362,10 @@ test('amend-stay occupancy fill fires select and updates the bound record', asyn
   assert.match(body, /rec\.set/);
   assert.match(body, /payload\.fieldName/);
   assert.ok(body.indexOf("fireEvent('select'") > body.indexOf('cmp.setValue(chosen)'));
+  const previewAt = source.indexOf("ctx.result.outcome = 'previewed'");
   const availAt = source.indexOf('await checkAvailability(ctx.page)');
-  assert.ok(availAt > 0);
-  assert.match(source.slice(availAt - 180, availAt), /request\.fields\.adults/);
+  assert.ok(previewAt > 0 && availAt > previewAt);
+  assert.equal(/request\.fields\.arrival/.test(source.slice(previewAt, availAt)), false);
 });
 
 test('occupancy that never blurs keeps the old count and fails closed', async () => {
