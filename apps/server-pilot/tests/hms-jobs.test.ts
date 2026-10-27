@@ -1229,6 +1229,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       vi.stubEnv('HMS_JOB_QUEUE', 'on');
       vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
       const { threadId, messageId, run } = await seedQuoteExtraction(db);
+      await insertInboundExtraction(db, threadId, messageId);
       expect(await prefetchQuoteReadyForExtraction(run, db, QUOTE_PREPARE_ENV)).toBe(HRCEN_PREPARED_SHOPS);
       const prepared = await claimJob(db);
       await enqueueStaffQuoteJob(db, threadId, messageId);
