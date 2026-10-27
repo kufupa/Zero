@@ -1222,7 +1222,9 @@ export function QuoteWorkflowPanel({
                             </tr>
                           </thead>
                           <tbody>
-                            {comparisonRows.map(({ strategy, row, room, board, nightly, status }) => (
+                            {comparisonRows.map(({ strategy, row, room, board, nightly, status }) => {
+                              const failureLine = strategyFailureLine(row);
+                              return (
                               <tr key={strategy.code} className="border-b border-[#e2e8f0] align-top">
                                 <td className="p-1.5 font-semibold">{strategy.code}</td>
                                 <td className="p-1.5">{strategy.label}</td>
@@ -1230,7 +1232,12 @@ export function QuoteWorkflowPanel({
                                 <td className="p-1.5">{board}</td>
                                 <td className="p-1.5">{nightly}</td>
                                 <td className="p-1.5">{row?.status === 'ready' ? money(row.totalMinor) : '—'}</td>
-                                <td className="p-1.5" title={row && 'message' in row ? row.message : undefined}>{status}</td>
+                                <td className="p-1.5">
+                                  <div>{status}</div>
+                                  {failureLine ? (
+                                    <p className="mt-1 text-[12px] text-[#334155]">{failureLine}</p>
+                                  ) : null}
+                                </td>
                                 <td className="p-1.5">
                                   {row?.status === 'ready' ? (
                                     <SecondaryButton
@@ -1254,7 +1261,8 @@ export function QuoteWorkflowPanel({
                                   ) : '—'}
                                 </td>
                               </tr>
-                            ))}
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -1511,4 +1519,40 @@ export function QuoteWorkflowPanel({
       />
     </div>
   );
+}
+
+const STRATEGY_CAUSE_LABEL = {
+  not_set_up: 'Not set up',
+  hms_down: 'HMS down',
+  busy: 'Busy',
+  not_found: 'Not found',
+  needs_staff: 'Needs staff',
+} as const;
+
+/** Plain line under a comparison row. A retry hides the failure until the next result lands. */
+function strategyFailureLine(row: QuoteStrategyRow | undefined): string | null {
+  if (!row || row.status === 'ready') return null;
+  if (row.retrying) return 'Retrying…';
+  if (row.status === 'pending') return null;
+  const cause = row.causeClass ?? 'needs_staff';
+  const sentence = row.message.trim();
+  return sentence ? `${STRATEGY_CAUSE_LABEL[cause]}. ${sentence}` : STRATEGY_CAUSE_LABEL[cause];
+}
+
+const STRATEGY_CAUSE_LABEL = {
+  not_set_up: 'Not set up',
+  hms_down: 'HMS down',
+  busy: 'Busy',
+  not_found: 'Not found',
+  needs_staff: 'Needs staff',
+} as const;
+
+/** Plain line under a comparison row. A retry hides the failure until the next result lands. */
+function strategyFailureLine(row: QuoteStrategyRow | undefined): string | null {
+  if (!row || row.status === 'ready') return null;
+  if (row.retrying) return 'Retrying…';
+  if (row.status === 'pending') return null;
+  const cause = row.causeClass ?? 'needs_staff';
+  const sentence = row.message.trim();
+  return sentence ? `${STRATEGY_CAUSE_LABEL[cause]}. ${sentence}` : STRATEGY_CAUSE_LABEL[cause];
 }

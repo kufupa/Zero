@@ -15,6 +15,7 @@ import {
   createToolRunRecorder,
   ledgerQuoteInput,
   mergeEpisodeOnToolRun,
+  quoteFailureCauseClass,
   quoteRefusalReason,
   recordedToolRun,
   recordToolOutcome,
@@ -467,7 +468,7 @@ describe('tool-run ledger: classifiers by site', () => {
     expect(classifyStaffQuote({ status: 'needs_input' })).toEqual({
       status: 'refused',
       errorCode: 'needs_input',
-      result: { reason: 'needs_input' },
+      result: { reason: 'needs_input', causeClass: 'needs_staff' },
     });
   });
 
@@ -532,6 +533,18 @@ describe('tool-run ledger: classifiers by site', () => {
     expect(quoteRefusalReason({ code: 'BAD_REQUEST', message: 'lastName Jane is not valid' })).toBe(
       'refused',
     );
+  });
+
+  it('stores a cause class on a refusal and fails closed to needs staff', () => {
+    expect(quoteFailureCauseClass('quote_davinci_disabled')).toBe('not_set_up');
+    expect(quoteFailureCauseClass('hms_execution_failure')).toBe('hms_down');
+    expect(quoteFailureCauseClass('refused_lock_busy')).toBe('busy');
+    expect(quoteFailureCauseClass('native_quote_no_matching_rate')).toBe('not_found');
+    expect(quoteFailureCauseClass('needs_input')).toBe('needs_staff');
+    expect(quoteFailureCauseClass('not_a_catalog_reason')).toBe('needs_staff');
+    expect(
+      classifyStaffQuote({ status: 'needs_input' }).result,
+    ).toMatchObject({ reason: 'needs_input', causeClass: 'needs_staff' });
   });
 
   it('the input digest does not depend on key order', () => {
