@@ -95,3 +95,75 @@ it('classifies an HRDAV wholesale BWS1B row with agency context as contextual an
   expect(option?.eligibility).toBe('verified');
   expect(option?.matchStatus).toBe('match');
 });
+
+it('does not verify an HRDAV wholesale row from company context alone', () => {
+  const open = {
+    israteavailable: true,
+    restricted: false,
+    combClosed: false,
+    combClosedToArrival: false,
+    combClosedToDeparture: false,
+    combMinLOSToArrival: 0,
+    combMinLOSToDeparture: 0,
+    combMaxLOSToArrival: null,
+    combMaxLOSToDeparture: null,
+    combMinLOSToThrough: null,
+    combMaxLOSToThrough: null,
+  };
+  const columns = Object.fromEntries([1, 2].map((n) => [`col${n}`, { ...open, value: 2500 }]));
+  const stay = {
+    propertyCode: 'HRDAV',
+    arrivalDate: '2027-02-16',
+    departureDate: '2027-02-17',
+    rooms: [{ quantity: 1, adults: 1, children: 0, childAges: [] }],
+    search: { salesStrategy: 'Wholesale' },
+    rateContext: { organization: { name: 'Example Company' } },
+  };
+  const data = {
+    datesList: ['02/16/2027', '02/17/2027'],
+    children: [{
+      isprop: true,
+      issummary: false,
+      code: 'HRDAV',
+      currency: 'ZAR',
+      children: [{
+        code: 'STKNG',
+        desc: 'Standard King',
+        buildingCode: null,
+        children: [{
+          code: 'BWS1B',
+          desc: 'Wholesale Best Available Rate 1',
+          currency: 'ZAR',
+          isNegotiatedRate: false,
+          restricted: false,
+          minLOS: null,
+          maxLOS: null,
+          minLeadTime: null,
+          maxLeadTime: null,
+          haspolicies: true,
+          columns,
+        }],
+        columns: Object.fromEntries([1, 2].map((n) => [`col${n}`, { value: 84 }])),
+      }],
+    }],
+  };
+  const calendar = {
+    headers: ['16-FEB-2027Tuesday', '17-FEB-2027Wednesday'],
+    options: [{
+      room: { code: 'STKNG', inventory: ['84', '84'] },
+      rate: 'BWS1B: Wholesale Best Available Rate 1',
+      board: 'Bed & Breakfast NR',
+      prices: ['R2,500.00', 'R2,500.00'],
+    }],
+  };
+  const result = extractOptions(
+    stay,
+    stay.rooms[0],
+    [{ data, calendar, criteria: { salesStrategy: 'WS', organizationID: '1' } }],
+    { organization: { id: '1' } },
+  );
+  const option = result.options.find((row) => row.rate.code === 'BWS1B');
+  expect(option?.rateScope).toBe('contextual');
+  expect(option?.eligibility).not.toBe('verified');
+  expect(option?.matchStatus).toBe('unresolved');
+});

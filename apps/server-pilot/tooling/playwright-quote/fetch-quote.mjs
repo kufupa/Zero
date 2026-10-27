@@ -517,6 +517,14 @@ function quoteRateScope(profile, code, strategy, isNegotiatedRate) {
   return 'unknown';
 }
 
+function strategyPartyKind(profile, strategy, code) {
+  const row = profile?.rates?.strategies?.[strategy];
+  if (!row || !Array.isArray(row.plans) || !row.plans.includes(code)) return null;
+  if (row.scope === 'agency') return 'agency';
+  if (row.scope === 'company') return 'organization';
+  return null;
+}
+
 // Merge only native/visible observations. An invalid row is isolated, never a
 // reason to throw away verified siblings or manufacture a sold-out response.
 export function extractOptions(request,room,windows,resolvedContext={}) {
@@ -623,10 +631,12 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     option.availability=availability.status;
     if(availability.reason)option.availabilityReason=availability.reason;
     const governmentFamily=!contextRequested.length&&windows.every(w=>w.criteria?.salesStrategy==='GOV')&&profile?.classifyRate(option.rate.code,strategyCode,option._rate.isNegotiatedRate,option.rate.label)==='government';
-    option.eligibility=invalid?'unknown':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified?'verified':'conditional';
+    const requiredKind=strategyPartyKind(profile,strategyCode,option.rate.code);
+    const strategyContextOk=!requiredKind||(contextVerified&&contextRequested.includes(requiredKind));
+    option.eligibility=invalid?'unknown':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified&&strategyContextOk?'verified':'conditional';
     if (option.availability==='restricted') option.eligibility='conditional';
     Object.assign(option,assessConstraints(room,sourceFacts(option)));
-    if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified)) {
+    if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified&&strategyContextOk)) {
       // ponytail: a verified party's public row stays bookable as the BAR it is; an unverified context keeps it unresolved.
       if(contextVerified&&option.rateScope==='public') {
         option.conditions.push({kind:'preferred',field:'rateContext',status:'unsatisfied',requested:request.rateContext,evidence:null,reason:noSpecialRates?'No special rates for this party; public BAR is returned.':'Public rate for this party; any contract rate is reported separately.'});
