@@ -4,6 +4,7 @@ import type {AuthorizedTaskAnswer,ReservationistExecutionServices} from './reser
 import type {PreparedFact} from './prepared-draft-input.js';
 import {deriveStaffAnswerTopics,ReservationistTaskEvidenceUnavailable} from './reservationist-execution.js';
 import {getProfileLetter,profileFor} from '../../tooling/playwright-quote/property-profile.mjs';
+import {boardsFor,norm} from './rate-options.js';
 
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
 type Selection={sourceRef:string;groupId:string;optionId:string};
@@ -13,7 +14,6 @@ type RatePolicyDocumentIdentity={
 };
 export type ReservationistRatePolicyDocument=RatePolicyDocumentIdentity&({kind?:'family_invoice';authoredDate:string;rateCode:string;board:Board;publicationAt?:never}|{kind:'hotel_rate_terms';publicationAt:string;authoredDate?:never;rateCode?:never;board?:never});
 const sha=(body:Uint8Array)=>createHash('sha256').update(body).digest('hex');
-const boards:Record<string,Board>={'Room Only R':'room_only','Bed & Breakfast R':'breakfast','Dinner Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed, Breakfast & Beverage R':'dinner_bed_breakfast'};
 export function letterIdentity(propertyCode:string):{hotel:RegExp;confirmation:RegExp}|null{
  if(!profileFor(propertyCode))return null;
  try{return getProfileLetter(propertyCode);}catch{return null;}
@@ -88,7 +88,7 @@ export function createReservationistSelectedRatePolicyResolver(options:{
   await guard();
   if(propertyCode!==ctx.input.propertyCode||source.request.propertyCode!==propertyCode||source.result.propertyCode!==propertyCode||source.result.outcome!=='quote'||!source.ref||!/^[a-f0-9]{64}$/.test(source.sha256)||!rateCode||!['room_only','breakfast','dinner_bed_breakfast'].includes(board))throw new Error('rate_policy_selected_scope_invalid');
   const selected=selections.map(s=>{const group=source.result.groups.find(g=>g.id===s.groupId),option=group?.options.find(o=>o.id===s.optionId);if(s.sourceRef!==source.ref||!group||!option||group.completeness.search!=='complete'||group.completeness.requiredFacts!=='complete'||option.eligibility!=='verified'||option.availability!=='available'||option.matchStatus!=='match'||option.held!==false)throw new Error('rate_policy_selected_scope_invalid');return{group,option};});
-  const matched=selected.filter(({option})=>option.rate.code===rateCode&&boards[option.board??'']===board);
+  const matched=selected.filter(({option})=>option.rate.code===rateCode&&boardsFor(propertyCode)[norm(option.board??'')]===board);
   if(!matched.length)throw new Error('rate_policy_selected_family_invalid');
   if(matched.some(({option})=>!option.nightly.length||option.nightly.some(n=>{const row=n as typeof n&{restricted?:boolean;rateAvailable?:boolean};return row.restricted!==false||row.rateAvailable!==true;})))return null;
   const documents=await read(ctx,{propertyCode,rateCode,board}),documentsIdentity=quoteDigest(documents);await guard();

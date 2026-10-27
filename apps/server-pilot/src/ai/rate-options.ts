@@ -4,13 +4,20 @@ import {getProfileBoards,profileFor} from '../../tooling/playwright-quote/proper
 export const boards:Record<string,Board>={'ro':'room_only','room_only':'room_only','room only':'room_only','room only r':'room_only','bb':'breakfast','b&b':'breakfast','breakfast':'breakfast','bed & breakfast':'breakfast','bed and breakfast':'breakfast','bed & breakfast r':'breakfast','dbb':'dinner_bed_breakfast','dinner_bed_breakfast':'dinner_bed_breakfast','breakfast and dinner':'dinner_bed_breakfast','breakfast & dinner':'dinner_bed_breakfast','dinner and breakfast':'dinner_bed_breakfast','dinner & breakfast':'dinner_bed_breakfast','dinner, bed & breakfast':'dinner_bed_breakfast','dinner, bed and breakfast':'dinner_bed_breakfast','dinner bed & breakfast':'dinner_bed_breakfast','dinner bed & breakfast r':'dinner_bed_breakfast','dinner, bed & breakfast r':'dinner_bed_breakfast','dinner, bed, breakfast & beverage r':'dinner_bed_breakfast'};
 export const norm=(s:string)=>s.toLowerCase().replace(/\s+/g,' ').trim();
 
+const BOARD_CACHE=new Map<string,Record<string,Board>>();
+
 /** Static board aliases plus this property's profile map. Unknown property keeps the static map (fail closed). */
 export function boardsFor(propertyCode?:string):Record<string,Board>{
+ const key=typeof propertyCode==='string'?propertyCode:'';
+ const hit=BOARD_CACHE.get(key);
+ if(hit)return hit;
  const merged={...boards};
- if(typeof propertyCode!=='string'||!propertyCode||!profileFor(propertyCode))return merged;
- try{
-  for(const [label,base] of Object.entries(getProfileBoards(propertyCode))) merged[norm(label)]=base;
- }catch{return merged;}
+ if(key&&profileFor(key)){
+  try{
+   for(const [label,base] of Object.entries(getProfileBoards(key))) merged[norm(label)]=base;
+  }catch{/* keep static aliases */}
+ }
+ BOARD_CACHE.set(key,merged);
  return merged;
 }
 

@@ -1,6 +1,7 @@
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import type { ReservationistSourceFreshnessProof } from '../ai/draft-approval.js';
+import { getProfileBoards, profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
 
 /** How long a priced staff quote may be reused, measured from the HMS observation. */
 export const PRICED_QUOTE_REUSE_MS = 24 * 60 * 60_000;
@@ -178,6 +179,23 @@ function freeze<T>(value: T): T {
 const nativeContractPath = fileURLToPath(
   new URL('../../tooling/playwright-quote/quote-contract.mjs', import.meta.url),
 );
+const STATIC_BOARDS: Record<string, Board> = {
+  'Room Only R': 'room_only',
+  'Bed & Breakfast R': 'breakfast',
+  'Dinner Bed & Breakfast R': 'dinner_bed_breakfast',
+  'Dinner, Bed & Breakfast R': 'dinner_bed_breakfast',
+  'Dinner, Bed, Breakfast & Beverage R': 'dinner_bed_breakfast',
+};
+function nativeBoard(propertyCode: string, label: string | null): Board | undefined {
+  if (label && STATIC_BOARDS[label]) return STATIC_BOARDS[label];
+  const key = (label ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!profileFor(propertyCode)) return undefined;
+  try {
+    return getProfileBoards(propertyCode)[key];
+  } catch {
+    return undefined;
+  }
+}
 /** Sources/policies must be resolved by authorized server storage, never accepted from model slots. */
 export async function resolveQuoteRevision(input: {
   propertyCode: string;
@@ -280,15 +298,7 @@ export async function resolveQuoteRevision(input: {
       (req.required?.rateCodes && !req.required.rateCodes.includes(o.rate.code))
     )
       throw new Error('wrong_room_rate');
-    const board: Board | undefined = (
-      {
-        'Room Only R': 'room_only',
-        'Bed & Breakfast R': 'breakfast',
-        'Dinner Bed & Breakfast R': 'dinner_bed_breakfast',
-        'Dinner, Bed & Breakfast R': 'dinner_bed_breakfast',
-        'Dinner, Bed, Breakfast & Beverage R': 'dinner_bed_breakfast',
-      } as Record<string, Board>
-    )[o.board ?? ''];
+    const board: Board | undefined = nativeBoard(s.request.propertyCode, o.board);
     if (!board) throw new Error('unknown_board');
     if (req.required?.boardBases && !req.required.boardBases.includes(board))
       throw new Error('wrong_board');
