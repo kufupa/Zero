@@ -338,6 +338,32 @@ describe('staff quote strategy comparisons', () => {
     expect(mutate).not.toHaveBeenCalled();
   });
 
+  it('classes a thrown comparison error as needs staff unless the message is an HMS outage', async () => {
+    const generic = await bindStaffQuoteStrategy({
+      ...args,
+      strategyCode: 'BAR',
+      staffQuoteJob: async () => {
+        throw new Error('The stay could not be qualified. Review the stay inputs.');
+      },
+    });
+    expect(generic.row).toMatchObject({
+      status: 'failed',
+      causeClass: 'needs_staff',
+    });
+
+    const outage = await bindStaffQuoteStrategy({
+      ...args,
+      strategyCode: 'BAR',
+      staffQuoteJob: async () => {
+        throw new Error("HMS didn't answer.");
+      },
+    });
+    expect(outage.row).toMatchObject({
+      status: 'failed',
+      causeClass: 'hms_down',
+    });
+  });
+
   it('keeps the HRCEN BAR and Government request values unchanged', async () => {
     const hrcenStrategies: QuoteSalesStrategy[] = [
       { code: 'BAR', label: 'BAR', requestValue: 'BAR' },

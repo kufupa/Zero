@@ -1647,7 +1647,8 @@ export async function bindStaffQuoteStrategy(
     }
     return rowForBoundStrategy(args.strategyCode, bound, args.groups);
   } catch (error) {
-    return failedQuoteStrategy(args.strategyCode, rejectionReason(error), 'hms_down');
+    const message = rejectionReason(error);
+    return failedQuoteStrategy(args.strategyCode, message, causeClassForBoundReason(message));
   }
 }
 
