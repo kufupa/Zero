@@ -38,6 +38,7 @@ import { aiWorkflowRun } from '../db/schema/mail.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { getDb, type DB } from '../db/client.js';
 import { parseEnv } from '../env.js';
+import { PROPERTY_REGISTRY } from '../../tooling/playwright-quote/property-registry.mjs';
 
 export const DEFAULT_AI_MODEL_ID = 'amazon.nova-lite-v1:0';
 export const DEFAULT_TRIAGE_PROMPT_VERSION = 'triage-v6';
@@ -48,6 +49,18 @@ export const READ_TOOL_PROMPT_VERSION = 'hms-read/1';
 export const HMS_JOB_PROMPT_VERSION = 'hms-job/1';
 // Keep aligned with HMS_JOB_PRIORITY_PREFETCH in hms-jobs.ts without creating a module cycle.
 const HMS_DEV_GATE_PREFETCH_PRIORITY = 0;
+// Several active transports may share one serialized browser slot; take groups from the registry.
+const ACTIVE_HMS_TRANSPORT_GROUPS = [
+  ...new Set(
+    PROPERTY_REGISTRY.properties
+      .filter((property) => property.active)
+      .map((property) => property.browserSlot),
+  ),
+].map((browserSlot) =>
+  PROPERTY_REGISTRY.properties
+    .filter((property) => property.active && property.browserSlot === browserSlot)
+    .flatMap((property) => [...property.transportIds]),
+);
 /** Staff quote jobs get a 7-minute claim budget for their measured ~5-minute native rate read. */
 const HMS_STAFF_QUOTE_RUN_DEADLINE_MS = 7 * 60_000;
 /** An unclaimed staff quote that waited this long is stale and must be queued again explicitly. */
@@ -631,6 +644,15 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
   const utcHour = now.getUTCHours();
   const inStaffHours = utcHour >= startHour && utcHour < endHour;
   const higherTierRun = alias(aiWorkflowRun, 'higher_tier_hms_run');
+  const sameHmsSlot = or(
+    eq(higherTierRun.transportId, aiWorkflowRun.transportId),
+    ...ACTIVE_HMS_TRANSPORT_GROUPS.map((transportIds) =>
+      and(
+        inArray(aiWorkflowRun.transportId, transportIds),
+        inArray(higherTierRun.transportId, transportIds),
+      ),
+    ),
+  );
   const devGate = input.lane === 'hms' && process.env.HMS_DEV_GATE !== 'off' && inStaffHours
     ? or(
         gte(aiWorkflowRun.priority, HMS_DEV_GATE_PREFETCH_PRIORITY),
@@ -640,6 +662,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             .from(higherTierRun)
             .where(
               and(
+                sameHmsSlot,
                 eq(higherTierRun.executorLane, 'hms'),
                 gte(higherTierRun.priority, HMS_DEV_GATE_PREFETCH_PRIORITY),
                 // Writes have their own runner; a parked write must not hold dev reads all day.
