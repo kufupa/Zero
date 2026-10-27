@@ -11,6 +11,7 @@ import type {
 } from '@/lib/quote-workflow/types';
 import { prefillReservationNote, reservationNoteForGroup } from '@/lib/quote-workflow/reservation-note';
 import { HmsLinkActions } from './hms-link-actions';
+import { HmsShotsViewer, visibleStayShots, type HmsShotRecord } from './hms-shots-viewer';
 import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
 import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
@@ -253,9 +254,18 @@ type CommitView =
       confirmationNumber: string;
       runId?: string;
       screenshots: string[];
+      shots?: HmsShotRecord[];
       unverified?: boolean;
     }
-  | { status: 'refused'; key: string; message: string; runId?: string; screenshots?: string[] };
+  | {
+      status: 'refused';
+      key: string;
+      message: string;
+      runId?: string;
+      screenshots?: string[];
+      shots?: HmsShotRecord[];
+      statusChip?: 'check';
+    };
 
 type RoomSaveState = { preview?: PreviewView; commit?: CommitView };
 
@@ -263,6 +273,9 @@ export type SavedStayCommit = {
   confirmationNumber: string | null;
   status: 'booked' | 'unknown';
   screenshotRef: { runId: string; name: string } | null;
+  /** Durable before/saved shots from the work-item stay record. */
+  runId?: string;
+  shots?: HmsShotRecord[];
 };
 
 function stayIdForRoom(
@@ -284,8 +297,10 @@ function commitViewFromSaved(
   saved: SavedStayCommit,
   stay: { firstName?: string; lastName?: string; arrival?: string; departure?: string },
 ): CommitView {
-  const runId = saved.screenshotRef?.runId;
+  const runId = saved.runId ?? saved.screenshotRef?.runId;
   const screenshots = saved.screenshotRef ? [saved.screenshotRef.name] : [];
+  const shots = visibleStayShots(saved.shots ?? []);
+  const shotFields = shots.length > 0 ? { shots } : {};
   if (saved.confirmationNumber) {
     return {
       status: 'booked',
@@ -293,6 +308,7 @@ function commitViewFromSaved(
       confirmationNumber: saved.confirmationNumber,
       runId,
       screenshots,
+      ...shotFields,
       ...(saved.status === 'unknown' ? { unverified: true } : {}),
     };
   }
@@ -307,6 +323,8 @@ function commitViewFromSaved(
     }),
     runId,
     screenshots,
+    ...shotFields,
+    statusChip: 'check',
   };
 }
 
