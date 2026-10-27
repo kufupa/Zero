@@ -3100,13 +3100,19 @@ async function executePartyMatchV2(input: {
 async function requeueRun(
   db: DB,
   mark: Mark,
-  input: { attempts: number; delayMs: number; failureClass: AiFailureClass; lastError: string },
+  input: {
+    attempts: number;
+    delayMs: number;
+    failureClass: AiFailureClass;
+    lastError: string;
+    nextRunAt?: Date;
+  },
 ): Promise<'retry_wait'> {
   await markAiRunRetry(
     {
       ...mark,
       attempts: input.attempts,
-      nextRunAt: new Date(Date.now() + input.delayMs),
+      nextRunAt: input.nextRunAt ?? new Date(Date.now() + input.delayMs),
       lastError: input.lastError,
       failureClass: input.failureClass,
       // A yielded or retried job runs again later, so its next claim gets a fresh run deadline.
@@ -3693,11 +3699,72 @@ export async function executeHmsJob(input: {
         ))`,
       );
       const scoped = tx as unknown as DB;
+      const now = new Date();
+      const batchScope = and(
+        eq(aiWorkflowRun.transportId, run.transportId),
+        eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+        run.triggerMessageId
+          ? eq(aiWorkflowRun.triggerMessageId, run.triggerMessageId)
+          : eq(aiWorkflowRun.id, run.id),
+        sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+        sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+      );
+      const batchRows = await scoped
+        .select({ id: aiWorkflowRun.id, state: aiWorkflowRun.state, metrics: aiWorkflowRun.metrics })
+        .from(aiWorkflowRun)
+        .where(batchScope);
+      const alreadyAdmitted = batchRows.find((row) => {
+        const siblingMetrics = objectRecord(row.metrics);
+        return siblingMetrics.prefetchBatchDecision === 'admitted' || siblingMetrics.prefetchDeferred !== true;
+      });
+      const alreadyAdmittedMetrics = alreadyAdmitted ? objectRecord(alreadyAdmitted.metrics) : {};
+      const recordedAdmittedAt = alreadyAdmittedMetrics.prefetchBatchAdmittedAt;
+      const parsedAdmittedAt =
+        typeof recordedAdmittedAt === 'string' ? Date.parse(recordedAdmittedAt) : Number.NaN;
+      const admittedAt = Number.isFinite(parsedAdmittedAt) ? new Date(parsedAdmittedAt) : now;
+      const activeBatchRows = batchRows.filter((row) =>
+        ['queued', 'retry_wait', 'claimed', 'running'].includes(row.state),
+      );
+      // A waking strategy promotes or reschedules its whole source-mail fan-out atomically.
+      const stampBatchDecision = async (
+        decision: 'admitted' | 'deferred',
+        decisionAt: Date,
+        nextRunAt?: Date,
+      ) => {
+        for (const row of activeBatchRows) {
+          const waiting = row.state === 'queued' || row.state === 'retry_wait';
+          await scoped
+            .update(aiWorkflowRun)
+            .set({
+              metrics: {
+                ...objectRecord(row.metrics),
+                prefetchBatchDecision: decision,
+                prefetchDeferred: decision === 'deferred',
+                ...(decision === 'admitted'
+                  ? { prefetchBatchAdmittedAt: decisionAt.toISOString() }
+                  : {}),
+              },
+              ...(decision === 'deferred' && nextRunAt
+                ? { nextRunAt }
+                : decision === 'admitted' && waiting
+                  ? { nextRunAt: decisionAt }
+                  : {}),
+              ...(waiting ? { updatedAt: now } : {}),
+            })
+            .where(eq(aiWorkflowRun.id, row.id));
+        }
+      };
+      if (alreadyAdmitted) {
+        await stampBatchDecision('admitted', admittedAt);
+        const occupied = await occupyPrefetchReservation(scoped, run.id, admittedAt);
+        return { status: 'admit' as const, admittedAt: occupied.admittedAt };
+      }
       const capacity = await reservePrefetchCapacity(scoped, {
         transportId: run.transportId,
         kind: 'staff_quote',
         perHour: quotePreparationPerHour(),
         batchSize: prefetchBatchSize,
+        now,
         excludeRunId: run.id,
         excludeTriggerMessageId: run.triggerMessageId ?? undefined,
       });
@@ -3706,15 +3773,18 @@ export async function executeHmsJob(input: {
         return { status: 'dead_letter' as const };
       }
       if (capacity.action === 'defer') {
+        await stampBatchDecision('deferred', now, capacity.nextRunAt);
         await requeueRun(scoped, mark, {
           attempts: run.attempts,
-          delayMs: Math.max(JOB_YIELD_MS, capacity.nextRunAt.getTime() - Date.now()),
+          delayMs: Math.max(JOB_YIELD_MS, capacity.nextRunAt.getTime() - now.getTime()),
           failureClass: 'POLICY_BLOCK',
           lastError: preparedQuoteYieldLastError(run, 'prefetch_capacity_deferred'),
+          nextRunAt: capacity.nextRunAt,
         });
         return { status: 'retry_wait' as const };
       }
-      const occupied = await occupyPrefetchReservation(scoped, run.id);
+      await stampBatchDecision('admitted', now);
+      const occupied = await occupyPrefetchReservation(scoped, run.id, now);
       return { status: 'admit' as const, admittedAt: occupied.admittedAt };
     });
     if (admitted.status !== 'admit') return admitted.status;

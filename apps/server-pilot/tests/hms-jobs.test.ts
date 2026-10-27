@@ -1104,6 +1104,48 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       expect(claimed?.transportId).toBe(DAVINCI_TRANSPORT_ID);
     }));
 
+  it('blocks a dev run while higher-tier work is queued on another mailbox for the same property', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_DEV_GATE', 'on');
+      vi.stubEnv('HMS_DEV_GATE_START_HOUR_UTC', '5');
+      vi.stubEnv('HMS_DEV_GATE_END_HOUR_UTC', '16');
+      const now = new Date('2099-05-10T10:00:00Z');
+      const createdAt = new Date(now.getTime() - 60_000);
+      const higherTier = await seedThread(db, 'Quote request', FAITH_TRANSPORT_ID);
+      const devCandidate = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID);
+      const prefix = `dev-gate-same-property-${randomUUID()}`;
+      await enqueuePriorityJob(
+        db,
+        higherTier.threadId,
+        higherTier.messageId,
+        `${prefix}:prefill`,
+        HMS_JOB_PRIORITY_PREFETCH,
+        createdAt,
+        FAITH_TRANSPORT_ID,
+      );
+      await enqueuePriorityJob(
+        db,
+        devCandidate.threadId,
+        devCandidate.messageId,
+        `${prefix}:dev`,
+        HMS_JOB_PRIORITY_DEV,
+        createdAt,
+        DAVINCI_TRANSPORT_ID,
+      );
+
+      const claimed = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        transportId: DAVINCI_TRANSPORT_ID,
+        idempotencyPrefix: `${prefix}:dev`,
+        db,
+        now,
+      });
+      expect(claimed).toBeNull();
+    }));
+
   it('claims a prepared quote with the staff quote read budget', () =>
     withSeededTestDb(async (db) => {
       vi.stubEnv('HMS_RUN_DEADLINE_MS', '150000');

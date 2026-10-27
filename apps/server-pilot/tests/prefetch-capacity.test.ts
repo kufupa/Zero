@@ -439,6 +439,21 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
       ).toBe('succeeded');
       expect(staffQuoteRunner.run).toHaveBeenCalledTimes(1);
 
+      const admittedBatch = await preparedQuoteRows(db, second.messageId);
+      expect(
+        admittedBatch.every(
+          (row) =>
+            (row.metrics as { prefetchBatchDecision?: string; prefetchDeferred?: boolean } | null)
+              ?.prefetchBatchDecision === 'admitted' &&
+            (row.metrics as { prefetchDeferred?: boolean } | null)?.prefetchDeferred !== true,
+        ),
+      ).toBe(true);
+      expect(
+        admittedBatch
+          .filter((row) => row.state === 'queued' || row.state === 'retry_wait')
+          .every((row) => row.nextRunAt !== null && row.nextRunAt.getTime() <= Date.now()),
+      ).toBe(true);
+
       expect(await prefetchQuoteReadyForExtraction(second.prefetchRun, db, env)).toBe(0);
       expect(await preparedQuoteRows(db, second.messageId)).toHaveLength(afterFirstOverflow.length);
     }));
