@@ -339,24 +339,34 @@ describe('staff quote strategy comparisons', () => {
   });
 
   it('classes a thrown comparison error as needs staff unless the message is an HMS outage', async () => {
+    const genericHeader = emptyStaffQuoteHeader();
+    Object.defineProperty(genericHeader, 'fieldErrors', {
+      get() {
+        throw new Error('The stay could not be qualified. Review the stay inputs.');
+      },
+    });
     const generic = await bindStaffQuoteStrategy({
       ...args,
       strategyCode: 'BAR',
-      staffQuoteJob: async () => {
-        throw new Error('The stay could not be qualified. Review the stay inputs.');
-      },
+      header: genericHeader,
+      staffQuoteJob: async () => null,
     });
     expect(generic.row).toMatchObject({
       status: 'failed',
       causeClass: 'needs_staff',
     });
 
+    const outageHeader = emptyStaffQuoteHeader();
+    Object.defineProperty(outageHeader, 'fieldErrors', {
+      get() {
+        throw new Error("HMS didn't answer.");
+      },
+    });
     const outage = await bindStaffQuoteStrategy({
       ...args,
       strategyCode: 'BAR',
-      staffQuoteJob: async () => {
-        throw new Error("HMS didn't answer.");
-      },
+      header: outageHeader,
+      staffQuoteJob: async () => null,
     });
     expect(outage.row).toMatchObject({
       status: 'failed',
