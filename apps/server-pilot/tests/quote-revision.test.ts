@@ -139,6 +139,27 @@ describe('server-resolved immutable nightly quote revisions', () => {
     if (kind === 'context') s.request.rateContext = { organization: { nativeId: 'org-1' } };
     await expect(revision(s)).rejects.toThrow();
   });
+  it('revises a profile Non-Rewardable breakfast label without unknown_board', async () => {
+    const record = source();
+    record.request.propertyCode = 'HRDAV';
+    record.result.propertyCode = 'HRDAV';
+    record.result.groups[0].options[0].board = 'Bed & Breakfast NR';
+    const nrPolicy = {
+      ...policy,
+      propertyCode: 'HRDAV',
+      families: [{ rateCode: 'BAR', board: 'breakfast' as const }],
+    };
+    const r = await resolveQuoteRevision({
+      admission: admission([record]),
+      propertyCode: 'HRDAV',
+      selections: [{ sourceRef: record.ref, groupId: 'g1', optionId: 'HRCEN:STQN:BAR' }],
+      authoredDate: '2026-10-04',
+      resolveSource: async () => record,
+      resolvePolicy: async () => nrPolicy,
+    });
+    expect(r.groups[0].board).toBe('breakfast');
+    expect(r.totalMinor).toBe(220002);
+  });
   it('rejects impossible calendar dates rather than rolling February into March', async () => {
     const s = source();
     s.request.arrivalDate = '2026-02-30';
