@@ -6,29 +6,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readShuttleProviderConfig } from '../../server-pilot/src/ai/shuttle-draft.js';
 import { ShuttleDraft } from '../components/quote-workflow/shuttle-draft';
 
-const { createDraftMutate, sendMutate, invalidateQueries } = vi.hoisted(() => ({
-  createDraftMutate: vi.fn(),
-  sendMutate: vi.fn(),
-  invalidateQueries: vi.fn(),
-}));
-
-vi.mock('@tanstack/react-query', () => ({
-  useQueryClient: () => ({ invalidateQueries }),
-}));
-
-vi.mock('../providers/query-provider', () => ({
-  trpcClient: {
-    drafts: { create: { mutate: createDraftMutate } },
-    mail: { send: { mutate: sendMutate } },
-  },
-  useTRPC: () => ({
-    drafts: { list: { queryKey: () => ['drafts', 'list'] } },
-    mail: { unreadCounts: { queryKey: () => ['mail', 'unreadCounts'] } },
-  }),
-}));
+const { createDraftCommand } = vi.hoisted(() => ({ createDraftCommand: vi.fn() }));
 
 const provider = { provider: 'Jarat Tours', to: ['shuttle@example.test'] };
-const transportId = 'transport-1';
+const storeId = 'store-1';
+const savedDraftLocation = {
+  entryId: 'outlook-draft-1',
+  storeId,
+  folderEntryId: 'drafts-folder',
+  folderName: 'Drafts',
+  displayed: false,
+};
+const nativeDraftBridge = {
+  sendCommand: createDraftCommand as never,
+  supportsAction: () => true,
+};
 const malformedProviderSettings: Array<[string, unknown]> = [
   ['mixed valid and invalid recipients', { provider: 'Jarat Tours', to: ['shuttle@example.test', 'bad-address'] }],
   ['empty recipients', { provider: 'Jarat Tours', to: [] }],
@@ -49,16 +41,20 @@ function fillDetails() {
 }
 
 beforeEach(() => {
-  createDraftMutate.mockReset().mockResolvedValue({ id: 'draft-1' });
-  sendMutate.mockReset();
-  invalidateQueries.mockReset().mockResolvedValue(undefined);
+  createDraftCommand.mockReset().mockResolvedValue(savedDraftLocation);
 });
 
 afterEach(cleanup);
 
 describe('shuttle request drafts', () => {
-  it('saves staff-entered transfer details as a standalone unsent draft and note text', async () => {
-    render(<ShuttleDraft config={provider} transportId={transportId} />);
+  it('saves staff-entered transfer details as a standalone Outlook draft and note text', async () => {
+    render(
+      <ShuttleDraft
+        bridge={nativeDraftBridge}
+        config={provider}
+        storeId={storeId}
+      />,
+    );
     fillDetails();
 
     const note = screen.getByLabelText('Reservation note for HMS') as HTMLTextAreaElement;
@@ -68,27 +64,41 @@ describe('shuttle request drafts', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
 
-    await waitFor(() => expect(createDraftMutate).toHaveBeenCalledWith({
-      id: null,
-      threadId: null,
-      replyToMessageId: null,
-      to: 'shuttle@example.test',
-      subject: 'Shuttle request — 2026-11-21',
-      message: expect.stringMatching(/Hotel &lt;main&gt;[\s\S]*SA123/),
-    }, { context: { activeTransportId: transportId } }));
-    expect(createDraftMutate).toHaveBeenCalledTimes(1);
-    expect(sendMutate).not.toHaveBeenCalled();
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['drafts', 'list'] });
-    expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['mail', 'unreadCounts'] });
-    expect(screen.getByRole('status').textContent).toContain('Saved as an unsent draft');
+    await waitFor(() => expect(createDraftCommand).toHaveBeenCalledWith(
+      'CREATE_DRAFT',
+      expect.objectContaining({
+        operationId: expect.stringMatching(/^op_\d+_[0-9a-f]{32}$/i),
+        storeId,
+        to: 'shuttle@example.test',
+        subject: 'Shuttle request — 2026-11-21',
+        htmlBody: expect.stringMatching(/Hotel &lt;main&gt;[\s\S]*SA123/),
+        openInComposer: false,
+      }),
+    ));
+    expect(createDraftCommand).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('status').textContent).toContain('Saved as an unsent Outlook draft');
   });
 
   it('fails closed when no provider is configured', () => {
-    render(<ShuttleDraft config={null} transportId={transportId} />);
+    render(<ShuttleDraft config={null} />);
 
     expect(screen.getByRole('status').textContent).toContain('not set up');
     expect(screen.queryByLabelText('Pickup location')).toBeNull();
-    expect(createDraftMutate).not.toHaveBeenCalled();
+    expect(createDraftCommand).not.toHaveBeenCalled();
+  });
+
+  it('does not fall back to a Zero draft when Outlook draft creation is unavailable', () => {
+    render(
+      <ShuttleDraft
+        bridge={{ ...nativeDraftBridge, supportsAction: () => false }}
+        config={provider}
+        storeId={storeId}
+      />,
+    );
+
+    expect(screen.getByRole('status').textContent).toContain('Outlook draft creation is not available');
+    expect(screen.getByRole('button', { name: 'Save unsent draft' }).hasAttribute('disabled')).toBe(true);
+    expect(createDraftCommand).not.toHaveBeenCalled();
   });
 
   it.each(malformedProviderSettings)('rejects %s shuttle settings', (_caseName, settings) => {
@@ -97,28 +107,66 @@ describe('shuttle request drafts', () => {
 
   it('locks transfer details while saving the unsent draft', async () => {
     let completeSave = () => {};
-    createDraftMutate.mockImplementationOnce(() => new Promise((resolve) => {
-      completeSave = () => resolve({ id: 'draft-1' });
+    createDraftCommand.mockImplementationOnce(() => new Promise((resolve) => {
+      completeSave = () => resolve(savedDraftLocation);
     }));
-    render(<ShuttleDraft config={provider} transportId={transportId} />);
+    render(
+      <ShuttleDraft
+        bridge={nativeDraftBridge}
+        config={provider}
+        storeId={storeId}
+      />,
+    );
     const pickup = screen.getByLabelText('Pickup location') as HTMLInputElement;
     fireEvent.change(pickup, { target: { value: 'Hotel entrance' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
 
     await waitFor(() => expect(pickup.disabled).toBe(true));
     await act(async () => completeSave());
-    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Saved as an unsent draft'));
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Saved as an unsent Outlook draft'));
   });
 
   it('shows a plain mailbox error when saving fails and keeps the draft unsent', async () => {
-    createDraftMutate.mockRejectedValueOnce(new Error('INTERNAL_SERVER_ERROR: mail store unavailable'));
-    render(<ShuttleDraft config={provider} transportId={transportId} />);
+    createDraftCommand.mockRejectedValueOnce(new Error('DRAFT_OUTLOOK_SECRET: mailbox unavailable'));
+    render(
+      <ShuttleDraft
+        bridge={nativeDraftBridge}
+        config={provider}
+        storeId={storeId}
+      />,
+    );
     fireEvent.change(screen.getByLabelText('Pickup location'), { target: { value: 'Hotel entrance' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
 
     const message = await screen.findByRole('alert');
-    expect(message.textContent).toContain('mailbox is busy or unavailable');
-    expect(message.textContent).not.toContain('INTERNAL_SERVER_ERROR');
-    expect(sendMutate).not.toHaveBeenCalled();
+    expect(message.textContent).toContain('Outlook is busy or unavailable');
+    expect(message.textContent).toContain('may have been saved');
+    expect(message.textContent).not.toContain('DRAFT_OUTLOOK_SECRET');
+    expect(createDraftCommand.mock.calls.map(([action]) => action)).toEqual(['CREATE_DRAFT']);
+  });
+
+  it('reuses the operation id when staff retry an unconfirmed save', async () => {
+    createDraftCommand
+      .mockRejectedValueOnce(new Error('Outlook command timed out'))
+      .mockResolvedValueOnce(savedDraftLocation);
+    render(
+      <ShuttleDraft
+        bridge={nativeDraftBridge}
+        config={provider}
+        storeId={storeId}
+      />,
+    );
+    fireEvent.change(screen.getByLabelText('Pickup location'), { target: { value: 'Hotel entrance' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
+    await screen.findByRole('alert');
+    expect((screen.getByLabelText('Pickup location') as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
+
+    await waitFor(() => expect(createDraftCommand).toHaveBeenCalledTimes(2));
+    expect(createDraftCommand.mock.calls[0]?.[1]).toMatchObject({ operationId: expect.any(String) });
+    expect(createDraftCommand.mock.calls[1]?.[1].operationId)
+      .toBe(createDraftCommand.mock.calls[0]?.[1].operationId);
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Saved as an unsent Outlook draft'));
   });
 });

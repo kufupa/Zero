@@ -54,6 +54,7 @@ import {
 } from '@/components/nava-pane/pane-ui';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayAvailabilityReader, PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
+import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { pdfBlockReason } from './document-review';
 import { QuoteBookingHost } from './quote-booking-host';
 import { ShuttleDraft } from './shuttle-draft';
@@ -381,6 +382,7 @@ function allStaysDisplayTotal(session: QuoteSession): { total: number | null; ra
 
 export function QuoteWorkflowPanel({
   session,
+  bridge,
   onPatchGroup,
   onStayAction,
   onRunNext,
@@ -425,6 +427,8 @@ export function QuoteWorkflowPanel({
   workItemPane = null,
 }: {
   session: QuoteSession;
+  /** Outlook draft creation is capability-checked by the connected mailbox bridge. */
+  bridge?: PaneBridge | null;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
   paneSave?: PaneStayClient | null;
   /** Work item owning the Book preview receipt and any resulting commit. */
@@ -496,10 +500,11 @@ export function QuoteWorkflowPanel({
   const shuttleDraft = session.binding && paneConfig !== undefined ? (
     <ShuttleDraft
       key={`${session.binding.transportId}:${session.binding.entryId}:${session.binding.selectionEpoch}`}
+      bridge={bridge}
       config={
         paneConfig?.transportId === session.binding.transportId ? paneConfig.shuttle ?? null : null
       }
-      transportId={session.binding.transportId}
+      storeId={session.binding.storeId}
     />
   ) : null;
   const failedRatesNotice = useFailedHmsJobNoticeMessage('quote-rates', currentEmailKey);
