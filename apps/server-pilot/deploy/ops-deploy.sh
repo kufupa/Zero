@@ -152,8 +152,14 @@ if [ "$QUIESCED" = "1" ]; then
   step_finish
   echo "== ops-deploy: on-box quiesced deploy (no PM2 / no HTTP health) =="
   step_mark 'ops-deploy: on-box quiesced deploy (no PM2 / no HTTP health)'
+  # Rollback may select a deploy script from before --skip-install existed.
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
-    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/deploy-ec2.sh --quiesced --skip-install"
+    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
+      if bash apps/server-pilot/deploy/deploy-ec2.sh --skip-install --help >/dev/null 2>&1; then \
+        bash apps/server-pilot/deploy/deploy-ec2.sh --quiesced --skip-install; \
+      else \
+        bash apps/server-pilot/deploy/deploy-ec2.sh --quiesced; \
+      fi"
 fi
 
 if [ "$QUIESCED" != "1" ]; then
@@ -161,7 +167,12 @@ if [ "$QUIESCED" != "1" ]; then
   echo "== ops-deploy: on-box deploy =="
   step_mark 'ops-deploy: on-box deploy'
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
-    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/deploy-ec2.sh --skip-install"
+    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
+      if bash apps/server-pilot/deploy/deploy-ec2.sh --skip-install --help >/dev/null 2>&1; then \
+        bash apps/server-pilot/deploy/deploy-ec2.sh --skip-install; \
+      else \
+        bash apps/server-pilot/deploy/deploy-ec2.sh; \
+      fi"
 
   step_finish
   echo "== ops-deploy: health =="
@@ -171,8 +182,6 @@ if [ "$QUIESCED" != "1" ]; then
 
   step_finish
   echo "== ops-deploy: remote-admin lifecycle readiness =="
-  step_mark 'ops-deploy: remote-admin lifecycle readiness'
-  step_finish
   echo "== ops-deploy: read last-good deploy marker =="
   step_mark 'ops-deploy: read last-good deploy marker'
   # A failed SSM read must not stop the deploy: the empty result falls back to the 24-hour window below.
