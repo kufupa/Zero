@@ -323,6 +323,7 @@ test('amend CLI refuses commit before HMS access when pane save gate is off', as
   try {
     const result = spawnSync(process.execPath, [
       fileURLToPath(new URL('./amend-stay.mjs', import.meta.url)),
+      '--property', 'HRDAV',
       '--request', requestPath,
       '--mode', 'commit',
       '--digest', 'a'.repeat(64),
