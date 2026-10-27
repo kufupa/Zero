@@ -3663,6 +3663,7 @@ export async function executeHmsJob(input: {
     userId?: string | null;
     owner?: string;
     staffQuoteUser?: unknown;
+    autoStart?: boolean;
     quotePrepared?: boolean;
     prefetchDeferred?: boolean;
   };
@@ -3783,6 +3784,7 @@ export async function executeHmsJob(input: {
             {
               signal: input.signal,
               deadlineAt: fence.deadlineAt.getTime(),
+              ...(metrics.autoStart === true ? { autoStart: true } : {}),
               ...(systemPrepared ? { preparedRunId: run.id } : {}),
               commitQueuedResult: async (quoteResult, transaction) =>
                 (await storeStaffQuoteResult({

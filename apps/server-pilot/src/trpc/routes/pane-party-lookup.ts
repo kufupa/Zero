@@ -32,7 +32,12 @@ export const panePartyLookupRouter = router({
     return findParty({ name: input.name, kind: input.kind }, { target });
   }),
   // Read-only. Suggestions come from the sender's domain and the body's names; only HMS-listed ids are ever attached.
-  suggest: mailboxProcedure.input(suggestInput).query(({ input }) => ({ suggestions: suggestPartiesFor(input) })),
+  suggest: mailboxProcedure.input(suggestInput).query(({ input, ctx }) => ({
+    suggestions: suggestPartiesFor({
+      ...input,
+      propertyCode: hmsReadTargetForTransport(ctx.activeTransportId).propertyCode,
+    }),
+  })),
   // Read-only and local: the HMS list the sweep wrote. It never reaches HMS, and it is empty when there is no list.
   // Mailbox transport picks the property file. A Da Vinci inbox never reads the Centurion index.
   typeahead: mailboxProcedure.input(typeaheadInput).query(({ input, ctx }) =>

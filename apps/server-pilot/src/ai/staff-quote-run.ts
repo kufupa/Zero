@@ -571,6 +571,8 @@ export type StaffQuoteRunIdentity = {
 export type StaffQuoteRunOptions = {
   signal?: AbortSignal;
   deadlineAt?: number;
+  /** Auto-started quotes have not been explicitly accepted as a staff rate pick. */
+  autoStart?: boolean;
   /** Prepared read jobs use their own id as the document reference; no candidate-draft row is created. */
   preparedRunId?: string;
   /** Commit a queued read result under the same claim fence and transaction as the quote artifacts. */
@@ -1038,7 +1040,7 @@ export async function runStaffQuote(
           lines: preparedLines, totalMinor: revision.totalMinor, currency: revision.currency };
         const staffVersion = { ...preparedVersion, fields: staffFields, party: effectiveQuoteInput.parties ?? null,
           lines: staffLines, totalMinor: pricedRoomTotal(revision, rowPrices) + extraTotal };
-        const ratePick = identity.user
+        const ratePick = identity.user && !options.autoStart
           ? buildStaffRatePick({
               strategy: effectiveQuoteInput.salesStrategy,
               property: scope.propertyCode,

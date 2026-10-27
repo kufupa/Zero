@@ -28,6 +28,10 @@ const quoteRunMocks = vi.hoisted(() => ({
 
 const workflowMocks = vi.hoisted(() => ({ executeStaffQuote: vi.fn() }));
 const quoteQueueMocks = vi.hoisted(() => ({ staffQuoteInFlight: vi.fn() }));
+const quoteOutcomeMocks = vi.hoisted(() => ({
+  ensureQuoteOutcomeWorkItem: vi.fn(),
+  recordPreparedQuoteOutcome: vi.fn(),
+}));
 const quoteLineMocks = vi.hoisted(() => ({
   deriveQuoteLines: vi.fn(),
   pricedRoomTotal: vi.fn(),
@@ -62,6 +66,12 @@ vi.mock('../src/ai/staff-quote-installation.js', () => ({
 vi.mock('../src/ai/staff-quote-workflow.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/ai/staff-quote-workflow.js')>()),
   executeStaffQuote: workflowMocks.executeStaffQuote,
+}));
+
+vi.mock('../src/ai/quote-outcomes.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/ai/quote-outcomes.js')>()),
+  ensureQuoteOutcomeWorkItem: quoteOutcomeMocks.ensureQuoteOutcomeWorkItem,
+  recordPreparedQuoteOutcome: quoteOutcomeMocks.recordPreparedQuoteOutcome,
 }));
 
 vi.mock('../src/quote-proposal/quote-lines.js', async (importOriginal) => ({
@@ -171,6 +181,8 @@ beforeEach(async () => {
     .mockReset()
     .mockImplementation((revision: { totalMinor: number }) => revision.totalMinor);
   quoteLineMocks.rowRatesFor.mockReset().mockReturnValue([]);
+  quoteOutcomeMocks.ensureQuoteOutcomeWorkItem.mockReset().mockResolvedValue('quote-work-item');
+  quoteOutcomeMocks.recordPreparedQuoteOutcome.mockReset().mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -216,7 +228,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff quote auto-start route 
       const rows = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.triggerMessageId, messageId));
       expect(rows).toHaveLength(1);
       expect(rows[0].readRequest).toEqual({ kind: 'staff_quote', input });
-      expect(rows[0].metrics).toMatchObject({ userId: CENTURION_USER_ID, staffQuoteUser: { id: CENTURION_USER_ID } });
+      expect(rows[0].metrics).toMatchObject({
+        userId: CENTURION_USER_ID,
+        staffQuoteUser: { id: CENTURION_USER_ID },
+        autoStart: true,
+      });
       expect(jobMocks.runStaffQuote).not.toHaveBeenCalled();
       expect(quoteRunMocks.readConfiguration).not.toHaveBeenCalled();
     }));
@@ -389,6 +405,34 @@ async function provisionalWorkerQuote(
 }
 
 describe('staff_quote HMS job execution', () => {
+  it('does not record a staff rate pick for an auto-started quote', async () => {
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
+    (run as unknown as { metrics: Record<string, unknown> }).metrics.autoStart = true;
+    workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: { authorizationId: string }) =>
+      syntheticRevision(
+        ['600.00', '600.00'],
+        'Room Only R',
+        'SKNG',
+        undefined,
+        '2026-11-12',
+        prepared.authorizationId,
+      ),
+    );
+
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+
+    expect(jobMocks.runStaffQuote).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: STAFF_QUOTE_INPUT.messageId }),
+      { transportId: run.transportId, user },
+      quoteDb,
+      expect.objectContaining({ autoStart: true }),
+    );
+    expect(quoteOutcomeMocks.recordPreparedQuoteOutcome).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ratePick: null }),
+    );
+  });
+
   it('includes a staff-entered dinner allowance on an ordinary B&B quote', async () => {
     const groups: StaffQuoteInput['groups'] = [
       {
