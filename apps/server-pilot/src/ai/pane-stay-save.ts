@@ -485,6 +485,7 @@ async function persistDurableStayShots(input: {
       })) ?? undefined
     );
   } catch {
+    console.warn('hms_shots_persist_failed', { property: input.propertyCode });
     return undefined;
   }
 }

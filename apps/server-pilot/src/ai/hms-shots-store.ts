@@ -5,7 +5,8 @@ import { getPropertyRegistration } from '../../tooling/playwright-quote/property
 
 export const HMS_SHOTS_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const HMS_SHOT_NAMES = ['before.png', 'saved.png'] as const;
-const DEFAULT_ROOT = '/var/lib/nava/hms-shots';
+const DEFAULT_ROOT = '/opt/nava/shared/hms-runtime/hms-shots';
+const PROPERTY_CODE = /^[A-Z][A-Z0-9]+$/;
 const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SHOT_NAME_PATTERN = /^(before|saved)\.png$/;
 
@@ -74,7 +75,11 @@ function shotDir(root: string, index: Pick<RunIndex, 'property' | 'workItemId'>,
   return join(root, index.property, index.workItemId, runId);
 }
 
-async function readIndex(root: string, runId: string): Promise<RunIndex | null> {
+async function readIndex(
+  root: string,
+  runId: string,
+  opts: { requireActive?: boolean } = {},
+): Promise<RunIndex | null> {
   if (!RUN_ID_PATTERN.test(runId)) return null;
   const path = indexPath(root, runId);
   if (!underRoot(root, path)) return null;
@@ -82,7 +87,8 @@ async function readIndex(root: string, runId: string): Promise<RunIndex | null> 
     const raw = JSON.parse(await readFile(path, 'utf8')) as Partial<RunIndex>;
     if (
       typeof raw.property !== 'string' ||
-      !registeredProperty(raw.property) ||
+      !PROPERTY_CODE.test(raw.property) ||
+      (opts.requireActive !== false && !registeredProperty(raw.property)) ||
       typeof raw.workItemId !== 'string' ||
       !RUN_ID_PATTERN.test(raw.workItemId) ||
       typeof raw.owner !== 'string' ||
@@ -196,11 +202,16 @@ export async function purgeExpiredHmsShots(input: { now: number; env?: ShotEnv }
   for (const file of names) {
     if (!file.endsWith('.json')) continue;
     const runId = file.slice(0, -'.json'.length);
-    const index = await readIndex(root, runId);
+    const index = await readIndex(root, runId, { requireActive: false });
     if (!index || input.now - index.storedAt <= HMS_SHOTS_TTL_MS) continue;
     const dest = shotDir(root, index, runId);
-    if (underRoot(root, dest)) await rm(dest, { recursive: true, force: true }).catch(() => {});
     const idx = indexPath(root, runId);
-    if (underRoot(root, idx)) await rm(idx, { force: true }).catch(() => {});
+    if (!underRoot(root, dest) || !underRoot(root, idx)) continue;
+    try {
+      await rm(dest, { recursive: true, force: true });
+    } catch {
+      continue;
+    }
+    await rm(idx, { force: true }).catch(() => {});
   }
 }

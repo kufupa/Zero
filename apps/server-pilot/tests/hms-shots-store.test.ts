@@ -37,6 +37,7 @@ describe('hms shots store', () => {
     const env = { HMS_SHOTS_DIR: dir };
     expect(hmsShotsRoot(env)).toBe(dir);
     expect(hmsShotsRoot({ NODE_ENV: 'test' })).toBeNull();
+    expect(hmsShotsRoot({})).toBe('/opt/nava/shared/hms-runtime/hms-shots');
     expect(HMS_SHOTS_TTL_MS).toBe(30 * 24 * 60 * 60 * 1000);
 
     const source = await mkdtemp(join(tmpdir(), 'pane-stay-'));
