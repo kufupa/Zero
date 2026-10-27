@@ -122,7 +122,7 @@ async function clickSave(page) {
   }, '^Save');
 }
 
-// HMS keeps a changed date only after Check Availability has re-rated the stay; Save before that is discarded.
+// HMS keeps a changed date or occupancy only after Check Availability has re-rated the stay; Save before that is discarded.
 async function checkAvailability(page) {
   await closeAppDrawer(page);
   const btn = page.locator('.x-btn:visible').filter({ hasText: /^Check Availability$/i }).first();
@@ -185,9 +185,9 @@ async function fillOneField(page, field, value) {
           if (rec) form.updateRecord(rec);
           else form.updateRecord();
         }
-        const name = cmp.name;
+        const name = cmp.name || payload.fieldName;
         const written = chosen && typeof chosen.get === 'function' ? chosen.get(vf) : chosen;
-        if (rec && name && typeof rec.set === 'function' && String(rec.get?.(name)) !== String(written)) {
+        if (rec && name && typeof rec.set === 'function' && written != null) {
           rec.set(name, written);
         }
       } else {
@@ -198,7 +198,7 @@ async function fillOneField(page, field, value) {
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     }
-  }, { shown, iso, combo });
+  }, { shown, iso, combo, fieldName: SELECTOR_BY_FIELD[field] });
 }
 
 async function blurOneField(page, field) {
@@ -359,7 +359,8 @@ async function run(ctx, request) {
       ctx.result.outcome = 'previewed';
       return;
     }
-    if ((request.fields.arrival || request.fields.departure) && !(await checkAvailability(ctx.page))) {
+    if ((request.fields.arrival || request.fields.departure || request.fields.adults
+      || request.fields.children || request.fields.roomType) && !(await checkAvailability(ctx.page))) {
       ctx.result.outcome = 'refused_save_control_missing';
       ctx.result.reason = 'check_availability_missing';
       return;
