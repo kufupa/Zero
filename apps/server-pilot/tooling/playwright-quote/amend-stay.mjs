@@ -162,7 +162,64 @@ async function fillOneField(page, field, value) {
     if (cmp?.setValue) {
       if (payload.iso) {
         const [year, month, day] = payload.iso.split('-').map(Number);
-        cmp.setValue(new Date(year, month - 1, day));
+        const date = new Date(year, month - 1, day);
+        cmp.setValue(date);
+        if (cmp.fireEvent) {
+          cmp.fireEvent('change', cmp, date);
+          cmp.fireEvent('select', cmp, date);
+        }
+        const form = typeof cmp.up === 'function' ? (cmp.up('form') || cmp.up('recordview')) : null;
+        const rec = form && typeof form.getRecord === 'function' ? form.getRecord() : null;
+        if (form && typeof form.updateRecord === 'function') {
+          if (rec) form.updateRecord(rec);
+          else form.updateRecord();
+        }
+        const name = cmp.name || payload.fieldName;
+        const written = typeof cmp.getValue === 'function' ? cmp.getValue() : date;
+        if (rec && name && typeof rec.set === 'function' && written != null) {
+          rec.set(name, written);
+        }
+        const otherName = name === 'departuredate' ? 'arrivaldate' : name === 'arrivaldate' ? 'departuredate' : null;
+        const otherRaw = rec && otherName && typeof rec.get === 'function' ? rec.get(otherName) : null;
+        const toUtc = (value) => {
+          if (value instanceof Date && !Number.isNaN(value.getTime())) {
+            return Date.UTC(value.getFullYear(), value.getMonth(), value.getDate());
+          }
+          const text = String(value ?? '');
+          const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+          if (iso) return Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
+          const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text);
+          if (us) return Date.UTC(Number(us[3]), Number(us[1]) - 1, Number(us[2]));
+          return null;
+        };
+        const thisUtc = toUtc(written);
+        const otherUtc = toUtc(otherRaw);
+        let nights = null;
+        if (thisUtc != null && otherUtc != null) {
+          const start = name === 'arrivaldate' ? thisUtc : otherUtc;
+          const end = name === 'departuredate' ? thisUtc : otherUtc;
+          if (end > start) nights = Math.round((end - start) / 86400000);
+        }
+        const nightsEl = document.querySelector('input[name="nights"]');
+        const nightsId = nightsEl?.id ? nightsEl.id.replace(/-inputEl$/, '') : '';
+        const nightsCmp = nightsId && typeof Ext.getCmp === 'function' ? Ext.getCmp(nightsId) : null;
+        if (nights != null) {
+          if (nightsCmp?.setValue) nightsCmp.setValue(nights);
+          if (nightsCmp?.fireEvent) nightsCmp.fireEvent('change', nightsCmp, nights);
+          if (form && typeof form.updateRecord === 'function') {
+            if (rec) form.updateRecord(rec);
+            else form.updateRecord();
+          }
+          if (rec && typeof rec.set === 'function') rec.set('nights', nights);
+        }
+        const commitCmp = (fieldCmp) => {
+          if (!fieldCmp) return;
+          if (typeof fieldCmp.resetOriginalValue === 'function') fieldCmp.resetOriginalValue();
+          else if (typeof fieldCmp.getValue === 'function') fieldCmp.originalValue = fieldCmp.getValue();
+        };
+        commitCmp(cmp);
+        commitCmp(nightsCmp);
+        if (rec && typeof rec.commit === 'function') rec.commit();
       } else if (payload.combo != null) {
         const vf = cmp.valueField || 'value';
         const store = cmp.store;
