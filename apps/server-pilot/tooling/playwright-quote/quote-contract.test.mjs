@@ -789,16 +789,25 @@ test('same room type across two rows sums against one profile pool: 20 + 20 STQN
   assert.equal(fits.pools[0].nights[0].demand, 34);
 });
 
-test('AE1c: HRCEN with STWN reporting 70, above its capacity of 69, is out of date and unknown', () => {
+test('AE1c: HMS inventory above the profile roomCapacity still pools on the HMS count (capacity is a hint)', () => {
   const allocation = composeAllocation([
     roomGroup('a', 1, 'STQN', 'BAR', null, nights(34)),
     roomGroup('b', 1, 'STWN', 'BAR', null, nights(70)),
   ], 'HRCEN');
-  assert.equal(allocation.status, 'unknown');
-  assert.equal(allocation.diagnostic, 'room_profile_mismatch');
-  assert.match(allocation.reason, /^Room profile out of date/);
-  assert.deepEqual(allocation.pools, []);
-  assert.equal(allocation.poolBasis, undefined);
+  assert.equal(allocation.status, 'verified_at_observation');
+  assert.equal(allocation.diagnostic, undefined);
+  assert.equal(allocation.poolBasis, 'property_profile');
+  const stwn = allocation.pools.find((pool) => pool.id === 'HRCEN:profile:STWN');
+  assert.equal(stwn.nights[0].supply, 70);
+});
+
+test('AE1c2: HMS count above roomCapacity is still the supply, so demand above HMS stock is insufficient', () => {
+  const allocation = composeAllocation([
+    roomGroup('a', 40, 'STWN', 'BAR', null, nights(70)),
+    roomGroup('b', 31, 'STWN', 'BARRO', null, nights(70)),
+  ], 'HRCEN');
+  assert.equal(allocation.status, 'insufficient');
+  assert.equal(allocation.pools[0].nights[0].demand, 71);
 });
 
 test('AE1d: a property without a verified profile keeps unknown for rows that HMS gave no building', () => {
@@ -852,8 +861,9 @@ test('profileHolds checks every observed option, not only the selected ones', ()
     return group;
   };
   assert.equal(profileHolds('HRCEN', [withAlternative('SUITE', nights(2, 2)), selected[1]]), true);
-  // SUITE holds 2 rooms, so 3 observed is out of date even though the selected STQN row is fine.
-  assert.equal(profileHolds('HRCEN', [withAlternative('SUITE', nights(3, 2)), selected[1]]), false);
+  // SUITE's profile says 2 rooms; HMS reporting 3 is the truth and does not void the profile pools.
+  assert.equal(profileHolds('HRCEN', [withAlternative('SUITE', nights(3, 2)), selected[1]]), true);
+  assert.equal(profileHolds('HRCEN', [withAlternative('SUITE', nights(-1, 2)), selected[1]]), false);
   assert.equal(profileHolds('HRCEN', [withAlternative('PENT', nights(1)), selected[1]]), false);
 });
 
