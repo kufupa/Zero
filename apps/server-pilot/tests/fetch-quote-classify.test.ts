@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { extractOptions } from '../tooling/playwright-quote/fetch-quote.mjs';
+import { extractOptions, groupOutcomeFromOptions } from '../tooling/playwright-quote/fetch-quote.mjs';
 import { multipleSource } from '../tooling/playwright-quote/fetch-quote-fixtures.mjs';
 
 const hrcenRequest = {
@@ -166,4 +166,108 @@ it('does not verify an HRDAV wholesale row from company context alone', () => {
   expect(option?.rateScope).toBe('contextual');
   expect(option?.eligibility).not.toBe('verified');
   expect(option?.matchStatus).toBe('unresolved');
+});
+
+it('verifies public BAR/PROMO rows on a two-group shop and keeps unbound WS conditional', () => {
+  const open = {
+    israteavailable: true,
+    restricted: false,
+    combClosed: false,
+    combClosedToArrival: false,
+    combClosedToDeparture: false,
+    combMinLOSToArrival: 0,
+    combMinLOSToDeparture: 0,
+    combMaxLOSToArrival: null,
+    combMaxLOSToDeparture: null,
+    combMinLOSToThrough: null,
+    combMaxLOSToThrough: null,
+  };
+  const columns = Object.fromEntries([1, 2].map((n) => [`col${n}`, { ...open, value: 2500 }]));
+  const windowFor = (room: string, rates: { code: string; desc: string }[], strategy: string) => ({
+    data: {
+      datesList: ['02/07/2027', '02/08/2027'],
+      children: [{
+        isprop: true,
+        issummary: false,
+        code: 'HRDAV',
+        currency: 'ZAR',
+        children: [{
+          code: room,
+          desc: room,
+          buildingCode: null,
+          children: rates.map((row) => ({
+            code: row.code,
+            desc: row.desc,
+            currency: 'ZAR',
+            isNegotiatedRate: false,
+            restricted: false,
+            minLOS: null,
+            maxLOS: null,
+            minLeadTime: null,
+            maxLeadTime: null,
+            haspolicies: true,
+            columns,
+          })),
+          columns: Object.fromEntries([1, 2].map((n) => [`col${n}`, { value: 84 }])),
+        }],
+      }],
+    },
+    calendar: {
+      headers: ['07-FEB-2027Sunday', '08-FEB-2027Monday'],
+      options: rates.map((row) => ({
+        room: { code: room, inventory: ['84', '84'] },
+        rate: `${row.code}: ${row.desc}`,
+        board: 'Bed & Breakfast NR',
+        prices: ['R2,500.00', 'R2,500.00'],
+      })),
+    },
+    criteria: { salesStrategy: strategy },
+  });
+  const mixed = [
+    { code: 'BAR', desc: 'Best Available Rate' },
+    { code: 'BWS1B', desc: 'Wholesale Best Available Rate 1' },
+  ];
+  const groups = [{ id: 'g1', room: 'STKNG' }, { id: 'g2', room: 'STWN' }];
+  const wholesale = {
+    propertyCode: 'HRDAV',
+    arrivalDate: '2027-02-07',
+    departureDate: '2027-02-08',
+    details: 'summary' as const,
+    rooms: groups.map((group) => ({
+      id: group.id,
+      quantity: group.id === 'g1' ? 1 : 2,
+      adults: group.id === 'g1' ? 2 : 1,
+      children: 0,
+      childAges: [],
+    })),
+    search: { salesStrategy: 'Wholesale' },
+    rateContext: { agency: { name: 'Example Agency' } },
+  };
+  for (const group of groups) {
+    const result = extractOptions(
+      wholesale,
+      wholesale.rooms.find((room) => room.id === group.id)!,
+      [{ ...windowFor(group.room, mixed, 'WS') }],
+      {},
+    );
+    const bar = result.options.find((row) => row.rate.code === 'BAR');
+    const ws = result.options.find((row) => row.rate.code === 'BWS1B');
+    expect(bar?.rateScope).toBe('public');
+    expect(bar?.eligibility).toBe('verified');
+    expect(bar?.matchStatus).toBe('match');
+    expect(ws?.rateScope).toBe('contextual');
+    expect(ws?.eligibility).toBe('conditional');
+    expect(ws?.matchStatus).toBe('unresolved');
+    const grouped = groupOutcomeFromOptions(result.options, { details: 'summary', searchComplete: true });
+    expect(grouped.outcome).toBe('quote');
+    expect(grouped.requiredFacts).toBe('complete');
+    expect(grouped.eligible.some((row) => row.rate.code === 'BAR')).toBe(true);
+    expect(grouped.eligible.some((row) => row.rate.code === 'BWS1B')).toBe(false);
+  }
+  const promotions = { ...wholesale, search: { salesStrategy: 'Promotions' }, rateContext: undefined };
+  const promo = extractOptions(promotions, promotions.rooms[0], [
+    windowFor('STKNG', [{ code: 'BAR', desc: 'Best Available Rate' }, { code: 'PMO1B', desc: 'Promotion Breakfast' }], 'PROMO'),
+  ]);
+  expect(promo.options.find((row) => row.rate.code === 'PMO1B')?.rateScope).toBe('public');
+  expect(promo.options.find((row) => row.rate.code === 'PMO1B')?.eligibility).toBe('verified');
 });

@@ -637,8 +637,8 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     if (option.availability==='restricted') option.eligibility='conditional';
     Object.assign(option,assessConstraints(room,sourceFacts(option)));
     if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified&&strategyContextOk)) {
-      // ponytail: a verified party's public row stays bookable as the BAR it is; an unverified context keeps it unresolved.
-      if(contextVerified&&option.rateScope==='public') {
+      // Public rows stay bookable without a proven party. Contextual rows without that party stay unresolved.
+      if(option.rateScope==='public') {
         option.conditions.push({kind:'preferred',field:'rateContext',status:'unsatisfied',requested:request.rateContext,evidence:null,reason:noSpecialRates?'No special rates for this party; public BAR is returned.':'Public rate for this party; any contract rate is reported separately.'});
       } else {
         option.conditions.push({kind:'required',field:'rateContext',status:'unknown',requested:request.rateContext,evidence:null,reason:'Public/conditional row does not prove requested contextual entitlement.'});

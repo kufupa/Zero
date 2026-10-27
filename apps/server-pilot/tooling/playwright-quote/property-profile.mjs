@@ -146,11 +146,21 @@ function classifyRateFor(profile, code, strategy, isNegotiatedRate, label) {
       }
     }
   }
-  const strat = rates.strategies?.[strategyKey];
-  if (strat && Array.isArray(strat.plans) && strat.plans.includes(codeStr)) {
-    return strat.scope === 'public' ? 'public' : 'contextual';
+  const strategies =
+    rates.strategies && typeof rates.strategies === 'object' && !Array.isArray(rates.strategies)
+      ? rates.strategies
+      : {};
+  for (const row of Object.values(strategies)) {
+    if (!row || !Array.isArray(row.plans) || !row.plans.includes(codeStr)) continue;
+    return row.scope === 'public' ? 'public' : 'contextual';
   }
   if (isNegotiatedRate === true) return 'contextual';
+  if (strategyKey === 'GOV' || strategyKey === 'GOVERNMENT') return 'unknown';
+  const strat = strategies[strategyKey];
+  if (strat && (strat.scope === 'agency' || strat.scope === 'company')) return 'unknown';
+  const listed = Array.isArray(profile.salesStrategies)
+    && profile.salesStrategies.some((row) => typeof row?.value === 'string' && row.value.trim().toUpperCase() === strategyKey);
+  if (listed) return 'public';
   return 'unknown';
 }
 

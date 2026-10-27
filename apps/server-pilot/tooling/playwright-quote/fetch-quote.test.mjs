@@ -448,7 +448,7 @@ test('filtered rate or room search cannot claim the party has no special rates',
   assert.equal(filtered.issues.some(i=>i.code==='NO_SPECIAL_RATES'),false);
   assert.equal(filtered.options.every(o=>o.matchStatus==='match'&&o.conditions.find(c=>c.field==='rateContext')?.kind==='preferred'),true);
 });
-test('a verified party keeps its public row bookable; an unverified party keeps it unresolved',()=>{
+test('a verified party keeps its public row bookable; an unverified party still keeps public BAR bookable',()=>{
   const f=multipleSource();
   const scoped={...request,rateContext:{agency:{name:'CWT JNB'}}};
   const criteria={travelAgencyID:'290'};
@@ -457,8 +457,42 @@ test('a verified party keeps its public row bookable; an unverified party keeps 
   for(const o of verified.options){assert.equal(o.matchStatus,'match');assert.equal(o.conditions.find(c=>c.field==='rateContext').kind,'preferred');}
   const unverified=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],{});
   assert.ok(unverified.options.length>0&&unverified.options.every(o=>o.rateScope==='public'));
-  for(const o of unverified.options){assert.equal(o.matchStatus,'unresolved');assert.equal(o.conditions.find(c=>c.field==='rateContext').kind,'required');}
-  assert.equal(quote.reapplyBedAssessment(unverified.options[0],{matchStatus:'match',conditions:[]}).matchStatus,'unresolved');
+  for(const o of unverified.options){assert.equal(o.matchStatus,'match');assert.equal(o.eligibility,'verified');assert.equal(o.conditions.find(c=>c.field==='rateContext').kind,'preferred');}
+  assert.equal(quote.reapplyBedAssessment(unverified.options[0],{matchStatus:'match',conditions:[]}).matchStatus,'match');
+});
+test('two-group public BAR/PROMO rows verify and compose; unbound WS stays conditional',()=>{
+  const open={israteavailable:true,restricted:false,combClosed:false,combClosedToArrival:false,combClosedToDeparture:false,combMinLOSToArrival:0,combMinLOSToDeparture:0,combMaxLOSToArrival:null,combMaxLOSToDeparture:null,combMinLOSToThrough:null,combMaxLOSToThrough:null};
+  const columns=Object.fromEntries([1,2].map(n=>[`col${n}`,{...open,value:2500}]));
+  const windowFor=(room,rates,strategy)=>({
+    data:{datesList:['02/07/2027','02/08/2027'],children:[{isprop:true,issummary:false,code:'HRDAV',currency:'ZAR',children:[{code:room,desc:room,buildingCode:null,children:rates.map(r=>({code:r.code,desc:r.desc,currency:'ZAR',isNegotiatedRate:false,restricted:false,minLOS:null,maxLOS:null,minLeadTime:null,maxLeadTime:null,haspolicies:true,columns})),columns:Object.fromEntries([1,2].map(n=>[`col${n}`,{value:84}]))}]}]},
+    calendar:{headers:['07-FEB-2027Sunday','08-FEB-2027Monday'],options:rates.map(r=>({room:{code:room,inventory:['84','84']},rate:`${r.code}: ${r.desc}`,board:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}))},
+    criteria:{salesStrategy:strategy},
+  });
+  const barPromo=[{code:'BAR',desc:'Best Available Rate'},{code:'PMO1B',desc:'Promotion Breakfast'}];
+  const mixed=[{code:'BAR',desc:'Best Available Rate'},{code:'BWS1B',desc:'Wholesale Best Available Rate 1'}];
+  const groups=[{id:'g1',room:'STKNG'},{id:'g2',room:'STWN'}];
+  const wholesale={propertyCode:'HRDAV',arrivalDate:'2027-02-07',departureDate:'2027-02-08',details:'summary',rooms:groups.map(g=>({id:g.id,quantity:g.id==='g1'?1:2,adults:g.id==='g1'?2:1,children:0,childAges:[]})),search:{salesStrategy:'Wholesale'},rateContext:{agency:{name:'Example Agency'}}};
+  for(const group of groups){
+    const result=quote.extractOptions(wholesale,wholesale.rooms.find(r=>r.id===group.id),[{...windowFor(group.room,mixed,'WS')}],{});
+    const bar=result.options.find(o=>o.rate.code==='BAR');
+    const ws=result.options.find(o=>o.rate.code==='BWS1B');
+    assert.equal(bar.rateScope,'public');
+    assert.equal(bar.eligibility,'verified');
+    assert.equal(bar.matchStatus,'match');
+    assert.equal(ws.rateScope,'contextual');
+    assert.equal(ws.eligibility,'conditional');
+    assert.equal(ws.matchStatus,'unresolved');
+    const grouped=quote.groupOutcomeFromOptions(result.options,{details:'summary',searchComplete:true});
+    assert.equal(grouped.outcome,'quote');
+    assert.equal(grouped.requiredFacts,'complete');
+    assert.ok(grouped.eligible.some(o=>o.rate.code==='BAR'));
+    assert.equal(grouped.eligible.some(o=>o.rate.code==='BWS1B'),false);
+  }
+  const promotions={...wholesale,search:{salesStrategy:'Promotions'},rateContext:undefined};
+  const promo=quote.extractOptions(promotions,promotions.rooms[0],[windowFor('STKNG',barPromo,'PROMO')]);
+  const promoRow=promo.options.find(o=>o.rate.code==='PMO1B');
+  assert.equal(promoRow.rateScope,'public');
+  assert.equal(promoRow.eligibility,'verified');
 });
 test('OPTION_LIMIT counts only a cut row that is not an alternative',()=>{
   const rows=[{id:0,matchStatus:'match'},{id:1,matchStatus:'alternative'},{id:2,matchStatus:'alternative'}];
