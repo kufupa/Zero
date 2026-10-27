@@ -64,6 +64,8 @@ test('writes the per-booking recipient into emailaddress, verifies readback, and
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
   assert.match(source, /confirmationRecipientFills/);
   assert.match(source, /confirmationRecipientRefusal/);
+  assert.match(source, /findStayByConfirmation[\s\S]*emailaddress/);
+  assert.equal(/emailaddress: formEmail/.test(source), false);
   assert.equal(/clickTip\([^)]*(Email confirmation|Send confirmation|CMS Send Mail)/i.test(source), false);
   assert.equal(source.includes("fillNamed(page, 'udfchkbox04'"), false);
 });

@@ -50,6 +50,8 @@ describe('create confirmation recipient', () => {
     expect(source).toContain('confirmationRecipientFills');
     expect(source).toContain('confirmationRecipientRefusal');
     expect(source).toContain("field: 'emailaddress'");
+    expect(source).toMatch(/findStayByConfirmation[\s\S]*emailaddress/);
+    expect(source).not.toMatch(/emailaddress: formEmail/);
     expect(source).not.toMatch(/clickTip\([^)]*(Email confirmation|Send confirmation|CMS Send Mail)/i);
     expect(source).not.toMatch(/fillNamed\(page, 'udfchkbox04'/);
   });
