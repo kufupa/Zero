@@ -4,11 +4,11 @@ Extends [the 2026-10-26 shuttle corpus](2026-10-26-shuttle-corpus.md): that repo
 
 ## Coverage and method
 
-The local Faith/Ayanda export results below reuse the prior thread review. Da Vinci, Epick and Kmgidi counts come from a read-only production snapshot taken 2026-10-27. The query counted distinct outbound messages and thread IDs where a direct To/Cc recipient matched a Jarat domain; it had no time-window filter. The aggregate query inspected subject/body only for rows passing that recipient filter and returned counts rather than message text. A separate extraction selected subject/body only from those matching rows and reduced samples to placeholders before review; its response contained eight of Epick's 18 matching rows and no Kmgidi body row. Kmgidi's template shape is therefore based on aggregate field cues, not a sentence-level sample. Faith/Ayanda are the 2026-10-19 local-export snapshot, so their counts are not a current-production census.
+The local Faith/Ayanda export results below reuse the prior thread review. Da Vinci, Epick and Kmgidi counts come from a read-only production snapshot taken 2026-10-27. The query counted distinct outbound messages and thread IDs where a direct To/Cc recipient's normalized domain was `jarattours.co.za` or `jaratbookings.co.za`; it had no time-window filter. The aggregate query inspected subject/body only for rows passing that recipient filter and returned counts rather than message text. A separate extraction selected subject/body only from those matching rows and reduced samples to placeholders before review; its response contained eight of Epick's 18 matching rows and no Kmgidi body row. Kmgidi's template shape is therefore based on aggregate field cues, not a sentence-level sample. Faith/Ayanda are the 2026-10-19 local-export snapshot, so their counts are not a current-production census.
 
 | DV mailbox | Outbound messages | Threads | Source |
 |---|---:|---:|---|
-| Faith | 1 | 1 | Prior manual review of the local export ([source](2026-10-26-shuttle-corpus.md#2-provider-emails)) |
+| Faith | 1 | 1 | Prior manual review of the local export ([source](2026-10-26-shuttle-corpus.md)) |
 | Ayanda | 0 | 0 | Prior review of the local export |
 | Da Vinci | 0 | 0 | Read-only production snapshot |
 | Epick | 18 | 15 | Read-only production snapshot |
@@ -21,6 +21,18 @@ The two local-export mailboxes and three production mailboxes are counted indepe
 Faith's single message was manually reviewed in the prior report: flight 1/1, drop-off time 1/1, pickup time 0/1, passenger-count/`pax` mention 1/1, explicit guest-name field 0/1, confirmation number 0/1, and price 0/1.
 
 For Epick and Kmgidi, these are broad keyword-presence counts across each mailbox's matching messages, not confirmed structured fields. Categories can overlap.
+
+The database scan applied these case-insensitive patterns (`~*`) to the concatenated subject/body of matching messages:
+
+| Cue | Pattern |
+|---|---|
+| Flight / airline | `flight|airline` |
+| Pickup / drop-off | `pickup|pick-up|pick up|dropoff|drop-off|drop off` |
+| Airport | `airport` |
+| Pax / passenger / person / guest | `pax|passenger|person|guest` |
+| Explicit guest-name label | `guest name|passenger name|traveller name|traveler name` |
+| Confirmation / booking reference | `confirm|booking (no|number|ref)|reference` |
+| Price / rate / cost / amount / currency token | `price|rate|cost|amount|zar|r[[:space:]]*[0-9]` |
 
 | Keyword cue | Epick | Kmgidi |
 |---|---:|---:|
