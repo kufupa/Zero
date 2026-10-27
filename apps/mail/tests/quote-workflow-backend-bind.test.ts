@@ -466,7 +466,7 @@ describe('staff quote execute/PDF header bind', () => {
     });
     expect(labelled.status).toBe('unavailable');
     if (labelled.status === 'unavailable') {
-      expect(labelled.reason).toMatch(/Room type "SINGLE" is not one HMS knows/);
+      expect(labelled.reason).toMatch(/Not in this hotel's room list/);
       expect(labelled.reason).toMatch(/DLXTWN/);
     }
     expect(mutate).not.toHaveBeenCalled();
