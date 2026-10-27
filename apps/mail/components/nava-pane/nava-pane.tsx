@@ -2299,7 +2299,11 @@ export function NavaPane({
             ) : null}
 
             {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
-            <ConfirmationSourcesBridge userEmail={session?.user?.email ?? ''}>
+            <ConfirmationSourcesBridge
+              userId={session?.user?.id ?? ''}
+              userEmail={session?.user?.email ?? ''}
+              mailbox={activeConnection?.email ?? ''}
+            >
             <QuoteWorkflowPanel
               session={quoteSession}
               bridge={bridge}

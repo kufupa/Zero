@@ -1,14 +1,6 @@
 'use client';
 
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  useSyncExternalStore,
-  type ReactNode,
-} from 'react';
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { paneFieldClass } from '@/components/nava-pane/pane-ui';
 
 export type ConfirmationMode = 'self' | 'client' | 'custom';
@@ -25,6 +17,10 @@ export type ConfirmationRecipientPayload = {
 
 export type ConfirmationSources = {
   userEmail: string;
+  /** Signed-in user. A finished save is dropped when this changes. */
+  userId?: string;
+  /** Active mailbox. A finished save is dropped when this changes. */
+  mailbox?: string;
   setting: ConfirmationSetting | null;
   /** Saved confirmation could not be read. Fail closed until staff pick. */
   invalidSetting?: boolean;
@@ -156,6 +152,7 @@ export function ConfirmationRecipient({
   onMakeDefault,
   defaultSaved,
   defaultError,
+  saving,
 }: {
   mode: ConfirmationMode;
   customAddress: string;
@@ -170,6 +167,8 @@ export function ConfirmationRecipient({
   onMakeDefault?: () => void;
   defaultSaved?: boolean;
   defaultError?: string | null;
+  /** True while the default save request is in flight. */
+  saving?: boolean;
 }) {
   const user = cleanEmail(userEmail);
   const client = cleanEmail(clientEmail);
@@ -212,7 +211,7 @@ export function ConfirmationRecipient({
         <button
           type="button"
           className="self-start text-[11px] font-semibold text-[#0066cc] underline disabled:text-[#94a3b8]"
-          disabled={disabled || defaultSaved}
+          disabled={disabled || defaultSaved || saving}
           onClick={onMakeDefault}
         >
           {defaultSaved ? 'Saved as your default' : 'Make this my default'}
@@ -239,50 +238,17 @@ type SettingsClient = {
   };
 };
 
-type SettingsQuery = {
-  queryKey: readonly unknown[];
-  state: { data?: unknown };
-};
-
 type SettingsQueryClient = {
-  getQueryCache: () => { getAll: () => SettingsQuery[] };
-  setQueryData: (queryKey: readonly unknown[], data: unknown) => void;
+  invalidateQueries: (filters: {
+    predicate: (query: { queryKey: readonly unknown[] }) => boolean;
+  }) => Promise<void>;
 };
 
-type SavedDefaultListener = () => void;
+/** Who the open pane is saving for. A finished save is ignored when this changes. */
+let activeConfirmationScope = '';
 
-let savedDefault: ConfirmationSetting | null = null;
-const savedDefaultListeners = new Set<SavedDefaultListener>();
-
-function subscribeSavedDefault(listener: SavedDefaultListener) {
-  savedDefaultListeners.add(listener);
-  return () => {
-    savedDefaultListeners.delete(listener);
-  };
-}
-
-function readSavedDefault() {
-  return savedDefault;
-}
-
-function publishSavedDefault() {
-  savedDefaultListeners.forEach((listener) => listener());
-}
-
-/** Drops a default saved in this pane. The bridge calls this when the signed-in user changes. */
-export function clearSavedConfirmation() {
-  if (!savedDefault) return;
-  savedDefault = null;
-  publishSavedDefault();
-}
-
-function dropSavedConfirmation() {
-  savedDefault = null;
-}
-
-function noteSavedConfirmation(setting: ConfirmationSetting) {
-  savedDefault = setting;
-  publishSavedDefault();
+export function confirmationScopeKey(userId: string, mailbox: string): string {
+  return `${userId}\0${mailbox}`;
 }
 
 function confirmationForSave(setting: ConfirmationSetting): ConfirmationSetting {
@@ -291,19 +257,13 @@ function confirmationForSave(setting: ConfirmationSetting): ConfirmationSetting 
     : { mode: setting.mode };
 }
 
-function patchSettingsGetCache(queryClient: SettingsQueryClient, confirmation: ConfirmationSetting) {
-  for (const query of queryClient.getQueryCache().getAll()) {
-    const keyText = JSON.stringify(query.queryKey);
-    if (!keyText.includes('settings') || !keyText.includes('get')) continue;
-    const data = query.state.data;
-    if (!data || typeof data !== 'object' || !('settings' in data)) continue;
-    const row = data as { settings?: unknown };
-    if (!row.settings || typeof row.settings !== 'object') continue;
-    queryClient.setQueryData(query.queryKey, {
-      ...row,
-      settings: { ...(row.settings as Record<string, unknown>), confirmation },
-    });
-  }
+async function invalidateSettingsGet(queryClient: SettingsQueryClient) {
+  await queryClient.invalidateQueries({
+    predicate: (query) => {
+      const keyText = JSON.stringify(query.queryKey);
+      return keyText.includes('settings') && keyText.includes('get');
+    },
+  });
 }
 
 /** Saves only the confirmation key. The settings route merges that key and leaves the rest of the row. */
@@ -313,12 +273,13 @@ export async function saveConfirmationDefault(setting: ConfirmationSetting): Pro
   if (!save) {
     throw new Error('Could not save your default (not set up).');
   }
+  const started = activeConfirmationScope;
   const confirmation = confirmationForSave(setting);
   await save({ confirmation });
-  noteSavedConfirmation(confirmation);
+  if (activeConfirmationScope !== started) return;
   const getQueryClient = (provider as { getQueryClient?: () => SettingsQueryClient }).getQueryClient;
   if (!getQueryClient) return;
-  patchSettingsGetCache(getQueryClient(), confirmation);
+  await invalidateSettingsGet(getQueryClient());
 }
 
 /**
@@ -327,23 +288,28 @@ export async function saveConfirmationDefault(setting: ConfirmationSetting): Pro
  */
 export function ConfirmationSourcesBridge({
   userEmail,
+  userId = '',
+  mailbox = '',
   children,
 }: {
   userEmail: string;
+  userId?: string;
+  mailbox?: string;
   children: ReactNode;
 }) {
   const [setting, setSetting] = useState<ConfirmationSetting | null>(null);
   const [invalidSetting, setInvalidSetting] = useState(false);
   const [load, setLoad] = useState<NonNullable<ConfirmationSources['load']>>('pending');
-  const [loadedFor, setLoadedFor] = useState(userEmail);
-  const noted = useSyncExternalStore(subscribeSavedDefault, readSavedDefault, () => null);
+  const scopeKey = confirmationScopeKey(userId, mailbox);
+  const loadedKey = `${scopeKey}\0${userEmail}`;
+  const [loadedFor, setLoadedFor] = useState(loadedKey);
+  activeConfirmationScope = scopeKey;
 
-  if (loadedFor !== userEmail) {
-    setLoadedFor(userEmail);
+  if (loadedFor !== loadedKey) {
+    setLoadedFor(loadedKey);
     setSetting(null);
     setInvalidSetting(false);
     setLoad('pending');
-    dropSavedConfirmation();
   }
 
   useEffect(() => {
@@ -369,13 +335,11 @@ export function ConfirmationSourcesBridge({
     return () => {
       cancelled = true;
     };
-  }, [userEmail]);
+  }, [loadedKey]);
 
-  const value = useMemo(() => {
-    if (noted) {
-      return { userEmail, setting: noted, invalidSetting: false, load: 'ready' as const };
-    }
-    return { userEmail, setting, invalidSetting, load };
-  }, [userEmail, setting, invalidSetting, load, noted]);
+  const value = useMemo(
+    () => ({ userEmail, userId, mailbox, setting, invalidSetting, load }),
+    [userEmail, userId, mailbox, setting, invalidSetting, load],
+  );
   return <ConfirmationSourcesProvider value={value}>{children}</ConfirmationSourcesProvider>;
 }

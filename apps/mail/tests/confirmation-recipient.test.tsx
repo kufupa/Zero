@@ -1,11 +1,9 @@
 /**
  * @vitest-environment happy-dom
  */
-import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
-  clearSavedConfirmation,
   ConfirmationSourcesBridge,
   ConfirmationSourcesProvider,
   type ConfirmationSources,
@@ -25,10 +23,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: v
 const settingsDouble = vi.hoisted(() => ({
   get: vi.fn(async (): Promise<unknown> => ({ settings: { confirmation: { mode: 'self' }, language: 'en' } })),
   save: vi.fn(async (_input: unknown) => ({ success: true })),
-  queries: [] as Array<{
-    queryKey: unknown[];
-    state: { data?: { settings?: Record<string, unknown> } };
-  }>,
+  invalidated: [] as string[],
 }));
 
 vi.mock('@/providers/query-provider', () => ({
@@ -39,20 +34,18 @@ vi.mock('@/providers/query-provider', () => ({
     },
   },
   getQueryClient: () => ({
-    getQueryCache: () => ({ getAll: () => settingsDouble.queries }),
-    setQueryData: (queryKey: unknown[], data: { settings?: Record<string, unknown> }) => {
-      const found = settingsDouble.queries.find((query) => query.queryKey === queryKey);
-      if (found) found.state.data = data;
+    invalidateQueries: async (filters: { predicate: (query: { queryKey: readonly unknown[] }) => boolean }) => {
+      const query = { queryKey: [['settings', 'get']] as const };
+      if (filters.predicate(query)) settingsDouble.invalidated.push('settings.get');
     },
   }),
 }));
 
 afterEach(() => {
   cleanup();
-  clearSavedConfirmation();
   settingsDouble.get.mockReset();
   settingsDouble.save.mockReset();
-  settingsDouble.queries.splice(0, settingsDouble.queries.length);
+  settingsDouble.invalidated.splice(0, settingsDouble.invalidated.length);
 });
 
 const STAFF = 'staff@example.invalid';
@@ -295,27 +288,16 @@ describe('confirmation recipient', () => {
     expect(screen.getByRole('button', { name: 'Make this my default' })).toBeDefined();
   });
 
-  it('shows the saved default on the next booking in the same pane', async () => {
+  it('invalidates the settings read after saving a default and ignores a late save after a user switch', async () => {
     settingsDouble.get.mockResolvedValue({
       settings: { confirmation: { mode: 'self' }, language: 'en' },
     });
-    settingsDouble.queries.push({
-      queryKey: [['settings', 'get']],
-      state: { data: { settings: { confirmation: { mode: 'self' }, language: 'en' } } },
-    });
     const api = pane();
-    function Pane() {
-      const [ticket, setTicket] = useState(1);
-      return (
-        <ConfirmationSourcesBridge userEmail={STAFF}>
-          <button type="button" onClick={() => setTicket((next) => next + 1)}>
-            Next booking
-          </button>
-          <QuoteBookingHost key={ticket} session={session()} paneSave={api.client} contact={contact} />
-        </ConfirmationSourcesBridge>
-      );
-    }
-    render(<Pane />);
+    render(
+      <ConfirmationSourcesBridge userId="user-a" mailbox="box-a@example.invalid" userEmail={STAFF}>
+        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+      </ConfirmationSourcesBridge>,
+    );
     await waitFor(() => {
       expect(screen.queryByText('Nava is still reading the saved confirmation choice.')).toBeNull();
       expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe(
@@ -331,16 +313,45 @@ describe('confirmation recipient', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Make this my default' }));
     await waitFor(() => expect(settingsDouble.save).toHaveBeenCalledTimes(1));
     expect(settingsDouble.save.mock.calls[0]?.[0]).toEqual({ confirmation: { mode: 'client' } });
-    expect(settingsDouble.queries[0]?.state.data?.settings).toMatchObject({
-      language: 'en',
-      confirmation: { mode: 'client' },
-    });
-    fireEvent.click(screen.getByRole('button', { name: 'Next booking' }));
+    await waitFor(() => expect(settingsDouble.invalidated).toEqual(['settings.get']));
+    expect(screen.getByRole('button', { name: 'Saved as your default' })).toBeDefined();
+
+    let release: () => void = () => {};
+    settingsDouble.save.mockClear();
+    settingsDouble.save.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ success: true });
+        }),
+    );
+    cleanup();
+    settingsDouble.invalidated.splice(0, settingsDouble.invalidated.length);
+    const held = render(
+      <ConfirmationSourcesBridge userId="user-a" mailbox="box-a@example.invalid" userEmail={STAFF}>
+        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+      </ConfirmationSourcesBridge>,
+    );
     await waitFor(() => {
       expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe(
-        'client',
+        'self',
       );
     });
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'client' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Make this my default' }));
+    await waitFor(() => {
+      expect(
+        (screen.getByRole('button', { name: 'Make this my default' }) as unknown as HTMLButtonElement).disabled,
+      ).toBe(true);
+    });
+    held.rerender(
+      <ConfirmationSourcesBridge userId="user-b" mailbox="box-b@example.invalid" userEmail="other@example.invalid">
+        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+      </ConfirmationSourcesBridge>,
+    );
+    release();
+    await waitFor(() => expect(settingsDouble.save).toHaveBeenCalledTimes(1));
+    expect(settingsDouble.invalidated).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Saved as your default' })).toBeNull();
   });
 
   it('drops the previous user address when the signed-in user changes', async () => {

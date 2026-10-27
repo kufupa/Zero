@@ -38,6 +38,7 @@ import {
 } from '@/lib/quote-workflow/pane-stay-bind';
 import { Notice, paneFieldClass, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
 import {
+  confirmationScopeKey,
   ConfirmationRecipient,
   resolveConfirmationRecipient,
   useConfirmationSources,
@@ -825,16 +826,20 @@ export function BookingCards({
   const [staffChose, setStaffChose] = useState(false);
   const [defaultSaved, setDefaultSaved] = useState(false);
   const [defaultError, setDefaultError] = useState<string | null>(null);
+  const [savingDefault, setSavingDefault] = useState(false);
   const saveGeneration = useRef(0);
   const staffChoseRef = useRef(false);
-  const sourceEmail = sources?.userEmail ?? '';
-  const [choiceForEmail, setChoiceForEmail] = useState(sourceEmail);
-  if (sources && choiceForEmail !== sourceEmail) {
-    setChoiceForEmail(sourceEmail);
+  const scopeKey = confirmationScopeKey(sources?.userId ?? '', sources?.mailbox ?? '');
+  const scopeRef = useRef(scopeKey);
+  scopeRef.current = scopeKey;
+  const [seenScope, setSeenScope] = useState(`${scopeKey}\0${sources?.userEmail ?? ''}`);
+  if (sources && seenScope !== `${scopeKey}\0${sources.userEmail}`) {
+    setSeenScope(`${scopeKey}\0${sources.userEmail}`);
     staffChoseRef.current = false;
     setStaffChose(false);
     setDefaultSaved(false);
     setDefaultError(null);
+    setSavingDefault(false);
     setRecipientMode(sources.setting?.mode ?? 'self');
     setCustomAddress(sources.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '');
   }
@@ -1198,24 +1203,32 @@ export function BookingCards({
           onMakeDefault={
             onSaveDefault
               ? () => {
-                  if (!resolvedRecipient?.ok) return;
+                  if (savingDefault || !resolvedRecipient?.ok) return;
                   const { mode, address } = resolvedRecipient.recipient;
                   const setting: ConfirmationSetting =
                     mode === 'custom' ? { mode, address } : { mode };
                   const generation = ++saveGeneration.current;
+                  const startedScope = scopeRef.current;
                   setDefaultError(null);
+                  setSavingDefault(true);
                   void onSaveDefault(setting)
                     .then(() => {
                       if (saveGeneration.current !== generation) return;
+                      if (scopeRef.current !== startedScope) return;
                       setDefaultSaved(true);
                     })
                     .catch(() => {
                       if (saveGeneration.current !== generation) return;
+                      if (scopeRef.current !== startedScope) return;
                       setDefaultError('Could not save your default (not set up).');
+                    })
+                    .finally(() => {
+                      setSavingDefault(false);
                     });
                 }
               : undefined
           }
+          saving={savingDefault}
           defaultSaved={defaultSaved}
           defaultError={defaultError}
         />
