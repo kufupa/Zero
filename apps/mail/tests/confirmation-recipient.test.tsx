@@ -317,11 +317,17 @@ describe('confirmation recipient', () => {
     }
     render(<Pane />);
     await waitFor(() => {
+      expect(screen.queryByText('Nava is still reading the saved confirmation choice.')).toBeNull();
       expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe(
         'self',
       );
     });
     fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'client' } });
+    await waitFor(() => {
+      expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe(
+        'client',
+      );
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Make this my default' }));
     await waitFor(() => expect(settingsDouble.save).toHaveBeenCalledTimes(1));
     expect(settingsDouble.save.mock.calls[0]?.[0]).toEqual({ confirmation: { mode: 'client' } });

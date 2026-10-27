@@ -826,11 +826,12 @@ export function BookingCards({
   const [defaultSaved, setDefaultSaved] = useState(false);
   const [defaultError, setDefaultError] = useState<string | null>(null);
   const saveGeneration = useRef(0);
+  const staffChoseRef = useRef(false);
   useEffect(() => {
-    if (staffChose || !sources?.setting) return;
+    if (staffChoseRef.current || !sources?.setting) return;
     setRecipientMode(sources.setting.mode);
     if (sources.setting.mode === 'custom') setCustomAddress(sources.setting.address ?? '');
-  }, [sources, staffChose]);
+  }, [sources]);
   const clientEmail = contact ? textValue(contact.email) : '';
   const holdMessage = !sources || staffChose
     ? null
@@ -1170,12 +1171,14 @@ export function BookingCards({
           unconfirmed={Boolean(holdMessage) && sources?.load !== 'pending'}
           error={resolvedRecipient && !resolvedRecipient.ok ? resolvedRecipient.message : null}
           onMode={(next) => {
+            staffChoseRef.current = true;
             saveGeneration.current += 1;
             setStaffChose(true);
             setRecipientMode(next);
             setDefaultSaved(false);
           }}
           onCustomAddress={(value) => {
+            staffChoseRef.current = true;
             saveGeneration.current += 1;
             setStaffChose(true);
             setCustomAddress(value);
