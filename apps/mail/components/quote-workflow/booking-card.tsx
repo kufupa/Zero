@@ -818,14 +818,13 @@ export function BookingCards({
   const [customAddress, setCustomAddress] = useState(
     sources?.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '',
   );
-  const recipientDirty = useRef(false);
+  const [staffChose, setStaffChose] = useState(false);
   useEffect(() => {
-    if (recipientDirty.current || !sources?.setting) return;
+    if (staffChose || !sources?.setting) return;
     setRecipientMode(sources.setting.mode);
     if (sources.setting.mode === 'custom') setCustomAddress(sources.setting.address ?? '');
-  }, [sources]);
+  }, [sources, staffChose]);
   const clientEmail = contact ? textValue(contact.email) : '';
-  const staffChose = recipientDirty.current;
   const holdMessage = !sources || staffChose
     ? null
     : sources.load === 'pending'
@@ -1164,11 +1163,11 @@ export function BookingCards({
           unconfirmed={Boolean(holdMessage) && sources?.load !== 'pending'}
           error={resolvedRecipient && !resolvedRecipient.ok ? resolvedRecipient.message : null}
           onMode={(next) => {
-            recipientDirty.current = true;
+            setStaffChose(true);
             setRecipientMode(next);
           }}
           onCustomAddress={(value) => {
-            recipientDirty.current = true;
+            setStaffChose(true);
             setCustomAddress(value);
           }}
         />
