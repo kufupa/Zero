@@ -1890,9 +1890,10 @@ export async function enqueuePreparedQuoteWithinCap(
   db: DB,
   input: Parameters<typeof enqueueHmsJob>[0],
   perHour: number,
+  batchSize = 1,
 ): Promise<{ created: boolean; deferred: boolean }> {
   const { enqueuePreparedQuoteWithinCap: enqueue } = await import('./prepared-quote-queue.js');
-  return enqueue(db, input, perHour);
+  return enqueue(db, input, perHour, batchSize);
 }
 
 /** Serializes the guest-search count and insert per transport so concurrent extractions cannot overspend the cap. */
@@ -2728,6 +2729,7 @@ export async function prefetchQuoteReadyForExtraction(
           extraMetrics: { quotePrepared: true },
         },
         perHour,
+        shops.length,
       );
       if (queued.created) {
         created += 1;
@@ -3098,13 +3100,19 @@ async function executePartyMatchV2(input: {
 async function requeueRun(
   db: DB,
   mark: Mark,
-  input: { attempts: number; delayMs: number; failureClass: AiFailureClass; lastError: string },
+  input: {
+    attempts: number;
+    delayMs: number;
+    failureClass: AiFailureClass;
+    lastError: string;
+    nextRunAt?: Date;
+  },
 ): Promise<'retry_wait'> {
   await markAiRunRetry(
     {
       ...mark,
       attempts: input.attempts,
-      nextRunAt: new Date(Date.now() + input.delayMs),
+      nextRunAt: input.nextRunAt ?? new Date(Date.now() + input.delayMs),
       lastError: input.lastError,
       failureClass: input.failureClass,
       // A yielded or retried job runs again later, so its next claim gets a fresh run deadline.
@@ -3665,6 +3673,10 @@ export async function executeHmsJob(input: {
     staffQuoteUser?: unknown;
     quotePrepared?: boolean;
     prefetchDeferred?: boolean;
+    prefetchBatchSize?: number;
+    prefetchBatchDecision?: string;
+    prefetchBatchAdmittedAt?: string;
+    prefetchAdmittedAt?: string;
   };
   const systemPreparedQuote =
     request.kind === 'staff_quote' &&
@@ -3675,39 +3687,12 @@ export async function executeHmsJob(input: {
     await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, db);
     return 'dead_letter';
   }
-  let preparedQuoteLockWaitStart = run.createdAt;
-  if (systemPreparedQuote && metrics.prefetchDeferred === true) {
-    const admitted = await db.transaction(async (tx) => {
-      await tx.execute(
-        sql`select pg_advisory_xact_lock(hashtextextended(
-          ${'hms-prefetch:staff_quote:' + run.transportId}, 0
-        ))`,
-      );
-      const scoped = tx as unknown as DB;
-      const capacity = await reservePrefetchCapacity(scoped, {
-        transportId: run.transportId,
-        kind: 'staff_quote',
-        perHour: quotePreparationPerHour(),
-        excludeRunId: run.id,
-      });
-      if (capacity.action === 'disable') {
-        await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, scoped);
-        return { status: 'dead_letter' as const };
-      }
-      if (capacity.action === 'defer') {
-        await requeueRun(scoped, mark, {
-          attempts: run.attempts,
-          delayMs: Math.max(JOB_YIELD_MS, capacity.nextRunAt.getTime() - Date.now()),
-          failureClass: 'POLICY_BLOCK',
-          lastError: preparedQuoteYieldLastError(run, 'prefetch_capacity_deferred'),
-        });
-        return { status: 'retry_wait' as const };
-      }
-      const occupied = await occupyPrefetchReservation(scoped, run.id);
-      return { status: 'admit' as const, admittedAt: occupied.admittedAt };
-    });
-    if (admitted.status !== 'admit') return admitted.status;
-    preparedQuoteLockWaitStart = admitted.admittedAt;
+  const shouldValidatePreparedQuoteSource =
+    systemPreparedQuote &&
+    (metrics.prefetchDeferred === true ||
+      metrics.prefetchBatchDecision === 'admitted' ||
+      metrics.prefetchBatchDecision === 'deferred');
+  if (shouldValidatePreparedQuoteSource) {
     const extraction = await loadQuotePrepareSourceRun(db, {
       transportId: run.transportId,
       triggerMessageId: run.triggerMessageId,
@@ -3727,6 +3712,133 @@ export async function executeHmsJob(input: {
       );
       return 'dead_letter';
     }
+  }
+  const prefetchBatchSize =
+    typeof metrics.prefetchBatchSize === 'number' &&
+    Number.isSafeInteger(metrics.prefetchBatchSize) &&
+    metrics.prefetchBatchSize > 0
+      ? metrics.prefetchBatchSize
+      : 1;
+  const recordedAdmissionAt = metrics.prefetchBatchAdmittedAt ?? metrics.prefetchAdmittedAt;
+  const parsedAdmissionAt =
+    typeof recordedAdmissionAt === 'string' ? Date.parse(recordedAdmissionAt) : Number.NaN;
+  let preparedQuoteLockWaitStart = Number.isFinite(parsedAdmissionAt)
+    ? new Date(parsedAdmissionAt)
+    : run.createdAt;
+  if (systemPreparedQuote && metrics.prefetchDeferred === true) {
+    const admitted = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(
+          ${'hms-prefetch:staff_quote:' + run.transportId}, 0
+        ))`,
+      );
+      const scoped = tx as unknown as DB;
+      const now = new Date();
+      const batchScope = and(
+        eq(aiWorkflowRun.transportId, run.transportId),
+        eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+        run.triggerMessageId
+          ? eq(aiWorkflowRun.triggerMessageId, run.triggerMessageId)
+          : eq(aiWorkflowRun.id, run.id),
+        sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
+        sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+      );
+      const batchRows = await scoped
+        .select({ id: aiWorkflowRun.id, state: aiWorkflowRun.state, metrics: aiWorkflowRun.metrics })
+        .from(aiWorkflowRun)
+        .where(batchScope);
+      const wakeBatchSize = Math.max(
+        prefetchBatchSize,
+        batchRows.length,
+        ...batchRows.map((row) => {
+          const size = objectRecord(row.metrics).prefetchBatchSize;
+          return typeof size === 'number' && Number.isSafeInteger(size) && size > 0 ? size : 0;
+        }),
+      );
+      const alreadyAdmitted = batchRows.find((row) => {
+        const siblingMetrics = objectRecord(row.metrics);
+        return (
+          siblingMetrics.prefetchBatchDecision === 'admitted' ||
+          (siblingMetrics.prefetchDeferred !== true && siblingMetrics.prefetchBatchSize === wakeBatchSize)
+        );
+      });
+      const alreadyAdmittedMetrics = alreadyAdmitted ? objectRecord(alreadyAdmitted.metrics) : {};
+      const recordedAdmittedAt =
+        alreadyAdmittedMetrics.prefetchBatchAdmittedAt ?? alreadyAdmittedMetrics.prefetchAdmittedAt;
+      const parsedAdmittedAt =
+        typeof recordedAdmittedAt === 'string' ? Date.parse(recordedAdmittedAt) : Number.NaN;
+      const admittedAt = Number.isFinite(parsedAdmittedAt) ? new Date(parsedAdmittedAt) : now;
+      const activeBatchRows = batchRows.filter((row) =>
+        ['queued', 'retry_wait', 'claimed', 'running'].includes(row.state),
+      );
+      // A waking strategy promotes or reschedules its whole source-mail fan-out atomically.
+      const stampBatchDecision = async (
+        decision: 'admitted' | 'deferred',
+        decisionAt: Date,
+        nextRunAt?: Date,
+      ) => {
+        for (const row of activeBatchRows) {
+          const waiting = row.state === 'queued' || row.state === 'retry_wait';
+          const metricsPatch = {
+            prefetchBatchDecision: decision,
+            prefetchDeferred: decision === 'deferred',
+            prefetchBatchSize: wakeBatchSize,
+            ...(decision === 'admitted'
+              ? {
+                  prefetchBatchAdmittedAt: decisionAt.toISOString(),
+                  prefetchAdmittedAt: decisionAt.toISOString(),
+                }
+              : {}),
+          };
+          await scoped
+            .update(aiWorkflowRun)
+            .set({
+              metrics: sql`coalesce(${aiWorkflowRun.metrics}, '{}'::jsonb) || ${JSON.stringify(metricsPatch)}::jsonb`,
+              ...(decision === 'deferred' && nextRunAt
+                ? { nextRunAt }
+                : decision === 'admitted' && waiting
+                  ? { nextRunAt: decisionAt }
+                  : {}),
+              ...(waiting ? { updatedAt: now } : {}),
+            })
+            .where(eq(aiWorkflowRun.id, row.id));
+        }
+      };
+      if (alreadyAdmitted) {
+        await stampBatchDecision('admitted', admittedAt);
+        const occupied = await occupyPrefetchReservation(scoped, run.id, admittedAt);
+        return { status: 'admit' as const, admittedAt: occupied.admittedAt };
+      }
+      const capacity = await reservePrefetchCapacity(scoped, {
+        transportId: run.transportId,
+        kind: 'staff_quote',
+        perHour: quotePreparationPerHour(),
+        batchSize: wakeBatchSize,
+        now,
+        excludeRunId: run.id,
+        excludeTriggerMessageId: run.triggerMessageId ?? undefined,
+      });
+      if (capacity.action === 'disable') {
+        await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, scoped);
+        return { status: 'dead_letter' as const };
+      }
+      if (capacity.action === 'defer') {
+        await stampBatchDecision('deferred', now, capacity.nextRunAt);
+        await requeueRun(scoped, mark, {
+          attempts: run.attempts,
+          delayMs: Math.max(JOB_YIELD_MS, capacity.nextRunAt.getTime() - now.getTime()),
+          failureClass: 'POLICY_BLOCK',
+          lastError: preparedQuoteYieldLastError(run, 'prefetch_capacity_deferred'),
+          nextRunAt: capacity.nextRunAt,
+        });
+        return { status: 'retry_wait' as const };
+      }
+      await stampBatchDecision('admitted', now);
+      const occupied = await occupyPrefetchReservation(scoped, run.id, now);
+      return { status: 'admit' as const, admittedAt: occupied.admittedAt };
+    });
+    if (admitted.status !== 'admit') return admitted.status;
+    preparedQuoteLockWaitStart = admitted.admittedAt;
   }
   if (
     systemPreparedQuote &&
