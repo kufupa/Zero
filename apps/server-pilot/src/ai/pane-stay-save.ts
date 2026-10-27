@@ -74,6 +74,7 @@ export type PaneStay = {
   reservationNote?: string;
   bookerName?: string;
   bookerEmail?: string;
+  confirmationRecipient?: { mode: 'self' | 'client' | 'custom'; address: string };
   marketSegment?: string;
   guestoptin4?: boolean;
 };

@@ -21,6 +21,7 @@ import type { DB } from '../src/db/client.js';
 import {
   DAVINCI_TRANSPORT_EMAIL,
   DAVINCI_TRANSPORT_ID,
+  FAITH_TRANSPORT_ID,
   NAVA_TRANSPORT_ID,
   TRANSPORT_ID,
 } from '../src/db/seed.js';
@@ -200,6 +201,12 @@ describe('prefetch capacity (pure)', () => {
     expect(decision.nextRunAt.getTime()).toBe(oldest.getTime() + PREFETCH_CAPACITY_WINDOW_MS);
     expect(decision.nextRunAt.getTime()).toBeGreaterThan(now.getTime());
   });
+
+  it('admits one oversized batch only when the hourly window is empty and never splits a batch', () => {
+    expect(decidePrefetchCapacity({ used: 0, perHour: 6, batchSize: 9, now }).action).toBe('admit');
+    expect(decidePrefetchCapacity({ used: 1, perHour: 6, batchSize: 9, now }).action).toBe('defer');
+    expect(decidePrefetchCapacity({ used: 5, perHour: 6, batchSize: 2, now }).action).toBe('defer');
+  });
 });
 
 const FANOUT = [
@@ -362,6 +369,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
       expect(deferred.length).toBeGreaterThanOrEqual(1);
       const [target, ...siblings] = deferred;
       if (!target) throw new Error('expected a deferred prepared quote');
+      const targetMetrics =
+        target.metrics && typeof target.metrics === 'object'
+          ? (target.metrics as Record<string, unknown>)
+          : {};
+      await db
+        .update(aiWorkflowRun)
+        .set({ metrics: { ...targetMetrics, sharedTransportIds: [DAVINCI_TRANSPORT_ID, FAITH_TRANSPORT_ID] } })
+        .where(eq(aiWorkflowRun.id, target.id));
       const later = new Date(Date.now() + PREFETCH_CAPACITY_WINDOW_MS);
       for (const job of siblings) {
         await db
@@ -433,8 +448,158 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
       ).toBe('succeeded');
       expect(staffQuoteRunner.run).toHaveBeenCalledTimes(1);
 
+      const admittedBatch = await preparedQuoteRows(db, second.messageId);
+      const promotedTarget = admittedBatch.find((row) => row.id === target.id);
+      const admissionAt =
+        (promotedTarget?.metrics as { prefetchAdmittedAt?: string } | null)?.prefetchAdmittedAt;
+      expect(
+        admittedBatch.every(
+          (row) =>
+            (row.metrics as { prefetchBatchDecision?: string; prefetchDeferred?: boolean } | null)
+              ?.prefetchBatchDecision === 'admitted' &&
+            (row.metrics as { prefetchDeferred?: boolean } | null)?.prefetchDeferred !== true,
+        ),
+      ).toBe(true);
+      expect(typeof admissionAt).toBe('string');
+      expect(promotedTarget?.metrics).toMatchObject({
+        sharedTransportIds: [DAVINCI_TRANSPORT_ID, FAITH_TRANSPORT_ID],
+      });
+      expect(
+        admittedBatch.every(
+          (row) => (row.metrics as { prefetchAdmittedAt?: string } | null)?.prefetchAdmittedAt === admissionAt,
+        ),
+      ).toBe(true);
+      expect(
+        admittedBatch
+          .filter((row) => row.state === 'queued' || row.state === 'retry_wait')
+          .every((row) => row.nextRunAt !== null && row.nextRunAt.getTime() <= Date.now()),
+      ).toBe(true);
+
+      await db
+        .update(mailThread)
+        .set({ spamAt: new Date() })
+        .where(eq(mailThread.id, second.threadId));
+      const siblingClaimed = await claimNextAiRun({
+        ownerId: 'prefetch-capacity-worker',
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        db,
+      });
+      if (!siblingClaimed) throw new Error('expected a promoted sibling to be claimable');
+      expect(siblingClaimed.id).not.toBe(target.id);
+      if (
+        !(await markAiRunRunning(
+          {
+            runId: siblingClaimed.id,
+            claimOwner: siblingClaimed.claimOwner!,
+            claimToken: siblingClaimed.claimToken!,
+            deadlineAt: siblingClaimed.deadlineAt!,
+          },
+          db,
+        ))
+      ) {
+        throw new Error('markAiRunRunning fenced out');
+      }
+      expect(
+        await executeHmsJob({
+          run: siblingClaimed,
+          fence: {
+            runId: siblingClaimed.id,
+            claimOwner: siblingClaimed.claimOwner!,
+            claimToken: siblingClaimed.claimToken!,
+            deadlineAt: siblingClaimed.deadlineAt!,
+          },
+          db,
+        }),
+      ).toBe('dead_letter');
+      expect(staffQuoteRunner.run).toHaveBeenCalledTimes(1);
+
       expect(await prefetchQuoteReadyForExtraction(second.prefetchRun, db, env)).toBe(0);
       expect(await preparedQuoteRows(db, second.messageId)).toHaveLength(afterFirstOverflow.length);
+    }));
+
+  it('rejects a deferred quote if staff mark the source as spam before wake', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('PORT', '3000');
+      vi.stubEnv('BETTER_AUTH_URL', 'https://nava.legacy.local');
+      vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
+      vi.stubEnv('AWS_REGION', 'synthetic-region-1');
+      vi.stubEnv('S3_BUCKET', 'prefetch-capacity-test');
+      vi.stubEnv('HMS_JOB_QUEUE', 'on');
+      vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+      vi.stubEnv('HMS_QUOTE_PREPARE_PER_HOUR', '1');
+      vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+      vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-quote.json');
+      const env = { ...QUOTE_ON, HMS_QUOTE_PREPARE_PER_HOUR: '1' };
+      const first = await seedExtraction(db);
+      const deferredSource = await seedExtraction(db);
+      expect(await prefetchQuoteReadyForExtraction(first.prefetchRun, db, env)).toBeGreaterThanOrEqual(1);
+      expect(await prefetchQuoteReadyForExtraction(deferredSource.prefetchRun, db, env)).toBeGreaterThanOrEqual(1);
+      const firstBatch = await preparedQuoteRows(db, first.messageId);
+      const deferredRows = await preparedQuoteRows(db, deferredSource.messageId);
+      const target = deferredRows.find(
+        (row) => (row.metrics as { prefetchDeferred?: boolean } | null)?.prefetchDeferred === true,
+      );
+      if (!target) throw new Error('expected a deferred prepared quote');
+
+      await db
+        .update(mailThread)
+        .set({ spamAt: new Date() })
+        .where(eq(mailThread.id, deferredSource.threadId));
+      const aged = new Date(Date.now() - 2 * PREFETCH_CAPACITY_WINDOW_MS);
+      for (const job of firstBatch) {
+        await db
+          .update(aiWorkflowRun)
+          .set({ state: 'succeeded', createdAt: aged, finishedAt: aged, nextRunAt: null, updatedAt: aged })
+          .where(eq(aiWorkflowRun.id, job.id));
+      }
+      await db
+        .update(aiWorkflowRun)
+        .set({ nextRunAt: new Date(), updatedAt: new Date() })
+        .where(eq(aiWorkflowRun.id, target.id));
+
+      const claimed = await claimNextAiRun({
+        ownerId: 'prefetch-spam-worker',
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        db,
+      });
+      if (!claimed) throw new Error('expected deferred prepared quote to be claimable');
+      expect(claimed.id).toBe(target.id);
+      if (
+        !(await markAiRunRunning(
+          {
+            runId: claimed.id,
+            claimOwner: claimed.claimOwner!,
+            claimToken: claimed.claimToken!,
+            deadlineAt: claimed.deadlineAt!,
+          },
+          db,
+        ))
+      ) {
+        throw new Error('markAiRunRunning fenced out');
+      }
+      expect(
+        await executeHmsJob({
+          run: claimed,
+          fence: {
+            runId: claimed.id,
+            claimOwner: claimed.claimOwner!,
+            claimToken: claimed.claimToken!,
+            deadlineAt: claimed.deadlineAt!,
+          },
+          db,
+        }),
+      ).toBe('dead_letter');
+      expect(staffQuoteRunner.run).not.toHaveBeenCalled();
+      const afterSpam = await preparedQuoteRows(db, deferredSource.messageId);
+      expect(
+        afterSpam.every(
+          (row) => (row.metrics as { prefetchBatchDecision?: string } | null)?.prefetchBatchDecision === 'deferred',
+        ),
+      ).toBe(true);
     }));
 
   it('occupying a waking job counts it against the current hour', () =>
@@ -445,6 +610,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
       const rows = await preparedQuoteRows(db, seeded.messageId);
       const job = rows[0];
       if (!job) throw new Error('expected a prepared quote');
+      const batchSize = (job.metrics as { prefetchBatchSize?: number } | null)?.prefetchBatchSize;
+      expect(batchSize).toBe(rows.length);
       const aged = new Date(Date.now() - 2 * PREFETCH_CAPACITY_WINDOW_MS);
       for (const row of rows) {
         await db.update(aiWorkflowRun).set({ createdAt: aged, updatedAt: aged }).where(eq(aiWorkflowRun.id, row.id));
@@ -464,7 +631,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
           kind: 'staff_quote',
           since,
         }),
-      ).toMatchObject({ used: 1 });
+      ).toMatchObject({ used: batchSize });
       const [firstStamp] = await db
         .select({ createdAt: aiWorkflowRun.createdAt })
         .from(aiWorkflowRun)
