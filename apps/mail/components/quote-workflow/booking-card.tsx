@@ -365,16 +365,18 @@ function mergeSavedRoomCommits(
       if (local?.status === 'running') continue;
       if (local?.status === 'booked' && !sameBookedConfirmation(local, roomSave.commit)) continue;
     }
-    if (
-      local?.status === roomSave.commit.status &&
-      sameBookedConfirmation(local, roomSave.commit) &&
-      local.runId === roomSave.commit.runId &&
-      (local.shots?.length ?? 0) === (roomSave.commit.shots?.length ?? 0)
-    ) {
-      continue;
+    const incomingCommit = roomSave.commit;
+    if (local?.status === 'booked' && incomingCommit.status === 'booked') {
+      if (
+        local.confirmationNumber === incomingCommit.confirmationNumber &&
+        local.runId === incomingCommit.runId &&
+        (local.shots?.length ?? 0) === (incomingCommit.shots?.length ?? 0)
+      ) {
+        continue;
+      }
     }
-    if (local?.status === 'refused' && roomSave.commit.status === 'refused' && local.message === roomSave.commit.message && local.runId === roomSave.commit.runId) {
-      continue;
+    if (local?.status === 'refused' && incomingCommit.status === 'refused') {
+      if (local.message === incomingCommit.message && local.runId === incomingCommit.runId) continue;
     }
     next = { ...next, [roomKey]: { ...next[roomKey], commit: roomSave.commit } };
   }
