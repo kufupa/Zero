@@ -38,12 +38,7 @@ import {
   staffHeaderFieldProblem,
   staffStayExtrasFor,
 } from './types';
-import {
-  matchConfiguredRoomType,
-  ROOM_TYPE_CODES,
-  ROOM_TYPE_NAMES,
-  unpickedTwinRoomCode,
-} from './room-types';
+import { knownRoomCode, normaliseRoomLabel, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
@@ -432,24 +427,22 @@ export function qualifiedPdfFailureReason(error: unknown): string {
   return rejectionReason(error);
 }
 
-function propertyRoomTypes(propertyCode?: string): { code: string; label: string }[] | null {
-  if (propertyCode === HRDAV_PROPERTY_CODE) {
-    return Object.entries(HRDAV_ROOM_NAMES).map(([code, label]) => ({ code, label }));
-  }
-  if (propertyCode === HRCEN_PROPERTY_CODE || propertyCode === undefined) {
-    return Object.entries(ROOM_TYPE_NAMES).map(([code, label]) => ({ code, label }));
-  }
-  return null;
+function hrdavKnownCode(raw: string): string | null {
+  const code = raw.trim().replace(/[^a-z0-9]/gi, '').toUpperCase();
+  if (HRDAV_NATIVE_ROOM_CODES.has(code)) return code;
+  const needle = normaliseRoomLabel(raw);
+  const matches = (Object.entries(HRDAV_ROOM_NAMES) as Array<[string, string]>).filter(
+    ([code, label]) => normaliseRoomLabel(code) === needle || normaliseRoomLabel(label) === needle,
+  );
+  return matches.length === 1 ? matches[0]![0] : null;
 }
 
 function knownNativeCode(raw: string, propertyCode?: string): string | null {
-  const rooms = propertyRoomTypes(propertyCode);
-  if (!rooms) return null;
-  return (
-    matchConfiguredRoomType([raw], rooms, {
-      allowCenturionRoomAliases: propertyCode !== HRDAV_PROPERTY_CODE,
-    })?.code ?? null
-  );
+  if (propertyCode === HRDAV_PROPERTY_CODE) return hrdavKnownCode(raw);
+  if (propertyCode === HRCEN_PROPERTY_CODE || propertyCode === undefined) {
+    return knownRoomCode(normaliseRoomLabel(raw)) ?? knownRoomCode(raw);
+  }
+  return null;
 }
 
 export function resolveNativeRoomCodes(input: {

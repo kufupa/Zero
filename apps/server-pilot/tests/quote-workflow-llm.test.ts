@@ -681,6 +681,23 @@ describe('mapLlmDecision', () => {
     });
   });
 
+  it('keeps an HRDAV Twin ask defaulted so Get rates still searches every room', () => {
+    const mapped = mapLlmDecision(
+      lunaAnalysisSchema.parse(
+        analysis({
+          workflow: 'quote',
+          groups: [{ ...group, roomPreference: 'Twin' }],
+        }),
+      ),
+      { propertyCode: 'HRDAV' },
+    );
+
+    expect(mapped.groups[0]).toMatchObject({
+      roomPreference: 'Twin',
+      fields: { roomPreference: 'defaulted' },
+    });
+  });
+
   it('defaults occupancy while keeping missing dates and room count in the reply', () => {
     const mapped = mapLlmDecision(
       lunaAnalysisSchema.parse(

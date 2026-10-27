@@ -112,7 +112,13 @@ function matchAgainstCatalogue(
     return nameOnly.every((word) => nameWords.includes(word));
   });
 
-  if (candidates.length === 1) return { code: candidates[0]!, suggestions: [] };
+  if (candidates.length === 1) {
+    const nameWords = names[candidates[0]!]!.toLowerCase().split(' ');
+    if (nameOnly.length && nameWords.every((word) => nameOnly.includes(word))) {
+      return { code: candidates[0]!, suggestions: [] };
+    }
+    return { suggestions: candidates };
+  }
   const rank = (candidate: string) => {
     const fits = aliasWords.length > 0 && aliasWords.every((word) => aliases[word]!.includes(candidate));
     return fits ? aliases[aliasWords[0]!]!.indexOf(candidate) : 100 + codes.indexOf(candidate);

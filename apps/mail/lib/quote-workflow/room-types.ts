@@ -47,7 +47,9 @@ function uniqueCatalogueMatch(
     const nameWords = names[candidate]!.toLowerCase().split(' ');
     return nameOnly.every((word) => nameWords.includes(word));
   });
-  return candidates.length === 1 ? candidates[0] : undefined;
+  if (candidates.length !== 1) return undefined;
+  const nameWords = names[candidates[0]!]!.toLowerCase().split(' ');
+  return nameWords.every((word) => nameOnly.includes(word)) ? candidates[0] : undefined;
 }
 
 /** Match configured codes/labels; opt in when a profile should also accept legacy Centurion-name aliases. */

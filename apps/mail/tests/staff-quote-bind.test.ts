@@ -80,18 +80,6 @@ describe('HRDAV native room and board maps', () => {
       status: 'codes',
       codes: ['DLXPAT'],
     });
-    expect(resolveNativeRoomCodes({ roomPreference: 'Twin', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
-      status: 'codes',
-      codes: ['STWN'],
-    });
-    expect(
-      staffQuoteGroupsFromStay(
-        [stay({ roomPreference: 'Twin', fields: { roomPreference: 'extracted' } })],
-        HRDAV_PROPERTY_CODE,
-      ),
-    ).toEqual({
-      ok: [expect.objectContaining({ roomCodes: ['STWN'] })],
-    });
     expect(resolveNativeRoomCodes({ roomPreference: 'STD SGL', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
       status: 'unresolved',
       label: 'STD SGL',
@@ -184,6 +172,12 @@ describe('HRDAV native room and board maps', () => {
       status: 'codes',
       codes: ['STWN'],
     });
+    const allRooms = staffQuoteGroupsFromStay(
+      [stay({ roomPreference: 'Twin', fields: { roomPreference: 'defaulted' } })],
+      HRDAV_PROPERTY_CODE,
+    );
+    expect(allRooms).toMatchObject({ ok: [{ id: 'g1' }] });
+    if ('ok' in allRooms) expect(allRooms.ok[0]).not.toHaveProperty('roomCodes');
   });
 
   it('does not inherit a Centurion-only room alias on HRDAV', () => {

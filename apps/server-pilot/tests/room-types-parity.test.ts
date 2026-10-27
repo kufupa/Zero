@@ -78,6 +78,8 @@ describe('server/mail room matcher parity', () => {
     expect(matchServerRoomType('Deluxe Patio', 'HRDAV')).toEqual({ code: 'DLXPAT', suggestions: [] });
     expect(matchServerRoomType('Standard King', 'HRDAV')).toEqual({ code: 'STKNG', suggestions: [] });
     expect(matchServerRoomType('STD SGL', 'HRDAV')).toEqual({ suggestions: ['STWN', 'STKNG'] });
+    expect(matchServerRoomType('Twin', 'HRDAV')).toEqual({ suggestions: ['STWN'] });
+    expect(matchServerRoomType('SUITE', 'HRDAV')).toEqual({ suggestions: ['JNRSUI'] });
     expect(matchServerRoomType('Standard King')).toEqual({ code: 'SKNG', suggestions: [] });
   });
 });
