@@ -198,6 +198,34 @@ describe('prepared quote input from stored extraction', () => {
     });
   });
 
+  it('does not shop abbreviated Deluxe Twin as Standard Twin on HRDAV', () => {
+    const stay = payload().stays[0]!;
+    const plan = buildPreparedStaffQuotePlan({
+      messageId,
+      sourceHash,
+      payload: payload({
+        stays: [{ ...stay, rows: [{ ...stay.rows[0]!, roomType: 'DLX Twin' }] }],
+      }),
+      now: new Date('2026-10-14T12:00:00.000Z'),
+      propertyCode: 'HRDAV',
+    });
+    expect(plan.inputs[0]?.groups[0]?.roomCodes).toBeUndefined();
+  });
+
+  it('still prices an unpicked twin as Standard Twin on HRCEN', () => {
+    const stay = payload().stays[0]!;
+    const plan = buildPreparedStaffQuotePlan({
+      messageId,
+      sourceHash,
+      payload: payload({
+        stays: [{ ...stay, rows: [{ ...stay.rows[0]!, roomType: 'twin' }] }],
+      }),
+      now: new Date('2026-10-14T12:00:00.000Z'),
+      propertyCode: 'HRCEN',
+    });
+    expect(plan.inputs[0]?.groups[0]?.roomCodes).toEqual(['STWN']);
+  });
+
   it('defaults missing occupancy to two adults per room', () => {
     const stay = payload().stays[0]!;
     const plan = build({

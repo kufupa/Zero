@@ -149,7 +149,9 @@ function groupForStay(
     }
     const roomType = row.roomType?.trim();
     const roomMatch = roomType ? matchRoomType(roomType, propertyCode) : null;
-    const roomCode = roomMatch?.code ?? unpickedTwinRoomCode(roomType);
+    const roomCode =
+      roomMatch?.code ??
+      (propertyCode === undefined || propertyCode === 'HRCEN' ? unpickedTwinRoomCode(roomType) : undefined);
     groups.push({
       id: row.id,
       arrivalDate: arrival,
