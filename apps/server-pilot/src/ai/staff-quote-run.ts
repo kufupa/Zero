@@ -85,6 +85,8 @@ const HMS_NOT_RESPONDED_MESSAGE =
   "HMS didn't respond as expected. Try again; if it fails twice, quote in HMS directly.";
 const HMS_UNPRICEABLE_COMBINATION_MESSAGE =
   "HMS couldn't price this exact combination of rooms, guests and meals. Try one room type or B&B first, or quote this one in HMS.";
+const HMS_CONTRACT_AGENCY_REQUIRED_MESSAGE =
+  'Wholesale/contract rates need the agency confirmed. Pick the agency in step 1, then Get rates.';
 const HMS_EXECUTION_CODES = new Set([
   'EXECUTION_FAILURE',
   'AUTHENTICATED_SHELL_TIMEOUT',
@@ -435,6 +437,7 @@ export function staffQuoteFailureMessage(
     native_quote_restricted_nights:
       'HMS restricts sale on some of these nights. Choose other dates or quote this in HMS.',
     native_quote_capture_scope_or_completeness_invalid: HMS_UNPRICEABLE_COMBINATION_MESSAGE,
+    native_quote_party_context_required: HMS_CONTRACT_AGENCY_REQUIRED_MESSAGE,
     native_quote_capture_oversized: HMS_UNPRICEABLE_COMBINATION_MESSAGE,
     staff_quote_source_changed:
       'The selected email or approved inputs changed; rerun the current quote.',

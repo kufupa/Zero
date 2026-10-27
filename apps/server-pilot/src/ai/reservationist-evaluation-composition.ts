@@ -127,6 +127,33 @@ export function createReservationistCurrentReadResolver(options:{resolve:(reques
 /** Current sources retain their own strict qualification and never become historical truth. */
 export async function runReservationistEvaluationCurrentRead(options:Parameters<typeof runQualifiedReservationistCurrentRead>[0]&{authorization:LocalEvaluationAuthorization}){authorizeLocal(options.authorization,options.input);const{authorization: _authorization,...current}=options;return runQualifiedReservationistCurrentRead(current);}
 
+/** Wholesale/contract rows HMS left conditional because the quote asked for no party. Never fail-open those rows. Incomplete searches keep the combination copy: picking an agency does not fill a truncated grid. */
+export function unverifiedContextualRatesNeedAgency(source:{groups?:unknown;searchCompleteness?:unknown;issues?:unknown},request:{rateContext?:unknown}={}):boolean{
+ const ctx=request.rateContext;
+ if(ctx&&typeof ctx==='object'&&!Array.isArray(ctx)&&Object.keys(ctx).length)return false;
+ const completeness=source.searchCompleteness;
+ if(completeness&&typeof completeness==='object'&&!Array.isArray(completeness)&&(completeness as{status?:unknown}).status!=='complete')return false;
+ if(Array.isArray(source.issues)&&source.issues.length)return false;
+ const groups=Array.isArray(source.groups)?source.groups:[];
+ if(!groups.length)return false;
+ let count=0;
+ for(const group of groups){
+  if(!group||typeof group!=='object')return false;
+  const g=group as{options?:unknown;issues?:unknown;completeness?:{search?:unknown}};
+  if(Array.isArray(g.issues)&&g.issues.length)return false;
+  if(g.completeness&&g.completeness.search!==undefined&&g.completeness.search!=='complete')return false;
+  const options=Array.isArray(g.options)?g.options:[];
+  if(!options.length)return false;
+  for(const option of options){
+   if(!option||typeof option!=='object')return false;
+   const row=option as{rateScope?:unknown;eligibility?:unknown};
+   if(row.rateScope!=='contextual'||row.eligibility!=='conditional')return false;
+   count+=1;
+  }
+ }
+ return count>0;
+}
+
 /** Intact summary observations may narrow a full read or prove no available option; never quote authority. */
 export function isReservationistAuditedSummaryPartial(source:unknown,expectedRequest:QuoteSourceRecord['request'],composeAllocation:(groups:unknown[],propertyCode:string)=>{status:string}):boolean{
  if(!source||typeof source!=='object')return false;
@@ -253,6 +280,7 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
    if(isReservationistCleanNoMatch(source,normalized.request as QuoteSourceRecord['request']))throw new ReservationistTaskEvidenceUnavailable('native_quote_no_matching_rate',['a qualified rate for the requested stay'],undefined,{alternatives:normalize.availableRoomAlternatives(source.groups,normalized.request)});
    // HMS closed a requested room type to sale on named nights and offered no row for it: staff hear which room types and nights.
    if(isReservationistAuditedRestrictedNights(source,normalized.request as QuoteSourceRecord['request'],normalize.composeAllocation))throw new ReservationistTaskEvidenceUnavailable('native_quote_restricted_nights',['room availability on the restricted nights'],undefined,{restrictedNights:source.groups.flatMap(group=>group.restrictedNights??[])});
+   if(unverifiedContextualRatesNeedAgency(source,request))throw new Error('native_quote_party_context_required');
    throw new Error('native_quote_capture_scope_or_completeness_invalid');
   }
   // A multi-room quote must be exactly the allocation the contract recomputes from its rows; a tampered pool id fails here.
