@@ -169,4 +169,36 @@ describe('shuttle request drafts', () => {
       .toBe(createDraftCommand.mock.calls[0]?.[1].operationId);
     await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Saved as an unsent Outlook draft'));
   });
+
+  it('keeps the details when staff confirm no draft exists and retry with a fresh id', async () => {
+    createDraftCommand
+      .mockRejectedValueOnce(new Error('Outlook command timed out'))
+      .mockResolvedValueOnce(savedDraftLocation);
+    render(
+      <ShuttleDraft
+        bridge={nativeDraftBridge}
+        config={provider}
+        storeId={storeId}
+      />,
+    );
+    const pickup = screen.getByLabelText('Pickup location') as HTMLInputElement;
+    fireEvent.change(pickup, { target: { value: 'Hotel entrance' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
+
+    await screen.findByRole('alert');
+    expect(pickup.disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', {
+      name: 'I checked Outlook Drafts; no draft found — retry with a new ID',
+    }));
+
+    expect(pickup.disabled).toBe(false);
+    expect(pickup.value).toBe('Hotel entrance');
+    fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
+
+    await waitFor(() => expect(createDraftCommand).toHaveBeenCalledTimes(2));
+    const firstOperationId = createDraftCommand.mock.calls[0]?.[1].operationId;
+    const secondOperationId = createDraftCommand.mock.calls[1]?.[1].operationId;
+    expect(secondOperationId).not.toBe(firstOperationId);
+    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('Saved as an unsent Outlook draft'));
+  });
 });

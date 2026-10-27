@@ -96,9 +96,8 @@ function ShuttleDraftForm({
     setStatus(null);
   };
 
-  const startNewRequest = () => {
+  const allowFreshAttempt = () => {
     operationId.current = null;
-    setDetails(EMPTY_DETAILS);
     setStatus(null);
   };
 
@@ -192,8 +191,8 @@ function ShuttleDraftForm({
           </Notice>
         ) : null}
         {needsDraftCheck ? (
-          <SecondaryButton type="button" onClick={startNewRequest}>
-            I checked Outlook Drafts; start a new request
+          <SecondaryButton type="button" onClick={allowFreshAttempt}>
+            I checked Outlook Drafts; no draft found — retry with a new ID
           </SecondaryButton>
         ) : null}
         <PrimaryButton
