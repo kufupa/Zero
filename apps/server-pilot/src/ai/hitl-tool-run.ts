@@ -254,6 +254,7 @@ const QUOTE_REFUSAL_REASONS = new Set([
   'native_quote_insufficient_inventory',
   'native_quote_restricted_nights',
   'native_quote_capture_scope_or_completeness_invalid',
+  'native_quote_party_context_required',
   'native_quote_capture_oversized',
   'staff_quote_source_changed',
   'staff_quote_policy_pdf_unavailable',

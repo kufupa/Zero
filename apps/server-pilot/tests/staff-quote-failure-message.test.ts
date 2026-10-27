@@ -6,6 +6,7 @@ import {
   staffQuoteFailureLog,
   staffQuoteFailureMessage,
 } from '../src/trpc/routes/workstation.js';
+import { unverifiedContextualRatesNeedAgency } from '../src/ai/reservationist-evaluation-composition.js';
 
 const HMS_RETRY =
   "HMS didn't respond as expected. Try again; if it fails twice, quote in HMS directly.";
@@ -55,6 +56,54 @@ describe('staffQuoteFailureMessage', () => {
     expect(staffQuoteFailureMessage(new Error('native_quote_capture_oversized'))).toBe(COMBINATION);
   });
 
+  it('tells staff to confirm the agency when wholesale rows stayed conditional because no party was requested', () => {
+    expect(staffQuoteFailureMessage(new Error('native_quote_party_context_required'))).toBe(
+      'Wholesale/contract rates need the agency confirmed. Pick the agency in step 1, then Get rates.',
+    );
+  });
+});
+
+describe('unverifiedContextualRatesNeedAgency', () => {
+  const row = (rateScope: string, eligibility: string) => ({ rateScope, eligibility });
+  const capture = (options: { rateScope: string; eligibility: string }[]) => ({
+    groups: [{ options }],
+  });
+
+  it('is true only when every row is contextual and conditional and no rateContext was requested', () => {
+    expect(
+      unverifiedContextualRatesNeedAgency(capture([row('contextual', 'conditional')]), {}),
+    ).toBe(true);
+    expect(
+      unverifiedContextualRatesNeedAgency(capture([row('contextual', 'conditional')]), {
+        rateContext: undefined,
+      }),
+    ).toBe(true);
+  });
+
+  it('is false when a party was requested, a row is public or verified, or there are no rows', () => {
+    expect(
+      unverifiedContextualRatesNeedAgency(capture([row('contextual', 'conditional')]), {
+        rateContext: { agency: { nativeId: '838' } },
+      }),
+    ).toBe(false);
+    expect(
+      unverifiedContextualRatesNeedAgency(capture([row('public', 'conditional')]), {}),
+    ).toBe(false);
+    expect(
+      unverifiedContextualRatesNeedAgency(capture([row('contextual', 'verified')]), {}),
+    ).toBe(false);
+    expect(
+      unverifiedContextualRatesNeedAgency(
+        capture([row('contextual', 'conditional'), row('public', 'verified')]),
+        {},
+      ),
+    ).toBe(false);
+    expect(unverifiedContextualRatesNeedAgency({ groups: [{ options: [] }] }, {})).toBe(false);
+    expect(unverifiedContextualRatesNeedAgency({ groups: [] }, {})).toBe(false);
+  });
+});
+
+describe('staffQuoteFailureMessage no-match and native capture copy', () => {
   it('names the strategy and the dinner fallback for a clean HMS no-match on dinner', () => {
     expect(
       staffQuoteFailureMessage(new Error('native_quote_no_matching_rate'), {
