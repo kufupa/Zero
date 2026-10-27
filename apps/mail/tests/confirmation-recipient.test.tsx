@@ -24,7 +24,7 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: v
 
 const settingsDouble = vi.hoisted(() => ({
   get: vi.fn(async () => ({ settings: { confirmation: { mode: 'self' as const }, language: 'en' } })),
-  save: vi.fn(async (_input: { confirmation: { mode: string; address?: string } }) => ({ success: true })),
+  save: vi.fn(async (_input: unknown) => ({ success: true })),
   queries: [] as Array<{
     queryKey: unknown[];
     state: { data?: { settings?: Record<string, unknown> } };
