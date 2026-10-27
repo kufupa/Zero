@@ -46,7 +46,8 @@ export function requestMatches(request:RoomRequest,option:NativeOption):boolean{
 /** A row the quote can price: verified, available, held-free, every requested night covered and priced in the requested currency. */
 export function sellable(source:QuoteSourceRecord,quantity:number,option:NativeOption):boolean{
  const dates=occupiedDates(source.request.arrivalDate,source.request.departureDate);
- return option.eligibility==='verified'&&option.availability==='available'&&option.held===false&&!!boards[norm(option.board??'')]&&partyRowMatches(source.request.rateContext,option)&&option.nightly.length===dates.length&&new Set(option.nightly.map(n=>n.date)).size===dates.length&&option.nightly.every(n=>dates.includes(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory>=quantity&&exactMinor(n.price.amount)>0&&n.price.currency===source.request.requestedCurrency);
+ const detailStatus=(option as NativeOption&{details?:{status?:string}}).details?.status;
+ return detailStatus!=='not_read'&&detailStatus!=='partial'&&option.eligibility==='verified'&&option.availability==='available'&&option.held===false&&!!boards[norm(option.board??'')]&&partyRowMatches(source.request.rateContext,option)&&option.nightly.length===dates.length&&new Set(option.nightly.map(n=>n.date)).size===dates.length&&option.nightly.every(n=>dates.includes(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory>=quantity&&exactMinor(n.price.amount)>0&&n.price.currency===source.request.requestedCurrency);
 }
 
 /**

@@ -267,3 +267,12 @@ describe('HMS event rates (U13)', () => {
     expect(cards.find((card) => card.rateCode === 'BAR')).not.toHaveProperty('hint');
   });
 });
+
+it('does not quote a cheaper unread leftover row', () => {
+  const unread = row({ id: 'SKNG:BWS1B', rate: 'BWS1B', amount: '100.00', scope: 'contextual' });
+  (unread as NativeOption & { details?: { status: string } }).details = { status: 'not_read' };
+  const complete = row({ id: 'SKNG:BARRO', rate: 'BARRO', amount: '500.00' });
+  (complete as NativeOption & { details?: { status: string } }).details = { status: 'complete' };
+  const cards = buildRateOptions(source([unread, complete], ROOM_ONLY), [{ groupId: 'single', optionId: complete.id }]);
+  expect(cards.map((card) => card.rateCode)).toEqual(['BARRO']);
+});

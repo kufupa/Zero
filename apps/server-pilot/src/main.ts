@@ -11,6 +11,7 @@ import { resolveAuthSessionProfile } from './lib/auth-profile.js';
 import { getPublicAuthProviders } from './lib/auth-providers.js';
 import { startOutlookSyncDrain } from './outlook-sync/drain.js';
 import { OutlookSyncStorage } from './outlook-sync/storage.js';
+import { diskHealthAlertLine, readDiskUsedPercent } from './ops/playwright-quote-purge.js';
 import { mailboxTransport } from './db/schema/mail.js';
 import { closeDb, getDb } from './db/client.js';
 import { appRouter } from './trpc/router.js';
@@ -25,7 +26,10 @@ if (process.env.NODE_ENV !== 'production' || (process.env.S3_BUCKET && process.e
   initializeDraftArtifactServices();
 }
 
-app.get('/health', (c) => c.json({ ok: true, service: 'server-pilot' }));
+app.get('/health', async (c) => {
+  const diskAlertLine = diskHealthAlertLine(await readDiskUsedPercent());
+  return c.json({ ok: true, service: 'server-pilot', ...(diskAlertLine ? { diskAlertLine } : {}) });
+});
 
 // Public providers endpoint consumed by apps/mail login page.
 app.get('/api/public/providers', (c) => {
