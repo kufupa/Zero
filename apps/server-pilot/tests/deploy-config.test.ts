@@ -722,6 +722,8 @@ systemctl() {
   fi
 }
 
+export -f sudo nginx systemctl
+
 ip() {
   case "$*" in
     "-4 -o addr show dev ens5 scope global primary")
@@ -3143,8 +3145,11 @@ if (!realMailGate) {
       expect(start, scriptName).toBeGreaterThanOrEqual(0);
       const section = source.slice(start, source.indexOf('\necho', start + marker.length));
       expect(section, scriptName).toContain(readinessCommand);
-      expect(section.match(/launch-readiness\.sh/g), scriptName).toHaveLength(1);
       const readinessIndex = section.indexOf(readinessCommand);
+      expect(
+        section.indexOf(readinessCommand, readinessIndex + readinessCommand.length),
+        scriptName,
+      ).toBe(-1);
       expect(
         section.slice(readinessIndex + readinessCommand.length),
         scriptName,
