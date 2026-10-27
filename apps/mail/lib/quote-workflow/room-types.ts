@@ -174,10 +174,11 @@ export function knownRoomCode(raw: string | undefined): RoomTypeCode | null {
   return Object.hasOwn(ROOM_TYPE_NAMES, code) ? (code as RoomTypeCode) : (matchRoomType(raw).code ?? null);
 }
 
-/** Twin / 2 beds with no staff pick → Standard Twin. Unique names still win via matchRoomType. */
+/** Twin / 2 beds with no staff pick → Standard Twin. A named other type (Deluxe Twin) stays unresolved. */
 export function unpickedTwinRoomCode(raw: string | undefined): 'STWN' | undefined {
   if (!raw) return undefined;
   const text = raw.normalize('NFKD').toLowerCase();
+  if (/\b(?:deluxe|executive|junior|standard|king|queen|suite|accessible|patio)\b/.test(text)) return undefined;
   if (/\btwin\b/.test(text) || /\b(?:2|two)\s*beds?\b/.test(text)) return 'STWN';
   return undefined;
 }

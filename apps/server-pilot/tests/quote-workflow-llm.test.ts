@@ -263,7 +263,7 @@ describe('QUOTE_WORKFLOW_PROMPT_VERSION', () => {
       .update('\n')
       .update(JSON.stringify(zodToJsonSchema(lunaAnalysisSchema, { $refStrategy: 'none' })))
       .update(
-        '\nattachment-review/2\nparty-not-guest/2\nluna-group-dates/1\none-night-default/1\naop-quote-spine/1',
+        '\nattachment-review/2\nparty-not-guest/2\nluna-group-dates/1\none-night-default/1\naop-quote-spine/1\nproperty-room-match/1',
       )
       .digest('hex')
       .slice(0, 16);

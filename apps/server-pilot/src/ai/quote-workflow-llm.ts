@@ -92,6 +92,8 @@ export const QUOTE_WORKFLOW_PROMPT_VERSION = createHash('sha256')
   // One-date stays now default to one night, so cached analyses without a checkout must be remapped.
   .update('\none-night-default/1')
   .update('\naop-quote-spine/1')
+  // Property-aware room matching changes extracted vs defaulted without changing the model prompt.
+  .update('\nproperty-room-match/1')
   .digest('hex')
   .slice(0, 16);
 

@@ -97,10 +97,11 @@ function nightsBetween(arrival: string, departure: string): number {
   return (Date.parse(`${departure}T00:00:00.000Z`) - Date.parse(`${arrival}T00:00:00.000Z`)) / 86_400_000;
 }
 
-/** Twin / 2 beds with no staff pick → Standard Twin. Unique names (Deluxe Twin) still win via matchRoomType. */
+/** Twin / 2 beds with no staff pick → Standard Twin. A named other type (Deluxe Twin) stays unresolved. */
 function unpickedTwinRoomCode(roomType: string | undefined): 'STWN' | undefined {
   if (!roomType) return undefined;
   const text = roomType.normalize('NFKD').toLowerCase();
+  if (/\b(?:deluxe|executive|junior|standard|king|queen|suite|accessible|patio)\b/.test(text)) return undefined;
   if (/\btwin\b/.test(text) || /\b(?:2|two)\s*beds?\b/.test(text)) return 'STWN';
   return undefined;
 }

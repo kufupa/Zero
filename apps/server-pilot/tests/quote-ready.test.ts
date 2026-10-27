@@ -176,6 +176,7 @@ describe('prepared quote input from stored extraction', () => {
               { ...stay.rows[0]!, id: 'row-twn', roomType: 'STD TWN' },
               { ...stay.rows[0]!, id: 'row-sgl', roomType: 'STD SGL', rooms: 1, adultsPerRoom: 1 },
               { ...stay.rows[0]!, id: 'row-pat', roomType: 'Deluxe Patio', rooms: 1 },
+              { ...stay.rows[0]!, id: 'row-dlxtwn', roomType: 'Deluxe Twin', rooms: 1 },
               { ...stay.rows[0]!, id: 'row-kng', roomType: 'Standard King', rooms: 1 },
             ],
           },
@@ -192,6 +193,7 @@ describe('prepared quote input from stored extraction', () => {
       'row-twn': ['STWN'],
       'row-sgl': undefined,
       'row-pat': ['DLXPAT'],
+      'row-dlxtwn': undefined,
       'row-kng': ['STKNG'],
     });
   });
