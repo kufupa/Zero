@@ -35,7 +35,6 @@
     "hotel": "/The Centurion Hotel/",
     "confirmation": "/We have pleasure in confirming your reservation at The Centurion Hotel, Centurion/"
   },
-  "cancellation": { "noticeHours": 48 },
   "evidence": {
     "derivation": "max observed nightly inventory per room type across 95 captures",
     "derivedOn": "2026-10-10",

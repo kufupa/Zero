@@ -23,7 +23,7 @@ it('loads rates, boards and letter for both hotels and throws for an unknown pro
   expect(hrcen!.classifyRate('ZZZUNK', 'BAR', false)).toBe('unknown');
   expect(getProfileBoards('HRCEN')['bed & breakfast r']).toBe('breakfast');
   expect(getProfileLetter('HRCEN').hotel.source).toMatch(/The Centurion Hotel/);
-  expect(hrcen!.cancellation?.noticeHours).toBe(48);
+  expect(hrcen!.cancellation).toBeUndefined();
 
   expect(getProfileRates('HRDAV').public).toEqual(['BAR', 'BARRO', 'WAL']);
   expect(getProfileRates('HRDAV').strategies?.WS?.plans).toContain('BWS1B');

@@ -114,7 +114,7 @@ test('both hotels load rates, boards and letter; unknown property throws', () =>
   assert.equal(hrcen.classifyRate('ZZZUNK', 'BAR', false), 'unknown');
   assert.equal(getProfileBoards('HRCEN')['bed & breakfast r'], 'breakfast');
   assert.match(getProfileLetter('HRCEN').hotel.source, /The Centurion Hotel/);
-  assert.equal(hrcen.cancellation.noticeHours, 48);
+  assert.equal(hrcen.cancellation, undefined);
 
   assert.deepEqual(getProfileRates('HRDAV').public, ['BAR', 'BARRO', 'WAL']);
   const wsPlans = getProfileRates('HRDAV').strategies.WS.plans;
