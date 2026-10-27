@@ -454,10 +454,25 @@ test('a verified party keeps its public row bookable; an unverified party still 
   const criteria={travelAgencyID:'290'};
   const verified=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],{agency:{id:'290'}});
   assert.ok(verified.options.length>0&&verified.options.every(o=>o.rateScope==='public'));
-  for(const o of verified.options){assert.equal(o.matchStatus,'match');assert.equal(o.conditions.find(c=>c.field==='rateContext').kind,'preferred');}
+  assert.ok(verified.issues.some(i=>i.code==='NO_SPECIAL_RATES'));
+  assert.match(verified.issues.find(i=>i.code==='NO_SPECIAL_RATES').action,/not a contracted rate/i);
+  for(const o of verified.options){
+    assert.equal(o.matchStatus,'match');
+    const cond=o.conditions.find(c=>c.field==='rateContext');
+    assert.equal(cond.kind,'preferred');
+    assert.match(cond.reason,/public BAR is returned/i);
+  }
   const unverified=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],{});
   assert.ok(unverified.options.length>0&&unverified.options.every(o=>o.rateScope==='public'));
-  for(const o of unverified.options){assert.equal(o.matchStatus,'match');assert.equal(o.eligibility,'verified');assert.equal(o.conditions.find(c=>c.field==='rateContext').kind,'preferred');}
+  for(const o of unverified.options){
+    assert.equal(o.matchStatus,'match');
+    assert.equal(o.eligibility,'verified');
+    assert.equal(o.rateScope,'public');
+    const cond=o.conditions.find(c=>c.field==='rateContext');
+    assert.equal(cond.kind,'preferred');
+    assert.match(cond.reason,/public rate for this party/i);
+    assert.match(cond.reason,/contract rate/i);
+  }
   assert.equal(quote.reapplyBedAssessment(unverified.options[0],{matchStatus:'match',conditions:[]}).matchStatus,'match');
 });
 test('two-group public BAR/PROMO rows verify and compose; unbound WS stays conditional',()=>{
@@ -492,13 +507,39 @@ test('two-group public BAR/PROMO rows verify and compose; unbound WS stays condi
   const promo=quote.extractOptions(promotions,promotions.rooms[0],[windowFor('STKNG',barPromo,'PROMO')]);
   assert.equal(promo.options.find(o=>o.rate.code==='BAR').rateScope,'public');
   assert.equal(promo.options.find(o=>o.rate.code==='BAR').eligibility,'verified');
-  assert.equal(promo.options.find(o=>o.rate.code==='PMO1B').rateScope,'unknown');
-  assert.equal(promo.options.find(o=>o.rate.code==='PMO1B').eligibility,'conditional');
+  assert.equal(promo.options.find(o=>o.rate.code==='PMO1B').rateScope,'public');
+  assert.equal(promo.options.find(o=>o.rate.code==='PMO1B').eligibility,'verified');
+  const negotiatedPromo={...promotions};
+  const negotiatedWindow=windowFor('STKNG',[{code:'PMO1B',desc:'Promotion Breakfast'}],'PROMO');
+  negotiatedWindow.data.children[0].children[0].children[0].isNegotiatedRate=true;
+  const negotiated=quote.extractOptions(negotiatedPromo,negotiatedPromo.rooms[0],[negotiatedWindow]);
+  assert.equal(negotiated.options.find(o=>o.rate.code==='PMO1B').rateScope,'contextual');
+  assert.equal(negotiated.options.find(o=>o.rate.code==='PMO1B').eligibility,'conditional');
+  const contracted={...wholesale,search:{salesStrategy:'Negoticated Contracted'},rateContext:undefined};
+  const nc=quote.extractOptions(contracted,contracted.rooms[0],[windowFor('STKNG',[{code:'PMO1B',desc:'Promotion Breakfast'}],'NC')]);
+  assert.equal(nc.options.find(o=>o.rate.code==='PMO1B').rateScope,'unknown');
+  assert.equal(nc.options.find(o=>o.rate.code==='PMO1B').eligibility,'conditional');
   const barShop={...wholesale,search:{salesStrategy:'BAR'},rateContext:{organization:{name:'Example Company'}}};
   const crossed=quote.extractOptions(barShop,barShop.rooms[0],[{...windowFor('STKNG',mixed,'BAR'),criteria:{salesStrategy:'BAR',organizationID:'1'}}],{organization:{id:'1'}});
   assert.equal(crossed.options.find(o=>o.rate.code==='BAR').eligibility,'verified');
   assert.equal(crossed.options.find(o=>o.rate.code==='BWS1B').eligibility,'conditional');
   assert.equal(crossed.options.find(o=>o.rate.code==='BWS1B').matchStatus,'unresolved');
+});
+test('WS contract rows without a verified agency stay conditional',()=>{
+  const open={israteavailable:true,restricted:false,combClosed:false,combClosedToArrival:false,combClosedToDeparture:false,combMinLOSToArrival:0,combMinLOSToDeparture:0,combMaxLOSToArrival:null,combMaxLOSToDeparture:null,combMinLOSToThrough:null,combMaxLOSToThrough:null};
+  const columns=Object.fromEntries([1,2].map(n=>[`col${n}`,{...open,value:2500}]));
+  const stay={propertyCode:'HRDAV',arrivalDate:'2027-02-07',departureDate:'2027-02-08',details:'summary',rooms:[{id:'g1',quantity:1,adults:2,children:0,childAges:[]}],search:{salesStrategy:'Wholesale'},rateContext:{agency:{name:'Example Agency'}}};
+  const result=quote.extractOptions(stay,stay.rooms[0],[{
+    data:{datesList:['02/07/2027','02/08/2027'],children:[{isprop:true,issummary:false,code:'HRDAV',currency:'ZAR',children:[{code:'STKNG',desc:'STKNG',buildingCode:null,children:[{code:'BWS1B',desc:'Wholesale Best Available Rate 1',currency:'ZAR',isNegotiatedRate:false,restricted:false,minLOS:null,maxLOS:null,minLeadTime:null,maxLeadTime:null,haspolicies:true,columns}],columns:Object.fromEntries([1,2].map(n=>[`col${n}`,{value:84}]))}]}]},
+    calendar:{headers:['07-FEB-2027Sunday','08-FEB-2027Monday'],options:[{room:{code:'STKNG',inventory:['84','84']},rate:'BWS1B: Wholesale Best Available Rate 1',board:'Bed & Breakfast NR',prices:['R2,500.00','R2,500.00']}]},
+    criteria:{salesStrategy:'WS'},
+  }],{});
+  const ws=result.options.find(o=>o.rate.code==='BWS1B');
+  assert.equal(ws.rateScope,'contextual');
+  assert.equal(ws.eligibility,'conditional');
+  assert.equal(ws.matchStatus,'unresolved');
+  const grouped=quote.groupOutcomeFromOptions(result.options,{details:'summary',searchComplete:true});
+  assert.equal(grouped.eligible.some(o=>o.rate.code==='BWS1B'),false);
 });
 test('OPTION_LIMIT counts only a cut row that is not an alternative',()=>{
   const rows=[{id:0,matchStatus:'match'},{id:1,matchStatus:'alternative'},{id:2,matchStatus:'alternative'}];

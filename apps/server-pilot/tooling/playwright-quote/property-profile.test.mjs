@@ -111,7 +111,7 @@ test('both hotels load rates, boards and letter; unknown property throws', () =>
     hrcen.classifyRate('NGOVB', 'GOV', false, 'Local Government Rate Breakfast'),
     'government',
   );
-  assert.equal(hrcen.classifyRate('ZZZUNK', 'BAR', false), 'unknown');
+  assert.equal(hrcen.classifyRate('ZZZUNK', 'BAR', false), 'public');
   assert.equal(getProfileBoards('HRCEN')['bed & breakfast r'], 'breakfast');
   assert.match(getProfileLetter('HRCEN').hotel.source, /The Centurion Hotel/);
   assert.equal(hrcen.cancellation, undefined);
@@ -121,7 +121,7 @@ test('both hotels load rates, boards and letter; unknown property throws', () =>
   assert.ok(wsPlans.includes('BWS1B'));
   assert.equal(getProfileRates('HRDAV').strategies.WS.scope, 'agency');
   assert.equal(hrdav.classifyRate('BWS1B', 'WS', false), 'contextual');
-  assert.equal(hrdav.classifyRate('BLRB', 'BAR', false), 'unknown');
+  assert.equal(hrdav.classifyRate('BLRB', 'BAR', false), 'public');
   assert.equal(hrdav.classifyRate('ZZZUNK', 'WS', false), 'unknown');
   assert.equal(getProfileBoards('HRDAV')['bed & breakfast nr'], 'breakfast');
   assert.match(getProfileLetter('HRDAV').hotel.source, /Da \?Vinci Hotel/);
@@ -136,4 +136,19 @@ test('a bad letter regex string is rejected', async () => {
   const raw = await hrcenRaw();
   raw.letter = { hotel: '[', confirmation: '/The Centurion Hotel/' };
   assert.throws(() => validateProfile(raw, 'HRCEN'), /not a valid regular expression/);
+});
+
+test('unlisted non-negotiated rates are public only on a salesStrategies public scope', async () => {
+  const hrdav = profileFor('HRDAV');
+  assert.equal(hrdav.classifyRate('PMO1B', 'PROMO', false), 'public');
+  assert.equal(hrdav.classifyRate('PMO1B', 'PROMO', true), 'contextual');
+  assert.equal(hrdav.classifyRate('PMO1B', 'PROMO'), 'unknown');
+  assert.equal(hrdav.classifyRate('PMO1B', 'NC', false), 'unknown');
+  assert.equal(hrdav.classifyRate('PMO1B', 'WS', false), 'unknown');
+  assert.equal(hrdav.classifyRate('BWS1B', 'WS', false), 'contextual');
+  const raw = await hrcenRaw();
+  raw.salesStrategies = [{ value: 'BAR', display: 'BAR' }];
+  assert.equal(validateProfile(raw, 'HRCEN').classifyRate('ZZZUNK', 'BAR', false), 'unknown');
+  raw.salesStrategies = [{ value: 'BAR', display: 'BAR', scope: 'retail' }];
+  assert.throws(() => validateProfile(raw, 'HRCEN'), /scope must be agency, company or public/);
 });

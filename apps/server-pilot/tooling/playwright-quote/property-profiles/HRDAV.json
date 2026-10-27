@@ -66,14 +66,14 @@
     ]
   },
   "salesStrategies": [
-    { "value": "PROMO", "display": "Promotions" },
-    { "value": "BAR", "display": "BAR" },
-    { "value": "PRESET", "display": "Preset" },
+    { "value": "PROMO", "display": "Promotions", "scope": "public" },
+    { "value": "BAR", "display": "BAR", "scope": "public" },
+    { "value": "PRESET", "display": "Preset", "scope": "public" },
     { "value": "WS", "display": "Wholesale" },
     { "value": "NC", "display": "Negoticated Contracted" },
     { "value": "GOV", "display": "Government" },
     { "value": "AIR", "display": "Airline Crews" },
-    { "value": "DOML", "display": "Domestic Leisure" },
+    { "value": "DOML", "display": "Domestic Leisure", "scope": "public" },
     { "value": "OTHER", "display": "Other" }
   ],
   "salesStrategyObservation": {"observedOn": "2026-10-25", "field": "salesstrategy", "required": true, "count": 9, "screenshot": "dropdown-salesstrategy-0.png"},
