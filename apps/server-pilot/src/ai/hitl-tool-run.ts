@@ -281,7 +281,6 @@ const QUOTE_CAUSE_CLASS: Record<string, QuoteFailureCauseClass> = {
   execution_failure: 'hms_down',
   refused_lock_unavailable: 'hms_down',
   business_party_lookup_unavailable: 'hms_down',
-  business_dates_unavailable: 'hms_down',
   refused_lock_busy: 'busy',
   not_found: 'not_found',
   mail_not_found: 'not_found',

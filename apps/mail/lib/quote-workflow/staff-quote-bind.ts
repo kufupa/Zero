@@ -1548,7 +1548,6 @@ function failedQuoteStrategy(
       status: 'failed',
       message,
       causeClass,
-      ...(retryable ? { retrying: true } : {}),
     },
     ...(retryable ? { retryable: true as const } : {}),
   };
@@ -1655,7 +1654,12 @@ export async function bindStaffQuoteStrategy(
 function causeClassForBoundReason(reason: string): QuoteFailureCauseClass {
   const text = reason.toLowerCase();
   if (text.includes('busy')) return 'busy';
-  if (text.includes("didn't answer") || text.includes('could not') || text.includes('did not return')) return 'hms_down';
+  if (
+    text.includes("didn't answer") ||
+    text.includes('did not return') ||
+    text.includes('could not be completed') ||
+    text.includes('could not read its status')
+  ) return 'hms_down';
   if (text.includes('not configured') || text.includes('disabled') || text.includes('not prepared')) return 'not_set_up';
   if (text.includes('no rate') || text.includes('no room') || text.includes('not found')) return 'not_found';
   return 'needs_staff';
