@@ -30,7 +30,7 @@ describe('create confirmation recipient', () => {
         confirmationRecipient: RECIPIENT,
         bookerEmail: 'booker@example.invalid',
       }),
-    ).toEqual({ emailaddress: 'staff@example.invalid' });
+    ).toEqual({ emailaddress: 'staff@example.invalid', udfchar13: 'staff@example.invalid' });
     expect(optionalPartyAndNoteFills({ bookerEmail: 'booker@example.invalid' }).udfchar06).toBe(
       'booker@example.invalid',
     );
@@ -54,5 +54,6 @@ describe('create confirmation recipient', () => {
     expect(source).not.toMatch(/emailaddress: formEmail/);
     expect(source).not.toMatch(/clickTip\([^)]*(Email confirmation|Send confirmation|CMS Send Mail)/i);
     expect(source).not.toMatch(/fillNamed\(page, 'udfchkbox04'/);
+    expect(source).toMatch(/if \(confirmationSendMail\(stay\)\)[\s\S]*tickCmsSendMail/);
   });
 });

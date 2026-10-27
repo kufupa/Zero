@@ -29,13 +29,13 @@ test('offline create request test does not opt into pilot RDS', () => {
   assert.equal(/nava-zero-mail-pilot/i.test(process.env.DATABASE_URL || ''), false);
 });
 
-test('writes the per-booking recipient into emailaddress, verifies readback, and never sends mail', async () => {
+test('writes the per-booking recipient into emailaddress, verifies readback, and ticks CMS Send Mail', async () => {
   assert.deepEqual(
     confirmationRecipientFills({
       confirmationRecipient: RECIPIENT,
       bookerEmail: 'booker@example.invalid',
     }),
-    { emailaddress: 'staff@example.invalid' },
+    { emailaddress: 'staff@example.invalid', udfchar13: 'staff@example.invalid' },
   );
   assert.equal(optionalPartyAndNoteFills({ bookerEmail: 'booker@example.invalid' }).udfchar06, 'booker@example.invalid');
   assert.deepEqual(confirmationRecipientFills({}), {});
@@ -68,4 +68,5 @@ test('writes the per-booking recipient into emailaddress, verifies readback, and
   assert.equal(/emailaddress: formEmail/.test(source), false);
   assert.equal(/clickTip\([^)]*(Email confirmation|Send confirmation|CMS Send Mail)/i.test(source), false);
   assert.equal(source.includes("fillNamed(page, 'udfchkbox04'"), false);
+  assert.match(source, /if \(confirmationSendMail\(stay\)\)[\s\S]*tickCmsSendMail/);
 });
