@@ -289,7 +289,7 @@ function stayIdForRoom(
   return `${stay}_${room.roomIndex}`;
 }
 
-/** Stay ids a draft actually shows. An id shared by two rows is omitted so the receipt can still show it once. */
+/** Stay ids a draft actually shows. Rooms with children and ids shared by two rows are omitted so the receipt can still show the save once. */
 export function appliedSavedStayIds(
   draft: BookingDraftReady,
   groups: StayGroupRequirement[],
@@ -298,6 +298,7 @@ export function appliedSavedStayIds(
   if (!savedStays) return [];
   const claims = new Map<string, number>();
   for (const room of draft.draft.rooms) {
+    if (childCountForRoom(room, groups) > 0) continue;
     const id = stayIdForRoom(room, groups);
     claims.set(id, (claims.get(id) ?? 0) + 1);
   }
