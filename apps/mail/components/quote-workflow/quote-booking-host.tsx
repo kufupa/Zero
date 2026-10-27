@@ -4,7 +4,7 @@ import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { isMultiStay, requestedQuoteKeys } from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { BookingCards, type SavedStayCommit } from './booking-card';
-import { useConfirmationSources } from './confirmation-recipient';
+import { saveConfirmationDefault, useConfirmationSources, type ConfirmationSetting } from './confirmation-recipient';
 import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
 
 export function QuoteBookingHost({
@@ -14,6 +14,7 @@ export function QuoteBookingHost({
   workItemId,
   savedStays,
   propertyCode,
+  onSaveDefault,
 }: {
   session: QuoteSession;
   paneSave?: PaneStayClient | null;
@@ -21,6 +22,7 @@ export function QuoteBookingHost({
   workItemId?: string;
   savedStays?: Record<string, SavedStayCommit>;
   propertyCode?: string | null;
+  onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
 }) {
   const confirmation = useConfirmationSources();
   const requestKey = JSON.stringify([
@@ -55,6 +57,7 @@ export function QuoteBookingHost({
               session={session}
               propertyCode={propertyCode}
               confirmation={confirmation}
+              onSaveDefault={onSaveDefault ?? saveConfirmationDefault}
             />
           </Fragment>
         ))}

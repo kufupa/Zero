@@ -130,11 +130,19 @@ function pane() {
   return { client, preview, commit };
 }
 
-function renderHost(sources: ConfirmationSources) {
+function renderHost(
+  sources: ConfirmationSources,
+  onSaveDefault?: (setting: { mode: 'self' | 'client' | 'custom'; address?: string }) => Promise<void>,
+) {
   const api = pane();
   render(
     <ConfirmationSourcesProvider value={sources}>
-      <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+      <QuoteBookingHost
+        session={session()}
+        paneSave={api.client}
+        contact={contact}
+        onSaveDefault={onSaveDefault}
+      />
     </ConfirmationSourcesProvider>,
   );
   return api;
@@ -225,5 +233,14 @@ describe('confirmation recipient', () => {
     expect(failed.preview.mock.calls[0]?.[0]).toMatchObject({
       confirmationRecipient: { mode: 'client', address: CLIENT },
     });
+  });
+
+  it('saves only the confirmation choice as the user default', async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    renderHost({ userEmail: STAFF, setting: { mode: 'client' } }, save);
+    fireEvent.click(screen.getByRole('button', { name: 'Make this my default' }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]?.[0]).toEqual({ mode: 'client' });
+    expect(screen.getByRole('button', { name: 'Saved as your default' })).toBeDefined();
   });
 });

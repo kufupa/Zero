@@ -43,6 +43,7 @@ import {
   useConfirmationSources,
   type ConfirmationMode,
   type ConfirmationRecipientPayload,
+  type ConfirmationSetting,
   type ConfirmationSources,
 } from './confirmation-recipient';
 
@@ -725,6 +726,7 @@ export function BookingCards({
   session,
   propertyCode,
   confirmation,
+  onSaveDefault,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -751,6 +753,8 @@ export function BookingCards({
    * (unit tests that render the card alone). The live pane always passes it.
    */
   confirmation?: ConfirmationSources | null;
+  /** Persists the current choice as this user's default. Omitted in card-only tests. */
+  onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
 }) {
   const client = paneSave;
   const contactRef = useRef(contact);
@@ -819,6 +823,8 @@ export function BookingCards({
     sources?.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '',
   );
   const [staffChose, setStaffChose] = useState(false);
+  const [defaultSaved, setDefaultSaved] = useState(false);
+  const [defaultError, setDefaultError] = useState<string | null>(null);
   useEffect(() => {
     if (staffChose || !sources?.setting) return;
     setRecipientMode(sources.setting.mode);
@@ -830,7 +836,7 @@ export function BookingCards({
     : sources.load === 'pending'
       ? 'Nava is still reading the saved confirmation choice.'
       : sources.load === 'failed'
-        ? 'Nava could not read the saved confirmation choice (not set up). Pick who should get the HMS confirmation.'
+        ? 'Could not load your default (not set up). Pick who should get the HMS confirmation.'
         : sources.invalidSetting
           ? 'The saved confirmation choice is not set up. Pick who should get the HMS confirmation.'
           : null;
@@ -1165,11 +1171,29 @@ export function BookingCards({
           onMode={(next) => {
             setStaffChose(true);
             setRecipientMode(next);
+            setDefaultSaved(false);
           }}
           onCustomAddress={(value) => {
             setStaffChose(true);
             setCustomAddress(value);
+            setDefaultSaved(false);
           }}
+          onMakeDefault={
+            onSaveDefault
+              ? () => {
+                  if (!resolvedRecipient?.ok) return;
+                  const { mode, address } = resolvedRecipient.recipient;
+                  const setting: ConfirmationSetting =
+                    mode === 'custom' ? { mode, address } : { mode };
+                  setDefaultError(null);
+                  void onSaveDefault(setting)
+                    .then(() => setDefaultSaved(true))
+                    .catch(() => setDefaultError('Could not save your default (not set up).'));
+                }
+              : undefined
+          }
+          defaultSaved={defaultSaved}
+          defaultError={defaultError}
         />
       ) : null}
       {mode === 'lab' ? (

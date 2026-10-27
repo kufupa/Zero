@@ -145,6 +145,9 @@ export function ConfirmationRecipient({
   unconfirmed,
   onMode,
   onCustomAddress,
+  onMakeDefault,
+  defaultSaved,
+  defaultError,
 }: {
   mode: ConfirmationMode;
   customAddress: string;
@@ -156,6 +159,9 @@ export function ConfirmationRecipient({
   unconfirmed?: boolean;
   onMode: (mode: ConfirmationMode) => void;
   onCustomAddress: (address: string) => void;
+  onMakeDefault?: () => void;
+  defaultSaved?: boolean;
+  defaultError?: string | null;
 }) {
   const user = cleanEmail(userEmail);
   const client = cleanEmail(clientEmail);
@@ -194,6 +200,21 @@ export function ConfirmationRecipient({
         </label>
       ) : null}
       <p className="text-[11px] text-[#64748b]">HMS sends this confirmation. Nava does not send mail.</p>
+      {onMakeDefault ? (
+        <button
+          type="button"
+          className="self-start text-[11px] font-semibold text-[#0066cc] underline disabled:text-[#94a3b8]"
+          disabled={disabled || defaultSaved}
+          onClick={onMakeDefault}
+        >
+          {defaultSaved ? 'Saved as your default' : 'Make this my default'}
+        </button>
+      ) : null}
+      {defaultError ? (
+        <p role="alert" className="text-[11.5px] text-amber-900">
+          {defaultError}
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="text-[11.5px] text-amber-900">
           {error}
@@ -204,8 +225,25 @@ export function ConfirmationRecipient({
 }
 
 type SettingsClient = {
-  settings?: { get?: { query?: () => Promise<unknown> } };
+  settings?: {
+    get?: { query?: () => Promise<unknown> };
+    save?: { mutate?: (input: { confirmation: ConfirmationSetting }) => Promise<unknown> };
+  };
 };
+
+/** Saves only the confirmation key. The settings route merges that key and leaves the rest of the row. */
+export async function saveConfirmationDefault(setting: ConfirmationSetting): Promise<void> {
+  const { trpcClient } = await import('@/providers/query-provider');
+  const save = (trpcClient as SettingsClient).settings?.save?.mutate;
+  if (!save) {
+    throw new Error('Could not save your default (not set up).');
+  }
+  const confirmation: ConfirmationSetting =
+    setting.mode === 'custom' && setting.address
+      ? { mode: 'custom', address: setting.address }
+      : { mode: setting.mode };
+  await save({ confirmation });
+}
 
 /**
  * Reads the signed-in user's confirmation default. Both pane surfaces render NavaPane,
