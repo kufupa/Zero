@@ -1,9 +1,12 @@
 /**
  * @vitest-environment happy-dom
  */
+import { useState } from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  clearSavedConfirmation,
+  ConfirmationSourcesBridge,
   ConfirmationSourcesProvider,
   type ConfirmationSources,
 } from '../components/quote-workflow/confirmation-recipient';
@@ -19,7 +22,38 @@ import {
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
 
-afterEach(() => cleanup());
+const settingsDouble = vi.hoisted(() => ({
+  get: vi.fn(async () => ({ settings: { confirmation: { mode: 'self' as const }, language: 'en' } })),
+  save: vi.fn(async () => ({ success: true })),
+  queries: [] as Array<{
+    queryKey: unknown[];
+    state: { data?: { settings?: Record<string, unknown> } };
+  }>,
+}));
+
+vi.mock('@/providers/query-provider', () => ({
+  trpcClient: {
+    settings: {
+      get: { query: () => settingsDouble.get() },
+      save: { mutate: (input: unknown) => settingsDouble.save(input) },
+    },
+  },
+  getQueryClient: () => ({
+    getQueryCache: () => ({ getAll: () => settingsDouble.queries }),
+    setQueryData: (queryKey: unknown[], data: { settings?: Record<string, unknown> }) => {
+      const found = settingsDouble.queries.find((query) => query.queryKey === queryKey);
+      if (found) found.state.data = data;
+    },
+  }),
+}));
+
+afterEach(() => {
+  cleanup();
+  clearSavedConfirmation();
+  settingsDouble.get.mockReset();
+  settingsDouble.save.mockReset();
+  settingsDouble.queries.splice(0, settingsDouble.queries.length);
+});
 
 const STAFF = 'staff@example.invalid';
 const CLIENT = 'guest@example.invalid';
@@ -242,5 +276,64 @@ describe('confirmation recipient', () => {
     await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
     expect(save.mock.calls[0]?.[0]).toEqual({ mode: 'client' });
     expect(screen.getByRole('button', { name: 'Saved as your default' })).toBeDefined();
+  });
+
+  it('does not mark a newer choice saved when an older save finishes', async () => {
+    let release: () => void = () => {};
+    const save = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    renderHost({ userEmail: STAFF, setting: { mode: 'client' } }, save);
+    fireEvent.click(screen.getByRole('button', { name: 'Make this my default' }));
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'self' } });
+    release();
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('button', { name: 'Saved as your default' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Make this my default' })).toBeDefined();
+  });
+
+  it('shows the saved default on the next booking in the same pane', async () => {
+    settingsDouble.get.mockResolvedValue({
+      settings: { confirmation: { mode: 'self' }, language: 'en' },
+    });
+    settingsDouble.queries.push({
+      queryKey: [['settings', 'get']],
+      state: { data: { settings: { confirmation: { mode: 'self' }, language: 'en' } } },
+    });
+    const api = pane();
+    function Pane() {
+      const [ticket, setTicket] = useState(1);
+      return (
+        <ConfirmationSourcesBridge userEmail={STAFF}>
+          <button type="button" onClick={() => setTicket((next) => next + 1)}>
+            Next booking
+          </button>
+          <QuoteBookingHost key={ticket} session={session()} paneSave={api.client} contact={contact} />
+        </ConfirmationSourcesBridge>
+      );
+    }
+    render(<Pane />);
+    await waitFor(() => {
+      expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe(
+        'self',
+      );
+    });
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'client' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Make this my default' }));
+    await waitFor(() => expect(settingsDouble.save).toHaveBeenCalledTimes(1));
+    expect(settingsDouble.save.mock.calls[0]?.[0]).toEqual({ confirmation: { mode: 'client' } });
+    expect(settingsDouble.queries[0]?.state.data?.settings).toMatchObject({
+      language: 'en',
+      confirmation: { mode: 'client' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Next booking' }));
+    await waitFor(() => {
+      expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe(
+        'client',
+      );
+    });
   });
 });

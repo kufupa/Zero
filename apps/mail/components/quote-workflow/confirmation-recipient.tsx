@@ -1,6 +1,14 @@
 'use client';
 
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react';
 import { paneFieldClass } from '@/components/nava-pane/pane-ui';
 
 export type ConfirmationMode = 'self' | 'client' | 'custom';
@@ -231,18 +239,82 @@ type SettingsClient = {
   };
 };
 
+type SettingsQuery = {
+  queryKey: readonly unknown[];
+  state: { data?: unknown };
+};
+
+type SettingsQueryClient = {
+  getQueryCache: () => { getAll: () => SettingsQuery[] };
+  setQueryData: (queryKey: readonly unknown[], data: unknown) => void;
+};
+
+type SavedDefaultListener = () => void;
+
+let savedDefault: ConfirmationSetting | null = null;
+const savedDefaultListeners = new Set<SavedDefaultListener>();
+
+function subscribeSavedDefault(listener: SavedDefaultListener) {
+  savedDefaultListeners.add(listener);
+  return () => {
+    savedDefaultListeners.delete(listener);
+  };
+}
+
+function readSavedDefault() {
+  return savedDefault;
+}
+
+function publishSavedDefault() {
+  savedDefaultListeners.forEach((listener) => listener());
+}
+
+/** Drops a default saved in this pane. The bridge calls this when the signed-in user changes. */
+export function clearSavedConfirmation() {
+  if (!savedDefault) return;
+  savedDefault = null;
+  publishSavedDefault();
+}
+
+function noteSavedConfirmation(setting: ConfirmationSetting) {
+  savedDefault = setting;
+  publishSavedDefault();
+}
+
+function confirmationForSave(setting: ConfirmationSetting): ConfirmationSetting {
+  return setting.mode === 'custom' && setting.address
+    ? { mode: 'custom', address: setting.address }
+    : { mode: setting.mode };
+}
+
+function patchSettingsGetCache(queryClient: SettingsQueryClient, confirmation: ConfirmationSetting) {
+  for (const query of queryClient.getQueryCache().getAll()) {
+    const keyText = JSON.stringify(query.queryKey);
+    if (!keyText.includes('settings') || !keyText.includes('get')) continue;
+    const data = query.state.data;
+    if (!data || typeof data !== 'object' || !('settings' in data)) continue;
+    const row = data as { settings?: unknown };
+    if (!row.settings || typeof row.settings !== 'object') continue;
+    queryClient.setQueryData(query.queryKey, {
+      ...row,
+      settings: { ...(row.settings as Record<string, unknown>), confirmation },
+    });
+  }
+}
+
 /** Saves only the confirmation key. The settings route merges that key and leaves the rest of the row. */
 export async function saveConfirmationDefault(setting: ConfirmationSetting): Promise<void> {
-  const { trpcClient } = await import('@/providers/query-provider');
-  const save = (trpcClient as SettingsClient).settings?.save?.mutate;
+  const provider = await import('@/providers/query-provider');
+  const save = (provider.trpcClient as SettingsClient).settings?.save?.mutate;
   if (!save) {
     throw new Error('Could not save your default (not set up).');
   }
-  const confirmation: ConfirmationSetting =
-    setting.mode === 'custom' && setting.address
-      ? { mode: 'custom', address: setting.address }
-      : { mode: setting.mode };
+  const confirmation = confirmationForSave(setting);
   await save({ confirmation });
+  noteSavedConfirmation(confirmation);
+  const getQueryClient = (provider as { getQueryClient?: () => SettingsQueryClient }).getQueryClient;
+  if (!getQueryClient) return;
+  patchSettingsGetCache(getQueryClient(), confirmation);
 }
 
 /**
@@ -259,6 +331,11 @@ export function ConfirmationSourcesBridge({
   const [setting, setSetting] = useState<ConfirmationSetting | null>(null);
   const [invalidSetting, setInvalidSetting] = useState(false);
   const [load, setLoad] = useState<NonNullable<ConfirmationSources['load']>>('pending');
+  const noted = useSyncExternalStore(subscribeSavedDefault, readSavedDefault, () => null);
+
+  useEffect(() => {
+    clearSavedConfirmation();
+  }, [userEmail]);
 
   useEffect(() => {
     let cancelled = false;
@@ -285,9 +362,11 @@ export function ConfirmationSourcesBridge({
     };
   }, [userEmail]);
 
-  const value = useMemo(
-    () => ({ userEmail, setting, invalidSetting, load }),
-    [userEmail, setting, invalidSetting, load],
-  );
+  const value = useMemo(() => {
+    if (noted) {
+      return { userEmail, setting: noted, invalidSetting: false, load: 'ready' as const };
+    }
+    return { userEmail, setting, invalidSetting, load };
+  }, [userEmail, setting, invalidSetting, load, noted]);
   return <ConfirmationSourcesProvider value={value}>{children}</ConfirmationSourcesProvider>;
 }

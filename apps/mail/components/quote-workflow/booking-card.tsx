@@ -825,6 +825,7 @@ export function BookingCards({
   const [staffChose, setStaffChose] = useState(false);
   const [defaultSaved, setDefaultSaved] = useState(false);
   const [defaultError, setDefaultError] = useState<string | null>(null);
+  const saveGeneration = useRef(0);
   useEffect(() => {
     if (staffChose || !sources?.setting) return;
     setRecipientMode(sources.setting.mode);
@@ -1169,11 +1170,13 @@ export function BookingCards({
           unconfirmed={Boolean(holdMessage) && sources?.load !== 'pending'}
           error={resolvedRecipient && !resolvedRecipient.ok ? resolvedRecipient.message : null}
           onMode={(next) => {
+            saveGeneration.current += 1;
             setStaffChose(true);
             setRecipientMode(next);
             setDefaultSaved(false);
           }}
           onCustomAddress={(value) => {
+            saveGeneration.current += 1;
             setStaffChose(true);
             setCustomAddress(value);
             setDefaultSaved(false);
@@ -1185,10 +1188,17 @@ export function BookingCards({
                   const { mode, address } = resolvedRecipient.recipient;
                   const setting: ConfirmationSetting =
                     mode === 'custom' ? { mode, address } : { mode };
+                  const generation = ++saveGeneration.current;
                   setDefaultError(null);
                   void onSaveDefault(setting)
-                    .then(() => setDefaultSaved(true))
-                    .catch(() => setDefaultError('Could not save your default (not set up).'));
+                    .then(() => {
+                      if (saveGeneration.current !== generation) return;
+                      setDefaultSaved(true);
+                    })
+                    .catch(() => {
+                      if (saveGeneration.current !== generation) return;
+                      setDefaultError('Could not save your default (not set up).');
+                    });
                 }
               : undefined
           }
