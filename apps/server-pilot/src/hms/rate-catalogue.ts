@@ -1,4 +1,5 @@
 import { ROOM_TYPE_NAMES } from '../ai/room-types.js';
+import { readShuttleProviderConfig, type ShuttleProviderConfig } from '../ai/shuttle-draft.js';
 import {
   PROFILE_SALES_STRATEGY_CODES,
   profileFor,
@@ -80,6 +81,7 @@ export type PropertyQuotePaneConfig = {
   salesStrategies: QuoteSalesStrategy[];
   overrideRateCodes: string[];
   eventRateCodes: string[];
+  shuttle?: ShuttleProviderConfig | null;
 };
 
 const PANE_BOARD_ORDER: readonly QuotePaneBoard[] = ['room_only', 'bb', 'dinner_bb'];
@@ -179,5 +181,6 @@ export async function quotePaneConfigForProperty(
     salesStrategies: quoteSalesStrategiesFromRegistry(propertyCode, profile.salesStrategies),
     overrideRateCodes: ratePlans.map(({ code }) => code),
     eventRateCodes: ratePlans.filter(({ event }) => event).map(({ code }) => code),
+    shuttle: readShuttleProviderConfig((profile as PropertyProfile & { shuttle?: unknown }).shuttle),
   };
 }

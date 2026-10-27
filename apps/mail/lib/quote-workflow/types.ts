@@ -287,6 +287,9 @@ export type QuoteSalesStrategy = {
   requestValue: QuoteSalesStrategyValue;
 };
 
+/** Property-profile recipients for the optional shuttle request draft. */
+export type ShuttleProviderConfig = { provider: string; to: string[] };
+
 /** Mailbox-selected, registry-backed choices for the quote pane. */
 export type QuotePaneConfig = {
   transportId: string;
@@ -297,6 +300,7 @@ export type QuotePaneConfig = {
   salesStrategies: QuoteSalesStrategy[];
   overrideRateCodes: string[];
   eventRateCodes: string[];
+  shuttle?: ShuttleProviderConfig | null;
 };
 
 export type StaffQuoteSource = {
@@ -636,10 +640,18 @@ export type QuoteOffer = {
   screenshot?: QuoteScreenshot;
 };
 
+/** Staff-facing class for a quote refusal or failure. Unknown reasons stay needs_staff. */
+export type QuoteFailureCauseClass = 'not_set_up' | 'hms_down' | 'busy' | 'not_found' | 'needs_staff';
+
 /** Display-only outcome for one registry-approved strategy in the quote comparison table. */
 export type QuoteStrategyRow =
-  | { status: 'pending' }
-  | { status: 'not_offered' | 'failed'; message: string }
+  | { status: 'pending'; retrying?: boolean }
+  | {
+      status: 'not_offered' | 'failed';
+      message: string;
+      causeClass?: QuoteFailureCauseClass;
+      retrying?: boolean;
+    }
   | {
       status: 'ready';
       roomLabels: string[];

@@ -15,6 +15,7 @@ import {
   createToolRunRecorder,
   ledgerQuoteInput,
   mergeEpisodeOnToolRun,
+  quoteFailureCauseClass,
   quoteRefusalReason,
   recordedToolRun,
   recordToolOutcome,
@@ -431,7 +432,7 @@ describe('tool-run ledger: classifiers by site', () => {
     expect(classifyFind({ outcome: 'execution_failure' } as never)).toEqual({
       status: 'failed',
       errorCode: 'execution_failure',
-      result: { code: 'execution_failure', message: expect.any(String) },
+      result: { code: 'execution_failure', message: expect.any(String), causeClass: 'hms_down' },
     });
     expect(classifyFind({ outcome: 'execution_failure' } as never).result?.message).not.toBe('');
     expect(classifySearch({ outcome: 'execution_failure', rows: [] } as never)).toMatchObject({
@@ -467,7 +468,7 @@ describe('tool-run ledger: classifiers by site', () => {
     expect(classifyStaffQuote({ status: 'needs_input' })).toEqual({
       status: 'refused',
       errorCode: 'needs_input',
-      result: { reason: 'needs_input' },
+      result: { reason: 'needs_input', causeClass: 'needs_staff' },
     });
   });
 
@@ -532,6 +533,18 @@ describe('tool-run ledger: classifiers by site', () => {
     expect(quoteRefusalReason({ code: 'BAD_REQUEST', message: 'lastName Jane is not valid' })).toBe(
       'refused',
     );
+  });
+
+  it('stores a cause class on a refusal and fails closed to needs staff', () => {
+    expect(quoteFailureCauseClass('quote_davinci_disabled')).toBe('not_set_up');
+    expect(quoteFailureCauseClass('hms_execution_failure')).toBe('hms_down');
+    expect(quoteFailureCauseClass('refused_lock_busy')).toBe('busy');
+    expect(quoteFailureCauseClass('native_quote_no_matching_rate')).toBe('not_found');
+    expect(quoteFailureCauseClass('needs_input')).toBe('needs_staff');
+    expect(quoteFailureCauseClass('not_a_catalog_reason')).toBe('needs_staff');
+    expect(
+      classifyStaffQuote({ status: 'needs_input' }).result,
+    ).toMatchObject({ reason: 'needs_input', causeClass: 'needs_staff' });
   });
 
   it('the input digest does not depend on key order', () => {
@@ -987,7 +1000,7 @@ describe('tool-run ledger: route sites', () => {
     const sink = memorySink();
     toolRunLoaders.recorder = sink.recorder;
     mocks.findStay.mockResolvedValue({ outcome: 'execution_failure' });
-    await caller().paneStayLookup.findStay({ confirmation: '57291630-1' });
+    await caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' });
     expect(sink.rows[0]).toMatchObject({
       kind: 'stay_lookup',
       status: 'failed',
@@ -1002,7 +1015,7 @@ describe('tool-run ledger: route sites', () => {
     const sink = memorySink();
     toolRunLoaders.recorder = sink.recorder;
     mocks.searchGuest.mockResolvedValue({ outcome: 'execution_failure', rows: [] });
-    await caller().paneStayLookup.searchGuest({ lastName: 'Doe', arrival: '2027-09-14' });
+    await caller('user-1', 'transport-centurion').paneStayLookup.searchGuest({ lastName: 'Doe', arrival: '2027-09-14' });
     expect(sink.rows[0]).toMatchObject({
       kind: 'guest_search',
       status: 'failed',
@@ -1019,7 +1032,7 @@ describe('tool-run ledger: route sites', () => {
     mocks.findStay.mockRejectedValue(
       Object.assign(new Error('<html>Guest Jane Doe password=hunter2</html>'), { code: 'HMS_NAV_FAILED' }),
     );
-    await expect(caller().paneStayLookup.findStay({ confirmation: '57291630-1' })).rejects.toThrow();
+    await expect(caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' })).rejects.toThrow();
     expect(sink.rows[0]).toMatchObject({
       kind: 'stay_lookup',
       status: 'failed',
@@ -1038,7 +1051,7 @@ describe('tool-run ledger: route sites', () => {
     toolRunLoaders.recorder = sink.recorder;
     mocks.findStay.mockResolvedValue({ outcome: 'found' });
     const request = { confirmation: '57291630-1', arrival: '2027-09-14' };
-    await caller().paneStayLookup.findStay(request);
+    await caller('user-1', 'transport-centurion').paneStayLookup.findStay(request);
     expect(sink.rows[0]).toMatchObject({
       kind: 'stay_lookup',
       status: 'ok',
@@ -1052,7 +1065,7 @@ describe('tool-run ledger: route sites', () => {
     const sink = memorySink();
     toolRunLoaders.recorder = sink.recorder;
     mocks.searchGuest.mockResolvedValue({ outcome: 'ok', rows: [{ name: 'Jane Doe' }, { name: 'John Doe' }] });
-    await caller().paneStayLookup.searchGuest({ lastName: 'Doe', arrival: '2027-09-14' });
+    await caller('user-1', 'transport-centurion').paneStayLookup.searchGuest({ lastName: 'Doe', arrival: '2027-09-14' });
     expect(sink.rows[0]).toMatchObject({
       kind: 'guest_search',
       status: 'ok',
@@ -1067,7 +1080,7 @@ describe('tool-run ledger: route sites', () => {
     mocks.findStay.mockRejectedValue(
       new TRPCError({ code: 'BAD_REQUEST', message: 'confirmation 57291630-1 is not valid' }),
     );
-    await expect(caller().paneStayLookup.findStay({ confirmation: '57291630-1' })).rejects.toThrow('not valid');
+    await expect(caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' })).rejects.toThrow('not valid');
     expect(sink.rows[0]).toMatchObject({ kind: 'stay_lookup', status: 'refused', errorCode: 'BAD_REQUEST' });
     expect(JSON.stringify(sink.rows)).not.toContain('57291630');
   });
@@ -1076,7 +1089,7 @@ describe('tool-run ledger: route sites', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     toolRunLoaders.recorder = memorySink('throws').recorder;
     mocks.findStay.mockResolvedValue({ outcome: 'not_found' });
-    await expect(caller().paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
+    await expect(caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
       outcome: 'not_found',
     });
   });
@@ -1086,7 +1099,7 @@ describe('tool-run ledger: route sites', () => {
     const sink = memorySink();
     toolRunLoaders.recorder = sink.recorder;
     mocks.findStay.mockResolvedValue({ outcome: 'found' });
-    await expect(caller().paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
+    await expect(caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
       outcome: 'found',
     });
     expect(sink.rows).toEqual([]);
@@ -1176,7 +1189,7 @@ describe('tool-run ledger: a stalled write', () => {
     mocks.getDb.mockReturnValueOnce(stalledLedgerDb() as never);
     mocks.findStay.mockResolvedValue({ outcome: 'found' });
     const started = Date.now();
-    await expect(caller().paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
+    await expect(caller('user-1', 'transport-centurion').paneStayLookup.findStay({ confirmation: '57291630-1' })).resolves.toEqual({
       outcome: 'found',
     });
     expect(Date.now() - started).toBeLessThan(2_000);

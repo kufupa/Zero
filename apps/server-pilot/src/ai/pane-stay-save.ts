@@ -23,6 +23,7 @@ import {
   type PropertyReadLockAcquisitionOptions,
 } from '../hms/property-read-lock.js';
 import { guestDatesDuplicateCheckViaCli } from './pane-stay-lookup.js';
+import { persistHmsShots, readStoredHmsShot, type HmsShotMeta } from './hms-shots-store.js';
 
 const execFileAsync = promisify(execFile);
 const CREATE_LAB_STAY = fileURLToPath(
@@ -70,6 +71,7 @@ export type PaneStay = {
   reservationNote?: string;
   bookerName?: string;
   bookerEmail?: string;
+  confirmationRecipient?: { mode: 'self' | 'client' | 'custom'; address: string };
   marketSegment?: string;
   guestoptin4?: boolean;
 };
@@ -164,6 +166,8 @@ export type PaneStayResult = {
   runId?: string;
   /** Screenshot file names. Fetch the bytes with readPaneStayScreenshot. */
   screenshots?: string[];
+  /** Durable before/saved refs written under HMS_SHOTS_DIR. */
+  shots?: HmsShotMeta[];
 };
 
 export type PaneStayLock = {
@@ -461,6 +465,32 @@ async function takeBoundPreview(input: {
   return takePanePreview(input.owner, input.digest, input.now);
 }
 
+async function persistDurableStayShots(input: {
+  runId?: string;
+  runDir?: string;
+  owner: string;
+  workItemId?: string;
+  propertyCode: string;
+  now: number;
+}): Promise<HmsShotMeta[] | undefined> {
+  if (!input.runId || !input.runDir || !input.workItemId) return undefined;
+  try {
+    return (
+      (await persistHmsShots({
+        propertyCode: input.propertyCode,
+        workItemId: input.workItemId,
+        runId: input.runId,
+        sourceDir: input.runDir,
+        owner: input.owner,
+        now: input.now,
+      })) ?? undefined
+    );
+  } catch {
+    console.warn('hms_shots_persist_failed', { property: input.propertyCode });
+    return undefined;
+  }
+}
+
 // Run directories whose screenshots the owner can fetch. Expired runs are removed from disk.
 type PaneRun = { dir: string; owner: string; expiresAt: number };
 const paneRuns = new Map<string, PaneRun>();
@@ -497,15 +527,23 @@ export async function readPaneStayScreenshot(input: {
     return { status: 'unavailable', reason: 'screenshot_request_invalid' };
   }
   const run = paneRuns.get(input.runId);
-  if (!run || run.owner !== input.owner) {
-    return { status: 'unavailable', reason: 'screenshot_unavailable' };
+  if (run?.owner === input.owner) {
+    try {
+      const bytes = await readFile(join(run.dir, input.name));
+      return { status: 'ok', dataUrl: `data:image/png;base64,${bytes.toString('base64')}` };
+    } catch {
+      // In-memory dir gone; durable copy may still have before/saved.
+    }
   }
-  try {
-    const bytes = await readFile(join(run.dir, input.name));
-    return { status: 'ok', dataUrl: `data:image/png;base64,${bytes.toString('base64')}` };
-  } catch {
-    return { status: 'unavailable', reason: 'screenshot_unavailable' };
+  const durable = await readStoredHmsShot({
+    runId: input.runId,
+    name: input.name,
+    owner: input.owner,
+  });
+  if (durable) {
+    return { status: 'ok', dataUrl: `data:image/png;base64,${durable.toString('base64')}` };
   }
+  return { status: 'unavailable', reason: 'screenshot_unavailable' };
 }
 
 async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnResult> {
@@ -700,11 +738,20 @@ export async function runPaneStay(input: {
         now: paneStayClock(),
       });
     }
+    const shots = await persistDurableStayShots({
+      runId: spawned.runId,
+      runDir: spawned.runDir,
+      owner: input.owner,
+      workItemId: input.workItemId,
+      propertyCode: target.propertyCode,
+      now: paneStayClock(),
+    });
     return {
       status: 'refused',
       reason: PANE_SAVE_UNCONFIRMED,
       runId: spawned.runId,
       screenshots: spawned.screenshots ?? [],
+      ...(shots ? { shots } : {}),
     };
   }
   const previewed = input.mode === 'preview' && spawned.outcome === 'previewed';
@@ -734,6 +781,14 @@ export async function runPaneStay(input: {
       now: paneStayClock(),
     });
   }
+  const shots = await persistDurableStayShots({
+    runId: spawned.runId,
+    runDir: spawned.runDir,
+    owner: input.owner,
+    workItemId: input.workItemId,
+    propertyCode: target.propertyCode,
+    now: paneStayClock(),
+  });
   return {
     status: 'ok',
     outcome: spawned.outcome,
@@ -742,6 +797,7 @@ export async function runPaneStay(input: {
     previewDigest: previewed ? digest : null,
     runId: spawned.runId,
     screenshots: spawned.screenshots ?? [],
+    ...(shots ? { shots } : {}),
   };
 }
 

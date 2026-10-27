@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Deploy server-pilot + mail SPA to EC2 (SSM-friendly, run as ubuntu).
+# ops-deploy.sh installs dependencies before migration and passes --skip-install;
+# direct invocations keep the default install here.
 # Phase B Task 13: when HMS_REGISTRY_CANDIDATE is set, invoke
 # source-registry-cas.sh → runSourceRegistryTransaction (CAS source + active.json).
 # Incomplete restore exits 20 and halts the HMS live lane (before/after_source_switch,
@@ -18,14 +20,17 @@ REMOTE_COMMON_ENV="${SERVER_PILOT}/.env.remote-common"
 REMOTE_ADMIN_ENV="${SERVER_PILOT}/.env.remote-admin"
 
 QUIESCED=0
+SKIP_INSTALL=0
 for arg in "$@"; do
   case "$arg" in
     --quiesced) QUIESCED=1 ;;
+    --skip-install) SKIP_INSTALL=1 ;;
     -h|--help)
-      echo "usage: $0 [--quiesced]"
+      echo "usage: $0 [--quiesced] [--skip-install]"
       echo "  default: install/build/sync + PM2 start + HTTP health"
       echo "  --quiesced: install/build/web release only; no PM2 mutation; no HTTP health"
       echo "             (safe while pm2 http/ai-worker stay online — web only)"
+      echo "  --skip-install: use when dependencies were installed by ops-deploy.sh"
       exit 0
       ;;
     *)
@@ -143,14 +148,16 @@ validate_remote_env_files || {
 
 export PATH="${HOME}/.local/share/pnpm:${HOME}/.nvm/versions/node/$(ls "${HOME}/.nvm/versions/node" 2>/dev/null | sort -V | tail -1)/bin:${PATH}"
 
-# husky prepare copyFileSync needs owner-write on generated shim; prior deploys
-# can leave .husky/_/h mode 0444 and abort pnpm install with EACCES.
-if [ -e "${REPO_ROOT}/.husky/_/h" ]; then
-  chmod u+w "${REPO_ROOT}/.husky/_/h" || true
-fi
+if [ "$SKIP_INSTALL" != "1" ]; then
+  # husky prepare copyFileSync needs owner-write on generated shim; prior deploys
+  # can leave .husky/_/h mode 0444 and abort pnpm install with EACCES.
+  if [ -e "${REPO_ROOT}/.husky/_/h" ]; then
+    chmod u+w "${REPO_ROOT}/.husky/_/h" || true
+  fi
 
-echo "== pnpm install =="
-pnpm install --frozen-lockfile
+  echo "== pnpm install =="
+  pnpm install --frozen-lockfile
+fi
 
 if [ "$QUIESCED" != "1" ]; then
   echo "== verify database compatibility before activation =="
@@ -174,6 +181,9 @@ sudo install -d -o ubuntu -g ubuntu -m 0700 \
 if [ "$QUIESCED" != "1" ]; then
   echo "== build server-pilot =="
   pnpm --filter @zero/server build
+  echo "== install quote trace and HMS screenshot retention =="
+  REPO_ROOT="$REPO_ROOT" SERVER_PILOT="$SERVER_PILOT" \
+    bash "${SERVER_PILOT}/deploy/install-playwright-quote-purge.sh"
 fi
 
 echo "== build mail SPA =="

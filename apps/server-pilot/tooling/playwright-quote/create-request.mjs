@@ -218,6 +218,31 @@ export function optionalPartyAndNoteFills(stay) {
   };
 }
 
+// Guest Stay E-mail Address. E0: this field sticks on Save; Save does not auto-mail. Max 255.
+const CONFIRMATION_MODES = new Set(['self', 'client', 'custom']);
+const CONFIRMATION_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const CONFIRMATION_EMAIL_MAX = 255;
+
+export function confirmationRecipientAddress(stay) {
+  const recipient = stay?.confirmationRecipient;
+  if (!recipient || typeof recipient !== 'object' || Array.isArray(recipient)) return '';
+  if (!CONFIRMATION_MODES.has(recipient.mode)) return '';
+  const address = typeof recipient.address === 'string' ? recipient.address.trim() : '';
+  if (!address || address.length > CONFIRMATION_EMAIL_MAX || !CONFIRMATION_EMAIL.test(address)) return '';
+  return address;
+}
+
+export function confirmationRecipientFills(stay) {
+  const emailaddress = confirmationRecipientAddress(stay);
+  return emailaddress ? { emailaddress } : {};
+}
+
+/** Missing recipient is optional (CLI). A present but unusable value fails closed. */
+export function confirmationRecipientRefusal(stay) {
+  if (stay?.confirmationRecipient == null) return null;
+  return confirmationRecipientAddress(stay) ? null : 'confirmation_recipient_not_set_up';
+}
+
 /** Native Book fills. guestoptin4 is emitted only when staff opted in; never inferred true. */
 export function bookFieldFills(stay) {
   const marketsegment = typeof stay?.marketSegment === 'string' ? stay.marketSegment.trim() : '';
