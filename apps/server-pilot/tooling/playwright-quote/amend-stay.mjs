@@ -178,6 +178,18 @@ async function fillOneField(page, field, value) {
           }
         }
         cmp.setValue(chosen);
+        if (cmp.fireEvent) cmp.fireEvent('select', cmp, chosen);
+        const form = typeof cmp.up === 'function' ? (cmp.up('form') || cmp.up('recordview')) : null;
+        const rec = form && typeof form.getRecord === 'function' ? form.getRecord() : null;
+        if (form && typeof form.updateRecord === 'function') {
+          if (rec) form.updateRecord(rec);
+          else form.updateRecord();
+        }
+        const name = cmp.name;
+        const written = chosen && typeof chosen.get === 'function' ? chosen.get(vf) : chosen;
+        if (rec && name && typeof rec.set === 'function' && String(rec.get?.(name)) !== String(written)) {
+          rec.set(name, written);
+        }
       } else {
         cmp.setValue(payload.shown);
       }

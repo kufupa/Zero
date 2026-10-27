@@ -235,6 +235,33 @@ export function applyComboSetValue(cmp, wanted) {
   return chosen;
 }
 
+/** Ext combo Save uses the bound record. setValue+blur leaves getValues dirty while getRecord stays old. */
+export function applyComboSelect(cmp, chosen) {
+  if (!cmp || typeof cmp.fireEvent !== 'function') return false;
+  cmp.fireEvent('select', cmp, chosen);
+  return true;
+}
+
+export function owningAmendForm(cmp) {
+  if (!cmp || typeof cmp.up !== 'function') return null;
+  return cmp.up('form') || cmp.up('recordview') || null;
+}
+
+export function syncComboBoundRecord(cmp, wanted) {
+  const form = owningAmendForm(cmp);
+  const rec = form && typeof form.getRecord === 'function' ? form.getRecord() : null;
+  const name = cmp?.name;
+  const value = comboReadValue(cmp, wanted);
+  if (form && typeof form.updateRecord === 'function') {
+    if (rec) form.updateRecord(rec);
+    else form.updateRecord();
+  }
+  if (rec && name && typeof rec.set === 'function' && value != null && String(rec.get?.(name)) !== String(value)) {
+    rec.set(name, value);
+  }
+  return rec && name && typeof rec.get === 'function' ? rec.get(name) : null;
+}
+
 export function comboReadValue(cmp, fallback) {
   const got = typeof cmp?.getValue === 'function' ? cmp.getValue() : fallback;
   if (got && typeof got === 'object' && !(got instanceof Date)) {
