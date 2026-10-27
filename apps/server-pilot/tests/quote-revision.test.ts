@@ -456,8 +456,14 @@ it('uses a source-scoped room pool for one selected group when native building i
  expect(r.totalMinor).toBe(220002);expect(r.groups[0].poolId).toContain('source-1');
 });
 it('refuses independent unknown-building pools across selected groups when the room profile does not hold',async()=>{
- const a=source(),b=source();a.result.groups[0].options[0].room.buildingCode=null;a.result.groups[0].options[0].nightly.forEach(n=>{n.inventory=40;});b.ref='source-2';b.request.rooms[0].id='g2';b.result.groups[0].id='g2';b.result.groups[0].request.id='g2';b.result.groups[0].options[0].room.buildingCode=null;
+ const a=source(),b=source();a.result.groups[0].options[0].room.buildingCode=null;a.result.groups[0].options.push({...structuredClone(a.result.groups[0].options[0]),id:'HRCEN:PENT:BAR',room:{...a.result.groups[0].options[0].room,code:'PENT',buildingCode:null},matchStatus:'alternative'});b.ref='source-2';b.request.rooms[0].id='g2';b.result.groups[0].id='g2';b.result.groups[0].request.id='g2';b.result.groups[0].options[0].room.buildingCode=null;
  await expect(resolveQuoteRevision({propertyCode:'HRCEN',authoredDate:'2026-10-04',selections:[{sourceRef:a.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'},{sourceRef:b.ref,groupId:'g2',optionId:'HRCEN:STQN:BAR'}],resolveSource:async ref=>ref===a.ref?a:b,resolvePolicy:async()=>policy,admission:admission([a,b])})).rejects.toThrow('inventory_pool_unknown');
+});
+
+
+it('HMS inventory above the profile capacity keeps the profile pool; disagreeing same-pool observations still refuse',async()=>{
+ const a=source(),b=source();a.result.groups[0].options[0].room.buildingCode=null;a.result.groups[0].options[0].nightly.forEach(n=>{n.inventory=40;});b.ref='source-2';b.request.rooms[0].id='g2';b.result.groups[0].id='g2';b.result.groups[0].request.id='g2';b.result.groups[0].options[0].room.buildingCode=null;
+ await expect(resolveQuoteRevision({propertyCode:'HRCEN',authoredDate:'2026-10-04',selections:[{sourceRef:a.ref,groupId:'g1',optionId:'HRCEN:STQN:BAR'},{sourceRef:b.ref,groupId:'g2',optionId:'HRCEN:STQN:BAR'}],resolveSource:async ref=>ref===a.ref?a:b,resolvePolicy:async()=>policy,admission:admission([a,b])})).rejects.toThrow('inventory_observations_disagree');
 });
 
 it('pools same-type unknown-building selections under the verified profile and refuses demand above observed supply',async()=>{

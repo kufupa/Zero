@@ -162,6 +162,7 @@ describe('the joint-inventory block carries its diagnostics', () => {
         { row: 2, outcome: 'quote', roomCode: 'STWN', rateCode: 'BAR', buildingCode: 'null' },
       ],
       evidenceRun: 'run-2026-11-12T08-00-00Z',
+      alternatives: [{ groupId: 'room-1', quantity: 1, roomCode: 'PENT', roomLabel: 'Standard PENT' }],
     });
     // No prices and no full paths in the detail.
     expect(JSON.stringify(gap.detail)).not.toMatch(/1543|\/srv|\.private/);
