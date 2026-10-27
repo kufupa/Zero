@@ -101,6 +101,56 @@ describe('unverifiedContextualRatesNeedAgency', () => {
     expect(unverifiedContextualRatesNeedAgency({ groups: [{ options: [] }] }, {})).toBe(false);
     expect(unverifiedContextualRatesNeedAgency({ groups: [] }, {})).toBe(false);
   });
+
+  it('is false when the search is incomplete or carries search issues', () => {
+    const rows = [row('contextual', 'conditional')];
+    expect(
+      unverifiedContextualRatesNeedAgency(
+        { searchCompleteness: { status: 'partial' }, groups: [{ options: rows }] },
+        {},
+      ),
+    ).toBe(false);
+    expect(
+      unverifiedContextualRatesNeedAgency(
+        {
+          searchCompleteness: { status: 'complete' },
+          issues: [{ code: 'OPTION_LIMIT' }],
+          groups: [{ options: rows }],
+        },
+        {},
+      ),
+    ).toBe(false);
+    expect(
+      unverifiedContextualRatesNeedAgency(
+        {
+          searchCompleteness: { status: 'complete' },
+          issues: [],
+          groups: [{ issues: [{ code: 'OPTION_LIMIT' }], options: rows }],
+        },
+        {},
+      ),
+    ).toBe(false);
+    expect(
+      unverifiedContextualRatesNeedAgency(
+        {
+          searchCompleteness: { status: 'complete' },
+          issues: [],
+          groups: [{ completeness: { search: 'truncated' }, options: rows }],
+        },
+        {},
+      ),
+    ).toBe(false);
+    expect(
+      unverifiedContextualRatesNeedAgency(
+        {
+          searchCompleteness: { status: 'complete' },
+          issues: [],
+          groups: [{ completeness: { search: 'complete' }, issues: [], options: rows }],
+        },
+        {},
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('staffQuoteFailureMessage no-match and native capture copy', () => {

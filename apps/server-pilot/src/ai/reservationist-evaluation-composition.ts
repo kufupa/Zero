@@ -127,15 +127,22 @@ export function createReservationistCurrentReadResolver(options:{resolve:(reques
 /** Current sources retain their own strict qualification and never become historical truth. */
 export async function runReservationistEvaluationCurrentRead(options:Parameters<typeof runQualifiedReservationistCurrentRead>[0]&{authorization:LocalEvaluationAuthorization}){authorizeLocal(options.authorization,options.input);const{authorization: _authorization,...current}=options;return runQualifiedReservationistCurrentRead(current);}
 
-/** Wholesale/contract rows HMS left conditional because the quote asked for no party. Never fail-open those rows. */
-export function unverifiedContextualRatesNeedAgency(source:{groups?:unknown},request:{rateContext?:unknown}={}):boolean{
+/** Wholesale/contract rows HMS left conditional because the quote asked for no party. Never fail-open those rows. Incomplete searches keep the combination copy: picking an agency does not fill a truncated grid. */
+export function unverifiedContextualRatesNeedAgency(source:{groups?:unknown;searchCompleteness?:unknown;issues?:unknown},request:{rateContext?:unknown}={}):boolean{
  const ctx=request.rateContext;
  if(ctx&&typeof ctx==='object'&&!Array.isArray(ctx)&&Object.keys(ctx).length)return false;
+ const completeness=source.searchCompleteness;
+ if(completeness&&typeof completeness==='object'&&!Array.isArray(completeness)&&(completeness as{status?:unknown}).status!=='complete')return false;
+ if(Array.isArray(source.issues)&&source.issues.length)return false;
  const groups=Array.isArray(source.groups)?source.groups:[];
  if(!groups.length)return false;
  let count=0;
  for(const group of groups){
-  const options=group&&typeof group==='object'&&Array.isArray((group as{options?:unknown}).options)?(group as{options:unknown[]}).options:[];
+  if(!group||typeof group!=='object')return false;
+  const g=group as{options?:unknown;issues?:unknown;completeness?:{search?:unknown}};
+  if(Array.isArray(g.issues)&&g.issues.length)return false;
+  if(g.completeness&&g.completeness.search!==undefined&&g.completeness.search!=='complete')return false;
+  const options=Array.isArray(g.options)?g.options:[];
   if(!options.length)return false;
   for(const option of options){
    if(!option||typeof option!=='object')return false;
