@@ -497,6 +497,7 @@ export function QuoteWorkflowPanel({
   workItemPane?: WorkItemPaneControls | null;
 }) {
   const currentEmailKey = session.binding?.internetMessageId ?? session.binding?.entryId ?? null;
+  const shuttleArrivalDate = session.groups.find((group) => group.arrivalDate)?.arrivalDate ?? null;
   const shuttleDraft = session.binding && paneConfig !== undefined ? (
     <ShuttleDraft
       key={`${session.binding.transportId}:${session.binding.entryId}:${session.binding.selectionEpoch}`}
@@ -505,6 +506,7 @@ export function QuoteWorkflowPanel({
         paneConfig?.transportId === session.binding.transportId ? paneConfig.shuttle ?? null : null
       }
       storeId={session.binding.storeId}
+      arrivalDate={shuttleArrivalDate}
     />
   ) : null;
   const failedRatesNotice = useFailedHmsJobNoticeMessage('quote-rates', currentEmailKey);

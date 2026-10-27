@@ -51,34 +51,50 @@ export function ShuttleDraft({
   config,
   bridge,
   storeId,
+  arrivalDate,
 }: {
   config: ShuttleProviderConfig | null;
   bridge?: ShuttleDraftBridge | null;
   storeId?: string | null;
+  arrivalDate?: string | null;
 }) {
   const provider = readShuttleProviderConfig(config);
+  const [open, setOpen] = useState(false);
 
-  if (!provider) {
+  if (!provider) return null;
+  if (!open) {
     return (
-      <Section title="Draft shuttle request">
-        <Notice tone="warn" role="status">Shuttle requests are not set up for this property.</Notice>
-      </Section>
+      <SecondaryButton className="w-full" onClick={() => setOpen(true)}>
+        Draft shuttle request
+      </SecondaryButton>
     );
   }
 
-  return <ShuttleDraftForm bridge={bridge} provider={provider} storeId={storeId} />;
+  return (
+    <ShuttleDraftForm
+      bridge={bridge}
+      provider={provider}
+      storeId={storeId}
+      arrivalDate={arrivalDate}
+    />
+  );
 }
 
 function ShuttleDraftForm({
   bridge,
   provider,
   storeId,
+  arrivalDate,
 }: {
   bridge?: ShuttleDraftBridge | null;
   provider: ShuttleProviderConfig;
   storeId?: string | null;
+  arrivalDate?: string | null;
 }) {
-  const [details, setDetails] = useState(EMPTY_DETAILS);
+  const [details, setDetails] = useState(() => ({
+    ...EMPTY_DETAILS,
+    serviceDate: arrivalDate ?? '',
+  }));
   const [pending, setPending] = useState(false);
   const [status, setStatus] = useState<{ tone: 'success' | 'error'; message: string } | null>(null);
   const saving = useRef(false);

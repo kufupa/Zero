@@ -40,6 +40,10 @@ function fillDetails() {
   fireEvent.change(screen.getByLabelText('Booking reference'), { target: { value: 'RES-123' } });
 }
 
+function openDraftForm() {
+  fireEvent.click(screen.getByRole('button', { name: 'Draft shuttle request' }));
+}
+
 beforeEach(() => {
   createDraftCommand.mockReset().mockResolvedValue(savedDraftLocation);
 });
@@ -55,6 +59,7 @@ describe('shuttle request drafts', () => {
         storeId={storeId}
       />,
     );
+    openDraftForm();
     fillDetails();
 
     const note = screen.getByLabelText('Reservation note for HMS') as HTMLTextAreaElement;
@@ -79,12 +84,28 @@ describe('shuttle request drafts', () => {
     expect(screen.getByRole('status').textContent).toContain('Saved as an unsent Outlook draft');
   });
 
-  it('fails closed when no provider is configured', () => {
-    render(<ShuttleDraft config={null} />);
+  it('renders nothing when no provider is configured', () => {
+    const { container } = render(<ShuttleDraft config={null} />);
 
-    expect(screen.getByRole('status').textContent).toContain('not set up');
-    expect(screen.queryByLabelText('Pickup location')).toBeNull();
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByText(/not set up/i)).toBeNull();
     expect(createDraftCommand).not.toHaveBeenCalled();
+  });
+
+  it('keeps transfer details collapsed until staff open the shuttle request', () => {
+    render(<ShuttleDraft config={provider} />);
+
+    expect(screen.queryByLabelText('Service date')).toBeNull();
+    openDraftForm();
+    expect(screen.getByLabelText('Service date')).toBeTruthy();
+  });
+
+  it('prefills service date from stay arrival', () => {
+    render(<ShuttleDraft config={provider} arrivalDate="2026-11-21" />);
+    openDraftForm();
+
+    expect((screen.getByLabelText('Service date') as HTMLInputElement).value).toBe('2026-11-21');
+    expect((screen.getByLabelText('Pickup location') as HTMLInputElement).value).toBe('');
   });
 
   it('does not fall back to a Zero draft when Outlook draft creation is unavailable', () => {
@@ -95,6 +116,7 @@ describe('shuttle request drafts', () => {
         storeId={storeId}
       />,
     );
+    openDraftForm();
 
     expect(screen.getByRole('status').textContent).toContain('Outlook draft creation is not available');
     expect(screen.getByRole('button', { name: 'Save unsent draft' }).hasAttribute('disabled')).toBe(true);
@@ -117,6 +139,7 @@ describe('shuttle request drafts', () => {
         storeId={storeId}
       />,
     );
+    openDraftForm();
     const pickup = screen.getByLabelText('Pickup location') as HTMLInputElement;
     fireEvent.change(pickup, { target: { value: 'Hotel entrance' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
@@ -135,6 +158,7 @@ describe('shuttle request drafts', () => {
         storeId={storeId}
       />,
     );
+    openDraftForm();
     fireEvent.change(screen.getByLabelText('Pickup location'), { target: { value: 'Hotel entrance' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
 
@@ -156,6 +180,7 @@ describe('shuttle request drafts', () => {
         storeId={storeId}
       />,
     );
+    openDraftForm();
     fireEvent.change(screen.getByLabelText('Pickup location'), { target: { value: 'Hotel entrance' } });
 
     fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
@@ -181,6 +206,7 @@ describe('shuttle request drafts', () => {
         storeId={storeId}
       />,
     );
+    openDraftForm();
     const pickup = screen.getByLabelText('Pickup location') as HTMLInputElement;
     fireEvent.change(pickup, { target: { value: 'Hotel entrance' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save unsent draft' }));
