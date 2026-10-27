@@ -15,7 +15,7 @@
   },
   "requiredCreateFields": [],
   "salesStrategies": [
-    { "value": "BAR", "display": "BAR" },
+    { "value": "BAR", "display": "BAR", "scope": "public" },
     { "value": "GOV", "display": "Government" }
   ],
   "rates": {

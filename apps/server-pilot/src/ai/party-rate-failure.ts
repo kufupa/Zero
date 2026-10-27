@@ -63,7 +63,8 @@ export function partySearchCovered(group: { completeness?: { search?: unknown };
 /**
  * What a capture's groups say about a picked party's contract, for a party read that offers public rows and no flagged row.
  * no_contract only when every group's search covered its dates and rooms with no coverage issue. incomplete when any group
- * did not, because a missing calendar page can hide a flagged row. null for anything else, including a flagged row.
+ * did not, because a missing calendar page can hide a flagged row, or when PARTY_RATES_NOT_CHECKED is present (the party
+ * was requested but never verified, so public BAR is not proof of no contract). null for anything else, including a flagged row.
  */
 export function partyReadingOf(groups: unknown, rateContext: unknown): 'no_contract' | 'incomplete' | null {
   if (!rateContext || !Array.isArray(groups)) return null;
@@ -74,5 +75,8 @@ export function partyReadingOf(groups: unknown, rateContext: unknown): 'no_contr
   }>;
   const rows = list.flatMap((group) => group.options ?? []);
   if (!rows.some((row) => row.rateScope === 'public') || rows.some((row) => row.rateScope === 'contextual')) return null;
+  if (list.some((group) => (group.issues ?? []).some((issue) => issue.code === 'PARTY_RATES_NOT_CHECKED'))) {
+    return 'incomplete';
+  }
   return list.every(partySearchCovered) ? 'no_contract' : 'incomplete';
 }
