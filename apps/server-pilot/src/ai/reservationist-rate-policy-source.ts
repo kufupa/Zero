@@ -3,6 +3,7 @@ import {quoteDigest,type Board,type InclusionPolicy,type QuoteSourceRecord} from
 import type {AuthorizedTaskAnswer,ReservationistExecutionServices} from './reservationist-execution.js';
 import type {PreparedFact} from './prepared-draft-input.js';
 import {deriveStaffAnswerTopics,ReservationistTaskEvidenceUnavailable} from './reservationist-execution.js';
+import {getProfileLetter,profileFor} from '../../tooling/playwright-quote/property-profile.mjs';
 
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
 type Selection={sourceRef:string;groupId:string;optionId:string};
@@ -13,15 +14,9 @@ type RatePolicyDocumentIdentity={
 export type ReservationistRatePolicyDocument=RatePolicyDocumentIdentity&({kind?:'family_invoice';authoredDate:string;rateCode:string;board:Board;publicationAt?:never}|{kind:'hotel_rate_terms';publicationAt:string;authoredDate?:never;rateCode?:never;board?:never});
 const sha=(body:Uint8Array)=>createHash('sha256').update(body).digest('hex');
 const boards:Record<string,Board>={'Room Only R':'room_only','Bed & Breakfast R':'breakfast','Dinner Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed & Breakfast R':'dinner_bed_breakfast','Dinner, Bed, Breakfast & Beverage R':'dinner_bed_breakfast'};
-const HRCEN_HOTEL=/The Centurion Hotel/;
-const HRCEN_CONFIRMATION=/We have pleasure in confirming your reservation at The Centurion Hotel, Centurion/;
-// Live HRDAV letters (2026-10-26 probe): letterhead "Davinci Hotel & Suites", body "…reservation at The Davinci Hotel and Suites, Sandton".
-const HRDAV_HOTEL=/Da ?Vinci Hotel (?:&|and) Suites/i;
-const HRDAV_CONFIRMATION=/We have pleasure in confirming your reservation at (?:The )?Da ?Vinci Hotel (?:&|and) Suites/i;
 export function letterIdentity(propertyCode:string):{hotel:RegExp;confirmation:RegExp}|null{
- if(propertyCode==='HRCEN')return{hotel:HRCEN_HOTEL,confirmation:HRCEN_CONFIRMATION};
- if(propertyCode==='HRDAV')return{hotel:HRDAV_HOTEL,confirmation:HRDAV_CONFIRMATION};
- return null;
+ if(!profileFor(propertyCode))return null;
+ try{return getProfileLetter(propertyCode);}catch{return null;}
 }
 
 function validateOriginalDocument(ctx:Context,d:ReservationistRatePolicyDocument,propertyCode:string){

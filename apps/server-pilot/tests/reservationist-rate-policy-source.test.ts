@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import {describe,it,expect,vi} from 'vitest';
-import {createReservationistSelectedRatePolicyResolver} from '../src/ai/reservationist-rate-policy-source.js';
+import {createReservationistSelectedRatePolicyResolver,letterIdentity} from '../src/ai/reservationist-rate-policy-source.js';
 const hash=(v:Uint8Array)=>createHash('sha256').update(v).digest('hex');
 function setup(){
  const ctx:any={input:{propertyCode:'HRCEN',authorizationScope:{ownerRef:'synthetic-owner',threadId:'synthetic-current-thread'},clock:{causalAt:'2026-10-01T00:00:00Z',sourceAt:'2026-10-05T14:00:00Z',sourceMode:'current_read'},capabilities:{pmsWrite:false,emailSend:false}},task:{id:'quote',kind:'quote'},facts:[],signal:new AbortController().signal};
@@ -46,6 +46,15 @@ describe('explicit original hotel rate terms',()=>{
   s.d.pages[0]='Da Vinci Hotel and Suites\nWe have pleasure in confirming your reservation at Da Vinci Hotel and Suites for the following guest.';
   const p=await s.resolver(s.ctx,s.source,s.selections,'HRDAV','BAR','breakfast');
   expect(p).toMatchObject({propertyCode:'HRDAV',families:[{rateCode:'BAR',board:'breakfast'}],vat:'included',levy:'included'});
+ });
+ it('reads letter regexes from the property profile and fails closed when unknown',()=>{
+  expect(letterIdentity('UNKNOWN')).toBeNull();
+  const known=letterIdentity('HRCEN');
+  expect(known?.hotel.test('The Centurion Hotel')).toBe(true);
+  expect(known?.confirmation.test('We have pleasure in confirming your reservation at The Centurion Hotel, Centurion')).toBe(true);
+  const other=letterIdentity('HRDAV');
+  expect(other?.hotel.test('Da Vinci Hotel and Suites')).toBe(true);
+  expect(other?.confirmation.test('We have pleasure in confirming your reservation at Da Vinci Hotel and Suites')).toBe(true);
  });
  it('does not qualify a Centurion letter for Da Vinci terms',async()=>{
   const s=hotelTermsSetup();
