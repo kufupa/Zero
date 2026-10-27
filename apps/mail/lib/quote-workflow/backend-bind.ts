@@ -181,6 +181,14 @@ export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
 /** The contact block's fields. Each is one `contact.<field>` event path. `company` is the sender's organisation. */
 export type ContactField = 'name' | 'company' | 'endClient' | 'email' | 'phone';
 export type StoredContact = Record<ContactField, string | null>;
+/** One stay's last HMS commit, as workItems.getByMessage returns it. */
+export type StoredStayCommit = {
+  confirmationNumber: string | null;
+  status: 'booked' | 'unknown';
+  screenshotRef: { runId: string; name: string } | null;
+  runId?: string;
+  shots?: Array<{ name: string; sha256: string; at: string }>;
+};
 /** The translation the pane shows: aligned segments, or failed. Null when the read has none. */
 export type StoredTranslation =
   | { status: 'succeeded'; segments: Array<{ clean: string; literal: string }>; truncated: boolean }
@@ -207,6 +215,8 @@ export type StoredWork =
       refs: Record<string, { stayId: string; rowId: string | null }>;
       analysis: ReadyAnalyse;
       contact: StoredContact;
+      /** Last HMS commit per stay id, including durable before/saved shots. Absent on older reads. */
+      stays?: Record<string, StoredStayCommit>;
       /** The read's source language (ISO 639-1), or null when unclear. */
       language: string | null;
       translation: StoredTranslation;
