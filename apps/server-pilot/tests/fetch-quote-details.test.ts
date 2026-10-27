@@ -2,6 +2,7 @@ import { expect, it } from 'vitest';
 import {
   detailCandidates,
   detailReadBudgetMs,
+  detailReadOrder,
   extractOptions,
   groupOutcomeFromOptions,
   stayDates,
@@ -94,4 +95,24 @@ it('keeps a 17-row wholesale full read as quote when unread leftover rows stay i
   expect(grouped.requiredFacts).toBe('complete');
   expect(grouped.eligible).toHaveLength(3);
   expect(result.options.filter((option: { details: { status: string } }) => option.details.status === 'not_read')).toHaveLength(14);
+});
+
+it('finishes one option across stay dates before starting the next', () => {
+  const nights = ['2027-02-16', '2027-02-17', '2027-02-18'];
+  const options = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  expect(detailReadOrder(options, new Map(), nights).map((option: { id: string }) => option.id)).toEqual(['a']);
+  const started = new Map([['a', { details: [{ date: '2027-02-16' }] }]]);
+  expect(detailReadOrder(options, started, nights).map((option: { id: string }) => option.id)).toEqual(['a']);
+  const done = new Map([['a', { details: nights.map((date) => ({ date })) }]]);
+  expect(detailReadOrder(options, done, nights).map((option: { id: string }) => option.id)).toEqual(['b', 'c']);
+});
+
+it('keeps quote when a priced complete row exists beside partial leftovers', () => {
+  const grouped = groupOutcomeFromOptions([
+    { matchStatus: 'match', eligibility: 'verified', availability: 'available', details: { status: 'complete' } },
+    { matchStatus: 'match', eligibility: 'verified', availability: 'available', details: { status: 'partial' } },
+  ], { details: 'full', searchComplete: true });
+  expect(grouped.outcome).toBe('quote');
+  expect(grouped.requiredFacts).toBe('complete');
+  expect(grouped.eligible).toHaveLength(1);
 });
