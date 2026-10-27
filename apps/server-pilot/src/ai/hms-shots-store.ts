@@ -1,14 +1,13 @@
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
 
-export const HMS_SHOTS_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-export const HMS_SHOT_NAMES = ['before.png', 'saved.png'] as const;
-const DEFAULT_ROOT = '/opt/nava/shared/hms-runtime/hms-shots';
+export const HMS_SHOT_NAMES = ['before.png', 'filled.png', 'saved.png'] as const;
+const DEFAULT_ROOT = '/var/lib/nava/hms-shots';
 const PROPERTY_CODE = /^[A-Z][A-Z0-9]+$/;
 const RUN_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const SHOT_NAME_PATTERN = /^(before|saved)\.png$/;
+const SHOT_NAME_PATTERN = /^(before|filled|saved)\.png$/;
 
 export type HmsShotMeta = { name: string; sha256: string; at: string };
 
@@ -75,11 +74,7 @@ function shotDir(root: string, index: Pick<RunIndex, 'property' | 'workItemId'>,
   return join(root, index.property, index.workItemId, runId);
 }
 
-async function readIndex(
-  root: string,
-  runId: string,
-  opts: { requireActive?: boolean } = {},
-): Promise<RunIndex | null> {
+async function readIndex(root: string, runId: string): Promise<RunIndex | null> {
   if (!RUN_ID_PATTERN.test(runId)) return null;
   const path = indexPath(root, runId);
   if (!underRoot(root, path)) return null;
@@ -88,7 +83,7 @@ async function readIndex(
     if (
       typeof raw.property !== 'string' ||
       !PROPERTY_CODE.test(raw.property) ||
-      (opts.requireActive !== false && !registeredProperty(raw.property)) ||
+      !registeredProperty(raw.property) ||
       typeof raw.workItemId !== 'string' ||
       !RUN_ID_PATTERN.test(raw.workItemId) ||
       typeof raw.owner !== 'string' ||
@@ -114,13 +109,6 @@ async function readSourceBytes(sourceDir: string, durableName: string): Promise<
   try {
     return await readFile(join(sourceDir, durableName));
   } catch {
-    if (durableName === 'before.png') {
-      try {
-        return await readFile(join(sourceDir, 'filled.png'));
-      } catch {
-        return null;
-      }
-    }
     return null;
   }
 }
@@ -185,33 +173,5 @@ export async function readStoredHmsShot(input: ReadInput): Promise<Buffer | null
     return await readFile(path);
   } catch {
     return null;
-  }
-}
-
-/** O1 wires the timer. Deletes run dirs whose storedAt is older than 30 days. */
-export async function purgeExpiredHmsShots(input: { now: number; env?: ShotEnv }): Promise<void> {
-  const root = hmsShotsRoot(input.env);
-  if (!root) return;
-  const indexDir = join(root, 'by-run');
-  let names: string[] = [];
-  try {
-    names = await readdir(indexDir);
-  } catch {
-    return;
-  }
-  for (const file of names) {
-    if (!file.endsWith('.json')) continue;
-    const runId = file.slice(0, -'.json'.length);
-    const index = await readIndex(root, runId, { requireActive: false });
-    if (!index || input.now - index.storedAt <= HMS_SHOTS_TTL_MS) continue;
-    const dest = shotDir(root, index, runId);
-    const idx = indexPath(root, runId);
-    if (!underRoot(root, dest) || !underRoot(root, idx)) continue;
-    try {
-      await rm(dest, { recursive: true, force: true });
-    } catch {
-      continue;
-    }
-    await rm(idx, { force: true }).catch(() => {});
   }
 }
