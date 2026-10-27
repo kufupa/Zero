@@ -172,6 +172,20 @@ describe('HRDAV native room and board maps', () => {
       status: 'codes',
       codes: ['STWN'],
     });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Std. Twin', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['STWN'],
+    });
+    expect(
+      resolveNativeRoomCodes({
+        roomPreference: 'Standard Twin Rooms - double occupancy',
+        propertyCode: HRDAV_PROPERTY_CODE,
+      }),
+    ).toEqual({ status: 'codes', codes: ['STWN'] });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Deluxe Twin', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'unresolved',
+      label: 'Deluxe Twin',
+    });
     const allRooms = staffQuoteGroupsFromStay(
       [stay({ roomPreference: 'Twin', fields: { roomPreference: 'defaulted' } })],
       HRDAV_PROPERTY_CODE,

@@ -69,15 +69,16 @@ function catalogueFor(propertyCode?: string): {
   names: Record<string, string>;
   aliases: Record<string, readonly string[]>;
   codes: string[];
+  requireFullLabel: boolean;
 } {
   const profile = typeof propertyCode === 'string' ? profileFor(propertyCode) : null;
   if (profile?.rooms && Object.keys(profile.rooms).length) {
     const names = Object.fromEntries(
       Object.entries(profile.rooms).map(([code, room]) => [code, room.label]),
     );
-    return { names, aliases: occupancyAliases(names), codes: Object.keys(names) };
+    return { names, aliases: occupancyAliases(names), codes: Object.keys(names), requireFullLabel: true };
   }
-  return { names: ROOM_TYPE_NAMES, aliases: ROOM_WORD_ALIASES, codes: ROOM_TYPE_CODES };
+  return { names: ROOM_TYPE_NAMES, aliases: ROOM_WORD_ALIASES, codes: ROOM_TYPE_CODES, requireFullLabel: false };
 }
 
 function matchableWords(names: Record<string, string>, aliases: Record<string, readonly string[]>): Set<string> {
@@ -92,6 +93,7 @@ function matchAgainstCatalogue(
   names: Record<string, string>,
   aliases: Record<string, readonly string[]>,
   codes: string[],
+  requireFullLabel: boolean,
 ): RoomTypeMatch {
   const normalized = raw?.trim() ? stripRoomCountPrefix(raw) : '';
   const code = normalized.trim().replace(/[^a-z0-9]/gi, '').toUpperCase();
@@ -113,11 +115,14 @@ function matchAgainstCatalogue(
   });
 
   if (candidates.length === 1) {
-    const nameWords = names[candidates[0]!]!.toLowerCase().split(' ');
-    if (nameOnly.length && nameWords.every((word) => nameOnly.includes(word))) {
-      return { code: candidates[0]!, suggestions: [] };
+    if (requireFullLabel) {
+      const nameWords = names[candidates[0]!]!.toLowerCase().split(' ');
+      if (nameOnly.length && nameWords.every((word) => nameOnly.includes(word))) {
+        return { code: candidates[0]!, suggestions: [] };
+      }
+      return { suggestions: candidates };
     }
-    return { suggestions: candidates };
+    return { code: candidates[0]!, suggestions: [] };
   }
   const rank = (candidate: string) => {
     const fits = aliasWords.length > 0 && aliasWords.every((word) => aliases[word]!.includes(candidate));
@@ -128,6 +133,6 @@ function matchAgainstCatalogue(
 
 /** Match an email/extraction room label without choosing between multiple HMS codes. */
 export function matchRoomType(raw: string | undefined, propertyCode?: string): RoomTypeMatch {
-  const { names, aliases, codes } = catalogueFor(propertyCode);
-  return matchAgainstCatalogue(raw, names, aliases, codes);
+  const { names, aliases, codes, requireFullLabel } = catalogueFor(propertyCode);
+  return matchAgainstCatalogue(raw, names, aliases, codes, requireFullLabel);
 }

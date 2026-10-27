@@ -154,13 +154,7 @@ export function matchRoomType(raw: string | undefined): RoomTypeMatch {
     return nameWords.every((word) => candidateWords.includes(word));
   });
 
-  if (candidates.length === 1) {
-    const candidateWords = ROOM_TYPE_NAMES[candidates[0]!].toLowerCase().split(' ');
-    if (nameWords.length && candidateWords.every((word) => nameWords.includes(word))) {
-      return { code: candidates[0]!, suggestions: [] };
-    }
-    return { suggestions: candidates };
-  }
+  if (candidates.length === 1) return { code: candidates[0]!, suggestions: [] };
   const rank = (candidate: RoomTypeCode) => {
     const fits = aliasWords.length > 0 && aliasWords.every((word) => ROOM_WORD_ALIASES[word]!.includes(candidate));
     return fits ? ROOM_WORD_ALIASES[aliasWords[0]!]!.indexOf(candidate) : 100 + ROOM_TYPE_CODES.indexOf(candidate);

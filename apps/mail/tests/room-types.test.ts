@@ -38,6 +38,8 @@ describe('room type name matching', () => {
     ['standard twin room (with two double beds)', { code: 'STWN', suggestions: [] }],
     ['Standard Twin with two beds and double occupancy per person', { code: 'STWN', suggestions: [] }],
     ['Executive King room', { code: 'EXKNG', suggestions: [] }],
+    ['Luxury room', { code: 'LUXKNG', suggestions: [] }],
+    ['Executive room', { code: 'EXKNG', suggestions: [] }],
     ['deluxe twin', { code: 'DLXTWN', suggestions: [] }],
     ['luxury king', { code: 'LUXKNG', suggestions: [] }],
     ['double', { suggestions: ['STQN', 'SKNG', 'EXKNG'] }],
