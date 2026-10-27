@@ -618,16 +618,16 @@ function hasSingletonSelection(group) {
     && Array.isArray(group?.required?.rateCodes) && group.required.rateCodes.length === 1;
 }
 
-const ROOM_PROFILE_OUT_OF_DATE = 'Room profile out of date: observed HMS room types, inventory or building codes no longer match the verified property profile.';
+const ROOM_PROFILE_OUT_OF_DATE = 'Room profile out of date: observed HMS room types or building codes no longer match the verified property profile.';
 
-// Every observed row: a profiled room type, no HMS building, per-night inventory within that type's capacity.
+// Every observed row: a profiled room type, no HMS building, integer per-night inventory. HMS inventory is the truth:
+// a count above the profile's roomCapacity (a hint, not a cap) still holds; pool supply always comes from HMS nightly.
 function matchesProfile(profile, groups) {
   if (!Array.isArray(groups)) return false;
   return groups.every((group) => Array.isArray(group?.options) && group.options.every((row) => {
     const code = row?.room?.code;
     if (typeof code !== 'string' || !Object.hasOwn(profile.roomCapacity, code) || row.room.buildingCode !== null) return false;
-    return (row.nightly ?? []).every((night) => Number.isInteger(night?.inventory)
-      && night.inventory >= 0 && night.inventory <= profile.roomCapacity[code]);
+    return (row.nightly ?? []).every((night) => Number.isInteger(night?.inventory) && night.inventory >= 0);
   }));
 }
 
