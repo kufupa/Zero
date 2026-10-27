@@ -459,8 +459,12 @@ function RoomSave({
 
   if (commit?.status === 'booked') {
     const savedShot = commit.screenshots.includes(SAVED_SHOT) ? SAVED_SHOT : null;
+    const durableShots = commit.shots ?? [];
     return (
       <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
+        <span className="w-fit rounded-xs bg-emerald-100 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-900">
+          Booked
+        </span>
         <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
           {commit.unverified
             ? PANE_SAVE_UNVERIFIED_COPY
@@ -473,7 +477,9 @@ function RoomSave({
             arrival={stay?.arrival}
           />
         ) : null}
-        {commit.runId && savedShot ? (
+        {commit.runId && durableShots.length > 0 ? (
+          <HmsShotsViewer runId={commit.runId} shots={durableShots} screenshot={screenshot} />
+        ) : commit.runId && savedShot ? (
           <PaneScreenshot
             caption="See what Nava saved in HMS"
             runId={commit.runId}
@@ -524,10 +530,17 @@ function RoomSave({
       ) : null}
       {commit?.status === 'refused' ? (
         <>
+          {commit.statusChip === 'check' ? (
+            <span className="w-fit rounded-xs bg-amber-100 px-1.5 py-0.5 text-[11px] font-semibold text-amber-950">
+              Check HMS
+            </span>
+          ) : null}
           <p role="alert" className="text-[11.5px] text-amber-900">
             {commit.message}
           </p>
-          {commit.runId && refusedShot ? (
+          {commit.runId && (commit.shots?.length ?? 0) > 0 ? (
+            <HmsShotsViewer runId={commit.runId} shots={commit.shots ?? []} screenshot={screenshot} />
+          ) : commit.runId && refusedShot ? (
             <PaneScreenshot
               caption="See what Nava saved in HMS"
               runId={commit.runId}

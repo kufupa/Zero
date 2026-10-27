@@ -21,6 +21,7 @@ import {
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
 import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE } from '@/lib/quote-workflow/types';
 import type { WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
+import type { SavedStayCommit } from './booking-card';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type {
@@ -414,6 +415,7 @@ export function QuoteWorkflowPanel({
   onLoadRunScreenshot,
   paneSave,
   workItemId,
+  savedStays,
   availabilityReader,
   partySuggestions,
   partyIndex,
@@ -433,6 +435,8 @@ export function QuoteWorkflowPanel({
   paneSave?: PaneStayClient | null;
   /** Work item owning the Book preview receipt and any resulting commit. */
   workItemId?: string;
+  /** Last HMS commits from the stored read, so a reopened mail shows the same Book state. */
+  savedStays?: Record<string, SavedStayCommit>;
   /** Read-only stored availability lookup; independent of whether saving to HMS is enabled. */
   availabilityReader?: PaneStayAvailabilityReader | null;
   /** The stored read's contact (booker and company) for the HMS notes. Null while the mail has no stored read. */
@@ -1551,6 +1555,7 @@ export function QuoteWorkflowPanel({
         paneSave={paneSave}
         contact={contact}
         workItemId={workItemId}
+        savedStays={savedStays}
         propertyCode={paneConfig?.propertyCode ?? null}
       />
     </div>
