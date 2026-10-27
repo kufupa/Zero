@@ -92,6 +92,8 @@ export type PaneStayInput = {
   reservationNote?: string;
   bookerName?: string;
   bookerEmail?: string;
+  /** HMS confirmation letter recipient. The create route ignores this until the letter field is wired. */
+  confirmationRecipient?: { mode: 'self' | 'client' | 'custom'; address: string };
 };
 
 // Mirrors the server's PaneStayResult from quoteWorkflow.previewStay / commitStay.
@@ -272,6 +274,7 @@ export type PaneStayChoice = {
   reservationNote?: string;
   bookerName?: string;
   bookerEmail?: string;
+  confirmationRecipient?: { mode: 'self' | 'client' | 'custom'; address: string };
 };
 
 // Builds the stay for one room from its draft request and the staff's selects. Returns the names still
@@ -348,6 +351,7 @@ export function paneStayInputForRoom(
       ...(reservationNote ? { reservationNote } : {}),
       ...(bookerName ? { bookerName } : {}),
       ...(bookerEmail ? { bookerEmail } : {}),
+      ...(choice.confirmationRecipient ? { confirmationRecipient: choice.confirmationRecipient } : {}),
     },
     missing: [],
   };

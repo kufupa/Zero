@@ -99,6 +99,14 @@ const categoriesSchema = z.array(mailCategorySchema).superRefine((cats, ctx) => 
   }
 });
 
+/** Per-user default for the HMS confirmation letter. The pane can override it per booking. */
+export const confirmationSettingSchema = z.object({
+  mode: z.enum(['self', 'client', 'custom']),
+  address: z.string().email().optional(),
+});
+
+export type ConfirmationSetting = z.infer<typeof confirmationSettingSchema>;
+
 export const userSettingsSchema = z.object({
   language: z.string(),
   timezone: z.string(),
@@ -115,6 +123,8 @@ export const userSettingsSchema = z.object({
   imageCompression: z.enum(['low', 'medium', 'original']).default('medium'),
   autoRead: z.boolean().default(true),
   animations: z.boolean().default(false),
+  // Optional so a row saved before this key still parses. Missing means the default below.
+  confirmation: confirmationSettingSchema.optional(),
 });
 
 export type UserSettings = z.infer<typeof userSettingsSchema>;
@@ -135,4 +145,5 @@ export const defaultUserSettings: UserSettings = {
   undoSendEnabled: true,
   imageCompression: 'medium',
   animations: false,
+  confirmation: { mode: 'self' },
 };

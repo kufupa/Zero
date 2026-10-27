@@ -37,6 +37,16 @@ import {
   type PaneStayInput,
 } from '@/lib/quote-workflow/pane-stay-bind';
 import { Notice, paneFieldClass, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
+import {
+  confirmationScopeKey,
+  ConfirmationRecipient,
+  resolveConfirmationRecipient,
+  useConfirmationSources,
+  type ConfirmationMode,
+  type ConfirmationRecipientPayload,
+  type ConfirmationSetting,
+  type ConfirmationSources,
+} from './confirmation-recipient';
 
 const COPIED_MS = 1500;
 const COPY_FAILED_MS = 3000;
@@ -664,6 +674,7 @@ function roomChoiceFor(
   group: StayGroupRequirement | undefined,
   choice: RoomChoice,
   contact: StoredContact | null,
+  confirmationRecipient: ConfirmationRecipientPayload | null,
 ): PaneStayChoice {
   return {
     ...choice,
@@ -671,6 +682,7 @@ function roomChoiceFor(
     ratePlan: textValue(group?.rateCode) || textValue(room.request.ratePlan) || textValue(group?.quotedRateCode),
     bookerName: contact ? textValue(contact.name) : textValue(room.request.bookerName),
     bookerEmail: contact ? textValue(contact.email) : textValue(room.request.bookerEmail),
+    ...(confirmationRecipient ? { confirmationRecipient } : {}),
   };
 }
 
@@ -714,6 +726,8 @@ export function BookingCards({
   guestEditorKey,
   session,
   propertyCode,
+  confirmation,
+  onSaveDefault,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -735,6 +749,13 @@ export function BookingCards({
   session?: QuoteSession;
   /** Active mailbox property. Unknown or missing codes fail closed (no generated note). */
   propertyCode?: string | null;
+  /**
+   * Signed-in user and saved confirmation default. Null keeps the card as it was before this control
+   * (unit tests that render the card alone). The live pane always passes it.
+   */
+  confirmation?: ConfirmationSources | null;
+  /** Persists the current choice as this user's default. Omitted in card-only tests. */
+  onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
 }) {
   const client = paneSave;
   const contactRef = useRef(contact);
@@ -796,6 +817,61 @@ export function BookingCards({
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
   const stayBookingRef = useRef(false);
+  const contextConfirmation = useConfirmationSources();
+  const sources = confirmation === undefined ? contextConfirmation : confirmation;
+  const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(sources?.setting?.mode ?? 'self');
+  const [customAddress, setCustomAddress] = useState(
+    sources?.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '',
+  );
+  const [staffChose, setStaffChose] = useState(false);
+  const [defaultSaved, setDefaultSaved] = useState(false);
+  const [defaultError, setDefaultError] = useState<string | null>(null);
+  const [savingDefault, setSavingDefault] = useState(false);
+  const saveGeneration = useRef(0);
+  const staffChoseRef = useRef(false);
+  const signedInUserId = sources?.userId ?? '';
+  const signedInMailbox = sources?.mailbox ?? '';
+  const scopeKey = confirmationScopeKey(signedInUserId, signedInMailbox);
+  const scopeRef = useRef({ userId: signedInUserId, mailbox: signedInMailbox });
+  scopeRef.current = { userId: signedInUserId, mailbox: signedInMailbox };
+  const [seenScope, setSeenScope] = useState(`${scopeKey}\0${sources?.userEmail ?? ''}`);
+  if (sources && seenScope !== `${scopeKey}\0${sources.userEmail}`) {
+    setSeenScope(`${scopeKey}\0${sources.userEmail}`);
+    staffChoseRef.current = false;
+    setStaffChose(false);
+    setDefaultSaved(false);
+    setDefaultError(null);
+    setSavingDefault(false);
+    setRecipientMode(sources.setting?.mode ?? 'self');
+    setCustomAddress(sources.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '');
+  }
+  useEffect(() => {
+    if (staffChoseRef.current || !sources?.setting) return;
+    setRecipientMode(sources.setting.mode);
+    if (sources.setting.mode === 'custom') setCustomAddress(sources.setting.address ?? '');
+  }, [sources]);
+  const clientEmail = contact ? textValue(contact.email) : '';
+  const holdMessage = !sources || staffChose
+    ? null
+    : sources.load === 'pending'
+      ? 'Nava is still reading the saved confirmation choice.'
+      : sources.load === 'failed'
+        ? 'Could not load your default (not set up). Pick who should get the HMS confirmation.'
+        : sources.invalidSetting
+          ? 'The saved confirmation choice is not set up. Pick who should get the HMS confirmation.'
+          : null;
+  const resolvedRecipient = !sources
+    ? null
+    : holdMessage
+      ? { ok: false as const, message: holdMessage }
+      : resolveConfirmationRecipient({
+          mode: recipientMode,
+          customAddress,
+          userEmail: sources.userEmail,
+          clientEmail,
+          invalidSetting: sources.invalidSetting,
+          staffChose,
+        });
   useEffect(() => () => {
     stayBookingRef.current = false;
   }, []);
@@ -950,11 +1026,21 @@ export function BookingCards({
     currentContact: StoredContact | null = contact,
   ) {
     const group = roomGroupFor(room, groups);
-    return paneStayInputForConfiguredRoom(
+    const built = paneStayInputForConfiguredRoom(
       roomRequestFor(room, group),
-      roomChoiceFor(room, group, choices[roomKeyOf(room)] ?? NO_CHOICE, currentContact),
+      roomChoiceFor(
+        room,
+        group,
+        choices[roomKeyOf(room)] ?? NO_CHOICE,
+        currentContact,
+        resolvedRecipient?.ok ? resolvedRecipient.recipient : null,
+      ),
       requiredCreateFields,
     );
+    if (resolvedRecipient && !resolvedRecipient.ok) {
+      return { stay: null, missing: [...built.missing, 'confirmation recipient'] };
+    }
+    return built;
   }
 
   function previewKeyForRoom(
@@ -1093,6 +1179,73 @@ export function BookingCards({
           ? 'Preview each room using the Stay details above, then create it in HMS.'
           : 'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.'}
       </p>
+      {sources ? (
+        <ConfirmationRecipient
+          mode={recipientMode}
+          customAddress={customAddress}
+          userEmail={sources.userEmail}
+          clientEmail={clientEmail}
+          disabled={stayBooking}
+          unconfirmed={Boolean(holdMessage) && sources?.load !== 'pending'}
+          error={resolvedRecipient && !resolvedRecipient.ok ? resolvedRecipient.message : null}
+          onMode={(next) => {
+            staffChoseRef.current = true;
+            saveGeneration.current += 1;
+            setStaffChose(true);
+            setRecipientMode(next);
+            setDefaultSaved(false);
+          }}
+          onCustomAddress={(value) => {
+            staffChoseRef.current = true;
+            saveGeneration.current += 1;
+            setStaffChose(true);
+            setCustomAddress(value);
+            setDefaultSaved(false);
+          }}
+          onMakeDefault={
+            onSaveDefault
+              ? () => {
+                  if (savingDefault || !resolvedRecipient?.ok) return;
+                  const { mode, address } = resolvedRecipient.recipient;
+                  const setting: ConfirmationSetting =
+                    mode === 'custom' ? { mode, address } : { mode };
+                  const generation = ++saveGeneration.current;
+                  const startedUserId = scopeRef.current.userId;
+                  const startedMailbox = scopeRef.current.mailbox;
+                  setDefaultError(null);
+                  setSavingDefault(true);
+                  void onSaveDefault(setting)
+                    .then(() => {
+                      if (saveGeneration.current !== generation) return;
+                      if (
+                        scopeRef.current.userId !== startedUserId ||
+                        scopeRef.current.mailbox !== startedMailbox
+                      ) {
+                        return;
+                      }
+                      setDefaultSaved(true);
+                    })
+                    .catch(() => {
+                      if (saveGeneration.current !== generation) return;
+                      if (
+                        scopeRef.current.userId !== startedUserId ||
+                        scopeRef.current.mailbox !== startedMailbox
+                      ) {
+                        return;
+                      }
+                      setDefaultError('Could not save your default (not set up).');
+                    })
+                    .finally(() => {
+                      setSavingDefault(false);
+                    });
+                }
+              : undefined
+          }
+          saving={savingDefault}
+          defaultSaved={defaultSaved}
+          defaultError={defaultError}
+        />
+      ) : null}
       {mode === 'lab' ? (
         <p role="note" className="text-[11.5px] text-amber-900">
           {LAB_WRITE_NOTE}

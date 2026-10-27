@@ -259,7 +259,7 @@ export const makeQueryClient = () => {
 
 let browserQueryClient: QueryClient | null = null;
 
-const getQueryClient = () => {
+export const getQueryClient = () => {
   if (typeof window === 'undefined') {
     return makeQueryClient();
   }

@@ -71,6 +71,29 @@ describe('server-pilot package contract', () => {
     const mod = await import('@zero/server/schemas');
     expect(mod.userSettingsSchema).toBeDefined();
     expect(mod.defaultUserSettings).toBeDefined();
+    expect(mod.defaultUserSettings.confirmation).toEqual({ mode: 'self' });
+    const withConfirmation = mod.userSettingsSchema.parse({
+      ...mod.defaultUserSettings,
+      confirmation: { mode: 'custom', address: 'desk@example.invalid' },
+      notASetting: true,
+    });
+    expect(withConfirmation.confirmation).toEqual({ mode: 'custom', address: 'desk@example.invalid' });
+    expect('notASetting' in withConfirmation).toBe(false);
+    const legacy = mod.userSettingsSchema.parse({
+      language: 'en',
+      timezone: 'UTC',
+      externalImages: true,
+    });
+    expect(legacy.confirmation).toBeUndefined();
+    expect(
+      mod.userSettingsSchema.safeParse({
+        ...mod.defaultUserSettings,
+        confirmation: { mode: 'custom', address: 'not-an-email' },
+      }).success,
+    ).toBe(false);
+    expect(
+      mod.confirmationSettingSchema.safeParse({ mode: 'hotel' }).success,
+    ).toBe(false);
     expect(Array.isArray(mod.defaultMailCategories)).toBe(true);
     expect(mod.mailCategorySchema).toBeDefined();
     expect(mod.createDraftData).toBeDefined();

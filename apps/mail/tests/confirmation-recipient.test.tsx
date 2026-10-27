@@ -1,0 +1,387 @@
+/**
+ * @vitest-environment happy-dom
+ */
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  ConfirmationSourcesBridge,
+  ConfirmationSourcesProvider,
+  type ConfirmationSources,
+} from '../components/quote-workflow/confirmation-recipient';
+import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-host';
+import type { StoredContact } from '../lib/quote-workflow/backend-bind';
+import type { PaneStayClient, PaneStayResult } from '../lib/quote-workflow/pane-stay-bind';
+import {
+  emptyStaffQuoteHeader,
+  type BookingDraftReady,
+  type QuoteSession,
+  type StayGroupRequirement,
+} from '../lib/quote-workflow/types';
+
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
+
+const settingsDouble = vi.hoisted(() => ({
+  get: vi.fn(async (): Promise<unknown> => ({ settings: { confirmation: { mode: 'self' }, language: 'en' } })),
+  save: vi.fn(async (_input: unknown) => ({ success: true })),
+  invalidated: [] as string[],
+}));
+
+vi.mock('@/providers/query-provider', () => ({
+  trpcClient: {
+    settings: {
+      get: { query: () => settingsDouble.get() },
+      save: { mutate: (input: unknown) => settingsDouble.save(input) },
+    },
+  },
+  getQueryClient: () => ({
+    invalidateQueries: async (filters: { queryKey?: readonly unknown[] }) => {
+      const key = JSON.stringify(filters.queryKey ?? []);
+      if (key.includes('settings') && key.includes('get')) settingsDouble.invalidated.push('settings.get');
+    },
+  }),
+}));
+
+afterEach(() => {
+  cleanup();
+  settingsDouble.get.mockReset();
+  settingsDouble.save.mockReset();
+  settingsDouble.invalidated.splice(0, settingsDouble.invalidated.length);
+});
+
+const STAFF = 'staff@example.invalid';
+const CLIENT = 'guest@example.invalid';
+const OTHER = 'desk@example.invalid';
+
+const contact: StoredContact = {
+  name: 'Guest Contact',
+  company: null,
+  endClient: null,
+  email: CLIENT,
+  phone: null,
+};
+
+const group = {
+  id: 'g1',
+  arrivalDate: '2026-11-12',
+  departureDate: '2026-11-14',
+  quantity: 1,
+  adults: 1,
+  childrenAges: [],
+  board: 'bb',
+  specialRequests: [],
+  fields: { arrivalDate: 'extracted', departureDate: 'extracted', adults: 'extracted' },
+} as StayGroupRequirement;
+
+function draft(): BookingDraftReady {
+  return {
+    draft: {
+      rooms: [
+        {
+          groupId: 'g1',
+          roomIndex: 1,
+          request: {
+            arrival: '2026-11-12',
+            departure: '2026-11-14',
+            adults: 1,
+            childAges: [],
+            roomType: 'STQN',
+            ratePlan: 'TAXYZ',
+            firstName: 'Ada',
+            lastName: 'Lovelace',
+            track: 'COR',
+            sourceOfBusiness: 'E-Mail',
+            guaranteeType: 'Confirmation Received',
+          },
+          schemaErrors: [],
+        },
+      ],
+      rateCheck: [],
+      missing: [],
+      flags: [],
+    },
+    options: {
+      track: ['BAR', 'COR'],
+      sourceOfBusiness: ['Travel Agent', 'E-Mail'],
+      guaranteeType: ['Guaranteed By Agent', 'Confirmation Received'],
+      roomType: ['STQN'],
+    },
+    messageId: 'mail-1',
+    selectionEpoch: 1,
+    inputRevision: 1,
+    revisionRef: 'rev-1',
+  };
+}
+
+function session(): QuoteSession {
+  return {
+    binding: {
+      transportId: 't1',
+      storeId: 'store',
+      folderEntryId: 'inbox',
+      entryId: 'e1',
+      selectionEpoch: 1,
+      scopeEpoch: 1,
+    },
+    groups: [group],
+    bookingDrafts: { '2026-11-12:2026-11-14': draft() },
+    staffHeader: emptyStaffQuoteHeader(),
+    staffQuotes: {},
+    staffSource: null,
+    offers: [],
+  } as unknown as QuoteSession;
+}
+
+const PREVIEW_OK: PaneStayResult = {
+  status: 'ok',
+  outcome: 'previewed',
+  previewDigest: 'ab'.repeat(32),
+  runId: 'run-1',
+  screenshots: [],
+};
+
+function pane() {
+  const preview = vi.fn<PaneStayClient['preview']>().mockResolvedValue(PREVIEW_OK);
+  const commit = vi.fn<PaneStayClient['commit']>().mockResolvedValue({
+    status: 'ok',
+    outcome: 'committed',
+    confirmationNumber: '10001-1',
+    runId: 'run-1',
+    screenshots: [],
+  });
+  const client: PaneStayClient = {
+    preview,
+    commit,
+    screenshot: vi.fn(async () => null),
+    mode: () => 'on',
+  };
+  return { client, preview, commit };
+}
+
+function renderHost(
+  sources: ConfirmationSources,
+  onSaveDefault?: (setting: { mode: 'self' | 'client' | 'custom'; address?: string }) => Promise<void>,
+) {
+  const api = pane();
+  render(
+    <ConfirmationSourcesProvider value={sources}>
+      <QuoteBookingHost
+        session={session()}
+        paneSave={api.client}
+        contact={contact}
+        onSaveDefault={onSaveDefault}
+      />
+    </ConfirmationSourcesProvider>,
+  );
+  return api;
+}
+
+describe('confirmation recipient', () => {
+  it('prefills the saved choice and sends the edited recipient on create', async () => {
+    const { preview, commit } = renderHost({
+      userEmail: STAFF,
+      setting: { mode: 'client' },
+    });
+    const select = screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement;
+    expect(select.value).toBe('client');
+    expect(screen.getByRole('option', { name: `Me (${STAFF})` })).toBeDefined();
+    expect(screen.getByRole('option', { name: `Client (${CLIENT})` })).toBeDefined();
+    expect(screen.getByRole('option', { name: 'Other…' })).toBeDefined();
+    expect(screen.getByText('HMS sends this confirmation. Nava does not send mail.')).toBeDefined();
+
+    fireEvent.change(select, { target: { value: 'self' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview in HMS' }));
+    await waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
+    expect(preview.mock.calls[0]?.[0]).toMatchObject({
+      confirmationRecipient: { mode: 'self', address: STAFF },
+    });
+
+    fireEvent.change(select, { target: { value: 'custom' } });
+    fireEvent.change(screen.getByLabelText('Other confirmation email'), { target: { value: OTHER } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview in HMS' }));
+    await waitFor(() => expect(preview).toHaveBeenCalledTimes(2));
+    expect(preview.mock.calls[1]?.[0]).toMatchObject({
+      confirmationRecipient: { mode: 'custom', address: OTHER },
+    });
+    const book = screen.getByRole('button', { name: 'Create provisional booking' }) as HTMLButtonElement;
+    await waitFor(() => expect(book.disabled).toBe(false));
+    fireEvent.click(book);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    expect(commit.mock.calls[0]?.[0]).toMatchObject({
+      confirmationRecipient: { mode: 'custom', address: OTHER },
+    });
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('fails closed when the chosen address is missing', () => {
+    const missingSelf = renderHost({ userEmail: '', setting: { mode: 'self' } });
+    expect(screen.getByRole('alert').textContent).toContain('not set up');
+    expect((screen.getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(missingSelf.preview).not.toHaveBeenCalled();
+
+    cleanup();
+    const missingClient = pane();
+    render(
+      <ConfirmationSourcesProvider value={{ userEmail: STAFF, setting: { mode: 'client' } }}>
+        <QuoteBookingHost
+          session={session()}
+          paneSave={missingClient.client}
+          contact={{ ...contact, email: null }}
+        />
+      </ConfirmationSourcesProvider>,
+    );
+    expect(screen.getByRole('alert').textContent).toContain('not found');
+    expect((screen.getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(missingClient.preview).not.toHaveBeenCalled();
+  });
+
+  it('uses an explicit pick when the saved choice is unreadable or the read fails', async () => {
+    const invalid = renderHost({ userEmail: STAFF, setting: null, invalidSetting: true });
+    expect(screen.getByRole('alert').textContent).toContain('not set up');
+    expect((screen.getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'self' } });
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Preview in HMS' }));
+    await waitFor(() => expect(invalid.preview).toHaveBeenCalledTimes(1));
+    expect(invalid.preview.mock.calls[0]?.[0]).toMatchObject({
+      confirmationRecipient: { mode: 'self', address: STAFF },
+    });
+
+    cleanup();
+    const failed = renderHost({ userEmail: STAFF, setting: { mode: 'client' }, load: 'failed' });
+    expect(screen.getByRole('alert').textContent).toContain('not set up');
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'client' } });
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Preview in HMS' }) as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Preview in HMS' }));
+    await waitFor(() => expect(failed.preview).toHaveBeenCalledTimes(1));
+    expect(failed.preview.mock.calls[0]?.[0]).toMatchObject({
+      confirmationRecipient: { mode: 'client', address: CLIENT },
+    });
+  });
+
+  it('saves only the confirmation choice as the user default', async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    renderHost({ userEmail: STAFF, setting: { mode: 'client' } }, save);
+    fireEvent.click(screen.getByRole('button', { name: 'Make this my default' }));
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(save.mock.calls[0]?.[0]).toEqual({ mode: 'client' });
+    expect(screen.getByRole('button', { name: 'Saved as your default' })).toBeDefined();
+  });
+
+  it('does not mark a newer choice saved when an older save finishes', async () => {
+    let release: () => void = () => {};
+    const save = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        }),
+    );
+    renderHost({ userEmail: STAFF, setting: { mode: 'client' } }, save);
+    fireEvent.click(screen.getByRole('button', { name: 'Make this my default' }));
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'self' } });
+    release();
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('button', { name: 'Saved as your default' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Make this my default' })).toBeDefined();
+  });
+
+  it('invalidates the settings read after saving a default and ignores a late save after a user switch', async () => {
+    settingsDouble.get.mockResolvedValue({
+      settings: { confirmation: { mode: 'self' }, language: 'en' },
+    });
+    const api = pane();
+    render(
+      <ConfirmationSourcesBridge userId="user-a" mailbox="box-a@example.invalid" userEmail={STAFF}>
+        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+      </ConfirmationSourcesBridge>,
+    );
+    await waitFor(() => {
+      expect(screen.queryByText('Nava is still reading the saved confirmation choice.')).toBeNull();
+      expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe(
+        'self',
+      );
+    });
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'client' } });
+    await waitFor(() => {
+      expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe(
+        'client',
+      );
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Make this my default' }));
+    await waitFor(() => expect(settingsDouble.save).toHaveBeenCalledTimes(1));
+    expect(settingsDouble.save.mock.calls[0]?.[0]).toEqual({ confirmation: { mode: 'client' } });
+    await waitFor(() => expect(settingsDouble.invalidated).toEqual(['settings.get']));
+    expect(screen.getByRole('button', { name: 'Saved as your default' })).toBeDefined();
+
+    let release: () => void = () => {};
+    settingsDouble.save.mockClear();
+    settingsDouble.save.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve({ success: true });
+        }),
+    );
+    cleanup();
+    settingsDouble.invalidated.splice(0, settingsDouble.invalidated.length);
+    const held = render(
+      <ConfirmationSourcesBridge userId="user-a" mailbox="box-a@example.invalid" userEmail={STAFF}>
+        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+      </ConfirmationSourcesBridge>,
+    );
+    await waitFor(() => {
+      expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe(
+        'self',
+      );
+    });
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'client' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Make this my default' }));
+    await waitFor(() => {
+      expect(
+        (screen.getByRole('button', { name: 'Make this my default' }) as unknown as HTMLButtonElement).disabled,
+      ).toBe(true);
+    });
+    held.rerender(
+      <ConfirmationSourcesBridge userId="user-b" mailbox="box-b@example.invalid" userEmail="other@example.invalid">
+        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+      </ConfirmationSourcesBridge>,
+    );
+    release();
+    await waitFor(() => expect(settingsDouble.save).toHaveBeenCalledTimes(1));
+    expect(settingsDouble.invalidated).toEqual([]);
+    expect(screen.queryByRole('button', { name: 'Saved as your default' })).toBeNull();
+  });
+
+  it('drops the previous user address when the signed-in user changes', async () => {
+    let reads = 0;
+    settingsDouble.get.mockImplementation(async () => {
+      reads += 1;
+      if (reads === 1) {
+        return { settings: { confirmation: { mode: 'custom', address: OTHER } } };
+      }
+      return { settings: { language: 'en' } };
+    });
+    const api = pane();
+    const view = render(
+      <ConfirmationSourcesBridge userEmail="first@example.invalid">
+        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+      </ConfirmationSourcesBridge>,
+    );
+    await waitFor(() => {
+      expect((screen.getByLabelText('Other confirmation email') as unknown as HTMLInputElement).value).toBe(OTHER);
+    });
+    view.rerender(
+      <ConfirmationSourcesBridge userEmail="second@example.invalid">
+        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+      </ConfirmationSourcesBridge>,
+    );
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Other confirmation email')).toBeNull();
+      expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe(
+        'self',
+      );
+    });
+  });
+});
