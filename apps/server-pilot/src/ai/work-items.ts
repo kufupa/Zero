@@ -1732,7 +1732,12 @@ async function readyView(
       noReplySender: isNoReplyAddress(msg.fromAddress),
       hmsTodoCard: existingStayInformation
         ? null
-        : await hmsTodoCardFromLuna(stored.analysis.luna, synced?.attachments ?? [], sourceText),
+        : await hmsTodoCardFromLuna(
+            stored.analysis.luna,
+            synced?.attachments ?? [],
+            sourceText,
+            resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined,
+          ),
     },
     contact: storedContact(read.payload, state),
     stays: stayCommitsOf(state),

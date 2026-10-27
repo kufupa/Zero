@@ -64,4 +64,20 @@ describe('stored read hmsTodoCard', () => {
     const card = await hmsTodoCardFromLuna(analysis.luna, [], 'Please confirm the booking.');
     expect(card).toMatchObject({ kind: 'new_booking' });
   });
+
+  it('maps HRDAV STD KNG on the booking checklist to STKNG, not Centurion SKNG', async () => {
+    const payload: MailExtractionPayload = {
+      ...bookingPayload,
+      stays: [
+        {
+          ...bookingPayload.stays[0]!,
+          rows: [{ ...bookingPayload.stays[0]!.rows[0]!, roomType: 'STD KNG' }],
+        },
+      ],
+    };
+    const { analysis } = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}, undefined, 'HRDAV');
+    const card = await hmsTodoCardFromLuna(analysis.luna, [], 'Please confirm the booking.', 'HRDAV');
+    expect(card).toMatchObject({ kind: 'new_booking' });
+    expect(card?.prefill?.fields).toEqual(expect.arrayContaining([{ label: 'Room type', value: 'STKNG' }]));
+  });
 });

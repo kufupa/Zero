@@ -80,6 +80,18 @@ describe('HRDAV native room and board maps', () => {
       status: 'codes',
       codes: ['DLXPAT'],
     });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Twin', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['STWN'],
+    });
+    expect(
+      staffQuoteGroupsFromStay(
+        [stay({ roomPreference: 'Twin', fields: { roomPreference: 'extracted' } })],
+        HRDAV_PROPERTY_CODE,
+      ),
+    ).toEqual({
+      ok: [expect.objectContaining({ roomCodes: ['STWN'] })],
+    });
     expect(resolveNativeRoomCodes({ roomPreference: 'STD SGL', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
       status: 'unresolved',
       label: 'STD SGL',
