@@ -2,7 +2,15 @@
 
 const MUTATION_METHOD = /^(POST|PUT|PATCH|DELETE)$/i;
 const MUTATION_PATH = /save|delete|cancel|duplicate|checkin|checkout|crs/i;
-const AVAILABILITY_READ_PATH = '/api/internalBooking/hotelAvail/inquiryForGrid';
+// On-prem Hotel Availability posts hotelAvail/; the Infor cloud build (HRCEN, 2026-10-27) posts rateshop/.
+const AVAILABILITY_READ_PATHS = new Set([
+  '/api/internalBooking/hotelAvail/inquiryForGrid',
+  '/api/internalBooking/rateshop/inquiryForGrid',
+]);
+
+export function isAvailabilityReadPath(pathname) {
+  return AVAILABILITY_READ_PATHS.has(pathname);
+}
 const SAFE_READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 export function shouldAbortReadOnlyRequest({ method, url }) {
@@ -45,7 +53,7 @@ export async function installAvailabilityReadOnlyGuard(context, origin) {
     if (method === 'POST') {
       try {
         const url = new URL(request.url());
-        allowed = url.origin === allowedOrigin && url.pathname === AVAILABILITY_READ_PATH;
+        allowed = url.origin === allowedOrigin && isAvailabilityReadPath(url.pathname);
       } catch {
         allowed = false;
       }

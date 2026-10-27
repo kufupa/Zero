@@ -9,6 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createAudit } from './audit.mjs';
 import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
+import { isAvailabilityReadPath } from './hms-read-only-guard.mjs';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 import { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
 import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
@@ -51,8 +52,29 @@ export async function openHotelAvailability(page) {
     await node('Hotel Availability').waitFor({ timeout: 3000 }).catch(() => {});
   }
   await node('Hotel Availability').click();
-  await page.locator('input[name="startdate"]:visible').waitFor();
+  // On-prem HMS has a startdate field; the Infor cloud build (HRCEN, 2026-10-27) has one `dates` range picker.
+  await page.locator('input[name="startdate"]:visible, input[name="dates"]:visible').first().waitFor();
   await page.getByRole('heading',{name:'Hotel Availability',exact:true}).waitFor();
+}
+
+// Arrival date on either screen build. The range end keeps the screen's current window length; the
+// inquiry readback (assertApplied) checks the start date HMS actually searched.
+export async function setArrivalDate(page, iso) {
+  const start = page.locator('input[name="startdate"]');
+  if (await start.count()) {
+    await start.fill(displayDate(iso));
+    await start.press('Tab');
+    return;
+  }
+  const range = page.locator('input[name="dates"]:visible');
+  await range.evaluate((e, value) => {
+    const field = Ext.getCmp(e.id.replace(/-inputEl$/, ''));
+    const [year, month, day] = value.split('-').map(Number);
+    const current = field.getValue();
+    const span = current?.startDate && current?.endDate ? Math.round((current.endDate - current.startDate) / 86400000) : 14;
+    field.setValue({ startDate: new Date(year, month - 1, day), endDate: new Date(year, month - 1, day + span) });
+  }, iso);
+  await range.press('Tab');
 }
 
 export async function applyGuests(page, room) {
@@ -358,16 +380,14 @@ async function applyCriteria(page, request, room, criteriaCheckpoint, clock) {
   await clock.time('criteriaReset', () => resetPublicControls(page));
   // Pickers can be date-scoped. Do not resolve this request against a previous
   // group's calendar; selecting a group can then change the date again.
-  await page.locator('input[name="startdate"]').fill(displayDate(request.arrivalDate));
-  await page.locator('input[name="startdate"]').press('Tab');
+  await setArrivalDate(page,request.arrivalDate);
   const resolvedContext={};
   // Group changes date/strategy; restore requested occupancy/dates afterward.
   for (const kind of ['group','organization','agency']) if (request.rateContext?.[kind])
     resolvedContext[kind]=await resolveReference(page,kind,request.rateContext[kind]);
   if (request.rateContext?.group&&request.search?.salesStrategy) throw new Error('UNSUPPORTED_GROUP_SALES_STRATEGY');
   const strategy=request.rateContext?.group?null:await selectSalesStrategy(page,request.search?.salesStrategy??(request.rateContext?'Preset':'BAR'));
-  await page.locator('input[name="startdate"]').fill(displayDate(request.arrivalDate));
-  await page.locator('input[name="startdate"]').press('Tab');
+  await setArrivalDate(page,request.arrivalDate);
   await applyGuests(page,room);
   await applyCurrency(page,request.requestedCurrency);
   // Visibility only. Native false hides whole rows based on the 14-day grid,
@@ -389,7 +409,7 @@ export async function searchCalendar(page, request, room, criteriaCheckpoint=asy
   const windows=[];
   let expectedStart=request.arrivalDate;
   for (let index=0;index<3;index++) {
-    const pending=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/internalBooking/hotelAvail/inquiryForGrid'&&r.request().method()==='POST',{timeout:45000});
+    const pending=page.waitForResponse(r=>isAvailabilityReadPath(new URL(r.url()).pathname)&&r.request().method()==='POST',{timeout:45000});
     pending.catch(()=>{});
     const [response]=await clock.time('grid',()=>Promise.all([pending,index===0?search(page):page.locator('a.x-btn[data-qtip="Page Right"]:visible').click()]));
     if(!response.ok())throw new Error(`SEARCH_HTTP_${response.status()}`);
