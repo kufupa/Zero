@@ -827,6 +827,17 @@ export function BookingCards({
   const [defaultError, setDefaultError] = useState<string | null>(null);
   const saveGeneration = useRef(0);
   const staffChoseRef = useRef(false);
+  const sourceEmail = sources?.userEmail ?? '';
+  const [choiceForEmail, setChoiceForEmail] = useState(sourceEmail);
+  if (sources && choiceForEmail !== sourceEmail) {
+    setChoiceForEmail(sourceEmail);
+    staffChoseRef.current = false;
+    setStaffChose(false);
+    setDefaultSaved(false);
+    setDefaultError(null);
+    setRecipientMode(sources.setting?.mode ?? 'self');
+    setCustomAddress(sources.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '');
+  }
   useEffect(() => {
     if (staffChoseRef.current || !sources?.setting) return;
     setRecipientMode(sources.setting.mode);

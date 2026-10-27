@@ -276,6 +276,10 @@ export function clearSavedConfirmation() {
   publishSavedDefault();
 }
 
+function dropSavedConfirmation() {
+  savedDefault = null;
+}
+
 function noteSavedConfirmation(setting: ConfirmationSetting) {
   savedDefault = setting;
   publishSavedDefault();
@@ -331,11 +335,16 @@ export function ConfirmationSourcesBridge({
   const [setting, setSetting] = useState<ConfirmationSetting | null>(null);
   const [invalidSetting, setInvalidSetting] = useState(false);
   const [load, setLoad] = useState<NonNullable<ConfirmationSources['load']>>('pending');
+  const [loadedFor, setLoadedFor] = useState(userEmail);
   const noted = useSyncExternalStore(subscribeSavedDefault, readSavedDefault, () => null);
 
-  useEffect(() => {
-    clearSavedConfirmation();
-  }, [userEmail]);
+  if (loadedFor !== userEmail) {
+    setLoadedFor(userEmail);
+    setSetting(null);
+    setInvalidSetting(false);
+    setLoad('pending');
+    dropSavedConfirmation();
+  }
 
   useEffect(() => {
     let cancelled = false;

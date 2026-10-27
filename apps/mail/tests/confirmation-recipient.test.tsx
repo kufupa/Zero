@@ -342,4 +342,35 @@ describe('confirmation recipient', () => {
       );
     });
   });
+
+  it('drops the previous user address when the signed-in user changes', async () => {
+    let reads = 0;
+    settingsDouble.get.mockImplementation(async () => {
+      reads += 1;
+      if (reads === 1) {
+        return { settings: { confirmation: { mode: 'custom', address: OTHER } } };
+      }
+      return { settings: { language: 'en' } };
+    });
+    const api = pane();
+    const view = render(
+      <ConfirmationSourcesBridge userEmail="first@example.invalid">
+        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+      </ConfirmationSourcesBridge>,
+    );
+    await waitFor(() => {
+      expect((screen.getByLabelText('Other confirmation email') as unknown as HTMLInputElement).value).toBe(OTHER);
+    });
+    view.rerender(
+      <ConfirmationSourcesBridge userEmail="second@example.invalid">
+        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+      </ConfirmationSourcesBridge>,
+    );
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Other confirmation email')).toBeNull();
+      expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe(
+        'self',
+      );
+    });
+  });
 });
