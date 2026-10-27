@@ -523,6 +523,8 @@ test('two-group public BAR/PROMO rows verify and compose; unbound WS stays condi
   assert.equal(air.options.find(o=>o.rate.code==='PMO1B').rateScope,'unknown');
   const preset=quote.extractOptions({...wholesale,search:{salesStrategy:'Preset'},rateContext:undefined},wholesale.rooms[0],[windowFor('STKNG',[{code:'PMO1B',desc:'Promotion Breakfast'}],'PRESET')]);
   assert.equal(preset.options.find(o=>o.rate.code==='PMO1B').rateScope,'unknown');
+  const doml=quote.extractOptions({...wholesale,search:{salesStrategy:'Domestic Leisure'},rateContext:undefined},wholesale.rooms[0],[windowFor('STKNG',[{code:'PMO1B',desc:'Promotion Breakfast'}],'DOML')]);
+  assert.equal(doml.options.find(o=>o.rate.code==='PMO1B').rateScope,'unknown');
   const barShop={...wholesale,search:{salesStrategy:'BAR'},rateContext:{organization:{name:'Example Company'}}};
   const crossed=quote.extractOptions(barShop,barShop.rooms[0],[{...windowFor('STKNG',mixed,'BAR'),criteria:{salesStrategy:'BAR',organizationID:'1'}}],{organization:{id:'1'}});
   assert.equal(crossed.options.find(o=>o.rate.code==='BAR').eligibility,'verified');

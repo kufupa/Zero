@@ -117,8 +117,8 @@ test('both hotels load rates, boards and letter; unknown property throws', () =>
   assert.equal(hrcen.cancellation, undefined);
 
   assert.deepEqual(getProfileRates('HRDAV').public, ['BAR', 'BARRO', 'WAL']);
-  assert.deepEqual(getProfileRates('HRCEN').publicStrategies, ['BAR']);
-  assert.deepEqual(getProfileRates('HRDAV').publicStrategies, ['BAR', 'PROMO']);
+  assert.deepEqual(hrdav.salesStrategies.filter((row) => row.scope === 'public').map((row) => row.value), ['PROMO', 'BAR']);
+  assert.deepEqual(hrcen.salesStrategies.filter((row) => row.scope === 'public').map((row) => row.value), ['BAR']);
   const wsPlans = getProfileRates('HRDAV').strategies.WS.plans;
   assert.ok(wsPlans.includes('BWS1B'));
   assert.equal(getProfileRates('HRDAV').strategies.WS.scope, 'agency');
@@ -140,7 +140,7 @@ test('a bad letter regex string is rejected', async () => {
   assert.throws(() => validateProfile(raw, 'HRCEN'), /not a valid regular expression/);
 });
 
-test('unlisted non-negotiated rates are public only on rates.publicStrategies', async () => {
+test('unlisted non-negotiated rates are public only on salesStrategies scope public', async () => {
   const hrdav = profileFor('HRDAV');
   assert.equal(hrdav.classifyRate('PMO1B', 'PROMO', false), 'public');
   assert.equal(hrdav.classifyRate('PMO1B', 'PROMO', true), 'contextual');
@@ -148,12 +148,13 @@ test('unlisted non-negotiated rates are public only on rates.publicStrategies', 
   assert.equal(hrdav.classifyRate('PMO1B', 'NC', false), 'unknown');
   assert.equal(hrdav.classifyRate('PMO1B', 'AIR', false), 'unknown');
   assert.equal(hrdav.classifyRate('PMO1B', 'PRESET', false), 'unknown');
+  assert.equal(hrdav.classifyRate('PMO1B', 'DOML', false), 'unknown');
   assert.equal(hrdav.classifyRate('PMO1B', 'WS', false), 'unknown');
   assert.equal(hrdav.classifyRate('BWS1B', 'WS', false), 'contextual');
   assert.equal(hrdav.classifyRate('ZZZUNK', 'WS', false), 'unknown');
   const raw = await hrcenRaw();
-  delete raw.rates.publicStrategies;
+  raw.salesStrategies = [{ value: 'BAR', display: 'BAR' }];
   assert.equal(validateProfile(raw, 'HRCEN').classifyRate('ZZZUNK', 'BAR', false), 'unknown');
-  raw.rates.publicStrategies = ['BAR', 'NOTASTRAT'];
-  assert.throws(() => validateProfile(raw, 'HRCEN'), /not a known HMS strategy/);
+  raw.salesStrategies = [{ value: 'BAR', display: 'BAR', scope: 'retail' }];
+  assert.throws(() => validateProfile(raw, 'HRCEN'), /scope must be agency, company or public/);
 });

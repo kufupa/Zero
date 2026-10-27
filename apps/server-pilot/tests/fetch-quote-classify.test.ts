@@ -409,6 +409,12 @@ it('classifies unlisted non-negotiated PROMO rows public and leaves NC/negotiate
     [windowFor('PRESET', false)],
   );
   expect(preset.options[0]?.rateScope).toBe('unknown');
+  const doml = extractOptions(
+    { ...stay, search: { salesStrategy: 'Domestic Leisure' } },
+    stay.rooms[0],
+    [windowFor('DOML', false)],
+  );
+  expect(doml.options[0]?.rateScope).toBe('unknown');
 });
 
 it('keeps WS contract rows conditional without a verified agency', () => {
