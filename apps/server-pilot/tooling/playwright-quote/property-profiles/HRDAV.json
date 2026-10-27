@@ -55,6 +55,16 @@
     "confirmation": "/We have pleasure in confirming your reservation at (?:The )?Da ?Vinci Hotel (?:&|and) Suites/i"
   },
   "cancellation": { "noticeHours": 48 },
+  "shuttle": {
+    "provider": "Jarat Tours",
+    "to": [
+      "legacy@jarattours.co.za",
+      "info@jarattours.co.za",
+      "info.jhb@jarattours.co.za",
+      "davinci@jarattours.co.za",
+      "pako@jarattours.co.za"
+    ]
+  },
   "salesStrategies": [
     { "value": "PROMO", "display": "Promotions" },
     { "value": "BAR", "display": "BAR" },

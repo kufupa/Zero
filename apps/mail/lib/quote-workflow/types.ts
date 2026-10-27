@@ -287,6 +287,9 @@ export type QuoteSalesStrategy = {
   requestValue: QuoteSalesStrategyValue;
 };
 
+/** Property-profile recipients for the optional shuttle request draft. */
+export type ShuttleProviderConfig = { provider: string; to: string[] };
+
 /** Mailbox-selected, registry-backed choices for the quote pane. */
 export type QuotePaneConfig = {
   transportId: string;
@@ -297,6 +300,7 @@ export type QuotePaneConfig = {
   salesStrategies: QuoteSalesStrategy[];
   overrideRateCodes: string[];
   eventRateCodes: string[];
+  shuttle?: ShuttleProviderConfig | null;
 };
 
 export type StaffQuoteSource = {
