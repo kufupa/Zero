@@ -37,6 +37,14 @@ import {
   type PaneStayInput,
 } from '@/lib/quote-workflow/pane-stay-bind';
 import { Notice, paneFieldClass, PrimaryButton, SecondaryButton } from '@/components/nava-pane/pane-ui';
+import {
+  ConfirmationRecipient,
+  resolveConfirmationRecipient,
+  useConfirmationSources,
+  type ConfirmationMode,
+  type ConfirmationRecipientPayload,
+  type ConfirmationSources,
+} from './confirmation-recipient';
 
 const COPIED_MS = 1500;
 const COPY_FAILED_MS = 3000;
@@ -664,6 +672,7 @@ function roomChoiceFor(
   group: StayGroupRequirement | undefined,
   choice: RoomChoice,
   contact: StoredContact | null,
+  confirmationRecipient: ConfirmationRecipientPayload | null,
 ): PaneStayChoice {
   return {
     ...choice,
@@ -671,6 +680,7 @@ function roomChoiceFor(
     ratePlan: textValue(group?.rateCode) || textValue(room.request.ratePlan) || textValue(group?.quotedRateCode),
     bookerName: contact ? textValue(contact.name) : textValue(room.request.bookerName),
     bookerEmail: contact ? textValue(contact.email) : textValue(room.request.bookerEmail),
+    ...(confirmationRecipient ? { confirmationRecipient } : {}),
   };
 }
 
@@ -714,6 +724,7 @@ export function BookingCards({
   guestEditorKey,
   session,
   propertyCode,
+  confirmation,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -735,6 +746,11 @@ export function BookingCards({
   session?: QuoteSession;
   /** Active mailbox property. Unknown or missing codes fail closed (no generated note). */
   propertyCode?: string | null;
+  /**
+   * Signed-in user and saved confirmation default. Null keeps the card as it was before this control
+   * (unit tests that render the card alone). The live pane always passes it.
+   */
+  confirmation?: ConfirmationSources | null;
 }) {
   const client = paneSave;
   const contactRef = useRef(contact);
@@ -796,6 +812,28 @@ export function BookingCards({
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
   const stayBookingRef = useRef(false);
+  const contextConfirmation = useConfirmationSources();
+  const sources = confirmation === undefined ? contextConfirmation : confirmation;
+  const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(sources?.setting?.mode ?? 'self');
+  const [customAddress, setCustomAddress] = useState(
+    sources?.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '',
+  );
+  const recipientDirty = useRef(false);
+  useEffect(() => {
+    if (recipientDirty.current || !sources?.setting) return;
+    setRecipientMode(sources.setting.mode);
+    if (sources.setting.mode === 'custom') setCustomAddress(sources.setting.address ?? '');
+  }, [sources]);
+  const clientEmail = contact ? textValue(contact.email) : '';
+  const resolvedRecipient = sources
+    ? resolveConfirmationRecipient({
+        mode: recipientMode,
+        customAddress,
+        userEmail: sources.userEmail,
+        clientEmail,
+        invalidSetting: sources.invalidSetting,
+      })
+    : null;
   useEffect(() => () => {
     stayBookingRef.current = false;
   }, []);
@@ -950,11 +988,21 @@ export function BookingCards({
     currentContact: StoredContact | null = contact,
   ) {
     const group = roomGroupFor(room, groups);
-    return paneStayInputForConfiguredRoom(
+    const built = paneStayInputForConfiguredRoom(
       roomRequestFor(room, group),
-      roomChoiceFor(room, group, choices[roomKeyOf(room)] ?? NO_CHOICE, currentContact),
+      roomChoiceFor(
+        room,
+        group,
+        choices[roomKeyOf(room)] ?? NO_CHOICE,
+        currentContact,
+        resolvedRecipient?.ok ? resolvedRecipient.recipient : null,
+      ),
       requiredCreateFields,
     );
+    if (resolvedRecipient && !resolvedRecipient.ok) {
+      return { stay: null, missing: [...built.missing, 'confirmation recipient'] };
+    }
+    return built;
   }
 
   function previewKeyForRoom(
@@ -1093,6 +1141,24 @@ export function BookingCards({
           ? 'Preview each room using the Stay details above, then create it in HMS.'
           : 'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.'}
       </p>
+      {sources ? (
+        <ConfirmationRecipient
+          mode={recipientMode}
+          customAddress={customAddress}
+          userEmail={sources.userEmail}
+          clientEmail={clientEmail}
+          disabled={stayBooking}
+          error={resolvedRecipient && !resolvedRecipient.ok ? resolvedRecipient.message : null}
+          onMode={(next) => {
+            recipientDirty.current = true;
+            setRecipientMode(next);
+          }}
+          onCustomAddress={(value) => {
+            recipientDirty.current = true;
+            setCustomAddress(value);
+          }}
+        />
+      ) : null}
       {mode === 'lab' ? (
         <p role="note" className="text-[11.5px] text-amber-900">
           {LAB_WRITE_NOTE}

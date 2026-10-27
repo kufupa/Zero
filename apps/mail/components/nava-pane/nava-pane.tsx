@@ -23,6 +23,7 @@ import {
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { ConfirmationSourcesBridge } from '@/components/quote-workflow/confirmation-recipient';
 import { hideQuoteWorkspace, QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { WorkflowBadge } from '@/components/quote-workflow/workflow-badge';
 import {
@@ -2298,6 +2299,7 @@ export function NavaPane({
             ) : null}
 
             {/* HOOK(#79, #84; not on main): their picker props are added in StaffHeaderFields, quote-workflow-panel.tsx. */}
+            <ConfirmationSourcesBridge userEmail={session?.user?.email ?? ''}>
             <QuoteWorkflowPanel
               session={quoteSession}
               workItemId={paneWorkItemId ?? undefined}
@@ -2384,6 +2386,7 @@ export function NavaPane({
               pdfPending={pdfPending}
               replyContent={quoteOrBookingEmail ? replyBody : undefined}
             />
+            </ConfirmationSourcesBridge>
 
             {/* Supporting tools follow the four-step quote flow and stay available without competing with its actions. */}
             {storedWork.pane.state === 'ready' ? (
