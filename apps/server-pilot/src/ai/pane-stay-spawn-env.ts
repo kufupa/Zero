@@ -39,8 +39,6 @@ const PANE_WRITE_ENV_NAMES = [
   'PANE_WRITE_ATTACH',
 ] as const;
 
-const PANE_WRITE_ENV_NAME_SET = new Set<string>(PANE_WRITE_ENV_NAMES);
-
 /**
  * The only variables a pane HMS CLI inherits: process basics, CDP endpoint and ownership, credential source, the
  * slot storageState path used to skip a repeat login, the shared save gate, and the per-workflow write
@@ -82,10 +80,9 @@ function isolatedSlotPaneStaySpawnEnv(
       name === 'HMS_STAGEHAND_CDP_URL' ||
       name === 'HMS_QUOTE_SECRET_PATH' ||
       name === 'HMS_READ_SECRET_ARN' ||
-      name === 'RESERVATIONIST_PANE_SAVE' ||
-      PANE_WRITE_ENV_NAME_SET.has(name) ||
       name === 'HMS_SLOT_PROFILE_DIR' ||
-      name === 'HMS_SLOT_STORAGE_STATE'
+      name === 'HMS_SLOT_STORAGE_STATE' ||
+      (name === 'HMS_DAVINCI_CREATE' && target.browserSlot !== 'davinci')
     ) {
       continue;
     }
@@ -105,7 +102,8 @@ function isolatedSlotPaneStaySpawnEnv(
  * HMS_STAGEHAND_* variables, so the CLIs refuse with CDP_URL_REQUIRED. The installed staff quote configuration names
  * the borrowed browser and the credential file, the same way the staff quote spawner passes them to its CLIs.
  * Variables already set in the environment win, so a local run keeps its own browser.
- * A Da Vinci read target never inherits the Centurion CDP, quote secret file, or write gates.
+ * A Da Vinci read target never inherits the Centurion CDP, quote secret file, or slot paths.
+ * Write flags (RESERVATIONIST_PANE_SAVE, PANE_WRITE_*, HMS_DAVINCI_CREATE) come from this process env.
  */
 export function paneStaySpawnEnv(
   env: NodeJS.ProcessEnv = process.env,
