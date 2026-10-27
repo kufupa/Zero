@@ -15,3 +15,12 @@ export const ROOM_WORD_ALIASES = {
   double: ['STQN', 'SKNG', 'EXKNG'],
   single: ['STWN', 'SKNG'],
 };
+
+export const ROOM_ABBREVIATIONS = {
+  std: 'standard',
+  dlx: 'deluxe',
+  exec: 'executive',
+  twn: 'twin',
+  kng: 'king',
+  sgl: 'single',
+};

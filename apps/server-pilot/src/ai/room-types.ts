@@ -2,12 +2,13 @@
  * Server-side mirror of apps/mail/lib/quote-workflow/room-types.ts. These apps do not share a helper package; keep
  * behavior aligned with the parity test rather than importing across production app boundaries.
  */
-import { ROOM_TYPE_NAMES, ROOM_WORD_ALIASES } from '../../config/room-types.js';
+import { ROOM_ABBREVIATIONS, ROOM_TYPE_NAMES, ROOM_WORD_ALIASES } from '../../config/room-types.js';
+import { profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
 
 export { ROOM_TYPE_NAMES };
 
 export type RoomTypeCode = keyof typeof ROOM_TYPE_NAMES;
-export type RoomTypeMatch = { code?: RoomTypeCode; suggestions: RoomTypeCode[] };
+export type RoomTypeMatch = { code?: string; suggestions: string[] };
 
 export const ROOM_TYPE_CODES = Object.keys(ROOM_TYPE_NAMES) as RoomTypeCode[];
 
@@ -25,9 +26,6 @@ const IGNORED_ROOM_WORDS = new Set([
   'per',
   'person',
 ]);
-const MATCHABLE_ROOM_WORDS = new Set(
-  Object.values(ROOM_TYPE_NAMES).flatMap((name) => name.toLowerCase().split(' ')),
-);
 
 const MAX_ROOM_TYPE_SUGGESTIONS = 3;
 
@@ -53,38 +51,88 @@ function roomWords(raw: string): string[] {
     .split(/\s+/)
     .filter(Boolean)
     .map(singularRoomWord)
+    .map((word) => ROOM_ABBREVIATIONS[word] ?? word)
     .filter((word) => !IGNORED_ROOM_WORDS.has(word));
 }
 
-/** Match an email/extraction room label without choosing between multiple HMS codes. */
-export function matchRoomType(raw: string | undefined): RoomTypeMatch {
+function occupancyAliases(names: Record<string, string>): Record<string, string[]> {
+  const codes = Object.keys(names);
+  const withWord = (word: string) =>
+    codes.filter((code) => names[code]!.toLowerCase().split(/\s+/).includes(word));
+  return {
+    double: [...withWord('queen'), ...withWord('king')],
+    single: [...withWord('twin'), ...withWord('king')],
+  };
+}
+
+function catalogueFor(propertyCode?: string): {
+  names: Record<string, string>;
+  aliases: Record<string, readonly string[]>;
+  codes: string[];
+  requireFullLabel: boolean;
+} {
+  const profile = typeof propertyCode === 'string' ? profileFor(propertyCode) : null;
+  if (profile?.rooms && Object.keys(profile.rooms).length) {
+    const names = Object.fromEntries(
+      Object.entries(profile.rooms).map(([code, room]) => [code, room.label]),
+    );
+    return { names, aliases: occupancyAliases(names), codes: Object.keys(names), requireFullLabel: true };
+  }
+  return { names: ROOM_TYPE_NAMES, aliases: ROOM_WORD_ALIASES, codes: ROOM_TYPE_CODES, requireFullLabel: false };
+}
+
+function matchableWords(names: Record<string, string>, aliases: Record<string, readonly string[]>): Set<string> {
+  return new Set([
+    ...Object.values(names).flatMap((name) => name.toLowerCase().split(' ')),
+    ...Object.keys(aliases),
+  ]);
+}
+
+function matchAgainstCatalogue(
+  raw: string | undefined,
+  names: Record<string, string>,
+  aliases: Record<string, readonly string[]>,
+  codes: string[],
+  requireFullLabel: boolean,
+): RoomTypeMatch {
   const normalized = raw?.trim() ? stripRoomCountPrefix(raw) : '';
   const code = normalized.trim().replace(/[^a-z0-9]/gi, '').toUpperCase();
-  if (Object.hasOwn(ROOM_TYPE_NAMES, code)) return { code: code as RoomTypeCode, suggestions: [] };
+  if (Object.hasOwn(names, code)) return { code, suggestions: [] };
   if (!raw?.trim()) return { suggestions: [] };
 
+  const matchable = matchableWords(names, aliases);
   const words = roomWords(normalized);
-  if (
-    !words.length ||
-    words.some((word) => !MATCHABLE_ROOM_WORDS.has(word) && !Object.hasOwn(ROOM_WORD_ALIASES, word))
-  ) {
+  if (!words.length || words.some((word) => !matchable.has(word))) {
     return { suggestions: [] };
   }
 
-  // Bed words ("single", "double") only rank. They never narrow a name to one code: "single twin" fits Standard and
-  // Deluxe Twin, so it stays a suggestion. An exact code needs the name words alone to fit one type.
-  const aliasWords = words.filter((word) => Object.hasOwn(ROOM_WORD_ALIASES, word));
-  const nameOnly = words.filter((word) => !Object.hasOwn(ROOM_WORD_ALIASES, word));
-  const candidates = ROOM_TYPE_CODES.filter((candidate) => {
-    if (!nameOnly.length) return aliasWords.some((word) => ROOM_WORD_ALIASES[word]!.includes(candidate));
-    const nameWords = ROOM_TYPE_NAMES[candidate].toLowerCase().split(' ');
+  const aliasWords = words.filter((word) => Object.hasOwn(aliases, word));
+  const nameOnly = words.filter((word) => !Object.hasOwn(aliases, word));
+  const candidates = codes.filter((candidate) => {
+    if (!nameOnly.length) return aliasWords.some((word) => aliases[word]!.includes(candidate));
+    const nameWords = names[candidate]!.toLowerCase().split(' ');
     return nameOnly.every((word) => nameWords.includes(word));
   });
 
-  if (candidates.length === 1) return { code: candidates[0]!, suggestions: [] };
-  const rank = (candidate: RoomTypeCode) => {
-    const fits = aliasWords.length > 0 && aliasWords.every((word) => ROOM_WORD_ALIASES[word]!.includes(candidate));
-    return fits ? ROOM_WORD_ALIASES[aliasWords[0]!]!.indexOf(candidate) : 100 + ROOM_TYPE_CODES.indexOf(candidate);
+  if (candidates.length === 1) {
+    if (requireFullLabel) {
+      const nameWords = names[candidates[0]!]!.toLowerCase().split(' ');
+      if (nameOnly.length && nameWords.every((word) => nameOnly.includes(word))) {
+        return { code: candidates[0]!, suggestions: [] };
+      }
+      return { suggestions: candidates };
+    }
+    return { code: candidates[0]!, suggestions: [] };
+  }
+  const rank = (candidate: string) => {
+    const fits = aliasWords.length > 0 && aliasWords.every((word) => aliases[word]!.includes(candidate));
+    return fits ? aliases[aliasWords[0]!]!.indexOf(candidate) : 100 + codes.indexOf(candidate);
   };
   return { suggestions: [...candidates].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_ROOM_TYPE_SUGGESTIONS) };
+}
+
+/** Match an email/extraction room label without choosing between multiple HMS codes. */
+export function matchRoomType(raw: string | undefined, propertyCode?: string): RoomTypeMatch {
+  const { names, aliases, codes, requireFullLabel } = catalogueFor(propertyCode);
+  return matchAgainstCatalogue(raw, names, aliases, codes, requireFullLabel);
 }

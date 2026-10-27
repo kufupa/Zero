@@ -46,6 +46,8 @@ describe('server/mail room matcher parity', () => {
     ['singles', { suggestions: ['STWN', 'SKNG'] }],
     ['king', { suggestions: ['SKNG', 'EXKNG', 'DLXKNG'] }],
     ['Executive King', { code: 'EXKNG', suggestions: [] }],
+    ['Luxury room', { code: 'LUXKNG', suggestions: [] }],
+    ['Executive room', { code: 'EXKNG', suggestions: [] }],
     ['garbage', { suggestions: [] }],
   ] as const)('matches %s without guessing', (raw, expected) => {
     expect(matchServerRoomType(raw)).toEqual(expected);
@@ -67,4 +69,26 @@ describe('server/mail room matcher parity', () => {
       expect(matchServerRoomType(raw)).toEqual(matchMailRoomType(raw));
     },
   );
+
+  it('keeps Centurion Standard King on SKNG when no property profile is passed', () => {
+    expect(matchServerRoomType('Standard King')).toEqual({ code: 'SKNG', suggestions: [] });
+    expect(matchServerRoomType('Standard King')).toEqual(matchMailRoomType('Standard King'));
+  });
+
+  it('keeps Centurion Luxury and Executive room as codes on HRCEN', () => {
+    expect(matchServerRoomType('Luxury room', 'HRCEN')).toEqual({ code: 'LUXKNG', suggestions: [] });
+    expect(matchServerRoomType('Executive room', 'HRCEN')).toEqual({ code: 'EXKNG', suggestions: [] });
+    expect(matchServerRoomType('Luxury room', 'HRCEN')).toEqual(matchMailRoomType('Luxury room'));
+    expect(matchServerRoomType('Executive room', 'HRCEN')).toEqual(matchMailRoomType('Executive room'));
+  });
+
+  it('maps HRDAV abbreviations and labels onto that profile, not Centurion codes', () => {
+    expect(matchServerRoomType('STD TWN', 'HRDAV')).toEqual({ code: 'STWN', suggestions: [] });
+    expect(matchServerRoomType('Deluxe Patio', 'HRDAV')).toEqual({ code: 'DLXPAT', suggestions: [] });
+    expect(matchServerRoomType('Standard King', 'HRDAV')).toEqual({ code: 'STKNG', suggestions: [] });
+    expect(matchServerRoomType('STD SGL', 'HRDAV')).toEqual({ suggestions: ['STWN', 'STKNG'] });
+    expect(matchServerRoomType('Twin', 'HRDAV')).toEqual({ suggestions: ['STWN'] });
+    expect(matchServerRoomType('SUITE', 'HRDAV')).toEqual({ suggestions: ['JNRSUI'] });
+    expect(matchServerRoomType('Standard King')).toEqual({ code: 'SKNG', suggestions: [] });
+  });
 });

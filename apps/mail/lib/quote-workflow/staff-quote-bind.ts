@@ -38,7 +38,7 @@ import {
   staffHeaderFieldProblem,
   staffStayExtrasFor,
 } from './types';
-import { knownRoomCode, normaliseRoomLabel, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
+import { knownRoomCode, matchConfiguredRoomType, normaliseRoomLabel, ROOM_TYPE_CODES, unpickedTwinRoomCode } from './room-types';
 
 const SOURCE_HASH = /^[a-f0-9]{64}$/;
 /** Exact Centurion native room-type codes, from the room-types map. Labels such as SINGLE are not codes. */
@@ -430,11 +430,8 @@ export function qualifiedPdfFailureReason(error: unknown): string {
 function hrdavKnownCode(raw: string): string | null {
   const code = raw.trim().replace(/[^a-z0-9]/gi, '').toUpperCase();
   if (HRDAV_NATIVE_ROOM_CODES.has(code)) return code;
-  const needle = normaliseRoomLabel(raw);
-  const matches = (Object.entries(HRDAV_ROOM_NAMES) as Array<[string, string]>).filter(
-    ([code, label]) => normaliseRoomLabel(code) === needle || normaliseRoomLabel(label) === needle,
-  );
-  return matches.length === 1 ? matches[0]![0] : null;
+  const rooms = (Object.entries(HRDAV_ROOM_NAMES) as Array<[string, string]>).map(([code, label]) => ({ code, label }));
+  return matchConfiguredRoomType([raw], rooms)?.code ?? null;
 }
 
 function knownNativeCode(raw: string, propertyCode?: string): string | null {
