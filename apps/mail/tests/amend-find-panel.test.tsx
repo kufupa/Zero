@@ -1586,7 +1586,7 @@ describe('AmendLookupPanel cancel while writes are off (U-3)', () => {
     expect(preview).not.toHaveBeenCalled();
   });
 
-  it('shows Handle in Infor on a paid cancel stay and still offers preview', async () => {
+  it('shows paid-booking copy on a paid cancel stay and still offers preview', async () => {
     capabilities.paneSave = true;
     capabilities.paneSaveMode = 'lab';
     const findStay = vi.fn().mockResolvedValue(

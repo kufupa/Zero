@@ -188,10 +188,52 @@ export const unsupportedFieldReason = (state) =>
   state?.count === 1 && state.disabled === false && state.readOnly === false ? null : 'unsupported_field';
 export const dangerousDialogKind = (text) =>
   /\bpenalt(?:y|ies)\b/i.test(text) ? 'penalty' : /\bcharge(?:s)?\b/i.test(text) ? 'charge' : /\brate\b/i.test(text) ? 'rate' : null;
+const HMS_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+function calendarIsoFromDate(value) {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return null;
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return realDate(`${year}-${month}-${day}`) ? `${year}-${month}-${day}` : null;
+}
+
+/** Calendar ISO from an Ext Date, HMS DD-MON-YYYY, or ISO text. Occupancy stays numeric/string. */
+export function amendFieldIso(value) {
+  const fromDate = calendarIsoFromDate(value);
+  if (fromDate) return fromDate;
+  const text = String(value ?? '').trim();
+  if (realDate(text)) return text;
+  const match = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(text);
+  if (!match) return null;
+  const month = HMS_MONTHS.indexOf(match[2].toUpperCase());
+  if (month === -1) return null;
+  return realDate(`${match[3]}-${String(month + 1).padStart(2, '0')}-${match[1].padStart(2, '0')}`)
+    ? `${match[3]}-${String(month + 1).padStart(2, '0')}-${match[1].padStart(2, '0')}`
+    : null;
+}
+
+export function amendFieldMatches(field, expected, actual) {
+  if (actual == null || actual === '') return false;
+  if (field === 'arrival' || field === 'departure') return amendFieldIso(actual) === expected;
+  return String(actual) === String(expected);
+}
+
 export function compareChangedFields(fields, readback) {
   const actual = plainObject(readback) ? readback : {};
   const diff = Object.fromEntries(Object.entries(fields).filter(([field, value]) =>
-    !Object.hasOwn(actual, field) || actual[field] !== value).map(([field, expected]) =>
+    !Object.hasOwn(actual, field) || !amendFieldMatches(field, value, actual[field])).map(([field, expected]) =>
     [field, { expected, actual: actual[field] ?? null }]));
   return { matches: Object.keys(diff).length === 0, diff };
+}
+
+// Fill → blur → readback each field. Returns the first field that did not stick, or null.
+export async function commitAndVerifyFields(io, fields) {
+  for (const [field, value] of Object.entries(fields ?? {})) {
+    await io.fill(field, value);
+    await io.blur(field);
+    const actual = await io.read(field);
+    if (!amendFieldMatches(field, value, actual)) return field;
+  }
+  return null;
 }

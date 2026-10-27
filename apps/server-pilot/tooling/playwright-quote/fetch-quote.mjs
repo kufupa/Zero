@@ -518,10 +518,20 @@ function quoteRateScope(profile, code, strategy, isNegotiatedRate) {
 }
 
 function strategyPartyKind(profile, strategy, code) {
-  const row = profile?.rates?.strategies?.[strategy];
-  if (!row || !Array.isArray(row.plans) || !row.plans.includes(code)) return null;
-  if (row.scope === 'agency') return 'agency';
-  if (row.scope === 'company') return 'organization';
+  const strategies = profile?.rates?.strategies;
+  if (!strategies || typeof strategies !== 'object') return null;
+  const kindOf = (row) => {
+    if (!row || !Array.isArray(row.plans) || !row.plans.includes(code)) return null;
+    if (row.scope === 'agency') return 'agency';
+    if (row.scope === 'company') return 'organization';
+    return null;
+  };
+  const selected = kindOf(strategies[strategy]);
+  if (selected) return selected;
+  for (const row of Object.values(strategies)) {
+    const kind = kindOf(row);
+    if (kind) return kind;
+  }
   return null;
 }
 
@@ -620,6 +630,9 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     &&[...candidates.values()].some(o=>o.rateScope==='public')
     &&[...candidates.values()].every(o=>o.rateScope!=='contextual');
   if(noSpecialRates)issues.push(issue('NO_SPECIAL_RATES','rateContext','No special/negotiated rates for this party. Public BAR is returned.','Tell the guest this is BAR, not a contracted rate.'));
+  if(contextRequested.length&&!contextVerified&&[...candidates.values()].some(o=>o.rateScope==='public')) {
+    issues.push(issue('PARTY_RATES_NOT_CHECKED','rateContext','Party rates were not checked; public BAR shown.','Tell the guest this is public BAR; party rates were not checked.'));
+  }
   for (const option of candidates.values()) {
     const missing=wanted.filter(date=>!option.observations.has(date));
     if (missing.length) option.issues.push(issue('INCOMPLETE_DATES',option.id,`Missing nights/departure: ${missing.join(', ')}`));
@@ -637,8 +650,8 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     if (option.availability==='restricted') option.eligibility='conditional';
     Object.assign(option,assessConstraints(room,sourceFacts(option)));
     if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified&&strategyContextOk)) {
-      // ponytail: a verified party's public row stays bookable as the BAR it is; an unverified context keeps it unresolved.
-      if(contextVerified&&option.rateScope==='public') {
+      // Public rows stay bookable without a proven party. Contextual rows without that party stay unresolved.
+      if(option.rateScope==='public') {
         option.conditions.push({kind:'preferred',field:'rateContext',status:'unsatisfied',requested:request.rateContext,evidence:null,reason:noSpecialRates?'No special rates for this party; public BAR is returned.':'Public rate for this party; any contract rate is reported separately.'});
       } else {
         option.conditions.push({kind:'required',field:'rateContext',status:'unknown',requested:request.rateContext,evidence:null,reason:'Public/conditional row does not prove requested contextual entitlement.'});
@@ -653,7 +666,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     options.push(option);
   }
   if (!options.length&&!issues.length) issues.push(issue('NO_INTERPRETABLE_ROWS','search','No native/visible candidates; inventory absence is not established.'));
-  const blocking=issues.filter(i=>i.code!=='NO_SPECIAL_RATES');
+  const blocking=issues.filter(i=>i.code!=='NO_SPECIAL_RATES'&&i.code!=='PARTY_RATES_NOT_CHECKED');
   return {options,issues,completeness:{search:blocking.length?'partial':'complete',requiredFacts:blocking.length?'partial':'complete',
     sourceOptions:candidates.size,examinedOptions:options.length,windowCount:windows.length}};
 }
@@ -1101,8 +1114,13 @@ export function summarize(result) {
   const resultHas=(result.issues??[]).some(i=>i.code==='NO_SPECIAL_RATES');
   const allGroups=groups.length>0&&groups.every(hasSpecial);
   if(resultHas||allGroups)lines.push('No special rates for this party. Returned public BAR is not a contracted rate.');
+  const hasUnchecked=g=>(g.issues??[]).some(i=>i.code==='PARTY_RATES_NOT_CHECKED');
+  const resultUnchecked=(result.issues??[]).some(i=>i.code==='PARTY_RATES_NOT_CHECKED');
+  const allUnchecked=groups.length>0&&groups.every(hasUnchecked);
+  if(resultUnchecked||allUnchecked)lines.push('Party rates were not checked; public BAR shown.');
   for(const group of groups) {
     if(hasSpecial(group)&&!allGroups&&!resultHas)lines.push(`${group.id}: no special rates; returned public BAR is not a contracted rate.`);
+    if(hasUnchecked(group)&&!allUnchecked&&!resultUnchecked)lines.push(`${group.id}: party rates were not checked; public BAR shown.`);
     for(const option of group.options??[]) {
       lines.push(`${option.room.code} — ${option.room.label}; ${option.rate.code} — ${option.rate.label}; ${option.board??'board not shown'}; ${option.matchStatus??'unassessed'}; eligibility ${option.eligibility??'unknown'}; ${option.availability??'unknown'}`);
       for(const night of option.nightly??[]) lines.push(`${night.date}: ${night.price.currency} ${night.price.amount} per room/night; inventory ${night.inventory}`);

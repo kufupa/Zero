@@ -41,6 +41,9 @@ export const PANE_SCREENSHOT_NAME_PATTERN = /^[a-z][a-z0-9-]{0,40}\.png$/;
 // pane_save_unconfirmed, never as a plain failure, so staff check HMS before they press Book again.
 export const PANE_SAVE_UNCONFIRMED = 'pane_save_unconfirmed';
 const UNCONFIRMED_SAVE_OUTCOMES = new Set(['save_unconfirmed', 'save_failed']);
+/** D5: paid/guaranteed/unknown amend/cancel is out of scope. Staff handle those in HMS. */
+export const PANE_PAID_BOOKING_COPY =
+  'Paid or guaranteed booking: handle in HMS (Nava only changes unpaid bookings for now)';
 // HMS field limits: the maxlength of the live New Record inputs (fixtures/stay-lookup/record-form-live.html).
 // create-tool.schema.json carries the same numbers, and a test keeps the two equal.
 export const PANE_RESERVATION_NOTE_MAX = 2000; // reservationnote (textarea)

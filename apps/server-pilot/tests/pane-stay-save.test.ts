@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   assertLabStayGuard,
+  PANE_PAID_BOOKING_COPY,
   PANE_PREVIEW_TTL_MS,
   PANE_RUN_TTL_MS,
   PANE_STAY_PROPERTY_CODE,
@@ -173,6 +174,12 @@ describe('pane stay save guards', () => {
       }),
     ).toBe('off');
     expect(paneStaySaveMode({ PANE_WRITE_AMEND_UNPAID: 'lab' })).toBe('off');
+  });
+
+  it('paid or guaranteed copy tells staff to handle the stay in HMS', () => {
+    expect(PANE_PAID_BOOKING_COPY).toBe(
+      'Paid or guaranteed booking: handle in HMS (Nava only changes unpaid bookings for now)',
+    );
   });
 
   it('treats *_PAID=on as off and logs it', () => {

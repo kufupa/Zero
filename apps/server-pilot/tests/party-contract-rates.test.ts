@@ -800,6 +800,15 @@ describe('a public-only party read is no contract only when its search covered e
     expect(partyReadingOf([group([row('public')])], undefined)).toBeNull();
   });
 
+  it('PARTY_RATES_NOT_CHECKED is incomplete, never no_contract', () => {
+    expect(
+      partyReadingOf(
+        [group([row('public')], { search: 'complete', requiredFacts: 'complete' }, [{ code: 'PARTY_RATES_NOT_CHECKED' }])],
+        withContext,
+      ),
+    ).toBe('incomplete');
+  });
+
   it('both reasons are party-rate failures, so the public retry runs', () => {
     expect(isPartyRateFailure(new PartyRateFailure(PARTY_NO_CONTRACT_CODE))).toBe(true);
     expect(isPartyRateFailure(new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE))).toBe(true);
