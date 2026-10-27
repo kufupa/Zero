@@ -140,7 +140,7 @@ function fixture(metrics: Record<string, unknown> = { userId: user.id, staffQuot
   const request = { kind: 'staff_quote', input: STAFF_QUOTE_INPUT };
   const run = {
     id: 'job-1',
-    transportId: 'transport-1',
+    transportId: TRANSPORT_ID,
     threadId: 'thread-1',
     runKind: 'read_tool',
     promptVersion: HMS_JOB_PROMPT_VERSION,
@@ -339,7 +339,7 @@ async function provisionalWorkerQuote(
   onError?: (error: unknown) => void,
   inputOverrides: Partial<StaffQuoteInput> = {},
   prepared = false,
-  transportId = 'transport-1',
+  transportId = TRANSPORT_ID,
 ) {
   const actualRun = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
     '../src/ai/staff-quote-run.js',
@@ -405,32 +405,34 @@ async function provisionalWorkerQuote(
 }
 
 describe('staff_quote HMS job execution', () => {
-  it('does not record a staff rate pick for an auto-started quote', async () => {
-    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
-    (run as unknown as { metrics: Record<string, unknown> }).metrics.autoStart = true;
-    workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: { authorizationId: string }) =>
-      syntheticRevision(
-        ['600.00', '600.00'],
-        'Room Only R',
-        'SKNG',
-        undefined,
-        '2026-11-12',
-        prepared.authorizationId,
-      ),
-    );
+  it('records rate-pick history only for manual staff quotes', async () => {
+    for (const autoStart of [false, true]) {
+      jobMocks.runStaffQuote.mockClear();
+      quoteOutcomeMocks.recordPreparedQuoteOutcome.mockClear();
+      const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
+      if (autoStart) (run as unknown as { metrics: Record<string, unknown> }).metrics.autoStart = true;
+      workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: { authorizationId: string }) =>
+        syntheticRevision(
+          ['600.00', '600.00'],
+          'Room Only R',
+          'SKNG',
+          undefined,
+          '2026-11-12',
+          prepared.authorizationId,
+        ),
+      );
 
-    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+      await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
 
-    expect(jobMocks.runStaffQuote).toHaveBeenCalledWith(
-      expect.objectContaining({ messageId: STAFF_QUOTE_INPUT.messageId }),
-      { transportId: run.transportId, user },
-      quoteDb,
-      expect.objectContaining({ autoStart: true }),
-    );
-    expect(quoteOutcomeMocks.recordPreparedQuoteOutcome).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ ratePick: null }),
-    );
+      const options = jobMocks.runStaffQuote.mock.calls.at(-1)?.[3] as { autoStart?: boolean } | undefined;
+      expect(options?.autoStart).toBe(autoStart ? true : undefined);
+      const outcome = quoteOutcomeMocks.recordPreparedQuoteOutcome.mock.calls.at(-1)?.[1];
+      if (autoStart) {
+        expect(outcome?.ratePick).toBeNull();
+      } else {
+        expect(outcome?.ratePick).toMatchObject({ strategy: 'BAR', actorUserId: user.id, mailKind: 'quote' });
+      }
+    }
   });
 
   it('includes a staff-entered dinner allowance on an ordinary B&B quote', async () => {
@@ -904,7 +906,7 @@ describe('staff_quote HMS job execution', () => {
   it('keeps the worker deadline-bounded approval context and retries an unknown reader failure', async () => {
     const mail = {
       id: STAFF_QUOTE_INPUT.messageId,
-      transportId: 'transport-1',
+      transportId: TRANSPORT_ID,
       threadId: 'thread-1',
       direction: 'inbound',
       subject: 'Accommodation enquiry',
