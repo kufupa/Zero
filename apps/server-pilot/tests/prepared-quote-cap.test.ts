@@ -1,9 +1,14 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { countPrefetchReservations } from '../src/ai/prefetch-capacity.js';
 import { prefetchQuoteReadyForExtraction } from '../src/ai/hms-jobs.js';
-import { CENTURION_HMS_READ_TARGET, DAVINCI_HMS_READ_TARGET } from '../src/hms/hms-read-target.js';
+import {
+  CENTURION_HMS_READ_TARGET,
+  DAVINCI_HMS_READ_TARGET,
+  staffQuoteInstallationEnvName,
+} from '../src/hms/hms-read-target.js';
+import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { quotePaneConfigForProperty } from '../src/hms/rate-catalogue.js';
 import { aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction } from '../src/db/schema/work.js';
@@ -17,7 +22,10 @@ import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test
 
 const reachable = await probeTestDb();
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+});
 
 const QUOTE_ON = {
   HMS_JOB_QUEUE: 'on',
@@ -131,11 +139,11 @@ function preparedRows(db: DB, messageId: string) {
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote profile cap', { timeout: 60_000 }, () => {
   beforeEach(() => {
-    vi.stubEnv('PORT', '3000');
-    vi.stubEnv('BETTER_AUTH_URL', 'https://nava.legacy.local');
-    vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
-    vi.stubEnv('AWS_REGION', 'synthetic-region-1');
-    vi.stubEnv('S3_BUCKET', 'prepared-quote-cap-test');
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+    mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+      fromAddress: 'guest@example.test',
+      toAddresses: [],
+    });
   });
 
   it.each(PROPERTY_TARGETS)('admits a complete profile strategy set as one batch for $transportId', async (target) =>
@@ -149,7 +157,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote profile cap', 
       const cap = Math.max(1, strategies.length - 1);
       const env = {
         ...QUOTE_ON,
-        [`RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_${target.propertyCode}`]: '/tmp/prepared-quote-config.json',
+        [staffQuoteInstallationEnvName(target.propertyCode)]: '/tmp/prepared-quote-config.json',
         HMS_QUOTE_PREPARE_PER_HOUR: String(cap),
       };
 
