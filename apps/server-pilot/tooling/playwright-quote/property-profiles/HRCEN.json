@@ -15,11 +15,12 @@
   },
   "requiredCreateFields": [],
   "salesStrategies": [
-    { "value": "BAR", "display": "BAR", "scope": "public" },
+    { "value": "BAR", "display": "BAR" },
     { "value": "GOV", "display": "Government" }
   ],
   "rates": {
     "public": ["BAR", "BARRO", "WAL"],
+    "publicStrategies": ["BAR"],
     "government": {
       "labelPattern": "^Local Government Rate (?:Breakfast|Dinner|Room Only)$"
     }

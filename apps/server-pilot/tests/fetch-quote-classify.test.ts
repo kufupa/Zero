@@ -397,6 +397,18 @@ it('classifies unlisted non-negotiated PROMO rows public and leaves NC/negotiate
   );
   expect(nc.options[0]?.rateScope).toBe('unknown');
   expect(nc.options[0]?.eligibility).toBe('conditional');
+  const air = extractOptions(
+    { ...stay, search: { salesStrategy: 'Airline Crews' } },
+    stay.rooms[0],
+    [windowFor('AIR', false)],
+  );
+  expect(air.options[0]?.rateScope).toBe('unknown');
+  const preset = extractOptions(
+    { ...stay, search: { salesStrategy: 'Preset' } },
+    stay.rooms[0],
+    [windowFor('PRESET', false)],
+  );
+  expect(preset.options[0]?.rateScope).toBe('unknown');
 });
 
 it('keeps WS contract rows conditional without a verified agency', () => {

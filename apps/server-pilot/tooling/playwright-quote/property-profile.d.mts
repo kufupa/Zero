@@ -22,7 +22,7 @@ export type PropertyProfile = {
   building: string;
   roomCapacity: Record<string, number>;
   requiredCreateFields: string[];
-  salesStrategies?: Array<{ value: string; display: string; scope?: ProfileStrategyScope }>;
+  salesStrategies?: Array<{ value: string; display: string }>;
   rooms?: Record<string, { label: string; aliases?: string[] }>;
   ratePlans?: Record<string, {
     label: string;
@@ -33,6 +33,7 @@ export type PropertyProfile = {
   }>;
   rates?: {
     public?: string[];
+    publicStrategies?: string[];
     government?: { codes?: string[]; labelPattern?: string };
     strategies?: Record<string, { plans: string[]; scope: ProfileStrategyScope }>;
   };

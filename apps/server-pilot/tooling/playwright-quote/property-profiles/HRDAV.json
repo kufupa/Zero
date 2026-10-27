@@ -38,6 +38,7 @@
   "boardCodes": [],
   "rates": {
     "public": ["BAR", "BARRO", "WAL"],
+    "publicStrategies": ["BAR", "PROMO"],
     "strategies": {
       "WS": {
         "plans": ["BWS1B", "BWS2B", "BWS3B", "NG139B", "NGD73B", "NGD77B", "NGD90B", "NGDS1B", "NGDS2B", "NGDS8B", "NGDTSB", "WSF1B", "WSF2B", "WSF3B", "WSG5B", "WSG5DB"],
@@ -66,14 +67,14 @@
     ]
   },
   "salesStrategies": [
-    { "value": "PROMO", "display": "Promotions", "scope": "public" },
-    { "value": "BAR", "display": "BAR", "scope": "public" },
-    { "value": "PRESET", "display": "Preset", "scope": "public" },
+    { "value": "PROMO", "display": "Promotions" },
+    { "value": "BAR", "display": "BAR" },
+    { "value": "PRESET", "display": "Preset" },
     { "value": "WS", "display": "Wholesale" },
     { "value": "NC", "display": "Negoticated Contracted" },
     { "value": "GOV", "display": "Government" },
     { "value": "AIR", "display": "Airline Crews" },
-    { "value": "DOML", "display": "Domestic Leisure", "scope": "public" },
+    { "value": "DOML", "display": "Domestic Leisure" },
     { "value": "OTHER", "display": "Other" }
   ],
   "salesStrategyObservation": {"observedOn": "2026-10-25", "field": "salesstrategy", "required": true, "count": 9, "screenshot": "dropdown-salesstrategy-0.png"},

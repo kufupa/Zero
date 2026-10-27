@@ -48,9 +48,24 @@ function validateRateCodes(codes, field) {
   }
 }
 
+function validateStrategyCodes(codes, field) {
+  if (!Array.isArray(codes)) invalid(`${field} must be an array of HMS strategy codes`);
+  const seen = new Set();
+  for (const code of codes) {
+    if (!PROFILE_SALES_STRATEGY_CODE_SET.has(code)) {
+      invalid(`${field} entry ${code || '(empty)'} is not a known HMS strategy`);
+    }
+    if (seen.has(code)) invalid(`${field} repeats ${code}`);
+    seen.add(code);
+  }
+}
+
 function validateRates(rates) {
   if (!rates || typeof rates !== 'object' || Array.isArray(rates)) invalid('rates must be an object');
   if (Object.prototype.hasOwnProperty.call(rates, 'public')) validateRateCodes(rates.public, 'rates.public');
+  if (Object.prototype.hasOwnProperty.call(rates, 'publicStrategies')) {
+    validateStrategyCodes(rates.publicStrategies, 'rates.publicStrategies');
+  }
   if (Object.prototype.hasOwnProperty.call(rates, 'government')) {
     const government = rates.government;
     if (!government || typeof government !== 'object' || Array.isArray(government)) {
@@ -155,18 +170,14 @@ function classifyRateFor(profile, code, strategy, isNegotiatedRate, label) {
     return row.scope === 'public' ? 'public' : 'contextual';
   }
   if (isNegotiatedRate === true) return 'contextual';
-  if (isNegotiatedRate === false && listedPublicSalesStrategy(profile, strategyKey)) return 'public';
+  if (
+    isNegotiatedRate === false &&
+    Array.isArray(rates.publicStrategies) &&
+    rates.publicStrategies.includes(strategyKey)
+  ) {
+    return 'public';
+  }
   return 'unknown';
-}
-
-function listedPublicSalesStrategy(profile, strategyKey) {
-  if (!strategyKey) return false;
-  const rows = profile.salesStrategies;
-  if (!Array.isArray(rows)) return false;
-  return rows.some((row) => {
-    const value = typeof row?.value === 'string' ? row.value.trim().toUpperCase() : '';
-    return value === strategyKey && row.scope === 'public';
-  });
 }
 
 function requireProfile(propertyCode) {
@@ -189,9 +200,6 @@ function validateSalesStrategies(rows) {
     }
     if (!display || display.length > 80 || /[<>\u0000-\u001f\u007f]/.test(display)) {
       invalid(`sales strategy ${value} display is invalid`);
-    }
-    if (Object.prototype.hasOwnProperty.call(candidate, 'scope') && !STRATEGY_SCOPES.has(candidate.scope)) {
-      invalid(`sales strategy ${value} scope must be agency, company or public`);
     }
     if (seen.has(value)) invalid(`salesStrategies repeats ${value}`);
     seen.add(value);
