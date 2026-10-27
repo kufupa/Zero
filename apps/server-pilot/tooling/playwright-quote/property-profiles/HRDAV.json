@@ -23,7 +23,7 @@
     "EXKNGS": { "label": "Executive King Square" },
     "DLXPAT": { "label": "Deluxe Patio" },
     "DLXKNG": { "label": "Deluxe King" },
-    "ACCES": { "label": "Accessible" },
+    "ACCES": { "label": "Accessible", "autoQuote": false },
     "STKNG": { "label": "Standard King" },
     "STWN": { "label": "Standard Twin" }
   },

@@ -268,6 +268,14 @@ describe('HMS event rates (U13)', () => {
   });
 });
 
+it('keeps the selected Standard King on a tied BAR card when Accessible sorts first by id', () => {
+  const acces = row({ id: 'HRDAV:ACCES:BAR', room: 'ACCES', rate: 'BAR', board: 'Bed & Breakfast R', amount: '4656.00' });
+  const stkng = row({ id: 'HRDAV:STKNG:BAR', room: 'STKNG', rate: 'BAR', board: 'Bed & Breakfast R', amount: '4656.00' });
+  const base = source([acces, stkng], { boardBases: ['breakfast'] });
+  const cards = buildRateOptions({ ...base, request: { ...base.request, propertyCode: 'HRDAV' } }, [{ groupId: 'single', optionId: 'HRDAV:STKNG:BAR' }]);
+  expect(cards.find((card) => card.selected)).toMatchObject({ roomCode: 'STKNG', selected: true, priced: 'full', rateCode: 'BAR' });
+});
+
 it('maps a Non-Rewardable breakfast label from the property profile', () => {
   expect(boardsFor('HRDAV')['bed & breakfast nr']).toBe('breakfast');
   expect(boardsFor('UNKNOWN')['bed & breakfast nr']).toBeUndefined();

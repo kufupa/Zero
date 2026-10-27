@@ -23,7 +23,7 @@ export type PropertyProfile = {
   roomCapacity: Record<string, number>;
   requiredCreateFields: string[];
   salesStrategies?: Array<{ value: string; display: string; scope?: ProfileStrategyScope }>;
-  rooms?: Record<string, { label: string; aliases?: string[] }>;
+  rooms?: Record<string, { label: string; aliases?: string[]; autoQuote?: boolean }>;
   ratePlans?: Record<string, {
     label: string;
     board: string;
