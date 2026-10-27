@@ -43,6 +43,7 @@ import {
 import { attachmentMattersForReview, unreadReasonWords } from './quote-attachment-review.js';
 import { stayDateSourceText, stayDateYearEvidenceText } from './stay-date-anchoring.js';
 import { aopQuoteChannelFromSender } from './aop-playbook.js';
+import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 
 /**
  * Luna analyse of a synced mail, shared by the pane route and the inbound
@@ -591,6 +592,7 @@ export async function analyseSyncedSelection(
       flags,
       ...(treatAs ? { workflow: treatAs } : {}),
     };
+    const resolvedProperty = resolvePropertyTransport(options.transportId);
     const mapped = mapLlmDecision(luna, {
       treatAs,
       dateAnchor: {
@@ -605,6 +607,9 @@ export async function analyseSyncedSelection(
         subject: synced.subject,
         bodyText: synced.bodyText,
       }),
+      ...(resolvedProperty.kind === 'property'
+        ? { propertyCode: resolvedProperty.property.propertyCode }
+        : {}),
     });
     const dated = lunaWithMappedDates(luna, mapped);
     const payload = {

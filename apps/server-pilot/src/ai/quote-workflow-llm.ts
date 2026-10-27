@@ -439,7 +439,7 @@ function aopQuoteSpineOf(
 /** Pane mapping. Does not read `tasks` (K14: measured/displayed only). */
 export function mapLlmDecision(
   analysis: LunaAnalysis,
-  options?: { treatAs?: QuoteTreatAs; dateAnchor?: StayDateAnchorContext; channel?: AopQuoteChannel },
+  options?: { treatAs?: QuoteTreatAs; dateAnchor?: StayDateAnchorContext; channel?: AopQuoteChannel; propertyCode?: string },
 ): MappedQuoteDecision {
   const missing: Array<{ field: string; question: string }> = [];
   const staffQuote = Boolean(options?.treatAs);
@@ -525,7 +525,7 @@ export function mapLlmDecision(
     const quantity = group.rooms ?? (quantityDefaulted ? 1 : undefined);
     const adults = group.adultsPerRoom ?? (adultsDefaulted ? 2 : undefined);
     const roomPreference = group.roomPreference?.trim() || undefined;
-    const roomMatch = roomPreference ? matchRoomType(roomPreference) : null;
+    const roomMatch = roomPreference ? matchRoomType(roomPreference, options?.propertyCode) : null;
     const roomPreferenceDefaulted = quoteDefaults && !roomMatch?.code;
     const boardDefaulted = group.board === null;
     const board: MappedQuoteDecision['groups'][number]['board'] = mapStatedOrDefaultBoard(

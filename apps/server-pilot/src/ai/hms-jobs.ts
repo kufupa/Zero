@@ -2628,6 +2628,7 @@ export async function evaluateQuoteReadyForMessage(
       });
     parties = historyProperty ? withSenderHistoryProperty(historyProperty, readParties) : readParties();
   }
+  const resolvedProperty = resolvePropertyTransport(source.transportId);
   const plan = buildPreparedStaffQuotePlan({
     messageId: source.messageId,
     sourceHash: staffQuoteSourceHash({
@@ -2639,6 +2640,9 @@ export async function evaluateQuoteReadyForMessage(
     payload: source.payload,
     ...(parties ? { parties } : {}),
     now,
+    ...(resolvedProperty.kind === 'property'
+      ? { propertyCode: resolvedProperty.property.propertyCode }
+      : {}),
   });
   return {
     messageId: source.messageId,

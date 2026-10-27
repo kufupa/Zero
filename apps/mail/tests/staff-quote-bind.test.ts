@@ -72,6 +72,22 @@ describe('HRDAV native room and board maps', () => {
       status: 'codes',
       codes: ['DLXKNG'],
     });
+    expect(resolveNativeRoomCodes({ roomPreference: 'STD TWN', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['STWN'],
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Deluxe Patio', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['DLXPAT'],
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'STD SGL', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'unresolved',
+      label: 'STD SGL',
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Standard King', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['STKNG'],
+    });
     expect(
       resolveNativeRoomCodes({ roomPreference: 'Standard & Queen Rooms', propertyCode: HRCEN_PROPERTY_CODE }),
     ).toEqual({ status: 'codes', codes: ['STQN'] });

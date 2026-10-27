@@ -109,6 +109,7 @@ function groupForStay(
   stay: NonNullable<ReturnType<typeof mailExtractionPayloadSchema.parse>['stays'][number]>,
   today: string,
   missing: ReadonlyArray<{ field: string }> = [],
+  propertyCode?: string,
 ): { groups: StaffQuoteInput['groups']; reason?: string } {
   const { arrival } = stay.requested;
   const reversedStayDates = missing.some((item) => item.field === 'stayDates');
@@ -146,7 +147,7 @@ function groupForStay(
       return { groups: [], reason: 'missing_occupancy' };
     }
     const roomType = row.roomType?.trim();
-    const roomMatch = roomType ? matchRoomType(roomType) : null;
+    const roomMatch = roomType ? matchRoomType(roomType, propertyCode) : null;
     const roomCode = roomMatch?.code ?? unpickedTwinRoomCode(roomType);
     groups.push({
       id: row.id,
@@ -249,6 +250,7 @@ export function buildPreparedStaffQuotePlan(input: {
   payload: unknown;
   parties?: StaffQuoteParties;
   now?: Date;
+  propertyCode?: string;
 }): PreparedStaffQuotePlan {
   const parsedPayload = mailExtractionPayloadSchema.safeParse(input.payload);
   if (!parsedPayload.success || !input.messageId || !/^[a-f0-9]{64}$/.test(input.sourceHash)) {
@@ -257,7 +259,7 @@ export function buildPreparedStaffQuotePlan(input: {
   const payload = parsedPayload.data;
   const today = (input.now ?? new Date()).toISOString().slice(0, 10);
   const stays: PreparedStaffQuoteStay[] = payload.stays.map((stay) => {
-    const groupResult = groupForStay(stay, today, payload.missing);
+    const groupResult = groupForStay(stay, today, payload.missing, input.propertyCode);
     if (groupResult.reason) return { stayId: stay.id, reason: groupResult.reason };
     const built = staffQuoteInput.safeParse({
       messageId: input.messageId,

@@ -67,4 +67,17 @@ describe('server/mail room matcher parity', () => {
       expect(matchServerRoomType(raw)).toEqual(matchMailRoomType(raw));
     },
   );
+
+  it('keeps Centurion Standard King on SKNG when no property profile is passed', () => {
+    expect(matchServerRoomType('Standard King')).toEqual({ code: 'SKNG', suggestions: [] });
+    expect(matchServerRoomType('Standard King')).toEqual(matchMailRoomType('Standard King'));
+  });
+
+  it('maps HRDAV abbreviations and labels onto that profile, not Centurion codes', () => {
+    expect(matchServerRoomType('STD TWN', 'HRDAV')).toEqual({ code: 'STWN', suggestions: [] });
+    expect(matchServerRoomType('Deluxe Patio', 'HRDAV')).toEqual({ code: 'DLXPAT', suggestions: [] });
+    expect(matchServerRoomType('Standard King', 'HRDAV')).toEqual({ code: 'STKNG', suggestions: [] });
+    expect(matchServerRoomType('STD SGL', 'HRDAV')).toEqual({ suggestions: ['STWN', 'STKNG'] });
+    expect(matchServerRoomType('Standard King')).toEqual({ code: 'SKNG', suggestions: [] });
+  });
 });

@@ -566,6 +566,7 @@ export function storedAnalysis(
   read: StoredRead,
   state: WorkState,
   threadConfirmation?: ThreadConfirmationResolution,
+  propertyCode?: string,
 ) {
   const { kind, payload } = read;
   const pick = <T>(path: string, fallback: T): T =>
@@ -692,6 +693,7 @@ export function storedAnalysis(
       subject: read.subject,
       bodyText: read.bodyText,
     }),
+    ...(propertyCode ? { propertyCode } : {}),
   });
   mapped.groups.forEach((group, index) => {
     const slot = order[index];
@@ -725,7 +727,7 @@ export function storedAnalysis(
       intent: mapped.intent,
       // Each group names its stay, so the pane groups rows by the read's stays and logs edits to the stay's id.
       groups: mapped.groups.map((group, index) => {
-        const roomType = matchRoomType(group.roomPreference);
+        const roomType = matchRoomType(group.roomPreference, propertyCode);
         const stayId = order[index]?.stayId;
         const sourceStay = stayId ? payload.stays.find((item) => item.id === stayId) : undefined;
         const confirmationNumber = confirmationForStay(sourceStay, payload);
@@ -1700,6 +1702,7 @@ async function readyView(
   const threadConfirmation = isHmsConfirmation(selectedConfirmation)
     ? undefined
     : synced?.threadConfirmation;
+  const resolvedProperty = resolvePropertyTransport(transportId);
   const stored = storedAnalysis(
     {
       ...read,
@@ -1709,6 +1712,7 @@ async function readyView(
     },
     state,
     threadConfirmation,
+    resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined,
   );
   const sourceText = synced
     ? currentSourceText(synced)
