@@ -177,6 +177,10 @@ describe('reusable source-derived business services',()=>{
   const tied=[{code:'ACCES',amount:'4656.00',inventory:2},{code:'STKNG',amount:'4656.00',inventory:81},{code:'STWN',amount:'4656.00',inventory:26}];
   expect(selectReservationistQuoteOptions(profileRoomsSource([{id:'a',quantity:1},{id:'b',quantity:2}],tied),true).map(s=>s.optionId)).toEqual(['HRDAV:STKNG:BAR','HRDAV:STKNG:BAR']);
  });
+ it('splits groups across Standard King and Twin when King cannot cover combined demand',()=>{
+  const short=[{code:'ACCES',amount:'4656.00',inventory:2},{code:'STKNG',amount:'4656.00',inventory:2},{code:'STWN',amount:'4656.00',inventory:26}];
+  expect(selectReservationistQuoteOptions(profileRoomsSource([{id:'a',quantity:1},{id:'b',quantity:2}],short),true).map(s=>s.optionId)).toEqual(['HRDAV:STKNG:BAR','HRDAV:STWN:BAR']);
+ });
  it('narrows the full read with the joint pool instead of per-group Accessible',async()=>{
   const f=await organizationLookupFixture();
   f.c.input.propertyCode='HRDAV';
@@ -192,7 +196,7 @@ describe('reusable source-derived business services',()=>{
   f.c.task.factIds=f.c.facts.map((v:any)=>v.id);
   const dates=['2026-10-11'];
   const option=(code:string,inventory:number)=>({id:`HRDAV:${code}:BAR`,room:{code,label:code,buildingCode:null},rate:{code:'BAR',label:'Best Available'},board:'Bed & Breakfast R',held:false,rateScope:'public',appliedContext:{},eligibility:'verified',availability:'available',matchStatus:'match',totals:{taxInclusive:true},nightly:dates.map(date=>({date,inventory,price:{amount:'4656.00',currency:'ZAR'}}))});
-  const all=[option('ACCES',2),option('STKNG',81),option('STWN',26)];
+  const all=[option('ACCES',2),option('STKNG',2),option('STWN',26)];
   const calls:any[]=[];
   f.options.readQuote=async(request:any)=>{
    calls.push(structuredClone(request));
@@ -204,6 +208,63 @@ describe('reusable source-derived business services',()=>{
   expect(calls).toHaveLength(2);
   expect(calls[0].details).toBe('summary');
   expect(calls[1].details).toBe('full');
+  expect(calls[1].rooms.map((room:any)=>room.required.roomCodes)).toEqual([['STKNG'],['STWN']]);
+  expect(resolved.selections.map((s:any)=>s.optionId)).toEqual(['HRDAV:STKNG:BAR','HRDAV:STWN:BAR']);
+ });
+ it('still quotes Accessible on a party search that stripped roomCodes from the HMS request',async()=>{
+  const f=await organizationLookupFixture();
+  f.c.input.propertyCode='HRDAV';
+  f.party.outcome='resolved';
+  f.party.candidates=[{nativeId:'49',displayName:'Example Church',kind:'organization'}];
+  const body='Please quote 1 accessible room for 1 adult from Example Church. Bed and breakfast. Check in 11 October 2026, check out 12 October 2026.';
+  f.c.input.messages[0].text=body;
+  f.c.task.source={...source,quote:body,start:0,end:body.length,sourceHash:createHash('sha256').update(body).digest('hex')};
+  f.c.facts=[
+   {...fact('dates',{arrival:'2026-10-11',departure:'2026-10-12'}),source:f.c.task.source},
+   {...fact('room',{roomRef:'1',quantity:1,adults:1,childAges:[]}),id:'room-1',source:f.c.task.source},
+   {...fact('board','bed and breakfast'),source:f.c.task.source},
+   {...fact('party','Example Church'),source:f.c.task.source},
+  ];
+  f.c.task.factIds=f.c.facts.map((v:any)=>v.id);
+  const dates=['2026-10-11'];
+  const option=(code:string,inventory:number)=>({id:`HRDAV:${code}:BAR`,room:{code,label:code,buildingCode:null},rate:{code:'BAR',label:'Best Available'},board:'Bed & Breakfast R',held:false,rateScope:'public',appliedContext:{},eligibility:'verified',availability:'available',matchStatus:'match',totals:{taxInclusive:true},nightly:dates.map(date=>({date,inventory,price:{amount:'4656.00',currency:'ZAR'}}))});
+  const all=[option('ACCES',2),option('STKNG',81),option('STWN',26)];
+  const calls:any[]=[];
+  f.options.readQuote=async(request:any)=>{
+   calls.push(structuredClone(request));
+   const normalized=(await import('../tooling/playwright-quote/quote-contract.mjs' as string)).normalizeQuoteRequest({schemaVersion:2,...request}).request;
+   return{ref:'native:'+calls.length,sha256:String(calls.length).repeat(64),toolVersion:'test',observedAt:f.c.input.clock.sourceAt,request:normalized,result:{outcome:'quote',propertyCode:'HRDAV',groups:normalized.rooms.map((room:any)=>({id:room.id,request:room,completeness:{search:'complete',requiredFacts:'complete'},options:all.filter(o=>!room.required?.roomCodes?.length||room.required.roomCodes.includes(o.room.code))}))}};
+  };
+  f.options.resolvePolicy=async()=>({ref:'p',propertyCode:'HRDAV',sourceHashes:['b'.repeat(64)],authoredDates:['2026-09-08'],families:[{rateCode:'BAR',board:'breakfast'}],vat:'included',levy:'included',restrictions:{status:'supported',sourceRefs:['p']}});
+  const resolved=await createReservationistBusinessServices(f.options).resolveQuoteTask!(f.c);
+  expect(calls[0].rooms[0].required.roomCodes).toBeUndefined();
+  expect(calls[1].rooms.map((room:any)=>room.required.roomCodes)).toEqual([['ACCES']]);
+  expect(resolved.selections.map((s:any)=>s.optionId)).toEqual(['HRDAV:ACCES:BAR']);
+ });
+ it('does not let an over-capacity unselected Accessible row block a joint Standard King quote',async()=>{
+  const f=await organizationLookupFixture();
+  f.c.input.propertyCode='HRDAV';
+  const body='Please quote 1 room for 1 adult and 2 rooms for 1 adult. Bed and breakfast. Check in 11 October 2026, check out 12 October 2026.';
+  f.c.input.messages[0].text=body;
+  f.c.task.source={...source,quote:body,start:0,end:body.length,sourceHash:createHash('sha256').update(body).digest('hex')};
+  f.c.facts=[
+   {...fact('dates',{arrival:'2026-10-11',departure:'2026-10-12'}),source:f.c.task.source},
+   {...fact('room',{roomRef:'1',quantity:1,adults:1,childAges:[]}),id:'room-1',source:f.c.task.source},
+   {...fact('room',{roomRef:'2',quantity:2,adults:1,childAges:[]}),id:'room-2',source:f.c.task.source},
+   {...fact('board','bed and breakfast'),source:f.c.task.source},
+  ];
+  f.c.task.factIds=f.c.facts.map((v:any)=>v.id);
+  const dates=['2026-10-11'];
+  const option=(code:string,inventory:number)=>({id:`HRDAV:${code}:BAR`,room:{code,label:code,buildingCode:null},rate:{code:'BAR',label:'Best Available'},board:'Bed & Breakfast R',held:false,rateScope:'public',appliedContext:{},eligibility:'verified',availability:'available',matchStatus:'match',totals:{taxInclusive:true},nightly:dates.map(date=>({date,inventory,price:{amount:'4656.00',currency:'ZAR'}}))});
+  const all=[option('ACCES',81),option('STKNG',81),option('STWN',26)];
+  const calls:any[]=[];
+  f.options.readQuote=async(request:any)=>{
+   calls.push(structuredClone(request));
+   const normalized=(await import('../tooling/playwright-quote/quote-contract.mjs' as string)).normalizeQuoteRequest({schemaVersion:2,...request}).request;
+   return{ref:'native:'+calls.length,sha256:String(calls.length).repeat(64),toolVersion:'test',observedAt:f.c.input.clock.sourceAt,request:normalized,result:{outcome:'quote',propertyCode:'HRDAV',groups:normalized.rooms.map((room:any)=>({id:room.id,request:room,completeness:{search:'complete',requiredFacts:'complete'},options:all.filter(o=>!room.required?.roomCodes?.length||room.required.roomCodes.includes(o.room.code))}))}};
+  };
+  f.options.resolvePolicy=async()=>({ref:'p',propertyCode:'HRDAV',sourceHashes:['b'.repeat(64)],authoredDates:['2026-09-08'],families:[{rateCode:'BAR',board:'breakfast'}],vat:'included',levy:'included',restrictions:{status:'supported',sourceRefs:['p']}});
+  const resolved=await createReservationistBusinessServices(f.options).resolveQuoteTask!(f.c);
   expect(calls[1].rooms.map((room:any)=>room.required.roomCodes)).toEqual([['STKNG'],['STKNG']]);
   expect(resolved.selections.map((s:any)=>s.optionId)).toEqual(['HRDAV:STKNG:BAR','HRDAV:STKNG:BAR']);
  });

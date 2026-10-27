@@ -80,6 +80,7 @@ export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {gro
  const nights=occupiedDates(source.request.arrivalDate,source.request.departureDate).length;
  return source.request.rooms.flatMap(request=>{
   const cheapest=new Map<string,{option:NativeOption;matches:boolean;contract:boolean;board:RateOption['board'];perRoomMinor:number;totalMinor:number}>();
+  const selectedId=selected.find(s=>s.groupId===request.id)?.optionId;
   for(const option of source.result.groups.find(g=>g.id===request.id)?.options??[]){
    const matches=requestMatches(request,option,source.request.propertyCode);
    // A matching row must be quote-ready ('match'); a non-matching row is only ever shown, never quoted, so 'alternative' is fine.
@@ -89,7 +90,8 @@ export function buildRateOptions(source:QuoteSourceRecord,selected:readonly {gro
    if(!(totalMinor>0))continue;
    const mapped=boardsFor(source.request.propertyCode)[norm(option.board??'')];
    const contract=option.rateScope==='contextual',board=staffBoard[mapped],key=`${option.rate.code.toUpperCase()}|${board}|${contract}|${matches}`,held=cheapest.get(key);
-   if(!held||totalMinor<held.totalMinor||(totalMinor===held.totalMinor&&option.id<held.option.id))cheapest.set(key,{option,matches,contract,board,perRoomMinor,totalMinor});
+   const optionSelected=option.id===selectedId,heldSelected=held?.option.id===selectedId;
+   if(!held||optionSelected||(!heldSelected&&(totalMinor<held.totalMinor||(totalMinor===held.totalMinor&&option.id<held.option.id))))cheapest.set(key,{option,matches,contract,board,perRoomMinor,totalMinor});
   }
   const ranked=[...cheapest.values()].sort((a,b)=>Number(b.matches)-Number(a.matches)||Number(b.contract)-Number(a.contract)||a.totalMinor-b.totalMinor||a.option.id.localeCompare(b.option.id));
   // onlyContract is counted across every distinct rate code staff can see.
