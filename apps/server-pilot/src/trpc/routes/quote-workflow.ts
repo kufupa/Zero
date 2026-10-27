@@ -90,6 +90,17 @@ const paneStayInput = z.object({
   reservationNote: paneOptionalText(PANE_RESERVATION_NOTE_MAX),
   bookerName: paneOptionalText(PANE_BOOKER_NAME_MAX),
   bookerEmail: paneOptionalText(PANE_BOOKER_EMAIL_MAX),
+  confirmationRecipient: z
+    .object({
+      mode: z.enum(['self', 'client', 'custom']),
+      address: z
+        .string()
+        .trim()
+        .min(1)
+        .max(255)
+        .regex(/^[^\s@]+@[^\s@]+\.[^\s@]+$/),
+    })
+    .optional(),
   stayId: z
     .string()
     .regex(/^[A-Za-z0-9_-]{1,40}$/)

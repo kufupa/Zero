@@ -7,7 +7,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
-import { assertTrackReadyForGuarantee, bookFieldFills, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
+import { assertTrackReadyForGuarantee, bookFieldFills, confirmationRecipientAddress, confirmationRecipientFills, confirmationRecipientRefusal, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
 import { readSaveSnapshot, readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { paneCommitOutcome, proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
@@ -222,6 +222,19 @@ export function compareReadbackStay(expected, actual) {
       missing: (value) => value == null,
     },
   ];
+  const expectedEmail = typeof expected?.confirmationRecipient?.address === 'string'
+    ? expected.confirmationRecipient.address.trim()
+    : (typeof expected?.emailaddress === 'string' ? expected.emailaddress.trim() : '');
+  if (expectedEmail) {
+    rows.push({
+      field: 'emailaddress',
+      expectedNorm: expectedEmail.toLocaleLowerCase(),
+      actualNorm: String(actual?.emailaddress ?? '').trim().toLocaleLowerCase(),
+      expected: expectedEmail,
+      actual: actual?.emailaddress ?? null,
+      missing: (value) => !value,
+    });
+  }
   const mismatches = [];
   for (const row of rows) {
     if (row.missing(row.expectedNorm) || row.missing(row.actualNorm)) {
@@ -843,7 +856,7 @@ async function findStayByConfirmation(browser, secret, stay, dir, confirmation) 
   });
 }
 
-async function runProofReadback(browser, secret, stay, dir, save, savedScreenshot, existingRows) {
+async function runProofReadback(browser, secret, stay, dir, save, savedScreenshot, existingRows, formEmail) {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   let lastStay = null;
   const proof = await reconcileCreateSave({
@@ -864,7 +877,11 @@ async function runProofReadback(browser, secret, stay, dir, save, savedScreensho
       { sleep, isReady: (result) => newGuestRowReady(result, existingRows) },
     ),
   });
-  const merged = mergeReadbackCompare(proof, stay, lastStay);
+  const expectedEmail = confirmationRecipientAddress(stay);
+  const actual = lastStay && expectedEmail
+    ? { ...lastStay, emailaddress: formEmail ?? lastStay.emailaddress }
+    : lastStay;
+  const merged = mergeReadbackCompare(proof, stay, actual);
   return {
     confNo: merged.confNo,
     readbackMatch: merged.readbackMatch,
@@ -927,6 +944,12 @@ export async function main(argv = process.argv.slice(2)) {
   const labRefusal = createLabtestRefusal(propertyCode, stay, process.env);
   if (labRefusal) {
     process.stderr.write(`${labRefusal}\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const recipientRefusal = confirmationRecipientRefusal(stay);
+  if (recipientRefusal) {
+    process.stderr.write(`${recipientRefusal}\n`);
     process.exitCode = 2;
     return;
   }
@@ -1006,7 +1029,10 @@ export async function main(argv = process.argv.slice(2)) {
     await fillNamed(page, 'rateplan', stay.ratePlan);
     if (stop.stopBefore !== 'availability') {
       // Party lookups, Reservation Note and booker fields. Empty values are skipped. LIVE-UNVERIFIED: see create-request.mjs.
-      for (const [name, value] of Object.entries(optionalPartyAndNoteFills(stay))) {
+      for (const [name, value] of Object.entries({
+        ...optionalPartyAndNoteFills(stay),
+        ...confirmationRecipientFills(stay),
+      })) {
         if (value) await fillNamed(page, name, value);
       }
       const book = bookFieldFills(stay);
@@ -1022,6 +1048,22 @@ export async function main(argv = process.argv.slice(2)) {
     const blank = await blankRequired(page, createRequiredFieldNames(profile));
     result.blankRequired = blank;
     await shot(page, dir, 'filled.png');
+    const filledRecipient = confirmationRecipientFills(stay).emailaddress;
+    if (filledRecipient) {
+      const typed = await page.locator('input[name="emailaddress"]:visible').first().inputValue().catch(() => '');
+      result.confirmationRecipientReadback = {
+        expected: filledRecipient,
+        actual: typed,
+        match: typed.trim().toLocaleLowerCase() === filledRecipient.toLocaleLowerCase(),
+      };
+      if (result.confirmationRecipientReadback.match !== true) {
+        result.outcome = 'readback_mismatch';
+        await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
+        process.stdout.write(`${result.outcome}\n`);
+        process.exitCode = 1;
+        return;
+      }
+    }
     if (stop.stopBefore === 'availability') {
       result.outcome = 'stopped_before_availability';
       result.guestNameTyped = false;
@@ -1151,8 +1193,10 @@ export async function main(argv = process.argv.slice(2)) {
       ? await shot(page, dir, 'saved.png').catch(() => null)
       : await shot(page, dir, 'saved.png');
     if (verifySave) {
+      const formEmail = await page.locator('input[name="emailaddress"]:visible').first().inputValue().catch(() => '');
+      result.emailaddressAfterSave = formEmail;
       const proof = await runProofReadback(
-        browser, secret, stay, dir, save, savedScreenshot, existingRows,
+        browser, secret, stay, dir, save, savedScreenshot, existingRows, formEmail,
       );
       result.confirmationNumber = proof.confNo ?? save.confirmationNumber;
       result.saved = proof.confNo ? true : null;
