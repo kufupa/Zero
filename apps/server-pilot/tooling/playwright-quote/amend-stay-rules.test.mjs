@@ -11,9 +11,12 @@ import {
   classifyAmendPayment,
   amendFieldIso,
   amendFieldMatches,
+  comboUnsupportedFieldReason,
+  comboWritableState,
   commitAndVerifyFields,
   compareChangedFields,
   dangerousDialogKind,
+  isComboAmendField,
   parseAmendArgs,
   unsupportedFieldReason,
   validateAmendCurrent,
@@ -166,6 +169,47 @@ test('unsupported named controls return the explicit live-probe refusal', () => 
     assert.equal(unsupportedFieldReason(state), 'unsupported_field');
   }
   assert.equal(unsupportedFieldReason({ count: 1, disabled: false, readOnly: false }), null);
+});
+
+function fixtureAdultsInput(html, wrapClass) {
+  const tag = html.match(/<input[^>]*name="adults"[^>]*>/i)?.[0];
+  assert.ok(tag);
+  assert.match(tag, /readonly/i);
+  return {
+    id: 'uxcombobox-2368-inputEl',
+    closest: (sel) => (sel === '.x-field' ? { className: wrapClass } : null),
+  };
+}
+
+test('combo input readonly is supported when Ext component is enabled', async () => {
+  const html = await readFile(new URL('./fixtures/stay-lookup/record-form.html', import.meta.url), 'utf8');
+  const input = fixtureAdultsInput(html, 'x-field x-form-item');
+  const Ext = {
+    getCmp: (id) => (id === 'uxcombobox-2368' ? { isDisabled: () => false, readOnly: false } : null),
+  };
+  assert.equal(isComboAmendField('adults'), true);
+  assert.equal(comboUnsupportedFieldReason({ count: 1, ...comboWritableState(input, Ext) }), null);
+});
+
+test('combo is unsupported when Ext component is disabled', async () => {
+  const html = await readFile(new URL('./fixtures/stay-lookup/record-form.html', import.meta.url), 'utf8');
+  const input = fixtureAdultsInput(html, 'x-field x-item-disabled');
+  const Ext = { getCmp: () => ({ isDisabled: () => true, readOnly: false }) };
+  assert.equal(comboUnsupportedFieldReason({ count: 1, ...comboWritableState(input, Ext) }), 'unsupported_field');
+  assert.equal(comboUnsupportedFieldReason({ count: 1, ...comboWritableState(input, { getCmp: () => null }) }), 'unsupported_field');
+});
+
+test('combo refuse uses Ext.getCmp not input.readOnly', async () => {
+  const source = await readFile(new URL('./amend-stay.mjs', import.meta.url), 'utf8');
+  const body = source.slice(
+    source.indexOf('async function refuseUnsupportedFields'),
+    source.indexOf('async function clickSave'),
+  );
+  assert.match(body, /isComboAmendField\(field\)/);
+  assert.match(body, /Ext\.getCmp\(input\.id\.replace\(\/-inputEl\$\/, ''\)\)/);
+  assert.match(body, /closest\('\.x-field'\)/);
+  assert.match(body, /x-item-disabled/);
+  assert.ok(body.indexOf('isComboAmendField') < body.indexOf('unsupportedFieldReason'));
 });
 
 test('rate, penalty, or charge dialog text is a refusal signal', () => {
