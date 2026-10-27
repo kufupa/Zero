@@ -9,9 +9,8 @@
 // window picker is the fallback.
 // Preview reads the reason list and dismisses the dialog unconfirmed.
 // Commit re-reads payment on the open record and refuses (refused_not_unpaid) unless unpaid, then picks --reason
-// and clicks its OK once. A cancellation penalty dialog on a real guest or at preview refuses the run
-// (refused_penalty): it is recorded and left open; nothing is clicked on it. On a Labtest commit the open HMS
-// record is re-read (surname Labtest + arrival ≥ 2027); Waive is clicked if present, else OK.
+// and clicks its OK once. Any cancellation penalty dialog refuses the run (refused_penalty): screenshot, Escape /
+// window close if possible, never Waive, never OK on the charge.
 // --allow-real-guest lifts the Labtest guard for one run (on mode). The server passes it; it is never read from the env.
 // Usage: node cancel-stay.mjs --property CODE --confirmation 57291630-1 --arrival 2027-09-14 --mode preview|commit --out <dir> [--reason "Test Reservations"] [--last-name Labtest] [--allow-real-guest]
 // --last-name is optional: when the confirmation does not show in the header quick search, the surname is typed and the row with the exact confirmation is used.
@@ -30,7 +29,7 @@ import {
 } from './cancel-stay-rules.mjs';
 import { driveQuickSearch, runConfirmationSearch } from './quick-search.mjs';
 import { snapshotRecordForm } from './stay-lookup-dom.mjs';
-import { parseStayProperty, propertySecretRefusal } from './property-profile.mjs';
+import { parseStayProperty, profileFor, propertySecretRefusal } from './property-profile.mjs';
 import { withWriteCliPage } from './write-cli-lease.mjs';
 
 export { withWriteCliPage as withLeasedWritePage };
@@ -65,6 +64,7 @@ function newResult(args) {
     penaltyText: null,
     penaltyAmount: null,
     penaltyPending: false,
+    warning: null,
     clickedOk: false,
     followUps: [],
     readbackMethod: null,
@@ -619,26 +619,10 @@ export async function dismissLeftoverCancelWindows(page) {
   await closeCancelDialog(page, leftover);
 }
 
-// Clicks Waive or OK on the single visible cancellation-penalty window. Never the reason-dialog OK.
-async function clickPenaltyButton(page, label) {
-  const wanted = squash(label).toLowerCase();
-  if (wanted !== 'waive' && wanted !== 'ok') return false;
-  const clicked = await page.evaluate((target) => {
-    const shown = (node) => {
-      const box = node.getBoundingClientRect();
-      return box.width > 0 && box.height > 0;
-    };
-    const windows = [...document.querySelectorAll('.x-window')]
-      .filter((node) => shown(node) && /cancellation penalty/i.test(node.innerText || ''));
-    if (windows.length !== 1) return false;
-    const buttons = [...windows[0].querySelectorAll('.x-btn')]
-      .filter((node) => shown(node) && (node.innerText || '').trim().toLowerCase() === target);
-    if (buttons.length !== 1) return false;
-    buttons[0].click();
-    return true;
-  }, wanted);
-  if (clicked) await page.waitForTimeout(400);
-  return clicked;
+// PRODUCT hard rule: never accept a cancellation-penalty dialog. This IO method is a no-op so a
+// caller cannot click Waive or OK. Safe dismiss is Escape / the window close tool via closeCancelDialog.
+async function clickPenaltyButton(_page, _label) {
+  return false;
 }
 
 // Clicks the OK paired with Cancel inside the single visible Cancellation Reason window.
@@ -832,7 +816,19 @@ async function run(ctx) {
   await shot(ctx, 'cancel-dialog.png');
   // Write evidence for the pane's cancel run (U26): the dialog before OK, and the page after an OK click.
   await shot(ctx, 'before.png');
-  await runCancelDialog({ args, record, result, io: dialogIo(ctx, dialog) });
+  let profile = null;
+  try {
+    profile = args.property ? profileFor(args.property) : null;
+  } catch {
+    profile = null;
+  }
+  await runCancelDialog({
+    args,
+    record,
+    result,
+    io: dialogIo(ctx, dialog),
+    profile,
+  });
   if (result.clickedOk) await shot(ctx, 'after.png');
 }
 
