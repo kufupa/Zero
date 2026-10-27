@@ -27,7 +27,7 @@ function headerHtml(opts?: {
   propertyCode?: string;
   propertyName?: string;
 }): string {
-  const tenant = opts?.tenant ?? 'HMS_LEGACY';
+  const tenant = opts?.tenant ?? 'THECENTURION_PRD';
   const propertyCode = opts?.propertyCode ?? 'centurion';
   const propertyName = opts?.propertyName ?? 'Centurion Hotel';
   return `<header data-testid="property-header"
@@ -569,7 +569,7 @@ describe('InforReadAdapter.findReservation', () => {
     const { adapter } = adapterFor(
       {
         property: {
-          tenant: 'HMS_LEGACY',
+          tenant: 'THECENTURION_PRD',
           propertyCode: 'other-prop',
           propertyName: 'Other Hotel',
         },
@@ -720,7 +720,7 @@ describe.skip('InforReadAdapter.quoteStay legacy v1 fixtures', () => {
     const { adapter } = adapterFor(
       {
         property: {
-          tenant: 'HMS_LEGACY',
+          tenant: 'THECENTURION_PRD',
           propertyCode: '',
           propertyName: 'Centurion Hotel',
         },

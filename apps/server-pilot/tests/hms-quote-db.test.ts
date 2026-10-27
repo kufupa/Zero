@@ -45,7 +45,7 @@ import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 
 const reachable = await probeTestDb();
-const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
+const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const DEFAULT_QUOTE_TEXT =
   'Please quote arrival 2026-09-10, departure 2026-09-12, 2 adults, 0 children, 1 room, room type STD, rate plan BAR, currency ZAR.';
 

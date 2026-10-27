@@ -9,7 +9,7 @@ import {
   evaluateObservedRequest,
 } from '../src/hms/request-policy.js';
 
-const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
+const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 
 function formBody(fields: Record<string, string>): string {
   return new URLSearchParams(fields).toString();

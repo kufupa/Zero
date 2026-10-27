@@ -27,7 +27,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 
-const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
+const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 
 function candidate(): QuoteStayCandidate {
   const parsed = parseQuoteStayCandidateFromAuthoredSegment(

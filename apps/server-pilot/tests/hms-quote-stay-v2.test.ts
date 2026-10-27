@@ -55,7 +55,7 @@ class QuotePage implements HmsPage {
   }
   async readPropertyBinding() {
     return {
-      tenant: 'HMS_LEGACY',
+      tenant: 'THECENTURION_PRD',
       propertyCode: 'centurion',
       propertyName: 'Centurion Hotel',
     };

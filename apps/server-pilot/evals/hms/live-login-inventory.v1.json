@@ -1,7 +1,7 @@
 {
   "version": "live-login-inventory-1",
   "capturedAt": "2026-07-30",
-  "origin": "https://appsrv-1.legacyhotels.co.za",
+  "origin": "https://hmsweb.hms.eu1.inforcloudsuite.com",
   "notes": [
     "Abort-first EC2 probe under fail-closed request policy.",
     "Password input is type=text with name=password (Infor quirk).",

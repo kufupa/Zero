@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildLiveSentEmailListManifest } from '../src/hms/live-read-manifest.js';
 
-const origin = 'https://appsrv-1.legacyhotels.co.za';
+const origin = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 const manifest = buildLiveSentEmailListManifest(origin);
 const envelope = {
   schemaVersion: 1,

@@ -9,6 +9,10 @@ import {
   type ReservationSearchCandidate,
 } from './live-read-manifest.js';
 import { HmsRuntimeError, type HmsPage, type HmsReadSession } from './runtime.js';
+import {
+  CENTURION_HMS_PRODUCTION_ORIGIN,
+  DAVINCI_HMS_PRODUCTION_ORIGIN,
+} from './browser-artifacts.js';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -156,7 +160,8 @@ export function createFindReservationFacade(
 ): FindReservationFacade {
   const page = session.page;
   const requireLiveEnvelope =
-    session.origin === 'https://appsrv-1.legacyhotels.co.za';
+    session.origin === CENTURION_HMS_PRODUCTION_ORIGIN ||
+    session.origin === DAVINCI_HMS_PRODUCTION_ORIGIN;
   return {
     requireLiveEnvelope,
     async verifyBinding() {

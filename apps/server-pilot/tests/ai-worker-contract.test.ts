@@ -382,7 +382,7 @@ describe('ai worker contract', () => {
         HMS_CHROMIUM_EXECUTABLE_PATH: '/opt/nava/chromium/chrome',
         HMS_READ_ROLE_PROOF_PATH: '/opt/nava/shared/hms-read-role-proof.v1.json',
         HMS_HEALTH_STATUS_PATH: '/tmp/nava-zero-hms-health.json',
-        HMS_EXPECTED_TENANT: 'HMS_LEGACY',
+        HMS_EXPECTED_TENANT: 'THECENTURION_PRD',
         HMS_EXPECTED_PROPERTY_CODE: 'HRCEN',
         HMS_EXPECTED_TRANSPORT_ID: 'transport-centurion',
         HMS_EVIDENCE_HMAC_SECRET_ARN:

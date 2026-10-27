@@ -117,7 +117,7 @@ describe('discovery sanitize', () => {
   it('observation contains structure but no values', () => {
     const observation = sanitizeDiscoveryObservation({
       method: 'POST',
-      url: 'https://appsrv-1.example.test/search?tenant=HMS_LEGACY',
+      url: 'https://appsrv-1.example.test/search?tenant=THECENTURION_PRD',
       contentType: 'application/x-www-form-urlencoded',
       body: 'operation=search&surname=PrivateGuest',
     });
@@ -133,7 +133,7 @@ describe('discovery sanitize', () => {
       contentType: 'application/x-www-form-urlencoded',
     });
     expect(JSON.stringify(observation)).not.toContain('PrivateGuest');
-    expect(JSON.stringify(observation)).not.toContain('HMS_LEGACY');
+    expect(JSON.stringify(observation)).not.toContain('THECENTURION_PRD');
   });
 
   it('phase enum excludes write-forms', () => {

@@ -51,12 +51,15 @@ export const HMS_BROWSER_ARTIFACT_MIN_FREE_BYTES = 2 * 1024 ** 3;
 export const HMS_BROWSER_ARTIFACT_MIN_LIVE_FREE_BYTES = 1 * 1024 ** 3;
 export const HMS_BROWSER_CAPACITY_WATCHDOG_MS = 2_000;
 
-export const CENTURION_HMS_PRODUCTION_ORIGIN = 'https://appsrv-1.legacyhotels.co.za' as const;
+/** Centurion moved to Infor cloud (tenant THECENTURION_PRD) on 2026-10-27. */
+export const CENTURION_HMS_PRODUCTION_ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com' as const;
+/** Da Vinci stays on the on-prem appsrv-1 host behind the VPN. */
+export const DAVINCI_HMS_PRODUCTION_ORIGIN = 'https://appsrv-1.legacyhotels.co.za' as const;
 
-/** Infor host per browser slot. Both live hotels share appsrv-1 until a property gets its own origin. */
+/** Infor host per browser slot. */
 const HMS_PRODUCTION_ORIGIN_BY_SLOT = {
   centurion: CENTURION_HMS_PRODUCTION_ORIGIN,
-  davinci: CENTURION_HMS_PRODUCTION_ORIGIN,
+  davinci: DAVINCI_HMS_PRODUCTION_ORIGIN,
 } as const;
 
 export function hmsProductionOriginForSlot(slot: string): string | null {

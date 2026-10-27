@@ -18,7 +18,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
-const ORIGIN = 'https://appsrv-1.legacyhotels.co.za';
+const ORIGIN = 'https://hmsweb.hms.eu1.inforcloudsuite.com';
 
 function auth(overrides: Partial<HmsSessionAuthorization> = {}): HmsSessionAuthorization {
   const manifest = buildLiveGroupBlockListManifest(ORIGIN);

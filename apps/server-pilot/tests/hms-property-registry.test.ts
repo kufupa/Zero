@@ -116,7 +116,7 @@ describe('read-only HMS property registry', () => {
   it('keeps Centurion HRCEN secret resolution unchanged unless a property transport is explicit', () => {
     expect(getHmsPropertyRegistration('transport-centurion')).toMatchObject({
       propertyCode: 'HRCEN',
-      expectedTenant: 'HMS_LEGACY',
+      expectedTenant: 'THECENTURION_PRD',
       mailboxTransportId: 'transport-centurion',
       credentialSecretRef: 'nava-zero/server-pilot/infor-hms-read',
     });
@@ -162,7 +162,7 @@ describe('read-only HMS property registry', () => {
       validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, credentialMode: 'write_capable' }),
     ).toThrow('hms_property_credential_mismatch');
     expect(() =>
-      validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, expectedTenant: 'HMS_LEGACY' }),
+      validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, expectedTenant: 'THECENTURION_PRD' }),
     ).toThrow('hms_property_credential_mismatch');
     expect(() =>
       validateHmsPropertySecret(davinci, { ...DAVINCI_SECRET, mailboxTransportId: 'transport-centurion' }),

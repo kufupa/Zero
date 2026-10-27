@@ -1274,7 +1274,7 @@ describe('AmendLookupPanel guest-name search', () => {
   });
 
   it('shows one confirmation copy action and a supported HMS link after a found result', async () => {
-    const HMS_LANDING = 'https://appsrv-1.legacyhotels.co.za/web/base/logindisp?tenant=HMS_LEGACY';
+    const HMS_LANDING = 'https://hmsweb.hms.eu1.inforcloudsuite.com/web/base/logindisp?tenant=THECENTURION_PRD';
     const findStay = vi.fn().mockResolvedValue(found());
     render(<AmendLookupPanel session={sessionWith(AMEND)} trpc={lookupTrpc(findStay)} />);
     expect(screen.queryAllByRole('link', { name: 'Open in HMS' })).toHaveLength(0);

@@ -225,7 +225,7 @@ describe('read CLI session lease', () => {
       code === GENERIC_PROPERTY ? { propertyCode: GENERIC_PROPERTY } : null;
     const otherProperty = propertyReadLockKey(LOCK_TENANT, 'HTLBB');
     const databaseUrl = 'postgres://lock-matrix.invalid/unused';
-    const legacyTenant = 'HMS_LEGACY';
+    const legacyTenant = 'THECENTURION_PRD';
     const prepare = (env: NodeJS.ProcessEnv) =>
       prepareReadCliInput({
         propertyCode: GENERIC_PROPERTY,

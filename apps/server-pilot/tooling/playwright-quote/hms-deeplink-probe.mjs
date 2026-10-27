@@ -43,7 +43,7 @@ export function probePlan({ origin, conf, stayId = '' }) {
   const enc = encodeURIComponent;
   const plan = [
     ['P0_common_bare', `${origin}/web/base/COMMON`],
-    ['P1_logindisp_tenant_logged_in', `${origin}/web/base/logindisp?tenant=HMS_LEGACY`],
+    ['P1_logindisp_tenant_logged_in', `${origin}/web/base/logindisp?tenant=THECENTURION_PRD`],
     ['P2_osresv_get_no_key', `${origin}/web/base/OSRESV?${FUNCTION_QUERY}`],
     ['P3_osresv_get_confirmation', `${origin}/web/base/OSRESV?${FUNCTION_QUERY}&confirmationnumber=${enc(conf)}`],
     ['P3c_osresv_get_bogus_conf_control', `${origin}/web/base/OSRESV?${FUNCTION_QUERY}&confirmationnumber=ZZPROBE000000`],

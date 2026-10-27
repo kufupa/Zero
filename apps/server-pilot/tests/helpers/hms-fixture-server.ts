@@ -43,7 +43,7 @@ export type HmsFixtureServer = {
   close(): Promise<void>;
 };
 
-const TENANT = 'HMS_LEGACY';
+const TENANT = 'THECENTURION_PRD';
 const PROPERTY_CODE = 'centurion';
 const PROPERTY_NAME = 'Centurion Hotel';
 const LIVE_PROPERTY_CODE = 'HRCEN';
@@ -152,7 +152,7 @@ export async function startHmsFixtureServer(
             <input name="userid" type="text" />
             <input name="password" type="text" />
             <input name="csrftckt" type="hidden" value="fixture-csrf" />
-            <input name="tenant" type="hidden" value="HMS_LEGACY" />
+            <input name="tenant" type="hidden" value="THECENTURION_PRD" />
             <button type="submit">Sign In</button>
           </form>`),
         );
