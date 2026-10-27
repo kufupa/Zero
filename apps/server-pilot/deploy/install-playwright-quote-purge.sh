@@ -21,6 +21,7 @@ for path in "${REPO_ROOT}/.private" "$QUOTE_DIR" /var/lib/nava "$SHOTS_DIR"; do
 done
 
 sudo install -d -o root -g root -m 0755 /var/lib/nava
+sudo install -d -o ubuntu -g ubuntu -m 0700 "${REPO_ROOT}/.private"
 sudo install -d -o ubuntu -g ubuntu -m 0700 "$QUOTE_DIR" "$SHOTS_DIR"
 PURGE_LIB_DIR="/usr/local/lib/nava"
 PURGE_MODULE="${PURGE_LIB_DIR}/playwright-quote-purge.mjs"

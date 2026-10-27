@@ -43,7 +43,12 @@ async function purgeOldFiles(
       throw error;
     });
     if (!info || info.isSymbolicLink() || !info.isDirectory()) return;
-    for (const name of await readdir(directory)) {
+    const names = await readdir(directory).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!names) return;
+    for (const name of names) {
       const path = join(directory, name);
       const entry = await lstat(path).catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT') return null;
@@ -55,7 +60,12 @@ async function purgeOldFiles(
         continue;
       }
       if (!entry.isFile() || entry.mtimeMs > cutoff || !accepts(name)) continue;
-      await rm(path);
+      try {
+        await rm(path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+        throw error;
+      }
       removed += 1;
       bytes += entry.size;
     }

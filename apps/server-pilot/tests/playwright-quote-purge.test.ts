@@ -254,6 +254,7 @@ describe('Playwright quote disk retention', () => {
 
     expect(installer).toContain('nava-playwright-quote-purge.timer');
     expect(installer).toContain('ExecStartPre=/usr/bin/df -P /');
+    expect(installer).toContain('sudo install -d -o ubuntu -g ubuntu -m 0700 "${REPO_ROOT}/.private"');
     expect(installer).toContain('.private/playwright-quote');
     expect(installer).toContain('/var/lib/nava/hms-shots');
     expect(installer).toMatch(/OnUnitActiveSec=1h/);
