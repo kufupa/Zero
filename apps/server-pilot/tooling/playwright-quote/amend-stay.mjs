@@ -300,6 +300,13 @@ async function run(ctx, request) {
       ctx.result.reason = 'check_availability_missing';
       return;
     }
+    const afterAvailabilityDialog = await dangerousDialog(ctx.page);
+    if (afterAvailabilityDialog) {
+      ctx.result.outcome = 'refused_dangerous_dialog';
+      ctx.result.reason = 'dangerous_dialog_after_availability';
+      ctx.result.refusal = afterAvailabilityDialog;
+      return;
+    }
     ctx.result.saveAttempted = true;
     if (!(await clickSave(ctx.page))) {
       ctx.result.saveAttempted = false;

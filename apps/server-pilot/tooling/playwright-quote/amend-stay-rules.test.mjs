@@ -296,6 +296,23 @@ test('checkAvailability clicks the Check Availability control after closing the 
   assert.match(body, /return false;/);
 });
 
+test('amend-stay refuses a dangerous dialog after Check Availability and before Save', async () => {
+  const source = await readFile(new URL('./amend-stay.mjs', import.meta.url), 'utf8');
+  const avail = source.indexOf('await checkAvailability(ctx.page)');
+  const saveAttempted = source.indexOf('ctx.result.saveAttempted = true');
+  const clickSave = source.indexOf('clickSave(ctx.page)');
+  assert.ok(avail > 0);
+  assert.ok(saveAttempted > avail);
+  assert.ok(clickSave > saveAttempted);
+  const between = source.slice(avail, saveAttempted);
+  assert.match(between, /dangerousDialog\(ctx\.page\)/);
+  assert.match(between, /refused_dangerous_dialog/);
+  assert.match(between, /dangerous_dialog_after_availability/);
+  assert.equal(/clickSave/.test(between), false);
+  assert.equal(/\bWaive\b/.test(between), false);
+  assert.equal(/hasText: \/\^\\s\*\(OK\|Yes\|No\)/.test(between), false);
+});
+
 test('amend-stay closes the app drawer before filling changed fields', async () => {
   const source = await readFile(new URL('./amend-stay.mjs', import.meta.url), 'utf8');
   const fillAt = source.indexOf('async function fillChangedFields');
