@@ -289,7 +289,7 @@ function stayIdForRoom(
   return `${stay}_${room.roomIndex}`;
 }
 
-/** Stay ids a draft actually shows. An id shared by two rows is omitted so the receipt can still show it once. */
+/** Stay ids a draft actually shows. Rooms with children and ids shared by two rows are omitted so the receipt can still show the save once. */
 export function appliedSavedStayIds(
   draft: BookingDraftReady,
   groups: StayGroupRequirement[],
@@ -298,6 +298,7 @@ export function appliedSavedStayIds(
   if (!savedStays) return [];
   const claims = new Map<string, number>();
   for (const room of draft.draft.rooms) {
+    if (childCountForRoom(room, groups) > 0) continue;
     const id = stayIdForRoom(room, groups);
     claims.set(id, (claims.get(id) ?? 0) + 1);
   }
@@ -341,46 +342,6 @@ function commitViewFromSaved(
     ...shotFields,
     statusChip: 'check',
   };
-}
-
-function sameBookedConfirmation(local: CommitView | undefined, incoming: CommitView | undefined): boolean {
-  return Boolean(
-    local?.status === 'booked' &&
-      incoming?.status === 'booked' &&
-      local.confirmationNumber === incoming.confirmationNumber,
-  );
-}
-
-/** Fold a later stored read into room save state. A local book stays until the stored read has that confirmation. */
-function mergeSavedRoomCommits(
-  current: Record<string, RoomSaveState>,
-  incoming: Record<string, RoomSaveState>,
-  localKeys: ReadonlySet<string>,
-): Record<string, RoomSaveState> {
-  let next = current;
-  for (const [roomKey, roomSave] of Object.entries(incoming)) {
-    if (!roomSave.commit) continue;
-    const local = current[roomKey]?.commit;
-    if (localKeys.has(roomKey)) {
-      if (local?.status === 'running') continue;
-      if (local?.status === 'booked' && !sameBookedConfirmation(local, roomSave.commit)) continue;
-    }
-    const incomingCommit = roomSave.commit;
-    if (local?.status === 'booked' && incomingCommit.status === 'booked') {
-      if (
-        local.confirmationNumber === incomingCommit.confirmationNumber &&
-        local.runId === incomingCommit.runId &&
-        (local.shots?.length ?? 0) === (incomingCommit.shots?.length ?? 0)
-      ) {
-        continue;
-      }
-    }
-    if (local?.status === 'refused' && incomingCommit.status === 'refused') {
-      if (local.message === incomingCommit.message && local.runId === incomingCommit.runId) continue;
-    }
-    next = { ...next, [roomKey]: { ...next[roomKey], commit: roomSave.commit } };
-  }
-  return next;
 }
 
 function savesFromSavedStays(
@@ -952,12 +913,6 @@ export function BookingCards({
   const [saves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
     savesFromSavedStays(draft, groups, savedStays),
   );
-  const localCommitKeys = useRef(new Set<string>());
-  const savedStayMergeKey = JSON.stringify(savedStays ?? null);
-  useEffect(() => {
-    const incoming = savesFromSavedStays(draft, groups, savedStays);
-    setSaves((current) => mergeSavedRoomCommits(current, incoming, localCommitKeys.current));
-  }, [savedStayMergeKey, draft, groups, savedStays]);
   const previewReceipt = usePaneStayPreview();
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
@@ -1283,7 +1238,6 @@ export function BookingCards({
     const key = paneStayKey(stay);
     const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
     if (room) previewReceipt.clear(workItemId, stayIdForRoom(room, groups));
-    localCommitKeys.current.add(roomKey);
     patchSave(roomKey, { commit: { status: 'running', key } });
     let commit: CommitView;
     try {

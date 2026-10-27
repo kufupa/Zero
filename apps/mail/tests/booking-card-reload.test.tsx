@@ -165,35 +165,37 @@ describe('booking card reload', () => {
     expect(screen.getAllByText('Booked in HMS – confirmation 98765-1')).toHaveLength(1);
   });
 
-  it('shows a saved booking that arrives after the card is already open', () => {
+  it('shows the stored confirmation when the matching room has children', () => {
     const client: PaneStayClient = {
       preview: vi.fn(),
       commit: vi.fn(),
       screenshot: vi.fn(async () => null),
       mode: () => 'on',
     };
-    const stay = {
-      confirmationNumber: '98765-1',
-      status: 'booked' as const,
-      screenshotRef: null,
-      runId: RUN,
-      shots: [{ name: 'saved.png', sha256: 'c'.repeat(64), at: SHOT_AT }],
-    };
-    const view = (saved: boolean) => (
-      <BookingCards
-        draft={bookedDraft()}
-        groups={[group]}
+    const session = initialQuoteSession();
+    const childGroup = { ...group, childrenAges: [7] };
+    const draft = bookedDraft();
+    draft.draft.rooms[0]!.request.childAges = [7];
+    session.groups = [childGroup];
+    session.bookingDrafts = { '2026-11-12:2026-11-14': draft };
+    render(
+      <QuoteBookingHost
+        session={session}
         paneSave={client}
-        savedStays={saved ? { s_aaaa1111_1: stay } : undefined}
-      />
+        savedStays={{
+          s_aaaa1111_1: {
+            confirmationNumber: '98765-1',
+            status: 'booked',
+            screenshotRef: null,
+            runId: RUN,
+            shots: [{ name: 'saved.png', sha256: 'c'.repeat(64), at: SHOT_AT }],
+          },
+        }}
+      />,
     );
-    const { rerender } = render(view(false));
-    expect(screen.queryByText('Booked in HMS – confirmation 98765-1')).toBeNull();
-    rerender(view(true));
-    expect(screen.getByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+    expect(screen.getAllByText('Booked in HMS – confirmation 98765-1')).toHaveLength(1);
     expect(screen.getByRole('button', { name: 'View HMS screenshots' })).toBeDefined();
-    rerender(view(false));
-    expect(screen.getByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
   });
 
   it('shows a stored booking when the mail has no booking draft', () => {
