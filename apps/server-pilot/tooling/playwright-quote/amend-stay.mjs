@@ -12,7 +12,6 @@ import {
   amendCommitAllowed,
   amendPreviewDigest,
   comboUnsupportedFieldReason,
-  comboWritableFromPage,
   commitAndVerifyFields,
   compareChangedFields,
   dangerousDialogKind,
@@ -68,13 +67,29 @@ async function refuseUnsupportedFields(ctx, fields) {
     const locator = ctx.page.locator(`input[name="${SELECTOR_BY_FIELD[field]}"]:visible`);
     const count = await locator.count();
     let reason;
+    let state = null;
     if (isComboAmendField(field)) {
-      const state = count === 1
-        ? await locator.evaluate(comboWritableFromPage).catch(() => null)
+      state = count === 1
+        ? await locator.evaluate((input) => {
+            const cmp = typeof Ext !== 'undefined' && input.id
+              ? Ext.getCmp(input.id.replace(/-inputEl$/, ''))
+              : null;
+            if (cmp) {
+              const disabled = typeof cmp.isDisabled === 'function' ? cmp.isDisabled() : !!cmp.disabled;
+              return { exists: true, disabled: !!disabled, readOnly: cmp.readOnly === true };
+            }
+            const wrap = input.closest('.x-field');
+            if (!wrap) return { exists: false, disabled: true, readOnly: true };
+            return {
+              exists: true,
+              disabled: wrap.classList.contains('x-item-disabled'),
+              readOnly: false,
+            };
+          }).catch(() => null)
         : null;
       reason = comboUnsupportedFieldReason({ count, ...(state || {}) });
     } else {
-      const state = count === 1
+      state = count === 1
         ? await locator.evaluate((input) => ({ disabled: input.disabled, readOnly: input.readOnly })).catch(() => null)
         : null;
       reason = unsupportedFieldReason({
@@ -84,7 +99,10 @@ async function refuseUnsupportedFields(ctx, fields) {
       });
     }
     if (reason) {
-      ctx.result.fieldRefusals[field] = { reason: 'unsupported_field', note: 'TODO-LIVE-PROBE' };
+      ctx.result.fieldRefusals[field] = {
+        reason: 'unsupported_field',
+        note: isComboAmendField(field) ? JSON.stringify({ count, ...(state || { evaluate: 'failed' }) }) : 'TODO-LIVE-PROBE',
+      };
     }
   }
   if (Object.keys(ctx.result.fieldRefusals).length === 0) return false;

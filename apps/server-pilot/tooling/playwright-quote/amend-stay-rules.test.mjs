@@ -216,8 +216,8 @@ test('combo refuse uses Ext.getCmp not input.readOnly', async () => {
     source.indexOf('async function clickSave'),
   );
   assert.match(body, /isComboAmendField\(field\)/);
-  assert.match(body, /locator\.evaluate\(comboWritableFromPage\)/);
-  assert.match(helper, /Ext\.getCmp\(cmpId\)/);
+  assert.match(body, /Ext\.getCmp\(input\.id\.replace\(\/-inputEl\$\/, ''\)\)/);
+  assert.match(body, /typeof Ext !== 'undefined'/);
   assert.match(helper, /input\.id\.replace\(\/-inputEl\$\/, ''\)/);
   assert.match(helper, /closest\('\.x-field'\)/);
   assert.match(helper, /x-item-disabled/);
