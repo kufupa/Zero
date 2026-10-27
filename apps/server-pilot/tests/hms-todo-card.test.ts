@@ -408,6 +408,42 @@ describe('analyseSyncedSelection hmsTodoCard', () => {
     expect(labelsOf(card!)).not.toContain('Adults');
   });
 
+  it('maps HRDAV Standard King on the live checklist to STKNG, not Centurion SKNG', async () => {
+    const selection: SyncedQuoteSelection = {
+      subject: 'Please confirm',
+      bodyText: 'Please confirm one Standard King 26-28 October for Ann Example.',
+      receivedAt: '2026-10-06T08:00:00.000Z',
+      preceding: [],
+      attachments: [],
+    };
+    const { payload } = await analyseSyncedSelection(
+      selection,
+      {
+        ...options(
+          adapterReturning(
+            lunaBooking({
+              groups: [
+                {
+                  ...emptyGroup,
+                  arrival: '2027-10-26',
+                  departure: '2027-10-28',
+                  rooms: 1,
+                  adultsPerRoom: 2,
+                  roomPreference: 'Standard King',
+                  guestNames: ['Ann Example'],
+                },
+              ],
+            }),
+          ),
+        ),
+        transportId: 'transport-davinci',
+      },
+    );
+    const card = todoCardOf(payload);
+    expect(card).toMatchObject({ kind: 'new_booking' });
+    expect(card?.prefill?.fields).toEqual(expect.arrayContaining([{ label: 'Room type', value: 'STKNG' }]));
+  });
+
   it('rebuilds a missing card on cache read without calling the model', async () => {
     cacheDir = await mkdtemp(join(tmpdir(), 'hms-todo-cache-'));
     const internetMessageId = '<todo-cache@x>';
@@ -465,6 +501,50 @@ describe('analyseSyncedSelection hmsTodoCard', () => {
     expect(stepValue(card!, 'Arrival')).toBe('2026-11-12');
     expect(stepValue(card!, 'Adults per room')).toBe('2');
     expect(stepValue(card!, 'Attachments')).toBe('request.pdf');
+  });
+
+  it('maps HRDAV Standard King on a cached checklist to STKNG, not Centurion SKNG', async () => {
+    cacheDir = await mkdtemp(join(tmpdir(), 'hms-todo-cache-hrdav-'));
+    const internetMessageId = '<todo-cache-hrdav@x>';
+    const davinciTransport = 'transport-davinci';
+    const selection: SyncedQuoteSelection = {
+      subject: 'Please confirm',
+      bodyText: 'Please confirm one Standard King 26-28 October for Ann Example.',
+      receivedAt: '2026-10-06T08:00:00.000Z',
+      preceding: [],
+      attachments: [],
+    };
+    const luna = lunaBooking({
+      groups: [
+        {
+          ...emptyGroup,
+          arrival: '2027-10-26',
+          departure: '2027-10-28',
+          rooms: 1,
+          adultsPerRoom: 2,
+          roomPreference: 'Standard King',
+          guestNames: ['Ann Example'],
+        },
+      ],
+    });
+    const cacheFile = analyseCachePath({
+      internetMessageId,
+      sourceHash: hashSyncedQuoteSelection(selection),
+      promptVersion,
+      cacheDir,
+      transportId: davinciTransport,
+    });
+    await writeFile(cacheFile, JSON.stringify({ status: 'ready', source: 'luna', intent: 'other', groups: [], luna }));
+    const adapter = adapterReturning(lunaBooking());
+    const { payload, outcome } = await analyseSyncedSelection(
+      selection,
+      { ...options(adapter, { cacheDir, internetMessageId }), transportId: davinciTransport },
+    );
+    expect(outcome).toEqual({ kind: 'cache_hit' });
+    expect(adapter.invoke).not.toHaveBeenCalled();
+    const card = todoCardOf(payload);
+    expect(card).toMatchObject({ kind: 'new_booking' });
+    expect(card?.prefill?.fields).toEqual(expect.arrayContaining([{ label: 'Room type', value: 'STKNG' }]));
   });
 });
 

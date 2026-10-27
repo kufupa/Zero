@@ -80,4 +80,24 @@ describe('stored read hmsTodoCard', () => {
     expect(card).toMatchObject({ kind: 'new_booking' });
     expect(card?.prefill?.fields).toEqual(expect.arrayContaining([{ label: 'Room type', value: 'STKNG' }]));
   });
+
+  it('maps HRDAV Standard King on the booking checklist to STKNG, not Centurion SKNG', async () => {
+    const payload: MailExtractionPayload = {
+      ...bookingPayload,
+      stays: [
+        {
+          ...bookingPayload.stays[0]!,
+          rows: [{ ...bookingPayload.stays[0]!.rows[0]!, roomType: 'Standard King' }],
+        },
+      ],
+    };
+    const { analysis } = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}, undefined, 'HRDAV');
+    const withoutProperty = await hmsTodoCardFromLuna(analysis.luna, [], 'Please confirm the booking.');
+    expect(withoutProperty?.prefill?.fields).toEqual(
+      expect.arrayContaining([{ label: 'Room type', value: 'SKNG' }]),
+    );
+    const card = await hmsTodoCardFromLuna(analysis.luna, [], 'Please confirm the booking.', 'HRDAV');
+    expect(card).toMatchObject({ kind: 'new_booking' });
+    expect(card?.prefill?.fields).toEqual(expect.arrayContaining([{ label: 'Room type', value: 'STKNG' }]));
+  });
 });
