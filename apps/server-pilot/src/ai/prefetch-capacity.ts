@@ -38,16 +38,24 @@ function asCount(value: unknown): number {
 export function decidePrefetchCapacity(input: {
   used: number;
   perHour: number;
+  batchSize?: number;
   now: Date;
   windowMs?: number;
   oldestCreatedAt?: Date | null;
 }): PrefetchCapacityDecision {
   const used = asCount(input.used);
   const now = input.now;
-  if (!Number.isInteger(input.perHour) || input.perHour <= 0) {
+  const batchSize = input.batchSize ?? 1;
+  if (
+    !Number.isInteger(input.perHour) ||
+    input.perHour <= 0 ||
+    !Number.isInteger(batchSize) ||
+    batchSize <= 0
+  ) {
     return { action: 'disable', used, nextRunAt: now };
   }
-  if (used < input.perHour) {
+  // Let one profile-sized fan-out start as a unit; it may exceed the safety budget only in an empty window.
+  if (used + batchSize <= input.perHour || (used === 0 && batchSize > input.perHour)) {
     return { action: 'admit', used, nextRunAt: now };
   }
   const windowMs = input.windowMs ?? PREFETCH_CAPACITY_WINDOW_MS;
@@ -63,7 +71,7 @@ export function decidePrefetchCapacity(input: {
   };
 }
 
-/** Active plus scheduled reservations in the rolling hour, excluding an optional waking job. */
+/** Active plus scheduled reservations in the rolling hour, excluding an optional waking job or batch. */
 export async function countPrefetchReservations(
   db: DB,
   input: {
@@ -71,28 +79,65 @@ export async function countPrefetchReservations(
     kind: PrefetchKind;
     since: Date;
     excludeRunId?: string;
+    excludeTriggerMessageId?: string;
   },
 ): Promise<PrefetchReservationCount> {
+  const filters = and(
+    eq(aiWorkflowRun.transportId, input.transportId),
+    eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
+    eq(aiWorkflowRun.priority, PREFETCH_PRIORITY),
+    sql`${aiWorkflowRun.metrics}->>'batchId' IS NULL`,
+    ...(input.kind === 'staff_quote'
+      ? [sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`]
+      : []),
+    sql`${aiWorkflowRun.readRequest}->>'kind' = ${input.kind}`,
+    gt(aiWorkflowRun.createdAt, input.since),
+    ...(input.excludeRunId ? [ne(aiWorkflowRun.id, input.excludeRunId)] : []),
+    ...(input.excludeTriggerMessageId
+      ? [sql`${aiWorkflowRun.triggerMessageId} IS DISTINCT FROM ${input.excludeTriggerMessageId}`]
+      : []),
+  );
+
+  if (input.kind === 'staff_quote') {
+    // Every row from one inbound mail reserves that mail's full strategy fan-out, not one slot per row.
+    const sourceKey = sql<string>`coalesce(${aiWorkflowRun.triggerMessageId}, ${aiWorkflowRun.id})`;
+    const batchSize = sql<number>`greatest(
+      coalesce(max(
+        case
+          when ${aiWorkflowRun.metrics}->>'prefetchBatchSize' ~ '^[1-9][0-9]{0,8}$'
+          then (${aiWorkflowRun.metrics}->>'prefetchBatchSize')::int
+          else null
+        end
+      ), 0),
+      count(*)::int
+    )::int`;
+    const rows = await db
+      .select({
+        used: batchSize,
+        oldest: sql<Date | null>`min(${aiWorkflowRun.createdAt})`,
+      })
+      .from(aiWorkflowRun)
+      .where(filters)
+      .groupBy(sourceKey);
+    const oldest = rows.reduce<Date | null>((value, row) => {
+      if (!row.oldest) return value;
+      const candidate = new Date(row.oldest);
+      if (!Number.isFinite(candidate.getTime())) return value;
+      return !value || candidate.getTime() < value.getTime() ? candidate : value;
+    }, null);
+    return {
+      used: rows.reduce((total, row) => total + asCount(row.used), 0),
+      oldestCreatedAt: oldest,
+    };
+  }
+
   const [row] = await db
     .select({
       n: sql<number>`count(*)::int`,
       oldest: sql<Date | null>`min(${aiWorkflowRun.createdAt})`,
     })
     .from(aiWorkflowRun)
-    .where(
-      and(
-        eq(aiWorkflowRun.transportId, input.transportId),
-        eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
-        eq(aiWorkflowRun.priority, PREFETCH_PRIORITY),
-        sql`${aiWorkflowRun.metrics}->>'batchId' IS NULL`,
-        ...(input.kind === 'staff_quote'
-          ? [sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`]
-          : []),
-        sql`${aiWorkflowRun.readRequest}->>'kind' = ${input.kind}`,
-        gt(aiWorkflowRun.createdAt, input.since),
-        ...(input.excludeRunId ? [ne(aiWorkflowRun.id, input.excludeRunId)] : []),
-      ),
-    );
+    .where(filters);
   const oldest = row?.oldest ? new Date(row.oldest) : null;
   return {
     used: asCount(row?.n),
@@ -107,8 +152,10 @@ export async function reservePrefetchCapacity(
     transportId: string;
     kind: PrefetchKind;
     perHour: number;
+    batchSize?: number;
     now?: Date;
     excludeRunId?: string;
+    excludeTriggerMessageId?: string;
   },
 ): Promise<PrefetchCapacityDecision> {
   const now = input.now ?? new Date();
@@ -117,10 +164,12 @@ export async function reservePrefetchCapacity(
     kind: input.kind,
     since: new Date(now.getTime() - PREFETCH_CAPACITY_WINDOW_MS),
     excludeRunId: input.excludeRunId,
+    excludeTriggerMessageId: input.excludeTriggerMessageId,
   });
   return decidePrefetchCapacity({
     used: counted.used,
     perHour: input.perHour,
+    batchSize: input.batchSize,
     now,
     oldestCreatedAt: counted.oldestCreatedAt,
   });

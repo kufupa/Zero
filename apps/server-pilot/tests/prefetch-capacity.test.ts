@@ -200,6 +200,12 @@ describe('prefetch capacity (pure)', () => {
     expect(decision.nextRunAt.getTime()).toBe(oldest.getTime() + PREFETCH_CAPACITY_WINDOW_MS);
     expect(decision.nextRunAt.getTime()).toBeGreaterThan(now.getTime());
   });
+
+  it('admits one oversized batch only when the hourly window is empty and never splits a batch', () => {
+    expect(decidePrefetchCapacity({ used: 0, perHour: 6, batchSize: 9, now }).action).toBe('admit');
+    expect(decidePrefetchCapacity({ used: 1, perHour: 6, batchSize: 9, now }).action).toBe('defer');
+    expect(decidePrefetchCapacity({ used: 5, perHour: 6, batchSize: 2, now }).action).toBe('defer');
+  });
 });
 
 const FANOUT = [
@@ -445,6 +451,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
       const rows = await preparedQuoteRows(db, seeded.messageId);
       const job = rows[0];
       if (!job) throw new Error('expected a prepared quote');
+      const batchSize = (job.metrics as { prefetchBatchSize?: number } | null)?.prefetchBatchSize;
+      expect(batchSize).toBe(rows.length);
       const aged = new Date(Date.now() - 2 * PREFETCH_CAPACITY_WINDOW_MS);
       for (const row of rows) {
         await db.update(aiWorkflowRun).set({ createdAt: aged, updatedAt: aged }).where(eq(aiWorkflowRun.id, row.id));
@@ -464,7 +472,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prefetch capacity (lane DB)',
           kind: 'staff_quote',
           since,
         }),
-      ).toMatchObject({ used: 1 });
+      ).toMatchObject({ used: batchSize });
       const [firstStamp] = await db
         .select({ createdAt: aiWorkflowRun.createdAt })
         .from(aiWorkflowRun)

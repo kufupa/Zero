@@ -1890,9 +1890,10 @@ export async function enqueuePreparedQuoteWithinCap(
   db: DB,
   input: Parameters<typeof enqueueHmsJob>[0],
   perHour: number,
+  batchSize = 1,
 ): Promise<{ created: boolean; deferred: boolean }> {
   const { enqueuePreparedQuoteWithinCap: enqueue } = await import('./prepared-quote-queue.js');
-  return enqueue(db, input, perHour);
+  return enqueue(db, input, perHour, batchSize);
 }
 
 /** Serializes the guest-search count and insert per transport so concurrent extractions cannot overspend the cap. */
@@ -2728,6 +2729,7 @@ export async function prefetchQuoteReadyForExtraction(
           extraMetrics: { quotePrepared: true },
         },
         perHour,
+        shops.length,
       );
       if (queued.created) {
         created += 1;
@@ -3665,6 +3667,7 @@ export async function executeHmsJob(input: {
     staffQuoteUser?: unknown;
     quotePrepared?: boolean;
     prefetchDeferred?: boolean;
+    prefetchBatchSize?: number;
   };
   const systemPreparedQuote =
     request.kind === 'staff_quote' &&
@@ -3675,6 +3678,12 @@ export async function executeHmsJob(input: {
     await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, db);
     return 'dead_letter';
   }
+  const prefetchBatchSize =
+    typeof metrics.prefetchBatchSize === 'number' &&
+    Number.isSafeInteger(metrics.prefetchBatchSize) &&
+    metrics.prefetchBatchSize > 0
+      ? metrics.prefetchBatchSize
+      : 1;
   let preparedQuoteLockWaitStart = run.createdAt;
   if (systemPreparedQuote && metrics.prefetchDeferred === true) {
     const admitted = await db.transaction(async (tx) => {
@@ -3688,7 +3697,9 @@ export async function executeHmsJob(input: {
         transportId: run.transportId,
         kind: 'staff_quote',
         perHour: quotePreparationPerHour(),
+        batchSize: prefetchBatchSize,
         excludeRunId: run.id,
+        excludeTriggerMessageId: run.triggerMessageId ?? undefined,
       });
       if (capacity.action === 'disable') {
         await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, scoped);

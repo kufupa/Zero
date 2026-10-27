@@ -640,6 +640,7 @@ export async function claimNextAiRun(input: ClaimNextAiRunInput) {
             .from(higherTierRun)
             .where(
               and(
+                eq(higherTierRun.transportId, aiWorkflowRun.transportId),
                 eq(higherTierRun.executorLane, 'hms'),
                 gte(higherTierRun.priority, HMS_DEV_GATE_PREFETCH_PRIORITY),
                 // Writes have their own runner; a parked write must not hold dev reads all day.

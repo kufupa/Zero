@@ -21,6 +21,7 @@ export async function enqueuePreparedQuoteWithinCap(
   db: DB,
   input: Parameters<typeof enqueueHmsJob>[0],
   perHour: number,
+  batchSize = 1,
 ): Promise<PreparedQuoteCapResult> {
   return db.transaction(async (tx) => {
     await tx.execute(
@@ -65,7 +66,9 @@ export async function enqueuePreparedQuoteWithinCap(
       transportId: input.transportId,
       kind: 'staff_quote',
       perHour,
+      batchSize,
       now: input.createdAt,
+      ...(existing.length ? {} : { excludeTriggerMessageId: input.triggerMessageId }),
     });
     if (capacity.action === 'disable') return NOT_QUEUED;
     // A dead-letter retry while the hour is full must not spawn another reserved row.
@@ -79,6 +82,7 @@ export async function enqueuePreparedQuoteWithinCap(
         nextRunAt: capacity.nextRunAt,
         extraMetrics: {
           ...retryInput.extraMetrics,
+          prefetchBatchSize: batchSize,
           ...(capacity.action === 'defer' ? { prefetchDeferred: true } : {}),
         },
       },

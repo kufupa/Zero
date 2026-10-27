@@ -112,7 +112,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote queue cap seam
         const firstKey = `hms-job:staff-quote-prepared:${transportId}:${first.messageId}:${randomUUID()}`;
         const secondKey = `hms-job:staff-quote-prepared:${transportId}:${second.messageId}:${randomUUID()}`;
 
-        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 2)).toEqual({
+        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 1)).toEqual({
           created: true,
           deferred: false,
         });
@@ -124,18 +124,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote queue cap seam
           expect(afterFirst[0]?.idempotencyKey).toBe(firstKey);
         }
 
-        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 2)).toEqual({
+        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 1)).toEqual({
           created: false,
           deferred: false,
         });
         expect(await preparedRows(db, transportId)).toHaveLength(1);
 
+        const aged = new Date(Date.now() - 2 * 60 * 60_000);
         await db
           .update(aiWorkflowRun)
-          .set({ state: 'dead_letter', finishedAt: new Date(), updatedAt: new Date() })
+          .set({ state: 'dead_letter', createdAt: aged, finishedAt: new Date(), updatedAt: new Date() })
           .where(eq(aiWorkflowRun.id, afterFirst[0]!.id));
 
-        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 2)).toEqual({
+        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(first, transportId, firstKey), 1)).toEqual({
           created: true,
           deferred: false,
         });
@@ -143,7 +144,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote queue cap seam
         expect(afterRetry).toHaveLength(2);
         expect(afterRetry.some((row) => row.idempotencyKey.includes(':retry:'))).toBe(true);
 
-        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(second, transportId, secondKey), 2)).toEqual({
+        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(second, transportId, secondKey), 1)).toEqual({
           created: true,
           deferred: true,
         });
@@ -154,7 +155,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote queue cap seam
         );
         expect(overflow.length).toBeGreaterThanOrEqual(1);
         expect(overflow.every((row) => row.nextRunAt && row.nextRunAt.getTime() > Date.now())).toBe(true);
-        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(second, transportId, secondKey), 2)).toEqual({
+        expect(await enqueuePreparedQuoteWithinCap(db, preparedQuoteInput(second, transportId, secondKey), 1)).toEqual({
           created: false,
           deferred: false,
         });

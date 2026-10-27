@@ -206,9 +206,10 @@ async function enqueuePriorityJob(
   prefix: string,
   priority: number,
   createdAt: Date,
+  transportId = TRANSPORT_ID,
 ) {
   return enqueueHmsJob({
-    transportId: TRANSPORT_ID,
+    transportId,
     threadId,
     triggerMessageId: messageId,
     workItemId: null,
@@ -1058,6 +1059,49 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('U23 HMS job queue (lane DB)',
       });
       expect(Boolean(claimed)).toBe(shouldClaim);
       if (claimed) expect(claimed.priority).toBe(HMS_JOB_PRIORITY_DEV);
+    }));
+
+  it('does not let higher-tier work on another transport block the dev gate', () =>
+    withSeededTestDb(async (db) => {
+      vi.stubEnv('HMS_DEV_GATE', 'on');
+      vi.stubEnv('HMS_DEV_GATE_START_HOUR_UTC', '5');
+      vi.stubEnv('HMS_DEV_GATE_END_HOUR_UTC', '16');
+      const now = new Date('2099-05-10T10:00:00Z');
+      const createdAt = new Date(now.getTime() - 60_000);
+      const higherTier = await seedThread(db, 'Quote request', TRANSPORT_ID);
+      const devCandidate = await seedThread(db, 'Quote request', DAVINCI_TRANSPORT_ID);
+      const prefix = `dev-gate-transport-${randomUUID()}`;
+      await enqueuePriorityJob(
+        db,
+        higherTier.threadId,
+        higherTier.messageId,
+        `${prefix}:prefill`,
+        HMS_JOB_PRIORITY_PREFETCH,
+        createdAt,
+        TRANSPORT_ID,
+      );
+      await enqueuePriorityJob(
+        db,
+        devCandidate.threadId,
+        devCandidate.messageId,
+        `${prefix}:dev`,
+        HMS_JOB_PRIORITY_DEV,
+        createdAt,
+        DAVINCI_TRANSPORT_ID,
+      );
+
+      const claimed = await claimNextAiRun({
+        ownerId: LANE_OWNER,
+        lane: 'hms',
+        runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION,
+        transportId: DAVINCI_TRANSPORT_ID,
+        idempotencyPrefix: `${prefix}:dev`,
+        db,
+        now,
+      });
+      expect(claimed?.priority).toBe(HMS_JOB_PRIORITY_DEV);
+      expect(claimed?.transportId).toBe(DAVINCI_TRANSPORT_ID);
     }));
 
   it('claims a prepared quote with the staff quote read budget', () =>
