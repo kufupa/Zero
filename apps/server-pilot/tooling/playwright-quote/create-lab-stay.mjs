@@ -7,7 +7,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
-import { assertTrackReadyForGuarantee, bookFieldFills, confirmationRecipientFills, confirmationRecipientRefusal, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
+import { assertTrackReadyForGuarantee, bookFieldFills, confirmationRecipientFills, confirmationRecipientRefusal, confirmationSendMail, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
 import { readSaveSnapshot, readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { paneCommitOutcome, proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
@@ -409,6 +409,17 @@ async function fillGuestOptIn(page) {
     return;
   }
   await box.click();
+}
+
+/** CMS Send Mail (udfchkbox04): HMS sends its own confirmation letter on Save. Only when staff set a recipient. */
+async function tickCmsSendMail(page) {
+  const box = page.locator('input[name="udfchkbox04"]:visible').first();
+  if ((await box.getAttribute('type')) === 'checkbox') {
+    await box.setChecked(true);
+    return;
+  }
+  const checked = await box.evaluate((el) => el.closest('.x-form-cb-checked, .x-form-checkbox-checked') !== null).catch(() => false);
+  if (!checked) await box.click();
 }
 
 async function blankRequired(page, names) {
@@ -1035,6 +1046,10 @@ export async function main(argv = process.argv.slice(2)) {
         ...confirmationRecipientFills(stay),
       })) {
         if (value) await fillNamed(page, name, value);
+      }
+      if (confirmationSendMail(stay)) {
+        await tickCmsSendMail(page);
+        result.cmsSendMail = true;
       }
       const book = bookFieldFills(stay);
       if (book.marketsegment) await fillNamed(page, 'marketsegment', book.marketsegment);

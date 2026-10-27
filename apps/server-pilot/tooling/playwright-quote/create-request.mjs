@@ -234,7 +234,13 @@ export function confirmationRecipientAddress(stay) {
 
 export function confirmationRecipientFills(stay) {
   const emailaddress = confirmationRecipientAddress(stay);
-  return emailaddress ? { emailaddress } : {};
+  // udfchar13 = CMS Booker Email; HMS mails its own confirmation there when CMS Send Mail is ticked (owner 2026-10-27).
+  return emailaddress ? { emailaddress, udfchar13: emailaddress } : {};
+}
+
+/** Owner 2026-10-27: staff's Book click asks HMS to email its own confirmation (CMS Send Mail) when a recipient is set. */
+export function confirmationSendMail(stay) {
+  return Boolean(confirmationRecipientAddress(stay));
 }
 
 /** Missing recipient is optional (CLI). A present but unusable value fails closed. */
