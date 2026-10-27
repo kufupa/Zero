@@ -106,7 +106,7 @@ describe('cancel outcome copy', () => {
   it('a paid stay refused at commit tells staff to handle it in HMS', () => {
     const unpaid = run({ outcome: 'refused_not_unpaid', previewDigest: null });
     expect(AMEND_SAVE_COPY.handleInHms).toBe(
-      "Paid booking: handle in HMS (Nava doesn't change paid bookings yet)",
+      'Paid or guaranteed booking: handle in HMS (Nava only changes unpaid bookings for now)',
     );
     expect(cancelOutcomeNote('refused_not_unpaid', CONFIRMATION)).toBe(AMEND_SAVE_COPY.handleInHms);
     expect(viewAfterCommit(unpaid, run(), CONFIRMATION)).toEqual({

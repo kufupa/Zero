@@ -242,7 +242,7 @@ export const AMEND_SAVE_COPY = {
   unconfirmed: 'HMS may have saved this change. Check HMS before trying again.',
   failed: "Nava couldn't finish in HMS. Check HMS yourself.",
   done: 'Saved in HMS.',
-  handleInHms: "Paid booking: handle in HMS (Nava doesn't change paid bookings yet)",
+  handleInHms: 'Paid or guaranteed booking: handle in HMS (Nava only changes unpaid bookings for now)',
 } as const;
 
 export type AmendPaymentClass = 'unpaid' | 'paid' | 'guaranteed' | 'unknown';

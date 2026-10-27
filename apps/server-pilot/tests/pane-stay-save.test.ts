@@ -176,9 +176,9 @@ describe('pane stay save guards', () => {
     expect(paneStaySaveMode({ PANE_WRITE_AMEND_UNPAID: 'lab' })).toBe('off');
   });
 
-  it('paid booking copy tells staff to handle the stay in HMS', () => {
+  it('paid or guaranteed copy tells staff to handle the stay in HMS', () => {
     expect(PANE_PAID_BOOKING_COPY).toBe(
-      "Paid booking: handle in HMS (Nava doesn't change paid bookings yet)",
+      'Paid or guaranteed booking: handle in HMS (Nava only changes unpaid bookings for now)',
     );
   });
 
