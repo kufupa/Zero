@@ -66,7 +66,7 @@ describe('staffQuoteFailureMessage', () => {
 describe('unverifiedContextualRatesNeedAgency', () => {
   const row = (rateScope: string, eligibility: string) => ({ rateScope, eligibility });
   const capture = (options: { rateScope: string; eligibility: string }[]) => ({
-    groups: [{ options }],
+    groups: [{ completeness: { search: 'complete' }, issues: [], options }],
   });
 
   it('is true only when every row is contextual and conditional and no rateContext was requested', () => {
@@ -102,11 +102,56 @@ describe('unverifiedContextualRatesNeedAgency', () => {
     expect(unverifiedContextualRatesNeedAgency({ groups: [] }, {})).toBe(false);
   });
 
-  it('is false when the search is incomplete or carries search issues', () => {
+  it('is false unless every group search is complete with no coverage issues', () => {
     const rows = [row('contextual', 'conditional')];
+    expect(unverifiedContextualRatesNeedAgency({ groups: [{ options: rows }] }, {})).toBe(false);
     expect(
       unverifiedContextualRatesNeedAgency(
-        { searchCompleteness: { status: 'partial' }, groups: [{ options: rows }] },
+        {
+          groups: [
+            { completeness: { search: 'complete' }, issues: [], options: rows },
+            { options: rows },
+          ],
+        },
+        {},
+      ),
+    ).toBe(false);
+    expect(
+      unverifiedContextualRatesNeedAgency(
+        {
+          groups: [
+            {
+              completeness: { search: 'complete' },
+              issues: [{ code: 'STALE_CALENDAR_PAGE' }],
+              options: rows,
+            },
+          ],
+        },
+        {},
+      ),
+    ).toBe(false);
+    expect(
+      unverifiedContextualRatesNeedAgency(
+        {
+          groups: [
+            {
+              completeness: { search: 'complete' },
+              issues: [{ code: 'NOT_A_COVERAGE_CODE' }],
+              options: rows,
+            },
+          ],
+        },
+        {},
+      ),
+    ).toBe(true);
+  });
+
+  it('is false when the search is incomplete or carries search issues', () => {
+    const rows = [row('contextual', 'conditional')];
+    const covered = { completeness: { search: 'complete' as const }, issues: [] as { code: string }[] };
+    expect(
+      unverifiedContextualRatesNeedAgency(
+        { searchCompleteness: { status: 'partial' }, groups: [{ ...covered, options: rows }] },
         {},
       ),
     ).toBe(false);
@@ -115,7 +160,7 @@ describe('unverifiedContextualRatesNeedAgency', () => {
         {
           searchCompleteness: { status: 'complete' },
           issues: [{ code: 'OPTION_LIMIT' }],
-          groups: [{ options: rows }],
+          groups: [{ ...covered, options: rows }],
         },
         {},
       ),
@@ -125,7 +170,7 @@ describe('unverifiedContextualRatesNeedAgency', () => {
         {
           searchCompleteness: { status: 'complete' },
           issues: [],
-          groups: [{ issues: [{ code: 'OPTION_LIMIT' }], options: rows }],
+          groups: [{ completeness: { search: 'complete' }, issues: [{ code: 'OPTION_LIMIT' }], options: rows }],
         },
         {},
       ),
@@ -145,7 +190,7 @@ describe('unverifiedContextualRatesNeedAgency', () => {
         {
           searchCompleteness: { status: 'complete' },
           issues: [],
-          groups: [{ completeness: { search: 'complete' }, issues: [], options: rows }],
+          groups: [{ ...covered, options: rows }],
         },
         {},
       ),

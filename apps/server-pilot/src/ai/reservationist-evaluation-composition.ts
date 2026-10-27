@@ -1,4 +1,4 @@
-import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partyReadingOf} from './party-rate-failure.js';
+import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partyReadingOf,partySearchCovered,COVERAGE_ISSUE_CODES} from './party-rate-failure.js';
 import {validateReservationistMailAnswers,type LocalEvaluationAnswerSource} from './reservationist-mail-answer-source.js';
 import {assertCurrentLookupTargetReceipt} from './reservationist-lookup-target.js';
 import {execFile} from 'node:child_process';
@@ -133,15 +133,14 @@ export function unverifiedContextualRatesNeedAgency(source:{groups?:unknown;sear
  if(ctx&&typeof ctx==='object'&&!Array.isArray(ctx)&&Object.keys(ctx).length)return false;
  const completeness=source.searchCompleteness;
  if(completeness&&typeof completeness==='object'&&!Array.isArray(completeness)&&(completeness as{status?:unknown}).status!=='complete')return false;
- if(Array.isArray(source.issues)&&source.issues.length)return false;
+ if(Array.isArray(source.issues)&&source.issues.some(issue=>issue&&typeof issue==='object'&&COVERAGE_ISSUE_CODES.has(String((issue as{code?:unknown}).code))))return false;
  const groups=Array.isArray(source.groups)?source.groups:[];
  if(!groups.length)return false;
  let count=0;
  for(const group of groups){
   if(!group||typeof group!=='object')return false;
-  const g=group as{options?:unknown;issues?:unknown;completeness?:{search?:unknown}};
-  if(Array.isArray(g.issues)&&g.issues.length)return false;
-  if(g.completeness&&g.completeness.search!==undefined&&g.completeness.search!=='complete')return false;
+  const g=group as{options?:unknown;issues?:Array<{code?:unknown}>;completeness?:{search?:unknown}};
+  if(!partySearchCovered(g))return false;
   const options=Array.isArray(g.options)?g.options:[];
   if(!options.length)return false;
   for(const option of options){
