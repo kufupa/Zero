@@ -106,6 +106,16 @@ export async function createAudit(directory, {video=false,trace='failure',secret
     async finish() {
       if(finished) return report;
       finished=true;
+      // A login screen can arrive after the caller's last checkpoint and make
+      // its catch path skip the failure screenshot. Preserve that trace too.
+      if(traceMode==='failure'&&tracing&&!runFailed&&page) {
+        try {
+          if(await page.locator('input[type="password"]:visible').count()) {
+            runFailed=true;
+            try {event('result_execution_failure');} catch { /* Keep the trace decision independent of event storage. */ }
+          }
+        } catch { /* A detached page alone does not prove the run failed. */ }
+      }
       if(recording) {
         try {await page.screencast.stop();report.video={requested:true,status:'complete',...await artifact('video.webm')};}
         catch {report.video.status='failed';fail('VIDEO_CAPTURE_FAILED');}

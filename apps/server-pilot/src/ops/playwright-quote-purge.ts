@@ -1,4 +1,4 @@
-import { lstat, realpath, readdir, rm, rmdir, statfs } from 'node:fs/promises';
+import { lstat, realpath, readdir, rm, statfs } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -52,12 +52,6 @@ async function purgeOldFiles(
       if (!entry || entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         await walk(path);
-        try {
-          await rmdir(path);
-        } catch (error) {
-          const code = (error as NodeJS.ErrnoException).code;
-          if (code !== 'ENOTEMPTY' && code !== 'EEXIST' && code !== 'ENOENT') throw error;
-        }
         continue;
       }
       if (!entry.isFile() || entry.mtimeMs > cutoff || !accepts(name)) continue;

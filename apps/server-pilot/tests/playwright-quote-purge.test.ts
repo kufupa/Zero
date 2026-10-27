@@ -44,10 +44,11 @@ function browserPage(stopTrace: (...args: unknown[]) => Promise<void>) {
     context: () => unknown;
     locator: () => { count: () => Promise<number> };
   };
-  page.context = () => ({
+  const context = {
     storageState: async () => ({ cookies: [], origins: [] }),
     tracing: { start: async () => {}, stop: stopTrace },
-  });
+  };
+  page.context = () => context;
   page.locator = () => ({ count: async () => 0 });
   return page;
 }
@@ -120,6 +121,19 @@ describe('Playwright quote disk retention', () => {
     await expect(purgeExpiredHmsShots(parent)).rejects.toThrow(/ROOT_INVALID/);
   });
 
+  it('leaves empty quote request and run directories in place', async () => {
+    const parent = await tempRoot('retention-active-directories-');
+    const root = join(parent, '.private', 'playwright-quote');
+    const requestDir = join(root, 'availability-requests');
+    const runDir = join(root, 'availability-runs');
+    await mkdir(requestDir, { recursive: true });
+    await mkdir(runDir, { recursive: true });
+
+    expect(await purgeExpiredPlaywrightQuoteZips(root)).toEqual({ removed: 0, bytes: 0 });
+    expect((await stat(requestDir)).isDirectory()).toBe(true);
+    expect((await stat(runDir)).isDirectory()).toBe(true);
+  });
+
   it('refuses trace writes at 75% and exposes the health alert at 85%', () => {
     expect(canWritePlaywrightTraceAtUsage(74.99)).toBe(true);
     expect(canWritePlaywrightTraceAtUsage(75)).toBe(false);
@@ -168,6 +182,30 @@ describe('Playwright quote disk retention', () => {
     expect((failureStopArgs[0] as { path: string }).path).toContain('.trace-raw.zip');
     expect((await readFile(join(failureDir, 'trace.zip'))).byteLength).toBeGreaterThan(0);
     await expect(stat(join(failureDir, '.trace-raw.zip'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('keeps a failed trace when the page has returned to login before finish', async () => {
+    const directory = await tempRoot('quote-audit-login-returned-');
+    const trace = zipSync({
+      'trace.trace': Buffer.from('{}\n'),
+      'trace.network': Buffer.from('{}\n'),
+      'trace.stacks': Buffer.from('{}'),
+    });
+    const page = browserPage(async (...args) => {
+      const path = (args[0] as { path?: string } | undefined)?.path;
+      if (path) await writeFile(path, trace, { mode: 0o600 });
+    });
+    const audit = await createAudit(directory, { diskUsage: async () => 10 });
+    await audit.start(page);
+    page.locator = () => ({ count: async () => 1 });
+
+    const result = await audit.finish();
+
+    expect(result.trace.status).toBe('complete');
+    expect((await stat(join(directory, 'trace.zip'))).size).toBeGreaterThan(0);
+    const events = (await readFile(join(directory, 'events.jsonl'), 'utf8'))
+      .trim().split('\n').map((line) => JSON.parse(line));
+    expect(events.some((entry: { phase: string }) => entry.phase === 'result_execution_failure')).toBe(true);
   });
 
   it('does not start or persist a trace when disk is already at the refusal threshold', async () => {
