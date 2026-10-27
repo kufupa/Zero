@@ -9,6 +9,9 @@ import {
   amendCommitAllowed,
   amendPreviewDigest,
   classifyAmendPayment,
+  amendFieldIso,
+  amendFieldMatches,
+  commitAndVerifyFields,
   compareChangedFields,
   dangerousDialogKind,
   parseAmendArgs,
@@ -175,6 +178,7 @@ test('rate, penalty, or charge dialog text is a refusal signal', () => {
 test('compareChangedFields reports exact fresh matches and per-field mismatches', () => {
   const fields = { arrival: '2027-09-15', adults: 2 };
   assert.deepEqual(compareChangedFields(fields, { arrival: '2027-09-15', adults: 2 }), { matches: true, diff: {} });
+  assert.deepEqual(compareChangedFields(fields, { arrival: '15-SEP-2027', adults: '2' }), { matches: true, diff: {} });
   assert.deepEqual(compareChangedFields(fields, { arrival: '2027-09-14', adults: 1 }), {
     matches: false,
     diff: { arrival: { expected: '2027-09-15', actual: '2027-09-14' }, adults: { expected: 2, actual: 1 } },
@@ -183,6 +187,55 @@ test('compareChangedFields reports exact fresh matches and per-field mismatches'
     matches: false,
     diff: { arrival: { expected: '2027-09-15', actual: null }, adults: { expected: 2, actual: null } },
   });
+});
+
+test('occupancy combobox and date stick only after fill, blur, and matching readback', async () => {
+  const calls = [];
+  const state = { adults: 1, arrival: new Date(2027, 8, 14) };
+  const io = {
+    fill: async (field, value) => {
+      calls.push(`fill:${field}`);
+      if (field === 'adults') state.adults = value;
+      if (field === 'arrival') state.arrival = value;
+    },
+    blur: async (field) => {
+      calls.push(`blur:${field}`);
+    },
+    read: async (field) => {
+      calls.push(`read:${field}`);
+      return state[field];
+    },
+  };
+  assert.equal(await commitAndVerifyFields(io, { adults: 2, arrival: '2027-09-15' }), null);
+  assert.deepEqual(calls, ['fill:adults', 'blur:adults', 'read:adults', 'fill:arrival', 'blur:arrival', 'read:arrival']);
+});
+
+test('date fill that leaves the previous Ext Date is a mismatch, even when that Date is valid', async () => {
+  const oldArrival = new Date(2027, 8, 14);
+  assert.equal(amendFieldIso(oldArrival), '2027-09-14');
+  assert.equal(amendFieldMatches('arrival', '2027-09-15', oldArrival), false);
+  assert.equal(amendFieldMatches('arrival', '2027-09-15', '15-SEP-2027'), true);
+  const io = {
+    fill: async () => {},
+    blur: async () => {},
+    read: async () => oldArrival,
+  };
+  assert.equal(await commitAndVerifyFields(io, { arrival: '2027-09-15' }), 'arrival');
+});
+
+test('occupancy that never blurs keeps the old count and fails closed', async () => {
+  let adults = 1;
+  const io = {
+    fill: async (_field, value) => {
+      adults = value;
+    },
+    blur: async () => {},
+    read: async () => 1,
+  };
+  assert.equal(await commitAndVerifyFields(io, { adults: 2 }), 'adults');
+  assert.equal(adults, 2);
+  assert.equal(amendFieldMatches('adults', 2, '2'), true);
+  assert.equal(amendFieldMatches('adults', 2, 1), false);
 });
 
 test('classifyAmendPayment is unpaid only for provisional + deposit 0 + non-paying guarantee', () => {
@@ -249,10 +302,12 @@ test('amend-stay closes the app drawer before filling changed fields', async () 
   assert.ok(fillAt > 0);
   const fill = source.slice(fillAt, source.indexOf('async function waitForSaveToSettle'));
   assert.match(fill, /closeAppDrawer\(page\)/);
-  assert.match(fill, /Ext\.getCmp\(id\)/);
-  assert.match(fill, /setValue/);
-  assert.match(fill, /got instanceof Date/);
-  assert.ok(fill.indexOf('closeAppDrawer') < fill.indexOf('setValue'));
+  assert.match(fill, /commitAndVerifyFields/);
+  assert.match(source, /Ext\.getCmp\(id\)/);
+  assert.match(source, /setValue/);
+  assert.match(source, /got instanceof Date/);
+  assert.match(source, /fireEvent\('blur'/);
+  assert.ok(fill.indexOf('closeAppDrawer') < fill.indexOf('commitAndVerifyFields'));
   assert.equal(/input\.click\(/.test(fill), false);
 });
 
