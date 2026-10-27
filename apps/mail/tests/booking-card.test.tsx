@@ -1165,7 +1165,7 @@ describe('booking card pane save', () => {
     fireEvent.click(previewButton(0));
     expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
     expect(preview).toHaveBeenCalledTimes(1);
-    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 'stay-preview-1_g1_1' }));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 'stay-preview-1_1' }));
     expect(commit).not.toHaveBeenCalled();
 
     rerender(host(bookingSessionForPreview(previewableDraft(), 2)));
@@ -1593,7 +1593,7 @@ describe('booking card pane save', () => {
     await screen.findByText('Booked in HMS – confirmation 98765-1');
     expect(commit).toHaveBeenCalledWith(
       expect.objectContaining({
-        stayId: 's_aaaa1111_g1_2',
+        stayId: 's_aaaa1111_2',
         workItemId: '11111111-1111-1111-1111-111111111111',
       }),
       PANE_DIGEST,

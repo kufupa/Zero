@@ -148,6 +148,21 @@ describe('booking card reload', () => {
     );
     expect(screen.queryByText('Booked in HMS – confirmation 98765-1')).toBeNull();
     expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(2);
+
+    const session = initialQuoteSession();
+    session.groups = [shared, { ...group, id: 'g2' }];
+    session.bookingDrafts = { '2026-11-12:2026-11-14': draft };
+    cleanup();
+    render(
+      <QuoteBookingHost session={session} paneSave={client} savedStays={{
+        s_aaaa1111_1: {
+          confirmationNumber: '98765-1',
+          status: 'booked',
+          screenshotRef: null,
+        },
+      }} />,
+    );
+    expect(screen.getAllByText('Booked in HMS – confirmation 98765-1')).toHaveLength(1);
   });
 
   it('shows a stored booking when the mail has no booking draft', () => {

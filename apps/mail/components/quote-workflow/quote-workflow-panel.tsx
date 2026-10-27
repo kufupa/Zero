@@ -416,6 +416,7 @@ export function QuoteWorkflowPanel({
   paneSave,
   workItemId,
   savedStays,
+  screenshot,
   availabilityReader,
   partySuggestions,
   partyIndex,
@@ -437,6 +438,8 @@ export function QuoteWorkflowPanel({
   workItemId?: string;
   /** Last HMS commits from the stored read, so a reopened mail shows the same Book state. */
   savedStays?: Record<string, SavedStayCommit>;
+  /** Reads a stored HMS screenshot even when Book writes are off. */
+  screenshot?: PaneStayClient['screenshot'] | null;
   /** Read-only stored availability lookup; independent of whether saving to HMS is enabled. */
   availabilityReader?: PaneStayAvailabilityReader | null;
   /** The stored read's contact (booker and company) for the HMS notes. Null while the mail has no stored read. */
@@ -1556,6 +1559,7 @@ export function QuoteWorkflowPanel({
         contact={contact}
         workItemId={workItemId}
         savedStays={savedStays}
+        screenshot={screenshot ?? paneSave?.screenshot}
         propertyCode={paneConfig?.propertyCode ?? null}
       />
     </div>

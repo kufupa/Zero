@@ -2310,6 +2310,7 @@ export function NavaPane({
               bridge={bridge}
               workItemId={paneWorkItemId ?? undefined}
               savedStays={savedStays}
+              screenshot={PANE_STAY_CLIENT.screenshot}
               quoteStrategyRows={quoteSession.quoteStrategyRows}
               onSelectQuoteStrategy={(stayKey, strategyCode) =>
                 dispatchQuote({ type: 'quote_strategy_selected', stayKey, strategyCode })

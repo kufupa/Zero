@@ -278,45 +278,30 @@ export type SavedStayCommit = {
   shots?: HmsShotRecord[];
 };
 
-const STAY_RECORD_ID = /^[A-Za-z0-9_-]{1,40}$/;
-
-function stayLabel(
+function stayIdForRoom(
   room: { groupId: string; roomIndex: number },
   groups: StayGroupRequirement[],
 ): string {
   const group =
     groups.find((item) => item.id === room.groupId) ??
     groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
-  return group?.stayId ?? room.groupId;
+  const stay = group?.stayId ?? room.groupId;
+  return `${stay}_${room.roomIndex}`;
 }
 
-/** Older saves used stay plus room index. Two rows in one stay can share that id. */
-function legacyStayId(
-  room: { groupId: string; roomIndex: number },
+/** Stay ids a draft actually shows. An id shared by two rows is omitted so the receipt can still show it once. */
+export function appliedSavedStayIds(
+  draft: BookingDraftReady,
   groups: StayGroupRequirement[],
-): string {
-  return `${stayLabel(room, groups)}_${room.roomIndex}`;
-}
-
-/** Stay plus the row id plus the room index, when that still fits the server stay-id rule. */
-function stayIdForRoom(
-  room: { groupId: string; roomIndex: number },
-  groups: StayGroupRequirement[],
-): string {
-  const precise = `${stayLabel(room, groups)}_${room.groupId}_${room.roomIndex}`;
-  if (STAY_RECORD_ID.test(precise)) return precise;
-  const legacy = legacyStayId(room, groups);
-  return STAY_RECORD_ID.test(legacy) ? legacy : legacy.slice(0, 40);
-}
-
-/** Ids a room may already be stored under. The precise id is what a new save writes. */
-export function draftStayLookupIds(draft: BookingDraftReady, groups: StayGroupRequirement[]): string[] {
-  const ids = new Set<string>();
+  savedStays: Record<string, SavedStayCommit> | undefined,
+): string[] {
+  if (!savedStays) return [];
+  const claims = new Map<string, number>();
   for (const room of draft.draft.rooms) {
-    ids.add(stayIdForRoom(room, groups));
-    ids.add(legacyStayId(room, groups));
+    const id = stayIdForRoom(room, groups);
+    claims.set(id, (claims.get(id) ?? 0) + 1);
   }
-  return [...ids];
+  return [...claims.entries()].filter(([id, count]) => count === 1 && savedStays[id]).map(([id]) => id);
 }
 
 function paneStayPreviewKey(workItemId: string | undefined, stayId: string, inputKey: string): string {
@@ -364,17 +349,12 @@ function savesFromSavedStays(
   savedStays: Record<string, SavedStayCommit> | undefined,
 ): Record<string, RoomSaveState> {
   if (!savedStays) return {};
-  const legacyClaims = new Map<string, number>();
-  for (const room of draft.draft.rooms) {
-    const legacy = legacyStayId(room, groups);
-    legacyClaims.set(legacy, (legacyClaims.get(legacy) ?? 0) + 1);
-  }
+  const shown = new Set(appliedSavedStayIds(draft, groups, savedStays));
   const saves: Record<string, RoomSaveState> = {};
   for (const room of draft.draft.rooms) {
-    const precise = stayIdForRoom(room, groups);
-    const legacy = legacyStayId(room, groups);
-    const saved =
-      savedStays[precise] ?? (legacyClaims.get(legacy) === 1 ? savedStays[legacy] : undefined);
+    const id = stayIdForRoom(room, groups);
+    if (!shown.has(id)) continue;
+    const saved = savedStays[id];
     if (!saved) continue;
     saves[`${room.groupId}:${room.roomIndex}`] = { commit: commitViewFromSaved(saved, room.request) };
   }
@@ -838,6 +818,7 @@ export function BookingCards({
   contact = null,
   workItemId,
   savedStays,
+  screenshot: shotReader,
   guestName,
   guestEditorKey,
   session,
@@ -857,6 +838,8 @@ export function BookingCards({
   workItemId?: string;
   /** Last HMS commit per stay, read back on mount so a reload still shows the confirmation. */
   savedStays?: Record<string, SavedStayCommit>;
+  /** Loads a stored HMS screenshot when Book writes are off and paneSave is absent. */
+  screenshot?: PaneStayClient['screenshot'] | null;
   /** Selected staying Guest from People. Prefills first/last; never the Contact/booker. */
   guestName?: string;
   /** People-step cache key so a Guest edit updates Book first/last while both stay mounted. */
@@ -1622,6 +1605,18 @@ export function BookingCards({
                 frozen={stayBooking}
                 onPreview={(stay) => void previewRoom(key, client, stay)}
                 onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
+              />
+            ) : childCount === 0 && saves[key]?.commit ? (
+              <RoomSave
+                stay={built.stay}
+                previewKey={previewKeyForRoom(room, built.stay)}
+                missing={built.missing}
+                save={saves[key] ?? {}}
+                screenshot={client?.screenshot ?? shotReader ?? (async () => null)}
+                bookLabel={CREATE_PROVISIONAL_LABEL}
+                frozen
+                onPreview={() => undefined}
+                onBook={() => undefined}
               />
             ) : childCount === 0 ? (
               <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">

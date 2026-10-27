@@ -3,7 +3,7 @@ import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { isMultiStay, requestedQuoteKeys } from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
-import { BookingCards, draftStayLookupIds, SavedStayReceipt, type SavedStayCommit } from './booking-card';
+import { appliedSavedStayIds, BookingCards, SavedStayReceipt, type SavedStayCommit } from './booking-card';
 import { saveConfirmationDefault, useConfirmationSources, type ConfirmationSetting } from './confirmation-recipient';
 import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
 
@@ -13,6 +13,7 @@ export function QuoteBookingHost({
   contact,
   workItemId,
   savedStays,
+  screenshot,
   propertyCode,
   onSaveDefault,
 }: {
@@ -21,6 +22,8 @@ export function QuoteBookingHost({
   contact?: StoredContact | null;
   workItemId?: string;
   savedStays?: Record<string, SavedStayCommit>;
+  /** Reads a stored screenshot when Book writes are off. */
+  screenshot?: PaneStayClient['screenshot'] | null;
   propertyCode?: string | null;
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
 }) {
@@ -37,7 +40,9 @@ export function QuoteBookingHost({
 
   const shownDrafts = requestedQuoteKeys(session.groups).filter((key) => session.bookingDrafts[key]);
   const coveredStayIds = new Set(
-    shownDrafts.flatMap((key) => draftStayLookupIds(session.bookingDrafts[key]!, session.groups)),
+    shownDrafts.flatMap((key) =>
+      appliedSavedStayIds(session.bookingDrafts[key]!, session.groups, savedStays),
+    ),
   );
   const uncoveredStays = Object.entries(savedStays ?? {}).filter(([stayId]) => !coveredStayIds.has(stayId));
 
@@ -55,6 +60,7 @@ export function QuoteBookingHost({
               contact={contact}
               workItemId={workItemId}
               savedStays={savedStays}
+              screenshot={screenshot ?? paneSave?.screenshot}
               parties={session.staffHeader.parties}
               guestName={stayingGuestName(session, contact ?? null)}
               guestEditorKey={guestEditorKeyFor(session)}
@@ -66,7 +72,7 @@ export function QuoteBookingHost({
           </Fragment>
         ))}
       {uncoveredStays.map(([stayId, saved]) => (
-        <SavedStayReceipt key={stayId} saved={saved} screenshot={paneSave?.screenshot} />
+        <SavedStayReceipt key={stayId} saved={saved} screenshot={screenshot ?? paneSave?.screenshot} />
       ))}
     </>
   );
