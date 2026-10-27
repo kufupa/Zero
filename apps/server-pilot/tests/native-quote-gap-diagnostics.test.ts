@@ -490,3 +490,77 @@ describe('a quote capture may keep unread detail rows in evidence', () => {
     ]);
   });
 });
+
+describe('wholesale rows that stay conditional without a party', () => {
+  it('asks staff to confirm the agency instead of the unpriceable-combination copy', async () => {
+    const req = {
+      propertyCode: 'HRCEN',
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+      requestedCurrency: 'ZAR',
+      details: 'summary',
+      rooms: [{ id: 'room-1', quantity: 1, adults: 1, children: 0, childAges: [], required: { boardBases: ['breakfast'] } }],
+    };
+    const evidence = await captureFor(
+      req,
+      (rooms) => [
+        {
+          id: 'room-1',
+          request: rooms[0],
+          outcome: 'partial',
+          issues: [],
+          completeness: { search: 'complete', requiredFacts: 'complete' },
+          options: [
+            {
+              ...rowFor(standardQueen, 5, 'available', 'NGD73B'),
+              rateScope: 'contextual',
+              eligibility: 'conditional',
+            },
+          ],
+        },
+      ],
+      { outcome: 'partial' },
+    );
+    const error = await failureOf(evidence, req);
+    expect(error).toEqual(expect.objectContaining({ message: 'native_quote_party_context_required' }));
+    expect(staffQuoteFailureMessage(error)).toBe(
+      'Wholesale/contract rates need the agency confirmed. Pick the agency in step 1, then Get rates.',
+    );
+  });
+
+  it('keeps the combination copy when wholesale rows are conditional but the search is incomplete', async () => {
+    const req = {
+      propertyCode: 'HRCEN',
+      arrivalDate: '2026-11-12',
+      departureDate: '2026-11-14',
+      requestedCurrency: 'ZAR',
+      details: 'summary',
+      rooms: [{ id: 'room-1', quantity: 1, adults: 1, children: 0, childAges: [], required: { boardBases: ['breakfast'] } }],
+    };
+    const evidence = await captureFor(
+      req,
+      (rooms) => [
+        {
+          id: 'room-1',
+          request: rooms[0],
+          outcome: 'partial',
+          issues: [],
+          completeness: { search: 'complete', requiredFacts: 'complete' },
+          options: [
+            {
+              ...rowFor(standardQueen, 5, 'available', 'NGD73B'),
+              rateScope: 'contextual',
+              eligibility: 'conditional',
+            },
+          ],
+        },
+      ],
+      { outcome: 'partial', issues: [{ code: 'OPTION_LIMIT' }] },
+    );
+    const error = await failureOf(evidence, req);
+    expect(error).toEqual(expect.objectContaining({ message: 'native_quote_capture_scope_or_completeness_invalid' }));
+    expect(staffQuoteFailureMessage(error)).toBe(
+      "HMS couldn't price this exact combination of rooms, guests and meals. Try one room type or B&B first, or quote this one in HMS.",
+    );
+  });
+});
