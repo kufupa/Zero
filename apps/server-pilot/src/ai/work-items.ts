@@ -117,13 +117,18 @@ export const PANE_STAY_ALREADY_BOOKED = 'pane_stay_already_booked';
 const STAY_ID_PATTERN = new RegExp(`^${ID}$`);
 const STAY_RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const STAY_SHOT_NAME = /^[a-z][a-z0-9-]{0,40}\.png$/;
+const STAY_SHOT_SHA256 = /^[a-f0-9]{64}$/;
+const STAY_SHOT_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 
 export type StayCommitStatus = 'booked' | 'unknown';
 export type StayCommitScreenshotRef = { runId: string; name: string };
+export type StayCommitShot = { name: string; sha256: string; at: string };
 export type StayCommitRecord = {
   confirmationNumber: string | null;
   status: StayCommitStatus;
   screenshotRef: StayCommitScreenshotRef | null;
+  runId?: string;
+  shots?: StayCommitShot[];
 };
 export type StayCommitGuard =
   | { action: 'commit' }
@@ -152,7 +157,36 @@ function parseStayCommit(value: unknown): StayCommitRecord | null {
       screenshotRef = { runId: ref.runId, name: ref.name };
     }
   }
-  return { confirmationNumber: confirmation, status, screenshotRef };
+  const runId =
+    typeof row.runId === 'string' && STAY_RUN_ID.test(row.runId) ? row.runId : undefined;
+  const shots = parseStayCommitShots(row.shots);
+  return {
+    confirmationNumber: confirmation,
+    status,
+    screenshotRef,
+    ...(runId ? { runId } : {}),
+    ...(shots ? { shots } : {}),
+  };
+}
+
+function parseStayCommitShots(value: unknown): StayCommitShot[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const shots: StayCommitShot[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    if (
+      typeof row.name === 'string' &&
+      STAY_SHOT_NAME.test(row.name) &&
+      typeof row.sha256 === 'string' &&
+      STAY_SHOT_SHA256.test(row.sha256) &&
+      typeof row.at === 'string' &&
+      STAY_SHOT_AT.test(row.at)
+    ) {
+      shots.push({ name: row.name, sha256: row.sha256, at: row.at });
+    }
+  }
+  return shots.length > 0 ? shots : undefined;
 }
 
 export function stayCommitsOf(state: WorkState): Record<string, StayCommitRecord> {
@@ -226,6 +260,8 @@ export function withStayActionResult(
     confirmationNumber: result.confirmationNumber,
     status: existing?.status ?? 'booked',
     screenshotRef: result.screenshotRef,
+    ...(existing?.runId ? { runId: existing.runId } : {}),
+    ...(existing?.shots ? { shots: existing.shots } : {}),
   });
 }
 
@@ -248,21 +284,30 @@ export function stayCommitFromPaneResult(result: {
   confirmationNumber?: string;
   runId?: string;
   screenshots?: string[];
+  shots?: StayCommitShot[];
 }): StayCommitRecord | null {
   const screenshotRef = screenshotRefFromPane(result);
   const confirmationNumber =
     typeof result.confirmationNumber === 'string' && result.confirmationNumber.trim()
       ? result.confirmationNumber.trim()
       : null;
+  const runId =
+    typeof result.runId === 'string' && STAY_RUN_ID.test(result.runId) ? result.runId : undefined;
+  const shots = parseStayCommitShots(result.shots);
+  const extras = {
+    ...(runId ? { runId } : {}),
+    ...(shots ? { shots } : {}),
+  };
   if (result.status === 'ok' && confirmationNumber) {
     return {
       confirmationNumber,
       status: result.outcome === 'committed_unverified' ? 'unknown' : 'booked',
       screenshotRef,
+      ...extras,
     };
   }
   if (result.reason === 'pane_save_unconfirmed' || result.outcome === 'committed_unverified') {
-    return { confirmationNumber, status: 'unknown', screenshotRef };
+    return { confirmationNumber, status: 'unknown', screenshotRef, ...extras };
   }
   return null;
 }
