@@ -497,7 +497,7 @@ describe('rate cards in the quote panel', () => {
 
     const garbage = staffQuoteGroupsFromStay([{ ...stay, roomPreference: 'PENTHOUSE', roomCodes: undefined, fields: {} }]);
     expect(garbage).toEqual({
-      error: expect.stringMatching(/Room type "PENTHOUSE" is not one HMS knows/),
+      error: expect.stringMatching(/Not in this hotel's room list/),
     });
   });
 

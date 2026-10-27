@@ -52,6 +52,51 @@ describe('HRDAV native room and board maps', () => {
     });
   });
 
+  it('normalizes each HRDAV room label as staff spellings and keeps HRCEN normalization', () => {
+    for (const [code, label] of Object.entries(HRDAV_ROOM_NAMES)) {
+      expect(
+        resolveNativeRoomCodes({
+          roomPreference: `  ${label.toUpperCase().replace(/ /g, '   ')} ROOMS `,
+          propertyCode: HRDAV_PROPERTY_CODE,
+        }),
+      ).toEqual({ status: 'codes', codes: [code] });
+    }
+    expect(
+      resolveNativeRoomCodes({ roomPreference: 'STANDARD TWIN ROOM', propertyCode: HRDAV_PROPERTY_CODE }),
+    ).toEqual({ status: 'codes', codes: ['STWN'] });
+    expect(resolveNativeRoomCodes({ roomCodes: ['DLX-KNG'], propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['DLXKNG'],
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'DLX KNG', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
+      status: 'codes',
+      codes: ['DLXKNG'],
+    });
+    expect(
+      resolveNativeRoomCodes({ roomPreference: 'Standard & Queen Rooms', propertyCode: HRCEN_PROPERTY_CODE }),
+    ).toEqual({ status: 'codes', codes: ['STQN'] });
+    expect(
+      resolveNativeRoomCodes({ roomPreference: '2 rooms Deluxe Twin', propertyCode: HRCEN_PROPERTY_CODE }),
+    ).toEqual({ status: 'codes', codes: ['DLXTWN'] });
+    expect(
+      resolveNativeRoomCodes({ roomPreference: 'Standard RoomQueen Bed', propertyCode: HRCEN_PROPERTY_CODE }),
+    ).toEqual({ status: 'codes', codes: ['STQN'] });
+  });
+
+  it('does not use a hotel room list or twin fallback for an unknown property', () => {
+    expect(resolveNativeRoomCodes({ roomPreference: 'Standard Queen', propertyCode: 'UNKNOWN' })).toEqual({
+      status: 'unresolved',
+      label: 'Standard Queen',
+    });
+    expect(resolveNativeRoomCodes({ roomPreference: 'Twin', propertyCode: 'UNKNOWN' })).toEqual({
+      status: 'unresolved',
+      label: 'Twin',
+    });
+    expect(staffQuoteGroupsFromStay([stay()], 'UNKNOWN')).toEqual({
+      error: expect.stringMatching(/Could not identify the hotel/i),
+    });
+  });
+
   it('keeps shared DLXKNG and STWN codes on HRDAV without using the Centurion room list as a fallback', () => {
     expect(resolveNativeRoomCodes({ roomCodes: ['DLXKNG'], propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
       status: 'codes',
