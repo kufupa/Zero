@@ -90,43 +90,66 @@ describe('paneStaySpawnEnv', () => {
     ).toEqual([]);
   });
 
-  it('forwards all five PANE_WRITE_* flags to HRCEN and strips them for HRDAV', () => {
+  it('forwards write flags to a DV target; CDP and secret stay stripped; HRCEN unchanged', () => {
     const PANE_WRITE_ENV_NAMES = [
       'PANE_WRITE_CREATE',
       'PANE_WRITE_AMEND_UNPAID',
       'PANE_WRITE_AMEND_PAID',
       'PANE_WRITE_CANCEL_UNPAID',
       'PANE_WRITE_CANCEL_PAID',
+      'PANE_WRITE_ATTACH',
     ] as const;
     for (const name of PANE_WRITE_ENV_NAMES) {
       expect(PANE_CLI_ENV_ALLOWLIST).toContain(name);
     }
     const flags = Object.fromEntries(PANE_WRITE_ENV_NAMES.map((name) => [name, 'lab']));
+    const shared = {
+      PATH: '/usr/bin',
+      RESERVATIONIST_PANE_SAVE: 'lab',
+      HMS_DAVINCI_CREATE: 'on',
+      ...flags,
+    };
     const hrcen = paneStaySpawnEnv(
       {
-        PATH: '/usr/bin',
+        ...shared,
         HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
         HMS_STAGEHAND_BROWSER_OWNERSHIP: 'borrowed',
-        ...flags,
+        HMS_QUOTE_SECRET_PATH: '/repo/.private/owner/secret.json',
+        HMS_SLOT_PROFILE_DIR: '/var/lib/nava/hms-slot/hrcen/profile',
       },
       () => configuration,
       CENTURION_HMS_READ_TARGET,
     );
+    expect(hrcen.RESERVATIONIST_PANE_SAVE).toBe('lab');
     for (const name of PANE_WRITE_ENV_NAMES) {
       expect(hrcen[name]).toBe('lab');
     }
+    expect(hrcen.HMS_STAGEHAND_CDP_URL).toBe('http://127.0.0.1:19223');
+    expect(hrcen.HMS_QUOTE_SECRET_PATH).toBe('/repo/.private/owner/secret.json');
+    expect(hrcen.HMS_SLOT_PROFILE_DIR).toBe('/var/lib/nava/hms-slot/hrcen/profile');
     const hrdav = paneStaySpawnEnv(
       {
-        PATH: '/usr/bin',
+        ...shared,
         HMS_STAGEHAND_CDP_URL: 'http://127.0.0.1:19223',
-        ...flags,
+        HMS_QUOTE_SECRET_PATH: '/repo/.private/owner/secret.json',
+        HMS_READ_SECRET_ARN: 'arn-hrcen',
+        HMS_SLOT_PROFILE_DIR: '/var/lib/nava/hms-slot/hrcen/profile',
+        HMS_SLOT_STORAGE_STATE: '/var/lib/nava/hms-slot/hrcen/storageState.json',
+        HMS_STAGEHAND_CDP_URL_DAVINCI: 'http://127.0.0.1:19225',
       },
       () => configuration,
       DAVINCI_HMS_READ_TARGET,
     );
+    expect(hrdav.RESERVATIONIST_PANE_SAVE).toBe('lab');
     for (const name of PANE_WRITE_ENV_NAMES) {
-      expect(hrdav[name]).toBeUndefined();
+      expect(hrdav[name]).toBe('lab');
     }
+    expect(hrdav.HMS_DAVINCI_CREATE).toBe('on');
+    expect(hrdav.HMS_STAGEHAND_CDP_URL).toBe('http://127.0.0.1:19225');
+    expect(hrdav.HMS_QUOTE_SECRET_PATH).toBeUndefined();
+    expect(hrdav.HMS_READ_SECRET_ARN).toBe('nava-zero/server-pilot/infor-hms-read-davinci');
+    expect(hrdav.HMS_SLOT_PROFILE_DIR).toBeUndefined();
+    expect(hrdav.HMS_SLOT_STORAGE_STATE).toBeUndefined();
   });
 
   it('forwards the slot storageState path so pane CLIs can skip a repeat login', () => {
