@@ -29,6 +29,7 @@ import type {
   QuoteSalesStrategyCode,
   QuoteSalesStrategyValue,
   QuoteStrategyRow,
+  QuoteFailureCauseClass,
 } from './types';
 import {
   HRCEN_PROPERTY_CODE,
@@ -1538,11 +1539,16 @@ const QUOTE_STRATEGY_VALUES: ReadonlySet<string> = new Set([
 function failedQuoteStrategy(
   strategyCode: QuoteSalesStrategyCode,
   message: string,
+  causeClass: QuoteFailureCauseClass,
   retryable = false,
 ): BoundStaffQuoteStrategy {
   return {
     strategyCode,
-    row: { status: 'failed', message },
+    row: {
+      status: 'failed',
+      message,
+      causeClass,
+    },
     ...(retryable ? { retryable: true as const } : {}),
   };
 }
@@ -1557,7 +1563,11 @@ function rowForBoundStrategy(
   if (!groups.length || groups.some((group) => !selectedGroupIds.has(group.id))) {
     return {
       strategyCode,
-      row: { status: 'not_offered', message: 'No room option was returned for this strategy and stay.' },
+      row: {
+        status: 'not_offered',
+        message: 'No room option was returned for this strategy and stay.',
+        causeClass: 'not_found',
+      },
     };
   }
   return {
@@ -1582,18 +1592,20 @@ export async function bindStaffQuoteStrategy(
     return failedQuoteStrategy(
       args.strategyCode,
       'This rate strategy is not configured for the selected hotel; no search was run.',
+      'not_set_up',
     );
   }
   if (!args.staffQuoteJob) {
     return failedQuoteStrategy(
       args.strategyCode,
       'The quote comparison queue is disabled or unavailable; no search was run.',
+      'not_set_up',
     );
   }
 
   try {
     const request = staffQuoteRequest({ ...args, strategyRequestValue: strategy.requestValue });
-    if ('error' in request) return failedQuoteStrategy(args.strategyCode, request.error);
+    if ('error' in request) return failedQuoteStrategy(args.strategyCode, request.error, 'needs_staff');
     const query: StaffQuoteJobQuery = async (lookup, options) => {
       const view = await args.staffQuoteJob!(lookup, options);
       if (
@@ -1611,6 +1623,7 @@ export async function bindStaffQuoteStrategy(
       return failedQuoteStrategy(
         args.strategyCode,
         'No prepared comparison job was found. The queue may be disabled; no search was run.',
+        'not_set_up',
         true,
       );
     }
@@ -1621,6 +1634,7 @@ export async function bindStaffQuoteStrategy(
         row: {
           status: notOffered ? 'not_offered' : 'failed',
           message: bound.reason,
+          causeClass: notOffered ? 'not_found' : causeClassForBoundReason(bound.reason),
         },
       };
     }
@@ -1628,12 +1642,28 @@ export async function bindStaffQuoteStrategy(
       return failedQuoteStrategy(
         args.strategyCode,
         'The comparison job was not prepared by Nava; its result was not bound.',
+        'not_set_up',
       );
     }
     return rowForBoundStrategy(args.strategyCode, bound, args.groups);
   } catch (error) {
-    return failedQuoteStrategy(args.strategyCode, rejectionReason(error));
+    const message = rejectionReason(error);
+    return failedQuoteStrategy(args.strategyCode, message, causeClassForBoundReason(message));
   }
+}
+
+function causeClassForBoundReason(reason: string): QuoteFailureCauseClass {
+  const text = reason.toLowerCase();
+  if (text.includes('busy')) return 'busy';
+  if (
+    text.includes("didn't answer") ||
+    text.includes('did not return') ||
+    text.includes('could not be completed') ||
+    text.includes('could not read its status')
+  ) return 'hms_down';
+  if (text.includes('not configured') || text.includes('disabled') || text.includes('not prepared')) return 'not_set_up';
+  if (text.includes('no rate') || text.includes('no room') || text.includes('not found')) return 'not_found';
+  return 'needs_staff';
 }
 
 /** Binds all active registry strategies independently; one failed or unavailable row cannot hide the others. */
