@@ -13,7 +13,7 @@ export type ShuttleTransferDetails = {
   bookingReference: string;
 };
 
-const EMAIL = /^[^\s@,<>]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
+const EMAIL = /^[^\s@,<>;\x00-\x1f\x7f]+@[a-z0-9.-]+\.[a-z]{2,}$/i;
 
 const DETAIL_LABELS: ReadonlyArray<[keyof ShuttleTransferDetails, string]> = [
   ['serviceDate', 'Service date'],
