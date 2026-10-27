@@ -11,9 +11,11 @@ import { readSaveSnapshot, SAVE_POLL_MS, SAVE_WAIT_MS } from './save-wait.mjs';
 import {
   amendCommitAllowed,
   amendPreviewDigest,
+  comboUnsupportedFieldReason,
   commitAndVerifyFields,
   compareChangedFields,
   dangerousDialogKind,
+  isComboAmendField,
   parseAmendArgs,
   unsupportedFieldReason,
   validateAmendCurrent,
@@ -64,11 +66,43 @@ async function refuseUnsupportedFields(ctx, fields) {
   for (const field of Object.keys(fields)) {
     const locator = ctx.page.locator(`input[name="${SELECTOR_BY_FIELD[field]}"]:visible`);
     const count = await locator.count();
-    const state = count === 1
-      ? await locator.evaluate((input) => ({ disabled: input.disabled, readOnly: input.readOnly })).catch(() => null)
-      : null;
-    if (unsupportedFieldReason({ count, disabled: state?.disabled !== false, readOnly: state?.readOnly !== false })) {
-      ctx.result.fieldRefusals[field] = { reason: 'unsupported_field', note: 'TODO-LIVE-PROBE' };
+    let reason;
+    let state = null;
+    if (isComboAmendField(field)) {
+      state = count === 1
+        ? await locator.evaluate((input) => {
+            const cmp = typeof Ext !== 'undefined' && input.id
+              ? Ext.getCmp(input.id.replace(/-inputEl$/, ''))
+              : null;
+            if (cmp) {
+              const disabled = typeof cmp.isDisabled === 'function' ? cmp.isDisabled() : !!cmp.disabled;
+              return { exists: true, disabled: !!disabled, readOnly: cmp.readOnly === true };
+            }
+            const wrap = input.closest('.x-field');
+            if (!wrap) return { exists: false, disabled: true, readOnly: true };
+            return {
+              exists: true,
+              disabled: wrap.classList.contains('x-item-disabled'),
+              readOnly: false,
+            };
+          }).catch(() => null)
+        : null;
+      reason = comboUnsupportedFieldReason({ count, ...(state || {}) });
+    } else {
+      state = count === 1
+        ? await locator.evaluate((input) => ({ disabled: input.disabled, readOnly: input.readOnly })).catch(() => null)
+        : null;
+      reason = unsupportedFieldReason({
+        count,
+        disabled: state?.disabled !== false,
+        readOnly: state?.readOnly !== false,
+      });
+    }
+    if (reason) {
+      ctx.result.fieldRefusals[field] = {
+        reason: 'unsupported_field',
+        note: isComboAmendField(field) ? JSON.stringify({ count, ...(state || { evaluate: 'failed' }) }) : 'TODO-LIVE-PROBE',
+      };
     }
   }
   if (Object.keys(ctx.result.fieldRefusals).length === 0) return false;
