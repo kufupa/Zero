@@ -72,7 +72,31 @@ ops_deploy_worktree_guard() {
 }
 ops_deploy_worktree_guard
 
-echo "== ops-deploy: sync bundle (prints shipping SHA and EC2 SHA) =="
+STEP_LABEL=''
+STEP_STARTED=0
+
+step_finish() {
+  if [ -n "$STEP_LABEL" ]; then
+    printf 'ops-deploy step seconds: %s=%s\n' "$STEP_LABEL" "$((SECONDS - STEP_STARTED))"
+    STEP_LABEL=''
+  fi
+}
+
+step_start() {
+  step_finish
+  STEP_LABEL="$1"
+  STEP_STARTED=$SECONDS
+  printf '== %s ==\n' "$STEP_LABEL"
+}
+
+step_exit() {
+  local exit_status=$?
+  step_finish
+  return "$exit_status"
+}
+trap step_exit EXIT
+
+step_start 'ops-deploy: sync bundle (prints shipping SHA and EC2 SHA)'
 if [ "$ALLOW_ROLLBACK" -eq 1 ]; then
   bash "${SCRIPT_DIR}/sync-ec2-git-bundle.sh" --allow-rollback
 else
@@ -84,28 +108,28 @@ REMOTE_NVM='export NVM_DIR=/home/ubuntu/.nvm; [ -s "$NVM_DIR/nvm.sh" ] && . "$NV
 # Every on-box pnpm install runs husky's prepare, which fails with EACCES while .husky/_/h is mode 0444.
 # Restore the owner write bit before the first install. A missing hook is skipped.
 # See docs/solutions/workflow-issues/ec2-deploy-husky-prepare-eacces-readonly-hook.md
-echo "== ops-deploy: restore husky hook write bit =="
+step_start 'ops-deploy: restore husky hook write bit'
 bash "${SCRIPT_DIR}/ssm-run-command.sh" \
   'hook=/home/ubuntu/repos/zero/.husky/_/h; if [ -e "$hook" ]; then chmod u+w "$hook"; fi'
 
-echo "== ops-deploy: install dependencies before migration check =="
+step_start 'ops-deploy: install dependencies before migration check'
 bash "${SCRIPT_DIR}/ssm-run-command.sh" \
   "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && pnpm install --frozen-lockfile"
 
 if [ "$DO_MIGRATE" -eq 1 ]; then
-  echo "== ops-deploy: migrate =="
+  step_start 'ops-deploy: migrate'
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
-    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero/apps/server-pilot && set -a && source .env.production && set +a && pnpm db:migrate"
+    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero/apps/server-pilot && set -a && source .env.production && set +a && NODE_EXTRA_CA_CERTS=/home/ubuntu/repos/zero/apps/server-pilot/deploy/rds-ca-global.pem pnpm db:migrate"
 fi
 
 if [ "$QUIESCED" != "1" ]; then
-  echo "== ops-deploy: verify database before remote env bootstrap =="
+  step_start 'ops-deploy: verify database before remote env bootstrap'
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
     "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/check-migration-compatibility.sh"
 fi
 
 if [ "$QUIESCED" != "1" ]; then
-  echo "== ops-deploy: bootstrap isolated remote env when absent =="
+  step_start 'ops-deploy: bootstrap isolated remote env when absent'
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
     "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
       if [ ! -e apps/server-pilot/.env.remote-common ] && [ ! -e apps/server-pilot/.env.remote-admin ]; then \
@@ -116,22 +140,22 @@ if [ "$QUIESCED" != "1" ]; then
 fi
 
 if [ "$QUIESCED" = "1" ]; then
-  echo "== ops-deploy: on-box quiesced deploy (no PM2 / no HTTP health) =="
+  step_start 'ops-deploy: on-box quiesced deploy (no PM2 / no HTTP health)'
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
-    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/deploy-ec2.sh --quiesced"
+    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/deploy-ec2.sh --quiesced --skip-install"
 fi
 
 if [ "$QUIESCED" != "1" ]; then
-  echo "== ops-deploy: on-box deploy =="
+  step_start 'ops-deploy: on-box deploy'
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
-    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/deploy-ec2.sh"
+    "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && bash apps/server-pilot/deploy/deploy-ec2.sh --skip-install"
 
-  echo "== ops-deploy: health =="
+  step_start 'ops-deploy: health'
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
     'curl -fsS http://127.0.0.1:8788/health && curl -fsS http://127.0.0.1:8789/health && curl --disable --noproxy "*" -fsS --connect-to "nava-admin.trynava.io:8443:172.31.12.112:8443" -H "Host: nava-admin.trynava.io" "http://nava-admin.trynava.io:8443/" >/dev/null'
 
   echo "== ops-deploy: remote-admin lifecycle readiness =="
-  echo "== ops-deploy: read last-good deploy marker =="
+  step_start 'ops-deploy: read last-good deploy marker'
   # A failed SSM read must not stop the deploy: the empty result falls back to the 24-hour window below.
   LAST_GOOD_DEPLOY_SSM_RESULT="$(
     bash "${SCRIPT_DIR}/ssm-run-command.sh" \
@@ -174,6 +198,7 @@ NODE
   # letters run on), read right before readiness queries the database, minus a 5-minute margin for clock skew and the
   # SSM round trip. The operator laptop clock is only a fallback, and it is pulled back 15 minutes to stay on the safe
   # side. An earlier boundary only counts more dead letters next time, which is the safe direction.
+  step_start 'ops-deploy: read EC2 clock'
   READINESS_HOST_CLOCK_SSM_RESULT="$(
     bash "${SCRIPT_DIR}/ssm-run-command.sh" \
       'printf "NAVA_HOST_CLOCK_UTC=%s\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"'
@@ -200,10 +225,11 @@ NODE
     READINESS_STARTED_AT="$(node -e 'process.stdout.write(new Date(Date.now() - 15 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, "Z"))')"
     echo "ops-deploy: host clock unavailable; readiness boundary uses the operator clock minus 15 minutes"
   fi
+  step_start 'ops-deploy: run remote-admin readiness'
   REMOTE_ADMIN_MODE=1 REMOTE_TARGET_HEALTH_REQUIRED=0 REMOTE_ADMIN_LIFECYCLE_MODE=auto bash "${SCRIPT_DIR}/launch-readiness.sh"
 fi
 
-echo "== ops-deploy: VPN HARD assert =="
+step_start 'ops-deploy: VPN HARD assert'
 bash "${SCRIPT_DIR}/ssm-run-command.sh" \
   'bash /home/ubuntu/repos/zero/apps/server-pilot/deploy/vpn-health-assert.sh'
 
@@ -213,7 +239,7 @@ bash "${SCRIPT_DIR}/ssm-run-command.sh" \
 # before/after_pm2_restart, before/after_health_verdict (HMS_CAS_CRASH_AT).
 # Incomplete restore → exit 20 and halt the live lane.
 if [ -n "${HMS_REGISTRY_CANDIDATE:-}" ]; then
-  echo "== ops-deploy: source+registry CAS (source-registry-transaction) =="
+  step_start 'ops-deploy: source+registry CAS (source-registry-transaction)'
   bash "${SCRIPT_DIR}/ssm-run-command.sh" \
     "${REMOTE_NVM}; cd /home/ubuntu/repos/zero && \
       export HMS_REGISTRY_CANDIDATE='${HMS_REGISTRY_CANDIDATE}' \
@@ -231,7 +257,7 @@ if [ -n "${HMS_REGISTRY_CANDIDATE:-}" ]; then
 fi
 
 if [ "$QUIESCED" != "1" ]; then
-  echo "== ops-deploy: record last-good deploy marker =="
+  step_start 'ops-deploy: record last-good deploy marker'
   # The SSM helper runs payloads as ubuntu, so the directory, temp file, and marker are ubuntu-owned.
   # The marker records the boundary taken before readiness (READINESS_STARTED_AT), not this write time. A dead letter
   # that lands between readiness and this write is then inside the next deploy's window.
@@ -259,4 +285,5 @@ if [ "$QUIESCED" != "1" ]; then
      trap - EXIT'
 fi
 
+step_finish
 echo "ops-deploy ok"
