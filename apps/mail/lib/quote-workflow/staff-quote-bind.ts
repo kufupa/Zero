@@ -436,6 +436,8 @@ function normaliseRoomLabel(value: string): string {
 }
 
 function hrdavKnownCode(raw: string): string | null {
+  const code = raw.trim().replace(/[^a-z0-9]/gi, '').toUpperCase();
+  if (HRDAV_NATIVE_ROOM_CODES.has(code)) return code;
   const needle = normaliseRoomLabel(raw);
   const matches = (Object.entries(HRDAV_ROOM_NAMES) as Array<[string, string]>).filter(
     ([code, label]) => normaliseRoomLabel(code) === needle || normaliseRoomLabel(label) === needle,
@@ -446,7 +448,7 @@ function hrdavKnownCode(raw: string): string | null {
 function knownNativeCode(raw: string, propertyCode?: string): string | null {
   if (propertyCode === HRDAV_PROPERTY_CODE) return hrdavKnownCode(raw);
   if (propertyCode === HRCEN_PROPERTY_CODE || propertyCode === undefined) {
-    return knownRoomCode(normaliseRoomLabel(raw));
+    return knownRoomCode(normaliseRoomLabel(raw)) ?? knownRoomCode(raw);
   }
   return null;
 }
