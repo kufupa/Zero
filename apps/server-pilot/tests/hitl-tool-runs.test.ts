@@ -126,7 +126,7 @@ function memorySink(behaviour: 'records' | 'throws' | 'hangs' = 'records') {
   return { rows, recorder };
 }
 
-function caller(userId = 'user-1', transportId = 'transport-1') {
+function caller(userId = 'user-1', transportId = 'transport-centurion') {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
