@@ -527,6 +527,10 @@ async function runNginxActivation({
       join(deployDir, 'pane-csp-release.mjs'),
       readFileSync(join(here, '..', 'deploy', 'pane-csp-release.mjs'), 'utf8'),
     );
+    writeFileSync(
+      join(deployDir, 'prune-web-releases.sh'),
+      readFileSync(join(here, '..', 'deploy', 'prune-web-releases.sh'), 'utf8'),
+    );
     function stageFixtureRelease(html: string, stable: string, label: string) {
       const seed = join(tempDir, `${label}-client`);
       mkdirSync(join(seed, 'assets'), { recursive: true });
@@ -699,6 +703,10 @@ esac
 }
 
 nginx() {
+  if [ "\${1:-}" = "-T" ]; then
+    command cat "$NGINX_TEST_SITE"
+    return $?
+  fi
   nginx_calls=$((nginx_calls + 1))
   printf '%s' "$nginx_calls" >"$NGINX_TEST_NGINX_CALLS"
   if [ "$NGINX_TEST_SCENARIO" = "validate" ] && [ "$nginx_calls" -eq 1 ]; then
@@ -791,7 +799,8 @@ fi`,
       candidate,
       priorCandidate,
       currentStable: readFileSync(join(releaseDir, 'assets', stableAsset), 'utf8'),
-      priorStable: previous
+      priorStable: previous &&
+        existsSync(join(previous.directory, 'assets', stableAsset))
         ? readFileSync(join(previous.directory, 'assets', stableAsset), 'utf8')
         : null,
       currentId: releaseId,
@@ -2308,16 +2317,19 @@ describe('deploy config', () => {
     expect(result.site).not.toBe(result.candidate);
     expect(result.enabledState).toBe('valid');
     expect(result.enabledTarget).toBe('../sites-available/previous-nava');
+    expect(result.priorStable).toBe('<svg>old stable asset</svg>');
     expect(result.backupEntries).toEqual([]);
   });
 
-  it('commits the matching new web release only after backend health succeeds', async () => {
+  it('commits the matching new web release and prunes the prior release only after backend health succeeds', async () => {
     const result = await runNginxActivation({
       scenario: 'healthy', priorState: 'present', priorRelease: true,
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.site).toBe(result.candidate);
     expect(result.enabledState).toBe('valid');
+    expect(result.currentStable).toBe('<svg>new stable asset</svg>');
+    expect(result.priorStable).toBeNull();
     expect(result.backupEntries).toEqual([]);
   });
 
@@ -3131,7 +3143,12 @@ if (!realMailGate) {
       expect(start, scriptName).toBeGreaterThanOrEqual(0);
       const section = source.slice(start, source.indexOf('\necho', start + marker.length));
       expect(section, scriptName).toContain(readinessCommand);
-      expect(section, scriptName).not.toContain('ssm-run-command.sh');
+      expect(section.match(/launch-readiness\.sh/g), scriptName).toHaveLength(1);
+      const readinessIndex = section.indexOf(readinessCommand);
+      expect(
+        section.slice(readinessIndex + readinessCommand.length),
+        scriptName,
+      ).not.toContain('ssm-run-command.sh');
       expect(section, scriptName).not.toContain('/home/ubuntu/repos/zero');
     }
   });
