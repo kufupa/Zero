@@ -54,8 +54,10 @@ import {
 } from '@/components/nava-pane/pane-ui';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayAvailabilityReader, PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
+import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { pdfBlockReason } from './document-review';
 import { QuoteBookingHost } from './quote-booking-host';
+import { ShuttleDraft } from './shuttle-draft';
 import { QuoteDocumentsStep, type CurrentQuoteAction } from './quote-documents-step';
 import { QuotePeopleStep } from './quote-people-step';
 import { QuoteStayStep, StayAskChrome } from './quote-stay-step';
@@ -380,6 +382,7 @@ function allStaysDisplayTotal(session: QuoteSession): { total: number | null; ra
 
 export function QuoteWorkflowPanel({
   session,
+  bridge,
   onPatchGroup,
   onStayAction,
   onRunNext,
@@ -424,6 +427,8 @@ export function QuoteWorkflowPanel({
   workItemPane = null,
 }: {
   session: QuoteSession;
+  /** Outlook draft creation is capability-checked by the connected mailbox bridge. */
+  bridge?: PaneBridge | null;
   /** Set only when the server pane save flag is on. Null keeps the booking card copy-only. */
   paneSave?: PaneStayClient | null;
   /** Work item owning the Book preview receipt and any resulting commit. */
@@ -492,6 +497,18 @@ export function QuoteWorkflowPanel({
   workItemPane?: WorkItemPaneControls | null;
 }) {
   const currentEmailKey = session.binding?.internetMessageId ?? session.binding?.entryId ?? null;
+  const shuttleArrivalDate = session.groups.find((group) => group.arrivalDate)?.arrivalDate ?? null;
+  const shuttleDraft = session.binding && paneConfig !== undefined ? (
+    <ShuttleDraft
+      key={`${session.binding.transportId}:${session.binding.entryId}:${session.binding.selectionEpoch}`}
+      bridge={bridge}
+      config={
+        paneConfig?.transportId === session.binding.transportId ? paneConfig.shuttle ?? null : null
+      }
+      storeId={session.binding.storeId}
+      arrivalDate={shuttleArrivalDate}
+    />
+  ) : null;
   const failedRatesNotice = useFailedHmsJobNoticeMessage('quote-rates', currentEmailKey);
   // A row price or rate tapped and waiting for its pin to reach the session. The re-run starts once every pin is there, so it reads them.
   const [pinRun, setPinRun] = useState<PinRun | null>(null);
@@ -615,13 +632,17 @@ export function QuoteWorkflowPanel({
     return (
       <div className="flex flex-col gap-3">
         <StatusNote>This email has not finished syncing yet. Wait a moment, then select it again.</StatusNote>
+        {shuttleDraft}
         {replyContent ? <div className="flex flex-col gap-2.5">{replyContent}</div> : null}
       </div>
     );
   }
   if (session.phase === 'unsupported') {
     return (
-      <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
+      <div className="flex flex-col gap-3">
+        <StatusNote>{session.errorMessage ?? 'Nava cannot handle this email yet. Handle it by hand in Outlook.'}</StatusNote>
+        {shuttleDraft}
+      </div>
     );
   }
   const amendment = amendmentOf(session);
@@ -642,6 +663,7 @@ export function QuoteWorkflowPanel({
         {TELL_NAVA_ENABLED ? (
           <CorrectionNote onStaffNote={onStaffNote} draft={staffNoteDraft} onDraftChange={onStaffNoteDraftChange} />
         ) : null}
+        {shuttleDraft}
         {amendStays.map((stay) => (
           <StayAskChrome key={stay.id} session={session} stay={stay} onSelectStayKey={onSelectStayKey} />
         ))}
@@ -971,6 +993,7 @@ export function QuoteWorkflowPanel({
       ) : null}
       {session.phase === 'analysing' ? <StatusNote>{analysingCopy(session)}</StatusNote> : null}
       <PaneStatusLine session={session} />
+      {shuttleDraft}
       {session.analysis?.alternatives.length ? (
         <StatusNote>The email also mentions: {session.analysis.alternatives.join(', ')}. These are not quoted yet.</StatusNote>
       ) : null}

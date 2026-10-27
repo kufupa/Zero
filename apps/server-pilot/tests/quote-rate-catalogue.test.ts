@@ -85,7 +85,12 @@ describe('mailbox-scoped quote pane configuration', () => {
       ],
       overrideRateCodes: ['BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF'],
       eventRateCodes: [],
+      shuttle: {
+        provider: 'Jarat Tours',
+        to: expect.arrayContaining(['legacy@jarattours.co.za', 'info@jarattours.co.za']),
+      },
     });
+    expect(config.shuttle?.to).toHaveLength(5);
     expect(config.roomTypes.map(({ code }) => code)).not.toContain('STQN');
     expect(config.ratePlans.map(({ code }) => code)).toEqual(['BAR', 'BARRO', 'BLRB', 'BARDIS', 'DEF']);
   });
