@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { amendRoomTypes } from './property-profile.mjs';
 
 export const AMEND_FIELDS = ['arrival', 'departure', 'adults', 'children', 'roomType'];
+export const COMBO_AMEND_FIELDS = Object.freeze(['adults', 'children', 'roomType']);
+export const isComboAmendField = (field) => COMBO_AMEND_FIELDS.includes(field);
 export const LAB_ARRIVAL_FLOOR = '2027-01-01';
 const FLAGS = new Set(['--request', '--mode', '--out', '--digest', '--property']);
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -186,6 +188,30 @@ export function amendPreviewDigest({ confirmation, expectedLastName, current, fi
 
 export const unsupportedFieldReason = (state) =>
   state?.count === 1 && state.disabled === false && state.readOnly === false ? null : 'unsupported_field';
+
+/** Combo writability from Ext. Playwright serializes this into the page; do not close over Node locals. */
+export function comboWritableFromPage(input) {
+  const Ext = typeof globalThis.Ext === 'undefined' ? null : globalThis.Ext;
+  const cmpId = typeof input?.id === 'string' ? input.id.replace(/-inputEl$/, '') : '';
+  const cmp = Ext && cmpId && typeof Ext.getCmp === 'function' ? Ext.getCmp(cmpId) : null;
+  if (cmp) {
+    const disabled = typeof cmp.isDisabled === 'function' ? cmp.isDisabled() : !!cmp.disabled;
+    return { exists: true, disabled: !!disabled, readOnly: cmp.readOnly === true };
+  }
+  const wrap = typeof input?.closest === 'function' ? input.closest('.x-field') : null;
+  if (!wrap) return { exists: false, disabled: true, readOnly: true };
+  const className = String(wrap.className || '');
+  return {
+    exists: true,
+    disabled: className.split(/\s+/).includes('x-item-disabled'),
+    readOnly: false,
+  };
+}
+
+export const comboUnsupportedFieldReason = (state) =>
+  state?.count === 1 && state.exists === true && state.disabled === false && state.readOnly === false
+    ? null
+    : 'unsupported_field';
 export const dangerousDialogKind = (text) =>
   /\bpenalt(?:y|ies)\b/i.test(text) ? 'penalty' : /\bcharge(?:s)?\b/i.test(text) ? 'charge' : /\brate\b/i.test(text) ? 'rate' : null;
 const HMS_MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
