@@ -156,7 +156,7 @@ async function readOneField(page, field) {
   return input.evaluate((el) => {
     const id = el.id?.replace(/-inputEl$/, '');
     const cmp = typeof Ext !== 'undefined' && id ? Ext.getCmp(id) : null;
-    const got = cmp?.getValue?.() ?? el.value;
+    const got = typeof cmp?.getValue === 'function' ? cmp.getValue() : el.value;
     if (got instanceof Date && !Number.isNaN(got.getTime())) {
       const year = got.getFullYear();
       const month = String(got.getMonth() + 1).padStart(2, '0');
