@@ -20,7 +20,6 @@ const { zipSync } = createRequire(new URL('../package.json', import.meta.url))('
 const testsDir = dirname(fileURLToPath(import.meta.url));
 const deployDir = join(testsDir, '../deploy');
 const temporaryRoots: string[] = [];
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 afterEach(async () => {
   for (const root of temporaryRoots.splice(0)) await rm(root, { recursive: true, force: true });
