@@ -300,6 +300,8 @@ describe('party prefetch selection', () => {
 describe('prepared quote selection', () => {
   it.each([
     { name: 'prefers an available party-bound WS run over a newer BAR run', contract: true, otherParty: false, stale: false, expected: 'ws-run' },
+    { name: 'prefers a company-bound WS contract over newer BAR', contract: true, otherParty: false, stale: false, company: true, expected: 'ws-run' },
+    { name: 'rejects a contract bound to a different company', contract: true, otherParty: true, stale: false, company: true, expected: 'bar-run' },
     { name: 'keeps BAR when the WS result is not a selected contract', contract: false, otherParty: false, stale: false, expected: 'bar-run' },
     { name: 'keeps BAR over a newer unverified WS result', contract: false, otherParty: false, stale: false, wsNewest: true, expected: 'bar-run' },
     { name: 'keeps BAR when the contract belongs to another party', contract: true, otherParty: true, stale: false, expected: 'bar-run' },
@@ -307,19 +309,23 @@ describe('prepared quote selection', () => {
     { name: 'uses newer BAR when an approval invalidated the older contract', contract: true, otherParty: false, stale: false, approvalBetween: true, expected: 'bar-run' },
     { name: 'does not reuse an unverified WS price as BAR when BAR is missing', contract: false, otherParty: false, stale: false, noBar: true, expected: null },
     { name: 'reuses a verified WS contract when BAR is missing', contract: true, otherParty: false, stale: false, noBar: true, expected: 'ws-run' },
-  ])('$name', async ({ contract, otherParty, stale, expected, noBar, wsNewest, approvalBetween }) => {
+  ])('$name', async ({ contract, otherParty, stale, expected, noBar, wsNewest, approvalBetween, company }) => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
     const quote = staffQuoteInput.parse({
       messageId: 'message-1', sourceHash: 'a'.repeat(64), selectionEpoch: 1, inputRevision: 1,
       groups: [{ id: 'g1', arrivalDate: '2027-01-01', departureDate: '2027-01-02', quantity: 1,
         adults: 1, childrenAges: [], board: 'bb' }],
-      salesStrategy: 'BAR', parties: { agency: { kind: 'agency', nativeId: '42', name: 'Acme Travel' } },
+      salesStrategy: 'BAR', parties: company
+        ? { company: { kind: 'company', nativeId: '42', name: 'Acme Company' } }
+        : { agency: { kind: 'agency', nativeId: '42', name: 'Acme Travel' } },
     });
     const now = new Date();
     const prepared = (id: string, strategy: 'BAR' | 'WS') => ({
       ...runningRun({ kind: 'staff_quote', input: { ...quote, salesStrategy: strategy,
-        ...(strategy === 'WS' && otherParty ? { parties: { agency: { kind: 'agency', nativeId: 'other', name: 'Other' } } } : {}),
+        ...(strategy === 'WS' && otherParty ? { parties: company
+          ? { company: { kind: 'company', nativeId: 'other', name: 'Other' } }
+          : { agency: { kind: 'agency', nativeId: 'other', name: 'Other' } } } : {}),
       } }, HMS_JOB_PRIORITY_PREFETCH),
       id, transportId: 'transport-faith', state: 'succeeded',
       createdAt: strategy === 'WS' ? new Date(now.getTime() - 2_000) : now, finishedAt: now,
