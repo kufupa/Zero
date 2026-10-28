@@ -133,6 +133,8 @@ async function writeClipboard(value: string): Promise<boolean> {
 
 export const ROOM_TYPE_CHANGED_COPY =
   'Room type changed from the quote, so the price check no longer applies. Quote again to check the price for this room.';
+const PRICE_INPUT_CHANGED_COPY =
+  'Booking details changed from the quote, so the price check no longer applies. Quote again to check the price.';
 
 export const AMBIGUOUS_GUEST_NAME_COPY = 'Enter first and last name for the staying guest.';
 
@@ -1074,6 +1076,20 @@ export function BookingCards({
     return Boolean(requested && selected && requested !== selected);
   });
 
+  // An edited rate or occupancy no longer describes the price comparison made for the original quote.
+  const priceInputChanged = draft.draft.rooms.some((room) => {
+    const choice = choices[roomKeyOf(room)];
+    if (!choice) return false;
+    const group = roomGroupFor(room, groups);
+    const originalRate = textValue(group?.rateCode) || textValue(group?.quotedRateCode) || textValue(room.request.ratePlan);
+    const originalAdults = String(group?.adults ?? room.request.adults ?? '');
+    const originalAges = group?.childrenAges ?? room.request.childAges;
+    return (choice.ratePlan !== undefined && choice.ratePlan !== originalRate) ||
+      (choice.adults !== undefined && choice.adults !== originalAdults) ||
+      (choice.childAges !== undefined && JSON.stringify(choice.childAges) !==
+        JSON.stringify(Array.isArray(originalAges) ? originalAges.map(String) : []));
+  });
+
   function patchSave(roomKey: string, patch: RoomSaveState) {
     setSaves((current) => ({ ...current, [roomKey]: { ...current[roomKey], ...patch } }));
   }
@@ -1402,8 +1418,8 @@ export function BookingCards({
           {LAB_WRITE_NOTE}
         </p>
       ) : null}
-      {roomTypeChanged && draft.draft.rateCheck.length > 0 ? (
-        <Notice tone="warn">{ROOM_TYPE_CHANGED_COPY}</Notice>
+      {(roomTypeChanged || priceInputChanged) && draft.draft.rateCheck.length > 0 ? (
+        <Notice tone="warn">{roomTypeChanged ? ROOM_TYPE_CHANGED_COPY : PRICE_INPUT_CHANGED_COPY}</Notice>
       ) : (
         draft.draft.rateCheck.map((check, index) => (
           <RateCheckChip key={`${check.status}:${check.claimQuote}:${index}`} check={check} />
