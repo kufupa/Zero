@@ -4353,7 +4353,7 @@ async function latestStaffQuoteRunFor(
       parsed.data.input.messageId !== preparedRun.triggerMessageId ||
       (!sameMessageCopy && !relatedMessageIds.includes(preparedRun.triggerMessageId)) ||
       (sameMessageCopy && parsed.data.input.sourceHash !== quoteInput.sourceHash) ||
-      !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, true)
+      !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, preferBoundContract && hasReadySelectedContract(preparedRun))
     ) {
       continue;
     }
