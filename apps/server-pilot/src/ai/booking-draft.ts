@@ -5,6 +5,7 @@ import type { Board, QuoteRevision } from '../quote-proposal/quote-revision.js';
 import type { RowPrice } from '../quote-proposal/quote-lines.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
+import { requiredBookNativeFields } from '../../tooling/playwright-quote/property-profile.mjs';
 import { CENTURION_RATE_PLANS } from '../hms/rate-catalogue.js';
 
 export type BookingDraftDefaults = {
@@ -310,6 +311,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
       defaultGuest?: string;
     } | null;
     createForm?: {
+      requiredMarkers?: Record<string, { required?: boolean }>;
       options?: Record<string, { choices?: Array<{ value: string; display: string }> }>;
     };
   };
@@ -337,7 +339,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     roomType: Object.keys(profile.roomCapacity ?? {}),
     ratePlans: profile.ratePlans ? Object.keys(profile.ratePlans) :
       propertyCode === 'HRCEN' ? CENTURION_RATE_PLANS.map(({ code }) => code) : [],
-    requiredCreateFields: profile.requiredCreateFields ?? [],
+    requiredCreateFields: [...new Set([...(profile.requiredCreateFields ?? []), ...requiredBookNativeFields(profile)])],
     ...(validCms ? {
       cmsMessageIds: cmsRows,
       cmsDefaults: { agency: cms.defaultAgency!, guest: cms.defaultGuest! },
