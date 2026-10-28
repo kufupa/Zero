@@ -1255,6 +1255,25 @@ describe('HRDAV booking fields and CMS', () => {
     await waitFor(() => expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ roomType: 'DLXKNG', ratePlan: 'NEWKNG' })));
   });
 
+  it('blocks preview when there are no adults', () => {
+    const { client, preview } = paneClient();
+    render(<BookingCards draft={hrdavDraft()} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    fireEvent.change(screen.getByLabelText('Adults'), { target: { value: '0' } });
+    expect(previewButton(0).disabled).toBe(true);
+    fireEvent.click(previewButton(0));
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('preserves child ages if the child count field is temporarily cleared', () => {
+    const draft = hrdavDraft();
+    draft.draft.rooms[0]!.request.childAges = [5];
+    render(<BookingCards draft={draft} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    fireEvent.change(screen.getByLabelText('Children'), { target: { value: '' } });
+    expect((screen.getByLabelText('Child age 1') as HTMLInputElement).value).toBe('5');
+  });
+
   it('rejects child ages outside 0–17 and accepts the boundary values', async () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
