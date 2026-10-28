@@ -80,6 +80,8 @@ export type PaneStayInput = {
   departure: string;
   adults: number;
   childAges?: number[];
+  cmsMessageId?: string;
+  confirmationSendMail?: boolean;
   sourceOfBusiness: string;
   roomType: string;
   ratePlan: string;
@@ -100,6 +102,7 @@ export type PaneStayInput = {
 export type PaneStayResult = {
   status: 'ok' | 'refused';
   reason?: string;
+  cmsReason?: string;
   outcome?: string;
   confirmationNumber?: string;
   previewDigest?: string | null;
@@ -268,12 +271,14 @@ export type PaneStayChoice = {
   ratePlan?: string;
   firstName?: string;
   lastName?: string;
-  /** Typed in the card. A blank value is not sent. */
-  bookingAgency?: string;
-  organization?: string;
+  /** A bound HMS party, or text in legacy callers. A blank value is not sent. */
+  bookingAgency?: string | PaneStayParty;
+  organization?: string | PaneStayParty;
   reservationNote?: string;
   bookerName?: string;
   bookerEmail?: string;
+  cmsMessageId?: string;
+  confirmationSendMail?: boolean;
   confirmationRecipient?: { mode: 'self' | 'client' | 'custom'; address: string };
 };
 
@@ -306,21 +311,33 @@ export function paneStayInputForRoom(
   if (!lastName) missing.push('last name');
   if (!DATE_PATTERN.test(arrival)) missing.push('arrival date');
   if (!DATE_PATTERN.test(departure) || nights <= 0) missing.push('departure date after arrival');
-  if (!Number.isInteger(adults) || adults < 0 || adults > 16) missing.push('adults');
+  if (!Number.isInteger(adults) || adults < 1 || adults > 16) missing.push('adults');
   if (!roomType) missing.push('room type');
   if (!ratePlan) missing.push('rate code');
   if (!choice.sourceOfBusiness) missing.push('source of business');
   if (!choice.track) missing.push('track');
   if (!choice.guaranteeType) missing.push('guarantee');
-  const bookingAgency = text(choice.bookingAgency);
-  const organization = text(choice.organization);
+  const party = (value: string | PaneStayParty | undefined): PaneStayParty | undefined => {
+    const name = text(typeof value === 'string' ? value : value?.name);
+    if (!name) return undefined;
+    const nativeId = typeof value === 'object' ? text(value.nativeId) : '';
+    return { name, ...(nativeId ? { nativeId } : {}) };
+  };
+  const bookingAgency = party(choice.bookingAgency);
+  const organization = party(choice.organization);
+  const childAges = Array.isArray(request.childAges) ? request.childAges : [];
+  if (childAges.length > 16 || childAges.some((age) =>
+    typeof age !== 'number' || !Number.isInteger(age) || age < 0 || age > 17
+  )) missing.push('child ages (0–17)');
+  const cmsMessageId = text(choice.cmsMessageId);
+  if (choice.confirmationSendMail && !cmsMessageId) missing.push('Confirmation type');
   const reservationNote = text(choice.reservationNote);
   const bookerName = text(choice.bookerName);
   const bookerEmail = text(choice.bookerEmail);
   // An over-long value is named here so Preview waits; the server would refuse it at the schema.
   const tooLong: Array<[boolean, string]> = [
-    [bookingAgency.length > PANE_PARTY_NAME_MAX, `agency name (${PANE_PARTY_NAME_MAX} characters at most)`],
-    [organization.length > PANE_PARTY_NAME_MAX, `organization name (${PANE_PARTY_NAME_MAX} characters at most)`],
+    [(bookingAgency?.name.length ?? 0) > PANE_PARTY_NAME_MAX, `agency name (${PANE_PARTY_NAME_MAX} characters at most)`],
+    [(organization?.name.length ?? 0) > PANE_PARTY_NAME_MAX, `organization name (${PANE_PARTY_NAME_MAX} characters at most)`],
     [reservationNote.length > PANE_RESERVATION_NOTE_MAX, `reservation note (${PANE_RESERVATION_NOTE_MAX} characters at most)`],
     [bookerName.length > PANE_BOOKER_NAME_MAX, `booker name (${PANE_BOOKER_NAME_MAX} characters at most)`],
     [bookerEmail.length > PANE_BOOKER_EMAIL_MAX, `booker email (${PANE_BOOKER_EMAIL_MAX} characters at most)`],
@@ -328,9 +345,6 @@ export function paneStayInputForRoom(
   for (const [over, name] of tooLong) if (over) missing.push(name);
   if (missing.length) return { stay: null, missing };
 
-  const childAges = Array.isArray(request.childAges)
-    ? request.childAges.filter((age): age is number => Number.isInteger(age))
-    : [];
   return {
     stay: {
       firstName,
@@ -338,7 +352,9 @@ export function paneStayInputForRoom(
       arrival,
       departure,
       adults,
-      ...(childAges.length ? { childAges } : {}),
+      ...(childAges.length ? { childAges: childAges as number[] } : {}),
+      ...(cmsMessageId ? { cmsMessageId } : {}),
+      ...(choice.confirmationSendMail !== undefined ? { confirmationSendMail: choice.confirmationSendMail } : {}),
       sourceOfBusiness: choice.sourceOfBusiness,
       roomType,
       ratePlan,
@@ -346,8 +362,8 @@ export function paneStayInputForRoom(
       ...(marketSegment ? { marketSegment } : {}),
       guestoptin4: choice.guestoptin4 === true,
       guaranteeType: choice.guaranteeType,
-      ...(bookingAgency ? { bookingAgency: { name: bookingAgency } } : {}),
-      ...(organization ? { organization: { name: organization } } : {}),
+      ...(bookingAgency ? { bookingAgency } : {}),
+      ...(organization ? { organization } : {}),
       ...(reservationNote ? { reservationNote } : {}),
       ...(bookerName ? { bookerName } : {}),
       ...(bookerEmail ? { bookerEmail } : {}),
@@ -387,10 +403,11 @@ export function previewOutcome(result: PaneStayResult): PreviewOutcome {
 }
 
 export type CommitOutcome =
-  | { ok: true; confirmationNumber: string; runId?: string; screenshots: string[]; unverified?: boolean }
+  | { ok: true; confirmationNumber: string; runId?: string; screenshots: string[]; unverified?: boolean; cmsMismatch?: boolean }
   | { ok: false; message: string; runId?: string; screenshots: string[] };
 
 export const PANE_SAVE_UNVERIFIED_COPY = 'Saved — check in Infor';
+export const PANE_CMS_MISMATCH_COPY = 'Booked, but HMS confirmation settings did not match — check CMS in HMS';
 
 export function commitOutcome(result: PaneStayResult, stay?: PaneStayGuest): CommitOutcome {
   const screenshots = result.screenshots ?? [];
@@ -404,6 +421,7 @@ export function commitOutcome(result: PaneStayResult, stay?: PaneStayGuest): Com
       runId: result.runId,
       screenshots,
       unverified: true,
+      ...(result.cmsReason === 'saved_cms_mismatch' ? { cmsMismatch: true } : {}),
     };
   }
   if (result.outcome === 'committed' && result.confirmationNumber) {

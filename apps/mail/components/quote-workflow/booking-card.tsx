@@ -22,11 +22,12 @@ import { usePaneStayPreview } from './use-pane-stay-preview';
 import {
   commitOutcome,
   PANE_BOOKER_NAME_MAX,
-  PANE_CHILDREN_COPY,
+  PANE_CMS_MISMATCH_COPY,
   PANE_COMMIT_UNREACHABLE_COPY,
   PANE_PARTY_NAME_MAX,
   PANE_PREVIEW_FAILED_COPY,
   PANE_RESERVATION_NOTE_MAX,
+  PANE_SAVE_UNCONFIRMED_REASON,
   PANE_SAVE_UNVERIFIED_COPY,
   paneStayInputForRoom,
   paneStayKey,
@@ -133,6 +134,8 @@ async function writeClipboard(value: string): Promise<boolean> {
 
 export const ROOM_TYPE_CHANGED_COPY =
   'Room type changed from the quote, so the price check no longer applies. Quote again to check the price for this room.';
+const PRICE_INPUT_CHANGED_COPY =
+  'Booking details changed from the quote, so the price check no longer applies. Quote again to check the price.';
 
 export const AMBIGUOUS_GUEST_NAME_COPY = 'Enter first and last name for the staying guest.';
 
@@ -233,6 +236,17 @@ const PREVIEW_SHOT = 'filled.png';
 const SAVED_SHOT = 'saved.png';
 const CREATE_PROVISIONAL_LABEL = 'Create provisional booking';
 const BOOK_THIS_STAY_LABEL = 'Book this stay';
+const CHILD_AGE_FIELDS = Array.from({ length: 16 }, (_, index) => `child-age-${index + 1}`);
+const CMS_FALLBACK = [
+  { code: '01', label: 'Guest booking – payment link' },
+  { code: '03', label: 'Agency/company booking – payment link + proforma' },
+  { code: '08', label: 'Agency booking – no rate' },
+];
+type BookingOptions = BookingDraftReady['options'] & {
+  cmsMessageIds?: Array<{ code: string; label: string }>;
+  cmsDefaults?: { agency: string; guest: string };
+  ratePlans?: string[];
+};
 const WRITES_OFF_LABEL = 'Booking writes are off — create in HMS';
 const LAB_WRITE_NOTE = 'This write is test-only. Book a real guest in HMS.';
 const textareaClass =
@@ -256,6 +270,7 @@ type CommitView =
       screenshots: string[];
       shots?: HmsShotRecord[];
       unverified?: boolean;
+      cmsMismatch?: boolean;
     }
   | {
       status: 'refused';
@@ -276,6 +291,7 @@ export type SavedStayCommit = {
   /** Durable before/saved shots from the work-item stay record. */
   runId?: string;
   shots?: HmsShotRecord[];
+  cmsReason?: string;
 };
 
 function stayIdForRoom(
@@ -289,7 +305,7 @@ function stayIdForRoom(
   return `${stay}_${room.roomIndex}`;
 }
 
-/** Stay ids a draft actually shows. Rooms with children and ids shared by two rows are omitted so the receipt can still show the save once. */
+/** Only apply a stored save when exactly one visible room claims its id. */
 export function appliedSavedStayIds(
   draft: BookingDraftReady,
   groups: StayGroupRequirement[],
@@ -298,7 +314,6 @@ export function appliedSavedStayIds(
   if (!savedStays) return [];
   const claims = new Map<string, number>();
   for (const room of draft.draft.rooms) {
-    if (childCountForRoom(room, groups) > 0) continue;
     const id = stayIdForRoom(room, groups);
     claims.set(id, (claims.get(id) ?? 0) + 1);
   }
@@ -326,12 +341,13 @@ function commitViewFromSaved(
       screenshots,
       ...shotFields,
       ...(saved.status === 'unknown' ? { unverified: true } : {}),
+      ...(saved.cmsReason === 'saved_cms_mismatch' ? { cmsMismatch: true } : {}),
     };
   }
   return {
     status: 'refused',
     key: '',
-    message: paneUnconfirmedMessage({
+    message: saved.cmsReason === 'saved_cms_mismatch' ? PANE_CMS_MISMATCH_COPY : paneUnconfirmedMessage({
       firstName: textValue(stay.firstName) || 'this guest',
       lastName: textValue(stay.lastName),
       arrival: textValue(stay.arrival),
@@ -470,6 +486,7 @@ function RoomSave({
   onBook: (stay: PaneStayInput, previewDigest: string) => void;
 }) {
   const { preview, commit } = save;
+  const noRetry = commit?.status === 'refused' && commit.statusChip === 'check';
   const busy = frozen || preview?.status === 'running' || commit?.status === 'running';
   const fresh = stay && preview?.status === 'ready' && preview.key === previewKey ? preview : null;
   const changed =
@@ -491,7 +508,9 @@ function RoomSave({
           {commit.unverified ? 'Check HMS' : 'Booked'}
         </span>
         <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
-          {commit.unverified
+          {commit.cmsMismatch
+            ? PANE_CMS_MISMATCH_COPY
+            : commit.unverified
             ? PANE_SAVE_UNVERIFIED_COPY
             : `Booked in HMS – confirmation ${commit.confirmationNumber}`}
         </p>
@@ -575,7 +594,7 @@ function RoomSave({
           ) : null}
         </>
       ) : null}
-      <div className="grid grid-cols-2 gap-2">
+      {!noRetry && <div className="grid grid-cols-2 gap-2">
         <SecondaryButton
           disabled={!stay || busy}
           className="w-full"
@@ -594,12 +613,12 @@ function RoomSave({
         >
           {bookLabel}
         </PrimaryButton>
-      </div>
-      <p className="text-[11px] text-[#64748b]">
+      </div>}
+      {!noRetry && <p className="text-[11px] text-[#64748b]">
         {stay
           ? 'Nava fills the booking in HMS and checks availability. Nothing is saved.'
           : `Set ${missing.join(', ')} before you preview.`}
-      </p>
+      </p>}
     </div>
   );
 }
@@ -673,6 +692,12 @@ type RoomChoice = {
   bookingAgency: string;
   organization: string;
   reservationNote: string;
+  /** The exact note Nava generated, so staff-authored text is never discarded. */
+  generatedReservationNote?: string;
+  roomType?: string;
+  ratePlan?: string;
+  adults?: string;
+  childAges?: string[];
 };
 
 const NO_CHOICE: RoomChoice = {
@@ -714,14 +739,16 @@ function roomTypeFor(room: BookingDraftReady['draft']['rooms'][number], group?: 
 function roomRequestFor(
   room: BookingDraftReady['draft']['rooms'][number],
   group?: StayGroupRequirement,
+  choice?: RoomChoice,
 ): Record<string, unknown> {
-  if (!group) return room.request;
   return {
     ...room.request,
-    arrival: group.arrivalDate ?? room.request.arrival,
-    departure: group.departureDate ?? room.request.departure,
-    adults: group.adults ?? room.request.adults,
-    childAges: group.childrenAges,
+    arrival: group?.arrivalDate ?? room.request.arrival,
+    departure: group?.departureDate ?? room.request.departure,
+    adults: choice?.adults ?? group?.adults ?? room.request.adults,
+    childAges: choice?.childAges
+      ? choice.childAges.map((age) => age.trim() === '' ? Number.NaN : Number(age))
+      : group?.childrenAges ?? room.request.childAges,
   };
 }
 
@@ -734,21 +761,34 @@ function roomChoiceFor(
 ): PaneStayChoice {
   return {
     ...choice,
-    roomType: roomTypeFor(room, group),
-    ratePlan: textValue(group?.rateCode) || textValue(room.request.ratePlan) || textValue(group?.quotedRateCode),
+    roomType: choice.roomType ?? roomTypeFor(room, group),
+    ratePlan: choice.ratePlan ?? (textValue(group?.rateCode) || textValue(group?.quotedRateCode) || textValue(room.request.ratePlan)),
     bookerName: contact ? textValue(contact.name) : textValue(room.request.bookerName),
     bookerEmail: contact ? textValue(contact.email) : textValue(room.request.bookerEmail),
     ...(confirmationRecipient ? { confirmationRecipient } : {}),
   };
 }
 
-function childCountForRoom(
+/** Never reuse quote prices for a different room, rate or occupancy. */
+function generatedNoteForChoice(
+  session: QuoteSession | undefined,
+  propertyCode: string | null | undefined,
   room: BookingDraftReady['draft']['rooms'][number],
-  groups: StayGroupRequirement[],
-): number {
-  const group = roomGroupFor(room, groups);
-  const childAges = group ? group.childrenAges : room.request.childAges;
-  return Array.isArray(childAges) ? childAges.length : 0;
+  group: StayGroupRequirement | undefined,
+  choice: RoomChoice,
+): string | null {
+  const quoted = session?.groups.find((item) => item.id === room.groupId);
+  if (!session || !quoted || quoted.roomCodes?.length !== 1 || !quoted.rateCode) return null;
+  const request = roomRequestFor(room, group, choice);
+  const selectedRoom = choice.roomType ?? roomTypeFor(room, group);
+  const selectedRate = choice.ratePlan ?? (textValue(group?.rateCode) || textValue(group?.quotedRateCode) || textValue(room.request.ratePlan));
+  if (
+    selectedRoom !== quoted.roomCodes[0] || selectedRate !== quoted.rateCode ||
+    request.arrival !== quoted.arrivalDate || request.departure !== quoted.departureDate ||
+    Number(request.adults) !== quoted.adults ||
+    JSON.stringify(request.childAges ?? []) !== JSON.stringify(quoted.childrenAges ?? [])
+  ) return null;
+  return reservationNoteForGroup(session, propertyCode, room.groupId);
 }
 
 function paneStayInputForConfiguredRoom(
@@ -761,11 +801,11 @@ function paneStayInputForConfiguredRoom(
     .map((field) => field.trim().toLowerCase().replace(/[^a-z0-9]/g, ''))
     .filter(Boolean);
   const missing = [...built.missing];
-  if (requiredFields.includes('reservationnote') && !textValue(choice.reservationNote).trim()) {
-    missing.push('reservation note');
-  }
-  if (requiredFields.some((field) => field !== 'reservationnote')) {
-    missing.push('required hotel field');
+  for (const field of requiredFields) {
+    if (field === 'reservationnote' && !textValue(choice.reservationNote).trim()) missing.push('reservation note');
+    else if (field === 'marketsegment' && !textValue(choice.marketSegment).trim()) missing.push('Market segment');
+    else if (field === 'guestoptin4' && choice.guestoptin4 !== true) missing.push('Terms');
+    else if (!['reservationnote', 'marketsegment', 'guestoptin4'].includes(field)) missing.push('required hotel field');
   }
   return { stay: missing.length ? null : built.stay, missing };
 }
@@ -798,7 +838,9 @@ export function SavedStayReceipt({
         </p>
       ) : (
         <p role="alert" className="text-[11.5px] text-amber-900">
-          {saved.status === 'unknown' && saved.confirmationNumber
+          {saved.cmsReason === 'saved_cms_mismatch'
+            ? PANE_CMS_MISMATCH_COPY
+            : saved.status === 'unknown' && saved.confirmationNumber
             ? PANE_SAVE_UNVERIFIED_COPY
             : 'HMS may have saved this booking. Check HMS before trying again.'}
         </p>
@@ -850,8 +892,8 @@ export function BookingCards({
   /** Active mailbox property. Unknown or missing codes fail closed (no generated note). */
   propertyCode?: string | null;
   /**
-   * Signed-in user and saved confirmation default. Null keeps the card as it was before this control
-   * (unit tests that render the card alone). The live pane always passes it.
+   * Signed-in user and saved confirmation default. Without it, confirmation defaults to an
+   * unresolved staff address until staff choose a recipient.
    */
   confirmation?: ConfirmationSources | null;
   /** Persists the current choice as this user's default. Omitted in card-only tests. */
@@ -882,41 +924,65 @@ export function BookingCards({
             readSelectedGuestName(guestEditorKey, guestName),
             room.request,
           );
-          const generated = session ? reservationNoteForGroup(session, propertyCode, room.groupId) : null;
-          return [
-            key,
-            {
-              track: textValue(room.request.track),
-              sourceOfBusiness: initialSourceOfBusiness(
-                room.request.sourceOfBusiness,
-                draft.options.sourceOfBusiness,
-              ),
-              marketSegment: '',
-              // Guest consent must come from an explicit staff action, never from mail or a hotel default.
-              guestoptin4: false,
-              guaranteeType: textValue(room.request.guaranteeType),
-              firstName: names.firstName,
-              lastName: names.lastName,
-              bookingAgency: textValue(room.request.agency) || pickedName(parties?.agency),
-              organization: textValue(room.request.organization) || pickedName(parties?.company),
-              reservationNote: prefillReservationNote(
-                textValue(room.request.reservationNote),
-                generated,
-                false,
-              ),
-            },
-          ];
+          const existingNote = textValue(room.request.reservationNote);
+          const choice: RoomChoice = {
+            track: textValue(room.request.track),
+            sourceOfBusiness: initialSourceOfBusiness(
+              room.request.sourceOfBusiness,
+              draft.options.sourceOfBusiness,
+            ),
+            marketSegment: '',
+            // Guest consent must come from an explicit staff action, never from mail or a hotel default.
+            guestoptin4: false,
+            guaranteeType: textValue(room.request.guaranteeType),
+            firstName: names.firstName,
+            lastName: names.lastName,
+            bookingAgency: '',
+            organization: textValue(room.request.organization) || pickedName(parties?.company),
+            reservationNote: existingNote,
+          };
+          const generated = generatedNoteForChoice(session, propertyCode, room, roomGroupFor(room, groups), choice);
+          choice.reservationNote = prefillReservationNote(existingNote, generated, false);
+          if (!existingNote.trim() && generated) choice.generatedReservationNote = generated;
+          return [key, choice];
         }),
       ),
   );
 
-  const [saves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
+  const [localSaves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
     savesFromSavedStays(draft, groups, savedStays),
   );
+  // A work item can finish loading after this card mounts. Apply its saved outcomes immediately,
+  // then retain them locally even if a later refresh temporarily omits savedStays.
+  const storedSaves = savesFromSavedStays(draft, groups, savedStays);
+  const saves = { ...localSaves };
+  for (const [key, stored] of Object.entries(storedSaves)) {
+    saves[key] = { ...saves[key], commit: stored.commit };
+  }
+  const savesRef = useRef(saves);
+  savesRef.current = saves;
+  useEffect(() => {
+    setSaves((current) => {
+      let next: typeof current | undefined;
+      for (const [key, stored] of Object.entries(savesFromSavedStays(draft, groups, savedStays))) {
+        if (JSON.stringify(current[key]?.commit) === JSON.stringify(stored.commit)) continue;
+        next ??= { ...current };
+        next[key] = { ...current[key], commit: stored.commit };
+      }
+      return next ?? current;
+    });
+  }, [draft, groups, savedStays]);
   const previewReceipt = usePaneStayPreview();
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
   const stayBookingRef = useRef(false);
+  const options = draft.options as BookingOptions;
+  const cmsOptions = options.cmsMessageIds?.length ? options.cmsMessageIds : CMS_FALLBACK;
+  const [sendConfirmation, setSendConfirmation] = useState(true);
+  const [chosenCmsMessage, setChosenCmsMessage] = useState<string | null>(null);
+  const hasBoundParty = Boolean(pickedName(parties?.agency) || pickedName(parties?.company));
+  const defaultCmsMessage = hasBoundParty ? (options.cmsDefaults?.agency ?? '03') : (options.cmsDefaults?.guest ?? '01');
+  const cmsMessage = chosenCmsMessage ?? defaultCmsMessage;
   const contextConfirmation = useConfirmationSources();
   const sources = confirmation === undefined ? contextConfirmation : confirmation;
   const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(sources?.setting?.mode ?? 'self');
@@ -950,7 +1016,9 @@ export function BookingCards({
     setRecipientMode(sources.setting.mode);
     if (sources.setting.mode === 'custom') setCustomAddress(sources.setting.address ?? '');
   }, [sources]);
-  const clientEmail = contact ? textValue(contact.email) : '';
+  const effectiveRecipientMode = !sources && !staffChose ? 'self' : recipientMode;
+  const clientEmail = contact ? textValue(contact.email) :
+    staffChose && effectiveRecipientMode === 'client' ? textValue(draft.draft.rooms[0]?.request.bookerEmail) : '';
   const holdMessage = !sources || staffChose
     ? null
     : sources.load === 'pending'
@@ -960,18 +1028,16 @@ export function BookingCards({
         : sources.invalidSetting
           ? 'The saved confirmation choice is not set up. Pick who should get the HMS confirmation.'
           : null;
-  const resolvedRecipient = !sources
-    ? null
-    : holdMessage
-      ? { ok: false as const, message: holdMessage }
-      : resolveConfirmationRecipient({
-          mode: recipientMode,
-          customAddress,
-          userEmail: sources.userEmail,
-          clientEmail,
-          invalidSetting: sources.invalidSetting,
-          staffChose,
-        });
+  const resolvedRecipient = holdMessage
+    ? { ok: false as const, message: holdMessage }
+    : resolveConfirmationRecipient({
+        mode: effectiveRecipientMode,
+        customAddress,
+        userEmail: sources?.userEmail ?? '',
+        clientEmail,
+        invalidSetting: sources?.invalidSetting,
+        staffChose,
+      });
   useEffect(() => () => {
     stayBookingRef.current = false;
   }, []);
@@ -1026,7 +1092,6 @@ export function BookingCards({
     stayBooking,
   ]);
   useEffect(() => {
-    if (!session) return;
     setChoices((current) => {
       let changed = false;
       const next = { ...current };
@@ -1034,28 +1099,51 @@ export function BookingCards({
         const key = `${room.groupId}:${room.roomIndex}`;
         const choice = current[key];
         if (!choice) continue;
-        const generated = reservationNoteForGroup(session, propertyCode, room.groupId);
-        const bound = prefillReservationNote(
-          choice.reservationNote,
-          generated,
-          reservationNoteDirty.current[key] === true,
-        );
-        if (bound === choice.reservationNote) continue;
-        next[key] = { ...choice, reservationNote: bound };
+        const generated = generatedNoteForChoice(session, propertyCode, room, roomGroupFor(room, groups), choice);
+        const dirty = reservationNoteDirty.current[key] === true;
+        const wasGenerated = !dirty && choice.generatedReservationNote !== undefined &&
+          choice.reservationNote === choice.generatedReservationNote;
+        const bound = wasGenerated ? (generated ?? '') : prefillReservationNote(choice.reservationNote, generated, dirty);
+        const generatedReservationNote = wasGenerated || (!dirty && !choice.reservationNote.trim() && generated)
+          ? (generated ?? undefined) : choice.generatedReservationNote;
+        if (bound === choice.reservationNote && generatedReservationNote === choice.generatedReservationNote) continue;
+        next[key] = { ...choice, reservationNote: bound, generatedReservationNote };
         changed = true;
       }
       return changed ? next : current;
     });
-  }, [draft.draft.rooms, propertyCode, session]);
+  }, [draft.draft.rooms, groups, propertyCode, session]);
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const requested = textValue(room.request.roomType);
-    const selected = roomTypeFor(room, roomGroupFor(room, groups));
+    const selected = choices[roomKeyOf(room)]?.roomType ?? roomTypeFor(room, roomGroupFor(room, groups));
     return Boolean(requested && selected && requested !== selected);
   });
 
+  // An edited rate or occupancy no longer describes the price comparison made for the original quote.
+  const priceInputChanged = draft.draft.rooms.some((room) => {
+    const choice = choices[roomKeyOf(room)];
+    if (!choice) return false;
+    const group = roomGroupFor(room, groups);
+    const originalRate = textValue(group?.rateCode) || textValue(group?.quotedRateCode) || textValue(room.request.ratePlan);
+    const originalAdults = String(group?.adults ?? room.request.adults ?? '');
+    const originalAges = group?.childrenAges ?? room.request.childAges;
+    return (choice.ratePlan !== undefined && choice.ratePlan !== originalRate) ||
+      (choice.adults !== undefined && choice.adults !== originalAdults) ||
+      (choice.childAges !== undefined && JSON.stringify(choice.childAges) !==
+        JSON.stringify(Array.isArray(originalAges) ? originalAges.map(String) : []));
+  });
+
+  function savedOutcomeBlocksRoom(roomKey: string): boolean {
+    const commit = savesRef.current[roomKey]?.commit;
+    return commit?.status === 'booked' || (commit?.status === 'refused' && commit.statusChip === 'check');
+  }
+
   function patchSave(roomKey: string, patch: RoomSaveState) {
-    setSaves((current) => ({ ...current, [roomKey]: { ...current[roomKey], ...patch } }));
+    setSaves((current) => {
+      if (savedOutcomeBlocksRoom(roomKey)) return current;
+      return { ...current, [roomKey]: { ...current[roomKey], ...patch } };
+    });
   }
 
   function finishPreviewIfRunning(
@@ -1072,6 +1160,7 @@ export function BookingCards({
   }
 
   async function previewRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput) {
+    if (savedOutcomeBlocksRoom(roomKey)) return;
     const inputKey = paneStayKey(stay);
     const input = previewInputsRef.current[roomKey];
     if (!input?.key || input.inputKey !== inputKey) return;
@@ -1118,7 +1207,7 @@ export function BookingCards({
   }
 
   function bookableRooms() {
-    return draft.draft.rooms.filter((room) => childCountForRoom(room, groups) === 0);
+    return draft.draft.rooms;
   }
 
   function roomBuilt(
@@ -1126,21 +1215,33 @@ export function BookingCards({
     currentContact: StoredContact | null = contact,
   ) {
     const group = roomGroupFor(room, groups);
-    const built = paneStayInputForConfiguredRoom(
-      roomRequestFor(room, group),
-      roomChoiceFor(
-        room,
-        group,
-        choices[roomKeyOf(room)] ?? NO_CHOICE,
-        currentContact,
-        resolvedRecipient?.ok ? resolvedRecipient.recipient : null,
-      ),
-      requiredCreateFields,
-    );
-    if (resolvedRecipient && !resolvedRecipient.ok) {
-      return { stay: null, missing: [...built.missing, 'confirmation recipient'] };
+    const choice = choices[roomKeyOf(room)] ?? NO_CHOICE;
+    const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
+    const unboundName = textValue(room.request.agency).trim();
+    const agencyUnresolved = choice.bookingAgency !== '__none__' && !boundAgency && Boolean(unboundName);
+    const currentEmail = currentContact ? textValue(currentContact.email) :
+      staffChose && effectiveRecipientMode === 'client' ? textValue(draft.draft.rooms[0]?.request.bookerEmail) : '';
+    const recipient = holdMessage ? { ok: false as const, message: holdMessage } : resolveConfirmationRecipient({
+      mode: effectiveRecipientMode, customAddress, userEmail: sources?.userEmail ?? '', clientEmail: currentEmail,
+      invalidSetting: sources?.invalidSetting, staffChose,
+    });
+    const roomChoice = roomChoiceFor(room, group, choice, currentContact, sendConfirmation && recipient.ok ? recipient.recipient : null);
+    if (!reservationNoteDirty.current[roomKeyOf(room)] && choice.generatedReservationNote !== undefined &&
+      choice.reservationNote === choice.generatedReservationNote) {
+      roomChoice.reservationNote = generatedNoteForChoice(session, propertyCode, room, group, choice) ?? '';
     }
-    return built;
+    roomChoice.bookingAgency = choice.bookingAgency === '__none__' || !boundAgency
+      ? undefined : { name: boundAgency.name, nativeId: boundAgency.nativeId };
+    roomChoice.confirmationSendMail = sendConfirmation;
+    roomChoice.cmsMessageId = cmsMessage;
+    const built = paneStayInputForConfiguredRoom(roomRequestFor(room, group, choice), roomChoice, requiredCreateFields);
+    const missing = [...built.missing];
+    if (agencyUnresolved) missing.push('booking agency');
+    if (sendConfirmation && !recipient.ok) missing.push('confirmation recipient');
+    if (!cmsOptions.some((option) => option.code === cmsMessage)) missing.push('Confirmation type');
+    const selectedRoom = roomChoice.roomType ?? '';
+    if (propertyCode && propertyCode !== 'HRCEN' && !draft.options.roomType.includes(selectedRoom)) missing.push('room type');
+    return { stay: missing.length ? null : built.stay, missing: [...new Set(missing)] };
   }
 
   function previewKeyForRoom(
@@ -1184,7 +1285,7 @@ export function BookingCards({
       if (cached) restored[roomKey] = { ...cached, status: 'ready', key: input.key };
     }
     setSaves((current) => {
-      let next = current;
+      let next: typeof current | undefined;
       for (const [roomKey, input] of inputs) {
         const existing = current[roomKey]?.preview;
         const cached = restored[roomKey];
@@ -1193,9 +1294,12 @@ export function BookingCards({
             ? { status: 'stale' as const, key: existing.key }
             : existing
         );
-        if (preview !== existing) next = { ...next, [roomKey]: { ...next[roomKey], preview } };
+        if (preview !== existing) {
+          next ??= { ...current };
+          next[roomKey] = { ...current[roomKey], preview };
+        }
       }
-      return next;
+      return next ?? current;
     });
   }, [previewInputSignature, previewReceipt, workItemId]);
 
@@ -1211,7 +1315,10 @@ export function BookingCards({
 
   async function bookThisStay(pane: PaneStayClient) {
     const snapshot = bookableRooms()
-      .filter((room) => saves[roomKeyOf(room)]?.commit?.status !== 'booked')
+      .filter((room) => {
+        const commit = saves[roomKeyOf(room)]?.commit;
+        return commit?.status !== 'booked' && !(commit?.status === 'refused' && commit.statusChip === 'check');
+      })
       .map((room) => {
         const ready = roomPreviewReady(room);
         return ready ? { roomKey: roomKeyOf(room), stay: ready.stay, digest: ready.digest } : null;
@@ -1221,12 +1328,13 @@ export function BookingCards({
     setStayBooking(true);
     try {
       for (const item of snapshot) {
-        if (!item || !stayBookingRef.current) return;
+        if (!item || !stayBookingRef.current || savedOutcomeBlocksRoom(item.roomKey)) return;
         const room = draft.draft.rooms.find((candidate) => roomKeyOf(candidate) === item.roomKey);
         if (!room) return;
         const currentStay = roomBuilt(room, contactRef.current).stay;
-        if (!currentStay || paneStayKey(currentStay) !== paneStayKey(item.stay)) return;
-        await bookRoom(item.roomKey, pane, item.stay, item.digest);
+        if (!currentStay || paneStayKey(currentStay) !== paneStayKey(item.stay) ||
+            previewInputsRef.current[item.roomKey]?.inputKey !== paneStayKey(item.stay)) return;
+        if (!(await bookRoom(item.roomKey, pane, item.stay, item.digest))) return;
       }
     } finally {
       stayBookingRef.current = false;
@@ -1235,6 +1343,7 @@ export function BookingCards({
   }
 
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
+    if (savedOutcomeBlocksRoom(roomKey)) return false;
     const key = paneStayKey(stay);
     const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
     if (room) previewReceipt.clear(workItemId, stayIdForRoom(room, groups));
@@ -1245,10 +1354,8 @@ export function BookingCards({
         workItemId && room
           ? { stayId: stayIdForRoom(room, groups), workItemId }
           : {};
-      const outcome = commitOutcome(
-        await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest),
-        stay,
-      );
+      const result = await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
+      const outcome = commitOutcome(result, stay);
       commit = outcome.ok
         ? {
             status: 'booked',
@@ -1257,6 +1364,7 @@ export function BookingCards({
             runId: outcome.runId,
             screenshots: outcome.screenshots,
             ...(outcome.unverified ? { unverified: true } : {}),
+            ...(outcome.cmsMismatch ? { cmsMismatch: true } : {}),
           }
         : {
             status: 'refused',
@@ -1264,12 +1372,15 @@ export function BookingCards({
             message: outcome.message,
             runId: outcome.runId,
             screenshots: outcome.screenshots,
+            ...(result.status === 'ok' || result.reason === PANE_SAVE_UNCONFIRMED_REASON
+              ? { statusChip: 'check' as const } : {}),
           };
     } catch {
-      commit = { status: 'refused', key, message: PANE_COMMIT_UNREACHABLE_COPY };
+      commit = { status: 'refused', key, message: PANE_COMMIT_UNREACHABLE_COPY, statusChip: 'check' };
     }
-    // A refused save invalidates the preview, so Book stays locked until the staff preview again.
+    // Definite refusals can be previewed again; uncertain saves stay locked for an HMS check.
     patchSave(roomKey, commit.status === 'booked' ? { commit } : { commit, preview: undefined });
+    return commit.status === 'booked' && !commit.unverified;
   }
 
   return (
@@ -1279,11 +1390,26 @@ export function BookingCards({
           ? 'Preview each room using the Stay details above, then create it in HMS.'
           : 'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.'}
       </p>
-      {sources ? (
+      <div className="flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
+        <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
+          <input type="checkbox" aria-label="Send confirmation from HMS" checked={sendConfirmation}
+            disabled={stayBooking} onChange={(event) => setSendConfirmation(event.target.checked)} />
+          Send confirmation from HMS
+        </label>
+        <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+          Message Id
+          <select aria-label="Message Id" className={paneFieldClass} disabled={stayBooking}
+            value={cmsMessage} onChange={(event) => setChosenCmsMessage(event.target.value)}>
+            <option value="">Select confirmation type</option>
+            {cmsOptions.map((option) => <option key={option.code} value={option.code}>{option.code} – {option.label}</option>)}
+          </select>
+        </label>
+      {sendConfirmation ? (
+        <div data-pii>
         <ConfirmationRecipient
-          mode={recipientMode}
+          mode={effectiveRecipientMode}
           customAddress={customAddress}
-          userEmail={sources.userEmail}
+          userEmail={sources?.userEmail ?? ''}
           clientEmail={clientEmail}
           disabled={stayBooking}
           unconfirmed={Boolean(holdMessage) && sources?.load !== 'pending'}
@@ -1345,14 +1471,16 @@ export function BookingCards({
           defaultSaved={defaultSaved}
           defaultError={defaultError}
         />
+        </div>
       ) : null}
+      </div>
       {mode === 'lab' ? (
         <p role="note" className="text-[11.5px] text-amber-900">
           {LAB_WRITE_NOTE}
         </p>
       ) : null}
-      {roomTypeChanged && draft.draft.rateCheck.length > 0 ? (
-        <Notice tone="warn">{ROOM_TYPE_CHANGED_COPY}</Notice>
+      {(roomTypeChanged || priceInputChanged) && draft.draft.rateCheck.length > 0 ? (
+        <Notice tone="warn">{roomTypeChanged ? ROOM_TYPE_CHANGED_COPY : PRICE_INPUT_CHANGED_COPY}</Notice>
       ) : (
         draft.draft.rateCheck.map((check, index) => (
           <RateCheckChip key={`${check.status}:${check.claimQuote}:${index}`} check={check} />
@@ -1381,33 +1509,52 @@ export function BookingCards({
             const guestChanged =
               (patch.firstName !== undefined && patch.firstName !== currentChoice.firstName) ||
               (patch.lastName !== undefined && patch.lastName !== currentChoice.lastName);
-            return {
-              ...current,
-              [key]: {
-                ...currentChoice,
-                ...patch,
-                ...(guestChanged ? { guestoptin4: false } : {}),
-              },
+            const nextChoice: RoomChoice = {
+              ...currentChoice,
+              ...patch,
+              ...(guestChanged ? { guestoptin4: false } : {}),
             };
+            if (!reservationNoteDirty.current[key]) {
+              const wasGenerated = currentChoice.generatedReservationNote !== undefined &&
+                currentChoice.reservationNote === currentChoice.generatedReservationNote;
+              const generated = generatedNoteForChoice(session, propertyCode, room, roomGroupFor(room, groups), nextChoice);
+              if (wasGenerated || (!nextChoice.reservationNote.trim() && generated)) {
+                nextChoice.reservationNote = generated ?? '';
+                nextChoice.generatedReservationNote = generated ?? undefined;
+              }
+            }
+            return { ...current, [key]: nextChoice };
           });
         // Once create is running or saved, freeze its create-only fields until staff checks the result.
         const commitStatus = saves[key]?.commit?.status;
-        const locked = stayBooking || commitStatus === 'running' || commitStatus === 'booked';
+        const locked = stayBooking || commitStatus === 'running' || savedOutcomeBlocksRoom(key);
         const request = room.request;
         const group = roomGroupFor(room, groups);
-        const generatedNote = session ? reservationNoteForGroup(session, propertyCode, room.groupId) : null;
+        const generatedNote = generatedNoteForChoice(session, propertyCode, room, group, choice);
         const built = roomBuilt(room);
         const price = group?.rowPrice;
         const override = price?.source === 'override' ? price : null;
         const commit = saves[key]?.commit;
         const bookedCommit = commit?.status === 'booked' ? commit : null;
-        const childCount = childCountForRoom(room, groups);
         const roomCount = group?.quantity ?? Math.max(
           1,
           draft.draft.rooms.filter((candidate) => candidate.groupId === room.groupId).length,
         );
+        const selectedRoom = choice.roomType ?? roomTypeFor(room, group);
+        const selectedRate = choice.ratePlan ?? (textValue(group?.rateCode) || textValue(group?.quotedRateCode) || textValue(request.ratePlan));
+        const propertyRooms = [...draft.options.roomType];
+        if ((!propertyCode || propertyCode === 'HRCEN') && selectedRoom && !propertyRooms.includes(selectedRoom)) propertyRooms.push(selectedRoom);
+        const rateCodes = [...new Set([
+          ...(options.ratePlans ?? []),
+          ...(session?.rateOptions ?? []).filter((rate) => rate.groupId === room.groupId && rate.roomCode === selectedRoom).map((rate) => rate.rateCode),
+          ...(choice.ratePlan === undefined && selectedRate ? [selectedRate] : []),
+        ].filter(Boolean))];
+        const ages = choice.childAges ?? (Array.isArray(group?.childrenAges ?? request.childAges)
+          ? (group?.childrenAges ?? request.childAges as number[]).map(String) : []);
+        const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
+        const agencyValue = choice.bookingAgency === '__none__' ? '__none__' : boundAgency ? '__bound__' : '';
         const roomLabel = rowRoomLabel({
-          roomPreference: roomTypeFor(room, group) || textValue(request.roomType),
+          roomPreference: selectedRoom || textValue(request.roomType),
           quantity: roomCount,
         });
         return (
@@ -1415,18 +1562,84 @@ export function BookingCards({
             key={key}
             className="shadow-xs flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3"
           >
-            <RoomTextField
-              roomLabel={roomLabel}
-              label="Last name"
-              value={choice.lastName}
-              disabled={locked}
-              maxLength={PANE_BOOKER_NAME_MAX}
-              pii
-              onChange={(value) => {
-                guestNamesEdited.current[key] = true;
-                setChoice({ lastName: value });
-              }}
-            />
+            <div className="flex items-end gap-2">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
+                Booking agency
+                <select aria-label="Booking agency" className={paneFieldClass} disabled={locked} value={agencyValue}
+                  onChange={(event) => setChoice({ bookingAgency: event.target.value })}>
+                  <option value="">Select agency above</option>
+                  <option value="__none__">No agency</option>
+                  {boundAgency ? <option value="__bound__">{boundAgency.name}</option> : null}
+                </select>
+              </label>
+              <CopyButton label="Booking agency" roomLabel={roomLabel} value={agencyValue === '__bound__' ? boundAgency?.name ?? '' : ''} />
+            </div>
+            {!boundAgency && textValue(request.agency).trim() && agencyValue !== '__none__' ? (
+              <p className="text-[11px] text-[#64748b]">{textValue(request.agency)}: select this agency in Agency &amp; company above, or choose No agency.</p>
+            ) : null}
+            <div className="flex items-end gap-2">
+              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
+                Guarantee
+                <select
+                  disabled={locked}
+                  aria-label="Guarantee"
+                  className={paneFieldClass}
+                  value={choice.guaranteeType}
+                  onChange={(event) => setChoice({ guaranteeType: event.target.value })}
+                >
+                  <option value="">Select guarantee</option>
+                  {draft.options.guaranteeType.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <CopyButton label="Guarantee" roomLabel={roomLabel} value={choice.guaranteeType} />
+            </div>
+            <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+              Room type
+              <select aria-label="Room type" className={paneFieldClass} disabled={locked}
+                value={propertyRooms.includes(selectedRoom) ? selectedRoom : ''}
+                onChange={(event) => setChoice({ roomType: event.target.value, ratePlan: '' })}>
+                <option value="">Select room type</option>
+                {propertyRooms.map((code) => <option key={code} value={code}>{code}</option>)}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+              Rate plan
+              <select aria-label="Rate plan" className={paneFieldClass} disabled={locked} value={selectedRate}
+                onChange={(event) => setChoice({ ratePlan: event.target.value })}>
+                <option value="">Select rate plan</option>
+                {rateCodes.map((code) => <option key={code} value={code}>{code}</option>)}
+              </select>
+            </label>
+            {!selectedRate ? <p className="text-[11px] text-[#64748b]">Rates loading. Select a rate when available.</p> : null}
+            <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+              Adults
+              <input type="number" min={1} max={16} step={1} aria-label="Adults" className={paneFieldClass} disabled={locked}
+                value={choice.adults ?? String(group?.adults ?? request.adults ?? '')}
+                onChange={(event) => setChoice({ adults: event.target.value })} />
+            </label>
+            <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+              Children
+              <input type="number" min={0} max={16} step={1} aria-label="Children" className={paneFieldClass} disabled={locked}
+                value={ages.length} onChange={(event) => {
+                  if (event.target.value.trim() === '') return;
+                  const count = Number(event.target.value);
+                  if (Number.isInteger(count) && count >= 0 && count <= 16) {
+                    setChoice({ childAges: Array.from({ length: count }, (_, index) => ages[index] ?? '') });
+                  }
+                }} />
+            </label>
+            {CHILD_AGE_FIELDS.slice(0, ages.length).map((field, index) => (
+              <label key={field} className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+                Child age {index + 1}
+                <input type="number" min={0} max={17} step={1} aria-label={`Child age ${index + 1}`}
+                  className={paneFieldClass} disabled={locked} value={ages[index] ?? ''}
+                  onChange={(event) => setChoice({ childAges: ages.map((item, i) => i === index ? event.target.value : item) })} />
+              </label>
+            ))}
             <RoomTextField
               roomLabel={roomLabel}
               label="First name"
@@ -1439,19 +1652,23 @@ export function BookingCards({
                 setChoice({ firstName: value });
               }}
             />
+            <RoomTextField
+              roomLabel={roomLabel}
+              label="Last name"
+              value={choice.lastName}
+              disabled={locked}
+              maxLength={PANE_BOOKER_NAME_MAX}
+              pii
+              onChange={(value) => {
+                guestNamesEdited.current[key] = true;
+                setChoice({ lastName: value });
+              }}
+            />
             {selectedGuestName.trim() && guestSplit.ambiguous ? (
               <p role="status" className="text-[11px] text-[#64748b]">
                 {AMBIGUOUS_GUEST_NAME_COPY}
               </p>
             ) : null}
-            <RoomTextField
-              roomLabel={roomLabel}
-              label="Booking agency"
-              value={choice.bookingAgency}
-              disabled={locked}
-              maxLength={PANE_PARTY_NAME_MAX}
-              onChange={(value) => setChoice({ bookingAgency: value })}
-            />
             <RoomTextField
               roomLabel={roomLabel}
               label="Organization"
@@ -1516,29 +1733,9 @@ export function BookingCards({
                   disabled={locked}
                   onChange={(event) => setChoice({ guestoptin4: event.target.checked })}
                 />
-                <span>Guest opt-in</span>
+                <span>Terms</span>
               </label>
               <p className="text-[11px] text-[#64748b]">Select only if the guest explicitly opted in.</p>
-            </div>
-            <div className="flex items-end gap-2">
-              <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-semibold text-[#475569]">
-                Guarantee
-                <select
-                  disabled={locked}
-                  aria-label="Guarantee"
-                  className={paneFieldClass}
-                  value={choice.guaranteeType}
-                  onChange={(event) => setChoice({ guaranteeType: event.target.value })}
-                >
-                  <option value="">Select guarantee</option>
-                  {draft.options.guaranteeType.map((option) => (
-                    <option key={option} value={option}>
-                      {option}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <CopyButton label="Guarantee" roomLabel={roomLabel} value={choice.guaranteeType} />
             </div>
             <RoomTextField
               multiline
@@ -1560,7 +1757,7 @@ export function BookingCards({
                 disabled={locked}
                 onClick={() => {
                   reservationNoteDirty.current[key] = false;
-                  setChoice({ reservationNote: generatedNote });
+                  setChoice({ reservationNote: generatedNote, generatedReservationNote: generatedNote });
                 }}
               >
                 Regenerate reservation note
@@ -1590,12 +1787,7 @@ export function BookingCards({
                 ],
               })}
             />
-            {childCount > 0 ? (
-              <p role="note" className="text-[11.5px] text-amber-900">
-                {PANE_CHILDREN_COPY}
-              </p>
-            ) : null}
-            {childCount === 0 && client && savesOn ? (
+            {client && savesOn ? (
               <RoomSave
                 stay={built.stay}
                 previewKey={previewKeyForRoom(room, built.stay)}
@@ -1607,7 +1799,7 @@ export function BookingCards({
                 onPreview={(stay) => void previewRoom(key, client, stay)}
                 onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
               />
-            ) : childCount === 0 && saves[key]?.commit ? (
+            ) : saves[key]?.commit ? (
               <RoomSave
                 stay={built.stay}
                 previewKey={previewKeyForRoom(room, built.stay)}
@@ -1619,11 +1811,11 @@ export function BookingCards({
                 onPreview={() => undefined}
                 onBook={() => undefined}
               />
-            ) : childCount === 0 ? (
+            ) : (
               <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
                 <PrimaryButton disabled>{WRITES_OFF_LABEL}</PrimaryButton>
               </div>
-            ) : null}
+            )}
           </article>
         );
       })}
@@ -1632,7 +1824,6 @@ export function BookingCards({
           rooms={draft.draft.rooms}
           saves={saves}
           isPreviewReady={(room) => roomPreviewReady(room) !== null}
-          childCountForRoom={(room) => childCountForRoom(room, groups)}
           pane={client}
           stayBooking={stayBooking}
           onBookStay={bookThisStay}
@@ -1646,7 +1837,6 @@ function StayBookBar({
   rooms,
   saves,
   isPreviewReady,
-  childCountForRoom,
   pane,
   stayBooking,
   onBookStay,
@@ -1654,18 +1844,20 @@ function StayBookBar({
   rooms: BookingDraftReady['draft']['rooms'];
   saves: Record<string, RoomSaveState>;
   isPreviewReady: (room: BookingDraftReady['draft']['rooms'][number]) => boolean;
-  childCountForRoom: (room: BookingDraftReady['draft']['rooms'][number]) => number;
   pane: PaneStayClient;
   stayBooking: boolean;
   onBookStay: (pane: PaneStayClient) => Promise<void>;
 }) {
-  const bookable = rooms.filter((room) => childCountForRoom(room) === 0);
+  const bookable = rooms;
   if (!bookable.length) return null;
   const numbers = bookable.flatMap((room) => {
     const commit = saves[`${room.groupId}:${room.roomIndex}`]?.commit;
     return commit?.status === 'booked' && commit.confirmationNumber ? [commit.confirmationNumber] : [];
   });
-  const pending = bookable.filter((room) => saves[`${room.groupId}:${room.roomIndex}`]?.commit?.status !== 'booked');
+  const pending = bookable.filter((room) => {
+    const commit = saves[`${room.groupId}:${room.roomIndex}`]?.commit;
+    return commit?.status !== 'booked' && !(commit?.status === 'refused' && commit.statusChip === 'check');
+  });
   const busy =
     stayBooking ||
     bookable.some((room) => {
@@ -1677,9 +1869,7 @@ function StayBookBar({
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
       {numbers.length > 0 ? (
         <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
-          {numbers.length === bookable.length
-            ? `Booked this stay – ${numbers.join(', ')}`
-            : `Booked ${numbers.length} of ${bookable.length} – ${numbers.join(', ')}`}
+          {`Booked ${numbers.length} of ${bookable.length} – ${numbers.join(', ')}`}
         </p>
       ) : null}
       {pending.length > 0 ? (
