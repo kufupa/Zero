@@ -705,7 +705,7 @@ describe('booking cards', () => {
       expect(select.selectedOptions[0]?.textContent).toContain('Woolworths Travel');
       expect(select.value).not.toBe('');
     }
-    const noAgency = within(agencies[0]!).getByRole('option', { name: /no agency/i }) as unknown as HTMLOptionElement;
+    const noAgency = within(agencies[0]! as unknown as HTMLElement).getByRole('option', { name: /no agency/i }) as unknown as HTMLOptionElement;
     fireEvent.change(agencies[0]!, { target: { value: noAgency.value } });
     expect(agencies[0]!.value).toBe(noAgency.value);
     expect(agencies[1]!.selectedOptions[0]?.textContent).toContain('Woolworths Travel');
