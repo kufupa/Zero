@@ -339,7 +339,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     roomType: Object.keys(profile.roomCapacity ?? {}),
     ratePlans: profile.ratePlans ? Object.keys(profile.ratePlans) :
       propertyCode === 'HRCEN' ? CENTURION_RATE_PLANS.map(({ code }) => code) : [],
-    requiredCreateFields: [...new Set([...(profile.requiredCreateFields ?? []), ...requiredBookNativeFields(profile)])],
+    requiredCreateFields: [...new Set([...(profile.requiredCreateFields ?? []), ...requiredBookNativeFields({ createForm: profile.createForm })])],
     ...(validCms ? {
       cmsMessageIds: cmsRows,
       cmsDefaults: { agency: cms.defaultAgency!, guest: cms.defaultGuest! },
