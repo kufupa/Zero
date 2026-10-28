@@ -235,6 +235,22 @@ describe('booking card reload', () => {
     assertNoRetry();
   });
 
+  it('locks the matching room if its saved outcome arrives after the card mounts', () => {
+    const client: PaneStayClient = {
+      preview: vi.fn(), commit: vi.fn(), screenshot: vi.fn(async () => null), mode: () => 'on',
+    };
+    const draft = bookedDraft();
+    const view = render(<BookingCards draft={draft} groups={[group]} paneSave={client} />);
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toBeDefined();
+    view.rerender(<BookingCards draft={draft} groups={[group]} paneSave={client} savedStays={{
+      s_aaaa1111_1: { confirmationNumber: '98765-1', status: 'unknown', screenshotRef: null,
+        cmsReason: 'saved_cms_mismatch' },
+    }} />);
+    expect(screen.getByText('Booked, but HMS confirmation settings did not match — check CMS in HMS')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
+  });
+
   it('shows a stored CMS mismatch without offering another booking', () => {
     const client: PaneStayClient = {
       preview: vi.fn(), commit: vi.fn(), screenshot: vi.fn(async () => null), mode: () => 'on',
