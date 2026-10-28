@@ -32,12 +32,14 @@ const REQUIRED = [
 
 // --- ext-message-box-rules ---
 export const INFORMATIONAL_NO_ROOMS_MESSAGE = 'There are no rooms or openings for this process.';
+// HRDAV shows this after Save when the booking agency has a negotiated rate; it carries no choice.
+export const INFORMATIONAL_AGENCY_RATES_MESSAGE = 'Negotiated Rates are Available for Booking Agency.';
 const MONEY_MESSAGE = /penalty|charge|cancel|deposit|no-show|payment/i;
 
 export function classifyExtMessageBox(text) {
   const trimmed = String(text ?? '').trim();
   if (MONEY_MESSAGE.test(trimmed)) return 'refuse';
-  if (trimmed === INFORMATIONAL_NO_ROOMS_MESSAGE) return 'allow';
+  if (trimmed === INFORMATIONAL_NO_ROOMS_MESSAGE || trimmed === INFORMATIONAL_AGENCY_RATES_MESSAGE) return 'allow';
   return 'unknown';
 }
 
@@ -682,7 +684,8 @@ export function inspectFieldValidation(field, document = globalThis.document) {
   const iconVisible = visible(icon);
   const markedInvalid =
     input.getAttribute('aria-invalid') === 'true'
-    || /(^|\s)x-form-invalid(\s|$)/.test(String(input.className || ''))
+    // Ext marks a rejected lookup value on the input itself as x-form-invalid-field (HRDAV track, 2026-10-28).
+    || /(^|\s)x-form-invalid(-field)?(\s|$)/.test(String(input.className || ''))
     || /(^|\s)x-form-invalid(\s|$)/.test(String(wrap?.className || ''));
   const qtip = (input.getAttribute('data-errorqtip') || '').trim();
   const messages = [
