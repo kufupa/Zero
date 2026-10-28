@@ -311,7 +311,7 @@ describe('prepared quote selection', () => {
     const prepared = (id: string, strategy: 'BAR' | 'WS') => ({
       ...runningRun({ kind: 'staff_quote', input: { ...quote, salesStrategy: strategy } }, HMS_JOB_PRIORITY_PREFETCH),
       id, transportId: 'transport-faith', state: 'succeeded', createdAt: now, finishedAt: now,
-      readResult: { status: 'ready', asOf: now.toISOString() }, readResultExpiresAt: new Date(now.getTime() + 60_000),
+      readResult: { status: 'ready', asOf: now.toISOString(), rateOptions: [{ groupId: 'g1', selected: true, contract: strategy === 'WS', rateCode: strategy === 'WS' ? 'BWS1B' : 'BAR' }] }, readResultExpiresAt: new Date(now.getTime() + 60_000),
       metrics: { userId: null, quotePrepared: true },
     } as AiWorkflowRun);
     let selects = 0;
