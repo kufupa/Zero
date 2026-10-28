@@ -961,6 +961,7 @@ export function BookingCards({
   }
   const savesRef = useRef(saves);
   savesRef.current = saves;
+  const bookedInRunRef = useRef<Record<string, CommitView>>({});
   useEffect(() => {
     setSaves((current) => {
       let next: typeof current | undefined;
@@ -1325,6 +1326,7 @@ export function BookingCards({
       });
     if (snapshot.some((item) => item == null)) return;
     stayBookingRef.current = true;
+    bookedInRunRef.current = {};
     setStayBooking(true);
     try {
       for (const item of snapshot) {
@@ -1338,8 +1340,47 @@ export function BookingCards({
       }
     } finally {
       stayBookingRef.current = false;
+      bookedInRunRef.current = {};
       setStayBooking(false);
     }
+  }
+
+  // Rooms 2+ join the first room already booked for the same guest and dates, so HMS holds one booking with
+  // several rooms (Associated Reservations) instead of separate bookings the duplicate check would refuse.
+  function bookedParentStayId(room: BookingDraftReady['draft']['rooms'][number], stay: PaneStayInput): string | null {
+    for (const other of draft.draft.rooms) {
+      if (other === room) continue;
+      const commit = bookedInRunRef.current[roomKeyOf(other)] ?? savesRef.current[roomKeyOf(other)]?.commit;
+      if (commit?.status !== 'booked' || commit.unverified || !commit.confirmationNumber) continue;
+      const otherStay = roomBuilt(other, contactRef.current).stay;
+      // Add Record keeps room 1's guest profile, so only a room for the same guest joins it.
+      if (otherStay && otherStay.lastName === stay.lastName && otherStay.firstName === stay.firstName &&
+        otherStay.arrival === stay.arrival && otherStay.departure === stay.departure &&
+        inheritedFieldsMatch(other, otherStay, room, stay)) return stayIdForRoom(other, groups);
+    }
+    return null;
+  }
+
+  // The added room copies room 1's booking-level fields, so a room staff set up differently stays its own booking.
+  // Nava's generated notes differ per room by design; a note staff typed must match.
+  function inheritedFieldsMatch(
+    parentRoom: BookingDraftReady['draft']['rooms'][number],
+    parent: PaneStayInput,
+    room: BookingDraftReady['draft']['rooms'][number],
+    stay: PaneStayInput,
+  ): boolean {
+    const shared = (value: PaneStayInput) => JSON.stringify([
+      value.guaranteeType, value.track, value.marketSegment ?? '', value.sourceOfBusiness, value.guestoptin4,
+      value.bookingAgency ?? null, value.organization ?? null, value.cmsMessageId ?? '', value.confirmationSendMail ?? false,
+      value.bookerName ?? '', value.bookerEmail ?? '', value.confirmationRecipient ?? null,
+    ]);
+    if (shared(parent) !== shared(stay)) return false;
+    const generated = (item: BookingDraftReady['draft']['rooms'][number]) => {
+      const choice = choices[roomKeyOf(item)];
+      return !reservationNoteDirty.current[roomKeyOf(item)] && choice?.generatedReservationNote !== undefined &&
+        choice.reservationNote === choice.generatedReservationNote;
+    };
+    return (parent.reservationNote ?? '') === (stay.reservationNote ?? '') || (generated(parentRoom) && generated(room));
   }
 
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
@@ -1350,9 +1391,10 @@ export function BookingCards({
     patchSave(roomKey, { commit: { status: 'running', key } });
     let commit: CommitView;
     try {
+      const parentStayId = room && workItemId ? bookedParentStayId(room, stay) : null;
       const persist =
         workItemId && room
-          ? { stayId: stayIdForRoom(room, groups), workItemId }
+          ? { stayId: stayIdForRoom(room, groups), workItemId, ...(parentStayId ? { parentStayId } : {}) }
           : {};
       const result = await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
       const outcome = commitOutcome(result, stay);
@@ -1378,6 +1420,8 @@ export function BookingCards({
     } catch {
       commit = { status: 'refused', key, message: PANE_COMMIT_UNREACHABLE_COPY, statusChip: 'check' };
     }
+    // The next room in a Book this stay run can start before React re-renders this result.
+    if (commit.status === 'booked' && stayBookingRef.current) bookedInRunRef.current[roomKey] = commit;
     // Definite refusals can be previewed again; uncertain saves stay locked for an HMS check.
     patchSave(roomKey, commit.status === 'booked' ? { commit } : { commit, preview: undefined });
     return commit.status === 'booked' && !commit.unverified;

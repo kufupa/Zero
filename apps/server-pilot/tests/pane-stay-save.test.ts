@@ -396,6 +396,47 @@ describe('pane stay save guards', () => {
     expect(seen).toEqual(['lock', 'save']);
   });
 
+  it('commit with a parent confirmation adds the room to that booking despite the same-guest duplicate', async () => {
+    paneStaySaveLoaders.mode = () => 'lab';
+    paneStaySaveLoaders.lock = passingLock();
+    paneStaySaveLoaders.osressGuestDatesSearch = async () => 'duplicate';
+    const owner = freshOwner();
+    paneStaySaveLoaders.spawn = async (input) => {
+      if (input.paneCommit) expect(input.parentConfirmation).toBe('73165771-1');
+      return input.paneCommit
+        ? { outcome: 'committed', clickedSave: true, confirmationNumber: '39863956-1' }
+        : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
+    };
+    await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: labStay,
+        owner,
+        previewDigest: paneStayDigest(labStay),
+        parentConfirmation: '73165771-1',
+      }),
+    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '39863956-1' });
+  });
+
+  it('commit refuses a parent that is not a confirmation number before any lock', async () => {
+    paneStaySaveLoaders.mode = () => 'lab';
+    paneStaySaveLoaders.lock = {
+      withLock: async () => {
+        throw new Error('must not lock');
+      },
+    } as never;
+    await expect(
+      runPaneStay({
+        mode: 'commit',
+        stay: labStay,
+        owner: freshOwner(),
+        previewDigest: paneStayDigest(labStay),
+        parentConfirmation: 'Labtest',
+      }),
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_parent_invalid' });
+  });
+
   it('commit refuses when OSRESS finds a duplicate stay', async () => {
     paneStaySaveLoaders.mode = () => 'lab';
     paneStaySaveLoaders.lock = passingLock();

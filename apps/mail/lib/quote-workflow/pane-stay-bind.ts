@@ -36,6 +36,16 @@ const REFUSAL_COPY: Record<string, string> = {
     'This booking is for a different hotel than this HMS session. Book it by hand in HMS.',
   osress_reader_parked:
     "Nava couldn't confirm there's no existing booking for this guest, so it didn't save. Check HMS, then book by hand.",
+  pane_save_parent_not_booked:
+    "The first room of this booking isn't confirmed in HMS yet, so Nava didn't add this room. Check HMS, then try again.",
+  pane_save_parent_invalid: "Nava couldn't tell which booking to add this room to. Nothing was saved.",
+  refused_parent_not_found:
+    "Nava couldn't open the first room's booking in HMS, so it didn't add this room. Check HMS, then try again.",
+  refused_parent_dates:
+    "The first room's booking has different dates in HMS, so Nava didn't add this room. Check HMS, then book by hand.",
+  refused_child_band_unsupported:
+    'HMS adds extra rooms with child bands 0-2 and 3-12 only. Add this room by hand in HMS.',
+  refused_form_mismatch: "HMS didn't take every value for this room, so Nava didn't save it. Check HMS, then book by hand.",
   osress_duplicate:
     'HMS already has a booking for this guest on these dates, so Nava did not save. Check HMS, then book by hand.',
   pane_save_preview_required:
