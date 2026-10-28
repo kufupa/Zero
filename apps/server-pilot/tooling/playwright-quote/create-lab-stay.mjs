@@ -485,10 +485,17 @@ async function pickCmsMessageId(page, code) {
   const win = page.locator('.x-window:visible').last();
   const rows = win.locator('.x-grid-row:visible, .x-grid-data-row:visible');
   await rows.first().waitFor({ timeout: 5000 });
-  const exact = [];
-  for (let i = 0; i < await rows.count(); i += 1) {
-    const cells = await rows.nth(i).locator('td, .x-grid-cell').allTextContents();
-    if (cells.some((cell) => cell.trim() === code)) exact.push(i);
+  // The grid fills in after its first row appears (HRDAV 03 is the 4th of 6), so re-read until the code shows.
+  let exact = [];
+  const deadline = Date.now() + 8000;
+  for (;;) {
+    exact = [];
+    for (let i = 0; i < await rows.count(); i += 1) {
+      const cells = await rows.nth(i).locator('td, .x-grid-cell').allTextContents();
+      if (cells.some((cell) => cell.trim() === code)) exact.push(i);
+    }
+    if (exact.length > 0 || Date.now() >= deadline) break;
+    await page.waitForTimeout(250);
   }
   if (exact.length !== 1) throw new Error('cms_message_id_not_unique');
   await rows.nth(exact[0]).click();
