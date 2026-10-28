@@ -53,8 +53,8 @@ export const PANE_BOOKER_NAME_MAX = 50; // caller
 export const PANE_BOOKER_EMAIL_MAX = 80; // udfchar06 Booker Contact
 export const PANE_MARKET_SEGMENT_MAX = 80; // marketsegment
 
-/** A party as the pane sends it. The runner types name into the lookup. nativeId is carried, not selected by. */
-export type PaneStayParty = { nativeId?: string; name: string };
+/** A party as the pane sends it. The runner selects nativeId when present, otherwise exact name. */
+export type PaneStayParty = { nativeId?: string; id?: string; name: string };
 
 export type PaneStay = {
   firstName: string;
@@ -68,6 +68,7 @@ export type PaneStay = {
   track: string;
   guaranteeType: string;
   childAges?: number[];
+  cmsMessageId?: string;
   propertyCode?: string;
   bookingAgency?: PaneStayParty;
   organization?: PaneStayParty;
@@ -151,6 +152,8 @@ export type PaneStaySpawnResult = {
   outcome: string;
   clickedSave: boolean;
   confirmationNumber: string;
+  cmsReason?: 'saved_cms_mismatch';
+  cmsMismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
   /** Per-run directory that create-lab-stay.mjs wrote to. Absent when a test spawn never runs the CLI. */
   runId?: string;
   runDir?: string;
@@ -161,6 +164,8 @@ export type PaneStaySpawnResult = {
 export type PaneStayResult = {
   status: 'ok' | 'refused';
   reason?: string;
+  cmsReason?: 'saved_cms_mismatch';
+  cmsMismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
   outcome?: string;
   confirmationNumber?: string;
   clickedSave?: boolean;
@@ -350,12 +355,11 @@ export function assertLabStayGuard(input: {
   }
 }
 
-// Refusals decided before the lock, in order: the mode, adults ≥1, children (copy-only for now), then the
+// Refusals decided before the lock, in order: the mode, adults ≥1, then the
 // Labtest guard in lab mode.
 export function paneStayModeRefusal(mode: PaneSaveMode, stay: PaneStay): string | null {
   if (mode === 'off') return 'pane_save_flag_off';
   if (!Number.isInteger(stay.adults) || stay.adults < 1) return 'pane_save_adults_required';
-  if (stay.childAges?.length) return 'pane_save_children_unsupported';
   if (mode === 'lab') {
     try {
       assertLabStayGuard({ lastName: stay.lastName, arrival: stay.arrival });
@@ -576,12 +580,27 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   } finally {
     await rm(requestPath, { force: true });
   }
+  let cmsReason: 'saved_cms_mismatch' | undefined;
+  let cmsMismatches: PaneStayResult['cmsMismatches'];
+  try {
+    const result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as {
+      cmsReason?: unknown;
+      proof?: { mismatches?: PaneStayResult['cmsMismatches'] };
+    };
+    if (result.cmsReason === 'saved_cms_mismatch') {
+      cmsReason = result.cmsReason;
+      cmsMismatches = result.proof?.mismatches?.filter((item) => ['udfchar09', 'udfchar13', 'send'].includes(item.field));
+    }
+  } catch {
+    // The result file may not exist when a runner exits before it creates the file.
+  }
   const line = stdout.trim().split('\n').at(-1) ?? '';
   const [outcome = '', confirmationNumber = ''] = line.split(/\s+/);
   const screenshots = (await readdir(dir)).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)).sort();
   return {
     outcome,
     clickedSave: Boolean(input.paneCommit),
+    ...(cmsReason ? { cmsReason, cmsMismatches } : {}),
     confirmationNumber,
     runId,
     runDir: dir,
@@ -729,7 +748,7 @@ export async function runPaneStay(input: {
   if ('refusal' in gate) return { status: 'refused', reason: gate.refusal };
   const spawned = gate.spawned;
   if (/^refused/i.test(spawned.outcome)) {
-    return { status: 'refused', reason: spawned.outcome };
+    return { status: 'refused', reason: spawned.outcome === 'refused_agency_not_unique' ? 'agency_not_unique' : spawned.outcome };
   }
   if (input.mode === 'commit' && UNCONFIRMED_SAVE_OUTCOMES.has(spawned.outcome)) {
     // HMS may have booked the stay. The run stays fetchable, so staff can see what HMS shows.
@@ -795,6 +814,7 @@ export async function runPaneStay(input: {
   return {
     status: 'ok',
     outcome: spawned.outcome,
+    ...(spawned.cmsReason ? { cmsReason: spawned.cmsReason, cmsMismatches: spawned.cmsMismatches } : {}),
     confirmationNumber: spawned.confirmationNumber,
     clickedSave: spawned.clickedSave,
     previewDigest: previewed ? digest : null,

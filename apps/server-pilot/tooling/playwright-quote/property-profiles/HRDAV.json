@@ -15,6 +15,7 @@
     "STKNG": 84,
     "STWN": 28
   },
+  "cms": {"messageIds": [{"code": "01", "label": "Guest booking – payment link"}, {"code": "03", "label": "Agency/company booking – payment link + proforma"}, {"code": "05", "label": "Online check-in"}, {"code": "08", "label": "Agency booking – no rate"}, {"code": "012", "label": "Payment proof"}, {"code": "014", "label": "Payment proof"}], "defaultAgency": "03", "defaultGuest": "01"},
   "requiredCreateFields": ["reservationnote"],
   "rooms": {
     "JNRSUI": { "label": "Junior Suite" },

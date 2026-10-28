@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import {
   amendRoomTypes,
+  profileCms,
   getProfileBoards,
   getProfileLetter,
   getProfileRates,
@@ -165,4 +166,16 @@ test('unlisted non-negotiated rates are public only on salesStrategies scope pub
   assert.equal(validateProfile(raw, 'HRCEN').classifyRate('ZZZUNK', 'BAR', false), 'unknown');
   raw.salesStrategies = [{ value: 'BAR', display: 'BAR', scope: 'retail' }];
   assert.throws(() => validateProfile(raw, 'HRCEN'), /scope must be agency, company or public/);
+});
+
+test('CMS profiles expose validated unique codes and valid defaults', async () => {
+  const profile = profileFor('HRDAV');
+  assert.equal(profileCms(profile).defaultAgency, '03');
+  assert.equal(profileCms(profile).defaultGuest, '01');
+  const raw = await hrcenRaw();
+  raw.cms.defaultAgency = '77';
+  assert.throws(() => validateProfile(raw, 'HRCEN'), /cms/);
+  raw.cms.defaultAgency = '03';
+  raw.cms.messageIds.push(raw.cms.messageIds[0]);
+  assert.throws(() => validateProfile(raw, 'HRCEN'), /cms/);
 });

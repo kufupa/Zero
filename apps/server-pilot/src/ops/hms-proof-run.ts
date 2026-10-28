@@ -75,6 +75,10 @@ const STAY_KEYS = [
   'reservationNote',
   'bookerName',
   'bookerEmail',
+  'marketSegment',
+  'guestoptin4',
+  'confirmationRecipient',
+  'cmsMessageId',
 ] as const;
 
 export type ProofRunCommand = 'create' | 'amend' | 'cancel' | 'attach' | 'find';
@@ -362,6 +366,9 @@ export async function hmsProofRun(
   const resolved = paneStayHmsTargetForTransport(args.transportId);
   if (!resolved.ok) throw new Error('unknown_transport');
   assertLabRequest(args.request);
+  if (args.command === 'create' && stayFromProofRequest(args.request).confirmationRecipient != null && args.request.confirmationSendAuthorized !== true) {
+    throw new Error('confirmation_send_authorization_required');
+  }
   assertWriteFlagsLab(args.command, env);
   if (args.command === 'attach' && args.mode !== 'commit') {
     throw new Error('attach_preview_unsupported');

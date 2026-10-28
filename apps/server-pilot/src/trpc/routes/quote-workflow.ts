@@ -70,7 +70,7 @@ const paneOptionalText = (max: number) =>
     .transform((value) => value || undefined)
     .optional();
 
-const paneStayInput = z.object({
+export const paneStayInput = z.object({
   firstName: z.string().min(1),
   lastName: z.string().min(1),
   arrival: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -83,9 +83,10 @@ const paneStayInput = z.object({
   guaranteeType: z.string().min(1),
   marketSegment: paneOptionalText(PANE_MARKET_SEGMENT_MAX),
   guestoptin4: z.boolean().optional(),
-  childAges: z.array(z.number().int()).max(16).optional(),
+  childAges: z.array(z.number().int().min(0).max(17)).max(16).optional(),
+  cmsMessageId: z.string().trim().min(1).max(8).optional(),
   propertyCode: z.string().min(1).optional(),
-  bookingAgency: paneParty.optional(),
+  bookingAgency: paneParty.extend({ id: z.string().trim().min(1).max(PANE_PARTY_NATIVE_ID_MAX).optional() }).refine((party) => !party.id || !party.nativeId || party.id === party.nativeId).optional(),
   organization: paneParty.optional(),
   reservationNote: paneOptionalText(PANE_RESERVATION_NOTE_MAX),
   bookerName: paneOptionalText(PANE_BOOKER_NAME_MAX),

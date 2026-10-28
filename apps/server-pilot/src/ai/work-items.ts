@@ -129,6 +129,8 @@ export type StayCommitRecord = {
   screenshotRef: StayCommitScreenshotRef | null;
   runId?: string;
   shots?: StayCommitShot[];
+  cmsReason?: 'saved_cms_mismatch';
+  cmsMismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
 };
 export type StayCommitGuard =
   | { action: 'commit' }
@@ -160,13 +162,28 @@ function parseStayCommit(value: unknown): StayCommitRecord | null {
   const runId =
     typeof row.runId === 'string' && STAY_RUN_ID.test(row.runId) ? row.runId : undefined;
   const shots = parseStayCommitShots(row.shots);
+  const cmsReason = row.cmsReason === 'saved_cms_mismatch' ? row.cmsReason : undefined;
+  const cmsMismatches = parseCmsMismatches(row.cmsMismatches);
   return {
     confirmationNumber: confirmation,
     status,
     screenshotRef,
     ...(runId ? { runId } : {}),
     ...(shots ? { shots } : {}),
+    ...(cmsReason ? { cmsReason, ...(cmsMismatches ? { cmsMismatches } : {}) } : {}),
   };
+}
+
+function parseCmsMismatches(value: unknown): StayCommitRecord['cmsMismatches'] {
+  if (!Array.isArray(value)) return undefined;
+  return value.flatMap((item: unknown) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const row = item as Record<string, unknown>;
+    if (typeof row.field !== 'string' || !['udfchar09', 'udfchar13', 'send'].includes(row.field)) return [];
+    const scalar = (v: unknown) => v === null || typeof v === 'string' || typeof v === 'boolean';
+    if (!scalar(row.expected) || !scalar(row.actual)) return [];
+    return [{ field: row.field, expected: row.expected, actual: row.actual }];
+  });
 }
 
 function parseStayCommitShots(value: unknown): StayCommitShot[] | undefined {
@@ -262,6 +279,7 @@ export function withStayActionResult(
     screenshotRef: result.screenshotRef,
     ...(existing?.runId ? { runId: existing.runId } : {}),
     ...(existing?.shots ? { shots: existing.shots } : {}),
+    ...(existing?.cmsReason ? { cmsReason: existing.cmsReason, cmsMismatches: existing.cmsMismatches } : {}),
   });
 }
 
@@ -285,6 +303,8 @@ export function stayCommitFromPaneResult(result: {
   runId?: string;
   screenshots?: string[];
   shots?: StayCommitShot[];
+  cmsReason?: 'saved_cms_mismatch';
+  cmsMismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
 }): StayCommitRecord | null {
   const screenshotRef = screenshotRefFromPane(result);
   const confirmationNumber =
@@ -294,7 +314,10 @@ export function stayCommitFromPaneResult(result: {
   const runId =
     typeof result.runId === 'string' && STAY_RUN_ID.test(result.runId) ? result.runId : undefined;
   const shots = parseStayCommitShots(result.shots);
+  const cmsReason = result.cmsReason === 'saved_cms_mismatch' ? result.cmsReason : undefined;
+  const cmsMismatches = parseCmsMismatches(result.cmsMismatches);
   const extras = {
+    ...(cmsReason ? { cmsReason, ...(cmsMismatches ? { cmsMismatches } : {}) } : {}),
     ...(runId ? { runId } : {}),
     ...(shots ? { shots } : {}),
   };

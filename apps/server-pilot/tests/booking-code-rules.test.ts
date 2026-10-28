@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { PROPERTY_REGISTRY } from '../tooling/playwright-quote/property-registry.mjs';
+import { profileFor } from '../tooling/playwright-quote/property-profile.mjs';
 import {
   bookingCodeDefaults,
   defaultsFromCrosstabRow,
@@ -18,7 +20,6 @@ const schema = JSON.parse(
       properties: {
         track: { enum: string[] };
         sourceOfBusiness: { enum: string[] };
-        guaranteeType: { enum: string[] };
       };
     };
   };
@@ -26,7 +27,9 @@ const schema = JSON.parse(
 
 const trackEnum = schema.$defs.request.properties.track.enum;
 const sourceEnum = schema.$defs.request.properties.sourceOfBusiness.enum;
-const guaranteeEnum = schema.$defs.request.properties.guaranteeType.enum;
+const guaranteeLabels = PROPERTY_REGISTRY.properties
+  .filter((property) => property.active && property.profileFile)
+  .flatMap((property) => profileFor(property.propertyCode)?.createForm?.options?.guaranteetype?.choices?.map((choice) => choice.display) ?? []);
 
 describe('bookingCodeDefaults', () => {
   it('every non-null default is a valid create-tool.schema.json enum value', () => {
@@ -34,8 +37,19 @@ describe('bookingCodeDefaults', () => {
       const defaults = bookingCodeDefaults(kind);
       if (defaults.track !== null) expect(trackEnum).toContain(defaults.track);
       if (defaults.sourceOfBusiness !== null) expect(sourceEnum).toContain(defaults.sourceOfBusiness);
-      if (defaults.guaranteeType !== null) expect(guaranteeEnum).toContain(defaults.guaranteeType);
+      if (defaults.guaranteeType !== null) expect(guaranteeLabels).toContain(defaults.guaranteeType);
     }
+  });
+
+  it('accepts a guarantee from either property profile and rejects unknown labels', () => {
+    const row = {
+      n: 5,
+      track: { value: 'BAR', support: 1 },
+      sourceOfBusiness: { value: 'E-Mail', support: 1 },
+      guaranteeType: { value: 'Guaranteed By Credit Card and Agent', support: 1 },
+    };
+    expect(defaultsFromCrosstabRow(row)).toEqual({ track: 'BAR', sourceOfBusiness: 'E-Mail', guaranteeType: row.guaranteeType.value });
+    expect(defaultsFromCrosstabRow({ ...row, guaranteeType: { value: 'Unknown Guarantee', support: 1 } }).guaranteeType).toBeNull();
   });
 
   it('returns all nulls for an unknown kind', () => {
