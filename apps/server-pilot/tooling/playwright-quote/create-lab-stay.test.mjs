@@ -447,6 +447,24 @@ test('ext message-box allowlist equals the informational text and refuses money 
   assert.equal(classifyExtMessageBox(''), 'unknown');
 });
 
+test('HRDAV agency negotiated-rates notice is informational for Labtest only', async () => {
+  const { extMessageBoxAction } = await loadExtMessageBoxRules();
+  const notice = 'Negotiated Rates are Available for Booking Agency.';
+  assert.equal(extMessageBoxAction(notice, LAB_STAY), 'ok');
+  assert.equal(extMessageBoxAction(notice, { lastName: 'Smith', arrival: '2027-06-01' }), 'unknown');
+  assert.equal(extMessageBoxAction(`${notice} Deposit required.`, LAB_STAY), 'refuse');
+});
+
+test('field validation reads Ext x-form-invalid-field on the input as invalid', async () => {
+  const { inspectFieldValidation } = await import('./create-lab-stay.mjs');
+  const input = { className: 'x-form-text x-form-invalid-field', value: 'STO Rate', getAttribute: () => null, closest: () => null, parentElement: null };
+  const doc = { querySelector: () => input };
+  const out = inspectFieldValidation('track', doc);
+  assert.equal(out.invalid, true);
+  input.className = 'x-form-text';
+  assert.equal(inspectFieldValidation('track', doc).invalid, false);
+});
+
 test('ext message-box handler is Labtest-only, never accepts JS dialogs, never clicks Save for the box', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
   const checkAvail = source.indexOf("clickTip(page, '^Check Availability$'");
