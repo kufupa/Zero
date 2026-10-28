@@ -927,9 +927,29 @@ export function BookingCards({
       ),
   );
 
-  const [saves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
+  const [localSaves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
     savesFromSavedStays(draft, groups, savedStays),
   );
+  // A work item can finish loading after this card mounts. Apply its saved outcomes immediately,
+  // then retain them locally even if a later refresh temporarily omits savedStays.
+  const storedSaves = savesFromSavedStays(draft, groups, savedStays);
+  const saves = { ...localSaves };
+  for (const [key, stored] of Object.entries(storedSaves)) {
+    saves[key] = { ...saves[key], commit: stored.commit };
+  }
+  const savesRef = useRef(saves);
+  savesRef.current = saves;
+  useEffect(() => {
+    setSaves((current) => {
+      let next: typeof current | undefined;
+      for (const [key, stored] of Object.entries(savesFromSavedStays(draft, groups, savedStays))) {
+        if (JSON.stringify(current[key]?.commit) === JSON.stringify(stored.commit)) continue;
+        next ??= { ...current };
+        next[key] = { ...current[key], commit: stored.commit };
+      }
+      return next ?? current;
+    });
+  }, [draft, groups, savedStays]);
   const previewReceipt = usePaneStayPreview();
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
@@ -1090,8 +1110,16 @@ export function BookingCards({
         JSON.stringify(Array.isArray(originalAges) ? originalAges.map(String) : []));
   });
 
+  function savedOutcomeBlocksRoom(roomKey: string): boolean {
+    const commit = savesRef.current[roomKey]?.commit;
+    return commit?.status === 'booked' || (commit?.status === 'refused' && commit.statusChip === 'check');
+  }
+
   function patchSave(roomKey: string, patch: RoomSaveState) {
-    setSaves((current) => ({ ...current, [roomKey]: { ...current[roomKey], ...patch } }));
+    setSaves((current) => {
+      if (savedOutcomeBlocksRoom(roomKey)) return current;
+      return { ...current, [roomKey]: { ...current[roomKey], ...patch } };
+    });
   }
 
   function finishPreviewIfRunning(
@@ -1108,6 +1136,7 @@ export function BookingCards({
   }
 
   async function previewRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput) {
+    if (savedOutcomeBlocksRoom(roomKey)) return;
     const inputKey = paneStayKey(stay);
     const input = previewInputsRef.current[roomKey];
     if (!input?.key || input.inputKey !== inputKey) return;
@@ -1270,7 +1299,7 @@ export function BookingCards({
     setStayBooking(true);
     try {
       for (const item of snapshot) {
-        if (!item || !stayBookingRef.current) return;
+        if (!item || !stayBookingRef.current || savedOutcomeBlocksRoom(item.roomKey)) return;
         const room = draft.draft.rooms.find((candidate) => roomKeyOf(candidate) === item.roomKey);
         if (!room) return;
         const currentStay = roomBuilt(room, contactRef.current).stay;
@@ -1285,6 +1314,7 @@ export function BookingCards({
   }
 
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
+    if (savedOutcomeBlocksRoom(roomKey)) return false;
     const key = paneStayKey(stay);
     const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
     if (room) previewReceipt.clear(workItemId, stayIdForRoom(room, groups));
@@ -1459,7 +1489,7 @@ export function BookingCards({
           });
         // Once create is running or saved, freeze its create-only fields until staff checks the result.
         const commitStatus = saves[key]?.commit?.status;
-        const locked = stayBooking || commitStatus === 'running' || commitStatus === 'booked';
+        const locked = stayBooking || commitStatus === 'running' || savedOutcomeBlocksRoom(key);
         const request = room.request;
         const group = roomGroupFor(room, groups);
         const generatedNote = session ? reservationNoteForGroup(session, propertyCode, room.groupId) : null;
