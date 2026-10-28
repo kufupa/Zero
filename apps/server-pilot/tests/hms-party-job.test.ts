@@ -307,9 +307,10 @@ describe('prepared quote selection', () => {
     { name: 'keeps BAR when the contract belongs to another party', contract: true, otherParty: true, stale: false, expected: 'bar-run' },
     { name: 'keeps BAR when the contract has expired', contract: true, otherParty: false, stale: true, expected: 'bar-run' },
     { name: 'uses newer BAR when an approval invalidated the older contract', contract: true, otherParty: false, stale: false, approvalBetween: true, expected: 'bar-run' },
+    { name: 'rejects both rates when approval is newer than both', contract: true, otherParty: false, stale: false, approvalAfterAll: true, expected: null },
     { name: 'does not reuse an unverified WS price as BAR when BAR is missing', contract: false, otherParty: false, stale: false, noBar: true, expected: null },
     { name: 'reuses a verified WS contract when BAR is missing', contract: true, otherParty: false, stale: false, noBar: true, expected: 'ws-run' },
-  ])('$name', async ({ contract, otherParty, stale, expected, noBar, wsNewest, approvalBetween, company }) => {
+  ])('$name', async ({ contract, otherParty, stale, expected, noBar, wsNewest, approvalBetween, approvalAfterAll, company }) => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
     const quote = staffQuoteInput.parse({
@@ -344,7 +345,8 @@ describe('prepared quote selection', () => {
             ? [prepared('ws-run', 'WS'), ...(noBar ? [] : [prepared('bar-run', 'BAR')])]
             : [...(noBar ? [] : [prepared('bar-run', 'BAR')]), prepared('ws-run', 'WS')]) : chain,
           limit: async () => index === 1 ? [{ id: 'message-1', messageIdHeader: null }] :
-            approvalBetween ? [{ createdAt: new Date(now.getTime() - 1_000) }] : [],
+            approvalBetween || approvalAfterAll
+              ? [{ createdAt: new Date(now.getTime() + (approvalAfterAll ? 1_000 : -1_000)) }] : [],
         };
         return chain;
       },

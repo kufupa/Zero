@@ -4373,7 +4373,8 @@ async function latestStaffQuoteRunFor(
       )
       .orderBy(desc(aiDraftGeneration.createdAt))
       .limit(1);
-    if (latestApproval && latestApproval.createdAt >= preparedRun.createdAt) return [];
+    // Contract ranking may put an older run first; a later run can still postdate the approval.
+    if (latestApproval && latestApproval.createdAt >= preparedRun.createdAt) continue;
     return reusable(preparedRun) ? [preparedRun] : [];
   }
   return [];
