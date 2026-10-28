@@ -1204,6 +1204,20 @@ describe('HRDAV booking fields and CMS', () => {
     }));
   });
 
+  it('fails closed if confirmation sources disappear after a saved client default', () => {
+    const { client, preview } = paneClient();
+    const draft = hrdavDraft();
+    const view = render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    expect(previewButton(0).disabled).toBe(false);
+    view.rerender(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={null} />);
+    expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe('self');
+    expect(previewButton(0).disabled).toBe(true);
+    fireEvent.click(previewButton(0));
+    expect(preview).not.toHaveBeenCalled();
+  });
+
   it('blocks CMS preview and booking when no recipient is available', () => {
     const { client, preview, commit } = paneClient();
     const draft = hrdavDraft();
@@ -2249,13 +2263,16 @@ describe('booking card save modes and the note fields', () => {
   it.each(['room', 'rate', 'adults', 'children'] as const)(
     'does not retain stale generated reservation pricing after %s changes',
     (changed) => {
-      const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+      const draft = previewableDraft();
+      const { client, preview } = paneClient();
       draft.draft.rooms[0]!.request.roomType = 'STWN';
-      draft.options = { ...draft.options, roomType: ['STWN', 'SKNG'], ratePlans: ['NCOR1B', 'BAR'] };
+      draft.options = { ...draft.options, roomType: ['STWN', 'SKNG'], ratePlans: ['NCOR1B', 'BAR'],
+        requiredCreateFields: ['reservationnote'] } as BookingDraftReady['options'];
       const session = sessionWithGeneratedNote(draft);
       const note = reservationNoteForGroup(session, HRDAV_PROPERTY_CODE, 'g1');
       expect(note).toBeTruthy();
-      render(<BookingCards draft={draft} groups={session.groups} session={session} propertyCode={HRDAV_PROPERTY_CODE} />);
+      render(<BookingCards draft={draft} groups={session.groups} session={session} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE} />);
+      expect(previewButton(0).disabled).toBe(false);
       const field = screen.getByLabelText('Reservation note') as HTMLTextAreaElement;
       expect(field.value).toBe(note);
       if (changed === 'room') fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'SKNG' } });
@@ -2264,11 +2281,30 @@ describe('booking card save modes and the note fields', () => {
       if (changed === 'children') fireEvent.change(screen.getByLabelText('Children'), { target: { value: '1' } });
       expect(field.value).toBe('');
       expect(screen.queryByRole('button', { name: 'Regenerate reservation note' })).toBeNull();
+      expect(screen.getByText(/reservation note before you preview/i)).toBeDefined();
+      expect(previewButton(0).disabled).toBe(true);
+      expect(bookButton(0).disabled).toBe(true);
+      expect(preview).not.toHaveBeenCalled();
     },
   );
 
+  it('preserves a staff-edited reservation note when the room changes', () => {
+    const draft = previewableDraft();
+    draft.draft.rooms[0]!.request.roomType = 'STWN';
+    draft.options = { ...draft.options, roomType: ['STWN', 'SKNG'] };
+    const session = sessionWithGeneratedNote(draft);
+    render(<BookingCards draft={draft} groups={session.groups} session={session} propertyCode={HRDAV_PROPERTY_CODE} />);
+    const field = screen.getByLabelText('Reservation note') as HTMLTextAreaElement;
+    fireEvent.change(field, { target: { value: 'Staff-edited note' } });
+    fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'SKNG' } });
+    expect(field.value).toBe('Staff-edited note');
+    expect(screen.queryByRole('button', { name: 'Regenerate reservation note' })).toBeNull();
+  });
+
   it('prefills Book Reservation note from the generated stay note and keeps a dirty staff edit', () => {
     const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    draft.draft.rooms[0]!.request.roomType = 'STWN';
+    draft.options = { ...draft.options, roomType: ['STWN', 'SKNG'] };
     const session = sessionWithGeneratedNote(draft);
     const note = reservationNoteForGroup(session, HRDAV_PROPERTY_CODE, 'g1');
     expect(note).toBeTruthy();
