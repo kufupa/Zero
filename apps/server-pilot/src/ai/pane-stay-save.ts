@@ -153,6 +153,7 @@ export type PaneStaySpawnResult = {
   clickedSave: boolean;
   confirmationNumber: string;
   cmsReason?: 'saved_cms_mismatch';
+  cmsMismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
   /** Per-run directory that create-lab-stay.mjs wrote to. Absent when a test spawn never runs the CLI. */
   runId?: string;
   runDir?: string;
@@ -164,6 +165,7 @@ export type PaneStayResult = {
   status: 'ok' | 'refused';
   reason?: string;
   cmsReason?: 'saved_cms_mismatch';
+  cmsMismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
   outcome?: string;
   confirmationNumber?: string;
   clickedSave?: boolean;
@@ -579,9 +581,16 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
     await rm(requestPath, { force: true });
   }
   let cmsReason: 'saved_cms_mismatch' | undefined;
+  let cmsMismatches: PaneStayResult['cmsMismatches'];
   try {
-    const result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as { cmsReason?: unknown };
-    if (result.cmsReason === 'saved_cms_mismatch') cmsReason = result.cmsReason;
+    const result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as {
+      cmsReason?: unknown;
+      proof?: { mismatches?: PaneStayResult['cmsMismatches'] };
+    };
+    if (result.cmsReason === 'saved_cms_mismatch') {
+      cmsReason = result.cmsReason;
+      cmsMismatches = result.proof?.mismatches?.filter((item) => ['udfchar09', 'udfchar13', 'send'].includes(item.field));
+    }
   } catch {
     // The result file may not exist when a runner exits before it creates the file.
   }
@@ -591,7 +600,7 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   return {
     outcome,
     clickedSave: Boolean(input.paneCommit),
-    ...(cmsReason ? { cmsReason } : {}),
+    ...(cmsReason ? { cmsReason, cmsMismatches } : {}),
     confirmationNumber,
     runId,
     runDir: dir,
@@ -805,7 +814,7 @@ export async function runPaneStay(input: {
   return {
     status: 'ok',
     outcome: spawned.outcome,
-    ...(spawned.cmsReason ? { cmsReason: spawned.cmsReason } : {}),
+    ...(spawned.cmsReason ? { cmsReason: spawned.cmsReason, cmsMismatches: spawned.cmsMismatches } : {}),
     confirmationNumber: spawned.confirmationNumber,
     clickedSave: spawned.clickedSave,
     previewDigest: previewed ? digest : null,

@@ -909,14 +909,16 @@ describe('pane stay save modes', () => {
     enableSave();
     paneStaySaveLoaders.mode = () => 'on';
     paneStaySaveLoaders.spawn = async () => ({ outcome: 'committed_unverified', clickedSave: true,
-      confirmationNumber: '12345-1', cmsReason: 'saved_cms_mismatch' });
+      confirmationNumber: '12345-1', cmsReason: 'saved_cms_mismatch',
+      cmsMismatches: [{ field: 'udfchar09', expected: '03', actual: '' }] });
     const owner = freshOwner();
     const previewDigest = paneStayDigest(realStay);
     const { recordPanePreview } = await import('../src/ai/pane-stay-save.js');
     recordPanePreview(owner, previewDigest, Date.now());
     await expect(runPaneStay({ mode: 'commit', stay: realStay, owner, previewDigest }))
       .resolves.toMatchObject({ status: 'ok', outcome: 'committed_unverified',
-        confirmationNumber: '12345-1', cmsReason: 'saved_cms_mismatch' });
+        confirmationNumber: '12345-1', cmsReason: 'saved_cms_mismatch',
+        cmsMismatches: [{ field: 'udfchar09', expected: '03', actual: '' }] });
   });
 
   it('allows children and passes ages through to the create request', async () => {

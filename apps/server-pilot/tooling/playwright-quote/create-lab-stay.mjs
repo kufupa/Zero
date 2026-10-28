@@ -494,8 +494,13 @@ async function pickBookingAgency(page, party) {
 
 async function readSavedCreateFields(page) {
   return page.evaluate(() => {
-    const read = (name) => document.querySelector(`input[name="${name}"]`)?.value ?? null;
-    const box = document.querySelector('input[name="udfchkbox04"]');
+    const visibleInput = (name) => {
+      const inputs = [...document.querySelectorAll(`input[name="${name}"]`)]
+        .filter((input) => input.getClientRects().length && getComputedStyle(input).visibility !== 'hidden');
+      return inputs.length === 1 ? inputs[0] : null;
+    };
+    const read = (name) => visibleInput(name)?.value ?? null;
+    const box = visibleInput('udfchkbox04');
     const send = !box ? null : box.type === 'checkbox' ? box.checked : Boolean(box.closest('.x-form-cb-checked, .x-form-checkbox-checked'));
     return { emailaddress: read('emailaddress'), udfchar09: read('udfchar09'), udfchar13: read('udfchar13'), send, child1: read('child1'), child2: read('child2'), child3: read('child3') };
   });
