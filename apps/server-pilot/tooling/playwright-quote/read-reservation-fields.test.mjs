@@ -407,3 +407,172 @@ test('navigate names a signed-out login page instead of a missing Front Desk', a
     /GUEST_STAY_NAV_LOGIN_PAGE/,
   );
 });
+
+test('HRDAV reads through the screen; HRCEN keeps the fetch path and its positive control', () => {
+  assert.equal(reader.readMode('HRDAV'), 'ui');
+  assert.equal(reader.readMode('HRCEN'), 'fetch');
+  assert.equal(reader.POSITIVE_CONTROLS.HRCEN, '59898948-1');
+  assert.equal(reader.POSITIVE_CONTROLS.HRDAV, undefined);
+  assert.deepEqual(reader.queueConfirmations(['AAA-1', '59898948-1'], null), ['AAA-1', '59898948-1']);
+  assert.deepEqual(reader.queueConfirmations(['AAA-1']), ['59898948-1', 'AAA-1']);
+});
+
+test('input rows accept plain confirmations or {conf, arrival, lastName}; bad arrival dropped, dupes once', () => {
+  assert.deepEqual(reader.inputItems([
+    '11111111-1',
+    { conf: ' 22222222-1 ', arrival: '2027-12-20', lastName: ' Labtest ' },
+    { conf: '33333333-1', arrival: '20-DEC-2027' },
+    { conf: '11111111-1', arrival: '2027-01-01' },
+    { arrival: '2027-12-20' },
+    42,
+  ]), [
+    { conf: '11111111-1', arrival: null, lastName: null },
+    { conf: '22222222-1', arrival: '2027-12-20', lastName: 'Labtest' },
+    { conf: '33333333-1', arrival: null, lastName: null },
+  ]);
+});
+
+function fakeInput(attrs) {
+  return {
+    type: attrs.type ?? 'text',
+    value: attrs.value ?? '',
+    getAttribute: (key) => attrs[key] ?? null,
+    getClientRects: () => (attrs.hidden ? [] : [{}]),
+    closest: (sel) => (attrs.checkedWrap && /x-form-cb-checked/.test(sel) ? {} : null),
+  };
+}
+
+test('visible field values: hidden controls omitted, blanks keyed but valueless, Ext checkboxes as true/false', () => {
+  const byName = {
+    confirmationnumber: [fakeInput({ value: 'secret-hidden', hidden: true }), fakeInput({ value: ' 73165771-1 ' })],
+    lastname: [fakeInput({ value: 'Labtest' })],
+    company: [fakeInput({ value: '  ' })],
+    udfchkbox04: [fakeInput({ type: 'button', role: 'checkbox' })],
+    guestoptin4: [fakeInput({ type: 'button', role: 'checkbox', checkedWrap: true })],
+    reservationnote: [fakeInput({ value: 'line one\n line two' })],
+  };
+  const doc = { querySelectorAll: (sel) => byName[/name="([^"]+)"/.exec(sel)[1]] ?? [] };
+  const { fields, keys } = reader.visibleFieldValues(
+    ['confirmationnumber', 'lastname', 'company', 'udfchkbox04', 'guestoptin4', 'reservationnote', 'roomtype'],
+    doc,
+  );
+  assert.deepEqual(fields, {
+    confirmationnumber: '73165771-1',
+    lastname: 'Labtest',
+    udfchkbox04: 'false',
+    guestoptin4: 'true',
+    reservationnote: 'line one line two',
+  });
+  assert.deepEqual(keys, ['confirmationnumber', 'lastname', 'company', 'udfchkbox04', 'guestoptin4', 'reservationnote']);
+});
+
+function uiPage(fields) {
+  return { evaluate: async () => ({ fields, keys: Object.keys(fields) }) };
+}
+
+test('UI read passes the arrival hint to find and returns the readOne row shape', async () => {
+  const calls = [];
+  const find = async (ctx, opts) => {
+    calls.push({ args: ctx.args, opts });
+    return { outcome: 'found', findMethod: 'quick' };
+  };
+  const fields = {
+    confirmationnumber: '73165771-1', lastname: 'Labtest', roomtype: 'STWN', adults: '2', arrivaldate: '20-DEC-2027',
+    guaranteetype: 'Guaranteed By Agent', ta1: 'Agency X',
+  };
+  const row = await reader.readOneUi(
+    uiPage(fields), { conf: '73165771-1', arrival: '2027-12-20', lastName: null }, find, async () => true,
+  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args.mode, 'find');
+  assert.equal(calls[0].args.confirmation, '73165771-1');
+  assert.equal(calls[0].args.arrival, '2027-12-20');
+  assert.equal(calls[0].opts.captureScreenshots, false);
+  assert.equal(row.outcome, 'read');
+  assert.equal(row.rowCount, 1);
+  assert.deepEqual(row.fields, fields);
+  assert.equal(row.bookingState.guaranteeType, 'Guaranteed By Agent');
+  assert.equal(row.bookingState.agency, 'Agency X');
+  assert.equal(row.bookingState.company, null);
+  assert.equal(row.envelope.type, 'ui_form');
+  assert.equal(JSON.stringify(row.envelope).includes('Labtest'), false);
+  const stdout = JSON.stringify(reader.stdoutPayload({ phase: 'search', ...row }));
+  assert.equal(stdout.includes('73165771-1'), false);
+  assert.equal(stdout.includes('Labtest'), false);
+});
+
+test('UI read refuses a record showing another confirmation', async () => {
+  const row = await reader.readOneUi(
+    uiPage({ confirmationnumber: '99999999-1', lastname: 'Other', roomtype: 'STWN', adults: '2' }),
+    { conf: '73165771-1' },
+    async () => ({ outcome: 'found' }),
+    async () => true,
+  );
+  assert.equal(row.outcome, 'identity_mismatch');
+  assert.equal('fields' in row, false);
+});
+
+test('UI read retries a miss or a thrown find once after settling; ambiguous and mismatch are not retried', async () => {
+  let settles = 0;
+  const settle = async () => {
+    settles += 1;
+    return true;
+  };
+  const page = uiPage({ confirmationnumber: '1-1', lastname: 'Labtest', roomtype: 'STWN', adults: '2' });
+  const script = (outcomes) => {
+    let i = 0;
+    return async () => {
+      const next = outcomes[i++];
+      if (next instanceof Error) throw next;
+      return next;
+    };
+  };
+  const retried = await reader.readOneUi(
+    page, { conf: '1-1' }, script([new Error('DATE_PICKER_NOT_OPEN'), { outcome: 'found' }]), settle,
+  );
+  assert.equal(retried.outcome, 'read');
+  assert.equal(settles, 2);
+  const missed = await reader.readOneUi(
+    page, { conf: '1-1' }, script([{ outcome: 'not_found' }, { outcome: 'not_found' }]), settle,
+  );
+  assert.equal(missed.outcome, 'not_found');
+  assert.equal(missed.arrivalHint, null);
+  settles = 0;
+  const ambiguous = await reader.readOneUi(page, { conf: '1-1' }, script([{ outcome: 'ambiguous' }]), settle);
+  assert.equal(ambiguous.outcome, 'ambiguous');
+  const mismatch = await reader.readOneUi(
+    page, { conf: '1-1' }, script([{ outcome: 'ambiguous', reason: 'confirmation_mismatch' }]), settle,
+  );
+  assert.equal(mismatch.outcome, 'identity_mismatch');
+  assert.equal(settles, 2);
+  await assert.rejects(
+    () => reader.readOneUi(page, { conf: '1-1' }, script([new Error('X'), new Error('QUICK_ROW_UNPARSED')]), settle),
+    /QUICK_ROW_UNPARSED/,
+  );
+  await assert.rejects(
+    () => reader.readOneUi(page, { conf: '1-1' }, script([new Error('AMBIGUOUS_QUICK_ROW')]), settle),
+    /AMBIGUOUS_QUICK_ROW/,
+  );
+});
+
+test('settleScreen waits out a visible load mask', async () => {
+  let checks = 0;
+  const page = { evaluate: async () => ++checks < 3, waitForTimeout: async () => {} };
+  assert.equal(await reader.settleScreen(page, { timeoutMs: 1000, pollMs: 1 }), true);
+  assert.equal(checks, 3);
+  const stuck = { evaluate: async () => true, waitForTimeout: async () => {} };
+  assert.equal(await reader.settleScreen(stuck, { timeoutMs: 5, pollMs: 1 }), false);
+});
+
+test('UI path source: no OSRESS shell on HRDAV, read-only guard kept, never Save, explicit exit', async () => {
+  const source = await readFile(sourceUrl, 'utf8');
+  const ui = source.slice(source.indexOf('export async function readOneUi'), source.indexOf('async function main()'));
+  assert.ok(ui.length > 0);
+  assert.equal(/openOsressShell|OSRESS\.search|OSRESV\.HDR|\bpost\(/.test(ui), false);
+  assert.equal(/Save|dblclick|\.fill\(|press\(/.test(ui), false);
+  const mainBody = source.slice(source.indexOf('async function main()'));
+  assert.match(mainBody, /mode === 'ui'[\s\S]*openGuestStayScreen\(page\)[\s\S]*else[\s\S]*navigateGuestStay/);
+  assert.match(mainBody, /readOneUi\(page/);
+  assert.match(mainBody, /process\.exit\(process\.exitCode \?\? 0\)/);
+  assert.match(source, /save\|delete\|cancel\|duplicate\|checkin\|checkout\|crs/i);
+});

@@ -1,13 +1,19 @@
 #!/usr/bin/env node
-// Read-only Guest Stay field reader: OSRESS.search + OSRESV.HDR via fetch in the logged-in browser page.
-// Only allowlisted read endpoints are ever requested. Never saves, cancels or opens write flows.
+// Read-only Guest Stay field reader. HRCEN: OSRESS.search + OSRESV.HDR via fetch in the logged-in browser page;
+// only allowlisted read endpoints are ever requested. HRDAV: the Guest Stay screen (stay-lookup find), then the
+// visible record controls; no OSRESS request. Never saves, cancels or opens write flows.
+// Input: JSON array of confirmations, or {conf, arrival: 'YYYY-MM-DD', lastName} rows; the screen path moves its
+// quick-search window to the arrival (a stay outside the default window is otherwise not found).
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
+import { openGuestStayScreen } from './open-guest-stay.mjs';
 import { parseStayProperty } from './property-profile.mjs';
 import { withReadCliPage } from './read-cli-lease.mjs';
+import { findOnOpenGuestStay } from './stay-lookup.mjs';
 
 export { withReadCliPage as withLeasedReadPage };
 
@@ -33,6 +39,15 @@ export const ALLOWED_PATH = /^\/web\/base\/(OSRESS\.search|OSRESV\.HDR)$/;
 const PAUSE_MS = 400;
 export const OSRESS_OR_UNUSED_TOKEN = '___NOMATCH___';
 export const SEP15_POSITIVE_CONTROL = '59898948-1';
+// The Sep-15 control was added for HRCEN (2026-10-07). No HRDAV control is proven, so HRDAV queues none.
+export const POSITIVE_CONTROLS = Object.freeze({ HRCEN: SEP15_POSITIVE_CONTROL });
+// HRDAV logs the session out on the OSRESS shell POST and answers direct OSRESS/OSRESV fetches with a login stub
+// (live 2026-10-28), so it reads through the screen. HRCEN keeps the fetch path.
+export const UI_READ_PROPERTIES = new Set(['HRDAV']);
+export function readMode(propertyCode) {
+  return UI_READ_PROPERTIES.has(propertyCode) ? 'ui' : 'fetch';
+}
+const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 export const NAV_TIMEOUTS = {
   frontDeskMs: 15_000,
   guestStayMs: 8_000,
@@ -119,9 +134,23 @@ export function stdoutPayload(row) {
   };
 }
 
-export function queueConfirmations(confs) {
-  const rest = [...confs].filter((c) => c !== SEP15_POSITIVE_CONTROL);
-  return [SEP15_POSITIVE_CONTROL, ...rest];
+export function queueConfirmations(confs, control = SEP15_POSITIVE_CONTROL) {
+  const rest = [...confs].filter((c) => c !== control);
+  return control ? [control, ...rest] : rest;
+}
+
+// Input rows: a confirmation string, or {conf, arrival?, lastName?}. A malformed arrival is dropped, not guessed.
+export function inputItems(rows) {
+  const seen = new Set();
+  return rows.flatMap((row) => {
+    const item = typeof row === 'string' ? { conf: row } : row && typeof row === 'object' ? row : null;
+    const conf = typeof item?.conf === 'string' ? item.conf.trim() : '';
+    if (!conf || seen.has(conf)) return [];
+    seen.add(conf);
+    const lastName = typeof item.lastName === 'string' ? item.lastName.trim() : '';
+    const arrival = ISO_DAY.test(String(item.arrival ?? '')) ? item.arrival : null;
+    return [{ conf, arrival, lastName: lastName || null }];
+  });
 }
 
 function isGreenControl(row) {
@@ -439,6 +468,96 @@ async function readOne(page, origin, conf, propertyCode) {
   };
 }
 
+// Visible named controls on the open Guest Stay record. Self-contained for page.evaluate. A control not on screen is
+// omitted; a shown but blank one is listed in keys only, so "blank in HMS" stays distinct from "not read".
+export function visibleFieldValues(names, doc = document) {
+  const fields = {};
+  const keys = [];
+  for (const name of names) {
+    const el = [...doc.querySelectorAll(`input[name="${name}"], textarea[name="${name}"]`)]
+      .find((node) => node.getClientRects().length > 0);
+    if (!el) continue;
+    keys.push(name);
+    if (el.type === 'checkbox' || el.getAttribute('role') === 'checkbox') {
+      const on = el.type === 'checkbox'
+        ? el.checked
+        : el.getAttribute('aria-checked') === 'true'
+          || Boolean(el.closest('.x-form-cb-checked, .x-form-checkbox-checked'));
+      fields[name] = on ? 'true' : 'false';
+      continue;
+    }
+    const value = String(el.value ?? '').replace(/\s+/g, ' ').trim();
+    if (value) fields[name] = value;
+  }
+  return { fields, keys };
+}
+
+// Waits until no load mask shows (a quick search still "Processing request." masks its panel). True when settled.
+export async function settleScreen(page, { timeoutMs = 15_000, pollMs = 300 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const busy = await page.evaluate(() => [...document.querySelectorAll('.x-mask')]
+      .some((node) => node.getClientRects().length > 0 && getComputedStyle(node).visibility !== 'hidden'))
+      .catch(() => false);
+    if (!busy) return true;
+    if (Date.now() >= deadline) return false;
+    await page.waitForTimeout(pollMs);
+  }
+}
+
+// One confirmation through the Guest Stay screen: stay-lookup find (header quick search; the arrival hint moves the
+// window), then the visible record controls. Same row shape as readOne; no OSRESS/OSRESV request.
+// The find runs in place (a new tab is not signed in on HRDAV). The quick panel can still show the previous search
+// while the new one processes, and a masked panel blocks the window picker (live HRDAV 2026-10-28), so a miss or a
+// thrown find is retried once after the screen settles; ambiguous and mismatch are not. Identity is re-checked on
+// the opened record.
+export async function readOneUi(page, hint, find = findOnOpenGuestStay, settle = settleScreen) {
+  const { conf } = hint;
+  const args = {
+    mode: 'find', confirmation: conf, arrival: hint.arrival ?? null, departure: null, lastName: hint.lastName ?? null,
+    debugHtml: false,
+  };
+  let found = null;
+  let failure = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await settle(page);
+    try {
+      const ctx = { page, args, dir: tmpdir(), result: null, started: Date.now() };
+      found = await find(ctx, { captureScreenshots: false });
+      failure = null;
+    } catch (error) {
+      if (String(error?.message ?? error).startsWith('AMBIGUOUS_')) throw error;
+      found = null;
+      failure = error;
+    }
+    if (found && found.outcome !== 'not_found') break;
+  }
+  if (failure) throw failure;
+  if (found?.outcome !== 'found') {
+    const outcome = found?.reason === 'confirmation_mismatch' ? 'identity_mismatch'
+      : ['not_found', 'ambiguous'].includes(found?.outcome) ? found.outcome : 'error';
+    // Without an arrival the quick search covers only its default window (about today +/- 30 days on HRDAV).
+    const envelope = { type: 'ui_form' };
+    return { conf, outcome, reason: found?.reason ?? null, arrivalHint: args.arrival, rowCount: 0, envelope };
+  }
+  const { fields, keys } = await page.evaluate(visibleFieldValues, FIELDS);
+  const envelope = { type: 'ui_form', keys: [...keys].sort() };
+  if (fields.confirmationnumber !== conf) return { conf, outcome: 'identity_mismatch', envelope };
+  const bookingState = Object.fromEntries(
+    Object.entries(BOOKING_STATE_KEYS).map(([key, name]) => [key, fields[name] ?? null]),
+  );
+  return {
+    conf,
+    outcome: Object.keys(fields).length > 3 ? 'read' : 'thin',
+    fields,
+    bookingState,
+    grid: {},
+    findMethod: found.findMethod ?? null,
+    envelope,
+    rowCount: 1,
+  };
+}
+
 async function main() {
   const property = parseStayProperty(process.argv.slice(2));
   if (!property.ok) {
@@ -449,7 +568,10 @@ async function main() {
   const { input, out, cap } = args(property.rest);
   process.umask(0o077);
   await mkdir(dirname(out), { recursive: true, mode: 0o700 });
-  const confs = queueConfirmations(JSON.parse(await readFile(input, 'utf8')).slice(0, cap));
+  const mode = readMode(property.propertyCode);
+  const items = inputItems(JSON.parse(await readFile(input, 'utf8')).slice(0, cap));
+  const hints = new Map(items.map((item) => [item.conf, item]));
+  const confs = queueConfirmations(items.map((item) => item.conf), POSITIVE_CONTROLS[property.propertyCode] ?? null);
   let done = new Set();
   try {
     done = resumeSkipped(await readFile(out, 'utf8'));
@@ -459,7 +581,10 @@ async function main() {
   const url = assertBorrowedCdp(process.env);
   const secret = await readSecret();
   const browser = await playwright().chromium.connectOverCDP(url.href, { timeout: 25_000 });
-  const ctx = await newBorrowedContext(browser, { ignoreHTTPSErrors: true, acceptDownloads: false, serviceWorkers: 'block' });
+  const ctx = await newBorrowedContext(browser, {
+    ignoreHTTPSErrors: true, acceptDownloads: false, serviceWorkers: 'block',
+    ...(mode === 'ui' ? { viewport: { width: 1600, height: 1000 } } : {}),
+  });
   await ctx.route('**/*', (route) => {
     const path = new URL(route.request().url()).pathname;
     if (route.request().method() === 'POST' && /save|delete|cancel|duplicate|checkin|checkout|crs/i.test(path)) {
@@ -473,14 +598,24 @@ async function main() {
       propertyCode: property.propertyCode, secret, context: ctx, browser, env: process.env,
     }, async ({ page }) => {
       const origin = new URL(page.url()).origin;
-      await navigateGuestStay(page, { ...NAV_TIMEOUTS, origin });
+      if (mode === 'ui') {
+        page.setDefaultTimeout?.(20_000);
+        await openGuestStayScreen(page);
+        await page.waitForTimeout(1500);
+      } else {
+        await navigateGuestStay(page, { ...NAV_TIMEOUTS, origin });
+      }
       for (const conf of confs.filter((c) => !done.has(c))) {
         const positiveControl = conf === SEP15_POSITIVE_CONTROL;
         let row;
         try {
-          row = await readOne(page, origin, conf, property.propertyCode);
+          row = mode === 'ui'
+            ? await readOneUi(page, hints.get(conf) ?? { conf })
+            : await readOne(page, origin, conf, property.propertyCode);
         } catch (error) {
-          row = { conf, outcome: 'error', error: String(error.message || error).slice(0, 160), envelope: { type: 'error' } };
+          const message = String(error.message || error);
+          const outcome = message.startsWith('AMBIGUOUS_') ? 'ambiguous' : 'error';
+          row = { conf, outcome, error: message.slice(0, 160), envelope: { type: 'error' } };
         }
         if (positiveControl) row.role = 'positive_control';
         counts[row.outcome] = (counts[row.outcome] ?? 0) + 1;
@@ -509,7 +644,8 @@ async function main() {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  main().catch((error) => {
+  // Exit explicitly: CDP and lease handles keep Node alive after main returns (stay-lookup does the same).
+  main().then(() => process.exit(process.exitCode ?? 0), (error) => {
     const msg = String(error.message || error);
     process.stderr.write((/password|secret|cookie|jsessionid/i.test(msg) ? 'redacted_error' : msg.slice(0, 200)) + '\n');
     process.exit(1);
