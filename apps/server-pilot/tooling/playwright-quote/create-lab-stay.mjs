@@ -472,6 +472,11 @@ async function setCmsSendMail(page, desired) {
 
 async function tickCmsSendMail(page) { await setCmsSendMail(page, true); }
 
+// Infor lookup windows render OK as an unroled `a.x-btn`; getByRole('button') never matches it.
+async function clickLookupOk(win) {
+  await win.locator('a.x-btn:visible').filter({ hasText: /^OK$/ }).first().click();
+}
+
 async function pickCmsMessageId(page, code) {
   const input = page.locator('input[name="udfchar09"]:visible').first();
   const trigger = input.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible, .x-form-search-trigger:visible, .x-form-trigger:visible').first();
@@ -487,7 +492,7 @@ async function pickCmsMessageId(page, code) {
   }
   if (exact.length !== 1) throw new Error('cms_message_id_not_unique');
   await rows.nth(exact[0]).click();
-  await win.getByRole('button', { name: /^OK$/i }).first().click();
+  await clickLookupOk(win);
 }
 
 async function pickBookingAgency(page, party) {
@@ -514,7 +519,7 @@ async function pickBookingAgency(page, party) {
   }
   if (matching.length !== 1) return false;
   await rows.nth(matching[0]).click();
-  await win.getByRole('button', { name: /^OK$/i }).first().click();
+  await clickLookupOk(win);
   return true;
 }
 
