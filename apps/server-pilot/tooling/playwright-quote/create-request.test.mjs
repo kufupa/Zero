@@ -11,7 +11,7 @@ import {
   optionalPartyAndNoteFills,
   validateCreateRequest,
 } from './create-request.mjs';
-import { bandChildAges, compareCmsReadback, compareReadbackStay, matchAgencyCandidate } from './create-lab-stay.mjs';
+import { bandChildAges, compareCmsReadback, compareReadbackStay, expectedCmsFields, matchAgencyCandidate, matchAgencyGridRow } from './create-lab-stay.mjs';
 
 const RECIPIENT = { mode: 'self', address: 'staff@example.invalid' };
 const STAY = {
@@ -91,6 +91,26 @@ test('agency requires one exact id or one exact normalized name', () => {
   assert.equal(matchAgencyCandidate(rows, { id: '2', nativeId: '1', name: 'Acme Travel' }), null);
   assert.equal(matchAgencyCandidate(rows, { name: 'Acme Travel' }), null);
   assert.equal(matchAgencyCandidate(rows, { name: 'Acme' }), null);
+});
+
+test('send-off CMS keeps message ID and checks that Send Mail is off', () => {
+  const expected = expectedCmsFields({ cmsMessageId: '03' });
+  assert.deepEqual(expected, { udfchar09: '03', send: false });
+  assert.equal(compareCmsReadback(expected, { udfchar09: '03', udfchar13: 'existing@example.invalid', send: false }).reason, null);
+  assert.equal(compareCmsReadback(expected, { udfchar09: '03', send: true }).reason, 'saved_cms_mismatch');
+  assert.equal(compareCmsReadback(expected, { udfchar09: '', send: false }).reason, 'saved_cms_mismatch');
+});
+
+test('send-off path explicitly unchecks the control before readback', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  assert.match(source, /if \(expectedCmsFields\(stay\)\) \{[\s\S]*pickCmsMessageId[\s\S]*else await setCmsSendMail\(page, false\);[\s\S]*compareCmsReadback/);
+});
+
+test('agency row selection uses internal record ID, not visible IATA', () => {
+  const selected = { nativeId: '456', displayName: 'Acme Travel', matchedOn: ['store'] };
+  assert.equal(matchAgencyGridRow({ nativeId: '456', displayName: 'Acme Travel', iata: '987' }, selected, { id: '456', name: 'Acme Travel' }), true);
+  assert.equal(matchAgencyGridRow({ nativeId: '987', displayName: 'Acme Travel', iata: '456' }, selected, { id: '456', name: 'Acme Travel' }), false);
+  assert.equal(matchAgencyGridRow(null, selected, { id: '456', name: 'Acme Travel' }), false);
 });
 
 test('property-driven guarantee accepts CCIATA and rejects unknown labels', async () => {

@@ -59,6 +59,7 @@ import {
   stayCommitGuard,
   stayCommitOf,
   withStayCommit,
+  withStayActionResult,
 } from '../src/ai/work-items.js';
 import {
   stayPreviewGrantOf,
@@ -1330,6 +1331,20 @@ describe('stay commit persist/reload', () => {
   it('reload reads the confirmation saved on the stay', () => {
     const state = withStayCommit({}, 's_1', booked);
     expect(stayCommitOf(state, 's_1')).toEqual(booked);
+  });
+
+  it('persists a saved CMS mismatch across JSON reload without permitting another booking', () => {
+    const cmsMismatches = [{ field: 'udfchar09', expected: '03', actual: '' },
+      { field: 'send', expected: true, actual: false }];
+    const record = stayCommitFromPaneResult({ status: 'ok', outcome: 'committed_unverified',
+      confirmationNumber: '46184891-1', cmsReason: 'saved_cms_mismatch', cmsMismatches });
+    expect(record).not.toBeNull();
+    const state = JSON.parse(JSON.stringify(withStayCommit({}, 's_1', record!)));
+    expect(stayCommitOf(state, 's_1')).toMatchObject({ status: 'unknown',
+      cmsReason: 'saved_cms_mismatch', cmsMismatches });
+    expect(stayCommitGuard(stayCommitOf(state, 's_1'))).toEqual({ action: 'refuse', reason: PANE_STAY_ALREADY_BOOKED });
+    const afterAction = withStayActionResult(state, 's_1', { confirmationNumber: '46184891-1', screenshotRef: null });
+    expect(stayCommitOf(afterAction, 's_1')).toMatchObject({ cmsReason: 'saved_cms_mismatch', cmsMismatches });
   });
 
   it('commit refuses a stay that already has a number', () => {

@@ -7,13 +7,13 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
-import { assertTrackReadyForGuarantee, bookFieldFills, confirmationRecipientFills, confirmationRecipientRefusal, confirmationSendMail, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
+import { assertTrackReadyForGuarantee, bookFieldFills, confirmationRecipientFills, confirmationRecipientRefusal, confirmationSendMail, loadCreateRequest, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
 import { readSaveSnapshot, readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { paneCommitOutcome, proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
 import { parseStayProperty, profileFor, propertySecretRefusal, stayBookFieldRefusal } from './property-profile.mjs';
 import { withWriteCliPage } from './write-cli-lease.mjs';
-import { matchKey, searchKind, windowTitleRe } from './party-lookup.mjs';
+import { cellsToRow, matchKey, searchKind, windowTitleRe } from './party-lookup.mjs';
 
 export { withWriteCliPage as withLeasedWritePage };
 
@@ -117,10 +117,25 @@ export function bandChildAges(ages = []) {
 export function compareCmsReadback(expected, actual) {
   const mismatches = [];
   for (const field of ['udfchar09', 'udfchar13', 'send']) {
+    if (!Object.hasOwn(expected ?? {}, field)) continue;
     const norm = (value) => field === 'send' ? value : String(value ?? '').trim().toLocaleLowerCase();
     if (norm(expected?.[field]) !== norm(actual?.[field])) mismatches.push({ field, expected: expected?.[field] ?? null, actual: actual?.[field] ?? null });
   }
   return { reason: mismatches.length ? 'saved_cms_mismatch' : null, mismatches };
+}
+
+export function expectedCmsFields(stay) {
+  const code = String(stay?.cmsMessageId ?? '').trim();
+  if (!code) return null;
+  const send = confirmationSendMail(stay);
+  return { udfchar09: code, ...(send ? { udfchar13: confirmationRecipientFills(stay).udfchar13 } : {}), send };
+}
+
+export function matchAgencyGridRow(row, selected, party) {
+  if (!row || !selected) return false;
+  if (selected.matchedOn?.includes('store')) return String(row.nativeId ?? '') === String(selected.nativeId);
+  if (party?.id || party?.nativeId) return false; // DOM fallback has no verified internal ID.
+  return String(row.nativeId ?? '') === String(selected.nativeId) && matchKey(row.displayName) === matchKey(selected.displayName);
 }
 
 export function matchAgencyCandidate(rows, party) {
@@ -446,15 +461,17 @@ async function fillGuestOptIn(page) {
 }
 
 /** CMS Send Mail (udfchkbox04): HMS sends its own confirmation letter on Save. Only when staff set a recipient. */
-async function tickCmsSendMail(page) {
+async function setCmsSendMail(page, desired) {
   const box = page.locator('input[name="udfchkbox04"]:visible').first();
   if ((await box.getAttribute('type')) === 'checkbox') {
-    await box.setChecked(true);
+    await box.setChecked(desired);
     return;
   }
-  const checked = await box.evaluate((el) => el.closest('.x-form-cb-checked, .x-form-checkbox-checked') !== null).catch(() => false);
-  if (!checked) await box.click();
+  const checked = await box.evaluate((el) => el.closest('.x-form-cb-checked, .x-form-checkbox-checked') !== null);
+  if (checked !== desired) await box.click();
 }
+
+async function tickCmsSendMail(page) { await setCmsSendMail(page, true); }
 
 async function pickCmsMessageId(page, code) {
   const input = page.locator('input[name="udfchar09"]:visible').first();
@@ -480,11 +497,21 @@ async function pickBookingAgency(page, party) {
   const selected = matchAgencyCandidate(found.candidates, party);
   if (!selected) return false;
   const win = page.locator('.x-window:visible').filter({ hasText: windowTitleRe('bookingAgency') }).last();
-  const rows = win.locator('.x-grid-row:visible, .x-grid-data-row:visible, .x-grid-item:visible');
+  let rows = win.locator('.x-grid-view .x-grid-row:visible, .x-grid-view .x-grid-data-row:visible');
+  if (!(await rows.count())) rows = win.locator('.x-grid-item:visible');
   const matching = [];
   for (let i = 0; i < await rows.count(); i += 1) {
-    const cells = await rows.nth(i).locator('td, .x-grid-cell').allTextContents();
-    if (cells[0]?.trim() === String(selected.nativeId).trim()) matching.push(i);
+    const row = rows.nth(i);
+    const record = await row.evaluate((el) => {
+      if (typeof Ext === 'undefined') return null;
+      const grids = (Ext.ComponentQuery.query('grid, readonlygrid') || [])
+        .filter((grid) => grid.getEl?.()?.dom?.contains(el));
+      if (grids.length !== 1) return null;
+      const data = grids[0].getView?.()?.getRecord?.(el)?.data;
+      return data?.travelagencyid == null ? null : { nativeId: String(data.travelagencyid), displayName: String(data.travelagencyname ?? '') };
+    }).catch(() => null);
+    const identity = record ?? (selected.matchedOn?.includes('store') ? null : cellsToRow(await row.locator('td, .x-grid-cell').allTextContents(), { kind: 'bookingAgency' }));
+    if (matchAgencyGridRow(identity, selected, party)) matching.push(i);
   }
   if (matching.length !== 1) return false;
   await rows.nth(matching[0]).click();
@@ -576,14 +603,14 @@ export async function chooseCombo(page, name, label) {
 async function listTrackLookupRows(page) {
   return page.evaluate(() => {
     const visible = (el) => !!(el.offsetParent || el.getClientRects().length);
-    const bound = [...document.querySelectorAll('.x-boundlist')].filter(visible).at(-1);
+    const bound = [...document.querySelectorAll('.x-boundlist')].findLast(visible);
     if (bound) {
       return [...bound.querySelectorAll('.x-boundlist-item')]
         .filter(visible)
         .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
         .filter(Boolean);
     }
-    const grid = [...document.querySelectorAll('.x-window .x-grid-view, .x-window .x-grid')].filter(visible).at(-1);
+    const grid = [...document.querySelectorAll('.x-window .x-grid-view, .x-window .x-grid')].findLast(visible);
     if (!grid) return [];
     return [...grid.querySelectorAll('.x-grid-row, .x-grid-data-row')]
       .filter(visible)
@@ -603,14 +630,14 @@ async function clickTrackLookupRow(page, picked) {
       if (want.description && t.includes(want.description) && (!want.code || t.includes(want.code))) return true;
       return want.code && t === want.code;
     };
-    const bound = [...document.querySelectorAll('.x-boundlist')].filter(visible).at(-1);
+    const bound = [...document.querySelectorAll('.x-boundlist')].findLast(visible);
     if (bound) {
       const item = [...bound.querySelectorAll('.x-boundlist-item')].filter(visible).find((el) => matches(el.textContent));
       if (!item) return false;
       item.click();
       return true;
     }
-    const grid = [...document.querySelectorAll('.x-window .x-grid-view, .x-window .x-grid')].filter(visible).at(-1);
+    const grid = [...document.querySelectorAll('.x-window .x-grid-view, .x-window .x-grid')].findLast(visible);
     if (!grid) return false;
     const row = [...grid.querySelectorAll('.x-grid-row, .x-grid-data-row')].filter(visible).find((el) => matches(el.innerText));
     if (!row) return false;
@@ -976,8 +1003,8 @@ async function runProofReadback(browser, secret, stay, dir, save, savedScreensho
     ),
   });
   const merged = mergeReadbackCompare(proof, stay, lastStay);
-  const cms = confirmationSendMail(stay) && lastStay
-    ? compareCmsReadback({ udfchar09: stay.cmsMessageId, udfchar13: confirmationRecipientFills(stay).udfchar13, send: true }, lastStay)
+  const cms = expectedCmsFields(stay) && lastStay
+    ? compareCmsReadback(expectedCmsFields(stay), lastStay)
     : { reason: null, mismatches: [] };
   if (cms.reason) {
     merged.readbackMatch = false;
@@ -1146,12 +1173,13 @@ export async function main(argv = process.argv.slice(2)) {
       })) {
         if (value) await fillNamed(page, name, value);
       }
-      if (confirmationSendMail(stay)) {
-        if (!String(stay.cmsMessageId ?? '').trim()) throw new Error('cms_message_id_required');
+      if (confirmationSendMail(stay) && !expectedCmsFields(stay)) throw new Error('cms_message_id_required');
+      if (expectedCmsFields(stay)) {
         await pickCmsMessageId(page, stay.cmsMessageId.trim());
-        await tickCmsSendMail(page);
-        result.cmsSendMail = true;
-        const cms = compareCmsReadback({ udfchar09: stay.cmsMessageId, udfchar13: confirmationRecipientFills(stay).udfchar13, send: true }, await readSavedCreateFields(page));
+        if (confirmationSendMail(stay)) await tickCmsSendMail(page);
+        else await setCmsSendMail(page, false);
+        result.cmsSendMail = confirmationSendMail(stay);
+        const cms = compareCmsReadback(expectedCmsFields(stay), await readSavedCreateFields(page));
         if (cms.reason) {
           result.outcome = 'refused_cms_fields_unverified';
           result.cmsMismatches = cms.mismatches;
@@ -1240,8 +1268,8 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
     // Availability and other form fields can alter CMS controls. Recheck immediately before Save.
-    if (confirmationSendMail(stay)) {
-      const cms = compareCmsReadback({ udfchar09: stay.cmsMessageId, udfchar13: confirmationRecipientFills(stay).udfchar13, send: true }, await readSavedCreateFields(page));
+    if (expectedCmsFields(stay)) {
+      const cms = compareCmsReadback(expectedCmsFields(stay), await readSavedCreateFields(page));
       if (cms.reason) {
         result.outcome = 'refused_cms_fields_unverified';
         result.cmsMismatches = cms.mismatches;
@@ -1352,10 +1380,10 @@ export async function main(argv = process.argv.slice(2)) {
       process.stdout.write(`${result.outcome}${result.confirmationNumber ? ` ${result.confirmationNumber}` : ''}\n`);
       return;
     }
-    if (result.saved && (confirmationSendMail(stay) || Array.isArray(stay.childAges))) {
+    if (result.saved && (expectedCmsFields(stay) || Array.isArray(stay.childAges))) {
       const actual = await readSavedCreateFields(page);
-      const cms = confirmationSendMail(stay)
-        ? compareCmsReadback({ udfchar09: stay.cmsMessageId, udfchar13: confirmationRecipientFills(stay).udfchar13, send: true }, actual)
+      const cms = expectedCmsFields(stay)
+        ? compareCmsReadback(expectedCmsFields(stay), actual)
         : { reason: null, mismatches: [] };
       const children = Array.isArray(stay.childAges) ? bandChildAges(stay.childAges) : {};
       const childMismatches = Object.entries(children).filter(([field, count]) => normalizeAdults(actual[field]) !== count)
