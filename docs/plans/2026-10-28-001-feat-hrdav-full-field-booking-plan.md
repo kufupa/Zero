@@ -381,6 +381,21 @@ What this means:
 
 **Deploy:** one deploy via `apps/server-pilot/deploy/ops-deploy.sh` from a clean `recover-parse-failure`. Record the last-good SHA first.
 
+## Lane briefs (lessons from or2 / mh1024 retros)
+
+Each lane gets one `BRIEF.md` in its worktree, written by the coordinator from this plan. A lane reads its brief, not the repo.
+
+| Rule | Retro evidence |
+|---|---|
+| Brief carries the unit's exact `file:line` anchors, the shared contract, settled facts and the test files that assert changed UI | Pre-cut lanes finished in 9–14 min; open "trace every hop" lanes ran 60+ min and 160–262 calls (MISTAKES 2026-10-26) |
+| "Do not re-read": research docs, ACTIVE history, other units. Use `codegraph explore <names>` before grep | or2: 14 context compactions in 8 lanes from reloading protocol/context |
+| Coordinator runs each lane's listed tests on clean `main` (EC2) before launch; known-red tests go in the brief as "pre-existing, ignore" | or2: ~60 min of critical path lost to baseline-red stalls |
+| Lane chains its own gates in the background: remote typecheck ‖ EC2 tests ‖ `greptile review` vs fresh `origin/main` | AGENTS gates rule; or2 gates were 16% of lane time |
+| Merge only through `scripts/orch/merge-gate.sh` | mh1024: merges mid-review |
+| Coordinator checks each lane every ~10 min; waits use process + PR state, never `tui-idle` | mh1024: idle orchestrator with startable work, repeated 3 runs |
+| ETA quoted = longest chain incl. deploy + live proof | mh1024: milestone ETA quoted as run ETA (repeat) |
+| Lane closes its terminal and worktree after merge | Orca lane cleanup rule |
+
 ## ETA
 
 | Part | Minutes | Basis |
