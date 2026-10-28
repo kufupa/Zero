@@ -180,11 +180,17 @@ const STAFF_QUOTE_NON_PRICE_FIELDS = new Set(
 function staffQuoteRequestMatches(
   request: StaffQuoteJobView['request'],
   expected: ExecuteStaffQuoteInput,
+  allowBoundStrategyMismatch = false,
 ): boolean {
   if (request?.kind !== 'staff_quote' || request.input.messageId !== expected.messageId ||
-    request.input.sourceHash !== expected.sourceHash || request.input.salesStrategy !== expected.salesStrategy) return false;
+    request.input.sourceHash !== expected.sourceHash) return false;
+  const boundParties = pickedParties(request.input.parties);
+  const canIgnoreStrategy = allowBoundStrategyMismatch && boundParties !== undefined &&
+    stableJson(boundParties) === stableJson(pickedParties(expected.parties));
+  if (request.input.salesStrategy !== expected.salesStrategy && !canIgnoreStrategy) return false;
   const priceKey = (input: ExecuteStaffQuoteInput) => stableJson({
     ...Object.fromEntries(Object.entries(input).filter(([key]) => !STAFF_QUOTE_NON_PRICE_FIELDS.has(key))),
+    ...(canIgnoreStrategy ? { salesStrategy: expected.salesStrategy } : {}),
     groups: input.groups.map((group) => ({
       id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate, quantity: group.quantity,
       adults: group.adults, childrenAges: group.childrenAges, board: group.board,
@@ -1483,7 +1489,10 @@ export async function bindReadBackStaffQuote(
       ? await args.query({ input: built.input }, { signal: args.signal })
       : await args.query({ input: built.input });
     if (!first || args.signal?.aborted) return null;
-    if (first.request && !staffQuoteStayTermsMatch(first.request, built.input)) return null;
+    if (first.request && (
+      !staffQuoteStayTermsMatch(first.request, built.input) ||
+      !staffQuoteRequestMatches(first.request, built.input, first.prefetch === true)
+    )) return null;
     if (
       first.status === 'done' &&
       (!first.asOf ||
@@ -1494,6 +1503,7 @@ export async function bindReadBackStaffQuote(
     }
     const settled = await pollStaffQuoteJob(args.query, first, args.signal);
     if (args.signal?.aborted) return null;
+    if (settled.request && !staffQuoteRequestMatches(settled.request, built.input, settled.prefetch === true)) return null;
     const rebased = settled.result
       ? {
           ...settled,
