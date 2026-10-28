@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   bindExecuteStaffQuote,
+  bindReadBackStaffQuote,
   bindStaffQuoteStrategy,
   bindStaffQuoteStrategies,
   resolveNativeRoomCodes,
@@ -466,6 +467,39 @@ describe('staff quote strategy comparisons', () => {
 
     expect(staffQuoteJob.mock.calls[0]?.[0]).toMatchObject({ input: { maxOptionsPerGroup: 200 } });
     expect(outcome.row.status).toBe('ready');
+  });
+
+  it('hydrates a prepared contract run only for the same bound party and price shape', async () => {
+    const agency = { kind: 'agency' as const, nativeId: 'agency-17', name: 'Acme Travel' };
+    const header = { ...emptyStaffQuoteHeader(), parties: { agency } };
+    const run = async (changes: Partial<ExecuteStaffQuoteInput> = {}, prefetch = true) => {
+      const query = vi.fn<StaffQuoteJobQuery>(async (lookup) => {
+        if (!('input' in lookup)) return null;
+        return {
+          runId: 'run-WS', status: 'done', prefetch, asOf: new Date().toISOString(), failureClass: null,
+          request: { kind: 'staff_quote', input: { ...lookup.input, salesStrategy: 'WS', ...changes } },
+          result: queuedQuote('WS', args.groups[0]!),
+        };
+      });
+      return bindReadBackStaffQuote({ ...args, header, query });
+    };
+    expect(await run()).toMatchObject({ status: 'ok', staffQuote: { preparedByNava: true } });
+    expect(await run({ parties: { agency: { ...agency, nativeId: 'other' } } })).toBeNull();
+    expect(await run({ parties: undefined })).toBeNull();
+    expect(await run({}, false)).toBeNull();
+    expect(await run({ sourceHash: 'b'.repeat(64) })).toBeNull();
+  });
+
+  it('never hydrates an unbound prepared run under a different strategy', async () => {
+    const query = vi.fn<StaffQuoteJobQuery>(async (lookup) => {
+      if (!('input' in lookup)) return null;
+      return {
+        runId: 'run-WS', status: 'done', prefetch: true, asOf: new Date().toISOString(), failureClass: null,
+        request: { kind: 'staff_quote', input: { ...lookup.input, salesStrategy: 'WS' } },
+        result: queuedQuote('WS', args.groups[0]!),
+      };
+    });
+    expect(await bindReadBackStaffQuote({ ...args, query })).toBeNull();
   });
 
   it('still requires the same source and strategy when matching prepared inputs', async () => {

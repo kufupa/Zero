@@ -2803,6 +2803,7 @@ export function scheduleQuotePreparationAfterPartyMatch(
 }
 
 type PartyMatchV2JobResult = PanePartyFindResult & {
+  propertyCode?: string;
   matchVersion: 2;
   matcher?: 'v3';
   matchStatus: 'bound' | 'needs_pick';
@@ -2965,7 +2966,7 @@ async function executePartyMatchV2(input: {
     } catch {
       // Invalid/unavailable route settings are a closed-model case; exact-name fallback remains safe.
     }
-    return runPartyMatchV3({
+    const result = await runPartyMatchV3({
       adapter,
       candidates,
       context,
@@ -2988,6 +2989,7 @@ async function executePartyMatchV2(input: {
       signal: input.signal,
       deadlineAt: input.deadlineAt,
     });
+    return { ...result, propertyCode: readTarget.propertyCode };
   }
   const plan = planPartySearches(candidates).slice(0, PARTY_MATCH_V2_SEARCH_CAP);
   const searchesTried: PartyMatchV2JobResult['searchesTried'] = [];
@@ -3049,6 +3051,7 @@ async function executePartyMatchV2(input: {
     });
     return {
       ...failure,
+      propertyCode: readTarget.propertyCode,
       results: failedRows,
       truncated: failureTruncated,
       best: null,
@@ -3086,6 +3089,7 @@ async function executePartyMatchV2(input: {
   const outcome = decision.matchStatus === 'bound' ? 'resolved' : rows.length ? 'ambiguous' : 'no_match';
   return {
     outcome,
+    propertyCode: readTarget.propertyCode,
     results: rows,
     truncated,
     best: decision.boundParty,
@@ -4311,9 +4315,24 @@ async function latestStaffQuoteRunFor(
     if (sameTerms) return [userRun];
   }
 
+  // A ready, selected contract for the bound party wins over the pane's default public strategy.
+  // Preserve the original newest-first order within each tier. Comparison callers still validate the strategy.
+  const preferBoundContract = Boolean(quoteInput.parties?.agency || quoteInput.parties?.company) &&
+    ['BAR', 'Government', 'GOV'].includes(quoteInput.salesStrategy);
+  const hasReadySelectedContract = (run: AiWorkflowRun): boolean => {
+    const result = objectRecord(run.readResult);
+    return run.state === 'succeeded' && result.status === 'ready' && staffQuoteResultReusable(run.readResult, now) &&
+      Array.isArray(result.rateOptions) && result.rateOptions.some((value) => {
+        const option = objectRecord(value);
+        return option.selected === true && option.contract === true;
+      });
+  };
+  const preparedRows = preferBoundContract
+    ? [...rows].sort((left, right) => Number(hasReadySelectedContract(right)) - Number(hasReadySelectedContract(left)))
+    : rows;
   // System-prepared quotes are independent per stay. Look for the newest prepared price for these terms rather than
   // letting a different stay's more recently enqueued job hide a valid match.
-  for (const preparedRun of rows) {
+  for (const preparedRun of preparedRows) {
     const metrics = objectRecord(preparedRun.metrics);
     if (
       !isSystemPreparedPriority(preparedRun.priority) ||
@@ -4334,7 +4353,7 @@ async function latestStaffQuoteRunFor(
       parsed.data.input.messageId !== preparedRun.triggerMessageId ||
       (!sameMessageCopy && !relatedMessageIds.includes(preparedRun.triggerMessageId)) ||
       (sameMessageCopy && parsed.data.input.sourceHash !== quoteInput.sourceHash) ||
-      !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput)
+      !staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, preferBoundContract && hasReadySelectedContract(preparedRun))
     ) {
       continue;
     }
@@ -4354,7 +4373,8 @@ async function latestStaffQuoteRunFor(
       )
       .orderBy(desc(aiDraftGeneration.createdAt))
       .limit(1);
-    if (latestApproval && latestApproval.createdAt >= preparedRun.createdAt) return [];
+    // Contract ranking may put an older run first; a later run can still postdate the approval.
+    if (latestApproval && latestApproval.createdAt >= preparedRun.createdAt) continue;
     return reusable(preparedRun) ? [preparedRun] : [];
   }
   return [];

@@ -7,6 +7,7 @@ import { panePartyLookupLoaders } from '../src/ai/pane-party-lookup.js';
 import { HMS_JOB_PROMPT_VERSION } from '../src/ai/run-ledger.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { mailExtraction } from '../src/db/schema/work.js';
+import { staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import type { DB } from '../src/db/client.js';
 import { and, eq, sql } from 'drizzle-orm';
@@ -296,6 +297,69 @@ describe('party prefetch selection', () => {
   });
 });
 
+describe('prepared quote selection', () => {
+  it.each([
+    { name: 'prefers an available party-bound WS run over a newer BAR run', contract: true, otherParty: false, stale: false, expected: 'ws-run' },
+    { name: 'prefers a company-bound WS contract over newer BAR', contract: true, otherParty: false, stale: false, company: true, expected: 'ws-run' },
+    { name: 'rejects a contract bound to a different company', contract: true, otherParty: true, stale: false, company: true, expected: 'bar-run' },
+    { name: 'keeps BAR when the WS result is not a selected contract', contract: false, otherParty: false, stale: false, expected: 'bar-run' },
+    { name: 'keeps BAR over a newer unverified WS result', contract: false, otherParty: false, stale: false, wsNewest: true, expected: 'bar-run' },
+    { name: 'keeps BAR when the contract belongs to another party', contract: true, otherParty: true, stale: false, expected: 'bar-run' },
+    { name: 'keeps BAR when the contract has expired', contract: true, otherParty: false, stale: true, expected: 'bar-run' },
+    { name: 'uses newer BAR when an approval invalidated the older contract', contract: true, otherParty: false, stale: false, approvalBetween: true, expected: 'bar-run' },
+    { name: 'rejects both rates when approval is newer than both', contract: true, otherParty: false, stale: false, approvalAfterAll: true, expected: null },
+    { name: 'does not reuse an unverified WS price as BAR when BAR is missing', contract: false, otherParty: false, stale: false, noBar: true, expected: null },
+    { name: 'reuses a verified WS contract when BAR is missing', contract: true, otherParty: false, stale: false, noBar: true, expected: 'ws-run' },
+  ])('$name', async ({ contract, otherParty, stale, expected, noBar, wsNewest, approvalBetween, approvalAfterAll, company }) => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+    const quote = staffQuoteInput.parse({
+      messageId: 'message-1', sourceHash: 'a'.repeat(64), selectionEpoch: 1, inputRevision: 1,
+      groups: [{ id: 'g1', arrivalDate: '2027-01-01', departureDate: '2027-01-02', quantity: 1,
+        adults: 1, childrenAges: [], board: 'bb' }],
+      salesStrategy: 'BAR', parties: company
+        ? { company: { kind: 'company', nativeId: '42', name: 'Acme Company' } }
+        : { agency: { kind: 'agency', nativeId: '42', name: 'Acme Travel' } },
+    });
+    const now = new Date();
+    const prepared = (id: string, strategy: 'BAR' | 'WS') => ({
+      ...runningRun({ kind: 'staff_quote', input: { ...quote, salesStrategy: strategy,
+        ...(strategy === 'WS' && otherParty ? { parties: company
+          ? { company: { kind: 'company', nativeId: 'other', name: 'Other' } }
+          : { agency: { kind: 'agency', nativeId: 'other', name: 'Other' } } } : {}),
+      } }, HMS_JOB_PRIORITY_PREFETCH),
+      id, transportId: 'transport-faith', state: 'succeeded',
+      createdAt: strategy === 'WS' ? new Date(now.getTime() - 2_000) : now, finishedAt: now,
+      readResult: { status: 'ready', asOf: strategy === 'WS' && stale ? new Date(now.getTime() - 25 * 60 * 60_000).toISOString() : now.toISOString(),
+        rateOptions: [{ groupId: 'g1', selected: true, contract: strategy === 'WS' && contract, rateCode: strategy === 'WS' ? 'BWS1B' : 'BAR' }] },
+      readResultExpiresAt: new Date(now.getTime() + 60_000),
+      metrics: { userId: null, quotePrepared: true },
+    } as AiWorkflowRun);
+    let selects = 0;
+    const db = {
+      select: () => {
+        const index = ++selects;
+        const chain = {
+          from: () => chain, where: () => chain,
+          orderBy: () => index === 2 ? Promise.resolve(wsNewest
+            ? [prepared('ws-run', 'WS'), ...(noBar ? [] : [prepared('bar-run', 'BAR')])]
+            : [...(noBar ? [] : [prepared('bar-run', 'BAR')]), prepared('ws-run', 'WS')]) : chain,
+          limit: async () => index === 1 ? [{ id: 'message-1', messageIdHeader: null }] :
+            approvalBetween || approvalAfterAll
+              ? [{ createdAt: new Date(now.getTime() + (approvalAfterAll ? 1_000 : -1_000)) }] : [],
+        };
+        return chain;
+      },
+    } as unknown as DB;
+    try {
+      const result = await readHmsJobView({ transportId: 'transport-faith', userId: 'staff-1', messageId: 'message-1', kind: 'staff_quote', input: quote }, db);
+      expect(result?.runId ?? null).toBe(expected);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe('executeHmsJob party reads', () => {
   it('stores the party find result on a succeeded job', async () => {
     const run = runningRun(REQUEST);
@@ -313,6 +377,59 @@ describe('executeHmsJob party reads', () => {
       }),
       fakeDb,
     );
+  });
+
+  it.each([['V2', '0'], ['V3', '1']])('stores the resolved HRDAV property on %s no-match results', async (_label, v3) => {
+    vi.stubEnv('PARTY_MATCH_V2', '1');
+    vi.stubEnv('PARTY_MATCH_V3', v3);
+    vi.stubEnv('HMS_DAVINCI_READS', 'on');
+    const source = {
+      payload: {}, extractionStatus: 'succeeded', extractionKind: 'quote', fromAddress: 'person@example.test',
+      ownerHeaderValue: null, toAddresses: [], ccAddresses: [], subject: '', textBody: '',
+      direction: 'inbound', historyOnly: false, threadHistoryOnly: false, spamAt: null,
+    };
+    const limit = vi.fn().mockResolvedValueOnce([source]).mockResolvedValueOnce([]);
+    const chain = { from: () => chain, innerJoin: () => chain, where: () => chain, orderBy: () => chain, limit };
+    const db = { select: () => chain } as unknown as DB;
+    const run = { ...runningRun({ kind: 'party', name: 'Acme Travel', matchVersion: 2 }, HMS_JOB_PRIORITY_PREFETCH), transportId: 'transport-faith' };
+    try {
+      await expect(executeHmsJob({ run, fence: { ...fence, deadlineAt: new Date(Date.now() + 60_000) }, db })).resolves.toBe('succeeded');
+      expect(runLedger.markAiRunSucceeded).toHaveBeenCalledWith(
+        expect.objectContaining({ readResult: expect.objectContaining({ propertyCode: 'HRDAV', matchStatus: 'needs_pick' }) }), db,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([['V2', '0'], ['V3', '1']])('stores the resolved HRDAV property on %s bound results', async (_label, v3) => {
+    vi.stubEnv('PARTY_MATCH_V2', '1');
+    vi.stubEnv('PARTY_MATCH_V3', v3);
+    vi.stubEnv('HMS_DAVINCI_READS', 'on');
+    panePartyLookupLoaders.spawn = vi.fn(async ({ searches }) => ({
+      searches: (searches ?? []).map((search) => ({
+        outcome: 'resolved', truncated: false,
+        candidates: [{ kind: search.kind === 'agency' ? 'bookingAgency' : 'organization', nativeId: '42', displayName: 'Acme Travel' }],
+      })),
+    }));
+    const source = {
+      payload: { agency: 'Acme Travel' }, extractionStatus: 'succeeded', extractionKind: 'quote',
+      fromAddress: 'agent@acme.test', ownerHeaderValue: null, toAddresses: [], ccAddresses: [],
+      subject: 'Booking', textBody: 'Acme Travel', direction: 'inbound', historyOnly: false,
+      threadHistoryOnly: false, spamAt: null,
+    };
+    const limit = vi.fn().mockResolvedValueOnce([source]).mockResolvedValueOnce([]);
+    const chain = { from: () => chain, innerJoin: () => chain, where: () => chain, orderBy: () => chain, limit };
+    const db = { select: () => chain } as unknown as DB;
+    const run = { ...runningRun({ kind: 'party', name: 'Acme Travel', matchVersion: 2 }, HMS_JOB_PRIORITY_PREFETCH), transportId: 'transport-faith' };
+    try {
+      await expect(executeHmsJob({ run, fence: { ...fence, deadlineAt: new Date(Date.now() + 60_000) }, db })).resolves.toBe('succeeded');
+      expect(runLedger.markAiRunSucceeded).toHaveBeenCalledWith(
+        expect.objectContaining({ readResult: expect.objectContaining({ propertyCode: 'HRDAV', matchStatus: 'bound' }) }), db,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('yields a background party job on a busy lock without using an attempt', async () => {

@@ -360,6 +360,10 @@ describe('quote prepare kind gate', () => {
     ).toBe('not_quote');
   });
 
+  it.each(['DAT-2291', 'BK12345'])('admits agent reference %s instead of treating it as an HMS confirmation', (reference) => {
+    expect(quotePrepareKindReason({ kind: 'booking', payload: payload({ confirmationNumbers: [reference] }) })).toBeNull();
+  });
+
   it('rejects a booking whose subject carries a confirmation number', () => {
     expect(
       quotePrepareKindReason({
@@ -639,6 +643,20 @@ describe('prepared quote reuse price fields', () => {
     expect(staffQuotePriceKey(base)).not.toBe(
       staffQuotePriceKey({ ...otherCopy, salesStrategy: 'Government' }),
     );
+  });
+
+  it('permits strategy differences only for a prepared run with exactly matching bound parties', () => {
+    const agency = { kind: 'agency' as const, nativeId: 'agency-17', name: 'Acme Lodging Holdings' };
+    const contract = { ...base, salesStrategy: 'WS' as const, parties: { agency } };
+    const pane = { ...base, salesStrategy: 'BAR' as const, parties: { agency } };
+    const preparedEquivalent = staffQuoteInputsPriceEquivalent as (
+      a: typeof base, b: typeof base, allowPreparedParty: boolean,
+    ) => boolean;
+    expect(preparedEquivalent(contract, pane, true)).toBe(true);
+    expect(preparedEquivalent(contract, pane, false)).toBe(false);
+    expect(preparedEquivalent({ ...contract, parties: undefined }, { ...pane, parties: undefined }, true)).toBe(false);
+    expect(preparedEquivalent(contract, { ...pane, parties: { agency: { ...agency, nativeId: 'other' } } }, true)).toBe(false);
+    expect(preparedEquivalent(contract, { ...pane, groups: [{ ...pane.groups[0]!, quantity: 3 }] }, true)).toBe(false);
   });
 
   it('requires the same pane row identity for reuse', () => {

@@ -198,12 +198,24 @@ describe('buildCreatePrefill', () => {
       track: 'BAR',
       sourceOfBusiness: 'Walk in',
       guaranteeType: 'Non-Guaranteed Individual',
-      ratePlan: 'BAR',
       roomType: 'STQN',
     });
+    expect(result.requests[0]).not.toHaveProperty('ratePlan');
+    expect(result.missing.map((row) => row.field)).toContain('ratePlan');
     expect(result.missing.map((row) => row.field)).not.toEqual(
-      expect.arrayContaining(['track', 'sourceOfBusiness', 'guaranteeType', 'ratePlan', 'roomType']),
+      expect.arrayContaining(['track', 'sourceOfBusiness', 'guaranteeType', 'roomType']),
     );
+  });
+
+  it.each([null, ''])('leaves an absent rate %s empty even for a bound agency', async (rateText) => {
+    const result = await buildCreatePrefill(stay({ rateText }));
+    expect(result.requests[0]).not.toHaveProperty('ratePlan');
+    expect(result.missing.map((item) => item.field)).toContain('ratePlan');
+  });
+
+  it.each(['BWS1B', 'BAR'])('retains the supplied prepared rate %s', async (rateText) => {
+    const result = await buildCreatePrefill(stay({ rateText }));
+    expect(result.requests[0]).toMatchObject({ ratePlan: rateText });
   });
 
   it('leaves Track and Source empty when an agency or company party is set', async () => {
