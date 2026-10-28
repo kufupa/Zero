@@ -245,7 +245,9 @@ describe('createRequestFieldOptions', () => {
   });
 
   it('exposes CMS message choices and defaults only from the selected property profile', () => {
+    profileOverride.cms = null;
     const absent = createRequestFieldOptions('HRDAV');
+    const centurion = createRequestFieldOptions('HRCEN');
     expect(absent).not.toHaveProperty('cmsMessageIds');
     expect(absent).not.toHaveProperty('cmsDefaults');
     profileOverride.cms = {
@@ -256,7 +258,7 @@ describe('createRequestFieldOptions', () => {
       cmsMessageIds: [{ code: '01', label: 'Guest' }, { code: '03', label: 'Agency' }],
       cmsDefaults: { agency: '03', guest: '01' },
     });
-    expect(createRequestFieldOptions('HRCEN')).not.toHaveProperty('cmsMessageIds');
+    expect(createRequestFieldOptions('HRCEN')).toEqual(centurion);
   });
 
   it('uses HRDAV create-form choices and required fields from its registry profile', () => {
@@ -334,7 +336,13 @@ describe('createRequestFieldOptions', () => {
 
     expect(options.track).toEqual(schema.$defs.request.properties.track.enum);
     expect(options.sourceOfBusiness).toEqual(schema.$defs.request.properties.sourceOfBusiness.enum);
-    expect(options.guaranteeType).toEqual(schema.$defs.request.properties.guaranteeType.enum);
+    const profile = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../tooling/playwright-quote/property-profiles/HRCEN.json', import.meta.url)), 'utf8'),
+    ) as { createForm?: { options?: { guaranteetype?: { choices?: Array<{ display: string }> } } } };
+    expect(options.guaranteeType).toEqual(
+      profile.createForm?.options?.guaranteetype?.choices?.map(({ display }) => display) ??
+        schema.$defs.request.properties.guaranteeType.enum,
+    );
     expect(options).toHaveProperty('requiredCreateFields', []);
     expect(createRequestFieldOptions()).toEqual(options);
   });
