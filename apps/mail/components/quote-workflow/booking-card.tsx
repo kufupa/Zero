@@ -27,6 +27,7 @@ import {
   PANE_PARTY_NAME_MAX,
   PANE_PREVIEW_FAILED_COPY,
   PANE_RESERVATION_NOTE_MAX,
+  PANE_SAVE_UNCONFIRMED_REASON,
   PANE_SAVE_UNVERIFIED_COPY,
   paneStayInputForRoom,
   paneStayKey,
@@ -1353,10 +1354,8 @@ export function BookingCards({
         workItemId && room
           ? { stayId: stayIdForRoom(room, groups), workItemId }
           : {};
-      const outcome = commitOutcome(
-        await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest),
-        stay,
-      );
+      const result = await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
+      const outcome = commitOutcome(result, stay);
       commit = outcome.ok
         ? {
             status: 'booked',
@@ -1373,11 +1372,13 @@ export function BookingCards({
             message: outcome.message,
             runId: outcome.runId,
             screenshots: outcome.screenshots,
+            ...(result.status === 'ok' || result.reason === PANE_SAVE_UNCONFIRMED_REASON
+              ? { statusChip: 'check' as const } : {}),
           };
     } catch {
-      commit = { status: 'refused', key, message: PANE_COMMIT_UNREACHABLE_COPY };
+      commit = { status: 'refused', key, message: PANE_COMMIT_UNREACHABLE_COPY, statusChip: 'check' };
     }
-    // A refused save invalidates the preview, so Book stays locked until the staff preview again.
+    // Definite refusals can be previewed again; uncertain saves stay locked for an HMS check.
     patchSave(roomKey, commit.status === 'booked' ? { commit } : { commit, preview: undefined });
     return commit.status === 'booked' && !commit.unverified;
   }
