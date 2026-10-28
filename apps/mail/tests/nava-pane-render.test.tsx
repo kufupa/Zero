@@ -776,7 +776,7 @@ describe('NavaPane', () => {
   /** Radix menu ids change with prior mounts; snapshots keep a stable placeholder. */
   const stabilizePaneSnapshot = (root: HTMLElement) => {
     root.querySelectorAll('*').forEach((el) => {
-      for (const attr of [...el.attributes]) {
+      for (const attr of el.attributes) {
         if (attr.value.includes('radix-')) {
           el.setAttribute(attr.name, attr.value.replace(/radix-[^\s"]+/g, 'radix-stable'));
         }

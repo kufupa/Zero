@@ -11,7 +11,6 @@ import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-hos
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import type { StoredContact } from '../lib/quote-workflow/backend-bind';
 import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
-import { trackPaneAction } from '../lib/quote-workflow/pane-telemetry';
 import {
   bindGetPriorStaffQuoteRequote,
   bindListThreadQuoteRevisions,

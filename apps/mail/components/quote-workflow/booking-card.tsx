@@ -233,6 +233,7 @@ const PREVIEW_SHOT = 'filled.png';
 const SAVED_SHOT = 'saved.png';
 const CREATE_PROVISIONAL_LABEL = 'Create provisional booking';
 const BOOK_THIS_STAY_LABEL = 'Book this stay';
+const CHILD_AGE_FIELDS = Array.from({ length: 16 }, (_, index) => `child-age-${index + 1}`);
 const CMS_FALLBACK = [
   { code: '01', label: 'Guest booking – payment link' },
   { code: '03', label: 'Agency/company booking – payment link + proforma' },
@@ -1210,7 +1211,7 @@ export function BookingCards({
       if (cached) restored[roomKey] = { ...cached, status: 'ready', key: input.key };
     }
     setSaves((current) => {
-      let next = current;
+      let next: typeof current | undefined;
       for (const [roomKey, input] of inputs) {
         const existing = current[roomKey]?.preview;
         const cached = restored[roomKey];
@@ -1219,9 +1220,12 @@ export function BookingCards({
             ? { status: 'stale' as const, key: existing.key }
             : existing
         );
-        if (preview !== existing) next = { ...next, [roomKey]: { ...next[roomKey], preview } };
+        if (preview !== existing) {
+          next ??= { ...current };
+          next[roomKey] = { ...current[roomKey], preview };
+        }
       }
-      return next;
+      return next ?? current;
     });
   }, [previewInputSignature, previewReceipt, workItemId]);
 
@@ -1543,11 +1547,11 @@ export function BookingCards({
                   }
                 }} />
             </label>
-            {ages.map((age, index) => (
-              <label key={index} className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+            {CHILD_AGE_FIELDS.slice(0, ages.length).map((field, index) => (
+              <label key={field} className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
                 Child age {index + 1}
                 <input type="number" min={0} max={17} step={1} aria-label={`Child age ${index + 1}`}
-                  className={paneFieldClass} disabled={locked} value={age}
+                  className={paneFieldClass} disabled={locked} value={ages[index] ?? ''}
                   onChange={(event) => setChoice({ childAges: ages.map((item, i) => i === index ? event.target.value : item) })} />
               </label>
             ))}
