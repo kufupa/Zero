@@ -321,3 +321,23 @@ New optional fields on the pane stay input (tRPC zod + `PaneStay` + runner reque
   - Default: the owner forwards the edited email to Faith's HRDAV mailbox, so it is ingested as HRDAV.
   - Avoid navaai@ for this: it is the BCC collector with no hotel, so the pane would not know the property.
   - Alternative: a DB-side copy of the message row with the guest swapped to Labtest.
+
+## If we finish early (ROI order)
+
+1. **Golden-set field score.** Use `find-batch.mjs` on ~30 real HRDAV staff bookings (523 confirmation numbers are ready) to compare Nava's prefilled fields against what Faith actually saved, field by field. This is the PRODUCT.md "done" metric, and it shows which defaults are still wrong.
+2. **Outlook surface proof.** An nginx bundle load plus one Outlook pane open on the new card.
+3. **Provisional quote = this flow.** A 01/03 provisional booking with a payment link *is* the HMS quote. Check one quote-class Faith mail end to end through the same Book path.
+4. **Centurion parity prep** (code only, no HRCEN browser): the HRCEN profile `cms` block and an HRCEN unit test; the live canary waits until Pomerado frees the HRCEN browser.
+5. Split `booking-card.tsx` (no behaviour change).
+
+## End state vs 10/10
+
+| Dimension | After this run | 10/10 |
+|---|---|---|
+| Hotels | Da Vinci | Da Vinci + Centurion + next hotel from a profile |
+| Booking fields | All staff fields, CMS 01/03, children, agency pick | Same, scored ≥95% field parity on a golden set |
+| Letter | 01/03 sent by HMS, proven once | Proven on every create; failures shown to staff |
+| Rates | Agency-entitled default when prepared | Ready before the pane opens on ≥90% of mails |
+| Proof | 1 hard live Labtest + webmail | Golden-set score + Outlook + live staff use |
+| Real guests | Off (`lab`) | On, after the owner's go |
+| Amend / cancel / payment proof | Not in this run | All four workflows |
