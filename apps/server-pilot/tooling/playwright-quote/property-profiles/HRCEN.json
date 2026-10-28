@@ -13,7 +13,9 @@
     "STWN": 69,
     "SUITE": 2
   },
+  "cms": {"messageIds": [{"code": "01", "label": "Guest booking – payment link"}, {"code": "03", "label": "Agency/company booking – payment link + proforma"}, {"code": "05", "label": "Online check-in"}, {"code": "08", "label": "Agency booking – no rate"}, {"code": "012", "label": "Payment proof"}, {"code": "014", "label": "Payment proof"}], "defaultAgency": "03", "defaultGuest": "01"},
   "requiredCreateFields": [],
+  "createForm": { "options": {"guaranteetype": {"choices": [{"value": "Awaiting Voucher", "display": "Awaiting Voucher"}, {"value": "Confirmation Received", "display": "Confirmation Received"}, {"value": "Deposit Requested", "display": "Deposit Requested"}, {"value": "Group Definite", "display": "Group Definite"}, {"value": "Guaranteed By Agent", "display": "Guaranteed By Agent"}, {"value": "Guaranteed By Company", "display": "Guaranteed By Company"}, {"value": "Guaranteed By Credit Card", "display": "Guaranteed By Credit Card"}, {"value": "Guaranteed By Deposit", "display": "Guaranteed By Deposit"}, {"value": "Non-Guaranteed Group", "display": "Non-Guaranteed Group"}, {"value": "Non-Guaranteed Individual", "display": "Non-Guaranteed Individual"}]}} },
   "salesStrategies": [
     { "value": "BAR", "display": "BAR", "scope": "public" },
     { "value": "GOV", "display": "Government" }

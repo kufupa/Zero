@@ -499,6 +499,20 @@ describe('hms-proof-run refusals', () => {
     }
   });
 
+  it('preserves CMS and native fields without carrying send authorization into the stay', () => {
+    const fields = { marketSegment: 'Wholesale', guestoptin4: true, cmsMessageId: '03',
+      confirmationRecipient: { mode: 'self', address: 'staff@example.invalid' } };
+    expect(stayFromProofRequest({ ...fields, confirmationSendAuthorized: true })).toEqual(fields);
+  });
+
+  it('refuses proof recipient without explicit send authorization before the lock', async () => {
+    const { createLock } = createLockSpy();
+    await expect(hmsProofRun(parseProofRunArgs(argv('create', { ...LAB,
+      confirmationRecipient: { mode: 'self', address: 'staff@example.invalid' } })), WRITE_LAB, createLock))
+      .rejects.toThrow('confirmation_send_authorization_required');
+    expect(createLock).not.toHaveBeenCalled();
+  });
+
   it('create stay omits CLI-only fields so the preview digest still matches', () => {
     const stay = stayFromProofRequest({
       ...LAB,

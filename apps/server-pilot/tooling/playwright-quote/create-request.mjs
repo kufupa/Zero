@@ -4,7 +4,7 @@
 // Descriptions are ignored at validation time.
 import { readFile } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
-import { parseStayProperty, profileFor } from './property-profile.mjs';
+import { guaranteeDisplay, parseStayProperty, profileFor } from './property-profile.mjs';
 
 const schemaUrl = new URL('./create-tool.schema.json', import.meta.url);
 
@@ -205,12 +205,10 @@ export function normalizeCreateLabels(data) {
   return next;
 }
 
-// Text the runner types into the optional New Record fields, keyed by native field name. The two lookups take the
-// exact party name. LIVE-UNVERIFIED: typed lookup text may not bind the HMS party; Opus checks the readback live.
+// Other optional New Record fills. Booking agency is selected via its HMS lookup.
 export function optionalPartyAndNoteFills(stay) {
   const organization = typeof stay.organization === 'string' ? stay.organization : (stay.organization?.name ?? '');
   return {
-    ta1: stay.bookingAgency?.name ?? stay.agency ?? '', // LIVE-UNVERIFIED Primary Booking Agency lookup
     company: organization, // LIVE-UNVERIFIED Organization lookup
     reservationnote: stay.reservationNote ?? '', // LIVE-UNVERIFIED multiline textarea
     caller: stay.bookerName ?? '', // LIVE-UNVERIFIED Booker Name
@@ -378,5 +376,8 @@ export async function loadCreateRequest(argv) {
   if (!result.ok) {
     return { ok: false, exitCode: 2, error: `invalid request: ${result.errors.join('; ')}` };
   }
+  const guarantee = guaranteeDisplay(profileFor(property.propertyCode), data.guaranteeType);
+  if (!guarantee) return { ok: false, exitCode: 2, error: 'guarantee_type_unknown' };
+  data.guaranteeType = guarantee;
   return { ok: true, exitCode: 0, request: data };
 }

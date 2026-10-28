@@ -1,5 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { PROPERTY_REGISTRY } from '../../tooling/playwright-quote/property-registry.mjs';
+import { profileFor } from '../../tooling/playwright-quote/property-profile.mjs';
 
 /**
  * CLIENT_QUESTION: track / sourceOfBusiness / guaranteeType per party class
@@ -87,7 +89,6 @@ const schema = JSON.parse(
       properties: {
         track: { enum: string[] };
         sourceOfBusiness: { enum: string[] };
-        guaranteeType: { enum: string[] };
       };
     };
   };
@@ -96,7 +97,11 @@ const schema = JSON.parse(
 const ENUMS = {
   track: new Set(schema.$defs.request.properties.track.enum),
   sourceOfBusiness: new Set(schema.$defs.request.properties.sourceOfBusiness.enum),
-  guaranteeType: new Set(schema.$defs.request.properties.guaranteeType.enum),
+  guaranteeType: new Set(
+    PROPERTY_REGISTRY.properties.flatMap((property) =>
+      profileFor(property.propertyCode)?.createForm?.options?.guaranteetype?.choices?.map((choice) => choice.display) ?? [],
+    ),
+  ),
 };
 
 function normalizeCreateLabelsLike(field: keyof BookingCodeDefaults, value: string): string {

@@ -88,9 +88,10 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["name"],
-      "description": "HMS party for an identity lookup field. name is typed into the lookup. nativeId is optional and carried for the audit and the preview digest; the runner does not select by id yet.",
+      "description": "HMS party with name and optional native identifier.",
       "properties": {
         "nativeId": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "id": { "type": "string", "minLength": 1, "maxLength": 40 },
         "name": { "type": "string", "minLength": 1, "maxLength": 100 }
       }
     },
@@ -128,11 +129,11 @@
         "childAges": {
           "type": "array",
           "maxItems": 16,
-          "description": "Optional ages entered through Enter Child Ages after Update Child Categories is checked. Each age is an integer 0 through 99. The main Child 0-02, 03-12, and 13-17 boxes stay read-only. Observed 2026-09-24: age 5 applied on an unsaved stay as children 1 and Child 03-12 count 1.",
+          "description": "Optional ages entered through Enter Child Ages after Update Child Categories is checked. Each age is an integer 0 through 17. The main Child 0-02, 03-12, and 13-17 boxes stay read-only. Observed 2026-09-24: age 5 applied on an unsaved stay as children 1 and Child 03-12 count 1.",
           "items": {
             "type": "integer",
             "minimum": 0,
-            "maximum": 99
+            "maximum": 17
           }
         },
         "sourceOfBusiness": {
@@ -229,20 +230,10 @@
         },
         "guaranteeType": {
           "type": "string",
-          "enum": [
-            "Awaiting Voucher",
-            "Confirmation Received",
-            "Deposit Requested",
-            "Group Definite",
-            "Guaranteed By Agent",
-            "Guaranteed By Company",
-            "Guaranteed By Credit Card",
-            "Guaranteed By Deposit",
-            "Non-Guaranteed Group",
-            "Non-Guaranteed Individual"
-          ],
-          "description": "Opened Guarantee Type labels."
+          "minLength": 1,
+          "description": "Property profile guarantee option label or code."
         },
+        "cmsMessageId": { "type": "string", "minLength": 1, "maxLength": 8 },
         "agency": {
           "type": "string",
           "minLength": 1,
@@ -250,7 +241,7 @@
         },
         "bookingAgency": {
           "$ref": "#/$defs/partyRef",
-          "description": "Optional Primary Booking Agency {nativeId?, name}. The runner types name into the lookup (ta1). nativeId is carried, not selected by. Not required."
+          "description": "Optional Primary Booking Agency {nativeId?, name}. The runner selects the exact HMS lookup row by nativeId when present, else by name. Not required."
         },
         "organization": {
           "description": "Optional Organization: an exact name string (draft request) or {nativeId?, name} (pane). The runner types the name into the lookup (company). Not required.",
