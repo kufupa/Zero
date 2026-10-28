@@ -1376,6 +1376,7 @@ export function BookingCards({
           </select>
         </label>
       {sendConfirmation ? (
+        <div data-pii>
         <ConfirmationRecipient
           mode={recipientMode}
           customAddress={customAddress}
@@ -1441,6 +1442,7 @@ export function BookingCards({
           defaultSaved={defaultSaved}
           defaultError={defaultError}
         />
+        </div>
       ) : null}
       </div>
       {mode === 'lab' ? (
