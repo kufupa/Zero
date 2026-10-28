@@ -229,6 +229,100 @@ New optional fields on the pane stay input (tRPC zod + `PaneStay` + runner reque
 
 **Size:** ~200–300 product lines.
 
+### U5. Field-parity scorer (L4, parallel, read-only)
+
+**Goal:** a reusable scoreboard. For each real Da Vinci booking email, it shows Nava's prefill next to the booking staff actually saved in HMS, field by field, and gives every miss a cause. It runs a baseline now on current `main` and re-scores offline after the deploy.
+
+**Why now:** it touches no L1–L3 file. Any later tuning (rules, lookup, prompt, GEPA) needs this test set. It also checks the 01/03 Message Id rule and the guarantee defaults against Faith's real records **before** U4.
+
+**Evidence (read-only prod SQL, 2026-10-28 ~01:00Z):**
+
+| Fact | Number |
+|---|---|
+| HRDAV transports | 5 mailboxes: `davinci@`, `epick@`, `fkhumalo@` (Faith), `kmgidi@`, `adladla@`. Mail since 2026-10-07/08 |
+| Inbound `new_booking` (latest extraction) | **207** (Faith 54) |
+| …with a guest name extracted | 162 |
+| …linked by same-thread confirmation subject | 19 |
+| …linked by guest surname in a confirmation-number subject ≤21 days later | **86** (65 on the same mailbox) |
+| Census lane, thread/extraction linkage only | 0 confirmations; `find-batch` probe failed on a guest name starting with a digit ([census](../research/2026-10-28-hrdav-field-census.md), lane held) |
+
+What this means:
+- Thread linkage is a dead end. Surname plus confirmation subject is the join, with HMS as the referee.
+- The ceiling is ~86 mails before the HMS identity check. Expect ~50–75 true pairs. That is enough for per-field rates (bar n ≥ 10) and **below** the ≥100 classifier bar. The report says so.
+
+**Dependencies:** none to start. The HMS batch must finish before U4 (shared HRDAV lock). The post-deploy re-score depends on U1–U3 being deployed.
+
+**Files:**
+- Create `apps/server-pilot/src/ai/field-parity.ts`: pure scorer (pair in, per-field verdict + cause out).
+- Create `apps/server-pilot/scripts/hrdav-field-parity.ts`: three stages (pairs SQL, HMS read, score). Writes raw data to `.private/hrdav-parity/` on EC2 and aggregates to stdout.
+- Modify `apps/server-pilot/tooling/playwright-quote/read-reservation-fields.mjs`: additive `FIELDS` entries only (`child1`–`child3`, `udfchar09`, `udfchar13`, `udfchkbox04`, `udfchar06`, `guestoptin4`, `emailaddress`, `lastname`). No change to the allowlisted endpoints or the read-only guard.
+- Test `apps/server-pilot/tests/field-parity.test.ts` and `apps/server-pilot/tooling/playwright-quote/read-reservation-fields.test.mjs`.
+- Output `docs/research/2026-10-28-hrdav-field-parity.md` (aggregates, no PII).
+
+**Approach:**
+1. **Pairs (SQL, no HMS).** Inbound `new_booking` on the 5 HRDAV transports, plus `quote`/`quote_availability` mails that staff later booked. For each:
+   - Take the extracted guest surname and arrival.
+   - Collect candidate confirmation numbers from subjects on any HRDAV transport, up to 21 days later, whose subject contains that surname.
+   - Same-thread hits rank first. Keep every candidate; HMS decides.
+2. **Truth (HMS read, HRDAV lock).** Read each candidate with `read-reservation-fields.mjs`, which does `OSRESS.search` by confirmation then `OSRESV.HDR`. Do **not** use `find-batch`/quick-search: its surname parser broke the census probe.
+   - Accept a pair only when the HMS last name equals the surname **and** the HMS arrival is within ±3 days of the extracted arrival.
+   - Exclude records Nava or Labtest created (`createdby`, or last name Labtest).
+   - The existing identity check refuses a record whose confirmation number differs.
+3. **Nava side (offline, no model calls).** Rebuild what the pane would show, from stored artifacts:
+   - The latest extraction payload.
+   - The stored V2 party bind.
+   - The prepared rate run, if any.
+   - Profile defaults, through the same builders the pane uses (`buildCreatePrefill`, `createRequestFieldOptions`).
+   - Fresh re-extraction (`golden-fresh-extract.ts`) is used only later, to test prompt changes.
+4. **Score per field.** Fields in the owner's order: agency `ta1`, guarantee type, room type, rate plan, adults, children (age → band), dates, meal plan, market segment, source of business, track, CMS Send Mail / Message Id / Booker Email, reservation note present. Stay-level fields use the first confirmation; room-level fields compare as a multiset across all of the mail's confirmations (one per room).
+5. **Cause per miss:**
+
+| Class | Rule | Fix lane later |
+|---|---|---|
+| `extract` | The email states the value; the extraction has it wrong or missing | prompt |
+| `lookup` | The extraction is right, but the bound party or prepared rate ≠ HMS | lookup |
+| `default` | The value comes from the profile or a rule (guarantee, segment, SOB, track, CMS id) and ≠ HMS | profile/rule |
+| `not_in_email` | Staff had information the email lacks | excluded from the denominator, counted |
+| `truth_drift` | A later mail in the thread changed it (amend) | excluded, counted |
+
+   - Deterministic first. A Luna max judge (approved Azure route, on EC2) runs only on misses, to split `extract` from `not_in_email`/`truth_drift`. Its email text never leaves EC2.
+6. **Report.** One table: field · n · hit · each cause · excluded. Also:
+   - The CMS Message Id split by agency-bound vs direct. This confirms or kills the 03/01 rule.
+   - The guarantee-type mix on provisional bookings.
+   - Faith's mailbox shown separately.
+   - Rows are labelled `P###`; no names, emails or confirmation numbers.
+
+**Execution note:** write the scorer test-first against hand-built pairs. Do the live HMS read once, and cache it; re-scores never touch HMS.
+
+**Patterns to follow:**
+- `apps/server-pilot/src/ai/gold-pair-join.ts` and `apps/server-pilot/scripts/join-gold-pair-ops.ts`: offline join, private input.
+- `apps/server-pilot/scripts/golden-fresh-extract.ts`: fixed id set, no persistence.
+- [2026-10-20 prefill backtest](../research/2026-10-20-booking-prefill-backtest.md): a redacted per-mail table. It reached n = 1; this unit fixes the linkage it lacked.
+
+**Test scenarios** (`tests/field-parity.test.ts`):
+- Happy path: exact dates, adults 2, `ta1` id equal to the bound party id → all hits.
+- Children: email ages 5 and 14 → HMS `child2=1`, `child3=1` → hit. Email "2 kids", no ages, HMS bands set → `extract` miss on ages, adults still scored.
+- Agency: extraction "Tourvest", bound id X, HMS `ta1` X → hit; HMS `ta1` Y → `lookup`; extraction null while the email names an agency → `extract`; email names none, HMS has one → `not_in_email`.
+- Room type: "standard king" mapped through the profile to `STKNG` → hit; `SKNG` vs `STQN` → `extract` miss (the 2026-10-20 real case).
+- Default: profile guarantee ≠ HMS guarantee → `default`.
+- CMS: agency bound and HMS `udfchar09`=03 → rule hit; direct and HMS 01 → hit; HMS blank → counted as "staff left blank", not a Nava miss.
+- Multi-room: email 2 rooms, 2 confirmations → room multiset hit; 1 confirmation found → partial, flagged.
+- Excluded: last name Labtest, or `createdby` = Nava service user → not scored.
+- Pairs: surnames "van der Merwe", "Mr J Smith", "Dlamini-Nkosi" and a diacritic all normalise; two confirmations with the same surname and different arrivals → arrival match wins; none within ±3 days → unlinked, counted.
+- Reader (`read-reservation-fields.test.mjs`): `pickFields` on a fixture HDR body returns `child1`, `udfchar09`, `udfchkbox04` and `guestoptin4`; unknown keys are still ignored.
+
+**Verification:**
+- The research md exists with per-field n and causes, the CMS split and the guarantee mix, and no PII. Raw data is mode 600 in EC2 `.private/hrdav-parity/`.
+- The HRDAV slot was released and no write endpoint was called (read-only guard log).
+- Baseline scored on the current `main` SHA. Re-score after the U1–U3 deploy with no HMS calls; both columns are in the report.
+
+**Lock and staff-hours rules:**
+- Live prefetch (`HMS_DAVINCI_READS=on`) uses the same HRDAV lock.
+- Read in leases of ≤10 confirmations, so a staff job waits at most ~1 minute.
+- Finish the batch before 05:00 UTC staff start, and before U4. Pause if U4 starts.
+
+**Size:** ~250–350 lines (scorer ~150, script ~120, reader +15), tests extra. One PR, Apex once.
+
 ### U4. Live proof (coordinator)
 
 **Goal:** one real Faith email edited to Labtest becomes 2 HRDAV bookings with every field right, and the letter arrives.
@@ -264,6 +358,7 @@ New optional fields on the pane stay input (tRPC zod + `PaneStay` + runner reque
 | L1 | `hrdav-book-write-20261028` | Claude Code `--model claude-fable-5-1 --effort xhigh` (Terra) | U1 files |
 | L2 | `hrdav-book-rates-20261028` | same | U2 files |
 | L3 | `hrdav-book-pane-20261028` | same | U3 files |
+| L4 | `hrdav-field-parity-20261028` | Codex Luna max (pure TS + SQL, cheap); coordinator reads the one HMS-reader diff | U5 files |
 | Coordinator | this chat (Opus) | | contract, diffs, merge, deploy, U4 |
 
 **Do not touch:**
@@ -272,9 +367,9 @@ New optional fields on the pane stay input (tRPC zod + `PaneStay` + runner reque
 - `wt-avail` (`fetch-quote.mjs`).
 - Pane demo worktrees: they only touch `apps/mail/prototypes/`.
 
-**Cleanup before start:** close the idle census and email-pairs worktrees.
+**Cleanup before start:** close the idle census and email-pairs worktrees. U5 replaces the held census lane: it reads the same staff records with a linkage that works.
 
-**HMS:** only U4 and the U2 shadow read touch HRDAV, through its own lock. Pomerado stays on HRCEN, so there is no shared browser.
+**HMS:** only U4, the U2 shadow read and the U5 batch touch HRDAV, through its own lock. Order: U5 batch → U2 shadow → U4. Pomerado stays on HRCEN, so there is no shared browser.
 
 **Gates per lane** (run in parallel, in the background):
 - Remote typecheck on EC2.
@@ -295,6 +390,7 @@ New optional fields on the pane stay input (tRPC zod + `PaneStay` + runner reque
 | Deploy | 15–30 | Measured 13–30 |
 | Live proof (≤2 tries) | 30–60 | Labtest saves took 20–34 |
 | **Total** | **140–230** | Past overnight runs ran 2.8× over → bad case ~7 h |
+| L4 scorer, in parallel (off the critical path) | 75–110 | Code 40–60 (code-server 0.85); HMS batch ~86 reads × ~5 s plus leases, 10–15 (live-hms 0.80); score + report 20–30 (research 0.66) |
 
 ## Risks
 
@@ -306,6 +402,11 @@ New optional fields on the pane stay input (tRPC zod + `PaneStay` + runner reque
 | Letter still not sent with 03 set | Check the HMS CMS Message List / Sent Email for that booking, read-only |
 | The `recover-parse-failure` deploy tree is dirty (other chats' docs) | Deploy from a clean checkout of that path, or ask before stashing |
 | Outlook surface unseen tonight | Webmail proof tonight; Outlook bundle load in the morning |
+| U5: true pairs < 50 after the HMS identity check | Report n per field; add the quote→booked mails; Centurion pairs later (HRCEN busy). Never pad with Nava-made bookings |
+| U5: the surname join picks the wrong booking | Accept only on HMS last name + arrival ±3 days; ambiguous → unlinked |
+| U5: the batch blocks live staff prefetch on HRDAV | Leases of ≤10, done before 05:00 UTC, paused during U4 |
+| U5: stored artifacts are older than current code | The baseline is labelled "stored prefill"; the post-deploy re-score rebuilds with new code over the same cached truth |
+| U5: the score points at a fix L1–L3 already make | Expected. The before/after columns show it; no new lane opens until after U4 |
 
 ## Out of scope (deferred)
 
@@ -342,16 +443,9 @@ New optional fields on the pane stay input (tRPC zod + `PaneStay` + runner reque
 | Real guests | Off (`lab`) | On, after the owner's go |
 | Amend / cancel / payment proof | Not in this run | All four workflows |
 
-## L4: field-parity scorer (parallel, read-only, starts with L1–L3)
+## L4: field-parity scorer
 
-- **What:** pair real Faith inbound mail with the HMS record she saved, read through `find-batch.mjs` under the HRDAV lock. Score Nava's prefill field by field, and tag every miss with its cause class:
-  - **extract**: the LLM misread the email.
-  - **lookup**: the party or rate didn't bind.
-  - **default**: a rule or profile value is wrong.
-- **Why parallel:** it touches no lane files. It is the eval set any later tuning needs, and it ranks which fixes matter.
-- **Coder:** Luna max (bulk, cheap). Output: a dated research md with no PII; raw output goes to `.private/`.
-- **Known limit:** only 26 of 523 HRDAV confirmations linked to an inbound thread by `thread_id` (2026-10-28 check). The lane widens linkage first: confirmation number in staff outbound/letter subjects ↔ the inbound in the same conversation. Report n honestly.
-- **HMS lock:** batch reads finish before U4. They pause while U4 runs.
+Scoped as **U5** under Implementation units. It runs in parallel with L1–L3 from the start.
 
 ## Tuning after the score (not before)
 
