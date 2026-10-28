@@ -298,7 +298,7 @@ describe('party prefetch selection', () => {
 });
 
 describe('prepared quote selection', () => {
-  it('prefers an exact strategy over a newer party-matched different strategy', async () => {
+  it('prefers an available party-bound WS run over a newer BAR run', async () => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
     const quote = staffQuoteInput.parse({
@@ -320,7 +320,7 @@ describe('prepared quote selection', () => {
         const index = ++selects;
         const chain = {
           from: () => chain, where: () => chain,
-          orderBy: () => index === 2 ? Promise.resolve([prepared('ws-run', 'WS'), prepared('bar-run', 'BAR')]) : chain,
+          orderBy: () => index === 2 ? Promise.resolve([prepared('bar-run', 'BAR'), prepared('ws-run', 'WS')]) : chain,
           limit: async () => index === 1 ? [{ id: 'message-1', messageIdHeader: null }] : [],
         };
         return chain;
@@ -328,7 +328,7 @@ describe('prepared quote selection', () => {
     } as unknown as DB;
     try {
       const result = await readHmsJobView({ transportId: 'transport-faith', userId: 'staff-1', messageId: 'message-1', kind: 'staff_quote', input: quote }, db);
-      expect(result?.runId).toBe('bar-run');
+      expect(result?.runId).toBe('ws-run');
     } finally {
       vi.unstubAllEnvs();
     }
