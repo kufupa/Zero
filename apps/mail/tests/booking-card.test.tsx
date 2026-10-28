@@ -1411,14 +1411,17 @@ describe('booking card marks guest details for the preview gate (H6b)', () => {
 
   it('marks the guest names, the booking summary and the HMS confirmation with data-pii', async () => {
     const { client } = paneClient();
-    const { container } = render(<BookingCards draft={draftReady()} paneSave={client} />);
-    expect(unmaskedPii(container, ['Smith', 'Doe'])).toEqual([]);
+    const draft = draftReady();
+    // Avoid a substring match between the surname Doe and the word "does" in normal UI copy.
+    draft.draft.rooms[1]!.request.lastName = 'Doe-Guest';
+    const { container } = render(<BookingCards draft={draft} paneSave={client} />);
+    expect(unmaskedPii(container, ['Smith', 'Doe-Guest'])).toEqual([]);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     expect((await screen.findByText(JOHN_SMITH_PREVIEW)).hasAttribute('data-pii')).toBe(true);
     fireEvent.click(bookButton(0));
     await screen.findByText('Booked in HMS – confirmation 98765-1');
-    expect(unmaskedPii(container, ['Smith', 'Doe', '98765-1'])).toEqual([]);
+    expect(unmaskedPii(container, ['Smith', 'Doe-Guest', '98765-1'])).toEqual([]);
   });
 });
 
