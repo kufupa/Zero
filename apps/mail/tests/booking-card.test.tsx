@@ -1173,6 +1173,25 @@ describe('HRDAV booking fields and CMS', () => {
     expect(Array.from(message.options, (option) => option.value)).toEqual(expect.arrayContaining(['21', '23']));
   });
 
+  it('never defaults to the inbound booker when confirmation sources are missing', () => {
+    const { client, preview, commit } = paneClient();
+    const draft = hrdavDraft();
+    expect(draft.draft.rooms[0]!.request.bookerEmail).toBe('booker@example.invalid');
+    render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE} confirmation={null} />);
+    expect((screen.getByLabelText('Send HMS confirmation to') as HTMLSelectElement).value).toBe('self');
+    expect(previewButton(0).disabled).toBe(true);
+    expect(bookButton(0).disabled).toBe(true);
+    fireEvent.click(previewButton(0));
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'client' } });
+    expect(previewButton(0).disabled).toBe(false);
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({
+      confirmationRecipient: { mode: 'client', address: 'booker@example.invalid' },
+    }));
+  });
+
   it('blocks CMS preview and booking when no recipient is available', () => {
     const { client, preview, commit } = paneClient();
     const draft = hrdavDraft();
