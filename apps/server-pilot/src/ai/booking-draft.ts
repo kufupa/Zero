@@ -5,6 +5,7 @@ import type { Board, QuoteRevision } from '../quote-proposal/quote-revision.js';
 import type { RowPrice } from '../quote-proposal/quote-lines.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
+import { CENTURION_RATE_PLANS } from '../hms/rate-catalogue.js';
 
 export type BookingDraftDefaults = {
   track: string | null;
@@ -266,7 +267,10 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
   sourceOfBusiness: string[];
   guaranteeType: string[];
   roomType: string[];
+  ratePlans: string[];
   requiredCreateFields: string[];
+  cmsMessageIds?: Array<{ code: string; label: string }>;
+  cmsDefaults?: { agency: string; guest: string };
 } {
   const property = getPropertyRegistration(propertyCode);
   if (!property) throw new Error('hms_property_unknown');
@@ -283,7 +287,7 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
         properties: {
           track: { enum: string[]; 'x-propertyEnums'?: Record<string, string[]> };
           sourceOfBusiness: { enum: string[] };
-          guaranteeType: { enum: string[] };
+          guaranteeType: { enum?: string[] };
         };
       };
     };
@@ -298,7 +302,13 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     ),
   ) as {
     roomCapacity?: Record<string, number>;
+    ratePlans?: Record<string, unknown>;
     requiredCreateFields?: string[];
+    cms?: {
+      messageIds?: Array<{ code: string; label: string }>;
+      defaultAgency?: string;
+      defaultGuest?: string;
+    } | null;
     createForm?: {
       options?: Record<string, { choices?: Array<{ value: string; display: string }> }>;
     };
@@ -309,15 +319,29 @@ export function createRequestFieldOptions(propertyCode = 'HRCEN'): {
     ...(props.track['x-propertyEnums']?.[propertyCode] ?? []),
   ]);
   const propertyTrackChoices = createOptions?.track?.choices?.map(({ value }) => value);
+  const cms = profile.cms;
+  const cmsRows = cms?.messageIds;
+  const validCms = Array.isArray(cmsRows) && cmsRows.length > 0 &&
+    cmsRows.every((row) => typeof row?.code === 'string' && row.code.trim() &&
+      typeof row.label === 'string' && row.label.trim()) &&
+    typeof cms?.defaultAgency === 'string' && typeof cms.defaultGuest === 'string' &&
+    cmsRows.some((row) => row.code === cms.defaultAgency) &&
+    cmsRows.some((row) => row.code === cms.defaultGuest);
   return {
     track: (propertyTrackChoices ?? props.track.enum).filter((track) => validTracks.has(track)),
     sourceOfBusiness:
       createOptions?.sourceofbusinessdesc?.choices?.map(({ display }) => display) ??
       props.sourceOfBusiness.enum,
     guaranteeType:
-      createOptions?.guaranteetype?.choices?.map(({ display }) => display) ?? props.guaranteeType.enum,
+      createOptions?.guaranteetype?.choices?.map(({ display }) => display) ?? props.guaranteeType.enum ?? [],
     roomType: Object.keys(profile.roomCapacity ?? {}),
+    ratePlans: profile.ratePlans ? Object.keys(profile.ratePlans) :
+      propertyCode === 'HRCEN' ? CENTURION_RATE_PLANS.map(({ code }) => code) : [],
     requiredCreateFields: profile.requiredCreateFields ?? [],
+    ...(validCms ? {
+      cmsMessageIds: cmsRows,
+      cmsDefaults: { agency: cms.defaultAgency!, guest: cms.defaultGuest! },
+    } : {}),
   };
 }
 
