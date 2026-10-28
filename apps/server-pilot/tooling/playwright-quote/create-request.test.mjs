@@ -108,6 +108,13 @@ test('send-off path explicitly unchecks the control before readback', async () =
   assert.match(source, /if \(stay\.cmsMessageId\) await pickCmsMessageId[\s\S]*else await setCmsSendMail\(page, false\);[\s\S]*compareCmsReadback/);
 });
 
+test('CMS message picker re-reads the lookup grid until the code row renders', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const picker = source.slice(source.indexOf('async function pickCmsMessageId'), source.indexOf('async function pickBookingAgency'));
+  assert.match(picker, /for \(;;\)[\s\S]*exact\.length > 0 \|\| Date\.now\(\) >= deadline[\s\S]*waitForTimeout/);
+  assert.match(picker, /if \(exact\.length !== 1\) throw new Error\('cms_message_id_not_unique'\)/);
+});
+
 test('agency row selection uses internal record ID, not visible IATA', () => {
   const selected = { nativeId: '456', displayName: 'Acme Travel', matchedOn: ['store'] };
   assert.equal(matchAgencyGridRow({ nativeId: '456', displayName: 'Acme Travel', iata: '987' }, selected, { id: '456', name: 'Acme Travel' }), true);
