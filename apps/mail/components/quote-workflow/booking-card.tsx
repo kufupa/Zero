@@ -1589,6 +1589,7 @@ export function BookingCards({
               Children
               <input type="number" min={0} max={16} step={1} aria-label="Children" className={paneFieldClass} disabled={locked}
                 value={ages.length} onChange={(event) => {
+                  if (event.target.value.trim() === '') return;
                   const count = Number(event.target.value);
                   if (Number.isInteger(count) && count >= 0 && count <= 16) {
                     setChoice({ childAges: Array.from({ length: count }, (_, index) => ages[index] ?? '') });
