@@ -304,9 +304,10 @@ describe('prepared quote selection', () => {
     { name: 'keeps BAR over a newer unverified WS result', contract: false, otherParty: false, stale: false, wsNewest: true, expected: 'bar-run' },
     { name: 'keeps BAR when the contract belongs to another party', contract: true, otherParty: true, stale: false, expected: 'bar-run' },
     { name: 'keeps BAR when the contract has expired', contract: true, otherParty: false, stale: true, expected: 'bar-run' },
+    { name: 'uses newer BAR when an approval invalidated the older contract', contract: true, otherParty: false, stale: false, approvalBetween: true, expected: 'bar-run' },
     { name: 'does not reuse an unverified WS price as BAR when BAR is missing', contract: false, otherParty: false, stale: false, noBar: true, expected: null },
     { name: 'reuses a verified WS contract when BAR is missing', contract: true, otherParty: false, stale: false, noBar: true, expected: 'ws-run' },
-  ])('$name', async ({ contract, otherParty, stale, expected, noBar, wsNewest }) => {
+  ])('$name', async ({ contract, otherParty, stale, expected, noBar, wsNewest, approvalBetween }) => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
     const quote = staffQuoteInput.parse({
@@ -320,7 +321,8 @@ describe('prepared quote selection', () => {
       ...runningRun({ kind: 'staff_quote', input: { ...quote, salesStrategy: strategy,
         ...(strategy === 'WS' && otherParty ? { parties: { agency: { kind: 'agency', nativeId: 'other', name: 'Other' } } } : {}),
       } }, HMS_JOB_PRIORITY_PREFETCH),
-      id, transportId: 'transport-faith', state: 'succeeded', createdAt: now, finishedAt: now,
+      id, transportId: 'transport-faith', state: 'succeeded',
+      createdAt: strategy === 'WS' ? new Date(now.getTime() - 2_000) : now, finishedAt: now,
       readResult: { status: 'ready', asOf: strategy === 'WS' && stale ? new Date(now.getTime() - 25 * 60 * 60_000).toISOString() : now.toISOString(),
         rateOptions: [{ groupId: 'g1', selected: true, contract: strategy === 'WS' && contract, rateCode: strategy === 'WS' ? 'BWS1B' : 'BAR' }] },
       readResultExpiresAt: new Date(now.getTime() + 60_000),
@@ -335,7 +337,8 @@ describe('prepared quote selection', () => {
           orderBy: () => index === 2 ? Promise.resolve(wsNewest
             ? [prepared('ws-run', 'WS'), ...(noBar ? [] : [prepared('bar-run', 'BAR')])]
             : [...(noBar ? [] : [prepared('bar-run', 'BAR')]), prepared('ws-run', 'WS')]) : chain,
-          limit: async () => index === 1 ? [{ id: 'message-1', messageIdHeader: null }] : [],
+          limit: async () => index === 1 ? [{ id: 'message-1', messageIdHeader: null }] :
+            approvalBetween ? [{ createdAt: new Date(now.getTime() - 1_000) }] : [],
         };
         return chain;
       },
