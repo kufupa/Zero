@@ -1195,7 +1195,7 @@ describe('HRDAV booking fields and CMS', () => {
     fireEvent.click(previewButton(0));
     expect(preview).toHaveBeenCalledTimes(1);
     expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('confirmationRecipient');
-    expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('cmsMessageId');
+    expect(preview.mock.calls[0]?.[0]).toHaveProperty('cmsMessageId', '01');
     expect(preview.mock.calls[0]?.[0]).toHaveProperty('confirmationSendMail', false);
   });
 

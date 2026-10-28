@@ -1158,12 +1158,12 @@ export function BookingCards({
     roomChoice.bookingAgency = choice.bookingAgency === '__none__' || !boundAgency
       ? undefined : { name: boundAgency.name, nativeId: boundAgency.nativeId };
     roomChoice.confirmationSendMail = sendConfirmation;
-    roomChoice.cmsMessageId = sendConfirmation ? cmsMessage : undefined;
+    roomChoice.cmsMessageId = cmsMessage;
     const built = paneStayInputForConfiguredRoom(roomRequestFor(room, group, choice), roomChoice, requiredCreateFields);
     const missing = [...built.missing];
     if (agencyUnresolved) missing.push('booking agency');
     if (sendConfirmation && !recipient.ok) missing.push('confirmation recipient');
-    if (sendConfirmation && !cmsOptions.some((option) => option.code === cmsMessage)) missing.push('Confirmation type');
+    if (!cmsOptions.some((option) => option.code === cmsMessage)) missing.push('Confirmation type');
     const selectedRoom = roomChoice.roomType ?? '';
     if (propertyCode && propertyCode !== 'HRCEN' && !draft.options.roomType.includes(selectedRoom)) missing.push('room type');
     return { stay: missing.length ? null : built.stay, missing: [...new Set(missing)] };
@@ -1317,14 +1317,14 @@ export function BookingCards({
             disabled={stayBooking} onChange={(event) => setSendConfirmation(event.target.checked)} />
           Send confirmation from HMS
         </label>
-        {sendConfirmation ? <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
+        <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
           Message Id
           <select aria-label="Message Id" className={paneFieldClass} disabled={stayBooking}
             value={cmsMessage} onChange={(event) => setChosenCmsMessage(event.target.value)}>
             <option value="">Select confirmation type</option>
             {cmsOptions.map((option) => <option key={option.code} value={option.code}>{option.code} – {option.label}</option>)}
           </select>
-        </label> : null}
+        </label>
       {sendConfirmation ? (
         <ConfirmationRecipient
           mode={recipientMode}
