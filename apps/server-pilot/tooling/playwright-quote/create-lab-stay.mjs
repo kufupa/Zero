@@ -126,9 +126,8 @@ export function compareCmsReadback(expected, actual) {
 
 export function expectedCmsFields(stay) {
   const code = String(stay?.cmsMessageId ?? '').trim();
-  if (!code) return null;
   const send = confirmationSendMail(stay);
-  return { udfchar09: code, ...(send ? { udfchar13: confirmationRecipientFills(stay).udfchar13 } : {}), send };
+  return { ...(code ? { udfchar09: code } : {}), ...(send ? { udfchar13: confirmationRecipientFills(stay).udfchar13 } : {}), send };
 }
 
 export function matchAgencyGridRow(row, selected, party) {
@@ -1003,7 +1002,7 @@ async function runProofReadback(browser, secret, stay, dir, save, savedScreensho
     ),
   });
   const merged = mergeReadbackCompare(proof, stay, lastStay);
-  const cms = expectedCmsFields(stay) && lastStay
+  const cms = lastStay
     ? compareCmsReadback(expectedCmsFields(stay), lastStay)
     : { reason: null, mismatches: [] };
   if (cms.reason) {
@@ -1173,20 +1172,18 @@ export async function main(argv = process.argv.slice(2)) {
       })) {
         if (value) await fillNamed(page, name, value);
       }
-      if (confirmationSendMail(stay) && !expectedCmsFields(stay)) throw new Error('cms_message_id_required');
-      if (expectedCmsFields(stay)) {
-        await pickCmsMessageId(page, stay.cmsMessageId.trim());
-        if (confirmationSendMail(stay)) await tickCmsSendMail(page);
-        else await setCmsSendMail(page, false);
-        result.cmsSendMail = confirmationSendMail(stay);
-        const cms = compareCmsReadback(expectedCmsFields(stay), await readSavedCreateFields(page));
-        if (cms.reason) {
-          result.outcome = 'refused_cms_fields_unverified';
-          result.cmsMismatches = cms.mismatches;
-          result.clickedSave = false;
-          process.stdout.write(`${result.outcome}\n`);
-          return;
-        }
+      if (confirmationSendMail(stay) && !String(stay.cmsMessageId ?? '').trim()) throw new Error('cms_message_id_required');
+      if (stay.cmsMessageId) await pickCmsMessageId(page, stay.cmsMessageId.trim());
+      if (confirmationSendMail(stay)) await tickCmsSendMail(page);
+      else await setCmsSendMail(page, false);
+      result.cmsSendMail = confirmationSendMail(stay);
+      const cms = compareCmsReadback(expectedCmsFields(stay), await readSavedCreateFields(page));
+      if (cms.reason) {
+        result.outcome = 'refused_cms_fields_unverified';
+        result.cmsMismatches = cms.mismatches;
+        result.clickedSave = false;
+        process.stdout.write(`${result.outcome}\n`);
+        return;
       }
       const book = bookFieldFills(stay);
       if (book.marketsegment) await fillNamed(page, 'marketsegment', book.marketsegment);
@@ -1268,15 +1265,13 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
     // Availability and other form fields can alter CMS controls. Recheck immediately before Save.
-    if (expectedCmsFields(stay)) {
-      const cms = compareCmsReadback(expectedCmsFields(stay), await readSavedCreateFields(page));
-      if (cms.reason) {
-        result.outcome = 'refused_cms_fields_unverified';
-        result.cmsMismatches = cms.mismatches;
-        result.clickedSave = false;
-        process.stdout.write(`${result.outcome}\n`);
-        return;
-      }
+    const cmsBeforeSave = compareCmsReadback(expectedCmsFields(stay), await readSavedCreateFields(page));
+    if (cmsBeforeSave.reason) {
+      result.outcome = 'refused_cms_fields_unverified';
+      result.cmsMismatches = cmsBeforeSave.mismatches;
+      result.clickedSave = false;
+      process.stdout.write(`${result.outcome}\n`);
+      return;
     }
     let saveClickUnknown = false;
     try {
@@ -1380,11 +1375,9 @@ export async function main(argv = process.argv.slice(2)) {
       process.stdout.write(`${result.outcome}${result.confirmationNumber ? ` ${result.confirmationNumber}` : ''}\n`);
       return;
     }
-    if (result.saved && (expectedCmsFields(stay) || Array.isArray(stay.childAges))) {
+    if (result.saved) {
       const actual = await readSavedCreateFields(page);
-      const cms = expectedCmsFields(stay)
-        ? compareCmsReadback(expectedCmsFields(stay), actual)
-        : { reason: null, mismatches: [] };
+      const cms = compareCmsReadback(expectedCmsFields(stay), actual);
       const children = Array.isArray(stay.childAges) ? bandChildAges(stay.childAges) : {};
       const childMismatches = Object.entries(children).filter(([field, count]) => normalizeAdults(actual[field]) !== count)
         .map(([field, expected]) => ({ field, expected, actual: actual[field] ?? null }));

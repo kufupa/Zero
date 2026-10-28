@@ -94,6 +94,8 @@ test('agency requires one exact id or one exact normalized name', () => {
 });
 
 test('send-off CMS keeps message ID and checks that Send Mail is off', () => {
+  assert.deepEqual(expectedCmsFields({}), { send: false });
+  assert.equal(compareCmsReadback(expectedCmsFields({}), { send: true }).reason, 'saved_cms_mismatch');
   const expected = expectedCmsFields({ cmsMessageId: '03' });
   assert.deepEqual(expected, { udfchar09: '03', send: false });
   assert.equal(compareCmsReadback(expected, { udfchar09: '03', udfchar13: 'existing@example.invalid', send: false }).reason, null);
@@ -103,7 +105,7 @@ test('send-off CMS keeps message ID and checks that Send Mail is off', () => {
 
 test('send-off path explicitly unchecks the control before readback', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
-  assert.match(source, /if \(expectedCmsFields\(stay\)\) \{[\s\S]*pickCmsMessageId[\s\S]*else await setCmsSendMail\(page, false\);[\s\S]*compareCmsReadback/);
+  assert.match(source, /if \(stay\.cmsMessageId\) await pickCmsMessageId[\s\S]*else await setCmsSendMail\(page, false\);[\s\S]*compareCmsReadback/);
 });
 
 test('agency row selection uses internal record ID, not visible IATA', () => {
