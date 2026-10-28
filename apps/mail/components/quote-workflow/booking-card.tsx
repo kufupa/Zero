@@ -867,8 +867,8 @@ export function BookingCards({
   /** Active mailbox property. Unknown or missing codes fail closed (no generated note). */
   propertyCode?: string | null;
   /**
-   * Signed-in user and saved confirmation default. Null keeps the card as it was before this control
-   * (unit tests that render the card alone). The live pane always passes it.
+   * Signed-in user and saved confirmation default. Without it, confirmation defaults to an
+   * unresolved staff address until staff choose a recipient.
    */
   confirmation?: ConfirmationSources | null;
   /** Persists the current choice as this user's default. Omitted in card-only tests. */
@@ -963,7 +963,7 @@ export function BookingCards({
   const cmsMessage = chosenCmsMessage ?? defaultCmsMessage;
   const contextConfirmation = useConfirmationSources();
   const sources = confirmation === undefined ? contextConfirmation : confirmation;
-  const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(sources?.setting?.mode ?? (sources ? 'self' : 'client'));
+  const [recipientMode, setRecipientMode] = useState<ConfirmationMode>(sources?.setting?.mode ?? 'self');
   const [customAddress, setCustomAddress] = useState(
     sources?.setting?.mode === 'custom' ? (sources.setting.address ?? '') : '',
   );
@@ -994,7 +994,9 @@ export function BookingCards({
     setRecipientMode(sources.setting.mode);
     if (sources.setting.mode === 'custom') setCustomAddress(sources.setting.address ?? '');
   }, [sources]);
-  const clientEmail = contact ? textValue(contact.email) : textValue(draft.draft.rooms[0]?.request.bookerEmail);
+  const effectiveRecipientMode = !sources && !staffChose ? 'self' : recipientMode;
+  const clientEmail = contact ? textValue(contact.email) :
+    staffChose && effectiveRecipientMode === 'client' ? textValue(draft.draft.rooms[0]?.request.bookerEmail) : '';
   const holdMessage = !sources || staffChose
     ? null
     : sources.load === 'pending'
@@ -1007,7 +1009,7 @@ export function BookingCards({
   const resolvedRecipient = holdMessage
     ? { ok: false as const, message: holdMessage }
     : resolveConfirmationRecipient({
-        mode: recipientMode,
+        mode: effectiveRecipientMode,
         customAddress,
         userEmail: sources?.userEmail ?? '',
         clientEmail,
@@ -1195,9 +1197,10 @@ export function BookingCards({
     const boundAgency = parties?.agency?.nativeId ? parties.agency : undefined;
     const unboundName = textValue(room.request.agency).trim();
     const agencyUnresolved = choice.bookingAgency !== '__none__' && !boundAgency && Boolean(unboundName);
-    const currentEmail = currentContact ? textValue(currentContact.email) : textValue(draft.draft.rooms[0]?.request.bookerEmail);
+    const currentEmail = currentContact ? textValue(currentContact.email) :
+      staffChose && effectiveRecipientMode === 'client' ? textValue(draft.draft.rooms[0]?.request.bookerEmail) : '';
     const recipient = holdMessage ? { ok: false as const, message: holdMessage } : resolveConfirmationRecipient({
-      mode: recipientMode, customAddress, userEmail: sources?.userEmail ?? '', clientEmail: currentEmail,
+      mode: effectiveRecipientMode, customAddress, userEmail: sources?.userEmail ?? '', clientEmail: currentEmail,
       invalidSetting: sources?.invalidSetting, staffChose,
     });
     const roomChoice = roomChoiceFor(room, group, choice, currentContact, sendConfirmation && recipient.ok ? recipient.recipient : null);
@@ -1378,7 +1381,7 @@ export function BookingCards({
       {sendConfirmation ? (
         <div data-pii>
         <ConfirmationRecipient
-          mode={recipientMode}
+          mode={effectiveRecipientMode}
           customAddress={customAddress}
           userEmail={sources?.userEmail ?? ''}
           clientEmail={clientEmail}
