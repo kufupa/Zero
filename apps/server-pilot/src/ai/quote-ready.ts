@@ -60,7 +60,7 @@ function guestHasConfirmation(stay: unknown): boolean {
 
 function payloadHasConfirmation(payload: Record<string, unknown> | null): boolean {
   const values = payload?.confirmationNumbers;
-  if (Array.isArray(values) && values.some((value) => typeof value === 'string' && value.trim().length > 0)) {
+  if (Array.isArray(values) && values.some((value) => typeof value === 'string' && HMS_CONFIRMATION.test(value.trim()))) {
     return true;
   }
   const stays = payload?.stays;
@@ -324,6 +324,14 @@ export function staffQuotePriceKey(input: StaffQuoteInput): string {
   return JSON.stringify(priceShape(input));
 }
 
-export function staffQuoteInputsPriceEquivalent(left: StaffQuoteInput, right: StaffQuoteInput): boolean {
-  return staffQuotePriceKey(left) === staffQuotePriceKey(right);
+export function staffQuoteInputsPriceEquivalent(
+  left: StaffQuoteInput,
+  right: StaffQuoteInput,
+  allowBoundStrategyMismatch = false,
+): boolean {
+  if (staffQuotePriceKey(left) === staffQuotePriceKey(right)) return true;
+  // Only an explicitly party-bound prepared quote may ignore the pane's default strategy.
+  // The price key still requires identical parties, stay terms, and charges.
+  if (!allowBoundStrategyMismatch || (!left.parties?.agency && !left.parties?.company)) return false;
+  return staffQuotePriceKey(left) === staffQuotePriceKey({ ...right, salesStrategy: left.salesStrategy });
 }

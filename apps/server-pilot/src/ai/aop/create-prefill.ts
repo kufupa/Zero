@@ -192,7 +192,7 @@ export async function buildCreatePrefill(
 
   // ratePlan is a native HMS code (BAR, BARRO, BWEBB), not an enum; prose like "Best Available Rate" goes to missing.
   const rateText = trimmed(parsed.rateText);
-  const ratePlan = rateText && NATIVE_RATE_CODE.test(rateText) ? rateText : rateText ? null : 'BAR';
+  const ratePlan = rateText && NATIVE_RATE_CODE.test(rateText) ? rateText : null;
   if (!ratePlan) missing.push({ field: 'ratePlan', question: 'Rate plan code for this booking?' });
 
   const shared: Record<string, unknown> = {};

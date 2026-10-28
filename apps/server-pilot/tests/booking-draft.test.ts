@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   bookingDraftFromPrefill,
   buildBookingDrafts,
@@ -22,6 +22,22 @@ import {
 } from '../src/trpc/routes/workstation.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import type { QuoteRevision } from '../src/quote-proposal/quote-revision.js';
+
+const profileOverride = vi.hoisted(() => ({ cms: undefined as unknown }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readFileSync: (...args: unknown[]) => {
+      const contents = (actual.readFileSync as (...values: unknown[]) => unknown)(...args);
+      if (profileOverride.cms !== undefined && String(args[0]).endsWith('/property-profiles/HRDAV.json')) {
+        return JSON.stringify({ ...JSON.parse(String(contents)), cms: profileOverride.cms });
+      }
+      return contents;
+    },
+  };
+});
 
 const COMPLETE_DEFAULTS = {
   track: 'BAR',
@@ -160,6 +176,7 @@ function draftCaller(transportId = 'transport-centurion') {
 }
 
 afterEach(() => {
+  profileOverride.cms = undefined;
   __setDbForTests(null);
 });
 
@@ -221,6 +238,46 @@ describe('createRequestFieldOptions', () => {
     expect(createRequestFieldOptions('HRDAV').roomType).not.toEqual(expect.arrayContaining(['STQN']));
   });
 
+  it('exposes the HRDAV profile rate plans without Centurion-only defaults', () => {
+    const options = createRequestFieldOptions('HRDAV');
+    expect(options).toHaveProperty('ratePlans', expect.arrayContaining(['BAR', 'BARRO', 'BLRB', 'BARDIS']));
+    expect(options).not.toHaveProperty('ratePlans', expect.arrayContaining(['NGOVDB']));
+  });
+
+  it.each(['HRCEN', 'HRDAV'])('exposes the merged %s CMS choices and defaults', (propertyCode) => {
+    const options = createRequestFieldOptions(propertyCode);
+    expect(options.cmsDefaults).toEqual({ agency: '03', guest: '01' });
+    expect(options.cmsMessageIds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: '01' }),
+      expect.objectContaining({ code: '03' }),
+      expect.objectContaining({ code: '08' }),
+    ]));
+  });
+
+  it('exposes CMS message choices and defaults only from the selected property profile', () => {
+    profileOverride.cms = null;
+    const absent = createRequestFieldOptions('HRDAV');
+    const centurion = createRequestFieldOptions('HRCEN');
+    expect(absent).not.toHaveProperty('cmsMessageIds');
+    expect(absent).not.toHaveProperty('cmsDefaults');
+    profileOverride.cms = {
+      messageIds: [{ code: '01', label: 'Guest' }, { code: '03', label: 'Agency' }],
+      defaultAgency: '03', defaultGuest: '01',
+    };
+    expect(createRequestFieldOptions('HRDAV')).toMatchObject({
+      cmsMessageIds: [{ code: '01', label: 'Guest' }, { code: '03', label: 'Agency' }],
+      cmsDefaults: { agency: '03', guest: '01' },
+    });
+    expect(createRequestFieldOptions('HRCEN')).toEqual(centurion);
+    profileOverride.cms = {
+      messageIds: [{ code: '01', label: 'Guest' }],
+      defaultAgency: '03', defaultGuest: '01',
+    };
+    const invalid = createRequestFieldOptions('HRDAV');
+    expect(invalid).not.toHaveProperty('cmsMessageIds');
+    expect(invalid).not.toHaveProperty('cmsDefaults');
+  });
+
   it('uses HRDAV create-form choices and required fields from its registry profile', () => {
     const profile = JSON.parse(
       readFileSync(
@@ -272,7 +329,7 @@ describe('createRequestFieldOptions', () => {
       profile.createForm.options.guaranteetype.choices.map(({ display }) => display),
     );
     expect(options.roomType).toEqual(Object.keys(profile.roomCapacity));
-    expect(options).toHaveProperty('requiredCreateFields', profile.requiredCreateFields);
+    expect(options).toHaveProperty('requiredCreateFields', [...profile.requiredCreateFields, 'marketsegment', 'guestoptin4']);
   });
 
   it('keeps HRCEN choices unchanged and has no extra required create fields', () => {
@@ -296,7 +353,13 @@ describe('createRequestFieldOptions', () => {
 
     expect(options.track).toEqual(schema.$defs.request.properties.track.enum);
     expect(options.sourceOfBusiness).toEqual(schema.$defs.request.properties.sourceOfBusiness.enum);
-    expect(options.guaranteeType).toEqual(schema.$defs.request.properties.guaranteeType.enum);
+    const profile = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../tooling/playwright-quote/property-profiles/HRCEN.json', import.meta.url)), 'utf8'),
+    ) as { createForm?: { options?: { guaranteetype?: { choices?: Array<{ display: string }> } } } };
+    expect(options.guaranteeType).toEqual(
+      profile.createForm?.options?.guaranteetype?.choices?.map(({ display }) => display) ??
+        schema.$defs.request.properties.guaranteeType.enum,
+    );
     expect(options).toHaveProperty('requiredCreateFields', []);
     expect(createRequestFieldOptions()).toEqual(options);
   });
@@ -847,8 +910,8 @@ describe('prepareUnquotedBookingDraft route', () => {
       departure: '2026-10-13',
       firstName: 'John',
       lastName: 'Smith',
-      ratePlan: 'BAR',
     });
+    expect(result.draft.rooms[0]?.request).not.toHaveProperty('ratePlan');
   });
 
   it('returns hotel-specific create lists and required fields from the active transport', async () => {
@@ -862,7 +925,7 @@ describe('prepareUnquotedBookingDraft route', () => {
     if (davinci.status !== 'ready' || centurion.status !== 'ready') return;
 
     expect(davinci.options).toEqual(createRequestFieldOptions('HRDAV'));
-    expect(davinci.options).toHaveProperty('requiredCreateFields', ['reservationnote']);
+    expect(davinci.options).toHaveProperty('requiredCreateFields', ['reservationnote', 'marketsegment', 'guestoptin4']);
     expect(centurion.options).toEqual(createRequestFieldOptions('HRCEN'));
     expect(centurion.options).toHaveProperty('requiredCreateFields', []);
   });
