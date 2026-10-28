@@ -120,3 +120,11 @@ test('empty child array skips popup', async () => {
   const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
   assert.match(source, /Array\.isArray\(stay\.childAges\) && stay\.childAges\.length\) await applyChildAges/);
 });
+
+test('non-pane save stops before cancellation on CMS or child mismatch', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const mismatch = source.indexOf("result.outcome = cms.reason ?? 'saved_child_mismatch'");
+  const cancel = source.indexOf("await clickTip(page, 'Cancel')", mismatch);
+  assert.ok(mismatch > 0 && cancel > mismatch);
+  assert.match(source.slice(mismatch, cancel), /result\.cancelled = false;[\s\S]*return;/);
+});

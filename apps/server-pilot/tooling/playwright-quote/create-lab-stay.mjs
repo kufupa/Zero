@@ -1341,6 +1341,23 @@ export async function main(argv = process.argv.slice(2)) {
       process.stdout.write(`${result.outcome}${result.confirmationNumber ? ` ${result.confirmationNumber}` : ''}\n`);
       return;
     }
+    if (result.saved && (confirmationSendMail(stay) || Array.isArray(stay.childAges))) {
+      const actual = await readSavedCreateFields(page);
+      const cms = confirmationSendMail(stay)
+        ? compareCmsReadback({ udfchar09: stay.cmsMessageId, udfchar13: confirmationRecipientFills(stay).udfchar13, send: true }, actual)
+        : { reason: null, mismatches: [] };
+      const children = Array.isArray(stay.childAges) ? bandChildAges(stay.childAges) : {};
+      const childMismatches = Object.entries(children).filter(([field, count]) => normalizeAdults(actual[field]) !== count)
+        .map(([field, expected]) => ({ field, expected, actual: actual[field] ?? null }));
+      if (cms.reason || childMismatches.length) {
+        result.outcome = cms.reason ?? 'saved_child_mismatch';
+        result.cmsReason = cms.reason;
+        result.mismatches = [...cms.mismatches, ...childMismatches];
+        result.cancelled = false;
+        process.stdout.write(`${result.outcome}\n`);
+        return;
+      }
+    }
     if (!result.saved) {
       result.outcome = 'save_unconfirmed';
       await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
