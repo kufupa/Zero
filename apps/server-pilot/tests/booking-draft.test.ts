@@ -221,6 +221,12 @@ describe('createRequestFieldOptions', () => {
     expect(createRequestFieldOptions('HRDAV').roomType).not.toEqual(expect.arrayContaining(['STQN']));
   });
 
+  it('exposes the HRDAV profile rate plans without Centurion-only defaults', () => {
+    const options = createRequestFieldOptions('HRDAV');
+    expect(options).toHaveProperty('ratePlan', expect.arrayContaining(['BAR', 'BARRO', 'BLRB', 'BARDIS']));
+    expect(options).not.toHaveProperty('ratePlan', expect.arrayContaining(['NGOVDB']));
+  });
+
   it('uses HRDAV create-form choices and required fields from its registry profile', () => {
     const profile = JSON.parse(
       readFileSync(
