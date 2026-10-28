@@ -312,7 +312,13 @@ export const quoteWorkflowRouter = router({
     });
   }),
   commitStay: mailboxProcedure
-    .input(paneStayInput.extend({ previewDigest: z.string().regex(/^[0-9a-f]{64}$/) }))
+    .input(
+      paneStayInput.extend({
+        previewDigest: z.string().regex(/^[0-9a-f]{64}$/),
+        // Rooms 2+ of one booking name room 1's stay; the server reads its confirmation from this work item.
+        parentStayId: z.string().trim().min(1).max(200).optional(),
+      }),
+    )
     .use(({ input, ctx, next }) =>
       recordToolOutcome(
         () => ({
@@ -326,12 +332,23 @@ export const quoteWorkflowRouter = router({
       ),
     )
     .mutation(async ({ input, ctx }) => {
-      const { previewDigest, stayId, workItemId, ...stay } = input;
+      const { previewDigest, stayId, workItemId, parentStayId, ...stay } = input;
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
       const previewPersist =
         workItemId && stayId
           ? createWorkItemPreviewPersist(getDb(), ctx.activeTransportId, PANE_PREVIEW_TTL_MS)
           : undefined;
+      let parentConfirmation: string | undefined;
+      if (parentStayId) {
+        const parent =
+          workItemId && stayId && parentStayId !== stayId
+            ? await loadStayCommit(getDb(), { transportId: ctx.activeTransportId, workItemId, stayId: parentStayId })
+            : undefined;
+        if (!parent?.confirmationNumber || parent.status !== 'booked') {
+          return { status: 'refused' as const, reason: 'pane_save_parent_not_booked' };
+        }
+        parentConfirmation = parent.confirmationNumber;
+      }
       if (workItemId && stayId) {
         const existing = await loadStayCommit(getDb(), {
           transportId: ctx.activeTransportId,
@@ -351,6 +368,7 @@ export const quoteWorkflowRouter = router({
         workItemId,
         stayId,
         previewPersist,
+        ...(parentConfirmation ? { parentConfirmation } : {}),
       });
       if (workItemId && stayId) {
         const record = stayCommitFromPaneResult(result);

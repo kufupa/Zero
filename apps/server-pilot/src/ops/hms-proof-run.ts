@@ -457,12 +457,14 @@ async function runCommand(
     );
   }
   if (args.command === 'create') {
+    const parentConfirmation = textField(args.request, 'parentConfirmation');
     return runPaneStay({
       mode: args.mode,
       stay: stayFromProofRequest(args.request),
       owner,
       previewDigest: digest,
       transportId: args.transportId,
+      ...(parentConfirmation ? { parentConfirmation } : {}),
     });
   }
   if (args.command === 'cancel') {

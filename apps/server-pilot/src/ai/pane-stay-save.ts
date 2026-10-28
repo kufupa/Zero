@@ -29,6 +29,11 @@ const execFileAsync = promisify(execFile);
 const CREATE_LAB_STAY = fileURLToPath(
   new URL('../../tooling/playwright-quote/create-lab-stay.mjs', import.meta.url),
 );
+// Rooms 2+ of one booking: Associated Reservations > Add Record on the first room's confirmation.
+const ADD_ROOM_STAY = fileURLToPath(
+  new URL('../../tooling/playwright-quote/add-room-stay.mjs', import.meta.url),
+);
+const PARENT_CONFIRMATION = /^\d{6,10}-\d{1,2}$/;
 // Compatibility name for the registered Centurion property code; target selection requires a mailbox or explicit code.
 export const PANE_STAY_PROPERTY_CODE = CENTURION_HMS_READ_TARGET.propertyCode;
 // A successful preview can be committed for this long, once, and only for the same stay.
@@ -144,6 +149,8 @@ export type PaneStaySpawnInput = {
   stay: PaneStay;
   stopBefore: 'save' | null;
   paneCommit: boolean;
+  /** Set for rooms 2+ of one booking: the room is added to this confirmation, not created on its own. */
+  parentConfirmation?: string;
   /** Resolved HMS property/secret/slot. Da Vinci uses the HRDAV CDP and secret. */
   target?: HmsReadTarget;
 };
@@ -562,12 +569,13 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   const requestPath = join(dir, 'request.json');
   await writeFile(requestPath, JSON.stringify(paneStayRequestBody(input.stay)), { mode: 0o600 });
   const args = [
-    CREATE_LAB_STAY,
+    input.parentConfirmation ? ADD_ROOM_STAY : CREATE_LAB_STAY,
     '--request',
     requestPath,
     '--out',
     dir,
     ...paneStayCreatePropertyArgs(target),
+    ...(input.parentConfirmation ? ['--parent', input.parentConfirmation] : []),
   ];
   if (input.stopBefore) args.push('--stop-before', input.stopBefore);
   if (input.paneCommit) args.push('--pane-commit');
@@ -655,6 +663,8 @@ export async function runPaneStay(input: {
   workItemId?: string;
   stayId?: string;
   previewPersist?: PaneStayPreviewPersist | null;
+  /** Room 1's HMS confirmation. The caller proves it belongs to this booking; the runner checks guest and dates. */
+  parentConfirmation?: string;
 }): Promise<PaneStayResult> {
   // Runs that outlived their retention window are removed here too, not only when a screenshot is read.
   await pruneExpiredPaneRuns(paneStayClock());
@@ -681,6 +691,10 @@ export async function runPaneStay(input: {
   const bookRefusal = stayBookFieldRefusal(input.stay, profileFor(target.propertyCode));
   if (bookRefusal) {
     return { status: 'refused', reason: bookRefusal };
+  }
+  const parent = input.parentConfirmation?.trim() || undefined;
+  if (parent && !PARENT_CONFIRMATION.test(parent)) {
+    return { status: 'refused', reason: 'pane_save_parent_invalid' };
   }
   const digest = paneStayDigest(input.stay);
   if (input.mode === 'commit') {
@@ -715,7 +729,8 @@ export async function runPaneStay(input: {
         });
         if (status === 'parked') return { refusal: 'osress_reader_parked' };
         if (status === 'busy') return { refusal: 'refused_lock_busy' };
-        if (status === 'duplicate') return { refusal: 'osress_duplicate' };
+        // Adding a room to this guest's own booking finds that booking on the same dates; that is the parent.
+        if (status === 'duplicate' && !parent) return { refusal: 'osress_duplicate' };
         // The grant is taken under the lock, so two concurrent commits cannot both spawn.
         // Durable work-item grant wins; if none, the in-memory grant still covers same-process preview.
         if (
@@ -737,6 +752,7 @@ export async function runPaneStay(input: {
           stopBefore: input.mode === 'preview' ? 'save' : null,
           paneCommit: input.mode === 'commit',
           target,
+          ...(parent ? { parentConfirmation: parent } : {}),
         }),
       };
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
