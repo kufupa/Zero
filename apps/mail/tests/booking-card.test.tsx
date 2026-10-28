@@ -1186,6 +1186,19 @@ describe('HRDAV booking fields and CMS', () => {
     expect(commit).not.toHaveBeenCalled();
   });
 
+  it('does not send a confirmation recipient when Send confirmation from HMS is off', () => {
+    const { client, preview } = paneClient();
+    const draft = hrdavDraft();
+    render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Send confirmation from HMS' }));
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('confirmationRecipient');
+    expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('cmsMessageId');
+    expect(preview.mock.calls[0]?.[0]).toHaveProperty('confirmationSendMail', false);
+  });
+
   it('clearing a bound agency clears it from the preview instead of sending the draft name', () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
@@ -1693,7 +1706,7 @@ describe('booking card pane save', () => {
     await screen.findByText('Booked in HMS – confirmation 98765-1');
     const [booked, other] = Array.from(document.querySelectorAll('article'));
     const bookedSelects = Array.from(booked?.querySelectorAll('select') ?? []);
-    expect(bookedSelects).toHaveLength(3);
+    expect(bookedSelects).toHaveLength(6);
     for (const select of bookedSelects) expect(select.disabled).toBe(true);
     for (const select of Array.from(other?.querySelectorAll('select') ?? [])) expect(select.disabled).toBe(false);
   });
