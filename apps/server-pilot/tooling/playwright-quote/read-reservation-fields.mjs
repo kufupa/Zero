@@ -19,6 +19,8 @@ const FIELDS = [
   'totalrate', 'depositreceived', 'createdby', 'created', 'reservationdate', 'updatedby',
   'externalreference1', 'billingreference', 'caller', 'reservationnote', 'cancellationnote',
   'confidentialratecb', 'viplevel', 'revenuedesc',
+  'child1', 'child2', 'child3', 'udfchar09', 'udfchar13', 'udfchkbox04', 'udfchar06',
+  'guestoptin4', 'emailaddress', 'lastname',
 ];
 export const BOOKING_STATE_KEYS = {
   guaranteeType: 'guaranteetype',
