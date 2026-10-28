@@ -475,7 +475,7 @@ describe('booking cards', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
     const agencies = screen.getAllByLabelText('Booking agency') as unknown as HTMLSelectElement[];
     expect(agencies).toHaveLength(2);
-    expect(agencies.every((field) => field.value === '')).toBe(true);
+    expect(agencies.every((field) => field.options[field.selectedIndex]?.getAttribute('value') === '')).toBe(true);
     expect(screen.getAllByLabelText('Last name').map((field) => (field as HTMLInputElement).value)).toEqual([
       'Smith',
       'Doe',
@@ -701,13 +701,13 @@ describe('booking cards', () => {
     const agencies = screen.getAllByLabelText('Booking agency') as unknown as HTMLSelectElement[];
     expect(agencies).toHaveLength(2);
     for (const select of agencies) {
-      expect(select.selectedOptions[0]?.textContent).toContain('Woolworths Travel');
-      expect(select.value).not.toBe('');
+      expect(select.value).toBe('__bound__');
+      expect(Array.from(select.options).find((option) => option.getAttribute('value') === '__bound__')?.textContent).toContain('Woolworths Travel');
     }
     const noAgency = within(agencies[0]! as unknown as HTMLElement).getByRole('option', { name: /no agency/i }) as unknown as HTMLOptionElement;
     fireEvent.change(agencies[0]!, { target: { value: noAgency.value } });
     expect(agencies[0]!.value).toBe(noAgency.value);
-    expect(agencies[1]!.selectedOptions[0]?.textContent).toContain('Woolworths Travel');
+    expect(agencies[1]!.value).toBe('__bound__');
   });
 
   it('keeps a staff-edited Organization when party picks change', () => {
@@ -744,7 +744,7 @@ describe('booking cards', () => {
     expect(fieldValues('Organization')).toEqual(['', '']);
     for (const select of screen.getAllByLabelText('Booking agency') as unknown as HTMLSelectElement[]) {
       expect(Array.from(select.options).some((option) => option.textContent === 'Typed Agency')).toBe(false);
-      expect(select.value).toBe('');
+      expect(select.options[select.selectedIndex]?.getAttribute('value')).toBe('');
     }
   });
 
@@ -752,7 +752,8 @@ describe('booking cards', () => {
     render(<QuoteWorkflowPanel session={quotedSession(bareDraft(), PICKED)} />);
     expect(fieldValues('Organization')).toEqual(['Woolworths Holdings', 'Woolworths Holdings']);
     for (const select of screen.getAllByLabelText('Booking agency') as unknown as HTMLSelectElement[]) {
-      expect(select.selectedOptions[0]?.textContent).toContain('Woolworths Travel');
+      expect(select.value).toBe('__bound__');
+      expect(Array.from(select.options).find((option) => option.getAttribute('value') === '__bound__')?.textContent).toContain('Woolworths Travel');
     }
   });
 });
@@ -1087,7 +1088,7 @@ describe('HRDAV booking fields and CMS', () => {
       expect(fields[i - 1]!.compareDocumentPosition(fields[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     }
     const types = room.getByLabelText('Room type') as unknown as HTMLSelectElement;
-    const values = Array.from(types.options, (option) => option.value).filter(Boolean);
+    const values = Array.from(types.options, (option) => option.getAttribute('value')).filter(Boolean);
     expect(values).toEqual(['DLXTWN', 'DLXKNG']);
     expect(values).not.toContain('STQN');
     expect(values).not.toContain('SKNG');
@@ -1340,7 +1341,8 @@ describe('HRDAV booking fields and CMS', () => {
     const loading = hrdavDraft();
     delete loading.draft.rooms[0]!.request.ratePlan;
     render(view(loading, { ...group, quotedRateCode: undefined, rateCode: undefined }));
-    expect((screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement).value).toBe('');
+    const loadingRate = screen.getByLabelText('Rate plan') as unknown as HTMLSelectElement;
+    expect(loadingRate.options[loadingRate.selectedIndex]?.getAttribute('value')).toBe('');
     expect(screen.getByText(/rates loading/i)).toBeDefined();
     expect(previewButton(0).disabled).toBe(true);
     expect(bookButton(0).disabled).toBe(true);
@@ -2865,7 +2867,7 @@ describe('booking card HMS notes copy', () => {
         draft={draft}
         groups={[{ ...g1, board: 'dinner_bb', rateCode: 'BARRO', specialRequests: ['Cot'], rowPrice }]}
         paneSave={client}
-        contact={CONTACT}
+        contact={{ ...CONTACT, email: 'booker@example.invalid' }}
       />,
     );
     const quoted = [
