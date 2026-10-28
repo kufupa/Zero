@@ -1190,7 +1190,7 @@ describe('HRDAV booking fields and CMS', () => {
     const draft = hrdavDraft();
     expect(draft.draft.rooms[0]!.request.bookerEmail).toBe('booker@example.invalid');
     render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE} confirmation={null} />);
-    expect((screen.getByLabelText('Send HMS confirmation to') as HTMLSelectElement).value).toBe('self');
+    expect((screen.getByLabelText('Send HMS confirmation to') as unknown as HTMLSelectElement).value).toBe('self');
     expect(previewButton(0).disabled).toBe(true);
     expect(bookButton(0).disabled).toBe(true);
     fireEvent.click(previewButton(0));
@@ -2245,6 +2245,27 @@ describe('booking card save modes and the note fields', () => {
     expect(screen.getByText('Set organization name (100 characters at most) before you preview.')).toBeDefined();
     expect(preview).not.toHaveBeenCalled();
   });
+
+  it.each(['room', 'rate', 'adults', 'children'] as const)(
+    'does not retain stale generated reservation pricing after %s changes',
+    (changed) => {
+      const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+      draft.draft.rooms[0]!.request.roomType = 'STWN';
+      draft.options = { ...draft.options, roomType: ['STWN', 'SKNG'], ratePlans: ['NCOR1B', 'BAR'] };
+      const session = sessionWithGeneratedNote(draft);
+      const note = reservationNoteForGroup(session, HRDAV_PROPERTY_CODE, 'g1');
+      expect(note).toBeTruthy();
+      render(<BookingCards draft={draft} groups={session.groups} session={session} propertyCode={HRDAV_PROPERTY_CODE} />);
+      const field = screen.getByLabelText('Reservation note') as HTMLTextAreaElement;
+      expect(field.value).toBe(note);
+      if (changed === 'room') fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'SKNG' } });
+      if (changed === 'rate') fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'BAR' } });
+      if (changed === 'adults') fireEvent.change(screen.getByLabelText('Adults'), { target: { value: '2' } });
+      if (changed === 'children') fireEvent.change(screen.getByLabelText('Children'), { target: { value: '1' } });
+      expect(field.value).toBe('');
+      expect(screen.queryByRole('button', { name: 'Regenerate reservation note' })).toBeNull();
+    },
+  );
 
   it('prefills Book Reservation note from the generated stay note and keeps a dirty staff edit', () => {
     const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
