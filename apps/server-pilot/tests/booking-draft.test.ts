@@ -259,6 +259,13 @@ describe('createRequestFieldOptions', () => {
       cmsDefaults: { agency: '03', guest: '01' },
     });
     expect(createRequestFieldOptions('HRCEN')).toEqual(centurion);
+    profileOverride.cms = {
+      messageIds: [{ code: '01', label: 'Guest' }],
+      defaultAgency: '03', defaultGuest: '01',
+    };
+    const invalid = createRequestFieldOptions('HRDAV');
+    expect(invalid).not.toHaveProperty('cmsMessageIds');
+    expect(invalid).not.toHaveProperty('cmsDefaults');
   });
 
   it('uses HRDAV create-form choices and required fields from its registry profile', () => {
