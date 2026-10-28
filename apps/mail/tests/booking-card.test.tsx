@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
@@ -32,7 +32,6 @@ import {
   paneSaveModeOf,
   paneStayFromTrpc,
   paneUnconfirmedMessage,
-  PANE_CHILDREN_COPY,
   PANE_COMMIT_UNREACHABLE_COPY,
   PANE_PREVIEW_FAILED_COPY,
   PANE_SAVE_LAB_GUARD_COPY,
@@ -70,6 +69,12 @@ vi.mock('../lib/quote-workflow/pane-telemetry', async (importOriginal) => ({
 afterEach(() => cleanup());
 
 const STAFF_HASH = 'ab'.repeat(32);
+
+const CARD_CONTACT: StoredContact = {
+  name: 'Booker Example', company: null, endClient: null,
+  email: 'booker@example.invalid', phone: null,
+};
+const CARD_CONFIRMATION = { userEmail: 'staff@example.invalid', setting: { mode: 'client' as const } };
 
 const g1: StayGroupRequirement = {
   id: 'g1',
@@ -307,11 +312,12 @@ function sessionWithBoardRoomLabel(session: QuoteSession, roomLabel: string): Qu
 }
 
 describe('booking cards', () => {
-  it('keeps the create action without repeating Stay, room, board or rate controls', () => {
+  it('shows editable room and rate controls for each booking', () => {
     const { client } = paneClient();
     render(<BookingCards draft={draftReady()} paneSave={client} />);
 
-    expect(screen.queryByLabelText('Room type')).toBeNull();
+    expect(screen.getAllByLabelText('Room type')).toHaveLength(2);
+    expect(screen.getAllByLabelText('Rate plan')).toHaveLength(2);
     for (const label of ['Arrival', 'Departure', 'Adults', 'Children', 'Meal plan', 'Rate code']) {
       expect(screen.queryByRole('button', { name: new RegExp(`Copy ${label} for`) })).toBeNull();
     }
@@ -396,17 +402,17 @@ describe('booking cards', () => {
     );
   });
 
-  it('keeps the draft rate plan when a manual quote code is not an HMS rate selection', () => {
+  it('uses the quoted rate plan before the request default', () => {
     const { client, preview } = paneClient();
     const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
     draft.draft.rooms[0]!.request.ratePlan = 'TAXYZ';
-    const group: StayGroupRequirement = { ...g1, quotedRateCode: 'OTHER' };
+    const group: StayGroupRequirement = { ...g1, quotedRateCode: 'QUOTED' };
     render(<BookingCards draft={draft} groups={[group]} paneSave={client} />);
     pickRoomChoices(0);
 
     fireEvent.click(previewButton(0));
 
-    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ ratePlan: 'TAXYZ' }));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ ratePlan: 'QUOTED' }));
   });
 
   it('keeps the prepared native room code when the Stay has only an unmatched room name', () => {
@@ -868,7 +874,7 @@ describe('booking card copy buttons', () => {
     expect(writeText).toHaveBeenCalledWith('COR');
   });
 
-  it('does not repeat room, board or selected rate in the create-only form', () => {
+  it('shows the selected rate in the booking form without repeating the board or price', () => {
     render(
       <BookingCards
         draft={draftReady()}
@@ -876,7 +882,7 @@ describe('booking card copy buttons', () => {
       />,
     );
     expect(screen.queryByText('Room only')).toBeNull();
-    expect(screen.queryByText('BARRO')).toBeNull();
+    expect(fieldValues('Rate plan')).toEqual(['BARRO', 'BARRO']);
     expect(screen.queryByText('R1850.00')).toBeNull();
     expect(screen.queryByText('Standard Queen ×2')).toBeNull();
   });
@@ -1007,6 +1013,159 @@ function bookButton(index: number): HTMLButtonElement {
   return screen.getAllByRole('button', { name: 'Create provisional booking' })[index] as HTMLButtonElement;
 }
 
+
+describe('HRDAV booking fields and CMS', () => {
+  function hrdavDraft(): BookingDraftReady {
+    const draft = previewableDraft();
+    draft.draft.rooms[0]!.request.roomType = 'DLXTWN';
+    draft.options = {
+      ...draft.options,
+      roomType: ['DLXTWN', 'DLXKNG'],
+      guaranteeType: ['Confirmation Received', 'CCIATA'],
+      cmsMessageIds: [
+        { code: '01', label: 'Guest booking – payment link' },
+        { code: '03', label: 'Agency/company booking – payment link + proforma' },
+        { code: '08', label: 'Agency booking – no rate' },
+      ],
+      cmsDefaults: { agency: '03', guest: '01' },
+    } as BookingDraftReady['options'];
+    return draft;
+  }
+
+  const agency = { agency: { kind: 'agency' as const, nativeId: '571', name: 'Woolworths Travel' } };
+
+  it('renders editable fields in HMS order and only this hotel’s room options', () => {
+    const draft = hrdavDraft();
+    draft.draft.rooms[0]!.request.childAges = [5];
+    const { container } = render(
+      <BookingCards draft={draft} propertyCode={HRDAV_PROPERTY_CODE} parties={agency}
+        contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />,
+    );
+    const article = container.querySelector('article');
+    expect(article).not.toBeNull();
+    const room = within(article!);
+    const fields = [
+      room.getByLabelText('Booking agency'),
+      room.getByLabelText('Guarantee'),
+      room.getByLabelText('Room type'),
+      room.getByLabelText('Rate plan'),
+      room.getByLabelText('Adults'),
+      room.getByLabelText(/child age 1/i),
+      room.getByLabelText('First name'),
+      room.getByLabelText('Source of business'),
+      room.getByLabelText('Track'),
+      room.getByLabelText('Market Segment'),
+      room.getByRole('checkbox', { name: 'Guest opt-in' }),
+      room.getByLabelText('Reservation note'),
+    ];
+    for (let i = 1; i < fields.length; i++) {
+      expect(fields[i - 1]!.compareDocumentPosition(fields[i]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+    const types = room.getByLabelText('Room type') as HTMLSelectElement;
+    const values = Array.from(types.options, (option) => option.value).filter(Boolean);
+    expect(values).toEqual(['DLXTWN', 'DLXKNG']);
+    expect(values).not.toContain('STQN');
+    expect(values).not.toContain('SKNG');
+    expect(room.getByRole('option', { name: 'CCIATA' })).toBeDefined();
+  });
+
+  it('defaults CMS by bound party, sends selected message and the exact bound HMS id', async () => {
+    const { client, preview, commit } = paneClient();
+    const draft = hrdavDraft();
+    delete draft.draft.rooms[0]!.request.agency;
+    render(<BookingCards draft={draft} propertyCode={HRDAV_PROPERTY_CODE} parties={agency}
+      paneSave={client} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    expect(screen.getByRole('checkbox', { name: 'Send confirmation from HMS' })).toHaveProperty('checked', true);
+    const message = screen.getByLabelText('Message Id') as HTMLSelectElement;
+    expect(message.value).toBe('03');
+    fireEvent.change(message, { target: { value: '08' } });
+    fireEvent.change(screen.getByLabelText('Guarantee'), { target: { value: 'CCIATA' } });
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0).disabled).toBe(false));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({
+      bookingAgency: { name: 'Woolworths Travel', nativeId: '571' },
+      guaranteeType: 'CCIATA',
+      cmsMessageId: '08',
+      confirmationSendMail: true,
+      confirmationRecipient: { mode: 'client', address: 'booker@example.invalid' },
+    }));
+    fireEvent.click(bookButton(0));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    expect(commit.mock.calls[0]?.[0]).toMatchObject({
+      bookingAgency: { name: 'Woolworths Travel', nativeId: '571' }, cmsMessageId: '08',
+    });
+  });
+
+  it('defaults to guest CMS type without a bound party and blocks a blank type', () => {
+    const { client, preview } = paneClient();
+    const draft = hrdavDraft();
+    delete draft.draft.rooms[0]!.request.agency;
+    render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    const message = screen.getByLabelText('Message Id') as HTMLSelectElement;
+    expect(message.value).toBe('01');
+    fireEvent.change(message, { target: { value: '' } });
+    expect(screen.getByText(/confirmation type/i)).toBeDefined();
+    expect(previewButton(0).disabled).toBe(true);
+    expect(bookButton(0).disabled).toBe(true);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('requires Market segment only while it is blank', async () => {
+    const { client, preview } = paneClient();
+    const draft = hrdavDraft();
+    draft.options = { ...draft.options, requiredCreateFields: ['marketsegment'] };
+    render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    expect(screen.getByText(/set market segment before you preview/i)).toBeDefined();
+    expect(previewButton(0).disabled).toBe(true);
+    expect(bookButton(0).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Market Segment'), { target: { value: 'Leisure' } });
+    expect(screen.queryByText(/set market segment before you preview/i)).toBeNull();
+    expect(screen.queryByText(/required hotel field/i)).toBeNull();
+    expect(previewButton(0).disabled).toBe(false);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({ marketSegment: 'Leisure' })));
+  });
+
+  it('uses quoted rate before draft default and blocks while all rates are missing', () => {
+    const { client, preview } = paneClient();
+    const draft = hrdavDraft();
+    const group: StayGroupRequirement = { ...g1, quantity: 1, quotedRateCode: 'Q-HRDAV' };
+    const view = (current: BookingDraftReady, selected: StayGroupRequirement) => (
+      <BookingCards draft={current} groups={[selected]} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
+        contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />
+    );
+    const { unmount } = render(view(draft, group));
+    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('Q-HRDAV');
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ ratePlan: 'Q-HRDAV' }));
+    unmount();
+
+    const loading = hrdavDraft();
+    delete loading.draft.rooms[0]!.request.ratePlan;
+    render(view(loading, { ...group, quotedRateCode: undefined, rateCode: undefined }));
+    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).toBe('');
+    expect(screen.getByText(/rates loading/i)).toBeDefined();
+    expect(previewButton(0).disabled).toBe(true);
+    expect(bookButton(0).disabled).toBe(true);
+  });
+
+  it('stops the batch after a refused first room', async () => {
+    const { client, commit } = paneClient();
+    commit.mockResolvedValueOnce({ status: 'refused', reason: 'refused_save_blank_required' });
+    render(<BookingCards draft={draftReady()} paneSave={client} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    pickRoomChoices(0);
+    pickRoomChoices(1);
+    fireEvent.click(previewButton(0));
+    fireEvent.click(previewButton(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', false));
+    fireEvent.click(screen.getByRole('button', { name: 'Book this stay' }));
+    await screen.findByText(/HMS still has a blank required field/i);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('booking card marks guest details for the preview gate (H6b)', () => {
   it('marks the guest names, the booking summary and the HMS confirmation with data-pii', async () => {
     const { client } = paneClient();
@@ -1109,7 +1268,7 @@ describe('booking card pane save', () => {
     render(<BookingCards draft={draftReady()} paneSave={client} />);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
-    expect(preview).toHaveBeenCalledWith({
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({
       firstName: 'John',
       lastName: 'Smith',
       arrival: '2026-11-12',
@@ -1122,7 +1281,7 @@ describe('booking card pane save', () => {
       guestoptin4: false,
       guaranteeType: 'Confirmation Received',
       bookingAgency: { name: 'XYZ TRAVEL' },
-    });
+    }));
     expect(screen.getByRole('status').textContent).toBe('Nava is filling the booking in HMS… (about 2 minutes)');
     expect(bookButton(0)).toHaveProperty('disabled', true);
     await act(async () => pending.resolve(PREVIEW_OK));
@@ -1511,7 +1670,10 @@ describe('booking card pane save', () => {
     commit
       .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '11111-1' })
       .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '22222-1' });
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    const draft = draftReady();
+    draft.draft.rooms[0]!.request.childAges = [5];
+    render(<BookingCards draft={draft} paneSave={client} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    expect(screen.getAllByRole('button', { name: 'Create provisional booking' })).toHaveLength(2);
     pickRoomChoices(0);
     pickRoomChoices(1);
     fireEvent.click(previewButton(0));
@@ -1520,8 +1682,10 @@ describe('booking card pane save', () => {
     const bookStay = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
     await waitFor(() => expect(bookStay.disabled).toBe(false));
     fireEvent.click(bookStay);
-    await screen.findByText('Booked this stay – 11111-1, 22222-1');
+    await screen.findByText(/Booked 2 of 2/);
     expect(commit).toHaveBeenCalledTimes(2);
+    expect(commit.mock.calls[0]?.[0]).toMatchObject({ firstName: 'John', childAges: [5] });
+    expect(commit.mock.calls[1]?.[0]).toMatchObject({ firstName: 'Jane' });
     expect(screen.getByText('Booked in HMS – confirmation 11111-1')).toBeDefined();
     expect(screen.getByText('Booked in HMS – confirmation 22222-1')).toBeDefined();
   });
@@ -1635,13 +1799,31 @@ describe('booking card save modes and the note fields', () => {
     expect(screen.getAllByRole('button', { name: 'Copy Booking agency for Standard Queen ×2' })).toHaveLength(2);
   });
 
-  it('a room with children is copy-only with the reason, and the other room can still save', () => {
-    const { client } = paneClient();
-    const draft = draftReady();
+  it('previews and books a child room with its age, and invalidates preview after an age edit', async () => {
+    const { client, preview, commit } = paneClient();
+    const draft = previewableDraft();
     draft.draft.rooms[0]!.request.childAges = [5];
-    render(<BookingCards draft={draft} paneSave={client} />);
-    expect(screen.getByText(PANE_CHILDREN_COPY)).toBeDefined();
-    expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(1);
+    render(<BookingCards draft={draft} paneSave={client} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+
+    expect(screen.queryByText('Bookings with children: enter in HMS for now')).toBeNull();
+    expect(bookButton(0)).toBeDefined();
+    const age = screen.getByLabelText(/child age 1/i) as HTMLInputElement;
+    expect(age.value).toBe('5');
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0).disabled).toBe(false));
+    expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ childAges: [5] }));
+
+    fireEvent.change(age, { target: { value: '6' } });
+    expect(bookButton(0).disabled).toBe(true);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0).disabled).toBe(false));
+    expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ childAges: [6] }));
+    fireEvent.change(age, { target: { value: '5' } });
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0).disabled).toBe(false));
+    fireEvent.click(bookButton(0));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ childAges: [5] }), PANE_DIGEST);
   });
 
   it('uses the latest top contact for create preview, not the draft or mounted contact copy', () => {
