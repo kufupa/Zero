@@ -333,3 +333,24 @@ test('source stays read-only: Guest Stay menu nav, no save/cancel/checkin, no ma
   assert.ok(nav !== -1 && search !== -1 && nav < search);
   assert.match(source, /OSRESS\?FUNCTION_CLASS=WEBL/);
 });
+
+test('pickFields reads HRDAV child, CMS and surname fields while ignoring unknown keys', () => {
+  const hdr = JSON.stringify({
+    child1: 0,
+    child2: 1,
+    child3: 1,
+    udfchar09: '03',
+    udfchar13: 'booker@example.test',
+    udfchar06: 'x',
+    udfchkbox04: true,
+    guestoptin4: 'Y',
+    emailaddress: 'booker@example.test',
+    lastname: 'Smith',
+    shouldNotRead: 'unknown',
+  });
+  const fields = reader.pickFields(hdr);
+  for (const key of ['child1', 'child2', 'child3', 'udfchar09', 'udfchar13', 'udfchar06', 'udfchkbox04', 'guestoptin4', 'emailaddress', 'lastname']) {
+    assert.ok(key in fields, `${key} should be included in the explicit allowlist`);
+  }
+  assert.equal('shouldNotRead' in fields, false);
+});
