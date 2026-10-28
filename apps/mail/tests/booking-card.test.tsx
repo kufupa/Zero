@@ -1291,6 +1291,24 @@ describe('HRDAV booking fields and CMS', () => {
     await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({ marketSegment: 'Leisure' })));
   });
 
+  it('previews HRDAV after all required hotel fields are filled together', async () => {
+    const { client, preview } = paneClient();
+    const draft = hrdavDraft();
+    draft.options = { ...draft.options, requiredCreateFields: ['marketsegment', 'guestoptin4', 'reservationnote'] };
+    render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    expect(previewButton(0).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Market Segment'), { target: { value: 'Leisure' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Guest opt-in' }));
+    expect(previewButton(0).disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Reservation note'), { target: { value: 'Guest request' } });
+    expect(previewButton(0).disabled).toBe(false);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({
+      marketSegment: 'Leisure', guestoptin4: true, reservationNote: 'Guest request',
+    })));
+  });
+
   it('requires Terms only when the hotel marks guestoptin4 required', async () => {
     const { client, preview } = paneClient();
     const draft = hrdavDraft();
@@ -1900,6 +1918,31 @@ describe('booking card pane save', () => {
     expect(commit.mock.calls[1]?.[0]).toMatchObject({ firstName: 'Jane' });
     expect(screen.getByText('Booked in HMS – confirmation 11111-1')).toBeDefined();
     expect(screen.getByText('Booked in HMS – confirmation 22222-1')).toBeDefined();
+  });
+
+  it('stops a batch if a later room is saved while the first room is in flight', async () => {
+    const { client, commit } = paneClient();
+    const firstCommit = deferred<PaneStayResult>();
+    commit.mockReturnValueOnce(firstCommit.promise).mockResolvedValueOnce(COMMIT_OK);
+    const draft = draftReady();
+    const group = { ...g1, stayId: 's_aaaa1111' };
+    const view = (savedStays?: Record<string, { confirmationNumber: string | null; status: 'unknown'; screenshotRef: null }>) => (
+      <BookingCards draft={draft} groups={[group]} paneSave={client} contact={CARD_CONTACT}
+        confirmation={CARD_CONFIRMATION} savedStays={savedStays} />
+    );
+    const { rerender } = render(view());
+    pickRoomChoices(0);
+    pickRoomChoices(1);
+    fireEvent.click(previewButton(0));
+    fireEvent.click(previewButton(1));
+    const bookStay = screen.getByRole('button', { name: 'Book this stay' });
+    await waitFor(() => expect(bookStay).toHaveProperty('disabled', false));
+    fireEvent.click(bookStay);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    rerender(view({ s_aaaa1111_2: { confirmationNumber: null, status: 'unknown', screenshotRef: null } }));
+    await act(async () => firstCommit.resolve(COMMIT_OK));
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(screen.getAllByText(/HMS may have saved this booking/i).length).toBeGreaterThan(0);
   });
 
   it('stops later room creates when the top contact changes during batch booking', async () => {

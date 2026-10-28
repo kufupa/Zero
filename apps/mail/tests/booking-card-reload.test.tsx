@@ -249,6 +249,9 @@ describe('booking card reload', () => {
     expect(screen.getByText('Booked, but HMS confirmation settings did not match — check CMS in HMS')).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
+    view.rerender(<BookingCards draft={draft} groups={[group]} paneSave={client} />);
+    expect(screen.getByText('Booked, but HMS confirmation settings did not match — check CMS in HMS')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
   });
 
   it('shows a stored CMS mismatch without offering another booking', () => {
