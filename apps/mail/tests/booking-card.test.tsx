@@ -2028,6 +2028,26 @@ describe('booking card pane save', () => {
     expect(commit.mock.calls[1]?.[0]).toMatchObject({ stayId: 's_aaaa1111_2', parentStayId: 's_aaaa1111_1' });
   });
 
+  it('Book this stay keeps a same-guest room with a different guarantee as its own booking', async () => {
+    const { client, commit } = paneClient();
+    const draft = draftReady();
+    draft.draft.rooms[1]!.request.firstName = 'John';
+    draft.draft.rooms[1]!.request.lastName = 'Smith';
+    const session = quotedSession(draft);
+    session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
+    render(<QuoteBookingHost session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111" />);
+    pickRoomChoices(0);
+    pickRoomChoices(1);
+    fireEvent.change(screen.getAllByLabelText('Guarantee')[1]!, { target: { value: 'Guaranteed By Agent' } });
+    fireEvent.click(previewButton(0));
+    fireEvent.click(previewButton(1));
+    const bookStay = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
+    await waitFor(() => expect(bookStay.disabled).toBe(false));
+    fireEvent.click(bookStay);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
+    expect(commit.mock.calls[1]?.[0]).not.toHaveProperty('parentStayId');
+  });
+
   it('Book this stay keeps a different guest\'s room as its own booking', async () => {
     const { client, commit } = paneClient();
     const draft = draftReady();

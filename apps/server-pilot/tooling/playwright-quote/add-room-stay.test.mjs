@@ -60,3 +60,10 @@ test('only confirmations new after Submit count as the added room', () => {
   assert.deepEqual(newConfirmations(['73165771-1'], ['73165771-1', '39863956-1']), ['39863956-1']);
   assert.deepEqual(newConfirmations(['73165771-1'], ['73165771-1']), []);
 });
+
+test('the runner reports an uncertain save with exit 0 so the server records it', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('./add-room-stay.mjs', import.meta.url), 'utf8');
+  assert.match(source, /if \(result\.outcome === 'execution_failure'\) process\.exitCode = 1;/);
+  assert.match(source, /result\.clickedSave \? 'save_unconfirmed' : submitted/);
+});

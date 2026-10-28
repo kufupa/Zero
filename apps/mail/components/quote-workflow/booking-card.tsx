@@ -1355,9 +1355,32 @@ export function BookingCards({
       const otherStay = roomBuilt(other, contactRef.current).stay;
       // Add Record keeps room 1's guest profile, so only a room for the same guest joins it.
       if (otherStay && otherStay.lastName === stay.lastName && otherStay.firstName === stay.firstName &&
-        otherStay.arrival === stay.arrival && otherStay.departure === stay.departure) return stayIdForRoom(other, groups);
+        otherStay.arrival === stay.arrival && otherStay.departure === stay.departure &&
+        inheritedFieldsMatch(other, otherStay, room, stay)) return stayIdForRoom(other, groups);
     }
     return null;
+  }
+
+  // The added room copies room 1's booking-level fields, so a room staff set up differently stays its own booking.
+  // Nava's generated notes differ per room by design; a note staff typed must match.
+  function inheritedFieldsMatch(
+    parentRoom: BookingDraftReady['draft']['rooms'][number],
+    parent: PaneStayInput,
+    room: BookingDraftReady['draft']['rooms'][number],
+    stay: PaneStayInput,
+  ): boolean {
+    const shared = (value: PaneStayInput) => JSON.stringify([
+      value.guaranteeType, value.track, value.marketSegment ?? '', value.sourceOfBusiness, value.guestoptin4,
+      value.bookingAgency ?? null, value.organization ?? null, value.cmsMessageId ?? '', value.confirmationSendMail ?? false,
+      value.bookerName ?? '', value.bookerEmail ?? '', value.confirmationRecipient ?? null,
+    ]);
+    if (shared(parent) !== shared(stay)) return false;
+    const generated = (item: BookingDraftReady['draft']['rooms'][number]) => {
+      const choice = choices[roomKeyOf(item)];
+      return !reservationNoteDirty.current[roomKeyOf(item)] && choice?.generatedReservationNote !== undefined &&
+        choice.reservationNote === choice.generatedReservationNote;
+    };
+    return (parent.reservationNote ?? '') === (stay.reservationNote ?? '') || (generated(parentRoom) && generated(room));
   }
 
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {

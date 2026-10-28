@@ -254,7 +254,9 @@ export async function main(argv = process.argv.slice(2)) {
       const submitted = await submitAndWait(page, stay, before, result);
       await shot(page, dir, 'saved.png');
       if (submitted !== 'saved') {
-        result.outcome = submitted;
+        // After Submit HMS may have saved even if a box stopped us, so staff check HMS before trying again.
+        result.submitStop = submitted;
+        result.outcome = result.clickedSave ? 'save_unconfirmed' : submitted;
         return;
       }
       await page.locator('.x-tab:visible').filter({ hasText: /^Record View/ }).first().click().catch(() => {});
@@ -263,7 +265,7 @@ export async function main(argv = process.argv.slice(2)) {
       result.readback = reread
         ? await readValues(page, ['confirmationnumber', 'status', 'roomtype', 'rateplan', 'adults', 'children', 'arrivaldate', 'departuredate', 'lastname'])
         : null;
-      const check = { confirmationnumber: result.confirmationNumber, roomtype: form.want.roomtype, adults: form.want.adults, children: form.want.children, arrivaldate: form.want.arrivaldate, departuredate: form.want.departuredate, lastname: form.want.lastname };
+      const check = { confirmationnumber: result.confirmationNumber, roomtype: form.want.roomtype, rateplan: form.want.rateplan, adults: form.want.adults, children: form.want.children, arrivaldate: form.want.arrivaldate, departuredate: form.want.departuredate, lastname: form.want.lastname };
       result.readbackMismatches = result.readback ? formMismatches(check, result.readback) : [{ field: 'confirmationnumber', expected: result.confirmationNumber, actual: null }];
       result.outcome = result.readbackMismatches.length ? 'committed_unverified' : 'committed';
     });
@@ -276,7 +278,9 @@ export async function main(argv = process.argv.slice(2)) {
     if (typeof browser.disconnect === 'function') browser.disconnect();
   }
   process.stdout.write(`${result.outcome}${result.confirmationNumber ? ` ${result.confirmationNumber}` : ''}\n`);
-  if (!['previewed', 'committed', 'committed_unverified'].includes(result.outcome)) process.exitCode = 1;
+  // Like create-lab-stay, every named outcome exits 0 so the server reads it; an uncertain save must reach staff as
+  // pane_save_unconfirmed, not as a spawn failure that loses the record. Only a run with no outcome fails.
+  if (result.outcome === 'execution_failure') process.exitCode = 1;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
