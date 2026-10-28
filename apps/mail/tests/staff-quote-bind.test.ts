@@ -490,6 +490,18 @@ describe('staff quote strategy comparisons', () => {
     expect(await run({ sourceHash: 'b'.repeat(64) })).toBeNull();
   });
 
+  it('never hydrates an unbound prepared run under a different strategy', async () => {
+    const query = vi.fn<StaffQuoteJobQuery>(async (lookup) => {
+      if (!('input' in lookup)) return null;
+      return {
+        runId: 'run-WS', status: 'done', prefetch: true, asOf: new Date().toISOString(), failureClass: null,
+        request: { kind: 'staff_quote', input: { ...lookup.input, salesStrategy: 'WS' } },
+        result: queuedQuote('WS', args.groups[0]!),
+      };
+    });
+    expect(await bindReadBackStaffQuote({ ...args, query })).toBeNull();
+  });
+
   it('still requires the same source and strategy when matching prepared inputs', async () => {
     const group = stay();
     const mismatches: Array<Partial<ExecuteStaffQuoteInput>> = [

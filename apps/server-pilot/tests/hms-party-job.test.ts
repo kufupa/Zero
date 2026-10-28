@@ -338,6 +338,36 @@ describe('executeHmsJob party reads', () => {
     }
   });
 
+  it.each([['V2', '0'], ['V3', '1']])('stores the resolved HRDAV property on %s bound results', async (_label, v3) => {
+    vi.stubEnv('PARTY_MATCH_V2', '1');
+    vi.stubEnv('PARTY_MATCH_V3', v3);
+    vi.stubEnv('HMS_DAVINCI_READS', 'on');
+    panePartyLookupLoaders.spawn = vi.fn(async ({ searches }) => ({
+      searches: (searches ?? []).map((search) => ({
+        outcome: 'resolved', truncated: false,
+        candidates: [{ kind: search.kind === 'agency' ? 'bookingAgency' : 'organization', nativeId: '42', displayName: 'Acme Travel' }],
+      })),
+    }));
+    const source = {
+      payload: { agency: 'Acme Travel' }, extractionStatus: 'succeeded', extractionKind: 'quote',
+      fromAddress: 'agent@acme.test', ownerHeaderValue: null, toAddresses: [], ccAddresses: [],
+      subject: 'Booking', textBody: 'Acme Travel', direction: 'inbound', historyOnly: false,
+      threadHistoryOnly: false, spamAt: null,
+    };
+    const limit = vi.fn().mockResolvedValueOnce([source]).mockResolvedValueOnce([]);
+    const chain = { from: () => chain, innerJoin: () => chain, where: () => chain, orderBy: () => chain, limit };
+    const db = { select: () => chain } as unknown as DB;
+    const run = { ...runningRun({ kind: 'party', name: 'Acme Travel', matchVersion: 2 }, HMS_JOB_PRIORITY_PREFETCH), transportId: 'transport-faith' };
+    try {
+      await expect(executeHmsJob({ run, fence: { ...fence, deadlineAt: new Date(Date.now() + 60_000) }, db })).resolves.toBe('succeeded');
+      expect(runLedger.markAiRunSucceeded).toHaveBeenCalledWith(
+        expect.objectContaining({ readResult: expect.objectContaining({ propertyCode: 'HRDAV', matchStatus: 'bound' }) }), db,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('yields a background party job on a busy lock without using an attempt', async () => {
     let lockOptions: unknown;
     panePartyLookupLoaders.lock = {
