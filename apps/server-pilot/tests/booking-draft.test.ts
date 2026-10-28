@@ -244,6 +244,16 @@ describe('createRequestFieldOptions', () => {
     expect(options).not.toHaveProperty('ratePlans', expect.arrayContaining(['NGOVDB']));
   });
 
+  it.each(['HRCEN', 'HRDAV'])('exposes the merged %s CMS choices and defaults', (propertyCode) => {
+    const options = createRequestFieldOptions(propertyCode);
+    expect(options.cmsDefaults).toEqual({ agency: '03', guest: '01' });
+    expect(options.cmsMessageIds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: '01' }),
+      expect.objectContaining({ code: '03' }),
+      expect.objectContaining({ code: '08' }),
+    ]));
+  });
+
   it('exposes CMS message choices and defaults only from the selected property profile', () => {
     profileOverride.cms = null;
     const absent = createRequestFieldOptions('HRDAV');
