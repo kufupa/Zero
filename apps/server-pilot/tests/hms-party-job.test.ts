@@ -304,6 +304,7 @@ describe('prepared quote selection', () => {
     { name: 'keeps BAR when the contract belongs to another party', contract: true, otherParty: true, stale: false, expected: 'bar-run' },
     { name: 'keeps BAR when the contract has expired', contract: true, otherParty: false, stale: true, expected: 'bar-run' },
     { name: 'does not reuse an unverified WS price as BAR when BAR is missing', contract: false, otherParty: false, stale: false, noBar: true, expected: null },
+    { name: 'reuses a verified WS contract when BAR is missing', contract: true, otherParty: false, stale: false, noBar: true, expected: 'ws-run' },
   ])('$name', async ({ contract, otherParty, stale, expected, noBar }) => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
