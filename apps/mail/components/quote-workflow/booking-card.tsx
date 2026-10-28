@@ -691,6 +691,8 @@ type RoomChoice = {
   bookingAgency: string;
   organization: string;
   reservationNote: string;
+  /** The exact note Nava generated, so staff-authored text is never discarded. */
+  generatedReservationNote?: string;
   roomType?: string;
   ratePlan?: string;
   adults?: string;
@@ -764,6 +766,28 @@ function roomChoiceFor(
     bookerEmail: contact ? textValue(contact.email) : textValue(room.request.bookerEmail),
     ...(confirmationRecipient ? { confirmationRecipient } : {}),
   };
+}
+
+/** Never reuse quote prices for a different room, rate or occupancy. */
+function generatedNoteForChoice(
+  session: QuoteSession | undefined,
+  propertyCode: string | null | undefined,
+  room: BookingDraftReady['draft']['rooms'][number],
+  group: StayGroupRequirement | undefined,
+  choice: RoomChoice,
+): string | null {
+  const quoted = session?.groups.find((item) => item.id === room.groupId);
+  if (!session || !quoted || quoted.roomCodes?.length !== 1 || !quoted.rateCode) return null;
+  const request = roomRequestFor(room, group, choice);
+  const selectedRoom = choice.roomType ?? roomTypeFor(room, group);
+  const selectedRate = choice.ratePlan ?? (textValue(group?.rateCode) || textValue(group?.quotedRateCode) || textValue(room.request.ratePlan));
+  if (
+    selectedRoom !== quoted.roomCodes[0] || selectedRate !== quoted.rateCode ||
+    request.arrival !== quoted.arrivalDate || request.departure !== quoted.departureDate ||
+    Number(request.adults) !== quoted.adults ||
+    JSON.stringify(request.childAges ?? []) !== JSON.stringify(quoted.childrenAges ?? [])
+  ) return null;
+  return reservationNoteForGroup(session, propertyCode, room.groupId);
 }
 
 function paneStayInputForConfiguredRoom(
@@ -899,30 +923,27 @@ export function BookingCards({
             readSelectedGuestName(guestEditorKey, guestName),
             room.request,
           );
-          const generated = session ? reservationNoteForGroup(session, propertyCode, room.groupId) : null;
-          return [
-            key,
-            {
-              track: textValue(room.request.track),
-              sourceOfBusiness: initialSourceOfBusiness(
-                room.request.sourceOfBusiness,
-                draft.options.sourceOfBusiness,
-              ),
-              marketSegment: '',
-              // Guest consent must come from an explicit staff action, never from mail or a hotel default.
-              guestoptin4: false,
-              guaranteeType: textValue(room.request.guaranteeType),
-              firstName: names.firstName,
-              lastName: names.lastName,
-              bookingAgency: '',
-              organization: textValue(room.request.organization) || pickedName(parties?.company),
-              reservationNote: prefillReservationNote(
-                textValue(room.request.reservationNote),
-                generated,
-                false,
-              ),
-            },
-          ];
+          const existingNote = textValue(room.request.reservationNote);
+          const choice: RoomChoice = {
+            track: textValue(room.request.track),
+            sourceOfBusiness: initialSourceOfBusiness(
+              room.request.sourceOfBusiness,
+              draft.options.sourceOfBusiness,
+            ),
+            marketSegment: '',
+            // Guest consent must come from an explicit staff action, never from mail or a hotel default.
+            guestoptin4: false,
+            guaranteeType: textValue(room.request.guaranteeType),
+            firstName: names.firstName,
+            lastName: names.lastName,
+            bookingAgency: '',
+            organization: textValue(room.request.organization) || pickedName(parties?.company),
+            reservationNote: existingNote,
+          };
+          const generated = generatedNoteForChoice(session, propertyCode, room, roomGroupFor(room, groups), choice);
+          choice.reservationNote = prefillReservationNote(existingNote, generated, false);
+          if (!existingNote.trim() && generated) choice.generatedReservationNote = generated;
+          return [key, choice];
         }),
       ),
   );
@@ -1070,7 +1091,6 @@ export function BookingCards({
     stayBooking,
   ]);
   useEffect(() => {
-    if (!session) return;
     setChoices((current) => {
       let changed = false;
       const next = { ...current };
@@ -1078,19 +1098,20 @@ export function BookingCards({
         const key = `${room.groupId}:${room.roomIndex}`;
         const choice = current[key];
         if (!choice) continue;
-        const generated = reservationNoteForGroup(session, propertyCode, room.groupId);
-        const bound = prefillReservationNote(
-          choice.reservationNote,
-          generated,
-          reservationNoteDirty.current[key] === true,
-        );
-        if (bound === choice.reservationNote) continue;
-        next[key] = { ...choice, reservationNote: bound };
+        const generated = generatedNoteForChoice(session, propertyCode, room, roomGroupFor(room, groups), choice);
+        const dirty = reservationNoteDirty.current[key] === true;
+        const wasGenerated = !dirty && choice.generatedReservationNote !== undefined &&
+          choice.reservationNote === choice.generatedReservationNote;
+        const bound = wasGenerated ? (generated ?? '') : prefillReservationNote(choice.reservationNote, generated, dirty);
+        const generatedReservationNote = wasGenerated || (!dirty && !choice.reservationNote.trim() && generated)
+          ? (generated ?? undefined) : choice.generatedReservationNote;
+        if (bound === choice.reservationNote && generatedReservationNote === choice.generatedReservationNote) continue;
+        next[key] = { ...choice, reservationNote: bound, generatedReservationNote };
         changed = true;
       }
       return changed ? next : current;
     });
-  }, [draft.draft.rooms, propertyCode, session]);
+  }, [draft.draft.rooms, groups, propertyCode, session]);
   // The price check compared the quoted room. Once staff pick another room type, it no longer describes the booking.
   const roomTypeChanged = draft.draft.rooms.some((room) => {
     const requested = textValue(room.request.roomType);
@@ -1204,6 +1225,10 @@ export function BookingCards({
       invalidSetting: sources?.invalidSetting, staffChose,
     });
     const roomChoice = roomChoiceFor(room, group, choice, currentContact, sendConfirmation && recipient.ok ? recipient.recipient : null);
+    if (!reservationNoteDirty.current[roomKeyOf(room)] && choice.generatedReservationNote !== undefined &&
+      choice.reservationNote === choice.generatedReservationNote) {
+      roomChoice.reservationNote = generatedNoteForChoice(session, propertyCode, room, group, choice) ?? '';
+    }
     roomChoice.bookingAgency = choice.bookingAgency === '__none__' || !boundAgency
       ? undefined : { name: boundAgency.name, nativeId: boundAgency.nativeId };
     roomChoice.confirmationSendMail = sendConfirmation;
@@ -1483,21 +1508,28 @@ export function BookingCards({
             const guestChanged =
               (patch.firstName !== undefined && patch.firstName !== currentChoice.firstName) ||
               (patch.lastName !== undefined && patch.lastName !== currentChoice.lastName);
-            return {
-              ...current,
-              [key]: {
-                ...currentChoice,
-                ...patch,
-                ...(guestChanged ? { guestoptin4: false } : {}),
-              },
+            const nextChoice: RoomChoice = {
+              ...currentChoice,
+              ...patch,
+              ...(guestChanged ? { guestoptin4: false } : {}),
             };
+            if (!reservationNoteDirty.current[key]) {
+              const wasGenerated = currentChoice.generatedReservationNote !== undefined &&
+                currentChoice.reservationNote === currentChoice.generatedReservationNote;
+              const generated = generatedNoteForChoice(session, propertyCode, room, roomGroupFor(room, groups), nextChoice);
+              if (wasGenerated || (!nextChoice.reservationNote.trim() && generated)) {
+                nextChoice.reservationNote = generated ?? '';
+                nextChoice.generatedReservationNote = generated ?? undefined;
+              }
+            }
+            return { ...current, [key]: nextChoice };
           });
         // Once create is running or saved, freeze its create-only fields until staff checks the result.
         const commitStatus = saves[key]?.commit?.status;
         const locked = stayBooking || commitStatus === 'running' || savedOutcomeBlocksRoom(key);
         const request = room.request;
         const group = roomGroupFor(room, groups);
-        const generatedNote = session ? reservationNoteForGroup(session, propertyCode, room.groupId) : null;
+        const generatedNote = generatedNoteForChoice(session, propertyCode, room, group, choice);
         const built = roomBuilt(room);
         const price = group?.rowPrice;
         const override = price?.source === 'override' ? price : null;
@@ -1724,7 +1756,7 @@ export function BookingCards({
                 disabled={locked}
                 onClick={() => {
                   reservationNoteDirty.current[key] = false;
-                  setChoice({ reservationNote: generatedNote });
+                  setChoice({ reservationNote: generatedNote, generatedReservationNote: generatedNote });
                 }}
               >
                 Regenerate reservation note
