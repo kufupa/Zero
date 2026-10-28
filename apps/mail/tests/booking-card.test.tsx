@@ -1876,8 +1876,7 @@ describe('booking card pane save', () => {
         screenshots: ['saved.png'],
       }),
     });
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
-    pickRoomChoices(0);
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
     fireEvent.click(previewButton(0));
     await screen.findByText(JOHN_SMITH_PREVIEW);
     fireEvent.click(bookButton(0));
@@ -1887,13 +1886,9 @@ describe('booking card pane save', () => {
       ),
     ).toBeDefined();
     expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
-    expect(bookButton(0)).toHaveProperty('disabled', true);
-    expect(previewButton(0)).toHaveProperty('disabled', false);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
     expect(screen.queryByText(/Booked in HMS/)).toBeNull();
-    // Only a fresh Preview unlocks Book again.
-    fireEvent.click(previewButton(0));
-    await screen.findByText(JOHN_SMITH_PREVIEW);
-    expect(bookButton(0)).toHaveProperty('disabled', false);
   });
 
   it('shows the preview-failed copy when the preview call throws', async () => {
@@ -1914,12 +1909,24 @@ describe('booking card pane save', () => {
         throw new Error('socket closed');
       },
     });
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
-    pickRoomChoices(0);
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
     fireEvent.click(previewButton(0));
     await screen.findByText(JOHN_SMITH_PREVIEW);
     fireEvent.click(bookButton(0));
     expect(await screen.findByText(PANE_COMMIT_UNREACHABLE_COPY)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
+  });
+
+  it('blocks retry when HMS returns an uncertain outcome without a confirmation', async () => {
+    const { client } = paneClient({ commit: async () => ({ status: 'ok', outcome: 'save_failed' }) });
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
+    fireEvent.click(previewButton(0));
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
+    expect(await screen.findByText(/HMS may have saved this booking/)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
   });
 
   it('shows a saved confirmation on mount without booking again', async () => {
