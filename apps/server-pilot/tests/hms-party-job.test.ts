@@ -303,7 +303,8 @@ describe('prepared quote selection', () => {
     { name: 'keeps BAR when the WS result is not a selected contract', contract: false, otherParty: false, stale: false, expected: 'bar-run' },
     { name: 'keeps BAR when the contract belongs to another party', contract: true, otherParty: true, stale: false, expected: 'bar-run' },
     { name: 'keeps BAR when the contract has expired', contract: true, otherParty: false, stale: true, expected: 'bar-run' },
-  ])('$name', async ({ contract, otherParty, stale, expected }) => {
+    { name: 'does not reuse an unverified WS price as BAR when BAR is missing', contract: false, otherParty: false, stale: false, noBar: true, expected: null },
+  ])('$name', async ({ contract, otherParty, stale, expected, noBar }) => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
     const quote = staffQuoteInput.parse({
@@ -329,7 +330,7 @@ describe('prepared quote selection', () => {
         const index = ++selects;
         const chain = {
           from: () => chain, where: () => chain,
-          orderBy: () => index === 2 ? Promise.resolve([prepared('bar-run', 'BAR'), prepared('ws-run', 'WS')]) : chain,
+          orderBy: () => index === 2 ? Promise.resolve([...(noBar ? [] : [prepared('bar-run', 'BAR')]), prepared('ws-run', 'WS')]) : chain,
           limit: async () => index === 1 ? [{ id: 'message-1', messageIdHeader: null }] : [],
         };
         return chain;
@@ -337,7 +338,7 @@ describe('prepared quote selection', () => {
     } as unknown as DB;
     try {
       const result = await readHmsJobView({ transportId: 'transport-faith', userId: 'staff-1', messageId: 'message-1', kind: 'staff_quote', input: quote }, db);
-      expect(result?.runId).toBe(expected);
+      expect(result?.runId ?? null).toBe(expected);
     } finally {
       vi.unstubAllEnvs();
     }
