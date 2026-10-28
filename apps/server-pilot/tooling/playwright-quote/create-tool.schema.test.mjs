@@ -137,7 +137,7 @@ test('enums match new-record.md opened lists', () => {
   assert.equal(lists.roomType.length, 9);
   assert.equal(lists.sourceOfBusiness.length, 25);
   assert.equal(lists.track.length, 21);
-  assert.deepEqual(schema.$defs.request.properties.guaranteeType.enum, lists.guaranteeType);
+  assert.equal(schema.$defs.request.properties.guaranteeType.enum, undefined);
   assert.equal(schema.$defs.request.properties.roomType.enum, undefined);
   assert.equal(schema.$defs.request.properties.roomType.minLength, 1);
   assert.deepEqual(schema.$defs.request.properties.sourceOfBusiness.enum, lists.sourceOfBusiness);
@@ -267,7 +267,7 @@ test('meal plan and totals are not request fields', () => {
 test('childAges is optional and the gray category boxes are not request keys', () => {
   const withAges = requestResult(requiredRequest({ childAges: [5] }));
   assert.equal(withAges.ok, true, withAges.errors.join('; '));
-  const tooOld = requestResult(requiredRequest({ childAges: [100] }));
+  const tooOld = requestResult(requiredRequest({ childAges: [18] }));
   assert.equal(tooOld.ok, false);
   assert.ok(tooOld.errors.some((error) => error.includes('childAges')));
   const category = requestResult(requiredRequest({ child1: 1 }));

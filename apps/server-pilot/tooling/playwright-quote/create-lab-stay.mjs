@@ -7,12 +7,13 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayDate, login, newBorrowedContext, playwright, readSecret } from './fetch-quote.mjs';
-import { assertTrackReadyForGuarantee, bookFieldFills, confirmationRecipientFills, confirmationRecipientRefusal, confirmationSendMail, loadCreateRequest, loadCreateToolSchema, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
+import { assertTrackReadyForGuarantee, bookFieldFills, confirmationRecipientFills, confirmationRecipientRefusal, confirmationSendMail, loadCreateRequest, matchTrackRow, optionalPartyAndNoteFills, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, stayActions, TRACK_LABELS } from './create-request.mjs';
 import { readSaveSnapshot, readSettledStatus, waitForSaveConfirmation } from './save-wait.mjs';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 import { paneCommitOutcome, proofModeRefusal, proofPreSaveSearchRefusal, reconcileCreateSave, saveClickMayHaveFired } from './create-proof-rules.mjs';
 import { parseStayProperty, profileFor, propertySecretRefusal, stayBookFieldRefusal } from './property-profile.mjs';
 import { withWriteCliPage } from './write-cli-lease.mjs';
+import { cellsToRow, matchKey, searchKind, windowTitleRe } from './party-lookup.mjs';
 
 export { withWriteCliPage as withLeasedWritePage };
 
@@ -102,6 +103,46 @@ export function isoStayDate(value) {
   const iso = `${match[3]}-${String(month + 1).padStart(2, '0')}-${String(match[1]).padStart(2, '0')}`;
   const date = new Date(`${iso}T00:00:00.000Z`);
   return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === iso ? iso : null;
+}
+
+export function bandChildAges(ages = []) {
+  const counts = { child1: 0, child2: 0, child3: 0 };
+  for (const age of ages) {
+    if (!Number.isInteger(age) || age < 0 || age > 17) throw new Error('child_age_invalid');
+    counts[age <= 2 ? 'child1' : age <= 12 ? 'child2' : 'child3'] += 1;
+  }
+  return counts;
+}
+
+export function compareCmsReadback(expected, actual) {
+  const mismatches = [];
+  for (const field of ['udfchar09', 'udfchar13', 'send']) {
+    if (!Object.hasOwn(expected ?? {}, field)) continue;
+    const norm = (value) => field === 'send' ? value : String(value ?? '').trim().toLocaleLowerCase();
+    if (norm(expected?.[field]) !== norm(actual?.[field])) mismatches.push({ field, expected: expected?.[field] ?? null, actual: actual?.[field] ?? null });
+  }
+  return { reason: mismatches.length ? 'saved_cms_mismatch' : null, mismatches };
+}
+
+export function expectedCmsFields(stay) {
+  const code = String(stay?.cmsMessageId ?? '').trim();
+  const send = confirmationSendMail(stay);
+  return { ...(code ? { udfchar09: code } : {}), ...(send ? { udfchar13: confirmationRecipientFills(stay).udfchar13 } : {}), send };
+}
+
+export function matchAgencyGridRow(row, selected, party) {
+  if (!row || !selected) return false;
+  if (selected.matchedOn?.includes('store')) return String(row.nativeId ?? '') === String(selected.nativeId);
+  if (party?.id || party?.nativeId) return false; // DOM fallback has no verified internal ID.
+  return String(row.nativeId ?? '') === String(selected.nativeId) && matchKey(row.displayName) === matchKey(selected.displayName);
+}
+
+export function matchAgencyCandidate(rows, party) {
+  const id = String(party?.id ?? party?.nativeId ?? '').trim();
+  if (party?.id && party?.nativeId && party.id !== party.nativeId) return null;
+  const name = matchKey(party?.name);
+  const matches = rows.filter((row) => id ? String(row.nativeId ?? '').trim() === id : Boolean(name) && matchKey(row.displayName) === name);
+  return matches.length === 1 ? matches[0] : null;
 }
 
 export function normalizeLastName(value) {
@@ -233,6 +274,13 @@ export function compareReadbackStay(expected, actual) {
       expected: expectedEmail,
       actual: actual?.emailaddress ?? null,
       missing: (value) => !value,
+    });
+  }
+  if (Array.isArray(expected?.childAges)) {
+    const counts = bandChildAges(expected.childAges);
+    for (const field of ['child1', 'child2', 'child3']) rows.push({
+      field, expectedNorm: counts[field], actualNorm: normalizeAdults(actual?.[field]),
+      expected: counts[field], actual: actual?.[field] ?? null, missing: (value) => value == null,
     });
   }
   const mismatches = [];
@@ -412,14 +460,76 @@ async function fillGuestOptIn(page) {
 }
 
 /** CMS Send Mail (udfchkbox04): HMS sends its own confirmation letter on Save. Only when staff set a recipient. */
-async function tickCmsSendMail(page) {
+async function setCmsSendMail(page, desired) {
   const box = page.locator('input[name="udfchkbox04"]:visible').first();
   if ((await box.getAttribute('type')) === 'checkbox') {
-    await box.setChecked(true);
+    await box.setChecked(desired);
     return;
   }
-  const checked = await box.evaluate((el) => el.closest('.x-form-cb-checked, .x-form-checkbox-checked') !== null).catch(() => false);
-  if (!checked) await box.click();
+  const checked = await box.evaluate((el) => el.closest('.x-form-cb-checked, .x-form-checkbox-checked') !== null);
+  if (checked !== desired) await box.click();
+}
+
+async function tickCmsSendMail(page) { await setCmsSendMail(page, true); }
+
+async function pickCmsMessageId(page, code) {
+  const input = page.locator('input[name="udfchar09"]:visible').first();
+  const trigger = input.locator('xpath=ancestor::table[1]').locator('.x-form-lov-trigger:visible, .x-form-search-trigger:visible, .x-form-trigger:visible').first();
+  if (!(await trigger.count())) throw new Error('cms_message_lookup_unavailable');
+  await trigger.click();
+  const win = page.locator('.x-window:visible').last();
+  const rows = win.locator('.x-grid-row:visible, .x-grid-data-row:visible');
+  await rows.first().waitFor({ timeout: 5000 });
+  const exact = [];
+  for (let i = 0; i < await rows.count(); i += 1) {
+    const cells = await rows.nth(i).locator('td, .x-grid-cell').allTextContents();
+    if (cells.some((cell) => cell.trim() === code)) exact.push(i);
+  }
+  if (exact.length !== 1) throw new Error('cms_message_id_not_unique');
+  await rows.nth(exact[0]).click();
+  await win.getByRole('button', { name: /^OK$/i }).first().click();
+}
+
+async function pickBookingAgency(page, party) {
+  const found = await searchKind(page, { kind: 'bookingAgency', query: { bookingAgencyName: party.name } });
+  if (found.truncated || !['resolved', 'ambiguous'].includes(found.outcome)) return false;
+  const selected = matchAgencyCandidate(found.candidates, party);
+  if (!selected) return false;
+  const win = page.locator('.x-window:visible').filter({ hasText: windowTitleRe('bookingAgency') }).last();
+  let rows = win.locator('.x-grid-view .x-grid-row:visible, .x-grid-view .x-grid-data-row:visible');
+  if (!(await rows.count())) rows = win.locator('.x-grid-item:visible');
+  const matching = [];
+  for (let i = 0; i < await rows.count(); i += 1) {
+    const row = rows.nth(i);
+    const record = await row.evaluate((el) => {
+      if (typeof Ext === 'undefined') return null;
+      const grids = (Ext.ComponentQuery.query('grid, readonlygrid') || [])
+        .filter((grid) => grid.getEl?.()?.dom?.contains(el));
+      if (grids.length !== 1) return null;
+      const data = grids[0].getView?.()?.getRecord?.(el)?.data;
+      return data?.travelagencyid == null ? null : { nativeId: String(data.travelagencyid), displayName: String(data.travelagencyname ?? '') };
+    }).catch(() => null);
+    const identity = record ?? (selected.matchedOn?.includes('store') ? null : cellsToRow(await row.locator('td, .x-grid-cell').allTextContents(), { kind: 'bookingAgency' }));
+    if (matchAgencyGridRow(identity, selected, party)) matching.push(i);
+  }
+  if (matching.length !== 1) return false;
+  await rows.nth(matching[0]).click();
+  await win.getByRole('button', { name: /^OK$/i }).first().click();
+  return true;
+}
+
+async function readSavedCreateFields(page) {
+  return page.evaluate(() => {
+    const visibleInput = (name) => {
+      const inputs = [...document.querySelectorAll(`input[name="${name}"]`)]
+        .filter((input) => input.getClientRects().length && getComputedStyle(input).visibility !== 'hidden');
+      return inputs.length === 1 ? inputs[0] : null;
+    };
+    const read = (name) => visibleInput(name)?.value ?? null;
+    const box = visibleInput('udfchkbox04');
+    const send = !box ? null : box.type === 'checkbox' ? box.checked : Boolean(box.closest('.x-form-cb-checked, .x-form-checkbox-checked'));
+    return { emailaddress: read('emailaddress'), udfchar09: read('udfchar09'), udfchar13: read('udfchar13'), send, child1: read('child1'), child2: read('child2'), child3: read('child3') };
+  });
 }
 
 async function blankRequired(page, names) {
@@ -492,14 +602,14 @@ export async function chooseCombo(page, name, label) {
 async function listTrackLookupRows(page) {
   return page.evaluate(() => {
     const visible = (el) => !!(el.offsetParent || el.getClientRects().length);
-    const bound = [...document.querySelectorAll('.x-boundlist')].filter(visible).at(-1);
+    const bound = [...document.querySelectorAll('.x-boundlist')].findLast(visible);
     if (bound) {
       return [...bound.querySelectorAll('.x-boundlist-item')]
         .filter(visible)
         .map((el) => (el.textContent || '').replace(/\s+/g, ' ').trim())
         .filter(Boolean);
     }
-    const grid = [...document.querySelectorAll('.x-window .x-grid-view, .x-window .x-grid')].filter(visible).at(-1);
+    const grid = [...document.querySelectorAll('.x-window .x-grid-view, .x-window .x-grid')].findLast(visible);
     if (!grid) return [];
     return [...grid.querySelectorAll('.x-grid-row, .x-grid-data-row')]
       .filter(visible)
@@ -519,14 +629,14 @@ async function clickTrackLookupRow(page, picked) {
       if (want.description && t.includes(want.description) && (!want.code || t.includes(want.code))) return true;
       return want.code && t === want.code;
     };
-    const bound = [...document.querySelectorAll('.x-boundlist')].filter(visible).at(-1);
+    const bound = [...document.querySelectorAll('.x-boundlist')].findLast(visible);
     if (bound) {
       const item = [...bound.querySelectorAll('.x-boundlist-item')].filter(visible).find((el) => matches(el.textContent));
       if (!item) return false;
       item.click();
       return true;
     }
-    const grid = [...document.querySelectorAll('.x-window .x-grid-view, .x-window .x-grid')].filter(visible).at(-1);
+    const grid = [...document.querySelectorAll('.x-window .x-grid-view, .x-window .x-grid')].findLast(visible);
     if (!grid) return false;
     const row = [...grid.querySelectorAll('.x-grid-row, .x-grid-data-row')].filter(visible).find((el) => matches(el.innerText));
     if (!row) return false;
@@ -783,9 +893,8 @@ async function shopRates(page, dir) {
   return shopResult(read.records, read.lines);
 }
 
-async function observeBlankForm(page, dir) {
-  const schema = await loadCreateToolSchema();
-  const labels = schema.$defs.request.properties.guaranteeType.enum;
+async function observeBlankForm(page, dir, profile) {
+  const labels = profile?.createForm?.options?.guaranteetype?.choices?.map((choice) => choice.display) ?? [];
   const child = page.locator('input[name="children"]').first();
   const childState = (el) => ({ disabled: el.disabled, readOnly: el.readOnly, className: el.className });
   const notes = { children: {}, guarantee: [], rateShop: { clicked: false, rowClicked: false } };
@@ -861,8 +970,7 @@ async function findStayByConfirmation(browser, secret, stay, dir, confirmation) 
     const found = await findOnOpenGuestStay(ctx, { captureScreenshots: false });
     let record = found.stay;
     if (record) {
-      const emailaddress = await ctx.page.locator('input[name="emailaddress"]:visible').first().inputValue().catch(() => '');
-      record = { ...record, emailaddress };
+      record = { ...record, ...await readSavedCreateFields(ctx.page) };
     }
     return dropUnsearchedStay({
       outcome: found.outcome,
@@ -894,7 +1002,16 @@ async function runProofReadback(browser, secret, stay, dir, save, savedScreensho
     ),
   });
   const merged = mergeReadbackCompare(proof, stay, lastStay);
+  const cms = lastStay
+    ? compareCmsReadback(expectedCmsFields(stay), lastStay)
+    : { reason: null, mismatches: [] };
+  if (cms.reason) {
+    merged.readbackMatch = false;
+    merged.mismatches = [...(merged.mismatches ?? []), ...cms.mismatches];
+    merged.unknownOutcome = 'unresolved';
+  }
   return {
+    cmsReason: cms.reason,
     confNo: merged.confNo,
     readbackMatch: merged.readbackMatch,
     mismatches: merged.mismatches,
@@ -1025,7 +1142,7 @@ export async function main(argv = process.argv.slice(2)) {
     }
     if (stop.stopBefore === 'availability') {
       try {
-        result.observe = await observeBlankForm(page, dir);
+        result.observe = await observeBlankForm(page, dir, profile);
       } catch (error) {
         result.observeError = String(error.message || error);
       }
@@ -1040,16 +1157,33 @@ export async function main(argv = process.argv.slice(2)) {
     await fillNamed(page, 'roomtype', stay.roomType);
     await fillNamed(page, 'rateplan', stay.ratePlan);
     if (stop.stopBefore !== 'availability') {
-      // Party lookups, Reservation Note and booker fields. Empty values are skipped. LIVE-UNVERIFIED: see create-request.mjs.
+      // A lookup result must identify exactly one agency before any save.
+      const agency = stay.bookingAgency ?? (stay.agency ? { name: stay.agency } : null);
+      if (agency && !(await pickBookingAgency(page, agency))) {
+        result.outcome = 'refused_agency_not_unique';
+        result.clickedSave = false;
+        process.stdout.write(`${result.outcome}\n`);
+        return;
+      }
+      // Other optional fields are typed; empty values are skipped.
       for (const [name, value] of Object.entries({
         ...optionalPartyAndNoteFills(stay),
         ...confirmationRecipientFills(stay),
       })) {
         if (value) await fillNamed(page, name, value);
       }
-      if (confirmationSendMail(stay)) {
-        await tickCmsSendMail(page);
-        result.cmsSendMail = true;
+      if (confirmationSendMail(stay) && !String(stay.cmsMessageId ?? '').trim()) throw new Error('cms_message_id_required');
+      if (stay.cmsMessageId) await pickCmsMessageId(page, stay.cmsMessageId.trim());
+      if (confirmationSendMail(stay)) await tickCmsSendMail(page);
+      else await setCmsSendMail(page, false);
+      result.cmsSendMail = confirmationSendMail(stay);
+      const cms = compareCmsReadback(expectedCmsFields(stay), await readSavedCreateFields(page));
+      if (cms.reason) {
+        result.outcome = 'refused_cms_fields_unverified';
+        result.cmsMismatches = cms.mismatches;
+        result.clickedSave = false;
+        process.stdout.write(`${result.outcome}\n`);
+        return;
       }
       const book = bookFieldFills(stay);
       if (book.marketsegment) await fillNamed(page, 'marketsegment', book.marketsegment);
@@ -1128,6 +1262,15 @@ export async function main(argv = process.argv.slice(2)) {
     if (await handleVisibleExtMessageBox(page, dir, result, stay) === 'abort') {
       result.clickedSave = false;
       process.exitCode = 2;
+      return;
+    }
+    // Availability and other form fields can alter CMS controls. Recheck immediately before Save.
+    const cmsBeforeSave = compareCmsReadback(expectedCmsFields(stay), await readSavedCreateFields(page));
+    if (cmsBeforeSave.reason) {
+      result.outcome = 'refused_cms_fields_unverified';
+      result.cmsMismatches = cmsBeforeSave.mismatches;
+      result.clickedSave = false;
+      process.stdout.write(`${result.outcome}\n`);
       return;
     }
     let saveClickUnknown = false;
@@ -1216,6 +1359,7 @@ export async function main(argv = process.argv.slice(2)) {
       result.confirmationNumber = proof.confNo ?? save.confirmationNumber;
       result.saved = proof.confNo ? true : null;
       result.proof = proof;
+      result.cmsReason = proof.cmsReason;
       if (proofMode) {
         result.outcome = proof.readbackMatch === true ? 'readback_match'
           : proof.unknownOutcome === 'not_found' ? 'unknown_not_found'
@@ -1230,6 +1374,21 @@ export async function main(argv = process.argv.slice(2)) {
       await writeFile(join(dir, 'result.json'), JSON.stringify(result, null, 2));
       process.stdout.write(`${result.outcome}${result.confirmationNumber ? ` ${result.confirmationNumber}` : ''}\n`);
       return;
+    }
+    if (result.saved) {
+      const actual = await readSavedCreateFields(page);
+      const cms = compareCmsReadback(expectedCmsFields(stay), actual);
+      const children = Array.isArray(stay.childAges) ? bandChildAges(stay.childAges) : {};
+      const childMismatches = Object.entries(children).filter(([field, count]) => normalizeAdults(actual[field]) !== count)
+        .map(([field, expected]) => ({ field, expected, actual: actual[field] ?? null }));
+      if (cms.reason || childMismatches.length) {
+        result.outcome = cms.reason ?? 'saved_child_mismatch';
+        result.cmsReason = cms.reason;
+        result.mismatches = [...cms.mismatches, ...childMismatches];
+        result.cancelled = false;
+        process.stdout.write(`${result.outcome}\n`);
+        return;
+      }
     }
     if (!result.saved) {
       result.outcome = 'save_unconfirmed';
