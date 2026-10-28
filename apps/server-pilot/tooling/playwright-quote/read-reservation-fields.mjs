@@ -258,6 +258,8 @@ export async function navigateGuestStay(page, timeouts = NAV_TIMEOUTS) {
     }
   }
   for (let attempt = 0; attempt < 3; attempt += 1) {
+    // A collapsed app menu hides Front Desk entirely; open it before waiting for the label.
+    await openAppMenu(page);
     const menuDeadline = Date.now() + timeouts.frontDeskMs;
     while (!(await exactMenuLabel(page, 'Front Desk')) && Date.now() < menuDeadline) {
       await delay(timeouts.pollMs);

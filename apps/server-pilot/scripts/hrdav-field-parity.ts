@@ -89,13 +89,16 @@ async function truthStage(): Promise<{ confirmations: number; cached: number; re
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; cache = { schemaVersion: 1, generatedAt: new Date().toISOString(), byConfirmation: {} }; }
   const numbers = [...new Set(source.rows.flatMap((row) => row.candidates.map((c) => c.confirmationNumber)))], cachedAtStart = numbers.filter((n) => cache.byConfirmation[n]).length;
   let read = 0;
+  // The reader resolves its HMS secret from the transport; inherited secret overrides would bind the wrong property.
+  const readerEnv = { ...process.env, HMS_PROPERTY_TRANSPORT_ID: 'transport-davinci' };
+  delete readerEnv.HMS_READ_SECRET_ARN; delete readerEnv.HMS_QUOTE_SECRET_PATH;
   for (let i = 0; i < numbers.length; i += 9) {
     const pending = numbers.slice(i, i + 9).filter((n) => !cache.byConfirmation[n]); if (!pending.length) continue;
     const dir = await mkdtemp(join(PRIVATE, '.reader-')), input = join(dir, 'input.json'), out = join(dir, 'truth.jsonl');
     try {
       await writeFile(input, JSON.stringify(pending), { mode: 0o600 });
       let failed = false;
-      try { await exec(process.execPath, [READER, '--property', 'HRDAV', '--input', input, '--out', out, '--cap', '10'], { cwd: APP, env: process.env, maxBuffer: 2_000_000 }); }
+      try { await exec(process.execPath, [READER, '--property', 'HRDAV', '--input', input, '--out', out, '--cap', '10'], { cwd: APP, env: readerEnv, maxBuffer: 2_000_000 }); }
       catch { failed = true; }
       let lines: Reader[] = [];
       try { lines = (await readFile(out, 'utf8')).split(/\r?\n/u).filter(Boolean).map((line) => JSON.parse(line) as Reader); } catch { /* reader failed before output */ }
