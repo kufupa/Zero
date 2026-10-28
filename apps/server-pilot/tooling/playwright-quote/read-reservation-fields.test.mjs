@@ -174,6 +174,42 @@ test('navigate uses visible Ext tree labels after app-menu-trigger', async () =>
   );
 });
 
+test('navigate opens a collapsed app menu before waiting for Front Desk', async () => {
+  const clicks = [];
+  let html = '<div>Home</div>';
+  function makeLocator(sel, extra = {}) {
+    return {
+      filter({ hasText }) {
+        return makeLocator(sel, { ...extra, hasText: String(hasText) });
+      },
+      async count() {
+        if (sel.includes('x-tree-node-text')) return html.includes(extra.hasText?.replace(/[\^$/]/g, '') ?? '') ? 1 : 0;
+        return 1;
+      },
+      async click() {
+        clicks.push({ sel, hasText: extra.hasText || null });
+        if (sel.includes('app-menu-trigger')) html = '<div>Front Desk</div>';
+        else if (String(extra.hasText).includes('Front Desk')) html = '<div>Front Desk</div>\n<div>Guest Stay</div>';
+        else if (String(extra.hasText).includes('Guest Stay')) html = '<input name="search">';
+      },
+    };
+  }
+  const page = {
+    content: async () => html,
+    evaluate: async (_fn, label) =>
+      html.replace(/<[^>]+>/g, '\n').split('\n').some((line) => line.trim() === label),
+    locator: (sel) => makeLocator(sel),
+  };
+  const result = await reader.navigateGuestStay(page, {
+    frontDeskMs: 40,
+    guestStayMs: 200,
+    searchPaintMs: 200,
+    pollMs: 10,
+  });
+  assert.equal(result.navigated, 'menu');
+  assert.equal(clicks[0].sel.includes('app-menu-trigger'), true);
+});
+
 test('navigate retries Front Desk click with force when overlay intercepts', async () => {
   const clicks = [];
   let html = '<div>Front Desk</div>';
