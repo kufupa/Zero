@@ -2114,7 +2114,7 @@ describe('NavaPane', () => {
     await waitFor(() => {
       expect(reviewedReplyHtml()).toBe('');
       const stay = screen.getByRole('article', { name: 'Stay 1 details' });
-      expect((within(stay).getByLabelText('Room type') as HTMLSelectElement).value).toBe('DLXTWN');
+      expect((within(stay).getByLabelText('Room type') as unknown as HTMLSelectElement).value).toBe('DLXTWN');
     });
     expect(await screen.findByText('Available')).toBeDefined();
   });
