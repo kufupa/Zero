@@ -301,11 +301,12 @@ describe('prepared quote selection', () => {
   it.each([
     { name: 'prefers an available party-bound WS run over a newer BAR run', contract: true, otherParty: false, stale: false, expected: 'ws-run' },
     { name: 'keeps BAR when the WS result is not a selected contract', contract: false, otherParty: false, stale: false, expected: 'bar-run' },
+    { name: 'keeps BAR over a newer unverified WS result', contract: false, otherParty: false, stale: false, wsNewest: true, expected: 'bar-run' },
     { name: 'keeps BAR when the contract belongs to another party', contract: true, otherParty: true, stale: false, expected: 'bar-run' },
     { name: 'keeps BAR when the contract has expired', contract: true, otherParty: false, stale: true, expected: 'bar-run' },
     { name: 'does not reuse an unverified WS price as BAR when BAR is missing', contract: false, otherParty: false, stale: false, noBar: true, expected: null },
     { name: 'reuses a verified WS contract when BAR is missing', contract: true, otherParty: false, stale: false, noBar: true, expected: 'ws-run' },
-  ])('$name', async ({ contract, otherParty, stale, expected, noBar }) => {
+  ])('$name', async ({ contract, otherParty, stale, expected, noBar, wsNewest }) => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
     const quote = staffQuoteInput.parse({
@@ -331,7 +332,9 @@ describe('prepared quote selection', () => {
         const index = ++selects;
         const chain = {
           from: () => chain, where: () => chain,
-          orderBy: () => index === 2 ? Promise.resolve([...(noBar ? [] : [prepared('bar-run', 'BAR')]), prepared('ws-run', 'WS')]) : chain,
+          orderBy: () => index === 2 ? Promise.resolve(wsNewest
+            ? [prepared('ws-run', 'WS'), ...(noBar ? [] : [prepared('bar-run', 'BAR')])]
+            : [...(noBar ? [] : [prepared('bar-run', 'BAR')]), prepared('ws-run', 'WS')]) : chain,
           limit: async () => index === 1 ? [{ id: 'message-1', messageIdHeader: null }] : [],
         };
         return chain;
