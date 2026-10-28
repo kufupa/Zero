@@ -1581,7 +1581,7 @@ export function BookingCards({
             {!selectedRate ? <p className="text-[11px] text-[#64748b]">Rates loading. Select a rate when available.</p> : null}
             <label className="flex flex-col gap-1 text-xs font-semibold text-[#475569]">
               Adults
-              <input type="number" min={0} max={16} step={1} aria-label="Adults" className={paneFieldClass} disabled={locked}
+              <input type="number" min={1} max={16} step={1} aria-label="Adults" className={paneFieldClass} disabled={locked}
                 value={choice.adults ?? String(group?.adults ?? request.adults ?? '')}
                 onChange={(event) => setChoice({ adults: event.target.value })} />
             </label>

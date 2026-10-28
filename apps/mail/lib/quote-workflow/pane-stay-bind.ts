@@ -311,7 +311,7 @@ export function paneStayInputForRoom(
   if (!lastName) missing.push('last name');
   if (!DATE_PATTERN.test(arrival)) missing.push('arrival date');
   if (!DATE_PATTERN.test(departure) || nights <= 0) missing.push('departure date after arrival');
-  if (!Number.isInteger(adults) || adults < 0 || adults > 16) missing.push('adults');
+  if (!Number.isInteger(adults) || adults < 1 || adults > 16) missing.push('adults');
   if (!roomType) missing.push('room type');
   if (!ratePlan) missing.push('rate code');
   if (!choice.sourceOfBusiness) missing.push('source of business');
