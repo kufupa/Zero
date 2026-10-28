@@ -1,3 +1,4 @@
+import { paneStayInput } from '../src/trpc/routes/quote-workflow.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -895,25 +896,37 @@ describe('pane stay save modes', () => {
     expect(paneStayDigest({ ...realStay, reservationNote: '   ' })).toBe(paneStayDigest(realStay));
   });
 
-  it('children are copy-only: a stay with child ages is refused before any spawn, in preview and commit', async () => {
+  it('rejects out-of-range child ages at the pane boundary', () => {
+    expect(paneStayInput.safeParse({ ...realStay, childAges: [0, 17] }).success).toBe(true);
+    expect(paneStayInput.safeParse({ ...realStay, childAges: [18] }).success).toBe(false);
+    expect(paneStayInput.safeParse({ ...realStay, childAges: [-1] }).success).toBe(false);
+    expect(paneStayInput.safeParse({ ...realStay, childAges: [1.5] }).success).toBe(false);
+    expect(paneStayInput.safeParse({ ...realStay, bookingAgency: { id: '7', name: 'XYZ' } }).success).toBe(true);
+    expect(paneStayInput.safeParse({ ...realStay, bookingAgency: { id: '7', nativeId: '8', name: 'XYZ' } }).success).toBe(false);
+  });
+
+  it('returns a saved CMS mismatch without turning the booking into a refusal', async () => {
     enableSave();
     paneStaySaveLoaders.mode = () => 'on';
-    paneStaySaveLoaders.spawn = async () => {
-      throw new Error('must not spawn');
-    };
+    paneStaySaveLoaders.spawn = async () => ({ outcome: 'committed_unverified', clickedSave: true,
+      confirmationNumber: '12345-1', cmsReason: 'saved_cms_mismatch' });
+    const owner = freshOwner();
+    const previewDigest = paneStayDigest(realStay);
+    const { recordPanePreview } = await import('../src/ai/pane-stay-save.js');
+    recordPanePreview(owner, previewDigest, Date.now());
+    await expect(runPaneStay({ mode: 'commit', stay: realStay, owner, previewDigest }))
+      .resolves.toMatchObject({ status: 'ok', outcome: 'committed_unverified',
+        confirmationNumber: '12345-1', cmsReason: 'saved_cms_mismatch' });
+  });
+
+  it('allows children and passes ages through to the create request', async () => {
+    enableSave();
+    paneStaySaveLoaders.mode = () => 'on';
     const withChildren = { ...realStay, childAges: [5] };
-    await expect(
-      runPaneStay({ mode: 'preview', stay: withChildren, owner: freshOwner() }),
-    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_children_unsupported' });
-    await expect(
-      runPaneStay({
-        mode: 'commit',
-        stay: withChildren,
-        owner: freshOwner(),
-        previewDigest: paneStayDigest(withChildren),
-      }),
-    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_children_unsupported' });
-    expect(paneStayModeRefusal('on', { ...realStay, childAges: [] })).toBeNull();
+    expect(paneStayModeRefusal('on', withChildren)).toBeNull();
+    expect(paneStayRequestBody(withChildren).childAges).toEqual([5]);
+    await expect(runPaneStay({ mode: 'preview', stay: withChildren, owner: freshOwner() }))
+      .resolves.toMatchObject({ status: 'ok', outcome: 'previewed' });
   });
 
   it('sends the agency, organization, note and booker fields to the runner request, and the request passes the schema', async () => {
@@ -954,7 +967,34 @@ describe('Da Vinci pane create (HMS_DAVINCI_CREATE)', () => {
     propertyCode: 'HRDAV' as const,
     marketSegment: davinciSegment,
     guestoptin4: true,
+    reservationNote: 'Test billing instructions',
   };
+
+
+  it('checks CMS, required note, and property guarantee before the lock', async () => {
+    vi.stubEnv('HMS_DAVINCI_CREATE', 'lab');
+    enableSave();
+    const locked: string[] = [];
+    paneStaySaveLoaders.lock = passingLock(locked);
+    const stay = { ...labStay, propertyCode: 'HRDAV', roomType: 'STKNG', adults: 2,
+      marketSegment: 'Wholesale', guestoptin4: true, reservationNote: 'Test', childAges: [5],
+      guaranteeType: 'Guaranteed By Credit Card and Agent', bookingAgency: { nativeId: '7', name: 'XYZ' },
+      confirmationRecipient: { mode: 'self' as const, address: 'staff@example.invalid' }, cmsMessageId: '03' };
+    for (const [change, reason] of [
+      [{ cmsMessageId: undefined }, 'cms_message_id_required'],
+      [{ cmsMessageId: '99' }, 'cms_message_id_unknown'],
+      [{ reservationNote: ' ' }, 'pane_save_reservation_note_required'],
+      [{ marketSegment: '' }, 'pane_save_market_segment_required'],
+      [{ guaranteeType: 'UNKNOWN' }, 'guarantee_type_unknown'],
+    ] as const) {
+      await expect(runPaneStay({ mode: 'preview', stay: { ...stay, ...change }, owner: freshOwner('transport-davinci') }))
+        .resolves.toMatchObject({ status: 'refused', reason });
+      expect(locked).toEqual([]);
+    }
+    await expect(runPaneStay({ mode: 'preview', stay, owner: freshOwner('transport-davinci') }))
+      .resolves.toMatchObject({ status: 'ok', outcome: 'previewed' });
+    expect(paneStayRequestBody(stay)).toMatchObject({ childAges: [5], cmsMessageId: '03', bookingAgency: { nativeId: '7' } });
+  });
 
   it('is off unless HMS_DAVINCI_CREATE is lab or on, same as PANE_WRITE_CREATE', () => {
     expect(hmsDavinciCreateMode({})).toBe('off');
@@ -1207,18 +1247,15 @@ describe('create request schema for the pane fields', () => {
         bookerEmail: 'ann@example.invalid',
       }),
     ).toEqual({
-      ta1: 'XYZ TRAVEL',
       company: 'Bidvest',
       reservationnote: 'Pay by EFT',
       caller: 'Ann',
       udfchar06: 'ann@example.invalid',
     });
     expect(optionalPartyAndNoteFills({ agency: 'CIDB', organization: 'Org' })).toMatchObject({
-      ta1: 'CIDB',
       company: 'Org',
     });
     expect(optionalPartyAndNoteFills(base)).toEqual({
-      ta1: '',
       company: '',
       reservationnote: '',
       caller: '',
@@ -1261,7 +1298,7 @@ describe('create request schema for the pane fields', () => {
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_market_segment_required' });
     expect(locked).toEqual([]);
 
-    const valid = { ...labStay, propertyCode: 'HRDAV' as const, marketSegment, guestoptin4: true };
+    const valid = { ...labStay, propertyCode: 'HRDAV' as const, marketSegment, guestoptin4: true, reservationNote: 'Test instructions' };
     const seen: PaneStaySpawnInput[] = [];
     paneStaySaveLoaders.lock = passingLock();
     paneStaySaveLoaders.spawn = async (input) => {

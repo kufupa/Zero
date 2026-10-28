@@ -226,6 +226,16 @@ export function validateProfile(raw, propertyCode) {
     if (seenFields.has(name)) invalid(`requiredCreateFields repeats ${name}`);
     seenFields.add(name);
   }
+  if (raw.cms !== undefined) {
+    const cms = raw.cms;
+    if (!cms || !Array.isArray(cms.messageIds) || !cms.messageIds.length) invalid('cms.messageIds required');
+    const codes = new Set();
+    for (const item of cms.messageIds) {
+      if (typeof item?.code !== 'string' || !/^\d{1,8}$/.test(item.code) || typeof item.label !== 'string' || !item.label.trim() || codes.has(item.code)) invalid('cms.messageIds invalid or duplicate');
+      codes.add(item.code);
+    }
+    if (!codes.has(cms.defaultAgency) || !codes.has(cms.defaultGuest)) invalid('cms defaults must be listed');
+  }
   if (Object.prototype.hasOwnProperty.call(raw, 'salesStrategies')) validateSalesStrategies(raw.salesStrategies);
   if (Object.prototype.hasOwnProperty.call(raw, 'rates')) validateRates(raw.rates);
   // Array boards are the legacy pane list (HRFAKE fixture). Object boards are HMS label → board base.
@@ -291,6 +301,16 @@ export function profileFor(propertyCode) {
   return validateProfile(JSON.parse(readFileSync(file, 'utf8')), propertyCode);
 }
 
+export function profileCms(profile) {
+  return profile?.cms ?? null;
+}
+
+export function guaranteeDisplay(profile, value) {
+  const choices = profile?.createForm?.options?.guaranteetype?.choices;
+  const text = typeof value === 'string' ? value.trim() : '';
+  return choices?.find((choice) => choice.display === text || choice.value === text)?.display ?? null;
+}
+
 function uniqueChoiceLabels(choices) {
   const seen = new Set();
   const labels = [];
@@ -340,6 +360,11 @@ export function stayBookFieldRefusal(stay, profile) {
   if (required.includes('marketsegment') && !marketSegment) return 'pane_save_market_segment_required';
   if (marketSegment && options && !options.includes(marketSegment)) return 'pane_save_market_segment_invalid';
   if (required.includes('guestoptin4') && stay?.guestoptin4 !== true) return 'pane_save_guest_opt_in_required';
+  if ((profile.requiredCreateFields?.includes('reservationnote') || profile.createForm?.requiredMarkers?.reservationnote?.required) && !String(stay?.reservationNote ?? '').trim()) return 'pane_save_reservation_note_required';
+  const messageId = typeof stay?.cmsMessageId === 'string' ? stay.cmsMessageId.trim() : '';
+  if ((stay?.confirmationSendMail === true || stay?.confirmationRecipient != null) && !messageId) return 'cms_message_id_required';
+  if (messageId && !profileCms(profile)?.messageIds.some((item) => item.code === messageId)) return 'cms_message_id_unknown';
+  if (stay?.guaranteeType && profile.createForm?.options?.guaranteetype?.choices && !guaranteeDisplay(profile, stay.guaranteeType)) return 'guarantee_type_unknown';
   return null;
 }
 

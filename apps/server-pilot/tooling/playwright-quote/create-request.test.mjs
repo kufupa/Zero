@@ -1,14 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   confirmationRecipientFills,
   confirmationRecipientRefusal,
   loadCreateToolSchema,
+  loadCreateRequest,
   optionalPartyAndNoteFills,
   validateCreateRequest,
 } from './create-request.mjs';
-import { compareReadbackStay } from './create-lab-stay.mjs';
+import { bandChildAges, compareCmsReadback, compareReadbackStay, matchAgencyCandidate } from './create-lab-stay.mjs';
 
 const RECIPIENT = { mode: 'self', address: 'staff@example.invalid' };
 const STAY = {
@@ -69,4 +72,51 @@ test('writes the per-booking recipient into emailaddress, verifies readback, and
   assert.equal(/clickTip\([^)]*(Email confirmation|Send confirmation|CMS Send Mail)/i.test(source), false);
   assert.equal(source.includes("fillNamed(page, 'udfchkbox04'"), false);
   assert.match(source, /if \(confirmationSendMail\(stay\)\)[\s\S]*tickCmsSendMail/);
+});
+
+test('CMS and child counts are compared without mistaking a saved mismatch for no booking', () => {
+  assert.deepEqual(bandChildAges([0, 2, 5, 12, 14, 17]), { child1: 2, child2: 2, child3: 2 });
+  const result = compareCmsReadback({ udfchar09: '03', udfchar13: 'x@example.invalid', send: true },
+    { udfchar09: '', udfchar13: 'x@example.invalid', send: true });
+  assert.equal(result.reason, 'saved_cms_mismatch');
+  assert.equal(result.mismatches[0].field, 'udfchar09');
+  assert.equal(compareCmsReadback({ udfchar09: '03', udfchar13: 'x@example.invalid', send: true },
+    { udfchar09: '03', udfchar13: 'x@example.invalid', send: true }).reason, null);
+});
+
+test('agency requires one exact id or one exact normalized name', () => {
+  const rows = [{ nativeId: '1', displayName: 'Acme Travel' }, { nativeId: '2', displayName: 'Acme Travel' }];
+  assert.equal(matchAgencyCandidate(rows, { nativeId: '2', name: 'Acme Travel' }).nativeId, '2');
+  assert.equal(matchAgencyCandidate(rows, { id: '2', name: 'Acme Travel' }).nativeId, '2');
+  assert.equal(matchAgencyCandidate(rows, { id: '2', nativeId: '1', name: 'Acme Travel' }), null);
+  assert.equal(matchAgencyCandidate(rows, { name: 'Acme Travel' }), null);
+  assert.equal(matchAgencyCandidate(rows, { name: 'Acme' }), null);
+});
+
+test('property-driven guarantee accepts CCIATA and rejects unknown labels', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'create-request-test-'));
+  const file = join(dir, 'request.json');
+  try {
+    await writeFile(file, JSON.stringify({ ...STAY, guaranteeType: 'CCIATA' }));
+    const args = ['--property', 'HRDAV', '--request', file];
+    const accepted = await loadCreateRequest(args);
+    assert.equal(accepted.ok, true);
+    assert.equal(accepted.request.guaranteeType, 'Guaranteed By Credit Card and Agent');
+    await writeFile(file, JSON.stringify({ ...STAY, guaranteeType: 'unknown' }));
+    assert.equal((await loadCreateRequest(args)).error, 'guarantee_type_unknown');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('readback requires the requested child bands', () => {
+  const expected = { ...STAY, childAges: [5, 14] };
+  const actual = { ...STAY, child1: '0', child2: '1', child3: '1' };
+  assert.equal(compareReadbackStay(expected, actual).readbackMatch, true);
+  const mismatch = compareReadbackStay(expected, { ...actual, child3: '0' });
+  assert.equal(mismatch.readbackMatch, false);
+  assert.equal(mismatch.mismatches[0].field, 'child3');
+});
+
+test('empty child array skips popup', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  assert.match(source, /Array\.isArray\(stay\.childAges\) && stay\.childAges\.length\) await applyChildAges/);
 });
