@@ -298,7 +298,12 @@ describe('party prefetch selection', () => {
 });
 
 describe('prepared quote selection', () => {
-  it('prefers an available party-bound WS run over a newer BAR run', async () => {
+  it.each([
+    { name: 'prefers an available party-bound WS run over a newer BAR run', contract: true, otherParty: false, stale: false, expected: 'ws-run' },
+    { name: 'keeps BAR when the WS result is not a selected contract', contract: false, otherParty: false, stale: false, expected: 'bar-run' },
+    { name: 'keeps BAR when the contract belongs to another party', contract: true, otherParty: true, stale: false, expected: 'bar-run' },
+    { name: 'keeps BAR when the contract has expired', contract: true, otherParty: false, stale: true, expected: 'bar-run' },
+  ])('$name', async ({ contract, otherParty, stale, expected }) => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
     const quote = staffQuoteInput.parse({
@@ -309,9 +314,13 @@ describe('prepared quote selection', () => {
     });
     const now = new Date();
     const prepared = (id: string, strategy: 'BAR' | 'WS') => ({
-      ...runningRun({ kind: 'staff_quote', input: { ...quote, salesStrategy: strategy } }, HMS_JOB_PRIORITY_PREFETCH),
+      ...runningRun({ kind: 'staff_quote', input: { ...quote, salesStrategy: strategy,
+        ...(strategy === 'WS' && otherParty ? { parties: { agency: { kind: 'agency', nativeId: 'other', name: 'Other' } } } : {}),
+      } }, HMS_JOB_PRIORITY_PREFETCH),
       id, transportId: 'transport-faith', state: 'succeeded', createdAt: now, finishedAt: now,
-      readResult: { status: 'ready', asOf: now.toISOString(), rateOptions: [{ groupId: 'g1', selected: true, contract: strategy === 'WS', rateCode: strategy === 'WS' ? 'BWS1B' : 'BAR' }] }, readResultExpiresAt: new Date(now.getTime() + 60_000),
+      readResult: { status: 'ready', asOf: strategy === 'WS' && stale ? new Date(now.getTime() - 25 * 60 * 60_000).toISOString() : now.toISOString(),
+        rateOptions: [{ groupId: 'g1', selected: true, contract: strategy === 'WS' && contract, rateCode: strategy === 'WS' ? 'BWS1B' : 'BAR' }] },
+      readResultExpiresAt: new Date(now.getTime() + 60_000),
       metrics: { userId: null, quotePrepared: true },
     } as AiWorkflowRun);
     let selects = 0;
@@ -328,7 +337,7 @@ describe('prepared quote selection', () => {
     } as unknown as DB;
     try {
       const result = await readHmsJobView({ transportId: 'transport-faith', userId: 'staff-1', messageId: 'message-1', kind: 'staff_quote', input: quote }, db);
-      expect(result?.runId).toBe('ws-run');
+      expect(result?.runId).toBe(expected);
     } finally {
       vi.unstubAllEnvs();
     }
