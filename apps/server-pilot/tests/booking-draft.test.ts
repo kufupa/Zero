@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   bookingDraftFromPrefill,
   buildBookingDrafts,
@@ -22,6 +22,22 @@ import {
 } from '../src/trpc/routes/workstation.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import type { QuoteRevision } from '../src/quote-proposal/quote-revision.js';
+
+const profileOverride = vi.hoisted(() => ({ cms: undefined as unknown }));
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    readFileSync: (...args: unknown[]) => {
+      const contents = (actual.readFileSync as (...values: unknown[]) => unknown)(...args);
+      if (profileOverride.cms !== undefined && String(args[0]).endsWith('/property-profiles/HRDAV.json')) {
+        return JSON.stringify({ ...JSON.parse(String(contents)), cms: profileOverride.cms });
+      }
+      return contents;
+    },
+  };
+});
 
 const COMPLETE_DEFAULTS = {
   track: 'BAR',
@@ -160,6 +176,7 @@ function draftCaller(transportId = 'transport-centurion') {
 }
 
 afterEach(() => {
+  profileOverride.cms = undefined;
   __setDbForTests(null);
 });
 
@@ -223,8 +240,23 @@ describe('createRequestFieldOptions', () => {
 
   it('exposes the HRDAV profile rate plans without Centurion-only defaults', () => {
     const options = createRequestFieldOptions('HRDAV');
-    expect(options).toHaveProperty('ratePlan', expect.arrayContaining(['BAR', 'BARRO', 'BLRB', 'BARDIS']));
-    expect(options).not.toHaveProperty('ratePlan', expect.arrayContaining(['NGOVDB']));
+    expect(options).toHaveProperty('ratePlans', expect.arrayContaining(['BAR', 'BARRO', 'BLRB', 'BARDIS']));
+    expect(options).not.toHaveProperty('ratePlans', expect.arrayContaining(['NGOVDB']));
+  });
+
+  it('exposes CMS message choices and defaults only from the selected property profile', () => {
+    const absent = createRequestFieldOptions('HRDAV');
+    expect(absent).not.toHaveProperty('cmsMessageIds');
+    expect(absent).not.toHaveProperty('cmsDefaults');
+    profileOverride.cms = {
+      messageIds: [{ code: '01', label: 'Guest' }, { code: '03', label: 'Agency' }],
+      defaultAgency: '03', defaultGuest: '01',
+    };
+    expect(createRequestFieldOptions('HRDAV')).toMatchObject({
+      cmsMessageIds: [{ code: '01', label: 'Guest' }, { code: '03', label: 'Agency' }],
+      cmsDefaults: { agency: '03', guest: '01' },
+    });
+    expect(createRequestFieldOptions('HRCEN')).not.toHaveProperty('cmsMessageIds');
   });
 
   it('uses HRDAV create-form choices and required fields from its registry profile', () => {
@@ -853,8 +885,8 @@ describe('prepareUnquotedBookingDraft route', () => {
       departure: '2026-10-13',
       firstName: 'John',
       lastName: 'Smith',
-      ratePlan: 'BAR',
     });
+    expect(result.draft.rooms[0]?.request).not.toHaveProperty('ratePlan');
   });
 
   it('returns hotel-specific create lists and required fields from the active transport', async () => {
