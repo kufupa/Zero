@@ -7,6 +7,7 @@ import { panePartyLookupLoaders } from '../src/ai/pane-party-lookup.js';
 import { HMS_JOB_PROMPT_VERSION } from '../src/ai/run-ledger.js';
 import type { PaneStayLock } from '../src/ai/pane-stay-save.js';
 import { mailExtraction } from '../src/db/schema/work.js';
+import { staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { TRANSPORT_ID } from '../src/db/seed.js';
 import type { DB } from '../src/db/client.js';
 import { and, eq, sql } from 'drizzle-orm';
@@ -293,6 +294,44 @@ describe('party prefetch selection', () => {
     expect(partyMatchV2Enabled({})).toBe(false);
     expect(partyMatchV2Enabled({ PARTY_MATCH_V2: '1' })).toBe(true);
     expect(partyMatchV2Enabled({ PARTY_MATCH_V2: 'on' })).toBe(false);
+  });
+});
+
+describe('prepared quote selection', () => {
+  it('prefers an exact strategy over a newer party-matched different strategy', async () => {
+    vi.stubEnv('HMS_JOB_QUEUE', 'on');
+    vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+    const quote = staffQuoteInput.parse({
+      messageId: 'message-1', sourceHash: 'a'.repeat(64), selectionEpoch: 1, inputRevision: 1,
+      groups: [{ id: 'g1', arrivalDate: '2027-01-01', departureDate: '2027-01-02', quantity: 1,
+        adults: 1, childrenAges: [], board: 'bb' }],
+      salesStrategy: 'BAR', parties: { agency: { kind: 'agency', nativeId: '42', name: 'Acme Travel' } },
+    });
+    const now = new Date();
+    const prepared = (id: string, strategy: 'BAR' | 'WS') => ({
+      ...runningRun({ kind: 'staff_quote', input: { ...quote, salesStrategy: strategy } }, HMS_JOB_PRIORITY_PREFETCH),
+      id, transportId: 'transport-faith', state: 'succeeded', createdAt: now, finishedAt: now,
+      readResult: { status: 'ready', asOf: now.toISOString() }, readResultExpiresAt: new Date(now.getTime() + 60_000),
+      metrics: { userId: null, quotePrepared: true },
+    } as AiWorkflowRun);
+    let selects = 0;
+    const db = {
+      select: () => {
+        const index = ++selects;
+        const chain = {
+          from: () => chain, where: () => chain,
+          orderBy: () => index === 2 ? Promise.resolve([prepared('ws-run', 'WS'), prepared('bar-run', 'BAR')]) : chain,
+          limit: async () => index === 1 ? [{ id: 'message-1', messageIdHeader: null }] : [],
+        };
+        return chain;
+      },
+    } as unknown as DB;
+    try {
+      const result = await readHmsJobView({ transportId: 'transport-faith', userId: 'staff-1', messageId: 'message-1', kind: 'staff_quote', input: quote }, db);
+      expect(result?.runId).toBe('bar-run');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

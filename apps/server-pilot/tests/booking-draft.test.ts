@@ -312,7 +312,7 @@ describe('createRequestFieldOptions', () => {
       profile.createForm.options.guaranteetype.choices.map(({ display }) => display),
     );
     expect(options.roomType).toEqual(Object.keys(profile.roomCapacity));
-    expect(options).toHaveProperty('requiredCreateFields', profile.requiredCreateFields);
+    expect(options).toHaveProperty('requiredCreateFields', [...profile.requiredCreateFields, 'marketsegment', 'guestoptin4']);
   });
 
   it('keeps HRCEN choices unchanged and has no extra required create fields', () => {
@@ -908,7 +908,7 @@ describe('prepareUnquotedBookingDraft route', () => {
     if (davinci.status !== 'ready' || centurion.status !== 'ready') return;
 
     expect(davinci.options).toEqual(createRequestFieldOptions('HRDAV'));
-    expect(davinci.options).toHaveProperty('requiredCreateFields', ['reservationnote']);
+    expect(davinci.options).toHaveProperty('requiredCreateFields', ['reservationnote', 'marketsegment', 'guestoptin4']);
     expect(centurion.options).toEqual(createRequestFieldOptions('HRCEN'));
     expect(centurion.options).toHaveProperty('requiredCreateFields', []);
   });
