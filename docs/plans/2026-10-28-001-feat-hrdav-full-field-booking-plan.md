@@ -381,6 +381,17 @@ What this means:
 
 **Deploy:** one deploy via `apps/server-pilot/deploy/ops-deploy.sh` from a clean `recover-parse-failure`. Record the last-good SHA first.
 
+**Pomerado run (plan `2026-10-28-002`, separate chat) — coexistence rules:**
+
+| Shared thing | Conflict? | Rule |
+|---|---|---|
+| HMS browser | No: Pomerado = HRCEN only, own Chromium; we = HRDAV slot 19225 only | Never touch HRCEN or its slot |
+| Property locks | No: both HRCEN keys vs our HRDAV key | U5 batch uses only the HRDAV lock |
+| Lane files | No: we don't edit `session-reuse.mjs`, `hms-slot-lease.mjs`, `property-read-lock.ts` or `fetch-quote.mjs` | Keep them out of every brief's owned files |
+| EC2 repo `/home/ubuntu/repos/zero` | **Yes**: Pomerado's trial loads `tooling/playwright-quote/session-reuse.mjs` from it (login fallback) and runs from `apps/server-pilot`; `ops-deploy` swaps that checkout, runs `pnpm install` and restarts pm2 | **Deploy gate:** before `ops-deploy`, check no `nava-pomerado-*` systemd unit is active on EC2 (`systemctl list-units 'nava-pomerado-*'`). If one is, ask the Pomerado chat for a gap; do not deploy mid-mint |
+| `recover-parse-failure` VPS tree | Shared: Pomerado writes `.private/pomerado-readstay/` and dirty docs there | Never stash/reset/clean it; deploy needs only `main` == `origin/main` |
+| Pomerado's own deploys | None: its plan forbids product deploy and flag flips | — |
+
 ## Lane briefs (lessons from or2 / mh1024 retros)
 
 Each lane gets one `BRIEF.md` in its worktree, written by the coordinator from this plan. A lane reads its brief, not the repo.

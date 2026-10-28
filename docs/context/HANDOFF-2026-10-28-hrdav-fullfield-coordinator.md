@@ -58,6 +58,8 @@ Letter recipient is settled: CMS Booker Email = `navaai@legacyhotels.co.za`.
 
 ## Do not touch
 
+- **Deploy gate (Pomerado coexistence):** before `ops-deploy`, check EC2 for an active `nava-pomerado-*` systemd unit. Pomerado's trial loads `tooling/playwright-quote/session-reuse.mjs` from `/home/ubuntu/repos/zero`, which the deploy swaps and pm2-restarts. If a unit is active, ask the Pomerado chat (terminal `term_5cfedd0a…`) for a gap. See the plan's "Pomerado run — coexistence rules".
+
 - Pomerado terminal `term_5cfedd0a…` and the HRCEN browser.
 - `dv-amend` worktree (#651, `amend-stay*.mjs`), `wt-avail` (`fetch-quote.mjs`), pane-demo and triage-shape worktrees, `hms-quote-letter-proof-20261027`.
 - `recover-parse-failure` is dirty with other chats' docs: never stash or reset it. Deploy from a clean checkout of that path or ask.
