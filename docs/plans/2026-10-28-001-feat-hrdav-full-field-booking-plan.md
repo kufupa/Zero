@@ -324,7 +324,7 @@ New optional fields on the pane stay input (tRPC zod + `PaneStay` + runner reque
 
 ## If we finish early (ROI order)
 
-1. **Golden-set field score.** Use `find-batch.mjs` on ~30 real HRDAV staff bookings (523 confirmation numbers are ready) to compare Nava's prefilled fields against what Faith actually saved, field by field. This is the PRODUCT.md "done" metric, and it shows which defaults are still wrong.
+1. *(moved to parallel lane L4 below)*
 2. **Outlook surface proof.** An nginx bundle load plus one Outlook pane open on the new card.
 3. **Provisional quote = this flow.** A 01/03 provisional booking with a payment link *is* the HMS quote. Check one quote-class Faith mail end to end through the same Book path.
 4. **Centurion parity prep** (code only, no HRCEN browser): the HRCEN profile `cms` block and an HRCEN unit test; the live canary waits until Pomerado frees the HRCEN browser.
@@ -341,3 +341,23 @@ New optional fields on the pane stay input (tRPC zod + `PaneStay` + runner reque
 | Proof | 1 hard live Labtest + webmail | Golden-set score + Outlook + live staff use |
 | Real guests | Off (`lab`) | On, after the owner's go |
 | Amend / cancel / payment proof | Not in this run | All four workflows |
+
+## L4: field-parity scorer (parallel, read-only, starts with L1–L3)
+
+- **What:** pair real Faith inbound mail with the HMS record she saved, read through `find-batch.mjs` under the HRDAV lock. Score Nava's prefill field by field, and tag every miss with its cause class:
+  - **extract**: the LLM misread the email.
+  - **lookup**: the party or rate didn't bind.
+  - **default**: a rule or profile value is wrong.
+- **Why parallel:** it touches no lane files. It is the eval set any later tuning needs, and it ranks which fixes matter.
+- **Coder:** Luna max (bulk, cheap). Output: a dated research md with no PII; raw output goes to `.private/`.
+- **Known limit:** only 26 of 523 HRDAV confirmations linked to an inbound thread by `thread_id` (2026-10-28 check). The lane widens linkage first: confirmation number in staff outbound/letter subjects ↔ the inbound in the same conversation. Report n honestly.
+- **HMS lock:** batch reads finish before U4. They pause while U4 runs.
+
+## Tuning after the score (not before)
+
+- **Cheapest fix first:**
+  1. A profile or rule change for **default** misses.
+  2. A lookup fix for **lookup** misses.
+  3. A prompt edit for **extract** misses.
+- **GEPA/DSPy** only if extract misses plateau and n ≥ 100 truth rows. On 2026-10-19/20, GEPA was planned but not run: held-out triage v4 scored 94.0% and had no money-class gap ([held-out score](../research/2026-10-20-chatd-heldout-v4-score.md)).
+- **Triage is not in scope:** the field score measures extraction and defaults, not the action class. Change triage only if L4 finds a booking mail classified as something else.
