@@ -2803,6 +2803,7 @@ export function scheduleQuotePreparationAfterPartyMatch(
 }
 
 type PartyMatchV2JobResult = PanePartyFindResult & {
+  propertyCode?: string;
   matchVersion: 2;
   matcher?: 'v3';
   matchStatus: 'bound' | 'needs_pick';
@@ -2965,7 +2966,7 @@ async function executePartyMatchV2(input: {
     } catch {
       // Invalid/unavailable route settings are a closed-model case; exact-name fallback remains safe.
     }
-    return runPartyMatchV3({
+    const result = await runPartyMatchV3({
       adapter,
       candidates,
       context,
@@ -2988,6 +2989,7 @@ async function executePartyMatchV2(input: {
       signal: input.signal,
       deadlineAt: input.deadlineAt,
     });
+    return { ...result, propertyCode: readTarget.propertyCode };
   }
   const plan = planPartySearches(candidates).slice(0, PARTY_MATCH_V2_SEARCH_CAP);
   const searchesTried: PartyMatchV2JobResult['searchesTried'] = [];
@@ -3049,6 +3051,7 @@ async function executePartyMatchV2(input: {
     });
     return {
       ...failure,
+      propertyCode: readTarget.propertyCode,
       results: failedRows,
       truncated: failureTruncated,
       best: null,
@@ -3086,6 +3089,7 @@ async function executePartyMatchV2(input: {
   const outcome = decision.matchStatus === 'bound' ? 'resolved' : rows.length ? 'ambiguous' : 'no_match';
   return {
     outcome,
+    propertyCode: readTarget.propertyCode,
     results: rows,
     truncated,
     best: decision.boundParty,
