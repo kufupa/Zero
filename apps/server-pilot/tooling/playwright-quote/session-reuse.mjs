@@ -93,7 +93,8 @@ export async function authenticatedShellReady(page, secret) {
       /"tenantid"\s*:\s*"([^"]+)"/i.exec(html)?.[1] ?? new URL(location.href).searchParams.get('tenant');
     const property = document.documentElement.dataset.propertyCode ?? /Infor HMS\s*-\s*([A-Z0-9]+)/i.exec(document.title)?.[1];
     const visible = (el) => !!(el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden');
-    return ![...document.querySelectorAll('input[type="password"], .x-mask, .x-mask-msg, .x-loadmask, [aria-busy="true"]')].some(visible) &&
+    // Infor's login form renders the password box as type=text name=password; a page showing it is not signed in.
+    return ![...document.querySelectorAll('input[type="password"], input[name="password"], .x-mask, .x-mask-msg, .x-loadmask, [aria-busy="true"]')].some(visible) &&
       tenant === expectedTenant && property === expectedPropertyCode && (document.body?.innerText ?? '').includes(expectedPropertyName);
   }, {
     expectedTenant: secret.expectedTenant,

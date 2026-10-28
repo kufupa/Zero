@@ -390,3 +390,20 @@ test('pickFields reads HRDAV child, CMS and surname fields while ignoring unknow
   }
   assert.equal('shouldNotRead' in fields, false);
 });
+
+test('navigate names a signed-out login page instead of a missing Front Desk', async () => {
+  const page = {
+    content: async () => '<input name="password" type="text">',
+    evaluate: async () => false,
+    click: async () => {},
+    locator: (sel) => ({
+      filter: () => ({ count: async () => 0, click: async () => {} }),
+      count: async () => (sel.includes('name="password"') ? 1 : 0),
+      click: async () => {},
+    }),
+  };
+  await assert.rejects(
+    () => reader.navigateGuestStay(page, { frontDeskMs: 20, guestStayMs: 20, searchPaintMs: 20, pollMs: 5 }),
+    /GUEST_STAY_NAV_LOGIN_PAGE/,
+  );
+});

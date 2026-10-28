@@ -305,3 +305,20 @@ test('login form detection matches the Infor password box by name (it renders as
   const body = source.slice(source.indexOf('async function loginFormVisible'), source.indexOf('export async function waitForShellOrLoginForm'));
   assert.match(body, /input\[name="password"\]:visible/);
 });
+
+test('a visible Infor login form (type=text name=password) is never an authenticated shell', async () => {
+  const loginDoc = {
+    documentElement: { outerHTML: '', dataset: { tenant: 'tenant', propertyCode: 'HRCEN' } },
+    querySelectorAll: (sel) => (sel.includes('input[name="password"]') ? [{ getClientRects: () => [1] }] : []),
+    body: { innerText: 'Hotel' },
+  };
+  const page = {
+    evaluate: async (fn, arg) => vm.runInNewContext(`(${fn.toString()})(arg)`, {
+      arg, document: loginDoc, location: { href: secret.loginUrl }, getComputedStyle: () => ({ visibility: 'visible' }),
+    }),
+    locator: () => ({ count: async () => 1 }),
+  };
+  assert.equal(await quote.authenticatedShellReady(page, secret), false);
+  assert.equal(await quote.findReusableAuthenticatedPage([page], secret), null);
+  assert.deepEqual(await quote.waitForShellOrLoginForm(page, secret, Date.now() + 50), { ready: false, loginForm: true });
+});

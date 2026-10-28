@@ -265,7 +265,11 @@ export async function navigateGuestStay(page, timeouts = NAV_TIMEOUTS) {
       await delay(timeouts.pollMs);
     }
     if (!(await exactMenuLabel(page, 'Front Desk'))) {
-      if (attempt === 2) throw new Error('GUEST_STAY_NAV_NO_FRONT_DESK');
+      if (attempt === 2) {
+        // A signed-out page has no app menu; name that instead of a missing Front Desk.
+        const loginForm = page.locator ? await page.locator('input[name="password"]:visible').count().catch(() => 0) : 0;
+        throw new Error(loginForm > 0 ? 'GUEST_STAY_NAV_LOGIN_PAGE' : 'GUEST_STAY_NAV_NO_FRONT_DESK');
+      }
       continue;
     }
     await openAppMenu(page);
