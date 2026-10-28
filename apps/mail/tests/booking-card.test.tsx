@@ -1381,6 +1381,15 @@ describe('HRDAV booking fields and CMS', () => {
 });
 
 describe('booking card marks guest details for the preview gate (H6b)', () => {
+  it('masks HMS confirmation addresses in preview screenshots', () => {
+    const { container } = render(<BookingCards draft={draftReady()} contact={CARD_CONTACT}
+      confirmation={CARD_CONFIRMATION} />);
+    expect(unmaskedPii(container, ['booker@example.invalid', 'staff@example.invalid'])).toEqual([]);
+    fireEvent.change(screen.getByLabelText('Send HMS confirmation to'), { target: { value: 'custom' } });
+    fireEvent.change(screen.getByLabelText('Other confirmation email'), { target: { value: 'guest@example.invalid' } });
+    expect(unmaskedPii(container, ['guest@example.invalid'])).toEqual([]);
+  });
+
   it('marks the guest names, the booking summary and the HMS confirmation with data-pii', async () => {
     const { client } = paneClient();
     const { container } = render(<BookingCards draft={draftReady()} paneSave={client} />);
