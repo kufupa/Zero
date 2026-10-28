@@ -1,8 +1,10 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render as renderWithTestingLibrary, screen, waitFor, within } from '@testing-library/react';
+import type { ReactElement, ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ConfirmationSourcesProvider } from '../components/quote-workflow/confirmation-recipient';
 import { unmaskedPii } from './helpers/pii-marks';
 import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
 import { ContactBlock } from '../components/nava-pane/blocks/contact-block';
@@ -66,6 +68,16 @@ vi.mock('../lib/quote-workflow/pane-telemetry', async (importOriginal) => ({
 }));
 
 afterEach(() => cleanup());
+
+// Most booking tests model a signed-in staff member. Tests for missing sources explicitly pass null.
+const TEST_CONFIRMATION = { userEmail: 'staff@example.invalid', setting: { mode: 'self' as const } };
+function TestConfirmationProvider({ children }: { children: ReactNode }) {
+  return <ConfirmationSourcesProvider value={TEST_CONFIRMATION}>{children}</ConfirmationSourcesProvider>;
+}
+function render(ui: ReactElement) {
+  return renderWithTestingLibrary(ui, { wrapper: TestConfirmationProvider });
+}
+
 
 const STAFF_HASH = 'ab'.repeat(32);
 
@@ -1196,7 +1208,7 @@ describe('HRDAV booking fields and CMS', () => {
     const { client, preview, commit } = paneClient();
     const draft = hrdavDraft();
     delete draft.draft.rooms[0]!.request.bookerEmail;
-    render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE} />);
+    render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE} confirmation={null} />);
     expect(screen.getByRole('checkbox', { name: 'Send confirmation from HMS' })).toHaveProperty('checked', true);
     expect(previewButton(0).disabled).toBe(true);
     expect(bookButton(0).disabled).toBe(true);
