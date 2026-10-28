@@ -1328,6 +1328,23 @@ describe('HRDAV booking fields and CMS', () => {
     expect(bookButton(0).disabled).toBe(true);
   });
 
+  it.each([
+    ['Rate plan', 'OTHER'],
+    ['Adults', '2'],
+    ['Child age 1', '6'],
+  ])('marks the price check outdated when %s changes', (label, value) => {
+    const draft = hrdavDraft();
+    draft.draft.rooms[0]!.request.childAges = [5];
+    draft.draft.rateCheck = [{ status: 'match', claimQuote: 'R1,750', assumedTaxBasis: false, differenceMinor: 0 }];
+    draft.options = { ...draft.options, ratePlans: ['TAXYZ', 'OTHER'] } as BookingDraftReady['options'];
+    render(<BookingCards draft={draft} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    expect(screen.getByText(/Price matches the email/)).toBeDefined();
+    fireEvent.change(screen.getByLabelText(label), { target: { value } });
+    expect(screen.queryByText(/Price matches the email/)).toBeNull();
+    expect(screen.getByText(/price check no longer applies/i)).toBeDefined();
+  });
+
   it('stops the batch after a refused first room', async () => {
     const { client, commit } = paneClient();
     commit.mockResolvedValueOnce({ status: 'refused', reason: 'refused_save_blank_required' });
