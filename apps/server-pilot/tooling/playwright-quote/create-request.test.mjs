@@ -1,14 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   confirmationRecipientFills,
   confirmationRecipientRefusal,
   loadCreateToolSchema,
+  loadCreateRequest,
   optionalPartyAndNoteFills,
   validateCreateRequest,
 } from './create-request.mjs';
-import { compareReadbackStay } from './create-lab-stay.mjs';
+import { bandChildAges, compareCmsReadback, compareReadbackStay, expectedCmsFields, matchAgencyCandidate, matchAgencyGridRow } from './create-lab-stay.mjs';
 
 const RECIPIENT = { mode: 'self', address: 'staff@example.invalid' };
 const STAY = {
@@ -69,4 +72,89 @@ test('writes the per-booking recipient into emailaddress, verifies readback, and
   assert.equal(/clickTip\([^)]*(Email confirmation|Send confirmation|CMS Send Mail)/i.test(source), false);
   assert.equal(source.includes("fillNamed(page, 'udfchkbox04'"), false);
   assert.match(source, /if \(confirmationSendMail\(stay\)\)[\s\S]*tickCmsSendMail/);
+});
+
+test('CMS and child counts are compared without mistaking a saved mismatch for no booking', () => {
+  assert.deepEqual(bandChildAges([0, 2, 5, 12, 14, 17]), { child1: 2, child2: 2, child3: 2 });
+  const result = compareCmsReadback({ udfchar09: '03', udfchar13: 'x@example.invalid', send: true },
+    { udfchar09: '', udfchar13: 'x@example.invalid', send: true });
+  assert.equal(result.reason, 'saved_cms_mismatch');
+  assert.equal(result.mismatches[0].field, 'udfchar09');
+  assert.equal(compareCmsReadback({ udfchar09: '03', udfchar13: 'x@example.invalid', send: true },
+    { udfchar09: '03', udfchar13: 'x@example.invalid', send: true }).reason, null);
+});
+
+test('agency requires one exact id or one exact normalized name', () => {
+  const rows = [{ nativeId: '1', displayName: 'Acme Travel' }, { nativeId: '2', displayName: 'Acme Travel' }];
+  assert.equal(matchAgencyCandidate(rows, { nativeId: '2', name: 'Acme Travel' }).nativeId, '2');
+  assert.equal(matchAgencyCandidate(rows, { id: '2', name: 'Acme Travel' }).nativeId, '2');
+  assert.equal(matchAgencyCandidate(rows, { id: '2', nativeId: '1', name: 'Acme Travel' }), null);
+  assert.equal(matchAgencyCandidate(rows, { name: 'Acme Travel' }), null);
+  assert.equal(matchAgencyCandidate(rows, { name: 'Acme' }), null);
+});
+
+test('send-off CMS keeps message ID and checks that Send Mail is off', () => {
+  assert.deepEqual(expectedCmsFields({}), { send: false });
+  assert.equal(compareCmsReadback(expectedCmsFields({}), { send: true }).reason, 'saved_cms_mismatch');
+  const expected = expectedCmsFields({ cmsMessageId: '03' });
+  assert.deepEqual(expected, { udfchar09: '03', send: false });
+  assert.equal(compareCmsReadback(expected, { udfchar09: '03', udfchar13: 'existing@example.invalid', send: false }).reason, null);
+  assert.equal(compareCmsReadback(expected, { udfchar09: '03', send: true }).reason, 'saved_cms_mismatch');
+  assert.equal(compareCmsReadback(expected, { udfchar09: '', send: false }).reason, 'saved_cms_mismatch');
+});
+
+test('send-off path explicitly unchecks the control before readback', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  assert.match(source, /if \(stay\.cmsMessageId\) await pickCmsMessageId[\s\S]*else await setCmsSendMail\(page, false\);[\s\S]*compareCmsReadback/);
+});
+
+test('agency row selection uses internal record ID, not visible IATA', () => {
+  const selected = { nativeId: '456', displayName: 'Acme Travel', matchedOn: ['store'] };
+  assert.equal(matchAgencyGridRow({ nativeId: '456', displayName: 'Acme Travel', iata: '987' }, selected, { id: '456', name: 'Acme Travel' }), true);
+  assert.equal(matchAgencyGridRow({ nativeId: '987', displayName: 'Acme Travel', iata: '456' }, selected, { id: '456', name: 'Acme Travel' }), false);
+  assert.equal(matchAgencyGridRow(null, selected, { id: '456', name: 'Acme Travel' }), false);
+});
+
+test('property-driven guarantee accepts CCIATA and rejects unknown labels', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'create-request-test-'));
+  const file = join(dir, 'request.json');
+  try {
+    await writeFile(file, JSON.stringify({ ...STAY, guaranteeType: 'CCIATA' }));
+    const args = ['--property', 'HRDAV', '--request', file];
+    const accepted = await loadCreateRequest(args);
+    assert.equal(accepted.ok, true);
+    assert.equal(accepted.request.guaranteeType, 'Guaranteed By Credit Card and Agent');
+    await writeFile(file, JSON.stringify({ ...STAY, guaranteeType: 'unknown' }));
+    assert.equal((await loadCreateRequest(args)).error, 'guarantee_type_unknown');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('readback requires the requested child bands', () => {
+  const expected = { ...STAY, childAges: [5, 14] };
+  const actual = { ...STAY, child1: '0', child2: '1', child3: '1' };
+  assert.equal(compareReadbackStay(expected, actual).readbackMatch, true);
+  const mismatch = compareReadbackStay(expected, { ...actual, child3: '0' });
+  assert.equal(mismatch.readbackMatch, false);
+  assert.equal(mismatch.mismatches[0].field, 'child3');
+});
+
+test('empty child array skips popup', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  assert.match(source, /Array\.isArray\(stay\.childAges\) && stay\.childAges\.length\) await applyChildAges/);
+});
+
+test('non-pane save stops before cancellation on CMS or child mismatch', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const mismatch = source.indexOf("result.outcome = cms.reason ?? 'saved_child_mismatch'");
+  const cancel = source.indexOf("await clickTip(page, 'Cancel')", mismatch);
+  assert.ok(mismatch > 0 && cancel > mismatch);
+  assert.match(source.slice(mismatch, cancel), /result\.cancelled = false;[\s\S]*return;/);
+});
+
+test('CMS controls are checked again after availability and before Save', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const availability = source.indexOf('result.clickedCheckAvailability = true');
+  const save = source.indexOf("await clickTip(page, '^Save')", availability);
+  assert.ok(availability >= 0 && save > availability);
+  assert.match(source.slice(availability, save), /compareCmsReadback\([\s\S]*refused_cms_fields_unverified/);
 });

@@ -45,6 +45,7 @@ export type PropertyProfile = {
       choices?: Array<{ value: string; display: string; marketSegment?: string }>;
     }>;
   };
+  cms?: { messageIds: Array<{ code: string; label: string }>; defaultAgency: string; defaultGuest: string };
   digest: string;
   classifyRate: (
     code: string,
@@ -63,12 +64,16 @@ export declare function validateProfile(raw: unknown, propertyCode: string): Pro
 export declare function profileFor(propertyCode: string): PropertyProfile | null;
 export type BookFieldProfile = {
   createForm?: PropertyProfile['createForm'];
+  requiredCreateFields?: string[];
+  cms?: PropertyProfile['cms'];
 };
 
+export declare function profileCms(profile: BookFieldProfile | null | undefined): PropertyProfile['cms'] | null;
+export declare function guaranteeDisplay(profile: BookFieldProfile | null | undefined, value: string): string | null;
 export declare function requiredBookNativeFields(profile: BookFieldProfile | null | undefined): string[];
 export declare function marketSegmentOptions(profile: BookFieldProfile | null | undefined): string[] | null;
 export declare function stayBookFieldRefusal(
-  stay: { marketSegment?: string; guestoptin4?: boolean } | null | undefined,
+  stay: { marketSegment?: string; guestoptin4?: boolean; reservationNote?: string; cmsMessageId?: string; confirmationSendMail?: boolean; confirmationRecipient?: unknown; guaranteeType?: string } | null | undefined,
   profile: BookFieldProfile | null | undefined,
 ): string | null;
 export declare function amendRoomTypes(propertyCode: string): string[];
