@@ -4315,9 +4315,24 @@ async function latestStaffQuoteRunFor(
     if (sameTerms) return [userRun];
   }
 
+  // A ready, selected contract for the bound party wins over the pane's default public strategy.
+  // Preserve the original newest-first order within each tier. Comparison callers still validate the strategy.
+  const preferBoundContract = Boolean(quoteInput.parties?.agency || quoteInput.parties?.company) &&
+    ['BAR', 'Government', 'GOV'].includes(quoteInput.salesStrategy);
+  const hasReadySelectedContract = (run: AiWorkflowRun): boolean => {
+    const result = objectRecord(run.readResult);
+    return run.state === 'succeeded' && result.status === 'ready' && staffQuoteResultReusable(run.readResult, now) &&
+      Array.isArray(result.rateOptions) && result.rateOptions.some((value) => {
+        const option = objectRecord(value);
+        return option.selected === true && option.contract === true;
+      });
+  };
+  const preparedRows = preferBoundContract
+    ? [...rows].sort((left, right) => Number(hasReadySelectedContract(right)) - Number(hasReadySelectedContract(left)))
+    : rows;
   // System-prepared quotes are independent per stay. Look for the newest prepared price for these terms rather than
   // letting a different stay's more recently enqueued job hide a valid match.
-  for (const preparedRun of rows) {
+  for (const preparedRun of preparedRows) {
     const metrics = objectRecord(preparedRun.metrics);
     if (
       !isSystemPreparedPriority(preparedRun.priority) ||
