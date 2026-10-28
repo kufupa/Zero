@@ -43,7 +43,7 @@ function bookedDraft(): BookingDraftReady {
             childAges: [],
             roomType: 'STQN',
             ratePlan: 'TAXYZ',
-            agency: 'XYZ TRAVEL',
+            bookerEmail: 'booker@example.invalid',
             firstName: 'John',
             lastName: 'Smith',
           },
@@ -178,6 +178,16 @@ describe('booking card reload', () => {
     draft.draft.rooms[0]!.request.childAges = [7];
     session.groups = [childGroup];
     session.bookingDrafts = { '2026-11-12:2026-11-14': draft };
+    const savedStays = {
+      s_aaaa1111_1: {
+        confirmationNumber: '98765-1', status: 'booked' as const, screenshotRef: null,
+        runId: RUN, shots: [{ name: 'saved.png', sha256: 'c'.repeat(64), at: SHOT_AT }],
+      },
+    };
+    const direct = render(<BookingCards draft={draft} groups={[childGroup]} paneSave={client} savedStays={savedStays} />);
+    expect(screen.getAllByText('Booked in HMS – confirmation 98765-1')).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    direct.unmount();
     render(
       <QuoteBookingHost
         session={session}
@@ -196,6 +206,58 @@ describe('booking card reload', () => {
     expect(screen.getAllByText('Booked in HMS – confirmation 98765-1')).toHaveLength(1);
     expect(screen.getByRole('button', { name: 'View HMS screenshots' })).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+  });
+
+  it('never offers preview or retry after an unknown save without a confirmation number', () => {
+    const preview = vi.fn<PaneStayClient['preview']>();
+    const commit = vi.fn<PaneStayClient['commit']>();
+    const client: PaneStayClient = { preview, commit, screenshot: vi.fn(async () => null), mode: () => 'on' };
+    const savedStays = {
+      s_aaaa1111_1: { confirmationNumber: null, status: 'unknown' as const, screenshotRef: null },
+    };
+    const draft = bookedDraft();
+    const session = initialQuoteSession();
+    session.groups = [group];
+    session.bookingDrafts = { '2026-11-12:2026-11-14': draft };
+
+    const assertNoRetry = () => {
+      expect(screen.getAllByText(/check HMS/i).length).toBeGreaterThan(0);
+      expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Book this stay' })).toBeNull();
+      expect(preview).not.toHaveBeenCalled();
+      expect(commit).not.toHaveBeenCalled();
+    };
+    const direct = render(<BookingCards draft={draft} groups={[group]} paneSave={client} savedStays={savedStays} />);
+    assertNoRetry();
+    direct.unmount();
+    render(<QuoteBookingHost session={session} paneSave={client} savedStays={savedStays} />);
+    assertNoRetry();
+  });
+
+  it('shows a stored CMS mismatch without offering another booking', () => {
+    const client: PaneStayClient = {
+      preview: vi.fn(), commit: vi.fn(), screenshot: vi.fn(async () => null), mode: () => 'on',
+    };
+    const savedStays = {
+      s_aaaa1111_1: {
+        confirmationNumber: '98765-1', status: 'unknown' as const, screenshotRef: null,
+        cmsReason: 'saved_cms_mismatch',
+      },
+    };
+    const draft = bookedDraft();
+    const warning = 'Booked, but HMS confirmation settings did not match — check CMS in HMS';
+    const direct = render(<BookingCards draft={draft} groups={[group]} paneSave={client} savedStays={savedStays} />);
+    expect(screen.getByText(warning)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
+    direct.unmount();
+    // The same saved receipt must remain meaningful when no booking draft survives the reload.
+    render(<QuoteBookingHost session={initialQuoteSession()} paneSave={client} savedStays={savedStays} />);
+    expect(screen.getByText(warning)).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
+    expect(client.commit).not.toHaveBeenCalled();
   });
 
   it('shows a stored booking when the mail has no booking draft', () => {

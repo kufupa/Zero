@@ -159,7 +159,7 @@ function draftReady(over: Partial<BookingDraftReady['draft']> = {}): BookingDraf
             childAges: [],
             roomType: 'STQN',
             ratePlan: 'TAXYZ',
-            agency: 'XYZ TRAVEL',
+            bookerEmail: 'booker@example.invalid',
             firstName: 'John',
             lastName: 'Smith',
           },
@@ -175,7 +175,7 @@ function draftReady(over: Partial<BookingDraftReady['draft']> = {}): BookingDraf
             childAges: [],
             roomType: 'STQN',
             ratePlan: 'TAXYZ',
-            agency: 'XYZ TRAVEL',
+            bookerEmail: 'booker@example.invalid',
             firstName: 'Jane',
             lastName: 'Doe',
           },
@@ -383,7 +383,7 @@ describe('booking cards', () => {
       roomTypeCode: 'DLXKNG',
       roomCodes: ['DLXKNG'],
       rateCode: 'NEWBAR',
-      quotedRateCode: 'NEWBAR',
+      quotedRateCode: 'OLDERQUOTE',
       fields: { ...g1.fields, roomCodes: 'staff_corrected' },
     };
     render(<BookingCards draft={draft} groups={[currentGroup]} paneSave={client} />);
@@ -474,10 +474,9 @@ describe('booking cards', () => {
 
   it('renders create-only fields once per draft room', () => {
     render(<QuoteWorkflowPanel session={quotedSession()} />);
-    expect(screen.getAllByLabelText('Booking agency').map((field) => (field as HTMLInputElement).value)).toEqual([
-      'XYZ TRAVEL',
-      'XYZ TRAVEL',
-    ]);
+    const agencies = screen.getAllByLabelText('Booking agency') as HTMLSelectElement[];
+    expect(agencies).toHaveLength(2);
+    expect(agencies.every((field) => field.value === '')).toBe(true);
     expect(screen.getAllByLabelText('Last name').map((field) => (field as HTMLInputElement).value)).toEqual([
       'Smith',
       'Doe',
@@ -554,7 +553,8 @@ describe('booking cards', () => {
       eventRateCodes: [],
     };
     render(<QuoteWorkflowPanel session={session} paneConfig={paneConfig} />);
-    const roomType = screen.getByLabelText('Room type') as unknown as HTMLSelectElement;
+    const stay = screen.getByRole('article', { name: 'Stay 1 details' });
+    const roomType = within(stay).getByLabelText('Room type') as HTMLSelectElement;
     const values = Array.from(roomType.options, (option) => option.value);
     expect(values.filter((value) => value === 'CONFIG-ONLY')).toHaveLength(1);
     expect(values.filter((value) => value === 'HOTEL-ONLY')).toHaveLength(1);
@@ -696,39 +696,65 @@ describe('booking cards', () => {
     expect(document.querySelectorAll('[class*="amber"]').length).toBe(0);
   });
 
-  it('fills an empty Organization and Booking agency from the picked company and agency', () => {
+  it('shows bound agency by name and keeps Organization separate', () => {
     render(<BookingCards draft={bareDraft()} parties={PICKED} />);
     expect(fieldValues('Organization')).toEqual(['Woolworths Holdings', 'Woolworths Holdings']);
-    expect(fieldValues('Booking agency')).toEqual(['Woolworths Travel', 'Woolworths Travel']);
+    const agencies = screen.getAllByLabelText('Booking agency') as HTMLSelectElement[];
+    expect(agencies).toHaveLength(2);
+    for (const select of agencies) {
+      expect(select.selectedOptions[0]?.textContent).toContain('Woolworths Travel');
+      expect(select.value).not.toBe('');
+    }
+    const noAgency = within(agencies[0]!).getByRole('option', { name: /no agency/i }) as HTMLOptionElement;
+    fireEvent.change(agencies[0]!, { target: { value: noAgency.value } });
+    expect(agencies[0]!.value).toBe(noAgency.value);
+    expect(agencies[1]!.selectedOptions[0]?.textContent).toContain('Woolworths Travel');
   });
 
-  it('keeps the draft agency and staff text when the picks change', () => {
+  it('keeps a staff-edited Organization when party picks change', () => {
     const { rerender } = render(<BookingCards draft={draftReady()} parties={PICKED} />);
-    expect(fieldValues('Booking agency')).toEqual(['XYZ TRAVEL', 'XYZ TRAVEL']);
-    expect(fieldValues('Organization')).toEqual(['Woolworths Holdings', 'Woolworths Holdings']);
     fireEvent.change(screen.getAllByLabelText('Organization')[0]!, { target: { value: 'Bidvest Bank' } });
     const other = { company: { kind: 'company' as const, nativeId: '77', name: 'Other Co' } };
     rerender(<BookingCards draft={draftReady()} parties={other} />);
     expect(fieldValues('Organization')[0]).toBe('Bidvest Bank');
-    expect(fieldValues('Booking agency')).toEqual(['XYZ TRAVEL', 'XYZ TRAVEL']);
   });
 
-  it('leaves the fields as the draft has them when nothing is picked', () => {
-    render(<BookingCards draft={draftReady()} />);
-    expect(fieldValues('Booking agency')).toEqual(['XYZ TRAVEL', 'XYZ TRAVEL']);
-    expect(fieldValues('Organization')).toEqual(['', '']);
+  it('requires staff to resolve an unbound draft agency before preview', () => {
+    const { client, preview } = paneClient();
+    const draft = previewableDraft();
+    draft.draft.rooms[0]!.request.agency = 'Unbound Example';
+    render(<BookingCards draft={draft} paneSave={client} />);
+    expect(screen.getAllByText(/Unbound Example/i).length).toBeGreaterThan(0);
+    expect(previewButton(0).disabled).toBe(true);
+    expect(preview).not.toHaveBeenCalled();
+    const select = screen.getByLabelText('Booking agency') as HTMLSelectElement;
+    const noAgency = screen.getByRole('option', { name: /no agency/i }) as HTMLOptionElement;
+    fireEvent.change(select, { target: { value: noAgency.value } });
+    expect(previewButton(0).disabled).toBe(false);
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('bookingAgency');
   });
 
-  it('does not fill from a pick without an HMS id', () => {
-    const typed = { company: { kind: 'company' as const, nativeId: '', name: 'Typed Co' } };
+  it('does not offer a typed agency or company without an HMS id', () => {
+    const typed = {
+      company: { kind: 'company' as const, nativeId: '', name: 'Typed Co' },
+      agency: { kind: 'agency' as const, nativeId: '', name: 'Typed Agency' },
+    };
     render(<BookingCards draft={bareDraft()} parties={typed} />);
     expect(fieldValues('Organization')).toEqual(['', '']);
+    for (const select of screen.getAllByLabelText('Booking agency') as HTMLSelectElement[]) {
+      expect(Array.from(select.options).some((option) => option.textContent === 'Typed Agency')).toBe(false);
+      expect(select.value).toBe('');
+    }
   });
 
-  it('passes the picked company and agency from the quote to the booking card', () => {
+  it('passes picked company and bound agency from quote to booking card', () => {
     render(<QuoteWorkflowPanel session={quotedSession(bareDraft(), PICKED)} />);
     expect(fieldValues('Organization')).toEqual(['Woolworths Holdings', 'Woolworths Holdings']);
-    expect(fieldValues('Booking agency')).toEqual(['Woolworths Travel', 'Woolworths Travel']);
+    for (const select of screen.getAllByLabelText('Booking agency') as HTMLSelectElement[]) {
+      expect(select.selectedOptions[0]?.textContent).toContain('Woolworths Travel');
+    }
   });
 });
 
@@ -1104,11 +1130,136 @@ describe('HRDAV booking fields and CMS', () => {
       contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
     const message = screen.getByLabelText('Message Id') as HTMLSelectElement;
     expect(message.value).toBe('01');
-    fireEvent.change(message, { target: { value: '' } });
-    expect(screen.getByText(/confirmation type/i)).toBeDefined();
+    const blank = Array.from(message.options).find((option) => option.value === '');
+    if (blank && !blank.disabled) {
+      fireEvent.change(message, { target: { value: '' } });
+      expect(screen.getByText(/confirmation type/i)).toBeDefined();
+      expect(previewButton(0).disabled).toBe(true);
+      expect(bookButton(0).disabled).toBe(true);
+    } else {
+      // A select with no selectable blank also enforces the non-blank contract.
+      expect(message.value).not.toBe('');
+    }
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('uses the fallback CMS choices and guest or company default when profile CMS is absent', () => {
+    const draft = hrdavDraft();
+    draft.options = { ...OPTIONS, roomType: ['DLXTWN'] };
+    delete draft.draft.rooms[0]!.request.agency;
+    const { unmount } = render(<BookingCards draft={draft} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    const guest = screen.getByLabelText('Message Id') as HTMLSelectElement;
+    expect(guest.value).toBe('01');
+    expect(Array.from(guest.options, (option) => option.value)).toEqual(expect.arrayContaining(['01', '03', '08']));
+    unmount();
+    render(<BookingCards draft={draft} propertyCode={HRDAV_PROPERTY_CODE}
+      parties={{ company: { kind: 'company', nativeId: '49', name: 'Woolworths Holdings' } }}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    expect((screen.getByLabelText('Message Id') as HTMLSelectElement).value).toBe('03');
+  });
+
+  it('uses CMS options and defaults from the property profile when supplied', () => {
+    const draft = hrdavDraft();
+    draft.options = {
+      ...draft.options,
+      cmsMessageIds: [{ code: '21', label: 'Guest custom' }, { code: '23', label: 'Agency custom' }],
+      cmsDefaults: { guest: '21', agency: '23' },
+    } as BookingDraftReady['options'];
+    render(<BookingCards draft={draft} parties={agency} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    const message = screen.getByLabelText('Message Id') as HTMLSelectElement;
+    expect(message.value).toBe('23');
+    expect(Array.from(message.options, (option) => option.value)).toEqual(expect.arrayContaining(['21', '23']));
+  });
+
+  it('blocks CMS preview and booking when no recipient is available', () => {
+    const { client, preview, commit } = paneClient();
+    const draft = hrdavDraft();
+    delete draft.draft.rooms[0]!.request.bookerEmail;
+    render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE} />);
+    expect(screen.getByRole('checkbox', { name: 'Send confirmation from HMS' })).toHaveProperty('checked', true);
     expect(previewButton(0).disabled).toBe(true);
     expect(bookButton(0).disabled).toBe(true);
+    fireEvent.click(previewButton(0));
     expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('clearing a bound agency clears it from the preview instead of sending the draft name', () => {
+    const { client, preview } = paneClient();
+    const draft = hrdavDraft();
+    render(<BookingCards draft={draft} paneSave={client} parties={agency} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    const noAgency = screen.getByRole('option', { name: /no agency/i }) as HTMLOptionElement;
+    fireEvent.change(screen.getByLabelText('Booking agency'), { target: { value: noAgency.value } });
+    fireEvent.click(previewButton(0));
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('bookingAgency');
+  });
+
+  it('requires a new applicable rate and fresh preview after staff changes room type', async () => {
+    const { client, preview } = paneClient();
+    const draft = hrdavDraft();
+    const initial: StayGroupRequirement = {
+      ...g1, quantity: 1, roomTypeCode: 'DLXTWN', roomCodes: ['DLXTWN'], rateCode: 'TAXYZ',
+      fields: { ...g1.fields, roomCodes: 'staff_corrected' },
+    };
+    const session = quotedSession(draft);
+    const rateOption = {
+      id: 'old-rate', groupId: 'g1', board: 'bb' as const, boardLabel: 'Bed & breakfast',
+      rateCode: 'TAXYZ', rateLabel: 'Old rate', roomCode: 'DLXTWN', roomLabel: 'Deluxe Twin',
+      contract: false, onlyContract: false, matchesRequest: true, perNightMinor: 100000,
+      totalMinor: 200000, currency: 'ZAR', priced: 'full' as const, selected: true,
+    };
+    session.rateOptions = [rateOption];
+    const view = (group: StayGroupRequirement, currentSession: QuoteSession) => (
+      <BookingCards draft={draft} groups={[group]} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
+        session={currentSession} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />
+    );
+    const { rerender } = render(view(initial, session));
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0).disabled).toBe(false));
+    fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'DLXKNG' } });
+    expect(bookButton(0).disabled).toBe(true);
+    expect(previewButton(0).disabled).toBe(true);
+    expect((screen.getByLabelText('Rate plan') as HTMLSelectElement).value).not.toBe('TAXYZ');
+    expect(preview).toHaveBeenCalledTimes(1);
+
+    // A fresh applicable rate arrives for the new room, not the earlier room's quote.
+    const refreshed = {
+      ...session,
+      rateOptions: [
+        rateOption,
+        { ...rateOption, id: 'new-rate', rateCode: 'NEWKNG', roomCode: 'DLXKNG', roomLabel: 'Deluxe King' },
+      ],
+    };
+    rerender(view({ ...initial, roomTypeCode: 'DLXKNG', roomCodes: ['DLXKNG'], rateCode: 'NEWKNG' }, refreshed));
+    const rate = screen.getByLabelText('Rate plan') as HTMLSelectElement;
+    fireEvent.change(rate, { target: { value: 'NEWKNG' } });
+    await waitFor(() => expect(previewButton(0).disabled).toBe(false));
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ roomType: 'DLXKNG', ratePlan: 'NEWKNG' })));
+  });
+
+  it('rejects child ages outside 0–17 and accepts the boundary values', async () => {
+    const { client, preview } = paneClient();
+    const draft = hrdavDraft();
+    draft.draft.rooms[0]!.request.childAges = [5];
+    render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    const age = screen.getByLabelText(/child age 1/i);
+    for (const value of ['-1', '18']) {
+      fireEvent.change(age, { target: { value } });
+      expect(previewButton(0).disabled).toBe(true);
+    }
+    for (const value of ['0', '17']) {
+      fireEvent.change(age, { target: { value } });
+      expect(previewButton(0).disabled).toBe(false);
+      fireEvent.click(previewButton(0));
+      await waitFor(() => expect(preview).toHaveBeenLastCalledWith(expect.objectContaining({ childAges: [Number(value)] })));
+      await waitFor(() => expect(bookButton(0).disabled).toBe(false));
+    }
   });
 
   it('requires Market segment only while it is blank', async () => {
@@ -1126,6 +1277,20 @@ describe('HRDAV booking fields and CMS', () => {
     expect(previewButton(0).disabled).toBe(false);
     fireEvent.click(previewButton(0));
     await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({ marketSegment: 'Leisure' })));
+  });
+
+  it('requires Terms only when the hotel marks guestoptin4 required', async () => {
+    const { client, preview } = paneClient();
+    const draft = hrdavDraft();
+    draft.options = { ...draft.options, requiredCreateFields: ['guestoptin4'] };
+    render(<BookingCards draft={draft} paneSave={client} propertyCode={HRDAV_PROPERTY_CODE}
+      contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
+    expect(previewButton(0).disabled).toBe(true);
+    expect(screen.getAllByText(/terms/i).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Guest opt-in' }));
+    expect(previewButton(0).disabled).toBe(false);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith(expect.objectContaining({ guestoptin4: true })));
   });
 
   it('uses quoted rate before draft default and blocks while all rates are missing', () => {
@@ -1280,8 +1445,8 @@ describe('booking card pane save', () => {
       track: 'COR',
       guestoptin4: false,
       guaranteeType: 'Confirmation Received',
-      bookingAgency: { name: 'XYZ TRAVEL' },
     }));
+    expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('bookingAgency');
     expect(screen.getByRole('status').textContent).toBe('Nava is filling the booking in HMS… (about 2 minutes)');
     expect(bookButton(0)).toHaveProperty('disabled', true);
     await act(async () => pending.resolve(PREVIEW_OK));
@@ -1467,6 +1632,24 @@ describe('booking card pane save', () => {
     expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
     expect(screenshot).toHaveBeenCalledWith(PANE_SAVE_RUN, 'saved.png');
     expect(screenshot).not.toHaveBeenCalledWith(PANE_SAVE_RUN, 'before.png');
+  });
+
+  it('warns of a saved CMS mismatch without offering a retry', async () => {
+    const { client, commit } = paneClient();
+    commit.mockResolvedValueOnce({
+      ...COMMIT_OK,
+      outcome: 'committed_unverified',
+      cmsReason: 'saved_cms_mismatch',
+    } as PaneStayResult & { cmsReason: string });
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
+    fireEvent.click(previewButton(0));
+    await waitFor(() => expect(bookButton(0).disabled).toBe(false));
+    fireEvent.click(bookButton(0));
+    expect(await screen.findByText('Booked, but HMS confirmation settings did not match — check CMS in HMS')).toBeDefined();
+    expect(commit).toHaveBeenCalledTimes(1);
+    const retry = screen.queryByRole('button', { name: 'Create provisional booking' });
+    expect(!retry || (retry as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Book this stay' })).toBeNull();
   });
 
   it('books with the preview digest and shows the confirmation and readback screenshot', async () => {
@@ -1796,7 +1979,6 @@ describe('booking card save modes and the note fields', () => {
     expect(preview).not.toHaveBeenCalled();
     expect(commit).not.toHaveBeenCalled();
     expect(screen.getAllByRole('button', { name: 'Copy Reservation note for Standard Queen ×2' })).toHaveLength(2);
-    expect(screen.getAllByRole('button', { name: 'Copy Booking agency for Standard Queen ×2' })).toHaveLength(2);
   });
 
   it('previews and books a child room with its age, and invalidates preview after an age edit', async () => {
@@ -1903,7 +2085,6 @@ describe('booking card save modes and the note fields', () => {
     fireEvent.click(previewButton(0));
     expect(preview).toHaveBeenCalledWith(
       expect.objectContaining({
-        bookingAgency: { name: 'XYZ TRAVEL' },
         organization: { name: 'Bidvest Bank' },
         reservationNote: 'Pay by EFT',
         bookerName: 'Ann Booker',
@@ -1918,14 +2099,14 @@ describe('booking card save modes and the note fields', () => {
     expect(bookButton(0)).toHaveProperty('disabled', true);
   });
 
-  it('caps the reservation note at 2000 characters, and a prefilled agency over 100 characters waits for Preview', () => {
+  it('caps the reservation note at 2000 characters and rejects an overlong organization', () => {
     const { client, preview } = paneClient();
     render(<BookingCards draft={draftReady()} paneSave={client} />);
     expect((screen.getAllByLabelText('Reservation note')[0] as HTMLTextAreaElement).maxLength).toBe(2000);
     pickRoomChoices(0);
-    fireEvent.change(screen.getAllByLabelText('Booking agency')[0]!, { target: { value: 'A'.repeat(101) } });
+    fireEvent.change(screen.getAllByLabelText('Organization')[0]!, { target: { value: 'A'.repeat(101) } });
     expect(previewButton(0)).toHaveProperty('disabled', true);
-    expect(screen.getByText('Set agency name (100 characters at most) before you preview.')).toBeDefined();
+    expect(screen.getByText('Set organization name (100 characters at most) before you preview.')).toBeDefined();
     expect(preview).not.toHaveBeenCalled();
   });
 

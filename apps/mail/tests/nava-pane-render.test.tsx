@@ -2113,7 +2113,8 @@ describe('NavaPane', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Use this' }));
     await waitFor(() => {
       expect(reviewedReplyHtml()).toBe('');
-      expect((screen.getByLabelText('Room type') as unknown as HTMLSelectElement).value).toBe('DLXTWN');
+      const stay = screen.getByRole('article', { name: 'Stay 1 details' });
+      expect((within(stay).getByLabelText('Room type') as HTMLSelectElement).value).toBe('DLXTWN');
     });
     expect(await screen.findByText('Available')).toBeDefined();
   });
@@ -2214,8 +2215,8 @@ describe('NavaPane', () => {
 
     render(<NavaPane bridge={fakeBridge} />);
     await waitFor(() => expect(bridgeMockState.staffQuoteJobQuery).toHaveBeenCalled());
-    const roomType = await screen.findByLabelText('Room type');
-    fireEvent.change(roomType, { target: { value: 'SKNG' } });
+    const stay = await screen.findByRole('article', { name: 'Stay 1 details' });
+    fireEvent.change(within(stay).getByLabelText('Room type'), { target: { value: 'SKNG' } });
 
     await act(async () => resolveReadback(completedStaffQuoteJob(STAFF_QUOTE_READY)));
     await settle();
@@ -2831,7 +2832,9 @@ describe('NavaPane', () => {
     fireEvent.change(screen.getByRole('textbox', { name: 'Search company in HMS' }), {
       target: { value: 'Edited Company' },
     });
-    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'government' } });
+    const quoteRatePlan = screen.getByRole('option', { name: 'All government rates' }).closest('select');
+    expect(quoteRatePlan).not.toBeNull();
+    fireEvent.change(quoteRatePlan!, { target: { value: 'government' } });
     await waitFor(() => expect(queueModeResolvers.length).toBeGreaterThan(0));
     await act(async () => queueModeResolvers.forEach((resolve) => resolve(true)));
     await settle();
