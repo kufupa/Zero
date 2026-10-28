@@ -128,3 +128,11 @@ test('non-pane save stops before cancellation on CMS or child mismatch', async (
   assert.ok(mismatch > 0 && cancel > mismatch);
   assert.match(source.slice(mismatch, cancel), /result\.cancelled = false;[\s\S]*return;/);
 });
+
+test('CMS controls are checked again after availability and before Save', async () => {
+  const source = await readFile(new URL('./create-lab-stay.mjs', import.meta.url), 'utf8');
+  const availability = source.indexOf('result.clickedCheckAvailability = true');
+  const save = source.indexOf("await clickTip(page, '^Save')", availability);
+  assert.ok(availability >= 0 && save > availability);
+  assert.match(source.slice(availability, save), /compareCmsReadback\([\s\S]*refused_cms_fields_unverified/);
+});

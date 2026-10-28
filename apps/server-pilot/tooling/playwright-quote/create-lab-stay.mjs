@@ -1239,6 +1239,17 @@ export async function main(argv = process.argv.slice(2)) {
       process.exitCode = 2;
       return;
     }
+    // Availability and other form fields can alter CMS controls. Recheck immediately before Save.
+    if (confirmationSendMail(stay)) {
+      const cms = compareCmsReadback({ udfchar09: stay.cmsMessageId, udfchar13: confirmationRecipientFills(stay).udfchar13, send: true }, await readSavedCreateFields(page));
+      if (cms.reason) {
+        result.outcome = 'refused_cms_fields_unverified';
+        result.cmsMismatches = cms.mismatches;
+        result.clickedSave = false;
+        process.stdout.write(`${result.outcome}\n`);
+        return;
+      }
+    }
     let saveClickUnknown = false;
     try {
       await clickTip(page, '^Save');
