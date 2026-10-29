@@ -505,7 +505,8 @@ describe('staff quote strategy comparisons', () => {
       return {
         runId: 'run-BAR', status: 'done', prefetch: true, asOf: new Date().toISOString(), failureClass: null,
         request: { kind: 'staff_quote', input: lookup.input },
-        result: { ...queuedQuote('BAR', group), requestedSalesStrategy: 'BAR', effectiveSalesStrategy: 'BAR',
+        result: { ...queuedQuote('BAR', group), propertyCode: HRCEN_PROPERTY_CODE,
+          requestedSalesStrategy: 'BAR', effectiveSalesStrategy: 'BAR',
           dinnerFallbackGroupIds: [group.id], dinnerAddOnRequired: true },
       };
     });
