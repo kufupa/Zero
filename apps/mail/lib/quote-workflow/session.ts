@@ -256,11 +256,7 @@ type StayAskRow = StayGroupRequirement & {
 };
 
 export type PaneCaseSnapshot = { identity: string | null; tasks: string; propertyCode: string | null; aliases?: Record<string, string> };
-type PaneRead = {
-  groups: StayGroupRequirement[] | null;
-  rememberedSource: PaneCaseSnapshot | null;
-  propertyCode: string | null;
-};
+type PaneRead = { groups: StayGroupRequirement[] | null; rememberedSource: PaneCaseSnapshot | null; propertyCode: string | null };
 type CaseAnalysis = QuoteAnalysis & {
   paneRead?: PaneRead;
   caseActionsUncertain?: boolean;
@@ -269,12 +265,8 @@ type CaseAnalysis = QuoteAnalysis & {
 };
 
 /** Keep the unmodified read as analysis.groups; remembered rows are only the editable pane projection. */
-export function withPaneRead(
-  analysis: QuoteAnalysis,
-  groups: StayGroupRequirement[] | null,
-  rememberedSource: PaneCaseSnapshot | null,
-  propertyCode: string | null,
-): QuoteAnalysis {
+export function withPaneRead(analysis: QuoteAnalysis, groups: StayGroupRequirement[] | null,
+  rememberedSource: PaneCaseSnapshot | null, propertyCode: string | null): QuoteAnalysis {
   return { ...analysis, paneRead: { groups, rememberedSource, propertyCode } } as CaseAnalysis;
 }
 /** The baseline is retained while case evidence is held, including across a pane switch. */
@@ -542,13 +534,8 @@ function heldCaseAnalysis(analysis: QuoteAnalysis, baseline: PaneCaseSnapshot | 
     }
   }
   return {
-    ...analysis,
-    groups: analysis.groups.map(withoutCaseIdentity),
-    luna,
-    amendment: null,
-    hmsTodoCard: null,
-    caseActionsUncertain: true,
-    caseBaseline: baseline,
+    ...analysis, groups: analysis.groups.map(withoutCaseIdentity), luna, amendment: null, hmsTodoCard: null,
+    caseActionsUncertain: true, caseBaseline: baseline,
   } as CaseAnalysis;
 }
 
@@ -2055,7 +2042,7 @@ export function reduceQuoteSession(
       const fresh = paneCaseSnapshot(action.analysis);
       const wasHeld = caseReviewPending(session.analysis);
       const editsToKeep = staffEditedDuringRun || session.stayRevision > 1 || paneRead?.groups != null ||
-        Boolean(session.analysis && session.groups.length && session.inputRevision > 1) ||
+        Boolean(!session.staffNote && session.analysis && session.groups.length && session.inputRevision > 1) ||
         session.groups.some((group) => group.stayId !== undefined || Object.values(group.fields).includes('staff_corrected'));
       const unverifiedMemory = !session.analysis && paneRead?.groups != null && !paneRead.rememberedSource &&
         JSON.stringify(paneRead.groups) !== JSON.stringify(action.analysis.groups);
