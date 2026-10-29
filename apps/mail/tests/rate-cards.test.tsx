@@ -274,7 +274,7 @@ describe('rate cards in the quote panel', () => {
     const grid = screen.getByRole('group', { name: 'Room, rate and board choices' });
     expect(within(grid).getByText('Standard Twin (STWN)')).toBeDefined();
     expect(within(grid).getByText('Standard Queen (STQN)')).toBeDefined();
-    expect(within(grid).getByRole('button', { name: /Select Standard Queen.*Nightly price not checked.*Rooms left not checked/i })).toBeDefined();
+    expect(within(grid).getByRole('button', { name: /Select Standard Queen.*Average price per room per night not checked.*Rooms left not checked/i })).toBeDefined();
     expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
     expect(within(grid).getAllByText('Public').length).toBe(2);
     expect(within(grid).queryByText('Contract')).toBeNull();
