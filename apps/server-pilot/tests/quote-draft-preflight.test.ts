@@ -95,6 +95,8 @@ describe('priced draft preflight', () => {
     const refs = [{ workflowRunId: 'run-1', revisionRef: revision.id }];
     const input = { messageId: 'm1', threadId: 't1', pdfHashes: [hash], preparedVersions: refs };
     await expect(caller().workstation.quoteDraftPreflight(input)).resolves.toEqual({ ready: true });
+    await expect(caller().workstation.quoteDraftPreflight({ ...input, pdfHashes: [] }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     await expect(caller().workstation.quoteDraftPreflight({ ...input, preparedVersions: [{ ...refs[0]!, revisionRef: 'other' }] }))
       .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     state['stays[s1].rows[g1].roomType'] = 'Standard Twin';
@@ -126,6 +128,8 @@ describe('priced draft preflight', () => {
     await expect(caller('transport-davinci').workstation.quoteDraftPreflight({ messageId: 'm1', threadId: 't1',
       pdfHashes: [hash], preparedVersions: [{ workflowRunId: 'run-1', revisionRef: revision.id }] }))
       .resolves.toEqual({ ready: true });
+    await expect(caller('transport-davinci').workstation.quoteDraftPreflight({ messageId: 'm1', threadId: 't1',
+      pdfHashes: [] })).resolves.toEqual({ ready: true });
   });
 
   it('keeps an edited saved quote guarded and trusts a non-quote classification only while current', async () => {
