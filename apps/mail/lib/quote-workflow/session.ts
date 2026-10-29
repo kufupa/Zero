@@ -256,10 +256,9 @@ type StayAskRow = StayGroupRequirement & {
 };
 
 export type PaneCaseSnapshot = { identity: string | null; tasks: string; propertyCode: string | null; aliases?: Record<string, string> };
-type PaneRead = { groups: StayGroupRequirement[] | null; rememberedSource: PaneCaseSnapshot | null; propertyCode: string | null };
 type CaseAnalysis = QuoteAnalysis & {
-  paneRead?: PaneRead; caseActionsUncertain?: boolean;
-  caseBaseline?: PaneCaseSnapshot | null; caseAliases?: Record<string, string>;
+  paneRead?: { groups: StayGroupRequirement[] | null; rememberedSource: PaneCaseSnapshot | null; propertyCode: string | null };
+  caseActionsUncertain?: boolean; caseBaseline?: PaneCaseSnapshot | null; caseAliases?: Record<string, string>;
 };
 
 /** Keep the unmodified read as analysis.groups; remembered rows are only the editable pane projection. */
@@ -272,11 +271,8 @@ export function paneCaseSnapshot(analysis: QuoteAnalysis | null): PaneCaseSnapsh
   if (!analysis) return null;
   const source = analysis as CaseAnalysis;
   if (source.caseActionsUncertain) return source.caseBaseline ?? null;
-  return {
-    identity: caseIdentitySignature(analysis),
-    tasks: caseTaskSignature(analysis),
-    propertyCode: source.paneRead?.propertyCode ?? null, ...(source.caseAliases ? { aliases: source.caseAliases } : {}),
-  };
+  return { identity: caseIdentitySignature(analysis), tasks: caseTaskSignature(analysis),
+    propertyCode: source.paneRead?.propertyCode ?? null, ...(source.caseAliases ? { aliases: source.caseAliases } : {}) };
 }
 function sameCaseAfterRemovedRows(before: string | null, after: string | null, retained: readonly string[]): boolean {
   if (!before || !after) return false;
@@ -325,15 +321,13 @@ export function singleCaseReclassification(before: QuoteAnalysis, after: QuoteAn
   const oldIdentity = identity(before, a[0]), newIdentity = identity(after, b[0]);
   const tasks = after.luna.tasks.filter((task) => task.groupIndexes.length);
   if (!oldIdentity || oldIdentity !== newIdentity || !tasks.length ||
-    tasks.some((task) => task.kind !== chosen || task.groupIndexes.some((index) => index !== 0)) ||
-    !tasks.some((task) => task.groupIndexes.includes(0))) return null;
+    tasks.some((task) => task.kind !== chosen || task.groupIndexes.some((index) => index !== 0))) return null;
   return { [stayIdOf(b[0])]: stayIdOf(a[0]) };
 }
 export function sameCaseSnapshot(before: PaneCaseSnapshot, after: PaneCaseSnapshot, allowTaskChange = false,
   retainedRows?: readonly string[]): boolean {
   return (before.identity === after.identity || Boolean(retainedRows && sameCaseAfterRemovedRows(before.identity, after.identity, retainedRows))) &&
-    (allowTaskChange || before.tasks === after.tasks) &&
-    (!before.propertyCode || before.propertyCode === after.propertyCode);
+    (allowTaskChange || before.tasks === after.tasks) && (!before.propertyCode || before.propertyCode === after.propertyCode);
 }
 
 const CASE_IDENTITY_FIELDS = ['guestNames', 'confirmationNumber', 'stayGuests', 'caseLookupConfirmation', 'hotel', 'propertyCode'] as const;
@@ -348,8 +342,7 @@ function restoreCaseIdentity(groups: StayGroupRequirement[], source: StayGroupRe
   return groups.map((group) => {
     const original = source.find((row) => row.id === group.id && stayIdOf(row) === stayIdOf(group)) as StayAskRow | undefined;
     const copy = withoutCaseIdentity(group) as StayAskRow;
-    if (!original) return copy;
-    for (const field of CASE_IDENTITY_FIELDS) if (original[field]) Object.assign(copy, { [field]: original[field] });
+    for (const field of CASE_IDENTITY_FIELDS) if (original?.[field]) Object.assign(copy, { [field]: original[field] });
     return copy;
   });
 }
@@ -702,8 +695,7 @@ export function caseQuoteBlocked(
   stayKey: string,
 ): boolean {
   const analysis = session.analysis;
-  if (!analysis) return false;
-  if (caseReviewPending(analysis)) return true;
+  if (!analysis || caseReviewPending(analysis)) return Boolean(analysis);
   const cases = { groups: session.groups, analysis };
   const rows = stayAskRows(cases, stayKey);
   const aliases = (analysis as CaseAnalysis).caseAliases;
