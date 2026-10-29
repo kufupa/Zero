@@ -15,9 +15,8 @@ import { HmsShotsViewer, visibleStayShots, type HmsShotRecord } from './hms-shot
 import { CopyHmsNotesButton, hmsNotesBlock } from './rate-controls';
 import { rowRoomLabel } from '@/lib/quote-workflow/room-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
-import { recalledGuestName } from '@/lib/quote-workflow/guest-name-cache';
+import { recalledGuestName, subscribeStayingGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
-import { subscribeStayingGuestName } from './quote-people-step';
 import { usePaneStayPreview } from './use-pane-stay-preview';
 import {
   commitOutcome,

@@ -1,7 +1,7 @@
 import { Fragment } from 'react';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
-import { isMultiStay, requestedQuoteKeys } from '@/lib/quote-workflow/session';
+import { caseReviewPending, isMultiStay, requestedQuoteKeys, stayIdOf } from '@/lib/quote-workflow/session';
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { appliedSavedStayIds, BookingCards, SavedStayReceipt, type SavedStayCommit } from './booking-card';
 import { saveConfirmationDefault, useConfirmationSources, type ConfirmationSetting } from './confirmation-recipient';
@@ -39,6 +39,15 @@ export function QuoteBookingHost({
   ]);
 
   const shownDrafts = requestedQuoteKeys(session.groups).filter((key) => session.bookingDrafts[key]);
+  const row = session.groups.length === 1 ? session.groups[0] : undefined;
+  const sourceRow = session.analysis?.groups.length === 1 ? session.analysis.groups[0] : undefined;
+  const onlyDraft = shownDrafts.length === 1 ? session.bookingDrafts[shownDrafts[0]!] : undefined;
+  // The People guest is keyed to a message, not to a case or room. Never apply it across rooms or a held source.
+  const singleRoomGuest = Boolean(workItemId && session.binding && session.staffSource && session.analysis &&
+    !caseReviewPending(session.analysis) &&
+    row && sourceRow && row.id === sourceRow.id && stayIdOf(row) === stayIdOf(sourceRow) && row.quantity === 1 &&
+    onlyDraft?.messageId === session.staffSource.messageId && onlyDraft.selectionEpoch === session.binding.selectionEpoch &&
+    onlyDraft.draft.rooms.length === 1 && onlyDraft.draft.rooms[0]?.groupId === row.id);
   const coveredStayIds = new Set(
     shownDrafts.flatMap((key) =>
       appliedSavedStayIds(session.bookingDrafts[key]!, session.groups, savedStays),
@@ -48,6 +57,9 @@ export function QuoteBookingHost({
 
   return (
     <>
+      {shownDrafts.length > 0 && !singleRoomGuest ? (
+        <p className="text-[13px] text-[#64748b]">Check each room’s guest name.</p>
+      ) : null}
       {shownDrafts.map((key) => (
           <Fragment key={`${requestKey}:${key}`}>
             {isMultiStay(session) ? (
@@ -62,8 +74,8 @@ export function QuoteBookingHost({
               savedStays={savedStays}
               screenshot={screenshot ?? paneSave?.screenshot}
               parties={session.staffHeader.parties}
-              guestName={stayingGuestName(session, contact ?? null)}
-              guestEditorKey={guestEditorKeyFor(session)}
+              guestName={singleRoomGuest ? stayingGuestName(session, contact ?? null) : ''}
+              guestEditorKey={singleRoomGuest ? guestEditorKeyFor(session) : undefined}
               session={session}
               propertyCode={propertyCode}
               confirmation={confirmation}

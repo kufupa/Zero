@@ -8,11 +8,11 @@ import { ConfirmationSourcesProvider } from '../components/quote-workflow/confir
 import { unmaskedPii } from './helpers/pii-marks';
 import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
 import { ContactBlock } from '../components/nava-pane/blocks/contact-block';
-import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step';
+import { guestEditorKeyFor, QuotePeopleStep } from '../components/quote-workflow/quote-people-step';
 import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-host';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import type { StoredContact } from '../lib/quote-workflow/backend-bind';
-import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
+import { recalledGuestName, rememberGuestName, resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import {
   bindGetPriorStaffQuoteRequote,
   bindListThreadQuoteRevisions,
@@ -772,6 +772,58 @@ describe('booking cards', () => {
 
 describe('booking card staying-guest prefill', () => {
   afterEach(() => resetGuestNameCacheForTests());
+
+  it('keeps a message-level guest out of several rooms after a remount and lets staff edit each room', () => {
+    const session = quotedSession();
+    const key = guestEditorKeyFor(session);
+    rememberGuestName(key, 'Ada Example');
+
+    const view = render(<QuoteBookingHost session={session} workItemId="wi-1" />);
+    expect(fieldValues('First name')).toEqual(['John', 'Jane']);
+    expect(fieldValues('Last name')).toEqual(['Smith', 'Doe']);
+    view.unmount();
+    render(<QuoteBookingHost session={session} workItemId="wi-1" />);
+    expect(recalledGuestName(key)).toBe('Ada Example');
+    expect(fieldValues('First name')).toEqual(['John', 'Jane']);
+    const second = screen.getAllByLabelText('First name')[1] as HTMLInputElement;
+    expect(second.disabled).toBe(false);
+    fireEvent.change(second, { target: { value: 'Bea' } });
+    expect(second.value).toBe('Bea');
+  });
+
+  it('applies the People guest to a single matched room, but not to a second case on the same message', () => {
+    const first = { ...g1, quantity: 1 };
+    const second = { ...g1, id: 'g2', quantity: 1, arrivalDate: '2026-11-20', departureDate: '2026-11-22' };
+    const firstDraft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    const secondRoom = { ...draftReady().draft.rooms[1]!, groupId: second.id };
+    const secondDraft = draftReady({ rooms: [secondRoom] });
+    const firstKey = '2026-11-12:2026-11-14';
+    const secondKey = '2026-11-20:2026-11-22';
+    const session = { ...quotedSession(null), groups: [first], analysis: { ...analysis, groups: [first] },
+      bookingDrafts: { [firstKey]: firstDraft } };
+    const key = guestEditorKeyFor(session);
+    rememberGuestName(key, 'Ada Example');
+
+    const view = render(<QuoteBookingHost session={session} />);
+    expect(fieldValues('First name')).toEqual(['John']);
+    view.rerender(<QuoteBookingHost session={session} workItemId="wi-1" />);
+    expect(fieldValues('First name')).toEqual(['Ada']);
+    expect(fieldValues('Last name')).toEqual(['Example']);
+
+    view.rerender(<QuoteBookingHost workItemId="wi-1" session={{ ...session,
+      analysis: { ...analysis, groups: [first], caseActionsUncertain: true } }} />);
+    expect(fieldValues('First name')).toEqual(['John']);
+    view.rerender(<QuoteBookingHost workItemId="wi-1" session={{ ...session,
+      binding: { ...session.binding!, selectionEpoch: 2 } }} />);
+    expect(fieldValues('First name')).toEqual(['John']);
+
+    const multi = { ...session, groups: [first, second], analysis: { ...analysis, groups: [first, second] },
+      bookingDrafts: { [firstKey]: firstDraft, [secondKey]: secondDraft } };
+    view.rerender(<QuoteBookingHost session={multi} workItemId="wi-1" />);
+    expect(fieldValues('First name')).toEqual(['John', 'Jane']);
+    expect(fieldValues('Last name')).toEqual(['Smith', 'Doe']);
+    expect(recalledGuestName(key)).toBe('Ada Example');
+  });
 
   it('prefills editable first and last names from the selected Guest, not Contact', () => {
     const contact: StoredContact = {
