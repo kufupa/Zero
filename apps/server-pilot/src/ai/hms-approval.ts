@@ -248,11 +248,10 @@ function paneCreateNeedsCheck(state: Record<string, unknown>): boolean {
   if (stays === undefined) return false;
   if (!stays || typeof stays !== 'object' || Array.isArray(stays)) return true;
   return Object.values(stays).some((raw) => {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return true;
     const stay = raw as Record<string, unknown>;
-    if (stay.status === 'unknown') return true;
-    return stay.status === 'booked' && (typeof stay.confirmationNumber !== 'string' ||
-      !/^\d{6,10}-\d{1,2}$/.test(stay.confirmationNumber));
+    return stay.status !== 'booked' || typeof stay.confirmationNumber !== 'string' ||
+      !/^\d{6,10}-\d{1,2}$/.test(stay.confirmationNumber);
   });
 }
 
