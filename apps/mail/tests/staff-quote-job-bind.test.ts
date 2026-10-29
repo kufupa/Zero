@@ -168,6 +168,7 @@ describe('staff quote HMS job binding', () => {
     ['Centurion', HRCEN_PROPERTY_CODE, HRDAV_PROPERTY_CODE],
     ['Da Vinci', HRDAV_PROPERTY_CODE, HRCEN_PROPERTY_CODE],
     ['an unverified Centurion result', HRCEN_PROPERTY_CODE, undefined],
+    ['an unverified Da Vinci result', HRDAV_PROPERTY_CODE, undefined],
   ])('holds a quote with a different or unverified property for %s', async (_label, paneProperty, quotedProperty) => {
     const mutate = vi.fn(async () => ({ ...READY, propertyCode: quotedProperty }));
     const result = await bindExecuteStaffQuote({

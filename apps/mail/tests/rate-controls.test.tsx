@@ -66,6 +66,7 @@ const stay: StayGroupRequirement = {
   departureDate: '2026-11-14',
   quantity: 1,
   adults: 2,
+  childrenPerRoom: 0,
   childrenAges: [],
   roomPreference: 'STWN',
   board: 'bb',
@@ -74,6 +75,7 @@ const stay: StayGroupRequirement = {
 };
 const READY: ExecuteStaffQuoteResult = {
   status: 'ready',
+  propertyCode: HRCEN_PROPERTY_CODE,
   workflowRunId: 'run-1',
   revisionRef: 'rev-1',
   messageId: 'mail-1',

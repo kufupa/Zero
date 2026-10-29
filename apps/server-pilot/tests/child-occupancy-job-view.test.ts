@@ -211,12 +211,19 @@ describe('cached quote views use current selected occupancy', () => {
       } }),
       transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(fake),
     } as unknown as DB;
-    const queued = await queueAutoStaffQuoteHmsJob({ transportId, threadId: mail.threadId,
+    const request = { transportId, threadId: mail.threadId,
       triggerMessageId: mail.id, workItemId: 'item-1', userId: 'user-1',
-      request: { kind: 'staff_quote', input }, priority: HMS_JOB_PRIORITY_USER }, fake);
+      request: { kind: 'staff_quote' as const, input }, priority: HMS_JOB_PRIORITY_USER };
+    const queued = await queueAutoStaffQuoteHmsJob(request, fake);
     expect(queued.created).toBe(true);
     expect(queued.run.id).not.toBe(legacy.id);
     expect(inserted).toMatchObject({ state: 'queued', readRequest: { kind: 'staff_quote', input } });
+
+    legacy.readResult = { ...legacy.readResult, propertyCode: 'HRCEN' };
+    expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
+    legacy.state = 'queued';
+    legacy.readResult = null;
+    expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
   });
 
   it('keeps a non-quote job view unchanged without quote context', async () => {
