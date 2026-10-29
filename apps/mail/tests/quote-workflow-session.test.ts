@@ -4474,7 +4474,7 @@ describe('multi-ask stay cards: guests, action, split', () => {
     const selected = reduceQuoteSession(session, { type: 'select_stay_key', stayKey: 'stay-cancel' });
     expect(stayAskAction(selected, 'stay-cancel')).toBe('cancel');
     expect(amendmentOf(selected)).toMatchObject({
-      kind: 'amend', confirmationNumber: null, guestLastName: null,
+      kind: 'cancel', confirmationNumber: null, guestLastName: null,
       arrival: null, departure: null, requestedChange: null,
     });
   });

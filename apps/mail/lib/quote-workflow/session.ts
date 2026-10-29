@@ -94,7 +94,8 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
   if (!stay) return unbound();
   const action = stayAskAction(session, selectedKey);
   // The mail-wide amendment cannot supply a different stay action's booking or requested changes.
-  if (action !== base.kind) return unbound();
+  if (action !== base.kind) return action === 'amend' || action === 'cancel'
+    ? { ...unbound(), kind: action } : unbound();
   const roster = storedStayGuests(session, selectedKey);
   if (roster !== null) {
     const row = rows[0];
