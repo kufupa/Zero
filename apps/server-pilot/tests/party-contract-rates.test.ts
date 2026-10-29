@@ -198,6 +198,7 @@ function rateShopServices(
     readParty?: any;
     incompleteParty?: boolean;
     truncatedParty?: boolean;
+    contextChangedInFullRead?: boolean;
     onRateOptions?: (options: RateOption[]) => void;
   } = {},
 ) {
@@ -216,7 +217,9 @@ function rateShopServices(
         const ordered = rateShopRows(request, hmsVisibleRows(request, rates), context).sort(
           (a, b) => rank[a.matchStatus]! - rank[b.matchStatus]!,
         );
-        const rows = ordered.slice(0, normalized.maxOptionsPerGroup);
+        const rows = ordered.slice(0, normalized.maxOptionsPerGroup).map((row) =>
+          flags.contextChangedInFullRead && request.rateContext && request.details === 'full' && row.rateScope === 'contextual'
+            ? { ...row, rateScope: 'public' as const } : row);
         const cut = ordered.slice(normalized.maxOptionsPerGroup).some((row) => row.matchStatus !== 'alternative');
         // As the runner reads it: an unfiltered full read of more than five rows has no detail rows, so it is partial.
         const unfilteredFull =
@@ -264,6 +267,7 @@ async function quoteWith(
     readParty?: any;
     incompleteParty?: boolean;
     truncatedParty?: boolean;
+    contextChangedInFullRead?: boolean;
     pin?: string;
     roomCodes?: string[];
   } = {},
@@ -402,6 +406,15 @@ describe('contract rates from the picked company or agency', () => {
     expect(partyContractReviewNote(agencyWoolworths, revision.groups)).toBeNull();
   });
 
+  it('does not label a price as contracted when its full read disagrees with the summary', async () => {
+    const parties = { agency: agency('569', 'Woolworths Agency') };
+    const { revision, note, fellBack, cards } = await quoteWith(parties, [BAR, AGENCY_FLAGGED], { contextChangedInFullRead: true });
+    expect(fellBack).toBe(true);
+    expect(note).toContain("couldn't confirm contract rates");
+    expect(revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(cards.some((card) => card.contract)).toBe(false);
+  });
+
   it('matches the party by HMS id, so a shorter name ("Woolworths" vs "Woolworths Holdings") still gets the contract row', async () => {
     hmsDisplayName['569'] = 'Woolworths Agency (Pty) Ltd';
     try {
@@ -415,9 +428,10 @@ describe('contract rates from the picked company or agency', () => {
   });
 
   it('a plan named after the party is not offered as a contract unless HMS flags it', async () => {
-    const { revision } = await quoteWith({ company: company('49', 'Woolworths') }, [NAME_ONLY, BAR]);
+    const { revision, note } = await quoteWith({ company: company('49', 'Woolworths') }, [NAME_ONLY, BAR]);
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
     expect(revision.groups[0]!.rateCode).not.toBe('NGD10B');
+    expect(note).toContain("couldn't confirm contract rates");
   });
 
   it('with the switch off, no party context is sent and the request is public', async () => {
@@ -794,8 +808,10 @@ describe('a public-only party read is no contract only when its search covered e
     options: rows,
   });
 
-  it('complete public rows are no contract', () => {
-    expect(partyReadingOf([group([row('public'), row('unknown')])], withContext)).toBe('no_contract');
+  it('unknown rate scope leaves the party search incomplete', () => {
+    expect(partyReadingOf([group([row('public'), row('unknown')])], withContext)).toBe('incomplete');
+    expect(partyReadingOf([group([row('public'), {}])], withContext)).toBe('incomplete');
+    expect(partyReadingOf([group([row('public')])], withContext)).toBe('no_contract');
   });
 
   it('a group whose search is partial is incomplete, so no contract is never concluded from it', () => {

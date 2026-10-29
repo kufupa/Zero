@@ -435,6 +435,31 @@ test('Centurion government rates stay conditional without guest entitlement, reg
     assert.equal(result.options.find(option=>option.rate.code==='BAR')?.eligibility,'verified');
   }
 });
+test('Centurion BAR needs a known public code and an unnegotiated row; government hints override public codes',()=>{
+  for(const [code,label,negotiated,scope,eligibility] of [
+    ['WAL','Walk-in Rate',false,'public','verified'],
+    ['OTHER','Unclassified Special',false,'unknown','conditional'],
+    ['BAR','Government Special',false,'unknown','conditional'],
+    ['NGOVX','Special Rate',false,'unknown','conditional'],
+    ['BAR','Best Available Rate',null,'unknown','conditional'],
+  ]){
+    const f=multipleSource(),rate=f.data.children[0].children[0].children[0];
+    rate.code=code;rate.desc=label;rate.isNegotiatedRate=negotiated;
+    f.calendar.options[0].rate=`${code}: ${label}`;
+    const scoped={...request,search:{salesStrategy:'BAR'},rateContext:{agency:{name:'Agency'}}};
+    const result=quote.extractOptions(scoped,request.rooms[0],
+      [{data:f.data,calendar:f.calendar,criteria:{salesStrategy:'BAR',travelAgencyID:'23'}}],{agency:{id:'23'}});
+    const selected=result.options.find(option=>option.room.code==='STQN');
+    assert.equal(selected.rateScope,scope,code);
+    assert.equal(selected.eligibility,eligibility,code);
+    if(eligibility!=='verified') assert.equal(quote.pricedEligibleOptions([selected]).length,0,code);
+    if(scope==='unknown') {
+      const unfiltered=quote.extractOptions({...request,rateContext:scoped.rateContext},request.rooms[0],
+        [{data:f.data,calendar:f.calendar,criteria:{travelAgencyID:'23'}}],{agency:{id:'23'}});
+      assert.equal(unfiltered.issues.some(issue=>issue.code==='NO_SPECIAL_RATES'),false,code);
+    }
+  }
+});
 test('bound party with no negotiated rates returns public BAR and flags no special rates',()=>{
   const f=multipleSource();
   const scoped={...request,rateContext:{agency:{name:'CWT JNB'}}};
