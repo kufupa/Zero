@@ -582,11 +582,33 @@ describe('staff_quote HMS job execution', () => {
       await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
       expect(inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
       expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
-        readResult: { ok: false, message: expect.stringMatching(/changed while pricing/i) },
+        readResult: { ok: false, code: 'staff_quote_centurion_source_changed',
+          message: expect.stringMatching(/changed while pricing/i) },
       });
       expect(jobMocks.markRetry).not.toHaveBeenCalled();
     },
   );
+
+  it('keeps the existing HRDAV refusal when its selected email changes while pricing', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    const { run, fence, db: quoteDb, mail } = await provisionalWorkerQuote(
+      Promise.resolve(), undefined, {}, false, 'transport-davinci',
+    );
+    quoteRunMocks.readConfiguration.mockReturnValue({
+      tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRDAV' }, outputDir: '/tmp/synthetic-staff-quote',
+    });
+    workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: { authorizationId: string }) => {
+      mail.textBody = 'A changed synthetic request.';
+      return syntheticRevision(['600.00', '600.00'], 'Room Only R', 'SKNG', undefined,
+        '2026-11-12', prepared.authorizationId,
+        { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] }, 'HRDAV');
+    });
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
+      readResult: { ok: false, code: 'PRECONDITION_FAILED', message: expect.stringMatching(/changed while pricing/i) },
+    });
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
 
   it.each(['message', 'later write'])('holds a quote when its %s source lock is busy', async (busyAt) => {
     const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
@@ -1373,6 +1395,21 @@ describe('staff_quote HMS job execution', () => {
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
 
+  it.each(['staff', 'prepared'] as const)('holds a changed Centurion source without retrying a %s quote', async (kind) => {
+    const { run, fence } = kind === 'prepared' ? preparedFixture() : fixture();
+    jobMocks.runStaffQuote.mockRejectedValue(new TRPCError({
+      code: 'PRECONDITION_FAILED', message: 'Selected email changed while pricing',
+      cause: { reason: 'source_changed', code: 'staff_quote_centurion_source_changed' },
+    }));
+
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      readResult: expect.objectContaining({ ok: false, code: 'staff_quote_centurion_source_changed',
+        message: 'Selected email changed while pricing' }),
+    }), db);
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
+
   it.each([
     [
       'missing party',
@@ -1388,6 +1425,13 @@ describe('staff_quote HMS job execution', () => {
         code: 'BAD_REQUEST',
         message: 'The extras on this quote are not valid. Check the amounts and counts, then run the quote again.',
         cause: { reason: 'invalid_extras' },
+      }),
+    ],
+    [
+      'other-property source change',
+      new TRPCError({
+        code: 'PRECONDITION_FAILED', message: 'Selected email changed while pricing',
+        cause: { reason: 'source_changed' },
       }),
     ],
   ])('stores a catalog refusal with a wrapped cause as a successful job: %s', async (_label, error) => {

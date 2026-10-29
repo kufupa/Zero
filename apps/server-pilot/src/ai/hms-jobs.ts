@@ -38,7 +38,7 @@ import {
   type RecordSenderPartyInput,
 } from './party-sender-map.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
-import { captureQuoteSourceProof, childOccupancyIsCurrent, isCenturionQuoteScope, isCenturionQuoteTransport, quoteSourceProofFromRun,
+import { captureQuoteSourceProof, CENTURION_QUOTE_SOURCE_CHANGED, childOccupancyIsCurrent, isCenturionQuoteScope, isCenturionQuoteTransport, quoteSourceProofFromRun,
   quoteSourceProofIsCurrent, quoteSourceProofMatchesInput,
   quoteSourceProofPredatesPolicy, quoteSourcePolicyChangedMessage, quoteSourceUnverifiedMessage,
   QUOTE_SOURCE_PROOF_VERSION } from './child-occupancy.js';
@@ -3498,8 +3498,11 @@ export function staffQuoteRefusal(error: unknown, request: StaffQuoteInput): {
   alternatives?: ReturnType<typeof staffQuoteRoomAlternatives>;
 } {
   const rawCode = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-  const unverifiedSource = error instanceof TRPCError && objectRecord(error.cause).code === 'staff_quote_source_unverified';
+  const causeRecord = error instanceof TRPCError ? objectRecord(error.cause) : {};
+  const unverifiedSource = causeRecord.code === 'staff_quote_source_unverified';
+  const changedSource = causeRecord.code === CENTURION_QUOTE_SOURCE_CHANGED;
   const code = unverifiedSource ? 'staff_quote_source_unverified'
+    : changedSource ? CENTURION_QUOTE_SOURCE_CHANGED
     : typeof rawCode === 'string' ? rawCode : staffQuoteFailureCode(error);
   const directMessage = error instanceof Error ? error.message : '';
   const businessTrpcError = error instanceof TRPCError && error.code !== 'INTERNAL_SERVER_ERROR';
@@ -4469,15 +4472,17 @@ async function latestStaffQuoteRunFor(
     )
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
   const reusable = async (run: AiWorkflowRun) => {
-    const sourceUnverified = objectRecord(run.readResult).code === 'staff_quote_source_unverified';
-    const centurion = sourceUnverified || isCenturionQuoteScope({ transportId: run.transportId, propertyCode: quoteRunPropertyCode(run) });
+    const sourceHold = ['staff_quote_source_unverified', CENTURION_QUOTE_SOURCE_CHANGED]
+      .includes(String(objectRecord(run.readResult).code));
+    const centurion = sourceHold || isCenturionQuoteScope({ transportId: run.transportId, propertyCode: quoteRunPropertyCode(run) });
     if (centurion && objectRecord(run.metrics).quoteSourcePolicyVersion !== QUOTE_SOURCE_PROOF_VERSION) return false;
     if (run.state !== 'succeeded') return true;
     if (!staffQuoteResultReusable(run.readResult, now)) return false;
-    // Keep an unresolved hold visible, but do not let it mask a later valid saved source for six hours.
-    if (sourceUnverified &&
-      await captureQuoteSourceProof(db, quoteInput, { transportId: run.transportId, threadId: run.threadId,
-        messageId, propertyCode: 'HRCEN' })) return false;
+    // Keep an unresolved hold visible, but do not mask a valid correction or a switch to Da Vinci.
+    if (sourceHold && (await captureQuoteSourceProof(db, quoteInput, { transportId: run.transportId,
+      threadId: run.threadId, messageId, propertyCode: 'HRCEN' }) || await quotePropertyMatchesOrigin({
+      db, transportId: run.transportId, threadId: run.threadId, messageId, propertyCode: 'HRDAV',
+    }))) return false;
     // Require the priced property's evidence, with a bound-revision recovery for old Da Vinci staff quotes.
     const propertyCode = quoteRunPropertyEvidence(run).code;
     if (quoteResultHasPrice(run.readResult)) {

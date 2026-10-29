@@ -386,14 +386,19 @@ describe('cached quote views use current selected occupancy', () => {
     legacy.readResult = { ...legacy.readResult, propertyCode: 'HRCEN' };
     expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
     const verified = legacy.readResult;
-    legacy.readResult = { kind: 'staff_quote', ok: false, code: 'staff_quote_source_unverified' };
-    saved = item({ 'stays[s1].rows[r1].adults': 3 });
-    expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
-    saved = item();
-    expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
-    legacy.metrics = { ...legacy.metrics, propertyCode: 'HRDAV' }; // A stale queued target cannot override the worker's source hold.
-    expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
-    legacy.metrics = { ...legacy.metrics, propertyCode: 'HRCEN' };
+    for (const code of ['staff_quote_source_unverified', 'staff_quote_centurion_source_changed']) {
+      legacy.readResult = { kind: 'staff_quote', ok: false, code };
+      saved = item({ 'stays[s1].rows[r1].adults': 3 });
+      expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
+      await withDavinciOrigin(async () => {
+        expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
+      });
+      saved = item();
+      expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
+      legacy.metrics = { ...legacy.metrics, propertyCode: 'HRDAV' }; // A stale queued target cannot override the worker's source hold.
+      expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
+      legacy.metrics = { ...legacy.metrics, propertyCode: 'HRCEN' };
+    }
     legacy.readResult = verified;
     await withDavinciOrigin(async () => {
       expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });

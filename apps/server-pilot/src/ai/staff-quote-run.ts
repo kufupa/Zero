@@ -48,7 +48,7 @@ import { type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { ReservationistTaskEvidenceUnavailable } from './reservationist-execution.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js';
 import { mailExtraction } from '../db/schema/work.js';
-import { captureQuoteSourceProof, draftQuoteOccupancyMessage, quoteSourceUnverifiedMessage, isCenturionQuoteScope,
+import { captureQuoteSourceProof, CENTURION_QUOTE_SOURCE_CHANGED, draftQuoteOccupancyMessage, quoteSourceUnverifiedMessage, isCenturionQuoteScope,
   isCenturionQuoteTransport, quoteSourceProofIsCurrent } from './child-occupancy.js';
 import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
 import { buildStaffRatePick } from './staff-rate-pick-history.js';
@@ -686,6 +686,8 @@ export async function runStaffQuote(
     messageText: mail.textBody ?? '',
     propertyCode: config.owner.propertyCode,
   };
+  const refuseChangedSource = (message: string): never => refuseQuote('source_changed', message,
+    scope.propertyCode === 'HRCEN' ? { cause: { code: CENTURION_QUOTE_SOURCE_CHANGED } } : {});
   if (!staffQuoteChildOccupancyComplete(input, scope.propertyCode)) {
     refuseQuote('inputs_incomplete', STAFF_QUOTE_CHILD_OCCUPANCY_MESSAGE);
   }
@@ -816,7 +818,14 @@ export async function runStaffQuote(
             const services = getInstalledStaffQuoteServices(
               {
                 authorizationId: attempt.authorizationId,
-                authorizeContext: async (c) => c === attempt.context && (await stillCurrent()),
+                authorizeContext: async (c) => {
+                  if (c !== attempt.context) return false;
+                  const current = await stillCurrent();
+                  // Preserve the source-change reason when Centurion becomes stale inside the native read.
+                  // A generic authorization error is otherwise treated as a transient HMS failure.
+                  if (!current && scope.propertyCode === 'HRCEN') throw new Error('staff_quote_source_changed');
+                  return current;
+                },
                 signer,
                 propertyCode: quoteTarget.target.propertyCode,
                 childEnv,
@@ -955,6 +964,8 @@ export async function runStaffQuote(
           .where(eq(aiDraftGeneration.id, generationId));
       }
       const cause = staffQuoteCauseSummary(error);
+      if (scope.propertyCode === 'HRCEN' && cause.code === 'staff_quote_source_changed')
+        refuseChangedSource(staffQuoteFailureMessage(error));
       refuseQuote(
         cause.code,
         staffQuoteFailureMessage(error, {
@@ -993,7 +1004,7 @@ export async function runStaffQuote(
         });
       }
       if (!(await stillCurrent()))
-        refuseQuote('source_changed', 'Selected email changed while pricing');
+        refuseChangedSource('Selected email changed while pricing');
     } catch (error) {
       await markGenerationFailed('staff_quote_post_pricing_failed');
       throw error;
@@ -1005,18 +1016,18 @@ export async function runStaffQuote(
       withQuoteSourceBusyHold(() => db.transaction(async (tx) => {
         if (isCenturionQuoteTransport(scope.transportId) || isCenturionQuoteScope(occupancyScope)) {
           if (!(await quotePropertyMatchesOrigin({ ...occupancyScope, db: tx as unknown as DB, lock: true })))
-            refuseQuote('source_changed', QUOTE_HOTEL_CHANGED_MESSAGE);
+            refuseChangedSource(QUOTE_HOTEL_CHANGED_MESSAGE);
           const [lockedMail] = await tx.select().from(message).where(and(
             eq(message.id, mail.id), eq(message.transportId, scope.transportId), eq(message.threadId, scope.threadId),
           )).limit(1);
           if (!lockedMail || staffQuoteSourceHash(lockedMail) !== input.sourceHash)
-            refuseQuote('source_changed', 'Selected email changed while pricing');
+            refuseChangedSource('Selected email changed while pricing');
           await tx.select({ id: mailExtraction.id }).from(mailExtraction)
             .where(eq(mailExtraction.messageId, mail.id)).orderBy(mailExtraction.id).for('share', { noWait: true });
           // Keep the saved room/party evidence stable until the priced result commits.
           if (quoteSourceProof && !(await quoteSourceProofIsCurrent(tx as unknown as DB, input.groups,
             { ...occupancyScope, lock: true, allowMissingWorkItem: true }, quoteSourceProof)))
-            refuseQuote('source_changed', 'Selected email changed while pricing');
+            refuseChangedSource('Selected email changed while pricing');
           if (!systemPrepared) {
             await tx.select({ id: aiDraftGeneration.id }).from(aiDraftGeneration).where(and(
               eq(aiDraftGeneration.transportId, scope.transportId), eq(aiDraftGeneration.threadId, scope.threadId),
@@ -1026,7 +1037,7 @@ export async function runStaffQuote(
               eq(aiDraftGeneration.requestedByUserId, identity.user!.id), eq(aiDraftGeneration.model, 'staff-approved-native'),
               sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([scope.messageId])}::jsonb`,
             )).orderBy(desc(aiDraftGeneration.createdAt), desc(aiDraftGeneration.id)).limit(1);
-            if (latest?.id !== generationId) refuseQuote('source_changed', 'The quote approval changed while pricing');
+            if (latest?.id !== generationId) refuseChangedSource('The quote approval changed while pricing');
           }
         }
         if (!systemPrepared) {
@@ -1212,14 +1223,14 @@ export async function runStaffQuote(
       if (waitForTracePersistence) await pending;
       const result = await summary();
       if (!waitForTracePersistence && !(await stillCurrent()))
-        refuseQuote('source_changed', 'Selected email changed while pricing');
+        refuseChangedSource('Selected email changed while pricing');
       return result;
     }
     try {
       const result = await summary();
       await persistRun(result);
       if (!waitForTracePersistence && !(await stillCurrent()))
-        refuseQuote('source_changed', 'Selected email changed while pricing');
+        refuseChangedSource('Selected email changed while pricing');
       return result;
     } catch (error) {
       await markGenerationFailed('staff_quote_persist_failed');

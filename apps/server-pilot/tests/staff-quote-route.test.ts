@@ -768,11 +768,22 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             state: { [`stays[${raced.source.stayId}].rows[${raced.source.rowId}].adults`]: 2 } });
           return nativeFixture(nativeInput);
         });
-        const raceResult = await executeAiRun(raced.run.id);
+        const warning = vi.spyOn(console, 'warn');
+        let raceResult!: Awaited<ReturnType<typeof executeAiRun>>;
+        let nativeFailure = 'not logged';
+        try {
+          raceResult = await executeAiRun(raced.run.id);
+        } finally {
+          const detail = warning.mock.calls.find(([event]) => event === 'staff_quote_failed')?.[1] as
+            { code?: string; phase?: string } | undefined;
+          if (detail) nativeFailure = `${detail.code ?? 'unknown'}:${detail.phase ?? 'unknown'}`;
+          warning.mockRestore();
+        }
         const [held] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, raced.run.id));
         expect(raceResult.runId).toBe(raced.run.id);
-        expect(raceResult.state, `failure=${held?.failureClass}; reason=${held?.lastError}`).toBe('succeeded');
-        expect(held?.readResult).toMatchObject({ ok: false });
+        expect(raceResult.state, `failure=${held?.failureClass}; reason=${held?.lastError}; native=${nativeFailure}`).toBe('succeeded');
+        expect(held?.readResult).toMatchObject({ ok: false, code: 'staff_quote_centurion_source_changed',
+          message: expect.stringMatching(/email or approved inputs changed/i) });
         expect(held?.readResult).not.toHaveProperty('totalMinor');
 
         const booking = await enqueueWithoutItem('booking');
