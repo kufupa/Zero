@@ -1462,7 +1462,9 @@ export async function bindAutoStartStaffQuote(
     const settled = await pollStaffQuoteJob(args.staffQuoteJob, first, built.input.messageId);
     // Prepared quotes may have an older display header, but their source and price terms must still match.
     // A staff-started run must also match the submitted header before its pane counters can be rebased.
-    const requestMatches = staffQuoteRequestMatches(settled.request, built.input, settled.prefetch === true) &&
+    const requestMatches = staffQuoteRequestMatches(
+      settled.request, built.input, settled.prefetch === true && args.propertyCode === HRDAV_PROPERTY_CODE,
+    ) &&
       staffQuoteStayTermsMatch(settled.request, built.input) &&
       (settled.prefetch === true || (
         settled.request?.kind === 'staff_quote' &&
@@ -1507,7 +1509,7 @@ export async function bindReadBackStaffQuote(
     if (!first || args.signal?.aborted) return null;
     if (first.request && (
       !staffQuoteStayTermsMatch(first.request, built.input) ||
-      !staffQuoteRequestMatches(first.request, built.input, first.prefetch === true)
+      !staffQuoteRequestMatches(first.request, built.input, first.prefetch === true && args.propertyCode === HRDAV_PROPERTY_CODE)
     )) return null;
     if (
       first.status === 'done' &&
@@ -1519,7 +1521,9 @@ export async function bindReadBackStaffQuote(
     }
     const settled = await pollStaffQuoteJob(args.query, first, built.input.messageId, args.signal);
     if (args.signal?.aborted) return null;
-    if (settled.request && !staffQuoteRequestMatches(settled.request, built.input, settled.prefetch === true)) return null;
+    if (settled.request && !staffQuoteRequestMatches(
+      settled.request, built.input, settled.prefetch === true && args.propertyCode === HRDAV_PROPERTY_CODE,
+    )) return null;
     const rebased = settled.result
       ? {
           ...settled,

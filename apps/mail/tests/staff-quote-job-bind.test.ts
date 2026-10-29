@@ -13,6 +13,7 @@ import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 import {
   emptyStaffQuoteHeader,
   HRCEN_PROPERTY_CODE,
+  HRDAV_PROPERTY_CODE,
   type StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -83,6 +84,84 @@ afterEach(() => {
 });
 
 describe('staff quote HMS job binding', () => {
+  it('rejects a different prepared strategy for Centurion auto-start and readback', async () => {
+    const header = {
+      ...emptyStaffQuoteHeader(),
+      agency: 'Example Agency',
+      parties: { agency: { kind: 'agency' as const, nativeId: 'A123', name: 'Example Agency' } },
+    };
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-contract' }));
+    const prepared = vi.fn(async () => ({
+      ...view('done', READY, undefined, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { salesStrategy: 'WS' }),
+    }));
+    const auto = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE, queue, staffQuoteJob: prepared, source,
+      selectionEpoch: 3, inputRevision: 4, groups, header,
+    });
+    expect(queue).toHaveBeenCalledOnce();
+    expect(prepared).toHaveBeenCalledOnce();
+    expect(auto).toMatchObject({ status: 'unavailable' });
+
+    const query = vi.fn(async (lookup: { input: ExecuteStaffQuoteInput } | { runId: string; messageId: string }) => {
+      if (!('input' in lookup)) throw new Error('unexpected poll');
+      return {
+        ...view('done', READY, undefined, true),
+        request: storedStaffQuoteRequest(lookup.input, { salesStrategy: 'WS' }),
+      };
+    });
+    expect(await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE, query, source,
+      selectionEpoch: 3, inputRevision: 4, groups, header,
+    })).toBeNull();
+    expect(query).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a Centurion prepared strategy that changes while a quote is polled', async () => {
+    vi.useFakeTimers();
+    const header = {
+      ...emptyStaffQuoteHeader(),
+      agency: 'Example Agency',
+      parties: { agency: { kind: 'agency' as const, nativeId: 'A123', name: 'Example Agency' } },
+    };
+    let input: ExecuteStaffQuoteInput | undefined;
+    const query = vi.fn(async (lookup: { input: ExecuteStaffQuoteInput } | { runId: string; messageId: string }) => {
+      if ('input' in lookup) {
+        input = lookup.input;
+        return { ...view('running', null, undefined, true), request: storedStaffQuoteRequest(input) };
+      }
+      return {
+        ...view('done', READY, undefined, true),
+        request: storedStaffQuoteRequest(input!, { salesStrategy: 'WS' }),
+      };
+    });
+    const result = bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE, query, source,
+      selectionEpoch: 3, inputRevision: 4, groups, header,
+    });
+    await vi.runAllTimersAsync();
+    expect(await result).toBeNull();
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
+  it('preserves the Da Vinci prepared-contract strategy preference', async () => {
+    const header = {
+      ...emptyStaffQuoteHeader(),
+      agency: 'Example Agency',
+      parties: { agency: { kind: 'agency' as const, nativeId: 'A123', name: 'Example Agency' } },
+    };
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-contract' }));
+    const prepared = vi.fn(async () => ({
+      ...view('done', READY, undefined, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { salesStrategy: 'WS' }),
+    }));
+    const result = await bindAutoStartStaffQuote({
+      propertyCode: HRDAV_PROPERTY_CODE, queue, staffQuoteJob: prepared, source,
+      selectionEpoch: 3, inputRevision: 4, groups: [{ ...groups[0]!, roomCodes: ['STKNG'] }], header,
+    });
+    expect(result).toMatchObject({ status: 'ok' });
+  });
+
   it('does not restore a prepared quote for a different saved child count', async () => {
     const requested = [{ ...groups[0]!, childrenPerRoom: 1, childrenAges: [8] }];
     const query = vi.fn(async (lookup: { input?: ExecuteStaffQuoteInput; runId?: string }) => {
