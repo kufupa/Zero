@@ -280,7 +280,7 @@ describe('connected mailbox corpus PostgreSQL reader', () => {
           messageId: 'message-a',
           filename: 'valid.txt',
           contentType: 'text/plain',
-          byteSize: 12,
+          byteSize: '12',
           s3Key: 'attachments/message-a/valid.txt',
         },
         {
