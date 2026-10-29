@@ -7,6 +7,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { addDays } from './stay-date-anchoring.js';
 import { formStays } from './work-items.js';
 import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
+import { quoteSourcePartyDigest } from './quote-source-party.js';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
   'id' | 'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'childrenAges' | 'childrenPerRoom'>;
@@ -144,7 +145,7 @@ async function loadChildOccupancyEvidence(
   // A newer read has not been adopted yet. Do not apply old corrections to that read, or keep pricing the older one.
   // The existing work-item relink decides whether edits can safely carry; once it moves, the latest evidence is used.
   if ((!item && scope.lock) || (item && item.extractionId !== latest.id)) return null;
-  return { kind: latest.kind, payload: latest.payload, state: item?.state ?? {} };
+  return { extractionId: latest.id, kind: latest.kind, payload: latest.payload, state: item?.state ?? {} };
 }
 
 export async function childOccupancyIsCurrent(
@@ -158,7 +159,7 @@ export async function childOccupancyIsCurrent(
 }
 
 export const importedOfferOccupancyHold = 'The original offer cannot yet be matched to the requested rooms and child ages. Review it in HMS and run a new quote.';
-export const draftQuoteOccupancyMessage = 'Confirm rooms, adults, the number of children per room and each age; check room type and meal plan, then run the quote again.';
+export const draftQuoteOccupancyMessage = 'Refresh the email, confirm rooms, adults, the number of children per room and each age; check room type, meal plan, agency and company, then run the quote again.';
 export const quoteSourcePolicyChangedMessage = 'Rate checks have changed since this quote. Run rates again before using it.';
 
 export function isCenturionQuoteTransport(transportId: string): boolean {
@@ -172,7 +173,7 @@ export function isCenturionQuoteScope(scope: { transportId: string; propertyCode
   return isCenturionQuoteTransport(scope.transportId);
 }
 
-const QUOTE_SOURCE_PROOF_VERSION = 3 as const;
+const QUOTE_SOURCE_PROOF_VERSION = 4 as const;
 type QuoteSourceProof = {
   version: typeof QUOTE_SOURCE_PROOF_VERSION;
   messageId: string;
@@ -188,6 +189,8 @@ function quoteSourceSnapshot(groups: Group[], payload: unknown, state: Record<st
   if (!childOccupancyMatchesStored(groups, payload, state)) return null;
   const parsed = mailExtractionPayloadSchema.safeParse(payload);
   if (!parsed.success) return null;
+  const partyDigest = quoteSourcePartyDigest(parsed.data, state);
+  if (!partyDigest) return null;
   const rows = new Map<string, { stayId: string; rowId: string; roomType: unknown; board: unknown }>();
   for (const stay of parsed.data.stays) for (const row of stay.rows) {
     rows.set(`${stay.id}\n${row.id}`, { stayId: stay.id, rowId: row.id, roomType: row.roomType, board: row.board });
@@ -221,8 +224,9 @@ function quoteSourceSnapshot(groups: Group[], payload: unknown, state: Record<st
   }
   values.sort((a, b) => a.id.localeCompare(b.id));
   return {
-    sourceDigest: quoteDigest(values),
-    singleRowDigest: values.length === 1 ? quoteDigest([values[0]!.roomType, values[0]!.board]) : null,
+    sourceDigest: quoteDigest([values, partyDigest]),
+    singleRowDigest: values.length === 1 ? quoteDigest([values[0]!.roomType, values[0]!.board, partyDigest]) : null,
+    partyDigest,
     preferences: values.map(({ id, roomType, board }) => ({
       id, roomType: roomType[0] === 'value' ? roomType[1]?.trim() || null : null,
       board: board[0] === 'value' ? board[1] : null,
@@ -244,7 +248,8 @@ function parseQuoteSourceProof(value: unknown): QuoteSourceProof | null {
 export async function captureQuoteSourceProof(db: DB, input: StaffQuoteInput, scope: QuoteSourceScope) {
   const evidence = await loadChildOccupancyEvidence(db, scope);
   const snapshot = evidence && quoteSourceSnapshot(input.groups, evidence.payload, evidence.state);
-  if (!evidence || !snapshot || input.groups.some((group) => {
+  if (!evidence || !snapshot || (isCenturionQuoteScope(scope) &&
+    (input.sourcePartyDigest !== snapshot.partyDigest || input.sourceExtractionId !== evidence.extractionId)) || input.groups.some((group) => {
     const source = snapshot.preferences.find((item) => item.id === group.id);
     return !group.sourcePreference || !source || group.sourcePreference.roomType !== source.roomType ||
       group.sourcePreference.board !== source.board;
@@ -259,7 +264,7 @@ export async function captureQuoteSourceProof(db: DB, input: StaffQuoteInput, sc
 /** Only explains a refusal; the proof parser is the authority for reuse. */
 export function quoteSourceProofPredatesPolicy(value: unknown): boolean {
   return !!value && typeof value === 'object' && 'version' in value &&
-    (value.version === 1 || value.version === 2);
+    (value.version === 1 || value.version === 2 || value.version === 3);
 }
 
 export function quoteSourceProofFromRun(run: { metrics?: unknown; readResult?: unknown }): unknown {

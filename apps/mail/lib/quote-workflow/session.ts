@@ -389,7 +389,8 @@ export function pendingPdfStayKey(
 }
 
 /** Why a run must wait while an automatic HMS company or agency search still decides the pick, or null. */
-export function partyLookupWaitReason(session: Pick<QuoteSession, 'pendingPartyKinds'>): string | null {
+export function partyLookupWaitReason(session: Pick<QuoteSession, 'pendingPartyKinds'> & Partial<Pick<QuoteSession, 'sourcePartyReview'>>): string | null {
+  if (session.sourcePartyReview?.length) return 'The email’s agency or company changed. Select or clear the HMS party again before getting rates.';
   const pending = session.pendingPartyKinds ?? [];
   if (!pending.length) return null;
   const names = (['company', 'agency'] as const).filter((kind) => pending.includes(kind));
@@ -398,7 +399,8 @@ export function partyLookupWaitReason(session: Pick<QuoteSession, 'pendingPartyK
 
 /** Plain-English reason this date option must wait, or null when it may run. */
 export function quoteRunBlockReason(
-  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds'>,
+  session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds'> &
+    Partial<Pick<QuoteSession, 'sourcePartyReview'>>,
   step: QuoteToolStep,
 ): string | null {
   if (
@@ -1963,7 +1965,25 @@ export function reduceQuoteSession(
         },
       };
     }
+    case 'quote_source_changed': {
+      const review = new Set(session.sourcePartyReview ?? []);
+      if (session.staffHeader.parties?.agency) review.add('agency');
+      if (session.staffHeader.parties?.company) review.add('company');
+      return clearDownstream({
+        ...session,
+        inputRevision: session.inputRevision + 1,
+        sourcePartyEpoch: (session.sourcePartyEpoch ?? 0) + 1,
+        sourcePartyReview: [...review],
+        sourcePartyAutoPickDisabled: true,
+        staffHeader: { ...session.staffHeader, parties: undefined,
+          ...(action.sourceParty ? { agency: action.sourceParty.agency ?? '', company: action.sourceParty.company ?? '' } : {}) },
+      });
+    }
+    case 'quote_party_reviewed':
+      if (action.sourcePartyEpoch !== (session.sourcePartyEpoch ?? 0)) return session;
+      return { ...session, sourcePartyReview: (session.sourcePartyReview ?? []).filter((kind) => kind !== action.kind) };
     case 'patch_staff_header': {
+      if (action.sourcePartyEpoch !== undefined && action.sourcePartyEpoch !== (session.sourcePartyEpoch ?? 0)) return session;
       // Field errors alone do not change the quote, so they neither bump the input revision nor clear results.
       const { fieldErrors, ...amounts } = action.header;
       if (fieldErrors !== undefined && Object.keys(amounts).length === 0) {

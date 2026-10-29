@@ -121,6 +121,10 @@ export const staffQuoteInput = z
     salesStrategy: z.enum(['BAR', 'PROMO', 'PRESET', 'WS', 'NC', 'GOV', 'AIR', 'DOML', 'OTHER', 'Government']).default('BAR'),
     company: z.string().max(256).default(''),
     agency: z.string().max(256).default(''),
+    /** Fingerprint of the work-item agency and end client the pane read, separate from the HMS picks. */
+    sourcePartyDigest: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    /** The extraction whose source facts the pane read before submitting this request. */
+    sourceExtractionId: z.string().min(1).max(200).optional(),
     attention: z.string().max(256).default(''),
     clientEmail: z.string().max(256).default(''),
     clientTelephone: z.string().max(128).default(''),

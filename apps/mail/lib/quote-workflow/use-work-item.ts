@@ -8,6 +8,7 @@ import {
   type RecordFieldEventInput,
   type StoredContact,
   type StoredStayCommit,
+  type SourcePartyFields,
   type StoredTranslation,
   type StoredWork,
 } from './backend-bind';
@@ -42,7 +43,9 @@ export type StoredPane =
       workItemStatus: string | null;
       /** Null when the read has no work item (it could not be opened): the read shows, edits are not logged. */
       workItemId: string | null;
+      extractionId: string;
       contact: StoredContact;
+      sourcePartyDigest?: string | null;
       /** Last HMS commits for this mail. The Book step shows them again after a reload. */
       savedStays?: Record<string, StoredStayCommit>;
       language: string | null;
@@ -363,6 +366,8 @@ export function useStoredWork(args: {
   openMissingWorkItem?: boolean;
   /** The signed-in user, session and mailbox. A mailbox switch looks the mail up again in the new mailbox. */
   scope?: string | null;
+  /** Centurion quotes bind the party facts the pane has actually seen. */
+  verifyQuotePartySource?: boolean;
 }) {
   const { trpc, internetMessageId } = args;
   const openMissingWorkItem = args.openMissingWorkItem !== false;
@@ -370,6 +375,16 @@ export function useStoredWork(args: {
   // The lookup is for this mail in this mailbox. Either changing makes the last lookup someone else's.
   const lookupKey = internetMessageId ? `${scope}\n${internetMessageId}` : null;
   const [lookup, setLookup] = useState<Lookup | null>(null);
+  const lookupRef = useRef(lookup);
+  lookupRef.current = lookup;
+  const selection = useRef({ key: lookupKey, epoch: 0 });
+  if (selection.current.key !== lookupKey) selection.current = { key: lookupKey, epoch: selection.current.epoch + 1 };
+  const renderEpoch = selection.current.epoch;
+  const editEpoch = useRef(0);
+  const partyEdits = useRef(new Map<string, { epoch: number; extractionId: string; fields: SourcePartyFields | null }>());
+  const confirmedParty = useRef(new Map<string, { epoch: number; extractionId: string; digest: string }>());
+  const [partySourceProblem, setPartySourceProblem] = useState<{ key: string; message: string } | null>(null);
+  const retryPartySource = useRef<() => void>(() => undefined);
   // Retries asked for on the mail on screen. A retry reads live, so the stored failure stops showing for that mail.
   const [retries, setRetries] = useState<{ messageId: string | null; count: number }>({ messageId: null, count: 0 });
   const readyAt = useRef(0);
@@ -469,6 +484,7 @@ export function useStoredWork(args: {
     failed.current.clear();
     setSaveFailed(false);
     for (const entry of entries) post(entry, false);
+    retryPartySource.current();
   }, [post]);
 
   const flushAll = useCallback(() => {
@@ -547,6 +563,7 @@ export function useStoredWork(args: {
       current = false;
       clearTimeout(timer);
       flushAll();
+      if (selection.current.key === lookupKey && selection.current.epoch === renderEpoch) selection.current.epoch += 1;
     };
   }, [internetMessageId, lookupKey, canLookUp, openMissingWorkItem, flushAll]);
 
@@ -565,7 +582,9 @@ export function useStoredWork(args: {
       confirmationNumbers: stored.confirmationNumbers ?? [],
       workItemStatus: stored.workItemStatus,
       workItemId: stored.workItemId,
+      extractionId: stored.extractionId,
       contact: stored.contact,
+      sourcePartyDigest: stored.sourcePartyDigest ?? null,
       savedStays: stored.stays,
       language: stored.language,
       translation: stored.translation,
@@ -593,21 +612,76 @@ export function useStoredWork(args: {
 
   /** Wait until the selected email's pending edits have actually reached the server. */
   const flushEdits = useCallback(async (): Promise<boolean> => {
-    if (!readyWorkItemId || !lookupKey || historyPendingRef.current || historyPending || historyNeedsReload ||
+    if (!readyWorkItemId || !lookupKey || !internetMessageId || selection.current.epoch !== renderEpoch ||
+        historyPendingRef.current || historyPending || historyNeedsReload ||
         !workItemsFromTrpc(trpcRef.current).recordEvent) return false;
+    const epoch = renderEpoch;
+    const fail = (message: string) => {
+      if (selection.current.key === lookupKey && selection.current.epoch === epoch)
+        setPartySourceProblem({ key: lookupKey, message });
+      return false;
+    };
     const prefix = `${readyWorkItemId}\n`;
     for (let attempt = 0; attempt < 4; attempt += 1) {
       flushAll();
       const active = [...inFlight.current.entries()]
         .filter(([key]) => key.startsWith(prefix)).map(([, promise]) => promise);
       if (active.length) await Promise.allSettled(active);
-      if (historyPendingRef.current || lookupKeyRef.current !== lookupKey) return false;
+      if (historyPendingRef.current || lookupKeyRef.current !== lookupKey || selection.current.epoch !== epoch) return false;
       if ([...pending.current.keys()].some((key) => key.startsWith(prefix))) continue;
       if ([...latest.current.keys(), ...failed.current.keys()].some((key) => key.startsWith(prefix))) return false;
+      const party = partyEdits.current.get(lookupKey);
+      if (party) {
+        const query = workItemsFromTrpc(trpcRef.current).getByMessage;
+        if (!query || !party.fields) return fail('Refresh the email before getting rates.');
+        const revision = editEpoch.current;
+        try {
+          const input = { internetMessageId };
+          const pinned = inMailbox(readyTransportId);
+          const read = await (pinned ? query.query(input, pinned) : query.query(input));
+          if (historyPendingRef.current || selection.current.key !== lookupKey || selection.current.epoch !== epoch ||
+              editEpoch.current !== revision || partyEdits.current.get(lookupKey) !== party) return false;
+          if (read.status !== 'ready' || read.workItemId !== readyWorkItemId || read.extractionId !== party.extractionId ||
+              JSON.stringify(read.sourcePartyFields) !== JSON.stringify(party.fields) ||
+              !read.sourcePartyDigest || !/^[a-f0-9]{64}$/.test(read.sourcePartyDigest)) {
+            return fail('The saved agency or company changed. Refresh the email before getting rates.');
+          }
+          const current = lookupRef.current;
+          const seen = current?.key === lookupKey && current.result?.status === 'ready' ? current.result : null;
+          if (party.epoch !== epoch && (!seen || seen.extractionId !== read.extractionId ||
+              seen.sourcePartyDigest !== read.sourcePartyDigest)) {
+            if (!seen || seen.extractionId !== read.extractionId) return fail('Refresh the email before getting rates.');
+            // Show a party saved after this visit's read and let the pane invalidate the old HMS pick.
+            partyEdits.current.delete(lookupKey);
+            confirmedParty.current.delete(lookupKey);
+            setLookup((prev) => !historyPendingRef.current && selection.current.key === lookupKey &&
+              selection.current.epoch === epoch && prev && prev.key === lookupKey && prev.result?.status === 'ready' &&
+              prev.result.extractionId === read.extractionId
+              ? { ...prev, result: { ...prev.result, contact: { ...prev.result.contact,
+                  company: read.contact.company, endClient: read.contact.endClient },
+                  sourcePartyDigest: read.sourcePartyDigest, sourcePartyFields: read.sourcePartyFields } } : prev);
+            return fail('The saved agency or company changed. Review it before getting rates.');
+          }
+          confirmedParty.current.set(lookupKey, { epoch, extractionId: read.extractionId, digest: read.sourcePartyDigest });
+          partyEdits.current.delete(lookupKey);
+          setLookup((prev) => !historyPendingRef.current && selection.current.key === lookupKey &&
+            selection.current.epoch === epoch && prev && prev.key === lookupKey && prev.result?.status === 'ready' &&
+            prev.result.extractionId === read.extractionId
+            ? { ...prev, result: { ...prev.result, sourcePartyDigest: read.sourcePartyDigest,
+                sourcePartyFields: read.sourcePartyFields } } : prev);
+        } catch {
+          return fail("The change was saved, but the agency or company couldn't be refreshed. Retry saving.");
+        }
+      }
+      setPartySourceProblem((problem) => problem?.key === lookupKey ? null : problem);
       return true;
     }
     return false;
-  }, [flushAll, historyNeedsReload, historyPending, lookupKey, readyWorkItemId]);
+  }, [flushAll, historyNeedsReload, historyPending, internetMessageId, lookupKey, readyTransportId, readyWorkItemId, renderEpoch]);
+
+  retryPartySource.current = () => {
+    if (partySourceProblem?.key === lookupKey) void flushEdits();
+  };
 
   const retry = useCallback(() => {
     if (!internetMessageId) return;
@@ -620,11 +694,14 @@ export function useStoredWork(args: {
   /** Logs one edit (a field patch or a stay/row action) as field events. Only a stored read has a work item. */
   const recordGroups = useCallback(
     (before: StayGroupRequirement[], after: StayGroupRequirement[]) => {
-      if (historyPendingRef.current || historyPending || historyNeedsReload) return;
+      if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch ||
+          historyPendingRef.current || historyPending || historyNeedsReload) return;
+      editEpoch.current += 1;
       if (!readyRefs || !readyWorkItemId) return;
       const events = fieldEventsBetween(readyRefs, before, after);
       if (events.length) {
         setLookup((prev) =>
+          selection.current.key === lookupKey && selection.current.epoch === renderEpoch &&
           prev && prev.key === lookupKey && prev.result?.status === 'ready'
             ? { ...prev, result: withStaffPaths(prev.result, events) }
             : prev,
@@ -634,20 +711,35 @@ export function useStoredWork(args: {
         schedule(event.path, readyWorkItemId, readyTransportId, event.value);
       }
     },
-    [historyNeedsReload, historyPending, lookupKey, readyRefs, readyWorkItemId, readyTransportId, schedule],
+    [historyNeedsReload, historyPending, lookupKey, readyRefs, readyWorkItemId, readyTransportId, renderEpoch, schedule],
   );
 
   /** Logs one contact edit as a `contact.<field>` event. Nothing is logged until the mail has a stored read. */
   const recordContact = useCallback(
     (field: ContactField, value: string | null) => {
-      if (historyPendingRef.current || historyPending || historyNeedsReload) return;
+      if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch ||
+          historyPendingRef.current || historyPending || historyNeedsReload) return;
+      editEpoch.current += 1;
+      if (args.verifyQuotePartySource && lookupKey && (field === 'company' || field === 'endClient')) {
+        const current = lookupRef.current;
+        const pendingParty = partyEdits.current.get(lookupKey);
+        const previous = pendingParty?.epoch === renderEpoch ? pendingParty : null;
+        const ready = current?.key === lookupKey && current.result?.status === 'ready' ? current.result : null;
+        const fields = previous ? previous.fields : ready?.sourcePartyFields ?? null;
+        const updated = fields ? { ...fields, [field]: value === null ? ['cleared'] : ['value', value] } as SourcePartyFields : null;
+        partyEdits.current.set(lookupKey, { epoch: renderEpoch, extractionId: previous?.extractionId ?? ready?.extractionId ?? '', fields: updated });
+        confirmedParty.current.delete(lookupKey);
+      }
       // The stored read takes the edit at once, so the HMS notes agree with the Contact block before the save lands.
       setLookup((prev) =>
+        selection.current.key === lookupKey && selection.current.epoch === renderEpoch &&
         prev && prev.key === lookupKey && prev.result?.status === 'ready'
           ? {
               ...prev,
               result: withStaffPaths(
-                { ...prev.result, contact: { ...prev.result.contact, [field]: value } },
+                { ...prev.result, contact: { ...prev.result.contact, [field]: value },
+                  ...(args.verifyQuotePartySource && (field === 'company' || field === 'endClient')
+                    ? { sourcePartyDigest: null, sourcePartyFields: partyEdits.current.get(lookupKey ?? '')?.fields ?? null } : {}) },
                 [{ path: `contact.${field}`, value }],
               ),
             }
@@ -656,7 +748,7 @@ export function useStoredWork(args: {
       if (!readyWorkItemId) return;
       schedule(`contact.${field}`, readyWorkItemId, readyTransportId, value);
     },
-    [historyNeedsReload, historyPending, lookupKey, readyWorkItemId, readyTransportId, schedule],
+    [args.verifyQuotePartySource, historyNeedsReload, historyPending, lookupKey, readyWorkItemId, readyTransportId, renderEpoch, schedule],
   );
 
   /**
@@ -718,18 +810,28 @@ export function useStoredWork(args: {
     const input = { internetMessageId: messageId };
     return (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input))
       .then((result) => {
-        if (lookupKeyRef.current !== keyNow) return;
-        setLookup((prev) => (prev && prev.key === keyNow ? { ...prev, result } : prev));
+        if (lookupKeyRef.current !== keyNow || selection.current.epoch !== renderEpoch) return;
+        const party = partyEdits.current.get(keyNow);
+        const pendingParty = readyWorkItemId && ['contact.company', 'contact.endClient'].some((path) => {
+          const slot = saveKey(readyWorkItemId, path);
+          return [pending.current, inFlight.current, latest.current, failed.current].some((saves) => saves.has(slot));
+        });
+        if (party && pendingParty) partyEdits.current.set(keyNow, { ...party, epoch: -1 });
+        else partyEdits.current.delete(keyNow);
+        confirmedParty.current.delete(keyNow);
+        if (!pendingParty) setPartySourceProblem((problem) => problem?.key === keyNow ? null : problem);
+        setLookup((prev) => (selection.current.key === keyNow && selection.current.epoch === renderEpoch &&
+          prev && prev.key === keyNow ? { ...prev, result } : prev));
         setHistoryEpoch((n) => n + 1);
         setHistoryError(null);
         setHistoryNeedsReload(false);
       })
       .catch(() => {
-        if (lookupKeyRef.current !== keyNow) return;
+        if (lookupKeyRef.current !== keyNow || selection.current.epoch !== renderEpoch) return;
         setHistoryError(HISTORY_REFRESH_COPY);
         setHistoryNeedsReload(true);
       });
-  }, [internetMessageId, lookupKey, readyTransportId]);
+  }, [internetMessageId, lookupKey, readyTransportId, readyWorkItemId, renderEpoch]);
 
   const historyRoutes = historyRoutesFrom(trpc);
   const historyAvailable = Boolean(readyWorkItemId && historyRoutes.undoRevision && historyRoutes.redoRevision);
@@ -920,9 +1022,20 @@ export function useStoredWork(args: {
     recordContact,
     acceptUnedited,
     flushEdits,
+    /** Read after flush: React may not have rendered the freshly verified digest yet. */
+    quoteSourceAfterFlush: () => {
+      if (!lookupKey || selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch ||
+          partyEdits.current.has(lookupKey)) return { sourcePartyDigest: null, sourceExtractionId: null };
+      const confirmed = confirmedParty.current.get(lookupKey);
+      if (confirmed?.epoch === renderEpoch) return { sourcePartyDigest: confirmed.digest, sourceExtractionId: confirmed.extractionId };
+      const current = lookupRef.current;
+      const ready = current?.key === lookupKey && current.result?.status === 'ready' ? current.result : null;
+      return { sourcePartyDigest: ready?.sourcePartyDigest ?? null, sourceExtractionId: ready?.extractionId ?? null };
+    },
     retryTranslation,
     translationBusy: translating !== null && translating === readyWorkItemId,
-    saveFailed,
+    saveFailed: saveFailed || Boolean(partySourceProblem?.key === lookupKey),
+    saveError: partySourceProblem?.key === lookupKey ? partySourceProblem.message : null,
     retrySave,
     historyEpoch,
     historyCursor: historyCursor

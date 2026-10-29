@@ -9,6 +9,7 @@ import {
   staffQuoteInputsPriceEquivalent,
 } from '../src/ai/quote-ready.js';
 import { replaceLearnedSenderMapForTests } from '../src/ai/party-sender-map.js';
+import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 import {
   quoteSalesStrategiesFromRegistry,
   type QuoteSalesStrategy,
@@ -88,6 +89,21 @@ describe('prepared quote input from stored extraction', () => {
     });
     expect(plan.inputs[0]?.groups[0]).toMatchObject({ childrenAges: [8] });
     expect(plan.inputs[0]?.groups[0]).not.toHaveProperty('childrenPerRoom');
+  });
+
+  it('prefetches the same source-party fingerprint and extraction identity as the pane', () => {
+    const read = payload();
+    const plan = buildPreparedStaffQuotePlan({ messageId, sourceHash, payload: read, extractionId: 'extract-1',
+      propertyCode: 'HRCEN', now: new Date('2026-10-14T12:00:00.000Z') });
+    expect(plan.inputs[0]).toMatchObject({
+      sourcePartyDigest: quoteSourcePartyDigest(read, {}), sourceExtractionId: 'extract-1',
+    });
+    const edited = quoteSourcePartyDigest(read, { 'contact.company': 'Updated Agency' });
+    expect(plan.inputs[0]?.sourcePartyDigest).not.toBe(edited);
+    const davinci = buildPreparedStaffQuotePlan({ messageId, sourceHash, payload: read, extractionId: 'extract-1',
+      propertyCode: 'HRDAV', now: new Date('2026-10-14T12:00:00.000Z') });
+    expect(davinci.inputs[0]).not.toHaveProperty('sourcePartyDigest');
+    expect(davinci.inputs[0]).not.toHaveProperty('sourceExtractionId');
   });
 
   it('defaults unspecified board to B&B and uses the single-row total without inventing occupancy', () => {
@@ -651,6 +667,13 @@ describe('confident party bind for prepared quotes', () => {
 
 describe('prepared quote reuse price fields', () => {
   const base = build().inputs[0]!;
+
+  it('matches the saved source party but permits equivalent copies with distinct extraction ids', () => {
+    const source = { ...base, sourceExtractionId: 'extract-a' };
+    expect(staffQuoteInputsPriceEquivalent(source, { ...source, sourceExtractionId: 'extract-b' })).toBe(true);
+    expect(staffQuoteInputsPriceEquivalent(source, { ...source, sourcePartyDigest: 'f'.repeat(64) })).toBe(false);
+    expect(staffQuoteInputsPriceEquivalent(source, { ...source, sourcePartyDigest: 'f'.repeat(64) }, false, false)).toBe(true);
+  });
 
   it('ignores staff headers and pane selection counters', () => {
     expect(
