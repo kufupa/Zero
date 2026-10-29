@@ -775,6 +775,20 @@ describe('booking cards', () => {
 describe('booking card staying-guest prefill', () => {
   afterEach(() => resetGuestNameCacheForTests());
 
+  it('retains HRDAV message-level guest prefill across rooms when no work item is open', () => {
+    const session = quotedSession();
+    const key = guestEditorKeyFor(session, 'staff-1', HRDAV_PROPERTY_CODE)!;
+    rememberGuestName(key, 'Ada Example');
+
+    render(<QuoteBookingHost session={session} propertyCode={HRDAV_PROPERTY_CODE} guestEditorKey={key} />);
+    expect(fieldValues('First name')).toEqual(['Ada', 'Ada']);
+    expect(fieldValues('Last name')).toEqual(['Example', 'Example']);
+    const second = screen.getAllByLabelText('First name')[1] as HTMLInputElement;
+    expect(second.disabled).toBe(false);
+    fireEvent.change(second, { target: { value: 'Bea' } });
+    expect(second.value).toBe('Bea');
+  });
+
   it('keeps a message-level guest out of several rooms after a remount and lets staff edit each room', () => {
     const session = quotedSession();
     const key = guestEditorKeyFor(session, 'staff-1')!;

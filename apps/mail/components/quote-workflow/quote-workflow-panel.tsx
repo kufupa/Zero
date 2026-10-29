@@ -1061,6 +1061,7 @@ export function QuoteWorkflowPanel({
           partyIndex={partyIndex}
           partyJobTransport={partyJobTransport}
           contact={contact}
+          propertyCode={paneConfig?.propertyCode ?? null}
           contactEditorKey={contactEditorKey}
           guestEditorKey={guestEditorKey}
           onContactEdit={onContactEdit}

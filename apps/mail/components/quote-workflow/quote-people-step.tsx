@@ -5,11 +5,11 @@ import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { recalledGuestName, rememberGuestName, subscribeStayingGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
-import type { QuoteSession, StaffQuoteHeader, StaffQuoteParty } from '@/lib/quote-workflow/types';
+import { HRDAV_PROPERTY_CODE, type QuoteSession, type StaffQuoteHeader, type StaffQuoteParty } from '@/lib/quote-workflow/types';
 import { sectionHasStaffEdit, type WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 import { PartyPicker } from './party-picker';
 
-function inferredGuestName(session: QuoteSession): string {
+function inferredGuestName(session: QuoteSession, contact?: StoredContact | null, propertyCode?: string | null): string {
   const sourceGroups = session.analysis?.groups ?? [];
   const hasStoredRoster = sourceGroups.some((group) => 'stayGuests' in group && Array.isArray(group.stayGuests));
   if (hasStoredRoster) {
@@ -39,34 +39,46 @@ function inferredGuestName(session: QuoteSession): string {
 
   if (uniqueGuestNames.length === 1) return uniqueGuestNames[0] ?? '';
   if (uniqueGuestNames.length > 1) return '';
+  if (propertyCode === HRDAV_PROPERTY_CODE && session.analysis?.luna?.party?.kind === 'private') {
+    return contact?.name?.trim() ?? '';
+  }
   return '';
 }
 
-export function guestEditorKeyFor(session: QuoteSession, userId: string | null | undefined): string | null {
+export function guestEditorKeyFor(session: QuoteSession, userId: string | null | undefined, propertyCode?: string | null): string | null {
   const binding = session.binding;
-  if (!userId?.trim() || !binding?.transportId?.trim() || !binding.storeId?.trim() || !binding.entryId?.trim()) return null;
+  const property = propertyCode === undefined ? session.quotePropertyCode : propertyCode;
+  if (!userId?.trim() || !binding?.transportId?.trim() || !binding.entryId?.trim() ||
+      (!binding.storeId?.trim() && property !== HRDAV_PROPERTY_CODE)) return null;
   // Message-ID headers are not unique. Outlook supplies store/entry IDs; webmail uses the stored message ID as entryId.
-  return JSON.stringify([userId, binding.transportId, binding.storeId, binding.entryId]);
+  // Older HRDAV bridges may omit the store; its entry ID remains user- and transport-scoped.
+  return JSON.stringify([userId, binding.transportId, binding.storeId?.trim() ? binding.storeId : null, binding.entryId]);
 }
 
 export function stayingGuestName(
   session: QuoteSession,
-  _contact?: StoredContact | null,
+  contact?: StoredContact | null,
   editorKey?: string,
+  propertyCode?: string | null,
 ): string {
-  return (editorKey ? recalledGuestName(editorKey) : null) ?? inferredGuestName(session);
+  const property = propertyCode === undefined ? session.quotePropertyCode : propertyCode;
+  return (editorKey ? recalledGuestName(editorKey) : null) ?? inferredGuestName(session, contact, property);
 }
 
 function GuestNameField({
   session,
   guestEditorKey,
+  contact,
+  propertyCode,
 }: {
   session: QuoteSession;
   guestEditorKey: string | null;
+  contact?: StoredContact | null;
+  propertyCode?: string | null;
 }) {
   const editedName = useSyncExternalStore(subscribeStayingGuestName,
     () => guestEditorKey ? recalledGuestName(guestEditorKey) : null, () => null);
-  const guestName = guestEditorKey ? (editedName ?? inferredGuestName(session)) : '';
+  const guestName = guestEditorKey ? (editedName ?? inferredGuestName(session, contact, propertyCode)) : '';
   const needsPrompt = guestName.trim().length === 0;
 
   return (
@@ -85,7 +97,8 @@ function GuestNameField({
       />
       {needsPrompt ? (
         <p id="quote-guest-name-prompt" className="text-[11px] text-[#64748b]">
-          {guestEditorKey ? 'Enter the staying guest’s name; the contact is not assumed to be the guest.' :
+          {guestEditorKey ? (propertyCode === HRDAV_PROPERTY_CODE ? 'Enter the staying guest’s name.' :
+            'Enter the staying guest’s name; the contact is not assumed to be the guest.') :
             'Select a signed-in mailbox and email to enter the guest’s name.'}
         </p>
       ) : null}
@@ -235,6 +248,7 @@ export function QuotePeopleStep({
   partyIndex,
   partyJobTransport,
   contact,
+  propertyCode,
   contactEditorKey,
   guestEditorKey = null,
   onContactEdit,
@@ -254,6 +268,7 @@ export function QuotePeopleStep({
   partyIndex?: PartyIndexSearcher | null;
   partyJobTransport?: HmsJobTransport | null;
   contact?: StoredContact | null;
+  propertyCode?: string | null;
   contactEditorKey?: string;
   guestEditorKey?: string | null;
   onContactEdit?: (field: ContactField, value: string | null) => void;
@@ -285,6 +300,8 @@ export function QuotePeopleStep({
         key={`guest:${guestEditorKey}`}
         session={session}
         guestEditorKey={guestEditorKey}
+        contact={contact}
+        propertyCode={propertyCode === undefined ? session.quotePropertyCode : propertyCode}
       />
       <StaffPartyFields
         header={header}
