@@ -18,6 +18,9 @@ describe('one-room HMS create plan contract', () => {
       .toThrow('case_multiple_rooms_unsupported');
     expect(() => assertOneRoomCaseScope(CASE_READ, { 'stays[case-stay].rows[other].count': 1 }))
       .toThrow('case_multiple_rooms_unsupported');
+    const multipleGuests = { ...CASE_READ, stays: [{ ...CASE_READ.stays[0]!,
+      guests: [{ name: 'One Guest', confirmationNumber: null }, { name: 'Another Guest', confirmationNumber: null }] }] };
+    expect(() => assertOneRoomCaseScope(multipleGuests, {})).toThrow('case_multiple_guests_unsupported');
   });
 
   it('accepts only the matching, fresh native quote with every nightly amount', async () => {

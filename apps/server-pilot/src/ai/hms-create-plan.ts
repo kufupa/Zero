@@ -102,6 +102,8 @@ export function assertOneRoomCaseScope(payload: unknown, state: Record<string, u
   const stays = formStays(parsed.data, state);
   if (stays.length !== 1 || stays[0]!.rows.length > 1 ||
       (stays[0]!.totalRooms !== null && stays[0]!.totalRooms !== 1)) refuse('case_multiple_rooms_unsupported');
+  const guests = parsed.data.stays.find((stay) => stay.id === stays[0]!.id)?.guests ?? [];
+  if (guests.length > 1) refuse('case_multiple_guests_unsupported');
   const row = stays[0]!.rows[0];
   if (row) {
     const path = `stays[${stays[0]!.id}].rows[${row.id}].count`;
