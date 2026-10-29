@@ -15,6 +15,7 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { sqlList } from '../db/schema/hitl.js';
@@ -87,6 +88,19 @@ export type FieldPath =
   | { stayId: string; rowId: null; field: 'arrival' | 'departure' | 'removed' }
   | { stayId: string; rowId: string; field: RowField | 'removed' };
 export type WorkState = Record<string, unknown>;
+
+/** Fingerprint the saved state and status, without exposing their contents in the recovery cursor. */
+function recoveryStateDigest(state: WorkState, status: string): string {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') {
+      const object = value as Record<string, unknown>;
+      return Object.fromEntries(Object.keys(object).sort().map((key) => [key, canonical(object[key])]));
+    }
+    return value;
+  };
+  return createHash('sha256').update(JSON.stringify(canonical({ state, status }))).digest('hex');
+}
 
 const ID = '[A-Za-z0-9_-]{1,40}';
 const PATH = new RegExp(
@@ -912,7 +926,7 @@ export type StoredAnalysis = ReturnType<typeof storedAnalysis>['analysis'];
 
 type WorkTx = DB | Parameters<Parameters<DB['transaction']>[0]>[0];
 
-export type WorkItemRef = { id: string; status: string; state: WorkState; extractionId: string | null };
+export type WorkItemRef = { id: string; status: string; state: WorkState; extractionId: string | null; revisionSeq: number };
 
 function contentKeepsId<T extends { id: string }>(
   id: string,
@@ -1037,6 +1051,7 @@ export async function ensureWorkItem(
         status: workItem.status,
         state: workItem.state,
         extractionId: workItem.extractionId,
+        revisionSeq: workItem.revisionSeq,
       })
       .from(workItem)
       .where(
@@ -1059,9 +1074,9 @@ export async function ensureWorkItem(
     if (!(await shouldRelink(tx, row.extractionId, input.extractionId, row.state))) return row;
     await tx
       .update(workItem)
-      .set({ extractionId: input.extractionId, updatedAt: new Date() })
+      .set({ extractionId: input.extractionId, revisionSeq: row.revisionSeq + 1, updatedAt: new Date() })
       .where(eq(workItem.id, row.id));
-    return { ...row, extractionId: input.extractionId };
+    return { ...row, extractionId: input.extractionId, revisionSeq: row.revisionSeq + 1 };
   });
 }
 
@@ -1171,7 +1186,7 @@ export async function ensureWorkItemForMessage(
   // A reply already on the thread closes the item here, and a newer request supersedes it (see refreshThreadWork).
   if (msg.threadId) await refreshThreadWork(db, { transportId: input.transportId, threadId: msg.threadId });
   const [fresh] = await db
-    .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
+    .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId, revisionSeq: workItem.revisionSeq })
     .from(workItem)
     .where(eq(workItem.id, current.id))
     .limit(1);
@@ -1199,7 +1214,7 @@ async function restoreSupersededItem(
 ): Promise<WorkItemRef> {
   return db.transaction(async (tx) => {
     const [row] = await tx
-      .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
+      .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId, revisionSeq: workItem.revisionSeq })
       .from(workItem)
       .where(eq(workItem.id, input.workItemId))
       .limit(1)
@@ -1749,7 +1764,12 @@ export type StoredWork =
       workItemId: string | null;
       workItemStatus: string | null;
       extractionId: string;
+      /** Revision and fingerprint of the work-item state, when present. */
+      revisionSeq: number | null;
+      stateDigest: string | null;
       refs: Record<string, GroupRef>;
+      /** Latest extraction before any saved staff edits, including when the item remains linked to an older read. */
+      sourceRead: { extractionId: string; kind: string; analysis: StoredAnalysis; refs: Record<string, GroupRef> };
       /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
       analysis: StoredAnalysis & {
         noReplySender: boolean;
@@ -1862,7 +1882,7 @@ async function readyView(
     mailboxAddress: string | null;
   },
   latest: ReadyRead,
-  item: Pick<WorkItemRef, 'id' | 'status' | 'state' | 'extractionId'> | null,
+  item: WorkItemRef | null,
   transportId: string,
 ): Promise<StoredWork> {
   const messageId = msg.id;
@@ -1898,6 +1918,19 @@ async function readyView(
     threadConfirmation,
     resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined,
   );
+  const latestConfirmations = payloadConfirmationNumbers(latest.payload);
+  const latestExistingStayInformation = isSelfSentPreStayInformationMail({
+    fromAddress: msg.fromAddress,
+    mailboxAddress: msg.mailboxAddress,
+    subject: msg.subject,
+    confirmationNumbers: latestConfirmations,
+  });
+  const source = storedAnalysis(
+    { ...latest, fromAddress: msg.fromAddress, subject: msg.subject, bodyText: msg.textBody },
+    {},
+    isHmsConfirmation(latestConfirmations[0] ?? '') ? undefined : synced?.threadConfirmation,
+    resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined,
+  );
   const sourceText = synced
     ? currentSourceText(synced)
     : [msg.subject ?? '', msg.textBody ?? ''].join('\n');
@@ -1922,7 +1955,15 @@ async function readyView(
     workItemId: paneItem?.id ?? null,
     workItemStatus: paneItem?.status ?? null,
     extractionId: read.id,
+    revisionSeq: paneItem?.revisionSeq ?? null,
+    stateDigest: paneItem ? recoveryStateDigest(state, paneItem.status) : null,
     refs: stored.refs,
+    sourceRead: {
+      extractionId: latest.id,
+      kind: latestExistingStayInformation ? 'other' : latest.kind,
+      analysis: source.analysis,
+      refs: source.refs,
+    },
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
     analysis: {
       ...stored.analysis,
@@ -1962,7 +2003,7 @@ export async function storedWorkFor(
   });
   if (existingStayInformation) return readyView(db, msg, latest, null, input.transportId);
   const [item] = await db
-    .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId })
+    .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId, revisionSeq: workItem.revisionSeq })
     .from(workItem)
     .where(
       and(
@@ -2012,7 +2053,8 @@ export type FieldEventResult =
   | { status: 'not_found' }
   | { status: 'invalid_path' }
   | { status: 'invalid_value' }
-  | { status: 'recorded'; aiValue: unknown; value: unknown };
+  | { status: 'stale' }
+  | { status: 'recorded'; aiValue: unknown; value: unknown; cursor?: { extractionId: string; seq: number; stateDigest: string } };
 
 /**
  * Appends one field event and updates that field in the work item's state, in one transaction. ai_value is read from the
@@ -2030,6 +2072,7 @@ export async function recordFieldEvent(
     fieldPath: string;
     value?: unknown;
     msSinceOpen?: number;
+    expected?: { extractionId: string; seq: number; stateDigest: string };
   },
 ): Promise<FieldEventResult> {
   const contact = contactFieldOf(input.fieldPath);
@@ -2043,6 +2086,7 @@ export async function recordFieldEvent(
       .select({
         extractionId: workItem.extractionId,
         state: workItem.state,
+        status: workItem.status,
         revision: workItem.revision,
         revisionHead: workItem.revisionHead,
         revisionSeq: workItem.revisionSeq,
@@ -2052,6 +2096,10 @@ export async function recordFieldEvent(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
+    if (input.expected && (item.extractionId !== input.expected.extractionId || item.revisionSeq !== input.expected.seq ||
+        recoveryStateDigest(item.state, item.status) !== input.expected.stateDigest)) {
+      return { status: 'stale' as const };
+    }
     const [read] = item.extractionId
       ? await tx
           .select({ payload: mailExtraction.payload, version: mailExtraction.extractorVersion })
@@ -2088,7 +2136,7 @@ export async function recordFieldEvent(
       msSinceOpen: input.msSinceOpen ?? null,
       evidence: advanced.evidence,
     });
-    await tx
+    const update = tx
       .update(workItem)
       .set({
         state,
@@ -2098,7 +2146,16 @@ export async function recordFieldEvent(
         updatedAt: new Date(),
       })
       .where(eq(workItem.id, input.workItemId));
-    return { status: 'recorded' as const, aiValue, value };
+    if (!input.expected) {
+      await update;
+      return { status: 'recorded' as const, aiValue, value };
+    }
+    const [persisted] = await update.returning({ state: workItem.state, status: workItem.status });
+    if (!persisted) throw new Error('Work item disappeared while locked.');
+    return { status: 'recorded' as const, aiValue, value, cursor: {
+      extractionId: input.expected.extractionId, seq: item.revisionSeq + 1,
+      stateDigest: recoveryStateDigest(persisted.state, persisted.status),
+    } };
   });
 }
 
