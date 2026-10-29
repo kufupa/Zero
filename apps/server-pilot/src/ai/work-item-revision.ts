@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { workEvent, workItem } from '../db/schema/work.js';
+import { centurionSourceFence, isWorkItemSourceBusy, lockWorkItemSource } from './work-item-source-lock.js';
 
 /** Nested HMS commits. Same key as STAY_COMMITS_KEY in work-items.ts. Undo never touches it. */
 const STAY_COMMITS_KEY = 'stays';
@@ -10,6 +11,7 @@ export type PaneState = Record<string, unknown>;
 export type PaneRevisionCursor = { revision: number; revisionHead: number; seq: number };
 export type PaneRevisionResult =
   | { status: 'not_found' }
+  | { status: 'busy' }
   | { status: 'stale'; revision: number; revisionHead: number; seq: number }
   | { status: 'history_stale'; revision: number; revisionHead: number; seq: number }
   | { status: 'at_boundary'; revision: number; revisionHead: number; seq: number }
@@ -132,6 +134,8 @@ async function applyHistoryMove(
   },
 ): Promise<PaneRevisionResult> {
   return db.transaction(async (tx) => {
+    const source = await lockWorkItemSource(tx, input);
+    if (source === 'not_found') return { status: 'not_found' as const };
     const [item] = await tx
       .select({
         state: workItem.state,
@@ -148,6 +152,7 @@ async function applyHistoryMove(
     const revision = item.revision;
     const revisionHead = item.revisionHead;
     const seq = item.revisionSeq;
+    if (source === 'held') return { status: 'history_stale' as const, revision, revisionHead, seq };
     if (input.expectedSeq !== undefined && input.expectedSeq !== seq) {
       return { status: 'stale' as const, revision, revisionHead, seq };
     }
@@ -177,6 +182,9 @@ async function applyHistoryMove(
       .set({ state, revision: nextRevision, revisionSeq: nextSeq, updatedAt: new Date() })
       .where(eq(workItem.id, input.workItemId));
     return { status: 'applied' as const, revision: nextRevision, revisionHead, seq: nextSeq, restored };
+  }).catch((error: unknown) => {
+    if (centurionSourceFence(input.transportId) && isWorkItemSourceBusy(error)) return { status: 'busy' as const };
+    throw error;
   });
 }
 
