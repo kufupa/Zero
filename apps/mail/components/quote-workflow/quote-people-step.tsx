@@ -44,11 +44,9 @@ function inferredGuestName(session: QuoteSession): string {
 
 export function guestEditorKeyFor(session: QuoteSession, userId: string | null | undefined): string | null {
   const binding = session.binding;
-  if (!userId?.trim() || !binding?.transportId?.trim()) return null;
-  const messageId = binding.internetMessageId?.trim();
-  const source = messageId ? ['message', messageId] :
-    binding.storeId && binding.entryId ? ['entry', binding.storeId, binding.entryId] : null;
-  return source ? JSON.stringify([userId, binding.transportId, source]) : null;
+  if (!userId?.trim() || !binding?.transportId?.trim() || !binding.storeId?.trim() || !binding.entryId?.trim()) return null;
+  // Message-ID headers are not unique. Outlook supplies store/entry IDs; webmail uses the stored message ID as entryId.
+  return JSON.stringify([userId, binding.transportId, binding.storeId, binding.entryId]);
 }
 
 export function stayingGuestName(
