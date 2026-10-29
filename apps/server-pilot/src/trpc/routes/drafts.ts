@@ -76,7 +76,8 @@ function isPostgresUniqueViolation(err: unknown): boolean {
 }
 
 function isPostgresLockUnavailable(err: unknown): boolean {
-  if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === '55P03') return true;
+  if (err && typeof err === 'object' && 'code' in err &&
+    ['55P03', '40P01'].includes((err as { code: string }).code)) return true;
   return err instanceof Error && err.cause !== undefined && isPostgresLockUnavailable(err.cause);
 }
 
@@ -925,6 +926,7 @@ export async function assertHmsDraftFreshForAction(input: {
   conflict: 'STALE_AI_CANDIDATE' | 'STALE_AI_DRAFT';
   now?: Date;
   attachmentSourceHashes?: ReadonlyMap<string, string>;
+  lockQuoteOrigin?: boolean;
 }): Promise<void> {
   if (input.draft.origin !== 'ai') return;
   if (!input.draft.generationId || !input.draft.threadId) return;
@@ -942,7 +944,8 @@ export async function assertHmsDraftFreshForAction(input: {
   const [qualifiedRun] = await input.db.select({ metrics: aiWorkflowRun.metrics, triggerMessageId: aiWorkflowRun.triggerMessageId }).from(aiWorkflowRun).where(and(eq(aiWorkflowRun.generationId, input.draft.generationId), eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.threadId, input.draft.threadId), eq(aiWorkflowRun.runKind, 'candidate_draft'))).orderBy(desc(aiWorkflowRun.createdAt)).limit(1);
   const occupancyHold = await draftQuoteOccupancyHold(input.db, { transportId: input.transportId, threadId: input.draft.threadId,
     messageId: input.draft.replyToMessageId, triggerMessageId: qualifiedRun?.triggerMessageId ?? null,
-    result: qualifiedRun?.metrics?.reservationistResult, quoteSourceProof: quoteSourceProofFromRun(qualifiedRun ?? {}) });
+    result: qualifiedRun?.metrics?.reservationistResult, quoteSourceProof: quoteSourceProofFromRun(qualifiedRun ?? {}),
+    lockOrigin: input.lockQuoteOrigin });
   if (occupancyHold) throw new TRPCError({ code: 'CONFLICT', message: occupancyHold });
   try {
     assertReservationistResultFreshForAction(qualifiedRun?.metrics?.reservationistResult, input.now);
@@ -1434,6 +1437,7 @@ export const draftsRouter = tRouter({
             transportId,
             draft: candidate,
             conflict: 'STALE_AI_CANDIDATE',
+            lockQuoteOrigin: true,
           });
 
           await tx
@@ -1473,6 +1477,9 @@ export const draftsRouter = tRouter({
         });
         return toDraftWire(promoted);
       } catch (error) {
+        if (isPostgresLockUnavailable(error)) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The email is being updated. Wait a moment, then try again.' });
+        }
         if (!isPostgresUniqueViolation(error)) throw error;
         const activeRows = await db
           .select()

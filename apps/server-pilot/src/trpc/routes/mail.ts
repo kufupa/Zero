@@ -91,6 +91,7 @@ import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { markThreadRead } from '../../mail/thread-read.js';
 import { assertHmsDraftFreshForAction } from './drafts.js';
+import { withQuoteSourceBusyHold } from '../../hms/quote-source-contention.js';
 import { latestWorkflowThreads, WORKFLOW_FOLDER_IDS } from '../../mail/workflow-folders.js';
 import { getDb, type DB } from '../../db/client.js';
 import { toDraftWire } from './draft-wire.js';
@@ -1435,7 +1436,7 @@ export const mailRouter = tRouter({
       ? new Date(scheduleAtMs)
       : new Date(now.getTime() + undoSecs * 1000);
 
-    await db.transaction(async (tx) => {
+    const persistSend = () => db.transaction(async (tx) => {
       if (approvedDraft && sendingDraft?.origin === 'ai') {
         try {
           await claimDraftApprovalForSend({
@@ -1531,6 +1532,8 @@ export const mailRouter = tRouter({
         }
       }
     });
+    if (approvedDraft && sendingDraft?.origin === 'ai') await withQuoteSourceBusyHold(persistSend);
+    else await persistSend();
 
     if (isUserScheduled) {
       return {

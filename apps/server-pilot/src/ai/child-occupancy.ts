@@ -9,6 +9,8 @@ import { formStays } from './work-items.js';
 import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
 import { priorKindConflict } from './work-item-source-conflict.js';
 import { quoteSourcePartyDigest } from './quote-source-party.js';
+import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin } from '../hms/hms-quote-target.js';
+import { isQuoteSourceLockBusy, QUOTE_SOURCE_BUSY_MESSAGE } from '../hms/quote-source-contention.js';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
   'id' | 'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'childrenAges' | 'childrenPerRoom'>;
@@ -126,13 +128,26 @@ async function loadChildOccupancyEvidence(
   db: DB,
   scope: QuoteSourceScope,
 ) {
+  if (scope.lock && isCenturionQuoteScope(scope)) {
+    // A pending extraction can become the newest successful read without inserting a row.
+    await db.select({ id: mailExtraction.id }).from(mailExtraction)
+      .where(eq(mailExtraction.messageId, scope.messageId)).orderBy(mailExtraction.id).for('share', { noWait: true });
+  }
   const [latest] = await db
     .select({ id: mailExtraction.id, kind: mailExtraction.kind, payload: mailExtraction.payload })
     .from(mailExtraction)
     .where(and(eq(mailExtraction.messageId, scope.messageId), eq(mailExtraction.status, 'succeeded')))
-    .orderBy(desc(mailExtraction.createdAt))
+    .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
     .limit(1);
   if (!latest?.kind || !latest.payload) return null;
+  // A sibling case can become conflicting while we check this one. Lock every
+  // existing item for the message before checking earlier human decisions.
+  if (scope.lock && isCenturionQuoteScope(scope)) {
+    await db.select({ id: workItem.id }).from(workItem).where(and(
+      eq(workItem.transportId, scope.transportId), eq(workItem.threadId, scope.threadId),
+      eq(workItem.sourceMessageId, scope.messageId),
+    )).orderBy(workItem.id).for('update', { noWait: true });
+  }
   // A reclassification cannot silently discard a person's earlier work, even
   // when a caller bypasses the pane or asks for a cached quote directly.
   if (isCenturionQuoteScope(scope) && await priorKindConflict(db, { ...scope, latestKind: latest.kind })) return null;
@@ -146,10 +161,10 @@ async function loadChildOccupancyEvidence(
       eq(workItem.kind, latest.kind),
     ))
     .limit(1);
-  const [item] = await (scope.lock ? itemQuery.for('share') : itemQuery);
+  const [item] = await (scope.lock ? itemQuery.for('share', { noWait: true }) : itemQuery);
   // A newer read has not been adopted yet. Do not apply old corrections to that read, or keep pricing the older one.
   // The existing work-item relink decides whether edits can safely carry; once it moves, the latest evidence is used.
-  if ((!item && scope.lock) || (item && item.extractionId !== latest.id)) return null;
+  if ((!item && scope.lock && !scope.allowMissingWorkItem) || (item && item.extractionId !== latest.id)) return null;
   return { extractionId: latest.id, kind: latest.kind, payload: latest.payload, state: item?.state ?? {} };
 }
 
@@ -187,7 +202,9 @@ type QuoteSourceProof = {
   sourceDigest: string;
   singleRowDigest: string | null;
 };
-type QuoteSourceScope = { transportId: string; threadId: string; messageId: string; propertyCode?: string; lock?: boolean };
+type QuoteSourceScope = { transportId: string; threadId: string; messageId: string; propertyCode?: string; lock?: boolean;
+  /** Only for a transaction already holding the source message FOR UPDATE, which prevents new items. */
+  allowMissingWorkItem?: boolean };
 
 /** Snapshot the saved source preferences, separately from the room/rate actually chosen by the quote. */
 function quoteSourceSnapshot(groups: Group[], payload: unknown, state: Record<string, unknown>) {
@@ -318,22 +335,40 @@ export async function quoteSourceProofMatchesSingleStay(
 export async function draftQuoteOccupancyHold(db: DB, input: {
   transportId: string; threadId: string; messageId: string | null; triggerMessageId: string | null; result: unknown;
   quoteSourceProof?: unknown;
+  lockOrigin?: boolean;
 }): Promise<string | null> {
   if (!input.result || typeof input.result !== 'object') return null;
   const result = input.result as { importedOffers?: unknown; quoteRevisions?: unknown; quoteRevisionIds?: unknown; approvedOverrides?: unknown };
   if ([result.importedOffers, result.quoteRevisions, result.quoteRevisionIds, result.approvedOverrides].some((value) => value != null && !Array.isArray(value)))
     return isCenturionQuoteTransport(input.transportId) ? draftQuoteOccupancyMessage : null;
-  if (Array.isArray(result.importedOffers) && result.importedOffers.some((offer) =>
-    isCenturionQuoteScope({ transportId: input.transportId, propertyCode: offer?.propertyCode }))) return importedOfferOccupancyHold;
+  if (Array.isArray(result.importedOffers)) {
+    for (const offer of result.importedOffers) {
+      if (isCenturionQuoteScope({ transportId: input.transportId, propertyCode: offer?.propertyCode }))
+        return importedOfferOccupancyHold;
+      if (isCenturionQuoteTransport(input.transportId) && (!input.messageId || input.messageId !== input.triggerMessageId))
+        return draftQuoteOccupancyMessage;
+      if (!(await quotePropertyMatchesOrigin({ db, transportId: input.transportId, threadId: input.threadId,
+        messageId: input.messageId ?? undefined, propertyCode: offer?.propertyCode, lock: input.lockOrigin })))
+        return QUOTE_HOTEL_CHANGED_MESSAGE;
+    }
+  }
   const quotes = (result.quoteRevisions ?? []) as QuoteRevision[];
   const overrides = (result.approvedOverrides ?? []) as { id: string; sourceRevision: QuoteRevision }[];
   const refs = (result.quoteRevisionIds ?? []) as unknown[];
   if (!quotes.length && !overrides.length && !refs.length) return null;
-  const selectedQuotes = [...quotes, ...overrides.map((offer) => offer.sourceRevision)].filter((quote) =>
+  const candidates = [...quotes, ...overrides.map((offer) => offer.sourceRevision)];
+  for (const quote of candidates) {
+    if (!(await quotePropertyMatchesOrigin({ db, transportId: input.transportId, threadId: input.threadId,
+      messageId: input.messageId ?? undefined, propertyCode: quote?.propertyCode, lock: input.lockOrigin })))
+      return QUOTE_HOTEL_CHANGED_MESSAGE;
+  }
+  const selectedQuotes = candidates.filter((quote) =>
     isCenturionQuoteScope({ transportId: input.transportId, propertyCode: quote?.propertyCode }));
+  if ((isCenturionQuoteTransport(input.transportId) || selectedQuotes.length > 0) &&
+    (!input.messageId || input.messageId !== input.triggerMessageId ||
+      refs.some((id) => ![...quotes, ...overrides].some((offer) => offer?.id === id)))) return draftQuoteOccupancyMessage;
   if (!selectedQuotes.length && (quotes.length || overrides.length || !isCenturionQuoteTransport(input.transportId))) return null;
-  if (!input.messageId || input.messageId !== input.triggerMessageId ||
-    refs.some((id) => ![...quotes, ...overrides].some((offer) => offer?.id === id))) return draftQuoteOccupancyMessage;
+  if (!input.messageId) return draftQuoteOccupancyMessage;
   if (selectedQuotes.length && quoteSourceProofPredatesPolicy(input.quoteSourceProof)) return quoteSourcePolicyChangedMessage;
   try {
     for (const quote of selectedQuotes) {
@@ -342,7 +377,9 @@ export async function draftQuoteOccupancyHold(db: DB, input: {
         propertyCode: quote.propertyCode, lock: true,
       }, input.quoteSourceProof))) return draftQuoteOccupancyMessage;
     }
-  } catch { return draftQuoteOccupancyMessage; }
+  } catch (error) {
+    return isQuoteSourceLockBusy(error) ? QUOTE_SOURCE_BUSY_MESSAGE : draftQuoteOccupancyMessage;
+  }
   return null;
 }
 

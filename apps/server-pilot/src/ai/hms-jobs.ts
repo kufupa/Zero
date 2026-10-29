@@ -38,7 +38,7 @@ import {
   type RecordSenderPartyInput,
 } from './party-sender-map.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
-import { childOccupancyIsCurrent, isCenturionQuoteScope, quoteSourceProofFromRun,
+import { childOccupancyIsCurrent, isCenturionQuoteScope, isCenturionQuoteTransport, quoteSourceProofFromRun,
   quoteSourceProofIsCurrent, quoteSourceProofMatchesCopy, quoteSourceProofMatchesInput,
   quoteSourceProofMatchesSingleStay, quoteSourceProofPredatesPolicy, quoteSourcePolicyChangedMessage } from './child-occupancy.js';
 import {
@@ -52,7 +52,7 @@ import {
   type HmsReadTarget,
 } from '../hms/hms-read-target.js';
 import { PropertyRefusalCause } from '../hms/property-refusal.js';
-import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin, resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import { quotePaneConfigForProperty } from '../hms/rate-catalogue.js';
 import {
   acquisitionWithin,
@@ -4293,6 +4293,10 @@ async function quoteViewIsCurrent(db: DB, run: AiWorkflowRun, request: HmsJobReq
   if (view.input && (view.input.messageId !== selected.id ||
     view.input.sourceHash !== staffQuoteSourceHash(selected))) return false;
   const propertyCode = quoteRunPropertyEvidence(run).code;
+  if (!sameSource && !(await quotePropertyMatchesOrigin({ db, transportId: view.transportId,
+    threadId: selected.threadId, messageId: selected.id, propertyCode }))) return false;
+  // Da Vinci prices do not carry Centurion's source proof; retain their existing admission rules.
+  if (!isCenturionQuoteScope({ transportId: run.transportId, propertyCode })) return true;
   const proof = quoteSourceProofFromRun(run);
   const sourceScope = { transportId: run.transportId, threadId: run.threadId, messageId: source.id, propertyCode };
   if (!quoteSourceProofMatchesInput(proof, request.input) ||
@@ -4325,6 +4329,11 @@ async function toView(
     status = 'failed';
     result = { kind: 'staff_quote', ok: false, code: 'staff_quote_property_unverified',
       message: 'The hotel for this saved quote could not be confirmed. Search availability again.' };
+  } else if (staffQuote && result && hasPrice && propertyCode &&
+    !(await quotePropertyMatchesOrigin({ db, transportId: run.transportId, threadId: run.threadId,
+      messageId: run.triggerMessageId ?? undefined, propertyCode }))) {
+    status = 'failed';
+    result = { kind: 'staff_quote', ok: false, code: 'staff_quote_property_changed', message: QUOTE_HOTEL_CHANGED_MESSAGE };
   } else if (quoteResult && result && hasPrice && (!request.success || request.data.kind !== 'staff_quote' ||
       !staffQuoteChildOccupancyComplete(request.data.input, 'HRCEN'))) {
     status = 'failed';
@@ -4337,6 +4346,13 @@ async function toView(
       ? { ok: false, code: 'quote_source_outdated', message: quoteSourcePolicyChangedMessage }
       : { ok: false, code: 'child_occupancy_incomplete',
         message: 'Refresh the selected email and confirm rooms, guests, room type, meal plan, agency and company before using this price.' };
+  } else if (!quoteResult && staffQuote && result && hasPrice &&
+    isCenturionQuoteTransport(options.quoteScope?.transportId ?? run.transportId) &&
+    (options.quoteScope?.messageId || options.quoteScope?.workItemId) &&
+    (!request.success || !(await quoteViewIsCurrent(db, run, request.data, options.quoteScope)))) {
+    status = 'failed';
+    result = { ok: false, code: 'staff_quote_source_changed',
+      message: 'The selected email or hotel changed. Refresh it and search rates again.' };
   } else if (result && hasPrice && propertyCode && result.propertyCode === undefined) {
     // Older prepared revisions already record the actual property.
     result = { ...result, propertyCode };
@@ -4402,11 +4418,14 @@ async function latestStaffQuoteRunFor(
       ),
     )
     .orderBy(desc(aiWorkflowRun.createdAt), desc(aiWorkflowRun.id));
-  const reusable = (run: AiWorkflowRun) => {
+  const reusable = async (run: AiWorkflowRun) => {
     if (run.state !== 'succeeded') return true;
     if (!staffQuoteResultReusable(run.readResult, now)) return false;
     // A pane cannot safely use a price whose actual property is unknown or contradictory.
-    if (quoteResultHasPrice(run.readResult) && !quoteRunPropertyEvidence(run).code) return false;
+    const propertyCode = quoteRunPropertyEvidence(run).code;
+    if (quoteResultHasPrice(run.readResult) && (!propertyCode ||
+      !(await quotePropertyMatchesOrigin({ db, transportId: run.transportId, threadId: run.threadId,
+        messageId: run.triggerMessageId ?? undefined, propertyCode })))) return false;
     const stored = run.readResult as { status?: unknown } | null;
     if (stored?.status === 'ready') return true;
     return Boolean(run.readResultExpiresAt && run.readResultExpiresAt > now);
@@ -4431,7 +4450,7 @@ async function latestStaffQuoteRunFor(
       // run, or its eventual refusal, cannot answer a later read of this mail.
       (!centurion || parsed.data.input.sourceExtractionId === quoteInput.sourceExtractionId) &&
       staffQuoteInputsPriceEquivalent(parsed.data.input, quoteInput, false, centurion);
-    if (!reusable(userRun)) {
+    if (!(await reusable(userRun))) {
       // Newest matching price is stale: do not fall back to an older refusal.
       const stored = userRun.readResult as { status?: unknown } | null;
       if (sameTerms && stored?.status === 'ready') break;
@@ -4507,7 +4526,13 @@ async function latestStaffQuoteRunFor(
       .limit(1);
     // Contract ranking may put an older run first; a later run can still postdate the approval.
     if (latestApproval && latestApproval.createdAt >= preparedRun.createdAt) continue;
-    return reusable(preparedRun) ? [preparedRun] : [];
+    if (!sameMessageCopy && quoteResultHasPrice(preparedRun.readResult)) {
+      const [selected] = await db.select({ threadId: message.threadId }).from(message)
+        .where(and(eq(message.id, messageId), eq(message.transportId, transportId))).limit(1);
+      if (!selected?.threadId || !(await quotePropertyMatchesOrigin({ db, transportId,
+        threadId: selected.threadId, messageId, propertyCode: quoteRunPropertyEvidence(preparedRun).code }))) continue;
+    }
+    return await reusable(preparedRun) ? [preparedRun] : [];
   }
   return [];
 }

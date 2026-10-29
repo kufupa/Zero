@@ -1,5 +1,6 @@
 import {assertCurrentLookupTargetReceipt} from './reservationist-lookup-target.js';
 import {draftQuoteOccupancyHold,quoteSourceProofFromRun} from './child-occupancy.js';
+import {isQuoteSourceLockBusy,QUOTE_SOURCE_BUSY_MESSAGE} from '../hms/quote-source-contention.js';
 import {assertReservationistRecipientReceipt,RECIPIENT_PREPARATION_CLAUSE,type RecipientPreparationReceipt} from './reservationist-recipient-preparation.js';
 import {assertReservationistChannelBookingSyncPacket} from './reservationist-pending-action.js';
 import {assertReservationistExistingDocumentReceiptFresh,type ReservationistExistingDocumentReceipt} from './reservationist-existing-document.js';
@@ -675,6 +676,8 @@ export async function assertDraftApprovalCurrent(input: {
     input: { transportId: string; threadId: string },
   ) => Promise<string>;
   queueMessageId?: string;
+  /** Only set by the caller holding a short transaction. */
+  lockQuoteOrigin?: boolean;
   now?: Date;
   signingSecret: string;
 }): Promise<DraftApproval> {
@@ -784,7 +787,8 @@ export async function assertDraftApprovalCurrent(input: {
   }
   const occupancyHold = await draftQuoteOccupancyHold(input.db, { transportId: approval.transportId,
     threadId: approval.threadId, messageId: draft.replyToMessageId, triggerMessageId: run?.triggerMessageId ?? null,
-    result: run?.metrics?.reservationistResult, quoteSourceProof: quoteSourceProofFromRun(run ?? {}) });
+    result: run?.metrics?.reservationistResult, quoteSourceProof: quoteSourceProofFromRun(run ?? {}),
+    lockOrigin: input.lockQuoteOrigin });
   if (occupancyHold) throw new DraftQuoteOccupancyError(occupancyHold);
   assertReservationistResultFreshForAction(run?.metrics?.reservationistResult, now);
   assertReservationistResultWording(run?.metrics?.reservationistResult, input.payload, now);
@@ -845,7 +849,13 @@ export async function claimDraftApprovalForSend(
     .for('update');
   if (!lockedDraft) throw new DraftApprovalError('draft changed before send claim');
 
-  const approval = await assertDraftApprovalCurrent(input);
+  let approval: DraftApproval;
+  try {
+    approval = await assertDraftApprovalCurrent({ ...input, lockQuoteOrigin: true });
+  } catch (error) {
+    if (isQuoteSourceLockBusy(error)) throw new DraftQuoteOccupancyError(QUOTE_SOURCE_BUSY_MESSAGE);
+    throw error;
+  }
   const [claimed] = await input.db
     .update(mailDraft)
     .set({

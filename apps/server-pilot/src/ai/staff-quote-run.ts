@@ -48,7 +48,8 @@ import { type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { ReservationistTaskEvidenceUnavailable } from './reservationist-execution.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js';
 import { mailExtraction } from '../db/schema/work.js';
-import { captureQuoteSourceProof, draftQuoteOccupancyMessage, quoteSourceProofIsCurrent } from './child-occupancy.js';
+import { captureQuoteSourceProof, draftQuoteOccupancyMessage, isCenturionQuoteScope,
+  isCenturionQuoteTransport, quoteSourceProofIsCurrent } from './child-occupancy.js';
 import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
 import { buildStaffRatePick } from './staff-rate-pick-history.js';
 import { otherBoardContractNotes, type RateOption } from './rate-options.js';
@@ -62,7 +63,8 @@ import {
 import { beginQuoteRun, staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
-import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin, resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { isQuoteSourceLockBusy, withQuoteSourceBusyHold } from '../hms/quote-source-contention.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { HMS_OUTAGE_STAFF_COPY } from '../hms/property-outage.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
@@ -762,14 +764,15 @@ export async function runStaffQuote(
               sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([scope.messageId])}::jsonb`,
             ),
           )
-          .orderBy(desc(aiDraftGeneration.createdAt))
+          .orderBy(desc(aiDraftGeneration.createdAt), desc(aiDraftGeneration.id))
           .limit(1);
     return (
       (systemPrepared || latest?.id === generationId) &&
       !!current &&
       current.threadId === scope.threadId &&
       staffQuoteSourceHash(current) === input.sourceHash &&
-      (!quoteSourceProof || await quoteSourceProofIsCurrent(db, input.groups, occupancyScope, quoteSourceProof))
+      (!quoteSourceProof || await quoteSourceProofIsCurrent(db, input.groups, occupancyScope, quoteSourceProof)) &&
+      await quotePropertyMatchesOrigin({ ...occupancyScope, db })
     );
   };
   const databaseUrl = process.env.DATABASE_URL;
@@ -997,7 +1000,33 @@ export async function runStaffQuote(
       ? quoteRunIdFromEvidenceDirectory(config.outputDir, evidence.directory)
       : null;
     const persistRun = (quoteResult: Record<string, unknown>) =>
-      db.transaction(async (tx) => {
+      withQuoteSourceBusyHold(() => db.transaction(async (tx) => {
+        if (isCenturionQuoteTransport(scope.transportId) || isCenturionQuoteScope(occupancyScope)) {
+          if (!(await quotePropertyMatchesOrigin({ ...occupancyScope, db: tx as unknown as DB, lock: true })))
+            refuseQuote('source_changed', QUOTE_HOTEL_CHANGED_MESSAGE);
+          const [lockedMail] = await tx.select().from(message).where(and(
+            eq(message.id, mail.id), eq(message.transportId, scope.transportId), eq(message.threadId, scope.threadId),
+          )).limit(1);
+          if (!lockedMail || staffQuoteSourceHash(lockedMail) !== input.sourceHash)
+            refuseQuote('source_changed', 'Selected email changed while pricing');
+          await tx.select({ id: mailExtraction.id }).from(mailExtraction)
+            .where(eq(mailExtraction.messageId, mail.id)).orderBy(mailExtraction.id).for('share', { noWait: true });
+          // Keep the saved room/party evidence stable until the priced result commits.
+          if (quoteSourceProof && !(await quoteSourceProofIsCurrent(tx as unknown as DB, input.groups,
+            { ...occupancyScope, lock: true, allowMissingWorkItem: true }, quoteSourceProof)))
+            refuseQuote('source_changed', 'Selected email changed while pricing');
+          if (!systemPrepared) {
+            await tx.select({ id: aiDraftGeneration.id }).from(aiDraftGeneration).where(and(
+              eq(aiDraftGeneration.transportId, scope.transportId), eq(aiDraftGeneration.threadId, scope.threadId),
+            )).orderBy(aiDraftGeneration.id).for('share', { noWait: true });
+            const [latest] = await tx.select({ id: aiDraftGeneration.id }).from(aiDraftGeneration).where(and(
+              eq(aiDraftGeneration.transportId, scope.transportId), eq(aiDraftGeneration.threadId, scope.threadId),
+              eq(aiDraftGeneration.requestedByUserId, identity.user!.id), eq(aiDraftGeneration.model, 'staff-approved-native'),
+              sql`${aiDraftGeneration.contextMessageIds} @> ${JSON.stringify([scope.messageId])}::jsonb`,
+            )).orderBy(desc(aiDraftGeneration.createdAt), desc(aiDraftGeneration.id)).limit(1);
+            if (latest?.id !== generationId) refuseQuote('source_changed', 'The quote approval changed while pricing');
+          }
+        }
         if (!systemPrepared) {
           await tx
             .update(aiDraftGeneration)
@@ -1096,7 +1125,7 @@ export async function runStaffQuote(
         ) {
           throw Object.assign(new Error('staff_quote_claim_lost'), { code: 'HMS_JOB_CLAIM_LOST' });
         }
-      });
+      }));
     const summary = async () => ({
       status: 'ready' as const,
       workflowRunId,
@@ -1163,6 +1192,9 @@ export async function runStaffQuote(
             `[staff-quote] run ${workflowRunId} not recorded: ${error instanceof Error ? error.message : 'unknown error'}`,
           );
           await markGenerationFailed('staff_quote_trace_finish_failed');
+          if (waitForTracePersistence && error instanceof TRPCError &&
+            ((error.cause as { reason?: unknown } | undefined)?.reason === 'source_changed' ||
+              isQuoteSourceLockBusy(error))) throw error;
           if (waitForTracePersistence && !(error instanceof Error && error.message === 'staff_quote_superseded')) {
             const failure = new Error('staff_quote_native_unavailable');
             Object.assign(failure, {
@@ -1176,11 +1208,16 @@ export async function runStaffQuote(
         .finally(() => queued.end());
       registerPendingStaffQuote([workflowRunId, mail.id, ...(runId ? [runId] : [])], pending);
       if (waitForTracePersistence) await pending;
-      return summary();
+      const result = await summary();
+      if (!waitForTracePersistence && !(await stillCurrent()))
+        refuseQuote('source_changed', 'Selected email changed while pricing');
+      return result;
     }
     try {
       const result = await summary();
       await persistRun(result);
+      if (!waitForTracePersistence && !(await stillCurrent()))
+        refuseQuote('source_changed', 'Selected email changed while pricing');
       return result;
     } catch (error) {
       await markGenerationFailed('staff_quote_persist_failed');
