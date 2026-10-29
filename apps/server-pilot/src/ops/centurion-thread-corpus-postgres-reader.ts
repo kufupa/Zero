@@ -361,7 +361,13 @@ function stringArray(value: unknown): string[] {
 }
 
 function nonNegativeInteger(value: unknown): number | null {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
+  const integer =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\d+$/.test(value)
+        ? Number(value)
+        : null;
+  return integer !== null && Number.isSafeInteger(integer) && integer >= 0 ? integer : null;
 }
 
 function canonicalHeaders(row: MessageRow): Record<string, string[]> {
