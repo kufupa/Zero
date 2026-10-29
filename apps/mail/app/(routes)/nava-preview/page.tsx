@@ -37,6 +37,7 @@ export default function NavaPreviewPage() {
   const trpc = useTRPC();
   const [params, setParams] = useSearchParams();
   const deepLinked = params.get('thread');
+  const sourceMessageId = params.get('sourceMessageId');
   const recent = useQuery(
     trpc.mail.listThreads.queryOptions({ folder: 'inbox', limit: LIST_LIMIT }),
   );
@@ -93,7 +94,10 @@ export default function NavaPreviewPage() {
           <WebPanePanel
             key={selectedId}
             threadId={selectedId}
-            onOpenThread={(id) => setParams({ thread: id })}
+            sourceMessageId={sourceMessageId}
+            onOpenThread={(id, sourceId) =>
+              setParams({ thread: id, ...(sourceId != null ? { sourceMessageId: sourceId } : {}) })
+            }
           />
         ) : (
           <p className="p-4 text-sm text-slate-500">No thread selected.</p>

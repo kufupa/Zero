@@ -1783,10 +1783,11 @@ export type FieldProvenanceSource = 'ai' | 'staff' | 'unknown';
 export type FieldProvenance = Record<string, { source: FieldProvenanceSource; value: unknown }>;
 
 export type StoredWork =
-  | { status: 'none' }
-  | { status: 'failed'; reason: string; hold?: true }
+  | { status: 'none'; sourceMessageId?: string }
+  | { status: 'failed'; reason: string; hold?: true; sourceMessageId?: string }
   | {
       status: 'ready';
+      sourceMessageId?: string;
       /** The stored extraction kind, for the pane's shared reservation-staff vocabulary. */
       kind: string;
       /** A self-sent pre-stay confirmation is information about an existing stay, not booking work. */
@@ -1852,6 +1853,18 @@ const AMBIGUOUS_CENTURION_MESSAGE: StoredWork = {
   reason: 'More than one email has this Message-ID. Review this request manually.',
   hold: true,
 };
+
+const SELECTED_MESSAGE_UNAVAILABLE: StoredWork = {
+  status: 'failed',
+  reason: 'The selected email changed or is unavailable. Reopen it and try again.',
+  hold: true,
+};
+
+type StoredWorkLookup = { transportId: string; internetMessageId: string; expectedMessageId?: string };
+
+function withSelectedMessage(work: StoredWork, messageId: string, expectedMessageId?: string): StoredWork {
+  return expectedMessageId ? { ...work, sourceMessageId: messageId } : work;
+}
 
 async function failureFor(db: DB, messageId: string, transportId: string): Promise<StoredWork> {
   // succeededRead returns null for a missing kind or payload. Do not mistake that corrupt success for no read.
@@ -2118,14 +2131,15 @@ async function workItemForKind(
  */
 export async function storedWorkFor(
   db: DB,
-  input: { transportId: string; internetMessageId: string },
+  input: StoredWorkLookup,
 ): Promise<StoredWork> {
   const found = await messageLookup(db, input);
-  if (found.status === 'ambiguous' && centurionSourceFence(input.transportId)) return AMBIGUOUS_CENTURION_MESSAGE;
-  if (found.status !== 'one') return { status: 'none' };
+  if (found.status === 'ambiguous' && (centurionSourceFence(input.transportId) || input.expectedMessageId)) return AMBIGUOUS_CENTURION_MESSAGE;
+  if (found.status !== 'one') return input.expectedMessageId ? SELECTED_MESSAGE_UNAVAILABLE : { status: 'none' };
   const msg = found.message;
+  if (input.expectedMessageId && msg.id !== input.expectedMessageId) return SELECTED_MESSAGE_UNAVAILABLE;
   const latest = await succeededRead(db, msg.id);
-  if (!latest) return failureFor(db, msg.id, input.transportId);
+  if (!latest) return withSelectedMessage(await failureFor(db, msg.id, input.transportId), msg.id, input.expectedMessageId);
   if (centurionSourceFence(input.transportId) && !mailExtractionPayloadSchema.safeParse(latest.payload).success) {
     return INVALID_CENTURION_READ;
   }
@@ -2138,11 +2152,11 @@ export async function storedWorkFor(
     subject: msg.subject,
     confirmationNumbers: payloadConfirmationNumbers(latest.payload),
   });
-  if (existingStayInformation) return readyView(db, msg, latest, null, input.transportId, sourceConflict);
+  if (existingStayInformation) return withSelectedMessage(await readyView(db, msg, latest, null, input.transportId, sourceConflict), msg.id, input.expectedMessageId);
   const item = await workItemForKind(db, {
     transportId: input.transportId, threadId: msg.threadId, messageId: msg.id, kind: latest.kind,
   });
-  return readyView(db, msg, latest, item, input.transportId, sourceConflict);
+  return withSelectedMessage(await readyView(db, msg, latest, item, input.transportId, sourceConflict), msg.id, input.expectedMessageId);
 }
 
 /**
@@ -2151,12 +2165,13 @@ export async function storedWorkFor(
  */
 export async function openStoredWork(
   db: DB,
-  input: { transportId: string; internetMessageId: string },
+  input: StoredWorkLookup,
 ): Promise<StoredWork> {
-  const found = centurionSourceFence(input.transportId) ? await messageLookup(db, input) : null;
+  const found = centurionSourceFence(input.transportId) || input.expectedMessageId ? await messageLookup(db, input) : null;
   if (found?.status === 'ambiguous') return AMBIGUOUS_CENTURION_MESSAGE;
-  if (found?.status === 'none') return { status: 'none' };
+  if (found?.status === 'none') return input.expectedMessageId ? SELECTED_MESSAGE_UNAVAILABLE : { status: 'none' };
   const initial = found?.status === 'one' ? found.message : null;
+  if (input.expectedMessageId && initial?.id !== input.expectedMessageId) return SELECTED_MESSAGE_UNAVAILABLE;
   let opened: Awaited<ReturnType<typeof prepareStoredWorkOpen>>;
   try {
     opened = initial
@@ -2173,24 +2188,27 @@ export async function openStoredWork(
   }
   if (opened.mode === 'immediate') return opened.immediate;
   // View building may read attachments; do not keep database source locks across that work.
-  return readyView(db, opened.msg, opened.latest, opened.item, input.transportId, opened.sourceConflict);
+  return withSelectedMessage(await readyView(db, opened.msg, opened.latest, opened.item, input.transportId, opened.sourceConflict), opened.msg.id, input.expectedMessageId);
 }
 
 async function prepareStoredWorkOpen(
   db: DB,
-  input: { transportId: string; internetMessageId: string },
+  input: StoredWorkLookup,
   lockedMessageId?: string,
 ) {
   const found = await messageLookup(db, input);
-  if (found.status === 'ambiguous' && centurionSourceFence(input.transportId)) {
+  if (found.status === 'ambiguous' && (centurionSourceFence(input.transportId) || input.expectedMessageId)) {
     return { mode: 'immediate', immediate: AMBIGUOUS_CENTURION_MESSAGE } as const;
   }
   const msg = found.status === 'one' ? found.message : null;
-  if (!msg || (lockedMessageId && msg.id !== lockedMessageId)) {
+  if (!msg || (input.expectedMessageId && msg.id !== input.expectedMessageId)) {
+    return { mode: 'immediate', immediate: input.expectedMessageId ? SELECTED_MESSAGE_UNAVAILABLE : { status: 'none' } as StoredWork } as const;
+  }
+  if (lockedMessageId && msg.id !== lockedMessageId) {
     return { mode: 'immediate', immediate: lockedMessageId ? BUSY_CENTURION_READ : { status: 'none' } as StoredWork } as const;
   }
   const latest = await succeededRead(db, msg.id);
-  if (!latest) return { mode: 'immediate', immediate: await failureFor(db, msg.id, input.transportId) } as const;
+  if (!latest) return { mode: 'immediate', immediate: withSelectedMessage(await failureFor(db, msg.id, input.transportId), msg.id, input.expectedMessageId) } as const;
   if (centurionSourceFence(input.transportId) && !mailExtractionPayloadSchema.safeParse(latest.payload).success) {
     return { mode: 'immediate', immediate: INVALID_CENTURION_READ } as const;
   }
@@ -2490,10 +2508,10 @@ export async function acceptUneditedFields(
  */
 export async function workItemIdForMail(
   db: DB,
-  input: { transportId: string; internetMessageId: string },
+  input: StoredWorkLookup,
 ): Promise<string | null> {
   const msg = await messageFor(db, input);
-  if (!msg) return null;
+  if (!msg || (input.expectedMessageId && msg.id !== input.expectedMessageId)) return null;
   const latest = await succeededRead(db, msg.id);
   if (!latest) return null;
   if (centurionSourceFence(input.transportId) && !mailExtractionPayloadSchema.safeParse(latest.payload).success) return null;

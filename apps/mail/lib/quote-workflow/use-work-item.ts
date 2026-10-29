@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { getMailCacheScope, inMailbox } from '@/lib/mail/mail-cache-scope';
 import {
   bindStoredWork,
+  checkedStoredMessage,
   quoteAnalysisOf,
   reopenStoredWork,
   workItemsFromTrpc,
@@ -34,22 +35,40 @@ const MAX_MS_SINCE_OPEN = 86_400_000;
 const RECOVERY_MARKER_PREFIX = 'nava.pending-work-item.v1:';
 const recoveryWithoutStorage = new Set<string>();
 
-// Match the pane's remembered edits: a session renewal must not hide an unsaved marker for the same mailbox and mail.
-function recoveryIdentity(key: string): string {
+// A session renewal must not hide a marker. Web markers also bind the signed-in user and exact selected row.
+function recoveryIdentities(key: string): { current: string; legacy: string | null } {
   const split = key.indexOf('\n');
-  if (split < 0) return key;
+  if (split < 0) return { current: key, legacy: null };
   const scope = key.slice(0, split);
-  return `${scope.slice(scope.lastIndexOf(':') + 1)}\n${key.slice(split + 1)}`;
+  const suffix = scope.lastIndexOf(':');
+  const legacy = `${scope.slice(suffix + 1)}\n${key.slice(split + 1)}`;
+  const marker = ':web-work-v2=';
+  const start = scope.lastIndexOf(marker);
+  if (start < 0 || suffix <= start) return { current: legacy, legacy: null };
+  try {
+    const owner = JSON.parse(decodeURIComponent(scope.slice(start + marker.length, suffix))) as unknown;
+    if (Array.isArray(owner) && owner.length === 3 && owner.every((value) => typeof value === 'string') && owner[0] && owner[2]) {
+      return { current: `web-v2:${JSON.stringify([...owner, scope.slice(suffix + 1), key.slice(split + 1)])}`, legacy };
+    }
+  } catch { /* An invalid scope cannot claim an existing marker. */ }
+  return { current: `invalid-web:${key}`, legacy };
 }
 
 /** Remember only that a recovery needs its in-memory baseline; never persist edit values here. */
-function recoveryMarked(key: string): boolean {
-  key = recoveryIdentity(key);
+function markerExists(key: string): boolean {
   if (recoveryWithoutStorage.has(key)) return true;
   try { return sessionStorage.getItem(`${RECOVERY_MARKER_PREFIX}${encodeURIComponent(key)}`) === '1'; } catch { return false; }
 }
+function legacyRecoveryMarked(key: string): boolean {
+  const legacy = recoveryIdentities(key).legacy;
+  return Boolean(legacy && markerExists(legacy));
+}
+function recoveryMarked(key: string): boolean {
+  const identities = recoveryIdentities(key);
+  return markerExists(identities.current) || Boolean(identities.legacy && markerExists(identities.legacy));
+}
 function setRecoveryMarked(key: string, marked: boolean): void {
-  key = recoveryIdentity(key);
+  key = recoveryIdentities(key).current;
   if (!marked) recoveryWithoutStorage.delete(key);
   try {
     const storageKey = `${RECOVERY_MARKER_PREFIX}${encodeURIComponent(key)}`;
@@ -573,6 +592,8 @@ function saveKey(workItemId: string, path: string): string {
 export function useStoredWork(args: {
   trpc: unknown;
   internetMessageId: string | null;
+  /** Exact webmail row when the caller can prove it; Outlook leaves this unset. */
+  expectedMessageId?: string | null;
   /** Read an existing item without opening a new work item when this is a non-actionable channel/system message. */
   openMissingWorkItem?: boolean;
   /** The signed-in user, session and mailbox. A mailbox switch looks the mail up again in the new mailbox. */
@@ -581,6 +602,7 @@ export function useStoredWork(args: {
   verifyQuotePartySource?: boolean;
 }) {
   const { trpc, internetMessageId } = args;
+  const expectedMessageId = args.expectedMessageId ?? null;
   const openMissingWorkItem = args.openMissingWorkItem !== false;
   const scope = args.scope ?? '';
   // The lookup is for this mail in this mailbox. Either changing makes the last lookup someone else's.
@@ -744,7 +766,7 @@ export function useStoredWork(args: {
   );
 
   // Without a stored-read route the pane reads live at once, with no extra render before the live read.
-  const canLookUp = Boolean(workItemsFromTrpc(trpc).getByMessage);
+  const canLookUp = Boolean(workItemsFromTrpc(trpc).getByMessage && (!expectedMessageId || args.scope));
 
   // One lookup per mail and mailbox. Switching either or unmounting sends the last mail's pending edits first.
   useEffect(() => {
@@ -779,8 +801,9 @@ export function useStoredWork(args: {
     // The deadline covers the stored read. Once it is in, a slow open shows that read rather than reading live.
     void bindStoredWork({
       query: routes.getByMessage,
-      open: openMissingWorkItem ? routes.open : undefined,
+      open: openMissingWorkItem ? (expectedMessageId ? routes.openWebMessage : routes.open) : undefined,
       internetMessageId,
+      expectedMessageId,
       transportId,
       isStale: () => !current,
       onRead: () => clearTimeout(timer),
@@ -797,13 +820,17 @@ export function useStoredWork(args: {
       flushAll();
       if (selection.current.key === lookupKey && selection.current.epoch === epoch) selection.current.epoch += 1;
     };
-  }, [internetMessageId, lookupKey, canLookUp, openMissingWorkItem, flushAll]);
+  }, [internetMessageId, expectedMessageId, lookupKey, canLookUp, openMissingWorkItem, flushAll]);
 
   const currentLookup = lookup && lookup.key === lookupKey ? lookup : null;
   const stored = currentLookup?.result ?? null;
   const retried = retries.messageId === internetMessageId ? retries.count : 0;
   let pane: StoredPane;
-  if (!internetMessageId || !canLookUp) pane = { state: 'reading' };
+  if (!internetMessageId) pane = { state: 'reading' };
+  else if (!canLookUp && expectedMessageId) pane = {
+    state: 'failed', hold: true, reason: 'The selected email could not be verified. Reopen it and try again.',
+  };
+  else if (!canLookUp) pane = { state: 'reading' };
   else if (!currentLookup) pane = { state: 'loading' };
   else if (stored?.status === 'ready') {
     pane = {
@@ -829,7 +856,10 @@ export function useStoredWork(args: {
     };
   } else if (stored?.status === 'failed' && (retried === 0 || stored.hold)) {
     pane = { state: 'failed', reason: stored.reason, ...(stored.hold ? { hold: true as const } : {}) };
-  } else if (currentLookup.timedOut || stored) pane = { state: 'reading' };
+  } else if (currentLookup.timedOut && !stored && expectedMessageId) pane = {
+    state: 'failed', hold: true, reason: 'The selected email could not be verified. Reopen it and try again.',
+  };
+  else if (currentLookup.timedOut || stored) pane = { state: 'reading' };
   else pane = { state: 'loading' };
 
   // Changes when the stored read changes or a retry is asked for, so the pane's analysis effect re-runs on it.
@@ -901,7 +931,9 @@ export function useStoredWork(args: {
         task = (async () => {
           const routes = workItemsFromTrpc(trpcRef.current);
           const opened = await reopenStoredWork({
-            open: routes.open, internetMessageId: draft.messageId, transportId: draft.transportId,
+            open: expectedMessageId ? routes.openWebMessage : routes.open,
+            internetMessageId: draft.messageId, transportId: draft.transportId,
+            expectedMessageId,
             timeoutMs: STORED_LOOKUP_TIMEOUT_MS,
           });
           if (!isSelected()) return false;
@@ -1012,9 +1044,9 @@ export function useStoredWork(args: {
         if (!query || !party.fields) return fail('Refresh the email before getting rates.');
         const revision = editEpoch.current;
         try {
-          const input = { internetMessageId };
+          const input = { internetMessageId, ...(expectedMessageId ? { expectedMessageId } : {}) };
           const pinned = inMailbox(readyTransportId);
-          const read = await (pinned ? query.query(input, pinned) : query.query(input));
+          const read = checkedStoredMessage(await (pinned ? query.query(input, pinned) : query.query(input)), expectedMessageId);
           if (selection.current.key !== lookupKey || selection.current.epoch !== epoch || editEpoch.current !== revision ||
               partyEdits.current.get(lookupKey) !== party) return false;
           if (read.status !== 'ready' || read.workItemId !== workItemId || read.extractionId !== party.extractionId ||
@@ -1038,7 +1070,7 @@ export function useStoredWork(args: {
       return true;
     }
     return false;
-  }, [cachedWorkItemId, draftForSelection, flushAll, historyNeedsReload, historyPending, internetMessageId,
+  }, [cachedWorkItemId, draftForSelection, expectedMessageId, flushAll, historyNeedsReload, historyPending, internetMessageId,
     lookupKey, openMissingWorkItem, readyTransportId, readyWorkItemId, renderEpoch, scope]);
 
   retryRecovery.current = () => {
@@ -1205,10 +1237,18 @@ export function useStoredWork(args: {
     if (!getByMessage || !messageId || !keyNow) return Promise.resolve(false);
     const epochNow = selection.current.epoch;
     const pinned = inMailbox(readyTransportId);
-    const input = { internetMessageId: messageId };
+    const input = { internetMessageId: messageId, ...(expectedMessageId ? { expectedMessageId } : {}) };
     return (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input))
-      .then((result) => {
-        if (lookupKeyRef.current !== keyNow || selection.current.epoch !== epochNow || (valid && !valid(result))) return false;
+      .then((unchecked) => {
+        const result = checkedStoredMessage(unchecked, expectedMessageId);
+        if (lookupKeyRef.current !== keyNow || selection.current.epoch !== epochNow) return false;
+        if (expectedMessageId && result.status === 'failed' && result.hold) {
+          setLookup((prev) => (prev && prev.key === keyNow ? { ...prev, result } : prev));
+          setHistoryError(HISTORY_REFRESH_COPY);
+          setHistoryNeedsReload(true);
+          return false;
+        }
+        if (valid && !valid(result)) return false;
         partyEdits.current.delete(keyNow);
         confirmedParty.current.delete(keyNow);
         setLookup((prev) => (prev && prev.key === keyNow ? { ...prev, result } : prev));
@@ -1228,13 +1268,15 @@ export function useStoredWork(args: {
         setHistoryNeedsReload(true);
         return false;
       });
-  }, [internetMessageId, lookupKey, readyTransportId]);
+  }, [expectedMessageId, internetMessageId, lookupKey, readyTransportId]);
 
   /** The optional callback must synchronously clear the pane's old edits, or return false without changing them. */
   const discardUnconfirmedEdits = useCallback(async (beforePublish?: () => boolean): Promise<boolean> => {
     if (!lookupKey || !internetMessageId || selection.current.epoch !== renderEpoch || !readyTransportId || !currentLookup?.userId || !scope || historyPending ||
         recovering.current.has(lookupKey) || discardInProgress.current ||
         !scope.startsWith(`${currentLookup.userId}:`) || !scope.endsWith(`:${readyTransportId}`)) return false;
+    // Header-only markers predate exact web-row identity and may belong to another message.
+    if (expectedMessageId && legacyRecoveryMarked(lookupKey)) return false;
     // A request already sent may still land. Never reload and call it discarded while that save can complete later.
     const itemId = readyWorkItemId ?? cachedWorkItemId;
     const prefix = itemId ? `${itemId}\n` : null;
@@ -1269,7 +1311,7 @@ export function useStoredWork(args: {
     } finally {
       if (stillSelected()) setHistoryPending(false);
     }
-  }, [cachedWorkItemId, currentLookup?.userId, historyEpoch, historyPending, internetMessageId, lookupKey, readyTransportId, readyWorkItemId,
+  }, [cachedWorkItemId, currentLookup?.userId, expectedMessageId, historyEpoch, historyPending, internetMessageId, lookupKey, readyTransportId, readyWorkItemId,
     refetchStored, renderEpoch, scope]);
 
   const historyRoutes = historyRoutesFrom(trpc);
@@ -1423,8 +1465,9 @@ export function useStoredWork(args: {
   }, [lookupKey, refetchStored]);
 
   const missingRecoveryBaseline = Boolean(lookupKey && recoveryMarked(lookupKey) && !deferred.current.has(lookupKey));
-  const saveError = recoveryProblem && recoveryProblem.key === lookupKey
-    ? recoveryProblem.message
+  const unattributedRecovery = Boolean(expectedMessageId && lookupKey && legacyRecoveryMarked(lookupKey));
+  const saveError = unattributedRecovery ? 'Earlier changes are not assigned to this email. Reopen the original email to recover them.'
+    : recoveryProblem && recoveryProblem.key === lookupKey ? recoveryProblem.message
     : missingRecoveryBaseline ? 'Earlier changes were not confirmed. Discard them and reload this request.' : null;
 
   return {
@@ -1455,6 +1498,7 @@ export function useStoredWork(args: {
     translationBusy: translating !== null && translating === readyWorkItemId,
     saveFailed: saveFailed || Boolean(saveError),
     saveError,
+    unattributedRecovery,
     discardUnconfirmedEdits,
     retrySave,
     historyEpoch,

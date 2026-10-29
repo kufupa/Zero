@@ -36,7 +36,7 @@ describe('mail list selection wiring', () => {
 
     expect(clickHandler.indexOf('runComposeLeaveFlush')).toBeGreaterThanOrEqual(0);
     expect(clickHandler.indexOf('runComposeLeaveFlush')).toBeLessThan(
-      clickHandler.indexOf('setThreadId(messageThreadId)'),
+      clickHandler.indexOf('setThreadSelection({ threadId: messageThreadId, sourceMessageId: null })'),
     );
   });
 });

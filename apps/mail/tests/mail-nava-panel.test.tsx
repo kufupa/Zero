@@ -14,6 +14,9 @@ import { readFileSync } from 'node:fs';
 
 const mocks = vi.hoisted(() => ({
   threadId: null as string | null,
+  sourceMessageId: null as string | null,
+  previewSearch: 'thread=thread-7',
+  setPreviewParams: vi.fn(),
   folder: 'inbox',
   searchListFolder: 'inbox',
   wide: true,
@@ -37,11 +40,16 @@ const readSource = (relativePath: string) =>
   readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), relativePath), 'utf8');
 
 vi.mock('../lib/workstation/web-pane-bridge', () => ({
-  useWebPreview: (args: { threadId: string; sourceThreadId?: string }) => mocks.useWebPreview(args),
+  useWebPreview: (args: { threadId: string; sourceThreadId?: string; sourceMessageId?: string }) => mocks.useWebPreview(args),
 }));
 
 vi.mock('../components/nava-pane/nava-pane', () => ({
-  NavaPane: () => <div data-testid="nava-pane" />,
+  NavaPane: ({ onOpenThread }: { onOpenThread?: (threadId: string, sourceMessageId?: string) => void }) => (
+    <div data-testid="nava-pane">
+      <input aria-label="Pending pane work" />
+      {onOpenThread ? <button onClick={() => onOpenThread('thread-8', 'source-8')}>Open saved request</button> : null}
+    </div>
+  ),
 }));
 
 vi.mock('../components/mail/thread-display', () => ({
@@ -108,13 +116,13 @@ vi.mock('react-router', () => ({
   ),
   useNavigate: () => vi.fn(),
   useParams: () => ({ folder: mocks.folder }),
-  useSearchParams: () => [new URLSearchParams('thread=thread-7')],
+  useSearchParams: () => [new URLSearchParams(mocks.previewSearch), mocks.setPreviewParams],
 }));
 vi.mock('nuqs', () => ({
   parseAsString: {},
   useQueryState: (key: string) => [key === 'threadId' ? mocks.threadId : null, vi.fn()],
   // DS2-S5 516304d2f: MailLayoutContent reads threadId + sourceMessageId together.
-  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: null }, vi.fn()],
+  useQueryStates: () => [{ threadId: mocks.threadId, sourceMessageId: mocks.sourceMessageId }, vi.fn()],
 }));
 vi.mock('react-hotkeys-hook', () => ({
   useHotkeys: vi.fn(),
@@ -174,6 +182,9 @@ const setNavaToggle = (open: boolean) => act(() => getDefaultStore().set(navaSid
 beforeEach(() => {
   localStorage.clear();
   mocks.threadId = null;
+  mocks.sourceMessageId = null;
+  mocks.previewSearch = 'thread=thread-7';
+  mocks.setPreviewParams.mockReset();
   mocks.folder = 'inbox';
   mocks.searchListFolder = 'inbox';
   mocks.wide = true;
@@ -197,6 +208,23 @@ describe('Nava pane beside the open thread', () => {
     expect(panelSize('mail-list-panel')).toBe('30.0');
     expect(panelSize('mail-thread-panel')).toBe('42.0');
     expect(panelSize('mail-nava-panel')).toBe('28.0');
+  });
+
+  it('passes the selected source row through and updates it within the same thread', async () => {
+    mocks.threadId = 'thread-42';
+    mocks.sourceMessageId = 'older-row';
+    const { rerender } = render(<MailLayout />);
+    await screen.findByTestId('nava-pane');
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceMessageId: 'older-row' });
+    const pending = screen.getByLabelText('Pending pane work') as HTMLInputElement;
+    fireEvent.change(pending, { target: { value: 'pending' } });
+    rerender(<MailLayout />);
+    expect(screen.getByLabelText('Pending pane work')).toBe(pending);
+    expect(pending.value).toBe('pending');
+    mocks.sourceMessageId = 'newer-row';
+    rerender(<MailLayout />);
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-42', sourceMessageId: 'newer-row' });
+    expect(screen.getByLabelText('Pending pane work')).toBe(pending);
   });
 
   it('is hidden when the toggle is off, and the two-pane layout is unchanged', () => {
@@ -331,6 +359,15 @@ describe('shared WebPanePanel', () => {
     expect(document.querySelector('[data-preview-reason="no_message_id"]')).not.toBeNull();
   });
 
+  it('shows a hold when the explicit source row is absent or outbound', () => {
+    mocks.useWebPreview.mockImplementation(() => ({
+      selection: { status: 'unsynced', reason: 'source_unavailable' }, bridge: {},
+    }));
+    render(<WebPanePanel threadId="thread-9" sourceMessageId="missing" />);
+    expect(screen.getByRole('status').textContent).toContain('selected email is unavailable');
+    expect(screen.queryByTestId('nava-pane')).toBeNull();
+  });
+
   it('nava-preview still renders WebPanePanel for the selected thread', async () => {
     render(<NavaPreviewPage />);
 
@@ -341,6 +378,16 @@ describe('shared WebPanePanel', () => {
     ).not.toBeNull();
   });
 
+  it('keeps the selected source row when opening a request from the preview', async () => {
+    mocks.previewSearch = 'thread=thread-7&sourceMessageId=source-7';
+    render(<NavaPreviewPage />);
+    await screen.findByTestId('nava-pane');
+    expect(mocks.useWebPreview).toHaveBeenLastCalledWith({ threadId: 'thread-7', sourceMessageId: 'source-7' });
+    fireEvent.click(screen.getByRole('button', { name: 'Open saved request' }));
+    expect(mocks.setPreviewParams).toHaveBeenCalledWith({ thread: 'thread-8', sourceMessageId: 'source-8' });
+    expect(screen.getByRole('link', { name: /Quote request/ }).getAttribute('href')).toBe('/nava-preview?thread=thread-7');
+  });
+
   it('the preview page imports WebPanePanel instead of keeping its own copy', () => {
     const pageSource = readSource('../app/(routes)/nava-preview/page.tsx');
     expect(pageSource).toContain(
@@ -349,7 +396,7 @@ describe('shared WebPanePanel', () => {
     expect(pageSource).toContain('<WebPanePanel');
     expect(pageSource).toContain('key={selectedId}');
     expect(pageSource).toContain('threadId={selectedId}');
-    expect(pageSource).toContain('onOpenThread={(id) => setParams({ thread: id })}');
+    expect(pageSource).toContain('sourceMessageId={sourceMessageId}');
     expect(pageSource).not.toContain('function PreviewPanel');
   });
 });

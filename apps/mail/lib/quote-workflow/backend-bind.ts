@@ -43,13 +43,15 @@ export type AnalyseSelectionInput = {
   storeId: string;
   /** The Outlook store's native EntryID; distinct from the canonical webmail sourceMessageId. */
   entryId: string;
+  /** Webmail's selected database row; omitted for native Outlook selections. */
+  expectedMessageId?: string;
   folderEntryId: string;
   selectionEpoch: number;
   treatAs?: 'quote' | 'create_booking';
   staffNote?: string;
 };
 
-export type AnalyseSelectionResult =
+export type AnalyseSelectionResult = (
   | { status: 'unsynced' }
   | { status: 'missing_source'; missing: string[]; documentFailures?: QuoteDocumentFailure[] }
   | {
@@ -70,7 +72,7 @@ export type AnalyseSelectionResult =
       amendment?: QuoteAmendment | null;
       hmsTodoCard?: QuoteAnalysis['hmsTodoCard'];
       noReplySender?: boolean;
-    };
+    }) & { sourceMessageId?: string };
 
 export type RunStepRequest = {
   stepId: string;
@@ -99,6 +101,7 @@ export type QualifiedProposalPdfResult = {
 type QuoteWorkflowClient = {
   rateCatalogue?: { query: () => Promise<RatePlanCatalogueEntry[]> };
   analyseSelection?: { mutate: (input: AnalyseSelectionInput) => Promise<AnalyseSelectionResult> };
+  analyseWebSelection?: { mutate: (input: AnalyseSelectionInput) => Promise<AnalyseSelectionResult> };
   runStep?: {
     mutate: (input: RunStepRequest) => Promise<RunStepResult>;
   };
@@ -121,6 +124,7 @@ function rejectionReason(error: unknown): string {
 
 export type BoundAnalyse =
   | { kind: 'unavailable'; reason: string }
+  | { kind: 'unverified_source'; reason: string }
   | { kind: 'unsynced' }
   | { kind: 'missing_source'; missing: string[]; documents: QuoteDocumentFailure[] }
   | { kind: 'ready'; analysis: QuoteAnalysis; sourceRevision: number };
@@ -129,7 +133,11 @@ export async function bindAnalyseSelection(args: {
   mutate?: (input: AnalyseSelectionInput) => Promise<AnalyseSelectionResult>;
   input: AnalyseSelectionInput;
 }): Promise<BoundAnalyse> {
+  const unverified: BoundAnalyse = {
+    kind: 'unverified_source', reason: 'The selected email could not be verified. Reopen it and try again.',
+  };
   if (!args.mutate) {
+    if (args.input.expectedMessageId) return unverified;
     return {
       kind: 'unavailable',
       reason:
@@ -138,6 +146,7 @@ export async function bindAnalyseSelection(args: {
   }
   try {
     const result = await args.mutate(args.input);
+    if (args.input.expectedMessageId && result.sourceMessageId !== args.input.expectedMessageId) return unverified;
     if (result.status === 'unsynced') return { kind: 'unsynced' };
     if (result.status === 'missing_source') {
       return {
@@ -152,7 +161,7 @@ export async function bindAnalyseSelection(args: {
       analysis: quoteAnalysisOf(result),
     };
   } catch (error) {
-    return { kind: 'unavailable', reason: rejectionReason(error) };
+    return args.input.expectedMessageId ? unverified : { kind: 'unavailable', reason: rejectionReason(error) };
   }
 }
 
@@ -208,10 +217,11 @@ export type StoredSourceConflict = {
  * opened, see bindStoredWork); none means read it live.
  */
 export type StoredWork =
-  | { status: 'none' }
-  | { status: 'failed'; reason: string; hold?: true }
+  | { status: 'none'; sourceMessageId?: string }
+  | { status: 'failed'; reason: string; hold?: true; sourceMessageId?: string }
   | {
       status: 'ready';
+      sourceMessageId?: string;
       /** The stored mail kind, used to keep the selected-email classification in the shared pane vocabulary. */
       kind: string;
       existingStayInformation?: boolean;
@@ -279,10 +289,13 @@ export type NeedsYouRow = {
 
 type WorkItemsClient = {
   getByMessage?: {
-    query: (input: { internetMessageId: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
+    query: (input: { internetMessageId: string; expectedMessageId?: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
   };
   open?: {
-    mutate: (input: { internetMessageId: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
+    mutate: (input: { internetMessageId: string; expectedMessageId?: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
+  };
+  openWebMessage?: {
+    mutate: (input: { internetMessageId: string; expectedMessageId?: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
   };
   recordEvent?: {
     mutate: (input: RecordFieldEventInput, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
@@ -319,6 +332,11 @@ function storedReadSnapshot(read: Extract<StoredWork, { status: 'ready' }>): str
   });
 }
 
+export function checkedStoredMessage(work: StoredWork, expectedMessageId?: string | null): StoredWork {
+  if (!expectedMessageId || (work.status === 'failed' && work.hold) || work.sourceMessageId === expectedMessageId) return work;
+  return { status: 'failed', hold: true, reason: 'The selected email could not be verified. Reopen it and try again.' };
+}
+
 /**
  * Reads the stored work for one mail. A missing route or a failed call reads as unavailable, so the pane reads live.
  * The read writes nothing. A stored read with no work item yet is opened once (workItems.open) so edits have an item;
@@ -330,6 +348,7 @@ export async function bindStoredWork(args: {
   query?: WorkItemsClient['getByMessage'];
   open?: WorkItemsClient['open'];
   internetMessageId: string;
+  expectedMessageId?: string | null;
   /** The mailbox the lookup was made in. Null sends under whichever mailbox is active. */
   transportId?: string | null;
   /** True once the caller no longer wants this lookup. Checked after the read, before any open. */
@@ -341,14 +360,16 @@ export async function bindStoredWork(args: {
   /** An open that finishes after that deadline can still discover a newer source hold. */
   onLateHold?: (hold: Extract<StoredWork, { status: 'failed' }>) => void;
 }): Promise<StoredWork | { status: 'unavailable' }> {
-  if (!args.query) return { status: 'unavailable' };
-  const input = { internetMessageId: args.internetMessageId };
+  if (!args.query) return args.expectedMessageId
+    ? checkedStoredMessage({ status: 'none' }, args.expectedMessageId) : { status: 'unavailable' };
+  const input = { internetMessageId: args.internetMessageId,
+    ...(args.expectedMessageId ? { expectedMessageId: args.expectedMessageId } : {}) };
   const pinned = inMailbox(args.transportId ?? null);
   let stored: StoredWork;
   try {
-    stored = await (pinned ? args.query.query(input, pinned) : args.query.query(input));
+    stored = checkedStoredMessage(await (pinned ? args.query.query(input, pinned) : args.query.query(input)), args.expectedMessageId);
   } catch {
-    return { status: 'unavailable' };
+    return args.expectedMessageId ? checkedStoredMessage({ status: 'none' }, args.expectedMessageId) : { status: 'unavailable' };
   }
   if (
     stored.status !== 'ready' ||
@@ -371,7 +392,8 @@ export async function bindStoredWork(args: {
     }, args.openTimeoutMs);
   });
   try {
-    const opening = (pinned ? args.open.mutate(input, pinned) : args.open.mutate(input)).then((opened): StoredWork => {
+    const opening = (pinned ? args.open.mutate(input, pinned) : args.open.mutate(input)).then((result): StoredWork => {
+      const opened = checkedStoredMessage(result, args.expectedMessageId);
       // The earlier lookup found this email. A later absence means the selected source changed or became ambiguous.
       if (opened.status === 'none') return {
         status: 'failed', hold: true, reason: 'This email changed or is no longer available. Review it manually.',
@@ -408,6 +430,7 @@ export async function bindStoredWork(args: {
 export async function reopenStoredWork(args: {
   open?: WorkItemsClient['open'];
   internetMessageId: string;
+  expectedMessageId?: string | null;
   transportId: string | null;
   timeoutMs: number;
 }): Promise<StoredWork | null> {
@@ -416,7 +439,10 @@ export async function reopenStoredWork(args: {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), args.timeoutMs); });
-    return await Promise.race([args.open.mutate({ internetMessageId: args.internetMessageId }, pinned), timeout]);
+    const input = { internetMessageId: args.internetMessageId,
+      ...(args.expectedMessageId ? { expectedMessageId: args.expectedMessageId } : {}) };
+    const result = await Promise.race([args.open.mutate(input, pinned), timeout]);
+    return result ? checkedStoredMessage(result, args.expectedMessageId) : null;
   } catch {
     return null;
   } finally {

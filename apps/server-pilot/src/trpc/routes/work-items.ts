@@ -40,6 +40,10 @@ import {
 import { mailboxProcedure, router } from '../trpc.js';
 
 const internetMessageId = z.string().min(1).max(998);
+const storedWorkLookupInput = z.object({
+  internetMessageId,
+  expectedMessageId: z.string().min(1).max(998).optional(),
+}).strict();
 const followUpDraftId = z.string().min(1).max(200);
 const adminReviewInput = z
   .object({
@@ -104,11 +108,12 @@ const fieldEventInput = z
 
 export const workItemsRouter = router({
   getByMessage: mailboxProcedure
-    .input(z.object({ internetMessageId }).strict())
+    .input(storedWorkLookupInput)
     .query(({ input, ctx }) =>
       storedWorkFor(getDb(), {
         transportId: ctx.activeTransportId,
         internetMessageId: input.internetMessageId,
+        expectedMessageId: input.expectedMessageId,
       }),
     ),
   /**
@@ -123,6 +128,13 @@ export const workItemsRouter = router({
         internetMessageId: input.internetMessageId,
       }),
     ),
+  // A separate procedure ensures an older server cannot ignore the selected row on a write.
+  openWebMessage: mailboxProcedure
+    .input(storedWorkLookupInput.extend({ expectedMessageId: z.string().min(1).max(998) }).strict())
+    .mutation(({ input, ctx }) => openStoredWork(getDb(), {
+      transportId: ctx.activeTransportId, internetMessageId: input.internetMessageId,
+      expectedMessageId: input.expectedMessageId,
+    })),
   list: mailboxProcedure
     .input(
       z

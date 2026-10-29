@@ -164,7 +164,9 @@ export const analyseSelectionInput = z.object({
   staffNote: z.string().max(4000).optional(),
 });
 
-async function analyseSelectedMail(input: z.infer<typeof analyseSelectionInput>, ctx: TrpcMailboxContext) {
+async function analyseSelectedMail(
+  input: z.infer<typeof analyseSelectionInput> & { expectedMessageId?: string }, ctx: TrpcMailboxContext,
+) {
   // One canonical id for the loader's exact match and for the cache key.
   const internetMessageId = canonicalInternetMessageId(input.internetMessageId) ?? undefined;
   const loader =
@@ -176,7 +178,7 @@ async function analyseSelectedMail(input: z.infer<typeof analyseSelectionInput>,
     storeId: input.storeId,
     signal: AbortSignal.timeout(15_000),
   });
-  if (!synced) {
+  if (!synced || (input.expectedMessageId && synced.messageId !== input.expectedMessageId)) {
     return { status: 'unsynced' as const };
   }
   const { payload, outcome } = await analyseSyncedSelection(synced, {
@@ -203,14 +205,17 @@ async function analyseSelectedMail(input: z.infer<typeof analyseSelectionInput>,
     const transportId = ctx.activeTransportId;
     const userId = ctx.sessionUser.id;
     void (async () => {
-      const workItemId = await workItemIdForMail(getDb(), { transportId, internetMessageId });
+      const workItemId = await workItemIdForMail(getDb(), {
+        transportId, internetMessageId, ...(input.expectedMessageId ? { expectedMessageId: input.expectedMessageId } : {}),
+      });
       if (workItemId) await recordStaffNote(getDb(), { workItemId, userId, note });
     })().catch((error: unknown) => {
       console.warn('staff_note_not_kept', error instanceof Error ? error.message : 'unknown');
     });
   }
   // The sender decides whether staff can answer, so the pane hides Insert draft for an automated one. Read per request.
-  return { ...payload, noReplySender: isNoReplyAddress(synced.fromAddress) };
+  return { ...payload, noReplySender: isNoReplyAddress(synced.fromAddress),
+    ...(input.expectedMessageId ? { sourceMessageId: input.expectedMessageId } : {}) };
 }
 
 export const runStepInput = z.object({
@@ -241,6 +246,10 @@ export const quoteWorkflowRouter = router({
   }),
   analyseSelection: mailboxProcedure
     .input(analyseSelectionInput)
+    .mutation(({ input, ctx }) => analyseSelectedMail(input, ctx)),
+  // A separate procedure prevents older servers from ignoring the selected row when a staff note is saved.
+  analyseWebSelection: mailboxProcedure
+    .input(analyseSelectionInput.extend({ expectedMessageId: z.string().min(1).max(998) }).strict())
     .mutation(({ input, ctx }) => analyseSelectedMail(input, ctx)),
   // Read-only. Voucher or POP mail gets the guest surname and arrival read from its text, and the file to save. The
   // stored subject and body decide it, so an ordinary email reads no attachment bytes. Nothing is booked or changed.

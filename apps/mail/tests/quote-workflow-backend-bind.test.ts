@@ -276,6 +276,34 @@ describe('quote workflow backend bind', () => {
     expect(result.kind).toBe('unavailable');
   });
 
+  it('holds a web analysis when the dedicated route is missing, old, or resolves a different row', async () => {
+    const input = { storeId: 'transport-1', entryId: 'row-b', folderEntryId: 'thread', selectionEpoch: 2,
+      internetMessageId: '<same@example.test>', expectedMessageId: 'row-b' };
+    const result = { status: 'ready' as const, intent: 'quote' as const, groups: [], secondaryAsks: [],
+      alternatives: [], sourceRevision: 1 };
+    expect(await bindAnalyseSelection({ input })).toMatchObject({ kind: 'unverified_source' });
+    expect(await bindAnalyseSelection({ input, mutate: async () => result })).toMatchObject({ kind: 'unverified_source' });
+    expect(await bindAnalyseSelection({ input, mutate: async () => ({ ...result, sourceMessageId: 'row-a' }) }))
+      .toMatchObject({ kind: 'unverified_source' });
+    expect(await bindAnalyseSelection({ input, mutate: async () => ({ ...result, sourceMessageId: 'row-b' }) }))
+      .toMatchObject({ kind: 'ready' });
+  });
+
+  it('requires server proof of the selected row before using or opening stored work', async () => {
+    const stored = { status: 'ready' as const, kind: 'quote', workItemId: null, workItemStatus: null,
+      extractionId: 'ex-a', refs: {}, analysis: { intent: 'quote' as const, groups: [], secondaryAsks: [], alternatives: [] },
+      contact: { name: null, company: null, endClient: null, email: null, phone: null }, language: null, translation: null };
+    const open = { mutate: vi.fn(async () => stored) };
+    const args = { internetMessageId: '<same@example.test>', expectedMessageId: 'row-b', open };
+    expect(await bindStoredWork(args)).toMatchObject({ status: 'failed', hold: true });
+    expect(await bindStoredWork({ ...args, query: { query: async () => stored } }))
+      .toMatchObject({ status: 'failed', hold: true });
+    expect(open.mutate).not.toHaveBeenCalled();
+    expect(await bindStoredWork({ ...args, query: { query: async () => ({ ...stored, sourceMessageId: 'row-b' }) } }))
+      .toMatchObject({ status: 'failed', hold: true });
+    expect(open.mutate).toHaveBeenCalledWith(expect.objectContaining({ expectedMessageId: 'row-b' }));
+  });
+
   it('passes through mailbox unsynced without inventing a source', async () => {
     const mutate = vi.fn(async () => ({ status: 'unsynced' as const }));
     const result = await bindAnalyseSelection({

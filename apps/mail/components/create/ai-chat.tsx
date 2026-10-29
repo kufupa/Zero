@@ -16,7 +16,7 @@ import { EditorContent } from '@tiptap/react';
 import { CurvedArrow } from '../icons/icons';
 import { Tools } from '../../types/tools';
 import { format } from 'date-fns-tz';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 
 type ToolResult = {
   labels?: Array<{ id: string }>;
@@ -26,12 +26,15 @@ type ToolResult = {
 };
 
 const ThreadPreview = ({ threadId }: { threadId: string }) => {
-  const [, setThreadId] = useQueryState('threadId');
+  const [, setThreadSelection] = useQueryStates({
+    threadId: parseAsString,
+    sourceMessageId: parseAsString,
+  });
   const { data: getThread } = useThread(threadId);
   const [, setIsFullScreen] = useQueryState('isFullScreen');
 
   const handleClick = () => {
-    setThreadId(threadId);
+    setThreadSelection({ threadId, sourceMessageId: null });
     setIsFullScreen(null);
   };
 

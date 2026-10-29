@@ -7,6 +7,7 @@ const threadContextSource = readFileSync(
   new URL('../components/context/thread-context.tsx', import.meta.url),
   'utf8',
 );
+const aiChatSource = readFileSync(new URL('../components/create/ai-chat.tsx', import.meta.url), 'utf8');
 const shortcutsSource = readFileSync(new URL('../config/shortcuts.ts', import.meta.url), 'utf8');
 const hotkeysSource = readFileSync(
   new URL('../lib/hotkeys/thread-display-hotkeys.tsx', import.meta.url),
@@ -295,6 +296,10 @@ describe('thread toolbar reply actions', () => {
 });
 
 describe('existing context-menu and keyboard reply surfaces', () => {
+  it('clears the old source row when an AI chat preview opens a different thread', () => {
+    expect(aiChatSource).toContain('setThreadSelection({ threadId, sourceMessageId: null });');
+  });
+
   it('preserves list context reply action IDs, labels, and latest-message modes', () => {
     const primaryActions = listContextPrimaryActionsSource();
     const contextMenuContent = listContextMenuContentSource();
@@ -328,6 +333,7 @@ describe('existing context-menu and keyboard reply surfaces', () => {
       expect(action).toContain(`id: '${id}'`);
       expect(action).toContain(`label: ${label},`);
       expect(action).toContain(`action: ${handler},`);
+      expect(handlerSource).toContain('setThreadSelection({ threadId, sourceMessageId: null });');
       expect(handlerSource).toContain('void openReplyComposeContext({');
       expect(handlerSource).toContain(`mode: '${mode}',`);
       expect(handlerSource).toContain('messageId: threadData?.latest?.id ?? null,');

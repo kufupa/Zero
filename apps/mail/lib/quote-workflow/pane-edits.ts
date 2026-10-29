@@ -4,8 +4,12 @@ import type { StayGroupRequirement } from './types';
 const STORAGE_PREFIX = 'nava.pane-edits.v1:';
 const memory = new Map<string, StayGroupRequirement[]>();
 
-export function paneEditKey(transportId: string, messageKey: string): string {
-  return `${transportId}::${messageKey}`;
+export function paneEditKey(
+  transportId: string, messageKey: string, exactWebMessageId?: string | null, ownerUserId?: string | null,
+): string {
+  return exactWebMessageId
+    ? ownerUserId ? `web-v2:${JSON.stringify([ownerUserId, transportId, messageKey, exactWebMessageId])}` : ''
+    : `${transportId}::${messageKey}`;
 }
 
 export function rememberPaneEdits(key: string, groups: StayGroupRequirement[]): void {

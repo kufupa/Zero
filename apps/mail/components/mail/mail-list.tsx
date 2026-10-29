@@ -64,7 +64,7 @@ import { m } from '@/paraglide/messages';
 import { useParams } from 'react-router';
 import { Button } from '../ui/button';
 import { Avatar } from '../ui/avatar';
-import { useQueryState } from 'nuqs';
+import { parseAsString, useQueryState, useQueryStates } from 'nuqs';
 import { useAtom } from 'jotai';
 import { resolveImportantState } from '@/lib/mail/important-ui';
 import { focusThreadElement } from '@/lib/mail/mail-row-focus';
@@ -153,7 +153,10 @@ const Thread = memo(
       () => buildCategoryIdToSlugMap(categorySettings),
       [categorySettings],
     );
-    const [id, setThreadId] = useQueryState('threadId');
+    const [, setThreadSelection] = useQueryStates({
+      threadId: parseAsString,
+      sourceMessageId: parseAsString,
+    });
     const [focusedIndex, setFocusedIndex] = useAtom(focusedIndexAtom);
 
     const { latestMessage, idToUse, cleanName } = useMemo(() => {
@@ -286,17 +289,19 @@ const Thread = memo(
 
     const handleNext = useCallback(
       (id: string) => {
-        if (!id || !threads.length || focusedIndex === null) return setThreadId(null);
+        if (!id || !threads.length || focusedIndex === null) {
+          return setThreadSelection({ threadId: null, sourceMessageId: null });
+        }
         if (focusedIndex < threads.length - 1) {
           const nextThread = threads[focusedIndex];
           if (nextThread) {
-            setThreadId(nextThread.id);
+            setThreadSelection({ threadId: nextThread.id, sourceMessageId: null });
             // Don't clear activeReplyId - let ThreadDisplay handle Reply All auto-opening
             setFocusedIndex(focusedIndex);
           }
         }
       },
-      [threads, id, focusedIndex],
+      [threads, focusedIndex, setFocusedIndex, setThreadSelection],
     );
 
     const moveThreadTo = useCallback(
@@ -912,7 +917,10 @@ export const MailList = memo(function MailList() {
     const { folder } = useParams<{ folder: string }>();
     const { data: settingsData } = useSettings();
     const autoReadEnabled = settingsData?.settings?.autoRead ?? true;
-    const [, setThreadId] = useQueryState('threadId');
+    const [, setThreadSelection] = useQueryStates({
+      threadId: parseAsString,
+      sourceMessageId: parseAsString,
+    });
     const [, setMode] = useQueryState('mode');
     const [, setDraftId] = useQueryState('draftId');
     const [, setActiveReplyId] = useQueryState('activeReplyId');
@@ -967,9 +975,9 @@ export const MailList = memo(function MailList() {
           setMode(null);
           setActiveReplyId(null);
           setDraftId(null);
-        }).then(() => setThreadId(threadId));
+        }).then(() => setThreadSelection({ threadId, sourceMessageId: null }));
       },
-      [setMode, setActiveReplyId, setDraftId, setThreadId],
+      [setMode, setActiveReplyId, setDraftId, setThreadSelection],
     );
 
     const { focusedIndex, handleMouseEnter, keyboardActive } = useMailNavigation({
@@ -1076,7 +1084,7 @@ export const MailList = memo(function MailList() {
           setActiveReplyId(null);
           setDraftId(null);
         });
-        setThreadId(messageThreadId);
+        setThreadSelection({ threadId: messageThreadId, sourceMessageId: null });
       },
       [
         getSelectMode,
@@ -1084,7 +1092,7 @@ export const MailList = memo(function MailList() {
         handleMouseEnter,
         setFocusedIndex,
         optimisticMarkAsRead,
-        setThreadId,
+        setThreadSelection,
         setDraftId,
         setMode,
         setActiveReplyId,
@@ -1170,9 +1178,9 @@ export const MailList = memo(function MailList() {
           setMode(null);
           setActiveReplyId(null);
           setDraftId(null);
-        }).then(() => setThreadId(threadId));
+        }).then(() => setThreadSelection({ threadId, sourceMessageId: null }));
       },
-      [setMode, setActiveReplyId, setDraftId, setThreadId],
+      [setMode, setActiveReplyId, setDraftId, setThreadSelection],
     );
 
     const vListRenderer = useCallback(

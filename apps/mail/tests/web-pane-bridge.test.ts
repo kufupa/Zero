@@ -96,6 +96,38 @@ describe('latest inbound selection', () => {
     });
   });
 
+  it('selects the exact stored row even when two inbound messages share an Internet Message-ID', () => {
+    const messages = [
+      message({ id: 'older-row', receivedOn: '2026-10-08T09:00:00.000Z' }),
+      message({ id: 'newer-row', receivedOn: '2026-10-08T10:00:00.000Z' }),
+    ];
+    const older = selectPreviewMessage(messages, MAILBOX, TRANSPORT, undefined, 'older-row');
+    const newer = selectPreviewMessage(messages, MAILBOX, TRANSPORT, undefined, 'newer-row');
+    expect(older).toMatchObject({ status: 'ready', email: { entryId: 'older-row', storeId: TRANSPORT } });
+    expect(newer).toMatchObject({ status: 'ready', email: { entryId: 'newer-row', storeId: TRANSPORT } });
+    expect(selectPreviewMessage(messages, MAILBOX, TRANSPORT)).toEqual(newer);
+  });
+
+  it('holds an explicit absent, outbound, draft, or wrong-thread source instead of choosing another email', () => {
+    const messages = [
+      message({ id: 'valid', threadId: 'thread-1' }),
+      staffReply({ id: 'outbound', threadId: 'thread-1' }),
+      message({ id: 'draft', threadId: 'thread-1', isDraft: true }),
+      message({ id: 'linked', threadId: 'thread-2' }),
+    ];
+    for (const sourceMessageId of ['missing', '', 'outbound', 'draft', 'linked']) {
+      expect(selectPreviewMessage(messages, MAILBOX, TRANSPORT, 'thread-1', sourceMessageId)).toEqual({
+        status: 'unsynced', reason: 'source_unavailable',
+      });
+    }
+    expect(selectPreviewMessage(messages, MAILBOX, TRANSPORT, undefined, 'linked')).toMatchObject({
+      status: 'ready', email: { entryId: 'linked' },
+    });
+    expect(selectPreviewMessage(messages, MAILBOX, TRANSPORT, 'thread-1', null)).toMatchObject({
+      status: 'ready', email: { entryId: 'valid' },
+    });
+  });
+
   it('trusts the stored direction over the sender address', () => {
     const outboundFromGuest = message({ id: 'odd', direction: 'outbound' });
     expect(isInboundMessage(outboundFromGuest, MAILBOX)).toBe(false);

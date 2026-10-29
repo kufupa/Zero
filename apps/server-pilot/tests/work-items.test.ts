@@ -781,6 +781,36 @@ describe('stored read for the pane', () => {
       expect(await caller.workItems.getByMessage({ internetMessageId: '<ro2@example.com>' })).toEqual(opened);
     }));
 
+  it('binds web stored reads and opens to the selected DB row as well as its Message-ID', () =>
+    withDb(async (db) => {
+      const firstId = await seedMail(db, 'exact-source-a');
+      await insertRead(db, firstId, { version: 'extract-v1', payload: payload() });
+      const caller = centurionCaller();
+      const header = '<exact-source-a@example.com>';
+      const wrong = { internetMessageId: header, expectedMessageId: 'missing-source-b' };
+      expect(await caller.workItems.getByMessage(wrong)).toMatchObject({ status: 'failed', hold: true });
+      await expect(caller.workItems.open(wrong)).rejects.toThrow();
+      expect(await caller.workItems.openWebMessage(wrong)).toMatchObject({ status: 'failed', hold: true });
+      await expect(caller.workItems.openWebMessage({ internetMessageId: header } as never)).rejects.toThrow();
+      expect(await workItemIdForMail(db, { transportId: CENTURION, ...wrong })).toBeNull();
+      expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, firstId))).toHaveLength(0);
+
+      const exact = { internetMessageId: header, expectedMessageId: firstId };
+      expect(await caller.workItems.getByMessage(exact)).toMatchObject({ status: 'ready', sourceMessageId: firstId });
+      expect(await caller.workItems.openWebMessage(exact)).toMatchObject({ status: 'ready', sourceMessageId: firstId });
+      const emptyId = await seedMail(db, 'exact-source-empty');
+      expect(await caller.workItems.getByMessage({ internetMessageId: 'exact-source-empty@example.com', expectedMessageId: emptyId }))
+        .toEqual({ status: 'none', sourceMessageId: emptyId });
+      expect(await caller.workItems.getByMessage({ internetMessageId: 'missing@example.com', expectedMessageId: firstId }))
+        .toMatchObject({ status: 'failed', hold: true });
+
+      const secondId = await seedMail(db, 'exact-source-b');
+      await db.update(message).set({ messageIdHeader: 'exact-source-a@example.com' }).where(eq(message.id, secondId));
+      expect(await caller.workItems.getByMessage(exact)).toMatchObject({ status: 'failed', hold: true });
+      expect(await caller.workItems.openWebMessage({ internetMessageId: header, expectedMessageId: secondId }))
+        .toMatchObject({ status: 'failed', hold: true });
+    }));
+
   it('returns none for an unknown mail and for a mail with no read', () =>
     withDb(async (db) => {
       await seedMail(db, 'q2');

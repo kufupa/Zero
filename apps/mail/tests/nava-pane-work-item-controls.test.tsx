@@ -7,7 +7,7 @@ import { NavaPane } from '../components/nava-pane/nava-pane';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
-import { resetPaneEditsForTests } from '../lib/quote-workflow/pane-edits';
+import { paneEditKey, recalledPaneEdits, rememberPaneEdits, resetPaneEditsForTests } from '../lib/quote-workflow/pane-edits';
 
 vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/workstation/pane-release-watch')>()),
@@ -405,6 +405,8 @@ describe('Nava pane work-item controls', () => {
     bridgeMockState.analyseCalls = 0;
     bridgeMockState.analyseFails = false;
     bridgeMockState.analysisOverride = null;
+    bridgeMockState.staffQuoteSources = {};
+    bridgeMockState.quotePaneConfig = null;
     bridgeMockState.revisionCursor.mockClear().mockResolvedValue(HISTORY_CURSOR);
     bridgeMockState.undoRevision.mockClear().mockResolvedValue({ revision: 1, revisionHead: 2, seq: 6 });
     bridgeMockState.redoRevision.mockClear().mockResolvedValue({ revision: 2, revisionHead: 2, seq: 7 });
@@ -421,6 +423,79 @@ describe('Nava pane work-item controls', () => {
     sessionStorage.clear();
     resetPaneEditsForTests();
     cleanup();
+  });
+
+  it('holds a web selection when the quote source identifies a different mail row', async () => {
+    const header = '<same-header@example.invalid>';
+    bridgeMockState.transportId = 'transport-centurion';
+    bridgeMockState.storedWork = { ...READY_WORK, sourceMessageId: 'row-b' };
+    bridgeMockState.staffQuoteSources[header] = { messageId: 'row-a', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-centurion' });
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, entryId: 'row-b',
+      storeId: 'transport-centurion', internetMessageId: header } } as PaneBridge;
+    const pane = render(<NavaPane bridge={bridge} preview />);
+    expect((await screen.findAllByText(/selected email could not be verified/i)).length).toBeGreaterThan(0);
+    pane.rerender(<NavaPane bridge={bridge} preview />);
+    expect(screen.getAllByText(/selected email could not be verified/i).length).toBeGreaterThan(0);
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
+  it('holds a different legacy same-header edit without displaying or saving it to the web row', async () => {
+    const header = '<legacy-shared@example.invalid>';
+    const transport = 'transport-centurion';
+    bridgeMockState.transportId = transport;
+    bridgeMockState.quotePaneConfig = { transportId: transport, propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [] };
+    bridgeMockState.storedWork = { ...READY_WORK, sourceMessageId: 'row-b',
+      sourceRead: { extractionId: 'ex-1', kind: 'quote', analysis: READY_WORK.analysis, refs: READY_WORK.refs } };
+    bridgeMockState.staffQuoteSources[header] = { messageId: 'row-b', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: transport });
+    const legacyKey = paneEditKey(transport, header);
+    const legacy = [{ ...READY_WORK.analysis.groups[0]!, adults: 4 }];
+    rememberPaneEdits(legacyKey, legacy);
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, entryId: 'row-b',
+      storeId: transport, internetMessageId: header } } as PaneBridge;
+    render(<NavaPane bridge={bridge} preview />);
+    expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
+    expect(screen.queryByText('4 adults per room')).toBeNull();
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    expect(recalledPaneEdits(legacyKey)).toEqual(legacy);
+  });
+
+  it('keeps an unsent contact edit with row A when switching to same-header row B', async () => {
+    const header = '<contact-shared@example.invalid>';
+    const transport = 'transport-centurion';
+    bridgeMockState.transportId = transport;
+    bridgeMockState.quotePaneConfig = { transportId: transport, propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [] };
+    const sourceRead = { extractionId: 'ex-1', kind: 'quote', analysis: READY_WORK.analysis, refs: READY_WORK.refs };
+    bridgeMockState.storedWork = { ...READY_WORK, sourceMessageId: 'row-a', sourceRead };
+    bridgeMockState.staffQuoteSources[header] = { messageId: 'row-a', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: transport });
+    const bridgeFor = (entryId: string) => ({ ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, entryId,
+      storeId: transport, internetMessageId: header } }) as PaneBridge;
+    const pane = render(<NavaPane bridge={bridgeFor('row-a')} preview />);
+    expect(await screen.findByText('Ada Lovelace')).toBeDefined();
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Edited A' } });
+    bridgeMockState.storedWork = { ...READY_WORK, sourceMessageId: 'row-b', sourceRead,
+      workItemId: '22222222-2222-2222-2222-222222222222', contact: { ...READY_WORK.contact, name: 'Contact B' } };
+    bridgeMockState.staffQuoteSources[header] = { messageId: 'row-b', threadId: 'thread-1', sourceHash: 'cd'.repeat(32) };
+    pane.rerender(<NavaPane bridge={bridgeFor('row-b')} preview />);
+    expect(await screen.findByText('Contact B')).toBeDefined();
+    expect(screen.queryByText('Edited A')).toBeNull();
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(expect.objectContaining({
+      workItemId: WORK_ITEM_ID, fieldPath: 'contact.name', value: 'Edited A',
+    })));
+  });
+
+  it('keeps non-Centurion web reads working while property configuration is still unavailable', async () => {
+    bridgeMockState.storedWork = READY_WORK;
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    render(<NavaPane bridge={fakeBridge} preview />);
+    expect(await screen.findByText('Ada Lovelace')).toBeDefined();
+    expect(screen.queryByText(/selected email could not be verified/i)).toBeNull();
   });
 
   it('marks a staff-edited field Edited and an AI field AI', async () => {

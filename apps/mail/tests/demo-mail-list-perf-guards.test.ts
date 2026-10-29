@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { atom } from 'jotai';
@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   useThreads: vi.fn(),
   useThread: vi.fn(),
   useDraft: vi.fn(),
+  setThreadSelection: vi.fn(),
+  navigateByKeyboard: null as null | ((threadId: string | null) => void),
   folder: 'inbox',
 }));
 
@@ -95,11 +97,10 @@ vi.mock('@/hooks/use-mail-navigation', async () => {
   const { atom } = await import('jotai');
   return {
     focusedIndexAtom: atom<number | null>(null),
-    useMailNavigation: () => ({
-      focusedIndex: null,
-      handleMouseEnter: vi.fn(),
-      keyboardActive: false,
-    }),
+    useMailNavigation: ({ onNavigate }: { onNavigate: (threadId: string | null) => void }) => {
+      mocks.navigateByKeyboard = onNavigate;
+      return { focusedIndex: null, handleMouseEnter: vi.fn(), keyboardActive: false };
+    },
   };
 });
 
@@ -132,8 +133,20 @@ vi.mock('react-router', () => ({
 }));
 
 vi.mock('nuqs', () => ({
-  useQueryState: () => [null, vi.fn()],
+  parseAsString: {},
+  useQueryState: (key: string) => [key === 'threadId' ? 'thread-a' : null, vi.fn()],
+  useQueryStates: () => [{ threadId: 'thread-a', sourceMessageId: 'source-a' }, mocks.setThreadSelection],
 }));
+
+vi.mock('@/components/context/thread-context', () => ({
+  ThreadContextMenu: ({ children }: { children: React.ReactNode }) => children,
+}));
+vi.mock('@/components/ui/tooltip', () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }) => children,
+  TooltipTrigger: ({ children }: { children: React.ReactNode }) => children,
+  TooltipContent: () => null,
+}));
+vi.mock('@/components/ui/bimi-avatar', () => ({ BimiAvatar: () => null }));
 
 vi.mock('@/components/icons/empty-state-svg', () => ({
   EmptyStateIcon: () => null,
@@ -145,6 +158,8 @@ type MemoExoticComponent = typeof MailList & {
 
 beforeEach(() => {
   mocks.folder = 'inbox';
+  mocks.navigateByKeyboard = null;
+  mocks.setThreadSelection.mockReset();
   mocks.searchValue = {
     ...EMPTY_SEARCH_VALUE,
     value: 'deposit',
@@ -182,6 +197,28 @@ afterEach(() => {
 });
 
 describe('demo mail list perf guards', () => {
+  it('atomically clears the previous source when a different thread row or keyboard target is opened', async () => {
+    mocks.searchValue = EMPTY_SEARCH_VALUE;
+    mocks.useThreads.mockReturnValue([
+      { refetch: vi.fn(), isLoading: false, isFetching: false, isFetchingNextPage: false,
+        hasNextPage: false, isError: false, error: null },
+      [{ id: 'thread-b' }], false, vi.fn(),
+    ]);
+    mocks.useThread.mockReturnValue({
+      data: { latest: { id: 'message-b', threadId: 'thread-b', sender: { email: 'guest@example.com', name: 'Guest' },
+        subject: 'Request B', receivedOn: '', tags: [], unread: false, body: '' },
+        labels: [], messages: [], hasUnread: false, totalReplies: 1 },
+      isGroupThread: false, latestDraft: null,
+    });
+    render(createElement(MailList));
+    const row = document.querySelector('[data-thread-id="thread-b"]');
+    expect(row).not.toBeNull();
+    fireEvent.click(row!);
+    await waitFor(() => expect(mocks.setThreadSelection).toHaveBeenCalledWith({ threadId: 'thread-b', sourceMessageId: null }));
+    mocks.setThreadSelection.mockClear();
+    act(() => mocks.navigateByKeyboard?.('thread-c'));
+    await waitFor(() => expect(mocks.setThreadSelection).toHaveBeenCalledWith({ threadId: 'thread-c', sourceMessageId: null }));
+  });
   it('shows effective query miss copy and preserves query state when trying all folders', () => {
     render(createElement(MailList));
 

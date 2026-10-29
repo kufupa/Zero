@@ -232,7 +232,10 @@ export function ThreadContextMenu({
   const effectiveIsSpam = isSpam || isReservedSpamFolder;
   const isSnoozedFolder = currentFolder === FOLDERS.SNOOZED;
   const [, setMode] = useQueryState('mode');
-  const [, setThreadId] = useQueryState('threadId');
+  const [, setThreadSelection] = useQueryStates({
+    threadId: parseAsString,
+    sourceMessageId: parseAsString,
+  });
   const { data: threadData } = useThread(threadId);
   const [, setActiveReplyId] = useQueryState('activeReplyId');
   const [, setDraftId] = useQueryState('draftId');
@@ -351,7 +354,7 @@ export function ThreadContextMenu({
   };
 
   const handleThreadReply = () => {
-    setThreadId(threadId);
+    setThreadSelection({ threadId, sourceMessageId: null });
     void openReplyComposeContext({
       mode: 'reply',
       messageId: threadData?.latest?.id ?? null,
@@ -363,7 +366,7 @@ export function ThreadContextMenu({
   };
 
   const handleThreadReplyAll = () => {
-    setThreadId(threadId);
+    setThreadSelection({ threadId, sourceMessageId: null });
     void openReplyComposeContext({
       mode: 'replyAll',
       messageId: threadData?.latest?.id ?? null,
@@ -375,7 +378,7 @@ export function ThreadContextMenu({
   };
 
   const handleThreadForward = () => {
-    setThreadId(threadId);
+    setThreadSelection({ threadId, sourceMessageId: null });
     void openReplyComposeContext({
       mode: 'forward',
       messageId: threadData?.latest?.id ?? null,

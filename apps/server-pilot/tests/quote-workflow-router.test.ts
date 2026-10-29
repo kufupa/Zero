@@ -177,6 +177,25 @@ describe('quoteWorkflow.analyseSelection', () => {
     enqueueHmsRead.mockReset();
   });
 
+  it('analyses a web row only when the mailbox lookup resolved that exact stored message', async () => {
+    const lookup = vi.fn(async () => ({
+      messageId: 'row-a', subject: 'Quote', bodyText: 'Please quote.', preceding: [], attachments: [],
+    }));
+    quoteWorkflowLoaders.loadSyncedSelection = lookup;
+    quoteWorkflowLoaders.llmEnabled = () => false;
+    vi.mocked(workItemIdForMail).mockClear();
+    const request = { internetMessageId: '<shared@example.test>', storeId: 'transport-1', entryId: 'row-b',
+      folderEntryId: 'thread', selectionEpoch: 1, staffNote: 'Please use the new date.' };
+    expect(await mailboxCaller().quoteWorkflow.analyseWebSelection({ ...request, expectedMessageId: 'row-b' }))
+      .toEqual({ status: 'unsynced' });
+    expect(workItemIdForMail).not.toHaveBeenCalled();
+    await expect(mailboxCaller().quoteWorkflow.analyseWebSelection(request as never)).rejects.toThrow();
+    const result = await mailboxCaller().quoteWorkflow.analyseWebSelection({
+      ...request, expectedMessageId: 'row-a', staffNote: undefined,
+    });
+    expect(result).toMatchObject({ status: 'ready', sourceMessageId: 'row-a' });
+  });
+
   it('returns unsynced from the default mailbox loader when no internetMessageId is provided', async () => {
     quoteWorkflowLoaders.loadSyncedSelection = null;
     const result = await mailboxCaller().quoteWorkflow.analyseSelection({
