@@ -589,6 +589,24 @@ export function useStoredWork(args: {
   const readyWorkItemId = stored?.status === 'ready' ? stored.workItemId : null;
   const readyTransportId = currentLookup?.transportId ?? null;
 
+  /** Wait until the selected email's pending edits have actually reached the server. */
+  const flushEdits = useCallback(async (): Promise<boolean> => {
+    if (!readyWorkItemId || !lookupKey || historyPending || historyNeedsReload ||
+        !workItemsFromTrpc(trpcRef.current).recordEvent) return false;
+    const prefix = `${readyWorkItemId}\n`;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      flushAll();
+      const active = [...inFlight.current.entries()]
+        .filter(([key]) => key.startsWith(prefix)).map(([, promise]) => promise);
+      if (active.length) await Promise.allSettled(active);
+      if (lookupKeyRef.current !== lookupKey) return false;
+      if ([...pending.current.keys()].some((key) => key.startsWith(prefix))) continue;
+      if ([...latest.current.keys(), ...failed.current.keys()].some((key) => key.startsWith(prefix))) return false;
+      return true;
+    }
+    return false;
+  }, [flushAll, historyNeedsReload, historyPending, lookupKey, readyWorkItemId]);
+
   const retry = useCallback(() => {
     if (!internetMessageId) return;
     setRetries((prev) => ({
@@ -860,6 +878,7 @@ export function useStoredWork(args: {
     recordGroups,
     recordContact,
     acceptUnedited,
+    flushEdits,
     retryTranslation,
     translationBusy: translating !== null && translating === readyWorkItemId,
     saveFailed,
