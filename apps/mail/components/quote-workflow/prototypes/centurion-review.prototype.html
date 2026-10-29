@@ -165,11 +165,11 @@
     const initialScenario = validScenarios.includes(start.get('scenario')) ? start.get('scenario') : 'ready';
     const defaults = {
       arrival: '2027-11-12', departure: '2027-11-14',
-      queenType: 'Standard Queen (STQN)', twinType: 'Standard Twin (STWN)',
+      queenType: 'Standard Queen (STQN)', twinType: 'Standard Twin (STWN)', queenAdults: '1', twinAdults: '1',
       queenGuest: 'Alex Example', twinGuest: 'Jordan Example', childName: 'Taylor Example', childAge: '8',
-      agency: 'Tourvest Travel Services · Roggebaai', company: 'No company',
+      agency: 'Tourvest Travel Services · Roggebaai', company: 'No company', booker: 'Sample travel agent', bookerEmail: 'agent@example.test', bookerPhone: '',
       queenRate: 'Agency eligible · breakfast included', twinRate: 'Agency eligible · breakfast included',
-      addOn: 'Airport transfer', transferDate: '2027-11-12', transferTime: '10:30', transferRoom: 'Standard Twin', trips: '1',
+      addOn: 'Airport transfer', transferDate: '2027-11-12', transferTime: '10:30', transferRoom: 'twin', trips: '1',
       recipient: 'reservations@example.test', message: '03 · Agency/company · payment link + pro forma', send: 'Yes',
       guarantee: 'Awaiting Voucher', source: 'Email', track: 'Not selected', market: 'Not selected', note: '', consent: 'No',
     };
@@ -195,9 +195,12 @@
       return Array.from({ length: count }, (_, i) => new Date(begin + i * 86400000).toISOString().slice(0, 10));
     }
     const ageValid = () => /^\d{1,2}$/.test(state.values.childAge) && Number(state.values.childAge) <= 17;
+    const adultsValid = () => ['queenAdults', 'twinAdults'].every((key) => /^\d{1,2}$/.test(state.values[key]) && Number(state.values[key]) >= 1 && Number(state.values[key]) <= 16);
     const hasOutcome = () => ['partial', 'uncertain', 'success'].includes(state.scenario);
     const cmsIncluded = () => state.cmsMode === 'permitted' && state.values.send === 'Yes';
-    const lookupKey = () => JSON.stringify(['arrival', 'departure', 'queenType', 'twinType', 'childAge', 'agency'].map((key) => state.values[key]));
+    const roomName = (kind) => state.values[kind + 'Type'].replace(/\s*\([^)]*\)$/, '');
+    const adultLabel = (count) => `${esc(count)} adult${count === '1' ? '' : 's'}`;
+    const lookupKey = () => JSON.stringify(['arrival', 'departure', 'queenType', 'twinType', 'queenAdults', 'twinAdults', 'childAge', 'agency'].map((key) => state.values[key]));
     function prices() {
       const dates = nights();
       const queen = dates.map((_, index) => 1200 + (index % 2) * 100 + (state.values.queenRate.startsWith('BAR') ? 200 : 0));
@@ -208,7 +211,7 @@
     }
     function refreshRates() {
       lookupGeneration += 1;
-      if (!nights().length || !ageValid()) { state.rates = 'needs-details'; return; }
+      if (!nights().length || !ageValid() || !adultsValid()) { state.rates = 'needs-details'; return; }
       state.rates = 'checking';
       const version = lookupGeneration;
       const key = lookupKey();
@@ -225,11 +228,11 @@
       const id = `field-${key}`;
       let control;
       if (kind === 'select') {
-        control = `<select id="${id}" data-field="${key}"${disabled}>${choices.map((choice) => `<option${choice === value ? ' selected' : ''}>${esc(choice)}</option>`).join('')}</select>`;
+        control = `<select id="${id}" data-field="${key}"${disabled}>${choices.map((choice) => { const item = typeof choice === 'string' ? { value: choice, label: choice } : choice; return `<option value="${esc(item.value)}"${item.value === value ? ' selected' : ''}>${esc(item.label)}</option>`; }).join('')}</select>`;
       } else if (kind === 'textarea') {
         control = `<textarea id="${id}" data-field="${key}"${disabled}>${esc(value)}</textarea>`;
       } else {
-        const bounds = key === 'childAge' ? ' min="0" max="17"' : key === 'trips' ? ' min="1" max="8"' : '';
+        const bounds = key === 'childAge' ? ' min="0" max="17"' : key === 'trips' ? ' min="1" max="8"' : key.endsWith('Adults') ? ' min="1" max="16"' : '';
         control = `<input id="${id}" data-field="${key}" type="${kind}" value="${esc(value)}"${bounds}${disabled}>`;
       }
       const conflict = Object.hasOwn(state.conflicts, key) ? `<div class="field-help conflict">New suggestion: ${esc(state.conflicts[key] || 'empty')} · your edit was kept.</div>` : '';
@@ -245,18 +248,19 @@
     const rateChoices = ['Agency eligible · breakfast included', 'BAR · breakfast included'];
     function stayEditor() {
       return `<div class="fields"><div class="grid-2">${field('arrival', 'Check-in', 'date')}${field('departure', 'Check-out', 'date')}</div>
-        <div class="subheading">1 room · ${esc(state.values.queenType)} · 1 adult</div>${field('queenType', 'Room type', 'select', roomChoices)}${field('queenGuest', 'Guest', 'text')}
-        <div class="subheading">1 room · ${esc(state.values.twinType)} · 1 adult + 1 child</div>${field('twinType', 'Room type', 'select', roomChoices)}${field('twinGuest', 'Guest', 'text')}
+        <div class="subheading">1 room · ${esc(state.values.queenType)}</div><div class="grid-2">${field('queenType', 'Room type', 'select', roomChoices)}${field('queenAdults', 'Adults', 'number')}</div>${field('queenGuest', 'Guest', 'text')}
+        <div class="subheading">1 room · ${esc(state.values.twinType)} · 1 child</div><div class="grid-2">${field('twinType', 'Room type', 'select', roomChoices)}${field('twinAdults', 'Adults', 'number')}</div>${field('twinGuest', 'Guest', 'text')}
         <div class="grid-age">${field('childName', 'Child', 'text')}${field('childAge', 'Age', 'number', [], 'Age needed for a rate.')}</div></div>`;
     }
     function partyEditor() {
-      return `<div class="fields">${field('agency', 'Booking agency', 'select', agencyChoices, 'Centurion profile example; current record must be checked.')}${field('company', 'Company', 'select', ['No company', 'Example company · simulated record'])}</div>`;
+      return `<div class="fields">${field('agency', 'Booking agency', 'select', agencyChoices, 'Centurion profile example; current record must be checked.')}${field('company', 'Company', 'select', ['No company', 'Example company · simulated record'])}<div class="subheading">Booking contact</div>${field('booker', 'Name')}${field('bookerEmail', 'Email', 'email')}${field('bookerPhone', 'Phone', 'tel')}</div>`;
     }
     function rateEditor() {
       return `<div class="fields">${field('queenRate', 'Queen rate', 'select', rateChoices)}${field('twinRate', 'Twin rate', 'select', rateChoices)}${rateRows()}</div>`;
     }
     function addOnEditor() {
-      const extra = state.values.addOn === 'Airport transfer' ? `<div class="grid-2">${field('transferDate', 'Date', 'date')}${field('transferTime', 'Arrival time', 'time')}</div><div class="grid-2">${field('transferRoom', 'Attach to', 'select', ['Standard Queen', 'Standard Twin'])}${field('trips', 'Trips', 'number')}</div><div class="small muted">Airport → hotel · ${money(350)} per trip · illustrative Centurion Add-On.</div>` : '';
+      const rooms = [{ value: 'queen', label: `${roomName('queen')} · ${state.values.queenGuest}` }, { value: 'twin', label: `${roomName('twin')} · ${state.values.twinGuest}` }];
+      const extra = state.values.addOn === 'Airport transfer' ? `<div class="grid-2">${field('transferDate', 'Date', 'date')}${field('transferTime', 'Arrival time', 'time')}</div><div class="grid-2">${field('transferRoom', 'Attach to', 'select', rooms)}${field('trips', 'Trips', 'number')}</div><div class="small muted">Airport → hotel · ${money(350)} per trip · illustrative Centurion Add-On.</div>` : '';
       return `<div class="fields">${field('addOn', 'Hotel Add-On', 'select', ['Airport transfer', 'None'])}${extra}</div>`;
     }
     function confirmationEditor() {
@@ -269,19 +273,22 @@
     function otherEditor() {
       return `<div class="fields">${field('guarantee', 'Guarantee', 'select', ['Awaiting Voucher', 'Guaranteed By Agent', 'Guaranteed By Company', 'Non-Guaranteed Individual'], 'A guarantee or voucher is not proof of payment.')}${field('source', 'Source of business', 'select', ['Email', 'Telephone'])}${field('track', 'Track', 'select', ['Not selected', 'Example track'])}${field('market', 'Market segment', 'select', ['Not selected', 'Example segment'])}${field('note', 'Reservation note', 'textarea')}${field('consent', 'Guest terms opt-in', 'select', ['No', 'Yes'])}</div>`;
     }
-    function rateRows() {
+    function rateRows(showPlan = false) {
       const p = prices();
       if (!p.dates.length) return '<div class="small muted">Enter a valid stay of 1–7 nights to see the example nightly rates.</div>';
       const rows = (amounts) => p.dates.map((date, i) => `<div class="line small"><span>${formatDate(date)}</span><span>${money(amounts[i])}</span></div>`).join('');
-      return `<div><div class="price-title">${esc(state.values.queenType)} · 1 room</div>${rows(p.queen)}<div class="price-title">${esc(state.values.twinType)} · 1 room</div>${rows(p.twin)}<div class="line total-line"><span>Rooms</span><span>${money(p.rooms)}</span></div></div>`;
+      return `<div><div class="price-title">${esc(state.values.queenType)} · 1 room</div>${showPlan ? `<div class="small muted">${esc(state.values.queenRate)}</div>` : ''}${rows(p.queen)}<div class="price-title">${esc(state.values.twinType)} · 1 room</div>${showPlan ? `<div class="small muted">${esc(state.values.twinRate)}</div>` : ''}${rows(p.twin)}<div class="line total-line"><span>Rooms</span><span>${money(p.rooms)}</span></div></div>`;
     }
     function addonSummary() {
       if (state.values.addOn === 'None') return 'No Add-On selected';
-      return `Airport transfer · ${esc(formatDate(state.values.transferDate))} ${esc(state.values.transferTime)} · ${esc(state.values.transferRoom)} · ${esc(state.values.trips)} trip(s) · ${money(prices().addon)}`;
+      return `Airport transfer · airport → hotel · ${esc(formatDate(state.values.transferDate))} ${esc(state.values.transferTime)} · ${esc(roomName(state.values.transferRoom))} · ${esc(state.values.trips)} trip(s) · ${money(prices().addon)}`;
     }
     function cmsSummary() {
       const stateLabel = cmsIncluded() ? (hasOutcome() ? 'Was included in the approved plan; see result above' : 'Included in this example') : state.cmsMode === 'unverified' ? 'Not included: capability or permission unverified' : 'Not included: staff choice';
-      return `${esc(state.values.recipient || 'Recipient missing')} · ${stateLabel}<br>One email with both rooms, Add-On and ${money(prices().total)} total; live support and authority unverified.`;
+      return `${esc(state.values.recipient || 'Recipient missing')} · ${stateLabel}<br>${esc(state.values.message)}<br>One email with both rooms, Add-On and ${money(prices().total)} total; live support and authority unverified.`;
+    }
+    function otherSummary() {
+      return `${esc(state.values.guarantee)} · source ${esc(state.values.source)} · track ${esc(state.values.track)} · market ${esc(state.values.market)} · opt-in ${esc(state.values.consent)} · ${state.values.note ? 'note: ' + esc(state.values.note) : 'no note'}`;
     }
     function outcomeBlock() {
       if (!hasOutcome()) return '';
@@ -301,35 +308,40 @@
     }
     function notices() {
       let result = '';
-      if (state.scenario === 'changed' && !hasOutcome()) result += '<div class="notice"><strong>Rate changed while you were reviewing</strong>Standard Twin, second night: R1,500 → R1,600. Check the updated total before approving.</div>';
+      if (state.scenario === 'changed' && !hasOutcome()) {
+        const p = prices();
+        const detail = p.dates.length > 1 ? `${esc(state.values.twinType)}, ${esc(formatDate(p.dates[1]))}: ${money(p.twin[1] - 100)} → ${money(p.twin[1])}.` : 'Check the current nightly rate.';
+        result += `<div class="notice"><strong>Rate changed while you were reviewing</strong>${detail} Check the updated total before approving.</div>`;
+      }
       if (!ageValid() && !hasOutcome()) result += '<div class="notice"><strong>Child’s age needed</strong>Enter the age to check the eligible rate and continue.</div>';
       if (state.rates === 'checking' && !hasOutcome()) result += '<div class="notice info"><strong>Checking rates for your changes</strong>Your edits are kept while the example lookup finishes.</div>';
       if (state.prefillArrived && Object.keys(state.dirty).length) result += '<div class="notice good"><strong>Background data arrived</strong>Your edited fields were kept. New suggestions are shown beside any differing edits.</div>';
       return result;
     }
     function layoutA() {
-      return `${outcomeBlock()}${notices()}${section('Stay and guests', stayEditor())}${section('Agency & company', partyEditor())}${section('Nightly rates', rateEditor())}${section('Hotel Add-On', addOnEditor())}${section('HMS confirmation', confirmationEditor())}${disclosure('Other booking details', 'Guarantee, source, track, notes and consent', otherEditor())}`;
+      return `${outcomeBlock()}${notices()}${section('Stay and guests', stayEditor())}${section('Agency & company', partyEditor())}${section('Nightly rates', rateEditor())}${section('Hotel Add-On', addOnEditor())}${section('HMS confirmation', confirmationEditor())}${disclosure('Other booking details', otherSummary(), otherEditor())}`;
     }
     function layoutB() {
       const p = prices();
       return `${outcomeBlock()}${notices()}
-        ${disclosure('Stay and guests', `${esc(formatDate(state.values.arrival))} – ${esc(formatDate(state.values.departure))} · 2 rooms<br>${esc(state.values.queenType)} · ${esc(state.values.queenGuest)}<br>${esc(state.values.twinType)} · ${esc(state.values.twinGuest)} + ${esc(state.values.childName)} (age ${esc(state.values.childAge || 'missing')})`, stayEditor(), !ageValid())}
-        ${disclosure('Agency & company', `${esc(state.values.agency)} · ${esc(state.values.company)}`, partyEditor())}
-        ${disclosure('Nightly rates', `${esc(state.values.queenType)}: ${p.dates.map((d, i) => `${esc(formatDate(d))} ${money(p.queen[i])}`).join(' · ')}<br>${esc(state.values.twinType)}: ${p.dates.map((d, i) => `${esc(formatDate(d))} ${money(p.twin[i])}`).join(' · ')}<br>Both rooms: ${money(p.rooms)}`, rateEditor(), state.scenario === 'changed')}
+        ${disclosure('Stay and guests', `${esc(formatDate(state.values.arrival))} – ${esc(formatDate(state.values.departure))} · 2 rooms<br>${esc(state.values.queenType)} · ${adultLabel(state.values.queenAdults)} · ${esc(state.values.queenGuest)}<br>${esc(state.values.twinType)} · ${adultLabel(state.values.twinAdults)} + 1 child · ${esc(state.values.twinGuest)} + ${esc(state.values.childName)} (age ${esc(state.values.childAge || 'missing')})`, stayEditor(), !ageValid())}
+        ${disclosure('Agency & company', `${esc(state.values.agency)} · ${esc(state.values.company)}<br>Contact: ${esc(state.values.booker)} · ${esc(state.values.bookerEmail)}${state.values.bookerPhone ? ' · ' + esc(state.values.bookerPhone) : ''}`, partyEditor())}
+        ${disclosure('Nightly rates', `${esc(state.values.queenType)} · ${esc(state.values.queenRate)}<br>${p.dates.map((d, i) => `${esc(formatDate(d))} ${money(p.queen[i])}`).join(' · ')}<br>${esc(state.values.twinType)} · ${esc(state.values.twinRate)}<br>${p.dates.map((d, i) => `${esc(formatDate(d))} ${money(p.twin[i])}`).join(' · ')}<br>Both rooms: ${money(p.rooms)}`, rateEditor(), state.scenario === 'changed')}
         ${disclosure('Hotel Add-On', addonSummary(), addOnEditor())}
         ${disclosure('HMS confirmation', cmsSummary(), confirmationEditor())}
-        ${disclosure('Other booking details', `${esc(state.values.guarantee)} · source ${esc(state.values.source)} · track ${esc(state.values.track)} · market ${esc(state.values.market)} · opt-in ${esc(state.values.consent)}${state.values.note ? ' · note: ' + esc(state.values.note) : ''}`, otherEditor())}`;
+        ${disclosure('Other booking details', otherSummary(), otherEditor())}`;
     }
     function layoutC() {
       const p = prices();
-      const plan = `<div class="plan-step"><span class="plan-number">1</span><div class="plan-detail"><strong>Create 2 provisional rooms</strong>${esc(formatDate(state.values.arrival))} – ${esc(formatDate(state.values.departure))}<br>${esc(state.values.agency)}<br>${esc(state.values.queenType)} · ${esc(state.values.queenGuest)}<br>${esc(state.values.twinType)} · ${esc(state.values.twinGuest)} + ${esc(state.values.childName)} (age ${esc(state.values.childAge || 'missing')})${rateRows()}</div></div>
+      const plan = `<div class="plan-step"><span class="plan-number">1</span><div class="plan-detail"><strong>Create 2 provisional rooms</strong>${esc(formatDate(state.values.arrival))} – ${esc(formatDate(state.values.departure))}<br>${esc(state.values.agency)} · ${esc(state.values.company)}<br>Contact: ${esc(state.values.booker)} · ${esc(state.values.bookerEmail)}${state.values.bookerPhone ? ' · ' + esc(state.values.bookerPhone) : ''}<br>${esc(state.values.queenType)} · ${adultLabel(state.values.queenAdults)} · ${esc(state.values.queenGuest)}<br>${esc(state.values.twinType)} · ${adultLabel(state.values.twinAdults)} + 1 child · ${esc(state.values.twinGuest)} + ${esc(state.values.childName)} (age ${esc(state.values.childAge || 'missing')})${rateRows(true)}</div></div>
         <div class="plan-step"><span class="plan-number">2</span><div class="plan-detail"><strong>${state.values.addOn === 'None' ? 'No Add-On' : 'Add hotel Add-On'}</strong>${addonSummary()}</div></div>
         <div class="plan-step"><span class="plan-number">3</span><div class="plan-detail"><strong>HMS confirmation</strong>${cmsSummary()}<div class="line total-line"><span>Complete total</span><span>${money(p.total)}</span></div><span class="small muted">Nava’s reply stays unsent.</span></div></div>`;
-      return `${outcomeBlock()}${notices()}${section(hasOutcome() ? 'Originally approved actions' : 'Actions for this email', plan)}${disclosure('Edit stay and guests', 'Dates, room types, occupants and child age', stayEditor(), !ageValid())}${disclosure('Edit agency & rates', `${esc(state.values.agency)} · ${money(p.rooms)} rooms`, partyEditor() + '<div class="subheading">Nightly rates</div>' + rateEditor())}${disclosure('Edit Add-On', addonSummary(), addOnEditor())}${disclosure('Edit HMS confirmation', esc(state.values.recipient || 'Recipient missing'), confirmationEditor())}${disclosure('Other booking details', `${esc(state.values.guarantee)} · source ${esc(state.values.source)} · track ${esc(state.values.track)} · market ${esc(state.values.market)} · opt-in ${esc(state.values.consent)}${state.values.note ? ' · note: ' + esc(state.values.note) : ''}`, otherEditor())}`;
+      return `${outcomeBlock()}${notices()}${section(hasOutcome() ? 'Originally approved actions' : 'Actions for this email', plan)}${disclosure('Edit stay and guests', 'Dates, room types, occupants and child age', stayEditor(), !ageValid())}${disclosure('Edit agency & rates', `${esc(state.values.agency)} · ${money(p.rooms)} rooms`, partyEditor() + '<div class="subheading">Nightly rates</div>' + rateEditor())}${disclosure('Edit Add-On', addonSummary(), addOnEditor())}${disclosure('Edit HMS confirmation', esc(state.values.recipient || 'Recipient missing'), confirmationEditor())}${disclosure('Other booking details', otherSummary(), otherEditor())}`;
     }
     function disabledReason() {
       if (!nights().length) return 'Enter a valid stay of 1–7 nights.';
       if (!ageValid()) return 'Enter the child’s age to continue.';
+      if (!adultsValid()) return 'Enter the number of adults in each room.';
       if (!state.values.queenGuest.trim() || !state.values.twinGuest.trim() || !state.values.childName.trim()) return 'Enter each guest’s name.';
       if (state.rates !== 'ready') return 'Wait for the updated rates.';
       if (state.values.addOn !== 'None' && (!state.values.transferDate || !state.values.transferTime || Number(state.values.trips) < 1)) return 'Complete the Add-On details.';
@@ -368,11 +380,11 @@
       document.getElementById('state-readout').textContent = JSON.stringify({
         property: 'Centurion · illustrative', agency: state.values.agency,
         stay: { arrival: state.values.arrival, departure: state.values.departure, rooms: [
-          { type: state.values.queenType, guest: state.values.queenGuest, nightly: p.queen },
-          { type: state.values.twinType, guest: state.values.twinGuest, child: state.values.childName, childAge: state.values.childAge, nightly: p.twin },
+          { type: state.values.queenType, adults: state.values.queenAdults, guest: state.values.queenGuest, rate: state.values.queenRate, nightly: p.queen },
+          { type: state.values.twinType, adults: state.values.twinAdults, guest: state.values.twinGuest, child: state.values.childName, childAge: state.values.childAge, rate: state.values.twinRate, nightly: p.twin },
         ] }, addOn: { type: state.values.addOn, date: state.values.transferDate, time: state.values.transferTime, room: state.values.transferRoom, trips: state.values.trips, total: p.addon },
         total: p.total, confirmation: { recipient: state.values.recipient, message: state.values.message, includes: 'both rooms, Add-On and complete total', includedInExample: cmsIncluded() },
-        otherFields: { company: state.values.company, guarantee: state.values.guarantee, source: state.values.source, track: state.values.track, market: state.values.market, note: state.values.note, consent: state.values.consent },
+        otherFields: { company: state.values.company, booker: state.values.booker, bookerEmail: state.values.bookerEmail, bookerPhone: state.values.bookerPhone, guarantee: state.values.guarantee, source: state.values.source, track: state.values.track, market: state.values.market, note: state.values.note, consent: state.values.consent },
         scenario: state.scenario, rateStatus: state.rates, dirtyFields: Object.keys(state.dirty), keptSuggestions: state.conflicts,
       }, null, 2);
       document.getElementById('pane-scroll').scrollTop = scroll;
@@ -419,7 +431,7 @@
       state.values[key] = el.value;
       state.dirty[key] = true;
       delete state.conflicts[key];
-      if (['arrival', 'departure', 'queenType', 'twinType', 'childAge', 'agency'].includes(key)) refreshRates();
+      if (['arrival', 'departure', 'queenType', 'twinType', 'queenAdults', 'twinAdults', 'childAge', 'agency'].includes(key)) refreshRates();
       render();
     }
     document.getElementById('review').addEventListener('input', (event) => { if (event.target.tagName !== 'SELECT') updateField(event); });
@@ -435,7 +447,7 @@
     document.getElementById('cms-mode').addEventListener('change', (event) => { state.cmsMode = event.target.value; render(); });
     document.getElementById('prefill').addEventListener('click', () => {
       const before = lookupKey();
-      const incoming = { queenGuest: 'Alex Example', twinGuest: 'Jordan Example', childName: 'Taylor Example', childAge: '8', agency: 'Tourvest Travel Services · Roggebaai', recipient: 'reservations@example.test', note: 'Airport transfer on arrival' };
+      const incoming = { queenGuest: 'Alex Example', twinGuest: 'Jordan Example', childName: 'Taylor Example', childAge: '8', agency: 'Tourvest Travel Services · Roggebaai', booker: 'Sample travel agent', bookerEmail: 'agent@example.test', recipient: 'reservations@example.test', note: 'Airport transfer on arrival' };
       Object.entries(incoming).forEach(([key, value]) => {
         if (state.dirty[key]) { if (state.values[key] !== value) state.conflicts[key] = value; }
         else state.values[key] = value;
