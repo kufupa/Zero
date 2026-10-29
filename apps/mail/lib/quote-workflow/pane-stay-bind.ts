@@ -44,6 +44,8 @@ const REFUSAL_COPY: Record<string, string> = {
     "Nava couldn't connect this booking to the request, so nothing was saved. Reopen the request and try again.",
   pane_save_work_item_unavailable:
     "Nava couldn't check the saved booking state, so nothing was saved. Reopen the request and try again.",
+  pane_save_preflight_unavailable:
+    "Nava couldn't check the booking, so nothing was saved. Preview again later.",
   pane_save_parent_invalid: "Nava couldn't tell which booking to add this room to. Nothing was saved.",
   refused_parent_not_found:
     "Nava couldn't open the first room's booking in HMS, so it didn't add this room. Check HMS, then try again.",
@@ -123,6 +125,7 @@ export type PaneStayResult = {
   cmsReason?: string;
   outcome?: string;
   confirmationNumber?: string;
+  clickedSave?: boolean;
   previewDigest?: string | null;
   runId?: string;
   screenshots?: string[];

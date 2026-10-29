@@ -252,6 +252,49 @@ describe('quoteWorkflow commit safety with fake storage and HMS', () => {
     });
   });
 
+  it.each(['lock connection', 'duplicate lookup', 'preview grant'])(
+    'releases the claim when the %s fails before the runner starts', async (stage) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { spawn } = fakeRunner();
+    const client = caller();
+    const previewDigest = await preview(client);
+    if (stage === 'lock connection') paneStaySaveLoaders.lock = { withLock: async () => { throw new Error('lock failed'); } };
+    if (stage === 'duplicate lookup') paneStaySaveLoaders.osressGuestDatesSearch = async () => { throw new Error('lookup failed'); };
+    if (stage === 'preview grant') failUpdateAt = updateCount + 2; // Claim succeeds; taking the preview fails.
+    expect(await client.quoteWorkflow.commitStay({ ...input, previewDigest })).toMatchObject({
+      status: 'refused', reason: 'pane_save_preflight_unavailable', clickedSave: false,
+    });
+    expect(state.stays).toEqual({});
+    expect(state.paneStaySaveClaims).toBeUndefined();
+    expect(spawn.mock.calls.filter(([request]) => request.paneCommit)).toHaveLength(0);
+  });
+
+  it('retains the unknown claim if a pre-save refusal cannot be durably cleared', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    fakeRunner();
+    const client = caller();
+    const previewDigest = await preview(client);
+    paneStaySaveLoaders.osressGuestDatesSearch = async () => { throw new Error('lookup failed'); };
+    failUpdatesFrom = updateCount + 2; // Claim succeeds; removing it fails.
+    expect(await client.quoteWorkflow.commitStay({ ...input, previewDigest })).toMatchObject({
+      status: 'refused', reason: 'pane_save_unconfirmed', clickedSave: false,
+    });
+    expect(state.stays).toMatchObject({ [parentId]: unknown });
+    expect(state.paneStaySaveClaims).toMatchObject({ [parentId]: expect.any(String) });
+  });
+
+  it('preserves a runner confirmation when releasing the property lock fails', async () => {
+    fakeRunner();
+    const client = caller();
+    const previewDigest = await preview(client);
+    paneStaySaveLoaders.lock = { withLock: async (fn) => { await fn(); throw new Error('unlock failed'); } };
+    expect(await client.quoteWorkflow.commitStay({ ...input, previewDigest })).toMatchObject({
+      status: 'ok', outcome: 'committed_unverified', confirmationNumber: '11111111-1',
+    });
+    expect(state.stays).toMatchObject({ [parentId]: { status: 'unknown', confirmationNumber: '11111111-1' } });
+    expect(state.paneStaySaveClaims).toBeUndefined();
+  });
+
   it.each(['refused_save', 'refused_save_blank_required'])(
     'clears a claim after the runner proves %s happened before Save',
     async (outcome) => {

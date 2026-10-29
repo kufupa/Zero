@@ -8,18 +8,13 @@ import { PANE_STAY_ALREADY_BOOKED, stayCommitsOf, type StayCommitRecord } from '
 const CLAIMS_KEY = 'paneStaySaveClaims';
 type State = Record<string, unknown>;
 type ClaimInput = { transportId: string; workItemId: string; stayId: string; parentStayId?: string };
-type ClaimResult =
-  | { status: 'ready'; claimId: string; parentConfirmation?: string }
-  | { status: 'refused'; reason: string };
+type ClaimResult = { status: 'ready'; claimId: string; parentConfirmation?: string } | { status: 'refused'; reason: string };
 
 function object(value: unknown): State | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as State : null;
 }
 
-/**
- * The work item has receipts but no persisted dependency plan. A single unresolved receipt therefore holds the
- * whole work item. Claim under its row lock before HMS so a concurrent request or a reload cannot pass the hold.
- */
+/** Fence pane commits at the property until an earlier save is verified or cleared. */
 export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<ClaimResult> {
   const property = resolvePropertyTransport(input.transportId);
   if (property.kind !== 'property') return { status: 'refused', reason: 'pane_save_work_item_unavailable' };
@@ -29,7 +24,6 @@ export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<Cl
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
       .limit(1).for('update');
     if (!item) return { status: 'refused', reason: 'pane_save_work_item_unavailable' };
-
     const rawStays = item.state.stays === undefined ? {} : object(item.state.stays);
     const claims = item.state[CLAIMS_KEY] === undefined ? {} : object(item.state[CLAIMS_KEY]);
     const commits = stayCommitsOf(item.state);

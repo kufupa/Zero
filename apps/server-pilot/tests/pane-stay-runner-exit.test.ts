@@ -3,10 +3,25 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fakeExecFile = vi.hoisted(() => vi.fn());
+const filesystemFailures = vi.hoisted(() => ({ cleanup: false, listing: false }));
 vi.mock('node:child_process', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:child_process')>();
   const execFile = Object.assign(() => undefined, { [Symbol.for('nodejs.util.promisify.custom')]: fakeExecFile });
   return { ...original, execFile };
+});
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...original,
+    rm: async (path: string, options?: Parameters<typeof original.rm>[1]) => {
+      if (filesystemFailures.cleanup && path.endsWith('/request.json')) throw new Error('synthetic cleanup failure');
+      return original.rm(path, options);
+    },
+    readdir: async (path: string) => {
+      if (filesystemFailures.listing) throw new Error('synthetic listing failure');
+      return original.readdir(path);
+    },
+  };
 });
 
 import { clearPanePreviewMemory, paneStayDigest, paneStaySaveLoaders, runPaneStay } from '../src/ai/pane-stay-save.js';
@@ -32,6 +47,8 @@ afterEach(async () => {
   clearPanePreviewMemory();
   await Promise.all(runDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   fakeExecFile.mockReset();
+  filesystemFailures.cleanup = false;
+  filesystemFailures.listing = false;
   vi.restoreAllMocks();
 });
 
@@ -81,6 +98,15 @@ describe('create runner exit and the save boundary', () => {
     )).resolves.toMatchObject({
       status: 'refused', reason: 'pane_save_unconfirmed', confirmationNumber: '11111111-1',
     });
+  });
+
+  it('preserves a confirmed result when temporary input cleanup or screenshot listing fails', async () => {
+    filesystemFailures.cleanup = true;
+    filesystemFailures.listing = true;
+    await expect(commitWithRunnerResult(
+      { outcome: 'committed', clickedSave: true, confirmationNumber: '11111111-1' },
+      { failed: false, stdout: 'committed 11111111-1\n' },
+    )).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '11111111-1', screenshots: [] });
   });
 
   it('keeps a refusal with a printed confirmation uncertain', async () => {

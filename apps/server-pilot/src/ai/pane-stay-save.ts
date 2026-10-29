@@ -591,7 +591,7 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
     failed = true;
     failure = error;
   } finally {
-    await rm(requestPath, { force: true });
+    await rm(requestPath, { force: true }).catch(() => console.warn('pane_stay_request_cleanup_failed'));
   }
   // If the runner did not leave a complete result, assume Save might have fired.
   let clickedSave = input.paneCommit;
@@ -629,7 +629,7 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   const outcome = failed ? preSaveSearchRefused ? 'refused_save' : 'save_unconfirmed' : printedOutcome;
   const confirmationNumber = failed ? knownConfirmation : printedConfirmation || knownConfirmation;
   if (input.paneCommit && confirmationNumber) clickedSave = true;
-  const screenshots = (await readdir(dir)).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)).sort();
+  const screenshots = (await readdir(dir).catch(() => [])).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)).sort();
   return {
     outcome,
     clickedSave,
@@ -679,9 +679,7 @@ export function paneStayPropertyRefusal(
 // Preview: fill, check availability, screenshots, no save. A successful preview returns previewDigest.
 // Commit: needs the previewDigest of a successful preview of this same stay (same owner, within 10 minutes,
 // once). The duplicate reader stays fail-closed: while it is parked, commit refuses.
-function paneStayNotSaved(reason: string): PaneStayResult {
-  return { status: 'refused', reason, clickedSave: false };
-}
+const paneStayNotSaved = (reason: string): PaneStayResult => ({ status: 'refused', reason, clickedSave: false });
 
 export async function runPaneStay(input: {
   mode: PaneStayMode;
@@ -747,10 +745,9 @@ export async function runPaneStay(input: {
   // and the save. The reader takes no lock of its own: a second acquisition would wait on this one.
   type Gate = { refusal: string } | { spawned: PaneStaySpawnResult };
   let gate: Gate;
-  let lockEntered = false;
+  const spawnState: { started: boolean; completed?: PaneStaySpawnResult } = { started: false };
   try {
     gate = await lock.withLock(async (): Promise<Gate> => {
-      lockEntered = true;
       if (reader) {
         const status = await reader({
           lastName: input.stay.lastName,
@@ -777,6 +774,7 @@ export async function runPaneStay(input: {
           return { refusal: 'pane_save_preview_required' };
         }
       }
+      spawnState.started = true;
       return {
         spawned: await spawn({
           stay: input.stay,
@@ -784,13 +782,22 @@ export async function runPaneStay(input: {
           paneCommit: input.mode === 'commit',
           target,
           ...(parent ? { parentConfirmation: parent } : {}),
-        }),
+        }).then((result) => { spawnState.completed = result; return result; }),
       };
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
-    if (!lockEntered && isPropertyReadLockDeadline(error)) return paneStayNotSaved('refused_lock_busy');
-    warnPaneStaySpawnFailed('save', error);
-    throw error;
+    if (!spawnState.started) {
+      if (isPropertyReadLockDeadline(error)) return paneStayNotSaved('refused_lock_busy');
+      console.warn('stay_save_preflight_failed');
+      return paneStayNotSaved('pane_save_preflight_unavailable');
+    }
+    if (input.mode === 'commit' && spawnState.completed?.confirmationNumber) {
+      // A lock release can fail after the runner returned a number; retain it without claiming verification.
+      gate = { spawned: { ...spawnState.completed, outcome: 'save_unconfirmed', clickedSave: true } };
+    } else {
+      warnPaneStaySpawnFailed('save', error);
+      throw error;
+    }
   }
   if ('refusal' in gate) return paneStayNotSaved(gate.refusal);
   const spawned = gate.spawned;

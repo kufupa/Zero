@@ -222,6 +222,40 @@ describe('multi-room save recovery', () => {
     expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', true);
   });
 
+  it('clears its loaded in-flight claim after a definite refusal, but holds a later unknown snapshot', async () => {
+    let finish!: (value: PaneStayResult) => void;
+    const commit = vi.fn<PaneStayClient['commit']>().mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const view = renderCase(commit);
+    await previewBoth();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create provisional booking' })[0]!);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    view.rerenderWithSaved({ s_aaaa1111_1: { confirmationNumber: null, status: 'unknown', screenshotRef: null } });
+    await act(async () => finish({ status: 'refused', reason: 'pane_save_preflight_unavailable', clickedSave: false }));
+    expect(screen.getByText("Nava couldn't check the booking, so nothing was saved. Preview again later.")).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Create provisional booking' })[1]).toHaveProperty('disabled', false);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Preview in HMS' })[0]!);
+    const batch = screen.getByRole('button', { name: 'Book this stay' });
+    await waitFor(() => expect(batch).toHaveProperty('disabled', false));
+    view.rerenderWithSaved({ s_aaaa1111_1: { confirmationNumber: null, status: 'unknown', screenshotRef: null } });
+    expect(batch).toHaveProperty('disabled', true);
+  });
+
+  it.each([
+    { result: { status: 'refused', reason: PANE_SAVE_UNCONFIRMED_REASON, clickedSave: false } as PaneStayResult, number: null },
+    { result: { status: 'refused', reason: 'pane_save_preflight_unavailable', clickedSave: false } as PaneStayResult, number: 'TEST-UNKNOWN' },
+  ])('does not clear an unconfirmed refusal or a loaded possible number', async ({ result, number }) => {
+    let finish!: (value: PaneStayResult) => void;
+    const commit = vi.fn<PaneStayClient['commit']>().mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const view = renderCase(commit);
+    await previewBoth();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create provisional booking' })[0]!);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    view.rerenderWithSaved({ s_aaaa1111_1: { confirmationNumber: number, status: 'unknown', screenshotRef: null } });
+    await act(async () => finish(result));
+    expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', true);
+    if (number) expect(screen.getByText(`Possible confirmation: ${number} (not verified)`)).toBeDefined();
+  });
+
   it('does not start another room while the first single-room action is in flight', async () => {
     let finish!: (value: PaneStayResult) => void;
     const commit = vi.fn<PaneStayClient['commit']>().mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));

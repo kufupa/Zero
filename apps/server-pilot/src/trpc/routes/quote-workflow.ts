@@ -369,10 +369,7 @@ export const quoteWorkflowRouter = router({
       }
       const record = definitelyNotSaved ? null : stayCommitFromPaneResult(result);
       try {
-        if (record || definitelyNotSaved) {
-          const saved = await finishPaneStayCommit(db, { ...scope, claimId: claim.claimId, record });
-          if (saved) return result;
-        }
+        if ((record || definitelyNotSaved) && await finishPaneStayCommit(db, { ...scope, claimId: claim.claimId, record })) return result;
       } catch {
         // No exception text: database errors can contain connection details.
         console.warn('stay_commit_persist_failed', { stayId, workItemId });

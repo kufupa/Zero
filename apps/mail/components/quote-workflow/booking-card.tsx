@@ -280,20 +280,22 @@ type CommitView =
       screenshots?: string[];
       shots?: HmsShotRecord[];
       statusChip?: 'check';
+      clearedClaim?: { snapshot?: SavedStayCommit };
     };
 
 type RoomSaveState = { preview?: PreviewView; commit?: CommitView };
 
 function isUncertainCommit(commit: CommitView | undefined): boolean {
-  return Boolean(
-    (commit?.status === 'booked' && commit.unverified) ||
-    (commit?.status === 'refused' && commit.statusChip === 'check'),
-  );
+  return (commit?.status === 'booked' && commit.unverified === true) ||
+    (commit?.status === 'refused' && commit.statusChip === 'check');
 }
 
-function recentCanReplaceUnknown(stored: CommitView | undefined, recent: CommitView | undefined): boolean {
+function recentCanReplaceUnknown(stored: CommitView | undefined, recent: CommitView | undefined, saved?: SavedStayCommit): boolean {
+  if (!isUncertainCommit(stored)) return false;
+  if (recent?.status === 'refused') return Boolean(recent.clearedClaim && stored?.status === 'refused' &&
+    (!saved || saved === recent.clearedClaim.snapshot));
   return Boolean(
-    isUncertainCommit(stored) && recent?.status === 'booked' && recent.confirmationNumber &&
+    recent?.status === 'booked' && recent.confirmationNumber &&
     (stored?.status !== 'booked' || !stored.confirmationNumber || stored.confirmationNumber === recent.confirmationNumber),
   );
 }
@@ -994,16 +996,20 @@ export function BookingCards({
   for (const [key, stored] of Object.entries(storedSaves)) {
     saves[key] = { ...saves[key], commit: stored.commit };
   }
-  for (const key of Object.keys(recentCommitsRef.current)) {
-    const recent = recentCommitForRoom(key);
-    if (recentCanReplaceUnknown(saves[key]?.commit, recent)) saves[key] = { ...saves[key], commit: recent };
-  }
   const savesRef = useRef(saves);
   savesRef.current = saves;
   const bookedInRunRef = useRef<Record<string, CommitView>>({});
   const committingRef = useRef(false);
   const savedStaysRef = useRef(savedStays);
   savedStaysRef.current = savedStays;
+  function savedStayForRoom(roomKey: string): SavedStayCommit | undefined {
+    const room = draft.draft.rooms.find((item) => roomKeyOf(item) === roomKey);
+    return room ? savedStaysRef.current?.[stayIdForRoom(room, groups)] : undefined;
+  }
+  for (const key of Object.keys(recentCommitsRef.current)) {
+    const recent = recentCommitForRoom(key);
+    if (recentCanReplaceUnknown(saves[key]?.commit, recent, savedStayForRoom(key))) saves[key] = { ...saves[key], commit: recent };
+  }
   useEffect(() => {
     const restored = Object.entries(savesFromSavedStays(draft, groups, savedStays));
     for (const [key, stored] of restored) {
@@ -1189,7 +1195,8 @@ export function BookingCards({
   function hasUncertainOutcome(): boolean {
     const verifiedAfterClaim = (roomKey: string, stored: CommitView | undefined) => {
       const recent = recentCommitForRoom(roomKey);
-      return recentCanReplaceUnknown(stored, recent) && recent?.status === 'booked' && !recent.unverified;
+      return recentCanReplaceUnknown(stored, recent, savedStayForRoom(roomKey)) &&
+        (recent?.status === 'refused' || (recent?.status === 'booked' && !recent.unverified));
     };
     return Object.entries(savedStaysRef.current ?? {}).some(([stayId, saved]) => {
       if (saved.status !== 'unknown') return false;
@@ -1207,7 +1214,7 @@ export function BookingCards({
   function patchSave(roomKey: string, patch: RoomSaveState, finishClaim = false) {
     setSaves((current) => {
       if (savedOutcomeBlocksRoom(roomKey) &&
-          !(finishClaim && recentCanReplaceUnknown(savesRef.current[roomKey]?.commit, patch.commit))) return current;
+          !(finishClaim && recentCanReplaceUnknown(savesRef.current[roomKey]?.commit, patch.commit, savedStayForRoom(roomKey)))) return current;
       return { ...current, [roomKey]: { ...current[roomKey], ...patch } };
     });
   }
@@ -1451,6 +1458,7 @@ export function BookingCards({
 
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
     if (!workItemId || committingRef.current || hasUncertainOutcome() || savedOutcomeBlocksRoom(roomKey)) return false;
+    delete recentCommitsRef.current[roomKey];
     committingRef.current = true;
     try {
       return await performRoomCommit(roomKey, pane, stay, previewDigest);
@@ -1491,6 +1499,8 @@ export function BookingCards({
             screenshots: outcome.screenshots,
             ...(result.status === 'ok' || result.reason === PANE_SAVE_UNCONFIRMED_REASON
               ? { statusChip: 'check' as const } : {}),
+            ...(result.status === 'refused' && result.clickedSave === false && result.reason !== PANE_SAVE_UNCONFIRMED_REASON
+              ? { clearedClaim: { snapshot: savedStayForRoom(roomKey) } } : {}),
           };
     } catch {
       commit = { status: 'refused', key, message: PANE_COMMIT_UNREACHABLE_COPY, statusChip: 'check' };
@@ -1500,9 +1510,7 @@ export function BookingCards({
       workItemId, stayId: room ? stayIdForRoom(room, groups) : null, commit,
     };
     // The next room in a Book this stay run can start before React re-renders this result.
-    if (commit.status === 'booked' && !commit.unverified && stayBookingRef.current) {
-      bookedInRunRef.current[roomKey] = commit;
-    }
+    if (commit.status === 'booked' && !commit.unverified && stayBookingRef.current) bookedInRunRef.current[roomKey] = commit;
     // Definite refusals can be previewed again; uncertain saves stay locked for an HMS check.
     patchSave(roomKey, commit.status === 'booked' ? { commit } : { commit, preview: undefined }, true);
     return commit.status === 'booked' && !commit.unverified;
