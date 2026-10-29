@@ -83,6 +83,53 @@ afterEach(() => {
 });
 
 describe('staff quote HMS job binding', () => {
+  it('does not restore a prepared quote for a different saved child count', async () => {
+    const requested = [{ ...groups[0]!, childrenPerRoom: 1, childrenAges: [8] }];
+    const query = vi.fn(async (lookup: { input?: ExecuteStaffQuoteInput; runId?: string }) => {
+      if (!lookup.input) return null;
+      return {
+        ...view('done', READY, undefined, true),
+        request: storedStaffQuoteRequest(lookup.input, {
+          groups: [{ ...lookup.input.groups[0]!, childrenPerRoom: 0 }],
+        }),
+      };
+    });
+    const result = await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
+      query: query as never,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups: requested,
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(query.mock.calls[0]?.[0].input?.groups[0]).toMatchObject({ childrenPerRoom: 1, childrenAges: [8] });
+    expect(result).toBeNull();
+  });
+
+  it('rejects an auto-started prepared quote for a different child count even with matching counters', async () => {
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-job' }));
+    const staffQuoteJob = vi.fn(async () => ({
+      ...view('done', READY, undefined, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], {
+        groups: [{ ...queue.mock.calls[0]![0].groups[0]!, childrenPerRoom: 1 }],
+      }),
+    }));
+    const result = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
+      queue,
+      staffQuoteJob,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups: [{ ...groups[0]!, childrenPerRoom: 0 }],
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(result).toMatchObject({
+      status: 'unavailable', reason: 'The quote is out of date because the stay details changed. Run it again.',
+    });
+  });
+
   it('keeps queued status reads on the mailbox where the quote routes were bound', async () => {
     vi.useFakeTimers();
     setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-a' });

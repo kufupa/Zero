@@ -238,6 +238,7 @@ function rowFieldsAt(row: string, group: StayGroupRequirement): FieldEvent[] {
     { path: `${row}.count`, value: group.quantity ?? null },
     { path: `${row}.adults`, value: group.adults ?? null },
     { path: `${row}.roomType`, value: group.roomPreference || null },
+    { path: `${row}.childrenPerRoom`, value: group.childrenPerRoom ?? null },
     { path: `${row}.childAges`, value: group.childrenAges },
     { path: `${row}.board`, value: extractionBoard(group.board) },
   ];
@@ -327,10 +328,15 @@ export function fieldEventsBetween(
     const count = `${row}.count`;
     const fromTotal = countFromStayTotal(group, old);
     const confirmed = old?.fields.quantity === 'defaulted' && !fromTotal;
+    // A dates-only stay has no source row: an explicit zero must save its empty age list too.
+    const confirmedNoChildren = old && group.childrenPerRoom === 0 && old.childrenPerRoom !== 0;
+    const always = new Set<string>();
+    if (confirmed) always.add(count);
+    if (confirmedNoChildren) always.add(`${row}.childAges`);
     changed(
       rowFieldsAt(row, group).filter((event) => !fromTotal || event.path !== count),
       old ? rowFieldsAt(row, old) : null,
-      confirmed ? new Set([count]) : undefined,
+      always,
     );
   }
   const kept = new Set(after.map((group) => group.id));
@@ -757,7 +763,7 @@ export function useStoredWork(args: {
       dropQueuedSaves();
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, expectedSeq: seq };
-      void Promise.allSettled([...inFlight.current.values()])
+      void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (lookupKeyRef.current !== keyNow) return;
           dropQueuedSaves();
@@ -810,7 +816,7 @@ export function useStoredWork(args: {
       dropQueuedSaves(section);
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, section };
-      void Promise.allSettled([...inFlight.current.values()])
+      void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (lookupKeyRef.current !== keyNow) return;
           dropQueuedSaves(section);
@@ -876,7 +882,7 @@ export function useStoredWork(args: {
 
 function withStaffPaths(stored: StoredWork, events: FieldEvent[]): StoredWork {
   if (stored.status !== 'ready' || !events.length) return stored;
-  const fieldProvenance: WorkItemProvenanceMap = { ...(provenanceOf(stored) ?? {}) };
+  const fieldProvenance: WorkItemProvenanceMap = { ...provenanceOf(stored) };
   for (const event of events) {
     fieldProvenance[event.path] = { source: 'staff', value: event.value };
   }

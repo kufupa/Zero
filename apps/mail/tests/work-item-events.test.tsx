@@ -103,6 +103,34 @@ describe('storedDecision', () => {
 });
 
 describe('fieldEventsBetween', () => {
+  it('persists the copied row occupancy independently and saves later corrections on that row', () => {
+    const original = { ...G1, childrenPerRoom: 1, childrenAges: [8] };
+    const session = { ...initialQuoteSession(), groups: [original] };
+    const copied = reduceQuoteSession(session, { type: 'duplicate_row', groupId: 'g1', token: 'c1' });
+    const copy = copied.groups.find((group) => group.id === 'r_c1')!;
+    expect(copy).toMatchObject({ childrenPerRoom: 1, childrenAges: [8] });
+    expect(fieldEventsBetween(READY.refs, session.groups, copied.groups)).toEqual(expect.arrayContaining([
+      { path: 'stays[st-1].rows[r_c1].childrenPerRoom', value: 1 },
+      { path: 'stays[st-1].rows[r_c1].childAges', value: [8] },
+    ]));
+    const corrected = copied.groups.map((group) => group.id === copy.id
+      ? { ...group, childrenPerRoom: 2, childrenAges: [8, 11] }
+      : group);
+    expect(fieldEventsBetween(READY.refs, copied.groups, corrected)).toEqual([
+      { path: 'stays[st-1].rows[r_c1].childrenPerRoom', value: 2 },
+      { path: 'stays[st-1].rows[r_c1].childAges', value: [8, 11] },
+    ]);
+  });
+
+  it('saves empty ages alongside a confirmed zero for a stay with no extracted row', () => {
+    const before = { ...G3, childrenPerRoom: null };
+    const after = { ...before, childrenPerRoom: 0 };
+    expect(fieldEventsBetween(READY.refs, [before], [after])).toEqual([
+      { path: 'stays[st-2].rows[st-2_row].childrenPerRoom', value: 0 },
+      { path: 'stays[st-2].rows[st-2_row].childAges', value: [] },
+    ]);
+  });
+
   it('maps a row edit to its stable stay and row ids, and a stay date to the stay', () => {
     expect(
       fieldEventsBetween(READY.refs, [G1, G2], [row('g1', 'st-1', { arrivalDate: '2026-10-11', quantity: 2, board: 'dinner_bb' }), G2]),

@@ -65,6 +65,18 @@ function buildWithRoomType(roomType: string) {
 }
 
 describe('prepared quote input from stored extraction', () => {
+  it('keeps the extracted child count in the prepared group and its price identity', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({ stays: [{ ...stay, rows: [{
+      ...stay.rows[0]!, childrenPerRoom: 2, childAges: [8, 11],
+    }] }] });
+    const input = plan.inputs[0]!;
+    expect(input.groups[0]).toMatchObject({ childrenPerRoom: 2, childrenAges: [8, 11] });
+    expect(staffQuotePriceKey(input)).not.toEqual(staffQuotePriceKey({
+      ...input, groups: [{ ...input.groups[0]!, childrenPerRoom: 1 }],
+    }));
+  });
+
   it('defaults unspecified board to B&B and uses the single-row total without inventing occupancy', () => {
     const plan = build();
 

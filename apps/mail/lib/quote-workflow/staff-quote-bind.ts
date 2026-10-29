@@ -73,6 +73,7 @@ export type StaffQuoteGroupInput = {
   departureDate: string;
   quantity: number;
   adults: number;
+  childrenPerRoom?: number | null;
   childrenAges: number[];
   board: 'room_only' | 'bb' | 'dinner_bb';
   roomCodes?: string[];
@@ -198,7 +199,7 @@ function staffQuoteRequestMatches(
     ...(canIgnoreStrategy ? { salesStrategy: expected.salesStrategy } : {}),
     groups: input.groups.map((group) => ({
       id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate, quantity: group.quantity,
-      adults: group.adults, childrenAges: group.childrenAges, board: group.board,
+      adults: group.adults, childrenPerRoom: group.childrenPerRoom ?? null, childrenAges: group.childrenAges, board: group.board,
       roomCodes: [...(group.roomCodes ?? [])].sort(), rateCode: group.rateCode ?? null,
     })),
   });
@@ -217,6 +218,7 @@ function staffQuoteStayTermsMatch(
         departureDate: group.departureDate,
         quantity: group.quantity,
         adults: group.adults,
+        childrenPerRoom: group.childrenPerRoom ?? null,
         childrenAges: group.childrenAges,
         board: group.board,
         roomCodes: [...(group.roomCodes ?? [])].sort(),
@@ -537,6 +539,7 @@ export function staffQuoteGroupsFromStay(
       departureDate: group.departureDate,
       quantity: group.quantity,
       adults: group.adults,
+      childrenPerRoom: group.childrenPerRoom,
       childrenAges: [...group.childrenAges],
       board: group.board,
       ...(rooms.status === 'codes' ? { roomCodes: rooms.codes } : {}),

@@ -34,6 +34,14 @@ const stay = (overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
 });
 
 describe('HRDAV native room and board maps', () => {
+  it('carries an explicit child count into the quote request', () => {
+    expect(staffQuoteGroupsFromStay([
+      stay({ childrenPerRoom: 1, childrenAges: [8] }),
+    ], HRCEN_PROPERTY_CODE)).toMatchObject({
+      ok: [{ childrenPerRoom: 1, childrenAges: [8] }],
+    });
+  });
+
   it('resolves Da Vinci room names on HRDAV and leaves Centurion-only types unknown', () => {
     expect(resolveNativeRoomCodes({ roomPreference: 'Junior Suite', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
       status: 'codes',

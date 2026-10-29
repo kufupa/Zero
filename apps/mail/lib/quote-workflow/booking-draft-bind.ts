@@ -163,6 +163,7 @@ export function overlayLunaGroupsFromStaff(
       departure: group.departureDate ?? null,
       rooms: group.quantity ?? null,
       adultsPerRoom: group.adults ?? null,
+      childrenPerRoom: group.childrenPerRoom ?? null,
       childAges: [...(group.childrenAges ?? [])],
       board:
         group.board === 'dinner_bb'
@@ -348,6 +349,7 @@ export function buildExpiredPriorRequoteBindArgs(args: {
         departureDate: group.departureDate,
         quantity: group.quantity,
         adults: group.adults,
+        childrenPerRoom: group.childrenPerRoom ?? null,
         childrenAges: [...group.childrenAges],
         board: group.board,
         roomCodes: group.roomCodes ? [...group.roomCodes] : undefined,

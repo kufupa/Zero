@@ -108,6 +108,9 @@ const mailExtractionObjectSchema = z.object({
             .int()
             .nullable()
             .describe('Adults in EACH room, not in total.'),
+          childrenPerRoom: z.number().int().nullable().optional().describe(
+            'Children in each room; null when the count is unknown, absent for older reads.',
+          ),
           childAges: z.array(z.number().int()).describe('Age of each child in these rooms.'),
           board: z.enum(['room_only', 'bb', 'dbb']).nullable(),
         }),
@@ -138,6 +141,7 @@ export type ExtractionRow = {
   roomType: string | null;
   rooms: number | null;
   adultsPerRoom: number | null;
+  childrenPerRoom?: number | null;
   childAges: number[];
   board: ExtractionBoard | null;
 };
@@ -353,15 +357,21 @@ export function sanitizeExtraction(
       requested: dateRangeOf(anchorStayDateRange(stay.requested, dateAnchor)),
       booked: stay.booked ? dateRangeOf(stay.booked) : null,
       totalRooms: countOf(stay.totalRooms, 1, 999),
-      rows: stay.rows.slice(0, MAX_ROWS).map((row) => ({
-        roomType: cleanText(row.roomType),
-        rooms: countOf(row.rooms, 1, 999),
-        adultsPerRoom: countOf(row.adultsPerRoom, 1, 9),
-        childAges: row.childAges
+      rows: stay.rows.slice(0, MAX_ROWS).map((row) => {
+        const childAges = row.childAges
           .filter((age) => Number.isInteger(age) && age >= 0 && age <= 17)
-          .slice(0, 9),
-        board: row.board,
-      })),
+          .slice(0, 9);
+        return {
+          roomType: cleanText(row.roomType),
+          rooms: countOf(row.rooms, 1, 999),
+          adultsPerRoom: countOf(row.adultsPerRoom, 1, 9),
+          ...(row.childrenPerRoom !== undefined
+            ? { childrenPerRoom: childAges.length === row.childAges.length ? countOf(row.childrenPerRoom, 0, 9) : null }
+            : {}),
+          childAges,
+          board: row.board,
+        };
+      }),
       ...(guests !== undefined ? { guests } : {}),
       ...(stay.action !== undefined ? { action: stay.action } : {}),
     };

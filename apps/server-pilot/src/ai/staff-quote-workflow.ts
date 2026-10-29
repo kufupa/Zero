@@ -47,6 +47,7 @@ const groupSchema = z
     departureDate: z.string(),
     quantity: z.number().int().min(1).max(100),
     adults: z.number().int().min(1).max(6),
+    childrenPerRoom: z.number().int().min(0).max(6).nullable().optional(),
     childrenAges: z.array(z.number().int().min(0).max(17)).max(6).default([]),
     board: z.enum(['room_only', 'bb', 'dinner_bb']),
     roomCodes: z
