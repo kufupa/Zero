@@ -207,6 +207,18 @@ describe('quote input bound to saved occupancy evidence', () => {
     })).toBe(false);
   });
 
+  it('matches the pane’s named-guest room default for each active row', () => {
+    const evidence = payload(0, []);
+    const stay = evidence.stays[0]!;
+    const first = { ...stay.rows[0]!, rooms: null, adultsPerRoom: null };
+    const second = { ...first, id: 'r_2' };
+    const make = (guests: string[]) => ({ ...evidence, stays: [{ ...stay, totalRooms: null, rows: [first, second],
+      guests: guests.map((name) => ({ name, confirmationNumber: null })) }] });
+    const groups = [group([], 0), { ...group([], 0), id: 'r_2' }];
+    expect(childOccupancyMatchesStored(groups, make(['First Guest', 'Second Guest']), {})).toBe(true);
+    expect(childOccupancyMatchesStored(groups, make(['First Guest']), {})).toBe(false);
+  });
+
   it('uses saved date corrections and treats an explicit cleared date as unknown', () => {
     const evidence = payload(0, []);
     const moved = { ...group([], 0), arrivalDate: '2027-10-22', departureDate: '2027-10-23' };
