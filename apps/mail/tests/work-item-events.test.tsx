@@ -487,6 +487,128 @@ describe('useStoredWork', () => {
     }
   });
 
+  it('discards a failed edit after resetting its stay, so rates and Retry do not restore it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      mutate.mockRejectedValue(new Error('offline'));
+      const reset = vi.fn(async (_input: unknown) => ({ reset: 1 }));
+      const routes = { workItems: { ...trpc.workItems, resetSection: { mutate: reset } } };
+      const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => { await Promise.resolve(); });
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS + WORK_EVENT_RETRY_MS); });
+      expect(result.current.saveFailed).toBe(true);
+      expect(await result.current.flushEdits()).toBe(false);
+
+      await act(async () => {
+        result.current.resetSection({ type: 'stay', stayId: 'st-1' });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(reset).toHaveBeenCalledWith({ workItemId: 'wi-1', section: { type: 'stay', stayId: 'st-1' } });
+      expect(result.current.saveFailed).toBe(false);
+      expect(await result.current.flushEdits()).toBe(true);
+      act(() => result.current.retrySave());
+      expect(mutate).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('cancels an automatic retry before reset and blocks a same-tick quote until reset completes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      mutate.mockRejectedValue(new Error('offline'));
+      let finishReset: (value: { reset: number }) => void = () => undefined;
+      const reset = vi.fn((_input: unknown) => new Promise<{ reset: number }>((resolve) => { finishReset = resolve; }));
+      const routes = { workItems: { ...trpc.workItems, resetSection: { mutate: reset } } };
+      const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => { await Promise.resolve(); });
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS); });
+      expect(mutate).toHaveBeenCalledTimes(1);
+
+      let flushed: Promise<boolean> = Promise.resolve(true);
+      act(() => {
+        result.current.resetSection({ type: 'stay', stayId: 'st-1' });
+        flushed = result.current.flushEdits();
+      });
+      expect(await flushed).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_RETRY_MS); });
+      expect(reset).toHaveBeenCalledTimes(1);
+      expect(mutate).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        finishReset({ reset: 1 });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(await result.current.flushEdits()).toBe(true);
+      expect(mutate).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps failed edits for another mailbox when resetting the same field on this one', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate, query } = fakeTrpc(() => READY);
+      mutate.mockRejectedValue(new Error('offline'));
+      const reset = vi.fn(async (_input: unknown) => ({ reset: 1 }));
+      const routes = { workItems: { ...trpc.workItems, resetSection: { mutate: reset } } };
+      const { result, rerender } = renderHook(
+        ({ id }: { id: string }) => useStoredWork({ trpc: routes, internetMessageId: id }),
+        { initialProps: { id: 'm-1' } },
+      );
+      await act(async () => { await Promise.resolve(); });
+      act(() => result.current.recordContact('phone', 'first'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS + WORK_EVENT_RETRY_MS); });
+      query.mockImplementation(async () => ({ ...READY, workItemId: 'wi-2' }));
+      rerender({ id: 'm-2' });
+      await act(async () => { await Promise.resolve(); });
+      act(() => result.current.recordContact('phone', 'second'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS + WORK_EVENT_RETRY_MS); });
+      expect(mutate).toHaveBeenCalledTimes(4);
+      await act(async () => {
+        result.current.resetSection({ type: 'contact' });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(result.current.saveFailed).toBe(true);
+      mutate.mockResolvedValue({ aiValue: null, value: null });
+      await act(async () => { result.current.retrySave(); await Promise.resolve(); });
+      expect(mutate).toHaveBeenCalledTimes(5);
+      expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({ workItemId: 'wi-1', value: 'first' }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves a failed edit for Retry when resetting its section fails', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      mutate.mockRejectedValue(new Error('offline'));
+      const reset = vi.fn(async (_input: unknown) => { throw new Error('offline'); });
+      const routes = { workItems: { ...trpc.workItems, resetSection: { mutate: reset } } };
+      const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => { await Promise.resolve(); });
+      act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]));
+      await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS + WORK_EVENT_RETRY_MS); });
+      await act(async () => {
+        result.current.resetSection({ type: 'stay', stayId: 'st-1' });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(result.current.historyError).toBe("Couldn't reset — try again");
+      expect(result.current.saveFailed).toBe(true);
+      expect(await result.current.flushEdits()).toBe(false);
+      mutate.mockResolvedValue({ aiValue: null, value: null });
+      await act(async () => { result.current.retrySave(); await Promise.resolve(); });
+      expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({ workItemId: 'wi-1', value: 4 }));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('never accepts a field she edited, while its first save is failing and waiting for the retry', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
