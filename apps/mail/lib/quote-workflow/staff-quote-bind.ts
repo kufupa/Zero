@@ -31,6 +31,7 @@ import type {
   QuoteSalesStrategyValue,
   QuoteStrategyRow,
   QuoteFailureCauseClass,
+  QuoteSourcePreference,
 } from './types';
 import {
   HRCEN_PROPERTY_CODE,
@@ -76,6 +77,7 @@ export type StaffQuoteGroupInput = {
   adults: number;
   childrenPerRoom?: number | null;
   childrenAges: number[];
+  sourcePreference?: QuoteSourcePreference;
   board: 'room_only' | 'bb' | 'dinner_bb';
   roomCodes?: string[];
   /** The HMS rate a rate card pinned. Absent means HMS picks the rate, as before. */
@@ -201,6 +203,7 @@ function staffQuoteRequestMatches(
     groups: input.groups.map((group) => ({
       id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate, quantity: group.quantity,
       adults: group.adults, childrenPerRoom: group.childrenPerRoom ?? null, childrenAges: group.childrenAges, board: group.board,
+      sourcePreference: group.sourcePreference ?? null,
       roomCodes: [...(group.roomCodes ?? [])].sort(), rateCode: group.rateCode ?? null,
     })),
   });
@@ -222,6 +225,7 @@ function staffQuoteStayTermsMatch(
         childrenPerRoom: group.childrenPerRoom ?? null,
         childrenAges: group.childrenAges,
         board: group.board,
+        sourcePreference: group.sourcePreference ?? null,
         roomCodes: [...(group.roomCodes ?? [])].sort(),
       })),
     );
@@ -546,6 +550,9 @@ export function staffQuoteGroupsFromStay(
       ...(propertyCode !== HRDAV_PROPERTY_CODE ? { childrenPerRoom: group.childrenPerRoom } : {}),
       childrenAges: [...group.childrenAges],
       board: group.board,
+      ...(propertyCode === HRCEN_PROPERTY_CODE && group.sourcePreference
+        ? { sourcePreference: { ...group.sourcePreference } }
+        : {}),
       ...(rooms.status === 'codes' ? { roomCodes: rooms.codes } : {}),
       ...(group.rateCode ? { rateCode: group.rateCode } : {}),
     });
@@ -1196,6 +1203,7 @@ function boundStaffQuoteResult(
     totalMinor: result.totalMinor,
     currency: result.currency,
     quoteRequestKey: `${result.arrivalDate}:${result.departureDate}`,
+    requestedSalesStrategy: built.input.salesStrategy,
     ...(typeof result.dinnerAddOnRequired === 'boolean' && !hrdavQuote
       ? { dinnerAddOnRequired: result.dinnerAddOnRequired }
       : {}),
@@ -1639,6 +1647,8 @@ export async function bindStaffQuoteStrategy(
     if ('error' in request) return failedQuoteStrategy(args.strategyCode, request.error, 'needs_staff');
     const query: StaffQuoteJobQuery = async (lookup, options) => {
       const view = await args.staffQuoteJob!(lookup, options);
+      // A comparison must prove which strategy its saved request actually asked HMS to price.
+      if (view && args.propertyCode === HRCEN_PROPERTY_CODE && view.request?.kind !== 'staff_quote') return null;
       if (
         view?.request?.kind === 'staff_quote' &&
         !staffQuoteRequestMatches(view.request, request.input)
