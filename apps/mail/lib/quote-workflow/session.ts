@@ -271,10 +271,8 @@ type StayAskRow = StayGroupRequirement & {
 export type PaneCaseSnapshot = { identity: string | null; tasks: string; propertyCode: string | null; aliases?: Record<string, string> };
 type PaneRead = { groups: StayGroupRequirement[] | null; rememberedSource: PaneCaseSnapshot | null; propertyCode: string | null };
 type CaseAnalysis = QuoteAnalysis & {
-  paneRead?: PaneRead;
-  caseActionsUncertain?: boolean;
-  caseBaseline?: PaneCaseSnapshot | null;
-  caseAliases?: Record<string, string>;
+  paneRead?: PaneRead; caseActionsUncertain?: boolean;
+  caseBaseline?: PaneCaseSnapshot | null; caseAliases?: Record<string, string>;
 };
 
 /** Keep the unmodified read as analysis.groups; remembered rows are only the editable pane projection. */
@@ -316,7 +314,7 @@ function sameCaseAfterRemovedRows(before: string | null, after: string | null, r
   } catch { return false; }
 }
 /** Join the formats only for one matching room with no known existing-booking evidence. */
-function singleCaseReclassification(before: QuoteAnalysis, after: QuoteAnalysis, chosen: string | null): Record<string, string> | null {
+export function singleCaseReclassification(before: QuoteAnalysis, after: QuoteAnalysis, chosen: string | null): Record<string, string> | null {
   const a = before.groups as StayAskRow[], b = after.groups as StayAskRow[];
   if (a.length !== 1 || b.length !== 1 || !a[0]?.stayId || b[0]?.stayId || b[0]?.id !== 'g1' ||
     a[0].staffCreated || b[0].staffCreated || a[0].quantity !== 1 || b[0].quantity !== 1 || !a[0].arrivalDate || !a[0].departureDate ||

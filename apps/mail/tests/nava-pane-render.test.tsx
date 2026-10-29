@@ -1683,6 +1683,65 @@ describe('NavaPane', () => {
       String((event as { fieldPath?: string }).fieldPath).includes('s_external'))).toBe(false);
   });
 
+  it('saves deferred edits once a reclassified stored case is verified again', async () => {
+    const storedRow = { ...STORED_READY.analysis.groups[0]!, stayId: 's_1', quantity: 1,
+      stayGuests: [{ name: 'Ada Example', confirmationNumber: null }] };
+    const lunaRow = { arrival: storedRow.arrivalDate, departure: storedRow.departureDate, rooms: 1,
+      adultsPerRoom: 2, childAges: [], board: 'bb', roomPreference: null, guestNames: [], stayId: 's_1' };
+    const quote = { ...BOOKING_LUNA, workflow: 'quote', groups: [lunaRow],
+      tasks: [{ kind: 'quote', groupIndexes: [0], note: '' }] };
+    const stored = { ...STORED_READY, analysis: { ...STORED_READY.analysis, groups: [storedRow], luna: quote } };
+    bridgeMockState.storedWork = stored;
+    const live = { status: 'ready', ...STORED_READY.analysis,
+      groups: [{ ...storedRow, id: 'g1', stayId: undefined, stayGuests: undefined, guestNames: ['Ada Example'] }],
+      luna: { ...quote, workflow: 'create_booking', groups: [{ ...lunaRow, stayId: undefined, guestNames: ['Ada Example'] }],
+        tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }] } };
+    bridgeMockState.analysisOverride = live;
+    const firstPane = render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText('Change how Nava reads this email'), { target: { value: 'create_booking' } });
+    await waitFor(() => expect(bridgeMockState.analyseCalls).toBeGreaterThan(0));
+    await waitFor(() => {
+      const record = JSON.parse(sessionStorage.getItem('nava.pane-source.v1:transport-1::<quote-request@example.invalid>') ?? 'null');
+      expect(Object.values(record?.source?.aliases ?? {})).toContain('s_1');
+    });
+    expect(screen.queryByText(/The email case changed or could not be verified/)).toBeNull();
+    firstPane.unmount();
+    bridgeMockState.recordEvent.mockClear();
+
+    bridgeMockState.analysisOverride = { ...live, groups: [{ ...live.groups[0]!, guestNames: ['Bea Example'] }],
+      luna: { ...live.luna, groups: [{ ...live.luna.groups[0]!, guestNames: ['Bea Example'] }] } };
+    const heldPane = render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
+    await waitFor(() => expect(screen.getByText('4 adults per room')).toBeDefined());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1000)); });
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    heldPane.unmount();
+
+    bridgeMockState.analysisOverride = live;
+    bridgeMockState.storedWork = { ...stored, analysis: { ...stored.analysis, groups: [{ ...storedRow,
+      stayGuests: [{ name: 'Bea Example', confirmationNumber: null }] }] } };
+    const lookupCount = bridgeMockState.storedWorkLookups;
+    const mismatchedPane = render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByText('4 adults per room')).toBeDefined();
+    await waitFor(() => expect(bridgeMockState.storedWorkLookups).toBeGreaterThan(lookupCount));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1000)); });
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    mismatchedPane.unmount();
+
+    bridgeMockState.storedWork = stored;
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByText('4 adults per room')).toBeDefined();
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(expect.objectContaining({
+      fieldPath: 'stays[s_1].rows[r_1].adults', value: 4,
+    })), { timeout: 4000 });
+  }, 20_000);
+
   it('shows finished rates after an email switch without queueing another staff_quote', async () => {
     bridgeMockState.storedWork = {
       ...STORED_READY,
