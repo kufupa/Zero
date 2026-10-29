@@ -372,7 +372,7 @@ export const quoteWorkflowRouter = router({
         if ((record || definitelyNotSaved) && await finishPaneStayCommit(db, { ...scope, claimId: claim.claimId, record })) return result;
       } catch {
         // No exception text: database errors can contain connection details.
-        console.warn('stay_commit_persist_failed', { stayId, workItemId });
+        console.warn('stay_commit_persist_failed', { stayId, workItemId, runId: result.runId, confirmationNumber: result.confirmationNumber });
       }
       // Keep any known number visible, but never claim a durable verified result when persistence failed.
       if (result.status === 'ok') {

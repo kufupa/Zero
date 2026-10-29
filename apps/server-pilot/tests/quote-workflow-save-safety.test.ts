@@ -396,7 +396,7 @@ describe('quoteWorkflow commit safety with fake storage and HMS', () => {
   });
 
   it('retains a durable unknown claim during an ongoing receipt outage', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
     fakeRunner();
     const client = caller();
     const parentPreview = await preview(client);
@@ -406,6 +406,9 @@ describe('quoteWorkflow commit safety with fake storage and HMS', () => {
     });
     expect(state.stays).toMatchObject({ [parentId]: unknown });
     expect(state.paneStaySaveClaims).toMatchObject({ [parentId]: expect.any(String) });
+    expect(warning).toHaveBeenCalledWith('stay_commit_persist_failed', {
+      stayId: parentId, workItemId, runId: undefined, confirmationNumber: '11111111-1',
+    });
     expect(await caller().quoteWorkflow.commitStay({ ...child, previewDigest: 'c'.repeat(64) })).toMatchObject({
       status: 'refused', reason: 'pane_save_dependency_unconfirmed',
     });
