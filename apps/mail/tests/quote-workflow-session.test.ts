@@ -236,6 +236,16 @@ describe('quote session', () => {
     expect(late.analysis?.caseActionsUncertain).toBe(true);
     expect(canCreateNativeDraft(late)).toBe(false);
   });
+
+  it('keeps an edited placeholder if a late live read arrives after a malformed-source hold', () => {
+    const typed = { ...quoteAnalysis.groups[0]!, id: 'draft-stay', adults: 3,
+      fields: { adults: 'staff_corrected' as const } };
+    const pending = { ...initialQuoteSession(), binding: bind(), groups: [typed] };
+    const held = reduceQuoteSession(pending, { type: 'analysis_failed', message: 'Review manually.', hold: true });
+    const late = reduceQuoteSession(held, { type: 'analysis_ready', analysis: quoteAnalysis });
+    expect(late.groups).toEqual([typed]);
+    expect(late.analysis?.caseActionsUncertain).toBe(true);
+  });
   it('does not tick shuttle for a bank transfer, but does for an airport transfer', () => {
     const analysisWith = (request: string) => ({
       ...quoteAnalysis,

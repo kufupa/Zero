@@ -749,6 +749,7 @@ export function useStoredWork(args: {
     const epoch = selection.current.epoch;
     let settled = false;
     let timedOut = false;
+    let lateHold: Extract<StoredWork, { status: 'failed' }> | null = null;
     // The lookup goes out under the active mailbox, so its work item lives there.
     const { activeTransportId: transportId, userId } = getMailCacheScope();
     const settle = (result: LookupResult) => {
@@ -762,7 +763,7 @@ export function useStoredWork(args: {
       settled = true;
       clearTimeout(timer);
       if (result.status === 'ready') readyAt.current = Date.now();
-      setLookup({ key: lookupKey, transportId, userId, result, timedOut });
+      setLookup({ key: lookupKey, transportId, userId, result: lateHold ?? result, timedOut });
     };
     const timer = setTimeout(() => {
       if (!current || settled) return;
@@ -780,6 +781,11 @@ export function useStoredWork(args: {
       isStale: () => !current,
       onRead: () => clearTimeout(timer),
       openTimeoutMs: STORED_LOOKUP_TIMEOUT_MS,
+      onLateHold: (hold) => {
+        if (!current) return;
+        lateHold = hold;
+        setLookup({ key: lookupKey, transportId, userId, result: hold, timedOut });
+      },
     }).then(settle);
     return () => {
       current = false;

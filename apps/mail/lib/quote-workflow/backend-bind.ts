@@ -57,7 +57,6 @@ export type AnalyseSelectionResult =
       intent: QuoteAnalysis['intent'];
       caseActionsUncertain?: boolean;
       groups: QuoteAnalysis['groups'];
-      caseActionsUncertain?: boolean;
       requestedRoomsByStay?: QuoteAnalysis['requestedRoomsByStay'];
       missingQuoteReplyFields?: QuoteAnalysis['missingQuoteReplyFields'];
       secondaryAsks: QuoteAnalysis['secondaryAsks'];
@@ -164,7 +163,6 @@ export type ReadyAnalyse = Omit<Extract<AnalyseSelectionResult, { status: 'ready
 export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
   return {
     intent: ready.intent,
-    ...(ready.caseActionsUncertain ? { caseActionsUncertain: true } : {}),
     groups: ready.groups,
     ...(ready.caseActionsUncertain ? { caseActionsUncertain: true } : {}),
     ...(ready.requestedRoomsByStay ? { requestedRoomsByStay: ready.requestedRoomsByStay } : {}),
@@ -327,6 +325,8 @@ export async function bindStoredWork(args: {
   onRead?: () => void;
   /** How long the open may take. Past it the read shows without an item, the same as a failed open. */
   openTimeoutMs?: number;
+  /** An open that finishes after that deadline can still discover a newer source hold. */
+  onLateHold?: (hold: Extract<StoredWork, { status: 'failed' }>) => void;
 }): Promise<StoredWork | { status: 'unavailable' }> {
   if (!args.query) return { status: 'unavailable' };
   const input = { internetMessageId: args.internetMessageId };
@@ -350,11 +350,18 @@ export async function bindStoredWork(args: {
   }
   args.onRead?.();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let openTimedOut = false;
   const late = new Promise<StoredWork>((resolve) => {
-    if (args.openTimeoutMs !== undefined) timer = setTimeout(() => resolve(stored), args.openTimeoutMs);
+    if (args.openTimeoutMs !== undefined) timer = setTimeout(() => {
+      openTimedOut = true;
+      resolve(stored);
+    }, args.openTimeoutMs);
   });
   try {
     const opening = pinned ? args.open.mutate(input, pinned) : args.open.mutate(input);
+    void opening.then((opened) => {
+      if (openTimedOut && opened.status === 'failed' && opened.hold && !args.isStale?.()) args.onLateHold?.(opened);
+    }, () => {});
     const opened = await Promise.race([opening, late]);
     return (opened.status === 'failed' && opened.hold) ||
       (opened.status === 'ready' && (opened.workItemId || opened.sourceConflict || opened.analysis.caseActionsUncertain))

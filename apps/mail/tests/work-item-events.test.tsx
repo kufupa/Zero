@@ -507,6 +507,26 @@ describe('useStoredWork', () => {
     }
   });
 
+  it('replaces a timed-out open with a late source hold', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      let finish!: (value: unknown) => void;
+      const { trpc } = fakeTrpc(() => ({ ...READY, workItemId: null, workItemStatus: null }));
+      const open = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+      const routes = { workItems: { ...trpc.workItems, open: { mutate: open } } };
+      const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-late-open' }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(open).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(STORED_LOOKUP_TIMEOUT_MS); });
+      expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null });
+      await act(async () => { finish({ status: 'failed', reason: 'Review manually.', hold: true }); });
+      expect(result.current.pane).toMatchObject({ state: 'failed', hold: true });
+      expect(storedDecision(result.current.pane, true)).toEqual({ kind: 'failed', reason: 'Review manually.' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('logs five quick edits to one field as one event after the quiet period', async () => {
     const { trpc, mutate } = fakeTrpc(() => READY);
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));

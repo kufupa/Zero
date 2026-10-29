@@ -6,9 +6,9 @@ import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { completedDateOptions, requireMultiOptionDraft, type CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
-import { missingQuoteDetailsReplyOnly, quoteDeclineReplyOnly } from '@/lib/quote-workflow/session';
+import { missingQuoteDetailsReplyOnly, quoteDeclineReplyOnly, type QuoteStrategySessionAction } from '@/lib/quote-workflow/session';
 import { currentPaneOwner, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
-import { HRCEN_PROPERTY_CODE, type QuoteSession } from '@/lib/quote-workflow/types';
+import { HRCEN_PROPERTY_CODE, type QuoteSession, type QuoteSessionAction } from '@/lib/quote-workflow/types';
 import { trpcClient } from '@/providers/query-provider';
 
 const MAX_UNRESOLVED_REPLY_OPERATIONS = 256;
@@ -73,18 +73,18 @@ type ReplyKind = 'quote' | 'decline' | 'missing_details' | 'other';
 type PreparedQuoteRef = { workflowRunId: string; revisionRef: string };
 
 /** Changes are marked at dispatch time, before React renders or debounced work-item saves finish. */
-export function useQuoteDraftRevision<Action extends { type: string }>(
-  dispatch: (action: Action) => void, pendingPartyKinds: QuoteSession['pendingPartyKinds'],
+export function useQuoteDraftRevision(
+  dispatch: (action: QuoteSessionAction | QuoteStrategySessionAction) => void,
+  pendingPartyKinds: QuoteSession['pendingPartyKinds'],
 ) {
   const live = useRef(0);
   const latestPendingKinds = useRef(pendingPartyKinds);
   latestPendingKinds.current = pendingPartyKinds;
   const mark = useCallback(() => { live.current += 1; }, []);
-  const trackedDispatch = useCallback((action: Action) => {
+  const trackedDispatch = useCallback((action: QuoteSessionAction | QuoteStrategySessionAction) => {
     if (action.type === 'party_lookup_pending') {
       // Pickers report this after every render, but a real transition must hold a pending draft.
-      const lookup = action as { kind: string; pending: boolean };
-      if ((latestPendingKinds.current ?? []).some((kind) => kind === lookup.kind) !== lookup.pending) mark();
+      if ((latestPendingKinds.current ?? []).some((kind) => kind === action.kind) !== action.pending) mark();
     } else if (action.type !== 'quote_strategy_comparison_started' && action.type !== 'quote_strategy_comparison_result') {
       // Background comparison rows do not select or alter the reviewed quote.
       mark();

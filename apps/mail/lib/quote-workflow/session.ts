@@ -273,6 +273,7 @@ type CaseAnalysis = QuoteAnalysis & {
   paneRead?: { groups: StayGroupRequirement[] | null; rememberedSource: PaneCaseSnapshot | null; propertyCode: string | null;
     trustedStoredProjection?: boolean };
   caseActionsUncertain?: boolean; caseBaseline?: PaneCaseSnapshot | null; caseAliases?: Record<string, string>;
+  invalidStoredReadHold?: true;
 };
 
 /** Keep the unmodified read as analysis.groups; remembered rows are only the editable pane projection. */
@@ -2064,6 +2065,8 @@ export function reduceQuoteSession(
         analysisStartStayRevision: session.stayRevision,
       };
     case 'analysis_ready': {
+      // Once the stored source is corrupt, an earlier live response cannot clear the hold or consume typed rows.
+      if ((session.analysis as CaseAnalysis | null)?.invalidStoredReadHold) return session;
       const draft = session.groups.length === 1 && session.groups[0]!.id === DRAFT_GROUP_ID ? session.groups[0]! : null;
       if (draft) {
         // She typed into the blank stay while Nava read. Take the read, then lay what she typed over each of its stays.
@@ -2272,7 +2275,8 @@ export function reduceQuoteSession(
       // A corrupt stored source may arrive after a live read or quote. Keep staff's fields, but invalidate every
       // derived result and keep the case blocked even if a late live read finishes.
       const held = action.hold
-        ? heldCaseAnalysis(session.analysis ?? { intent: 'other', groups: [], secondaryAsks: [], alternatives: [] }, null)
+        ? { ...heldCaseAnalysis(session.analysis ?? { intent: 'other', groups: [], secondaryAsks: [], alternatives: [] }, null),
+          invalidStoredReadHold: true as const }
         : session.analysis;
       const failed = {
         id: 'analysis-failed',
