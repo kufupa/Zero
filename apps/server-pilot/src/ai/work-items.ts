@@ -818,6 +818,10 @@ export function storedAnalysis(
     const slot = order[index];
     if (!slot) return;
     group.id = slot.groupId;
+    if (caseScoped && groups[index]?.board === null) {
+      group.board = 'unknown';
+      group.fields.board = 'missing';
+    }
     if (slot.rowId && totalRoomsDefaultRowIds.has(slot.rowId)) group.fields.quantity = 'defaulted';
     const stayPath = `stays[${slot.stayId}].requested`;
     const corrected: Array<[string, string]> = [

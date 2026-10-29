@@ -4698,9 +4698,10 @@ describe('multi-ask stay cards: guests, action, split', () => {
     let session = withStaffSource(analysisReady(analysis));
     session = reduceQuoteSession(session, { type: 'analysis_started' });
     session = reduceQuoteSession(session, { type: 'patch_group', groupId: row.id, patch: { adults: 3 } });
+    const laterRow = { ...row, stayGuests: [{ name: 'Bea Example', confirmationNumber: null }] };
     session = reduceQuoteSession(session, {
       type: 'analysis_ready',
-      analysis: { ...analysis, groups: [{ ...row, stayGuests: [{ name: 'Bea Example', confirmationNumber: null }] }] },
+      analysis: { ...analysis, groups: [laterRow] },
     });
     expect(session.groups[0]?.adults).toBe(3);
     expect(stayAskGuests(session, 'stay-a')).toEqual(row.stayGuests);
@@ -4727,11 +4728,12 @@ describe('multi-ask stay cards: guests, action, split', () => {
     let session = analysisReady(analysis);
     session = reduceQuoteSession(session, { type: 'analysis_started' });
     session = reduceQuoteSession(session, { type: 'patch_group', groupId: row.id, patch: { adults: 3 } });
+    const laterRow = { ...row, stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' };
     session = reduceQuoteSession(session, {
       type: 'analysis_ready',
       analysis: {
         ...analysis,
-        groups: [{ ...row, stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' }],
+        groups: [laterRow],
         amendment: { ...analysis.amendment!, confirmationNumber: '22222222-1' },
       },
     });

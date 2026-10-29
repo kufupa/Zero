@@ -39,6 +39,7 @@ describe('stored case boundaries', () => {
     payload.stays[1]!.requested = { ...payload.stays[0]!.requested };
     payload.stays[1]!.booked = { ...payload.stays[0]!.booked! };
     payload.stays[1]!.guests = [{ name: 'Bea Example', confirmationNumber: '22222222-1' }];
+    payload.stays[1]!.rows[0]!.board = null;
     payload.confirmationNumbers = ['57291630-1', '22222222-1'];
 
     const analysis = storedAnalysis({ kind: 'cancellation', payload, attachments: [] }, {}).analysis;
@@ -47,6 +48,7 @@ describe('stored case boundaries', () => {
     expect(analysis.groups.map((group) => [group.stayId, group.caseScoped, group.confirmationNumber])).toEqual([
       ['s_existing', true, '57291630-1'], ['s_new', true, '22222222-1'],
     ]);
+    expect(analysis.groups[1]).toMatchObject({ board: 'unknown', fields: { board: 'missing' } });
     expect(analysis.luna.tasks.map((task) => task.groupIndexes)).toEqual([[0], [1]]);
   });
 
