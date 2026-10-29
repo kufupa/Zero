@@ -588,13 +588,17 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   } finally {
     await rm(requestPath, { force: true });
   }
+  // If the runner did not leave a complete result, assume Save might have fired.
+  let clickedSave = input.paneCommit;
   let cmsReason: 'saved_cms_mismatch' | undefined;
   let cmsMismatches: PaneStayResult['cmsMismatches'];
   try {
     const result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as {
       cmsReason?: unknown;
+      clickedSave?: unknown;
       proof?: { mismatches?: PaneStayResult['cmsMismatches'] };
     };
+    if (typeof result.clickedSave === 'boolean') clickedSave = result.clickedSave;
     if (result.cmsReason === 'saved_cms_mismatch') {
       cmsReason = result.cmsReason;
       cmsMismatches = result.proof?.mismatches?.filter((item) => ['udfchar09', 'udfchar13', 'send'].includes(item.field));
@@ -607,7 +611,7 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   const screenshots = (await readdir(dir)).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)).sort();
   return {
     outcome,
-    clickedSave: Boolean(input.paneCommit),
+    clickedSave,
     ...(cmsReason ? { cmsReason, cmsMismatches } : {}),
     confirmationNumber,
     runId,
@@ -654,6 +658,10 @@ export function paneStayPropertyRefusal(
 // Preview: fill, check availability, screenshots, no save. A successful preview returns previewDigest.
 // Commit: needs the previewDigest of a successful preview of this same stay (same owner, within 10 minutes,
 // once). The duplicate reader stays fail-closed: while it is parked, commit refuses.
+function paneStayNotSaved(reason: string): PaneStayResult {
+  return { status: 'refused', reason, clickedSave: false };
+}
+
 export async function runPaneStay(input: {
   mode: PaneStayMode;
   stay: PaneStay;
@@ -671,46 +679,46 @@ export async function runPaneStay(input: {
   const mode = paneStaySaveLoaders.mode?.() ?? paneStaySaveMode();
   const modeRefusal = paneStayModeRefusal(mode, input.stay);
   if (modeRefusal) {
-    return { status: 'refused', reason: modeRefusal };
+    return paneStayNotSaved(modeRefusal);
   }
   const resolved = paneStayCreateTarget({
     transportId: input.transportId ?? paneStayTransportIdFromOwner(input.owner),
     propertyCode: input.stay.propertyCode,
   });
   if (!resolved.ok) {
-    return { status: 'refused', reason: resolved.reason };
+    return paneStayNotSaved(resolved.reason);
   }
   const target = resolved.target;
   if (target.browserSlot === 'davinci' && hmsDavinciCreateMode() === 'lab') {
     try {
       assertLabStayGuard({ lastName: input.stay.lastName, arrival: input.stay.arrival });
     } catch (error) {
-      return { status: 'refused', reason: (error as Error).message };
+      return paneStayNotSaved((error as Error).message);
     }
   }
   const bookRefusal = stayBookFieldRefusal(input.stay, profileFor(target.propertyCode));
   if (bookRefusal) {
-    return { status: 'refused', reason: bookRefusal };
+    return paneStayNotSaved(bookRefusal);
   }
   const parent = input.parentConfirmation?.trim() || undefined;
   if (parent && !PARENT_CONFIRMATION.test(parent)) {
-    return { status: 'refused', reason: 'pane_save_parent_invalid' };
+    return paneStayNotSaved('pane_save_parent_invalid');
   }
   const digest = paneStayDigest(input.stay);
   if (input.mode === 'commit') {
     if (!paneStaySaveLoaders.osressGuestDatesSearch) {
-      return { status: 'refused', reason: 'osress_reader_parked' };
+      return paneStayNotSaved('osress_reader_parked');
     }
     if (input.previewDigest === undefined) {
-      return { status: 'refused', reason: 'pane_save_preview_required' };
+      return paneStayNotSaved('pane_save_preview_required');
     }
     if (input.previewDigest !== digest) {
-      return { status: 'refused', reason: 'pane_save_digest_mismatch' };
+      return paneStayNotSaved('pane_save_digest_mismatch');
     }
   }
   const lock = paneStaySaveLoaders.lock ?? paneStayPropertyLock(target);
   if (!lock) {
-    return { status: 'refused', reason: 'pane_save_lock_unavailable' };
+    return paneStayNotSaved('pane_save_lock_unavailable');
   }
   const reader = input.mode === 'commit' ? paneStaySaveLoaders.osressGuestDatesSearch : null;
   const spawn = paneStaySaveLoaders.spawn ?? defaultSpawn;
@@ -718,8 +726,10 @@ export async function runPaneStay(input: {
   // and the save. The reader takes no lock of its own: a second acquisition would wait on this one.
   type Gate = { refusal: string } | { spawned: PaneStaySpawnResult };
   let gate: Gate;
+  let lockEntered = false;
   try {
     gate = await lock.withLock(async (): Promise<Gate> => {
+      lockEntered = true;
       if (reader) {
         const status = await reader({
           lastName: input.stay.lastName,
@@ -757,16 +767,24 @@ export async function runPaneStay(input: {
       };
     }, acquisitionWithin(PANE_PROPERTY_LOCK_WAIT_MS));
   } catch (error) {
-    if (isPropertyReadLockDeadline(error)) return { status: 'refused', reason: 'refused_lock_busy' };
+    if (!lockEntered && isPropertyReadLockDeadline(error)) return paneStayNotSaved('refused_lock_busy');
     warnPaneStaySpawnFailed('save', error);
     throw error;
   }
-  if ('refusal' in gate) return { status: 'refused', reason: gate.refusal };
+  if ('refusal' in gate) return paneStayNotSaved(gate.refusal);
   const spawned = gate.spawned;
-  if (/^refused/i.test(spawned.outcome)) {
-    return { status: 'refused', reason: spawned.outcome === 'refused_agency_not_unique' ? 'agency_not_unique' : spawned.outcome };
+  const refusedAfterSave = input.mode === 'commit' && /^refused/i.test(spawned.outcome) && spawned.clickedSave;
+  if (/^refused/i.test(spawned.outcome) && !refusedAfterSave) {
+    return {
+      status: 'refused',
+      reason: spawned.outcome === 'refused_agency_not_unique' ? 'agency_not_unique' : spawned.outcome,
+      clickedSave: spawned.clickedSave,
+      ...(spawned.confirmationNumber ? { confirmationNumber: spawned.confirmationNumber } : {}),
+      ...(spawned.runId ? { runId: spawned.runId } : {}),
+      ...(spawned.screenshots ? { screenshots: spawned.screenshots } : {}),
+    };
   }
-  if (input.mode === 'commit' && UNCONFIRMED_SAVE_OUTCOMES.has(spawned.outcome)) {
+  if (input.mode === 'commit' && (UNCONFIRMED_SAVE_OUTCOMES.has(spawned.outcome) || refusedAfterSave)) {
     // HMS may have booked the stay. The run stays fetchable, so staff can see what HMS shows.
     if (spawned.runId && spawned.runDir) {
       registerPaneRun({
@@ -787,6 +805,7 @@ export async function runPaneStay(input: {
     return {
       status: 'refused',
       reason: PANE_SAVE_UNCONFIRMED,
+      ...(spawned.confirmationNumber ? { confirmationNumber: spawned.confirmationNumber } : {}),
       runId: spawned.runId,
       screenshots: spawned.screenshots ?? [],
       ...(shots ? { shots } : {}),

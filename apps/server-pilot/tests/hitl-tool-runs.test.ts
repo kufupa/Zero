@@ -39,6 +39,8 @@ const mocks = vi.hoisted(() => ({
     throw new Error('getDb must not be called');
   }),
   runPaneStay: vi.fn(),
+  claimPaneStayCommit: vi.fn(),
+  finishPaneStayCommit: vi.fn(),
   previewCancel: vi.fn(),
   commitCancel: vi.fn(),
   findStay: vi.fn(),
@@ -52,6 +54,10 @@ vi.mock('../src/db/client.js', async (importOriginal) => ({
 vi.mock('../src/ai/pane-stay-save.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/ai/pane-stay-save.js')>()),
   runPaneStay: mocks.runPaneStay,
+}));
+vi.mock('../src/ai/pane-stay-commit-guard.js', () => ({
+  claimPaneStayCommit: mocks.claimPaneStayCommit,
+  finishPaneStayCommit: mocks.finishPaneStayCommit,
 }));
 vi.mock('../src/ai/pane-stay-cancel.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/ai/pane-stay-cancel.js')>()),
@@ -365,6 +371,15 @@ describe('tool-run ledger: classifiers by site', () => {
     expect(
       classifyStayCommit({ status: 'refused', reason: 'pane_save_unconfirmed' } as never, DIGEST),
     ).toMatchObject({ status: 'unconfirmed', errorCode: 'pane_save_unconfirmed' });
+    expect(classifyStayCommit({
+      status: 'ok', outcome: 'committed_unverified', confirmationNumber: '57291630-1',
+    } as never, DIGEST)).toMatchObject({
+      status: 'unconfirmed', errorCode: 'pane_save_unconfirmed', confirmationNo: '57291630-1',
+      result: { outcome: 'committed_unverified' },
+    });
+    expect(classifyStayCommit({
+      status: 'ok', outcome: 'committed_unverified', confirmationNumber: '57291630-1',
+    } as never, DIGEST).episodeOutcome).toBeUndefined();
     expect(classifyStayCommit({ status: 'ok' } as never, DIGEST)).toMatchObject({
       status: 'unconfirmed',
       errorCode: 'pane_save_unconfirmed',
@@ -948,10 +963,14 @@ describe('tool-run ledger: route sites', () => {
     const sink = memorySink();
     toolRunLoaders.recorder = sink.recorder;
     const previewDigest = 'c'.repeat(64);
-    mocks.runPaneStay.mockResolvedValueOnce({ status: 'ok', confirmationNumber: '57291630-1', outcome: 'booked' });
+    mocks.getDb.mockReturnValueOnce({} as never).mockReturnValueOnce({} as never);
+    mocks.claimPaneStayCommit.mockResolvedValue({ status: 'ready', claimId: 'claim' });
+    mocks.finishPaneStayCommit.mockResolvedValue(true);
+    mocks.runPaneStay.mockResolvedValueOnce({ status: 'ok', confirmationNumber: '57291630-1', outcome: 'committed' });
     mocks.runPaneStay.mockResolvedValueOnce({ status: 'refused', reason: 'pane_save_unconfirmed' });
-    await caller().quoteWorkflow.commitStay({ ...stayInput, previewDigest });
-    await caller().quoteWorkflow.commitStay({ ...stayInput, previewDigest });
+    const identity = { workItemId: '00000000-0000-4000-8000-000000000001', stayId: 's_aaaa1111_1' };
+    await caller().quoteWorkflow.commitStay({ ...stayInput, ...identity, previewDigest });
+    await caller().quoteWorkflow.commitStay({ ...stayInput, ...identity, previewDigest });
     expect(sink.rows.map((row) => [row.kind, row.status])).toEqual([
       ['stay_commit', 'ok'],
       ['stay_commit', 'unconfirmed'],

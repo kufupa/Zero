@@ -246,7 +246,7 @@ describe('pane stay save guards', () => {
     };
     await expect(
       runPaneStay({ mode: 'preview', stay: labStay, owner: freshOwner() }),
-    ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy' });
+    ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy', clickedSave: false });
   });
 
   it('refuses refused_lock_busy in commit when the duplicate check cannot get the lock in time', async () => {
@@ -254,7 +254,7 @@ describe('pane stay save guards', () => {
     paneStaySaveLoaders.osressGuestDatesSearch = async () => 'busy';
     await expect(
       runPaneStay({ mode: 'commit', stay: labStay, owner: freshOwner(), previewDigest: paneStayDigest(labStay) }),
-    ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy' });
+    ).resolves.toEqual({ status: 'refused', reason: 'refused_lock_busy', clickedSave: false });
   });
 
   it('refuses adults 0 before any write lock or spawn', async () => {

@@ -1737,7 +1737,7 @@ describe('booking card pane save', () => {
     ]);
   });
 
-  it('after an unverified save, says Saved — check in Infor and shows the after-save screenshot', async () => {
+  it('after an unverified save, shows its uncertainty and the after-save screenshot', async () => {
     const { client, screenshot } = paneClient({
       commit: async () => ({
         status: 'ok',
@@ -1754,7 +1754,7 @@ describe('booking card pane save', () => {
     fireEvent.click(bookButton(0));
     expect(await screen.findByText(PANE_SAVE_UNVERIFIED_COPY)).toBeDefined();
     expect(screen.queryByText('Booked in HMS – confirmation 98765-1')).toBeNull();
-    expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'View HMS screenshot' })).toBeDefined();
     expect(screenshot).toHaveBeenCalledWith(PANE_SAVE_RUN, 'saved.png');
     expect(screenshot).not.toHaveBeenCalledWith(PANE_SAVE_RUN, 'before.png');
   });
@@ -1770,7 +1770,7 @@ describe('booking card pane save', () => {
     fireEvent.click(previewButton(0));
     await waitFor(() => expect(bookButton(0).disabled).toBe(false));
     fireEvent.click(bookButton(0));
-    expect(await screen.findByText('Booked, but HMS confirmation settings did not match — check CMS in HMS')).toBeDefined();
+    expect(await screen.findByText('HMS confirmation settings did not match. Booking is unverified.')).toBeDefined();
     expect(commit).toHaveBeenCalledTimes(1);
     const retry = screen.queryByRole('button', { name: 'Create provisional booking' });
     expect(!retry || (retry as HTMLButtonElement).disabled).toBe(true);
@@ -1882,10 +1882,10 @@ describe('booking card pane save', () => {
     fireEvent.click(bookButton(0));
     expect(
       await screen.findByText(
-        'HMS may have saved this booking. Check HMS for John Smith 2026-11-12 – 2026-11-14 before trying again.',
+        'HMS may have saved this booking for John Smith 2026-11-12 – 2026-11-14, but Nava could not verify it.',
       ),
     ).toBeDefined();
-    expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
+    expect(await screen.findByRole('button', { name: 'View HMS screenshot' })).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
     expect(screen.queryByText(/Booked in HMS/)).toBeNull();
@@ -1903,7 +1903,7 @@ describe('booking card pane save', () => {
     expect(await screen.findByText(PANE_PREVIEW_FAILED_COPY)).toBeDefined();
   });
 
-  it('warns to check HMS when the book call throws after it may have saved', async () => {
+  it('surfaces uncertainty when the book call throws after it may have saved', async () => {
     const { client } = paneClient({
       commit: async () => {
         throw new Error('socket closed');
@@ -1954,7 +1954,7 @@ describe('booking card pane save', () => {
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
   });
 
-  it('on mount, an unknown save tells staff to check HMS before booking again', async () => {
+  it('on mount, an unknown save remains unconfirmed', async () => {
     const { client, commit } = paneClient();
     const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
     render(
@@ -1973,7 +1973,7 @@ describe('booking card pane save', () => {
     );
     expect(
       screen.getByText(
-        'HMS may have saved this booking. Check HMS for John Smith 2026-11-12 – 2026-11-14 before trying again.',
+        'HMS may have saved this booking for John Smith 2026-11-12 – 2026-11-14, but Nava could not verify it.',
       ),
     ).toBeDefined();
     expect(commit).not.toHaveBeenCalled();
@@ -2428,9 +2428,9 @@ describe('pane save helpers', () => {
 
   const johnSmith = { firstName: 'John', lastName: 'Smith', arrival: '2026-11-12', departure: '2026-11-14' };
 
-  it('says HMS may have saved the booking, with the guest and dates to check', () => {
+  it('says HMS may have saved the booking, with the guest and dates', () => {
     expect(paneUnconfirmedMessage(johnSmith)).toBe(
-      'HMS may have saved this booking. Check HMS for John Smith 2026-11-12 – 2026-11-14 before trying again.',
+      'HMS may have saved this booking for John Smith 2026-11-12 – 2026-11-14, but Nava could not verify it.',
     );
     expect(paneRefusalMessage(PANE_SAVE_UNCONFIRMED_REASON, johnSmith)).toBe(paneUnconfirmedMessage(johnSmith));
     expect(PANE_SAVE_UNCONFIRMED_REASON).toBe('pane_save_unconfirmed');
