@@ -32,6 +32,22 @@ function mixedMail(): MailExtractionPayload {
 }
 
 describe('stored case boundaries', () => {
+  it('marks a saved staff-created stay so rate searches survive reopening', () => {
+    const payload = mixedMail();
+    payload.stays = [payload.stays[1]!];
+    payload.confirmationNumbers = [];
+    const state = {
+      'stays[s_staff].requested.arrival': '2027-12-01',
+      'stays[s_staff].requested.departure': '2027-12-03',
+      'stays[s_staff].rows[r_staff].count': 1,
+      'stays[s_staff].rows[r_staff].adults': 1,
+    };
+    const { analysis } = storedAnalysis({ kind: 'booking', payload, attachments: [] }, state);
+    expect(analysis.groups.find((group) => group.stayId === 's_staff')).toMatchObject({ staffCreated: true });
+    expect(analysis.groups.find((group) => group.stayId === 's_new')?.staffCreated).toBeUndefined();
+    expect(analysis.luna.tasks).toEqual([{ kind: 'create_booking', groupIndexes: [0], note: '' }]);
+  });
+
   it('keeps same-date existing cases separately selectable on cancellation mail', () => {
     const payload = mixedMail();
     payload.stays[0]!.action = 'cancel';

@@ -566,10 +566,8 @@ function payloadConfirmationNumbers(payload: MailExtractionPayload): string[] {
 
 /** Staff changing a count does not establish which room an existing booking belongs to. */
 function singleOriginalRoom(
-  stay: ExtractionStay | undefined,
-  rowId: string | null | undefined,
-  rooms: number | null | undefined,
-  projectedRowCount: number,
+  stay: ExtractionStay | undefined, rowId: string | null | undefined,
+  rooms: number | null | undefined, projectedRowCount: number,
 ): boolean {
   if (!stay || stay.rows.length > 1 || projectedRowCount !== 1) return false;
   if (stay.rows.length === 0) return rowId === null && stay.totalRooms === 1;
@@ -579,11 +577,8 @@ function singleOriginalRoom(
 
 /** A stay's guests have no room links; only a single original room can carry a guest's number. */
 function confirmationForGroup(
-  stay: ExtractionStay | undefined,
-  payload: MailExtractionPayload,
-  rowId: string | null | undefined,
-  rooms: number | null | undefined,
-  projectedRowCount: number,
+  stay: ExtractionStay | undefined, payload: MailExtractionPayload, rowId: string | null | undefined,
+  rooms: number | null | undefined, projectedRowCount: number,
 ): string | null {
   if (!stay || !singleOriginalRoom(stay, rowId, rooms, projectedRowCount)) return null;
   if (payload.stays.length === 1 && payloadConfirmationNumbers(payload).length > 1) return null;
@@ -601,8 +596,7 @@ function confirmationForGroup(
 }
 
 function guestsForStay(stay: ExtractionStay | undefined): Array<{ name: string; confirmationNumber: string | null }> {
-  return (stay?.guests ?? [])
-    .filter((guest) => guest.name.trim().length > 0)
+  return (stay?.guests ?? []).filter((guest) => guest.name.trim().length > 0)
     .map((guest) => ({ name: guest.name, confirmationNumber: trimmedConfirmation(guest.confirmationNumber) }));
 }
 
@@ -616,8 +610,7 @@ function stayOwningConfirmation(
 
 /** The top-level workflow is a summary; retain any explicit per-stay actions on their own rows. */
 function taskKindForStay(
-  stay: ExtractionStay | undefined,
-  workflow: LunaAnalysis['workflow'],
+  stay: ExtractionStay | undefined, workflow: LunaAnalysis['workflow'],
   hasUnassignedConfirmation: boolean,
 ): LunaAnalysis['tasks'][number]['kind'] | null {
   switch (stay?.action) {
@@ -625,12 +618,8 @@ function taskKindForStay(
     case 'new_booking': return stay.booked || stayGuestConfirmations(stay).length || hasUnassignedConfirmation ? 'other' : 'create_booking';
     case 'amend': return 'amend';
     case 'cancel': return 'cancel';
-    case 'no_action':
-    case 'payment_proof':
-    case 'billing':
-    case 'group_event':
-    case 'other_actionable': return 'other';
     default:
+      if (stay?.action) return 'other';
       // Legacy extractions may not have per-stay actions. Existing-booking evidence is not a new booking.
       return stay && workflow === 'create_booking' && (stay.booked || stayGuestConfirmations(stay).length || hasUnassignedConfirmation)
         ? 'other'
@@ -858,13 +847,10 @@ export function storedAnalysis(
       const fields: string[] = [];
       if (!group.arrivalDate) fields.push(`Arrival date for stay ${stay}`);
       if (!group.departureDate) fields.push(`Departure date for stay ${stay}`);
-      if (group.quantity === undefined && group.adults === undefined) {
-        fields.push(`Number of rooms and occupancy per room for stay ${stay}`);
-      } else if (group.quantity === undefined) {
-        fields.push(`Number of rooms for stay ${stay}`);
-      } else if (group.adults === undefined) {
-        fields.push(`Number of guests per room for stay ${stay}`);
-      }
+      const occupancy = group.quantity === undefined
+        ? group.adults === undefined ? 'Number of rooms and occupancy per room' : 'Number of rooms'
+        : group.adults === undefined ? 'Number of guests per room' : null;
+      if (occupancy) fields.push(`${occupancy} for stay ${stay}`);
       return fields;
     });
   }
@@ -905,6 +891,7 @@ export function storedAnalysis(
           ...(roomType.code ? { roomTypeCode: roomType.code } : {}),
           roomTypeSuggestions: roomType.suggestions,
           stayId,
+          ...(!sourceStay ? { staffCreated: true } : {}),
           ...(caseScoped ? { caseScoped: true } : {}),
           ...(caseLookupConfirmation ? { caseLookupConfirmation } : {}),
           // Kept separately from room assignment so staff can see the names and numbers as reported in the email.

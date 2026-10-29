@@ -236,6 +236,7 @@ type StayAskRow = StayGroupRequirement & {
   stayGuests?: StayAskGuest[];
   caseScoped?: boolean;
   caseLookupConfirmation?: string;
+  staffCreated?: boolean;
 };
 
 function quoteDateGroups(groups: StayGroupRequirement[]): StayGroupRequirement[] {
@@ -352,9 +353,8 @@ function caseIdentitySignature(analysis: QuoteAnalysis | null): string | null {
   const groups = (analysis?.groups ?? []) as StayAskRow[];
   if (!groups.some((group) => Array.isArray(group.stayGuests) || group.caseScoped)) return null;
   return JSON.stringify(groups.map((group) => {
-    const roster = group.stayGuests?.map((guest) => JSON.stringify([
-      guest.name.trim(), trimmedConfirmation(guest.confirmationNumber),
-    ])).sort() ?? null;
+    const roster = group.stayGuests?.map((guest) =>
+      JSON.stringify([guest.name.trim(), trimmedConfirmation(guest.confirmationNumber)])).sort() ?? null;
     const confirmation = trimmedConfirmation(group.confirmationNumber) ?? trimmedConfirmation(group.caseLookupConfirmation);
     return JSON.stringify([
       group.id, stayIdOf(group), confirmation, roster,
@@ -517,7 +517,17 @@ export function quoteRunBlockReason(
 ): string | null {
   if (step.kind === 'quote_stay' && step.shareKey && session.analysis) {
     const cases = { groups: session.groups, analysis: session.analysis };
-    if (blocksNewBooking(cases, step.shareKey) && (caseReviewPending(session.analysis) || stayAskAction(cases, step.shareKey) !== 'quote')) {
+    const rows = stayAskRows(cases, step.shareKey);
+    const sourceIds = new Set((session.analysis.groups as StayAskRow[]).filter((row) => !row.staffCreated).map(stayIdOf));
+    const rateIds = new Set((session.analysis.luna?.tasks ?? [])
+      .filter((task) => task.kind === 'quote' || task.kind === 'create_booking')
+      .flatMap((task) => taskStayIds(cases, task)));
+    // New rows created by staff can get rates, but they cannot become booking drafts without a case action.
+    const staffAdded = rows.some((row) => !sourceIds.has(stayIdOf(row))) && rows.every((row) => {
+      const id = stayIdOf(row);
+      return !sourceIds.has(id) || (rateIds.has(id) && ['quote', 'booking'].includes(stayAskAction(cases, id)));
+    });
+    if (blocksNewBooking(cases, step.shareKey) && stayAskAction(cases, step.shareKey) !== 'quote' && !staffAdded) {
       return 'This stay includes an existing or unclear booking. Review it in HMS before making a new booking.';
     }
   }
