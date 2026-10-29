@@ -482,6 +482,16 @@ describe('Insert saved reply in Outlook', () => {
     expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('lookup to finish'));
   });
 
+  it('does not add the Centurion lookup hold to a Da Vinci quote', async () => {
+    const sendCommand = outlookSendCommand();
+    const session = { ...editableQuotedSession(), quotePropertyCode: 'HRDAV', pendingPartyKinds: ['company'] } as QuoteSession;
+    const { result } = renderEditableInsertHook(sendCommand, session);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(true);
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(true);
+  });
+
   it('allows an unchanged reviewed draft when a background comparison result arrives', async () => {
     let release!: (value: { ready: boolean }) => void;
     quoteDraftPreflight.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));

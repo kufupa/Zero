@@ -8,7 +8,7 @@ import { completedDateOptions, requireMultiOptionDraft, type CombinedReplyEdit }
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
 import { missingQuoteDetailsReplyOnly, quoteDeclineReplyOnly } from '@/lib/quote-workflow/session';
 import { currentPaneOwner, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
-import type { QuoteSession } from '@/lib/quote-workflow/types';
+import { HRCEN_PROPERTY_CODE, type QuoteSession } from '@/lib/quote-workflow/types';
 import { trpcClient } from '@/providers/query-provider';
 
 const MAX_UNRESOLVED_REPLY_OPERATIONS = 256;
@@ -475,7 +475,8 @@ export function useInsertAiDraft({
         if (!proof) return;
         if (!sameStaffScope() || contextRevision.current.selectionEpoch !== proof.localSelectionEpoch)
           throw new QuoteDraftPreflightError('The selected email changed. Select it again.');
-        if (quoteSessionRef.current.pendingPartyKinds?.length)
+        if ((!quoteSessionRef.current.quotePropertyCode || quoteSessionRef.current.quotePropertyCode === HRCEN_PROPERTY_CODE) &&
+          quoteSessionRef.current.pendingPartyKinds?.length)
           throw new QuoteDraftPreflightError('Wait for the company or agency lookup to finish, then try again.');
         if (quoteDraftRevision.current !== proof.localRevision || !sameLocalQuote(proof.localQuote, quoteSessionRef.current))
           throw new QuoteDraftPreflightError('The quote changed in the pane. Prepare it again.');
