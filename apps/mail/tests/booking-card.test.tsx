@@ -2866,6 +2866,7 @@ describe('expired prior re-quote', () => {
         departureDate: '2026-11-14',
         quantity: 2,
         adults: 1,
+        childrenPerRoom: 1,
         childrenAges: [7],
         board: 'bb' as const,
         roomCodes: ['STQN'],
@@ -2904,6 +2905,7 @@ describe('expired prior re-quote', () => {
         departureDate: '2026-11-14',
         quantity: 2,
         adults: 1,
+        childrenPerRoom: 1,
         childrenAges: [7],
         board: 'bb',
         roomCodes: ['STQN'],
@@ -3025,6 +3027,7 @@ describe('expired prior re-quote', () => {
     const edited: StayGroupRequirement = {
       ...g1,
       quantity: 3,
+      childrenPerRoom: 0,
       fields: { ...g1.fields, quantity: 'staff_corrected' },
     };
     const session = reduceQuoteSession({ ...initialQuoteSession(), groups: [g1] }, {
@@ -3089,6 +3092,28 @@ describe('expired prior re-quote', () => {
         salesStrategy: 'BAR',
       }),
     );
+  });
+
+  it('does not quote a prior stay with an unknown child count', async () => {
+    const unknown = { ...stored, groups: [{ ...stored.groups[0]!, childrenPerRoom: null }] };
+    const { groups, header } = buildExpiredPriorRequoteBindArgs({
+      stored: unknown,
+      sessionGroups: [g1],
+      sessionHeader: { salesStrategy: 'BAR', company: '', agency: '', attention: '', clientEmail: '', clientTelephone: '' },
+      staffEdited: false,
+    });
+    const mutate = vi.fn();
+    const result = await bindExecuteStaffQuote({
+      mutate,
+      source: { messageId: 'mail-1', threadId: 'thread-1', sourceHash: STAFF_HASH },
+      propertyCode: HRCEN_PROPERTY_CODE,
+      selectionEpoch: 1,
+      inputRevision: 1,
+      groups,
+      header,
+    });
+    expect(result).toMatchObject({ status: 'unavailable', reason: expect.stringMatching(/number of children/i) });
+    expect(mutate).not.toHaveBeenCalled();
   });
 
   it('loads stored payload through getPriorStaffQuoteRequote', async () => {
