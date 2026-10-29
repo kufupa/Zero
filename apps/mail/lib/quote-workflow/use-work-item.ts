@@ -423,8 +423,9 @@ function sameRecoverySource(source: ReadyStored, opened: ReadyStored): boolean {
   if (!source.extractionId || opened.extractionId !== source.extractionId || opened.kind !== source.kind ||
       opened.analysis.intent !== source.analysis.intent || opened.analysis.luna?.workflow !== source.analysis.luna?.workflow ||
       source.analysis.caseActionsUncertain || opened.analysis.caseActionsUncertain || !provenanceOf(opened)) return false;
+  if (source.workItemStatus && !['needs_you', 'review'].includes(source.workItemStatus)) return false;
   if (source.workItemStatus && source.workItemStatus !== opened.workItemStatus) return false;
-  if (opened.workItemId && !source.workItemStatus && !['needs_you', 'review'].includes(opened.workItemStatus ?? '')) return false;
+  if (opened.workItemId && !['needs_you', 'review'].includes(opened.workItemStatus ?? '')) return false;
   if (!recoveryValuesEqual(source.stays ?? {}, opened.stays ?? {})) return false;
   const raw = (opened as { fieldProvenance?: unknown }).fieldProvenance;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.values(raw).some((entry) =>

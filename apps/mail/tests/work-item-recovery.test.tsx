@@ -240,11 +240,12 @@ describe('missing work item recovery', () => {
   it('replays a new edit over unchanged seeded provenance', async () => {
     mailbox();
     const { trpc, open, record } = harness();
-    open.mockRejectedValueOnce(new Error('initial')).mockResolvedValueOnce({
+    const seeded: Ready = {
       ...OPENED, fieldProvenance: {
         [CHILD]: { source: 'ai', value: null }, [AGES]: { source: 'ai', value: [] },
       },
-    });
+    };
+    open.mockRejectedValueOnce(new Error('initial')).mockResolvedValueOnce(seeded);
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
     await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
     act(() => result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }]));
@@ -290,6 +291,18 @@ describe('missing work item recovery', () => {
     await act(async () => expect(await result.current.flushEdits()).toBe(false));
     expect(record).not.toHaveBeenCalled();
     expect(result.current.saveError).toMatch(/verif/i);
+  });
+
+  it('holds recovery when both the captured and reopened status are closed', async () => {
+    mailbox();
+    const { trpc, query, open, record } = harness();
+    query.mockResolvedValueOnce({ ...READ, workItemStatus: 'done' });
+    open.mockRejectedValueOnce(new Error('initial')).mockResolvedValueOnce({ ...OPENED, workItemStatus: 'done' });
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
+    act(() => result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }]));
+    await act(async () => expect(await result.current.flushEdits()).toBe(false));
+    expect(record).not.toHaveBeenCalled();
   });
 
   it('does not replay when the opened state fingerprint is missing', async () => {
