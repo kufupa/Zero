@@ -3654,6 +3654,15 @@ describe('a header patched while Nava reads', () => {
 });
 
 describe('type changed after rates', () => {
+  it('accepts a first quote after staff change an empty non-quote read to quote', () => {
+    let s = analysisReady({ ...quoteAnalysis, intent: 'other', groups: [], luna: lunaQuote({ workflow: 'other' }) });
+    s = reduceQuoteSession(s, { type: 'treat_as', treatAs: 'quote' });
+    s = reduceQuoteSession(s, { type: 'analysis_started' });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
+    expect(s.groups.map((group) => group.id)).toEqual(['g1']);
+    expect(quoteRunBlockReason(s, stepFor(s, STAY_A))).toBeNull();
+  });
+
   it('drops the old rates and booking cards so Get rates runs again for the chosen type, keeping the stays', () => {
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });

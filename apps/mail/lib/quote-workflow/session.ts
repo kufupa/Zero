@@ -2043,9 +2043,8 @@ export function reduceQuoteSession(
       const previous = paneCaseSnapshot(session.analysis) ?? (!session.analysis ? paneRead?.rememberedSource : null);
       const fresh = paneCaseSnapshot(action.analysis);
       const wasHeld = caseReviewPending(session.analysis);
-      const editsToKeep = staffEditedDuringRun || session.stayRevision > 1 ||
-        (!session.staffNote && hasStaffStayEdits(session)) || paneRead?.groups != null ||
-        session.groups.some((group) => Object.values(group.fields).includes('staff_corrected'));
+      const editsToKeep = staffEditedDuringRun || session.stayRevision > 1 || paneRead?.groups != null ||
+        session.groups.some((group) => group.stayId !== undefined || Object.values(group.fields).includes('staff_corrected'));
       const unverifiedMemory = !session.analysis && paneRead?.groups != null && !paneRead.rememberedSource &&
         JSON.stringify(paneRead.groups) !== JSON.stringify(action.analysis.groups);
       const explicitTypeChange = !wasHeld && Boolean(session.treatAs) &&
@@ -2111,7 +2110,7 @@ export function reduceQuoteSession(
       // A header patch made while Nava reads (contact prefill, party auto-lookup) moves inputRevision
       // but leaves no stays to keep, so it must not turn a first read into a re-read that drops it.
       const keepsStays = session.groups.length > 0 || session.stayRevision > 1;
-      if (keepsStays && hasStaffStayEdits(session) && (!session.staffNote || wasHeld)) {
+      if (keepsStays && editsToKeep && (!session.staffNote || wasHeld)) {
         const extras = session.reviewItems.filter(
           (item) => (item.kind === 'document_failure' || item.kind === 'analysis_failure') && item.id !== 'case-source-changed',
         );
