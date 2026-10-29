@@ -1220,7 +1220,7 @@ export function useStoredWork(args: {
       });
   }, [internetMessageId, lookupKey, readyTransportId]);
 
-  const discardUnconfirmedEdits = useCallback(async (): Promise<boolean> => {
+  const discardUnconfirmedEdits = useCallback(async (beforePublish?: () => boolean): Promise<boolean> => {
     if (!lookupKey || !internetMessageId || selection.current.epoch !== renderEpoch || !readyTransportId || !currentLookup?.userId || !scope || historyPending ||
         recovering.current.has(lookupKey) || discardInProgress.current ||
         !scope.startsWith(`${currentLookup.userId}:`) || !scope.endsWith(`:${readyTransportId}`)) return false;
@@ -1240,7 +1240,10 @@ export function useStoredWork(args: {
     setHistoryPending(true);
     setHistoryNeedsReload(true);
     try {
-      const ok = await refetchStored((result) => result.status === 'ready' && stillSelected() && editEpoch.current === revision);
+      // Give the pane a synchronous chance to verify and reset its own edits before publishing the refreshed read.
+      // Otherwise the old placeholder can be re-applied while this promise is settling.
+      const ok = await refetchStored((result) => result.status === 'ready' && stillSelected() &&
+        editEpoch.current === revision && (!beforePublish || beforePublish()));
       if (!ok || !stillSelected() || editEpoch.current !== revision) {
         if (stillSelected()) setRecoveryProblem({ key: lookupKey, message: "Couldn't reload this request. Try again." });
         discardAwaitingRender.current = null;
