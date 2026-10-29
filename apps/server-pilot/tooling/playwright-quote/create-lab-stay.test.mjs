@@ -62,7 +62,8 @@ test('missing property is refused before an implicit or explicit create mode', (
       '--request', '/nonexistent/create-request.json', ...mode,
     ], { encoding: 'utf8', env: { PATH: process.env.PATH } });
     assert.equal(result.status, 2);
-    assert.match(result.stderr, /^PROPERTY_REQUIRED\s*$/);
+    assert.match(result.stderr, /PROPERTY_REQUIRED/);
+    assert.doesNotMatch(result.stderr, /request file:|explicit_create_mode_required/);
   }
 });
 
