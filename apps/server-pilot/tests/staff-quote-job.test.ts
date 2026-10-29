@@ -1462,6 +1462,8 @@ describe('runStaffQuote property installation', () => {
   }
 
   async function runOn(transportId: string) {
+    // This fixture checks installation selection before database admission, including in disposable-DB runs.
+    vi.stubEnv('DATABASE_URL', '');
     const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
       '../src/ai/staff-quote-run.js',
     );
@@ -1488,6 +1490,7 @@ describe('runStaffQuote property installation', () => {
 
   it.each(['Government', 'GOV'] as const)('does not apply the Centurion %s hold to a resolved HRDAV quote', async (salesStrategy) => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('DATABASE_URL', '');
     originMocks.guard.mockResolvedValue({ ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin' });
     quoteRunMocks.readConfiguration.mockReturnValue({ tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRDAV' } });
     const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
