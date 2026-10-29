@@ -3,6 +3,7 @@ import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { occupiedDates, type QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
 import { staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
+import { ensureWorkItemForMessage } from '../src/ai/work-items.js';
 import { enqueueHmsJob, HMS_JOB_PRIORITY_PREFETCH } from '../src/ai/hms-jobs.js';
 import { ReservationistTaskEvidenceUnavailable } from '../src/ai/reservationist-execution.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
@@ -12,7 +13,7 @@ import { appRouter } from '../src/trpc/router.js';
 import { configureDraftArtifactStorage } from '../src/trpc/routes/drafts.js';
 import { findParty, panePartyLookupLoaders, resetPartyCacheForTests } from '../src/ai/pane-party-lookup.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-synced-selection.js';
-import { FAITH_TRANSPORT_EMAIL, FAITH_USER_ID } from '../src/db/seed.js';
+import { DAVINCI_TRANSPORT_EMAIL, FAITH_TRANSPORT_EMAIL, FAITH_USER_ID } from '../src/db/seed.js';
 import { randomUUID } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { and, eq } from 'drizzle-orm';
@@ -336,6 +337,28 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         revisionRef: quote.revisionRef, messageId: quote.messageId });
       return { request, api, quote, proposal };
     }
+
+    it('invalidates a quote and PDF when an unedited case relinks to a changed analysis', async () => {
+      await withSeededTestDb(async (db) => {
+        const { request, api, proposal } = await readyQuoteForPdf(db);
+        const pdf = await api.workstation.qualifiedQuoteProposalPdf(proposal);
+        const preflight = { messageId: request.mail.id, threadId: request.mail.threadId, pdfHashes: [pdf.pdfHash] };
+        await expect(api.workstation.quoteDraftPreflight(preflight)).resolves.toEqual({ ready: true });
+
+        const [old] = await db.select().from(mailExtraction).where(eq(mailExtraction.messageId, request.mail.id));
+        const [newRead] = await db.insert(mailExtraction).values({
+          messageId: request.mail.id, extractorVersion: 'synthetic-new-case', status: 'succeeded', kind: 'quote',
+          payload: { ...(old!.payload as Record<string, unknown>), agency: 'Different Synthetic Agency' },
+          createdAt: new Date(Date.now() + 5_000),
+        }).returning({ id: mailExtraction.id });
+        const relinked = await ensureWorkItemForMessage(db, {
+          transportId: request.mail.transportId, messageId: request.mail.id,
+        });
+        expect(relinked).toMatchObject({ id: request.workItemId, extractionId: newRead!.id });
+        await expect(api.workstation.quoteDraftPreflight(preflight)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        await expect(api.workstation.qualifiedQuoteProposalPdf(proposal)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      });
+    });
 
     it('persists the selected work item in a newly auto-linked quote PDF job', async () => {
       await withSeededTestDb(async (db) => {
@@ -666,6 +689,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         installFixture(db, 'HRDAV');
         vi.stubEnv('HMS_JOB_QUEUE', 'on');
         vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+        vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/synthetic-hrdav-quote.json');
         vi.stubEnv('QUOTE_PDF_RENDERER', 'html');
         const request = await seedRequest(db, 'transport-davinci');
         const sourceApi = caller('transport-davinci', FAITH_USER_ID);
@@ -673,7 +698,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const prepared = await seedPreparedQuote(db, request, quote);
         const copy = await seedMailboxCopy(db, request.mail, 'transport-faith');
         const copyApi = caller('transport-faith', FAITH_USER_ID);
-        const sourceInput = pdfInput({ ...prepared, messageId: request.mail.id });
+        const sourceInput = { ...pdfInput({ ...prepared, messageId: request.mail.id }), outlookEmail: DAVINCI_TRANSPORT_EMAIL };
         const copyInput = {
           ...pdfInput({ ...prepared, messageId: copy.id }),
           outlookEmail: FAITH_TRANSPORT_EMAIL,
@@ -859,7 +884,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const pdf = await api.workstation.qualifiedQuoteProposalPdf(combined);
         expect(pdf.totalMinor).toBe(40004);
         expect(pdf.revisionId).toMatch(/^quotes:/);
-        expect(pdf.fileName).toMatch(/^Quote - Guest 26 October - 18 November 2026 \([0-9a-f]{8}\)\.pdf$/);
+        expect(pdf.fileName).toMatch(/^Quote - Quote 26 October - 18 November 2026 \([0-9a-f]{8}\)\.pdf$/);
         expect(vi.mocked(fetch).mock.calls.at(-1)![0]).toBe('http://synthetic.invalid/forms/libreoffice/convert');
         const workbook = await api.workstation.quoteWorkbook(combined);
         expect(workbook).toMatchObject({ totalMinor: 40004, revisionId: pdf.revisionId });
@@ -1228,6 +1253,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         installFixture(db);
         vi.stubEnv('HMS_JOB_QUEUE', 'on');
         vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/synthetic-hrdav-quote.json');
         const { DAVINCI_STAFF_TRANSPORT_IDS, DAVINCI_HMS_READ_TARGET } = await import(
           '../src/hms/hms-read-target.js'
         );
@@ -1260,6 +1286,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           propertyCode: 'HRCEN',
         });
         vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/synthetic-hrdav-quote.json');
         await expect(dv.quoteWorkflow.makeQuote()).resolves.toEqual({
           makeQuote: true,
           propertyCode: 'HRDAV',
