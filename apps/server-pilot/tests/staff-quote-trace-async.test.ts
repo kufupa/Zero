@@ -265,6 +265,90 @@ describe('provisional staff quote capture', () => {
     },
     15_000,
   );
+
+  it.each(['before', 'after'] as const)(
+    'forces a child that ignores abort to exit %s a provisional capture',
+    async (stage) => {
+      const controller = new AbortController();
+      const script = `
+        const fs = require('node:fs');
+        const [result, evidence] = process.argv.slice(1);
+        process.on('SIGTERM', () => fs.writeFileSync(result + '.term', 'received'));
+        fs.writeFileSync(result + '.pid', String(process.pid));
+        if (${JSON.stringify(stage)} === 'after') {
+          fs.writeFileSync(result, JSON.stringify({ evidenceDirectory: evidence, traceFinish: 'pending' }));
+        }
+        setInterval(() => {}, 20);
+      `;
+      const run1 = await run(script, { signal: controller.signal, timeoutMs: 3_000 });
+      void run1.promise.catch(() => undefined);
+      let pid: number | undefined;
+      let completion: Promise<unknown> | undefined;
+      try {
+        pid = Number(await waitForFile(`${run1.resultPath}.pid`));
+        expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+        if (stage === 'after') {
+          const outcome = await run1.promise;
+          if (outcome.kind !== 'provisional') throw new Error('expected a provisional capture');
+          completion = outcome.finished;
+        } else {
+          completion = run1.promise;
+        }
+        controller.abort(new Error('caller_gone'));
+        await waitForFile(`${run1.resultPath}.term`);
+        const settled = completion.then(() => 'resolved', () => 'rejected');
+        expect(await Promise.race([settled, delay(7_000).then(() => 'timed out')])).toBe('rejected');
+        expect(await childExited(pid, 1_000)).toBe(true);
+      } finally {
+        if (pid && !(await childExited(pid, 1_000))) {
+          try { process.kill(pid, 'SIGKILL'); } catch { /* This owned child may already have exited. */ }
+          await childExited(pid, 1_000);
+        }
+        await completion?.catch(() => undefined);
+        await run1.promise.catch(() => undefined);
+        await rm(run1.dir, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+
+  it('waits for inherited stderr to close after the direct child exits', async () => {
+    const descendant = `
+      const fs = require('node:fs');
+      const release = process.argv[1];
+      setInterval(() => { if (fs.existsSync(release)) process.exit(0); }, 20);
+    `;
+    const script = `
+      const fs = require('node:fs');
+      const { spawn } = require('node:child_process');
+      const [result] = process.argv.slice(1);
+      fs.writeFileSync(result + '.pid', String(process.pid));
+      const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, result + '.release'],
+        { stdio: ['ignore', 'ignore', 2] });
+      fs.writeFileSync(result + '.descendant', String(child.pid));
+      child.unref();
+      process.exit(0);
+    `;
+    const run1 = await run(script, { timeoutMs: 8_000 });
+    let descendantPid: number | undefined;
+    try {
+      const pid = Number(await waitForFile(`${run1.resultPath}.pid`));
+      descendantPid = Number(await waitForFile(`${run1.resultPath}.descendant`));
+      expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+      expect(Number.isSafeInteger(descendantPid) && descendantPid > 0).toBe(true);
+      expect(await childExited(pid, 3_000)).toBe(true);
+      expect(await Promise.race([run1.promise.then(() => 'settled'), delay(250).then(() => 'pending')])).toBe('pending');
+      await writeFile(`${run1.resultPath}.release`, 'release');
+      await expect(run1.promise).resolves.toEqual({ kind: 'settled' });
+    } finally {
+      await writeFile(`${run1.resultPath}.release`, 'release').catch(() => undefined);
+      if (descendantPid && !(await childExited(descendantPid, 1_000))) {
+        try { process.kill(descendantPid, 'SIGKILL'); } catch { /* This owned child may already have exited. */ }
+      }
+      await run1.promise.catch(() => undefined);
+      await rm(run1.dir, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 describe('pending staff quote finishes', () => {
