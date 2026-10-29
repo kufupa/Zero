@@ -261,7 +261,7 @@ export const qualifiedProposalInput = z
 export const quoteDraftPreflightInput = z.object({
   messageId: z.string().min(1),
   threadId: z.string().min(1),
-  pdfHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).min(1).max(32),
+  pdfHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(32),
   preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1), revisionRef: z.string().min(1) }).strict()).max(32).optional(),
 }).strict();
 export function resolveLedgerProposal(
