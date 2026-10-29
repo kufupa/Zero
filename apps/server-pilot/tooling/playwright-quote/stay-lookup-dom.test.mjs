@@ -456,6 +456,8 @@ test('commercial parser joins named HMS controls with the opened stay and keeps 
     sourceOfBusiness: 'Travel Agency',
     averageRate: '1250.00',
     status: 'Reserved',
+    guaranteeType: 'Guaranteed',
+    depositReceived: '0.00',
     arrival: '2027-09-14',
     departure: '2027-09-16',
   });

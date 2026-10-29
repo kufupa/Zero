@@ -425,7 +425,7 @@ async function post(page, origin, path, form) {
   );
 }
 
-async function readOne(page, origin, conf, propertyCode) {
+export async function readOne(page, origin, conf, propertyCode) {
   const searchText = await post(page, origin, '/web/base/OSRESS.search', searchBody(conf));
   const sessionStub = /loadLocalizedPage/i.test(searchText) && searchText.length < 2000;
   const data = pageData(searchText);
@@ -451,10 +451,12 @@ async function readOne(page, origin, conf, propertyCode) {
   };
   const hdr = await post(page, origin, '/web/base/OSRESV.HDR', form);
   const fields = pickFields(hdr);
-  const bookingState = bookingStateFields(hdr);
-  if (fields.confirmationnumber && fields.confirmationnumber !== conf) {
+  // The selected search row does not prove that the returned header is the same record.
+  if (!fields.confirmationnumber) return { conf, outcome: 'identity_unconfirmed', envelope, rowCount: 1 };
+  if (fields.confirmationnumber !== conf) {
     return { conf, outcome: 'identity_mismatch', envelope };
   }
+  const bookingState = bookingStateFields(hdr);
   const grid = {};
   for (const [k, v] of Object.entries(row)) if (v != null && String(v).trim() !== '') grid[k] = String(v);
   return {

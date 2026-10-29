@@ -391,6 +391,37 @@ test('pickFields reads HRDAV child, CMS and surname fields while ignoring unknow
   assert.equal('shouldNotRead' in fields, false);
 });
 
+test('fetch read requires the returned header to identify the selected confirmation', async () => {
+  const confirmation = '12345678-1';
+  const search = JSON.stringify({ pageData: { grid: { GRIDRESULT: { GRID: { DATA: [
+    { confirmationnumber: confirmation, id: '123' },
+  ] } } } } });
+  const commercial = {
+    rateplan: 'BAR', averagerate: '1250.00', averageratecurr: 'ZAR', grandtotal: '2500.00', grandtotalcurr: 'ZAR',
+  };
+  const page = (header) => ({
+    evaluate: async (_fn, { url }) => url.endsWith('/OSRESS.search') ? search : JSON.stringify(header),
+  });
+  const unconfirmed = await reader.readOne(page(commercial), 'https://hms.example.test', confirmation, 'HRCEN');
+  assert.equal(unconfirmed.outcome, 'identity_unconfirmed');
+  assert.equal('fields' in unconfirmed, false);
+  const mismatch = await reader.readOne(page({ ...commercial, confirmationnumber: '87654321-1' }),
+    'https://hms.example.test', confirmation, 'HRCEN');
+  assert.equal(mismatch.outcome, 'identity_mismatch');
+  assert.equal('fields' in mismatch, false);
+  const read = await reader.readOne(page({ ...commercial, confirmationnumber: confirmation }),
+    'https://hms.example.test', confirmation, 'HRCEN');
+  assert.equal(read.outcome, 'read');
+  assert.equal(read.fields.grandtotal, '2500.00');
+  assert.equal(read.fields.grandtotalcurr, 'ZAR');
+
+  const skipped = reader.resumeSkipped([
+    JSON.stringify({ conf: reader.SEP15_POSITIVE_CONTROL, outcome: 'identity_unconfirmed' }),
+    JSON.stringify({ conf: confirmation, outcome: 'not_found' }),
+  ].join('\n'));
+  assert.equal(skipped.has(confirmation), false);
+});
+
 test('navigate names a signed-out login page instead of a missing Front Desk', async () => {
   const page = {
     content: async () => '<input name="password" type="text">',
