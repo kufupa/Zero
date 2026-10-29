@@ -75,6 +75,17 @@ describe.skipIf(!TEST_DB_AVAILABLE)('property-wide pane save fence', () => {
     expect((await claimPaneStayCommit(second.db, scope(1, 'transport-centurion'))).status).toBe('ready');
   });
 
+  it('refuses both explicit and omitted parents after a confirmed room in the same item', async () => {
+    await insert(0, 'transport-centurion', { stays: { s_1: booked } });
+    const next = { ...scope(0, 'transport-centurion'), stayId: 's_2' };
+    for (const extra of [{ parentStayId: 's_1' }, {}]) {
+      expect(await claimPaneStayCommit(second.db, { ...next, ...extra }))
+        .toEqual({ status: 'refused', reason: 'pane_save_multiple_rooms_unavailable' });
+    }
+    const rows = await first.db.execute(sql`select state from work_item where id = ${ids[0]}`);
+    expect(rows[0]?.state).toEqual({ stays: { s_1: booked } });
+  });
+
   it('serializes concurrent claims across work items and retains a confirmed receipt', async () => {
     await insert(0, 'transport-davinci');
     await insert(1, 'transport-faith');

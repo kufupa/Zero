@@ -333,11 +333,12 @@ export function stayIdForRoom(
   const dated = exact.length ? [] : groups.filter((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
   if (exact.length > 1 || dated.length > 1 || !Number.isInteger(room.roomIndex) || room.roomIndex < 1 || room.roomIndex > 999) return '';
   const group = exact[0] ?? dated[0];
-  const stay = group?.stayId ?? room.groupId;
+  const groupId = group?.id ?? room.groupId;
+  const stay = group?.stayId ?? groupId;
   const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-:';
-  if (!/^[A-Za-z0-9_-]+$/.test(stay) || !room.groupId) return '';
+  if (!/^[A-Za-z0-9_-]+$/.test(stay) || !groupId || groupId.length > 40) return '';
   let row = 1n;
-  for (const char of room.groupId) {
+  for (const char of groupId) {
     const digit = alphabet.indexOf(char);
     if (digit < 0) return '';
     row = row * BigInt(alphabet.length) + BigInt(digit);
@@ -347,13 +348,16 @@ export function stayIdForRoom(
   return id.length <= 40 ? id : '';
 }
 
-/** Old receipts have no immutable case/room binding. Show them separately, never on a guessed room. */
-export function appliedSavedStayIds(
-  _draft: BookingDraftReady,
-  _groups: StayGroupRequirement[],
-  _savedStays: Record<string, SavedStayCommit> | undefined,
-): string[] {
-  return [];
+/** Keep conflicting or temporarily missing outcomes visible until independent evidence resolves them. */
+export function rememberSavedStays(stays: Record<string, SavedStayCommit>, incoming?: Record<string, SavedStayCommit>): void {
+  for (const [id, saved] of Object.entries(incoming ?? {})) {
+    const prior = stays[id];
+    if (prior && ((prior.confirmationNumber && saved.confirmationNumber && prior.confirmationNumber !== saved.confirmationNumber) ||
+      (prior.status === 'booked' && saved.status === 'unknown'))) {
+      stays[`${id}:prior:${prior.status}:${prior.confirmationNumber ?? 'none'}`] = prior;
+    } else if (prior?.confirmationNumber && !saved.confirmationNumber) continue;
+    stays[id] = saved;
+  }
 }
 
 function paneStayPreviewKey(workItemId: string | undefined, stayId: string, inputKey: string): string {
@@ -858,7 +862,7 @@ export function SavedStayReceipt({
         {confirmed ? 'Booked' : 'Unconfirmed'}
       </span>
       {saved.confirmationNumber && saved.status !== 'unknown' ? (
-        <p className="text-[12.5px] font-semibold text-emerald-800">
+        <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
           {`Booked in HMS – confirmation ${saved.confirmationNumber}`}
         </p>
       ) : (
@@ -899,6 +903,7 @@ export function BookingCards({
   propertyCode,
   confirmation,
   onSaveDefault,
+  onReceipt,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -929,6 +934,8 @@ export function BookingCards({
   confirmation?: ConfirmationSources | null;
   /** Persists the current choice as this user's default. Omitted in card-only tests. */
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
+  /** Host displays outcomes outside any date or guest card. */
+  onReceipt?: (stayId: string, receipt: SavedStayCommit | null, snapshot?: SavedStayCommit) => void;
 }) {
   const client = paneSave;
   const drafts = session ? Object.values(session.bookingDrafts) : [draft];
@@ -995,16 +1002,9 @@ export function BookingCards({
   }>>({});
   // A temporarily missing refresh must not make a prior receipt disappear or unlock another save.
   const savedScope = JSON.stringify([workItemId, draft.messageId, draft.selectionEpoch]);
-  const savedCache = useRef<{ scope: string; stays: Record<string, SavedStayCommit> }>({ scope: savedScope, stays: {} });
-  if (savedCache.current.scope !== savedScope) savedCache.current = { scope: savedScope, stays: {} };
-  for (const [id, incoming] of Object.entries(savedStays ?? {})) {
-    const prior = savedCache.current.stays[id];
-    if (prior?.confirmationNumber && incoming.confirmationNumber && prior.confirmationNumber !== incoming.confirmationNumber) {
-      savedCache.current.stays[`${id}:prior:${prior.confirmationNumber}`] = prior;
-    } else if (prior?.confirmationNumber && !incoming.confirmationNumber) continue;
-    else if (prior?.status === 'booked' && incoming.status === 'unknown') continue;
-    savedCache.current.stays[id] = incoming;
-  }
+  const savedCache = useRef<{ scope: string; stays: Record<string, SavedStayCommit> }>({ scope: savedScope, stays: Object.create(null) });
+  if (savedCache.current.scope !== savedScope) savedCache.current = { scope: savedScope, stays: Object.create(null) };
+  rememberSavedStays(savedCache.current.stays, savedStays);
   function recentCommitForRoom(roomKey: string): CommitView | undefined {
     const recent = recentCommitsRef.current[roomKey];
     const room = draft.draft.rooms.find((item) => roomKeyOf(item) === roomKey);
@@ -1477,6 +1477,12 @@ export function BookingCards({
     recentCommitsRef.current[roomKey] = {
       workItemId, stayId: room ? stayIdForRoom(room, groups) : null, commit,
     };
+    if (room && onReceipt) {
+      const stayId = stayIdForRoom(room, groups);
+      const receipt = detachedReceipt(commit);
+      if (receipt) onReceipt(stayId, receipt, savedStaysRef.current[stayId]);
+      else if (commit.status === 'refused' && commit.clearedClaim) onReceipt(stayId, null, commit.clearedClaim.snapshot);
+    }
     // Definite refusals can be previewed again; uncertain saves stay locked for an HMS check.
     patchSave(roomKey, commit.status === 'booked' ? { commit } : { commit, preview: undefined }, true);
     return commit.status === 'booked' && !commit.unverified;
@@ -1944,7 +1950,7 @@ export function BookingCards({
           onBookStay={bookThisStay}
         />
       ) : null}
-      {Object.entries(recentCommitsRef.current).flatMap(([key, recent]) => {
+      {!onReceipt && Object.entries(recentCommitsRef.current).flatMap(([key, recent]) => {
         if (recent.workItemId !== workItemId) return [];
         const receipt = detachedReceipt(recent.commit);
         if (!receipt) return [];
@@ -1952,8 +1958,8 @@ export function BookingCards({
         if (stored && stored.confirmationNumber === receipt.confirmationNumber) return [];
         return [<SavedStayReceipt key={`recent:${key}`} saved={receipt} screenshot={client?.screenshot ?? shotReader} />];
       })}
-      {Object.entries(savedStaysRef.current).flatMap(([id, saved]) =>
-        clearedSavedOutcome(id, saved) || (session && savedStays?.[id] === saved) ? [] : [
+      {!onReceipt && Object.entries(savedStaysRef.current).flatMap(([id, saved]) =>
+        clearedSavedOutcome(id, saved) ? [] : [
           <SavedStayReceipt key={`stored:${id}`} saved={saved} screenshot={client?.screenshot ?? shotReader} />,
         ])}
     </section>

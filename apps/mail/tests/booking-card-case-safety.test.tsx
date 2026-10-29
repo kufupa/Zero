@@ -1,8 +1,11 @@
 /** @vitest-environment happy-dom */
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BookingCards, stayIdForRoom } from '../components/quote-workflow/booking-card';
+import { ConfirmationSourcesProvider } from '../components/quote-workflow/confirmation-recipient';
+import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-host';
 import type { PaneStayClient } from '../lib/quote-workflow/pane-stay-bind';
+import { initialQuoteSession } from '../lib/quote-workflow/session';
 import type { BookingDraftReady, StayGroupRequirement } from '../lib/quote-workflow/types';
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }));
@@ -50,9 +53,11 @@ describe('booking case safety', () => {
       expect(id.replace(/_\d+$/, '')).toBe('s_aaaa1111');
     }
     expect(one).toBe(stayIdForRoom({ groupId: 'g1', roomIndex: 1 }, [second, group]));
+    expect(one).toBe(stayIdForRoom({ groupId: '2027-01-15:2027-01-17', roomIndex: 1 }, [group]));
     expect(one).not.toBe('s_aaaa1111_1');
     expect(stayIdForRoom({ groupId: 'g'.repeat(60), roomIndex: 1 }, [{ ...group, id: 'g'.repeat(60) }])).toBe('');
     expect(stayIdForRoom({ groupId: 'g1', roomIndex: 1 }, [group, group])).toBe('');
+    expect(stayIdForRoom({ groupId: '2027-01-15:2027-01-17', roomIndex: 1 }, [group, second])).toBe('');
   });
 
   it('allows read-only previews but disables individual and batch creates for multiple rooms', async () => {
@@ -129,5 +134,101 @@ describe('booking case safety', () => {
     expect(screen.getByText('Booked in HMS – confirmation 11111111-1').closest('article')).toBeNull();
     expect(within(screen.getByRole('article')).queryByText(/11111111-1/)).toBeNull();
     expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps one receipt outside all date cards through a refresh and scopes it to its work item', () => {
+    const { pane } = client();
+    const session = initialQuoteSession();
+    const second = { ...group, id: 'g2', stayId: 's_bbbb2222', arrivalDate: '2027-02-15', departureDate: '2027-02-17' };
+    session.groups = [group, second];
+    session.bookingDrafts = { '2027-01-15:2027-01-17': draft(), '2027-02-15:2027-02-17': draft(['g2']) };
+    const saved = { s_aaaa1111_1: { status: 'booked' as const, confirmationNumber: '11111111-1', screenshotRef: null } };
+    const view = (id: string, savedStays?: typeof saved) =>
+      <QuoteBookingHost session={session} paneSave={pane} workItemId={id} savedStays={savedStays} />;
+    const { rerender } = render(view(workItemId, saved));
+    const assertDetached = () => {
+      const outcomes = screen.getByRole('region', { name: 'Booking outcomes' });
+      expect(within(outcomes).getAllByText('Booked in HMS – confirmation 11111111-1')).toHaveLength(1);
+      for (const card of screen.getAllByRole('region', { name: 'Booking details' })) {
+        expect(within(card).queryByText(/11111111-1/)).toBeNull();
+      }
+    };
+    assertDetached();
+    rerender(view(workItemId));
+    assertDetached();
+    rerender(view('00000000-0000-4000-8000-000000000002'));
+    expect(screen.queryByText(/11111111-1/)).toBeNull();
+    rerender(view(workItemId));
+    assertDetached();
+  });
+
+  it('preserves a verified receipt and shows a later conflicting unknown outcome', () => {
+    const { pane } = client();
+    const session = initialQuoteSession();
+    session.groups = [group];
+    session.bookingDrafts = { '2027-01-15:2027-01-17': draft() };
+    const view = (status: 'booked' | 'unknown', number: string | null) => <QuoteBookingHost session={session} paneSave={pane}
+      workItemId={workItemId} savedStays={{ s_aaaa1111_1: { status, confirmationNumber: number, screenshotRef: null } }} />;
+    const { rerender } = render(view('booked', '11111111-1'));
+    rerender(view('unknown', null));
+    const outcomes = screen.getByRole('region', { name: 'Booking outcomes' });
+    expect(within(outcomes).getByText('Booked in HMS – confirmation 11111111-1')).toBeDefined();
+    expect(within(outcomes).getByText('Unconfirmed')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
+  });
+
+  it('clears only the exact in-flight unknown snapshot after a proven pre-save refusal', async () => {
+    let finish!: (result: Awaited<ReturnType<PaneStayClient['commit']>>) => void;
+    const { pane, preview, commit } = client();
+    commit.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const session = initialQuoteSession();
+    session.groups = [group];
+    session.bookingDrafts = { '2027-01-15:2027-01-17': draft() };
+    const view = (savedStays?: Record<string, { status: 'unknown'; confirmationNumber: null; screenshotRef: null }>) =>
+      <ConfirmationSourcesProvider value={confirmation}>
+        <QuoteBookingHost session={session} paneSave={pane} workItemId={workItemId} savedStays={savedStays} />
+      </ConfirmationSourcesProvider>;
+    const { rerender } = render(view());
+    fireEvent.click(screen.getByRole('button', { name: 'Preview in HMS' }));
+    const book = screen.getByRole('button', { name: 'Create provisional booking' });
+    await waitFor(() => expect(book).toHaveProperty('disabled', false));
+    fireEvent.click(book);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    const id = (preview.mock.calls[0]![0] as { stayId: string }).stayId;
+    rerender(view({ [id]: { status: 'unknown', confirmationNumber: null, screenshotRef: null } }));
+    expect(screen.getByRole('region', { name: 'Booking outcomes' })).toBeDefined();
+    await act(async () => finish({ status: 'refused', reason: 'pane_save_preflight_unavailable', clickedSave: false }));
+    expect(screen.queryByRole('region', { name: 'Booking outcomes' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', false);
+    rerender(view({ [id]: { status: 'unknown', confirmationNumber: null, screenshotRef: null } }));
+    expect(screen.getByRole('region', { name: 'Booking outcomes' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a completed result outside any replacement guest or date after the original card unmounts', async () => {
+    let finish!: (result: Awaited<ReturnType<PaneStayClient['commit']>>) => void;
+    const { pane, commit } = client();
+    commit.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const session = initialQuoteSession();
+    session.groups = [group];
+    session.bookingDrafts = { '2027-01-15:2027-01-17': draft() };
+    const view = () => <ConfirmationSourcesProvider value={confirmation}>
+      <QuoteBookingHost session={session} paneSave={pane} workItemId={workItemId} />
+    </ConfirmationSourcesProvider>;
+    const { rerender } = render(view());
+    fireEvent.click(screen.getByRole('button', { name: 'Preview in HMS' }));
+    const book = screen.getByRole('button', { name: 'Create provisional booking' });
+    await waitFor(() => expect(book).toHaveProperty('disabled', false));
+    fireEvent.click(book);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    session.groups = [{ ...group, id: 'g2', arrivalDate: '2027-02-15', departureDate: '2027-02-17' }];
+    session.bookingDrafts = { '2027-02-15:2027-02-17': draft(['g2']) };
+    rerender(view());
+    await act(async () => finish({ status: 'ok', outcome: 'committed', confirmationNumber: '11111111-1' }));
+    const outcomes = screen.getByRole('region', { name: 'Booking outcomes' });
+    expect(within(outcomes).getByText('Booked in HMS – confirmation 11111111-1')).toBeDefined();
+    expect(within(screen.getByRole('region', { name: 'Booking details' })).queryByText(/11111111-1/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
   });
 });
