@@ -110,8 +110,8 @@ export async function dismissNotesOrThrow(root, { allowRecordFrame = false } = {
     note.privateCapture = saveNotePrivately(note);
     notes.push(note);
     const handle = await noteDialog.elementHandle();
-    await close.click({ timeout: 0 });
-    await handle.waitForElementState('hidden', { timeout: 0 });
+    await close.click();
+    await handle.waitForElementState('hidden');
   }
   return notes;
 }
@@ -172,7 +172,7 @@ export async function readConfirmationFromStay360(page, confirmation) {
         box.x <= searchBox.x + searchBox.width + 100) adjacentRuns.push(run);
   }
   if (adjacentRuns.length !== 1) throw new Error('CONFIRMATION_RUN_BUTTON_NOT_UNIQUE');
-  await adjacentRuns[0].click({ timeout: 0 });
+  await adjacentRuns[0].click();
 
   const popup = await waitForSearch(page, searchBox);
   const rows = popup.locator('.x-grid-row:visible');
@@ -188,7 +188,7 @@ export async function readConfirmationFromStay360(page, confirmation) {
 
   const row = rows.nth(matches[0].index);
   const selectedRow = (await row.innerText()).trim();
-  await row.locator('td, [role="gridcell"], .x-grid-cell').nth(matches[0].cellIndex).click({ timeout: 0 });
+  await row.locator('td, [role="gridcell"], .x-grid-cell').nth(matches[0].cellIndex).click();
   const notes = await waitForSelectedDetails(page, popup, wanted);
 
   const details = await page.evaluate(() => {

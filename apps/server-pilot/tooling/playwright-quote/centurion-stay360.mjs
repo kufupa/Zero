@@ -114,7 +114,6 @@ export async function withCenturionStay360Page(operation) {
     context = await browser.newContext({ viewport });
 
     const page = await context.newPage();
-    page.setDefaultTimeout(0);
 
     phase = 'login';
     await login(page, secret, {});
