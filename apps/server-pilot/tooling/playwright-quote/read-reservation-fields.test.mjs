@@ -564,9 +564,10 @@ test('UI read keeps observed commercial facts and aggregate controls only for th
   assert.equal(row.outcome, 'read');
   assert.deepEqual(row.commercial, commercial);
   assert.deepEqual(row.commercialConflicts, ['ratePlan']);
-  for (const name of ['averageratecurr', 'totalrate', 'totalratecurr', 'grandtotal', 'grandtotalcurr', 'bookingagency1iatanumber']) {
+  for (const name of ['averageratecurr', 'totalrate', 'totalratecurr', 'grandtotal', 'grandtotalcurr']) {
     assert.equal(row.fields[name], values[name]);
   }
+  assert.equal('bookingagency1iatanumber' in row.fields, false);
   const stdout = JSON.stringify(reader.stdoutPayload(row));
   assert.equal(stdout.includes('Agency X'), false);
   assert.equal(stdout.includes('12345678'), false);

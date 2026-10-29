@@ -116,8 +116,8 @@ export function commercialFieldsFromFormEntries(entries = []) {
 }
 
 /**
- * Guest Stay ExtJS form record. Self-contained for page.evaluate. Visible inputs hold the
- * agency name (ta1) but not companyid or bookingagency1iatanumber; those live on getRecord().data.
+ * Guest Stay ExtJS form record. Self-contained for page.evaluate. Company id and agency IATA
+ * are accepted only from the form whose unique visible confirmation agrees with the Ext record.
  */
 export function snapshotStayFormRecord(ext = globalThis.Ext, doc = document) {
   const textOf = (value) => {
@@ -131,10 +131,12 @@ export function snapshotStayFormRecord(ext = globalThis.Ext, doc = document) {
     return data && typeof data === 'object' ? data : null;
   };
   try {
-    const ta1 = doc.querySelector?.('input[name="ta1"]');
-    const company = doc.querySelector?.('input[name="company"]')
-      || doc.querySelector?.('input[name="companyname"]');
-    const data = recordOf(ta1) || recordOf(company) || {};
+    const visible = [...(doc.querySelectorAll?.('input[name="confirmationnumber"]') ?? [])]
+      .filter((input) => input.getClientRects?.().length > 0);
+    if (visible.length !== 1) return {};
+    const data = recordOf(visible[0]) || {};
+    const confirmation = textOf(visible[0].value);
+    if (!confirmation || textOf(data.confirmationnumber) !== confirmation) return {};
     const companyid = textOf(data.companyid);
     const iata = textOf(data.bookingagency1iatanumber);
     const out = {};
@@ -146,12 +148,13 @@ export function snapshotStayFormRecord(ext = globalThis.Ext, doc = document) {
   }
 }
 
-/** Copies companyid and agency IATA from the Ext record onto the named-control field map. */
+/** Only a confirmation-bound Ext record may supply companyid or agency IATA. */
 export function mergeStayFormRecord(fields = {}, record = {}) {
   const out = { ...fields };
   for (const name of ['companyid', 'bookingagency1iatanumber']) {
+    delete out[name];
     const value = squash(record[name]);
-    if (value && !out[name]) out[name] = { value, text: value, kind: 'input' };
+    if (value) out[name] = { value, text: value, kind: 'input' };
   }
   return out;
 }

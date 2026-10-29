@@ -93,16 +93,17 @@ test('stay form record keeps companyid and agency IATA, not an agency id', async
   assert.equal('nativeId' in parsed.agency, false);
 });
 
-test('snapshotStayFormRecord reads companyid and IATA from the Ext form record, not visible inputs', () => {
-  const record = { companyid: 49, bookingagency1iatanumber: '77218175', ta1: 'CWT JNB' };
-  const ta1 = { id: 'ta1-inputEl' };
+test('snapshotStayFormRecord binds companyid and IATA to the visible confirmation', () => {
+  const record = { confirmationnumber: '12345678-1', companyid: 49, bookingagency1iatanumber: '77218175' };
+  const hidden = { id: 'old-inputEl', value: '87654321-1', getClientRects: () => [] };
+  const current = { id: 'current-inputEl', value: '12345678-1', getClientRects: () => [{}] };
   const ext = {
     getCmp(id) {
-      assert.equal(id, 'ta1');
+      assert.equal(id, 'current');
       return { up: (xtype) => (xtype === 'form' ? { getRecord: () => ({ data: record }) } : null) };
     },
   };
-  const doc = { querySelector: (selector) => (selector === 'input[name="ta1"]' ? ta1 : null) };
+  const doc = { querySelectorAll: () => [hidden, current] };
   assert.deepEqual(snapshotStayFormRecord(ext, doc), {
     companyid: '49',
     bookingagency1iatanumber: '77218175',
@@ -114,6 +115,30 @@ test('snapshotStayFormRecord reads companyid and IATA from the Ext form record, 
   const parsed = parseCommercialFields(merged);
   assert.deepEqual(parsed.company, { nativeId: '49' });
   assert.deepEqual(parsed.agency, { name: 'CWT JNB', iata: '77218175' });
+});
+
+test('snapshotStayFormRecord refuses missing, ambiguous or mismatched visible confirmation', () => {
+  const input = (value, visible = true) => ({
+    id: 'current-inputEl', value, getClientRects: () => visible ? [{}] : [],
+  });
+  const ext = (confirmationnumber) => ({
+    getCmp: () => ({ up: () => ({ getRecord: () => ({ data: { confirmationnumber, companyid: 49 } }) }) }),
+  });
+  const doc = (...inputs) => ({ querySelectorAll: () => inputs });
+  assert.deepEqual(snapshotStayFormRecord(ext('12345678-1'), doc(input('12345678-1', false))), {});
+  assert.deepEqual(snapshotStayFormRecord(ext('12345678-1'), doc(input('12345678-1'), input('12345678-1'))), {});
+  assert.deepEqual(snapshotStayFormRecord(ext('87654321-1'), doc(input('12345678-1'))), {});
+  assert.deepEqual(snapshotStayFormRecord(ext(undefined), doc(input('12345678-1'))), {});
+});
+
+test('mergeStayFormRecord discards unbound ID and IATA controls', () => {
+  const fields = { ta1: 'Agency X', companyid: 'old', bookingagency1iatanumber: 'old' };
+  assert.deepEqual(mergeStayFormRecord(fields, {}), { ta1: 'Agency X' });
+  assert.deepEqual(mergeStayFormRecord(fields, { companyid: '49', bookingagency1iatanumber: '12345678' }), {
+    ta1: 'Agency X',
+    companyid: { value: '49', text: '49', kind: 'input' },
+    bookingagency1iatanumber: { value: '12345678', text: '12345678', kind: 'input' },
+  });
 });
 
 test('keeps a numeric party id even when it equals the name, else uses the select value', async () => {

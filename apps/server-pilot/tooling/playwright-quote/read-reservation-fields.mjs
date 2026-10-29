@@ -29,6 +29,8 @@ const FIELDS = [
   'child1', 'child2', 'child3', 'udfchar09', 'udfchar13', 'udfchkbox04', 'udfchar06',
   'guestoptin4', 'emailaddress', 'lastname',
 ];
+// An IATA input elsewhere on the page cannot be bound to this stay by visibility alone.
+const UI_FIELDS = FIELDS.filter((name) => name !== 'bookingagency1iatanumber');
 export const BOOKING_STATE_KEYS = {
   guaranteeType: 'guaranteetype',
   depositReceived: 'depositreceived',
@@ -543,7 +545,7 @@ export async function readOneUi(page, hint, find = findOnOpenGuestStay, settle =
     const envelope = { type: 'ui_form' };
     return { conf, outcome, reason: found?.reason ?? null, arrivalHint: args.arrival, rowCount: 0, envelope };
   }
-  const { fields, keys } = await page.evaluate(visibleFieldValues, FIELDS);
+  const { fields, keys } = await page.evaluate(visibleFieldValues, UI_FIELDS);
   const envelope = { type: 'ui_form', keys: [...keys].sort() };
   if (fields.confirmationnumber !== conf) return { conf, outcome: 'identity_mismatch', envelope };
   const foundConfirmation = typeof found.stay?.confirmation === 'string' ? found.stay.confirmation.trim() : '';
