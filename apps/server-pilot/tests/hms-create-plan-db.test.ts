@@ -149,18 +149,20 @@ describe('durable create-plan approval', () => {
     await withIngestionDb(async ({ db }) => {
       const { itemId } = await seed(db);
       const [item] = await db.select().from(workItem).where(eq(workItem.id, itemId));
-      for (const receipt of [null, [], {}, { status: 'unknown', confirmationNumber: null },
+      for (const receipt of [null, [], { confirmationNumber: null }, { status: 'unknown', confirmationNumber: null },
         { status: 'booked', confirmationNumber: null }]) {
         await db.update(workItem).set({ state: { ...item!.state, stays: { [CASE_STAY_ID]: receipt } } })
           .where(eq(workItem.id, itemId));
         await expect(approveHmsWrite({ db, ...scope, workItemId: itemId, now: PLAN_NOW }))
           .rejects.toMatchObject({ refusal: 'needs_check_open' });
       }
-      await db.update(workItem).set({ state: { ...item!.state, stays: {
-        [CASE_STAY_ID]: { status: 'booked', confirmationNumber: '123456-1' },
-      } } }).where(eq(workItem.id, itemId));
-      await expect(approveHmsWrite({ db, ...scope, workItemId: itemId, now: PLAN_NOW }))
-        .rejects.toMatchObject({ refusal: 'snapshot_missing' });
+      for (const value of [{ arrival: '2027-09-14', rooms: 1 },
+        { status: 'booked', confirmationNumber: '123456-1' }]) {
+        await db.update(workItem).set({ state: { ...item!.state, stays: { [CASE_STAY_ID]: value } } })
+          .where(eq(workItem.id, itemId));
+        await expect(approveHmsWrite({ db, ...scope, workItemId: itemId, now: PLAN_NOW }))
+          .rejects.toMatchObject({ refusal: 'snapshot_missing' });
+      }
     });
   });
 

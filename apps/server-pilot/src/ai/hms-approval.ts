@@ -250,6 +250,8 @@ function paneCreateNeedsCheck(state: Record<string, unknown>): boolean {
   return Object.values(stays).some((raw) => {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return true;
     const stay = raw as Record<string, unknown>;
+    // Older HMS approval forms also have a `stays` object, without pane receipt fields.
+    if (!['status', 'confirmationNumber', 'screenshotRef', 'runId'].some((key) => Object.hasOwn(stay, key))) return false;
     return stay.status !== 'booked' || typeof stay.confirmationNumber !== 'string' ||
       !/^\d{6,10}-\d{1,2}$/.test(stay.confirmationNumber);
   });
