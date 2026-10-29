@@ -825,6 +825,24 @@ describe('booking card staying-guest prefill', () => {
     expect(recalledGuestName(key)).toBe('Ada Example');
   });
 
+  it('does not prefill an unknown guest from a private booker and leaves the room editable', () => {
+    const row = { ...g1, quantity: 1 };
+    const room = { ...draftReady().draft.rooms[0]!, request: { ...draftReady().draft.rooms[0]!.request,
+      firstName: '', lastName: '' } };
+    const draft = draftReady({ rooms: [room] });
+    const session = { ...quotedSession(null), groups: [row],
+      analysis: { ...analysis, groups: [row], luna: { ...luna, party: { kind: 'private' as const, name: null, reference: null } } },
+      bookingDrafts: { '2026-11-12:2026-11-14': draft } };
+
+    render(<QuoteBookingHost session={session} workItemId="wi-1" contact={CARD_CONTACT} />);
+    const firstName = screen.getByLabelText('First name') as HTMLInputElement;
+    expect(firstName.value).toBe('');
+    expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('');
+    expect(firstName.disabled).toBe(false);
+    fireEvent.change(firstName, { target: { value: 'Ada' } });
+    expect(firstName.value).toBe('Ada');
+  });
+
   it('prefills editable first and last names from the selected Guest, not Contact', () => {
     const contact: StoredContact = {
       name: 'Agent Booker',
