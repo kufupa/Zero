@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray } from 'drizzle-orm';
-import { getDb } from '../db/client.js';
+import { getDb, type DB } from '../db/client.js';
 import { attachment, message } from '../db/schema/mail.js';
 import {
   readAuthorizedArtifact,
@@ -645,13 +645,17 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
   includeVisionImages?: boolean;
   /** Keep image metadata for an honest unread audit while the vision gate is off. */
   trackVisionImages?: boolean;
+  /** A caller-owned source transaction. */
+  db?: DB;
+  /** Fail closed unless every part is inline, and do no artifact or storage work. */
+  inlineAttachmentsOnly?: boolean;
   signal?: AbortSignal;
 }): Promise<SyncedQuoteSelection | null> {
   const internetMessageId = input.internetMessageId?.trim();
   if (!internetMessageId && !input.messageId) return null;
   let db;
   try {
-    db = getDb();
+    db = input.db ?? getDb();
   } catch {
     return null;
   }
@@ -717,12 +721,7 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
   const selectedRows = rows.filter((item) => item.messageId === row.id);
   const siblingRows = rows.filter((item) => item.messageId !== row.id);
 
-  const signal = input.signal ?? AbortSignal.timeout(15_000);
-  const reader = await readerForRows(rows, input.transportId, signal, {
-    includeVisionImages: input.includeVisionImages === true,
-  });
-
-  return {
+  const source = {
     subject: row.subject ?? '',
     bodyText: row.textBody ?? '',
     receivedAt: row.receivedAt?.toISOString(),
@@ -733,13 +732,28 @@ export async function loadSyncedQuoteSelectionFromMailbox(input: {
     ).toISOString(),
     preceding,
     ...(threadMessages ? { threadMessages } : {}),
+    messageId: row.id,
+    threadId: row.threadId,
+    fromAddress: row.fromAddress,
+  };
+  if (input.inlineAttachmentsOnly) {
+    if (rows.some((item) => !item.isInline)) return null;
+    // The regular attachment reader drops every inline part, including sibling confirmation files.
+    // Do not even construct a storage client while this source transaction holds locks.
+    return { ...source, attachments: [], threadConfirmation: { confirmation: null, reason: null } };
+  }
+
+  const signal = input.signal ?? AbortSignal.timeout(15_000);
+  const reader = await readerForRows(rows, input.transportId, signal, {
+    includeVisionImages: input.includeVisionImages === true,
+  });
+
+  return {
+    ...source,
     attachments: await readQuoteAttachments(selectedRows, reader, {
       includeVisionImages: input.includeVisionImages === true,
       trackVisionImages: input.trackVisionImages === true,
     }),
-    messageId: row.id,
-    threadId: row.threadId,
-    fromAddress: row.fromAddress,
     threadConfirmation: siblingRows.length
       ? resolveThreadConfirmationEvidence(await readQuoteAttachments(siblingRows, reader))
       : { confirmation: null, reason: null },

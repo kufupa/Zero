@@ -65,6 +65,7 @@ import {
   type ModelUsage,
 } from './extract.js';
 import { mailExtractionSchema } from './schema.js';
+import { captureCenturionExtractionSource, CENTURION_SOURCE_WITNESS_VERSION } from './centurion-source-witness.js';
 import {
   TRANSLATE_DEADLINE_MS,
   TRANSLATE_RULES,
@@ -187,6 +188,15 @@ async function storeRead(db: DB, row: ExtractionRowInput): Promise<void> {
 /** The worker lost its claim on the run while the read was made. Nothing the read wrote is kept. */
 class InboundClaimLostError extends Error {}
 
+/** The source changed during a witnessed read; the worker may retry, but must not store the stale result. */
+export class InboundExtractionSourceChangedError extends Error {
+  readonly failureClass = 'SOURCE_CHANGED' as const;
+  constructor() {
+    super('Centurion email source changed while reading');
+    this.name = 'InboundExtractionSourceChangedError';
+  }
+}
+
 type RunClaim = { runId: string; claimOwner: string; claimToken: string };
 
 /**
@@ -303,21 +313,38 @@ export async function runInboundExtraction(
   const clock = deps.now ?? Date.now;
   // Checked before any mail is loaded, so a spent hour costs no S3 or PDF work.
   if (callsInLastHour(clock()) >= max) return 'capped';
+  const isCenturion = centurionSourceFence(run.transportId);
+  const witnessScope = { transportId: run.transportId, threadId: trigger.threadId, messageId: run.triggerMessageId };
+  // A test/injected loader is not the transaction-scoped selection and cannot produce a source witness.
+  const source = isCenturion && !deps.loadSelection
+    ? await db.transaction((tx) => captureCenturionExtractionSource(tx as unknown as DB, witnessScope, EXTRACTION_VERSION, env))
+    : null;
+  const witness = isCenturion ? source?.status === 'captured'
+    ? { version: CENTURION_SOURCE_WITNESS_VERSION, status: 'captured', digest: source.digest }
+    : { version: CENTURION_SOURCE_WITNESS_VERSION, status: 'unproven',
+        reason: source?.status === 'unproven' ? source.reason : 'selection_override' }
+    : undefined;
+  const recheckWitness = async (tx: DB) => {
+    if (source?.status !== 'captured') return;
+    const current = await captureCenturionExtractionSource(tx, witnessScope, EXTRACTION_VERSION, env);
+    if (current.status !== 'captured' || current.digest !== source.digest) throw new InboundExtractionSourceChangedError();
+  };
   // Loaded by its row id: a header can be missing or shared by two rows ingest kept apart.
-  const selection = await (deps.loadSelection ?? loadSyncedQuoteSelectionFromMailbox)({
-    transportId: run.transportId,
-    messageId: run.triggerMessageId,
-    includeThreadState: true,
-    includeVisionImages: extractionVisionEnabled(env),
-    trackVisionImages: true,
-    signal: deps.signal,
-  });
+  const selection = source?.status === 'captured' ? source.selection
+    : await (deps.loadSelection ?? loadSyncedQuoteSelectionFromMailbox)({
+        transportId: run.transportId,
+        messageId: run.triggerMessageId,
+        includeThreadState: true,
+        includeVisionImages: extractionVisionEnabled(env),
+        trackVisionImages: true,
+        signal: deps.signal,
+      });
   if (!selection) {
     await commitRead(db, deps.claim, (tx) =>
       storeRead(tx, {
         messageId: run.triggerMessageId,
         status: 'failed',
-        usage: { failureReason: 'not_found' },
+        usage: { failureReason: 'not_found', ...(witness ? { sourceWitness: witness } : {}) },
       }),
     );
     return 'failed';
@@ -327,9 +354,10 @@ export async function runInboundExtraction(
     adapter,
     selection,
     messageId: run.triggerMessageId,
-    from: trigger.fromAddress,
-    mailbox: trigger.mailbox,
-    propertyCode: await extractionPropertyCode({ transportId: run.transportId, threadId: trigger.threadId, messageId: run.triggerMessageId }),
+    from: source?.status === 'captured' ? source.from : trigger.fromAddress,
+    mailbox: source?.status === 'captured' ? source.mailbox : trigger.mailbox,
+    propertyCode: source?.status === 'captured' ? source.propertyCode
+      : await extractionPropertyCode({ transportId: run.transportId, threadId: trigger.threadId, messageId: run.triggerMessageId }),
     signal: deps.signal,
     deadlineMs:
       deps.extractionDeadlineMs ?? lunaCallBudget(extractionReasoningEffort(env)).deadlineMs,
@@ -337,14 +365,15 @@ export async function runInboundExtraction(
   });
   const attachments = extraction.attachments ?? attachmentReads(selection.attachments);
   if (!extraction.ok) {
-    await commitRead(db, deps.claim, (tx) =>
-      storeRead(tx, {
+    await commitRead(db, deps.claim, async (tx) => {
+      await recheckWitness(tx);
+      await storeRead(tx, {
         messageId: run.triggerMessageId,
         status: 'failed',
         attachments,
-        usage: { ...extraction.usage, failureReason: extraction.reason },
-      }),
-    );
+        usage: { ...extraction.usage, failureReason: extraction.reason, ...(witness ? { sourceWitness: witness } : {}) },
+      });
+    });
     return 'failed';
   }
   let translation: InboundTranslation | null = null;
@@ -367,6 +396,7 @@ export async function runInboundExtraction(
   }
   const spamWrites = env.AI_WRITE_GATE_ENABLED === 'true' && !isInboundTriageClassifierEnabled(env);
   await commitRead(db, deps.claim, async (tx) => {
+    await recheckWitness(tx);
     // Take the parent lock before insertion: inserting first acquires an FK key-share lock and can deadlock
     // with another writer upgrading to the source fence after its own insertion.
     if (centurionSourceFence(run.transportId) &&
@@ -384,6 +414,7 @@ export async function runInboundExtraction(
       usage: {
         extraction: extraction.usage,
         ...(translationUsage ? { translation: translationUsage } : {}),
+        ...(witness ? { sourceWitness: witness } : {}),
       },
     });
     // The work item points at this read. Its person-set values stay in its state (see work-items.ts).
@@ -391,7 +422,9 @@ export async function runInboundExtraction(
     // Spam has one writer. While the classifier is on it owns spamAt and this read only records its kind, so the two
     // never race (the read could otherwise spam a thread before the classifier files it). Once it is retired, this
     // read writes spam with the classifier's guards.
-    if (spamWrites) await writeSpamDecision(tx, run, trigger, extraction.kind);
+    if (spamWrites) await writeSpamDecision(tx, run, {
+      threadId: trigger.threadId, fromAddress: source?.status === 'captured' ? source.from : trigger.fromAddress,
+    }, extraction.kind);
   });
   return 'stored';
 }
