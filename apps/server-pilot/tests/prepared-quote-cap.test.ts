@@ -2,7 +2,7 @@ import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { countPrefetchReservations } from '../src/ai/prefetch-capacity.js';
-import { prefetchQuoteReadyForExtraction } from '../src/ai/hms-jobs.js';
+import { evaluateQuoteReadyForMessage, prefetchQuoteReadyForExtraction } from '../src/ai/hms-jobs.js';
 import {
   CENTURION_HMS_READ_TARGET,
   DAVINCI_HMS_READ_TARGET,
@@ -31,6 +31,7 @@ const QUOTE_ON = {
   HMS_JOB_QUEUE: 'on',
   HMS_QUOTE_PREPARE: 'true',
   HMS_DAVINCI_MAKE_QUOTE: 'on',
+  RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '/tmp/hrdav-quote.json',
 };
 
 const PROPERTY_TARGETS: Array<{ transportId: string; propertyCode: string; expectedCount?: number }> = [
@@ -38,7 +39,7 @@ const PROPERTY_TARGETS: Array<{ transportId: string; propertyCode: string; expec
   { transportId: DAVINCI_TRANSPORT_ID, propertyCode: DAVINCI_HMS_READ_TARGET.propertyCode, expectedCount: 9 },
 ];
 
-function quotePayload() {
+function quotePayload(explicitChildren = true) {
   return {
     origin: 'person',
     contact: { name: 'Example Guest', email: 'guest@example.test', phone: null },
@@ -58,6 +59,7 @@ function quotePayload() {
             roomType: 'Standard King',
             rooms: 1,
             adultsPerRoom: 2,
+            ...(explicitChildren ? { childrenPerRoom: 0 } : {}),
             childAges: [],
             board: null,
           },
@@ -68,7 +70,7 @@ function quotePayload() {
   };
 }
 
-async function seedExtraction(db: DB, transportId: string) {
+async function seedExtraction(db: DB, transportId: string, explicitChildren = true) {
   const threadId = `thread-${randomUUID()}`;
   const messageId = `message-${randomUUID()}`;
   await db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
@@ -89,7 +91,7 @@ async function seedExtraction(db: DB, transportId: string) {
     extractorVersion: `prepared-quote-cap-${randomUUID()}`,
     status: 'succeeded',
     kind: 'quote',
-    payload: quotePayload(),
+    payload: quotePayload(explicitChildren),
   });
   const [source] = await db
     .insert(aiWorkflowRun)
@@ -145,6 +147,17 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote profile cap', 
       toAddresses: [],
     });
   });
+
+  it('evaluates a Da Vinci-origin message in the Centurion transport using its resolved property', async () =>
+    withSeededTestDb(async (db) => {
+      mailboxHmsOriginBindLoaders.loadThreadOrigin = async () => ({
+        fromAddress: 'guest@example.test', toAddresses: [DAVINCI_TRANSPORT_EMAIL],
+      });
+      const source = await seedExtraction(db, TRANSPORT_ID, false);
+      const result = await evaluateQuoteReadyForMessage({ messageId: source.messageId, transportId: TRANSPORT_ID }, db, QUOTE_ON);
+      expect(result.plan?.inputs.length).toBeGreaterThan(0);
+      expect(result.plan?.inputs[0]?.groups[0]).not.toHaveProperty('childrenPerRoom');
+    }));
 
   it.each(PROPERTY_TARGETS)('admits a complete profile strategy set as one batch for $transportId', async (target) =>
     withSeededTestDb(async (db) => {

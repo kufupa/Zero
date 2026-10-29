@@ -297,6 +297,7 @@ export function createReservationistDependencies(options:{adapter:ModelAdapter;e
        assertSourceOfferFactAttestation(ctx.facts,attestation.factAttestation);
        assertReservationistResultFreshForAction({version:1,...(source.kind==='imported_offer'?{importedOffers:[source]}:{approvedOverrides:[source]})},new Date(input.clock.sourceAt));
        if(original.propertyCode!==input.propertyCode)throw new Error('property_scope');
+       if(source.kind==='imported_offer'&&input.propertyCode==='HRCEN')throw new SourceRequestClarification('Our reservations team needs to check that the original offer matches the requested rooms and child ages before it can be used.',[source.ref],'imported_offer_occupancy_unavailable');
        const sourceClaims=ctx.facts.filter((fact):fact is ValidatedRateClaimFact=>fact.kind==='rate_claim');
        if(sourceClaims.length){
         if(source.kind==='imported_offer')work.importedOffers.push(source);else work.approvedOverrides.push(source);

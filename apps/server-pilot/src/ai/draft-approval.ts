@@ -1,4 +1,5 @@
 import {assertCurrentLookupTargetReceipt} from './reservationist-lookup-target.js';
+import {draftQuoteOccupancyHold} from './child-occupancy.js';
 import {assertReservationistRecipientReceipt,RECIPIENT_PREPARATION_CLAUSE,type RecipientPreparationReceipt} from './reservationist-recipient-preparation.js';
 import {assertReservationistChannelBookingSyncPacket} from './reservationist-pending-action.js';
 import {assertReservationistExistingDocumentReceiptFresh,type ReservationistExistingDocumentReceipt} from './reservationist-existing-document.js';
@@ -39,6 +40,8 @@ export class DraftApprovalError extends Error {
     this.name = 'DraftApprovalError';
   }
 }
+
+export class DraftQuoteOccupancyError extends DraftApprovalError {}
 
 export type DraftApprovalAttachment = {
   filename: string;
@@ -759,7 +762,7 @@ export async function assertDraftApprovalCurrent(input: {
   }
 
   const [run] = await input.db
-    .select({ metrics: aiWorkflowRun.metrics })
+    .select({ metrics: aiWorkflowRun.metrics, triggerMessageId: aiWorkflowRun.triggerMessageId })
     .from(aiWorkflowRun)
     .where(
       and(
@@ -779,6 +782,10 @@ export async function assertDraftApprovalCurrent(input: {
   if (!approval.routeBinding?.release) {
     throw new DraftApprovalError('approved draft route release unavailable');
   }
+  const occupancyHold = await draftQuoteOccupancyHold(input.db, { transportId: approval.transportId,
+    threadId: approval.threadId, messageId: draft.replyToMessageId, triggerMessageId: run?.triggerMessageId ?? null,
+    result: run?.metrics?.reservationistResult });
+  if (occupancyHold) throw new DraftQuoteOccupancyError(occupancyHold);
   assertReservationistResultFreshForAction(run?.metrics?.reservationistResult, now);
   assertReservationistResultWording(run?.metrics?.reservationistResult, input.payload, now);
   const persistedDigest = (run?.metrics as { resultDigest?: unknown } | null)?.resultDigest;

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
 import { staffQuoteInput, staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
+import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { AiWorkflowRun } from '../src/ai/run-ledger.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { TRPCError } from '@trpc/server';
@@ -267,12 +268,30 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('staff quote auto-start route 
     }));
 });
 
-function staffQuoteRunDb(mail: Record<string, unknown>) {
+function staffQuoteRunDb(
+  mail: Record<string, unknown>,
+  groups: StaffQuoteInput['groups'] = staffQuoteInput.parse(STAFF_QUOTE_INPUT).groups,
+) {
   let latestGenerationId: string | undefined;
   const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [];
   const updated: unknown[] = [];
+  const occupancyState: Record<string, unknown> = {};
+  const payload = {
+    contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
+    confirmationNumbers: [], missing: [], stays: [{
+      id: 's_test', hotel: null,
+      requested: { arrival: '2026-11-12', departure: '2026-11-14' }, booked: null, totalRooms: null,
+      rows: groups.map((group) => ({
+        id: group.id, roomType: null, rooms: group.quantity, adultsPerRoom: group.adults,
+        childrenPerRoom: group.childrenPerRoom ?? group.childrenAges.length,
+        childAges: [...group.childrenAges], board: null,
+      })),
+    }],
+  };
   const rowsFor = (table: unknown) => {
     if (table === message) return [mail];
+    if (table === mailExtraction) return [{ id: 'extraction-1', kind: 'quote', payload }];
+    if (table === workItem) return [{ extractionId: 'extraction-1', state: occupancyState }];
     if (table === aiDraftGeneration && latestGenerationId) return [{ id: latestGenerationId }];
     return [];
   };
@@ -333,7 +352,7 @@ function staffQuoteRunDb(mail: Record<string, unknown>) {
       }
     },
   };
-  return { db: db as unknown as DB, inserted, updated };
+  return { db: db as unknown as DB, inserted, updated, payload, occupancyState };
 }
 
 async function provisionalWorkerQuote(
@@ -374,7 +393,7 @@ async function provisionalWorkerQuote(
   const { run, fence } = prepared ? preparedFixture() : fixture();
   run.transportId = transportId;
   run.readRequest = { kind: 'staff_quote', input } as unknown as AiWorkflowRun['readRequest'];
-  const quoteDb = staffQuoteRunDb(mail);
+  const quoteDb = staffQuoteRunDb(mail, input.groups);
   quoteRunMocks.readConfiguration.mockReturnValue({
     tenantId: 'synthetic-hotel',
     owner: { propertyCode: 'HRCEN' },
@@ -403,8 +422,49 @@ async function provisionalWorkerQuote(
   }));
   vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
   vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
-  return { run, fence, db: quoteDb.db, inserted: quoteDb.inserted };
+  return { run, fence, db: quoteDb.db, inserted: quoteDb.inserted, occupancyState: quoteDb.occupancyState };
 }
+
+describe('runStaffQuote child occupancy', () => {
+  it('refuses a forged zero when the extraction mentions a child without an age', async () => {
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>(
+      '../src/ai/staff-quote-run.js',
+    );
+    const mail = {
+      id: STAFF_QUOTE_INPUT.messageId, transportId: TRANSPORT_ID, threadId: 'thread-1', direction: 'inbound',
+      subject: 'Accommodation enquiry', textBody: 'Please quote accommodation.', htmlBody: null,
+      receivedAt: new Date('2026-10-12T08:00:00Z'), sentAt: null, createdAt: new Date('2026-10-12T08:00:00Z'),
+    };
+    const input = staffQuoteInput.parse({
+      ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail),
+      groups: [{ ...STAFF_QUOTE_INPUT.groups[0], childrenPerRoom: 0 }],
+    });
+    const quoteDb = staffQuoteRunDb(mail, input.groups);
+    quoteDb.payload.stays[0]!.rows[0]!.childrenPerRoom = 1;
+    await expect(actual.runStaffQuote(input, { transportId: TRANSPORT_ID, user }, quoteDb.db)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED',
+      message: expect.stringContaining('number of children'),
+      cause: expect.objectContaining({ reason: 'inputs_incomplete' }),
+    });
+    expect(quoteRunMocks.readConfiguration).not.toHaveBeenCalled();
+  });
+
+  it('rechecks saved occupancy after pricing before returning a result', async () => {
+    const { run, fence, db: quoteDb, occupancyState } = await provisionalWorkerQuote(
+      Promise.resolve(), undefined, {}, false, TRANSPORT_ID,
+    );
+    workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: { authorizationId: string }) => {
+      occupancyState['stays[s_test].rows[single].childAges'] = null;
+      return syntheticRevision(
+        ['600.00', '600.00'], 'Room Only R', 'SKNG', undefined, '2026-11-12', prepared.authorizationId,
+      );
+    });
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(
+      expect.objectContaining({ readResult: expect.objectContaining({ ok: false }) }), quoteDb,
+    );
+  });
+});
 
 describe('staff_quote HMS job execution', () => {
   it.each([false, true])('holds incomplete Centurion child occupancy before manual or prepared HMS work (prepared=%s)', async (prepared) => {
@@ -417,7 +477,7 @@ describe('staff_quote HMS job execution', () => {
     expect(quoteRunMocks.getServices).not.toHaveBeenCalled();
     expect(workflowMocks.executeStaffQuote).not.toHaveBeenCalled();
     expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
-      readResult: { ok: false, message: expect.stringContaining('every child’s age') },
+      readResult: { ok: false, message: expect.stringContaining('number of children') },
     });
   });
 
@@ -1350,6 +1410,7 @@ describe('runStaffQuote property installation', () => {
 
   it('uses the HRDAV installation for a Da Vinci transport when the quote flag is on', async () => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('DATABASE_URL', '');
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel',
       owner: { propertyCode: 'HRDAV' },
@@ -1359,6 +1420,30 @@ describe('runStaffQuote property installation', () => {
       message: 'Staff quotation database unavailable',
     });
     expect(quoteRunMocks.readConfiguration.mock.calls).toEqual([['HRDAV']]);
+  });
+
+  it('allows an HRDAV quote to reach and recheck the reader without saved child evidence', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
+    const mail = mailFor('transport-davinci');
+    const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail),
+      groups: [{ ...STAFF_QUOTE_INPUT.groups[0], childrenPerRoom: null }] });
+    const quoteDb = staffQuoteRunDb(mail, input.groups);
+    quoteDb.occupancyState['stays[s_test].rows[single].childrenPerRoom'] = null;
+    quoteRunMocks.readConfiguration.mockReturnValue({ tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRDAV' } });
+    quoteRunMocks.snapshotRowPrices.mockResolvedValue([]);
+    quoteRunMocks.createPropertyReadLock.mockReturnValue({ withLock: (callback: () => Promise<unknown>) => callback() });
+    quoteRunMocks.getServices.mockReturnValue({});
+    let stillCurrent = false;
+    workflowMocks.executeStaffQuote.mockImplementation(async (_prepared, _services, isCurrent) => {
+      stillCurrent = await isCurrent();
+      throw new Error('synthetic_reader_stop');
+    });
+    await expect(actual.runStaffQuote(input, { transportId: 'transport-davinci', user }, quoteDb.db))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(workflowMocks.executeStaffQuote).toHaveBeenCalledOnce();
+    expect(stillCurrent).toBe(true);
   });
 
   it('refuses a Da Vinci quote when the HRDAV install is missing and does not read Centurion', async () => {
@@ -1375,6 +1460,7 @@ describe('runStaffQuote property installation', () => {
   });
 
   it('leaves Centurion quotes on the Centurion installation', async () => {
+    vi.stubEnv('DATABASE_URL', '');
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel',
       owner: { propertyCode: 'HRCEN' },

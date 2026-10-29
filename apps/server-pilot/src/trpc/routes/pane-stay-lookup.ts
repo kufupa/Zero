@@ -130,7 +130,7 @@ const hmsBatchQueueInput = z
   });
 // Poll by run id, or resume the latest job of one kind on a thread after a remount.
 const jobStatusInput = z.union([
-  z.object({ runId: z.string().uuid() }).strict(),
+  z.object({ runId: z.string().uuid(), messageId: messageIdInput.optional() }).strict(),
   z
     .object({
       threadId: threadIdInput,
@@ -375,6 +375,7 @@ export const paneStayLookupRouter = router({
         ? {
             transportId: ctx.activeTransportId,
             runId: input.runId,
+            ...(input.messageId ? { messageId: input.messageId } : {}),
             staffQuoteOwnerId: ctx.sessionUser.id,
           }
         : { transportId: ctx.activeTransportId, ...input };
