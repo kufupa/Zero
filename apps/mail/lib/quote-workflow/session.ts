@@ -341,10 +341,8 @@ function caseTaskSignature(analysis: QuoteAnalysis | null): string {
   const tasks = analysis?.luna?.tasks ?? [];
   return JSON.stringify(tasks.map((task) => JSON.stringify([
     task.kind,
-    task.groupIndexes.map((index) => {
-      const group = analysis?.groups[index];
-      return group ? [stayIdOf(group), group.id] : null;
-    }).map((item) => JSON.stringify(item)).sort(),
+    task.groupIndexes.map((index) => analysis?.groups[index])
+      .map((group) => JSON.stringify(group ? [stayIdOf(group), group.id] : null)).sort(),
   ])).sort());
 }
 
@@ -1777,8 +1775,7 @@ export function reduceQuoteSession(
     return reduceQuoteStrategySession(session, action);
   }
   if (action.type === 'analysis_ready') {
-    const analysis = withFallbackMissingQuoteReplyFields(action.analysis);
-    if (analysis !== action.analysis) action = { ...action, analysis };
+    action = { ...action, analysis: withFallbackMissingQuoteReplyFields(action.analysis) }; // Later overrides stay local to this read.
   }
   switch (action.type) {
     case 'reset':
@@ -1858,8 +1855,8 @@ export function reduceQuoteSession(
         action.analysis.groups.length === 1 && priorRow && currentRow && priorRow.id === currentRow.id &&
         stayIdOf(priorRow) === stayIdOf(currentRow) && caseIdentitySignature(session.analysis) !== null &&
         caseIdentitySignature(action.analysis) === null);
-      if (singleOverride) action = { ...action, analysis: { ...action.analysis, groups: session.groups,
-        luna: { ...action.analysis.luna!, groups: session.analysis!.luna!.groups } } };
+      if (singleOverride) action.analysis = { ...action.analysis, groups: session.groups,
+        luna: { ...action.analysis.luna!, groups: session.analysis!.luna!.groups } };
       if (singleOverride && !session.steps.length) session = { ...session, steps: planQuoteSteps(session.groups, session.staffQuotes) };
       if (staffEditedDuringRun) {
         // Staff corrected stay fields after this run started. Keep their groups and take
@@ -2089,7 +2086,7 @@ export function reduceQuoteSession(
       return {
         ...session,
         roomRateBoardSelections: {
-          ...(session.roomRateBoardSelections ?? {}),
+          ...session.roomRateBoardSelections,
           [action.groupId]: {
             roomCode: action.selection.roomCode,
             rateCode: action.selection.rateCode,

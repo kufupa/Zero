@@ -61,7 +61,6 @@ import type {
   QuoteSession,
   QuoteSessionAction,
   QuoteToolStep,
-  QuoteStrategyRow,
   QuoteSalesStrategyCode,
   RateOption,
   StaffQuoteAllocation,
@@ -3516,9 +3515,10 @@ describe('type chosen by staff after stay edits', () => {
     } as unknown as Extract<QuoteSessionAction, { type: 'booking_draft_ready' }>['payload'];
     expect(reduceQuoteSession(withRate, { type: 'booking_draft_ready', payload, sourceHash: STAFF_HASH }).bookingDrafts).toEqual({});
 
+    const staffRow = { ...session.groups.find((group) => group.id === 'r_added')!, staffCreated: true };
     const reopened = analysisReady({
       ...analysis,
-      groups: [row, { ...session.groups.find((group) => group.id === 'r_added')!, staffCreated: true }],
+      groups: [row, staffRow],
     });
     expect(quoteRunBlockReason(reopened, stepFor(reopened, STAY_B))).toBeNull();
   });
@@ -3580,18 +3580,19 @@ describe('type chosen by staff after stay edits', () => {
     session = reduceQuoteSession(session, { type: 'treat_as', treatAs: chosen });
     session = reduceQuoteSession(session, { type: 'analysis_started' });
     if (editDuringRead) session = reduceQuoteSession(session, { type: 'patch_group', groupId: sourceGroup.id, patch: { adults: 4 } });
-    session = reduceQuoteSession(session, {
-      type: 'analysis_ready',
-      analysis: {
-        ...quoteAnalysis, amendment: null,
-        groups: [{ ...quoteAnalysis.groups[0]!, id: 'live-row' }],
-        luna: lunaQuote({
-          workflow: chosen,
-          groups: [{ ...lunaGroup, guestNames: ['Bea Example'] }],
-          tasks: [{ kind: chosen, groupIndexes: [0], note: '' }],
-        }),
-      },
-    });
+    const incoming: QuoteAnalysis = {
+      ...quoteAnalysis, amendment: null,
+      groups: [{ ...quoteAnalysis.groups[0]!, id: 'live-row' }],
+      luna: lunaQuote({
+        workflow: chosen,
+        groups: [{ ...lunaGroup, guestNames: ['Bea Example'] }],
+        tasks: [{ kind: chosen, groupIndexes: [0], note: '' }],
+      }),
+    };
+    const read = { type: 'analysis_ready' as const, analysis: incoming };
+    session = reduceQuoteSession(session, read);
+    expect(read.analysis).toBe(incoming);
+    expect(incoming.groups[0]?.id).toBe('live-row');
     expect(session.analysis?.luna?.workflow).toBe(chosen);
     expect(session.groups[0]?.adults).toBe(editDuringRead ? 4 : 3);
     expect(stayAskGuests(session, 'stay-a')).toEqual(sourceGroup.stayGuests);
