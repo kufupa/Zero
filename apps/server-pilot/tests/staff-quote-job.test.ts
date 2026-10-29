@@ -28,6 +28,7 @@ const quoteRunMocks = vi.hoisted(() => ({
 }));
 
 const workflowMocks = vi.hoisted(() => ({ executeStaffQuote: vi.fn() }));
+const originMocks = vi.hoisted(() => ({ guard: vi.fn() }));
 const quoteQueueMocks = vi.hoisted(() => ({ staffQuoteInFlight: vi.fn() }));
 const quoteOutcomeMocks = vi.hoisted(() => ({
   ensureQuoteOutcomeWorkItem: vi.fn(),
@@ -101,7 +102,7 @@ vi.mock('../src/ai/run-ledger.js', async (importOriginal) => ({
 
 vi.mock('../src/hms/mailbox-hms-origin-bind.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/hms/mailbox-hms-origin-bind.js')>()),
-  guardCenturionHmsMailboxOrigin: async () => ({ ok: true }),
+  guardCenturionHmsMailboxOrigin: originMocks.guard,
 }));
 
 import { executeHmsJob, hmsJobRequestSchema, HMS_JOB_PRIORITY_USER } from '../src/ai/hms-jobs.js';
@@ -121,6 +122,7 @@ const STAFF_QUOTE_INPUT = {
       quantity: 1,
       adults: 2,
       childrenAges: [],
+      sourcePreference: { roomType: null, board: null },
       board: 'room_only',
       roomCodes: ['SKNG'],
     },
@@ -169,6 +171,7 @@ function preparedFixture() {
 }
 
 beforeEach(async () => {
+  originMocks.guard.mockReset().mockResolvedValue({ ok: true });
   vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', 'synthetic');
   jobMocks.markSucceeded.mockReset().mockResolvedValue({ id: 'job-1' });
   jobMocks.markRetry.mockReset().mockResolvedValue({ id: 'job-1' });
@@ -387,6 +390,9 @@ async function provisionalWorkerQuote(
   const input = staffQuoteInput.parse({
     ...STAFF_QUOTE_INPUT,
     ...inputOverrides,
+    groups: (inputOverrides.groups ?? STAFF_QUOTE_INPUT.groups).map((group) => ({
+      ...group, sourcePreference: group.sourcePreference ?? { roomType: null, board: null },
+    })),
     sourceHash: staffQuoteSourceHash(mail),
   });
   const { run, fence } = prepared ? preparedFixture() : fixture();
@@ -462,6 +468,16 @@ describe('runStaffQuote child occupancy', () => {
     expect(jobMocks.markSucceeded).toHaveBeenCalledWith(
       expect.objectContaining({ readResult: expect.objectContaining({ ok: false }) }), quoteDb,
     );
+  });
+
+  it('rechecks the saved room preference after pricing before returning a price', async () => {
+    const { run, fence, db: quoteDb, occupancyState } = await provisionalWorkerQuote(Promise.resolve());
+    workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: { authorizationId: string }) => {
+      occupancyState['stays[s_test].rows[single].roomType'] = 'Standard Twin';
+      return syntheticRevision(['600.00', '600.00'], 'Room Only R', 'SKNG', undefined, '2026-11-12', prepared.authorizationId);
+    });
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({ readResult: expect.objectContaining({ ok: false }) }), quoteDb);
   });
 });
 
@@ -1423,6 +1439,32 @@ describe('runStaffQuote property installation', () => {
       .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
     expect(workflowMocks.executeStaffQuote).toHaveBeenCalledOnce();
     expect(stillCurrent).toBe(true);
+  });
+
+  it('uses the resolved HRDAV target for a Da Vinci-origin thread on the Centurion mailbox', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
+    originMocks.guard.mockResolvedValue({ ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin' });
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
+    const mail = mailFor('transport-centurion');
+    const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail),
+      groups: [{ ...STAFF_QUOTE_INPUT.groups[0], childrenPerRoom: null, sourcePreference: undefined }] });
+    const quoteDb = staffQuoteRunDb(mail, input.groups);
+    quoteDb.occupancyState['stays[s_test].rows[single].childrenPerRoom'] = null;
+    quoteRunMocks.readConfiguration.mockReturnValue({ tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRDAV' } });
+    quoteRunMocks.snapshotRowPrices.mockResolvedValue([]);
+    quoteRunMocks.createPropertyReadLock.mockReturnValue({ withLock: (callback: () => Promise<unknown>) => callback() });
+    quoteRunMocks.getServices.mockReturnValue({});
+    let current = false;
+    workflowMocks.executeStaffQuote.mockImplementation(async (_prepared, _services, isCurrent) => {
+      current = await isCurrent();
+      throw new Error('synthetic_reader_stop');
+    });
+    await expect(actual.runStaffQuote(input, { transportId: 'transport-centurion', user }, quoteDb.db))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(quoteRunMocks.readConfiguration).toHaveBeenCalledWith('HRDAV');
+    expect(workflowMocks.executeStaffQuote).toHaveBeenCalledOnce();
+    expect(current).toBe(true);
   });
 
   it('refuses a Da Vinci quote when the HRDAV install is missing and does not read Centurion', async () => {
