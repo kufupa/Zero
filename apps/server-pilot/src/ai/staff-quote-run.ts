@@ -1088,6 +1088,11 @@ export async function runStaffQuote(
       messageId: mail.id,
       threadId: mail.threadId,
       propertyCode: scope.propertyCode,
+      requestedSalesStrategy: input.salesStrategy,
+      effectiveSalesStrategy: effectiveQuoteInput.salesStrategy,
+      ...(input.salesStrategy !== effectiveQuoteInput.salesStrategy ? {
+        salesStrategyFallback: { from: input.salesStrategy, to: effectiveQuoteInput.salesStrategy, reason: 'no_matching_rate' as const },
+      } : {}),
       factRefs: proposal.factRefs,
       extrasReviewItems: [...notes, ...proposal.extrasReviewItems],
       dinnerAddOnRequired: proposal.dinnerAddOnRequired,
