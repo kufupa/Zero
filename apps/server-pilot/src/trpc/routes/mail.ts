@@ -25,6 +25,7 @@ import {
   assertDraftApprovalCurrent,
   claimDraftApprovalForSend,
   DraftApprovalError,
+  DraftQuoteOccupancyError,
   getDraftApprovalSigningSecret,
   parseDraftApproval,
   type DraftApproval,
@@ -1420,7 +1421,7 @@ export const mailRouter = tRouter({
         });
       } catch (error) {
         if (error instanceof DraftApprovalError) {
-          throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+          throw new TRPCError({ code: 'CONFLICT', message: error instanceof DraftQuoteOccupancyError ? error.message : 'DRAFT_APPROVAL_INVALID' });
         }
         throw error;
       }
@@ -1447,7 +1448,7 @@ export const mailRouter = tRouter({
           });
         } catch (error) {
           if (error instanceof DraftApprovalError) {
-            throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_APPROVAL_INVALID' });
+            throw new TRPCError({ code: 'CONFLICT', message: error instanceof DraftQuoteOccupancyError ? error.message : 'DRAFT_APPROVAL_INVALID' });
           }
           throw error;
         }

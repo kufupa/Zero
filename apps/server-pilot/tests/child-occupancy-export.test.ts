@@ -1,8 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { __setDbForTests, type DB } from '../src/db/client.js';
-import { aiDraftGeneration, aiWorkflowRun, message } from '../src/db/schema/mail.js';
+import { aiDraftGeneration, aiWorkflowRun, mailDraft, mailDraftRevision, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
+import { draftQuoteOccupancyHold, draftQuoteOccupancyMessage, importedOfferOccupancyHold } from '../src/ai/child-occupancy.js';
+import { DRAFT_APPROVAL_POLICY_VERSION, DraftQuoteOccupancyError, assertDraftApprovalCurrent, buildDraftApproval, type DraftApprovalPayload } from '../src/ai/draft-approval.js';
+import { AZURE_DRAFT_ROUTE } from '../src/ai/draft-route-factory.js';
+import { assertQueuedDraftApproval, DraftApprovalInvalidError } from '../src/mail/send/outbound-queue.js';
+import { assertHmsDraftFreshForAction } from '../src/trpc/routes/drafts.js';
+import { resolveApprovedOverride, resolveImportedOffer } from '../src/quote-proposal/quote-revision.js';
 import { appRouter } from '../src/trpc/router.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 
@@ -45,6 +51,7 @@ async function fixture() {
     }],
   };
   const state: Record<string, unknown> = {};
+  const draft = { id: 'draft-1', origin: 'ai', generationId: 'generation-1', threadId: 't1', replyToMessageId: mail.id };
   const proposal = { workflowRunId: run.id, revisionRef: revision.id, messageId: mail.id,
     outlookEmail: 'centurion@legacyhotels.co.za', factRefs: [], company: '', agency: '', workItemId: itemId };
   const artifact = { kind: 'quote_pdf', revisionId: revision.id, pdfHash: 'a'.repeat(64),
@@ -63,11 +70,18 @@ async function fixture() {
         limit() {
           if (table === message) return Promise.resolve([mail]);
           if (table === mailExtraction) return Promise.resolve([{ id: 'extract-1', kind: 'quote', payload }]);
-          if (table === workItem) return Promise.resolve([{ extractionId: 'extract-1', state }]);
-          if (table === aiDraftGeneration) return Promise.resolve([{ id: 'generation-1', createdAt: new Date() }]);
+          if (table === workItem) {
+            const rows = Promise.resolve([{ extractionId: 'extract-1', state }]);
+            return Object.assign(rows, { for: () => rows });
+          }
+          if (table === aiDraftGeneration) return Promise.resolve([{ id: 'generation-1', createdAt: new Date(), status: 'succeeded', evidence: [] }]);
+          if (table === mailDraft) return Promise.resolve([draft]);
+          if (table === mailDraftRevision) return Promise.resolve([{ id: 'revision-1' }]);
           if (table === aiWorkflowRun && selection && 'run' in selection) return Promise.resolve([{ run }]);
           if (table === aiWorkflowRun && selection && 'request' in selection)
             return Promise.resolve([{ request: job.readRequest, messageId: mail.id }]);
+          if (table === aiWorkflowRun && selection && 'metrics' in selection)
+            return Promise.resolve([{ metrics: run.metrics, triggerMessageId: run.triggerMessageId }]);
           if (table === aiWorkflowRun) return Promise.resolve([job]);
           return Promise.resolve([]);
         },
@@ -76,7 +90,7 @@ async function fixture() {
     },
   } as unknown as DB;
   __setDbForTests({ db, conn: null as never });
-  return { revision, proposal, state, artifact };
+  return { revision, proposal, state, artifact, db, draft, run };
 }
 
 afterEach(() => { __setDbForTests(null); vi.unstubAllEnvs(); });
@@ -127,6 +141,91 @@ describe('stored quote export and draft occupancy', () => {
     expect((await api.qualifiedProposalChoices(input)).choices).toHaveLength(1);
     state[`${rowPath}.childrenPerRoom`] = 1;
     expect((await api.qualifiedProposalChoices(input)).choices).toHaveLength(0);
+  });
+
+  it('holds imported Centurion offers before PDF export and candidate promotion', async () => {
+    const { proposal, run, draft, db } = await fixture();
+    const observed = new Date(Date.now() - 60_000).toISOString();
+    const expiry = new Date(Date.now() + 2 * 86_400_000).toISOString();
+    const source = { ref: 'original', sourceHash: 'a'.repeat(64), authorizationId: 'auth-1',
+      scopeDigest: 'b'.repeat(64), propertyCode: 'HRCEN', currency: 'ZAR', printedDate: observed.slice(0, 10),
+      sentAt: observed, validUntil: expiry.slice(0, 10), terms: 'Synthetic offer',
+      lines: [{ id: 'line', page: 1, quote: 'Synthetic price', amount: '600.00' }],
+      sourceFreshness: { authorizationId: 'auth-1', sourceRefs: ['original'], purpose: 'offer_source' as const,
+        observedAt: observed, expiresAt: expiry } };
+    const offer = await resolveImportedOffer({ ref: source.ref, authorizationId: source.authorizationId,
+      evaluationAt: new Date().toISOString(), resolveSource: async () => source, authorizeSource: async () => true });
+    Object.assign(run.metrics.reservationistResult, { importedOffers: [offer] });
+    const api = caller().workstation;
+    const choices = await api.qualifiedProposalChoices({ internetMessageId: '<synthetic@example.invalid>' });
+    expect(choices.choices.every((choice) => choice.kind !== 'imported_offer')).toBe(true);
+    expect(choices).toMatchObject({ reason: importedOfferOccupancyHold });
+    const { workItemId: _item, ...uncached } = proposal;
+    await expect(api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'imported_offer' }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: importedOfferOccupancyHold });
+    await expect(assertHmsDraftFreshForAction({ db, transportId, draft: draft as never, conflict: 'STALE_AI_CANDIDATE' }))
+      .rejects.toMatchObject({ code: 'CONFLICT', message: importedOfferOccupancyHold });
+  });
+
+  it('hides and refuses an approved override after its original room occupancy changes', async () => {
+    const { revision, proposal, run, state } = await fixture();
+    const now = new Date().toISOString();
+    const offer = await resolveApprovedOverride({ revision, ref: 'override', evaluationAt: now,
+      resolveApproval: async () => ({ ref: 'override', authorizationId: revision.authorizationId,
+        revisionId: revision.id, sourceHash: 'a'.repeat(64), actorRef: 'staff', reason: 'Synthetic adjustment',
+        approvedAt: now, amount: '550.00', currency: 'ZAR' }), authorizeActor: async () => true });
+    Object.assign(run.metrics.reservationistResult, { approvedOverrides: [offer] });
+    const api = caller().workstation;
+    const input = { internetMessageId: '<synthetic@example.invalid>' };
+    expect((await api.qualifiedProposalChoices(input)).choices).toHaveLength(2);
+    const { workItemId: _item, ...uncached } = proposal;
+    vi.stubEnv('GOTENBERG_URL', '');
+    await expect(api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'approved_override' }))
+      .rejects.toThrow('GOTENBERG_URL missing');
+    state[`${rowPath}.childrenPerRoom`] = 1;
+    expect((await api.qualifiedProposalChoices(input)).choices).toHaveLength(0);
+    await expect(api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'approved_override' }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining('children per room') });
+  });
+
+  it('keeps non-quote candidates available and holds old priced candidates after an edit', async () => {
+    const { revision, run, state, draft, db } = await fixture();
+    const scope = { transportId, threadId: 't1', messageId: 'm1', triggerMessageId: 'm1', result: run.metrics.reservationistResult };
+    expect(await draftQuoteOccupancyHold(db, scope)).toBeNull();
+    expect(await draftQuoteOccupancyHold(db, { ...scope, triggerMessageId: 'another-message' }))
+      .toBe(draftQuoteOccupancyMessage);
+    expect(await draftQuoteOccupancyHold(db, { ...scope, result: { quoteRevisionIds: ['missing'], quoteRevisions: [] } }))
+      .toBe(draftQuoteOccupancyMessage);
+    expect(await draftQuoteOccupancyHold(db, { ...scope, transportId: 'transport-davinci', result: { importedOffers: [{}] } })).toBeNull();
+    state[`${rowPath}.childrenPerRoom`] = 1;
+    await expect(assertHmsDraftFreshForAction({ db, transportId, draft: draft as never, conflict: 'STALE_AI_CANDIDATE' }))
+      .rejects.toMatchObject({ code: 'CONFLICT', message: draftQuoteOccupancyMessage });
+    Object.assign(run.metrics.reservationistResult, { quoteRevisionIds: [], quoteRevisions: [] });
+    expect(await draftQuoteOccupancyHold(db, { ...scope, result: { version: 1, tasks: [] } })).toBeNull();
+    await expect(assertHmsDraftFreshForAction({ db, transportId, draft: draft as never, conflict: 'STALE_AI_CANDIDATE' }))
+      .resolves.toBeUndefined();
+    expect(revision.groups[0]?.children).toBe(0);
+  });
+
+  it('rejects a now-stale priced approval at the same recheck used by the SMTP queue', async () => {
+    const { state, db } = await fixture();
+    const secret = 'synthetic-signing-secret';
+    const release = { releaseId: 'release', releaseVersion: '1', sourceRevision: 'source', fingerprint: 'e'.repeat(64),
+      purpose: 'draft' as const, capabilityFamilyVersions: { draft: '1' }, issuedAt: '2026-01-01T00:00:00.000Z',
+      expiresAt: '2099-01-01T00:00:00.000Z', withdrawn: false };
+    const payload: DraftApprovalPayload = { draftId: 'draft-1', generationId: 'generation-1', transportId,
+      threadId: 't1', revisionId: 'revision-1', threadStateVersion: 'state-1', evidence: [],
+      policyVersion: DRAFT_APPROVAL_POLICY_VERSION, approvedByUserId: userId, approvedAt: new Date().toISOString(),
+      origin: 'ai', subject: 'Synthetic quote', html: '<p>Quote attached.</p>', text: 'Quote attached.',
+      to: ['guest@example.invalid'], cc: [], bcc: [], attachments: [], routeBinding: { ...AZURE_DRAFT_ROUTE, release } };
+    const approval = buildDraftApproval(payload, secret);
+    state[`${rowPath}.childAges`] = null;
+    await expect(assertDraftApprovalCurrent({ db, approval, payload, signingSecret: secret,
+      loadThreadStateVersion: async () => 'state-1' })).rejects.toBeInstanceOf(DraftQuoteOccupancyError);
+    vi.stubEnv('BETTER_AUTH_SECRET', secret);
+    await expect(assertQueuedDraftApproval(approval, { from: 'centurion@example.invalid', to: payload.to,
+      cc: payload.cc, bcc: payload.bcc, subject: payload.subject, html: payload.html, text: payload.text }, db))
+      .rejects.toBeInstanceOf(DraftApprovalInvalidError);
   });
 
   it('refuses a booking draft from a quote when the saved count changed', async () => {

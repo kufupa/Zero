@@ -5,6 +5,7 @@ import type { DB } from '../db/client.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { and, desc, eq } from 'drizzle-orm';
 import { addDays } from './stay-date-anchoring.js';
+import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
   'id' | 'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'childrenAges' | 'childrenPerRoom'>;
@@ -114,7 +115,7 @@ export function occupancyFromRevision(revision: QuoteRevision): Group[] {
 /** Load the same extraction version and saved edits as the selected email's pane. */
 async function loadChildOccupancyEvidence(
   db: DB,
-  scope: { transportId: string; threadId: string; messageId: string },
+  scope: { transportId: string; threadId: string; messageId: string; lock?: boolean },
 ) {
   const [latest] = await db
     .select({ id: mailExtraction.id, kind: mailExtraction.kind, payload: mailExtraction.payload })
@@ -123,7 +124,7 @@ async function loadChildOccupancyEvidence(
     .orderBy(desc(mailExtraction.createdAt))
     .limit(1);
   if (!latest?.kind || !latest.payload) return null;
-  const [item] = await db
+  const itemQuery = db
     .select({ extractionId: workItem.extractionId, state: workItem.state })
     .from(workItem)
     .where(and(
@@ -133,19 +134,51 @@ async function loadChildOccupancyEvidence(
       eq(workItem.kind, latest.kind),
     ))
     .limit(1);
+  const [item] = await (scope.lock ? itemQuery.for('share') : itemQuery);
   // A newer read has not been adopted yet. Do not apply old corrections to that read, or keep pricing the older one.
   // The existing work-item relink decides whether edits can safely carry; once it moves, the latest evidence is used.
-  if (item && item.extractionId !== latest.id) return null;
+  if ((!item && scope.lock) || (item && item.extractionId !== latest.id)) return null;
   return { payload: latest.payload, state: item?.state ?? {} };
 }
 
 export async function childOccupancyIsCurrent(
   db: DB,
   groups: Group[],
-  scope: { transportId: string; threadId: string; messageId: string },
+  scope: { transportId: string; threadId: string; messageId: string; lock?: boolean },
 ): Promise<boolean> {
   const evidence = await loadChildOccupancyEvidence(db, scope);
   return !!evidence && childOccupancyMatchesStored(groups, evidence.payload, evidence.state);
+}
+
+export const importedOfferOccupancyHold = 'The original offer cannot yet be matched to the requested rooms and child ages. Review it in HMS and run a new quote.';
+export const draftQuoteOccupancyMessage = 'Confirm the rooms, adults, and children per room, including each child’s age, then run the quote again.';
+
+export function isCenturionQuoteTransport(transportId: string): boolean {
+  return getPropertyTransportIds('HRCEN').includes(transportId.trim());
+}
+
+/** A priced candidate must still match the selected email and persisted room facts at promotion and send. */
+export async function draftQuoteOccupancyHold(db: DB, input: {
+  transportId: string; threadId: string; messageId: string | null; triggerMessageId: string | null; result: unknown;
+}): Promise<string | null> {
+  if (!isCenturionQuoteTransport(input.transportId) || !input.result || typeof input.result !== 'object') return null;
+  const result = input.result as { importedOffers?: unknown; quoteRevisions?: unknown; quoteRevisionIds?: unknown; approvedOverrides?: unknown };
+  if ([result.importedOffers, result.quoteRevisions, result.quoteRevisionIds, result.approvedOverrides].some((value) => value != null && !Array.isArray(value))) return draftQuoteOccupancyMessage;
+  if (Array.isArray(result.importedOffers) && result.importedOffers.length) return importedOfferOccupancyHold;
+  const quotes = (result.quoteRevisions ?? []) as QuoteRevision[];
+  const overrides = (result.approvedOverrides ?? []) as { id: string; sourceRevision: QuoteRevision }[];
+  const refs = (result.quoteRevisionIds ?? []) as unknown[];
+  if (!quotes.length && !overrides.length && !refs.length) return null;
+  if (!input.messageId || input.messageId !== input.triggerMessageId ||
+    refs.some((id) => ![...quotes, ...overrides].some((offer) => offer?.id === id))) return draftQuoteOccupancyMessage;
+  try {
+    for (const quote of [...quotes, ...overrides.map((offer) => offer.sourceRevision)]) {
+      if (!(await childOccupancyIsCurrent(db, occupancyFromRevision(quote), {
+        transportId: input.transportId, threadId: input.threadId, messageId: input.messageId, lock: true,
+      }))) return draftQuoteOccupancyMessage;
+    }
+  } catch { return draftQuoteOccupancyMessage; }
+  return null;
 }
 
 /** Across messages, admit only a single unambiguous saved room row with identical occupancy. */

@@ -97,7 +97,7 @@ import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { runStaffQuote } from '../../ai/staff-quote-run.js';
-import { childOccupancyIsCurrent, occupancyFromRevision, singleStayOccupancyIsCurrent } from '../../ai/child-occupancy.js';
+import { childOccupancyIsCurrent, occupancyFromRevision, singleStayOccupancyIsCurrent, isCenturionQuoteTransport, importedOfferOccupancyHold } from '../../ai/child-occupancy.js';
 import {
   enqueueHmsJob,
   queueAutoStaffQuoteHmsJob,
@@ -1382,6 +1382,7 @@ export const workstationRouter = router({
         .orderBy(desc(aiWorkflowRun.createdAt))
         .limit(10);
       const choices: rQualifiedChoice[] = [];
+      let importedOfferHeld = false;
       const [latestStaff] = await getDb()
         .select({ id: aiDraftGeneration.id })
         .from(aiDraftGeneration)
@@ -1462,6 +1463,7 @@ export const workstationRouter = router({
           | undefined;
         if (result?.readiness !== 'ready_for_staff_review') continue;
         for (const offer of result.importedOffers ?? []) {
+          if (isCenturionQuoteTransport(ctx.activeTransportId)) { importedOfferHeld = true; continue; }
           try {
             resolveLedgerSourceProposal(run, {
               transportId: ctx.activeTransportId,
@@ -1503,6 +1505,9 @@ export const workstationRouter = router({
               factRefs: [],
               kind: 'approved_override',
             });
+            if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(offer.sourceRevision), {
+              transportId: ctx.activeTransportId, threadId: mail.threadId, messageId: mail.id,
+            }))) continue;
             renderApprovedOverrideHtml(offer, {
               attention: '',
               company: '',
@@ -1533,6 +1538,7 @@ export const workstationRouter = router({
         threadId: mail.threadId,
         messageId: mail.id,
         choices,
+        ...(importedOfferHeld ? { reason: importedOfferOccupancyHold } : {}),
       };
     }),
   qualifiedQuoteProposalPdf: mailboxProcedure
@@ -1726,6 +1732,8 @@ export const workstationRouter = router({
           throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Newer stay inputs were approved; use the current quote' });
       };
       await assertNoNewerApproval();
+      if (input.kind === 'imported_offer' && isCenturionQuoteTransport(ctx.activeTransportId))
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: importedOfferOccupancyHold });
       try {
         selected = resolveLedgerSourceProposal(bound.run, {
           transportId: ctx.activeTransportId,
@@ -1740,6 +1748,16 @@ export const workstationRouter = router({
           message: 'Proposal evidence is not ready',
         });
       }
+      const assertSourceOccupancy = async () => {
+        if (selected.kind === 'approved_override' &&
+          !(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(selected.sourceRevision), {
+            transportId: ctx.activeTransportId, threadId: bound.run.threadId, messageId: input.messageId,
+          }))) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED',
+            message: 'Confirm rooms, adults, and the number of children per room before using this quote.' });
+        }
+      };
+      await assertSourceOccupancy();
       const header = {
         ...input,
         signerName: ctx.sessionUser.name ?? '',
@@ -1756,6 +1774,7 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'GOTENBERG_URL missing' });
       const pdf = await convertProposalHtml(html, { url });
       await assertNoNewerApproval();
+      await assertSourceOccupancy();
       try {
         resolveLedgerSourceProposal(bound.run, {
           transportId: ctx.activeTransportId, messageId: input.messageId,
