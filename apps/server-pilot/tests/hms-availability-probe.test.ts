@@ -524,6 +524,27 @@ describe('U10 availability probe (pure)', () => {
     expect(board.rows[1]?.roomsLeft).toBeNull();
   });
 
+  it('shows an average and minimum stock only when every requested night was read', () => {
+    const request: AvailabilityRequest = {
+      kind: 'availability', arrival: '2026-10-26', departure: '2026-10-29',
+      rooms: [{ roomType: 'All rooms', quantity: 1, adults: 1, childAges: [] }],
+    };
+    const nights = [
+      { date: '2026-10-26', inventory: 4, price: { amount: '100.00', currency: 'ZAR' } },
+      { date: '2026-10-27', inventory: 3, price: { amount: '200.00', currency: 'ZAR' } },
+      { date: '2026-10-28', inventory: 2, price: { amount: '300.00', currency: 'ZAR' } },
+    ];
+    const envelope = (observed: typeof nights) => ({ groups: [{ id: 'group-1', options: [{
+      room: { code: 'STQN' }, rate: { code: 'BAR' }, availability: 'available', nightly: observed,
+    }] }] });
+    const complete = availabilityBoardOf(envelope(nights), request, 'ZAR').rows[0];
+    expect(complete).toMatchObject({ nightlyPriceMinor: 20000, roomsLeft: 2 });
+    const missing = availabilityBoardOf(envelope(nights.slice(0, 2)), request, 'ZAR').rows[0];
+    expect(missing).toMatchObject({ nightlyPriceMinor: null, roomsLeft: null });
+    const mixedCurrency = [...nights.slice(0, 2), { ...nights[2]!, price: { amount: '300.00', currency: 'USD' } }];
+    expect(availabilityBoardOf(envelope(mixedCurrency), request, 'ZAR').rows[0]?.nightlyPriceMinor).toBeNull();
+  });
+
   it('keeps every reader room and night with stock, requested count, nightly price and completeness', () => {
     const snapshot = availabilitySnapshotOf(NIGHTLY_QUOTE_RESULT, NIGHTLY_REQUEST);
     expect(snapshot).toMatchObject({

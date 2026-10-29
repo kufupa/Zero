@@ -502,11 +502,11 @@ function amountMinor(amount: string | null): number | null {
 }
 
 /** Room × rate × board rows from a quote envelope, including unpriced nights as null. */
-export function availabilityBoardOf(result: QuoteEnvelope): {
+export function availabilityBoardOf(result: QuoteEnvelope, request?: AvailabilityRequest, expectedCurrency?: string): {
   rows: AvailabilityBoardRow[];
   truncated: boolean;
 } {
-  const snapshot = availabilitySnapshotOf(result);
+  const snapshot = availabilitySnapshotOf(result, request);
   const rows: AvailabilityBoardRow[] = [];
   for (const group of snapshot.groups) {
     const groupId = group.id ?? '';
@@ -521,6 +521,11 @@ export function availabilityBoardOf(result: QuoteEnvelope): {
       const stocks = nights
         .map((night) => night.availableCount)
         .filter((value): value is number => value !== null);
+      const priceTotal = priced.reduce((sum, value) => sum + value, 0);
+      const currency = nights[0]?.price.currency;
+      const completePrices = nights.length > 0 && priced.length === nights.length && Number.isSafeInteger(priceTotal) &&
+        Boolean(currency) && nights.every((night) => night.price.currency === currency) &&
+        (!expectedCurrency || currency === expectedCurrency);
       const boardLabel = option.board ?? '';
       rows.push({
         groupId,
@@ -530,10 +535,10 @@ export function availabilityBoardOf(result: QuoteEnvelope): {
         rateLabel: option.rateLabel ?? rateCode,
         board: boardLabel || rateCode,
         boardLabel,
-        nightlyPriceMinor: priced.length
-          ? Math.round(priced.reduce((sum, value) => sum + value, 0) / priced.length)
+        nightlyPriceMinor: completePrices
+          ? Math.round(priceTotal / priced.length)
           : null,
-        roomsLeft: stocks.length ? Math.min(...stocks) : null,
+        roomsLeft: nights.length > 0 && stocks.length === nights.length ? Math.min(...stocks) : null,
         ...(option.rateScope ? { rateScope: option.rateScope } : {}),
       });
     }
