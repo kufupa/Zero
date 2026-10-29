@@ -862,8 +862,8 @@ export function storedAnalysis(
         const rowId = order[index]?.rowId;
         const rooms = groups[index]?.rooms;
         const confirmationNumber = confirmationForGroup(sourceStay, payload, rowId, rooms, projectedRowCount) ??
-          (payload.stays.length === 1 && singleOriginalRoom(sourceStay, rowId, rooms, projectedRowCount)
-            ? overlaid.confirmation : null);
+          (!ambiguous && payload.stays.length === 1 && singleOriginalRoom(sourceStay, rowId, rooms, projectedRowCount)
+            ? selectedConfirmation : null);
         const firstRowOfStay = order.findIndex((slot) => slot.stayId === stayId) === index;
         const onlyGuest = sourceStay?.guests?.length === 1 ? sourceStay.guests[0] : undefined;
         const originalRoomCount = sourceStay?.rows[0]?.rooms ?? sourceStay?.totalRooms;
@@ -1897,6 +1897,19 @@ async function readyView(
   const sourceText = synced
     ? currentSourceText(synced)
     : [msg.subject ?? '', msg.textBody ?? ''].join('\n');
+  const hmsTodoCard = existingStayInformation
+    ? null
+    : await hmsTodoCardFromLuna(
+        stored.analysis.luna,
+        synced?.attachments ?? [],
+        sourceText,
+        resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined,
+      );
+  // Show the single case's roster on the manual checklist without assigning its guests to room rows.
+  const todoGuests = read.payload.stays.length === 1 ? guestsForStay(read.payload.stays[0]) : [];
+  if (hmsTodoCard?.kind === 'amend' && todoGuests.length) {
+    hmsTodoCard.steps.push({ label: 'Guests named in email', value: todoGuests.map((guest) => guest.name).join(', '), source: 'mail' });
+  }
   return {
     status: 'ready',
     kind: existingStayInformation ? 'other' : read.kind,
@@ -1910,14 +1923,7 @@ async function readyView(
     analysis: {
       ...stored.analysis,
       noReplySender: isNoReplyAddress(msg.fromAddress),
-      hmsTodoCard: existingStayInformation
-        ? null
-        : await hmsTodoCardFromLuna(
-            stored.analysis.luna,
-            synced?.attachments ?? [],
-            sourceText,
-            resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined,
-          ),
+      hmsTodoCard,
     },
     contact: storedContact(read.payload, state),
     stays: stayCommitsOf(state),

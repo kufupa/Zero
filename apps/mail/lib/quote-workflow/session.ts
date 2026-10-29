@@ -92,7 +92,8 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
     );
   if (!stay) return unbound();
   const action = stayAskAction(session, selectedKey);
-  if (action !== 'amend' && action !== 'cancel') return unbound();
+  // The mail-wide amendment cannot supply a different stay action's booking or requested changes.
+  if (action !== base.kind) return unbound();
   const roster = storedStayGuests(session, selectedKey);
   if (roster !== null) {
     const row = rows[0];
@@ -102,7 +103,7 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
       return { ...base, confirmationNumber: null };
     }
     const assigned = trimmedConfirmation(row.confirmationNumber);
-    // The stored projection assigns source and thread numbers only when this is the single original room.
+    // The stored projection assigns selected-email numbers only when this is the single original room.
     return { ...base, confirmationNumber: assigned };
   }
   // Stored rosters are case-scoped; a newly added or copied stay cannot inherit another case's lookup.

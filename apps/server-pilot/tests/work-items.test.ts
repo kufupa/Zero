@@ -290,6 +290,41 @@ describe('stored read for the pane', () => {
       expect(work.analysis.hmsTodoCard).toMatchObject({ kind: 'new_booking' });
     }));
 
+  it('keeps the stored amendment roster on the checklist without assigning rooms', () =>
+    withDb(async (db) => {
+      const extracted = payload();
+      const source = extracted.stays[0]!;
+      extracted.stays = [{
+        ...source,
+        action: 'amend',
+        totalRooms: 1,
+        guests: [{ name: 'Ada Example', confirmationNumber: '57291630-1' }],
+        rows: [{ ...source.rows[0]!, rooms: 1 }],
+      }];
+      extracted.confirmationNumbers = ['57291630-1'];
+      const messageId = await seedMail(db, 'amend-checklist-single');
+      await insertRead(db, messageId, { version: 'extract-v1', kind: 'amendment', payload: extracted });
+      const work = await storedWorkFor(db, {
+        transportId: CENTURION, internetMessageId: '<amend-checklist-single@example.com>',
+      });
+      if (work.status !== 'ready') throw new Error(`expected ready, got ${work.status}`);
+      expect(work.analysis.luna.groups[0]?.guestNames).toEqual([]);
+      expect(work.analysis.hmsTodoCard?.steps).toContainEqual({ label: 'Guests named in email', value: 'Ada Example', source: 'mail' });
+
+      // A multi-room roster stays visible but is not assigned to the first room.
+      extracted.stays[0]!.totalRooms = 2;
+      extracted.stays[0]!.rows[0]!.rooms = 2;
+      extracted.stays[0]!.guests!.push({ name: 'Bea Example', confirmationNumber: null });
+      const otherId = await seedMail(db, 'amend-checklist-multiple');
+      await insertRead(db, otherId, { version: 'extract-v1', kind: 'amendment', payload: extracted });
+      const multiple = await storedWorkFor(db, {
+        transportId: CENTURION, internetMessageId: '<amend-checklist-multiple@example.com>',
+      });
+      if (multiple.status !== 'ready') throw new Error(`expected ready, got ${multiple.status}`);
+      expect(multiple.analysis.hmsTodoCard?.steps).toContainEqual({ label: 'Guests named in email', value: 'Ada Example, Bea Example', source: 'mail' });
+      expect(multiple.analysis.hmsTodoCard?.steps.some((step) => step.label === 'Guests' || /^Group \d+ Guests$/.test(step.label))).toBe(false);
+    }));
+
   it('reads a stored read without writing: no work item is made or moved until the pane opens one', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'ro1');

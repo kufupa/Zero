@@ -4313,6 +4313,36 @@ describe('multi-ask stay cards: guests, action, split', () => {
     expect(amendmentOf(session)?.confirmationNumber).toBeNull();
   });
 
+  it('does not use the email-wide amendment for a selected cancellation stay', () => {
+    const groups = [
+      { ...quoteAnalysis.groups[0]!, id: 'r_amend', stayId: 'stay-amend', stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1' },
+      { ...quoteAnalysis.groups[0]!, id: 'r_cancel', stayId: 'stay-cancel', arrivalDate: '2026-12-01', departureDate: '2026-12-03', stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis,
+      intent: 'other', groups,
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [],
+        tasks: [
+          { kind: 'amend', groupIndexes: [0], note: '' },
+          { kind: 'cancel', groupIndexes: [1], note: '' },
+        ],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: '11111111-1', guestLastName: 'Example',
+        arrival: '2026-11-12', departure: '2026-11-14', requestedChange: 'Extend stay',
+      },
+    });
+    const selected = reduceQuoteSession(session, { type: 'select_stay_key', stayKey: 'stay-cancel' });
+    expect(stayAskAction(selected, 'stay-cancel')).toBe('cancel');
+    expect(amendmentOf(selected)).toMatchObject({
+      kind: 'amend', confirmationNumber: null, guestLastName: null,
+      arrival: null, departure: null, requestedChange: null,
+    });
+  });
+
   it('lists each named guest on the stay with that guest confirmation', () => {
     const session = twoGuestStay(2, [
       { name: 'Ada Example', confirmationNumber: '11111111-1' },

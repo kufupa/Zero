@@ -214,7 +214,7 @@ describe('stored case boundaries', () => {
     expect(analysis.groups[0]?.confirmationNumber).toBeUndefined();
   });
 
-  it('attaches a thread-only number to the one room when its original count is known', () => {
+  it('keeps a thread-only number as a lookup hint, not a room assignment', () => {
     const payload = mixedMail();
     payload.stays = [payload.stays[0]!];
     payload.stays[0]!.guests![0]!.confirmationNumber = null;
@@ -223,6 +223,15 @@ describe('stored case boundaries', () => {
       { kind: 'booking', payload, attachments: [] }, {},
       { confirmation: '57291630-1', reason: null },
     ).analysis;
+    expect(analysis.luna.confirmationNumber).toBe('57291630-1');
+    expect(analysis.groups[0]?.confirmationNumber).toBeUndefined();
+  });
+
+  it('retains a single selected-email number on the one original room', () => {
+    const payload = mixedMail();
+    payload.stays = [payload.stays[0]!];
+    payload.stays[0]!.guests![0]!.confirmationNumber = null;
+    const analysis = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}).analysis;
     expect(analysis.groups[0]?.confirmationNumber).toBe('57291630-1');
   });
 
