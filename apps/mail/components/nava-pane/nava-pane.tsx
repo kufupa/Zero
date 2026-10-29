@@ -106,6 +106,7 @@ import {
   initialQuoteSession,
   nextSelectedOfferIds,
   partyLookupWaitReason,
+  quotePartySourceTransition,
   pickNextRunnableStep,
   quoteRunBlockReason,
   reduceQuoteSession,
@@ -236,11 +237,13 @@ function analysisWithPaneEdits(
   analysis: QuoteAnalysis,
   transportId: string,
   messageKey: string | undefined,
+  recoverSavedPreferences = false,
 ): QuoteAnalysis {
   if (!messageKey) return analysis;
   const groups = overlayRememberedGroups(
     analysis.groups,
     recalledPaneEdits(paneEditKey(transportId, messageKey)),
+    recoverSavedPreferences,
   );
   return groups === analysis.groups ? analysis : { ...analysis, groups };
 }
@@ -443,6 +446,9 @@ export function NavaPane({
   const staffSignerName = session?.user?.name ?? '';
   const { data: activeConnection, isLoading: transportLoading } = useActiveConnection();
   const activePaneConfig = quotePaneConfig?.transportId === activeConnection?.id ? quotePaneConfig : null;
+  useEffect(() => {
+    dispatchQuote({ type: 'quote_property_configured', propertyCode: activePaneConfig?.propertyCode ?? null });
+  }, [activePaneConfig?.propertyCode, quoteSession.binding?.selectionEpoch, quoteSession.binding?.transportId]);
   const quoteStrategyRegistryKey = (activePaneConfig?.salesStrategies ?? [])
     .map((strategy) => `${strategy.code}:${strategy.requestValue}`)
     .join('|');
@@ -622,19 +628,19 @@ export function NavaPane({
     const next = { key: JSON.stringify([binding.transportId, binding.entryId, binding.selectionEpoch]), party: quoteSourceBinding.sourcePartyDigest,
       extraction: quoteSourceBinding.sourceExtractionId };
     const previous = previousQuoteSource.current;
+    const transition = quotePartySourceTransition(previous, next, localQuotePartyEdit.current === next.key,
+      Boolean(storedWork.saveError), Boolean(quoteSession.sourcePartyAutoPickDisabled));
+    if (transition === 'defer') return;
     previousQuoteSource.current = next;
-    if (localQuotePartyEdit.current === next.key) return;
     localQuotePartyEdit.current = null;
-    const changed = previous?.key === next.key && previous.party &&
-      (previous.party !== next.party || previous.extraction !== next.extraction);
-    const readyAfterHold = previous?.key === next.key && !previous.party && next.party && quoteSession.sourcePartyAutoPickDisabled;
-    if (changed || readyAfterHold) {
+    if (transition === 'review') {
       const contact = storedWork.pane.state === 'ready' ? storedWork.pane.contact : null;
       dispatchQuote({ type: 'quote_source_changed',
         ...(contact ? { sourceParty: { agency: contact.company, company: contact.endClient } } : {}) });
     }
   }, [activePaneConfig?.propertyCode, quoteSession.binding?.transportId, quoteSession.binding?.entryId, quoteSession.binding?.selectionEpoch,
-    quoteSession.sourcePartyAutoPickDisabled, quoteSourceBinding.sourcePartyDigest, quoteSourceBinding.sourceExtractionId]);
+    quoteSession.sourcePartyAutoPickDisabled, quoteSourceBinding.sourcePartyDigest, quoteSourceBinding.sourceExtractionId,
+    storedWork.saveError]);
   const isExistingStayInformation =
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
@@ -843,6 +849,7 @@ export function NavaPane({
           decision.analysis,
           binding.transportId,
           binding.internetMessageId,
+          true,
         ),
       } as const;
       const before = reduceQuoteSession(quoteSessionRef.current, { type: 'analysis_started' });
@@ -1852,7 +1859,7 @@ export function NavaPane({
         }
       : undefined;
     // Use the background default unless Centurion staff explicitly chose a different strategy.
-    const runHeader = autoStart || readBack
+    const runHeader = autoStart || readBack || (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && !quoteSession.staffSalesStrategyEdited)
       ? autoRunHeader(quoteSession, activePaneConfig?.propertyCode)
       : quoteSession.staffHeader;
     const noticeEmail = {

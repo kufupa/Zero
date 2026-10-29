@@ -3,6 +3,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { DRAFT_GROUP_ID } from '../lib/quote-workflow/session';
+import { staffQuoteGroupsFromStay } from '../lib/quote-workflow/staff-quote-bind';
 import {
   overlayRememberedGroups,
   paneEditKey,
@@ -10,7 +11,7 @@ import {
   rememberPaneEdits,
   resetPaneEditsForTests,
 } from '../lib/quote-workflow/pane-edits';
-import type { StayGroupRequirement } from '../lib/quote-workflow/types';
+import { HRCEN_PROPERTY_CODE, HRDAV_PROPERTY_CODE, type StayGroupRequirement } from '../lib/quote-workflow/types';
 
 const GROUP: StayGroupRequirement = {
   id: 'r_1',
@@ -59,5 +60,28 @@ describe('pane edits', () => {
     expect(recalledPaneEdits(key)).toEqual([]);
     expect(overlayRememberedGroups([extracted, extra], [])).toEqual([]);
     expect(overlayRememberedGroups([extracted, extra], [GROUP])).toEqual([GROUP]);
+  });
+
+  it('repairs an old remembered row only from the same saved room and meal preference', () => {
+    const old = { ...GROUP, childrenPerRoom: 0, roomPreference: 'Standard Twin' };
+    const saved = { ...old, adults: 2, sourcePreference: { roomType: 'Standard Twin', board: null } };
+    expect(overlayRememberedGroups([saved], [old], true)).toEqual([{ ...old, sourcePreference: saved.sourcePreference }]);
+    expect(overlayRememberedGroups([saved], [old])).toEqual([old]);
+    const restored = overlayRememberedGroups([saved], [old], true);
+    expect(staffQuoteGroupsFromStay(restored, HRCEN_PROPERTY_CODE)).toMatchObject({
+      ok: [{ sourcePreference: saved.sourcePreference, childrenPerRoom: 0 }],
+    });
+    const davinci = staffQuoteGroupsFromStay(restored, HRDAV_PROPERTY_CODE);
+    expect(davinci).toHaveProperty('ok');
+    if ('ok' in davinci) expect(davinci.ok[0]).not.toHaveProperty('sourcePreference');
+    for (const mismatch of [
+      { ...saved, roomPreference: 'King' },
+      { ...saved, board: 'dinner_bb' as const },
+      { ...saved, stayId: 'other' },
+      { ...saved, sourcePreference: undefined },
+    ]) expect(overlayRememberedGroups([mismatch], [old], true)).toEqual([old]);
+    expect(overlayRememberedGroups([saved, saved], [old], true)).toEqual([old]);
+    const alreadyBound = { ...old, sourcePreference: { roomType: 'Earlier', board: null } };
+    expect(overlayRememberedGroups([saved], [alreadyBound], true)).toEqual([alreadyBound]);
   });
 });
