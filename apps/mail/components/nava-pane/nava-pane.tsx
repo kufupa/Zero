@@ -682,6 +682,11 @@ export function NavaPane({
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
   const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
+  const contactCaseHeld = caseReviewPending(quoteSession.analysis) || (storedWork.pane.state === 'ready' &&
+    Boolean(storedWork.pane.sourceConflict || storedWork.pane.analysis.caseActionsUncertain)) ||
+    (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && (storedWork.pane.state !== 'ready' ||
+      !storedWork.pane.sourceRead || storedWork.pane.sourceRead.extractionId !== storedWork.pane.extractionId ||
+      storedWork.pane.sourceRead.kind !== storedWork.pane.kind));
   const contactEditorKey = `${contactCorrectionKey}|${
     storedWork.pane.state === 'ready'
       ? `ready:${storedWork.pane.workItemId ?? ''}${storedWork.historyEpoch ? `:h${storedWork.historyEpoch}` : ''}`
@@ -736,11 +741,11 @@ export function NavaPane({
           onResetStay: storedWork.resetAvailable && !caseReviewPending(quoteSession.analysis)
             ? (stayId: string) => storedWork.resetSection({ type: 'stay', stayId })
             : undefined,
-          resetPending: storedWork.historyPending || storedWork.historyNeedsReload,
+          resetPending: storedWork.historyPending || storedWork.historyNeedsReload || contactCaseHeld,
         }
       : null;
   const recordContact = (field: ContactField, value: string | null) => {
-    if (storedWork.historyPending || storedWork.historyNeedsReload) return;
+    if (storedWork.historyPending || storedWork.historyNeedsReload || contactCaseHeld) return;
     const previous = documentContactRef.current ?? {
       name: null,
       company: null,
@@ -790,6 +795,7 @@ export function NavaPane({
       pendingContactCorrections.current = null;
       return;
     }
+    if (contactCaseHeld) return;
     if (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) return;
     pendingContactCorrections.current = null;
     for (const [field, value] of Object.entries(pending.fields)) {
@@ -798,6 +804,7 @@ export function NavaPane({
   }, [
     contactCorrection,
     contactCorrectionKey,
+    contactCaseHeld,
     storedWork.pane.state,
     storedWork.pane.state === 'ready' ? storedWork.pane.workItemId : null,
     storedWork.recordContact,
@@ -2467,7 +2474,7 @@ export function NavaPane({
                     ? workItemPane.onResetContact
                     : undefined
                 }
-                resetPending={workItemPane?.resetPending}
+                resetPending={storedWork.historyPending || storedWork.historyNeedsReload || contactCaseHeld}
               />
             ) : null}
             <div className="flex flex-col gap-2">{mailboxWarnings}</div>
@@ -2542,6 +2549,7 @@ export function NavaPane({
               contact={documentContact}
               contactEditorKey={contactEditorKey}
               onContactEdit={contactInPeople ? recordContact : undefined}
+              contactReadOnly={contactCaseHeld || storedWork.historyPending || storedWork.historyNeedsReload}
               workItemPane={workItemPane}
               findParty={PANE_PARTY_FINDER}
               partySuggestions={partySuggestions}

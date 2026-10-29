@@ -426,6 +426,7 @@ export function QuoteWorkflowPanel({
   contact,
   contactEditorKey,
   onContactEdit,
+  contactReadOnly = false,
   makeQuote = true,
   workItemPane = null,
 }: {
@@ -448,6 +449,7 @@ export function QuoteWorkflowPanel({
   contactEditorKey?: string;
   /** Saves PDF contact corrections to this request, not an HMS party profile. */
   onContactEdit?: (field: ContactField, value: string | null) => void;
+  contactReadOnly?: boolean;
   partySuggestions?: PartySuggestion[];
   /** The HMS list searched while staff type. Null or absent leaves only the live search. */
   partyIndex?: PartyIndexSearcher | null;
@@ -1056,6 +1058,7 @@ export function QuoteWorkflowPanel({
           contact={contact}
           contactEditorKey={contactEditorKey}
           onContactEdit={onContactEdit}
+          contactReadOnly={contactReadOnly}
           onPartyLookupPending={onPartyLookupPending}
           scrollToStep={scrollToStep}
           workItemPane={workItemPane}

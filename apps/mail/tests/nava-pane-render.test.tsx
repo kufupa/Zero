@@ -1728,6 +1728,9 @@ describe('NavaPane', () => {
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     render(<NavaPane bridge={fakeBridge} />);
     expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
+    const contact = screen.queryByRole('group', { name: 'Quote contact — printed on the PDF' }) ??
+      screen.getByRole('region', { name: 'Quote contact — printed on the PDF' });
+    expect((within(contact).getByRole('button', { name: 'Edit' }) as HTMLButtonElement).disabled).toBe(true);
     const reads = bridgeMockState.analyseCalls;
     fireEvent.change(screen.getByLabelText('Change how Nava reads this email'), { target: { value: 'create_booking' } });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });

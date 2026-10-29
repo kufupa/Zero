@@ -239,6 +239,7 @@ export function QuotePeopleStep({
   contact,
   contactEditorKey,
   onContactEdit,
+  contactReadOnly = false,
   onPartyLookupPending,
   scrollToStep,
   workItemPane = null,
@@ -255,6 +256,7 @@ export function QuotePeopleStep({
   contact?: StoredContact | null;
   contactEditorKey?: string;
   onContactEdit?: (field: ContactField, value: string | null) => void;
+  contactReadOnly?: boolean;
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
   scrollToStep: (id: string) => void;
   workItemPane?: WorkItemPaneControls | null;
@@ -276,7 +278,7 @@ export function QuotePeopleStep({
               ? workItemPane.onResetContact
               : undefined
           }
-          resetPending={workItemPane?.resetPending}
+          resetPending={contactReadOnly || workItemPane?.resetPending}
         />
       ) : null}
       <GuestNameField
