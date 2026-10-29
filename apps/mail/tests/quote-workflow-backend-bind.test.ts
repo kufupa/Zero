@@ -161,6 +161,41 @@ describe('quote workflow backend bind', () => {
     }
   });
 
+  it('uses a newer open result even when it has no work item', async () => {
+    const stored = {
+      status: 'ready' as const, kind: 'quote', workItemId: null, workItemStatus: null,
+      extractionId: 'ex-old', refs: {},
+      analysis: { intent: 'quote' as const, groups: [], secondaryAsks: [], alternatives: [] },
+      contact: { name: null, company: null, endClient: null, email: null, phone: null }, language: null, translation: null,
+    };
+    const opened = { ...stored, kind: 'other', extractionId: 'ex-new', existingStayInformation: true };
+    expect(await bindStoredWork({ query: { query: async () => stored }, open: { mutate: async () => opened },
+      internetMessageId: 'mail' })).toEqual(opened);
+  });
+
+  it('holds a late open that finds a changed extraction', async () => {
+    vi.useFakeTimers();
+    try {
+      const stored = {
+        status: 'ready' as const, kind: 'quote', workItemId: null, workItemStatus: null,
+        extractionId: 'ex-old', refs: {},
+        analysis: { intent: 'quote' as const, groups: [], secondaryAsks: [], alternatives: [] },
+        contact: { name: null, company: null, endClient: null, email: null, phone: null }, language: null, translation: null,
+      };
+      let finish!: (value: typeof stored) => void;
+      const onLateHold = vi.fn();
+      const result = bindStoredWork({ query: { query: async () => stored },
+        open: { mutate: () => new Promise((resolve) => { finish = resolve; }) },
+        internetMessageId: 'mail', openTimeoutMs: 10, onLateHold });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await result).toEqual(stored);
+      finish({ ...stored, extractionId: 'ex-new' });
+      await vi.waitFor(() => expect(onLateHold).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', hold: true })));
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reports unavailable when analyseSelection is not on the client', async () => {
     const result = await bindAnalyseSelection({
       input: {

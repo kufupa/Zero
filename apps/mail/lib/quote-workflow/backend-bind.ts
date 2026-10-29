@@ -366,11 +366,17 @@ export async function bindStoredWork(args: {
       return opened;
     });
     void opening.then((opened) => {
-      if (openTimedOut && opened.status === 'failed' && opened.hold && !args.isStale?.()) args.onLateHold?.(opened);
+      if (!openTimedOut || args.isStale?.()) return;
+      if (opened.status === 'failed' && opened.hold) args.onLateHold?.(opened);
+      if (opened.status === 'ready' && (opened.extractionId !== stored.extractionId || opened.kind !== stored.kind ||
+        opened.sourceConflict || opened.analysis.caseActionsUncertain ||
+        (opened.sourceRead && opened.sourceRead.extractionId !== (stored.sourceRead?.extractionId ?? stored.extractionId)))) {
+        args.onLateHold?.({ status: 'failed', hold: true,
+          reason: 'This email changed while it was opening. Review it manually.' });
+      }
     }, () => {});
     const opened = await Promise.race([opening, late]);
-    return (opened.status === 'failed' && opened.hold) ||
-      (opened.status === 'ready' && (opened.workItemId || opened.sourceConflict || opened.analysis.caseActionsUncertain))
+    return (opened.status === 'failed' && opened.hold) || opened.status === 'ready'
       ? opened : stored;
   } catch {
     return stored;
