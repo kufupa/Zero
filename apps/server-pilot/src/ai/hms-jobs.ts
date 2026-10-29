@@ -763,7 +763,9 @@ export async function hmsMailCopiesForMessage(
 
 function hmsMailReadRequestKey(request: HmsJobRequest, propertyCode: string): string {
   return request.kind === 'staff_quote'
-    ? JSON.stringify({ kind: request.kind, price: staffQuotePriceKey(request.input, propertyCode !== 'HRDAV') })
+    ? JSON.stringify({ kind: request.kind, price: staffQuotePriceKey(request.input, propertyCode !== 'HRDAV'),
+        // A Centurion prepared job admitted for an older extraction must not prevent a new search.
+        ...(propertyCode === 'HRCEN' ? { sourceExtractionId: request.input.sourceExtractionId ?? null } : {}) })
     : hmsRequestKey(request);
 }
 
