@@ -74,10 +74,14 @@ export type QuoteStrategySessionAction =
 export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
   const base = session.analysis?.amendment ?? null;
   if (!base) return null;
+  const unbound = () => ({
+    ...base, confirmationNumber: null, guestLastName: null, arrival: null, departure: null,
+    requestedArrival: null, requestedDeparture: null, requestedChange: null,
+  });
   const selectedKey = session.selectedStayKey;
   if (!selectedKey) return base;
   const rows = stayAskRows(session, selectedKey);
-  if (new Set(rows.map(stayIdOf)).size > 1) return { ...base, confirmationNumber: null };
+  if (new Set(rows.map(stayIdOf)).size > 1) return unbound();
   const stays = groupStays(session.groups);
   const stay =
     stays.find((item) => item.id === selectedKey) ??
@@ -86,14 +90,15 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
         item.rows.some((row) => stayIdOf(row) === selectedKey) ||
         Boolean(item.rows[0] && stayKeyForGroup(item.rows[0]) === selectedKey),
     );
-  if (!stay) return base;
+  if (!stay) return unbound();
   const action = stayAskAction(session, selectedKey);
-  if (action !== 'amend' && action !== 'cancel') return base;
+  if (action !== 'amend' && action !== 'cancel') return unbound();
   const roster = storedStayGuests(session, selectedKey);
   if (roster !== null) {
     const row = rows[0];
     const original = row && session.analysis?.groups.find((item) => item.id === row.id && stayIdOf(item) === stayIdOf(row));
-    if (!row || !original || rows.length !== 1 || roster.length > 1 || (row.quantity != null && row.quantity !== 1)) {
+    if (!row || !original) return unbound();
+    if (rows.length !== 1 || roster.length > 1 || (row.quantity != null && row.quantity !== 1)) {
       return { ...base, confirmationNumber: null };
     }
     const assigned = trimmedConfirmation(row.confirmationNumber);
@@ -101,6 +106,8 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
     // A thread-only number can identify the only unedited row, but must not follow a different or newly added row.
     return session.analysis?.groups.length === 1 ? base : { ...base, confirmationNumber: null };
   }
+  // Stored rosters are case-scoped; a newly added or copied stay cannot inherit another case's lookup.
+  if (session.analysis?.groups.some((group) => 'stayGuests' in group && Array.isArray(group.stayGuests))) return unbound();
   const confirmations = [...new Set(stayAskGuests(session, selectedKey)
     .map((guest) => guest.confirmationNumber).filter((value): value is string => Boolean(value)))];
   if (confirmations.length > 1) return { ...base, confirmationNumber: null };
@@ -312,13 +319,22 @@ function taskStayIds(session: QuoteSession, task: LunaAnalysisWire['tasks'][numb
 /** The action this stay card should show. Tasks bind by stay id; a date-set card matches every row on those dates. */
 export function stayAskAction(session: QuoteSession, stayId: string): StayAskAction {
   const tasks = session.analysis?.luna?.tasks ?? [];
-  const ids = new Set(stayAskRows(session, stayId).map((row) => stayIdOf(row)));
-  ids.add(stayId);
+  const rowIds = new Set(stayAskRows(session, stayId).map(stayIdOf));
+  const ids = new Set([...rowIds, stayId]);
+  const actions = new Set<StayAskAction>();
+  const covered = new Set<string>();
   for (const task of tasks) {
-    if (!taskStayIds(session, task).some((id) => ids.has(id))) continue;
+    const matching = taskStayIds(session, task).filter((id) => ids.has(id));
+    if (!matching.length) continue;
     const mapped = stayAskActionFromTask(task.kind);
-    if (mapped) return mapped;
+    if (mapped) {
+      actions.add(mapped);
+      matching.forEach((id) => covered.add(id));
+    }
   }
+  // The pane can still group separate cases by date. Never label their combined card as just one action.
+  if (actions.size > 1 || (actions.size && rowIds.size > 1 && [...rowIds].some((id) => !covered.has(id)))) return 'other';
+  if (actions.size === 1) return [...actions][0]!;
   const workflow = session.analysis?.luna?.workflow;
   if (workflow === 'create_booking') return 'booking';
   if (workflow === 'quote') return 'quote';

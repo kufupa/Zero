@@ -47,7 +47,7 @@ import {
   staffHeaderFieldProblem,
   staffStayExtrasFor,
 } from '../lib/quote-workflow/types';
-import { approvedExecuteHeader, staffHeaderForStay } from '../lib/quote-workflow/staff-quote-bind';
+import { approvedExecuteHeader, staffHeaderForStay, staffQuoteGroupsFromStay } from '../lib/quote-workflow/staff-quote-bind';
 import { workbookRequestFor } from '../lib/quote-workflow/quote-workbook-download';
 import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { pdfBlockReason } from '../components/quote-workflow/document-review';
@@ -2620,6 +2620,27 @@ describe('quote session staff review items', () => {
     expect(s.bookingDrafts).toEqual({});
   });
 
+  it('clears a stale booking draft and refuses rates when staff clear occupancy with complete dates', () => {
+    const ready = analysisReady();
+    const session: QuoteSession = {
+      ...ready,
+      bookingDrafts: {
+        [STAY_A]: {
+          draft: { rooms: [], rateCheck: [], missing: [], flags: [] },
+          options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
+          messageId: 'mail-1', selectionEpoch: 1, inputRevision: 1, revisionRef: 'rev-1',
+        },
+      },
+    };
+    for (const patch of [{ adults: undefined }, { quantity: undefined }]) {
+      const cleared = reduceQuoteSession(session, { type: 'patch_group', groupId: 'g1', patch });
+      expect(cleared.bookingDrafts).toEqual({});
+      expect(staffQuoteGroupsFromStay(cleared.groups, 'HRCEN')).toEqual({
+        error: 'Enter the number of rooms and adults before running the quote.',
+      });
+    }
+  });
+
   it('accepts a matching booking_draft_ready and ignores a stale selectionEpoch', () => {
     const payload = {
       draft: {
@@ -4265,6 +4286,12 @@ describe('multi-ask stay cards: guests, action, split', () => {
     const newStay = reduceQuoteSession(session, { type: 'duplicate_stay', stayId: 'stay-a', token: 'new' });
     expect(stayAskGuests(newStay, 's_new')).toEqual([]);
     expect(amendmentOf(newStay)?.confirmationNumber).toBeNull();
+
+    const moved = reduceQuoteSession(newStay, {
+      type: 'patch_group', groupId: 'r_new_0', patch: { arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+    });
+    const selectedCopy = reduceQuoteSession(moved, { type: 'select_stay_key', stayKey: 's_new' });
+    expect(amendmentOf(selectedCopy)).toMatchObject({ confirmationNumber: null, arrival: null, departure: null });
   });
 
   it('lists each named guest on the stay with that guest confirmation', () => {
@@ -4483,5 +4510,28 @@ describe('multi-ask stay cards: guests, action, split', () => {
     });
     expect(stayAskAction(session, 'stay-a')).toBe('other');
     expect(stayAskAction(session, 'stay-b')).toBe('booking');
+  });
+
+  it('does not label same-date cases with conflicting actions as one booking', () => {
+    const groups = [
+      { ...quoteAnalysis.groups[0]!, id: 'g1', stayId: 'stay-a' },
+      { ...quoteAnalysis.groups[0]!, id: 'g2', stayId: 'stay-b' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis,
+      groups,
+      luna: {
+        workflow: 'create_booking', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [],
+        tasks: [
+          { kind: 'create_booking', groupIndexes: [0], note: '' },
+          { kind: 'amend', groupIndexes: [1], note: '' },
+        ],
+      },
+    });
+    expect(stayAskAction(session, 'stay-a')).toBe('booking');
+    expect(stayAskAction(session, 'stay-b')).toBe('amend');
+    expect(stayAskAction(session, stayKeyForGroup(groups[0]!))).toBe('other');
   });
 });

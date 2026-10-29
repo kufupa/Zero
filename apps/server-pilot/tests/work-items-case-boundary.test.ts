@@ -169,6 +169,21 @@ describe('stored case boundaries', () => {
     expect(analysis.luna.missing.some((item) => item.field === 'confirmationNumber')).toBe(true);
   });
 
+  it('does not attach a number to a date-only stay when the original room count is multiple or unknown', () => {
+    const payload = mixedMail();
+    payload.stays = [{ ...payload.stays[0]!, totalRooms: 2, rows: [] }];
+    const multiple = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}).analysis;
+    expect(multiple.groups[0]?.confirmationNumber).toBeUndefined();
+    expect(multiple.luna.confirmationNumber).toBeNull();
+
+    payload.stays[0]!.totalRooms = null;
+    const unknown = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}).analysis;
+    expect(unknown.groups[0]?.confirmationNumber).toBeUndefined();
+    payload.stays[0]!.totalRooms = 1;
+    const single = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}).analysis;
+    expect(single.groups[0]?.confirmationNumber).toBe('57291630-1');
+  });
+
   it('does not assign a guest number when staff have added another row to a single-row stay', () => {
     const payload = mixedMail();
     payload.stays = [payload.stays[0]!];
@@ -239,6 +254,24 @@ describe('stored case boundaries', () => {
       'Departure date for stay 1', 'Number of rooms and occupancy per room for stay 1',
     ]);
   });
+
+  it('leaves occupancy cleared even when both dates are present', () => {
+    const payload = mixedMail();
+    payload.stays = [payload.stays[1]!];
+    payload.confirmationNumbers = [];
+    const analysis = storedAnalysis({ kind: 'quote', payload, attachments: [] }, {
+      'stays[s_new].rows[r_new].count': null,
+      'stays[s_new].rows[r_new].adults': null,
+    }).analysis;
+    expect(analysis.groups[0]).toMatchObject({
+      arrivalDate: '2027-11-20', departureDate: '2027-11-22',
+      fields: { quantity: 'staff_corrected', adults: 'staff_corrected' },
+    });
+    expect(analysis.groups[0]?.quantity).toBeUndefined();
+    expect(analysis.groups[0]?.adults).toBeUndefined();
+    // This list is for the missing-date reply, not the quote request admission gate.
+    expect(analysis.missingQuoteReplyFields).toEqual([]);
+  });
 });
 
 describe('re-read identity for staff corrections', () => {
@@ -265,6 +298,31 @@ describe('re-read identity for staff corrections', () => {
     const differentProperty = structuredClone(before);
     differentProperty.stays[0]!.hotel = 'Da Vinci';
     expect(correctionsCarryTo(before, differentProperty, state)).toBe(false);
+  });
+
+  it('does not move saved edits when a partially overlapping roster or top-level number changes', () => {
+    const before = mixedMail();
+    before.stays = [before.stays[0]!];
+    before.confirmationNumbers = [];
+    before.stays[0]!.guests = [
+      { name: 'Ada Example', confirmationNumber: null },
+      { name: 'Bea Example', confirmationNumber: null },
+    ];
+    const state = { 'stays[s_existing].requested.departure': null };
+    const changed = structuredClone(before);
+    changed.stays[0]!.guests![1]!.name = 'Cal Example';
+    expect(correctionsCarryTo(before, changed, state)).toBe(false);
+    const reordered = structuredClone(before);
+    reordered.stays[0]!.guests!.reverse();
+    expect(correctionsCarryTo(before, reordered, state)).toBe(true);
+
+    before.confirmationNumbers = ['11111111-1'];
+    const differentNumber = structuredClone(before);
+    differentNumber.confirmationNumbers = ['22222222-1'];
+    expect(correctionsCarryTo(before, differentNumber, state)).toBe(false);
+    const lostNumber = structuredClone(before);
+    lostNumber.confirmationNumbers = [];
+    expect(correctionsCarryTo(before, lostNumber, state)).toBe(false);
   });
 
   it('does not move a cleared field when same-date stays have only positional identities', () => {

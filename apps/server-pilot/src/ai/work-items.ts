@@ -576,7 +576,8 @@ function confirmationForGroup(
   if (stay.rows.length === 1 && (
     stay.rows[0]?.id !== rowId || rooms !== 1 || (stay.rows[0]?.rooms ?? 1) !== 1 || (stay.totalRooms ?? 1) !== 1
   )) return null;
-  if (stay.rows.length === 0 && rowId !== null) return null;
+  // A date-only stay can identify a room only when the source says there was exactly one.
+  if (stay.rows.length === 0 && (rowId !== null || stay.totalRooms !== 1)) return null;
   if (payload.stays.length === 1 && payloadConfirmationNumbers(payload).length > 1) return null;
   if (stay.guests?.length) {
     if (stay.guests.length !== 1 || !stay.guests[0]?.name.trim()) return null;
@@ -905,24 +906,39 @@ function contentKeepsId<T extends { id: string }>(
   return hits.length === 1 && hits[0]!.id === id;
 }
 
+function sameStrings(left: Set<string>, right: Set<string>): boolean {
+  return left.size === right.size && [...left].every((value) => right.has(value));
+}
+
 /** A unique date key is insufficient when the reads name conflicting properties, bookings or guests. */
-function stayKeepsIdentity(id: string, before: ExtractionStay[], after: ExtractionStay[]): boolean {
-  if (!contentKeepsId(id, before, after, stayContentKey)) return false;
-  const prior = before.find((stay) => stay.id === id);
-  const next = after.find((stay) => stay.id === id);
+function stayKeepsIdentity(id: string, before: MailExtractionPayload, after: MailExtractionPayload): boolean {
+  if (!contentKeepsId(id, before.stays, after.stays, stayContentKey)) return false;
+  const prior = before.stays.find((stay) => stay.id === id);
+  const next = after.stays.find((stay) => stay.id === id);
   if (!prior || !next) return true; // A staff-added stay has no extraction counterpart in either read.
   const priorHotel = prior.hotel?.trim().toLowerCase();
   const nextHotel = next.hotel?.trim().toLowerCase();
   if (priorHotel && nextHotel && priorHotel !== nextHotel) return false;
-  const priorNumbers = new Set(stayGuestConfirmations(prior));
-  const nextNumbers = new Set(stayGuestConfirmations(next));
-  if (priorNumbers.size && nextNumbers.size) {
-    return priorNumbers.size === nextNumbers.size && [...priorNumbers].every((number) => nextNumbers.has(number));
-  }
+  // A top-level number with no unique owner could refer to any edited case in the mail.
+  const unassigned = (payload: MailExtractionPayload) => new Set(payload.confirmationNumbers.flatMap((value) => {
+    const number = trimmedConfirmation(value);
+    return number && payload.stays.filter((stay) => stayGuestConfirmations(stay).includes(number)).length !== 1
+      ? [number] : [];
+  }));
+  if (!sameStrings(unassigned(before), unassigned(after))) return false;
+  const numbers = (stay: ExtractionStay, payload: MailExtractionPayload) => new Set([
+    ...stayGuestConfirmations(stay),
+    ...(payload.stays.length === 1
+      ? payload.confirmationNumbers.map(trimmedConfirmation).filter((value): value is string => Boolean(value))
+      : []),
+  ]);
+  const priorNumbers = numbers(prior, before);
+  const nextNumbers = numbers(next, after);
+  if (priorNumbers.size || nextNumbers.size) return sameStrings(priorNumbers, nextNumbers);
   const names = (stay: ExtractionStay) => new Set(guestsForStay(stay).map((guest) => guest.name.trim().toLowerCase()));
   const priorNames = names(prior);
   const nextNames = names(next);
-  return !priorNames.size || !nextNames.size || [...priorNames].some((name) => nextNames.has(name));
+  return sameStrings(priorNames, nextNames);
 }
 
 /**
@@ -939,14 +955,14 @@ export function correctionsCarryTo(
   for (const key of Object.keys(state)) {
     const path = parseFieldPath(key);
     if (!path) continue;
-    if (!stayKeepsIdentity(path.stayId, before.stays, after.stays)) return false;
+    if (!stayKeepsIdentity(path.stayId, before, after)) return false;
     if (path.rowId === null) continue;
     const rowsBefore = before.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
     const rowsAfter = after.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
     if (!contentKeepsId(path.rowId, rowsBefore, rowsAfter, rowContentKey)) return false;
   }
   for (const key of Object.keys(stayCommitsOf(state))) {
-    if (!stayKeepsIdentity(stayIdFromCommitKey(key), before.stays, after.stays)) return false;
+    if (!stayKeepsIdentity(stayIdFromCommitKey(key), before, after)) return false;
   }
   return true;
 }
