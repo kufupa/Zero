@@ -98,6 +98,53 @@ describe('web selected-row stored work', () => {
     expect(open).not.toHaveBeenCalled();
   });
 
+  it('does not refresh a different selected row after an owned history action finishes', async () => {
+    setMailCacheScope({ userId: 'staff', activeTransportId: TRANSPORT });
+    let finish!: (value: unknown) => void;
+    const query = vi.fn(async ({ expectedMessageId }: { expectedMessageId?: string }) =>
+      ready(expectedMessageId!, expectedMessageId === 'row-a' ? 'work-a' : 'work-b'));
+    const action = vi.fn(() => new Promise<unknown>((resolve) => { finish = resolve; }));
+    const cursor = vi.fn(async () => ({ revision: 1, revisionHead: 1, seq: 1 }));
+    const trpc = { workItems: { getByMessage: { query }, ownedPaneAction: { mutate: action },
+      revisionCursor: { query: cursor } } };
+    const { result, rerender } = renderHook(({ entryId }) => useStoredWork({
+      trpc, internetMessageId: HEADER, expectedMessageId: entryId, scope: scope(entryId),
+    }), { initialProps: { entryId: 'row-a' } });
+    await waitFor(() => expect(result.current.historyCursor?.revision).toBe(1));
+    act(() => result.current.undo('work-a', 1));
+    await waitFor(() => expect(action).toHaveBeenCalledTimes(1));
+    expect(action).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'undo', workItemId: 'work-a', expectedUserId: 'staff',
+    }), { context: { activeTransportId: TRANSPORT } });
+    rerender({ entryId: 'row-b' });
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-b' }));
+    const reads = query.mock.calls.length;
+    await act(async () => { finish({ revision: 0, revisionHead: 1, seq: 2 }); await Promise.resolve(); });
+    expect(query).toHaveBeenCalledTimes(reads);
+    expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-b' });
+    expect(result.current.historyEpoch).toBe(0);
+  });
+
+  it.each([
+    { userId: 'other', activeTransportId: TRANSPORT },
+    { userId: 'staff', activeTransportId: 'other-transport' },
+  ])('does not dispatch stale owned history after the web scope changes', async (nextOwner) => {
+    setMailCacheScope({ userId: 'staff', activeTransportId: TRANSPORT });
+    const query = vi.fn(async () => ready('row-a', 'work-a'));
+    const action = vi.fn();
+    const cursor = vi.fn(async () => ({ revision: 1, revisionHead: 1, seq: 1 }));
+    const { result } = renderHook(() => useStoredWork({
+      trpc: { workItems: { getByMessage: { query }, ownedPaneAction: { mutate: action },
+        revisionCursor: { query: cursor } } }, internetMessageId: HEADER,
+      expectedMessageId: 'row-a', scope: scope('row-a'),
+    }));
+    await waitFor(() => expect(result.current.historyCursor?.revision).toBe(1));
+    const staleUndo = result.current.undo;
+    act(() => setMailCacheScope(nextOwner));
+    act(() => staleUndo('work-a', 1));
+    expect(action).not.toHaveBeenCalled();
+  });
+
   it('keeps an A edit on A, and retains a failed save for retry after selecting B', async () => {
     setMailCacheScope({ userId: 'staff', activeTransportId: TRANSPORT });
     const query = vi.fn(async ({ expectedMessageId }: { expectedMessageId?: string }) =>
