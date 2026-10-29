@@ -15,6 +15,7 @@ import {
 } from '@/lib/workstation/pane-release-watch';
 import { mutationsInFlight } from '@/lib/workstation/mutations-in-flight';
 import { downloadStaffQuoteWorkbook } from '@/lib/quote-workflow/quote-workbook-download';
+import { documentSourceContact } from '@/lib/quote-workflow/document-contact';
 import {
   missingQuoteDetailsWrapperHtml,
   quoteDeclineReplyHtml,
@@ -765,6 +766,16 @@ export function NavaPane({
     : normalizedContact;
   const documentContactRef = useRef(documentContact);
   documentContactRef.current = documentContact;
+  const documentPropertyCode = quoteSession.quotePropertyCode ?? activePaneConfig?.propertyCode;
+  const bindDocumentSource = !documentPropertyCode || documentPropertyCode === HRCEN_PROPERTY_CODE;
+  const documentContactSignature = JSON.stringify(documentSourceContact(documentContact));
+  const lastDocumentContact = useRef({ key: contactCorrectionKey, signature: documentContactSignature });
+  useEffect(() => {
+    const previous = lastDocumentContact.current;
+    if (bindDocumentSource && previous.key === contactCorrectionKey && previous.signature !== documentContactSignature)
+      dispatchQuote({ type: 'document_contact_changed' });
+    lastDocumentContact.current = { key: contactCorrectionKey, signature: documentContactSignature };
+  }, [bindDocumentSource, contactCorrectionKey, documentContactSignature, dispatchQuote]);
   useEffect(() => {
     if (storedWork.historyEpoch === 0) return;
     setContactCorrection(null);
@@ -783,7 +794,11 @@ export function NavaPane({
           fieldProvenance: storedWork.pane.fieldProvenance,
           refs: storedWork.pane.refs ?? {},
           onResetContact: storedWork.resetAvailable && !caseReviewPending(quoteSession.analysis)
-            ? () => { quoteDraftRevision.mark(); storedWork.resetSection({ type: 'contact' }); }
+            ? () => {
+                quoteDraftRevision.mark();
+                if (bindDocumentSource) dispatchQuote({ type: 'document_contact_changed' });
+                storedWork.resetSection({ type: 'contact' });
+              }
             : undefined,
           onResetStay: storedWork.resetAvailable && !caseReviewPending(quoteSession.analysis)
             ? (stayId: string) => { quoteDraftRevision.mark(); storedWork.resetSection({ type: 'stay', stayId }); }
@@ -802,6 +817,10 @@ export function NavaPane({
       phone: null,
     };
     const contact = { ...previous, [field]: value };
+    if (bindDocumentSource && (field === 'name' || field === 'email' || field === 'phone') &&
+      documentSourceContact(previous)[field] !== documentSourceContact(contact)[field])
+      dispatchQuote({ type: 'document_contact_changed' });
+    lastDocumentContact.current = { key: contactCorrectionKey, signature: JSON.stringify(documentSourceContact(contact)) };
     if (verifyQuotePartySource && (field === 'company' || field === 'endClient')) {
       const binding = quoteSession.binding;
       localQuotePartyEdit.current = binding ? JSON.stringify([binding.transportId, binding.entryId, binding.selectionEpoch]) : null;
@@ -1722,18 +1741,41 @@ export function NavaPane({
     replyGreetingName,
     workItemId: paneWorkItemId,
     transportId: paneTransportId,
+    flushQuoteEdits: () => flushQuoteEditsRef.current(),
+    quoteDraftRevision: quoteDraftRevision.live,
+    quoteDraftRenderedRevision: quoteDraftRevision.rendered,
   });
   const downloadWorkbook = () => {
     if (workbookInFlight.current) return;
     workbookInFlight.current = true;
     setWorkbookPending(true);
     const owner = currentPaneOwner();
-    void downloadStaffQuoteWorkbook({
-      session: quoteSessionRef.current,
-      contact: documentContactRef.current,
-      mutate: staffQuoteFromTrpc(trpcClient).workstation.quoteWorkbook?.mutate,
-      notify: (message) => toast.warning(message),
-    }).then((saved) => {
+    const revision = quoteDraftRevision.rendered;
+    const { scopeEpoch, selectionEpoch } = contextRevision.current;
+    void (async () => {
+      if (bindDocumentSource) {
+        let saved = false;
+        try { saved = await flushQuoteEditsRef.current(); } catch { /* A failed save must hold the export. */ }
+        if (!saved) {
+          toast.warning('The quote edits could not be saved. Retry saving before downloading Excel.');
+          return false;
+        }
+        if (quoteDraftRevision.live.current !== revision || contextRevision.current.scopeEpoch !== scopeEpoch ||
+          contextRevision.current.selectionEpoch !== selectionEpoch) {
+          toast.warning('The quote changed in the pane. Download Excel again.');
+          return false;
+        }
+      }
+      return downloadStaffQuoteWorkbook({
+        session: quoteSessionRef.current,
+        contact: documentContactRef.current,
+        bindContactSource: bindDocumentSource,
+        ...(bindDocumentSource ? { isCurrent: () => quoteDraftRevision.live.current === revision &&
+          contextRevision.current.scopeEpoch === scopeEpoch && contextRevision.current.selectionEpoch === selectionEpoch } : {}),
+        mutate: staffQuoteFromTrpc(trpcClient).workstation.quoteWorkbook?.mutate,
+        notify: (message) => toast.warning(message),
+      });
+    })().then((saved) => {
       if (saved) trackPaneAction({ type: 'excel.downloaded' }, owner);
     }).finally(() => {
       workbookInFlight.current = false;

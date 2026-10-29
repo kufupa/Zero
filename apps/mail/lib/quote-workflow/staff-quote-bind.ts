@@ -303,6 +303,8 @@ export type QualifiedStaffPdfInput = {
   company: string;
   clientEmail: string;
   clientTelephone: string;
+  sourceContact?: { name: string; email: string; phone: string };
+  contactOverrides?: { attention: string; clientEmail: string; clientTelephone: string };
   agency: string;
   notes?: string;
   /** A combined quote: the other stays' runs. Absent for one stay. */
@@ -1818,6 +1820,8 @@ export async function bindQualifiedStaffProposalPdf(args: {
       company: args.input.company,
       clientEmail: args.input.clientEmail,
       clientTelephone: args.input.clientTelephone,
+      ...(args.input.sourceContact ? { sourceContact: args.input.sourceContact } : {}),
+      ...(args.input.contactOverrides ? { contactOverrides: args.input.contactOverrides } : {}),
       agency: args.input.agency,
       ...(args.input.notes ? { notes: args.input.notes } : {}),
       ...(args.input.additionalStays?.length ? { additionalStays: args.input.additionalStays } : {}),

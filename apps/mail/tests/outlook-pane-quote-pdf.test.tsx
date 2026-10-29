@@ -12,10 +12,11 @@ import {
   type QuoteSession,
   type QuoteSessionAction,
 } from '../lib/quote-workflow/types';
-import type { StoredContact } from '../lib/quote-workflow/backend-bind';
+import type { ReadyAnalyse, StoredContact } from '../lib/quote-workflow/backend-bind';
 import { toast } from 'sonner';
 import { findReadStayArrival, prepareReviewedQuote, setReviewedReply } from './helpers/prepare-reviewed-quote';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
+import { OUTLOOK_CENTURION_ROOM_TYPES, OUTLOOK_DA_VINCI_ROOM_TYPES, OUTLOOK_QUOTE_ANALYSIS, outlookRecordEvent, outlookStoredQuote } from './helpers/outlook-stored-quote';
 
 const {
   sendCommandMock,
@@ -123,6 +124,12 @@ vi.mock('@/hooks/use-pilot-capabilities', () => ({
 
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
+    workItems: {
+      getByMessage: { query: async () => outlookStoredQuote(
+        (await analyseOverride.current?.({})) as ReadyAnalyse | undefined ?? OUTLOOK_QUOTE_ANALYSIS,
+      ) },
+      recordEvent: { mutate: (...args: Parameters<typeof outlookRecordEvent>) => outlookRecordEvent(...args) },
+    },
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
       quoteDraftPreflight: { mutate: vi.fn().mockResolvedValue({ ready: true }) },
@@ -172,7 +179,7 @@ vi.mock('../providers/query-provider', () => ({
         query: async () => ({
           transportId: sessionState.transportId,
           propertyCode: sessionState.propertyCode,
-          roomTypes: [],
+          roomTypes: sessionState.propertyCode === 'HRDAV' ? OUTLOOK_DA_VINCI_ROOM_TYPES : OUTLOOK_CENTURION_ROOM_TYPES,
           ratePlans: [],
           boards: [],
           overrideRateCodes: [],
@@ -290,11 +297,13 @@ function QuotePdfJobHarness({
   workItemId,
   transportId,
   activeTransportId = transportId,
+  flushQuoteEdits = async () => true,
 }: {
   session: QuoteSession;
   workItemId: string | null;
   transportId: string | null;
   activeTransportId?: string | null;
+  flushQuoteEdits?: () => Promise<boolean>;
 }) {
   const [quoteSession, setQuoteSession] = useState(session);
   const dispatchQuote = useCallback(
@@ -309,11 +318,15 @@ function QuotePdfJobHarness({
   const quoteSessionRef = useRef(quoteSession);
   quoteSessionRef.current = quoteSession;
   const documentContactRef = useRef<StoredContact | null>(null);
+  const quoteDraftRevision = useRef(0);
   const { pdfPending, preparePdfFor } = useQuotePdfJob({
     quoteSession,
     quoteSessionRef,
     documentContact: null,
     documentContactRef,
+    flushQuoteEdits,
+    quoteDraftRevision,
+    quoteDraftRenderedRevision: quoteDraftRevision.current,
     dispatchQuote,
     activeEmail: session.binding ? {
       entryId: session.binding.entryId,
@@ -457,6 +470,19 @@ describe('Outlook pane quote proposal PDF', () => {
     expect(sendCommandMock).not.toHaveBeenCalled();
   });
 
+  it('waits for pending contact edits before requesting a Centurion PDF', async () => {
+    let release!: (saved: boolean) => void;
+    const flush = vi.fn(() => new Promise<boolean>((resolve) => { release = resolve; }));
+    qualifiedQuotePdfMutateMock.mockResolvedValue({ ...AUTHORISED_QUOTE_PDF, revisionId: 'revision-one' });
+    render(<QuotePdfJobHarness session={reviewedQuoteSession()} workItemId={null} transportId={null}
+      activeTransportId="transport-test" flushQuoteEdits={flush} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Prepare PDF' }));
+    await waitFor(() => expect(flush).toHaveBeenCalledTimes(1));
+    expect(qualifiedQuotePdfMutateMock).not.toHaveBeenCalled();
+    await act(async () => release(true));
+    await waitFor(() => expect(qualifiedQuotePdfMutateMock).toHaveBeenCalledTimes(1));
+  });
+
   it('refuses a late generated PDF after the active quote switches to another mail', async () => {
     const jobPdf = { ...AUTHORISED_QUOTE_PDF, revisionId: 'revision-one' };
     let resolvePdf: ((value: typeof jobPdf) => void) | undefined;
@@ -540,6 +566,7 @@ describe('Outlook pane quote proposal PDF', () => {
           departureDate: '2026-11-14',
           quantity: 1,
           adults: 1,
+          childrenPerRoom: 0,
           childrenAges: [],
           board: 'bb' as const,
           specialRequests: [],
@@ -773,7 +800,7 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.transportEmail = 'davinci@legacyhotels.co.za';
     sessionState.propertyCode = 'HRDAV';
     render(<OutlookPanePage />);
-    await prepareReviewedQuote(null);
+    await prepareReviewedQuote(null, 'STKNG');
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
 

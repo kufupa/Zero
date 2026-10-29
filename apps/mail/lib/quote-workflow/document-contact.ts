@@ -1,6 +1,23 @@
 import type { StoredContact } from './backend-bind';
 
 type ContactLines = { attention: string; clientEmail: string; clientTelephone: string };
+export type DocumentSourceContact = { name: string; email: string; phone: string };
+
+export function documentContactOverrides(input: ContactLines): ContactLines {
+  return { attention: input.attention.trim(), clientEmail: input.clientEmail.trim(),
+    clientTelephone: input.clientTelephone.trim() };
+}
+
+/** The saved source the pane used when it filled the PDF's optional contact lines. */
+export function documentSourceContact(
+  contact: Pick<StoredContact, 'name' | 'email'> & Partial<Pick<StoredContact, 'phone'>> | null | undefined,
+): DocumentSourceContact {
+  return {
+    name: contact?.name?.trim().slice(0, 256) ?? '',
+    email: contact?.email?.trim().slice(0, 256) ?? '',
+    phone: contact?.phone?.trim().slice(0, 128) ?? '',
+  };
+}
 
 /**
  * The quotation's client lines: what the approved header holds, with each blank filled from the email's contact

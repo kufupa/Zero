@@ -1,5 +1,5 @@
 import { triggerBlobDownload } from '../attachment-access';
-import { withContactLines } from './document-contact';
+import { documentContactOverrides, documentSourceContact, withContactLines } from './document-contact';
 import {
   canCreatePdf,
   combinedStayRuns,
@@ -129,6 +129,7 @@ export async function bindQualifiedStaffWorkbook(args: {
   input: QualifiedStaffPdfInput;
   expectedTotalMinor: number;
   download?: (blob: Blob, fileName: string) => void;
+  isCurrent?: () => boolean;
 }): Promise<BoundStaffWorkbook> {
   if (!args.mutate) {
     return unavailable('Excel download is not connected to this pane yet. Refresh the pane and try again.');
@@ -144,6 +145,8 @@ export async function bindQualifiedStaffWorkbook(args: {
       company: args.input.company,
       clientEmail: args.input.clientEmail,
       clientTelephone: args.input.clientTelephone,
+      ...(args.input.sourceContact ? { sourceContact: args.input.sourceContact } : {}),
+      ...(args.input.contactOverrides ? { contactOverrides: args.input.contactOverrides } : {}),
       agency: args.input.agency,
       ...(args.input.notes ? { notes: args.input.notes } : {}),
       ...(args.input.additionalStays?.length ? { additionalStays: args.input.additionalStays } : {}),
@@ -164,6 +167,8 @@ export async function bindQualifiedStaffWorkbook(args: {
     if (!matches || !bytes) {
       return unavailable('The Excel does not match this quote. Run the quote again, then download the Excel.');
     }
+    if (args.isCurrent && !args.isCurrent())
+      return unavailable('The quote changed in the pane. Download Excel again.');
     (args.download ?? triggerBlobDownload)(new Blob([bytes], { type: XLSX_MIME_TYPE }), result.fileName);
     return { status: 'ok', fileName: result.fileName };
   } catch (error) {
@@ -179,9 +184,12 @@ export async function downloadStaffQuoteWorkbook(args: {
   session: QuoteSession;
   /** The email's contact; fills blank attention, email and telephone lines. */
   contact?: Parameters<typeof withContactLines>[1];
+  /** Centurion validates the saved contact separately from the displayed header. */
+  bindContactSource?: boolean;
   mutate?: (input: QualifiedStaffPdfInput) => Promise<QualifiedStaffWorkbookResult>;
   notify?: (message: string) => void;
   download?: (blob: Blob, fileName: string) => void;
+  isCurrent?: () => boolean;
 }): Promise<boolean> {
   const request = workbookRequestFor(args.session);
   if (request.status === 'unavailable') {
@@ -190,9 +198,12 @@ export async function downloadStaffQuoteWorkbook(args: {
   }
   const bound = await bindQualifiedStaffWorkbook({
     mutate: args.mutate,
-    input: withContactLines(request.input, args.contact),
+    input: { ...withContactLines(request.input, args.contact),
+      ...(args.bindContactSource ? { sourceContact: documentSourceContact(args.contact),
+        contactOverrides: documentContactOverrides(request.input) } : {}) },
     expectedTotalMinor: request.expectedTotalMinor,
     download: args.download,
+    isCurrent: args.isCurrent,
   });
   if (bound.status === 'unavailable') {
     args.notify?.(bound.reason);

@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { toast } from 'sonner';
+import { OUTLOOK_CENTURION_ROOM_TYPES, outlookRecordEvent, outlookStoredQuote } from './helpers/outlook-stored-quote';
 
 const { sendCommandMock, sessionState, COMBINED, OPTIONS } = vi.hoisted(() => ({
   sendCommandMock: vi.fn(),
@@ -117,8 +118,36 @@ vi.mock('@/hooks/use-pilot-capabilities', () => ({
 vi.mock('../providers/query-provider', () => {
   const optionFor = (groups: Array<{ arrivalDate: string }>) =>
     OPTIONS.find((option) => option.arrivalDate === groups[0]?.arrivalDate)!;
+  const analysis = () => ({
+    status: 'ready' as const,
+    intent: 'quote' as const,
+    groups: OPTIONS.map((option, index) => ({
+      id: `stay-${index === 0 ? 'a' : 'b'}`,
+      arrivalDate: option.arrivalDate,
+      departureDate: option.departureDate,
+      quantity: 1,
+      roomPreference: 'SKNG',
+      adults: 1,
+      childrenPerRoom: 0,
+      childrenAges: [],
+      board: 'bb' as const,
+      specialRequests: [],
+      fields: {
+        arrivalDate: 'extracted' as const,
+        departureDate: 'extracted' as const,
+        adults: 'extracted' as const,
+      },
+    })),
+    secondaryAsks: [],
+    alternatives: [],
+    sourceRevision: 1,
+  });
   return {
     trpcClient: {
+      workItems: {
+        getByMessage: { query: async () => outlookStoredQuote(analysis()) },
+        recordEvent: { mutate: (...args: Parameters<typeof outlookRecordEvent>) => outlookRecordEvent(...args) },
+      },
       workstation: {
         ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
         quoteDraftPreflight: { mutate: vi.fn().mockResolvedValue({ ready: true }) },
@@ -180,7 +209,7 @@ vi.mock('../providers/query-provider', () => {
           query: async () => ({
             transportId: 'transport-shared',
             propertyCode: 'HRCEN',
-            roomTypes: [],
+            roomTypes: OUTLOOK_CENTURION_ROOM_TYPES,
             ratePlans: [],
             boards: [],
             overrideRateCodes: [],
@@ -188,29 +217,7 @@ vi.mock('../providers/query-provider', () => {
           }),
         },
         analyseSelection: {
-          mutate: async () => ({
-            status: 'ready' as const,
-            intent: 'quote' as const,
-            groups: OPTIONS.map((option, index) => ({
-              id: `stay-${index === 0 ? 'a' : 'b'}`,
-              arrivalDate: option.arrivalDate,
-              departureDate: option.departureDate,
-              quantity: 1,
-              roomPreference: 'SKNG',
-              adults: 1,
-              childrenAges: [],
-              board: 'bb' as const,
-              specialRequests: [],
-              fields: {
-                arrivalDate: 'extracted' as const,
-                departureDate: 'extracted' as const,
-                adults: 'extracted' as const,
-              },
-            })),
-            secondaryAsks: [],
-            alternatives: [],
-            sourceRevision: 1,
-          }),
+          mutate: async () => analysis(),
         },
       },
     },

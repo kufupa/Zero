@@ -97,6 +97,19 @@ describe('Excel download binding', () => {
     expect(blob.type).toBe(XLSX_MIME_TYPE);
   });
 
+  it('does not download an Excel returned after the quote changes', async () => {
+    let release!: (value: QualifiedStaffWorkbookResult) => void;
+    let current = true;
+    const download = vi.fn();
+    const pending = bindQualifiedStaffWorkbook({ input, expectedTotalMinor: 270_000, download,
+      isCurrent: () => current, mutate: () => new Promise((resolve) => { release = resolve; }) });
+    current = false;
+    release(serverResult());
+    await expect(pending).resolves.toEqual({ status: 'unavailable',
+      reason: 'The quote changed in the pane. Download Excel again.' });
+    expect(download).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['a different total', serverResult({ totalMinor: 1 })],
     ['a different revision', serverResult({ revisionId: 'quote:other' })],

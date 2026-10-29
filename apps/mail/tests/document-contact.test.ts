@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { withContactLines } from '../lib/quote-workflow/document-contact';
+import { documentSourceContact, withContactLines } from '../lib/quote-workflow/document-contact';
 
 describe('withContactLines', () => {
   const blank = { attention: '', clientEmail: ' ', clientTelephone: '', company: 'Purple Surgical' };
@@ -30,5 +30,11 @@ describe('withContactLines', () => {
 
   it('cuts a long contact phone to the document limit', () => {
     expect(withContactLines(blank, { name: null, email: null, phone: '1'.repeat(200) }).clientTelephone).toHaveLength(128);
+  });
+
+  it('records the same normalized source as the printed fallback', () => {
+    expect(documentSourceContact({ name: '  Ada  ', email: null, phone: '1'.repeat(200) })).toEqual({
+      name: 'Ada', email: '', phone: '1'.repeat(128),
+    });
   });
 });

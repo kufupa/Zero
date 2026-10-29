@@ -33,7 +33,9 @@ async function fixture() {
       reservationistResult: { version: 1, readiness: 'ready_for_staff_review', quoteRevisionIds: [revision.id],
         quoteRevisions: [revision], proposalFacts: [] } }, readResult: null };
   const proposal = { workflowRunId: run.id, revisionRef: revision.id, messageId: mail.id,
-    outlookEmail: 'centurion@legacyhotels.co.za', factRefs: [], company: '', agency: '', workItemId: itemId };
+    outlookEmail: 'centurion@legacyhotels.co.za', factRefs: [], company: '', agency: '', workItemId: itemId,
+    sourceContact: { name: '', email: '', phone: '' },
+    contactOverrides: { attention: '', clientEmail: '', clientTelephone: '' } };
   const artifact = { kind: 'quote_pdf', revisionId: revision.id, pdfHash: hash,
     fileName: 'synthetic.pdf', totalMinor: revision.totalMinor, pdfBase64: pdf.toString('base64') };
   const job = { id: 'pdf-1', transportId, threadId: 't1', triggerMessageId: 'm1', workItemId: itemId,
@@ -76,7 +78,8 @@ async function fixture() {
         else if (table === aiWorkflowRun && selection && 'hash' in selection)
           rows = jobAvailable.value ? recordedHashes.value.map((recordedHash) => ({ hash: recordedHash })) : [];
         else if (table === aiWorkflowRun && selection && 'request' in selection)
-          rows = jobAvailable.value && job.readRequest.propertyCode !== 'HRDAV' ? [{ request: job.readRequest }] : [];
+          rows = jobAvailable.value && job.readRequest.propertyCode !== 'HRDAV'
+            ? [{ request: job.readRequest, messageId: mail.id, threadId: mail.threadId }] : [];
         else if (table === aiWorkflowRun) rows = jobAvailable.value ? [job] : [];
         return rows;
     };
@@ -109,6 +112,79 @@ beforeEach(() => {
 afterEach(() => { mailboxHmsOriginBindLoaders.loadThreadOriginScan = null; configureDraftArtifactStorage(null); __setDbForTests(null); vi.unstubAllEnvs(); });
 
 describe('priced draft preflight', () => {
+  it.each([
+    ['name', 'attention', 'Previous Name', 'Corrected Name'],
+    ['email', 'clientEmail', 'previous@example.invalid', 'corrected@example.invalid'],
+    ['phone', 'clientTelephone', '0123456789', '0987654321'],
+  ])('refuses a saved PDF after the printed contact %s changes', async (field, pdfField, previous, corrected) => {
+    const { state, job, proposal } = await fixture();
+    state[`contact.${field}`] = previous;
+    Object.assign(proposal.sourceContact, { [field]: previous });
+    Object.assign(proposal, { [pdfField]: previous });
+    job.readRequest.revisionId = quotePdfJobIdentity(proposal);
+    const input = { messageId: 'm1', threadId: 't1', pdfHashes: [hash] };
+    await expect(caller().workstation.quoteDraftPreflight(input)).resolves.toEqual({ ready: true });
+    state[`contact.${field}`] = corrected;
+    await expect(caller().workstation.quoteDraftPreflight(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('rejects a stale contact in cached PDF lookup and draft save', async () => {
+    const { proposal, state, transaction } = await fixture();
+    const query = { workItemId: itemId, revisionRef: proposal.revisionRef, sourceContact: proposal.sourceContact,
+      contactOverrides: proposal.contactOverrides,
+      attention: '', clientEmail: '', clientTelephone: '', agency: '', company: '' };
+    await expect(caller().workstation.quotePdfJob(query)).resolves.toMatchObject({ result: { pdfHash: hash } });
+    state['contact.name'] = 'Corrected Name';
+    await expect(caller().workstation.quotePdfJob(query)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(caller().workstation.qualifiedQuoteProposalPdf(proposal)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(caller().workstation.quoteWorkbook(proposal)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(caller().drafts.saveReply({ threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>',
+      replyKind: 'quote', attachments: [{ name: 'quote.pdf', type: 'application/pdf', size: pdf.length,
+        lastModified: 1, base64: pdf.toString('base64') }] })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects an old saved source even when the printed contact is an explicit staff header', async () => {
+    const { proposal, state, job } = await fixture();
+    state['contact.name'] = 'Original Name';
+    Object.assign(proposal, { attention: 'Explicit recipient', sourceContact: { name: 'Original Name', email: '', phone: '' },
+      contactOverrides: { attention: 'Explicit recipient', clientEmail: '', clientTelephone: '' } });
+    job.readRequest.revisionId = quotePdfJobIdentity(proposal);
+    const preflight = { messageId: 'm1', threadId: 't1', pdfHashes: [hash] };
+    await expect(caller().workstation.quoteDraftPreflight(preflight)).resolves.toEqual({ ready: true });
+    state['contact.name'] = 'Corrected Name';
+    await expect(caller().workstation.quoteDraftPreflight(preflight))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining('contact changed') });
+  });
+
+  it('refuses an older Centurion PDF without document-source proof', async () => {
+    const { proposal, job } = await fixture();
+    delete (proposal as { sourceContact?: unknown }).sourceContact;
+    job.readRequest.revisionId = quotePdfJobIdentity(proposal);
+    await expect(caller().workstation.quoteDraftPreflight({ messageId: 'm1', threadId: 't1', pdfHashes: [hash] }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('does not accept a printed contact that is neither the saved source nor an explicit override', async () => {
+    const { proposal, job } = await fixture();
+    Object.assign(proposal, { attention: 'Stale Name' });
+    job.readRequest.revisionId = quotePdfJobIdentity(proposal);
+    await expect(caller().workstation.quoteDraftPreflight({ messageId: 'm1', threadId: 't1', pdfHashes: [hash] }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('rechecks the document contact before committing an unsent webmail draft', async () => {
+    const { state, transactionState } = await fixture();
+    transactionState.enabled = true;
+    configureDraftArtifactStorage({ read: async () => pdf, stage: async () => {
+      state['contact.email'] = 'corrected@example.invalid';
+    } } as never);
+    await expect(caller().drafts.saveReply({ threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>',
+      replyKind: 'quote', attachments: [{ name: 'quote.pdf', type: 'application/pdf', size: pdf.length,
+        lastModified: 1, base64: pdf.toString('base64') }] })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(transactionState.committed).toBe(false);
+  });
+
   it('can use the selected email work item for a durable PDF when the pane did not supply its id', async () => {
     const { proposal, state } = await fixture();
     const { workItemId: _workItemId, ...input } = proposal;

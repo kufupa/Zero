@@ -1765,6 +1765,27 @@ describe('strategy comparison session state', () => {
     session = reduceQuoteSession(session, strategyResultAction(session, STAY_A, 'WS', stayRevisionA, 'ws-a', 650_000));
     expect(session.quoteStrategyRows[STAY_A]?.WS).toMatchObject({ status: 'ready', totalMinor: 650_000 });
   });
+
+  it('clears document caches on a contact change while retaining the approved rate', () => {
+    let session = singleStaySession() as QuoteWorkflowSession;
+    const stayRevision = quoteStrategyStayRevision(session, STAY_A);
+    session = reduceQuoteSession(session, { type: 'quote_strategy_comparison_started', stayKey: STAY_A,
+      strategyCodes: ['BAR'], selectionEpoch: session.binding!.selectionEpoch, stayRevision });
+    session = reduceQuoteSession(session, strategyResultAction(session, STAY_A, 'BAR', stayRevision, 'bar-row', 700_000));
+    session = reduceQuoteSession(session, { type: 'quote_strategy_selected', stayKey: STAY_A, strategyCode: 'BAR' });
+    session = reduceQuoteSession(session, { type: 'pdf_ready', pdf: quotePdf('bar-row', 700_000),
+      selectedOfferIds: ['bar-row'], selectionEpoch: session.binding!.selectionEpoch, inputRevision: session.inputRevision });
+    expect(session.quoteStrategyResults[STAY_A]?.BAR?.pdf).toBeTruthy();
+
+    session = reduceQuoteSession(session, { type: 'document_contact_changed' });
+    expect(session.pdf).toBeNull();
+    expect(session.stayPdfs).toEqual({});
+    expect(session.staffQuote?.revisionRef).toBe('bar-row');
+    expect(session.quoteStrategyRows[STAY_A]?.BAR?.status).toBe('ready');
+    session = reduceQuoteSession(session, { type: 'quote_strategy_selected', stayKey: STAY_A, strategyCode: 'BAR' });
+    expect(session.pdf).toBeNull();
+    expect(session.quoteStrategyResults[STAY_A]?.BAR?.pdf).toBeUndefined();
+  });
 });
 
 describe('quote session staff review items', () => {

@@ -102,6 +102,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { runStaffQuote } from '../../ai/staff-quote-run.js';
 import { occupancyFromRevision, singleStayOccupancyIsCurrent, isCenturionQuoteScope, isCenturionQuoteTransport, importedOfferOccupancyHold, draftQuoteOccupancyMessage,
+  quoteDocumentContactIsCurrent,
   quoteSourceProofFromRun, quoteSourceProofIsCurrent, quoteSourceProofMatchesSingleStay, quoteSourceProofPredatesPolicy,
   quoteSourcePolicyChangedMessage } from '../../ai/child-occupancy.js';
 import {
@@ -244,6 +245,13 @@ const qualifiedStayInput = z
     notes: z.string().trim().max(1000).optional(),
   })
   .strict();
+const quoteDocumentContactInput = z.object({
+  name: z.string().max(256), email: z.string().max(256), phone: z.string().max(128),
+}).strict();
+const quoteDocumentContactOverrides = z.object({
+  attention: z.string().max(256), clientEmail: z.string().max(256), clientTelephone: z.string().max(128),
+}).strict();
+
 export const qualifiedProposalInput = z
   .object({
     workflowRunId: z.string().min(1),
@@ -255,6 +263,8 @@ export const qualifiedProposalInput = z
     company: z.string().max(256).default(''),
     clientEmail: z.string().max(256).default(''),
     clientTelephone: z.string().max(128).default(''),
+    sourceContact: quoteDocumentContactInput.optional(),
+    contactOverrides: quoteDocumentContactOverrides.optional(),
     agency: z.string().max(256).default('Quote'),
     notes: z.string().trim().max(1000).optional(),
     // Empty for one stay. A combined quote lists its other stays here; the first stay stays in the fields above.
@@ -565,6 +575,22 @@ async function staffApprovalsFor(
   }));
 }
 
+type DocumentContactInput = Pick<z.infer<typeof qualifiedProposalInput>,
+  'sourceContact' | 'contactOverrides' | 'attention' | 'clientEmail' | 'clientTelephone' | 'messageId'>;
+
+async function assertCurrentQuoteDocumentContact(input: DocumentContactInput, db: DB,
+  scope: { transportId: string; threadId: string }): Promise<void> {
+  const source = input.sourceContact;
+  const override = input.contactOverrides;
+  if (!source || !override || input.attention !== (override.attention.trim() || source.name) ||
+    input.clientEmail !== (override.clientEmail.trim() || source.email) ||
+    input.clientTelephone !== (override.clientTelephone.trim() || source.phone) ||
+    !(await quoteDocumentContactIsCurrent(db, { ...scope, messageId: input.messageId }, source))) {
+    throw new TRPCError({ code: 'PRECONDITION_FAILED',
+      message: 'The quote contact changed. Confirm it and prepare the PDF again.' });
+  }
+}
+
 /**
  * Every stay of a proposal request, resolved to its approved revision. User and prepared runs require the exact source.
  * One stay keeps the message-wide currency rule. Re-resolve after building.
@@ -750,6 +776,9 @@ async function proposalStaysFor(
       rowPrices,
       ...(systemPrepared && request.notes ? { preparedNotes: request.notes } : {}),
     });
+  }
+  if (stays.some((stay) => stay.revision.propertyCode === 'HRCEN')) {
+    await assertCurrentQuoteDocumentContact(input, db, { transportId: ctx.activeTransportId, threadId: current.threadId });
   }
   return stays;
 }
@@ -1821,6 +1850,8 @@ export const workstationRouter = router({
           company: z.string().max(256).default(''),
           clientEmail: z.string().max(256).default(''),
           clientTelephone: z.string().max(128).default(''),
+          sourceContact: quoteDocumentContactInput.optional(),
+          contactOverrides: quoteDocumentContactOverrides.optional(),
           agency: z.string().max(256).default('Quote'),
           notes: z.string().trim().max(1000).optional(),
         })
@@ -1975,6 +2006,9 @@ export const workstationRouter = router({
           throw new TRPCError({ code: 'PRECONDITION_FAILED',
             message: draftQuoteOccupancyMessage });
         }
+        if (selected.kind === 'approved_override' && selected.sourceRevision.propertyCode === 'HRCEN')
+          await assertCurrentQuoteDocumentContact(input, getDb(), { transportId: ctx.activeTransportId,
+            threadId: bound.run.threadId });
       };
       await assertSourceOccupancy();
       const header = {
@@ -2023,6 +2057,10 @@ export const workstationRouter = router({
         });
       }
       const propertyCode = hmsReadTargetForTransport(ctx.activeTransportId).propertyCode;
+      if (propertyCode === 'HRCEN') {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED',
+          message: 'Prepare the PDF from the reviewed quotation instead.' });
+      }
       const gotenbergUrl = process.env.GOTENBERG_URL?.trim();
       if (!gotenbergUrl) {
         throw new TRPCError({

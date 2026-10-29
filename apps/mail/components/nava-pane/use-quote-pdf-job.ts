@@ -3,7 +3,7 @@ import type { Dispatch } from 'react';
 
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
-import { withContactLines } from '@/lib/quote-workflow/document-contact';
+import { documentContactOverrides, documentSourceContact, withContactLines } from '@/lib/quote-workflow/document-contact';
 import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import { quoteWrapperHtml } from '@/lib/quote-proposal/copy';
 import { trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
@@ -20,7 +20,7 @@ import {
   bindQualifiedStaffProposalPdf,
   type QualifiedStaffPdfInput,
 } from '@/lib/quote-workflow/staff-quote-bind';
-import type { QuotePaneConfig, QuoteSession, QuoteSessionAction } from '@/lib/quote-workflow/types';
+import { HRCEN_PROPERTY_CODE, type QuotePaneConfig, type QuoteSession, type QuoteSessionAction } from '@/lib/quote-workflow/types';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import { toast } from 'sonner';
 import { trpcClient } from '@/providers/query-provider';
@@ -44,12 +44,15 @@ type UseQuotePdfJobArgs = {
   replyGreetingName: ReplyGreetingName;
   workItemId: string | null;
   transportId: string | null;
+  flushQuoteEdits: () => Promise<boolean>;
+  quoteDraftRevision: MutableRef<number>;
+  quoteDraftRenderedRevision: number;
 };
 
 type PdfJobOwner = { workItemId: string; transportId: string };
 type PdfJobQueryInput = Pick<
   QualifiedStaffPdfInput,
-  'revisionRef' | 'additionalStays' | 'attention' | 'company' | 'clientEmail' | 'clientTelephone' | 'agency' | 'notes'
+  'revisionRef' | 'additionalStays' | 'attention' | 'company' | 'clientEmail' | 'clientTelephone' | 'sourceContact' | 'contactOverrides' | 'agency' | 'notes'
 > & { workItemId: string };
 
 const PDF_JOB_POLL_MS = 3_000;
@@ -64,9 +67,19 @@ function quotePdfJobQueryInput(input: QualifiedStaffPdfInput, workItemId: string
     company: input.company,
     clientEmail: input.clientEmail,
     clientTelephone: input.clientTelephone,
+    ...(input.sourceContact ? { sourceContact: input.sourceContact } : {}),
+    ...(input.contactOverrides ? { contactOverrides: input.contactOverrides } : {}),
     agency: input.agency,
     ...(input.notes ? { notes: input.notes } : {}),
   };
+}
+
+function documentInput(input: QualifiedStaffPdfInput, contact: StoredContact | null, session: QuoteSession,
+  config: QuotePaneConfig | null): QualifiedStaffPdfInput {
+  const property = session.quotePropertyCode ?? config?.propertyCode;
+  return { ...withContactLines(input, contact),
+    ...(!property || property === HRCEN_PROPERTY_CODE ? { sourceContact: documentSourceContact(contact),
+      contactOverrides: documentContactOverrides(input) } : {}) };
 }
 
 function emailKey(email: PaneBridge['activeEmail']): string {
@@ -116,6 +129,14 @@ function pdfRequestKey(input: QualifiedStaffPdfInput, workItemId: string | null,
   return JSON.stringify([workItemId, transportId, quotePdfJobQueryInput(input, workItemId ?? '')]);
 }
 
+function pdfPreparationKey(session: QuoteSession, contact: StoredContact | null, workItemId: string | null,
+  transportId: string | null, activeEmail: PaneBridge['activeEmail']): string {
+  const binding = session.binding;
+  return JSON.stringify([workItemId, transportId, emailKey(activeEmail), binding?.selectionEpoch, binding?.scopeEpoch,
+    session.inputRevision, session.stayRevision, session.selectedStayKey, session.staffSource?.messageId,
+    session.staffSource?.sourceHash, documentSourceContact(contact)]);
+}
+
 function qualifiedPdfMutation(owner: PdfJobOwner | null, transportId: string | null) {
   const mutate = trpcClient.workstation.qualifiedQuoteProposalPdf?.mutate;
   if (!mutate) return undefined;
@@ -162,6 +183,9 @@ export function useQuotePdfJob({
   replyGreetingName,
   workItemId,
   transportId,
+  flushQuoteEdits,
+  quoteDraftRevision,
+  quoteDraftRenderedRevision,
 }: UseQuotePdfJobArgs) {
   // Only one quote PDF request at a time, for single- and multi-stay quotes.
   const pdfInFlight = useRef(false);
@@ -169,8 +193,8 @@ export function useQuotePdfJob({
   const [pdfRestoring, setPdfRestoring] = useState(false);
   const restoreInFlight = useRef(false);
   const lastPdfKey = useRef<string | null>(null);
-  const latest = useRef({ workItemId, transportId, quoteSessionRef, documentContactRef, activeEmail, activeTransportId });
-  latest.current = { workItemId, transportId, quoteSessionRef, documentContactRef, activeEmail, activeTransportId };
+  const latest = useRef({ workItemId, transportId, quoteSessionRef, documentContactRef, activeEmail, activeTransportId, activePaneConfig });
+  latest.current = { workItemId, transportId, quoteSessionRef, documentContactRef, activeEmail, activeTransportId, activePaneConfig };
 
   const stillCurrent = (snapshot: string): boolean => {
     const current = latest.current;
@@ -178,7 +202,7 @@ export function useQuotePdfJob({
     if (!bindingMatchesEmail(session, current.activeEmail, current.activeTransportId)) return false;
     const currentRequest = workbookRequestFor(session);
     if (currentRequest.status !== 'ok') return false;
-    const currentInput = withContactLines(currentRequest.input, current.documentContactRef.current);
+    const currentInput = documentInput(currentRequest.input, current.documentContactRef.current, session, current.activePaneConfig);
     return pdfScopeKey(session, currentInput, current.workItemId, current.transportId, current.activeEmail) === snapshot;
   };
 
@@ -194,7 +218,7 @@ export function useQuotePdfJob({
     const request = workbookRequestFor(quoteSession);
     if (request.status !== 'ok') return;
     const contact = documentContactRef.current;
-    const input = withContactLines(request.input, contact);
+    const input = documentInput(request.input, contact, quoteSession, activePaneConfig);
     const queryInput = quotePdfJobQueryInput(input, owner.workItemId);
     const snapshot = pdfScopeKey(quoteSession, input, workItemId, transportId, activeEmail);
     const requestKey = pdfRequestKey(input, workItemId, transportId);
@@ -315,10 +339,34 @@ export function useQuotePdfJob({
    * Builds the quotation PDF for one date option from that option's own run.
    * A null stayKey means the selected option (the "Prepare quotation PDF" button).
    */
-  const preparePdfFor = (stayKey: string | null) => {
+  const preparePdfFor = (stayKey: string | null, editsFlushed = false) => {
     if (pdfInFlight.current || restoreInFlight.current) return;
     const session = quoteSessionRef.current;
     const owner = workItemId && transportId ? { workItemId, transportId } : null;
+    const property = session.quotePropertyCode ?? activePaneConfig?.propertyCode;
+    if ((!property || property === HRCEN_PROPERTY_CODE) && !editsFlushed) {
+      if (quoteDraftRevision.current !== quoteDraftRenderedRevision) {
+        toast.warning('The quote changed in the pane. Prepare the PDF again.');
+        return;
+      }
+      const snapshot = pdfPreparationKey(session, documentContactRef.current, workItemId, transportId, activeEmail);
+      pdfInFlight.current = true;
+      setPdfPending(true);
+      void Promise.resolve().then(flushQuoteEdits).catch(() => false).then((saved) => {
+        pdfInFlight.current = false;
+        setPdfPending(false);
+        const current = latest.current;
+        const currentSession = current.quoteSessionRef.current;
+        if (!saved) toast.warning('The quote edits could not be saved. Retry saving before preparing the PDF.');
+        else if (quoteDraftRevision.current !== quoteDraftRenderedRevision ||
+          !bindingMatchesEmail(currentSession, current.activeEmail, current.activeTransportId) ||
+          pdfPreparationKey(currentSession, current.documentContactRef.current, current.workItemId,
+            current.transportId, current.activeEmail) !== snapshot)
+          toast.warning('The quote changed in the pane. Prepare the PDF again.');
+        else preparePdfFor(stayKey, true);
+      });
+      return;
+    }
     if (dinnerAllowanceStillRequired(session)) {
       toast.warning(dinnerAddOnInputProblem(session) ?? 'Dinner price — enter amount.');
       return;
@@ -340,7 +388,7 @@ export function useQuotePdfJob({
         request.input.revisionRef,
         ...(request.input.additionalStays ?? []).map((stay) => stay.revisionRef),
       ];
-      const input = withContactLines(request.input, documentContactRef.current);
+      const input = documentInput(request.input, documentContactRef.current, session, activePaneConfig);
       const snapshot = pdfScopeKey(session, input, workItemId, transportId, activeEmail);
       void bindQualifiedStaffProposalPdf({
         mutate: qualifiedPdfMutation(owner, activeTransportId),
@@ -414,7 +462,7 @@ export function useQuotePdfJob({
       activePaneConfig,
       replyGreetingName,
     });
-    const input: QualifiedStaffPdfInput = {
+    const input: QualifiedStaffPdfInput = documentInput({
       workflowRunId: quote.workflowRunId,
       revisionRef: quote.revisionRef,
       messageId: source.messageId,
@@ -422,12 +470,11 @@ export function useQuotePdfJob({
       factRefs: quote.factRefs,
       company: header.company,
       agency: header.agency,
-      ...withContactLines(
-        { attention: header.attention, clientEmail: header.clientEmail, clientTelephone: header.clientTelephone },
-        documentContactRef.current,
-      ),
+      attention: header.attention,
+      clientEmail: header.clientEmail,
+      clientTelephone: header.clientTelephone,
       ...(header.notes ? { notes: header.notes } : {}),
-    };
+    }, documentContactRef.current, session, activePaneConfig);
     const snapshot = pdfScopeKey(session, input, workItemId, transportId, activeEmail);
     pdfInFlight.current = true;
     setPdfPending(true);

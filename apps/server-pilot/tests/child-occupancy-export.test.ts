@@ -61,7 +61,9 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
   const draft = { id: 'draft-1', origin: 'ai', generationId: 'generation-1', threadId: 't1', replyToMessageId: mail.id };
   const proposal = { workflowRunId: run.id, revisionRef: revision.id, messageId: mail.id,
     outlookEmail: transportId === 'transport-centurion' ? 'centurion@legacyhotels.co.za' : 'davinci@legacyhotels.co.za',
-    factRefs: [], company: '', agency: '', workItemId: itemId };
+    factRefs: [], company: '', agency: '', workItemId: itemId,
+    ...(propertyCode === 'HRCEN' ? { sourceContact: { name: '', email: '', phone: '' },
+      contactOverrides: { attention: '', clientEmail: '', clientTelephone: '' } } : {}) };
   const artifact = { kind: 'quote_pdf', revisionId: revision.id, pdfHash: 'a'.repeat(64),
     fileName: 'synthetic.pdf', totalMinor: revision.totalMinor, pdfBase64: 'JVBERi0xLjQ=' };
   const job = { id: 'pdf-job', state: 'succeeded', triggerMessageId: mail.id, readResult: artifact,
@@ -381,6 +383,10 @@ describe('stored quote export and draft occupancy', () => {
     vi.stubEnv('GOTENBERG_URL', '');
     await expect(api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'approved_override' }))
       .rejects.toThrow('GOTENBERG_URL missing');
+    state['contact.name'] = 'Corrected Name';
+    await expect(api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'approved_override' }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining('contact changed') });
+    delete state['contact.name'];
     state[`${rowPath}.childrenPerRoom`] = 1;
     expect((await api.qualifiedProposalChoices(input)).choices).toHaveLength(0);
     await expect(api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'approved_override' }))

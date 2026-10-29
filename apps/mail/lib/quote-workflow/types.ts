@@ -964,6 +964,7 @@ export type QuoteSessionAction =
   | { type: 'step_running'; stepId: string }
   | { type: 'step_stale'; stepId: string; selectionEpoch: number; inputRevision: number }
   | { type: 'step_failed'; stepId: string; retryGuidance: string }
+  | { type: 'document_contact_changed' }
   | {
       type: 'pdf_ready';
       pdf: QuotePdf;

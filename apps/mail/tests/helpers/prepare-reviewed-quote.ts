@@ -25,7 +25,7 @@ export async function findReadStayArrival(): Promise<HTMLElement> {
   return screen.getByLabelText('Arrival');
 }
 
-export async function fillStayFactsMatchingAuthorisedOffer(): Promise<void> {
+export async function fillStayFactsMatchingAuthorisedOffer(roomCode = 'SKNG'): Promise<void> {
   fireEvent.change(await findReadStayArrival(), { target: { value: '2026-11-12' } });
   fireEvent.change(screen.getByLabelText('Departure'), { target: { value: '2026-11-14' } });
   // The Meal plan select only filters the rate cards now. The stay's board comes from the read.
@@ -35,12 +35,12 @@ export async function fillStayFactsMatchingAuthorisedOffer(): Promise<void> {
   // Adults per room sits behind an edit button as a stepper. The read leaves it unset, so + sets it to 1.
   fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
   fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
-  fireEvent.change(screen.getByLabelText('Room type'), { target: { value: 'SKNG' } });
+  fireEvent.change(screen.getByLabelText('Room type'), { target: { value: roomCode } });
 }
 
 /** Drive an authorised HITL path. Production unavailable path must not reach here. */
-export async function prepareReviewedQuote(replyHtml: string | null = AUTHORISED_REPLY_HTML): Promise<void> {
-  await fillStayFactsMatchingAuthorisedOffer();
+export async function prepareReviewedQuote(replyHtml: string | null = AUTHORISED_REPLY_HTML, roomCode = 'SKNG'): Promise<void> {
+  await fillStayFactsMatchingAuthorisedOffer(roomCode);
   fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
   const allocation = await waitFor(() => {
     const match = screen.getAllByRole('button').find((element) => {

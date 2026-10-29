@@ -19,7 +19,7 @@ const TEMPLATE = readFileSync(
   fileURLToPath(new URL('../fixtures/centurion-quotation-template.xlsx', import.meta.url)),
 );
 
-function sessionCaller(email = 'ropperman@legacyhotels.co.za', name = 'R Opperman') {
+function sessionCaller(email = 'ropperman@legacyhotels.co.za', name = 'R Opperman', transport?: { id: string; email: string }) {
   return appRouter.createCaller({
     auth: null as never,
     reqHeaders: new Headers(),
@@ -28,6 +28,7 @@ function sessionCaller(email = 'ropperman@legacyhotels.co.za', name = 'R Opperma
       email,
       name,
     },
+    ...(transport ? { activeTransportId: transport.id, transportEmail: transport.email, accessRole: 'owner' } : {}),
   } as never);
 }
 
@@ -255,7 +256,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('workstation.quoteProposalPdf 
     });
   });
 
-  it('converts the patched workbook through Gotenberg and stamps the session user', async () => {
+  it('keeps the Da Vinci legacy converter available and stamps the session user', async () => {
     await withSeededTestDb(async (db) => {
       __setDbForTests({ db, conn: null as never });
       process.env.GOTENBERG_URL = 'http://gotenberg.test';
@@ -269,14 +270,14 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('workstation.quoteProposalPdf 
       });
       vi.stubGlobal('fetch', fetchMock);
 
-      const res = await sessionCaller().workstation.quoteProposalPdf({
-        outlookEmail: 'centurion@legacyhotels.co.za',
+      const res = await sessionCaller(undefined, undefined, { id: 'transport-davinci', email: 'davinci@legacyhotels.co.za' }).workstation.quoteProposalPdf({
+        outlookEmail: 'davinci@legacyhotels.co.za',
         attention: 'David Miller',
         company: 'CIDB',
         clientEmail: 'guest@example.com',
         agency: 'CIDB',
         dateLabel: '15-17 Sep',
-        lines: sampleLines,
+        lines: sampleLines.map((line) => ({ ...line, roomCode: 'STKNG' })),
       });
 
       expect(res.fileName).toBe('Quote - CIDB 15-17 Sep.pdf');

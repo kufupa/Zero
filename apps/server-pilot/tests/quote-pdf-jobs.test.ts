@@ -32,6 +32,10 @@ describe('quote PDF document identity', () => {
     expect(key).not.toBe(input.revisionRef);
     expect(quotePdfJobIdentity({ ...input, additionalStays: [] })).not.toBe(key);
     expect(quotePdfJobIdentity({ ...input, company: 'Other' })).not.toBe(key);
+    const withSource = { ...input, sourceContact: { name: 'Earlier', email: '', phone: '' } };
+    expect(quotePdfJobIdentity(withSource)).not.toBe(key);
+    expect(quotePdfJobIdentity({ ...withSource, sourceContact: { ...withSource.sourceContact, name: 'Corrected' } }))
+      .not.toBe(quotePdfJobIdentity(withSource));
   });
 });
 

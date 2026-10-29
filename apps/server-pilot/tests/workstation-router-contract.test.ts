@@ -85,7 +85,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('workstation quote mailbox aut
     delete process.env.GOTENBERG_URL;
   });
 
-  it('lets provisioned staff quote from an approved shared mailbox despite different login email', async () => {
+  it('holds the unqualified Centurion PDF even for provisioned staff using the approved mailbox', async () => {
     await withSeededTestDb(async (db) => {
       __setDbForTests({ db, conn: null as never });
       process.env.GOTENBERG_URL = 'http://gotenberg.test';
@@ -95,13 +95,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('workstation quote mailbox aut
       }));
       vi.stubGlobal('fetch', fetchMock);
 
-      const result = await sessionCaller().workstation.quoteProposalPdf({
+      await expect(sessionCaller().workstation.quoteProposalPdf({
         ...quoteInput,
         outlookEmail: 'CENTURION@legacyhotels.co.za',
-      });
-      expect(result.fileName).toBe('Quote - CIDB 15-17 Sep.pdf');
-      expect(Buffer.from(result.pdfBase64, 'base64').toString()).toBe('%PDF-1.4 test');
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining('reviewed quotation') });
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

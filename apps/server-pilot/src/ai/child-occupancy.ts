@@ -5,7 +5,7 @@ import type { DB } from '../db/client.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { and, desc, eq } from 'drizzle-orm';
 import { addDays } from './stay-date-anchoring.js';
-import { formStays } from './work-items.js';
+import { formStays, storedContact } from './work-items.js';
 import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
 import { priorKindConflict } from './work-item-source-conflict.js';
 import { quoteSourcePartyDigest } from './quote-source-party.js';
@@ -166,6 +166,23 @@ async function loadChildOccupancyEvidence(
   // The existing work-item relink decides whether edits can safely carry; once it moves, the latest evidence is used.
   if ((!item && scope.lock && !scope.allowMissingWorkItem) || (item && item.extractionId !== latest.id)) return null;
   return { extractionId: latest.id, kind: latest.kind, payload: latest.payload, state: item?.state ?? {} };
+}
+
+/** The PDF contact is independent of rates and must match the saved source seen by the pane. */
+export async function quoteDocumentContactIsCurrent(
+  db: DB,
+  scope: { transportId: string; threadId: string; messageId: string },
+  seen: { name: string; email: string; phone: string } | undefined,
+): Promise<boolean> {
+  if (!seen) return false;
+  const evidence = await loadChildOccupancyEvidence(db, scope);
+  const parsed = mailExtractionPayloadSchema.safeParse(evidence?.payload);
+  if (!evidence || !parsed.success) return false;
+  const contact = storedContact(parsed.data, evidence.state);
+  const normalized = (value: unknown, limit: number) =>
+    value == null ? '' : typeof value === 'string' ? value.trim().slice(0, limit) : null;
+  return seen.name === normalized(contact.name, 256) && seen.email === normalized(contact.email, 256) &&
+    seen.phone === normalized(contact.phone, 128);
 }
 
 export async function childOccupancyIsCurrent(

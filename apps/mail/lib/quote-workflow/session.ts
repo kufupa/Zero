@@ -2937,6 +2937,23 @@ export function reduceQuoteSession(
             : step,
         ),
       };
+    case 'document_contact_changed': {
+      const strategy = quoteStrategyState(session);
+      const quoteStrategyResults = { ...strategy.quoteStrategyResults };
+      for (const [stayKey, results] of Object.entries(quoteStrategyResults)) {
+        const updated = { ...results };
+        for (const code of Object.keys(updated) as QuoteSalesStrategyCode[]) {
+          const result = updated[code];
+          if (result?.pdf) {
+            const withoutPdf = { ...result };
+            delete withoutPdf.pdf;
+            updated[code] = withoutPdf;
+          }
+        }
+        quoteStrategyResults[stayKey] = updated;
+      }
+      return { ...session, ...strategy, quoteStrategyResults, pdf: null, stayPdfs: {} } as QuoteWorkflowSession;
+    }
     case 'pdf_ready': {
       if (!requestMatchesCurrent(session, action.selectionEpoch, action.inputRevision)) {
         return session;

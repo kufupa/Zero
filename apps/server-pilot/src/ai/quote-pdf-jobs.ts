@@ -63,6 +63,8 @@ export type QuotePdfDocumentIdentity = {
   clientTelephone?: string;
   agency?: string;
   notes?: string | null;
+  sourceContact?: { name: string; email: string; phone: string };
+  contactOverrides?: { attention: string; clientEmail: string; clientTelephone: string };
 };
 
 function quotePdfHeaderDigest(header: Omit<QuotePdfDocumentIdentity, 'revisionRef' | 'additionalStays'>): string {
@@ -75,6 +77,8 @@ function quotePdfHeaderDigest(header: Omit<QuotePdfDocumentIdentity, 'revisionRe
         clientTelephone: header.clientTelephone ?? '',
         agency: header.agency ?? '',
         notes: header.notes ?? '',
+        ...(header.sourceContact ? { sourceContact: header.sourceContact } : {}),
+        ...(header.contactOverrides ? { contactOverrides: header.contactOverrides } : {}),
       }),
     )
     .digest('hex')

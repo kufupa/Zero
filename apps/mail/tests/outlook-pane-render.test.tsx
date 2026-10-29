@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
 import { openPaneMenu, stubResizeObserverForMenus } from './helpers/pane-menu';
@@ -12,9 +12,12 @@ import path from 'node:path';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote, reviewedReplyHtml } from './helpers/prepare-reviewed-quote';
 import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
+import { OUTLOOK_CENTURION_ROOM_TYPES, OUTLOOK_QUOTE_ANALYSIS, outlookRecordEvent, outlookStoredQuote } from './helpers/outlook-stored-quote';
 
-const { sendCommandMock, pairDeviceMock, quotePdfMutate, bridgeMockState } = vi.hoisted(() => ({
+const { sendCommandMock, pairDeviceMock, quotePdfMutate, qualifiedQuotePdfMock, quoteDraftPreflightMock, bridgeMockState } = vi.hoisted(() => ({
   pairDeviceMock: vi.fn(async () => {}),
+  quoteDraftPreflightMock: vi.fn(),
+  qualifiedQuotePdfMock: vi.fn(),
   quotePdfMutate: vi.fn().mockResolvedValue({
     fileName: 'Quote - CIDB 15-17 Sep.pdf',
     pdfBase64: 'JVBERw==',
@@ -139,9 +142,13 @@ vi.mock('@/hooks/use-pilot-capabilities', () => ({
 
 vi.mock('../providers/query-provider', () => ({
   trpcClient: {
+    workItems: {
+      getByMessage: { query: async () => outlookStoredQuote(OUTLOOK_QUOTE_ANALYSIS) },
+      recordEvent: { mutate: (...args: Parameters<typeof outlookRecordEvent>) => outlookRecordEvent(...args) },
+    },
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
-      quoteDraftPreflight: { mutate: vi.fn().mockResolvedValue({ ready: true }) },
+      quoteDraftPreflight: { mutate: quoteDraftPreflightMock },
       quoteProposalPdf: { mutate: quotePdfMutate },
       staffQuoteSource: {
         query: async () => ({ status: 'ready', messageId: 'mail-1', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) }),
@@ -180,7 +187,7 @@ vi.mock('../providers/query-provider', () => ({
           };
         },
       },
-      qualifiedQuoteProposalPdf: { mutate: async () => AUTHORISED_QUOTE_PDF },
+      qualifiedQuoteProposalPdf: { mutate: qualifiedQuotePdfMock },
     },
     quoteWorkflow: {
       // 12f451bd6 (#536) loads mailbox pane choices via rateCatalogue.query on mount.
@@ -188,7 +195,7 @@ vi.mock('../providers/query-provider', () => ({
         query: async () => ({
           transportId: bridgeMockState.transportId,
           propertyCode: 'HRCEN',
-          roomTypes: [],
+          roomTypes: OUTLOOK_CENTURION_ROOM_TYPES,
           ratePlans: [],
           boards: [],
           overrideRateCodes: [],
@@ -239,6 +246,8 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     quotePdfMutate.mockReset();
     quotePdfMutate.mockResolvedValue({ fileName: 'Quote - CIDB 15-17 Sep.pdf', pdfBase64: 'JVBERw==' });
+    quoteDraftPreflightMock.mockReset().mockResolvedValue({ ready: true });
+    qualifiedQuotePdfMock.mockReset().mockResolvedValue(AUTHORISED_QUOTE_PDF);
     sendCommandMock.mockReset();
     sendCommandMock.mockImplementation(
       async (action: string, _payload?: unknown): Promise<unknown> => {
@@ -399,6 +408,53 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
         }),
       );
     });
+  });
+
+  it('holds an Outlook draft when staff edit the stay while quote preflight is pending', async () => {
+    let release!: (value: { ready: boolean }) => void;
+    quoteDraftPreflightMock.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote();
+    fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
+    await waitFor(() => expect(quoteDraftPreflightMock).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByLabelText('Rooms', { selector: 'input' }), { target: { value: '2' } });
+    await act(async () => release({ ready: true }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('quote changed in the pane')));
+    expect(createReplyCalls()).toHaveLength(0);
+  });
+
+  it.each([
+    ['Name', 'Corrected Name'],
+    ['Email', 'corrected@example.invalid'],
+    ['Phone', '0123456789'],
+  ])('requires a fresh PDF after staff correct the printed %s', async (label, value) => {
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote();
+    const contact = screen.getByRole('group', { name: 'Quote contact — printed on the PDF' });
+    fireEvent.click(within(contact).getByRole('button', { name: 'Edit' }));
+    fireEvent.change(within(contact).getByLabelText(label), { target: { value } });
+
+    await waitFor(() => expect(screen.queryByText(/Prepared PDF/i)).toBeNull());
+    expect(screen.getByRole('button', { name: /Draft quotation into email reply/i }).hasAttribute('disabled')).toBe(true);
+    expect(createReplyCalls()).toHaveLength(0);
+  });
+
+  it('makes a fresh PDF with the corrected contact while keeping the approved rate', async () => {
+    render(<OutlookPanePage />);
+    await prepareReviewedQuote();
+    expect(qualifiedQuotePdfMock).toHaveBeenCalledTimes(1);
+    const contact = screen.getByRole('group', { name: 'Quote contact — printed on the PDF' });
+    fireEvent.click(within(contact).getByRole('button', { name: 'Edit' }));
+    fireEvent.change(within(contact).getByLabelText('Name'), { target: { value: 'Corrected Name' } });
+    await waitFor(() => expect(screen.queryByText(/Prepared PDF/i)).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: /^Prepare PDF$/i }));
+    await waitFor(() => expect(qualifiedQuotePdfMock).toHaveBeenCalledTimes(2));
+    expect(qualifiedQuotePdfMock.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      attention: 'Corrected Name', sourceContact: { name: 'Corrected Name', email: '', phone: '' },
+      contactOverrides: { attention: '', clientEmail: '', clientTelephone: '' },
+    }));
+    expect(await screen.findByText(/Prepared PDF/i)).toBeTruthy();
   });
 
   it('prefills the reviewed reply and inserts its PDF through the Outlook bridge', async () => {

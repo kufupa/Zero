@@ -212,6 +212,8 @@ function pdfInput(quote: { workflowRunId: string; revisionRef: string; messageId
     outlookEmail: 'centurion@legacyhotels.co.za',
     company: '',
     agency: '',
+    sourceContact: { name: '', email: '', phone: '' },
+    contactOverrides: { attention: '', clientEmail: '', clientTelephone: '' },
   };
 }
 
@@ -642,6 +644,40 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await api.workItems.recordEvent({ workItemId: request.workItemId, type: 'field.edit',
           fieldPath: 'stays[s_default].rows[single].adults', value: 2 });
         await expect(api.workstation.quoteDraftPreflight(preflight)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      });
+    }, 30_000);
+
+    it('does not reuse a PDF when saved contact changes under an explicit header', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        let conversions = 0;
+        vi.mocked(fetch).mockImplementation(async () => new Response(`%PDF-1.4 synthetic ${++conversions}`, {
+          headers: { 'content-type': 'application/pdf' },
+        }));
+        const request = await seedRequest(db), api = caller();
+        const quote = await api.workstation.executeStaffQuote(request.input);
+        const original = { ...pdfInput({ workflowRunId: quote.workflowRunId, revisionRef: quote.revisionRef,
+          messageId: quote.messageId }), workItemId: request.workItemId, attention: 'Explicit recipient',
+          contactOverrides: { attention: 'Explicit recipient', clientEmail: '', clientTelephone: '' } };
+        const query = { workItemId: request.workItemId, revisionRef: quote.revisionRef, attention: original.attention,
+          company: original.company, agency: original.agency, sourceContact: original.sourceContact,
+          contactOverrides: original.contactOverrides };
+        const oldPdf = await api.workstation.qualifiedQuoteProposalPdf(original);
+        expect((await api.workstation.quotePdfJob(query))?.result?.pdfHash).toBe(oldPdf.pdfHash);
+
+        await api.workItems.recordEvent({ workItemId: request.workItemId, type: 'field.edit',
+          fieldPath: 'contact.name', value: 'Corrected Name' });
+        await expect(api.workstation.quotePdfJob(query))
+          .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining('contact changed') });
+        await expect(api.workstation.quoteDraftPreflight({ messageId: request.mail.id, threadId: request.mail.threadId,
+          pdfHashes: [oldPdf.pdfHash] })).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+        const sourceContact = { ...original.sourceContact, name: 'Corrected Name' };
+        expect(await api.workstation.quotePdfJob({ ...query, sourceContact })).toBeNull();
+        const fresh = await api.workstation.qualifiedQuoteProposalPdf({ ...original, sourceContact });
+        expect(fresh.documentKey).not.toBe(oldPdf.documentKey);
+        expect(fresh.pdfHash).not.toBe(oldPdf.pdfHash);
+        expect(conversions).toBe(2);
       });
     }, 30_000);
 
