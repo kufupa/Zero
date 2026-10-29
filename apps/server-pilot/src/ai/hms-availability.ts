@@ -523,9 +523,11 @@ export function availabilityBoardOf(result: QuoteEnvelope, request?: Availabilit
         .filter((value): value is number => value !== null);
       const priceTotal = priced.reduce((sum, value) => sum + value, 0);
       const currency = nights[0]?.price.currency;
-      const completePrices = nights.length > 0 && priced.length === nights.length && Number.isSafeInteger(priceTotal) &&
-        Boolean(currency) && nights.every((night) => night.price.currency === currency) &&
-        (!expectedCurrency || currency === expectedCurrency);
+      const completePrices = request
+        ? nights.length > 0 && priced.length === nights.length && Number.isSafeInteger(priceTotal) &&
+          Boolean(currency) && nights.every((night) => night.price.currency === currency) &&
+          (!expectedCurrency || currency === expectedCurrency)
+        : priced.length > 0;
       const boardLabel = option.board ?? '';
       rows.push({
         groupId,
@@ -538,7 +540,7 @@ export function availabilityBoardOf(result: QuoteEnvelope, request?: Availabilit
         nightlyPriceMinor: completePrices
           ? Math.round(priceTotal / priced.length)
           : null,
-        roomsLeft: nights.length > 0 && stocks.length === nights.length ? Math.min(...stocks) : null,
+        roomsLeft: stocks.length > 0 && (!request || stocks.length === nights.length) ? Math.min(...stocks) : null,
         ...(option.rateScope ? { rateScope: option.rateScope } : {}),
       });
     }

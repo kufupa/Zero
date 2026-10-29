@@ -545,6 +545,15 @@ describe('U10 availability probe (pure)', () => {
     expect(availabilityBoardOf(envelope(mixedCurrency), request, 'ZAR').rows[0]?.nightlyPriceMinor).toBeNull();
   });
 
+  it('preserves the existing partial-night board for callers without a stay request', () => {
+    const result = { groups: [{ id: 'group-1', options: [{ room: { code: 'STQN' }, rate: { code: 'BAR' },
+      availability: 'available', nightly: [
+        { date: '2026-10-26', inventory: 4, price: { amount: '100.00', currency: 'ZAR' } },
+        { date: '2026-10-27', inventory: null, price: { amount: null, currency: null } },
+      ] }] }] };
+    expect(availabilityBoardOf(result).rows[0]).toMatchObject({ nightlyPriceMinor: 10000, roomsLeft: 4 });
+  });
+
   it('keeps every reader room and night with stock, requested count, nightly price and completeness', () => {
     const snapshot = availabilitySnapshotOf(NIGHTLY_QUOTE_RESULT, NIGHTLY_REQUEST);
     expect(snapshot).toMatchObject({
