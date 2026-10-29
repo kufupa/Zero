@@ -7,8 +7,8 @@ import { and, desc, eq } from 'drizzle-orm';
 import { addDays } from './stay-date-anchoring.js';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
-  'id' | 'arrivalDate' | 'departureDate' | 'childrenAges' | 'childrenPerRoom'>;
-type RowEvidence = { stayId: string; rowId: string; count: unknown; ages: unknown };
+  'id' | 'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'childrenAges' | 'childrenPerRoom'>;
+type RowEvidence = { stayId: string; rowId: string; rooms: unknown; adults: unknown; count: unknown; ages: unknown };
 type StayOccupancy = Pick<QuoteRevision['groups'][number],
   'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'children' | 'childAges'>;
 
@@ -27,18 +27,20 @@ export function childOccupancyMatchesStored(
   const rows = parsed.data.stays.flatMap((stay) => stay.rows.map((row) => ({
     stayId: stay.id,
     rowId: row.id,
+    rooms: row.rooms,
+    adults: row.adultsPerRoom,
     count: row.childrenPerRoom,
     ages: row.childAges,
   })));
-  const countPath = /^stays\[([A-Za-z0-9_-]{1,40})\]\.rows\[([A-Za-z0-9_-]{1,40})\]\.childrenPerRoom$/;
+  const stateRowPath = /^stays\[([A-Za-z0-9_-]{1,40})\]\.rows\[([A-Za-z0-9_-]{1,40})\]\.(?:count|adults|childrenPerRoom|childAges|roomType|board|removed)$/;
   // Staff-added rows do not occur in the extraction; they need explicit saved count and ages.
   const addedRows = Object.keys(state).flatMap((key): RowEvidence[] => {
-    const match = countPath.exec(key);
+    const match = stateRowPath.exec(key);
     if (!match) return [];
     const [, stayId, rowId] = match;
     if (!stayId || !rowId || rows.some((row) => row.stayId === stayId && row.rowId === rowId)) return [];
-    return [{ stayId, rowId, count: undefined, ages: undefined }];
-  });
+    return [{ stayId, rowId, rooms: undefined, adults: undefined, count: undefined, ages: undefined }];
+  }).filter((row, index, found) => found.findIndex((item) => item.stayId === row.stayId && item.rowId === row.rowId) === index);
   const allRows: RowEvidence[] = [...rows, ...addedRows];
   return groups.every((group) => {
     if (typeof group.id !== 'string' || !Array.isArray(group.childrenAges)) return false;
@@ -66,6 +68,23 @@ export function childOccupancyMatchesStored(
     if (arrival !== group.arrivalDate || departure !== group.departureDate) return false;
     const count = Object.hasOwn(state, `${base}.childrenPerRoom`) ? state[`${base}.childrenPerRoom`] : row.count;
     const ages = Object.hasOwn(state, `${base}.childAges`) ? state[`${base}.childAges`] : row.ages;
+    const roomsPath = `${base}.count`;
+    const adultsPath = `${base}.adults`;
+    let rooms = Object.hasOwn(state, roomsPath) ? state[roomsPath] : row.rooms;
+    let adults = Object.hasOwn(state, adultsPath) ? state[adultsPath] : row.adults;
+    // Mirror the pane's existing unedited defaults. A cleared field never authorizes a default.
+    if (adults == null && !Object.hasOwn(state, adultsPath)) adults = 2;
+    if (rooms == null && !Object.hasOwn(state, roomsPath)) {
+      const activeRows = allRows.filter((candidate) => candidate.stayId === row.stayId &&
+        state[`stays[${candidate.stayId}].rows[${candidate.rowId}].removed`] !== true);
+      const singleRow = activeRows.length === 1;
+      const hasGuestEvidence = row.adults != null ||
+        (Object.hasOwn(state, adultsPath) && state[adultsPath] != null) ||
+        (Array.isArray(ages) && ages.length > 0) ||
+        (singleRow && (stay?.guests ?? []).some((guest) => guest.name.trim().length > 0));
+      rooms = singleRow && stay?.totalRooms != null ? stay.totalRooms : hasGuestEvidence ? 1 : null;
+    }
+    if (rooms !== group.quantity || adults !== group.adults) return false;
     return typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 6 &&
       (group.childrenPerRoom === undefined || group.childrenPerRoom === count) &&
       Array.isArray(ages) && ages.length === count &&
@@ -77,6 +96,7 @@ export function childOccupancyMatchesStored(
 export function occupancyFromRevision(revision: QuoteRevision): Group[] {
   return revision.groups.map((group) => ({
     id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate,
+    quantity: group.quantity, adults: group.adults,
     childrenPerRoom: Number.isInteger(group.children) ? group.children : null, childrenAges: group.childAges,
   }));
 }
@@ -165,6 +185,7 @@ export function singleStayOccupancyMatchesRevision(
   if ([...ages].sort((a, b) => a - b).some((age, i) => age !== quotedAges[i])) return false;
   return childOccupancyMatchesStored([{
     id: row.id, arrivalDate: quoted.arrivalDate, departureDate: quoted.departureDate,
+    quantity: quoted.quantity, adults: quoted.adults,
     childrenPerRoom: quoted.children, childrenAges: ages,
   }], parsed.data, state);
 }

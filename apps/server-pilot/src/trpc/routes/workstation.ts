@@ -716,7 +716,7 @@ async function proposalStaysFor(
     }))) {
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
-        message: 'Confirm the number of children per room and each child’s age, then run the quote again.',
+        message: 'Confirm rooms, adults, and the number of children per room; enter each child’s age, then run the quote again.',
       });
     }
     stays.push({
