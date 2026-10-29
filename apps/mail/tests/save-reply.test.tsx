@@ -9,9 +9,10 @@ import { useInsertAiDraft } from '../components/nava-pane/use-insert-ai-draft';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import type { QuoteSession } from '../lib/quote-workflow/types';
 
-const { saveReplyMutate, recordQuoteOutcomeMutate, reviewedDraftRef } = vi.hoisted(() => ({
+const { saveReplyMutate, recordQuoteOutcomeMutate, quoteDraftPreflight, reviewedDraftRef } = vi.hoisted(() => ({
   saveReplyMutate: vi.fn(),
   recordQuoteOutcomeMutate: vi.fn(),
+  quoteDraftPreflight: vi.fn(),
   reviewedDraftRef: {
     current: {
       html: '<p>Quote for you</p>',
@@ -28,6 +29,7 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     drafts: { saveReply: { mutate: saveReplyMutate } },
     workItems: { recordQuoteOutcome: { mutate: recordQuoteOutcomeMutate } },
+    workstation: { quoteDraftPreflight: { mutate: quoteDraftPreflight } },
   },
 }));
 
@@ -96,7 +98,9 @@ beforeEach(() => {
     pdf: { fileName: 'Quotation.pdf', pdfBase64: 'JVBERi0xLjQ=' },
   };
   saveReplyMutate.mockReset();
+  quoteDraftPreflight.mockReset().mockResolvedValue({ ready: true });
   recordQuoteOutcomeMutate.mockReset().mockResolvedValue({ recorded: true });
+  sessionStorage.removeItem('nava_outlook_unresolved_reply_v1');
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.error).mockClear();
 });
@@ -261,6 +265,36 @@ describe('Insert saved reply in Outlook', () => {
       expect.objectContaining({ entryId: 'entry-1', htmlBody: SAVED_HTML, replyAll: false }),
     );
     expect(saveReplyMutate).not.toHaveBeenCalled();
+    expect(quoteDraftPreflight).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds a stale quote before Outlook creates the draft', async () => {
+    quoteDraftPreflight.mockRejectedValueOnce(new Error('stale'));
+    const sendCommand = outlookSendCommand();
+    const { result } = renderInsertHook(sendCommand);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('could not be verified')));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
+  });
+
+  it('rechecks before attaching and reports a partial Outlook draft if facts change', async () => {
+    quoteDraftPreflight.mockResolvedValueOnce({ ready: true }).mockRejectedValueOnce(new Error('changed'));
+    const sendCommand = outlookSendCommand();
+    const { result } = renderInsertHook(sendCommand);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist')));
+    expect(sendCommand.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT')).toHaveLength(1);
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
+  });
+
+  it('keeps a saved non-quote reply available without quote preflight', async () => {
+    const sendCommand = outlookSendCommand();
+    const { result } = renderInsertHook(sendCommand);
+    act(() => result.current.trackedDraft('saved', { html: SAVED_HTML, quoteBound: false,
+      attachments: [{ fileName: 'document.pdf', pdfBase64: SAVED_PDF }] }));
+    await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything()));
+    expect(quoteDraftPreflight).not.toHaveBeenCalled();
   });
 
   it('does not record a missing-details Outlook reply as a quote outcome', async () => {

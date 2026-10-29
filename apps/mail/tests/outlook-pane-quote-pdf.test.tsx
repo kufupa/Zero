@@ -125,6 +125,7 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
+      quoteDraftPreflight: { mutate: vi.fn().mockResolvedValue({ ready: true }) },
       quoteProposalPdf: { mutate: quotePdfMutateMock },
       quoteWorkbook: { mutate: quoteWorkbookMutateMock },
       staffQuoteSource: {

@@ -44,6 +44,7 @@ import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersis
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
 import { draftQuoteOccupancyHold, quoteSourceProofFromRun } from '../../ai/child-occupancy.js';
+import { assertCurrentDraftQuotePdf } from './workstation.js';
 import { readAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
 import { enqueueAiRun } from '../../ai/run-ledger.js';
@@ -1827,6 +1828,13 @@ export const draftsRouter = tRouter({
       if (replyParent.threadId !== input.threadId) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'REPLY_PARENT_THREAD_MISMATCH' });
       }
+      const quoteBound = input.replyKind === 'quote' || input.preparedVersions.length > 0;
+      if (quoteBound) await assertCurrentDraftQuotePdf({
+        messageId: input.replyToMessageId, threadId: input.threadId,
+        pdfHashes: decodedAttachments.filter(({ file, body }) => file.type === 'application/pdf' && body.length > 0)
+          .map(({ sourceHash }) => sourceHash),
+        preparedVersions: input.preparedVersions,
+      }, ctx);
       const html = sanitizeHtmlBodyForStorage(input.html) ?? '';
       try {
         return await db.transaction(async (tx) => {
@@ -1915,7 +1923,7 @@ export const draftsRouter = tRouter({
             });
           }
           await tx.insert(mailDraftRevision).values({
-            id: `${SAVED_REPLY_REVISION_PREFIX}${randomUUID()}`,
+            id: `${SAVED_REPLY_REVISION_PREFIX}${quoteBound ? 'quote:' : 'other:'}${randomUUID()}`,
             draftId,
             actorUserId: ctx.sessionUser.id,
             kind: updateInPlace ? 'edited' : 'created',
@@ -1976,8 +1984,14 @@ export const draftsRouter = tRouter({
             like(mailDraftRevision.id, `${SAVED_REPLY_REVISION_PREFIX}%`),
           ),
         )
+        .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
         .limit(1);
       if (!saved) return null;
+      // A later composer edit can change the reply or attachments without a
+      // saved-reply marker. Keep quotes guarded; trust "other" only if current.
+      const [latest] = await db.select({ id: mailDraftRevision.id }).from(mailDraftRevision)
+        .where(eq(mailDraftRevision.draftId, draft.id))
+        .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id)).limit(1);
       if (draft.attachments.length && !generatedArtifactStorage) {
         throw new TRPCError({ code: 'CONFLICT', message: 'ARTIFACT_STORAGE_UNAVAILABLE' });
       }
@@ -1994,6 +2008,9 @@ export const draftsRouter = tRouter({
         }
         attachments.push({ fileName: a.filename, pdfBase64: body.toString('base64') });
       }
-      return { id: draft.id, html: draft.htmlBody ?? '', attachments };
+      const quoteBound = saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}quote:`) ? true :
+        latest?.id === saved.id && saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}other:`) ? false : undefined;
+      return { id: draft.id, html: draft.htmlBody ?? '', attachments,
+        ...(quoteBound === undefined ? {} : { quoteBound }) };
     }),
 });
