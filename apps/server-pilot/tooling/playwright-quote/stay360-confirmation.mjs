@@ -179,7 +179,8 @@ export async function readConfirmationFromStay360(page, confirmation) {
   const matches = await rows.evaluateAll((elements, value) => elements.flatMap((row, index) => {
     const cells = [...row.querySelectorAll('td, [role="gridcell"], .x-grid-cell')]
       .filter((cell) => cell.closest('.x-grid-row') === row);
-    const cellIndex = cells.findIndex((cell) => (cell.innerText || '').replace(/\s+/g, ' ').trim() === value);
+    const cellIndex = cells.findIndex((cell) => (cell.innerText || '').split(/\r?\n/)
+      .some((line) => line.replace(/\s+/g, ' ').trim() === value));
     return cellIndex < 0 ? [] : [{ index, cellIndex }];
   }), wanted);
   if (matches.length === 0) throw new Error('CONFIRMATION_NOT_FOUND');
