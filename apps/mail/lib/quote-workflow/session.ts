@@ -291,7 +291,7 @@ export function paneCaseSnapshot(analysis: QuoteAnalysis | null): PaneCaseSnapsh
 
 export function sameCaseSnapshot(before: PaneCaseSnapshot, after: PaneCaseSnapshot, allowTaskChange = false): boolean {
   return before.identity === after.identity && (allowTaskChange || before.tasks === after.tasks) &&
-    (!before.propertyCode || !after.propertyCode || before.propertyCode === after.propertyCode);
+    (!before.propertyCode || before.propertyCode === after.propertyCode);
 }
 
 /** Case evidence is not a staff edit. Do not attach it to rows while their source is uncertain. */
