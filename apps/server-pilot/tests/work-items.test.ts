@@ -1307,19 +1307,22 @@ describe('work item upsert', () => {
       const status = async (id: string) =>
         (await db.select({ status: workItem.status }).from(workItem).where(eq(workItem.id, id)))[0]!.status;
 
-      // quote, then other, then quote again: the quote item comes back on the newest read, the other item goes.
+      // quote, then other, then quote again: the old quote item returns but stays pinned to its original read.
       const messageId = await seedMail(db, 'fw4');
-      await read(messageId, 'extract-v1', 'quote', 30_000);
+      const first = await read(messageId, 'extract-v1', 'quote', 30_000);
       const quote = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
       await read(messageId, 'extract-v2', 'other', 20_000);
       const other = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
       expect(await status(quote!.id)).toBe('dismissed');
       const third = await read(messageId, 'extract-v3', 'quote', 10_000);
       const back = await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
-      expect(back).toMatchObject({ id: quote!.id, status: 'needs_you', extractionId: third });
+      expect(back).toMatchObject({ id: quote!.id, status: 'needs_you', extractionId: first });
       expect(await status(other!.id)).toBe('dismissed');
       const open = await listWorkItems(db, { transportId: CENTURION, statuses: ['needs_you', 'review'], limit: 50 });
       expect(open.map((row) => row.id)).toEqual([quote!.id]);
+      expect(await storedWorkFor(db, { transportId: CENTURION, internetMessageId: '<fw4@example.com>' }))
+        .toMatchObject({ status: 'ready', workItemId: quote!.id, extractionId: first,
+          sourceRead: { extractionId: third }, analysis: { caseActionsUncertain: true } });
 
       // Her own dismissal stands when the kind comes back.
       const mine = await seedMail(db, 'fw5');
@@ -2259,10 +2262,12 @@ describe('contact edits', () => {
       expect((await readyWork(db, 'k2')).contact.company).toBeNull();
     }));
 
-  it('keeps her contact value through a re-extraction, and takes the read value for a field she did not edit', () =>
+  it('keeps her contact value pinned and holds a newer Centurion extraction for review', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'k3');
-      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') })
+        .where(eq(mailExtraction.id, first));
       const before = await readyWork(db, 'k3');
       await recordFieldEvent(db, {
         transportId: CENTURION,
@@ -2272,19 +2277,25 @@ describe('contact edits', () => {
         fieldPath: 'contact.email',
         value: 'buyer@example.com',
       });
-      await insertRead(db, messageId, {
+      const second = await insertRead(db, messageId, {
         version: 'extract-v2',
-        payload: { ...payload(), contact: { name: 'Priya Naidoo', email: 'priya@example.com', phone: '+27 11 000 0000' } },
+        payload: { ...payload({ stayOneArrival: '2027-10-25' }),
+          contact: { name: 'Priya Naidoo', email: 'priya@example.com', phone: '+27 11 000 0000' } },
       });
 
       const after = await readyWork(db, 'k3');
       expect(after.workItemId).toBe(before.workItemId);
+      expect(after.extractionId).toBe(first);
+      expect(after.sourceRead.extractionId).toBe(second);
+      expect(after.analysis.caseActionsUncertain).toBe(true);
+      expect(after.analysis.groups.find((group) => group.id === ROW_SINGLE)?.arrivalDate).toBe('2027-10-26');
+      expect(after.sourceRead.analysis.groups.find((group) => group.id === ROW_SINGLE)?.arrivalDate).toBe('2027-10-25');
       expect(after.contact).toEqual({
-        name: 'Priya Naidoo',
+        name: null,
         company: 'Horizon Trail Tours',
         endClient: null,
         email: 'buyer@example.com',
-        phone: '+27 11 000 0000',
+        phone: null,
       });
     }));
 
