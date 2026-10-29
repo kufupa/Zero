@@ -387,15 +387,15 @@ describe('cached quote views use current selected occupancy', () => {
     expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
     const verified = legacy.readResult;
     for (const code of ['staff_quote_source_unverified', 'staff_quote_centurion_source_changed']) {
-      legacy.readResult = { kind: 'staff_quote', ok: false, code };
+      // The worker stamps the actual HRCEN result even if the earlier queued target was HRDAV.
+      legacy.readResult = { kind: 'staff_quote', ok: false, code, propertyCode: 'HRCEN' };
+      legacy.metrics = { ...legacy.metrics, propertyCode: 'HRDAV', quoteSourcePolicyVersion: 5 };
       saved = item({ 'stays[s1].rows[r1].adults': 3 });
       expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
       await withDavinciOrigin(async () => {
         expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
       });
       saved = item();
-      expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
-      legacy.metrics = { ...legacy.metrics, propertyCode: 'HRDAV' }; // A stale queued target cannot override the worker's source hold.
       expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
       legacy.metrics = { ...legacy.metrics, propertyCode: 'HRCEN' };
     }

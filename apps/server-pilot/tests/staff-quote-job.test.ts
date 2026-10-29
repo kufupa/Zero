@@ -538,6 +538,18 @@ describe('runStaffQuote child occupancy', () => {
 });
 
 describe('staff_quote HMS job execution', () => {
+  it('records the actual witnessed Centurion price when the earlier queued target was HRDAV', async () => {
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
+    run.triggerMessageId = STAFF_QUOTE_INPUT.messageId;
+    run.metrics = { ...run.metrics, propertyCode: 'HRDAV' };
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      readResult: expect.objectContaining({ status: 'ready', propertyCode: 'HRCEN',
+        quoteSourceProof: expect.objectContaining({ version: 5 }) }),
+      metrics: expect.objectContaining({ quoteSourcePolicyVersion: 5 }),
+    }), quoteDb);
+  });
+
   it('does not publish a price if the thread hotel changes while the job is pricing', async () => {
     const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
     run.triggerMessageId = STAFF_QUOTE_INPUT.messageId;
@@ -1389,8 +1401,9 @@ describe('staff_quote HMS job execution', () => {
 
     await expect(executeHmsJob({ run, fence, db })).resolves.toBe('succeeded');
     expect(jobMocks.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
-      readResult: expect.objectContaining({ ok: false, code: 'staff_quote_source_unverified',
+      readResult: expect.objectContaining({ ok: false, propertyCode: 'HRCEN', code: 'staff_quote_source_unverified',
         message: 'Refresh the email before quoting.' }),
+      metrics: expect.objectContaining({ quoteSourcePolicyVersion: 5 }),
     }), db);
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
@@ -1404,8 +1417,9 @@ describe('staff_quote HMS job execution', () => {
 
     await expect(executeHmsJob({ run, fence, db })).resolves.toBe('succeeded');
     expect(jobMocks.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
-      readResult: expect.objectContaining({ ok: false, code: 'staff_quote_centurion_source_changed',
+      readResult: expect.objectContaining({ ok: false, propertyCode: 'HRCEN', code: 'staff_quote_centurion_source_changed',
         message: 'Selected email changed while pricing' }),
+      metrics: expect.objectContaining({ quoteSourcePolicyVersion: 5 }),
     }), db);
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });

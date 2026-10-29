@@ -3476,16 +3476,24 @@ async function storeStaffQuoteResult(input: {
   outcome: string;
 }): Promise<'succeeded' | 'retry_wait'> {
   const now = new Date();
+  // A worker can resolve a different hotel from the one the queue originally saw.
+  // Record the actual Centurion hold or witnessed price, not the obsolete queued target.
+  const centurionHold = ['staff_quote_source_unverified', CENTURION_QUOTE_SOURCE_CHANGED]
+    .includes(String(input.result.code));
+  const witnessedPrice = input.result.status === 'ready' && input.result.propertyCode === 'HRCEN' &&
+    objectRecord(input.result.quoteSourceProof).version === QUOTE_SOURCE_PROOF_VERSION;
   const marked = await markAiRunSucceeded(
     {
       ...input.mark,
       readResult: {
         ...input.result,
+        ...(centurionHold ? { propertyCode: 'HRCEN' } : {}),
         kind: 'staff_quote',
         asOf: now.toISOString(),
       },
       readResultExpiresAt: staffQuoteResultExpiry(input.result, now),
-      metrics: { hmsJob: true, kind: 'staff_quote', outcome: input.outcome },
+      metrics: { hmsJob: true, kind: 'staff_quote', outcome: input.outcome,
+        ...((centurionHold || witnessedPrice) ? { quoteSourcePolicyVersion: QUOTE_SOURCE_PROOF_VERSION } : {}) },
     },
     input.db,
   );
