@@ -4983,6 +4983,16 @@ describe('fresh case evidence and mixed actions', () => {
   const overlaid = (fresh: QuoteAnalysis, remembered: QuoteAnalysis['groups'], prior: QuoteAnalysis | null, property: string | null = 'HRCEN') =>
     withPaneRead(fresh, overlayRememberedGroups(fresh.groups, remembered), paneCaseSnapshot(prior), property);
 
+  it('holds changed source identity after a header-only edit', () => {
+    let session = analysisReady(withPaneRead(source, null, null, 'HRCEN'));
+    session = reduceQuoteSession(session, { type: 'patch_staff_header', header: { company: 'Staff Co' } });
+    const changed = { ...source, groups: [{ ...first, confirmationNumber: '22222222-1' }, second] };
+    session = reduceQuoteSession(session, { type: 'analysis_ready', analysis: overlaid(changed, session.groups, session.analysis) });
+    expect(session.staffHeader.company).toBe('Staff Co');
+    expect(stayAskGuests(session, 'stay-a')).toEqual([]);
+    expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toMatch(/existing or unclear booking/i);
+  });
+
   it.each(['guest', 'reference', 'hotel', 'missing roster', 'mailbox property', 'missing mailbox property'])(
     'holds a %s change after the roster row was removed, even across further reducer transitions', (change) => {
       let session = analysisReady(withPaneRead(source, null, null, 'HRCEN'));
@@ -5072,7 +5082,7 @@ describe('fresh case evidence and mixed actions', () => {
     expect(quoteRunBlockReason(unexpected, stepFor(unexpected, STAY_A))).toMatch(/existing or unclear booking/i);
   });
 
-  it('reclassifies one proven stored quote using fresh live evidence and preserves the link on reopen', () => {
+  it('reclassifies one matching stored quote using fresh live evidence and preserves the link on reopen', () => {
     const storedRow = { ...quoteAnalysis.groups[0]!, id: 'r_single', stayId: 'stay-single',
       stayGuests: [{ name: 'Ada Example', confirmationNumber: null }] };
     const storedGroup = { arrival: storedRow.arrivalDate!, departure: storedRow.departureDate!, rooms: 1,
@@ -5102,6 +5112,18 @@ describe('fresh case evidence and mixed actions', () => {
     const reopened = analysisReady(overlaid(live, accepted.groups, accepted.analysis));
     expect(stayAskAction(reopened, 'stay-single')).toBe('booking');
     expect(quoteRunBlockReason(reopened, stepFor(reopened, STAY_A))).toBeNull();
+
+    for (const field of ['arrival', 'departure']) {
+      const bookedSource = { ...stored, luna: { ...stored.luna!, [field]: '2026-11-12' } };
+      let booked = analysisReady(withPaneRead(bookedSource, null, null, 'HRCEN'));
+      booked = reduceQuoteSession(booked, { type: 'treat_as', treatAs: 'create_booking' });
+      booked = reduceQuoteSession(booked, { type: 'analysis_started' });
+      const held = reduceQuoteSession(booked, {
+        type: 'analysis_ready', analysis: overlaid(live, booked.groups, booked.analysis),
+      });
+      expect(stayAskAction(held, 'stay-single')).toBe('other');
+      expect(quoteRunBlockReason(held, stepFor(held, STAY_A))).toMatch(/existing or unclear booking/i);
+    }
 
     const otherGuest = { ...live, luna: { ...live.luna!, groups: [{ ...live.luna!.groups[0]!, guestNames: ['Bea Example'] }] } };
     const duplicateGuest = { ...live, luna: { ...live.luna!, groups: [{ ...live.luna!.groups[0]!, guestNames: ['Ada Example', 'Ada Example'] }] } };

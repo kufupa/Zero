@@ -310,20 +310,22 @@ function sameCaseAfterRemovedRows(before: string | null, after: string | null, r
     return normalized(old) === normalized(fresh);
   } catch { return false; }
 }
-/** A staff override may join the stored and live formats only for one proven, unbooked room. */
+/** Join the formats only for one matching room with no known existing-booking evidence. */
 function singleCaseReclassification(before: QuoteAnalysis, after: QuoteAnalysis, chosen: string | null): Record<string, string> | null {
   const a = before.groups as StayAskRow[], b = after.groups as StayAskRow[];
   if (a.length !== 1 || b.length !== 1 || !a[0]?.stayId || b[0]?.stayId || b[0]?.id !== 'g1' ||
     a[0].staffCreated || b[0].staffCreated || a[0].quantity !== 1 || b[0].quantity !== 1 || !a[0].arrivalDate || !a[0].departureDate ||
     before.amendment || after.amendment || !after.luna || after.luna.groups.length !== 1) return null;
   const identity = (analysis: QuoteAnalysis, row: StayAskRow) => {
-    const luna = analysis.luna as (LunaAnalysisWire & { confirmationNumber?: string | null }) | undefined;
+    const luna = analysis.luna as (LunaAnalysisWire & {
+      confirmationNumber?: string | null; arrival?: string | null; departure?: string | null;
+    }) | undefined;
     const guests = row.stayGuests ? row.stayGuests.map((guest) => guest.name) : row.guestNames?.length ? row.guestNames
       : (luna?.groups ?? []).flatMap((group) => group.guestNames);
     const refs = [row.confirmationNumber, row.caseLookupConfirmation, luna?.confirmationNumber,
       ...(row.stayGuests ?? []).map((guest) => guest.confirmationNumber),
       ...(luna?.groups ?? []).map((group) => (group as LunaStayGroup).confirmationNumber)];
-    if (refs.some(trimmedConfirmation) || luna?.workflow === 'amend' || luna?.workflow === 'cancel' ||
+    if (refs.some(trimmedConfirmation) || luna?.arrival || luna?.departure || luna?.workflow === 'amend' || luna?.workflow === 'cancel' ||
       (luna?.tasks ?? []).some((task) => task.groupIndexes.length &&
       task.kind !== 'quote' && task.kind !== 'create_booking')) return null;
     return JSON.stringify([row.arrivalDate, row.departureDate, row.hotel?.trim().toLowerCase() ?? null,
@@ -2044,6 +2046,7 @@ export function reduceQuoteSession(
       const fresh = paneCaseSnapshot(action.analysis);
       const wasHeld = caseReviewPending(session.analysis);
       const editsToKeep = staffEditedDuringRun || session.stayRevision > 1 || paneRead?.groups != null ||
+        Boolean(session.analysis && session.groups.length && session.inputRevision > 1) ||
         session.groups.some((group) => group.stayId !== undefined || Object.values(group.fields).includes('staff_corrected'));
       const unverifiedMemory = !session.analysis && paneRead?.groups != null && !paneRead.rememberedSource &&
         JSON.stringify(paneRead.groups) !== JSON.stringify(action.analysis.groups);
