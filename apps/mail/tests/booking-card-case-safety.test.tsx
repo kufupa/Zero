@@ -209,6 +209,29 @@ describe('booking case safety', () => {
     expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
   });
 
+  it('replaces a recent unverified number with a matching verified receipt', async () => {
+    const { pane, preview, commit } = client();
+    commit.mockResolvedValueOnce({ status: 'ok', outcome: 'committed_unverified', confirmationNumber: '11111111-1' });
+    const session = initialQuoteSession();
+    session.groups = [group];
+    session.bookingDrafts = { '2027-01-15:2027-01-17': draft() };
+    const view = (savedStays?: Record<string, { status: 'booked'; confirmationNumber: string; screenshotRef: null }>) =>
+      <ConfirmationSourcesProvider value={confirmation}>
+        <QuoteBookingHost session={session} paneSave={pane} workItemId={workItemId} savedStays={savedStays} />
+      </ConfirmationSourcesProvider>;
+    const { rerender } = render(view());
+    fireEvent.click(screen.getByRole('button', { name: 'Preview in HMS' }));
+    const book = screen.getByRole('button', { name: 'Create provisional booking' });
+    await waitFor(() => expect(book).toHaveProperty('disabled', false));
+    fireEvent.click(book);
+    expect(await screen.findByText('Possible confirmation: 11111111-1 (not verified)')).toBeDefined();
+    const id = (preview.mock.calls[0]![0] as { stayId?: string }).stayId;
+    if (!id) throw new Error('preview did not carry a stay id');
+    rerender(view({ [id]: { status: 'booked', confirmationNumber: '11111111-1', screenshotRef: null } }));
+    expect(screen.getByText('Booked in HMS – confirmation 11111111-1')).toBeDefined();
+    expect(screen.queryByText('Possible confirmation: 11111111-1 (not verified)')).toBeNull();
+  });
+
   it('clears only the exact in-flight unknown snapshot after a proven pre-save refusal', async () => {
     let finish!: (result: Awaited<ReturnType<PaneStayClient['commit']>>) => void;
     const { pane, preview, commit } = client();

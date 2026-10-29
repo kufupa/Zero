@@ -106,6 +106,14 @@ describe('single-room save recovery', () => {
     expect(screen.getByText('Possible confirmation: 11111111-1 (not verified)')).toBeDefined();
   });
 
+  it('does not label a fallback pre-save picture as saved evidence', async () => {
+    const saved: SavedStayCommit = { confirmationNumber: '11111111-1', status: 'booked',
+      screenshotRef: { runId: 'synthetic-run', name: 'filled.png' } };
+    render(<SavedStayReceipt saved={saved} screenshot={vi.fn(async () => 'data:image/png;base64,AA==')} />);
+    expect(await screen.findByRole('button', { name: 'View HMS screenshot' })).toBeDefined();
+    expect(screen.queryByText('See what Nava saved in HMS')).toBeNull();
+  });
+
   it('preserves a verified receipt and a conflicting in-flight unverified number', async () => {
     let finish!: (value: PaneStayResult) => void;
     const commit = vi.fn<PaneStayClient['commit']>().mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));

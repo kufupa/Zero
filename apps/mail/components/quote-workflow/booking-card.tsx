@@ -885,7 +885,7 @@ export function SavedStayReceipt({
       {runId && shots.length > 0 && screenshot ? (
         <HmsShotsViewer key={runId} runId={runId} shots={shots} screenshot={screenshot} />
       ) : runId && saved.screenshotRef && screenshot ? (
-        <PaneScreenshot caption={confirmed ? 'See what Nava saved in HMS' : 'View HMS screenshot'}
+        <PaneScreenshot caption={confirmed && saved.screenshotRef.name === SAVED_SHOT ? 'See what Nava saved in HMS' : 'View HMS screenshot'}
           runId={runId} name={saved.screenshotRef.name} screenshot={screenshot} />
       ) : null}
     </div>

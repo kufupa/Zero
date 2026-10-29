@@ -57,6 +57,8 @@ export function QuoteBookingHost({
   const visibleStays = Object.fromEntries(Object.entries(cachedStays).filter(([id, saved]) => !superseded(id, saved)));
   const recent = Object.entries(updates).filter(([id, update]) => {
     const saved = visibleStays[id];
+    if (saved?.status === 'booked' && saved.confirmationNumber && update.receipt?.status === 'unknown' &&
+      saved.confirmationNumber === update.receipt.confirmationNumber) return false;
     return update.receipt && !(saved && saved.status === update.receipt.status &&
       saved.confirmationNumber === update.receipt.confirmationNumber &&
       (!update.receipt.cmsReason || saved.cmsReason === update.receipt.cmsReason));
