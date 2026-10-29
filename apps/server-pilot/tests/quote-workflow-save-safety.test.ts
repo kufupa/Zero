@@ -319,6 +319,20 @@ describe('quoteWorkflow commit safety with fake storage and HMS', () => {
     expect(state.paneStaySaveClaims).toBeUndefined();
   });
 
+  it.each([
+    { outcome: 'refused_save_blank_required', clickedSave: false, reason: 'refused_save_blank_required', saved: false },
+    { outcome: 'save_unconfirmed', clickedSave: true, reason: 'pane_save_unconfirmed', saved: true },
+  ])('keeps the runner outcome $outcome when releasing the property lock fails', async ({ outcome, clickedSave, reason, saved }) => {
+    const { spawn } = fakeRunner();
+    const client = caller();
+    const previewDigest = await preview(client);
+    spawn.mockImplementation(async () => ({ outcome, clickedSave, confirmationNumber: '' }));
+    paneStaySaveLoaders.lock = { withLock: async (fn) => { await fn(); throw new Error('unlock failed'); } };
+    expect(await client.quoteWorkflow.commitStay({ ...input, previewDigest })).toMatchObject({ status: 'refused', reason });
+    expect(state.stays).toEqual(saved ? { [parentId]: unknown } : {});
+    expect(state.paneStaySaveClaims).toBeUndefined();
+  });
+
   it.each(['refused_save', 'refused_save_blank_required'])(
     'clears a claim after the runner proves %s happened before Save',
     async (outcome) => {

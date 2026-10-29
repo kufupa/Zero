@@ -800,9 +800,9 @@ export async function runPaneStay(input: {
       console.warn('stay_save_preflight_failed');
       return paneStayNotSaved('pane_save_preflight_unavailable');
     }
-    if (input.mode === 'commit' && spawnState.completed?.confirmationNumber) {
-      // A lock release can fail after the runner returned a number; retain it without claiming verification.
-      gate = { spawned: { ...spawnState.completed, outcome: 'save_unconfirmed', clickedSave: true } };
+    if (input.mode === 'commit' && spawnState.completed) {
+      // A failed lock release cannot verify a number, but a completed pre-save refusal is still definite.
+      gate = { spawned: spawnState.completed.confirmationNumber ? { ...spawnState.completed, outcome: 'save_unconfirmed', clickedSave: true } : spawnState.completed };
     } else {
       warnPaneStaySpawnFailed('save', error);
       throw error;
