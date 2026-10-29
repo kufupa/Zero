@@ -37,9 +37,13 @@ describe('Outlook stored-work mailbox scope', () => {
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: scope(),
       expectedMailbox: { userId: 'staff-a', transportId: 'transport-a' } }));
     expect(result.current.pane.state).toBe('loading');
+    expect(result.current.webOwnerReady).toBe(false);
+    expect(result.current.webOwnerIsCurrent()).toBe(false);
     expect(query).not.toHaveBeenCalled();
     act(() => mailbox('staff-a', 'transport-a'));
     await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-a' }));
+    expect(result.current.webOwnerReady).toBe(true);
+    expect(result.current.webOwnerIsCurrent()).toBe(true);
     expect(query).toHaveBeenCalledTimes(1);
     expect(query).toHaveBeenCalledWith({ internetMessageId: 'm-1' }, { context: { activeTransportId: 'transport-a' } });
   });
@@ -84,6 +88,8 @@ describe('Outlook stored-work mailbox scope', () => {
     expect(query).toHaveBeenCalledTimes(1);
     act(() => mailbox('staff-b', 'transport-a'));
     expect(hook.result.current.pane.state).toBe('loading');
+    expect(hook.result.current.webOwnerReady).toBe(false);
+    expect(hook.result.current.webOwnerIsCurrent()).toBe(false);
     expect(query).toHaveBeenCalledTimes(1);
     hook.rerender({ owner: 'staff-b' });
     await waitFor(() => expect(hook.result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-b' }));

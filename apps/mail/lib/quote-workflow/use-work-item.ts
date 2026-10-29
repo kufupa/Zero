@@ -1283,7 +1283,7 @@ export function useStoredWork(args: {
   const acceptUnedited = useCallback(
     (groups: StayGroupRequirement[]) => {
       const accept = workItemsFromTrpc(trpcRef.current).ownedPaneAction;
-      if (!accept || !readyWorkItemId || !readyRefs || sourceHeld || !webOwnerIsCurrent() || selection.current.epoch !== renderEpoch ||
+      if (!accept || !readyWorkItemId || !readyRefs || sourceHeld || !ownerIsCurrent() || selection.current.epoch !== renderEpoch ||
           historyBusy.current.has(readyWorkItemId) ||
           (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
       const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
@@ -1295,7 +1295,7 @@ export function useStoredWork(args: {
       void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch ||
-              !webOwnerIsCurrent() || getMailCacheScope().userId !== ownerId || historyBusy.current.has(workItemId)) return;
+              !ownerIsCurrent() || getMailCacheScope().userId !== ownerId || historyBusy.current.has(workItemId)) return;
           // Every field she edited on this screen, including one still pending, failed or retrying, is left out.
           const fieldPaths = shown.filter((path) => !edited.current.has(fieldSlot(workItemId, path)));
           if (!fieldPaths.length) return;
@@ -1304,7 +1304,8 @@ export function useStoredWork(args: {
         })
         .catch(() => undefined);
     },
-    [currentLookup, expectedMessageId, readyRefs, readyWorkItemId, readyTransportId, flushAll, lookupKey, renderEpoch, scope, sourceHeld],
+    [currentLookup, expectedMailbox?.userId, expectedMailbox?.transportId, expectedMessageId, readyRefs, readyWorkItemId,
+      readyTransportId, flushAll, lookupKey, renderEpoch, scope, sourceHeld],
   );
 
   /**
@@ -1459,7 +1460,7 @@ export function useStoredWork(args: {
     void (pinned ? routes.revisionCursor.query(input, pinned) : routes.revisionCursor.query(input))
       .then((result) => {
         if (
-          current && webOwnerIsCurrent() &&
+          current && ownerIsCurrent() &&
           result &&
           Number.isSafeInteger(result.revision) &&
           Number.isSafeInteger(result.revisionHead) &&
@@ -1474,13 +1475,13 @@ export function useStoredWork(args: {
     return () => {
       current = false;
     };
-  }, [readyWorkItemId, readyTransportId, historyEpoch, cursorEpoch, expectedMessageId, scope]);
+  }, [readyWorkItemId, readyTransportId, historyEpoch, cursorEpoch, expectedMailbox?.userId, expectedMailbox?.transportId, expectedMessageId, scope]);
 
   const runHistoryAction = useCallback(
     (action: PaneHistoryRequest, message: string) => {
       const mutate = workItemsFromTrpc(trpcRef.current).ownedPaneAction?.mutate;
       if (!readyWorkItemId || !lookupKey || !mutate || discardInProgress.current || historyBusy.current.has(readyWorkItemId) ||
-          !webOwnerIsCurrent() || selection.current.epoch !== renderEpoch ||
+          !ownerIsCurrent() || selection.current.epoch !== renderEpoch ||
           deferred.current.has(lookupKey) || recoveryMarked(lookupKey)) return;
       const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
       if (!ownerId) {
@@ -1502,7 +1503,7 @@ export function useStoredWork(args: {
       const stillSelected = () => {
         const owner = getMailCacheScope();
         return lookupKeyRef.current === keyNow && selection.current.epoch === epoch &&
-          owner.userId === ownerId && owner.activeTransportId === readyTransportId && webOwnerIsCurrent();
+          owner.userId === ownerId && owner.activeTransportId === readyTransportId && ownerIsCurrent();
       };
       const pinned = inMailbox(readyTransportId);
       historyBusy.current.add(workItemId);
@@ -1550,7 +1551,7 @@ export function useStoredWork(args: {
       })();
     },
     [currentLookup, lookupKey, pauseQueuedSaves, readyWorkItemId, readyTransportId, refetchStored,
-      expectedMessageId, renderEpoch, scope, settleQueuedSaves],
+      expectedMailbox?.userId, expectedMailbox?.transportId, expectedMessageId, renderEpoch, scope, settleQueuedSaves],
   );
 
   const undo = useCallback((_workItemId: string, _expectedRevision: number) => {
@@ -1588,8 +1589,8 @@ export function useStoredWork(args: {
   return {
     pane,
     key,
-    webOwnerReady,
-    webOwnerIsCurrent,
+    webOwnerReady: ownerReady,
+    webOwnerIsCurrent: ownerIsCurrent,
     /** True when the stored lookup missed its deadline, independent of whether a ready payload later arrives. */
     lookupTimedOut: currentLookup?.timedOut ?? false,
     /** The mailbox the shown read was looked up in, which owns its work item. Null while no read is shown. */
