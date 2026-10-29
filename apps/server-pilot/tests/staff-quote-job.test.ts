@@ -1358,6 +1358,21 @@ describe('staff_quote HMS job execution', () => {
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
 
+  it.each(['staff', 'prepared'] as const)('holds an unverified source without retrying a %s quote', async (kind) => {
+    const { run, fence } = kind === 'prepared' ? preparedFixture() : fixture();
+    jobMocks.runStaffQuote.mockRejectedValue(new TRPCError({
+      code: 'PRECONDITION_FAILED', message: 'Refresh the email before quoting.',
+      cause: { reason: 'source_unverified', code: 'staff_quote_source_unverified' },
+    }));
+
+    await expect(executeHmsJob({ run, fence, db })).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      readResult: expect.objectContaining({ ok: false, code: 'staff_quote_source_unverified',
+        message: 'Refresh the email before quoting.' }),
+    }), db);
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
+
   it.each([
     [
       'missing party',

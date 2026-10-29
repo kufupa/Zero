@@ -202,7 +202,7 @@ export async function childOccupancyIsCurrent(
 export const importedOfferOccupancyHold = 'The original offer cannot yet be matched to the requested rooms and child ages. Review it in HMS and run a new quote.';
 export const draftQuoteOccupancyMessage = 'Refresh the email, confirm rooms, adults, the number of children per room and each age; check room type, meal plan, agency and company, then run the quote again.';
 export const quoteSourcePolicyChangedMessage = 'Rate checks have changed. A fresh supported email read is needed before pricing here; otherwise quote in HMS.';
-export const quoteSourceUnverifiedMessage = 'Nava cannot verify this email and its saved quote details. Refresh and confirm rooms, adults, the number of children and their ages, room type, meal plan, agency and company. Quote older emails or emails with attachments in HMS.';
+export const quoteSourceUnverifiedMessage = 'Nava cannot verify this email and its saved quote details. Refresh and confirm rooms, adults, the number of children per room and their ages, room type, meal plan, agency and company. Quote older emails or emails with attachments in HMS.';
 
 export function isCenturionQuoteTransport(transportId: string): boolean {
   return getPropertyTransportIds('HRCEN').includes(transportId.trim());

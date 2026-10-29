@@ -768,8 +768,10 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             state: { [`stays[${raced.source.stayId}].rows[${raced.source.rowId}].adults`]: 2 } });
           return nativeFixture(nativeInput);
         });
-        await expect(executeAiRun(raced.run.id)).resolves.toEqual({ runId: raced.run.id, state: 'succeeded' });
+        const raceResult = await executeAiRun(raced.run.id);
         const [held] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, raced.run.id));
+        expect(raceResult.runId).toBe(raced.run.id);
+        expect(raceResult.state, `failure=${held?.failureClass}; reason=${held?.lastError}`).toBe('succeeded');
         expect(held?.readResult).toMatchObject({ ok: false });
         expect(held?.readResult).not.toHaveProperty('totalMinor');
 
@@ -777,7 +779,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const calls = nativeRead.mock.calls.length;
         await expect(executeAiRun(booking.run.id)).resolves.toEqual({ runId: booking.run.id, state: 'succeeded' });
         const [bookingHold] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, booking.run.id));
-        expect(bookingHold?.readResult).toMatchObject({ ok: false });
+        expect(bookingHold?.readResult).toMatchObject({ ok: false, code: 'staff_quote_source_unverified' });
         expect(nativeRead).toHaveBeenCalledTimes(calls);
       });
     }, 60_000);
@@ -977,7 +979,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           // This success exercises the real persistRun transaction with a nested current-witness check.
           const second = await seedExtractedRequest(db, true), api = caller();
           const quote = await api.workstation.executeStaffQuote(second.input);
-          const proposal = { ...pdfInput(quote), workItemId: second.workItemId };
+          const proposal = { ...pdfInput({ workflowRunId: quote.workflowRunId, revisionRef: quote.revisionRef,
+            messageId: quote.messageId }), workItemId: second.workItemId };
           const pdf = await api.workstation.qualifiedQuoteProposalPdf(proposal);
           const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, quote.workflowRunId));
           const proof = quoteSourceProofFromRun(run!);
@@ -1034,7 +1037,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             });
             return new Response('%PDF-1.4 synthetic', { headers: { 'content-type': 'application/pdf' } });
           });
-          await expect(api.workstation.qualifiedQuoteProposalPdf({ ...pdfInput(quoted), workItemId: third.workItemId }))
+          await expect(api.workstation.qualifiedQuoteProposalPdf({ ...pdfInput({ workflowRunId: quoted.workflowRunId,
+            revisionRef: quoted.revisionRef, messageId: quoted.messageId }), workItemId: third.workItemId }))
             .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
         } finally {
           await writer.end();

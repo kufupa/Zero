@@ -347,9 +347,21 @@ describe('cached quote views use current selected occupancy', () => {
     const legacy = job();
     legacy.metrics = { ...legacy.metrics, propertyCode: 'HRCEN' };
     legacy.readResult = { ...legacy.readResult, propertyCode: undefined };
-    const select = () => {
-      const query = Object.assign(Promise.resolve([legacy]), {
-        from() { return query; }, where() { return query; }, orderBy() { return query; },
+    let saved = item();
+    const select = (selection?: Record<string, unknown>) => {
+      let table: unknown;
+      const read = () => {
+        if (selection && 'workItemId' in selection && 'kind' in selection && 'status' in selection) return [];
+        if (selection && Object.keys(selection).length === 1 && 'id' in selection &&
+          (table === workItem || table === mailExtraction)) return [];
+        if (table === mailExtraction) return [extraction];
+        if (table === workItem) return [saved];
+        if (table === aiWorkflowRun) return [legacy];
+        throw new Error('unexpected synthetic DB read');
+      };
+      const query = Object.assign(Promise.resolve().then(read), {
+        from(value: unknown) { table = value; return query; },
+        where() { return query; }, orderBy() { return query; }, for() { return query; }, limit() { return query; },
       });
       return query;
     };
@@ -373,6 +385,16 @@ describe('cached quote views use current selected occupancy', () => {
 
     legacy.readResult = { ...legacy.readResult, propertyCode: 'HRCEN' };
     expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
+    const verified = legacy.readResult;
+    legacy.readResult = { kind: 'staff_quote', ok: false, code: 'staff_quote_source_unverified' };
+    saved = item({ 'stays[s1].rows[r1].adults': 3 });
+    expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
+    saved = item();
+    expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
+    legacy.metrics = { ...legacy.metrics, propertyCode: 'HRDAV' }; // A stale queued target cannot override the worker's source hold.
+    expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
+    legacy.metrics = { ...legacy.metrics, propertyCode: 'HRCEN' };
+    legacy.readResult = verified;
     await withDavinciOrigin(async () => {
       expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
     });
