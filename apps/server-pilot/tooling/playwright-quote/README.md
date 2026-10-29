@@ -1,5 +1,8 @@
 # Native Playwright fetch-quote
 
+For the separate Centurion Stay 360 / arrivals browser scripts, see
+[STAY360-ARRIVALS.md](./STAY360-ARRIVALS.md).
+
 Standalone, attach-only Hotel Availability reader. No Stagehand runtime, model
 credentials, database, server integration or booking actions. It owns one isolated
 browser context and tab per invocation, closes that context and disconnects; it does not stop the remote
