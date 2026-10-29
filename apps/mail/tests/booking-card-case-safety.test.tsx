@@ -55,6 +55,11 @@ describe('booking case safety', () => {
     expect(one).toBe(stayIdForRoom({ groupId: 'g1', roomIndex: 1 }, [second, group]));
     expect(one).toBe(stayIdForRoom({ groupId: '2027-01-15:2027-01-17', roomIndex: 1 }, [group]));
     expect(one).not.toBe('s_aaaa1111_1');
+    const synthetic = { ...group, id: 's_aaaa1111_row' };
+    const syntheticId = stayIdForRoom({ groupId: synthetic.id, roomIndex: 1 }, [synthetic]);
+    expect(syntheticId).toMatch(/^s_aaaa1111_0\d+$/);
+    expect(syntheticId.length).toBeLessThanOrEqual(40);
+    expect(syntheticId).not.toBe(stayIdForRoom({ groupId: group.stayId!, roomIndex: 1 }, [{ ...group, id: group.stayId! }]));
     expect(stayIdForRoom({ groupId: 'g'.repeat(60), roomIndex: 1 }, [{ ...group, id: 'g'.repeat(60) }])).toBe('');
     expect(stayIdForRoom({ groupId: 'g1', roomIndex: 1 }, [group, group])).toBe('');
     expect(stayIdForRoom({ groupId: '2027-01-15:2027-01-17', roomIndex: 1 }, [group, second])).toBe('');

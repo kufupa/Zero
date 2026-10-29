@@ -338,8 +338,11 @@ export function stayIdForRoom(
   const stay = group?.stayId ?? groupId;
   const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-:';
   if (!/^[A-Za-z0-9_-]+$/.test(stay) || !groupId || groupId.length > 40) return '';
-  let row = 1n;
-  for (const char of groupId) {
+  // A synthetic row can reuse its stay id (e.g. `s_12345678_row`). Encode only the suffix,
+  // with a distinct leading digit so it cannot collide with a full row id.
+  const relative = groupId.startsWith(stay) ? groupId.slice(stay.length) : null;
+  let row = relative === null ? 1n : 2n;
+  for (const char of relative ?? groupId) {
     const digit = alphabet.indexOf(char);
     if (digit < 0) return '';
     row = row * BigInt(alphabet.length) + BigInt(digit);
