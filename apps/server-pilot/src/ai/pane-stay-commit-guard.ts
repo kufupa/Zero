@@ -10,9 +10,8 @@ type State = Record<string, unknown>;
 type ClaimInput = { transportId: string; workItemId: string; stayId: string; parentStayId?: string };
 type ClaimResult = { status: 'ready'; claimId: string; parentConfirmation?: string } | { status: 'refused'; reason: string };
 
-function object(value: unknown): State | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as State : null;
-}
+const object = (value: unknown): State | null =>
+  value && typeof value === 'object' && !Array.isArray(value) ? value as State : null;
 
 /** Fence pane commits at the property until an earlier save is verified or cleared. */
 export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<ClaimResult> {
@@ -28,13 +27,11 @@ export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<Cl
     const claims = item.state[CLAIMS_KEY] === undefined ? {} : object(item.state[CLAIMS_KEY]);
     const commits = stayCommitsOf(item.state);
     // A malformed receipt or claim cannot be silently treated as an empty, safe work item.
-    if (!rawStays || !claims || Object.keys(rawStays).length !== Object.keys(commits).length) {
+    if (!rawStays || !claims || Object.keys(rawStays).length !== Object.keys(commits).length)
       return { status: 'refused', reason: 'pane_save_work_item_unavailable' };
-    }
     const current = commits[input.stayId];
-    if (current?.status === 'unknown' || (current && !current.confirmationNumber)) {
+    if (current?.status === 'unknown' || (current && !current.confirmationNumber))
       return { status: 'refused', reason: 'pane_save_unconfirmed' };
-    }
     if (current?.confirmationNumber) return { status: 'refused', reason: PANE_STAY_ALREADY_BOOKED };
     if (Object.keys(claims).length || Object.values(commits).some((record) =>
       record.status === 'unknown' || !/^\d{6,10}-\d{1,2}$/.test(record.confirmationNumber ?? ''))) {
@@ -58,9 +55,8 @@ export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<Cl
     let parentConfirmation: string | undefined;
     if (input.parentStayId) {
       const parent = input.parentStayId !== input.stayId ? commits[input.parentStayId] : undefined;
-      if (parent?.status !== 'booked' || !parent.confirmationNumber) {
+      if (parent?.status !== 'booked' || !parent.confirmationNumber)
         return { status: 'refused', reason: 'pane_save_parent_not_booked' };
-      }
       parentConfirmation = parent.confirmationNumber;
     }
     const claimId = randomUUID();

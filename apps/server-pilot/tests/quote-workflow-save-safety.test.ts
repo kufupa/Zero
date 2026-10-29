@@ -9,6 +9,15 @@ import {
   type PaneStaySpawnResult,
 } from '../src/ai/pane-stay-save.js';
 
+const failProfile = vi.hoisted(() => ({ enabled: false }));
+vi.mock('../tooling/playwright-quote/property-profile.mjs', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../tooling/playwright-quote/property-profile.mjs')>();
+  return { ...original, profileFor: (propertyCode: string) => {
+    if (failProfile.enabled) throw new Error('synthetic profile read failure');
+    return original.profileFor(propertyCode);
+  } };
+});
+
 // Exercise the real route and work-item guard with a serialized in-memory transaction, never a database.
 let state: Record<string, unknown> = {};
 let exists = true;
@@ -94,6 +103,7 @@ async function preview(client: ReturnType<typeof caller>, stay = input) {
 }
 
 beforeEach(() => {
+  failProfile.enabled = false;
   state = {};
   exists = true;
   otherUnresolved = false;
@@ -104,6 +114,7 @@ beforeEach(() => {
   clearPanePreviewMemory();
 });
 afterEach(() => {
+  failProfile.enabled = false;
   paneStaySaveLoaders.spawn = null;
   paneStaySaveLoaders.lock = null;
   paneStaySaveLoaders.osressGuestDatesSearch = null;
@@ -261,6 +272,19 @@ describe('quoteWorkflow commit safety with fake storage and HMS', () => {
     if (stage === 'lock connection') paneStaySaveLoaders.lock = { withLock: async () => { throw new Error('lock failed'); } };
     if (stage === 'duplicate lookup') paneStaySaveLoaders.osressGuestDatesSearch = async () => { throw new Error('lookup failed'); };
     if (stage === 'preview grant') failUpdateAt = updateCount + 2; // Claim succeeds; taking the preview fails.
+    expect(await client.quoteWorkflow.commitStay({ ...input, previewDigest })).toMatchObject({
+      status: 'refused', reason: 'pane_save_preflight_unavailable', clickedSave: false,
+    });
+    expect(state.stays).toEqual({});
+    expect(state.paneStaySaveClaims).toBeUndefined();
+    expect(spawn.mock.calls.filter(([request]) => request.paneCommit)).toHaveLength(0);
+  });
+
+  it('clears the claim when the property profile cannot be read before the runner starts', async () => {
+    const { spawn } = fakeRunner();
+    const client = caller();
+    const previewDigest = await preview(client);
+    failProfile.enabled = true;
     expect(await client.quoteWorkflow.commitStay({ ...input, previewDigest })).toMatchObject({
       status: 'refused', reason: 'pane_save_preflight_unavailable', clickedSave: false,
     });

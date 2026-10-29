@@ -565,9 +565,16 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   const target = input.target;
   const runId = randomUUID();
   const dir = join(tmpdir(), `pane-stay-${runId}`);
-  await mkdir(dir, { mode: 0o700 });
   const requestPath = join(dir, 'request.json');
-  await writeFile(requestPath, JSON.stringify(paneStayRequestBody(input.stay)), { mode: 0o600 });
+  let created = false;
+  try {
+    await mkdir(dir, { mode: 0o700 });
+    created = true;
+    await writeFile(requestPath, JSON.stringify(paneStayRequestBody(input.stay)), { mode: 0o600 });
+  } catch {
+    if (created) await rm(dir, { recursive: true, force: true }).catch(() => {});
+    return { outcome: 'refused_preflight_unavailable', clickedSave: false, confirmationNumber: '' };
+  }
   const args = [
     input.parentConfirmation ? ADD_ROOM_STAY : CREATE_LAB_STAY,
     '--request',
@@ -715,7 +722,9 @@ export async function runPaneStay(input: {
       return paneStayNotSaved((error as Error).message);
     }
   }
-  const bookRefusal = stayBookFieldRefusal(input.stay, profileFor(target.propertyCode));
+  let bookRefusal: string | null;
+  try { bookRefusal = stayBookFieldRefusal(input.stay, profileFor(target.propertyCode)); }
+  catch { return paneStayNotSaved('pane_save_preflight_unavailable'); }
   if (bookRefusal) {
     return paneStayNotSaved(bookRefusal);
   }
@@ -803,9 +812,11 @@ export async function runPaneStay(input: {
   const spawned = gate.spawned;
   const refusedAfterSave = input.mode === 'commit' && /^refused/i.test(spawned.outcome) && spawned.clickedSave;
   if (/^refused/i.test(spawned.outcome) && !refusedAfterSave) {
+    if (spawned.runId && spawned.runDir) registerPaneRun({ runId: spawned.runId, dir: spawned.runDir, owner: input.owner, now: paneStayClock() });
     return {
       status: 'refused',
-      reason: spawned.outcome === 'refused_agency_not_unique' ? 'agency_not_unique' : spawned.outcome,
+      reason: spawned.outcome === 'refused_agency_not_unique' ? 'agency_not_unique'
+        : spawned.outcome === 'refused_preflight_unavailable' ? 'pane_save_preflight_unavailable' : spawned.outcome,
       clickedSave: spawned.clickedSave,
       ...(spawned.confirmationNumber ? { confirmationNumber: spawned.confirmationNumber } : {}),
       ...(spawned.runId ? { runId: spawned.runId } : {}),

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fakeExecFile = vi.hoisted(() => vi.fn());
-const filesystemFailures = vi.hoisted(() => ({ cleanup: false, listing: false }));
+const filesystemFailures = vi.hoisted(() => ({ cleanup: false, listing: false, setup: false }));
 vi.mock('node:child_process', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:child_process')>();
   const execFile = Object.assign(() => undefined, { [Symbol.for('nodejs.util.promisify.custom')]: fakeExecFile });
@@ -17,6 +17,12 @@ vi.mock('node:fs/promises', async (importOriginal) => {
       if (filesystemFailures.cleanup && path.endsWith('/request.json')) throw new Error('synthetic cleanup failure');
       return original.rm(path, options);
     },
+    writeFile: new Proxy(original.writeFile, { apply(target, thisArg, args) {
+      if (filesystemFailures.setup && typeof args[0] === 'string' && args[0].endsWith('/request.json')) {
+        throw new Error('synthetic request setup failure');
+      }
+      return Reflect.apply(target, thisArg, args);
+    } }),
     readdir: async (path: string) => {
       if (filesystemFailures.listing) throw new Error('synthetic listing failure');
       return original.readdir(path);
@@ -24,7 +30,7 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   };
 });
 
-import { clearPanePreviewMemory, paneStayDigest, paneStaySaveLoaders, runPaneStay } from '../src/ai/pane-stay-save.js';
+import { clearPanePreviewMemory, paneStayDigest, paneStaySaveLoaders, readPaneStayScreenshot, runPaneStay } from '../src/ai/pane-stay-save.js';
 
 const stay = {
   firstName: 'Proof', lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-16', adults: 1,
@@ -49,12 +55,13 @@ afterEach(async () => {
   fakeExecFile.mockReset();
   filesystemFailures.cleanup = false;
   filesystemFailures.listing = false;
+  filesystemFailures.setup = false;
   vi.restoreAllMocks();
 });
 
 async function commitWithRunnerResult(
   result: Record<string, unknown> | null,
-  options: { failed: boolean; stdout?: string; parentConfirmation?: string },
+  options: { failed: boolean; stdout?: string; parentConfirmation?: string; screenshot?: boolean },
 ) {
   paneStaySaveLoaders.spawn = async () => ({ outcome: 'previewed', clickedSave: false, confirmationNumber: '' });
   await runPaneStay({ mode: 'preview', stay, owner });
@@ -63,6 +70,7 @@ async function commitWithRunnerResult(
     const dir = args[args.indexOf('--out') + 1]!;
     runDirs.push(dir);
     if (result) await writeFile(join(dir, 'result.json'), JSON.stringify(result));
+    if (options.screenshot) await writeFile(join(dir, 'failure.png'), 'synthetic screenshot');
     if (options.failed) throw new Error('synthetic runner failure');
     return { stdout: options.stdout ?? '', stderr: '' };
   });
@@ -83,6 +91,24 @@ describe('create runner exit and the save boundary', () => {
     await expect(commitWithRunnerResult(
       { outcome: 'refused_save_blank_required' }, { failed: false, stdout: 'refused_save_blank_required\n' },
     )).resolves.toMatchObject({ status: 'refused', reason: 'refused_save_blank_required', clickedSave: false });
+  });
+
+  it('does not start the runner when writing its request fails', async () => {
+    filesystemFailures.setup = true;
+    await expect(commitWithRunnerResult(null, { failed: false })).resolves.toMatchObject({
+      status: 'refused', reason: 'pane_save_preflight_unavailable', clickedSave: false,
+    });
+    expect(fakeExecFile).not.toHaveBeenCalled();
+  });
+
+  it('makes the pre-save refusal screenshot available to its owner', async () => {
+    const result = await commitWithRunnerResult(
+      { outcome: 'refused_save_blank_required' },
+      { failed: false, stdout: 'refused_save_blank_required\n', screenshot: true },
+    );
+    expect(result).toMatchObject({ status: 'refused', screenshots: ['failure.png'] });
+    expect(result.runId).toBeDefined();
+    expect(await readPaneStayScreenshot({ runId: result.runId!, name: 'failure.png', owner })).toMatchObject({ status: 'ok' });
   });
 
   it('keeps a contradictory blank-field result uncertain', async () => {
