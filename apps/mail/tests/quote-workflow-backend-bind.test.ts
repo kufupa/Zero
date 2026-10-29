@@ -17,9 +17,9 @@ import {
   staffQuoteGroupsFromStay,
   sha256HexOfBytes,
 } from '../lib/quote-workflow/staff-quote-bind';
-import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE } from '../lib/quote-workflow/types';
+import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE, HRDAV_PROPERTY_CODE } from '../lib/quote-workflow/types';
 
-// Every staff-quote request in this file uses Centurion data; pin the fixture property explicitly.
+// Pin the default Centurion fixtures; the legacy property test supplies HRDAV explicitly.
 function bindExecuteStaffQuote(args: Parameters<typeof bindPropertyScopedStaffQuote>[0]) {
   return bindPropertyScopedStaffQuote({ ...args, propertyCode: HRCEN_PROPERTY_CODE });
 }
@@ -419,8 +419,8 @@ describe('staff quote execute/PDF header bind', () => {
     specialRequests: [] as string[],
     fields: {},
   };
-  const government = {
-    salesStrategy: 'Government' as const,
+  const barHeader = {
+    salesStrategy: 'BAR' as const,
     company: 'Provincial Treasury',
     agency: 'Travel Desk',
     attention: 'Ms. Naidoo',
@@ -448,13 +448,37 @@ describe('staff quote execute/PDF header bind', () => {
     const mutate = vi.fn();
     const result = await bindExecuteStaffQuote({
       mutate, source, selectionEpoch: 1, inputRevision: 1,
-      groups: [{ ...stay, childrenPerRoom: null, roomPreference: 'STWN' }], header: government,
+      groups: [{ ...stay, childrenPerRoom: null, roomPreference: 'STWN' }], header: barHeader,
     });
     expect(result).toMatchObject({ status: 'unavailable', reason: expect.stringMatching(/Confirm the number of children/) });
     expect(mutate).not.toHaveBeenCalled();
   });
 
-  it('sends staff-approved Government/contact and the actual native room-code set', async () => {
+  it('holds an unverified Centurion Government quote before calling HMS', async () => {
+    const mutate = vi.fn();
+    const result = await bindExecuteStaffQuote({
+      mutate, source, selectionEpoch: 1, inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: { ...barHeader, salesStrategy: 'Government' },
+    });
+    expect(result).toMatchObject({
+      status: 'unavailable', reason: expect.stringMatching(/Government rates need confirmed guest eligibility/),
+    });
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it('still forwards a Government quote in the legacy HRDAV context', async () => {
+    const mutate = vi.fn(async (_input: unknown) => readyResult);
+    const result = await bindPropertyScopedStaffQuote({
+      propertyCode: HRDAV_PROPERTY_CODE, mutate, source, selectionEpoch: 1, inputRevision: 1,
+      groups: [{ ...stay, roomPreference: 'STWN' }],
+      header: { ...barHeader, salesStrategy: 'Government' },
+    });
+    expect(result.status).toBe('ok');
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ salesStrategy: 'Government' }));
+  });
+
+  it('sends the staff-approved rate, contact and actual native room-code set', async () => {
     expect(nativeRoomCodes('SUITE')).toEqual(['SUITE']);
     expect(nativeRoomCodes('DLXKNG')).toEqual(['DLXKNG']);
     expect(resolveNativeRoomCodes({ roomPreference: 'Standard Queen' })).toEqual({
@@ -473,7 +497,7 @@ describe('staff quote execute/PDF header bind', () => {
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [{ ...stay, roomPreference: 'SINGLE' }],
-      header: government,
+      header: barHeader,
     });
     expect(labelled.status).toBe('unavailable');
     if (labelled.status === 'unavailable') {
@@ -487,11 +511,11 @@ describe('staff quote execute/PDF header bind', () => {
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [{ ...stay, roomPreference: 'STWN' }],
-      header: government,
+      header: barHeader,
     });
     expect(result.status).toBe('ok');
     expect(mutate.mock.calls[0]?.[0]).toMatchObject({
-      salesStrategy: 'Government',
+      salesStrategy: 'BAR',
       company: 'Provincial Treasury',
       agency: 'Travel Desk',
       attention: 'Ms. Naidoo',
@@ -510,7 +534,7 @@ describe('staff quote execute/PDF header bind', () => {
       inputRevision: 1,
       groups: [{ ...stay, roomPreference: 'STWN' }],
       header: {
-        ...government,
+        ...barHeader,
         dinnerAllowanceMinor: 12_500,
         shuttleRequested: true,
         shuttleMinor: 45_000,
@@ -535,7 +559,7 @@ describe('staff quote execute/PDF header bind', () => {
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [{ ...stay, roomPreference: 'STWN' }],
-      header: government,
+      header: barHeader,
     });
     expect(result).toMatchObject({
       status: 'unavailable',
@@ -556,7 +580,7 @@ describe('staff quote execute/PDF header bind', () => {
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [{ ...stay, roomPreference: 'STWN' }],
-      header: government,
+      header: barHeader,
     });
     expect(result.status).toBe('unavailable');
     if (result.status !== 'unavailable') return;
@@ -577,7 +601,7 @@ describe('staff quote execute/PDF header bind', () => {
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [{ ...stay, roomPreference: 'STWN' }],
-      header: government,
+      header: barHeader,
     });
     expect(result).toMatchObject({ status: 'unavailable', reason: raw, detail: raw });
   });
@@ -585,7 +609,7 @@ describe('staff quote execute/PDF header bind', () => {
   it('sends each new extra and the note as its own field, and leaves out empty ones', () => {
     expect(
       approvedExecuteHeader({
-        ...government,
+        ...barHeader,
         lunchAllowanceMinor: 20_000,
         lunchAllowanceLabel: ' with 1 soft drink ',
         officeTransferMinor: 20_000,
@@ -605,7 +629,7 @@ describe('staff quote execute/PDF header bind', () => {
       notes: 'Breakfast only on day 2.',
     });
     const bare = approvedExecuteHeader({
-      ...government,
+      ...barHeader,
       other: { label: 'Parking', unit: 'item' },
       notes: '   ',
     });
@@ -616,7 +640,7 @@ describe('staff quote execute/PDF header bind', () => {
 
   it('sends an other amount with no label, so the server can raise a review item for it', () => {
     expect(
-      approvedExecuteHeader({ ...government, other: { label: '  ', amountMinor: 30_000, unit: 'item' } }),
+      approvedExecuteHeader({ ...barHeader, other: { label: '  ', amountMinor: 30_000, unit: 'item' } }),
     ).toMatchObject({ other: { label: '', amountMinor: 30_000, unit: 'item' } });
   });
 
@@ -629,7 +653,7 @@ describe('staff quote execute/PDF header bind', () => {
       inputRevision: 1,
       groups: [{ ...stay, roomPreference: 'STWN' }],
       header: {
-        ...government,
+        ...barHeader,
         dinnerAllowanceMinor: 45_000,
         fieldErrors: { dinnerAllowance: 'Enter an amount in rand, like 450 or 1,250.50' },
       },
@@ -650,7 +674,7 @@ describe('staff quote execute/PDF header bind', () => {
       selectionEpoch: 1,
       inputRevision: 1,
       groups: [{ ...stay, roomPreference: 'STWN' }],
-      header: { ...government, dinnerAllowanceMinor: 12_500, dinnerAllowanceGroupIds: ['g1'] },
+      header: { ...barHeader, dinnerAllowanceMinor: 12_500, dinnerAllowanceGroupIds: ['g1'] },
     });
     expect(mutate.mock.calls[0]?.[0]).toMatchObject({
       dinnerAllowanceMinor: 12_500,
@@ -665,7 +689,7 @@ describe('staff quote execute/PDF header bind', () => {
     const groupsFor = (ids: string[], arrivalDate: string, departureDate: string) =>
       ids.map((id) => ({ ...stay, id, arrivalDate, departureDate, roomPreference: 'STWN' as const }));
     const header = {
-      ...government,
+      ...barHeader,
       dinnerAllowanceMinor: 12_500,
       dinnerAllowanceGroupIds: [...optionA, ...optionB, 'a1'],
     };
