@@ -556,6 +556,18 @@ svg.lucide{width:14px;height:14px;stroke-width:2;flex:none}
 .modal input { width:100%; min-height:32px; padding:5px 8px; border:1px solid #cbd5e1; border-radius:3px; }
 .modal-option { width:100%; display:block; padding:9px 4px; border:0; border-bottom:1px solid #e2e8f0; background:#fff; color:#1e293b; text-align:left; }
 .modal-option:hover { background:#eff6ff; }.modal-footer { display:flex; justify-content:space-between; margin-top:12px; }
+.embed-review-root, body.embed-review { height:auto; min-height:0; background:#fff; }
+body.embed-review .app { display:block; height:auto; min-height:0; }
+body.embed-review .nav { display:none !important; }
+body.embed-review .nav > :not(.demo-settings), body.embed-review .read,
+body.embed-review .pane-heading, body.embed-review .mailbox-row,
+body.embed-review .selected-email, body.embed-review .read-as-row,
+body.embed-review .needs-you, body.embed-review .workflow-title { display:none !important; }
+body.embed-review .demo-settings { grid-template-columns:1fr 1fr; padding:0 0 8px; }
+body.embed-review .demo-settings label { grid-column:span 2; }
+body.embed-review .demo-settings a, body.embed-review .demo-settings p { display:none; }
+body.embed-review .pane { display:block; min-height:0; border:0; }
+body.embed-review .pane-scroll { overflow:visible; padding:0; }
 
 </style>
 </head>
@@ -639,6 +651,7 @@ Thank you.</div>
       addOn: 'Airport transfer · sample', addOnDate: '2027-11-12', addOnTime: '10:30', addOnRoom: 'twin', addOnQuantity: '1',
     };
     const params = new URL(window.location.href).searchParams;
+    if (document.body.classList.contains('embed-review')) document.documentElement.classList.add('embed-review-root');
     const scenarios = ['ready', 'missing', 'changed', 'partial', 'uncertain', 'success'];
     const scenario = scenarios.includes(params.get('scenario')) ? params.get('scenario') : 'ready';
     const state = { values, scenario, cmsMode: 'permitted', expanded: {}, dirty: {}, conflicts: {}, unbound: {}, lookup: null,
@@ -955,7 +968,7 @@ Thank you.</div>
       state.scenario = event.target.value; state.rateChanged = state.scenario === 'changed'; state.recoveryOpen = false;
       if (state.scenario === 'missing') { if (!state.children.twin.length && !state.dirty['children.twin']) state.children.twin = [{ name: 'Taylor Example', age: '' }]; else if (state.children.twin.length && !state.dirty['children.twin.0.age']) state.children.twin[0].age = ''; state.childEditor = true; refreshRates(); }
       else if (state.children.twin.length === 1 && !state.children.twin[0].age && !state.dirty['children.twin.0.age']) { state.children.twin[0].age = '8'; state.rates = 'ready'; }
-      const url = new URL(window.location.href); url.searchParams.set('scenario', state.scenario); history.replaceState(null, '', url.href);
+      if (!document.body.classList.contains('embed-review')) { const url = new URL(window.location.href); url.searchParams.set('scenario', state.scenario); history.replaceState(null, '', url.href); }
       render(); document.getElementById('pane-scroll').scrollTop = 0;
     });
     document.getElementById('cms-mode').addEventListener('change', (event) => { state.cmsMode = event.target.value; render(); });
@@ -968,6 +981,16 @@ Thank you.</div>
       state.prefillArrived = true; render();
     });
     render();
+    if (document.body.classList.contains('embed-review')) {
+      window.addEventListener('message', (event) => {
+        if (event.source !== window.parent || !event.data) return;
+        const id = event.data.type === 'nava-demo-scenario' ? 'scenario' : event.data.type === 'nava-demo-cms' ? 'cms-mode' : null;
+        if (id) { const control = document.getElementById(id); control.value = event.data.value; control.dispatchEvent(new Event('change', { bubbles:true })); }
+        else if (event.data.type === 'nava-demo-prefill') document.getElementById('prefill').click();
+      });
+      const reportHeight = () => requestAnimationFrame(() => window.parent.postMessage({ type: 'nava-booking-example-height', height: Math.ceil(document.documentElement.scrollHeight) }, '*'));
+      const observer = new ResizeObserver(reportHeight); observer.observe(document.body); reportHeight();
+    }
   </script>
 </body>
 </html>
