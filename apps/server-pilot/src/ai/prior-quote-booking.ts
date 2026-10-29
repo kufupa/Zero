@@ -19,6 +19,7 @@ export type PriorStaffQuoteRequoteGroup = {
   departureDate: string;
   quantity: number;
   adults: number;
+  childrenPerRoom: number;
   childrenAges: number[];
   board: 'room_only' | 'bb' | 'dinner_bb';
   roomCodes?: string[];
@@ -332,6 +333,7 @@ export function priorStaffQuoteRequotePayload(
       departureDate: group.departureDate,
       quantity: group.quantity,
       adults: group.adults,
+      childrenPerRoom: group.children,
       childrenAges: [...group.childAges],
       board: staffBoardFromRevision(group.board),
       ...(group.roomCode ? { roomCodes: [group.roomCode] } : {}),

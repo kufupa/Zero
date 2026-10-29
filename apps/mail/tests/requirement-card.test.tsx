@@ -380,6 +380,19 @@ describe('StayCard rooms', () => {
     fireEvent.change(ages, { target: { value: '4, 7' } });
     expect(edited.onPatch).toHaveBeenLastCalledWith('g1', { childrenAges: [4, 7] });
   });
+
+  it('keeps the existing age-only editor for Da Vinci instead of showing an unenforced count', () => {
+    const onPatch = vi.fn();
+    render(<StayCard stayId="s1" rows={[stay({ childrenPerRoom: null })]} index={0} stayCount={1}
+      propertyCode={HRDAV_PROPERTY_CODE} onPatch={onPatch} />);
+    expect(screen.queryByLabelText('Children ages')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '+ Children / requests' }));
+    expect(screen.queryByLabelText('Children per room')).toBeNull();
+    const ages = screen.getByLabelText('Children ages') as HTMLInputElement;
+    expect(ages.disabled).toBe(false);
+    fireEvent.change(ages, { target: { value: '4, 7' } });
+    expect(onPatch).toHaveBeenLastCalledWith('g1', { childrenAges: [4, 7] });
+  });
 });
 
 describe('StayCard: counts Nava did not find', () => {

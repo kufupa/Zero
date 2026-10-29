@@ -363,7 +363,8 @@ export function RequirementCard({
   useEffect(() => {
     if (!editingAges.current) setAgeInput(agesLabel);
   }, [group.id, agesLabel]);
-  const hasOptionalDetails = group.childrenPerRoom == null || group.childrenPerRoom > 0 ||
+  const hasOptionalDetails = (propertyCode === HRCEN_PROPERTY_CODE &&
+    (group.childrenPerRoom == null || group.childrenPerRoom > 0)) ||
     group.childrenAges.length > 0 || group.specialRequests.length > 0;
   const [showOptionalDetails, setShowOptionalDetails] = useState(hasOptionalDetails);
   const hadOptionalDetails = useRef(hasOptionalDetails);
@@ -546,46 +547,61 @@ export function RequirementCard({
         </button>
         {showOptionalDetails ? (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <Field label="Children per room" htmlFor={`${id}-children-count`}>
-              <select
-                id={`${id}-children-count`}
-                aria-label="Children per room"
-                className={paneFieldClass}
-                value={group.childrenPerRoom ?? 'unknown'}
-                onChange={(event) => {
-                  const count = event.target.value === 'unknown' ? null : Number(event.target.value);
-                  if (count === 0) setAgeInput('');
-                  onPatch?.(group.id, { childrenPerRoom: count, ...(count === 0 ? { childrenAges: [] } : {}) });
-                }}
-              >
-                <option value="unknown">Not confirmed</option>
-                {Array.from({ length: 7 }, (_, count) => (
-                  <option key={count} value={count}>{count}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Children ages" htmlFor={`${id}-children`} hint="Enter one age per child, separated by commas.">
-              <input
-                id={`${id}-children`}
-                aria-label="Children ages"
-                className={paneFieldClass}
-                value={ageInput}
-                disabled={group.childrenPerRoom === 0}
-                aria-invalid={enteredChildAges(ageInput) === null || undefined}
-                onFocus={() => { editingAges.current = true; }}
-                onBlur={() => {
-                  editingAges.current = false;
-                  const ages = enteredChildAges(ageInput);
-                  if (ages) setAgeInput(ages.join(', '));
-                }}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  setAgeInput(value);
-                  onPatch?.(group.id, { childrenAges: enteredChildAges(value) ?? [] });
-                }}
-              />
-              <FieldEvidence quotes={quotesFor('childrenAges', evidence)} />
-            </Field>
+            {propertyCode === HRCEN_PROPERTY_CODE ? (
+              <Field label="Children per room" htmlFor={`${id}-children-count`}>
+                <select
+                  id={`${id}-children-count`}
+                  aria-label="Children per room"
+                  className={paneFieldClass}
+                  value={group.childrenPerRoom ?? 'unknown'}
+                  onChange={(event) => {
+                    const count = event.target.value === 'unknown' ? null : Number(event.target.value);
+                    if (count === 0) setAgeInput('');
+                    onPatch?.(group.id, { childrenPerRoom: count, ...(count === 0 ? { childrenAges: [] } : {}) });
+                  }}
+                >
+                  <option value="unknown">Not confirmed</option>
+                  {Array.from({ length: 7 }, (_, count) => (
+                    <option key={count} value={count}>{count}</option>
+                  ))}
+                </select>
+              </Field>
+            ) : null}
+            {propertyCode === HRCEN_PROPERTY_CODE ? (
+              <Field label="Children ages" htmlFor={`${id}-children`} hint="Enter one age per child, separated by commas.">
+                <input
+                  id={`${id}-children`}
+                  aria-label="Children ages"
+                  className={paneFieldClass}
+                  value={ageInput}
+                  disabled={group.childrenPerRoom === 0}
+                  aria-invalid={enteredChildAges(ageInput) === null || undefined}
+                  onFocus={() => { editingAges.current = true; }}
+                  onBlur={() => {
+                    editingAges.current = false;
+                    const ages = enteredChildAges(ageInput);
+                    if (ages) setAgeInput(ages.join(', '));
+                  }}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setAgeInput(value);
+                    onPatch?.(group.id, { childrenAges: enteredChildAges(value) ?? [] });
+                  }}
+                />
+                <FieldEvidence quotes={quotesFor('childrenAges', evidence)} />
+              </Field>
+            ) : (
+              <Field label="Children ages" htmlFor={`${id}-children`} hint="Separate ages with commas.">
+                <input
+                  id={`${id}-children`}
+                  aria-label="Children ages"
+                  className={paneFieldClass}
+                  value={group.childrenAges.join(', ')}
+                  onChange={(event) => onPatch?.(group.id, { childrenAges: parseChildrenAges(event.target.value) })}
+                />
+                <FieldEvidence quotes={quotesFor('childrenAges', evidence)} />
+              </Field>
+            )}
             <Field label="Special requests" htmlFor={`${id}-requests`}>
               <textarea
                 id={`${id}-requests`}

@@ -244,6 +244,7 @@ describe('analysisMatchesQuotedStay', () => {
 describe('priorStaffQuoteRequotePayload', () => {
   it('returns stored groups and party header from attestation', async () => {
     const revision = await freshRevision();
+    revision.groups[0]!.children = 1;
     revision.groups[0]!.childAges = [7];
     const payload = priorStaffQuoteRequotePayload(
       {
@@ -283,6 +284,7 @@ describe('priorStaffQuoteRequotePayload', () => {
         expect.objectContaining({
           arrivalDate: revision.groups[0]!.arrivalDate,
           quantity: revision.groups[0]!.quantity,
+          childrenPerRoom: 1,
           childrenAges: [7],
           roomCodes: [revision.groups[0]!.roomCode],
         }),
