@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, gte, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
-import { aiWorkflowRun, attachment, mailboxTransport, message } from '../db/schema/mail.js';
+import { aiDraftGeneration, aiWorkflowRun, attachment, mailboxTransport, message } from '../db/schema/mail.js';
 import { workEvent, workItem } from '../db/schema/work.js';
 import { occupiedDates, PRICED_QUOTE_REUSE_MS, quoteDigest, type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { profileFor, stayBookFieldRefusal } from '../../tooling/playwright-quote/property-profile.mjs';
@@ -171,6 +171,20 @@ async function loadContext(db: DB, item: WorkRow, input: ParsedInput, now: Date)
       attestation.messageId !== run.triggerMessageId || !attestation.revisionIds.includes(input.revisionId) ||
       !result.quoteRevisionIds.includes(input.revisionId)) refuse('quote_not_found');
   if (attestation.rowPrices?.length || attestation.dinnerAddOnRequired || result.proposalFacts?.length) refuse('quote_extra_not_supported');
+  if (!run.generationId) refuse('quote_not_found');
+  const [generation] = await db.select().from(aiDraftGeneration).where(and(
+    eq(aiDraftGeneration.id, run.generationId), eq(aiDraftGeneration.transportId, item.transportId),
+    eq(aiDraftGeneration.threadId, item.threadId), eq(aiDraftGeneration.model, 'staff-approved-native'),
+    eq(aiDraftGeneration.requestedByUserId, attestation.userId), eq(aiDraftGeneration.status, 'succeeded'),
+  )).limit(1);
+  if (!generation || !generation.contextMessageIds.includes(run.triggerMessageId)) refuse('quote_not_found');
+  // Any later staff quote in this thread can change this one-room case. A tie is ambiguous, so fail closed.
+  const [newer] = await db.select({ id: aiDraftGeneration.id }).from(aiDraftGeneration).where(and(
+    eq(aiDraftGeneration.transportId, item.transportId), eq(aiDraftGeneration.threadId, item.threadId),
+    eq(aiDraftGeneration.model, 'staff-approved-native'), ne(aiDraftGeneration.id, generation.id),
+    gte(aiDraftGeneration.createdAt, generation.createdAt),
+  )).limit(1);
+  if (newer) refuse('quote_superseded');
   const revisions = result.quoteRevisions.filter((row) => row.id === input.revisionId) as unknown as QuoteRevision[];
   if (revisions.length !== 1 || revisions[0]!.authorizationId !== attestation.authorizationId || revisions[0]!.propertyCode !== propertyCode) {
     refuse('quote_not_found');

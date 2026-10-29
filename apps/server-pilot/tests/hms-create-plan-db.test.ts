@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client.js';
-import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
+import { aiDraftGeneration, aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { workEvent, workItem } from '../src/db/schema/work.js';
 import { consumeHmsCreatePlan, loadHmsCreatePlan, prepareHmsCreatePlan } from '../src/ai/hms-create-plan.js';
 import { approveHmsWrite } from '../src/ai/hms-approval.js';
@@ -25,9 +25,13 @@ async function seed(db: DB) {
     sourceMessageId: 'selected-message', kind: 'booking', state: { selectedCase: 'case-1', stayPreviews: {
       room1: { status: 'previewed', digest: template.previewDigest, expiresAt: PLAN_NOW.getTime() + 600_000 },
     } } }).returning();
+  await db.insert(aiDraftGeneration).values({ id: 'quote-generation', transportId: scope.transportId,
+    threadId: 'thread-1', requestedByUserId: scope.actorUserId, contextMessageIds: ['quote-message'],
+    model: 'staff-approved-native', promptVersion: 'staff-quote-v1', status: 'succeeded',
+    createdAt: new Date(PLAN_NOW.getTime() - 60_000) });
   await db.insert(aiWorkflowRun).values({ id: template.quoteRunId, transportId: scope.transportId, threadId: 'thread-1',
     triggerMessageId: 'quote-message', runKind: 'candidate_draft', idempotencyKey: 'quote-fixture',
-    modelId: 'staff-approved-native', promptVersion: 'staff-quote-v1', state: 'succeeded', metrics: {
+    modelId: 'staff-approved-native', promptVersion: 'staff-quote-v1', state: 'succeeded', generationId: 'quote-generation', metrics: {
       staffQuoteAttestation: { version: 1, kind: 'staff_approved_quote', transportId: scope.transportId,
         userId: scope.actorUserId, threadId: 'thread-1', messageId: 'quote-message', sourceHash: staffQuoteSourceHash(quoteMail!),
         selectionEpoch: 1, inputRevision: 1, inputDigest: 'input-digest', authorizationId: revision.authorizationId,
@@ -124,6 +128,21 @@ describe('durable create-plan approval', () => {
         triggerMessageId: 'selected-message', runKind: 'hms_write', idempotencyKey: 'hms-write:fixture',
         modelId: 'none', promptVersion: 'hms-write/1', state: 'queued', workItemId: itemId });
       await expect(prepareHmsCreatePlan(db, scope, input, PLAN_NOW)).rejects.toMatchObject({ refusal: 'write_in_flight' });
+    });
+  });
+
+  it('refuses a newer staff quote even if it is still running or was requested by someone else', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const { itemId, input } = await seed(db);
+      const envelope = await prepareHmsCreatePlan(db, scope, input, PLAN_NOW);
+      const claimId = await claim(db, itemId);
+      await db.insert(aiDraftGeneration).values({ id: 'newer-quote', transportId: scope.transportId,
+        threadId: 'thread-1', requestedByUserId: 'staff-2', contextMessageIds: ['selected-message'],
+        model: 'staff-approved-native', promptVersion: 'staff-quote-v1', status: 'running', createdAt: PLAN_NOW });
+      await expect(consumeHmsCreatePlan(db, { ...scope, workItemId: itemId, planId: envelope.plan.id,
+        digest: envelope.digest, claimId }, PLAN_NOW)).rejects.toThrow('quote_superseded');
+      const approvals = await db.select().from(workEvent).where(and(eq(workEvent.workItemId, itemId), eq(workEvent.type, 'approval.granted')));
+      expect(approvals).toHaveLength(0);
     });
   });
 });
