@@ -14,7 +14,7 @@ import {
   canBuildStaffQuoteRequest,
   staffQuoteFromTrpc,
 } from '@/lib/quote-workflow/staff-quote-bind';
-import type { QuotePaneConfig, QuoteSession } from '@/lib/quote-workflow/types';
+import { HRCEN_PROPERTY_CODE, type QuotePaneConfig, type QuoteSession } from '@/lib/quote-workflow/types';
 import { trpcClient } from '@/providers/query-provider';
 
 type MutableRef<T> = { current: T };
@@ -35,6 +35,8 @@ type UseStaffQuoteAutostartArgs = {
   staffQuoteAutoSuppressed: MutableRef<Set<string>>;
   staffQuoteAutoAttempted: MutableRef<Set<string>>;
   activePaneConfig: QuotePaneConfig | null;
+  sourcePartyDigest?: string | null;
+  sourceExtractionId?: string | null;
   autoStartStaffQuoteStepRef: MutableRef<() => void>;
   runQuoteStep: QuoteStepRunner;
   autoStaffQuoteSuppressed: (emailKey: string) => boolean;
@@ -55,6 +57,8 @@ export function useStaffQuoteAutostart({
   staffQuoteAutoSuppressed,
   staffQuoteAutoAttempted,
   activePaneConfig,
+  sourcePartyDigest,
+  sourceExtractionId,
   autoStartStaffQuoteStepRef,
   runQuoteStep,
   autoStaffQuoteSuppressed,
@@ -84,6 +88,7 @@ export function useStaffQuoteAutostart({
       !quoteSession.binding ||
       (quoteSession.binding.internetMessageId ?? null) !== (activeEmail.internetMessageId ?? null) ||
       !staffSourceReady(quoteSession) ||
+      (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && (!sourcePartyDigest || !sourceExtractionId)) ||
       partyLookupWaitReason(quoteSession) ||
       staffQuoteAutoSuppressed.current.has(contactMessageKey) ||
       autoStaffQuoteSuppressed(contactMessageKey)
@@ -113,6 +118,8 @@ export function useStaffQuoteAutostart({
         groups: groupsForQuoteStep(quoteSession, candidate),
         header: autoRunHeader(quoteSession, activePaneConfig?.propertyCode),
         propertyCode: activePaneConfig?.propertyCode,
+        sourcePartyDigest,
+        sourceExtractionId,
         stayKey: candidate.shareKey,
       });
     });
@@ -150,5 +157,7 @@ export function useStaffQuoteAutostart({
     requiresRelogin,
     isNonActionableMessage,
     activePaneConfig?.transportId,
+    sourcePartyDigest,
+    sourceExtractionId,
   ]);
 }

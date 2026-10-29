@@ -3,6 +3,7 @@ import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { occupiedDates, type QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
 import { staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
+import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 import { enqueueHmsJob, HMS_JOB_PRIORITY_PREFETCH } from '../src/ai/hms-jobs.js';
 import { ReservationistTaskEvidenceUnavailable } from '../src/ai/reservationist-execution.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
@@ -79,6 +80,7 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
         childrenPerRoom: 0,
         childrenAges: [],
         board: 'room_only',
+        sourcePreference: { roomType: null, board: null },
         roomCodes: ['SKNG'],
       },
     ],
@@ -106,6 +108,8 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
   const [item] = await db.insert(workItem).values({
     transportId, threadId, sourceMessageId: messageId, kind: 'quote', extractionId: extraction!.id,
   }).returning({ id: workItem.id });
+  input.sourcePartyDigest = quoteSourcePartyDigest({ agency: null, endClient: null }, {})!;
+  input.sourceExtractionId = extraction!.id;
   return { mail, input, internetMessageId, storedMessageId, workItemId: item!.id };
 }
 
@@ -141,6 +145,7 @@ async function nativeFixture(
             rate: { code: 'BARRO', label: 'Room Only' },
             board: 'Room Only R',
             appliedContext: {},
+            rateScope: 'public',
             eligibility: 'verified',
             availability: 'available',
             matchStatus: 'match',

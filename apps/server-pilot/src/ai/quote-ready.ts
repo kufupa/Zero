@@ -5,6 +5,7 @@ import { applyPartyBindRule, buildPartyMatchCandidates, type PartyMatchRow } fro
 import { matchRoomType } from './room-types.js';
 import { rankQuoteSalesStrategies, type StaffRateRankContext } from './staff-rate-pick-history.js';
 import { staffQuoteInput, type StaffQuoteInput, type StaffQuoteParties } from './staff-quote-workflow.js';
+import { quoteSourcePartyDigest } from './quote-source-party.js';
 
 export type PreparedStaffQuoteStay = {
   stayId: string;
@@ -260,6 +261,7 @@ export function buildPreparedStaffQuotePlan(input: {
   messageId: string;
   sourceHash: string;
   payload: unknown;
+  extractionId?: string;
   parties?: StaffQuoteParties;
   now?: Date;
   propertyCode?: string;
@@ -269,6 +271,7 @@ export function buildPreparedStaffQuotePlan(input: {
     return { inputs: [], stays: [], reason: 'invalid_extraction', partyBound: false };
   }
   const payload = parsedPayload.data;
+  const sourcePartyDigest = quoteSourcePartyDigest(payload, {});
   const today = (input.now ?? new Date()).toISOString().slice(0, 10);
   const stays: PreparedStaffQuoteStay[] = payload.stays.map((stay) => {
     const groupResult = groupForStay(stay, today, payload.missing, input.propertyCode);
@@ -281,6 +284,8 @@ export function buildPreparedStaffQuotePlan(input: {
       groups: groupResult.groups,
       company: payload.endClient ?? '',
       agency: payload.agency ?? '',
+      ...((!input.propertyCode || input.propertyCode === 'HRCEN') && sourcePartyDigest ? { sourcePartyDigest } : {}),
+      ...((!input.propertyCode || input.propertyCode === 'HRCEN') && input.extractionId ? { sourceExtractionId: input.extractionId } : {}),
       attention: payload.contact.name ?? '',
       clientEmail: payload.contact.email ?? '',
       clientTelephone: payload.contact.phone ?? '',
@@ -315,6 +320,7 @@ function priceShape(input: StaffQuoteInput, includeSourcePreference: boolean): u
       rateCode: group.rateCode ?? null,
     })),
     salesStrategy: input.salesStrategy,
+    ...(includeSourcePreference ? { sourcePartyDigest: input.sourcePartyDigest ?? null } : {}),
     parties: input.parties ?? null,
     rowPrices: input.rowPrices ?? null,
     dinnerAllowanceMinor: input.dinnerAllowanceMinor ?? null,

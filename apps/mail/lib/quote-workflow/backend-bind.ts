@@ -181,6 +181,8 @@ export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
 /** The contact block's fields. Each is one `contact.<field>` event path. `company` is the sender's organisation. */
 export type ContactField = 'name' | 'company' | 'endClient' | 'email' | 'phone';
 export type StoredContact = Record<ContactField, string | null>;
+export type SourcePartyField = ['missing'] | ['cleared'] | ['value', string];
+export type SourcePartyFields = { company: SourcePartyField; endClient: SourcePartyField };
 /** One stay's last HMS commit, as workItems.getByMessage returns it. */
 export type StoredStayCommit = {
   confirmationNumber: string | null;
@@ -215,6 +217,9 @@ export type StoredWork =
       refs: Record<string, { stayId: string; rowId: string | null }>;
       analysis: ReadyAnalyse;
       contact: StoredContact;
+      /** Fingerprint of the saved agency and end-client source, from this read. */
+      sourcePartyDigest?: string | null;
+      sourcePartyFields?: SourcePartyFields | null;
       /** Last HMS commit per stay id, including durable before/saved shots. Absent on older reads. */
       stays?: Record<string, StoredStayCommit>;
       /** The read's source language (ISO 639-1), or null when unclear. */

@@ -410,6 +410,7 @@ export function QuoteWorkflowPanel({
   findParty,
   partyJobTransport,
   onPartyLookupPending,
+  onPartyReviewed,
   onSelectStayKey,
   onSelectQuoteStrategy,
   quoteStrategyRows,
@@ -491,6 +492,7 @@ export function QuoteWorkflowPanel({
   findParty?: PartyFinder | null;
   /** Tells the pane whether a company or agency search still decides its pick. A rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
+  onPartyReviewed?: (kind: 'company' | 'agency') => void;
   onSelectStayKey?: (stayKey: string) => void;
   /** Display-only outcomes keyed by stay and registry strategy code; bind/session owns their lifecycle. */
   quoteStrategyRows?: Record<string, Partial<Record<QuoteSalesStrategyCode, QuoteStrategyRow>>>;
@@ -1062,6 +1064,7 @@ export function QuoteWorkflowPanel({
           contactEditorKey={contactEditorKey}
           onContactEdit={onContactEdit}
           onPartyLookupPending={onPartyLookupPending}
+          onPartyReviewed={onPartyReviewed}
           scrollToStep={scrollToStep}
           workItemPane={workItemPane}
         />

@@ -6,7 +6,7 @@ import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-b
 import { recalledGuestName, rememberGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { paneEditKey } from '@/lib/quote-workflow/pane-edits';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
-import type { QuoteSession, StaffQuoteHeader } from '@/lib/quote-workflow/types';
+import type { QuoteSession, StaffQuoteHeader, StaffQuoteParty } from '@/lib/quote-workflow/types';
 import { sectionHasStaffEdit, type WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 import { PartyPicker } from './party-picker';
 
@@ -120,6 +120,9 @@ function StaffPartyFields({
   threadId,
   sourceMessageId,
   onPartyLookupPending,
+  sourcePartyReview = [],
+  sourcePartyAutoPickDisabled = false,
+  onPartyReviewed,
 }: {
   header: StaffQuoteHeader;
   onPatch?: (header: Partial<StaffQuoteHeader>) => void;
@@ -135,6 +138,9 @@ function StaffPartyFields({
   sourceMessageId?: string | null;
   /** Tells the pane whether a field's automatic HMS search still decides its pick, so a rates run waits for it. */
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
+  sourcePartyReview?: StaffQuoteParty['kind'][];
+  sourcePartyAutoPickDisabled?: boolean;
+  onPartyReviewed?: (kind: StaffQuoteParty['kind']) => void;
 }) {
   const partyPicker = (kind: 'company' | 'agency') => {
     const label = kind === 'agency' ? 'Agency' : 'Company';
@@ -160,9 +166,18 @@ function StaffPartyFields({
         </Field>
       );
     }
+    const pick = (party: StaffQuoteParty, explicit: boolean) => {
+      onFieldEdit?.(kind);
+      onPatch?.({
+        parties: { ...header.parties, [party.kind]: party },
+        ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }),
+      });
+      if (explicit) onPartyReviewed?.(party.kind);
+    };
     return (
       <PartyPicker
         autoLookup
+        allowAutoPick={!sourcePartyAutoPickDisabled}
         kind={kind}
         name={value}
         parties={header.parties ?? {}}
@@ -174,24 +189,17 @@ function StaffPartyFields({
         suggestions={partySuggestions}
         indexSearch={partyIndex}
         onLookupPending={(pending) => onPartyLookupPending?.(kind, pending)}
-        onPick={(party) => {
-          onFieldEdit?.(kind);
-          return onPatch?.({
-            parties:
-              party.kind === 'company'
-                ? { ...header.parties, company: party }
-                : { ...header.parties, agency: party },
-            ...(party.kind === 'company' ? { company: party.name } : { agency: party.name }),
-          });
-        }}
+        onPick={(party) => pick(party, true)}
+        onAutoPick={(party) => pick(party, false)}
         onClear={(cleared) => {
           onFieldEdit?.(cleared);
-          return onPatch?.({
+          onPatch?.({
             parties:
               cleared === 'company'
                 ? { ...header.parties, company: undefined }
                 : { ...header.parties, agency: undefined },
           });
+          onPartyReviewed?.(cleared);
         }}
         onSearchName={(searched, searchKind) => {
           onFieldEdit?.(searchKind);
@@ -203,11 +211,23 @@ function StaffPartyFields({
       />
     );
   };
+  const review = (kind: 'agency' | 'company') => sourcePartyReview.includes(kind) ? (
+    <div className="text-[12px] text-[#92400e]">
+      Select this {kind} in HMS again, or{' '}
+      <button type="button" className="underline" onClick={() => {
+        onFieldEdit?.(kind);
+        onPatch?.({ [kind]: '', parties: { ...header.parties, [kind]: undefined } });
+        onPartyReviewed?.(kind);
+      }}>{`use no ${kind}`}</button>.
+    </div>
+  ) : null;
   return (
     <div className="flex flex-col gap-2.5">
       {partyPicker('agency')}
+      {review('agency')}
       <div aria-hidden="true" className="border-t border-[#e2e8f0]" />
       {partyPicker('company')}
+      {review('company')}
     </div>
   );
 }
@@ -226,6 +246,7 @@ export function QuotePeopleStep({
   contactEditorKey,
   onContactEdit,
   onPartyLookupPending,
+  onPartyReviewed,
   scrollToStep,
   workItemPane = null,
 }: {
@@ -242,6 +263,7 @@ export function QuotePeopleStep({
   contactEditorKey?: string;
   onContactEdit?: (field: ContactField, value: string | null) => void;
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
+  onPartyReviewed?: (kind: StaffQuoteParty['kind']) => void;
   scrollToStep: (id: string) => void;
   workItemPane?: WorkItemPaneControls | null;
 }) {
@@ -282,6 +304,9 @@ export function QuotePeopleStep({
         threadId={session.staffSource?.threadId ?? null}
         sourceMessageId={session.staffSource?.messageId ?? null}
         onPartyLookupPending={onPartyLookupPending}
+        sourcePartyReview={session.sourcePartyReview}
+        sourcePartyAutoPickDisabled={session.sourcePartyAutoPickDisabled}
+        onPartyReviewed={onPartyReviewed}
       />
       <SecondaryButton className="w-full" onClick={() => scrollToStep('quote-stay')}>
         Continue to Stay

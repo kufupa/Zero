@@ -455,6 +455,7 @@ export function PartyPicker({
   parties,
   find,
   onPick,
+  onAutoPick,
   onClear,
   suggestions = [],
   onSearchName,
@@ -464,6 +465,7 @@ export function PartyPicker({
   sourceMessageId,
   propertyCode,
   autoLookup = false,
+  allowAutoPick = true,
   jobReadBackStatusOwner = true,
   onLookupPending,
 }: {
@@ -475,6 +477,8 @@ export function PartyPicker({
   parties: StaffQuoteParties;
   find: PartyFinder;
   onPick: (party: StaffQuoteParty) => void;
+  /** Kept separate so a stale automatic suggestion cannot satisfy a staff review. */
+  onAutoPick?: (party: StaffQuoteParty) => void;
   onClear: (kind: StaffQuoteParty['kind']) => void;
   suggestions?: PartySuggestion[];
   /** Puts an unverified suggestion's name in the matching field, so staff can search it in HMS. */
@@ -491,6 +495,7 @@ export function PartyPicker({
   propertyCode?: string | null;
   /** Search HMS by itself for this field's name and pick the best match. Needs a kind. Off, the field keeps Find in HMS. */
   autoLookup?: boolean;
+  allowAutoPick?: boolean;
   /** Which adjacent field owns the shared read-back loading line. A standalone picker owns it by default. */
   jobReadBackStatusOwner?: boolean;
   /** Told whether this field's automatic search still has to decide its pick. The pane holds a rates run until it does. */
@@ -761,7 +766,7 @@ export function PartyPicker({
     : undefined;
 
   useEffect(() => {
-    if (pickedHere || v2BoundForField || !onSearchName || !topSuggestion) return;
+    if (!allowAutoPick || pickedHere || v2BoundForField || !onSearchName || !topSuggestion) return;
     const seedKey = `${topSuggestion.kind}:${topSuggestion.name}`;
     if (seededSuggestion.current === seedKey) return;
     if (query && searchKey(query) === searchKey(topSuggestion.name)) {
@@ -771,7 +776,7 @@ export function PartyPicker({
     if (query) return;
     seededSuggestion.current = seedKey;
     onSearchName(topSuggestion.name, topSuggestion.kind);
-  }, [onSearchName, pickedHere, query, topSuggestion, v2BoundForField]);
+  }, [allowAutoPick, onSearchName, pickedHere, query, topSuggestion, v2BoundForField]);
 
   const picked: StaffQuoteParty[] = [];
   for (const party of [parties.company, parties.agency])
@@ -846,7 +851,7 @@ export function PartyPicker({
   }, [fieldPresetKey]);
 
   useEffect(() => {
-    if (pickedHere || !topSuggestion || !suggestionMayBind(topSuggestion)) return;
+    if (!allowAutoPick || pickedHere || !topSuggestion || !suggestionMayBind(topSuggestion)) return;
     const candidate = autoBest ?? prefetchedBest;
     if (
       !candidate ||
@@ -857,8 +862,8 @@ export function PartyPicker({
     const key = `${candidate.kind}:${candidate.nativeId}`;
     if (appliedSuggestionPick.current.has(key)) return;
     appliedSuggestionPick.current.add(key);
-    onPick({ kind: candidate.kind, nativeId: candidate.nativeId, name: candidate.name });
-  }, [autoBest, onPick, pickedHere, prefetchedBest, query, topSuggestion]);
+    (onAutoPick ?? onPick)({ kind: candidate.kind, nativeId: candidate.nativeId, name: candidate.name });
+  }, [allowAutoPick, autoBest, onAutoPick, onPick, pickedHere, prefetchedBest, query, topSuggestion]);
   const jobFailureOutcome = jobReply?.outcome ?? 'execution_failure';
   const partySearchTimedOut = currentJobView?.failureClass === 'PARTY_SEARCH_TIMEOUT';
   const timeoutMessage = 'Party search timed out after four minutes. You can retry.';
