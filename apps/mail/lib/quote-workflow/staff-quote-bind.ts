@@ -6,6 +6,7 @@ import type {
   UsePriorQuoteForBookingReady,
 } from './booking-draft-bind';
 import { HMS_JOB_MAX_MISSES, HMS_JOB_POLL_MS } from './amend-find';
+import { childOccupancyReady } from './child-occupancy';
 import { getMailCacheScope, inMailbox } from '../mail/mail-cache-scope';
 import type {
   QueueStatus,
@@ -519,6 +520,9 @@ export function staffQuoteGroupsFromStay(
     }
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
+    }
+    if (propertyCode !== HRDAV_PROPERTY_CODE && !childOccupancyReady(group)) {
+      return { error: 'Confirm the number of children per room and enter an age for each child.' };
     }
     // Empty preference (no staff room pick) omits roomCodes so HMS returns every type for the BAR grid.
     // An explicit code list or a known preference still binds; garbage codes still refuse below.

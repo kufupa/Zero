@@ -39,7 +39,7 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
-import type { QuoteAnalysis, QuotePaneConfig, QuoteSessionAction } from '@/lib/quote-workflow/types';
+import { HRCEN_PROPERTY_CODE, type QuoteAnalysis, type QuotePaneConfig, type QuoteSessionAction } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
@@ -1582,6 +1582,13 @@ export function NavaPane({
     return <OutlookPaneSignIn />;
   }
 
+  const saveQuoteEdits = async () => {
+    if (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) {
+      return activePaneConfig?.propertyCode !== HRCEN_PROPERTY_CODE;
+    }
+    return storedWork.flushEdits();
+  };
+
   requoteSameStayRef.current = (row) => {
     const session = quoteSessionRef.current;
     // Same as Get rates: a party lookup that still decides the pick would reset this run.
@@ -1605,7 +1612,7 @@ export function NavaPane({
       query: staff.workstation.getPriorStaffQuoteRequote?.query,
       threadId: source.threadId,
       row,
-    }).then((loaded) => {
+    }).then(async (loaded) => {
       if (loaded.status !== 'ok') {
         toast.warning(loaded.reason);
         return;
@@ -1618,6 +1625,14 @@ export function NavaPane({
       });
       if (!groups.length) {
         toast.warning('The stays changed since this quote. Run the search for that stay again.');
+        return;
+      }
+      if (!(await saveQuoteEdits())) {
+        toast.warning("Nava couldn't save your changes. Retry saving before getting rates.");
+        return;
+      }
+      if (!quoteRunIsCurrent(quoteSessionRef.current, { selectionEpoch, inputRevision, stayRevision })) {
+        toast.warning('Details changed while saving. Search availability again.');
         return;
       }
       // The prior quote loaded after the click, so a lookup may have started since. The run must not start under it.
@@ -1788,76 +1803,49 @@ export function NavaPane({
     // Auto-start and read-back use the session strategy, as the background prepare does (Government only when every
     // row is Dinner B&B), so a prepared run's price shape matches.
     const runHeader = autoStart || readBack ? autoRunHeader(quoteSession) : quoteSession.staffHeader;
-    // Get rates is where she proceeds with the read as shown, so unedited AI fields are accepted (v5 B2).
-    if (!autoStart && !readBack && !storedOverridden) storedWork.acceptUnedited(quoteSession.groups);
-    const run = readBack
-      ? bindReadBackStaffQuote({
-          query: observedStaffQuoteJob,
-          source,
-          selectionEpoch,
-          inputRevision,
-          groups: stayGroups,
-          header: runHeader,
-          propertyCode: activePaneConfig?.propertyCode,
-          stayKey: step.shareKey,
-        })
-      : autoStart
-        ? bindAutoStartStaffQuote({
-          queue: staff.workstation.queueStaffQuote?.mutate,
-          staffQuoteJob: observedStaffQuoteJob,
-          source,
-          selectionEpoch,
-          inputRevision,
-          groups: stayGroups,
-          header: runHeader,
-          propertyCode: activePaneConfig?.propertyCode,
-          stayKey: step.shareKey,
-        })
-        : bindExecuteStaffQuote({
-          mutate: staff.workstation.executeStaffQuote?.mutate,
-          queue: staff.workstation.queueStaffQuote?.mutate,
-          staffQuoteJob: observedStaffQuoteJob,
-          source,
-          selectionEpoch,
-          inputRevision,
-          groups: stayGroups,
-          header: runHeader,
-          propertyCode: activePaneConfig?.propertyCode,
-          stayKey: step.shareKey,
-        });
     const noticeEmail = {
       emailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
       emailSubject: activeEmail?.subject?.trim() || null,
     };
     const staffQuoteStep = step;
     const staffQuoteSource = source;
+    const startQuote = async (retrying = false): Promise<BoundExecuteStaffQuote | null> => {
+      if (!(await saveQuoteEdits())) {
+        return { status: 'unavailable', reason: "Nava couldn't save your changes. Retry saving before getting rates." };
+      }
+      const current = quoteSessionRef.current;
+      if (!quoteStayRunIsCurrent(current, {
+        selectionEpoch, inputRevision, stepId: step.id, stayKey: step.shareKey ?? '', groups: stayGroups,
+      })) return { status: 'unavailable', reason: 'Details changed while saving. Search availability again.' };
+      const currentStep = current.steps.find((item) => item.id === step.id);
+      const waitingNow = currentStep && quoteRunBlockReason(current, currentStep);
+      if (waitingNow) return { status: 'unavailable', reason: waitingNow };
+      if (!retrying && !autoStart && !readBack && !storedOverridden) storedWork.acceptUnedited(current.groups);
+      const lostRunId = retrying ? pollLostRunId : null;
+      if (lostRunId && originalStaffQuoteJob) {
+        return bindReadBackStaffQuote({
+          query: (input, options) =>
+            originalStaffQuoteJob('input' in input ? { runId: lostRunId, messageId: source.messageId } : input, options),
+          source, selectionEpoch, inputRevision, groups: stayGroups, header: runHeader,
+          propertyCode: activePaneConfig?.propertyCode, stayKey: step.shareKey,
+        });
+      }
+      if (readBack && !retrying) {
+        return bindReadBackStaffQuote({ query: observedStaffQuoteJob, source, selectionEpoch, inputRevision,
+          groups: stayGroups, header: runHeader, propertyCode: activePaneConfig?.propertyCode, stayKey: step.shareKey });
+      }
+      if (autoStart && !retrying) {
+        return bindAutoStartStaffQuote({ queue: staff.workstation.queueStaffQuote?.mutate, staffQuoteJob: observedStaffQuoteJob,
+          source, selectionEpoch, inputRevision, groups: stayGroups, header: runHeader,
+          propertyCode: activePaneConfig?.propertyCode, stayKey: step.shareKey });
+      }
+      return bindExecuteStaffQuote({ mutate: staff.workstation.executeStaffQuote?.mutate,
+        queue: staff.workstation.queueStaffQuote?.mutate, staffQuoteJob: observedStaffQuoteJob,
+        source, selectionEpoch, inputRevision, groups: stayGroups, header: runHeader,
+        propertyCode: activePaneConfig?.propertyCode, stayKey: step.shareKey });
+    };
     const retry = () => {
-      const lostRunId = pollLostRunId;
-      const retryRun = lostRunId && originalStaffQuoteJob
-        ? bindReadBackStaffQuote({
-            query: (input, options) =>
-              originalStaffQuoteJob('input' in input ? { runId: lostRunId, messageId: source.messageId } : input, options),
-            source,
-            selectionEpoch,
-            inputRevision,
-            groups: stayGroups,
-            header: runHeader,
-            propertyCode: activePaneConfig?.propertyCode,
-            stayKey: step.shareKey,
-          })
-        : bindExecuteStaffQuote({
-            mutate: staff.workstation.executeStaffQuote?.mutate,
-            queue: staff.workstation.queueStaffQuote?.mutate,
-            staffQuoteJob: observedStaffQuoteJob,
-            source,
-            selectionEpoch,
-            inputRevision,
-            groups: stayGroups,
-            header: runHeader,
-            propertyCode: activePaneConfig?.propertyCode,
-            stayKey: step.shareKey,
-          });
-      void runNoticed(retryRun).then(applyStaffQuoteResult);
+      void runNoticed(startQuote(true)).then(applyStaffQuoteResult);
     };
     const runNoticed = (pendingRun: Promise<BoundExecuteStaffQuote | null>) =>
       trackMainStaffQuoteRun(pendingRun, retry, noticeEmail).then((remote) => {
@@ -1943,7 +1931,7 @@ export function NavaPane({
         });
       }
     }
-    void runNoticed(run).then(applyStaffQuoteResult);
+    void runNoticed(startQuote()).then(applyStaffQuoteResult);
   };
   runQuoteStepRef.current = runQuoteStep;
 

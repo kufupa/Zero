@@ -4,6 +4,7 @@
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { StayCard } from '@/components/quote-workflow/requirement-card';
 import { DRAFT_GROUP_ID, initialQuoteSession, reduceQuoteSession } from '@/lib/quote-workflow/session';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
 import { setMailCacheScope, transportForCall } from '@/lib/mail/mail-cache-scope';
@@ -103,6 +104,18 @@ describe('storedDecision', () => {
 });
 
 describe('fieldEventsBetween', () => {
+  it('saves a confirmed zero with empty ages for a dates-only stay', () => {
+    const before = row('s_1', 's_1', { childrenPerRoom: null });
+    const onPatch = vi.fn();
+    render(<StayCard stayId="s_1" rows={[before]} index={0} stayCount={1} onPatch={onPatch} />);
+    fireEvent.change(screen.getByLabelText('Children per room'), { target: { value: '0' } });
+    const after = { ...before, ...onPatch.mock.calls[0]![1] };
+    expect(fieldEventsBetween({ s_1: { stayId: 's_1', rowId: null } }, [before], [after])).toEqual([
+      { path: 'stays[s_1].rows[s_1_row].childrenPerRoom', value: 0 },
+      { path: 'stays[s_1].rows[s_1_row].childAges', value: [] },
+    ]);
+  });
+
   it('persists the copied row occupancy independently and saves later corrections on that row', () => {
     const original = { ...G1, childrenPerRoom: 1, childrenAges: [8] };
     const session = { ...initialQuoteSession(), groups: [original] };
