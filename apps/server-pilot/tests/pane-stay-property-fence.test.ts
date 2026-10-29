@@ -59,6 +59,8 @@ describe.skipIf(!TEST_DB_AVAILABLE)('property-wide pane save fence', () => {
     { paneStaySaveClaims: { s_1: 'stranded-claim' } },
     { stays: null },
     { stays: { s_1: { status: 'booked', confirmationNumber: '' } } },
+    { stays: { s_1: { status: 'booked', confirmationNumber: ' \t\n ' } } },
+    { stays: { s_1: { status: 'booked', confirmationNumber: 'not-a-confirmation' } } },
     { stays: { 'bad id': booked } },
   ])('holds a property for unresolved or malformed legacy state', async (state) => {
     await insert(0, 'transport-centurion', state);

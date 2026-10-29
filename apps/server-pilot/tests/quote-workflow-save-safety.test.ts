@@ -158,6 +158,15 @@ describe('quoteWorkflow commit safety with fake storage and HMS', () => {
     },
   );
 
+  it('holds another room when a booked receipt has no usable confirmation', async () => {
+    state = { stays: { [parentId]: { ...booked, confirmationNumber: 'not-a-confirmation' } } };
+    const { spawn, read } = fakeRunner();
+    expect(await caller().quoteWorkflow.commitStay({ ...child, previewDigest: 'c'.repeat(64) }))
+      .toEqual({ status: 'refused', reason: 'pane_save_dependency_unconfirmed' });
+    expect(read).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
   it('keeps an unknown result and its known number across a new caller and refuses a child', async () => {
     const { spawn } = fakeRunner();
     spawn.mockImplementation(async (request) => request.paneCommit

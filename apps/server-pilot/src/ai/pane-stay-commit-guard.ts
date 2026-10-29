@@ -43,7 +43,7 @@ export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<Cl
     }
     if (current?.confirmationNumber) return { status: 'refused', reason: PANE_STAY_ALREADY_BOOKED };
     if (Object.keys(claims).length || Object.values(commits).some((record) =>
-      record.status === 'unknown' || !record.confirmationNumber)) {
+      record.status === 'unknown' || !/^\d{6,10}-\d{1,2}$/.test(record.confirmationNumber ?? ''))) {
       return { status: 'refused', reason: 'pane_save_dependency_unconfirmed' };
     }
 
@@ -56,7 +56,7 @@ export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<Cl
           THEN ${workItem.state}->'stays' ELSE '{}'::jsonb END) AS s
           WHERE s.key !~ '^[A-Za-z0-9_-]{1,40}$' OR s.value->>'status' IS DISTINCT FROM 'booked'
           OR jsonb_typeof(s.value->'confirmationNumber') IS DISTINCT FROM 'string'
-          OR btrim(s.value->>'confirmationNumber') = '')
+          OR btrim(s.value->>'confirmationNumber') !~ '^[0-9]{6,10}-[0-9]{1,2}$')
       )`,
     )).limit(1);
     if (unresolved) return { status: 'refused', reason: 'pane_save_dependency_unconfirmed' };
