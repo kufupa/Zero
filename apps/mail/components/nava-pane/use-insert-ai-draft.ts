@@ -418,7 +418,7 @@ export function useInsertAiDraft({
           };
         } else attempt.quotePreflight = null;
       }
-      const recheckQuote = async () => {
+      const recheckQuote = async (requireSelectedEmail: boolean) => {
         const proof = attempt.quotePreflight;
         if (!proof) return;
         const preflight = trpcClient.workstation?.quoteDraftPreflight?.mutate;
@@ -429,7 +429,7 @@ export function useInsertAiDraft({
         } catch {
           throw new QuoteDraftPreflightError('The quote changed or could not be verified. Refresh the email and prepare it again.');
         }
-        if (!sameStaffScope() || contextRevision.current.selectionEpoch !== startedSelectionEpoch)
+        if (!sameStaffScope() || (requireSelectedEmail && contextRevision.current.selectionEpoch !== startedSelectionEpoch))
           throw new QuoteDraftPreflightError('The selected email changed. Select it again.');
       };
       if (!attempt.draftLocation) {
@@ -459,7 +459,7 @@ export function useInsertAiDraft({
         replyAll: false,
         openInComposer: false,
       };
-      if (!attempt.draftLocation) await recheckQuote();
+      if (!attempt.draftLocation) await recheckQuote(true);
       attempt.replyPayload = replyPayload;
       if (!attempt.draftLocation) {
         replyMarkerBelongsToCurrentScope.current = true;
@@ -494,7 +494,7 @@ export function useInsertAiDraft({
       const alreadyAdded = attempt.attachmentsAdded ?? 0;
       for (const [index, payload] of attachmentPayloads.entries()) {
         if (index < alreadyAdded) continue;
-        await recheckQuote();
+        await recheckQuote(false);
         await sendCommand('ADD_ATTACHMENT_TO_DRAFT', payload);
         attempt.attachmentsAdded = index + 1;
         if (!sameStaffScope()) return;
