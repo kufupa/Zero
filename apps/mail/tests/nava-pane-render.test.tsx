@@ -87,6 +87,7 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     queueStaffQuoteMutation: vi.fn().mockResolvedValue({ runId: null }),
     staffQuoteSources: {} as Record<string, { messageId: string; threadId: string; sourceHash: string }>,
     quotePaneConfig: null as null | Record<string, unknown>,
+    quotePaneConfigGate: null as null | Promise<void>,
     findPartyMutation: vi.fn().mockResolvedValue({
       outcome: 'no_match',
       results: [],
@@ -295,7 +296,10 @@ vi.mock('../providers/query-provider', () => ({
     },
     quoteWorkflow: {
       rateCatalogue: {
-        query: async () => bridgeMockState.quotePaneConfig,
+        query: async () => {
+          if (bridgeMockState.quotePaneConfigGate) await bridgeMockState.quotePaneConfigGate;
+          return bridgeMockState.quotePaneConfig;
+        },
       },
       voucherFind: { query: voucherFindQuery },
       analyseSelection: {
@@ -452,6 +456,7 @@ describe('NavaPane', () => {
     bridgeMockState.queueStaffQuoteMutation.mockReset().mockResolvedValue({ runId: null });
     bridgeMockState.staffQuoteSources = {};
     bridgeMockState.quotePaneConfig = null;
+    bridgeMockState.quotePaneConfigGate = null;
     bridgeMockState.recordEvent.mockReset().mockImplementation(async (value: unknown) => {
       const event = value as { value?: unknown; expected?: { extractionId: string; seq: number } };
       return { aiValue: null, value: event.value ?? null, ...(event.expected ? { cursor: {
@@ -744,6 +749,7 @@ describe('NavaPane', () => {
     sessionStorage.clear();
     bridgeMockState.analysisOverride = null;
     bridgeMockState.quotePaneConfig = null;
+    bridgeMockState.quotePaneConfigGate = null;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
@@ -780,6 +786,7 @@ describe('NavaPane', () => {
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     bridgeMockState.analysisOverride = null;
     bridgeMockState.quotePaneConfig = null;
+    bridgeMockState.quotePaneConfigGate = null;
     bridgeMockState.analyseCalls = 0;
     bridgeMockState.analyseFails = false;
     bridgeMockState.storedWork = null;
@@ -2432,6 +2439,76 @@ describe('NavaPane', () => {
     expect((screen.getAllByLabelText(/Arrival/i)[0] as HTMLInputElement).value).toBe('2026-11-04');
     expect((screen.getAllByLabelText(/Departure/i)[0] as HTMLInputElement).value).toBe('2026-11-05');
   });
+
+  it.each([
+    { surface: 'Outlook', preview: false },
+    { surface: 'webmail', preview: true },
+  ])('holds the $surface contact editor until the Centurion source is verified', async ({ preview }) => {
+    configureCenturionPane();
+    bridgeMockState.transportId = 'transport-centurion';
+    bridgeMockState.transportEmail = 'centurion@example.invalid';
+    bridgeMockState.quotePaneConfig = { ...bridgeMockState.quotePaneConfig!, transportId: 'transport-centurion' };
+    bridgeMockState.storedWork = {
+      ...STORED_READY, sourceMessageId: '001',
+      contact: { name: 'Saved Contact', company: null, endClient: null, email: null, phone: null },
+    };
+    bridgeMockState.staffQuoteSources[fakeBridge.activeEmail!.internetMessageId!] = {
+      messageId: '001', threadId: 'thread-1', sourceHash: 'ab'.repeat(32),
+    };
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-centurion' });
+    let releaseConfig = () => {};
+    let releaseLookup = () => {};
+    bridgeMockState.quotePaneConfigGate = new Promise<void>((resolve) => { releaseConfig = resolve; });
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    const { container } = render(<NavaPane bridge={fakeBridge} preview={preview} />);
+    const edit = () => {
+      const button = container.querySelector<HTMLButtonElement>('#quote-contact button[aria-expanded]');
+      if (!button) throw new Error('Contact edit button is not mounted');
+      return button;
+    };
+
+    // The fallback contact may be shown immediately, before either the property or its saved case is known.
+    await waitFor(() => expect(edit().disabled).toBe(true));
+    fireEvent.click(edit());
+    expect(screen.queryByLabelText('Name')).toBeNull();
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+
+    await act(async () => releaseConfig());
+    expect(edit().disabled).toBe(true);
+    await act(async () => releaseLookup());
+    await storedReadLands();
+    await waitFor(() => expect(edit().disabled).toBe(false));
+    fireEvent.click(edit());
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Saved Contact');
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Corrected Contact' } });
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(expect.objectContaining({
+      workItemId: 'wi-1', fieldPath: 'contact.name', value: 'Corrected Contact',
+    })), { timeout: 4000 });
+  }, 15000);
+
+  it('allows HRDAV contact edits while its stored read loads after property configuration', async () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: HRDAV_PROPERTY_CODE, roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+    bridgeMockState.storedWork = STORED_READY;
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
+    let releaseConfig = () => {};
+    let releaseLookup = () => {};
+    bridgeMockState.quotePaneConfigGate = new Promise<void>((resolve) => { releaseConfig = resolve; });
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { releaseLookup = resolve; });
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    const edit = () => {
+      const button = container.querySelector<HTMLButtonElement>('#quote-contact button[aria-expanded]');
+      if (!button) throw new Error('Contact edit button is not mounted');
+      return button;
+    };
+    await waitFor(() => expect(edit().disabled).toBe(true));
+    await act(async () => releaseConfig());
+    await waitFor(() => expect(edit().disabled).toBe(false));
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    await act(async () => releaseLookup());
+  }, 15000);
 
   it('stored: a contact name correction keeps other fields from the read that lands later', async () => {
     let releaseLookup = () => {};
