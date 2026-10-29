@@ -366,6 +366,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           revisionRef: quote.revisionRef, company: '', agency: '' });
         await setProposal(legacyProposal);
         await expect(poll()).resolves.toMatchObject({ result: { pdfBase64: pdf.pdfBase64 } });
+        const preflight = () => api.workstation.quoteDraftPreflight({ messageId: request.mail.id,
+          threadId: request.mail.threadId, pdfHashes: [pdf.pdfHash] });
+        await expect(preflight()).resolves.toEqual({ ready: true });
 
         await setProposal({ ...legacyProposal, workItemId: randomUUID() });
         await expect(poll()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
@@ -377,6 +380,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await db.insert(message).values({ id: otherMessageId, transportId: request.mail.transportId,
           threadId: request.mail.threadId, direction: 'inbound', fromAddress: 'other@example.invalid' });
         await db.update(workItem).set({ sourceMessageId: otherMessageId }).where(eq(workItem.id, request.workItemId));
+        await expect(poll()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        await expect(preflight()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        await expect(api.workstation.qualifiedQuoteProposalPdf({ ...proposal, workItemId: request.workItemId }))
+          .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        await setProposal(savedProposal);
         await expect(poll()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
       });
     });
