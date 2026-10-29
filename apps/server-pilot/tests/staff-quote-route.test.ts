@@ -1,10 +1,12 @@
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
-import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
+import { aiDraftGeneration, aiWorkflowRun, mailDraft, mailThread, message, outboundSendQueue } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { occupiedDates, type QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
 import { staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { ensureWorkItemForMessage } from '../src/ai/work-items.js';
 import { enqueueHmsJob, HMS_JOB_PRIORITY_PREFETCH } from '../src/ai/hms-jobs.js';
+import { claimNextAiRun } from '../src/ai/run-ledger.js';
+import { executeAiRun } from '../src/ai/worker.js';
 import { ReservationistTaskEvidenceUnavailable } from '../src/ai/reservationist-execution.js';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
@@ -646,6 +648,89 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         await expect(api.workstation.quoteDraftPreflight(preflight)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
       });
     }, 30_000);
+
+    it('carries a queued Centurion quote from selected email to an unsent draft', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        vi.stubEnv('PORT', '3000');
+        vi.stubEnv('BETTER_AUTH_URL', 'https://synthetic.invalid');
+        vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
+        vi.stubEnv('AWS_REGION', 'synthetic-region-1');
+        vi.stubEnv('S3_BUCKET', 'synthetic-test-bucket');
+        vi.stubEnv('HMS_JOB_QUEUE', 'on');
+        vi.stubEnv('HMS_READ_SERVICE_ENABLED', 'true');
+        vi.stubEnv('HMS_LANE_PAUSED', 'false');
+        vi.stubEnv('AI_WORKER_LANE', 'hms');
+        vi.stubEnv('HMS_RUN_DEADLINE_MS', '150000');
+        const objects = new Map<string, Buffer>();
+        configureDraftArtifactStorage({
+          stage: async (key, body) => { objects.set(key, Buffer.from(body)); },
+          read: async (key) => objects.get(key) ?? null,
+        });
+        const request = await seedRequest(db), api = caller();
+        await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId }))
+          .resolves.toMatchObject({ status: 'ready', messageId: request.mail.id });
+
+        for (const [field, value] of [['arrival', '2027-10-12'], ['departure', '2027-10-15']] as const) {
+          await api.workItems.recordEvent({ workItemId: request.workItemId, type: 'field.edit',
+            fieldPath: `stays[s_default].requested.${field}`, value });
+        }
+        const input = { ...request.input, groups: [{ ...request.input.groups[0]!,
+          arrivalDate: '2027-10-12', departureDate: '2027-10-15' }] };
+        const queued = await api.workstation.queueStaffQuote(input);
+        expect(queued.runId).toEqual(expect.any(String));
+        if (!queued.runId) throw new Error('staff quote queue is disabled');
+        await expect(api.workstation.staffQuoteJob({ runId: queued.runId, messageId: request.mail.id }))
+          .resolves.toMatchObject({ runId: queued.runId, status: 'queued' });
+        expect(nativeRead).not.toHaveBeenCalled();
+
+        const claim = await claimNextAiRun({ db, ownerId: 'synthetic-worker', lane: 'hms',
+          transportId: request.mail.transportId, runKind: 'read_tool' });
+        expect(claim?.id).toBe(queued.runId);
+        const execution = await executeAiRun(queued.runId);
+        expect(execution).toEqual({ runId: queued.runId, state: 'succeeded' });
+        expect(nativeRead).toHaveBeenCalledWith(expect.objectContaining({
+          propertyCode: 'HRCEN', arrivalDate: '2027-10-12', departureDate: '2027-10-15',
+        }), expect.any(AbortSignal));
+
+        const view = await api.workstation.staffQuoteJob({ runId: queued.runId, messageId: request.mail.id });
+        expect(view).toMatchObject({ runId: queued.runId, sourceMessageId: request.mail.id,
+          status: 'done', result: { status: 'ready', messageId: request.mail.id, totalMinor: 220002 } });
+        const quote = view?.result;
+        if (!quote || typeof quote.workflowRunId !== 'string' || typeof quote.revisionRef !== 'string' ||
+            typeof quote.messageId !== 'string' || typeof quote.totalMinor !== 'number') {
+          throw new Error('queued quote did not return a priced revision');
+        }
+        const proposal = { ...pdfInput({ workflowRunId: quote.workflowRunId,
+          revisionRef: quote.revisionRef, messageId: quote.messageId }), workItemId: request.workItemId };
+        const pdf = await api.workstation.qualifiedQuoteProposalPdf(proposal);
+        expect(pdf).toMatchObject({ revisionId: quote.revisionRef, totalMinor: quote.totalMinor });
+        const versions = [{ workflowRunId: quote.workflowRunId, revisionRef: quote.revisionRef }];
+        const preflight = { messageId: request.mail.id, threadId: request.mail.threadId,
+          pdfHashes: [pdf.pdfHash], preparedVersions: versions };
+        await expect(api.workstation.quoteDraftPreflight(preflight)).resolves.toEqual({ ready: true });
+        const bytes = Buffer.from(pdf.pdfBase64, 'base64');
+        const draft = await api.drafts.saveReply({ threadId: request.mail.threadId, replyToMessageId: request.mail.id,
+          to: ['guest@example.invalid'], subject: 'Re: Quote', html: '<p>Your quote is attached.</p>',
+          replyKind: 'quote', preparedVersions: versions,
+          attachments: [{ name: pdf.fileName, type: 'application/pdf', size: bytes.length,
+            lastModified: 1, base64: pdf.pdfBase64 }] });
+        expect(await api.drafts.savedReply({ threadId: request.mail.threadId })).toMatchObject({
+          id: draft.id, quoteBound: true, attachments: [{ fileName: pdf.fileName, pdfBase64: pdf.pdfBase64 }],
+        });
+        const [storedDraft] = await db.select().from(mailDraft).where(eq(mailDraft.id, draft.id));
+        expect(storedDraft).toMatchObject({ status: 'active', origin: 'manual', isSent: false,
+          sentMessageId: null, replyToMessageId: request.mail.id });
+        expect(await db.select().from(outboundSendQueue).where(eq(outboundSendQueue.transportId, request.mail.transportId)))
+          .toEqual([]);
+        expect(await db.select().from(message).where(and(eq(message.threadId, request.mail.threadId),
+          eq(message.direction, 'outbound')))).toEqual([]);
+
+        await api.workItems.recordEvent({ workItemId: request.workItemId, type: 'field.edit',
+          fieldPath: 'stays[s_default].rows[single].adults', value: 2 });
+        await expect(api.workstation.quoteDraftPreflight(preflight)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      });
+    }, 60_000);
 
     it('does not reuse a PDF when saved contact changes under an explicit header', async () => {
       await withSeededTestDb(async (db) => {
