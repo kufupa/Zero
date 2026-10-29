@@ -211,6 +211,9 @@ async function loadThreadMailboxHmsOriginScanFromDb(
   const db = input.db ?? getDb();
   if (input.lock) {
     if (!input.db) throw new Error('source lock requires a caller transaction');
+    // Other mail writers can take child rows before the thread. Bound every remaining wait in this
+    // short transaction, including implicit unique/FK locks after the explicit message locks.
+    await db.execute(sql`set local lock_timeout = '250ms'`);
     const [thread] = await db.select({ id: mailThread.id }).from(mailThread)
       .where(and(eq(mailThread.id, input.threadId), eq(mailThread.transportId, input.transportId)))
       .limit(1).for('update');
@@ -232,7 +235,7 @@ async function loadThreadMailboxHmsOriginScanFromDb(
       desc(message.createdAt),
       desc(message.id),
     );
-  const rows = await (input.lock ? query.for('share') : query);
+  const rows = await (input.lock ? query.for('share', { noWait: true }) : query);
   const inbounds = rows
     .filter((row) => row.direction === 'inbound')
     .map((row) => originFields(row));

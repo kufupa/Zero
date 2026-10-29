@@ -3,8 +3,11 @@ import { eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client.js';
 import { mailboxTransport, mailThread, message } from '../src/db/schema/mail.js';
+import { workItem } from '../src/db/schema/work.js';
 import { TRANSPORT_EMAIL, TRANSPORT_ID, TRANSPORT_OWNER_HEADER } from '../src/db/seed.js';
 import { quotePropertyMatchesOrigin } from '../src/hms/hms-quote-target.js';
+import { withQuoteSourceBusyHold } from '../src/hms/quote-source-contention.js';
+import { refreshThreadAfterMessageRemoved } from '../src/trpc/routes/mail-helpers.js';
 import { openTestDbSession, probeTestDb, TEST_DB_AVAILABLE } from './helpers/test-db.js';
 
 const reachable = await probeTestDb();
@@ -64,9 +67,9 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('quote origin transaction fenc
     }
   }, 20_000);
 
-  it('holds and offers retry when Outlook updates a message before its thread', async () => {
+  it.each(['Outlook history', 'Undo Send'])('holds and offers retry when %s changes a message before its thread', async (action) => {
     const setup = openTestDbSession(), quote = openTestDbSession(), outlook = openTestDbSession();
-    const threadId = randomUUID(), selectedId = randomUUID();
+    const threadId = randomUUID(), selectedId = randomUUID(), outboundId = randomUUID();
     let signalMessageLocked!: () => void, startThreadUpdate!: () => void, signalThreadUpdate!: () => void;
     const messageLocked = new Promise<void>((resolve) => { signalMessageLocked = resolve; });
     const updateThread = new Promise<void>((resolve) => { startThreadUpdate = resolve; });
@@ -77,15 +80,22 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('quote origin transaction fenc
       await setup.db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID, threadRootId: threadId });
       await setup.db.insert(message).values({ id: selectedId, transportId: TRANSPORT_ID, threadId,
         direction: 'inbound', fromAddress: 'guest@example.invalid', toAddresses: ['centurion@legacyhotels.co.za'] });
+      await setup.db.insert(message).values({ id: outboundId, transportId: TRANSPORT_ID, threadId,
+        direction: 'outbound', fromAddress: 'centurion@legacyhotels.co.za', toAddresses: ['guest@example.invalid'] });
       const scope = { transportId: TRANSPORT_ID, threadId, messageId: selectedId, propertyCode: 'HRCEN' };
       writer = outlook.db.transaction(async (tx) => {
         await tx.execute(sql`set local lock_timeout = '3s'`);
-        await tx.update(message).set({ textBody: 'Outlook history update' }).where(eq(message.id, selectedId));
+        if (action === 'Outlook history')
+          await tx.update(message).set({ textBody: 'Outlook history update' }).where(eq(message.id, selectedId));
+        else await tx.delete(message).where(eq(message.id, outboundId));
         signalMessageLocked();
         await updateThread;
         signalThreadUpdate();
-        await tx.update(mailThread).set({ snippet: 'Outlook history refresh' }).where(eq(mailThread.id, threadId));
+        if (action === 'Outlook history')
+          await tx.update(mailThread).set({ snippet: 'Outlook history refresh' }).where(eq(mailThread.id, threadId));
+        else await refreshThreadAfterMessageRemoved(tx as unknown as DB, threadId, TRANSPORT_ID);
       });
+      void writer.catch(() => signalMessageLocked());
       await messageLocked;
       const quoteAttempt = quote.db.transaction(async (tx) => {
         // The actual quote fence takes the thread before reading its messages.
@@ -100,11 +110,58 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('quote origin transaction fenc
       await expect(quoteAttempt).rejects.toThrow('The email is being updated. Wait a moment, then try again.');
       await writer;
       expect(await quotePropertyMatchesOrigin({ ...scope, db: setup.db })).toBe(true);
+      if (action === 'Undo Send')
+        expect(await setup.db.select({ id: message.id }).from(message).where(eq(message.id, outboundId))).toHaveLength(0);
     } finally {
       startThreadUpdate();
       await writer?.catch(() => undefined);
       await setup.db.delete(mailThread).where(eq(mailThread.id, threadId)).catch(() => undefined);
       await Promise.all([setup.close(), quote.close(), outlook.close()]);
+    }
+  }, 20_000);
+
+  it('rolls back and offers retry if a later work-item write would invert the thread lock', async () => {
+    const setup = openTestDbSession(), quote = openTestDbSession(), editor = openTestDbSession();
+    const threadId = randomUUID(), selectedId = randomUUID(), itemId = randomUUID();
+    let signalItemLocked!: () => void, startThreadUpdate!: () => void, signalThreadUpdate!: () => void;
+    const itemLocked = new Promise<void>((resolve) => { signalItemLocked = resolve; });
+    const updateThread = new Promise<void>((resolve) => { startThreadUpdate = resolve; });
+    const threadUpdateStarted = new Promise<void>((resolve) => { signalThreadUpdate = resolve; });
+    let writer: Promise<unknown> | undefined;
+    try {
+      await ensureTransport(setup.db);
+      await setup.db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID, threadRootId: threadId });
+      await setup.db.insert(message).values({ id: selectedId, transportId: TRANSPORT_ID, threadId,
+        direction: 'inbound', fromAddress: 'guest@example.invalid', toAddresses: ['centurion@legacyhotels.co.za'] });
+      await setup.db.insert(workItem).values({ id: itemId, transportId: TRANSPORT_ID,
+        threadId, sourceMessageId: selectedId, kind: 'quote' });
+      const scope = { transportId: TRANSPORT_ID, threadId, messageId: selectedId, propertyCode: 'HRCEN' };
+      writer = editor.db.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '3s'`);
+        await tx.update(workItem).set({ status: 'done' }).where(eq(workItem.id, itemId));
+        signalItemLocked();
+        await updateThread;
+        signalThreadUpdate();
+        await tx.update(mailThread).set({ snippet: 'Editor refresh' }).where(eq(mailThread.id, threadId));
+      });
+      void writer.catch(() => signalItemLocked());
+      await itemLocked;
+      const quoteAttempt = withQuoteSourceBusyHold(() => quote.db.transaction(async (tx) => {
+        expect(await quotePropertyMatchesOrigin({ ...scope, db: tx as unknown as DB, lock: true })).toBe(true);
+        startThreadUpdate();
+        await threadUpdateStarted;
+        await tx.update(workItem).set({ status: 'review' }).where(eq(workItem.id, itemId));
+      }));
+      await expect(quoteAttempt).rejects.toThrow('The email is being updated. Wait a moment, then try again.');
+      await writer;
+      const [stored] = await setup.db.select({ status: workItem.status }).from(workItem).where(eq(workItem.id, itemId));
+      expect(stored?.status).toBe('done');
+    } finally {
+      startThreadUpdate();
+      await writer?.catch(() => undefined);
+      await setup.db.delete(workItem).where(eq(workItem.id, itemId)).catch(() => undefined);
+      await setup.db.delete(mailThread).where(eq(mailThread.id, threadId)).catch(() => undefined);
+      await Promise.all([setup.close(), quote.close(), editor.close()]);
     }
   }, 20_000);
 });

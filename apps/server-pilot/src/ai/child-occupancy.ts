@@ -8,6 +8,7 @@ import { addDays } from './stay-date-anchoring.js';
 import { formStays } from './work-items.js';
 import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
 import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin } from '../hms/hms-quote-target.js';
+import { isQuoteSourceLockBusy, QUOTE_SOURCE_BUSY_MESSAGE } from '../hms/quote-source-contention.js';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
   'id' | 'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'childrenAges' | 'childrenPerRoom'>;
@@ -141,7 +142,7 @@ async function loadChildOccupancyEvidence(
       eq(workItem.kind, latest.kind),
     ))
     .limit(1);
-  const [item] = await (scope.lock ? itemQuery.for('share') : itemQuery);
+  const [item] = await (scope.lock ? itemQuery.for('share', { noWait: true }) : itemQuery);
   // A newer read has not been adopted yet. Do not apply old corrections to that read, or keep pricing the older one.
   // The existing work-item relink decides whether edits can safely carry; once it moves, the latest evidence is used.
   if ((!item && scope.lock) || (item && item.extractionId !== latest.id)) return null;
@@ -214,7 +215,9 @@ export async function draftQuoteOccupancyHold(db: DB, input: {
         propertyCode: quote.propertyCode, lock: true,
       }))) return draftQuoteOccupancyMessage;
     }
-  } catch { return draftQuoteOccupancyMessage; }
+  } catch (error) {
+    return isQuoteSourceLockBusy(error) ? QUOTE_SOURCE_BUSY_MESSAGE : draftQuoteOccupancyMessage;
+  }
   return null;
 }
 

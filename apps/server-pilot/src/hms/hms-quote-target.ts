@@ -15,6 +15,7 @@ import {
   type MailboxHmsOriginLoadInput,
 } from './mailbox-hms-origin-bind.js';
 import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
+import { isQuoteSourceLockBusy, quoteSourceBusyError } from './quote-source-contention.js';
 
 /** Same staff copy as the Centurion refuse. Quote flag off keeps that refuse. */
 export const DAVINCI_QUOTE_REFUSED_MESSAGE = DAVINCI_ORIGIN_REFUSED_MESSAGE;
@@ -96,7 +97,8 @@ export async function quotePropertyMatchesOrigin(
     // A missing selected message and a Da Vinci origin both refuse the Centurion guard.
     const scan = await loadThreadMailboxHmsOriginScan(input);
     return scan.selectedFound && !!scan.selected && [scan.selected, ...scan.inbounds].some(isDaVinciMailboxOrigin);
-  } catch {
+  } catch (error) {
+    if (input.lock && isQuoteSourceLockBusy(error)) throw quoteSourceBusyError();
     return false;
   }
 }

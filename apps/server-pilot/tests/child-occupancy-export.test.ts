@@ -4,7 +4,7 @@ import { aiDraftGeneration, aiWorkflowRun, mailDraft, mailDraftRevision, message
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { draftQuoteOccupancyHold, draftQuoteOccupancyMessage, importedOfferOccupancyHold } from '../src/ai/child-occupancy.js';
-import { DRAFT_APPROVAL_POLICY_VERSION, DraftQuoteOccupancyError, assertDraftApprovalCurrent, buildDraftApproval, type DraftApprovalPayload } from '../src/ai/draft-approval.js';
+import { DRAFT_APPROVAL_POLICY_VERSION, DraftQuoteOccupancyError, assertDraftApprovalCurrent, buildDraftApproval, claimDraftApprovalForSend, type DraftApprovalPayload } from '../src/ai/draft-approval.js';
 import { AZURE_DRAFT_ROUTE } from '../src/ai/draft-route-factory.js';
 import { assertQueuedDraftApproval, DraftApprovalInvalidError } from '../src/mail/send/outbound-queue.js';
 import { assertHmsDraftFreshForAction } from '../src/trpc/routes/drafts.js';
@@ -80,7 +80,10 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
             return Object.assign(rows, { for: () => rows });
           }
           if (table === aiDraftGeneration) return Promise.resolve([{ id: 'generation-1', createdAt: new Date(), status: 'succeeded', evidence: [] }]);
-          if (table === mailDraft) return Promise.resolve([draft]);
+          if (table === mailDraft) {
+            const rows = Promise.resolve([draft]);
+            return Object.assign(rows, { for: () => rows });
+          }
           if (table === mailDraftRevision) return Promise.resolve([{ id: 'revision-1' }]);
           if (table === aiWorkflowRun && selection && 'run' in selection) return Promise.resolve([{ run }]);
           if (table === aiWorkflowRun && selection && 'request' in selection)
@@ -356,6 +359,27 @@ describe('stored quote export and draft occupancy', () => {
     await expect(assertQueuedDraftApproval(approval, { from: 'centurion@example.invalid', to: payload.to,
       cc: payload.cc, bcc: payload.bcc, subject: payload.subject, html: payload.html, text: payload.text }, db))
       .rejects.toBeInstanceOf(DraftApprovalInvalidError);
+  });
+
+  it('reports a retry hold before claiming a draft when the origin source is locked', async () => {
+    const { db } = await fixture();
+    const secret = 'synthetic-signing-secret';
+    const release = { releaseId: 'release', releaseVersion: '1', sourceRevision: 'source', fingerprint: 'e'.repeat(64),
+      purpose: 'draft' as const, capabilityFamilyVersions: { draft: '1' }, issuedAt: '2026-01-01T00:00:00.000Z',
+      expiresAt: '2099-01-01T00:00:00.000Z', withdrawn: false };
+    const payload: DraftApprovalPayload = { draftId: 'draft-1', generationId: 'generation-1', transportId,
+      threadId: 't1', revisionId: 'revision-1', threadStateVersion: 'state-1', evidence: [],
+      policyVersion: DRAFT_APPROVAL_POLICY_VERSION, approvedByUserId: userId, approvedAt: new Date().toISOString(),
+      origin: 'ai', subject: 'Synthetic quote', html: '<p>Quote attached.</p>', text: 'Quote attached.',
+      to: ['guest@example.invalid'], cc: [], bcc: [], attachments: [], routeBinding: { ...AZURE_DRAFT_ROUTE, release } };
+    const approval = buildDraftApproval(payload, secret);
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => {
+      throw Object.assign(new Error('lock unavailable'), { code: '55P03' });
+    };
+    await expect(claimDraftApprovalForSend({ db, approval, payload, signingSecret: secret, queueMessageId: 'queued-1',
+      loadThreadStateVersion: async () => 'state-1' })).rejects.toMatchObject({
+      message: 'The email is being updated. Wait a moment, then try again.',
+    });
   });
 
   it('refuses a booking draft from a quote when the saved count changed', async () => {

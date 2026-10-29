@@ -63,6 +63,7 @@ import { beginQuoteRun, staffQuoteInFlight } from '../hms/property-queue-state.j
 import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
 import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin, resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { isQuoteSourceLockBusy, withQuoteSourceBusyHold } from '../hms/quote-source-contention.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { HMS_OUTAGE_STAFF_COPY } from '../hms/property-outage.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
@@ -985,7 +986,7 @@ export async function runStaffQuote(
       ? quoteRunIdFromEvidenceDirectory(config.outputDir, evidence.directory)
       : null;
     const persistRun = (quoteResult: Record<string, unknown>) =>
-      db.transaction(async (tx) => {
+      withQuoteSourceBusyHold(() => db.transaction(async (tx) => {
         if (!(await quotePropertyMatchesOrigin({ ...occupancyScope, db: tx as unknown as DB, lock: true })))
           refuseQuote('source_changed', QUOTE_HOTEL_CHANGED_MESSAGE);
         if (!systemPrepared) {
@@ -1085,7 +1086,7 @@ export async function runStaffQuote(
         ) {
           throw Object.assign(new Error('staff_quote_claim_lost'), { code: 'HMS_JOB_CLAIM_LOST' });
         }
-      });
+      }));
     const summary = async () => ({
       status: 'ready' as const,
       // The mailbox origin may have changed since this job was queued.
@@ -1148,7 +1149,8 @@ export async function runStaffQuote(
           );
           await markGenerationFailed('staff_quote_trace_finish_failed');
           if (waitForTracePersistence && error instanceof TRPCError &&
-            (error.cause as { reason?: unknown } | undefined)?.reason === 'source_changed') throw error;
+            ((error.cause as { reason?: unknown } | undefined)?.reason === 'source_changed' ||
+              isQuoteSourceLockBusy(error))) throw error;
           if (waitForTracePersistence && !(error instanceof Error && error.message === 'staff_quote_superseded')) {
             const failure = new Error('staff_quote_native_unavailable');
             Object.assign(failure, {
