@@ -4969,10 +4969,10 @@ describe('fresh case evidence and mixed actions', () => {
     ...quoteAnalysis, groups: [first, second],
     luna: lunaQuote({ workflow: 'quote', tasks: [{ kind: 'quote', groupIndexes: [0, 1], note: '' }] }),
   };
-  const overlaid = (fresh: QuoteAnalysis, remembered: QuoteAnalysis['groups'], prior: QuoteAnalysis | null, property = 'HRCEN') =>
+  const overlaid = (fresh: QuoteAnalysis, remembered: QuoteAnalysis['groups'], prior: QuoteAnalysis | null, property: string | null = 'HRCEN') =>
     withPaneRead(fresh, overlayRememberedGroups(fresh.groups, remembered), paneCaseSnapshot(prior), property);
 
-  it.each(['guest', 'reference', 'hotel', 'missing roster', 'mailbox property'])(
+  it.each(['guest', 'reference', 'hotel', 'missing roster', 'mailbox property', 'missing mailbox property'])(
     'holds a %s change after the roster row was removed, even across further reducer transitions', (change) => {
       let session = analysisReady(withPaneRead(source, null, null, 'HRCEN'));
       session = reduceQuoteSession(session, { type: 'remove_row', groupId: first.id });
@@ -4984,7 +4984,7 @@ describe('fresh case evidence and mixed actions', () => {
           : change === 'hotel' ? { ...first, hotel: 'Other hotel' }
             : change === 'missing roster' ? { ...first, stayGuests: undefined } : first;
       const changed: QuoteAnalysis = { ...source, groups: [changedFirst, second] };
-      const property = change === 'mailbox property' ? 'HRDAV' : 'HRCEN';
+      const property = change === 'mailbox property' ? 'HRDAV' : change === 'missing mailbox property' ? null : 'HRCEN';
       const input = overlaid(changed, session.groups, original, property);
       session = reduceQuoteSession(session, { type: 'analysis_started' });
       session = reduceQuoteSession(session, { type: 'analysis_ready', analysis: input });
