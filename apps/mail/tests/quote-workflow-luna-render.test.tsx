@@ -7,8 +7,10 @@ import type {
   StayGroupRequirement,
   LunaAnalysisWire,
 } from '../lib/quote-workflow/types';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { useState } from 'react';
 import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
+import { AmendLookupPanel } from '../components/quote-workflow/amend-lookup-panel';
 import { QuoteWorkflowPanel } from '../components/quote-workflow/quote-workflow-panel';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -217,6 +219,46 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     fireEvent.click(buttons[0]!);
     fireEvent.click(buttons[1]!);
     expect(onSelectStayKey.mock.calls).toEqual([['stay-a'], ['stay-b']]);
+  });
+
+  it.each([
+    { summary: 'amend', other: 'cancel', before: 'Change to an existing booking', after: 'Cancellation request' },
+    { summary: 'cancel', other: 'amend', before: 'Cancellation request', after: 'Change to an existing booking' },
+  ] as const)('opens the $other case when the email summary is $summary', ({ summary, other, before, after }) => {
+    const groups = [
+      { ...g1, id: 'r_a', stayId: 'stay-a', caseScoped: true, stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1' },
+      { ...g1, id: 'r_b', stayId: 'stay-b', caseScoped: true, stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' },
+    ];
+    const initial = sessionWithAnalysis({
+      intent: 'other', groups, secondaryAsks: [], alternatives: [],
+      luna: lunaWire({
+        workflow: summary,
+        tasks: [{ kind: summary, groupIndexes: [0], note: '' }, { kind: other, groupIndexes: [1], note: '' }],
+      }),
+      amendment: {
+        kind: summary, confirmationNumber: '11111111-1', guestLastName: 'Example',
+        arrival: '2026-11-12', departure: '2026-11-14', requestedChange: 'Extend stay',
+      },
+    });
+    function Pane() {
+      const [session, setSession] = useState(initial);
+      return <>
+        <QuoteWorkflowPanel
+          session={session}
+          onSelectStayKey={(stayKey) => setSession((current) => reduceQuoteSession(current, { type: 'select_stay_key', stayKey }))}
+        />
+        <AmendLookupPanel session={session} trpc={null} />
+      </>;
+    }
+    render(<Pane />);
+    expect(within(screen.getByTestId('amend-lookup-panel')).getByText(before)).toBeDefined();
+    const buttons = screen.getAllByRole('button', { name: 'Find this booking' });
+    expect(buttons).toHaveLength(2);
+    fireEvent.click(buttons[1]!);
+    const panel = screen.getByTestId('amend-lookup-panel');
+    expect(within(panel).getByText(after)).toBeDefined();
+    expect(panel.textContent).not.toContain('11111111-1');
+    expect(panel.textContent).not.toContain('Extend stay');
   });
 
   it('does not offer a lookup button when the matching amendment panel is unavailable', () => {
