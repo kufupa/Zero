@@ -93,7 +93,8 @@ async function fixture() {
       }, for(mode: string) { transactionState.locks.push(mode); return Promise.resolve(rowsFor()); } };
     return query;
   };
-  const db = { transaction, select, selectDistinct: select, insert: () => ({ values: async () => undefined }) } as unknown as DB;
+  const db = { transaction, select, selectDistinct: select, execute: async () => undefined,
+    insert: () => ({ values: async () => undefined }) } as unknown as DB;
   const quoteInput = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail),
     sourcePartyDigest: quoteSourcePartyDigest(payload, state), sourceExtractionId: 'extract-1',
     selectionEpoch: 1, inputRevision: 1, salesStrategy: 'BAR', groups: [{ id: 'g1', arrivalDate: '2027-10-20',

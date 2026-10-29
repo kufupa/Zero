@@ -1644,6 +1644,9 @@ describe('runStaffQuote property installation', () => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
     vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
     originMocks.guard.mockResolvedValue({ ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin' });
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+      selectedFound: true, selected: { toAddresses: ['davinci@legacyhotels.co.za'] }, inbounds: [],
+    });
     const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
     const mail = mailFor('transport-centurion');
     const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail),
