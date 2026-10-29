@@ -93,6 +93,7 @@ import { loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { markThreadRead } from '../../mail/thread-read.js';
 import { assertHmsDraftFreshForAction } from './drafts.js';
 import { isQuoteSourceLockBusy, withQuoteSourceBusyHold } from '../../hms/quote-source-contention.js';
+import { isCenturionQuoteTransport } from '../../ai/child-occupancy.js';
 import { latestWorkflowThreads, WORKFLOW_FOLDER_IDS } from '../../mail/workflow-folders.js';
 import { getDb, type DB } from '../../db/client.js';
 import { toDraftWire } from './draft-wire.js';
@@ -1439,6 +1440,7 @@ export const mailRouter = tRouter({
 
     const persistSend = () => db.transaction(async (tx) => {
       if (approvedDraft && sendingDraft?.origin === 'ai') {
+        if (isCenturionQuoteTransport(transportId)) await tx.execute(sql`set local lock_timeout = '250ms'`);
         try {
           await claimDraftApprovalForSend({
             db: tx as unknown as DB,

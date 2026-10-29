@@ -84,7 +84,10 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
             const rows = Promise.resolve([{ extractionId: 'extract-1', state }]);
             return Object.assign(rows, { for: () => rows });
           }
-          if (table === aiDraftGeneration) return Promise.resolve([{ id: 'generation-1', createdAt: new Date(), status: 'succeeded', evidence: [] }]);
+          if (table === aiDraftGeneration) {
+            const rows = Promise.resolve([{ id: 'generation-1', createdAt: new Date(), status: 'succeeded', evidence: [] }]);
+            return Object.assign(rows, { for: () => rows });
+          }
           if (table === mailDraft) {
             const rows = Promise.resolve([draft]);
             return Object.assign(rows, { for: () => rows });
@@ -95,8 +98,10 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
             return Promise.resolve([{ request: job.readRequest, messageId: mail.id }]);
           if (table === aiWorkflowRun && selection && 'id' in selection && 'metrics' in selection)
             return Promise.resolve([run]);
-          if (table === aiWorkflowRun && selection && 'metrics' in selection)
-            return Promise.resolve([{ metrics: run.metrics, triggerMessageId: run.triggerMessageId }]);
+          if (table === aiWorkflowRun && selection && 'metrics' in selection) {
+            const rows = Promise.resolve([{ metrics: run.metrics, triggerMessageId: run.triggerMessageId }]);
+            return Object.assign(rows, { for: () => rows });
+          }
           if (table === aiWorkflowRun) return Promise.resolve([job]);
           return Promise.resolve([]);
         },
