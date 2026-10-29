@@ -11,9 +11,11 @@ const input = staffQuoteInput.parse({ messageId: 'm1', sourceHash: 'a'.repeat(64
     adults: 2, childrenPerRoom: 0, childrenAges: [], board: 'dinner_bb', roomCodes: ['SKNG'],
     sourcePreference: { roomType: 'Standard King', board: 'dbb' } }], salesStrategy: 'BAR' });
 function evidence(stayId = 's1', rowId = 'r1') {
-  const data = { payload: { contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
+  const data = { payload: { contact: { name: null, email: null, phone: null }, agency: null as string | null, endClient: null,
     confirmationNumbers: [], missing: [], stays: [{ id: stayId, hotel: null,
       requested: { arrival: '2027-10-20', departure: '2027-10-21' }, booked: null, totalRooms: 1,
+      guests: [{ name: 'Synthetic Guest', confirmationNumber: null as string | null }],
+      action: 'quote_availability' as 'quote_availability' | 'new_booking',
       rows: [{ id: rowId, roomType: 'Standard King' as string | null, rooms: 1, adultsPerRoom: 2,
         childrenPerRoom: 0, childAges: [] as number[], board: 'dbb' as string | null }] }] },
     state: {} as Record<string, unknown>, pinned: 'extract-1', latest: 'extract-1',
@@ -136,5 +138,25 @@ describe('source preferences bound to a Centurion price', () => {
     expect(await quoteSourceProofIsCurrent(db, input.groups, { ...scope, propertyCode: 'UNKNOWN' }, null)).toBe(false);
     expect(await quoteSourceProofIsCurrent(db, input.groups,
       { ...scope, transportId: 'transport-davinci' }, null)).toBe(false);
+  });
+
+  it('does not reuse a price after a same-kind read changes the guest, agency or stay action', async () => {
+    const { data, db } = evidence();
+    const proof = await captureQuoteSourceProof(db, input, scope);
+    data.latest = data.pinned = 'extract-2';
+    // A truly identical read should not make staff fetch the same rates again.
+    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(true);
+
+    const stay = data.payload.stays[0]!;
+    stay.guests[0]!.name = 'Different Synthetic Guest';
+    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(false);
+    stay.guests[0]!.name = 'Synthetic Guest';
+
+    data.payload.agency = 'Different Synthetic Agency';
+    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(false);
+    data.payload.agency = null;
+
+    stay.action = 'new_booking';
+    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(false);
   });
 });
