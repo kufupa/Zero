@@ -188,11 +188,19 @@ export const mailExtractionPayloadSchema = z.object({
   endClient: mailExtractionObjectSchema.shape.endClient,
   confirmationNumbers: mailExtractionObjectSchema.shape.confirmationNumbers,
   stays: z.array(storedExtractionStaySchema),
-  missing: mailExtractionObjectSchema.shape.missing,
+  missing: z.array(mailExtractionObjectSchema.shape.missing.element.extend({ stayId: z.string().min(1).optional() })),
 });
 
 /** The stored payload (mail_extraction.payload). Every string is card-masked and capped. */
 export type MailExtractionPayload = z.infer<typeof mailExtractionPayloadSchema>;
+
+/** Old, unscoped warnings and unknown stay IDs remain conservative across the whole email. */
+export function hasInvalidStayDates(
+  missing: ReadonlyArray<{ field: string; stayId?: string }>, stayId: string, knownStayIds: readonly string[],
+): boolean {
+  return missing.some((item) => item.field === 'stayDates' &&
+    (!item.stayId || !knownStayIds.includes(item.stayId) || item.stayId === stayId));
+}
 export type SanitizedExtraction = {
   kind: MailKind;
   needsAction: boolean;
@@ -397,11 +405,11 @@ export function sanitizeExtraction(
       ...(stay.action !== undefined ? { action: stay.action } : {}),
     };
   });
-  const reversedDateWarnings = output.stays.slice(0, MAX_STAYS).flatMap((stay) => {
+  const reversedDateWarnings = output.stays.slice(0, MAX_STAYS).flatMap((stay, index) => {
     const arrival = validIsoDate(stay.requested.arrival);
     const departure = validIsoDate(stay.requested.departure);
     return arrival && departure && departure <= arrival
-      ? [{ field: 'stayDates', question: 'Departure date must be after arrival; confirm the requested stay dates.' }]
+      ? [{ field: 'stayDates', question: 'Departure date must be after arrival; confirm the requested stay dates.', stayId: stays[index]!.id }]
       : [];
   });
   const incompleteChildren = stays.some((stay) => stay.rows.some((row) =>
@@ -422,6 +430,7 @@ export function sanitizeExtraction(
     .map((item) => ({
       field: cleanText(item.field, 60) ?? '',
       question: cleanText(item.question) ?? '',
+      ...('stayId' in item && typeof item.stayId === 'string' ? { stayId: item.stayId } : {}),
     }))
     .filter((item) => item.question);
   const actionEvidence = cleanText(output.actionEvidence, 200) ?? '';

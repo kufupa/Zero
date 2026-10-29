@@ -33,6 +33,38 @@ function prefetch(count: number | null | undefined, ages: number[]) {
 }
 
 describe('child occupancy extraction and prefetch', () => {
+  it('keeps a removed stay’s reversed-date warning from blocking another one-night stay', () => {
+    const original = AE1_OUTPUT.stays[0]!;
+    const row = { ...original.rows[0]!, rooms: 1, adultsPerRoom: 2, childrenPerRoom: 0, childAges: [] };
+    const parsed = mailExtractionSchema.parse({ ...AE1_OUTPUT, missing: [], stays: [
+      { ...original, hotel: null, totalRooms: 1, requested: { arrival: '2027-10-10', departure: '2027-10-09' }, rows: [row] },
+      { ...original, hotel: null, totalRooms: 1, requested: { arrival: '2027-10-20', departure: null }, rows: [row] },
+    ] });
+    const evidence = sanitizeExtraction(parsed, { messageId: 'm1', sourceText: AE1_TEXT, propertyCode: 'HRCEN' }).payload;
+    const [bad, good] = evidence.stays;
+    expect(bad?.requested.departure).toBeNull();
+    expect(evidence.missing).toContainEqual(expect.objectContaining({ field: 'stayDates', stayId: bad!.id }));
+    const goodGroup = { ...group([], 0), id: good!.rows[0]!.id };
+    const badGroup = { ...goodGroup, id: bad!.rows[0]!.id, arrivalDate: '2027-10-10', departureDate: '2027-10-11' };
+    const removed = { [`stays[${bad!.id}].removed`]: true };
+    expect(childOccupancyMatchesStored([goodGroup], evidence, removed)).toBe(true);
+    expect(singleStayOccupancyMatchesRevision({ groups: [{ arrivalDate: goodGroup.arrivalDate, departureDate: goodGroup.departureDate,
+      quantity: 1, adults: 2, children: 0, childAges: [] }] }, evidence, removed)).toBe(true);
+    expect(childOccupancyMatchesStored([badGroup], evidence, { [`stays[${good!.id}].removed`]: true })).toBe(false);
+
+    // Legacy or malformed unscoped warnings cannot establish which stay was reversed.
+    const globalWarning = { ...evidence, missing: evidence.missing.map(({ field, question }) => ({ field, question })) };
+    const unknownWarning = { ...evidence, missing: [{ ...evidence.missing[0]!, stayId: 'unknown-stay' }] };
+    expect(childOccupancyMatchesStored([goodGroup], globalWarning, removed)).toBe(false);
+    expect(childOccupancyMatchesStored([goodGroup], unknownWarning, removed)).toBe(false);
+    const plan = buildPreparedStaffQuotePlan({ messageId: 'm1', sourceHash: 'a'.repeat(64), payload: evidence,
+      propertyCode: 'HRCEN', now: new Date('2026-10-01T00:00:00Z') });
+    expect(plan.stays.find((stay) => stay.stayId === bad!.id)?.reason).toBe('invalid_dates');
+    expect(plan.stays.find((stay) => stay.stayId === good!.id)?.input?.groups[0]).toMatchObject({
+      arrivalDate: '2027-10-20', departureDate: '2027-10-21',
+    });
+  });
+
   it('preserves explicit counts, including zero and unknown, and flags missing ages', () => {
     const original = AE1_OUTPUT.stays[0]!;
     const row = original.rows[0]!;
