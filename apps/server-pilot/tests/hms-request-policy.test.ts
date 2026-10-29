@@ -150,6 +150,75 @@ describe('HMS request policy contracts', () => {
   });
 });
 
+describe('JSON request body safety', () => {
+  const jsonRule = requestRuleSchema.parse({
+    id: 'json-search',
+    origin: ORIGIN,
+    method: 'POST',
+    path: '/json/search',
+    resourceTypes: ['xhr'],
+    contentType: 'application/json',
+    fixedBody: { action: 'search', property: 'HRCEN', filters: ['a', 'a'] },
+    variableBody: { payload: { pattern: '.{0,512}', maxLength: 512 } },
+    maxBodyBytes: 4096,
+    redirectPolicy: 'same-reviewed-chain',
+  });
+  const jsonManifest = requestPolicyManifestSchema.parse({ rules: [jsonRule] });
+  const body = (payload: string) => JSON.stringify({ action: 'search', property: 'HRCEN', filters: ['a', 'a'], payload });
+  async function check(postData: string) {
+    const route = makeRoute({ url: `${ORIGIN}/json/search`, method: 'POST', resourceType: 'xhr',
+      headers: { 'content-type': 'application/json' }, postData });
+    const recorder = new FixtureRequestRecorder();
+    const decision = await enforceRequestPolicy(route, jsonManifest, { recorder });
+    return { route, recorder, decision };
+  }
+
+  it('preserves reviewed string and array bodies with commas, quotes and repeated array values', async () => {
+    const result = await check(body('value, "text" [a] {b}'));
+    expect(result.decision).toEqual({ action: 'allow', ruleId: 'json-search' });
+    expect(result.route.continued).toBe(true);
+    expect(result.route.aborted).toBe(false);
+  });
+
+  it('blocks duplicate decoded keys before an earlier mutation value can be discarded', async () => {
+    const suffix = '"property":"HRCEN","filters":["a","a"],"payload":"ok"}';
+    for (const postData of [
+      `{"action":"save","action":"search",${suffix}`,
+      `{"action":"search","action":"save",${suffix}`,
+      `{"\\u0061ction":"save","action":"search",${suffix}`,
+      `{"action":"search","property":"HRCEN","filters":["a","a"],"payload":"first","payload":"ok"}`,
+    ]) {
+      const result = await check(postData);
+      expect(result.decision).toMatchObject({ action: 'block', code: BLOCK_CODES.DUPLICATE_BODY });
+      expect(result.route.aborted).toBe(true);
+      expect(result.route.continued).toBe(false);
+      expect(result.recorder.requests()).toEqual([]);
+    }
+  });
+
+  it('blocks duplicate keys and mutation values inside nested JSON strings', async () => {
+    const duplicate = '{"action":"save","action":"search"}';
+    for (const payload of [duplicate, `  ${duplicate}  `, JSON.stringify({ child: ` ${duplicate} ` })]) {
+      const result = await check(body(payload));
+      expect(result.decision).toMatchObject({ action: 'block', code: BLOCK_CODES.MALFORMED_JSON });
+      expect(result.route.aborted).toBe(true);
+      expect(result.recorder.requests()).toEqual([]);
+    }
+    const mutation = await check(body('  {"action":"save"}  '));
+    expect(mutation.decision).toMatchObject({ action: 'block', code: BLOCK_CODES.MUTATION_ACTION });
+  });
+
+  it('continues to reject unreviewed typed inquiry fields and nested objects', async () => {
+    for (const extra of [{ adultCount: 2 }, { childCount: 0 }, { currency: null },
+      { shopByDay: false }, { childAges: [8] }, { details: { action: 'save' } }]) {
+      const result = await check(JSON.stringify({ action: 'search', property: 'HRCEN', filters: ['a', 'a'], payload: 'ok', ...extra }));
+      expect(result.decision).toMatchObject({ action: 'block', code: BLOCK_CODES.MALFORMED_JSON });
+      expect(result.route.aborted).toBe(true);
+      expect(result.recorder.requests()).toEqual([]);
+    }
+  });
+});
+
 describe('Phase B exact request-shape declarations', () => {
   const exactRule = requestRuleSchema.parse({
     id: 'phase-b-exact-search',

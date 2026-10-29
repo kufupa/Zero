@@ -17,7 +17,7 @@ const secret = {
 };
 
 const LOGIN_CALLERS = [
-  'fetch-quote.mjs',
+  // fetch-quote delegates context creation; both property paths are exercised in fetch-quote.test.mjs.
   'stay-lookup.mjs',
   'read-reservation-codes.mjs',
   'read-reservation-fields.mjs',
@@ -175,14 +175,12 @@ test('login fills then saves storageState at 0600 next to the slot profile', asy
   assert.equal(saved.cookies[0].name, 'sid');
 });
 
-test('every playwright-quote tool that calls login() creates its context via newBorrowedContext', async () => {
+test('direct playwright-quote login callers create their context via newBorrowedContext', async () => {
   for (const name of LOGIN_CALLERS) {
     const source = await readFile(new URL(`./${name}`, import.meta.url), 'utf8');
     assert.match(source, /newBorrowedContext\s*\(/, name);
     // The helper itself lives in session-reuse.mjs and calls browser.newContext once.
-    if (name !== 'fetch-quote.mjs') {
-      assert.equal(source.includes('browser.newContext('), false, name);
-    }
+    assert.equal(source.includes('browser.newContext('), false, name);
   }
 });
 

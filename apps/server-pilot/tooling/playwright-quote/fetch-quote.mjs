@@ -9,6 +9,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createAudit } from './audit.mjs';
 import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
+import { isAvailabilityReadRequest } from './hms-read-only-guard.mjs';
+import { attachGuardedQuoteSession, prepareQuoteRequestPolicy } from './quote-request-guard.mjs';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 import { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
 import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
@@ -51,8 +53,29 @@ export async function openHotelAvailability(page) {
     await node('Hotel Availability').waitFor({ timeout: 3000 }).catch(() => {});
   }
   await node('Hotel Availability').click();
-  await page.locator('input[name="startdate"]:visible').waitFor();
+  // On-prem HMS has a startdate field; the Infor cloud build (HRCEN, 2026-10-27) has one `dates` range picker.
+  await page.locator('input[name="startdate"]:visible, input[name="dates"]:visible').first().waitFor();
   await page.getByRole('heading',{name:'Hotel Availability',exact:true}).waitFor();
+}
+
+// Arrival date on either screen build. The range end keeps the screen's current window length; the
+// inquiry readback (assertApplied) checks the start date HMS actually searched.
+export async function setArrivalDate(page, iso) {
+  const start = page.locator('input[name="startdate"]:visible');
+  if (await start.count()) {
+    await start.fill(displayDate(iso));
+    await start.press('Tab');
+    return;
+  }
+  const range = page.locator('input[name="dates"]:visible');
+  await range.evaluate((e, value) => {
+    const field = Ext.getCmp(e.id.replace(/-inputEl$/, ''));
+    const [year, month, day] = value.split('-').map(Number);
+    const current = field.getValue();
+    const span = current?.startDate && current?.endDate ? Math.round((current.endDate - current.startDate) / 86400000) : 14;
+    field.setValue({ startDate: new Date(year, month - 1, day), endDate: new Date(year, month - 1, day + span) });
+  }, iso);
+  await range.press('Tab');
 }
 
 export async function applyGuests(page, room) {
@@ -358,16 +381,14 @@ async function applyCriteria(page, request, room, criteriaCheckpoint, clock) {
   await clock.time('criteriaReset', () => resetPublicControls(page));
   // Pickers can be date-scoped. Do not resolve this request against a previous
   // group's calendar; selecting a group can then change the date again.
-  await page.locator('input[name="startdate"]').fill(displayDate(request.arrivalDate));
-  await page.locator('input[name="startdate"]').press('Tab');
+  await setArrivalDate(page,request.arrivalDate);
   const resolvedContext={};
   // Group changes date/strategy; restore requested occupancy/dates afterward.
   for (const kind of ['group','organization','agency']) if (request.rateContext?.[kind])
     resolvedContext[kind]=await resolveReference(page,kind,request.rateContext[kind]);
   if (request.rateContext?.group&&request.search?.salesStrategy) throw new Error('UNSUPPORTED_GROUP_SALES_STRATEGY');
   const strategy=request.rateContext?.group?null:await selectSalesStrategy(page,request.search?.salesStrategy??(request.rateContext?'Preset':'BAR'));
-  await page.locator('input[name="startdate"]').fill(displayDate(request.arrivalDate));
-  await page.locator('input[name="startdate"]').press('Tab');
+  await setArrivalDate(page,request.arrivalDate);
   await applyGuests(page,room);
   await applyCurrency(page,request.requestedCurrency);
   // Visibility only. Native false hides whole rows based on the 14-day grid,
@@ -387,12 +408,14 @@ async function applyCriteria(page, request, room, criteriaCheckpoint, clock) {
 export async function searchCalendar(page, request, room, criteriaCheckpoint=async()=>{}, onWindow=async()=>{}, clock=createPhaseClock()) {
   const {resolvedContext,strategy,roomCodes,rateCodes,showRestricted}=await clock.time('criteria',()=>applyCriteria(page,request,room,criteriaCheckpoint,clock));
   const windows=[];
+  const origin=new URL(page.url()).origin;
   let expectedStart=request.arrivalDate;
   for (let index=0;index<3;index++) {
-    const pending=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/internalBooking/hotelAvail/inquiryForGrid'&&r.request().method()==='POST',{timeout:45000});
+    const pending=page.waitForResponse(r=>isAvailabilityReadRequest({method:r.request().method(),url:r.url()},origin),{timeout:45000});
     pending.catch(()=>{});
     const [response]=await clock.time('grid',()=>Promise.all([pending,index===0?search(page):page.locator('a.x-btn[data-qtip="Page Right"]:visible').click()]));
     if(!response.ok())throw new Error(`SEARCH_HTTP_${response.status()}`);
+    const endpoint=new URL(response.url()).pathname;
     const criteria=projectCriteria(response.request().postDataJSON());
     assertApplied(request,room,criteria,{resolvedContext,startDate:expectedStart,strategy,roomCodes,rateCodes});
     if(criteria.showRestrictedSellOptions!==showRestricted)throw new Error('RESTRICTED_VISIBILITY_READBACK_MISMATCH');
@@ -400,7 +423,7 @@ export async function searchCalendar(page, request, room, criteriaCheckpoint=asy
     const body=await response.json();
     if(!body.availabilitydata) {
       await clock.time('grid',()=>page.getByText('Selected criteria is not available for these dates.',{exact:true}).waitFor({timeout:15000}));
-      windows.push({criteria,data:null,calendar:null});break;
+      windows.push({endpoint,criteria,data:null,calendar:null});break;
     }
     await clock.time('grid',()=>page.waitForFunction(start=>{
       const visible=e=>!!e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden';
@@ -409,7 +432,7 @@ export async function searchCalendar(page, request, room, criteriaCheckpoint=asy
       return first?.startsWith(start)&&!Ext.Ajax.isLoading()&&![...document.querySelectorAll('.x-mask,.x-mask-msg,.x-loadmask')].some(visible);
     },displayDate(expectedStart),{timeout:30000}));
     const calendar=await clock.time('grid',()=>readCalendar(page));
-    windows.push({criteria,data:body.availabilitydata,calendar});
+    windows.push({endpoint,criteria,data:body.availabilitydata,calendar});
     await onWindow(windows.at(-1),{resolvedContext,index});
     const shown=body.availabilitydata.datesList.slice(0,calendar.headers.length).map(nativeDate);
     if(shown.includes(request.departureDate))break;
@@ -442,10 +465,10 @@ export function nativeBundleLabels(raw) {
   });
 }
 
-export function projectWindow({criteria,data,calendar}) {
+export function projectWindow({endpoint,criteria,data,calendar}) {
   const columns=raw=>Object.fromEntries(Object.entries(raw??{}).filter(([k])=>/^col\d+$/.test(k)).map(([k,v])=>[k,
     pick(v,['value','groupValue','overbookingLimitCount','israteavailable','restricted',...restrictionKeys])]));
-  return {criteria:projectCriteria(criteria??{}),calendar,data:data?{datesList:data.datesList,
+  return {...(endpoint?{endpoint}:{}),criteria:projectCriteria(criteria??{}),calendar,data:data?{datesList:data.datesList,
     children:(data.children??[]).filter(p=>p.isprop&&!p.issummary).map(p=>({...pick(p,['code','desc','currency','isprop','issummary']),
       children:(p.children??[]).map(r=>({...pick(r,['code','desc','buildingCode','roomTypeCategoryCode','isroomtype']),columns:columns(r.columns),
         children:(r.children??[]).map(t=>({...pick(t,['code','desc','currency','currencysymbol','isNegotiatedRate','restricted','haspolicies',
@@ -841,7 +864,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
           }
         },clock);
         searchCount+=source.searchCount;
-        await saveEvidence(directory,`${prefix}-source.json`,{endpoint:'/api/internalBooking/hotelAvail/inquiryForGrid',windows:source.windows.map(projectWindow),resolvedContext:source.resolvedContext});
+        await saveEvidence(directory,`${prefix}-source.json`,{endpoint:source.windows[0]?.endpoint??null,windows:source.windows.map(projectWindow),resolvedContext:source.resolvedContext});
         let roomFacts=[];
         if(room.required?.bedTypes||room.preferred?.bedTypes)roomFacts=await readRoomFacts(page,request.propertyCode);
         entry={source,details,roomFacts,detailIssues,sourceEvidence:`${prefix}-source.json`,gridShotPrefix:prefix};cache.set(signature,entry);
@@ -939,6 +962,29 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
     screenshots:copiedShots};
 }
 
+// The cloud policy is property-specific. Preserve the established HRDAV reader
+// until it has its own reviewed policy; never fall back if the HRCEN guard fails.
+export async function attachQuoteSession({href,env,property,secret,connectOverCDP,
+  buildPolicy=prepareQuoteRequestPolicy,guardedAttach=attachGuardedQuoteSession,
+  legacyAttach=attachBorrowedSession,legacyContext=newBorrowedContext}) {
+  if(property.propertyCode==='HRCEN') {
+    const policy=await buildPolicy({secret,property});
+    const attached=await guardedAttach({href,env,policy,connectOverCDP});
+    if(!attached?.guard) {
+      let cleanupFailed=false;
+      try {await attached?.context?.close();} catch {cleanupFailed=true;}
+      try {await attached?.browser?.close();} catch {cleanupFailed=true;}
+      throw new Error(cleanupFailed?'HMS_QUOTE_CONTEXT_CLEANUP_UNPROVEN':'HMS_QUOTE_POLICY_NOT_INSTALLED');
+    }
+    return attached;
+  }
+  if(property.propertyCode!=='HRDAV') throw new Error('HMS_QUOTE_PROPERTY_POLICY_UNREVIEWED');
+  const attached=await legacyAttach({href,env,connectOverCDP,
+    newContext:(browser,options,nextEnv)=>legacyContext(browser,options,nextEnv)});
+  await attached.page.close().catch(()=>{});
+  return {...attached,guard:null};
+}
+
 export async function fetchQuote({requestPath,outputDir,env=process.env,video=false,onCaptured}) {
   process.umask(0o077);
   const root=resolve(fileURLToPath(new URL('../../../../',import.meta.url)),'.private/playwright-quote');
@@ -946,7 +992,7 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
   if (outputRoot!==root && !outputRoot.startsWith(root+'/')) throw new Error('OUTPUT_MUST_BE_PRIVATE_PLAYWRIGHT_QUOTE_DIRECTORY');
   const directory=join(outputRoot,new Date().toISOString().replace(/[:.]/g,'-')+'-'+randomUUID().slice(0,8));
   await mkdir(directory,{recursive:true,mode:0o700});
-  let browser,context,page,secret,propertyRegistration,phase='input',result,auditReport;
+  let browser,context,page,secret,propertyRegistration,quoteGuard,phase='input',result,auditReport;
   const audit=await createAudit(directory,{video});
   const started=Date.now();
   const clock=createPhaseClock();
@@ -960,52 +1006,56 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       searchCompleteness:{status:'not_started',searchCount:0}});
     else {
       const request=normalized.request;
-      if(!lookupActiveProperty(request.propertyCode)) throw new Error('PROPERTY_UNKNOWN');
+      const property=lookupActiveProperty(request.propertyCode);
+      if(!property) throw new Error('PROPERTY_UNKNOWN');
       await saveEvidence(directory,'request.json',request);
       event('configuration');
       const url=new URL(env.HMS_STAGEHAND_CDP_URL);
       if(!['http:','ws:'].includes(url.protocol)||!['127.0.0.1','localhost','[::1]'].includes(url.hostname)||url.username||url.password||url.search) throw new Error('PRIVATE_CDP_REQUIRED');
       if(env.HMS_STAGEHAND_BROWSER_OWNERSHIP!=='borrowed') throw new Error('ATTACH_ONLY_REQUIRES_borrowed_OWNERSHIP');
-      if(env.HMS_PROPERTY_TRANSPORT_ID!==undefined)
+      if(env.HMS_PROPERTY_TRANSPORT_ID!==undefined) {
         propertyRegistration=getHmsPropertyRegistration(env.HMS_PROPERTY_TRANSPORT_ID);
+        if(propertyRegistration.propertyCode!==request.propertyCode) throw new Error('ACCOUNT_PROPERTY_MISMATCH');
+      }
       secret=await clock.time('secret',()=>readSecret(env));
       if(secret.expectedPropertyCode!==request.propertyCode) throw new Error('ACCOUNT_PROPERTY_MISMATCH');
       event('attach');
       await clock.time('cdp',async()=>{
-        // Trace only our isolated context, never the borrowed owner's tabs.
-        // Lease creates the only page; attachBorrowedSession's blank page is unused.
-        const attached=await attachBorrowedSession({
+        const attached=await attachQuoteSession({
           href:url.href,
           env,
+          property,
+          secret,
           connectOverCDP:(href,opts)=>playwright().chromium.connectOverCDP(href,opts),
-          newContext:(nextBrowser,options,nextEnv)=>newBorrowedContext(nextBrowser,options,nextEnv),
         });
         browser=attached.browser;
         context=attached.context;
-        await attached.page.close().catch(()=>{});
+        quoteGuard=attached.guard;
       });
+      event('login');
       result=await withReadCliPage({propertyCode:request.propertyCode,secret,context,browser,env},async({page:leased})=>{
         page=leased;
+        quoteGuard?.assertActive();
         page.setDefaultTimeout?.(20000);
-        event('login'); await clock.time('login',()=>Promise.resolve());
+        await clock.time('login',()=>Promise.resolve());
         event('audit_start'); await audit.start(page,[secret.password,secret.username,secret.loginUrl]);
         await audit.checkpoint('login-complete');
+        quoteGuard?.assertActive();
         event('hotel_availability'); await clock.time('nav',()=>openHotelAvailability(page));
         await audit.checkpoint('hotel-availability');
-        if(propertyRegistration)
-          await installRegisteredAvailabilityReadOnlyGuard(context,propertyRegistration.transportId,new URL(secret.loginUrl).origin);
+        if(!quoteGuard && propertyRegistration)
+          await installRegisteredAvailabilityReadOnlyGuard(context,env.HMS_PROPERTY_TRANSPORT_ID,new URL(secret.loginUrl).origin);
         const next=await runInPage(page,request,directory,event,audit.checkpoint,clock,env);
+        quoteGuard?.assertActive();
         event(`result_${next.outcome}`);
-        if(onCaptured&&quoteTraceAsyncEnabled(env)) {
-          const provisional=provisionalQuoteCapture({result:{...next,phaseMs:{...clock.ms}},audit,directory,started});
-          if(provisional){await saveEvidence(directory,'result.provisional.json',provisional);onCaptured(provisional);}
-        }
         return next;
       });
+      quoteGuard?.assertActive();
     }
   } catch(error) {
-    result=executionFailure(error,phase,secret);
-    if(page && phase!=='login' && !await page.locator('input[type="password"]:visible').count().catch(()=>1))
+    const policyError=quoteGuard?.failureError();
+    result=executionFailure(policyError??error,phase,secret);
+    if(!policyError && page && phase!=='login' && !await page.locator('input[type="password"]:visible').count().catch(()=>1))
       await audit.checkpoint('failure').catch(()=>{});
   } finally {
     // Flush recording and trace while our page is still alive. Capture failure
@@ -1018,8 +1068,20 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
     // Verified in coreBundle _connectOverCDPImpl and against the retained live tab.
     try { if(browser) await browser.close(); }
     catch { result={...result,outcome:'execution_failure',cleanupError:'CDP_DETACH_FAILED'}; }
+    const policyError=quoteGuard?.failureError();
+    if(policyError) result={...executionFailure(policyError,phase,secret),
+      ...(result?.cleanupError?{cleanupError:result.cleanupError}:{})};
   }
   result=applyQuoteScreenshotContract({...result,audit:auditReport,elapsedMs:Date.now()-started,evidenceDirectory:directory,phaseMs:{...clock.ms}});
+  // A provisional quote must not escape while a late request can still trip
+  // the policy. Publish only after the guarded context has closed.
+  if(onCaptured&&quoteTraceAsyncEnabled(env)&&(!quoteGuard||!quoteGuard.failureError())) {
+    try {
+      const provisional=provisionalQuoteCapture({result,audit,directory,started});
+      if(provisional){await saveEvidence(directory,'result.provisional.json',provisional);onCaptured(provisional);}
+    } catch(error) {result={...executionFailure(error,'capture',secret),audit:auditReport,
+      elapsedMs:Date.now()-started,evidenceDirectory:directory,phaseMs:{...clock.ms}};}
+  }
   audit.event('phase_timings',{phaseMs:result.phaseMs});
   event('run_finished');
   await saveEvidence(directory,'result.json',result);

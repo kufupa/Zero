@@ -9,6 +9,74 @@ import { barWalkInSource, multipleSource, selectionFixture } from './fetch-quote
 import { composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 const { validateRequest, stayDates, displayDate } = quote;
 const request = {propertyCode:'HRCEN',arrivalDate:'2026-09-24',departureDate:'2026-09-27',rooms:[{quantity:2,adults:1,children:0,childAges:[]}]};
+test('Centurion attaches only through its prepared cloud guard',async()=>{
+  const calls=[];
+  const policy={reviewed:true}, guard={assertActive(){}};
+  const attached=await quote.attachQuoteSession({href:'ws://localhost:1',env:{},property:{propertyCode:'HRCEN'},secret:{},
+    connectOverCDP:()=>{},buildPolicy:async()=>{calls.push('policy');return policy;},
+    guardedAttach:async options=>{calls.push('guarded');assert.equal(options.policy,policy);return {guard};},
+    legacyAttach:async()=>{throw new Error('unexpected legacy fallback');}});
+  assert.equal(attached.guard,guard);
+  assert.deepEqual(calls,['policy','guarded']);
+});
+test('Centurion guard failures never fall back to the legacy reader',async()=>{
+  let legacyUsed=false;
+  const options={href:'ws://localhost:1',env:{},property:{propertyCode:'HRCEN'},secret:{},connectOverCDP:()=>{},
+    legacyAttach:async()=>{legacyUsed=true;}};
+  await assert.rejects(quote.attachQuoteSession({...options,buildPolicy:async()=>{throw new Error('policy denied');}}),/policy denied/);
+  await assert.rejects(quote.attachQuoteSession({...options,buildPolicy:async()=>({}),
+    guardedAttach:async()=>{throw new Error('guard denied');}}),/guard denied/);
+  assert.equal(legacyUsed,false);
+});
+test('Centurion closes an unguarded attachment and refuses to continue',async()=>{
+  const closed=[];
+  await assert.rejects(quote.attachQuoteSession({href:'ws://localhost:1',env:{},property:{propertyCode:'HRCEN'},secret:{},
+    connectOverCDP:()=>{},buildPolicy:async()=>({}),guardedAttach:async()=>({
+      context:{close:async()=>closed.push('context')},browser:{close:async()=>closed.push('browser')},
+    })}),/HMS_QUOTE_POLICY_NOT_INSTALLED/);
+  assert.deepEqual(closed,['context','browser']);
+});
+test('the existing HRDAV reader remains available without the Centurion policy',async()=>{
+  const calls=[];
+  const result=await quote.attachQuoteSession({href:'ws://localhost:1',env:{},property:{propertyCode:'HRDAV'},secret:{},
+    connectOverCDP:()=>{},buildPolicy:async()=>{throw new Error('wrong property');},
+    guardedAttach:async()=>{throw new Error('wrong property');},
+    legacyAttach:async()=>({page:{close:async()=>calls.push('page')},context:{},browser:{}})});
+  assert.deepEqual(calls,['page']);
+  assert.equal(result.guard,null);
+});
+test('both property attachment paths reuse private slot state before login',async t=>{
+  const {mkdtemp,writeFile}=await import('node:fs/promises');
+  const {tmpdir}=await import('node:os');
+  const dir=await mkdtemp(join(tmpdir(),'quote-slot-state-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const storage=join(dir,'storageState.json');
+  await writeFile(storage,'{}',{mode:0o600});
+  for(const propertyCode of ['HRCEN','HRDAV']) {
+    let options,closedPages=0;
+    const listeners={};
+    const context={
+      route:async()=>{},routeWebSocket:async()=>{},on:(name,handler)=>{listeners[name]=handler;},
+      newPage:async()=>{
+        const page={on(){},setDefaultTimeout(){},close:async()=>{closedPages+=1;}};
+        listeners.page?.(page);
+        return page;
+      },
+      close:async()=>{},
+    };
+    const browser={newContext:async value=>{options=value;return context;},close:async()=>{}};
+    const attached=await quote.attachQuoteSession({href:'ws://localhost:1',env:{HMS_SLOT_STORAGE_STATE:storage},
+      property:{propertyCode},secret:{},connectOverCDP:async()=>browser,buildPolicy:async()=>({})});
+    assert.equal(options.storageState,storage,propertyCode);
+    assert.equal(options.serviceWorkers,'block',propertyCode);
+    assert.equal(options.acceptDownloads,false,propertyCode);
+    assert.equal(closedPages,1,propertyCode);
+    assert.equal(Boolean(attached.guard),propertyCode==='HRCEN');
+  }
+});
+test('an unreviewed property cannot use either quote attachment path',async()=>{
+  await assert.rejects(quote.attachQuoteSession({property:{propertyCode:'OTHER'}}),/HMS_QUOTE_PROPERTY_POLICY_UNREVIEWED/);
+});
 test('input-gap invocation has durable events and explicit capture status without browser access',async t=>{
   const result=await quote.fetchQuote({requestPath:new URL('./examples/missing-age.json',import.meta.url),env:{},video:true});
   t.after(()=>rm(result.evidenceDirectory,{recursive:true,force:true}));
@@ -675,7 +743,7 @@ test('selected multi-group allocation uses proven building/room pools from extra
 
 // A fake Hotel Availability menu. Hotel Availability appears from Availability click `revealOnClick` on,
 // or from the start when alreadyVisible. Infinity never reveals it.
-function hotelMenuPage({revealOnClick=2,alreadyVisible=false}={}){
+function hotelMenuPage({revealOnClick=2,alreadyVisible=false,dateField='startdate'}={}){
   const log=[];let availabilityClicks=0;
   const visibleNames=()=>['Front Desk','Availability',...(alreadyVisible||availabilityClicks>=revealOnClick?['Hotel Availability']:[])];
   const treeNode=(matchers)=>{
@@ -691,7 +759,10 @@ function hotelMenuPage({revealOnClick=2,alreadyVisible=false}={}){
     locator(selector){
       if(selector==='a.app-menu-trigger:visible')return{click:async()=>{log.push('menu');}};
       if(selector==='span.x-tree-node-text:visible')return treeNode([]);
-      if(selector==='input[name="startdate"]:visible')return{waitFor:async()=>{log.push('startdate');}};
+      if(selector==='input[name="startdate"]:visible, input[name="dates"]:visible')return{first:()=>({waitFor:async()=>{
+        if(!dateField)throw new Error('TimeoutError: no visible date field');
+        log.push(dateField);
+      }})};
       throw new Error(`unexpected selector ${selector}`);
     },
     getByRole:(role,{name})=>({waitFor:async()=>{log.push(`${role}:${name}`);}}),
@@ -708,6 +779,15 @@ test('Hotel Availability menu does not click Availability when the child is alre
   await quote.openHotelAvailability(menu.page);
   assert.deepEqual(menu.log,['menu','Front Desk','Hotel Availability','startdate','heading:Hotel Availability']);
   assert.equal(menu.availabilityClicks(),0);
+});
+test('Hotel Availability menu accepts the visible cloud date range',async()=>{
+  const menu=hotelMenuPage({alreadyVisible:true,dateField:'dates'});
+  await quote.openHotelAvailability(menu.page);
+  assert.deepEqual(menu.log,['menu','Front Desk','Hotel Availability','dates','heading:Hotel Availability']);
+});
+test('Hotel Availability menu rejects a screen without a visible date control',async()=>{
+  const menu=hotelMenuPage({alreadyVisible:true,dateField:null});
+  await assert.rejects(quote.openHotelAvailability(menu.page),/no visible date field/);
 });
 test('Hotel Availability menu stops after four Availability clicks and fails when the child never appears',async()=>{
   const menu=hotelMenuPage({revealOnClick:Infinity});
