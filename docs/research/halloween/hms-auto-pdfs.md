@@ -1,6 +1,6 @@
 # HMS Auto PDFs — HRCEN Confirmation Letters
 
-**Result:** The RDS query returned 1,865 outbound message rows with the exact `HRCEN_Confirmation_Letter_… .pdf` filename pattern; these represent 1,773 distinct email keys. It reported database name `zero`; the endpoint was not independently validated. These are stored rows, not proof of BCC delivery or capture completeness.
+**Result:** The RDS query returned 1,865 outbound message rows with the exact `HRCEN_Confirmation_Letter_… .pdf` filename pattern; these represent 1,773 distinct email keys. It reported database name `zero`; the endpoint was not independently validated. These are stored rows, not proof of BCC delivery or capture completeness. A later Centurion-only PDF extraction is documented in the [candidate dataset note](centurion-confirmation-pdf-dataset.md); it does not change these historical aggregate results.
 
 ## Snapshot and source
 
