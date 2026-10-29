@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { probeCommandEnv, probeSucceeded } from './party-lookup-batch-probe.mjs';
+import { probeCommandEnv, probeSucceeded } from './diagnostics/party-lookup-batch-probe.mjs';
 
 test('import has no CLI, browser or credential side effects', () => {
   const child = spawnSync(
     process.execPath,
-    ['--input-type=module', '-e', `await import(${JSON.stringify(new URL('./party-lookup-batch-probe.mjs', import.meta.url).href)}); console.log('import only');`],
+    ['--input-type=module', '-e', `await import(${JSON.stringify(new URL('./diagnostics/party-lookup-batch-probe.mjs', import.meta.url).href)}); console.log('import only');`],
     { encoding: 'utf8', timeout: 10000, env: { PATH: process.env.PATH } },
   );
   assert.equal(child.status, 0, child.stderr);
