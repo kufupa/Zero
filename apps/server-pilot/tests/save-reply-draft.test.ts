@@ -158,6 +158,19 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       30000,
     );
 
+    it('keeps a non-quote attachment insertable after the composer edits the reply', async () => {
+      await withSeededTestDb(async (db) => {
+        await seedThreads(db);
+        const nava = await callerFor(NAVA_USER_ID, { db, requestedTransportId: TRANSPORT_ID });
+        const saved = await nava.drafts.saveReply({ ...saveInput('<p>First greeting</p>'), replyKind: 'other' });
+        await nava.drafts.update({ id: saved.id, html: '<p>Edited greeting</p>' });
+        await expect(nava.drafts.savedReply({ threadId: THREAD_ID })).resolves.toMatchObject({
+          html: '<p>Edited greeting</p>', quoteBound: false,
+          attachments: [{ fileName: 'Quotation.pdf', pdfBase64: PDF_BASE64 }],
+        });
+      });
+    });
+
     it(
       "another person's saved reply needs the replace confirm, then is set aside for a new draft",
       async () => {
