@@ -104,6 +104,7 @@ import {
   stayKeyForGroup,
   hasStaffStayEdits,
   initialQuoteSession,
+  caseQuoteBlocked,
   caseReviewPending,
   paneCaseSnapshot,
   sameCaseSnapshot,
@@ -1008,6 +1009,8 @@ export function NavaPane({
 
   const priorQuoteKey = [
     quoteSession.analysis?.luna?.workflow ?? '',
+    caseReviewPending(quoteSession.analysis) ? 'case-held' : '',
+    (quoteSession.analysis?.luna?.tasks ?? []).map((task) => `${task.kind}:${task.groupIndexes.join(',')}`).join(';'),
     quoteSession.staffSource?.threadId ?? '',
     String(quoteSession.inputRevision),
     String(quoteSession.stayRevision),
@@ -1044,6 +1047,7 @@ export function NavaPane({
     const header = quoteSession.staffHeader;
     const stayKeys = requestedQuoteKeys(quoteSession.groups);
     for (const stayKey of stayKeys) {
+      if (caseQuoteBlocked(quoteSession, stayKey)) continue;
       const groups = quoteSession.groups.filter((group) => stayKeyForGroup(group) === stayKey);
       const stayRevision = quoteStrategyStayRevision(quoteSession, stayKey);
       const attemptKey = JSON.stringify([
@@ -1120,7 +1124,7 @@ export function NavaPane({
     const stayKeys = requestedQuoteKeys(quoteSession.groups);
     const singleStayKey = stayKeys.length <= 1 ? (stayKeys[0] ?? 'unknown:unknown') : null;
     const waiting = (singleStayKey ? [singleStayKey] : stayKeys).filter(
-      (key) => !quoteSession.staffQuotes[key] && !quoteSession.bookingDrafts[key],
+      (key) => !quoteSession.staffQuotes[key] && !quoteSession.bookingDrafts[key] && !caseQuoteBlocked(quoteSession, key),
     );
     const isBooking = luna?.workflow === 'create_booking';
     const isQuote = quoteSession.analysis?.intent === 'quote' || luna?.workflow === 'quote';
@@ -1690,6 +1694,12 @@ export function NavaPane({
       });
       if (!groups.length) {
         toast.warning('The stays changed since this quote. Run the search for that stay again.');
+        return;
+      }
+      const current = quoteSessionRef.current;
+      if (!quoteRunIsCurrent(current, { selectionEpoch, inputRevision, stayRevision }) ||
+        groups.some((group) => caseQuoteBlocked(current, stayKeyForGroup(group)))) {
+        toast.warning('This stay needs its case reviewed before getting rates.');
         return;
       }
       // The prior quote loaded after the click, so a lookup may have started since. The run must not start under it.
