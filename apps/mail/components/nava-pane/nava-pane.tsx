@@ -107,7 +107,7 @@ import {
   caseQuoteBlocked,
   caseReviewPending,
   paneCaseSnapshot,
-  sameCaseSnapshot,
+  sameCaseSnapshot, singleCaseReclassification,
   withPaneRead,
   type PaneCaseSnapshot,
   nextSelectedOfferIds,
@@ -838,20 +838,24 @@ export function NavaPane({
     if (!binding?.internetMessageId || binding.internetMessageId !== activeEmail?.internetMessageId ||
       !analysis || caseReviewPending(analysis) || storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) return;
     const key = paneEditKey(binding.transportId, binding.internetMessageId);
-    const record = paneSourceRecord(key);
+    let record = paneSourceRecord(key);
     const current = paneCaseSnapshot(analysis);
     if (record?.source && current?.aliases && record.source.identity !== current.identity) {
       rememberPaneSource(key, quoteSession.groups, current, record.pendingBefore);
+      record = paneSourceRecord(key);
     }
     const stored = paneCaseSnapshot(withPaneRead(storedWork.pane.analysis, null, null, activePaneConfig?.propertyCode ?? null));
     const retainedRows = quoteSession.groups.map((group) => group.id);
     if (!Array.isArray(record?.pendingBefore) || !record.source || !current || !stored ||
-      !sameCaseSnapshot(record.source, current, false, retainedRows) ||
-      !sameCaseSnapshot(record.source, stored, false, retainedRows)) return;
+      !sameCaseSnapshot(record.source, current, false, retainedRows)) return;
+    const linked = current.aliases && JSON.stringify(current.aliases) ===
+      JSON.stringify(singleCaseReclassification(storedWork.pane.analysis, analysis, quoteSession.treatAs));
+    if (!sameCaseSnapshot(record.source, stored, false, retainedRows) &&
+      (!linked || (record.source.propertyCode && record.source.propertyCode !== stored.propertyCode))) return;
     storedWork.recordGroups(record.pendingBefore, quoteSession.groups);
     rememberPaneEdits(key, quoteSession.groups);
     rememberPaneSource(key, quoteSession.groups, current);
-  }, [quoteSession.binding, quoteSession.analysis, quoteSession.groups, storedWork.pane, storedWork.recordGroups,
+  }, [quoteSession.binding, quoteSession.analysis, quoteSession.groups, quoteSession.treatAs, storedWork.pane, storedWork.recordGroups,
     activeEmail?.internetMessageId, activePaneConfig?.propertyCode]);
   // Keep the lookup deadline separate from its payload: a late ready result changes the decision to stored, not to
   // another live read. With a treat-as or note, only Retry read (its count) re-runs the live analysis.
