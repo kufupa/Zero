@@ -1,15 +1,14 @@
 # Agent Configuration for Zero Email
 
-Zero is an open-source AI email solution built with a modern TypeScript/Next.js stack in a monorepo setup.
+On-demand repository map and development commands. The Nava pilot has separate production, test and database safeguards in `PRODUCT.md` and `AGENTS.md`; these examples do not authorize a deployment or database write.
 
 ## Project Structure
 
 This is a pnpm workspace monorepo with the following structure:
 - `apps/mail/` - Next.js frontend email client
-- `apps/server/` - Backend server
-- `apps/ios-app/` - iOS mobile app
+- `apps/server/` - Upstream backend server
+- `apps/server-pilot/` - Nava pilot backend and HMS tooling
 - `packages/cli/` - CLI tools (`nizzy` command)
-- `packages/db/` - Database schemas and utilities
 - `packages/eslint-config/` - Shared ESLint configuration
 - `packages/tsconfig/` - Shared TypeScript configuration
 - `docs/solutions/` - Documented fixes and workflow gotchas (YAML frontmatter: `module`, `tags`, `problem_type`); search before debugging in documented areas
@@ -22,22 +21,19 @@ This is a pnpm workspace monorepo with the following structure:
 - `pnpm dev` - Start all development servers (uses Turbo)
 - `pnpm docker:db:up` - Start PostgreSQL database in Docker
 - `pnpm docker:db:down` - Stop and remove database container
-- `pnpm docker:db:clean` - Stop and remove database with volumes
+- `pnpm docker:db:clean` - Stop and remove database with volumes; destructive, do not run without explicit authorization
 
 ### Build & Deploy
 - `pnpm build` - Build all packages (uses Turbo)
 - `pnpm build:frontend` - Build only the mail frontend
-- `pnpm deploy:frontend` - Deploy frontend
-- `pnpm deploy:backend` - Deploy backend
+- Pilot production deploys use the path and approval rules in `PRODUCT.md`; generic deploy scripts are not pilot deployment instructions.
 
 ### Code Quality
-- `pnpm check` - Run format check and lint
-- `pnpm lint` - Run ESLint across all packages
-- `pnpm format` - Format code with Prettier
-- `pnpm check:format` - Check code formatting
+- Use targeted linting and formatting on specific files only when necessary. Do not run repository-wide `pnpm check`, `pnpm lint`, `pnpm format`, or `pnpm check:format`; `pnpm format` writes files and `pnpm check:format` checks them.
+- Follow `AGENTS.md` for approved test and type-check locations.
 
 ### Database
-- `pnpm db:push` - Push schema changes to database
+- `pnpm db:push` - Push schema changes to the configured database; never run automatically, and verify target and authorization first
 - `pnpm db:generate` - Generate migration files
 - `pnpm db:migrate` - Apply database migrations
 - `pnpm db:studio` - Open Drizzle Studio
@@ -89,14 +85,14 @@ This is a pnpm workspace monorepo with the following structure:
 2. Setup environment: `pnpm nizzy env`
 3. Sync environment: `pnpm nizzy sync`
 4. Start database: `pnpm docker:db:up`
-5. Initialize database: `pnpm db:push`
+5. Initialize a disposable development database only after verifying the target and authorization
 6. Start development: `pnpm dev`
 
 ## Common Workflow
 
-1. Always run `pnpm check` before committing
+1. Use targeted lint and the approved tests in `AGENTS.md`; never run repository-wide lint or formatting
 2. Use `pnpm nizzy sync` after environment variable changes
-3. Run `pnpm db:push` after schema changes
+3. For schema changes, verify the target and explicit authorization before any database write
 4. Use `pnpm go` for quick development startup
 
 ## Notes
@@ -104,12 +100,4 @@ This is a pnpm workspace monorepo with the following structure:
 - Uses Husky for git hooks
 - Integrates with Sentry for error tracking
 - Uses Cloudflare Workers for backend deployment
-- iOS app is part of the monorepo
 - CLI tool `nizzy` helps manage environment and sync operations
-
-## IMPORTANT RESTRICTIONS
-
-- **NEVER run project-wide lint/format commands** (`pnpm check`, `pnpm lint`, `pnpm format`, `pnpm check:format`)
-- These commands format/lint the entire codebase and cause unnecessary changes
-- Only use targeted linting/formatting on specific files when absolutely necessary
-- Focus on the specific task at hand without touching unrelated files

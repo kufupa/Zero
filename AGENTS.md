@@ -1,88 +1,31 @@
-# AGENTS.md
+# Zero agent guidance
 
-Read by Cursor CLI, Codex CLI, and any agent that looks for `AGENTS.md`. Claude Code loads `CLAUDE.md`, which points here.
+## Start with the task
 
-**Read in this order, every session:**
+Read `PRODUCT.md` for product and safety boundaries and `docs/context/START-HERE.md` for current work pointers. Treat historical directions as scoped to their original work, not authority for a new run. Consult `AGENT.md` for repo layout and commands, and the relevant handoff, research or `docs/solutions/` only when useful. Check a command or tool before claiming it is unavailable.
 
-1. `PRODUCT.md` — owner product spec. Do not invent requirements.
-2. `docs/context/ACTIVE.md` and `docs/context/OWNER-ASKS.md` — current run and original asks.
-3. `docs/research/README.md` — current index, dated conclusions and evidence locators; do not redo settled research.
-4. `AGENT.md` — repo layout and commands.
+Follow the owner’s current request and preserve existing changes. Coordinate ownership before editing files shared with another session. Use isolated worktrees for concurrent writers when needed. Do not reset, stash, overwrite, delete or interrupt another session’s work.
 
-- Before any research or analysis lane, read `docs/context/FACTS.md` and `docs/research/CATALOG.md` and reuse.
-- Reusable learnings live in `docs/solutions/<category>/`, searchable by YAML `module`, `tags` and `problem_type`; they are relevant before changing behavior or revisiting a documented failure.
-- A lane may only re-analyse when it names the prior artifact and why it’s insufficient.
-- Latest settled facts (live quote proof, HMS lane, staff defaults, "same move as staff" metric): `docs/context/FACTS.md` section 8 (2026-10-15).
-- New or migrated VPS: restore from `docs/context/VPS-MIGRATION.md` (GitHub branches, S3 backups, local tooling, backup cron).
+Ordinary questions do not require ledger entries, research files, or handoff updates. Record the decision, evidence, next check and holds when a genuine handoff needs them or the owner requests a durable record. Keep historical asks and evidence accessible without treating them as new approval.
 
-Done = score on the golden set in `PRODUCT.md`, not a merge.
+## Safety and resource limits
 
-**Before your first claim or plan in a session:** say which required files you read (with `git rev-parse --short origin/main`). Before saying a tool, command or flag does not exist, check it (`claude --help`, `codex --help`, the docs). Both misses happened on 2026-10-13.
+`PRODUCT.md` governs guest writes, Labtest, property ownership, privacy, penalty dialogs, flags and pilot deployment. Never test against pilot RDS, expose secrets, bypass git or test hooks, or authorize a real-guest write or send by inference. Verify the target and obtain the required authorization before schema pushes, destructive database operations or deleting volumes. Use the product’s approved deploy path and verify the current property and authority before live work. Production and authorization approvals must come from the owner in the executing session, not via another agent; the Labtest exception remains as specified in `PRODUCT.md`.
 
-## Bounded session startup and handoff
+This VPS has previously frozen under heavy checks. Run `tsc`, `tsgo` and typechecks via `bash /home/orca/bin/remote-typecheck.sh <clean worktree>`. The owner permits at most three concurrent local tests across harnesses, but the shared cap is not yet coordinated; use the approved Product EC2 test route until it is. Before Vitest, unset `DATABASE_URL`, `VITEST_ALLOW_PILOT_RDS`, and `TEST_DATABASE_URL`. Never bypass a denial. Stop processes you start by PID.
 
-- Batch-read the mandatory rules and short ACTIVE context, then inspect relevant changes since its checkpoint. A new session alone is not a reason to scan every transcript or corpus.
-- Open the research index and exact evidence for the chosen slice. Refresh volatile runtime/price/authorization facts; do not treat dated observations as live permission.
-- Start product discussion from settled conclusions while independent verification runs. Bulk archives go to Luna; fresh Haiku max reviews bounded changes, not the entire product.
-- Preserve original asks in OWNER-ASKS.md. At handoff update ACTIVE.md with verified state, the next acceptance check and holds; put detailed findings and methods in dated research files. At each lane close, the coordinator runs `ce-compound mode:lane-close` before spin-down; at full overnight-run close, run the nightly retro and link the evidence-backed closeout. This is normal closeout, not a separate owner ask; preserve unrelated asks and edits.
-- Root CLAUDE.md already imports ACTIVE.md. These files improve discovery, not behavioural enforcement; no new startup hook or memory system is implied.
+For flag changes, verify the durable environment source and effective environment of every affected PM2 process (`http`, `worker`, `ai-worker`, `remote-http`) before enqueuing work. Confirm property-specific readiness and a live canary on the final SHA before declaring a workflow on.
 
-## Limits that keep runs finishing (2026-10-14 retro)
+GitHub Actions are reserved for the authorized Outlook installer workflows. Do not add, enable or trigger other workflows. Never run repo-wide lint or formatting; use targeted checks when necessary.
 
-| Limit                | Rule                                                                                                                                                                                                                                                                      | Why                                                                                                                |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| PR size              | One behaviour per PR, ≤ ~500 changed product lines (tests and fixtures excluded). Split before review, not after                                                                                                                                                          | #214 grew to 58 files / +3.4k and took 16 Greptile rounds; Greptile's own data: 1,000+ line PRs average 3.5 rounds |
-| Stacking             | Never base a feature PR on an unmerged PR over 500 lines                                                                                                                                                                                                                  | #222 (quote-ready) waited on #214 and missed the 07:30Z target                                                     |
-| Main merges          | Merge `origin/main` into a long-lived PR before its first review, then freeze the diff                                                                                                                                                                                    | the late main merge into #214 brought 4 more rounds of new P1s                                                     |
-| Review rounds        | Two Greptile rounds. After that, validate each new P1 (real path, real impact); fix the real ones and send the rest to the owner with a one-line reason. Never merge with an unvalidated P1. Merges go through `merge-gate.sh` (Apex SUCCESS on head SHA, 0 open P1, ≤500 product lines, remote tests on head); until it lands, the orchestrator checks and logs all four. #532/#534 merged mid-review on 2026-10-25 | rounds r12–r16 on #214 cost ~2 h on the critical path                                                              |
-| Writers              | Unbounded writers **iff** disjoint files, own worktree, own branch from `origin/main`. Shared file = queued. One verifier **per PR** (Haiku/Luna), not a global mutex. Impl: Grok 4.6 high; review: Gemini 4 Argon High via `agy --model gemini-4-argon-high --mode plan` (owner 2026-10-25; was Grok 4.7 xhigh); merge/deploy/live HMS (deterministic scripts only): Grok orchestrator per D18 (2026-10-20). No Fast. | Cursor: 20 agents on a shared lock → 1–3 throughput. Isolation + file ownership scale; a count cap does not.     |
-| Orchestrator context | Opus orchestrator `/clear`s (or hands off) at each slice boundary; state lives in the scoreboard, not the chat. Wait for background work with run-in-background notifications, not `sleep` polls. Bulk reads (SQL dumps, transcripts, eval output) go to a subagent that returns a summary. Self-handoff at ~250K (owner 2026-10-23), ceiling ~300K; Grok has no /compact, so handoff = HANDOFF note + new terminal + resume prompt | overnight 2026-10-14: 867 Opus turns at ~253k context = $44 of cache reads alone. Overnight 2026-10-19: 514 Opus turns, 92M cache reads ≈ $46 of ~$63 Opus spend |
-| Idle orchestrator | A script, not the orchestrator, compares running lanes with startable units every ~10 min and steers on a gap | idle-with-startable-work repeated 2026-10-21, 10-22, 10-25 ([mh1024 retro](docs/context/ledger/2026-10-25-mh1024-retro.md)) |
-| Research scope       | One decision-critical question per research subagent, named start files, fixed output shape (table, ≤60 lines). No command or time cap: the coordinator checks every lane's log every ~10 min (a check-in, not a cap: progressing lanes keep running) and steers, or kills and relaunches a lane that is drifting. Split domains into parallel narrow questions; the coordinator synthesises. Effort xhigh or max only | 2026-10-20: four whole-domain Luna max lanes (R1–R4) had no output after 15 min; earlier L/P lanes ran 25–95 min each |
-| Plan-first lanes     | A lane told "plan first, then wait" posts its plan within ~10 min and at most ~8 tool calls, listing unchecked facts as assumptions. The coordinator starts a background `orca terminal wait --for tui-idle --timeout-ms 900000` per lane and interrupts a lane that hits the timeout with no plan | 2026-10-19: lanes C and D each spent 67 min, ~32 turns and ~1.2M max-effort thinking tokens verifying before posting anything |
-| Early stop           | When a stop rule ends a lane early (target, plateau), take the next item in the plan's list instead of ending the run. A run ends only when the list is empty or the wall clock is spent | overnight 2026-10-19 finished in 3.2 h of a 5.5 h window and stopped                                               |
-| Haiku                | Budget Haiku at the >100k tier ($0.50 / $2.50 per M): a 100k cap can't be enforced (owner, 2026-10-14). Still start a fresh agent per review/label task instead of resuming one; send long-context reading (transcripts, corpora) to Luna, whose cache reads are ~$0.01/M | 65% of overnight Haiku calls ran over 100k even with "keep under 100k" in every brief                              |
-| Slicing              | The orchestrator plans the PR slices before any lane starts (the owner doesn't): each slice = one behaviour, its test, its PR. Commit and push every green slice; deploy only when someone needs to see it                                                                | owner, 2026-10-14: "smaller PRs, more often, always — on you to plan it"                                           |
-| Flags and env        | A flag flip covers every pm2 process that reads it (`http`, `worker`, `ai-worker`, `remote-http`), sources the right env files, and checks `/proc/<pid>/environ` for each before anything is enqueued                                                                     | 6 quote-ready proofs dead-lettered on 2026-10-14 (login-shell pm2 restart); webmail never got the flag             |
-| Idle and owner forks | The orchestrator never ends a turn with work in flight unless a background watcher will wake it. List the likely owner forks at kickoff with defaults; reversible forks take the default | SR2 2026-10-21: ~76–170 min orchestrator idle and ~8 h of owner-decision waits; coding alone ran ~1.4× ETA, total 3.2× ([retro](docs/context/ledger/2026-10-21-sr2-overnight-retro.md)) |
-| ETAs                 | Quote the ledger-scaled ETA of the **longest dependency chain** (code + review + deploy + live proof). If the owner doubts it, show the evidence; change the number only for new evidence                                                                                 | the 8 h quote-ready ETA was cut to 6 h under pushback; actual was > 8 h                                            |
+## Changes and verification
 
-## VPS resources: never overload this machine (owner, 2026-10-15)
+Keep changes focused and reviewable. When preparing a PR, use one behavior per slice and respect the existing approximately 500-product-line gate, with its explicitly authorized pure-move exception. Do not stack a feature on an unmerged PR over that limit. Merge current main into a long-lived branch before its first review.
 
-This 8-vCPU / 30 GB VPS runs every lane, the gateway and the owner's tools. Twice now, parallel heavy checks froze it (first `tsc --noEmit` ×2, then several full Vitest suites at once).
+Before merging, run the applicable approved checks against the final head, obtain the required Greptile Apex result on that head, and validate all P0/P1 findings. Fix valid P0/P1s; do not merge with unvalidated P0/P1s. The coordinator reads each product diff. Merge through `scripts/orch/merge-gate.sh`. Check same-head remote test and typecheck evidence independently: the script checks for a gate record but does not validate its contents. Run independent gates in parallel when safe; honor explicit test-first requests without mandating red-first or forbidding them. Never use `--no-verify`.
 
-| Never | Instead |
-|---|---|
-| `tsc`, `tsgo`, or any `typecheck` script here | `bash /home/orca/bin/remote-typecheck.sh <clean worktree>` (EC2 via SSM; baseline mail 62, server-pilot 0) |
-| Vitest / any test runner on this coding VPS | Product EC2 only. Full suite: `bash /home/orca/bin/vitest-full.sh` is VPS-flock and is **not** the owner rule — do not run Vitest here. |
-| Docker/bake-off installs while lanes run checks | Research lanes run no heavy installs. Typecheck only via remote-typecheck.sh |
-| Leaving servers, containers or test runners behind | Every lane kills what it started before it reports |
+## Evaluation and evidence
 
-A PreToolUse hook (`~/.claude/hooks/block-local-tsc.sh`) denies tsc and direct full Vitest runs. There is no lane or load cap (owner, 2026-10-15: "i didnt add this rule im ok w more load"). The limits are the heavy checks above, not lane count.
+Use production-equivalent input for replay, independent truth data for accuracy, and report the source, sample size and uncertainty. Apply owner-confirmed workflow bars within their scope. Identify proposed bars as proposals, not owner-approved targets. See `PRODUCT.md` and its linked details. Small exploratory samples do not establish a production pass. Compare the same versioned rows and measure baseline noise when it matters. Prove any live tool path with an appropriate read-only probe before batching.
 
-## Gates, evals and instructions (2026-10-15 retro)
-
-All four drivers hit the same wall: **gate latency and eval validity, not lane count.**
-
-| Rule | Why |
-|---|---|
-| Chain gates in the lane's own background job: `lane && remote-typecheck && diff-only Luna verify`. A finished lane never waits for the driver | Main driver had 0 lanes running 19:30–20:00 while fix lanes sat finished ~35 min |
-| A Luna/Greptile P1 counts only if it is reachable from a staff action or a prod path **today**. Eval-only or unused code = P2, or strip the path | Diff-only verify found one fresh adjacent P1 per round (#310 ×3, #321 ×4, #318 ×3, #308 ×6) |
-| Round 3 with a fresh adjacent P1 = design flag: split, strip or redesign. Never a 4th round on the same design | #308 ran 6 rounds (~2.5 h) and is still blocked; #307 merged within the hour once split |
-| Replay/eval input must equal prod input (attachment text via prod's own `readQuoteAttachments` + `selectionToAgentPrompt`). Name the input parity in every eval brief | Every replay score on 2026-10-15 was body-only; 74% of gold inbound carry attachments |
-| Gate tuning on fresh rows with the baseline run ×2 (noise band) before any tuning. A single baseline run cannot pass or fail a change | No-SOP baseline varied 30↔37 on one 99-row set; tuning-slice SOP gains (7→27/30) vanished on fresh rows |
-| Kill and monitor by PID, never `pkill -f` / `pgrep -f` patterns | 3 drivers matched their own shell (exit 144) or a monitor's own command line |
-| Never relay an owner approval between sessions. Prod/auth approvals are given in the executing session's own chat | The watchdog relayed a "pre-approval" for `--apply`; the main driver correctly refused |
-| Live HMS tool path is DOM-verified with one read-only probe before any batch | 6 wasted live searches on an unverified Guest Search path |
-| Before building an agent/LLM loop, score the cheapest deterministic baseline (history, exact match, rule) on the same truth set | 2026-10-19: party v3 LLM loop took ~3 h and lost to v2 (14 vs 21/22); sender history, never scored, got 65/107 agencies right |
-| Accuracy evals use ≥ 100 truth rows by id that the system under test did not produce; report n and source with every rate | 2026-10-19: 42-mail party set, 22 rows were v2 binds staff accepted (circular) |
-| Lane gates run in parallel in the background (remote typecheck ‖ remote tests ‖ `greptile review --branch origin/main` after `git fetch`). No red-first runs, no self-review subagents. A UI lane's brief lists every test file that asserts the removed UI. Lanes never edit `/home/orca/bin` | 2026-10-19 evening: 6 PRs live in 95 min with parallel gates; the one lane without its test list stalled ~25 min; a stale Greptile base let 2 P1s reach main ([evening retro](docs/context/ledger/2026-10-19-evening-retro.md)) |
-| The coordinator reads every product diff before merge, even after green gates and Greptile | 2026-10-19: coordinator review caught 2 of 4 P1s (dropped junk-word list; contact questions scrolling to a step with no contact fields) |
-
-Run contracts, `/goal` vs `/loop`, and the overnight template: `docs/context/RUN-CONTRACT.md`.
-
-Do not copy this file into other worktrees by hand. It lives on `main`. A worktree sees it when that worktree’s HEAD contains this commit (`git merge origin/main` on an **idle** tree). Never merge into a live Luna/Codex lane.
-
-## Decision-ready chat output (owner, 2026-10-20)
-
-The owner reads the chat reply, not only linked plans. Report concrete work, evidence-backed/conditional elapsed-to-production ETAs, ROI, alternatives, fallbacks and exact authority needs in chat. Sol coordination may be slower than Opus under the owner’s observed half/third-speed assumption; delegate bounded work to Luna max and account for serial HMS/remote-gate constraints. Dated basis and unresolved gaps live in the plan/research; see OWNER-ASKS.md 139–146.
+Choose model and agent routing based on the actual task, risk, cost and current owner direction. Historical run-specific model assignments and orchestration recipes are not universal defaults. Avoid extra agents, reviews and documents that add no useful evidence.

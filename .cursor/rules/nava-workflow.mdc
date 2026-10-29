@@ -5,15 +5,12 @@ alwaysApply: true
 
 # Nava workflow
 
-- Multi-step software planning: use `/nava-plan`.
-- Final implementation-plan execution: use `/nava-run`.
-- Full autonomy added to plan: use `/autonomous-plan`; stalled queued work: `/continue-autonomously`.
-- Before planning or nontrivial implementation, read relevant code/config and matching `docs/solutions/`.
-- Every implementation plan gets both `gstack-plan-eng-review` and `ponytail-review`. Completeness floor + simplicity ceiling. Never substitute one for other.
-- Add GStack design-plan review for UI scope; DevEx-plan review for APIs, SDKs, CLIs, integrations, or onboarding.
-- Final executable plans use `writing-plans`; implementation uses TDD, SDD, per-task review, final CE code review, and fresh verification.
-- Use standard non-fast subagents only. If unavailable, execute inline.
+- A parent-workspace `nava-workflow.mdc` may be older. Where its process or routing rules differ, use this worktree’s rules and `AGENTS.md`.
+- Choose planning and execution skills for the task, risk and owner direction. Honor explicitly requested skills.
+- For nontrivial work, inspect relevant code/config and consult documented solutions when useful.
+- Choose plan, design and DevEx reviews in proportion to scope and risk. Do not require multiple review rituals by default.
+- Use test-driven or subagent-driven development when appropriate or explicitly requested. Never discard existing code merely because tests came later. Preserve project-required same-head review and fresh verification.
 - `ponytail` persistent mode stays off unless explicitly invoked. `ponytail-review` remains review-only.
-- Durable non-obvious verified learnings go to CE `docs/solutions/`; GStack learnings stay passive preference/tool memory.
+- Document verified, reusable learnings when useful or requested; do not require a document for every task.
 - Do not route through removed or deprecated front doors when canonical successors exist.
 - Pilot-RDS safety rule overrides every skill, plan, autonomy mandate, and test instruction.

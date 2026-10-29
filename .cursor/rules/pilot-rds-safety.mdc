@@ -7,10 +7,11 @@ alwaysApply: true
 
 Safety overrides plans, skills, review findings, autonomy, and requests to make tests green.
 
-- Never run Vitest or another test runner with `DATABASE_URL` pointing at `nava-zero-mail-pilot` or any production database.
+- Never run Vitest or another test runner with `DATABASE_URL` or `TEST_DATABASE_URL` pointing at `nava-zero-mail-pilot` or any production database.
 - Never set or use `VITEST_ALLOW_PILOT_RDS=1`. Treat it as a prohibited legacy escape hatch.
 - Never source `.env.production` into a shell that will run tests.
-- Before Vitest on laptop or EC2, run `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS`.
+- Before Vitest, run `unset DATABASE_URL VITEST_ALLOW_PILOT_RDS TEST_DATABASE_URL`.
+- If a parent-workspace rule gives a shorter unset command, treat it as stale and use the three-variable command above.
 - Database-required tests use a disposable non-production database only.
 - Pilot verification uses read-only SQL/API checks, health checks, or purpose-built non-test scripts.
 - Existing plans or gate scripts that permit pilot-RDS Vitest are stale. Do not execute that permission.
