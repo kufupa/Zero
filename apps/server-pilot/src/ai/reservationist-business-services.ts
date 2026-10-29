@@ -219,7 +219,14 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  const results=[];
  for(const chosen of selectionSets){
  const selectedRequest={...request,rooms:request.rooms.map(room=>{const selection=chosen.find(s=>s.groupId===room.id),group=summary.source.result.groups.find(g=>g.id===room.id),option=group?.options.find(o=>o.id===selection?.optionId);if(!option)throw new Error('business_selected_source_missing');return{...room,required:{...room.required,roomCodes:[option.room.code],rateCodes:[option.rate.code],...(alternativeRequest||!room.required?.boardBases?.length?{boardBases:[boardsFor(request.propertyCode)[norm(option.board??'')]!]}:{})}};})};
- const {source,sourceAt,expected}=await readBound(selectedRequest);if(source.result.outcome!=='quote')missing('business_selected_scope_unavailable',['complete narrowed full native quote source']);const selections=selectReservationistQuoteOptions(source,normalize.profileHolds(source.request.propertyCode,source.result.groups));
+ const {source,sourceAt,expected}=await readBound(selectedRequest);if(source.result.outcome!=='quote')missing('business_selected_scope_unavailable',['complete narrowed full native quote source']);
+ // Diagnose a changed entitlement before the selector rejects the now-unqualified full row.
+ if(request.propertyCode==='HRCEN'&&request.rateContext)for(const selection of chosen){
+  const summaryOption=summary.source.result.groups.find(group=>group.id===selection.groupId)?.options.find(option=>option.id===selection.optionId);
+  const fullOption=source.result.groups.find(group=>group.id===selection.groupId)?.options.find(option=>option.id===selection.optionId);
+  if(summaryOption&&fullOption&&summaryOption.rateScope!==fullOption.rateScope)throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
+ }
+ const selections=selectReservationistQuoteOptions(source,normalize.profileHolds(source.request.propertyCode,source.result.groups));
  if(request.propertyCode==='HRCEN'&&request.rateContext)for(const selection of selections){
   const previous=chosen.find(item=>item.groupId===selection.groupId);
   const summaryOption=summary.source.result.groups.find(group=>group.id===selection.groupId)?.options.find(option=>option.id===previous?.optionId);
