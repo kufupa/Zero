@@ -1646,6 +1646,10 @@ describe('NavaPane', () => {
   });
 
   it('holds remembered edits when the fresh stored case has a different guest', async () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [], boards: ['bb'],
+      salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
     const group = { ...STORED_READY.analysis.groups[0]!, stayId: 's_1', quantity: 1,
       guestNames: ['Ada Example'], stayGuests: [{ name: 'Ada Example', confirmationNumber: null }] };
     const original = { ...STORED_READY, analysis: { ...STORED_READY.analysis, groups: [group] } };
@@ -1685,6 +1689,8 @@ describe('NavaPane', () => {
 
   it.each([{ propertyCode: 'HRCEN', saves: true }, { propertyCode: null, saves: false }])(
     'saves a reclassified deferred edit only with verified property $propertyCode', async ({ propertyCode, saves }) => {
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!,
+      internetMessageId: `<deferred-${propertyCode ?? 'unknown'}@example.invalid>` } } as PaneBridge;
     bridgeMockState.quotePaneConfig = propertyCode ? {
       transportId: 'transport-1', propertyCode, roomTypes: [], ratePlans: [], boards: ['bb'], salesStrategies: [],
       overrideRateCodes: [], eventRateCodes: [],
@@ -1702,7 +1708,7 @@ describe('NavaPane', () => {
       luna: { ...quote, workflow: 'create_booking', groups: [{ ...lunaRow, stayId: undefined, guestNames: ['Ada Example'] }],
         tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }] } };
     bridgeMockState.analysisOverride = live;
-    const firstPane = render(<NavaPane bridge={fakeBridge} />);
+    const firstPane = render(<NavaPane bridge={bridge} />);
     await storedReadLands();
     fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
     fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
@@ -1710,16 +1716,17 @@ describe('NavaPane', () => {
     fireEvent.change(screen.getByLabelText('Change how Nava reads this email'), { target: { value: 'create_booking' } });
     await waitFor(() => expect(bridgeMockState.analyseCalls).toBeGreaterThan(0));
     await waitFor(() => {
-      const record = JSON.parse(sessionStorage.getItem('nava.pane-source.v1:transport-1::<quote-request@example.invalid>') ?? 'null');
+      const record = JSON.parse(sessionStorage.getItem(`nava.pane-source.v1:transport-1::${bridge.activeEmail!.internetMessageId}`) ?? 'null');
       expect(Object.values(record?.source?.aliases ?? {})).toContain('s_1');
     });
     expect(screen.queryByText(/The email case changed or could not be verified/)).toBeNull();
     firstPane.unmount();
     bridgeMockState.recordEvent.mockClear();
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
 
     bridgeMockState.analysisOverride = { ...live, groups: [{ ...live.groups[0]!, guestNames: ['Bea Example'] }],
       luna: { ...live.luna, groups: [{ ...live.luna.groups[0]!, guestNames: ['Bea Example'] }] } };
-    const heldPane = render(<NavaPane bridge={fakeBridge} />);
+    const heldPane = render(<NavaPane bridge={bridge} />);
     expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
     fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
     fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
@@ -1732,21 +1739,38 @@ describe('NavaPane', () => {
     bridgeMockState.storedWork = { ...stored, analysis: { ...stored.analysis, groups: [{ ...storedRow,
       stayGuests: [{ name: 'Bea Example', confirmationNumber: null }] }] } };
     const lookupCount = bridgeMockState.storedWorkLookups;
-    const mismatchedPane = render(<NavaPane bridge={fakeBridge} />);
+    const mismatchedPane = render(<NavaPane bridge={bridge} />);
     expect(await screen.findByText('4 adults per room')).toBeDefined();
     await waitFor(() => expect(bridgeMockState.storedWorkLookups).toBeGreaterThan(lookupCount));
+    expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
+    await waitFor(() => expect(screen.getByText('5 adults per room')).toBeDefined());
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1000)); });
     expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
     mismatchedPane.unmount();
 
     bridgeMockState.storedWork = stored;
-    render(<NavaPane bridge={fakeBridge} />);
-    expect(await screen.findByText('4 adults per room')).toBeDefined();
+    const recoveredPane = render(<NavaPane bridge={bridge} />);
+    expect(await screen.findByText('5 adults per room')).toBeDefined();
     if (saves) {
       await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(expect.objectContaining({
-        fieldPath: 'stays[s_1].rows[r_1].adults', value: 4,
+        fieldPath: 'stays[s_1].rows[r_1].adults', value: 5,
       })), { timeout: 4000 });
+      expect(screen.queryByText(/The email case changed or could not be verified/)).toBeNull();
     } else {
+      expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1000)); });
+      expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+      expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+      recoveredPane.unmount();
+      bridgeMockState.quotePaneConfig = {
+        transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [], boards: ['bb'],
+        salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+      };
+      render(<NavaPane bridge={bridge} />);
+      expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1000)); });
       expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
     }
