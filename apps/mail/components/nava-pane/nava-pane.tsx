@@ -805,7 +805,7 @@ export function NavaPane({
     lastDocumentContact.current = { key: contactCorrectionKey, signature: documentContactSignature };
   }, [bindDocumentSource, contactCorrectionKey, documentContactSignature, dispatchQuote]);
   useEffect(() => {
-    if (storedWork.historyEpoch === 0) return;
+    if (storedWork.historyEpoch === 0 || !storedWork.historyClearsPaneEdits) return;
     setContactCorrection(null);
     pendingContactCorrections.current = null;
     const transportId = quoteSession.binding?.transportId;
@@ -815,7 +815,7 @@ export function NavaPane({
       forgetPaneEdits(key);
       rememberPaneSource(key, [], null);
     }
-  }, [storedWork.historyEpoch]);
+  }, [storedWork.historyRefreshId, storedWork.historyClearsPaneEdits]);
   const workItemPane =
     storedWork.pane.state === 'ready' && storedWork.pane.fieldProvenance && storedWork.pane.workItemId
       ? {
@@ -2664,6 +2664,8 @@ export function NavaPane({
                     const editKey = paneEditKey(binding.transportId, binding.internetMessageId!);
                     forgetPaneEdits(editKey);
                     rememberPaneSource(editKey, [], null);
+                    setContactCorrection(null);
+                    pendingContactCorrections.current = null;
                     // Invalidate in-flight pane results and start again from the server read.
                     contextRevision.current.selectionEpoch += 1;
                     const fresh = { ...binding, selectionEpoch: contextRevision.current.selectionEpoch };

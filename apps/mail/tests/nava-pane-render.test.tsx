@@ -26,8 +26,8 @@ import { AMEND_SAVE_COPY } from '../lib/quote-workflow/amend-cancel';
 import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
-import { paneEditKey, resetPaneEditsForTests } from '../lib/quote-workflow/pane-edits';
-import { recalledGuestName, resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
+import { paneEditKey, recalledPaneEdits, rememberPaneEdits, resetPaneEditsForTests } from '../lib/quote-workflow/pane-edits';
+import { recalledGuestName, resetGuestNameCacheForTests, subscribeStayingGuestName } from '../lib/quote-workflow/guest-name-cache';
 
 // The pane reloads only through reloadPane(). Tests observe it; the real reload is never called.
 vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
@@ -1185,6 +1185,40 @@ describe('NavaPane', () => {
     render(<NavaPane bridge={bridge} />);
     expect(await screen.findByText(/early edits are not assigned to a stay/i)).toBeDefined();
     expect((screen.getByLabelText(/Arrival/i) as HTMLInputElement).value).toBe('2027-10-26');
+  }, 15000);
+
+  it('keeps an edit written after discard reset and before its history effect', async () => {
+    configureCenturionPane();
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
+    const stored = twoCaseStoredWork();
+    bridgeMockState.storedWork = stored;
+    let releaseInitial = () => {};
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { releaseInitial = resolve; });
+    const messageId = '<discard-followed-by-edit@example.invalid>';
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, internetMessageId: messageId } } as PaneBridge;
+    render(<NavaPane bridge={bridge} />);
+    fireEvent.change(await screen.findByLabelText(/Arrival/i), { target: { value: '2027-10-25' } });
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Early Guest' } });
+    await act(async () => releaseInitial());
+    await screen.findByText(/early edits are not assigned to a stay/i);
+
+    const guestKey = JSON.stringify([bridgeMockState.userId, 'transport-1', 'store-1', '001']);
+    const editKey = paneEditKey('transport-1', messageId);
+    let wroteAfterReset = false;
+    const unsubscribe = subscribeStayingGuestName(() => {
+      if (wroteAfterReset || recalledGuestName(guestKey) !== null) return;
+      wroteAfterReset = true;
+      rememberPaneEdits(editKey, [{ ...stored.analysis.groups[0]!, board: 'bb', adults: 4 }]);
+    });
+    try {
+      fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved changes and reload' }));
+      await waitFor(() => expect(wroteAfterReset).toBe(true));
+      await settle();
+      expect(recalledPaneEdits(editKey)?.[0]?.adults).toBe(4);
+      expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
   }, 15000);
 
   it('does not discard either message’s guest after the selection changes during reload', async () => {
