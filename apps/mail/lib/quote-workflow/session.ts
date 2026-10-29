@@ -1840,10 +1840,21 @@ export function reduceQuoteSession(
       const staffEditedDuringRun =
         session.analysisStartStayRevision != null && session.analysisStartStayRevision !== session.stayRevision;
       const loadingDone = session.phase === 'analysing' ? 'requirements' : session.phase;
+      // A single explicitly reclassified case can keep its saved identity when a live read lacks stored metadata.
+      const priorRow = session.analysis?.groups[0];
+      const currentRow = session.groups[0];
+      const singleOverride = Boolean(session.treatAs && action.analysis.luna?.workflow === session.treatAs &&
+        session.analysis?.luna && session.analysis.groups.length === 1 && session.groups.length === 1 &&
+        action.analysis.groups.length === 1 && priorRow && currentRow && priorRow.id === currentRow.id &&
+        stayIdOf(priorRow) === stayIdOf(currentRow) && caseIdentitySignature(session.analysis) !== null &&
+        caseIdentitySignature(action.analysis) === null);
+      if (singleOverride) action = { ...action, analysis: { ...action.analysis, groups: session.groups,
+        luna: { ...action.analysis.luna!, groups: session.analysis!.luna!.groups } } };
+      if (singleOverride && !session.steps.length) session = { ...session, steps: planQuoteSteps(session.groups, session.staffQuotes) };
       if (staffEditedDuringRun) {
         // Staff corrected stay fields after this run started. Keep their groups and take
         // only a compatible read-out, so a late result cannot retarget those edits to another case.
-        const caseChanged = session.analysis !== null && (
+        const caseChanged = session.analysis !== null && !singleOverride && (
           changedCaseIdentity(session.analysis, action.analysis) ||
           caseTaskSignature(session.analysis) !== caseTaskSignature(action.analysis)
         );
@@ -1883,12 +1894,12 @@ export function reduceQuoteSession(
         // workflow is taken, the edited stays are kept.
         const typeChanged =
           Boolean(session.treatAs) && action.analysis.luna?.workflow !== session.analysis?.luna?.workflow;
-        const identityChanged = changedCaseIdentity(session.analysis, action.analysis);
+        const identityChanged = !singleOverride && changedCaseIdentity(session.analysis, action.analysis);
         const changedCaseTasks = caseTaskSignature(action.analysis) !== caseTaskSignature(session.analysis);
-        const holdCase = session.analysis && (identityChanged || (!typeChanged && changedCaseTasks));
+        const holdCase = session.analysis && (identityChanged || (!typeChanged && !singleOverride && changedCaseTasks));
         const analysis = holdCase
           ? withCaseReview(session.analysis!, true)
-          : typeChanged
+          : typeChanged || singleOverride
             ? withCaseReview(action.analysis, false)
             : session.analysis && caseReviewPending(session.analysis)
               ? withCaseReview(session.analysis, false)

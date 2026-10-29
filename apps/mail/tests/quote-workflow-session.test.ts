@@ -3490,6 +3490,49 @@ describe('staff dinner B&B fallback', () => {
 });
 
 describe('type chosen by staff after stay edits', () => {
+  it.each([
+    { chosen: 'quote' as const, editDuringRead: false },
+    { chosen: 'create_booking' as const, editDuringRead: false },
+    { chosen: 'quote' as const, editDuringRead: true },
+    { chosen: 'create_booking' as const, editDuringRead: true },
+  ])('reclassifies one stored case as $chosen without taking a live guest or losing edits (edit during read: $editDuringRead)', ({ chosen, editDuringRead }) => {
+    const sourceGroup = {
+      ...quoteAnalysis.groups[0]!, id: 'r_source', stayId: 'stay-a', caseScoped: true,
+      stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1',
+    };
+    const lunaGroup = {
+      arrival: '2026-11-12', departure: '2026-11-14', rooms: 1, adultsPerRoom: 1, childAges: [],
+      board: 'bb' as const, roomPreference: 'standard king', guestNames: [] as string[], stayId: 'stay-a',
+    };
+    const source: QuoteAnalysis = {
+      ...quoteAnalysis, intent: 'other', groups: [sourceGroup],
+      luna: lunaQuote({ workflow: 'amend', groups: [lunaGroup], tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }] }),
+      amendment: { kind: 'amend', confirmationNumber: '11111111-1', guestLastName: null, arrival: null, departure: null, requestedChange: null },
+    };
+    let session = analysisReady(source);
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: sourceGroup.id, patch: { adults: 3 } });
+    session = reduceQuoteSession(session, { type: 'treat_as', treatAs: chosen });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    if (editDuringRead) session = reduceQuoteSession(session, { type: 'patch_group', groupId: sourceGroup.id, patch: { adults: 4 } });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: {
+        ...quoteAnalysis, amendment: null,
+        groups: [{ ...quoteAnalysis.groups[0]!, id: 'live-row' }],
+        luna: lunaQuote({
+          workflow: chosen,
+          groups: [{ ...lunaGroup, guestNames: ['Bea Example'] }],
+          tasks: [{ kind: chosen, groupIndexes: [0], note: '' }],
+        }),
+      },
+    });
+    expect(session.analysis?.luna?.workflow).toBe(chosen);
+    expect(session.groups[0]?.adults).toBe(editDuringRead ? 4 : 3);
+    expect(stayAskGuests(session, 'stay-a')).toEqual(sourceGroup.stayGuests);
+    expect(session.analysis?.luna?.groups[0]?.guestNames).toEqual([]);
+    expect(quoteRunBlockReason(session, stepFor(session, stayKeyForGroup(sourceGroup)))).toBeNull();
+  });
+
   it('applies Booking from the re-read and keeps the edited stay', () => {
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
