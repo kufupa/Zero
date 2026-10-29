@@ -273,6 +273,7 @@ type CaseAnalysis = QuoteAnalysis & {
   paneRead?: { groups: StayGroupRequirement[] | null; rememberedSource: PaneCaseSnapshot | null; propertyCode: string | null;
     trustedStoredProjection?: boolean };
   caseActionsUncertain?: boolean; caseBaseline?: PaneCaseSnapshot | null; caseAliases?: Record<string, string>;
+  rememberedPlaceholder?: StayGroupRequirement[];
   invalidStoredReadHold?: true;
 };
 
@@ -2068,23 +2069,47 @@ export function reduceQuoteSession(
     case 'analysis_ready': {
       // Once the stored source is corrupt, an earlier live response cannot clear the hold or consume typed rows.
       if ((session.analysis as CaseAnalysis | null)?.invalidStoredReadHold) return session;
-      const draft = session.groups.length === 1 && session.groups[0]!.id === DRAFT_GROUP_ID ? session.groups[0]! : null;
+      const remembered = (action.analysis as CaseAnalysis).rememberedPlaceholder;
+      const liveDraft = session.groups.find((group) => group.id === DRAFT_GROUP_ID);
+      const draftGroups = liveDraft ? session.groups : remembered;
+      const draft = liveDraft ?? remembered?.find((group) => group.id === DRAFT_GROUP_ID);
       if (draft) {
-        // She typed into the blank stay while Nava read. Take the read, then lay what she typed over each of its stays.
+        // A loading form has no case identity. Do not assign its values to several rooms or an unverified case.
         const typed: Partial<StayGroupRequirement> = {};
         for (const key of Object.keys(draft) as (keyof StayGroupRequirement)[]) {
           if (draft.fields[String(key)] === 'staff_corrected') Object.assign(typed, { [key]: draft[key] });
         }
+        const analysis = { ...action.analysis } as CaseAnalysis;
+        delete analysis.rememberedPlaceholder;
         // Read as a first read (no groups, revisions 0), then move the revisions on past hers so they only ever grow.
         const read = reduceQuoteSession(
           { ...session, groups: [], inputRevision: 0, stayRevision: 0, analysisStartStayRevision: null },
-          action,
+          { ...action, analysis },
         );
         const landed = {
           ...read,
           inputRevision: session.inputRevision + read.inputRevision + 1,
           stayRevision: session.stayRevision + read.stayRevision + 1,
         };
+        const property = analysis.paneRead?.propertyCode ?? session.quotePropertyCode;
+        const needsSourceBinding = !property || property === HRCEN_PROPERTY_CODE;
+        if (draftGroups && (Object.keys(typed).length > 0 || draftGroups.length > 1) &&
+            (!liveDraft || draftGroups.length !== 1 || landed.groups.length !== 1 || needsSourceBinding ||
+             caseReviewPending(session.analysis) || caseReviewPending(landed.analysis))) {
+          // Keep edits visible, but require staff to discard and re-enter them against a verified case.
+          const groups = draftGroups.map(withoutCaseIdentity);
+          const stays = groupStays(groups);
+          return {
+            ...clearDownstream(landed), analysis: heldCaseAnalysis(analysis, null), groups,
+            selectedStayKey: stays.length === 1 ? stays[0]!.id : null, steps: planQuoteSteps(groups),
+            reviewItems: [...landed.reviewItems.filter((item) =>
+              item.id !== 'case-source-changed' && item.id !== 'unassigned-placeholder'), {
+              id: 'unassigned-placeholder', kind: 'analysis_failure', rank: 'unread_source',
+              text: 'Your early edits are not assigned to a stay. Discard them and re-enter them for the correct stay.',
+              sourceLabel: 'This email', blocking: true,
+            }],
+          };
+        }
         if (!landed.groups.length) return landed;
         return landed.groups.reduce(
           (next, group) => reduceQuoteSession(next, { type: 'patch_group', groupId: group.id, patch: typed }),

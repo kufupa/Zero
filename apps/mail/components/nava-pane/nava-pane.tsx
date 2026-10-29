@@ -284,18 +284,22 @@ function analysisWithPaneEdits(
 ): QuoteAnalysis {
   const source = storedPane?.sourceRead;
   const sourceVerified = Boolean(storedPane && source && source.extractionId === storedPane.extractionId && source.kind === storedPane.kind);
+  const key = messageKey ? paneEditKey(transportId, messageKey) : null;
+  const remembered = key ? recalledPaneEdits(key) : null;
+  const rememberedPlaceholder = remembered?.some((group) => group.id === DRAFT_GROUP_ID) &&
+    (remembered.length > 1 || remembered.some((group) => Object.values(group.fields).includes('staff_corrected')))
+    ? remembered : null;
   // Keep remembered edits separate until the server has proved their source.
   if (analysis.caseActionsUncertain || storedPane?.sourceConflict ||
       (storedPane && propertyCode === HRCEN_PROPERTY_CODE && !sourceVerified)) {
-    return { ...withPaneRead(analysis, null, null, propertyCode), caseActionsUncertain: true };
+    return { ...withPaneRead(analysis, null, null, propertyCode), caseActionsUncertain: true,
+      ...(rememberedPlaceholder ? { rememberedPlaceholder } : {}) } as QuoteAnalysis;
   }
   // Keep the source case separate from the saved form. Only the server's
   // same-extraction projection may supply the initial edited rows.
   const original = sourceVerified && source ? { ...analysis, intent: source.analysis.intent,
     groups: source.analysis.groups, luna: source.analysis.luna, amendment: source.analysis.amendment,
     requestedRoomsByStay: source.analysis.requestedRoomsByStay } : analysis;
-  const key = messageKey ? paneEditKey(transportId, messageKey) : null;
-  const remembered = key ? recalledPaneEdits(key) : null;
   if (key && remembered === null) rememberPaneSource(key, [], null);
   const rememberedSource = key && remembered ? recalledPaneSource(key, remembered) : null;
   const freshSource = paneCaseSnapshot(withPaneRead(original, null, null, propertyCode));
@@ -310,6 +314,7 @@ function analysisWithPaneEdits(
   const projected = Boolean(storedPane && sourceVerified);
   let read = withPaneRead(original, projected || overlaid ? groups : null,
     overlaid ? rememberedSource : null, propertyCode, projected && !overlaid);
+  if (rememberedPlaceholder) read = { ...read, rememberedPlaceholder } as QuoteAnalysis;
   if (storedPane?.sourceConflict || analysis.caseActionsUncertain ||
       (storedPane && propertyCode === HRCEN_PROPERTY_CODE && !sourceVerified)) {
     read = { ...read, caseActionsUncertain: true };
@@ -1062,11 +1067,12 @@ export function NavaPane({
       const before = reduceQuoteSession(quoteSessionRef.current, { type: 'analysis_started' });
       dispatchQuote({ type: 'mailbox_status', status: 'ready' });
       dispatchQuote(ready);
-      // What she typed into the blank stay while the stored read loaded is laid over its stays. Log it like any edit.
+      // Keep early typing held if the read cannot assign it safely to one case.
       if (before.groups.some((group) => group.id === DRAFT_GROUP_ID)) {
         // The read as a first read, the way analysis_ready reads it under her typing, so the diff is only her typing.
         const first = { ...before, groups: [], inputRevision: 0, stayRevision: 0, analysisStartStayRevision: null };
-        const plain = reduceQuoteSession(first, ready).groups;
+        const plain = reduceQuoteSession(first, { ...ready,
+          analysis: { ...ready.analysis, rememberedPlaceholder: undefined } as QuoteAnalysis }).groups;
         const landed = reduceQuoteSession(before, ready);
         if (!caseReviewPending(landed.analysis)) storedWork.recordGroups(plain, landed.groups);
         else if (binding.internetMessageId) {
@@ -2616,7 +2622,8 @@ export function NavaPane({
                 </button>
               </p>
             ) : null}
-            {(storedWork.saveError || (quoteSession.binding?.internetMessageId &&
+            {(storedWork.saveError || (caseReviewPending(quoteSession.analysis) &&
+              quoteSession.groups.some((group) => group.id === DRAFT_GROUP_ID)) || (quoteSession.binding?.internetMessageId &&
               Array.isArray(paneSourceRecord(paneEditKey(quoteSession.binding.transportId, quoteSession.binding.internetMessageId))?.pendingBefore))) ? (
               <button type="button" className="self-start px-1 text-[11px] font-semibold underline text-[#b45309]"
                 onClick={() => {
