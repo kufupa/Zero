@@ -566,7 +566,8 @@ describe('staff_quote HMS job execution', () => {
     );
   });
 
-  it('keeps a successful Government Dinner B&B quote and shows its rate note', async () => {
+  it('keeps a synthetic HRDAV Government Dinner B&B quote and shows its rate note', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
     const groups: StaffQuoteInput['groups'] = [
       {
         id: 'single',
@@ -576,16 +577,16 @@ describe('staff_quote HMS job execution', () => {
         adults: 2,
         childrenAges: [],
         board: 'dinner_bb',
-        roomCodes: ['SKNG'],
+        roomCodes: ['STKNG'],
       },
     ];
     const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
       groups,
       salesStrategy: 'Government',
-    });
+    }, false, 'transport-davinci');
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel',
-      owner: { propertyCode: 'HRCEN' },
+      owner: { propertyCode: 'HRDAV' },
       outputDir: '/tmp/synthetic-staff-quote',
       dinnerAddOn: {
         amountMinor: 35_000,
@@ -608,11 +609,12 @@ describe('staff_quote HMS job execution', () => {
       return syntheticRevision(
         ['600.00', '600.00'],
         'Dinner, Bed & Breakfast R',
-        'SKNG',
+        'STKNG',
         undefined,
         '2026-11-12',
         prepared.authorizationId,
         { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] },
+        'HRDAV',
       );
     });
 
@@ -699,7 +701,8 @@ describe('staff_quote HMS job execution', () => {
     });
   });
 
-  it('retries Government no-match on BAR B&B with dinner separately and explains the fallback', async () => {
+  it('retries synthetic HRDAV Government no-match on BAR B&B and explains the fallback', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
     const groups: StaffQuoteInput['groups'] = [
       {
         id: 'single',
@@ -709,16 +712,16 @@ describe('staff_quote HMS job execution', () => {
         adults: 2,
         childrenAges: [],
         board: 'dinner_bb',
-        roomCodes: ['SKNG'],
+        roomCodes: ['STKNG'],
       },
     ];
     const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
       groups,
       salesStrategy: 'Government',
-    });
+    }, false, 'transport-davinci');
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel',
-      owner: { propertyCode: 'HRCEN' },
+      owner: { propertyCode: 'HRDAV' },
       outputDir: '/tmp/synthetic-staff-quote',
       dinnerAddOn: {
         amountMinor: 35_000,
@@ -742,11 +745,12 @@ describe('staff_quote HMS job execution', () => {
       return syntheticRevision(
         ['600.00', '600.00'],
         'Bed & Breakfast R',
-        'SKNG',
+        'STKNG',
         undefined,
         '2026-11-12',
         prepared.authorizationId,
         { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] },
+        'HRDAV',
       );
     });
 
