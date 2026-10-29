@@ -539,7 +539,8 @@ export function stayAskActionLabel(action: StayAskAction): string | null {
 function blocksNewBooking(session: Pick<QuoteSession, 'analysis' | 'groups'>, stayKey: string): boolean {
   const luna = session.analysis?.luna;
   if (caseReviewPending(session.analysis)) return true;
-  if (!luna?.tasks?.length) return luna?.workflow === 'amend' || luna?.workflow === 'cancel';
+  if (!luna?.tasks?.length) return luna?.workflow === 'amend' || luna?.workflow === 'cancel' ||
+    session.analysis?.amendment?.kind === 'amend' || session.analysis?.amendment?.kind === 'cancel';
   const rows = stayAskRows(session, stayKey);
   const targeted = new Set(luna.tasks.flatMap((task) => taskStayIds(session, task)));
   const action = stayAskAction(session, stayKey);
@@ -1931,12 +1932,15 @@ export function reduceQuoteSession(
       // Rates were got for the old type. A booking needs its cards and a quote must not keep them, so the results go
       // and Get rates runs again for the chosen type. The stays staff have are kept.
       if (
+        !session.runningStepId &&
         !session.staffQuote &&
         Object.keys(session.bookingDrafts).length === 0 &&
         Object.keys(session.staffQuotes ?? {}).length === 0 &&
+        Object.keys(quoteStrategyState(session).quoteStrategyRows).length === 0 &&
         Object.keys(quoteStrategyState(session).quoteStrategyResults).length === 0
       ) {
-        return chosen;
+        // A read-back may still be in flight even when no result is visible yet.
+        return { ...chosen, inputRevision: session.inputRevision + 1 };
       }
       return clearDownstream({
         ...chosen,
@@ -2104,7 +2108,11 @@ export function reduceQuoteSession(
       );
       const sourceKey = reviewSourceKey({ ...session, analysis: action.analysis });
       const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
-      const requirementsChanged = session.analysis !== null && JSON.stringify(session.groups) !== JSON.stringify(readGroups);
+      const requirementsChanged = session.analysis !== null && (
+        JSON.stringify(session.groups) !== JSON.stringify(readGroups) ||
+        Boolean(previous && !sameCaseSnapshot(previous, fresh)) ||
+        session.analysis.luna?.workflow !== action.analysis.luna?.workflow
+      );
       const base = requirementsChanged ? clearDownstream(session) : session;
       return {
         ...base,

@@ -3668,12 +3668,13 @@ describe('type changed after rates', () => {
     expect(after.groups).toEqual(groups);
   });
 
-  it('changes only the type when there are no rates yet', () => {
+  it('invalidates pending read-backs when the type changes before rates arrive', () => {
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
     const after = reduceQuoteSession(s, { type: 'treat_as', treatAs: 'create_booking' });
     expect(after.treatAs).toBe('create_booking');
-    expect(after.inputRevision).toBe(s.inputRevision);
+    expect(after.inputRevision).toBe(s.inputRevision + 1);
+    expect(reduceQuoteSession(withStaffSource(after), staffQuoteFor(STAY_A, 'old', 850000, s.inputRevision)).staffQuotes).toEqual({});
   });
 });
 
@@ -5069,6 +5070,31 @@ describe('fresh case evidence and mixed actions', () => {
       options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
     } as unknown as Extract<QuoteSessionAction, { type: 'booking_draft_ready' }>['payload'];
     expect(reduceQuoteSession(withRate, { type: 'booking_draft_ready', payload, sourceHash: STAFF_HASH }).bookingDrafts).toEqual({});
+  });
+
+  it('invalidates a previous quote when fresh task evidence changes without edited rows', () => {
+    const analysis: QuoteAnalysis = { ...quoteAnalysis, luna: lunaQuote({
+      tasks: [{ kind: 'quote', groupIndexes: [0], note: '' }],
+    }) };
+    const ready = withStaffSource(analysisReady(analysis));
+    const priced = reduceQuoteSession(ready, staffQuoteFor(STAY_A, 'old-rate', 850000, ready.inputRevision));
+    expect(priced.staffQuotes[STAY_A]).toBeDefined();
+    const refreshed = reduceQuoteSession(priced, { type: 'analysis_ready', analysis: { ...analysis,
+      luna: lunaQuote({ tasks: [{ kind: 'cancel', groupIndexes: [0], note: '' }] }),
+    } });
+    expect(refreshed.staffQuotes).toEqual({});
+    expect(refreshed.inputRevision).toBe(priced.inputRevision + 1);
+    expect(quoteRunBlockReason(refreshed, stepFor(refreshed, STAY_A))).toMatch(/existing or unclear booking/i);
+    expect(reduceQuoteSession(refreshed, staffQuoteFor(STAY_A, 'late-rate', 850000, priced.inputRevision)).staffQuotes).toEqual({});
+  });
+
+  it('holds a quote when an existing-booking request has no case tasks', () => {
+    const session = analysisReady({ ...quoteAnalysis,
+      luna: lunaQuote(),
+      amendment: { kind: 'amend', confirmationNumber: '11111111-1', guestLastName: null,
+        arrival: null, departure: null, requestedChange: null },
+    });
+    expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toMatch(/existing or unclear booking/i);
   });
 
   it.each([false, true])('uses only the selected case confirmation for opposite actions (same dates: %s)', (sameDate) => {
