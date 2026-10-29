@@ -700,6 +700,25 @@ export function useInsertAiDraft({
     }
     const replyKind = quoteReplyKind(scope, quoteSession, reviewedDraft);
     const preparedVersions = replyKind === 'quote' ? preparedQuoteRefs(quoteSession, scope) : [];
+    const startedScopeEpoch = contextRevision.current.scopeEpoch;
+    const startedSelectionEpoch = contextRevision.current.selectionEpoch;
+    const localQuote = localQuoteSnapshot(quoteSession);
+    const quoteIsCurrent = () =>
+      scopeRef.current === currentScope && contextRevision.current.scopeEpoch === startedScopeEpoch &&
+      contextRevision.current.selectionEpoch === startedSelectionEpoch &&
+      quoteDraftRevision.current === quoteDraftRenderedRevision && sameLocalQuote(localQuote, quoteSessionRef.current);
+    const checkLocalQuote = () => {
+      if (replyKind === 'quote' && !quoteIsCurrent())
+        throw new QuoteDraftPreflightError('The quote changed in the pane. Prepare it again.');
+    };
+    const flushAndCheckQuote = async () => {
+      if (replyKind !== 'quote') return;
+      checkLocalQuote();
+      let saved = false;
+      try { saved = await flushQuoteEdits(); } catch { /* Pending work-item changes could not be checked. */ }
+      if (!saved) throw new QuoteDraftPreflightError('The quote edits could not be saved. Retry saving before creating the draft.');
+      checkLocalQuote();
+    };
     const saveDraft = (replaceDraft?: string) =>
       trpcClient.drafts.saveReply.mutate({
         threadId: staffSource.threadId,
@@ -718,13 +737,24 @@ export function useInsertAiDraft({
     try {
       let saved: Awaited<ReturnType<typeof saveDraft>>;
       try {
+        await flushAndCheckQuote();
+        checkLocalQuote();
         saved = await saveDraft();
       } catch (error) {
         const token = replaceDraftToken(error);
         if (token === null) throw error;
+        checkLocalQuote();
         if (!confirmReplaceDraft()) return;
         // Replaces only the draft the prompt was about. If it changed meanwhile the server says DRAFT_CHANGED.
+        await flushAndCheckQuote();
+        checkLocalQuote();
         saved = await saveDraft(token);
+      }
+      if (replyKind === 'quote' && !quoteIsCurrent()) {
+        const message = 'An earlier quote was saved as a draft, but the quote changed while saving. Prepare and save it again. Nothing was sent.';
+        setDraftStatus({ key, message });
+        toast.warning(message);
+        return;
       }
       const message = declineOnly
         ? saved.replaced
@@ -741,6 +771,10 @@ export function useInsertAiDraft({
       trackPaneAction({ type: 'reply.saved', kind: scope }, owner);
       toast.success(message);
     } catch (error) {
+      if (error instanceof QuoteDraftPreflightError) {
+        toast.error(error.message);
+        return;
+      }
       const draftChanged = (error as { message?: string }).message === 'DRAFT_CHANGED';
       toast.error(
         draftChanged

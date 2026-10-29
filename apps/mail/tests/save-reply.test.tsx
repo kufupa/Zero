@@ -152,6 +152,7 @@ beforeEach(() => {
   sessionStorage.removeItem('nava_outlook_unresolved_reply_v1');
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.error).mockClear();
+  vi.mocked(toast.warning).mockClear();
 });
 
 afterEach(() => {
@@ -160,6 +161,71 @@ afterEach(() => {
 });
 
 describe('Save reply on the webmail panel', () => {
+  it('flushes pending work-item edits before saving a quote draft', async () => {
+    let release!: (saved: boolean) => void;
+    const flush = vi.fn(() => new Promise<boolean>((resolve) => { release = resolve; }));
+    saveReplyMutate.mockResolvedValueOnce({ id: 'draft-1', replaced: false });
+    const { result } = renderEditableInsertHook(outlookSendCommand(), editableQuotedSession(), flush);
+
+    act(() => result.current.trackedSave('selected'));
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(saveReplyMutate).not.toHaveBeenCalled();
+    await act(async () => release(true));
+    await waitFor(() => expect(saveReplyMutate).toHaveBeenCalledTimes(1));
+  });
+
+  it('holds a webmail quote if its inputs change while pending edits flush', async () => {
+    let release!: (saved: boolean) => void;
+    const flush = vi.fn(() => new Promise<boolean>((resolve) => { release = resolve; }));
+    const { result } = renderEditableInsertHook(outlookSendCommand(), editableQuotedSession(), flush);
+    act(() => result.current.trackedSave('selected'));
+    expect(flush).toHaveBeenCalledTimes(1);
+    act(() => result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } }));
+    await act(async () => release(true));
+
+    expect(saveReplyMutate).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('quote changed in the pane'));
+  });
+
+  it('does not save a quote if a pending work-item edit fails', async () => {
+    const flush = vi.fn().mockResolvedValue(false);
+    const { result } = renderEditableInsertHook(outlookSendCommand(), editableQuotedSession(), flush);
+    act(() => result.current.trackedSave('selected'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('could not be saved')));
+    expect(saveReplyMutate).not.toHaveBeenCalled();
+  });
+
+  it('does not replace an existing draft after the quote changes during the first save', async () => {
+    let reject!: (error: Error) => void;
+    saveReplyMutate.mockImplementationOnce(() => new Promise((_, fail) => { reject = fail; }));
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { result } = renderEditableInsertHook(outlookSendCommand(), editableQuotedSession());
+    act(() => result.current.trackedSave('selected'));
+    await waitFor(() => expect(saveReplyMutate).toHaveBeenCalledTimes(1));
+    act(() => result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } }));
+    await act(async () => reject(Object.assign(new Error('DRAFT_REPLACE_CONFIRM_REQUIRED:draft-0:rev-3'), {
+      data: { code: 'CONFLICT' },
+    })));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(saveReplyMutate).toHaveBeenCalledTimes(1);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('quote changed in the pane'));
+  });
+
+  it('reports an already saved earlier draft if inputs change during the webmail save', async () => {
+    let release!: (saved: { id: string; replaced: boolean }) => void;
+    saveReplyMutate.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const { result } = renderEditableInsertHook(outlookSendCommand(), editableQuotedSession());
+    act(() => result.current.trackedSave('selected'));
+    await waitFor(() => expect(saveReplyMutate).toHaveBeenCalledTimes(1));
+    act(() => result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } }));
+    await act(async () => release({ id: 'draft-1', replaced: false }));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+
+    expect(toast.warning).toHaveBeenCalledWith(expect.stringContaining('earlier quote was saved'));
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   it('saves the reviewed reply and PDF as the thread draft, not as an Outlook insert', async () => {
     saveReplyMutate.mockResolvedValueOnce({ id: 'draft-1', replaced: false });
     const sendCommand = outlookSendCommand();
@@ -226,6 +292,21 @@ describe('Save reply on the webmail panel', () => {
     await waitFor(() => expect(result.current.draftStatus?.message).toBe(
       'Saved the reply asking for the missing details. Nothing is sent.',
     ));
+  });
+
+  it('does not require quote-edit flushing for an unrelated missing-details reply', async () => {
+    const flush = vi.fn().mockResolvedValue(false);
+    const session = {
+      ...editableQuotedSession(),
+      analysis: { intent: 'quote', missingQuoteReplyFields: ['Arrival date'] },
+      groups: [{ arrivalDate: null, departureDate: '2027-11-14' }],
+      reviewedReplyHtml: '<p>Please confirm the arrival date.</p>',
+    } as unknown as QuoteSession;
+    saveReplyMutate.mockResolvedValueOnce({ id: 'draft-1', replaced: false });
+    const { result } = renderEditableInsertHook(outlookSendCommand(), session, flush);
+    act(() => result.current.trackedSave('selected'));
+    await waitFor(() => expect(saveReplyMutate).toHaveBeenCalledTimes(1));
+    expect(flush).not.toHaveBeenCalled();
   });
 
   it('asks Replace current draft? before overwriting, and replaces only the draft the prompt named', async () => {
