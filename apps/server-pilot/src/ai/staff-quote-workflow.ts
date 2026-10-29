@@ -278,26 +278,26 @@ export function staffQuoteDinnerGroupIdsToRetryAsBb(
 
 export { isPartyRateFailure, PartyRateFailure } from './party-rate-failure.js';
 
-/** The review note for a quote that fell back to public rates because HMS could not apply the contract rate. */
+/** The review note when HMS could not apply the contract rate. */
 export function partyRateFallbackNote(names: readonly string[]): string {
-  return `HMS couldn't apply the contract rate for ${names.join(' and ')}, so these are public rates. Check in HMS.`;
+  return `HMS couldn't apply the contract rate for ${names.join(' and ')}; check the selected fallback rate in HMS.`;
 }
 
-/** The review note when HMS could not confirm the picked party's contract rates. The quote is public and says so. */
+/** The review note when HMS could not confirm the picked party's contract rates. */
 export function partyUnconfirmedNote(names: readonly string[]): string {
-  return `Nava couldn't confirm contract rates for ${names.join(' and ')} — this quote uses our best available rate. Check HMS before sending.`;
+  return `Nava couldn't confirm contract rates for ${names.join(' and ')}; check the selected fallback rate in HMS before sending.`;
 }
 
-/** The note a public retry carries. A complete no-contract retry has none: its review note on the public groups says so. */
-function fallbackNote(code: unknown, names: readonly string[]): string | null {
-  if (code === PARTY_NO_CONTRACT_CODE) return null;
+/** The retry removes the party context; its strategy and rate code need not identify a public rate. */
+function fallbackNote(code: unknown, names: readonly string[]): string {
+  if (code === PARTY_NO_CONTRACT_CODE) return `No matching contract rate was found for ${names.join(' and ')} for at least one requested room; check the selected fallback rate in HMS.`;
   if (code === PARTY_SEARCH_INCOMPLETE_CODE) return partyUnconfirmedNote(names);
   return partyRateFallbackNote(names);
 }
 
 /**
- * Quotes the picked parties first. When HMS cannot price them, quotes once more at public rates and says so in the
- * note. Any other failure, and every quote without a picked party, fails as before.
+ * Quotes the picked parties first. When HMS cannot price them, retries without the party context and explains why.
+ * Any other failure, and every quote without a picked party, fails as before.
  */
 export async function quoteWithPartyFallback<T, P>(options: {
   input: StaffQuoteInput;
@@ -313,7 +313,6 @@ export async function quoteWithPartyFallback<T, P>(options: {
     return {
       prepared: retry,
       result: await options.run(retry),
-      // A no-contract retry is said by the review note on its public groups, not by the fallback note.
       note: fallbackNote((error as { code?: unknown }).code, partyNames(options.input.parties)),
       fellBack: true,
     };

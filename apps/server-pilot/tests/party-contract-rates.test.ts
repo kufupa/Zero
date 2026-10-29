@@ -350,7 +350,7 @@ describe('contract rates from the picked company or agency', () => {
     const agency360 = { agency: agency('113', '360 degrees Travel') };
     const { revision, fellBack, note, sent } = await quoteWith(agency360, [BAR]);
     expect(fellBack).toBe(true);
-    expect(note).toBeNull();
+    expect(note).toBe('No matching contract rate was found for 360 degrees Travel for at least one requested room; check the selected fallback rate in HMS.');
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
     expect(partyContractReviewNote(agency360, revision.groups)).toBe(
       'No contract rate found for 360 degrees Travel; this quote uses our best available rate.',
@@ -390,7 +390,7 @@ describe('contract rates from the picked company or agency', () => {
     const { revision, fellBack, note } = await quoteWith(agency360, [BAR], { incompleteParty: true });
     expect(fellBack).toBe(true);
     expect(note).toBe(
-      "Nava couldn't confirm contract rates for 360 degrees Travel — this quote uses our best available rate. Check HMS before sending.",
+      "Nava couldn't confirm contract rates for 360 degrees Travel; check the selected fallback rate in HMS before sending.",
     );
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
   });
@@ -543,8 +543,23 @@ describe('staff rate cards: the quoted option first, other boards labelled, a pi
     });
     const { fellBack, note, cards } = await quoteWith(parties, [BAR]);
     expect(fellBack).toBe(true);
-    expect(note).toBeNull();
+    expect(note).toBe('No matching contract rate was found for Woolworths for at least one requested room; check the selected fallback rate in HMS.');
     expect(cards.some((card) => card.contract)).toBe(false);
+  });
+
+  it('reports a missing contract from the retry outcome even for a public rate code the heuristic does not recognize', async () => {
+    const parties = { company: company('49', 'Woolworths') };
+    const attempt = await quoteWithPartyFallback({
+      input: groupInput(parties),
+      first: 'party',
+      retry: () => 'fallback',
+      run: async (kind) => {
+        if (kind === 'party') throw new PartyRateFailure(PARTY_NO_CONTRACT_CODE);
+        return { groups: [{ rateCode: 'WAL' }] };
+      },
+    });
+    expect(partyContractReviewNote(parties, attempt.result.groups)).toBeNull();
+    expect(attempt.note).toBe('No matching contract rate was found for Woolworths for at least one requested room; check the selected fallback rate in HMS.');
   });
 
   it('(d) a sold-out requested room still fails as before, and no rate cards are published for that quote', async () => {
@@ -706,7 +721,7 @@ describe('a party-rate failure falls back to public rates, and only a typed fail
     expect(outcome.fellBack).toBe(true);
     expect(outcome.result.groups[0]!.rateCode).toBe('BARRO');
     expect(outcome.note).toBe(partyRateFallbackNote(['Woolworths']));
-    expect(outcome.note).toBe("HMS couldn't apply the contract rate for Woolworths, so these are public rates. Check in HMS.");
+    expect(outcome.note).toBe("HMS couldn't apply the contract rate for Woolworths; check the selected fallback rate in HMS.");
     // A plain Error is not a party-rate failure, so it is not swallowed by the fallback.
     await expect(
       quoteWithPartyFallback({
@@ -867,7 +882,7 @@ describe('a picked party is matched by its HMS id, whatever its name looks like'
           expect(partyContractReviewNote(parties, revision.groups)).toBeNull();
         } else {
           expect(fellBack).toBe(true);
-          expect(note).toBeNull();
+          expect(note).toBe(`No matching contract rate was found for ${c.picked} for at least one requested room; check the selected fallback rate in HMS.`);
           expect(revision.groups[0]!.rateCode).toBe('BARRO');
           expect(partyContractReviewNote(parties, revision.groups)).toBe(partyNoContractNote([c.picked]));
         }
@@ -911,7 +926,7 @@ describe('a picked party is read once for every room type, and priced for the ro
     ];
     const { revision, fellBack, note } = await quoteWith(woolworths, otherRoom, { roomCodes: ['STQN'] });
     expect(fellBack).toBe(true);
-    expect(note).toBeNull();
+    expect(note).toBe('No matching contract rate was found for Woolworths for at least one requested room; check the selected fallback rate in HMS.');
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
     expect(partyContractReviewNote(woolworths, revision.groups)).toBe(copy);
   });
@@ -921,7 +936,7 @@ describe('a picked party is read once for every room type, and priced for the ro
     const { revision, fellBack, note } = await quoteWith(woolworths, rates, { roomCodes: ['STQN'], incompleteParty: true });
     expect(fellBack).toBe(true);
     expect(note).toBe(
-      "Nava couldn't confirm contract rates for Woolworths — this quote uses our best available rate. Check HMS before sending.",
+      "Nava couldn't confirm contract rates for Woolworths; check the selected fallback rate in HMS before sending.",
     );
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
   });
@@ -950,7 +965,7 @@ describe('a picked party is read once for every room type, and priced for the ro
     const { revision, fellBack, note } = await quoteWith(woolworths, rates, { roomCodes: ['STQN'], truncatedParty: true });
     expect(fellBack).toBe(true);
     expect(note).toBe(
-      "Nava couldn't confirm contract rates for Woolworths — this quote uses our best available rate. Check HMS before sending.",
+      "Nava couldn't confirm contract rates for Woolworths; check the selected fallback rate in HMS before sending.",
     );
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
   });
