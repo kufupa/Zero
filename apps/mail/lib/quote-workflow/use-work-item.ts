@@ -423,6 +423,7 @@ function sameRecoverySource(source: ReadyStored, opened: ReadyStored): boolean {
   if (!source.extractionId || opened.extractionId !== source.extractionId || opened.kind !== source.kind ||
       opened.analysis.intent !== source.analysis.intent || opened.analysis.luna?.workflow !== source.analysis.luna?.workflow ||
       source.analysis.caseActionsUncertain || opened.analysis.caseActionsUncertain || !provenanceOf(opened)) return false;
+  if (!recoveryValuesEqual(source.stays ?? {}, opened.stays ?? {})) return false;
   const raw = (opened as { fieldProvenance?: unknown }).fieldProvenance;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.values(raw).some((entry) =>
     !entry || typeof entry !== 'object' || Array.isArray(entry) || !Object.hasOwn(entry, 'value') ||
@@ -857,10 +858,13 @@ export function useStoredWork(args: {
             return fail('The saved details could not be verified. Review and re-enter your changes.');
           }
           const openedSeq = opened.revisionSeq;
-          if (typeof openedSeq !== 'number' || !Number.isSafeInteger(openedSeq) || openedSeq < 0) {
+          const openedDigest = opened.stateDigest;
+          if (typeof openedSeq !== 'number' || !Number.isSafeInteger(openedSeq) || openedSeq < 0 ||
+              typeof openedDigest !== 'string' || !/^[a-f0-9]{64}$/.test(openedDigest)) {
             return fail('The saved details could not be verified. Refresh and re-enter your changes.');
           }
           let seq = openedSeq;
+          let stateDigest = openedDigest;
           draft.workItemId = opened.workItemId;
           const provenance = provenanceOf(opened)!;
           const baseline = recoveryBaselineValues(source);
@@ -882,17 +886,19 @@ export function useStoredWork(args: {
               const result = await record.mutate({
                 workItemId: opened.workItemId, type: 'field.edit', fieldPath: event.path, value: event.value,
                 msSinceOpen: Math.min(MAX_MS_SINCE_OPEN, Math.max(0, Math.round(Date.now() - readyAt.current))),
-                expected: { extractionId: source.extractionId, seq },
+                expected: { extractionId: source.extractionId, seq, stateDigest },
               }, inMailbox(draft.transportId));
               const cursor = result && typeof result === 'object' && 'cursor' in result
-                ? result.cursor as { extractionId?: unknown; seq?: unknown } | null : null;
+                ? result.cursor as { extractionId?: unknown; seq?: unknown; stateDigest?: unknown } | null : null;
               if (!result || typeof result !== 'object' || !Object.hasOwn(result, 'value') ||
                   !recoveryValuesEqual((result as { value: unknown }).value, event.value) ||
-                  !cursor || cursor.extractionId !== source.extractionId || cursor.seq !== seq + 1) {
+                  !cursor || cursor.extractionId !== source.extractionId || cursor.seq !== seq + 1 ||
+                  typeof cursor.stateDigest !== 'string' || !/^[a-f0-9]{64}$/.test(cursor.stateDigest)) {
                 draft.blocked = true;
                 return fail('The save could not be confirmed. Refresh and re-enter your changes.');
               }
               seq += 1;
+              stateDigest = cursor.stateDigest;
               draft.acknowledged.set(event.path, event.value);
               edited.current.add(saveKey(opened.workItemId, event.path));
             } catch {

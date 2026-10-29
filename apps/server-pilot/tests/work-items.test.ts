@@ -1193,11 +1193,12 @@ describe('field events', () => {
       const firstRead = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
       const opened = await readyWork(db, 'cas-1');
       expect(opened.revisionSeq).toBe(0);
+      expect(opened.stateDigest).toMatch(/^[a-f0-9]{64}$/);
       const path = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`;
       const base = {
         transportId: CENTURION, workItemId: opened.workItemId, userId: USER,
         type: 'field.edit' as const, fieldPath: path,
-        expected: { extractionId: firstRead, seq: 0 },
+        expected: { extractionId: firstRead, seq: 0, stateDigest: opened.stateDigest! },
       };
       // Separate PostgreSQL connections contend for the same row lock; only one expected revision can win.
       const otherConn = postgres(url, { max: 1, connect_timeout: 5, ssl: false, onnotice: () => undefined });
@@ -1210,7 +1211,8 @@ describe('field events', () => {
         expect(attempts.map((result) => result.status).sort()).toEqual(['recorded', 'stale']);
         const winner = attempts.find((result) => result.status === 'recorded');
         if (!winner || winner.status !== 'recorded') throw new Error('missing winning write');
-        expect(winner.cursor).toEqual({ extractionId: firstRead, seq: 1 });
+        expect(winner.cursor).toMatchObject({ extractionId: firstRead, seq: 1, stateDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
+        if (!winner.cursor) throw new Error('missing winning cursor');
         const [saved] = await db.select().from(workItem).where(eq(workItem.id, opened.workItemId));
         expect(saved?.state[path]).toBe(winner.value);
         expect(saved?.revisionSeq).toBe(1);
@@ -1218,24 +1220,42 @@ describe('field events', () => {
 
         const caller = centurionCaller().workItems;
         const event = { workItemId: opened.workItemId, type: 'field.edit' as const, fieldPath: path, value: 3 };
-        await expect(caller.recordEvent({ ...event, expected: { extractionId: firstRead, seq: 0 } }))
+        await expect(caller.recordEvent({ ...event, expected: { extractionId: firstRead, seq: 0, stateDigest: winner.cursor.stateDigest } }))
           .rejects.toMatchObject({ code: 'CONFLICT' });
-        await expect(caller.recordEvent({ ...event, expected: { extractionId: randomUUID(), seq: 1 } }))
+        await expect(caller.recordEvent({ ...event, expected: { extractionId: randomUUID(), seq: 1, stateDigest: winner.cursor.stateDigest } }))
           .rejects.toMatchObject({ code: 'CONFLICT' });
-        await expect(caller.recordEvent({ ...event, expected: { extractionId: firstRead } as never }))
+        await expect(caller.recordEvent({ ...event, expected: { extractionId: firstRead, stateDigest: winner.cursor.stateDigest } as never }))
           .rejects.toMatchObject({ code: 'BAD_REQUEST' });
         expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]).toEqual(saved);
         expect(await eventsFor(db, opened.workItemId)).toHaveLength(1);
 
         const next = await caller.recordEvent({
-          ...event, fieldPath: 'contact.name', value: 'Sample', expected: { extractionId: firstRead, seq: 1 },
+          ...event, fieldPath: 'contact.name', value: 'Sample',
+          expected: { extractionId: firstRead, seq: 1, stateDigest: winner.cursor.stateDigest },
         });
-        expect(next).toMatchObject({ value: 'Sample', cursor: { extractionId: firstRead, seq: 2 } });
+        expect(next).toMatchObject({ value: 'Sample', cursor: {
+          extractionId: firstRead, seq: 2, stateDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        } });
         const legacy = await caller.recordEvent({ ...event, fieldPath: 'contact.phone', value: '123' });
         expect(legacy).toEqual({ aiValue: null, value: '123' });
         const snapshot = await readyWork(db, 'cas-1');
         expect(snapshot.revisionSeq).toBe(3);
         expect(snapshot.contact.name).toBe('Sample');
+
+        // A booking commit updates state without changing the pane-edit revision.
+        expect(await recordStayCommit(db, {
+          transportId: CENTURION, workItemId: opened.workItemId, stayId: STAY_ONE,
+          record: { confirmationNumber: 'LAB-1', status: 'booked', screenshotRef: null },
+        })).toEqual({ status: 'recorded' });
+        const afterBooking = await readyWork(db, 'cas-1');
+        expect(afterBooking.revisionSeq).toBe(snapshot.revisionSeq);
+        expect(afterBooking.stateDigest).not.toBe(snapshot.stateDigest);
+        const beforeBookingConflict = await eventsFor(db, opened.workItemId);
+        await expect(caller.recordEvent({ ...event, expected: {
+          extractionId: firstRead, seq: 3, stateDigest: snapshot.stateDigest!,
+        } })).rejects.toMatchObject({ code: 'CONFLICT' });
+        expect(await eventsFor(db, opened.workItemId)).toHaveLength(beforeBookingConflict.length);
+        expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]?.state[path]).toBe(winner.value);
 
         // Equal timestamps can otherwise permit A→B→A. Each relink must invalidate an older token.
         const secondRead = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
@@ -1248,7 +1268,9 @@ describe('field events', () => {
         const back = await ensureWorkItem(db, { ...link, extractionId: firstRead });
         expect(back).toMatchObject({ extractionId: firstRead, revisionSeq: 5 });
         const beforeConflict = await eventsFor(db, opened.workItemId);
-        await expect(caller.recordEvent({ ...event, expected: { extractionId: firstRead, seq: 3 } }))
+        await expect(caller.recordEvent({ ...event, expected: {
+          extractionId: firstRead, seq: 3, stateDigest: afterBooking.stateDigest!,
+        } }))
           .rejects.toMatchObject({ code: 'CONFLICT' });
         expect(await eventsFor(db, opened.workItemId)).toHaveLength(beforeConflict.length);
         expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]?.state[path]).toBe(winner.value);

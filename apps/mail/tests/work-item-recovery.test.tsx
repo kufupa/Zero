@@ -18,7 +18,9 @@ const READ: Ready = {
   contact: { name: null, company: null, endClient: null, email: null, phone: null },
   language: null, translation: null, fieldProvenance: {},
 };
-const OPENED: Ready = { ...READ, workItemId: 'wi-1', workItemStatus: 'needs_you', revisionSeq: 0 };
+const INITIAL_DIGEST = 'a'.repeat(64);
+const digestAt = (seq: number) => seq.toString(16).padStart(64, '0');
+const OPENED: Ready = { ...READ, workItemId: 'wi-1', workItemStatus: 'needs_you', revisionSeq: 0, stateDigest: INITIAL_DIGEST };
 const CHILD = 'stays[s_1].rows[s_1_row].childrenPerRoom';
 const AGES = 'stays[s_1].rows[s_1_row].childAges';
 const PINNED = { context: { activeTransportId: 'transport-a' } };
@@ -35,7 +37,9 @@ function harness() {
 function acknowledge(input: RecordFieldEventInput) {
   return {
     aiValue: null, value: input.value ?? null,
-    ...(input.expected ? { cursor: { extractionId: input.expected.extractionId, seq: input.expected.seq + 1 } } : {}),
+    ...(input.expected ? { cursor: {
+      extractionId: input.expected.extractionId, seq: input.expected.seq + 1, stateDigest: digestAt(input.expected.seq + 1),
+    } } : {}),
   };
 }
 
@@ -85,7 +89,9 @@ describe('missing work item recovery', () => {
       [CHILD, 0], [AGES, []], ['contact.name', 'Guest'],
     ]);
     expect(record.mock.calls.map(([input]) => input.expected)).toEqual([
-      { extractionId: 'ex-1', seq: 0 }, { extractionId: 'ex-1', seq: 1 }, { extractionId: 'ex-1', seq: 2 },
+      { extractionId: 'ex-1', seq: 0, stateDigest: INITIAL_DIGEST },
+      { extractionId: 'ex-1', seq: 1, stateDigest: digestAt(1) },
+      { extractionId: 'ex-1', seq: 2, stateDigest: digestAt(2) },
     ]);
     expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1', contact: { name: 'Guest' } });
     expect(result.current.saveError).toBeNull();
@@ -254,6 +260,7 @@ describe('missing work item recovery', () => {
     ['staff conflict', { ...OPENED, fieldProvenance: { [CHILD]: { source: 'staff', value: 2 } } }],
     ['unknown conflicting provenance', { ...OPENED, fieldProvenance: { [CHILD]: { source: 'unknown', value: 2 } } }],
     ['other changed staff value', { ...OPENED, fieldProvenance: { 'contact.name': { source: 'staff', value: 'Someone else' } } }],
+    ['newly saved booking', { ...OPENED, stays: { s_1: { status: 'booked', confirmationNumber: 'LAB-1', screenshotRef: null } } }],
   ])('holds an edit on %s', async (_why, changed) => {
     mailbox();
     const { trpc, open, record } = harness();
@@ -278,10 +285,22 @@ describe('missing work item recovery', () => {
     expect(result.current.saveError).toMatch(/verif/i);
   });
 
+  it('does not replay when the opened state fingerprint is missing', async () => {
+    mailbox();
+    const { trpc, open, record } = harness();
+    open.mockRejectedValueOnce(new Error('initial')).mockResolvedValueOnce({ ...OPENED, stateDigest: undefined });
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
+    act(() => result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }]));
+    await act(async () => expect(await result.current.flushEdits()).toBe(false));
+    expect(record).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['missing cursor', undefined],
-    ['another extraction', { extractionId: 'ex-2', seq: 1 }],
-    ['wrong revision', { extractionId: 'ex-1', seq: 2 }],
+    ['another extraction', { extractionId: 'ex-2', seq: 1, stateDigest: digestAt(1) }],
+    ['wrong revision', { extractionId: 'ex-1', seq: 2, stateDigest: digestAt(1) }],
+    ['missing state fingerprint', { extractionId: 'ex-1', seq: 1, stateDigest: '' }],
   ] as const)('holds after an unverified save acknowledgment with %s', async (_why, cursor) => {
     mailbox();
     const { trpc, open, record } = harness();

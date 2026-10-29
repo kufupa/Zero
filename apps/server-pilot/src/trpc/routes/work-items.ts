@@ -96,7 +96,9 @@ const fieldEventInput = z
       ])
       .optional(),
     msSinceOpen: z.number().int().min(0).max(86_400_000).optional(),
-    expected: z.object({ extractionId: z.string().uuid(), seq: z.number().int().min(0) }).strict().optional(),
+    expected: z.object({
+      extractionId: z.string().uuid(), seq: z.number().int().min(0), stateDigest: z.string().regex(/^[a-f0-9]{64}$/),
+    }).strict().optional(),
   })
   .strict();
 

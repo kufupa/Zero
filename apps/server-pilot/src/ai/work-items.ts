@@ -15,6 +15,7 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
+import { createHash } from 'node:crypto';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun, mailboxTransport, mailThread, message } from '../db/schema/mail.js';
 import { sqlList } from '../db/schema/hitl.js';
@@ -87,6 +88,19 @@ export type FieldPath =
   | { stayId: string; rowId: null; field: 'arrival' | 'departure' | 'removed' }
   | { stayId: string; rowId: string; field: RowField | 'removed' };
 export type WorkState = Record<string, unknown>;
+
+/** Fingerprint only; never send or log the underlying state for recovery validation. */
+function recoveryStateDigest(state: WorkState): string {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === 'object') {
+      const object = value as Record<string, unknown>;
+      return Object.fromEntries(Object.keys(object).sort().map((key) => [key, canonical(object[key])]));
+    }
+    return value;
+  };
+  return createHash('sha256').update(JSON.stringify(canonical(state))).digest('hex');
+}
 
 const ID = '[A-Za-z0-9_-]{1,40}';
 const PATH = new RegExp(
@@ -1767,6 +1781,8 @@ export type StoredWork =
       extractionId: string;
       /** Revision of the work-item state in this read, or null when it has no work item. */
       revisionSeq: number | null;
+      /** Fingerprint of the same persisted state; detects non-field writes between recovery steps. */
+      stateDigest: string | null;
       refs: Record<string, GroupRef>;
       /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
       analysis: StoredAnalysis & {
@@ -1942,6 +1958,7 @@ async function readyView(
     workItemStatus: paneItem?.status ?? null,
     extractionId: read.id,
     revisionSeq: paneItem?.revisionSeq ?? null,
+    stateDigest: paneItem ? recoveryStateDigest(state) : null,
     refs: stored.refs,
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
     analysis: {
@@ -2035,7 +2052,7 @@ export type FieldEventResult =
   | { status: 'invalid_path' }
   | { status: 'invalid_value' }
   | { status: 'stale' }
-  | { status: 'recorded'; aiValue: unknown; value: unknown; cursor?: { extractionId: string; seq: number } };
+  | { status: 'recorded'; aiValue: unknown; value: unknown; cursor?: { extractionId: string; seq: number; stateDigest: string } };
 
 /**
  * Appends one field event and updates that field in the work item's state, in one transaction. ai_value is read from the
@@ -2053,7 +2070,7 @@ export async function recordFieldEvent(
     fieldPath: string;
     value?: unknown;
     msSinceOpen?: number;
-    expected?: { extractionId: string; seq: number };
+    expected?: { extractionId: string; seq: number; stateDigest: string };
   },
 ): Promise<FieldEventResult> {
   const contact = contactFieldOf(input.fieldPath);
@@ -2076,7 +2093,8 @@ export async function recordFieldEvent(
       .limit(1)
       .for('update');
     if (!item) return { status: 'not_found' as const };
-    if (input.expected && (item.extractionId !== input.expected.extractionId || item.revisionSeq !== input.expected.seq)) {
+    if (input.expected && (item.extractionId !== input.expected.extractionId || item.revisionSeq !== input.expected.seq ||
+        recoveryStateDigest(item.state) !== input.expected.stateDigest)) {
       return { status: 'stale' as const };
     }
     const [read] = item.extractionId
@@ -2115,7 +2133,7 @@ export async function recordFieldEvent(
       msSinceOpen: input.msSinceOpen ?? null,
       evidence: advanced.evidence,
     });
-    await tx
+    const update = tx
       .update(workItem)
       .set({
         state,
@@ -2125,10 +2143,16 @@ export async function recordFieldEvent(
         updatedAt: new Date(),
       })
       .where(eq(workItem.id, input.workItemId));
-    return {
-      status: 'recorded' as const, aiValue, value,
-      ...(input.expected ? { cursor: { extractionId: input.expected.extractionId, seq: item.revisionSeq + 1 } } : {}),
-    };
+    if (!input.expected) {
+      await update;
+      return { status: 'recorded' as const, aiValue, value };
+    }
+    const [persisted] = await update.returning({ state: workItem.state });
+    if (!persisted) throw new Error('Work item disappeared while locked.');
+    return { status: 'recorded' as const, aiValue, value, cursor: {
+      extractionId: input.expected.extractionId, seq: item.revisionSeq + 1,
+      stateDigest: recoveryStateDigest(persisted.state),
+    } };
   });
 }
 
