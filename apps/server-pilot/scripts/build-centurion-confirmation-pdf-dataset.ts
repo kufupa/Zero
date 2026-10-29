@@ -32,6 +32,7 @@ type AttachmentSource = {
 type ExtractedPdf = {
   source: AttachmentSource;
   record: JsonRecord;
+  observedSha256: string | null;
   fields: ExtractedPdfFields;
   confirmationNumbers: Array<{ value: string; pageNumber: number }>;
 };
@@ -86,6 +87,8 @@ export async function extractPdf(source: AttachmentSource, inputDir: string): Pr
   const attachmentId = asString(attachment.attachmentId) ?? 'unknown';
   const relativePath = asString(file.path);
   const fileStatus = asString(file.status) ?? 'unknown';
+  const sourceHash = asString(file.sha256);
+  let observedSha256: string | null = null;
   let extraction: JsonRecord;
   let fields: ExtractedPdfFields = {
     guestName: [],
@@ -106,6 +109,8 @@ export async function extractPdf(source: AttachmentSource, inputDir: string): Pr
     try {
       const pdfPath = await safeInputPath(inputDir, relativePath);
       const bytes = await readFile(pdfPath);
+      observedSha256 = sha256(bytes);
+      if (sourceHash && sourceHash !== observedSha256) throw new Error('pdf_sha256_mismatch');
       const detected = detectPdf(bytes);
       const parsed = await extractPagesMarkdownAsync(bytes);
       const pages = parsed.pages.map((page) => ({
@@ -152,7 +157,7 @@ export async function extractPdf(source: AttachmentSource, inputDir: string): Pr
       };
     } catch (error) {
       extraction = {
-        status: 'parser_failure',
+        status: observedSha256 && sourceHash && observedSha256 !== sourceHash ? 'source_hash_mismatch' : 'parser_failure',
         errorClass: error instanceof Error ? error.name : 'Error',
       };
     }
@@ -160,9 +165,10 @@ export async function extractPdf(source: AttachmentSource, inputDir: string): Pr
 
   const parent = source.parentMessage;
   const parentMessageDbId = asString(parent.messageDbId);
-  const fileHash = asString(file.sha256);
+  const sourceHashMatches = observedSha256 && sourceHash ? observedSha256 === sourceHash : null;
   return {
     source,
+    observedSha256,
     fields,
     confirmationNumbers: confirmations,
     record: {
@@ -192,9 +198,11 @@ export async function extractPdf(source: AttachmentSource, inputDir: string): Pr
         mimeType: asString(attachment.mimeType),
         declaredBytes: typeof attachment.byteSize === 'number' ? attachment.byteSize : null,
         storedBytes: typeof file.bytes === 'number' ? file.bytes : null,
-        sha256: fileHash,
-        pdfMagicValid: file.pdfMagicValid === true,
-        sizeMatchesMetadata: file.sizeMatchesMetadata === true,
+        sha256: observedSha256 ?? sourceHash,
+        sourceSha256: sourceHash,
+        sourceSha256Matches: sourceHashMatches,
+        pdfMagicValid: sourceHashMatches === true && typeof file.pdfMagicValid === 'boolean' ? file.pdfMagicValid : null,
+        sizeMatchesMetadata: sourceHashMatches === true && typeof file.sizeMatchesMetadata === 'boolean' ? file.sizeMatchesMetadata : null,
         status: fileStatus,
       },
       parentMessage: {
@@ -291,7 +299,7 @@ async function main(): Promise<void> {
   }
   const idsByHash = new Map<string, string[]>();
   for (const item of extracted) {
-    const hash = asString(item.source.file.sha256);
+    const hash = item.observedSha256;
     const id = asString(item.source.attachment.attachmentId);
     if (!hash || !id) continue;
     const ids = idsByHash.get(hash) ?? [];
@@ -299,7 +307,7 @@ async function main(): Promise<void> {
     idsByHash.set(hash, ids);
   }
   for (const item of extracted) {
-    const hash = asString(item.source.file.sha256);
+    const hash = item.observedSha256;
     const ids = hash ? idsByHash.get(hash) ?? [] : [];
     item.record.duplicateContent = ids.length > 1
       ? { exactSha256: hash, sourceAttachmentIds: ids.sort(), groupSize: ids.length }
