@@ -131,13 +131,14 @@ describe('prepared quote reuse', () => {
     expect(view?.result).not.toHaveProperty('totalMinor');
   });
 
-  it('keeps a completed Centurion price and a legacy Da Vinci price readable', async () => {
+  it('holds a Centurion price without selected-source proof and keeps a legacy Da Vinci price readable', async () => {
     const centurion = preparedRun('cen', TRANSPORT_ID, input, false);
     const davinci = preparedRun('dav', DAVINCI_TRANSPORT_ID, {
       ...input, groups: [{ ...input.groups[0]!, childrenPerRoom: undefined }],
     }, false);
-    expect(await readHmsJobView({ transportId: TRANSPORT_ID, runId: centurion.id }, quoteDb([centurion])))
-      .toMatchObject({ status: 'done', result: { totalMinor: 100_000 } });
+    const held = await readHmsJobView({ transportId: TRANSPORT_ID, runId: centurion.id }, quoteDb([centurion]));
+    expect(held).toMatchObject({ status: 'failed', result: { ok: false } });
+    expect(held?.result).not.toHaveProperty('totalMinor');
     expect(await readHmsJobView({ transportId: DAVINCI_TRANSPORT_ID, runId: davinci.id }, quoteDb([davinci])))
       .toMatchObject({ status: 'done', result: { totalMinor: 100_000 } });
   });
