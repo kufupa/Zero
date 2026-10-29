@@ -720,6 +720,60 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       });
     }, 30_000);
 
+    it('prepares a witnessed Centurion quote before its work item exists and holds a later staff edit', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        vi.stubEnv('PORT', '3000');
+        vi.stubEnv('BETTER_AUTH_URL', 'https://synthetic.invalid');
+        vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
+        vi.stubEnv('AWS_REGION', 'synthetic-region-1');
+        vi.stubEnv('S3_BUCKET', 'synthetic-test-bucket');
+        vi.stubEnv('HMS_JOB_QUEUE', 'on');
+        vi.stubEnv('HMS_QUOTE_PREPARE', 'on');
+        vi.stubEnv('HMS_READ_SERVICE_ENABLED', 'true');
+        vi.stubEnv('HMS_LANE_PAUSED', 'false');
+        vi.stubEnv('AI_WORKER_LANE', 'hms');
+        vi.stubEnv('HMS_RUN_DEADLINE_MS', '150000');
+
+        async function enqueueWithoutItem() {
+          const source = await seedExtractedRequest(db);
+          // Represents a witnessed, complete extraction awaiting work-item creation; no edits exist here.
+          await db.delete(workItem).where(eq(workItem.id, source.workItemId));
+          const input = { ...source.input, selectionEpoch: 0, inputRevision: 0 };
+          expect(await captureQuoteSourceProof(db, input, { transportId: source.mail.transportId,
+            threadId: source.mail.threadId, messageId: source.mail.id, propertyCode: 'HRCEN' })).toBeNull();
+          const { run } = await enqueueHmsJob({ transportId: source.mail.transportId, threadId: source.mail.threadId,
+            triggerMessageId: source.mail.id, workItemId: null, userId: null, priority: HMS_JOB_PRIORITY_PREFETCH,
+            idempotencyKey: `synthetic-unlinked-prepared:${randomUUID()}`, request: { kind: 'staff_quote', input },
+            extraMetrics: { quotePrepared: true, propertyCode: 'HRCEN' } }, db);
+          const claim = await claimNextAiRun({ db, ownerId: 'synthetic-worker', lane: 'hms',
+            transportId: source.mail.transportId, runKind: 'read_tool' });
+          expect(claim?.id).toBe(run.id);
+          return { source, run };
+        }
+
+        const ready = await enqueueWithoutItem();
+        await expect(executeAiRun(ready.run.id)).resolves.toEqual({ runId: ready.run.id, state: 'succeeded' });
+        const [readyRun] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, ready.run.id));
+        expect(readyRun?.readResult).toMatchObject({ status: 'ready', quoteSourceProof: { version: 5 } });
+        const [created] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, ready.source.mail.id));
+        expect(created).toMatchObject({ extractionId: ready.source.input.sourceExtractionId, state: {} });
+
+        const raced = await enqueueWithoutItem();
+        nativeRead.mockImplementationOnce(async (nativeInput) => {
+          // A person opens and edits the newly created item while HMS is reading.
+          await db.insert(workItem).values({ transportId: raced.source.mail.transportId, threadId: raced.source.mail.threadId,
+            sourceMessageId: raced.source.mail.id, kind: 'quote', extractionId: raced.source.input.sourceExtractionId,
+            state: { [`stays[${raced.source.stayId}].rows[${raced.source.rowId}].adults`]: 2 } });
+          return nativeFixture(nativeInput);
+        });
+        await expect(executeAiRun(raced.run.id)).resolves.toEqual({ runId: raced.run.id, state: 'succeeded' });
+        const [held] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, raced.run.id));
+        expect(held?.readResult).toMatchObject({ ok: false });
+        expect(held?.readResult).not.toHaveProperty('totalMinor');
+      });
+    }, 60_000);
+
     it('carries a queued Centurion quote from selected email to an unsent draft', async () => {
       await withSeededTestDb(async (db) => {
         installFixture(db);
@@ -895,6 +949,22 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             return nativeFixture(input);
           });
           await expect(caller().workstation.executeStaffQuote(first.input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+
+          const noItem = await seedExtractedRequest(db);
+          await db.delete(workItem).where(eq(workItem.id, noItem.workItemId));
+          await db.transaction(async (tx) => {
+            const proof = await captureQuoteSourceProof(tx as unknown as DB, noItem.input, {
+              transportId: noItem.mail.transportId, threadId: noItem.mail.threadId, messageId: noItem.mail.id,
+              propertyCode: 'HRCEN', allowMissingWorkItem: true,
+            });
+            expect(proof).not.toBeNull();
+            // Even without a child row to lock, its parent source locks exclude a competing insert.
+            await expect(writer.begin(async (other) => {
+              await other`set local lock_timeout = '200ms'`;
+              await other`insert into work_item (transport_id, thread_id, source_message_id, kind, extraction_id)
+                values (${noItem.mail.transportId}, ${noItem.mail.threadId}, ${noItem.mail.id}, 'quote', ${noItem.input.sourceExtractionId})`;
+            })).rejects.toMatchObject({ code: '55P03' });
+          });
 
           // This success exercises the real persistRun transaction with a nested current-witness check.
           const second = await seedExtractedRequest(db, true), api = caller();

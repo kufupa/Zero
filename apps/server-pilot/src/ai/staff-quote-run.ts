@@ -655,7 +655,9 @@ export async function runStaffQuote(
     });
   }
   const occupancyScope = { transportId: identity.transportId, threadId: mail.threadId, messageId: mail.id,
-    propertyCode: quoteTarget.target.propertyCode };
+    propertyCode: quoteTarget.target.propertyCode,
+    // A prepared job can precede its work item; the witnessed snapshot holds the source message UPDATE lock.
+    ...(systemPrepared ? { allowMissingWorkItem: true } : {}) };
   const quoteSourceProof = quoteTarget.target.propertyCode === 'HRCEN'
     ? await captureQuoteSourceProof(db, input, occupancyScope) : null;
   if (quoteTarget.target.propertyCode === 'HRCEN' && !quoteSourceProof) {
