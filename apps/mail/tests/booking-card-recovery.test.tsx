@@ -45,7 +45,7 @@ const secondVerified: PaneStayResult = {
 const unconfirmed: PaneStayResult = { status: 'refused', reason: PANE_SAVE_UNCONFIRMED_REASON };
 let workItemSequence = 0;
 
-function renderCase(commit: PaneStayClient['commit'], savedStays?: Record<string, SavedStayCommit>) {
+function renderCase(commit: PaneStayClient['commit'], savedStays?: Record<string, SavedStayCommit>, withWorkItem = true) {
   // The preview cache is module-scoped; give each case its own work item.
   const workItemId = `00000000-0000-4000-8000-${String(++workItemSequence).padStart(12, '0')}`;
   const preview = vi.fn<PaneStayClient['preview']>().mockResolvedValue(previewResult);
@@ -53,7 +53,7 @@ function renderCase(commit: PaneStayClient['commit'], savedStays?: Record<string
   const bookingDraft = draft();
   const card = (stored?: Record<string, SavedStayCommit>) => (
     <BookingCards
-      draft={bookingDraft} groups={[group]} paneSave={client} workItemId={workItemId} savedStays={stored}
+      draft={bookingDraft} groups={[group]} paneSave={client} workItemId={withWorkItem ? workItemId : undefined} savedStays={stored}
       propertyCode="HRCEN"
       contact={{ name: 'Example Booker', company: null, endClient: null, email: 'booker@example.invalid', phone: null }}
       confirmation={{ userEmail: 'staff@example.invalid', setting: { mode: 'self' } }}
@@ -77,6 +77,38 @@ async function previewBoth() {
 }
 
 describe('multi-room save recovery', () => {
+  it('allows a fresh attempt after another booking has cleared a temporary server hold', async () => {
+    const commit = vi.fn<PaneStayClient['commit']>()
+      .mockResolvedValueOnce({ status: 'refused', reason: 'pane_save_dependency_unconfirmed' })
+      .mockResolvedValueOnce(firstVerified).mockResolvedValueOnce(secondVerified);
+    renderCase(commit);
+    fireEvent.click(await previewBoth());
+    await screen.findByText('Another booking is still being checked. Nava did not save this room. Preview again when the check finishes.');
+    expect(commit).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Preview in HMS' })[0]!);
+    const batch = screen.getByRole('button', { name: 'Book this stay' });
+    await waitFor(() => expect(batch).toHaveProperty('disabled', false));
+    fireEvent.click(batch);
+    expect(await screen.findByText('Booked 2 of 2 – TEST-FIRST, TEST-SECOND')).toBeDefined();
+    expect(commit).toHaveBeenCalledTimes(3);
+  });
+
+  it('disables preview and booking until the request identity is available', () => {
+    const commit = vi.fn<PaneStayClient['commit']>();
+    const { preview } = renderCase(commit, undefined, false);
+    for (let index = 0; index < 2; index += 1) {
+      fireEvent.change(screen.getAllByLabelText('Track')[index]!, { target: { value: 'COR' } });
+      fireEvent.change(screen.getAllByLabelText('Source of business')[index]!, { target: { value: 'E-Mail' } });
+      fireEvent.change(screen.getAllByLabelText('Guarantee')[index]!, { target: { value: 'Confirmation Received' } });
+    }
+    expect(screen.getByText('Nava could not connect this booking to the request. Reopen the request to continue.')).toBeDefined();
+    expect(screen.getAllByRole('button', { name: 'Preview in HMS' })
+      .every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', true);
+    expect(preview).not.toHaveBeenCalled();
+    expect(commit).not.toHaveBeenCalled();
+  });
+
   it.each(['unconfirmed result', 'interrupted request'] as const)(
     'holds both later batch and individual actions after an %s',
     async (failure) => {

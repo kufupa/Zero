@@ -2,8 +2,8 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render as renderWithTestingLibrary, screen, waitFor, within } from '@testing-library/react';
-import type { ReactElement, ReactNode } from 'react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { cloneElement, type ReactElement, type ReactNode } from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfirmationSourcesProvider } from '../components/quote-workflow/confirmation-recipient';
 import { unmaskedPii } from './helpers/pii-marks';
 import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
@@ -68,6 +68,11 @@ vi.mock('../lib/quote-workflow/pane-telemetry', async (importOriginal) => ({
 }));
 
 afterEach(() => cleanup());
+let workItemSequence = 0;
+let testWorkItemId = '';
+beforeEach(() => {
+  testWorkItemId = `00000000-0000-4000-8000-${String(++workItemSequence).padStart(12, '0')}`;
+});
 
 // Most booking tests model a signed-in staff member. Tests for missing sources explicitly pass null.
 const TEST_CONFIRMATION = { userEmail: 'staff@example.invalid', setting: { mode: 'self' as const } };
@@ -75,7 +80,12 @@ function TestConfirmationProvider({ children }: { children: ReactNode }) {
   return <ConfirmationSourcesProvider value={TEST_CONFIRMATION}>{children}</ConfirmationSourcesProvider>;
 }
 function render(ui: ReactElement) {
-  return renderWithTestingLibrary(ui, { wrapper: TestConfirmationProvider });
+  // Native actions now require a durable request; individual tests can still pass an explicit identity.
+  const bindWorkItem = (element: ReactElement) => element.type === BookingCards &&
+    !Object.hasOwn(element.props as object, 'workItemId')
+    ? cloneElement(element as ReactElement<{ workItemId?: string }>, { workItemId: testWorkItemId }) : element;
+  const view = renderWithTestingLibrary(bindWorkItem(ui), { wrapper: TestConfirmationProvider });
+  return { ...view, rerender: (element: ReactElement) => view.rerender(bindWorkItem(element)) };
 }
 
 

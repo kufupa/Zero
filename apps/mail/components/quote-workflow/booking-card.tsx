@@ -1002,8 +1002,6 @@ export function BookingCards({
   savesRef.current = saves;
   const bookedInRunRef = useRef<Record<string, CommitView>>({});
   const committingRef = useRef(false);
-  const [serverHold, setServerHold] = useState(false);
-  const serverHoldRef = useRef(false);
   const savedStaysRef = useRef(savedStays);
   savedStaysRef.current = savedStays;
   useEffect(() => {
@@ -1193,14 +1191,13 @@ export function BookingCards({
       const recent = recentCommitForRoom(roomKey);
       return recentCanReplaceUnknown(stored, recent) && recent?.status === 'booked' && !recent.unverified;
     };
-    return serverHoldRef.current ||
-      Object.entries(savedStaysRef.current ?? {}).some(([stayId, saved]) => {
-        if (saved.status !== 'unknown') return false;
-        const rooms = draft.draft.rooms.filter((room) => stayIdForRoom(room, groups) === stayId);
-        if (rooms.length !== 1) return true;
-        const room = rooms[0]!;
-        return !verifiedAfterClaim(roomKeyOf(room), commitViewFromSaved(saved, room.request));
-      }) ||
+    return Object.entries(savedStaysRef.current ?? {}).some(([stayId, saved]) => {
+      if (saved.status !== 'unknown') return false;
+      const rooms = draft.draft.rooms.filter((room) => stayIdForRoom(room, groups) === stayId);
+      if (rooms.length !== 1) return true;
+      const room = rooms[0]!;
+      return !verifiedAfterClaim(roomKeyOf(room), commitViewFromSaved(saved, room.request));
+    }) ||
       Object.entries(savesRef.current).some(([key, save]) =>
         isUncertainCommit(save.commit) && !verifiedAfterClaim(key, save.commit)) ||
       Object.values(recentCommitsRef.current).some((recent) =>
@@ -1229,7 +1226,7 @@ export function BookingCards({
   }
 
   async function previewRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput) {
-    if (savedOutcomeBlocksRoom(roomKey)) return;
+    if (!workItemId || savedOutcomeBlocksRoom(roomKey)) return;
     const inputKey = paneStayKey(stay);
     const input = previewInputsRef.current[roomKey];
     if (!input?.key || input.inputKey !== inputKey) return;
@@ -1383,7 +1380,7 @@ export function BookingCards({
   }
 
   async function bookThisStay(pane: PaneStayClient) {
-    if (committingRef.current || hasUncertainOutcome()) return;
+    if (!workItemId || committingRef.current || hasUncertainOutcome()) return;
     const snapshot = bookableRooms()
       .filter((room) => {
         const commit = saves[roomKeyOf(room)]?.commit;
@@ -1453,65 +1450,65 @@ export function BookingCards({
   }
 
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
-    if (committingRef.current || hasUncertainOutcome() || savedOutcomeBlocksRoom(roomKey)) return false;
+    if (!workItemId || committingRef.current || hasUncertainOutcome() || savedOutcomeBlocksRoom(roomKey)) return false;
     committingRef.current = true;
     try {
-      const key = paneStayKey(stay);
-      const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
-      if (room) previewReceipt.clear(workItemId, stayIdForRoom(room, groups));
-      patchSave(roomKey, { commit: { status: 'running', key } });
-      let commit: CommitView;
-      try {
-        const parentStayId = room && workItemId ? bookedParentStayId(room, stay) : null;
-        const persist =
-          workItemId && room
-            ? { stayId: stayIdForRoom(room, groups), workItemId, ...(parentStayId ? { parentStayId } : {}) }
-            : {};
-        const result = await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
-        if (result.status === 'refused' && result.reason === 'pane_save_dependency_unconfirmed') {
-          serverHoldRef.current = true;
-          setServerHold(true);
-        }
-        const outcome = commitOutcome(result, stay);
-        commit = outcome.ok
-          ? {
-              status: 'booked',
-              key,
-              confirmationNumber: outcome.confirmationNumber,
-              runId: outcome.runId,
-              screenshots: outcome.screenshots,
-              ...(outcome.unverified ? { unverified: true } : {}),
-              ...(outcome.cmsMismatch ? { cmsMismatch: true } : {}),
-            }
-          : {
-              status: 'refused',
-              key,
-              message: outcome.message,
-              runId: outcome.runId,
-              screenshots: outcome.screenshots,
-              ...(result.status === 'ok' || result.reason === PANE_SAVE_UNCONFIRMED_REASON
-                ? { statusChip: 'check' as const } : {}),
-            };
-      } catch {
-        commit = { status: 'refused', key, message: PANE_COMMIT_UNREACHABLE_COPY, statusChip: 'check' };
-      }
-      // Guard immediately even before React has rendered the new room state.
-      recentCommitsRef.current[roomKey] = {
-        workItemId, stayId: room ? stayIdForRoom(room, groups) : null, commit,
-      };
-      // The next room in a Book this stay run can start before React re-renders this result.
-      if (commit.status === 'booked' && !commit.unverified && stayBookingRef.current) {
-        bookedInRunRef.current[roomKey] = commit;
-      }
-      // Definite refusals can be previewed again; uncertain saves stay locked for an HMS check.
-      patchSave(roomKey, commit.status === 'booked' ? { commit } : { commit, preview: undefined }, true);
-      return commit.status === 'booked' && !commit.unverified;
+      return await performRoomCommit(roomKey, pane, stay, previewDigest);
     } finally {
       committingRef.current = false;
     }
   }
 
-  const unconfirmed = serverHold || hasUncertainOutcome();
+  async function performRoomCommit(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
+    const key = paneStayKey(stay);
+    const room = draft.draft.rooms.find((item) => `${item.groupId}:${item.roomIndex}` === roomKey);
+    if (room) previewReceipt.clear(workItemId, stayIdForRoom(room, groups));
+    patchSave(roomKey, { commit: { status: 'running', key } });
+    let commit: CommitView;
+    try {
+      const parentStayId = room && workItemId ? bookedParentStayId(room, stay) : null;
+      const persist =
+        workItemId && room
+          ? { stayId: stayIdForRoom(room, groups), workItemId, ...(parentStayId ? { parentStayId } : {}) }
+          : {};
+      const result = await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
+      const outcome = commitOutcome(result, stay);
+      commit = outcome.ok
+        ? {
+            status: 'booked',
+            key,
+            confirmationNumber: outcome.confirmationNumber,
+            runId: outcome.runId,
+            screenshots: outcome.screenshots,
+            ...(outcome.unverified ? { unverified: true } : {}),
+            ...(outcome.cmsMismatch ? { cmsMismatch: true } : {}),
+          }
+        : {
+            status: 'refused',
+            key,
+            message: outcome.message,
+            runId: outcome.runId,
+            screenshots: outcome.screenshots,
+            ...(result.status === 'ok' || result.reason === PANE_SAVE_UNCONFIRMED_REASON
+              ? { statusChip: 'check' as const } : {}),
+          };
+    } catch {
+      commit = { status: 'refused', key, message: PANE_COMMIT_UNREACHABLE_COPY, statusChip: 'check' };
+    }
+    // Guard immediately even before React has rendered the new room state.
+    recentCommitsRef.current[roomKey] = {
+      workItemId, stayId: room ? stayIdForRoom(room, groups) : null, commit,
+    };
+    // The next room in a Book this stay run can start before React re-renders this result.
+    if (commit.status === 'booked' && !commit.unverified && stayBookingRef.current) {
+      bookedInRunRef.current[roomKey] = commit;
+    }
+    // Definite refusals can be previewed again; uncertain saves stay locked for an HMS check.
+    patchSave(roomKey, commit.status === 'booked' ? { commit } : { commit, preview: undefined }, true);
+    return commit.status === 'booked' && !commit.unverified;
+  }
+
+  const unconfirmed = hasUncertainOutcome();
   const commitInFlight = Object.values(saves).some((save) => save.commit?.status === 'running');
 
   return (
@@ -1521,6 +1518,9 @@ export function BookingCards({
           ? 'Preview each room using the Stay details above, then create it in HMS.'
           : 'Saving to HMS from this pane is off for now. Stay details are above; enter the booking-only fields in HMS Guest Stay.'}
       </p>
+      {client && savesOn && !workItemId ? (
+        <p role="status">Nava could not connect this booking to the request. Reopen the request to continue.</p>
+      ) : null}
       <div className="flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
         <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
           <input type="checkbox" aria-label="Send confirmation from HMS" checked={sendConfirmation}
@@ -1926,7 +1926,7 @@ export function BookingCards({
                 save={saves[key] ?? {}}
                 screenshot={client.screenshot}
                 bookLabel={CREATE_PROVISIONAL_LABEL}
-                frozen={stayBooking}
+                frozen={stayBooking || !workItemId}
                 bookBlocked={unconfirmed || commitInFlight}
                 onPreview={(stay) => void previewRoom(key, client, stay)}
                 onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
@@ -1957,7 +1957,7 @@ export function BookingCards({
           saves={saves}
           isPreviewReady={(room) => roomPreviewReady(room) !== null}
           pane={client}
-          stayBooking={stayBooking}
+          stayBooking={stayBooking || !workItemId}
           unconfirmed={unconfirmed}
           onBookStay={bookThisStay}
         />

@@ -39,7 +39,7 @@ const REFUSAL_COPY: Record<string, string> = {
   pane_save_parent_not_booked:
     "The first room of this booking isn't confirmed in HMS yet, so Nava didn't add this room. Check HMS, then try again.",
   pane_save_dependency_unconfirmed:
-    'Another booking is still unconfirmed, so Nava paused the remaining rooms.',
+    'Another booking is still being checked. Nava did not save this room. Preview again when the check finishes.',
   pane_save_identity_required:
     "Nava couldn't connect this booking to the request, so nothing was saved. Reopen the request and try again.",
   pane_save_work_item_unavailable:
@@ -62,6 +62,8 @@ const REFUSAL_COPY: Record<string, string> = {
     'HMS is busy with another quote or lookup. Nothing was saved. Try again in a minute.',
   refused_save_blank_required:
     'HMS still has a blank required field. Nothing was saved. Fill in every field, then preview again.',
+  refused_save:
+    "Nava couldn't check for an existing booking in HMS. Nothing was saved. Preview again later.",
 };
 
 const REFUSED_FALLBACK = 'Nava stopped before saving anything. Check HMS, then book by hand.';

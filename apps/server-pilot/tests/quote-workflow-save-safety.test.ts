@@ -252,6 +252,34 @@ describe('quoteWorkflow commit safety with fake storage and HMS', () => {
     });
   });
 
+  it.each(['refused_save', 'refused_save_blank_required'])(
+    'clears a claim after the runner proves %s happened before Save',
+    async (outcome) => {
+      const { spawn } = fakeRunner();
+      spawn.mockImplementation(async (request) => request.paneCommit
+        ? { outcome, clickedSave: false, confirmationNumber: '' }
+        : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' });
+      const client = caller();
+      const previewDigest = await preview(client);
+      expect(await client.quoteWorkflow.commitStay({ ...input, previewDigest })).toMatchObject({
+        status: 'refused', reason: outcome, clickedSave: false,
+      });
+      expect(state.stays).toEqual({});
+      expect(state.paneStaySaveClaims).toBeUndefined();
+    },
+  );
+
+  it.each(['missing work item', 'failed write'])('does not return a ready preview after a %s', async (cause) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const { spawn } = fakeRunner();
+    if (cause === 'missing work item') exists = false;
+    else failUpdateAt = 1;
+    const result = await caller().quoteWorkflow.previewStay(input);
+    expect(result).toMatchObject({ status: 'refused', reason: 'pane_save_work_item_unavailable' });
+    expect(result.previewDigest).toBeUndefined();
+    expect(spawn.mock.calls.filter(([request]) => request.paneCommit)).toHaveLength(0);
+  });
+
   it('retains a possible number if the runner refuses after Save may have fired', async () => {
     const { spawn } = fakeRunner();
     spawn.mockImplementation(async (request) => request.paneCommit

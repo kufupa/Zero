@@ -1527,6 +1527,28 @@ describe('pane stay preview persist', () => {
     ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required', clickedSave: false });
   });
 
+  it('does not fall back to an unbound preview when durable storage is unavailable', async () => {
+    enableSave();
+    const owner = freshOwner();
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner });
+    await expect(runPaneStay({
+      mode: 'commit', stay: labStay, owner, workItemId: randomUUID(), stayId: 's_1',
+      previewDigest: preview.previewDigest as string,
+    })).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required', clickedSave: false });
+  });
+
+  it('does not report a ready work-item preview if its grant cannot be stored', async () => {
+    enableSave();
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    paneStaySaveLoaders.previewPersist = { record: () => { throw new Error('unavailable'); }, take: () => false };
+    const result = await runPaneStay({
+      mode: 'preview', stay: labStay, owner: freshOwner(), workItemId: randomUUID(), stayId: 's_1',
+    });
+    expect(result).toMatchObject({ status: 'refused', reason: 'pane_save_work_item_unavailable', clickedSave: false });
+    expect(result.previewDigest).toBeUndefined();
+    warning.mockRestore();
+  });
+
   it('does not transfer a preview grant to another work item or stay', async () => {
     enableSave();
     const grants = new Map<string, string>();

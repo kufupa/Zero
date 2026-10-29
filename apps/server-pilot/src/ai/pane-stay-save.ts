@@ -443,9 +443,12 @@ async function recordBoundPreview(input: {
   stayId?: string;
   previewPersist?: PaneStayPreviewPersist | null;
 }): Promise<void> {
-  recordPanePreview(input.owner, input.digest, input.now);
   const persist = boundPreviewPersist(input);
-  if (!persist || !input.workItemId || !input.stayId) return;
+  if (!input.workItemId || !input.stayId) {
+    recordPanePreview(input.owner, input.digest, input.now);
+    return;
+  }
+  if (!persist) throw new Error('pane_save_preview_persist_unavailable');
   await persist.record({
     workItemId: input.workItemId,
     stayId: input.stayId,
@@ -463,17 +466,14 @@ async function takeBoundPreview(input: {
   previewPersist?: PaneStayPreviewPersist | null;
 }): Promise<boolean> {
   const persist = boundPreviewPersist(input);
-  if (persist && input.workItemId && input.stayId) {
-    const taken = await persist.take({
+  if (input.workItemId && input.stayId) {
+    if (!persist) return false;
+    return persist.take({
       workItemId: input.workItemId,
       stayId: input.stayId,
       digest: input.digest,
       now: input.now,
     });
-    if (taken) {
-      takePanePreview(input.owner, input.digest, input.now);
-    }
-    return taken;
   }
   // The standalone proof runner has no work-item identity; pane commits require the durable bound grant.
   return takePanePreview(input.owner, input.digest, input.now);
@@ -579,26 +579,43 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   ];
   if (input.stopBefore) args.push('--stop-before', input.stopBefore);
   if (input.paneCommit) args.push('--pane-commit');
-  let stdout: string;
+  let stdout = '';
+  let failure: unknown;
+  let failed = false;
   try {
     ({ stdout } = await execFileAsync('node', args, {
       timeout: 20 * 60_000,
       env: paneStayCreateSpawnEnv(target),
     }));
+  } catch (error) {
+    failed = true;
+    failure = error;
   } finally {
     await rm(requestPath, { force: true });
   }
   // If the runner did not leave a complete result, assume Save might have fired.
   let clickedSave = input.paneCommit;
+  let preSaveSearchRefused = false;
+  let knownConfirmation = '';
   let cmsReason: 'saved_cms_mismatch' | undefined;
   let cmsMismatches: PaneStayResult['cmsMismatches'];
   try {
     const result = JSON.parse(await readFile(join(dir, 'result.json'), 'utf8')) as {
       cmsReason?: unknown;
       clickedSave?: unknown;
+      confirmationNumber?: unknown;
+      outcome?: unknown;
+      refusalReason?: unknown;
       proof?: { mismatches?: PaneStayResult['cmsMismatches'] };
     };
     if (typeof result.clickedSave === 'boolean') clickedSave = result.clickedSave;
+    if (typeof result.confirmationNumber === 'string') knownConfirmation = result.confirmationNumber.trim();
+    // These create-runner outcomes are emitted before Save; other failures may occur during a click.
+    if (!input.parentConfirmation && result.outcome === 'refused_save_blank_required' && result.clickedSave === undefined) {
+      clickedSave = false;
+    }
+    preSaveSearchRefused = !input.parentConfirmation && result.outcome === 'refused_save' &&
+      result.refusalReason === 'proof_pre_save_search_unavailable' && result.clickedSave === false && !knownConfirmation;
     if (result.cmsReason === 'saved_cms_mismatch') {
       cmsReason = result.cmsReason;
       cmsMismatches = result.proof?.mismatches?.filter((item) => ['udfchar09', 'udfchar13', 'send'].includes(item.field));
@@ -606,8 +623,12 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   } catch {
     // The result file may not exist when a runner exits before it creates the file.
   }
+  if (failed && !preSaveSearchRefused && !(input.paneCommit && knownConfirmation)) throw failure;
+  if (input.paneCommit && knownConfirmation) clickedSave = true;
   const line = stdout.trim().split('\n').at(-1) ?? '';
-  const [outcome = '', confirmationNumber = ''] = line.split(/\s+/);
+  const [printedOutcome = '', printedConfirmation = ''] = line.split(/\s+/);
+  const outcome = failed ? preSaveSearchRefused ? 'refused_save' : 'save_unconfirmed' : printedOutcome;
+  const confirmationNumber = failed ? knownConfirmation : printedConfirmation || knownConfirmation;
   const screenshots = (await readdir(dir)).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)).sort();
   return {
     outcome,
@@ -822,12 +843,12 @@ export async function runPaneStay(input: {
         stayId: input.stayId,
         previewPersist: input.previewPersist,
       });
-    } catch (error) {
+    } catch {
       console.warn('stay_preview_persist_failed', {
         stayId: input.stayId,
         workItemId: input.workItemId,
-        error,
       });
+      return paneStayNotSaved('pane_save_work_item_unavailable');
     }
   }
   if (spawned.runId && spawned.runDir) {
