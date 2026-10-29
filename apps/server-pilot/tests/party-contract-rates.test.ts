@@ -14,7 +14,7 @@ import {
   partyContractChoice,
 } from '../src/ai/reservationist-business-services.js';
 import { occupiedDates } from '../src/quote-proposal/quote-revision.js';
-import { availabilityBoardOf } from '../src/ai/hms-availability.js';
+import { availabilityBoardOf, type AvailabilityBoardRow } from '../src/ai/hms-availability.js';
 import { otherBoardContractNotes, type RateOption } from '../src/ai/rate-options.js';
 import { panePartyLookupLoaders, verifyPartyPick } from '../src/ai/pane-party-lookup.js';
 import { suggestPartiesFor } from '../src/ai/party-aliases.js';
@@ -200,6 +200,7 @@ function rateShopServices(
     truncatedParty?: boolean;
     contextChangedInFullRead?: boolean;
     onRateOptions?: (options: RateOption[]) => void;
+    onAvailabilityBoard?: (board: { rows: AvailabilityBoardRow[]; truncated: boolean }) => void;
   } = {},
 ) {
   const context = resolvedContext(prepared.request.rateContext);
@@ -254,7 +255,7 @@ function rateShopServices(
       resolvePolicy: async () => policy,
       ...(flags.readParty ? { readParty: flags.readParty } : {}),
     },
-    { ...prepared.approval, ...(flags.onRateOptions ? { onRateOptions: flags.onRateOptions } : {}) },
+    { ...prepared.approval, ...(flags.onRateOptions ? { onRateOptions: flags.onRateOptions } : {}), ...(flags.onAvailabilityBoard ? { onAvailabilityBoard: flags.onAvailabilityBoard } : {}) },
   );
 }
 
@@ -277,6 +278,7 @@ async function quoteWith(
   const sent: any[] = [];
   // The rate cards of the attempt that priced; a failed attempt never publishes any.
   const cards: RateOption[][] = [];
+  const boards: { rows: AvailabilityBoardRow[]; truncated: boolean }[] = [];
   const onRateOptions = (published: RateOption[]) => {
     cards.push(published);
   };
@@ -285,7 +287,7 @@ async function quoteWith(
     first,
     retry: () => prepareStaffQuote(confirmed, scope, signer, new AbortController().signal, 'public'),
     run: (prepared) =>
-      executeStaffQuote(prepared, rateShopServices(prepared, rates, sent, { ...options, onRateOptions }), async () => true),
+      executeStaffQuote(prepared, rateShopServices(prepared, rates, sent, { ...options, onRateOptions, onAvailabilityBoard: (board) => boards.push(board) }), async () => true),
   });
   return {
     prepared: first,
@@ -294,6 +296,7 @@ async function quoteWith(
     fellBack: attempt.fellBack,
     sent,
     cards: cards.at(-1) ?? [],
+    board: boards.at(-1) ?? { rows: [], truncated: false },
   };
 }
 
@@ -408,11 +411,24 @@ describe('contract rates from the picked company or agency', () => {
 
   it('does not label a price as contracted when its full read disagrees with the summary', async () => {
     const parties = { agency: agency('569', 'Woolworths Agency') };
-    const { revision, note, fellBack, cards } = await quoteWith(parties, [BAR, AGENCY_FLAGGED], { contextChangedInFullRead: true });
+    const { revision, note, fellBack, cards, board } = await quoteWith(parties, [BAR, AGENCY_FLAGGED], { contextChangedInFullRead: true });
     expect(fellBack).toBe(true);
     expect(note).toContain("couldn't confirm contract rates");
     expect(revision.groups[0]!.rateCode).toBe('BARRO');
     expect(cards.some((card) => card.contract)).toBe(false);
+    expect(board.rows.some((row) => row.rateScope === 'contextual')).toBe(false);
+  });
+
+  it('only shows Centurion rates whose public or party entitlement was verified', async () => {
+    const government: Rate = { code: 'BAR', label: 'Government rate', rateScope: 'public', amounts: ['100.00'] };
+    // The fixture deliberately calls contextual and government rows verified even without a party.
+    const publicQuote = await quoteWith(undefined, [BAR, AGENCY_FLAGGED, NAME_ONLY, government]);
+    expect(publicQuote.revision.groups[0]!.rateCode).toBe('BARRO');
+    expect(publicQuote.cards.map((card) => card.rateCode)).toEqual(['BARRO']);
+    expect(publicQuote.board.rows.map((row) => row.rateCode)).toEqual(['BARRO']);
+
+    const partyQuote = await quoteWith({ agency: agency('569', 'Woolworths Agency') }, [BAR, AGENCY_FLAGGED]);
+    expect(partyQuote.board.rows.map((row) => row.rateCode).sort()).toEqual(['BARRO', 'WSF2B']);
   });
 
   it('matches the party by HMS id, so a shorter name ("Woolworths" vs "Woolworths Holdings") still gets the contract row', async () => {

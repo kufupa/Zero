@@ -8,7 +8,7 @@ import {resolveReservationistAcceptedQuoteSource,type ReservationistAcceptedQuot
 import {ReservationistTaskEvidenceUnavailable,deriveStaffAnswerTopics,type ReservationistExecutionServices} from './reservationist-execution.js';
 import {isReservationistSignatureNoise} from './reservationist-attachment-input.js';
 import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partySearchCovered} from './party-rate-failure.js';
-import {boards,boardsFor,norm,buildRateOptions,requestMatches,sellable,type RateOption} from './rate-options.js';
+import {boards,boardsFor,norm,buildRateOptions,rateEligibilityMatches,requestMatches,sellable,type RateOption} from './rate-options.js';
 import {availabilityBoardOf,type AvailabilityBoardRow,type QuoteEnvelope} from './hms-availability.js';
 import {profileFor} from '../../tooling/playwright-quote/property-profile.mjs';
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
@@ -230,7 +230,7 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  results.push({propertyCode:ctx.input.propertyCode,authoredDate:sourceAt.slice(0,10),selections,resolveSource:async(ref:string)=>{await guard(ctx);if(ref!==source.ref)throw new Error('business_quote_source_unknown');return source;},resolvePolicy:async(property:string,rate:string,board:Board)=>{await guard(ctx);const policy=options.resolveSelectedPolicy?await options.resolveSelectedPolicy(ctx,source,selections,property,rate,board):await options.resolvePolicy(property,rate,board);await guard(ctx);if(policy===null)throw new ReservationistTaskEvidenceUnavailable('business_quote_policy_unavailable',['source-backed VAT and tourism levy inclusions'],['tax_inclusion']);return policy;},admission:{authorizationId:options.authorizationId,sourceEvaluationAt:sourceAt,maxSourceAgeMs:maxAge,expectedRequests:{[source.ref]:expected},authorizeSource:async(ref:string,id:string)=>{await guard(ctx);return ref===source.ref&&id===options.authorizationId;}}});
  }
  // ponytail: the option cards are optional. A failure building them must never fail a quote that already priced.
- if(staffApproval){try{staffApproval.onRateOptions?.(buildRateOptions(summary.source,selectionSets[0]!));}catch{/* cards stay empty */}try{staffApproval.onAvailabilityBoard?.(availabilityBoardOf(summary.source.result as QuoteEnvelope));}catch{/* grid stays empty */}}
+ if(staffApproval){try{staffApproval.onRateOptions?.(buildRateOptions(summary.source,selectionSets[0]!));}catch{/* cards stay empty */}try{const result=request.propertyCode==='HRCEN'?{...summary.source.result,groups:summary.source.result.groups.map(group=>({...group,options:group.options.filter(option=>rateEligibilityMatches(summary.source,option))}))}:summary.source.result;staffApproval.onAvailabilityBoard?.(availabilityBoardOf(result as QuoteEnvelope));}catch{/* grid stays empty */}}
  return{...results[0]!,...(alternativeRequest?{alternatives:results.slice(1)}:{})};},
  resolveProposalHeader:async(ctx)=>{await guard(ctx);return deriveReservationistProposalHeader(ctx,options.signer);},
  authorizeGuestProposal:async(ctx,revision:QuoteRevision,facts)=>{await guard(ctx);return facts===null&&revision.authorizationId===options.authorizationId&&revision.held===false&&revision.groups.every(g=>revisions.get(ctx.task.id)?.has(g.sourceHash)===true);}
