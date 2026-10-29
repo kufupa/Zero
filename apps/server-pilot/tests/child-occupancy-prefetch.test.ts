@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { EXTRACTION_RULES } from '../src/ai/extraction/extract.js';
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import { CENTURION_CHILD_RULES, extractInboundMail } from '../src/ai/extraction/extract.js';
+import { extractionPropertyCode } from '../src/ai/extraction/inbound-run.js';
+import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 import { mailExtractionSchema, sanitizeExtraction } from '../src/ai/extraction/schema.js';
 import { buildPreparedStaffQuotePlan } from '../src/ai/quote-ready.js';
 import { storedAnalysis } from '../src/ai/work-items.js';
-import { AE1_OUTPUT, AE1_TEXT } from './fixtures/inbound-extraction.js';
+import { AE1_OUTPUT, AE1_TEXT, fakeModel, selectionFor } from './fixtures/inbound-extraction.js';
 
 function payload(count: number | null | undefined, ages: number[]) {
   return {
@@ -27,8 +30,61 @@ function plan(source: unknown, propertyCode?: string) {
 
 describe('child occupancy extraction and prefetch', () => {
   it('instructs the model to preserve per-room counts without inventing ages', () => {
-    expect(EXTRACTION_RULES).toContain('Do not spread a total across rooms without an explicit allocation');
-    expect(EXTRACTION_RULES).toContain('never invent an age or assume an age is zero');
+    expect(CENTURION_CHILD_RULES).toContain('Do not spread a total across rooms without an explicit allocation');
+    expect(CENTURION_CHILD_RULES).toContain('never invent an age or assume an age is zero');
+    expect(CENTURION_CHILD_RULES).toContain('0 only if zero children are explicitly stated');
+    expect(CENTURION_CHILD_RULES).toContain('null when children are not mentioned');
+    expect(JSON.stringify(zodToJsonSchema(mailExtractionSchema))).toContain('0 only when explicitly stated; null when absent or unknown');
+  });
+
+  it.each(['HRCEN', 'HRDAV'] as const)('scopes child prompts and synthetic warnings to Centurion, preserving unknown for %s', async (propertyCode) => {
+    const original = AE1_OUTPUT.stays[0]!;
+    const model = fakeModel(() => ({ ...AE1_OUTPUT, missing: [], stays: [{ ...original, rows: [
+      { ...original.rows[0]!, childrenPerRoom: null, childAges: [] },
+    ] }] }));
+    const result = await extractInboundMail({
+      adapter: model.adapter, selection: selectionFor('Please quote one room for two adults.'),
+      messageId: 'm1', propertyCode,
+    });
+    expect(model.calls[0]?.systemPrompt.includes(CENTURION_CHILD_RULES)).toBe(propertyCode === 'HRCEN');
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.payload.stays[0]?.rows[0]?.childrenPerRoom).toBeNull();
+    expect(result.payload.missing.some((item) => item.field === 'childAges')).toBe(propertyCode === 'HRCEN');
+  });
+
+  it('does not apply Centurion prompts to a Da Vinci-origin email in the Centurion mailbox', async () => {
+    const before = mailboxHmsOriginBindLoaders.loadThreadOriginScan;
+    try {
+      const selected = { fromAddress: 'guest@example.invalid' };
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+        selectedFound: true, selected, inbounds: [{ toAddresses: ['davinci@legacyhotels.co.za'] }],
+      });
+      const input = { transportId: 'transport-centurion', threadId: 'thread-1', messageId: 'm1' };
+      const propertyCode = await extractionPropertyCode(input);
+      expect(propertyCode).toBeUndefined();
+      const original = AE1_OUTPUT.stays[0]!;
+      const model = fakeModel(() => ({ ...AE1_OUTPUT, missing: [], stays: [{ ...original, rows: [
+        { ...original.rows[0]!, childrenPerRoom: null, childAges: [] },
+      ] }] }));
+      const result = await extractInboundMail({ adapter: model.adapter, selection: selectionFor('Please quote.'), messageId: 'm1', propertyCode });
+      expect(model.calls[0]?.systemPrompt).not.toContain(CENTURION_CHILD_RULES);
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error(result.reason);
+      expect(result.payload.stays[0]?.rows[0]?.childrenPerRoom).toBeNull();
+      expect(result.payload.missing.some((item) => item.field === 'childAges')).toBe(false);
+
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({ selectedFound: true, selected, inbounds: [selected] });
+      expect(await extractionPropertyCode(input)).toBe('HRCEN');
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({ selectedFound: false, selected: null, inbounds: [] });
+      expect(await extractionPropertyCode(input)).toBeUndefined();
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => { throw new Error('unavailable'); };
+      expect(await extractionPropertyCode(input)).toBeUndefined();
+      expect(await extractionPropertyCode({ ...input, threadId: null })).toBeUndefined();
+      expect(await extractionPropertyCode({ ...input, transportId: 'transport-davinci' })).toBe('HRDAV');
+    } finally {
+      mailboxHmsOriginBindLoaders.loadThreadOriginScan = before;
+    }
   });
 
   it('keeps zero, unknown and legacy counts distinct and warns about incomplete ages', () => {
@@ -40,7 +96,7 @@ describe('child occupancy extraction and prefetch', () => {
       { ...row, childrenPerRoom: null, childAges: [] },
       { ...row, childAges: [] },
     ] }] });
-    const result = sanitizeExtraction(parsed, { messageId: 'm1', sourceText: AE1_TEXT }).payload;
+    const result = sanitizeExtraction(parsed, { messageId: 'm1', sourceText: AE1_TEXT, propertyCode: 'HRCEN' }).payload;
     expect(result.stays[0]?.rows.map((item) => item.childrenPerRoom)).toEqual([0, 2, null, undefined]);
     expect(result.missing).toContainEqual(expect.objectContaining({ field: 'childAges' }));
   });
@@ -50,7 +106,7 @@ describe('child occupancy extraction and prefetch', () => {
     const parsed = mailExtractionSchema.parse({ ...AE1_OUTPUT, stays: [{ ...original, rows: [
       { ...original.rows[0]!, childrenPerRoom: 0, childAges: [-1] },
     ] }] });
-    const result = sanitizeExtraction(parsed, { messageId: 'm1', sourceText: AE1_TEXT }).payload;
+    const result = sanitizeExtraction(parsed, { messageId: 'm1', sourceText: AE1_TEXT, propertyCode: 'HRCEN' }).payload;
     expect(result.stays[0]?.rows[0]).toMatchObject({ childrenPerRoom: null, childAges: [] });
     expect(result.missing).toContainEqual(expect.objectContaining({ field: 'childAges' }));
   });
