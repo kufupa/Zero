@@ -156,7 +156,7 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
 
 /**
  * The header an automatic (auto-start or read-back) rate run sends. It mirrors the background prepare in
- * quote-ready.ts: Government only when every requested row is Dinner B&B, else BAR, so the prepared run matches.
+ * quote-ready.ts. Centurion defaults to BAR; a dinner request alone does not establish government eligibility.
  * An explicit Centurion staff choice wins over that background default.
  */
 export function autoRunHeader(
@@ -164,7 +164,9 @@ export function autoRunHeader(
   propertyCode?: string,
 ): StaffQuoteHeader {
   // A staff choice is a price term, even when a background or restored job is available.
-  if (propertyCode === HRCEN_PROPERTY_CODE && session.staffSalesStrategyEdited) return session.staffHeader;
+  if (propertyCode === HRCEN_PROPERTY_CODE) {
+    return session.staffSalesStrategyEdited ? session.staffHeader : { ...session.staffHeader, salesStrategy: 'BAR' };
+  }
   const allDinner = session.groups.length > 0 && session.groups.every((group) => group.board === 'dinner_bb');
   return { ...session.staffHeader, salesStrategy: allDinner ? 'Government' : 'BAR' };
 }
@@ -1449,11 +1451,13 @@ function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
   return texts.some((text) => /shuttle|airport/i.test(text));
 }
 
-/** Government for a government party or when every row asks Dinner B&B; otherwise BAR. */
+/** Centurion defaults to public rates; the older Da Vinci behaviour is retained. */
 function automaticSalesStrategy(
   groups: readonly { board: string }[],
   partyKind: string | null | undefined,
+  propertyCode?: string | null,
 ): StaffQuoteHeader['salesStrategy'] {
+  if (propertyCode === HRCEN_PROPERTY_CODE) return 'BAR';
   const allDinner = groups.length > 0 && groups.every((group) => group.board === 'dinner_bb');
   return partyKind === 'government' || allDinner ? 'Government' : 'BAR';
 }
@@ -1479,7 +1483,7 @@ function prefillStaffHeaderFromLuna(
   }
   // Until staff pick a strategy, each read decides it again, so a corrected read without dinner returns to BAR.
   if (!staffSalesStrategyEdited) {
-    next = { ...next, salesStrategy: automaticSalesStrategy(analysis.groups, party?.kind) };
+    next = { ...next, salesStrategy: automaticSalesStrategy(analysis.groups, party?.kind, (analysis as CaseAnalysis).paneRead?.propertyCode) };
   }
   if (!next.shuttleRequested && shuttleRequestedFromAnalysis(analysis)) {
     next = { ...next, shuttleRequested: true };
@@ -2563,7 +2567,8 @@ export function reduceQuoteSession(
       // A board edit can change the automatic strategy; a strategy staff picked stays.
       const salesStrategy = session.staffSalesStrategyEdited
         ? staffHeader.salesStrategy
-        : automaticSalesStrategy(groups, session.analysis?.luna?.party?.kind);
+        : automaticSalesStrategy(groups, session.analysis?.luna?.party?.kind,
+            (session.analysis as CaseAnalysis | null)?.paneRead?.propertyCode);
       const header = salesStrategy === staffHeader.salesStrategy ? staffHeader : { ...staffHeader, salesStrategy };
       // A rate pick or a row price keeps its own cards on screen while the re-run is pending. Other edits clear them.
       return editStays(

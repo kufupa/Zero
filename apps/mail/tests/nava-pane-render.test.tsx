@@ -1775,6 +1775,7 @@ describe('NavaPane', () => {
     await storedReadLands();
 
     const table = await screen.findByRole('table', { name: 'Quote strategy comparison' });
+    expect(within(table).getByRole('columnheader', { name: 'Avg / room / night' })).toBeDefined();
     await waitFor(() => {
       expect(within(table).getAllByRole('row')).toHaveLength(7);
       expect(within(table).getAllByText('Rates found')).toHaveLength(5);

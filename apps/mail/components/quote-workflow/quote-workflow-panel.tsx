@@ -1165,6 +1165,15 @@ export function QuoteWorkflowPanel({
                         Prepared by Nava{preparedAtLabel ? ` · ${preparedAtLabel}` : ''}
                       </p>
                     ) : null}
+                    {stayQuote?.dinnerFallbackGroupIds?.length ? (
+                      <p role="status" className="text-[12px] font-semibold text-[#92400e]">
+                        The dinner rate was unavailable. This quote uses B&amp;B; check the separate dinner charge before using it.
+                      </p>
+                    ) : stayQuote?.dinnerAddOnRequired ? (
+                      <p role="status" className="text-[12px] font-semibold text-[#92400e]">
+                        Dinner is not priced yet. Add and confirm the dinner charge before using this quote.
+                      </p>
+                    ) : null}
                     <div className="flex flex-col gap-0.5">
                       <div className="flex flex-wrap items-center gap-2">
                         <h4 className="text-[13px] font-bold text-[#1e293b]">Availability for this date range</h4>
@@ -1251,7 +1260,7 @@ export function QuoteWorkflowPanel({
                               <th scope="col" className="p-1.5">Strategy</th>
                               <th scope="col" className="p-1.5">Room</th>
                               <th scope="col" className="p-1.5">Board</th>
-                              <th scope="col" className="p-1.5">Nightly</th>
+                              <th scope="col" className="p-1.5">Avg / room / night</th>
                               <th scope="col" className="p-1.5">Total</th>
                               <th scope="col" className="p-1.5">Status</th>
                               <th scope="col" className="p-1.5">Staff choice</th>

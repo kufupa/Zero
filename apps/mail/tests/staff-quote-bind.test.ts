@@ -476,6 +476,24 @@ describe('staff quote strategy comparisons', () => {
     expect(staffQuoteJob.mock.calls.map(([lookup]) => ('input' in lookup ? lookup.input.salesStrategy : '')).sort()).toEqual(['BAR', 'Government']);
   });
 
+  it('does not let a dinner fallback be selected as an exact Centurion comparison', async () => {
+    const group = stay({ roomPreference: 'Standard King', board: 'dinner_bb' });
+    const staffQuoteJob = vi.fn<StaffQuoteJobQuery>(async (lookup) => {
+      if (!('input' in lookup)) return null;
+      return {
+        runId: 'run-BAR', status: 'done', prefetch: true, asOf: new Date().toISOString(), failureClass: null,
+        request: { kind: 'staff_quote', input: lookup.input },
+        result: { ...queuedQuote('BAR', group), requestedSalesStrategy: 'BAR', effectiveSalesStrategy: 'BAR',
+          dinnerFallbackGroupIds: [group.id], dinnerAddOnRequired: true },
+      };
+    });
+    const outcome = await bindStaffQuoteStrategy({
+      ...args, propertyCode: HRCEN_PROPERTY_CODE, groups: [group], strategyCode: 'BAR', staffQuoteJob,
+    });
+    expect(outcome.row).toMatchObject({ status: 'not_offered', message: expect.stringMatching(/separate dinner/i) });
+    expect(outcome.result).toBeUndefined();
+  });
+
   it('binds a U6a all-room job when the pane adds its option-count counter', async () => {
     const group = stay();
     const staffQuoteJob = vi.fn<StaffQuoteJobQuery>(async (lookup) => {

@@ -139,6 +139,9 @@ export type ExecuteStaffQuoteResult = {
   arrivalDate: string;
   departureDate: string;
   description: string;
+  /** Newer servers state the actual strategy, including a retry on another strategy. */
+  requestedSalesStrategy?: QuoteSalesStrategyValue;
+  effectiveSalesStrategy?: QuoteSalesStrategyValue;
   /** Optional so a pane built before the server change still parses the result. */
   runId?: string | null;
   screenshots?: string[];
@@ -1146,6 +1149,27 @@ function boundStaffQuoteResult(
     };
   }
   const result = raw;
+  if (args.propertyCode === HRCEN_PROPERTY_CODE) {
+    const requested = built.input.salesStrategy;
+    const reported = result.requestedSalesStrategy;
+    const effective = result.effectiveSalesStrategy;
+    if (reported !== undefined && reported !== requested) {
+      return { status: 'unavailable', reason: 'The returned rate type does not match this search. Run rates again.' };
+    }
+    if (effective !== undefined && !QUOTE_STRATEGY_VALUES.has(effective)) {
+      return { status: 'unavailable', reason: 'The returned rate type could not be verified. Run rates again.' };
+    }
+    if (effective !== undefined && effective !== requested) {
+      return {
+        status: 'unavailable', noMatchingRate: true,
+        reason: 'The requested rate was unavailable. Choose BAR and run rates to review B&B and a separate dinner charge.',
+      };
+    }
+    if (effective === undefined && (requested === 'Government' || requested === 'GOV') &&
+        Array.isArray(result.dinnerFallbackGroupIds) && result.dinnerFallbackGroupIds.length > 0) {
+      return { status: 'unavailable', reason: 'The fallback rate type could not be verified. Choose BAR and run rates again.' };
+    }
+  }
   if (
     result.selectionEpoch !== args.selectionEpoch ||
     result.inputRevision !== args.inputRevision
@@ -1596,7 +1620,14 @@ function rowForBoundStrategy(
   strategyCode: QuoteSalesStrategyCode,
   result: Extract<BoundExecuteStaffQuote, { status: 'ok' }>,
   groups: readonly StayGroupRequirement[],
+  propertyCode?: string,
 ): BoundStaffQuoteStrategy {
+  // A meal fallback needs the direct quote's dinner-charge review; do not install it as an exact comparison.
+  if (propertyCode === HRCEN_PROPERTY_CODE &&
+      (result.staffQuote.dinnerFallbackGroupIds?.length || result.staffQuote.dinnerAddOnRequired)) {
+    return { strategyCode, row: { status: 'not_offered', causeClass: 'not_found',
+      message: 'The requested meal rate was not offered. Run rates directly to review B&B and a separate dinner charge.' } };
+  }
   const selected = result.staffQuote.rateOptions?.filter((option) => option.selected) ?? [];
   const selectedGroupIds = new Set(selected.map((option) => option.groupId));
   if (!groups.length || groups.some((group) => !selectedGroupIds.has(group.id))) {
@@ -1686,7 +1717,7 @@ export async function bindStaffQuoteStrategy(
         'not_set_up',
       );
     }
-    return rowForBoundStrategy(args.strategyCode, bound, args.groups);
+    return rowForBoundStrategy(args.strategyCode, bound, args.groups, args.propertyCode);
   } catch (error) {
     const message = rejectionReason(error);
     return failedQuoteStrategy(args.strategyCode, message, causeClassForBoundReason(message));

@@ -277,6 +277,25 @@ describe('staff quote HMS job binding', () => {
     if (result.status === 'ok') expect(result.staffQuote.dinnerFallbackGroupIds).toBeUndefined();
   });
 
+  it('does not present a BAR fallback as the requested Government rate', async () => {
+    const run = async (reported: Record<string, unknown>) => bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
+      queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
+      staffQuoteJob: vi.fn(async () => view('done', { ...READY, dinnerFallbackGroupIds: ['single'], ...reported })),
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups: groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
+      header: { ...emptyStaffQuoteHeader(), salesStrategy: 'Government' },
+    });
+    expect(await run({ requestedSalesStrategy: 'Government', effectiveSalesStrategy: 'BAR' })).toMatchObject({
+      status: 'unavailable', noMatchingRate: true, reason: expect.stringMatching(/Choose BAR/),
+    });
+    expect(await run({})).toMatchObject({
+      status: 'unavailable', reason: expect.stringMatching(/fallback rate type could not be verified/i),
+    });
+  });
+
   it('surfaces the exact business refusal stored by the worker', async () => {
     const refusal = 'HMS has no rate for this meal plan under BAR. Try another meal plan.';
     const queue = vi.fn(async () => ({ runId: 'staff-job-1' }));
