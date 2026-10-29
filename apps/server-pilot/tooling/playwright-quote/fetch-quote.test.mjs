@@ -675,7 +675,7 @@ test('selected multi-group allocation uses proven building/room pools from extra
 
 // A fake Hotel Availability menu. Hotel Availability appears from Availability click `revealOnClick` on,
 // or from the start when alreadyVisible. Infinity never reveals it.
-function hotelMenuPage({revealOnClick=2,alreadyVisible=false}={}){
+function hotelMenuPage({revealOnClick=2,alreadyVisible=false,dateField='startdate'}={}){
   const log=[];let availabilityClicks=0;
   const visibleNames=()=>['Front Desk','Availability',...(alreadyVisible||availabilityClicks>=revealOnClick?['Hotel Availability']:[])];
   const treeNode=(matchers)=>{
@@ -691,7 +691,10 @@ function hotelMenuPage({revealOnClick=2,alreadyVisible=false}={}){
     locator(selector){
       if(selector==='a.app-menu-trigger:visible')return{click:async()=>{log.push('menu');}};
       if(selector==='span.x-tree-node-text:visible')return treeNode([]);
-      if(selector==='input[name="startdate"]:visible')return{waitFor:async()=>{log.push('startdate');}};
+      if(selector==='input[name="startdate"]:visible, input[name="dates"]:visible')return{first:()=>({waitFor:async()=>{
+        if(!dateField)throw new Error('TimeoutError: no visible date field');
+        log.push(dateField);
+      }})};
       throw new Error(`unexpected selector ${selector}`);
     },
     getByRole:(role,{name})=>({waitFor:async()=>{log.push(`${role}:${name}`);}}),
@@ -708,6 +711,15 @@ test('Hotel Availability menu does not click Availability when the child is alre
   await quote.openHotelAvailability(menu.page);
   assert.deepEqual(menu.log,['menu','Front Desk','Hotel Availability','startdate','heading:Hotel Availability']);
   assert.equal(menu.availabilityClicks(),0);
+});
+test('Hotel Availability menu accepts the visible cloud date range',async()=>{
+  const menu=hotelMenuPage({alreadyVisible:true,dateField:'dates'});
+  await quote.openHotelAvailability(menu.page);
+  assert.deepEqual(menu.log,['menu','Front Desk','Hotel Availability','dates','heading:Hotel Availability']);
+});
+test('Hotel Availability menu rejects a screen without a visible date control',async()=>{
+  const menu=hotelMenuPage({alreadyVisible:true,dateField:null});
+  await assert.rejects(quote.openHotelAvailability(menu.page),/no visible date field/);
 });
 test('Hotel Availability menu stops after four Availability clicks and fails when the child never appears',async()=>{
   const menu=hotelMenuPage({revealOnClick:Infinity});

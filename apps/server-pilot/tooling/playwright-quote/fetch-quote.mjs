@@ -9,6 +9,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createAudit } from './audit.mjs';
 import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
+import { isAvailabilityReadRequest } from './hms-read-only-guard.mjs';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 import { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
 import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
@@ -51,8 +52,29 @@ export async function openHotelAvailability(page) {
     await node('Hotel Availability').waitFor({ timeout: 3000 }).catch(() => {});
   }
   await node('Hotel Availability').click();
-  await page.locator('input[name="startdate"]:visible').waitFor();
+  // On-prem HMS has a startdate field; the Infor cloud build (HRCEN, 2026-10-27) has one `dates` range picker.
+  await page.locator('input[name="startdate"]:visible, input[name="dates"]:visible').first().waitFor();
   await page.getByRole('heading',{name:'Hotel Availability',exact:true}).waitFor();
+}
+
+// Arrival date on either screen build. The range end keeps the screen's current window length; the
+// inquiry readback (assertApplied) checks the start date HMS actually searched.
+export async function setArrivalDate(page, iso) {
+  const start = page.locator('input[name="startdate"]:visible');
+  if (await start.count()) {
+    await start.fill(displayDate(iso));
+    await start.press('Tab');
+    return;
+  }
+  const range = page.locator('input[name="dates"]:visible');
+  await range.evaluate((e, value) => {
+    const field = Ext.getCmp(e.id.replace(/-inputEl$/, ''));
+    const [year, month, day] = value.split('-').map(Number);
+    const current = field.getValue();
+    const span = current?.startDate && current?.endDate ? Math.round((current.endDate - current.startDate) / 86400000) : 14;
+    field.setValue({ startDate: new Date(year, month - 1, day), endDate: new Date(year, month - 1, day + span) });
+  }, iso);
+  await range.press('Tab');
 }
 
 export async function applyGuests(page, room) {
@@ -358,16 +380,14 @@ async function applyCriteria(page, request, room, criteriaCheckpoint, clock) {
   await clock.time('criteriaReset', () => resetPublicControls(page));
   // Pickers can be date-scoped. Do not resolve this request against a previous
   // group's calendar; selecting a group can then change the date again.
-  await page.locator('input[name="startdate"]').fill(displayDate(request.arrivalDate));
-  await page.locator('input[name="startdate"]').press('Tab');
+  await setArrivalDate(page,request.arrivalDate);
   const resolvedContext={};
   // Group changes date/strategy; restore requested occupancy/dates afterward.
   for (const kind of ['group','organization','agency']) if (request.rateContext?.[kind])
     resolvedContext[kind]=await resolveReference(page,kind,request.rateContext[kind]);
   if (request.rateContext?.group&&request.search?.salesStrategy) throw new Error('UNSUPPORTED_GROUP_SALES_STRATEGY');
   const strategy=request.rateContext?.group?null:await selectSalesStrategy(page,request.search?.salesStrategy??(request.rateContext?'Preset':'BAR'));
-  await page.locator('input[name="startdate"]').fill(displayDate(request.arrivalDate));
-  await page.locator('input[name="startdate"]').press('Tab');
+  await setArrivalDate(page,request.arrivalDate);
   await applyGuests(page,room);
   await applyCurrency(page,request.requestedCurrency);
   // Visibility only. Native false hides whole rows based on the 14-day grid,
@@ -387,12 +407,14 @@ async function applyCriteria(page, request, room, criteriaCheckpoint, clock) {
 export async function searchCalendar(page, request, room, criteriaCheckpoint=async()=>{}, onWindow=async()=>{}, clock=createPhaseClock()) {
   const {resolvedContext,strategy,roomCodes,rateCodes,showRestricted}=await clock.time('criteria',()=>applyCriteria(page,request,room,criteriaCheckpoint,clock));
   const windows=[];
+  const origin=new URL(page.url()).origin;
   let expectedStart=request.arrivalDate;
   for (let index=0;index<3;index++) {
-    const pending=page.waitForResponse(r=>new URL(r.url()).pathname==='/api/internalBooking/hotelAvail/inquiryForGrid'&&r.request().method()==='POST',{timeout:45000});
+    const pending=page.waitForResponse(r=>isAvailabilityReadRequest({method:r.request().method(),url:r.url()},origin),{timeout:45000});
     pending.catch(()=>{});
     const [response]=await clock.time('grid',()=>Promise.all([pending,index===0?search(page):page.locator('a.x-btn[data-qtip="Page Right"]:visible').click()]));
     if(!response.ok())throw new Error(`SEARCH_HTTP_${response.status()}`);
+    const endpoint=new URL(response.url()).pathname;
     const criteria=projectCriteria(response.request().postDataJSON());
     assertApplied(request,room,criteria,{resolvedContext,startDate:expectedStart,strategy,roomCodes,rateCodes});
     if(criteria.showRestrictedSellOptions!==showRestricted)throw new Error('RESTRICTED_VISIBILITY_READBACK_MISMATCH');
@@ -400,7 +422,7 @@ export async function searchCalendar(page, request, room, criteriaCheckpoint=asy
     const body=await response.json();
     if(!body.availabilitydata) {
       await clock.time('grid',()=>page.getByText('Selected criteria is not available for these dates.',{exact:true}).waitFor({timeout:15000}));
-      windows.push({criteria,data:null,calendar:null});break;
+      windows.push({endpoint,criteria,data:null,calendar:null});break;
     }
     await clock.time('grid',()=>page.waitForFunction(start=>{
       const visible=e=>!!e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden';
@@ -409,7 +431,7 @@ export async function searchCalendar(page, request, room, criteriaCheckpoint=asy
       return first?.startsWith(start)&&!Ext.Ajax.isLoading()&&![...document.querySelectorAll('.x-mask,.x-mask-msg,.x-loadmask')].some(visible);
     },displayDate(expectedStart),{timeout:30000}));
     const calendar=await clock.time('grid',()=>readCalendar(page));
-    windows.push({criteria,data:body.availabilitydata,calendar});
+    windows.push({endpoint,criteria,data:body.availabilitydata,calendar});
     await onWindow(windows.at(-1),{resolvedContext,index});
     const shown=body.availabilitydata.datesList.slice(0,calendar.headers.length).map(nativeDate);
     if(shown.includes(request.departureDate))break;
@@ -442,10 +464,10 @@ export function nativeBundleLabels(raw) {
   });
 }
 
-export function projectWindow({criteria,data,calendar}) {
+export function projectWindow({endpoint,criteria,data,calendar}) {
   const columns=raw=>Object.fromEntries(Object.entries(raw??{}).filter(([k])=>/^col\d+$/.test(k)).map(([k,v])=>[k,
     pick(v,['value','groupValue','overbookingLimitCount','israteavailable','restricted',...restrictionKeys])]));
-  return {criteria:projectCriteria(criteria??{}),calendar,data:data?{datesList:data.datesList,
+  return {...(endpoint?{endpoint}:{}),criteria:projectCriteria(criteria??{}),calendar,data:data?{datesList:data.datesList,
     children:(data.children??[]).filter(p=>p.isprop&&!p.issummary).map(p=>({...pick(p,['code','desc','currency','isprop','issummary']),
       children:(p.children??[]).map(r=>({...pick(r,['code','desc','buildingCode','roomTypeCategoryCode','isroomtype']),columns:columns(r.columns),
         children:(r.children??[]).map(t=>({...pick(t,['code','desc','currency','currencysymbol','isNegotiatedRate','restricted','haspolicies',
@@ -841,7 +863,7 @@ export async function runInPage(page, request, directory, event=()=>{}, checkpoi
           }
         },clock);
         searchCount+=source.searchCount;
-        await saveEvidence(directory,`${prefix}-source.json`,{endpoint:'/api/internalBooking/hotelAvail/inquiryForGrid',windows:source.windows.map(projectWindow),resolvedContext:source.resolvedContext});
+        await saveEvidence(directory,`${prefix}-source.json`,{endpoint:source.windows[0]?.endpoint??null,windows:source.windows.map(projectWindow),resolvedContext:source.resolvedContext});
         let roomFacts=[];
         if(room.required?.bedTypes||room.preferred?.bedTypes)roomFacts=await readRoomFacts(page,request.propertyCode);
         entry={source,details,roomFacts,detailIssues,sourceEvidence:`${prefix}-source.json`,gridShotPrefix:prefix};cache.set(signature,entry);
