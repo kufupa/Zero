@@ -173,15 +173,18 @@ export function scanMultimapForMutation(map: Multimap): BlockCode | null {
         return BLOCK_CODES.MUTATION_ACTION;
       }
       // Nested JSON string values (e.g. payload={"action":"save"})
+      const nestedText = valNorm.value.trim();
       if (
-        (valNorm.value.startsWith('{') && valNorm.value.endsWith('}')) ||
-        (valNorm.value.startsWith('[') && valNorm.value.endsWith(']'))
+        (nestedText.startsWith('{') && nestedText.endsWith('}')) ||
+        (nestedText.startsWith('[') && nestedText.endsWith(']'))
       ) {
         try {
-          const nested = JSON.parse(valNorm.value) as unknown;
+          const nested = JSON.parse(nestedText) as unknown;
+          rejectDuplicateJsonBodyKeys(nestedText);
           const nestedHit = scanJsonForMutation(nested, 0, mutationControl);
           if (nestedHit) return nestedHit;
-        } catch {
+        } catch (error) {
+          if (error instanceof DuplicateJsonBodyKeyError) return BLOCK_CODES.MALFORMED_JSON;
           /* not JSON — continue */
         }
       }
@@ -199,9 +202,21 @@ function scanJsonForMutation(
   if (typeof value === 'string') {
     const norm = normalizeMutationFieldText(value);
     if (!norm.ok) return norm.code;
-    return mutationShapeInText(norm.value, mutationControl)
-      ? BLOCK_CODES.MUTATION_ACTION
-      : null;
+    if (mutationShapeInText(norm.value, mutationControl)) return BLOCK_CODES.MUTATION_ACTION;
+    const nestedText = norm.value.trim();
+    if (
+      (nestedText.startsWith('{') && nestedText.endsWith('}')) ||
+      (nestedText.startsWith('[') && nestedText.endsWith(']'))
+    ) {
+      try {
+        const nested = JSON.parse(nestedText) as unknown;
+        rejectDuplicateJsonBodyKeys(nestedText);
+        return scanJsonForMutation(nested, depth + 1, mutationControl);
+      } catch (error) {
+        if (error instanceof DuplicateJsonBodyKeyError) return BLOCK_CODES.MALFORMED_JSON;
+      }
+    }
+    return null;
   }
   if (typeof value === 'number' || typeof value === 'boolean' || value == null) {
     return null;
@@ -321,6 +336,42 @@ export function parseUrlEncodedMultimap(raw: string): Multimap {
   return map;
 }
 
+class DuplicateJsonBodyKeyError extends Error {}
+
+/** JSON.parse keeps only the last duplicate, which can hide a mutation value. */
+function rejectDuplicateJsonBodyKeys(raw: string): void {
+  const scopes: Array<{ kind: 'object'; keys: Set<string>; expectingKey: boolean } | { kind: 'array' }> = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (char === '"') {
+      const start = index;
+      index += 1;
+      while (index < raw.length) {
+        if (raw[index] === '\\') { index += 2; continue; }
+        if (raw[index] === '"') break;
+        index += 1;
+      }
+      const scope = scopes.at(-1);
+      if (scope?.kind === 'object' && scope.expectingKey) {
+        // The whole document was parsed first, so this is a valid JSON string.
+        const key = JSON.parse(raw.slice(start, index + 1)) as string;
+        if (scope.keys.has(key)) throw new DuplicateJsonBodyKeyError();
+        scope.keys.add(key);
+        scope.expectingKey = false;
+      }
+    } else if (char === '{') {
+      scopes.push({ kind: 'object', keys: new Set(), expectingKey: true });
+    } else if (char === '[') {
+      scopes.push({ kind: 'array' });
+    } else if (char === '}' || char === ']') {
+      scopes.pop();
+    } else if (char === ',') {
+      const scope = scopes.at(-1);
+      if (scope?.kind === 'object') scope.expectingKey = true;
+    }
+  }
+}
+
 function parseJsonObjectMultimap(raw: string): Multimap {
   const parsed: unknown = JSON.parse(raw);
   if (
@@ -330,6 +381,7 @@ function parseJsonObjectMultimap(raw: string): Multimap {
   ) {
     throw new Error('json_root');
   }
+  rejectDuplicateJsonBodyKeys(raw);
   const map = emptyMultimap();
   for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
     if (typeof value === 'string') {
@@ -466,8 +518,9 @@ function classifyBodyParse(
         map: parseJsonObjectMultimap(postData),
         mediaType,
       };
-    } catch {
-      return { ok: false, code: BLOCK_CODES.MALFORMED_JSON };
+    } catch (error) {
+      return { ok: false, code: error instanceof DuplicateJsonBodyKeyError
+        ? BLOCK_CODES.DUPLICATE_BODY : BLOCK_CODES.MALFORMED_JSON };
     }
   }
 
