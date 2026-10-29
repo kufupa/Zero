@@ -15,7 +15,8 @@ import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-sy
 import { FAITH_TRANSPORT_EMAIL, FAITH_USER_ID } from '../src/db/seed.js';
 import { randomUUID } from 'node:crypto';
 import { unzipSync } from 'fflate';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import { QUOTE_PDF_PROMPT_VERSION } from '../src/ai/quote-pdf-jobs.js';
 
 const installation = vi.hoisted(() => ({ configure: vi.fn(), services: vi.fn() }));
 vi.mock('../src/ai/staff-quote-installation.js', () => ({
@@ -324,6 +325,62 @@ afterEach(() => {
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
   'staff quote route approval ledger (disposable DB, no HMS)',
   () => {
+    async function readyQuoteForPdf(db: DB) {
+      installFixture(db);
+      const request = await seedRequest(db), api = caller();
+      const input = { ...request.input, groups: request.input.groups.map((group) => ({
+        ...group, childrenPerRoom: 0, sourcePreference: { roomType: null, board: null },
+      })) };
+      const quote = await api.workstation.executeStaffQuote(input);
+      const proposal = pdfInput({ workflowRunId: quote.workflowRunId,
+        revisionRef: quote.revisionRef, messageId: quote.messageId });
+      return { request, api, quote, proposal };
+    }
+
+    it('persists the selected work item in a newly auto-linked quote PDF job', async () => {
+      await withSeededTestDb(async (db) => {
+        const { request, api, quote, proposal } = await readyQuoteForPdf(db);
+        const pdf = await api.workstation.qualifiedQuoteProposalPdf(proposal);
+        const [job] = await db.select().from(aiWorkflowRun).where(and(
+          eq(aiWorkflowRun.triggerMessageId, request.mail.id), eq(aiWorkflowRun.promptVersion, QUOTE_PDF_PROMPT_VERSION),
+        ));
+        expect(job?.readRequest).toMatchObject({ workItemId: request.workItemId,
+          proposal: { workItemId: request.workItemId } });
+        await expect(api.workstation.quotePdfJob({ workItemId: request.workItemId, revisionRef: quote.revisionRef,
+          company: '', agency: '' })).resolves.toMatchObject({ result: { pdfBase64: pdf.pdfBase64 } });
+      });
+    });
+
+    it('restores an older auto-linked PDF only for the current selected work item', async () => {
+      await withSeededTestDb(async (db) => {
+        const { request, api, quote, proposal } = await readyQuoteForPdf(db);
+        const pdf = await api.workstation.qualifiedQuoteProposalPdf({ ...proposal, workItemId: request.workItemId });
+        const [job] = await db.select().from(aiWorkflowRun).where(and(
+          eq(aiWorkflowRun.triggerMessageId, request.mail.id), eq(aiWorkflowRun.promptVersion, QUOTE_PDF_PROMPT_VERSION),
+        ));
+        const savedRequest = job!.readRequest!, savedProposal = savedRequest.proposal as Record<string, unknown>;
+        const { workItemId: _oldItem, ...legacyProposal } = savedProposal;
+        const setProposal = (value: Record<string, unknown>) => db.update(aiWorkflowRun)
+          .set({ readRequest: { ...savedRequest, proposal: value } }).where(eq(aiWorkflowRun.id, job!.id));
+        const poll = () => api.workstation.quotePdfJob({ workItemId: request.workItemId,
+          revisionRef: quote.revisionRef, company: '', agency: '' });
+        await setProposal(legacyProposal);
+        await expect(poll()).resolves.toMatchObject({ result: { pdfBase64: pdf.pdfBase64 } });
+
+        await setProposal({ ...legacyProposal, workItemId: randomUUID() });
+        await expect(poll()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        await setProposal(legacyProposal);
+        await saveStayEdits(db, request.workItemId, { 'stays[s_default].rows[single].adults': 2 });
+        await expect(poll()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+        await saveStayEdits(db, request.workItemId, {});
+        const otherMessageId = randomUUID();
+        await db.insert(message).values({ id: otherMessageId, transportId: request.mail.transportId,
+          threadId: request.mail.threadId, direction: 'inbound', fromAddress: 'other@example.invalid' });
+        await db.update(workItem).set({ sourceMessageId: otherMessageId }).where(eq(workItem.id, request.workItemId));
+        await expect(poll()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      });
+    });
+
     it('queues staff quotes without reading HMS configuration and exposes the request result by input', async () => {
       await withSeededTestDb(async (db) => {
         installFixture(db);
