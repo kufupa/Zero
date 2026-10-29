@@ -1825,7 +1825,7 @@ export const draftsRouter = tRouter({
         subject: z.string().max(998).default(''),
         html: z.string(),
         replyKind: z.enum(['quote', 'decline', 'missing_details', 'other']).default('other'),
-        preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(32).default([]),
+        preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(63).default([]),
         attachments: z.array(serializedAttachmentInput).max(32).default([]),
         replaceDraft: z.string().max(200).optional(),
       }),

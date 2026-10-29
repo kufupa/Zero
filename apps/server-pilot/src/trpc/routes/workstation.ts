@@ -262,7 +262,7 @@ export const quoteDraftPreflightInput = z.object({
   messageId: z.string().min(1),
   threadId: z.string().min(1),
   pdfHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(32),
-  preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1), revisionRef: z.string().min(1) }).strict()).max(32).optional(),
+  preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1), revisionRef: z.string().min(1) }).strict()).max(63).optional(),
 }).strict();
 export function resolveLedgerProposal(
   run: {
@@ -772,9 +772,17 @@ export async function assertCurrentDraftQuotePdf(
   if (input.preparedVersions && (!input.preparedVersions.length ||
     new Set(input.preparedVersions.map((ref) => `${ref.workflowRunId}\n${ref.revisionRef}`)).size !== input.preparedVersions.length))
     throw unavailable();
+  const hashColumn = sql<string>`${aiWorkflowRun.readResult}->>'pdfHash'`;
+  const recorded = await db.selectDistinct({ hash: hashColumn }).from(aiWorkflowRun).where(and(
+    eq(aiWorkflowRun.transportId, ctx.activeTransportId), eq(aiWorkflowRun.promptVersion, QUOTE_PDF_PROMPT_VERSION),
+    eq(aiWorkflowRun.state, 'succeeded'), inArray(hashColumn, input.pdfHashes),
+  )).limit(32);
+  const quoteHashes = new Set(recorded.map(({ hash }) => hash).filter((hash) => input.pdfHashes.includes(hash)));
+  // Ordinary supporting files may accompany a quote, but at least one server-recorded quote must be present.
+  if (!quoteHashes.size) throw unavailable();
   const foundRefs: string[] = [];
   const sources: DraftQuoteSource[] = [];
-  for (const hash of new Set(input.pdfHashes)) {
+  for (const hash of quoteHashes) {
     const candidates = await db.select().from(aiWorkflowRun).where(and(
       eq(aiWorkflowRun.transportId, ctx.activeTransportId), eq(aiWorkflowRun.threadId, input.threadId),
       eq(aiWorkflowRun.triggerMessageId, input.messageId), eq(aiWorkflowRun.promptVersion, QUOTE_PDF_PROMPT_VERSION),
