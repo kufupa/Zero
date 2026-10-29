@@ -26,7 +26,7 @@ function job(request: unknown = { kind: 'staff_quote', input }) {
   return { id: 'run-1', transportId, threadId: mail.threadId, triggerMessageId: mail.id,
     workItemId: 'item-1', runKind: 'read_tool', promptVersion: HMS_JOB_PROMPT_VERSION, priority: 10,
     state: 'succeeded', attempts: 1, failureClass: null, createdAt: new Date(),
-    readRequest: request, readResult: { kind: 'staff_quote', status: 'ready', totalMinor: 10000, asOf: new Date().toISOString() },
+    readRequest: request, readResult: { kind: 'staff_quote', status: 'ready', propertyCode: 'HRCEN', totalMinor: 10000, asOf: new Date().toISOString() },
     readResultExpiresAt: new Date(Date.now() + 60_000),
     metrics: { userId: 'user-1', batchId: 'batch-1', itemIndex: 0 },
   } as unknown as AiWorkflowRun;
@@ -135,6 +135,7 @@ describe('cached quote views use current selected occupancy', () => {
 
   it('keeps single and batch HRDAV quote views available without the Centurion evidence context', async () => {
     const davinci = { ...job(), transportId: 'transport-davinci' };
+    davinci.readResult = { ...davinci.readResult, propertyCode: undefined };
     const view = await readHmsJobView({ ...byId, transportId: 'transport-davinci', messageId: undefined },
       fakeDb([[aiWorkflowRun, [davinci]]]));
     expect(view?.result).toMatchObject({ status: 'ready', totalMinor: 10000 });
@@ -146,7 +147,7 @@ describe('cached quote views use current selected occupancy', () => {
   it('keeps an HRDAV quote available when the source is in a Centurion mailbox', async () => {
     const { childrenPerRoom: _count, ...legacyGroup } = input.groups[0]!;
     const davinci = job({ kind: 'staff_quote', input: { ...input, groups: [legacyGroup] } });
-    davinci.metrics = { ...davinci.metrics, propertyCode: 'HRDAV' };
+    davinci.readResult = { ...davinci.readResult, propertyCode: 'HRDAV' };
     const view = await readHmsJobView({ ...byId, messageId: undefined }, fakeDb([[aiWorkflowRun, [davinci]]]));
     expect(view?.result).toMatchObject({ status: 'ready', totalMinor: 10000 });
   });
@@ -158,6 +159,36 @@ describe('cached quote views use current selected occupancy', () => {
     run.readResult = { ...run.readResult, propertyCode: 'HRCEN' };
     const view = await readHmsJobView(byId, fakeDb([[aiWorkflowRun, [run]]]));
     expect(view).toMatchObject({ status: 'failed', result: { ok: false, code: 'staff_quote_child_occupancy_incomplete' } });
+  });
+
+  it('does not treat the queued target as the property that priced an older result', async () => {
+    for (const queuedProperty of [undefined, 'HRDAV']) {
+      const legacy = job();
+      legacy.metrics = { ...legacy.metrics, propertyCode: queuedProperty };
+      legacy.readResult = { ...legacy.readResult, propertyCode: undefined };
+      const view = await readHmsJobView(byId, fakeDb([
+        [aiWorkflowRun, [legacy]], [message, [mail]], [mailExtraction, [extraction]], [workItem, [item()]],
+      ]));
+      expect(view).toMatchObject({ status: 'failed', result: { ok: false, code: 'staff_quote_property_unverified' } });
+      expect(view?.result).not.toHaveProperty('totalMinor');
+    }
+  });
+
+  it('exposes a saved prepared revision\'s property without treating its queued target as evidence', async () => {
+    const prepared = job();
+    prepared.metrics = { ...prepared.metrics, propertyCode: 'HRCEN' };
+    prepared.readResult = { ...prepared.readResult, propertyCode: undefined,
+      preparedProposal: { revision: { propertyCode: 'HRDAV' } } };
+    const view = await readHmsJobView({ ...byId, messageId: undefined }, fakeDb([[aiWorkflowRun, [prepared]]]));
+    expect(view?.result).toMatchObject({ status: 'ready', propertyCode: 'HRDAV', totalMinor: 10000 });
+  });
+
+  it('holds a result whose own property conflicts with the saved prepared revision', async () => {
+    const conflicting = job();
+    conflicting.readResult = { ...conflicting.readResult, propertyCode: 'HRDAV',
+      preparedProposal: { revision: { propertyCode: 'HRCEN' } } };
+    const view = await readHmsJobView(byId, fakeDb([[aiWorkflowRun, [conflicting]]]));
+    expect(view).toMatchObject({ status: 'failed', result: { ok: false, code: 'staff_quote_property_unverified' } });
   });
 
   it('keeps a non-quote job view unchanged without quote context', async () => {

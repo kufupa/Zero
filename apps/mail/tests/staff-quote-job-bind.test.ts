@@ -34,8 +34,9 @@ const groups: StayGroupRequirement[] = [
     fields: {},
   },
 ];
-const READY: ExecuteStaffQuoteResult = {
+const READY: ExecuteStaffQuoteResult & { propertyCode: string } = {
   status: 'ready',
+  propertyCode: HRCEN_PROPERTY_CODE,
   workflowRunId: 'workflow-1',
   revisionRef: 'revision-1',
   messageId: source.messageId,
@@ -153,7 +154,7 @@ describe('staff quote HMS job binding', () => {
     };
     const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-contract' }));
     const prepared = vi.fn(async () => ({
-      ...view('done', READY, undefined, true),
+      ...view('done', { ...READY, propertyCode: HRDAV_PROPERTY_CODE }, undefined, true),
       request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { salesStrategy: 'WS' }),
     }));
     const result = await bindAutoStartStaffQuote({
@@ -161,6 +162,33 @@ describe('staff quote HMS job binding', () => {
       selectionEpoch: 3, inputRevision: 4, groups: [{ ...groups[0]!, roomCodes: ['STKNG'] }], header,
     });
     expect(result).toMatchObject({ status: 'ok' });
+  });
+
+  it.each([
+    ['Centurion', HRCEN_PROPERTY_CODE, HRDAV_PROPERTY_CODE],
+    ['Da Vinci', HRDAV_PROPERTY_CODE, HRCEN_PROPERTY_CODE],
+    ['an unverified Centurion result', HRCEN_PROPERTY_CODE, undefined],
+  ])('holds a quote with a different or unverified property for %s', async (_label, paneProperty, quotedProperty) => {
+    const mutate = vi.fn(async () => ({ ...READY, propertyCode: quotedProperty }));
+    const result = await bindExecuteStaffQuote({
+      propertyCode: paneProperty, mutate, source, selectionEpoch: 3, inputRevision: 4,
+      groups: paneProperty === HRDAV_PROPERTY_CODE ? [{ ...groups[0]!, roomCodes: ['STKNG'] }] : groups,
+      header: emptyStaffQuoteHeader(),
+    });
+    expect(mutate).toHaveBeenCalledOnce();
+    expect(result).toMatchObject({ status: 'unavailable', reason: expect.stringMatching(/hotel/i) });
+  });
+
+  it('also holds a mismatched property on queued, prepared, and restored quote paths', async () => {
+    const args = { propertyCode: HRCEN_PROPERTY_CODE, source, selectionEpoch: 3, inputRevision: 4,
+      groups, header: emptyStaffQuoteHeader() };
+    const queue = vi.fn(async () => ({ runId: 'staff-job-1' }));
+    const query = vi.fn(async () => view('done', { ...READY, propertyCode: HRDAV_PROPERTY_CODE }));
+    for (const result of [
+      await bindExecuteStaffQuote({ ...args, queue, staffQuoteJob: query }),
+      await bindAutoStartStaffQuote({ ...args, queue, staffQuoteJob: query }),
+      await bindReadBackStaffQuote({ ...args, query }),
+    ]) expect(result).toMatchObject({ status: 'unavailable', reason: expect.stringMatching(/hotel/i) });
   });
 
   it('does not restore a prepared quote for a different saved child count', async () => {
