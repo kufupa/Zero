@@ -138,6 +138,12 @@ function groupForStay(
       return { groups: [], reason: 'missing_rooms' };
     }
     const adults = row.adultsPerRoom ?? 2;
+    if ((!propertyCode || propertyCode === 'HRCEN') && row.childrenPerRoom == null) {
+      return { groups: [], reason: 'missing_children_count' };
+    }
+    if ((!propertyCode || propertyCode === 'HRCEN') && row.childrenPerRoom !== row.childAges.length) {
+      return { groups: [], reason: 'missing_child_ages' };
+    }
     if (
       !Number.isInteger(adults) ||
       adults < 1 ||
