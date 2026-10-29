@@ -119,11 +119,11 @@ function payload(dates: { stayOneArrival?: string; stayTwoArrival?: string } = {
 }
 
 /** Runs one test against a fresh database with the test transport seeded and the work-item pane DB injected. */
-function withDb(run: (db: DB) => Promise<void>) {
-  return withIngestionDb(async ({ db, sql }) => {
+function withDb(run: (db: DB, url: string) => Promise<void>) {
+  return withIngestionDb(async ({ db, sql, url }) => {
     __setDbForTests({ db, conn: sql });
     try {
-      await run(db);
+      await run(db, url);
     } finally {
       __setDbForTests(null);
     }
@@ -1187,6 +1187,76 @@ describe('corrections carry to a re-read', () => {
 });
 
 describe('field events', () => {
+  it('guards competing recovery writes with the reopened revision and extraction', () =>
+    withDb(async (db, url) => {
+      const messageId = await seedMail(db, 'cas-1');
+      const firstRead = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const opened = await readyWork(db, 'cas-1');
+      expect(opened.revisionSeq).toBe(0);
+      const path = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`;
+      const base = {
+        transportId: CENTURION, workItemId: opened.workItemId, userId: USER,
+        type: 'field.edit' as const, fieldPath: path,
+        expected: { extractionId: firstRead, seq: 0 },
+      };
+      // Separate PostgreSQL connections contend for the same row lock; only one expected revision can win.
+      const otherConn = postgres(url, { max: 1, connect_timeout: 5, ssl: false, onnotice: () => undefined });
+      try {
+        const otherDb = drizzle(otherConn, { schema });
+        const attempts = await Promise.all([
+          recordFieldEvent(db, { ...base, value: 8 }),
+          recordFieldEvent(otherDb, { ...base, value: 9 }),
+        ]);
+        expect(attempts.map((result) => result.status).sort()).toEqual(['recorded', 'stale']);
+        const winner = attempts.find((result) => result.status === 'recorded');
+        if (!winner || winner.status !== 'recorded') throw new Error('missing winning write');
+        expect(winner.cursor).toEqual({ extractionId: firstRead, seq: 1 });
+        const [saved] = await db.select().from(workItem).where(eq(workItem.id, opened.workItemId));
+        expect(saved?.state[path]).toBe(winner.value);
+        expect(saved?.revisionSeq).toBe(1);
+        expect(await eventsFor(db, opened.workItemId)).toHaveLength(1);
+
+        const caller = centurionCaller().workItems;
+        const event = { workItemId: opened.workItemId, type: 'field.edit' as const, fieldPath: path, value: 3 };
+        await expect(caller.recordEvent({ ...event, expected: { extractionId: firstRead, seq: 0 } }))
+          .rejects.toMatchObject({ code: 'CONFLICT' });
+        await expect(caller.recordEvent({ ...event, expected: { extractionId: randomUUID(), seq: 1 } }))
+          .rejects.toMatchObject({ code: 'CONFLICT' });
+        await expect(caller.recordEvent({ ...event, expected: { extractionId: firstRead } as never }))
+          .rejects.toMatchObject({ code: 'BAD_REQUEST' });
+        expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]).toEqual(saved);
+        expect(await eventsFor(db, opened.workItemId)).toHaveLength(1);
+
+        const next = await caller.recordEvent({
+          ...event, fieldPath: 'contact.name', value: 'Sample', expected: { extractionId: firstRead, seq: 1 },
+        });
+        expect(next).toMatchObject({ value: 'Sample', cursor: { extractionId: firstRead, seq: 2 } });
+        const legacy = await caller.recordEvent({ ...event, fieldPath: 'contact.phone', value: '123' });
+        expect(legacy).toEqual({ aiValue: null, value: '123' });
+        const snapshot = await readyWork(db, 'cas-1');
+        expect(snapshot.revisionSeq).toBe(3);
+        expect(snapshot.contact.name).toBe('Sample');
+
+        // Equal timestamps can otherwise permit A→B→A. Each relink must invalidate an older token.
+        const secondRead = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
+        await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') })
+          .where(eq(mailExtraction.id, firstRead));
+        await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') })
+          .where(eq(mailExtraction.id, secondRead));
+        const link = { transportId: CENTURION, threadId: 'thread-cas-1', messageId, kind: 'quote' as const };
+        expect((await ensureWorkItem(db, { ...link, extractionId: secondRead })).revisionSeq).toBe(4);
+        const back = await ensureWorkItem(db, { ...link, extractionId: firstRead });
+        expect(back).toMatchObject({ extractionId: firstRead, revisionSeq: 5 });
+        const beforeConflict = await eventsFor(db, opened.workItemId);
+        await expect(caller.recordEvent({ ...event, expected: { extractionId: firstRead, seq: 3 } }))
+          .rejects.toMatchObject({ code: 'CONFLICT' });
+        expect(await eventsFor(db, opened.workItemId)).toHaveLength(beforeConflict.length);
+        expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]?.state[path]).toBe(winner.value);
+      } finally {
+        await otherConn.end();
+      }
+    }));
+
   it('logs one edit with the AI value, the value, and the extractor version, and sets the field', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'e1');
@@ -4592,13 +4662,20 @@ describe('pane revision undo/redo', () => {
         .limit(1);
       const eventsBefore = await eventsFor(db, work.workItemId);
 
-      const redone = await redoWorkItemRevision(db, {
+      const stale = await redoWorkItemRevision(db, {
         transportId: CENTURION,
         workItemId: work.workItemId,
         userId: USER,
         expectedSeq: 2,
       });
-      expect(redone).toMatchObject({ status: 'history_stale', revision: 0, revisionHead: 1, seq: 2 });
+      expect(stale).toMatchObject({ status: 'stale', revision: 0, revisionHead: 1, seq: 3 });
+      const redone = await redoWorkItemRevision(db, {
+        transportId: CENTURION,
+        workItemId: work.workItemId,
+        userId: USER,
+        expectedSeq: 3,
+      });
+      expect(redone).toMatchObject({ status: 'history_stale', revision: 0, revisionHead: 1, seq: 3 });
 
       const [afterRedo] = await db
         .select({

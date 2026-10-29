@@ -96,6 +96,7 @@ const fieldEventInput = z
       ])
       .optional(),
     msSinceOpen: z.number().int().min(0).max(86_400_000).optional(),
+    expected: z.object({ extractionId: z.string().uuid(), seq: z.number().int().min(0) }).strict().optional(),
   })
   .strict();
 
@@ -147,6 +148,7 @@ export const workItemsRouter = router({
       fieldPath: input.fieldPath,
       value: input.value,
       msSinceOpen: input.msSinceOpen,
+      expected: input.expected,
     });
     if (result.status === 'not_found') {
       throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
@@ -157,7 +159,10 @@ export const workItemsRouter = router({
     if (result.status === 'invalid_value') {
       throw new TRPCError({ code: 'BAD_REQUEST', message: 'Value does not fit this field.' });
     }
-    return { aiValue: result.aiValue, value: result.value };
+    if (result.status === 'stale') {
+      throw new TRPCError({ code: 'CONFLICT', message: 'The saved details changed. Reload and review your changes.' });
+    }
+    return { aiValue: result.aiValue, value: result.value, ...(result.cursor ? { cursor: result.cursor } : {}) };
   }),
   /** Owner/developer review of exactly the succeeded extraction shown by the workflow console. */
   adminReview: mailboxProcedure.input(adminReviewInput).mutation(async ({ input, ctx }) => {

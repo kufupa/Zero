@@ -18,7 +18,7 @@ const READ: Ready = {
   contact: { name: null, company: null, endClient: null, email: null, phone: null },
   language: null, translation: null, fieldProvenance: {},
 };
-const OPENED: Ready = { ...READ, workItemId: 'wi-1', workItemStatus: 'needs_you' };
+const OPENED: Ready = { ...READ, workItemId: 'wi-1', workItemStatus: 'needs_you', revisionSeq: 0 };
 const CHILD = 'stays[s_1].rows[s_1_row].childrenPerRoom';
 const AGES = 'stays[s_1].rows[s_1_row].childAges';
 const PINNED = { context: { activeTransportId: 'transport-a' } };
@@ -27,11 +27,16 @@ const SCOPE = 'staff:session:transport-a';
 function harness() {
   const query = vi.fn(async (_input: { internetMessageId: string }, _opts?: unknown): Promise<StoredWork> => READ);
   const open = vi.fn(async (_input: { internetMessageId: string }, _opts?: unknown): Promise<StoredWork> => OPENED);
-  const record = vi.fn(async (input: RecordFieldEventInput, _opts?: unknown) => ({
-    aiValue: null, value: input.value ?? null,
-  }));
+  const record = vi.fn(async (input: RecordFieldEventInput, _opts?: unknown) => acknowledge(input));
   const trpc = { workItems: { getByMessage: { query }, open: { mutate: open }, recordEvent: { mutate: record } } };
   return { trpc, query, open, record };
+}
+
+function acknowledge(input: RecordFieldEventInput) {
+  return {
+    aiValue: null, value: input.value ?? null,
+    ...(input.expected ? { cursor: { extractionId: input.expected.extractionId, seq: input.expected.seq + 1 } } : {}),
+  };
 }
 
 function mailbox() {
@@ -60,7 +65,7 @@ describe('missing work item recovery', () => {
     open.mockRejectedValueOnce(new Error('initial open failed'));
     let finish!: () => void;
     record.mockImplementationOnce((input) => new Promise((resolve) => {
-      finish = () => resolve({ aiValue: null, value: input.value ?? null });
+      finish = () => resolve(acknowledge(input));
     }));
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
     await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null, extractionId: 'ex-1' }));
@@ -78,6 +83,9 @@ describe('missing work item recovery', () => {
     await act(async () => { finish(); expect(await flushed).toBe(true); });
     expect(record.mock.calls.map(([input]) => [input.fieldPath, input.value])).toEqual([
       [CHILD, 0], [AGES, []], ['contact.name', 'Guest'],
+    ]);
+    expect(record.mock.calls.map(([input]) => input.expected)).toEqual([
+      { extractionId: 'ex-1', seq: 0 }, { extractionId: 'ex-1', seq: 1 }, { extractionId: 'ex-1', seq: 2 },
     ]);
     expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1', contact: { name: 'Guest' } });
     expect(result.current.saveError).toBeNull();
@@ -120,7 +128,7 @@ describe('missing work item recovery', () => {
     open.mockRejectedValueOnce(new Error('initial'));
     let finish!: () => void;
     record.mockImplementationOnce((input) => new Promise((resolve) => {
-      finish = () => resolve({ aiValue: null, value: input.value ?? null });
+      finish = () => resolve(acknowledge(input));
     }));
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
     await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
@@ -223,6 +231,21 @@ describe('missing work item recovery', () => {
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ fieldPath: CHILD, value: 0 }), PINNED);
   });
 
+  it('replays a new edit over unchanged seeded provenance', async () => {
+    mailbox();
+    const { trpc, open, record } = harness();
+    open.mockRejectedValueOnce(new Error('initial')).mockResolvedValueOnce({
+      ...OPENED, fieldProvenance: {
+        [CHILD]: { source: 'ai', value: null }, [AGES]: { source: 'ai', value: [] },
+      },
+    });
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
+    act(() => result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }]));
+    await act(async () => expect(await result.current.flushEdits()).toBe(true));
+    expect(record.mock.calls.map(([input]) => [input.fieldPath, input.value])).toEqual([[CHILD, 0], [AGES, []]]);
+  });
+
   it.each([
     ['new extraction', { ...OPENED, extractionId: 'ex-2' }],
     ['different row', { ...OPENED, refs: { s_1: { stayId: 's_1', rowId: 'different' } } }],
@@ -230,7 +253,6 @@ describe('missing work item recovery', () => {
     ['changed intent', { ...OPENED, analysis: { ...OPENED.analysis, intent: 'other' } }],
     ['staff conflict', { ...OPENED, fieldProvenance: { [CHILD]: { source: 'staff', value: 2 } } }],
     ['unknown conflicting provenance', { ...OPENED, fieldProvenance: { [CHILD]: { source: 'unknown', value: 2 } } }],
-    ['concurrent accepted value', { ...OPENED, fieldProvenance: { [CHILD]: { source: 'ai', value: null } } }],
     ['other changed staff value', { ...OPENED, fieldProvenance: { 'contact.name': { source: 'staff', value: 'Someone else' } } }],
   ])('holds an edit on %s', async (_why, changed) => {
     mailbox();
@@ -242,6 +264,53 @@ describe('missing work item recovery', () => {
     await act(async () => expect(await result.current.flushEdits()).toBe(false));
     expect(record).not.toHaveBeenCalled();
     expect(result.current.saveError).toMatch(/details/i);
+  });
+
+  it('does not replay when an older server omits the opened state revision', async () => {
+    mailbox();
+    const { trpc, open, record } = harness();
+    open.mockRejectedValueOnce(new Error('initial')).mockResolvedValueOnce({ ...OPENED, revisionSeq: undefined });
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
+    act(() => result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }]));
+    await act(async () => expect(await result.current.flushEdits()).toBe(false));
+    expect(record).not.toHaveBeenCalled();
+    expect(result.current.saveError).toMatch(/verif/i);
+  });
+
+  it.each([
+    ['missing cursor', undefined],
+    ['another extraction', { extractionId: 'ex-2', seq: 1 }],
+    ['wrong revision', { extractionId: 'ex-1', seq: 2 }],
+  ] as const)('holds after an unverified save acknowledgment with %s', async (_why, cursor) => {
+    mailbox();
+    const { trpc, open, record } = harness();
+    open.mockRejectedValueOnce(new Error('initial'));
+    record.mockImplementationOnce(async (input) => ({ aiValue: null, value: input.value ?? null, cursor }));
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
+    act(() => result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }]));
+    await act(async () => expect(await result.current.flushEdits()).toBe(false));
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(result.current.saveError).toContain('could not be confirmed');
+    await act(async () => expect(await result.current.flushEdits()).toBe(false));
+    expect(record).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops the remaining replay if another writer changes the revision between events', async () => {
+    mailbox();
+    const { trpc, open, record } = harness();
+    open.mockRejectedValueOnce(new Error('initial'));
+    record.mockImplementationOnce(async (input) => acknowledge(input)).mockRejectedValueOnce(new Error('CONFLICT'));
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
+    act(() => {
+      result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }]);
+      result.current.recordContact('name', 'Guest');
+    });
+    await act(async () => expect(await result.current.flushEdits()).toBe(false));
+    expect(record.mock.calls.map(([input]) => [input.fieldPath, input.expected?.seq])).toEqual([[CHILD, 0], [AGES, 1]]);
+    expect(result.current.saveError).toContain('could not be confirmed');
   });
 
   it('holds an edit with no stored baseline instead of guessing a source row', async () => {

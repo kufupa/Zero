@@ -213,6 +213,8 @@ export type StoredWork =
       workItemId: string | null;
       workItemStatus: string | null;
       extractionId: string;
+      /** The state revision seen in this read. Older servers may omit it. */
+      revisionSeq?: number | null;
       /** Group id to the stay and row it came from. A stay with dates and no rows has a null rowId. */
       refs: Record<string, { stayId: string; rowId: string | null }>;
       analysis: ReadyAnalyse;
@@ -232,6 +234,8 @@ export type RecordFieldEventInput = {
   /** `true` only on a `.removed` path: the person deleted that stay or row. */
   value?: string | number | number[] | true | null;
   msSinceOpen?: number;
+  /** Required for recovery, so a later writer cannot be overwritten. */
+  expected?: { extractionId: string; seq: number };
 };
 
 /** The outcome of a translation retry. Only `done` carries a translation; the rest say why it did not run. */

@@ -856,6 +856,11 @@ export function useStoredWork(args: {
               (workItemId && workItemId !== opened.workItemId)) {
             return fail('The saved details could not be verified. Review and re-enter your changes.');
           }
+          const openedSeq = opened.revisionSeq;
+          if (typeof openedSeq !== 'number' || !Number.isSafeInteger(openedSeq) || openedSeq < 0) {
+            return fail('The saved details could not be verified. Refresh and re-enter your changes.');
+          }
+          let seq = openedSeq;
           draft.workItemId = opened.workItemId;
           const provenance = provenanceOf(opened)!;
           const baseline = recoveryBaselineValues(source);
@@ -863,7 +868,7 @@ export function useStoredWork(args: {
             const wanted = draft.events.get(path);
             if (wanted && recoveryValuesEqual(saved.value, wanted.value)) return true;
             if (draft.acknowledged.has(path) && recoveryValuesEqual(saved.value, draft.acknowledged.get(path))) return true;
-            return !wanted && baseline.has(path) && recoveryValuesEqual(saved.value, baseline.get(path));
+            return baseline.has(path) && recoveryValuesEqual(saved.value, baseline.get(path));
           });
           const record = routes.recordEvent;
           if (!record) return fail("Nava couldn't save your changes. Retry saving.");
@@ -877,12 +882,17 @@ export function useStoredWork(args: {
               const result = await record.mutate({
                 workItemId: opened.workItemId, type: 'field.edit', fieldPath: event.path, value: event.value,
                 msSinceOpen: Math.min(MAX_MS_SINCE_OPEN, Math.max(0, Math.round(Date.now() - readyAt.current))),
+                expected: { extractionId: source.extractionId, seq },
               }, inMailbox(draft.transportId));
+              const cursor = result && typeof result === 'object' && 'cursor' in result
+                ? result.cursor as { extractionId?: unknown; seq?: unknown } | null : null;
               if (!result || typeof result !== 'object' || !Object.hasOwn(result, 'value') ||
-                  !recoveryValuesEqual((result as { value: unknown }).value, event.value)) {
+                  !recoveryValuesEqual((result as { value: unknown }).value, event.value) ||
+                  !cursor || cursor.extractionId !== source.extractionId || cursor.seq !== seq + 1) {
                 draft.blocked = true;
                 return fail('The save could not be confirmed. Refresh and re-enter your changes.');
               }
+              seq += 1;
               draft.acknowledged.set(event.path, event.value);
               edited.current.add(saveKey(opened.workItemId, event.path));
             } catch {
