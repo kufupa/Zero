@@ -6,7 +6,7 @@ import { cloneElement, type ReactElement, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConfirmationSourcesProvider } from '../components/quote-workflow/confirmation-recipient';
 import { unmaskedPii } from './helpers/pii-marks';
-import { BookingCards, ROOM_TYPE_CHANGED_COPY } from '../components/quote-workflow/booking-card';
+import { BookingCards, ROOM_TYPE_CHANGED_COPY, stayIdForRoom } from '../components/quote-workflow/booking-card';
 import { ContactBlock } from '../components/nava-pane/blocks/contact-block';
 import { QuotePeopleStep } from '../components/quote-workflow/quote-people-step';
 import { QuoteBookingHost } from '../components/quote-workflow/quote-booking-host';
@@ -33,7 +33,6 @@ import {
   paneSaveModeOf,
   paneStayFromTrpc,
   paneUnconfirmedMessage,
-  PANE_COMMIT_UNREACHABLE_COPY,
   PANE_PREVIEW_FAILED_COPY,
   PANE_SAVE_LAB_GUARD_COPY,
   PANE_SAVE_UNCONFIRMED_REASON,
@@ -1037,7 +1036,7 @@ function previewableDraft(track = 'COR'): BookingDraftReady {
 
 function bookingSessionForPreview(draft: BookingDraftReady, selectionEpoch: number): QuoteSession {
   const session = quotedSession(draft);
-  session.groups = session.groups.map((group) => ({ ...group, stayId: 'stay-preview-1' }));
+  session.groups = session.groups.map((group) => ({ ...group, stayId: 'stay-preview-1', quantity: 1 }));
   if (session.binding) session.binding = { ...session.binding, selectionEpoch };
   return session;
 }
@@ -1439,7 +1438,7 @@ describe('HRDAV booking fields and CMS', () => {
     expect(screen.getByText(/price check no longer applies/i)).toBeDefined();
   });
 
-  it('stops the batch after a refused first room', async () => {
+  it('holds the batch before the first save when the request has multiple rooms', async () => {
     const { client, commit } = paneClient();
     commit.mockResolvedValueOnce({ status: 'refused', reason: 'refused_save_blank_required' });
     render(<BookingCards draft={draftReady()} paneSave={client} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
@@ -1447,10 +1446,10 @@ describe('HRDAV booking fields and CMS', () => {
     pickRoomChoices(1);
     fireEvent.click(previewButton(0));
     fireEvent.click(previewButton(1));
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', false));
+    await screen.findAllByText(/Nothing is saved until you press Create provisional booking/);
+    expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', true);
     fireEvent.click(screen.getByRole('button', { name: 'Book this stay' }));
-    await screen.findByText(/HMS still has a blank required field/i);
-    expect(commit).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
   });
 });
 
@@ -1469,8 +1468,10 @@ describe('booking card marks guest details for the preview gate (H6b)', () => {
     const draft = draftReady();
     // Avoid a substring match between the surname Doe and the word "does" in normal UI copy.
     draft.draft.rooms[1]!.request.lastName = 'Doe-Guest';
-    const { container } = render(<BookingCards draft={draft} paneSave={client} />);
+    const { container, rerender } = render(<BookingCards draft={draft} paneSave={client} />);
     expect(unmaskedPii(container, ['Smith', 'Doe-Guest'])).toEqual([]);
+    const single = { ...draft, draft: { ...draft.draft, rooms: [draft.draft.rooms[0]!] } };
+    rerender(<BookingCards draft={single} paneSave={client} />);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     expect((await screen.findByText(JOHN_SMITH_PREVIEW)).hasAttribute('data-pii')).toBe(true);
@@ -1565,7 +1566,9 @@ describe('booking card pane save', () => {
     const pending = deferred<PaneStayResult>();
     const preview = vi.fn<PaneStayClient['preview']>().mockImplementation(() => pending.promise);
     const { client } = paneClient({ preview });
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    const draft = draftReady();
+    draft.draft.rooms = draft.draft.rooms.slice(0, 1);
+    render(<BookingCards draft={draft} paneSave={client} />);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     expect(preview).toHaveBeenCalledWith(expect.objectContaining({
@@ -1582,7 +1585,7 @@ describe('booking card pane save', () => {
       guaranteeType: 'Confirmation Received',
     }));
     expect(preview.mock.calls[0]?.[0]).not.toHaveProperty('bookingAgency');
-    expect(screen.getByRole('status').textContent).toBe('Nava is filling the booking in HMS… (about 2 minutes)');
+    expect(screen.getByText('Nava is filling the booking in HMS… (about 2 minutes)')).toBeDefined();
     expect(bookButton(0)).toHaveProperty('disabled', true);
     await act(async () => pending.resolve(PREVIEW_OK));
     expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
@@ -1624,7 +1627,7 @@ describe('booking card pane save', () => {
     fireEvent.click(previewButton(0));
     expect(await screen.findByText(JOHN_SMITH_PREVIEW)).toBeDefined();
     expect(preview).toHaveBeenCalledTimes(1);
-    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: 'stay-preview-1_1' }));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({ workItemId, stayId: stayIdForRoom({ groupId: 'g1', roomIndex: 1 }, [{ ...g1, stayId: 'stay-preview-1' }]) }));
     expect(commit).not.toHaveBeenCalled();
 
     rerender(host(bookingSessionForPreview(previewableDraft(), 2)));
@@ -1718,7 +1721,7 @@ describe('booking card pane save', () => {
     fireEvent.click(previewButton(0));
     fireEvent.change(screen.getAllByLabelText('Track')[0]!, { target: { value: 'BAR' } });
 
-    expect(screen.getByRole('status').textContent).toBe('Nava is filling the booking in HMS… (about 2 minutes)');
+    expect(screen.getByText('Nava is filling the booking in HMS… (about 2 minutes)')).toBeDefined();
     expect(screen.queryByText('You changed the booking – preview again.')).toBeNull();
     expect(previewButton(0)).toHaveProperty('disabled', true);
 
@@ -1735,7 +1738,7 @@ describe('booking card pane save', () => {
         screenshots: ['before.png', 'filled.png', 'saved.png'],
       }),
     });
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     await screen.findByText(JOHN_SMITH_PREVIEW);
@@ -1757,7 +1760,7 @@ describe('booking card pane save', () => {
         screenshots: ['before.png', 'saved.png'],
       }),
     });
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     await screen.findByText(JOHN_SMITH_PREVIEW);
@@ -1789,7 +1792,7 @@ describe('booking card pane save', () => {
 
   it('books with the preview digest and shows the confirmation and readback screenshot', async () => {
     const { client, commit } = paneClient();
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     await screen.findByText(JOHN_SMITH_PREVIEW);
@@ -1797,7 +1800,7 @@ describe('booking card pane save', () => {
     expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
     expect(commit).toHaveBeenCalledWith(expect.objectContaining({ firstName: 'John', track: 'COR' }), PANE_DIGEST);
     expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
-    expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
   });
 
   it('gives the booked confirmation a Copy confirmation action that copies the number', async () => {
@@ -1805,7 +1808,7 @@ describe('booking card pane save', () => {
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
     try {
       const { client } = paneClient();
-      render(<BookingCards draft={draftReady()} paneSave={client} />);
+      render(<BookingCards draft={previewableDraft()} paneSave={client} />);
       pickRoomChoices(0);
       fireEvent.click(previewButton(0));
       await screen.findByText(JOHN_SMITH_PREVIEW);
@@ -1820,28 +1823,27 @@ describe('booking card pane save', () => {
 
   it('freezes the source, track and guarantee choices once Book in HMS has run', async () => {
     const { client } = paneClient();
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     await screen.findByText(JOHN_SMITH_PREVIEW);
     fireEvent.click(bookButton(0));
     await screen.findByText('Booked in HMS – confirmation 98765-1');
-    const [booked, other] = Array.from(document.querySelectorAll('article'));
+    const [booked] = Array.from(document.querySelectorAll('article'));
     const bookedSelects = Array.from(booked?.querySelectorAll('select') ?? []);
     expect(bookedSelects).toHaveLength(6);
     for (const select of bookedSelects) expect(select.disabled).toBe(true);
-    for (const select of Array.from(other?.querySelectorAll('select') ?? [])) expect(select.disabled).toBe(false);
   });
 
   it('shows the saving wait while Book in HMS runs', async () => {
     const pending = deferred<PaneStayResult>();
     const { client } = paneClient({ commit: () => pending.promise });
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     await screen.findByText(JOHN_SMITH_PREVIEW);
     fireEvent.click(bookButton(0));
-    expect(screen.getByRole('status').textContent).toBe('Nava is booking this in HMS… (about 2 minutes)');
+    expect(screen.getByText('Nava is booking this in HMS… (about 2 minutes)')).toBeDefined();
     await act(async () => pending.resolve(COMMIT_OK));
     expect(await screen.findByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
   });
@@ -1861,7 +1863,7 @@ describe('booking card pane save', () => {
     const { client } = paneClient({
       commit: async () => ({ status: 'refused', reason: 'osress_reader_parked' }),
     });
-    render(<BookingCards draft={draftReady()} paneSave={client} />);
+    render(<BookingCards draft={previewableDraft()} paneSave={client} />);
     pickRoomChoices(0);
     fireEvent.click(previewButton(0));
     await screen.findByText(JOHN_SMITH_PREVIEW);
@@ -1892,7 +1894,7 @@ describe('booking card pane save', () => {
     fireEvent.click(bookButton(0));
     expect(
       await screen.findByText(
-        'HMS may have saved this booking for John Smith 2026-11-12 – 2026-11-14, but Nava could not verify it.',
+        'HMS may have saved this booking, but Nava could not verify it.',
       ),
     ).toBeDefined();
     expect(await screen.findByRole('button', { name: 'View HMS screenshot' })).toBeDefined();
@@ -1923,7 +1925,7 @@ describe('booking card pane save', () => {
     fireEvent.click(previewButton(0));
     await screen.findByText(JOHN_SMITH_PREVIEW);
     fireEvent.click(bookButton(0));
-    expect(await screen.findByText(PANE_COMMIT_UNREACHABLE_COPY)).toBeDefined();
+    expect(await screen.findByText('HMS may have saved this booking, but Nava could not verify it.')).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
   });
@@ -1961,7 +1963,7 @@ describe('booking card pane save', () => {
     expect(await screen.findByRole('button', { name: 'See what Nava saved in HMS' })).toBeDefined();
     expect(commit).not.toHaveBeenCalled();
     expect(screenshot).toHaveBeenCalledWith(PANE_SAVE_RUN, 'saved.png');
-    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
   });
 
   it('on mount, an unknown save remains unconfirmed', async () => {
@@ -1983,199 +1985,102 @@ describe('booking card pane save', () => {
     );
     expect(
       screen.getByText(
-        'HMS may have saved this booking for John Smith 2026-11-12 – 2026-11-14, but Nava could not verify it.',
+        'HMS may have saved this booking, but Nava could not verify it.',
       ),
     ).toBeDefined();
     expect(commit).not.toHaveBeenCalled();
     expect(screen.queryByText(/Booked in HMS/)).toBeNull();
   });
 
-  it('Book this stay commits each room row and shows both confirmation numbers', async () => {
-    const { client, commit } = paneClient();
-    commit
-      .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '11111-1' })
-      .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '22222-1' });
-    const draft = draftReady();
-    draft.draft.rooms[0]!.request.childAges = [5];
-    render(<BookingCards draft={draft} paneSave={client} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} />);
-    expect(screen.getAllByRole('button', { name: 'Create provisional booking' })).toHaveLength(2);
-    pickRoomChoices(0);
-    pickRoomChoices(1);
-    fireEvent.click(previewButton(0));
-    fireEvent.click(previewButton(1));
-    await screen.findAllByText(/Nothing is saved until you press Create provisional booking/);
-    const bookStay = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
-    await waitFor(() => expect(bookStay.disabled).toBe(false));
-    fireEvent.click(bookStay);
-    await screen.findByText(/Booked 2 of 2/);
-    expect(commit).toHaveBeenCalledTimes(2);
-    expect(commit.mock.calls[0]?.[0]).toMatchObject({ firstName: 'John', childAges: [5] });
-    expect(commit.mock.calls[1]?.[0]).toMatchObject({ firstName: 'Jane' });
-    expect(screen.getByText('Booked in HMS – confirmation 11111-1')).toBeDefined();
-    expect(screen.getByText('Booked in HMS – confirmation 22222-1')).toBeDefined();
-  });
+  it.each(['same guest', 'different guests'] as const)(
+    'holds both single-room and batch actions for multiple rooms with %s', async (names) => {
+      const { client, preview, commit } = paneClient();
+      const draft = draftReady();
+      if (names === 'same guest') {
+        draft.draft.rooms[1]!.request.firstName = 'John';
+        draft.draft.rooms[1]!.request.lastName = 'Smith';
+      }
+      const session = quotedSession(draft);
+      session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
+      render(<QuoteBookingHost session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111" />);
+      pickRoomChoices(0);
+      pickRoomChoices(1);
+      fireEvent.click(previewButton(0));
+      fireEvent.click(previewButton(1));
+      await waitFor(() => expect(preview).toHaveBeenCalledTimes(2));
+      for (const button of screen.getAllByRole('button', { name: 'Create provisional booking' })) {
+        expect(button).toHaveProperty('disabled', true);
+        fireEvent.click(button);
+      }
+      const batch = screen.getByRole('button', { name: 'Book this stay' });
+      expect(batch).toHaveProperty('disabled', true);
+      fireEvent.click(batch);
+      expect(commit).not.toHaveBeenCalled();
+      expect(screen.queryByText(/Booked \d of 2/)).toBeNull();
+    },
+  );
 
-  it('Book this stay adds room 2 of the same guest to room 1\'s booking', async () => {
-    const { client, commit } = paneClient();
-    commit
-      .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '11111-1' })
-      .mockResolvedValueOnce({ ...COMMIT_OK, confirmationNumber: '22222-1' });
-    const draft = draftReady();
-    draft.draft.rooms[1]!.request.firstName = 'John';
-    draft.draft.rooms[1]!.request.lastName = 'Smith';
-    const session = quotedSession(draft);
-    session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
-    render(<QuoteBookingHost session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111" />);
-    pickRoomChoices(0);
-    pickRoomChoices(1);
-    fireEvent.click(previewButton(0));
-    fireEvent.click(previewButton(1));
-    const bookStay = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
-    await waitFor(() => expect(bookStay.disabled).toBe(false));
-    fireEvent.click(bookStay);
-    await screen.findByText('Booked in HMS – confirmation 22222-1');
-    expect(commit.mock.calls[0]?.[0]).not.toHaveProperty('parentStayId');
-    expect(commit.mock.calls[1]?.[0]).toMatchObject({ stayId: 's_aaaa1111_2', parentStayId: 's_aaaa1111_1' });
-  });
-
-  it('Book this stay keeps a same-guest room with a different guarantee as its own booking', async () => {
-    const { client, commit } = paneClient();
-    const draft = draftReady();
-    draft.draft.rooms[1]!.request.firstName = 'John';
-    draft.draft.rooms[1]!.request.lastName = 'Smith';
-    const session = quotedSession(draft);
-    session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
-    render(<QuoteBookingHost session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111" />);
-    pickRoomChoices(0);
-    pickRoomChoices(1);
-    fireEvent.change(screen.getAllByLabelText('Guarantee')[1]!, { target: { value: 'Guaranteed By Agent' } });
-    fireEvent.click(previewButton(0));
-    fireEvent.click(previewButton(1));
-    const bookStay = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
-    await waitFor(() => expect(bookStay.disabled).toBe(false));
-    fireEvent.click(bookStay);
-    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
-    expect(commit.mock.calls[1]?.[0]).not.toHaveProperty('parentStayId');
-  });
-
-  it('Book this stay keeps a different guest\'s room as its own booking', async () => {
-    const { client, commit } = paneClient();
-    const draft = draftReady();
-    const session = quotedSession(draft);
-    session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
-    render(<QuoteBookingHost session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111" />);
-    pickRoomChoices(0);
-    pickRoomChoices(1);
-    fireEvent.click(previewButton(0));
-    fireEvent.click(previewButton(1));
-    const bookStay = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
-    await waitFor(() => expect(bookStay.disabled).toBe(false));
-    fireEvent.click(bookStay);
-    await waitFor(() => expect(commit).toHaveBeenCalledTimes(2));
-    expect(commit.mock.calls[1]?.[0]).not.toHaveProperty('parentStayId');
-  });
-
-  it('stops a batch if a later room is saved while the first room is in flight', async () => {
+  it('retains the first result and does not start an added room while a save is in flight', async () => {
     const { client, commit } = paneClient();
     const firstCommit = deferred<PaneStayResult>();
-    commit.mockReturnValueOnce(firstCommit.promise).mockResolvedValueOnce(COMMIT_OK);
-    const draft = draftReady();
-    const group = { ...g1, stayId: 's_aaaa1111' };
-    const view = (savedStays?: Record<string, { confirmationNumber: string | null; status: 'unknown'; screenshotRef: null }>) => (
-      <BookingCards draft={draft} groups={[group]} paneSave={client} contact={CARD_CONTACT}
-        confirmation={CARD_CONFIRMATION} savedStays={savedStays} />
+    commit.mockReturnValueOnce(firstCommit.promise);
+    const initial = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    const later = draftReady();
+    const view = (draft: BookingDraftReady, savedStays?: Record<string, { confirmationNumber: null; status: 'unknown'; screenshotRef: null }>) => (
+      <BookingCards draft={draft} groups={[{ ...g1, quantity: draft.draft.rooms.length, stayId: 's_aaaa1111' }]}
+        paneSave={client} contact={CARD_CONTACT} confirmation={CARD_CONFIRMATION} savedStays={savedStays} />
     );
-    const { rerender } = render(view());
+    const { rerender } = render(view(initial));
     pickRoomChoices(0);
-    pickRoomChoices(1);
     fireEvent.click(previewButton(0));
-    fireEvent.click(previewButton(1));
-    const bookStay = screen.getByRole('button', { name: 'Book this stay' });
-    await waitFor(() => expect(bookStay).toHaveProperty('disabled', false));
-    fireEvent.click(bookStay);
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
-    rerender(view({ s_aaaa1111_2: { confirmationNumber: null, status: 'unknown', screenshotRef: null } }));
+    rerender(view(later, { s_aaaa1111_2: { confirmationNumber: null, status: 'unknown', screenshotRef: null } }));
     await act(async () => firstCommit.resolve(COMMIT_OK));
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(screen.getAllByText(/HMS may have saved this booking/i).length).toBeGreaterThan(0);
+    expect(screen.getByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
+    expect(screen.getByText('Unconfirmed')).toBeDefined();
+    expect(screen.queryByText(/Booked \d of 2/)).toBeNull();
+    for (const button of screen.queryAllByRole('button', { name: 'Create provisional booking' })) {
+      expect(button).toHaveProperty('disabled', true);
+    }
   });
 
-  it('stops later room creates when the top contact changes during batch booking', async () => {
+  it('uses the contact captured by the single-room save if the contact changes in flight', async () => {
     const { client, commit } = paneClient();
     const firstCommit = deferred<PaneStayResult>();
-    commit.mockReturnValueOnce(firstCommit.promise).mockResolvedValueOnce(COMMIT_OK);
-    const draft = draftReady();
-    let contact: StoredContact = {
-      name: 'Original Booker',
-      company: null,
-      endClient: null,
-      email: 'original@example.invalid',
-      phone: null,
-    };
+    commit.mockReturnValueOnce(firstCommit.promise);
+    const draft = previewableDraft();
+    let contact: StoredContact = { name: 'Original Booker', company: null, endClient: null,
+      email: 'original@example.invalid', phone: null };
     const view = () => <BookingCards draft={draft} paneSave={client} contact={contact} />;
     const { rerender } = render(view());
-    pickRoomChoices(0);
-    pickRoomChoices(1);
     fireEvent.click(previewButton(0));
-    fireEvent.click(previewButton(1));
-    const bookStay = screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement;
-    await waitFor(() => expect(bookStay.disabled).toBe(false));
-    fireEvent.click(bookStay);
+    await screen.findByText(JOHN_SMITH_PREVIEW);
+    fireEvent.click(bookButton(0));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
-
     contact = { ...contact, name: 'Updated Booker' };
     rerender(view());
     await act(async () => firstCommit.resolve(COMMIT_OK));
-
-    await waitFor(() => {
-      const secondRoomName = screen.getAllByLabelText('First name')[1] as HTMLInputElement;
-      expect(secondRoomName.disabled).toBe(false);
-    });
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ bookerName: 'Original Booker' }), PANE_DIGEST);
     expect(commit).toHaveBeenCalledTimes(1);
-    expect(commit).toHaveBeenCalledWith(
-      expect.objectContaining({ bookerName: 'Original Booker' }),
-      PANE_DIGEST,
-    );
-    expect((screen.getByRole('button', { name: 'Book this stay' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it('passes work item and saved Stay through QuoteBookingHost to Book', async () => {
+  it('shows a work-item receipt separately and holds every room after reload', () => {
     const { client, commit } = paneClient();
-    const draft = draftReady();
-    const session = quotedSession(draft);
+    const session = quotedSession(draftReady());
     session.groups = [{ ...g1, stayId: 's_aaaa1111' }];
-    render(
-      <QuoteBookingHost
-        session={session}
-        paneSave={client}
-        workItemId="11111111-1111-1111-1111-111111111111"
-        savedStays={{
-          s_aaaa1111_1: {
-            confirmationNumber: 'TEST-123',
-            status: 'booked',
-            screenshotRef: null,
-          },
-        }}
-      />,
-    );
-    expect(screen.getByText('Booked in HMS – confirmation TEST-123')).toBeDefined();
-    expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(1);
-    pickRoomChoices(1);
-    fireEvent.click(previewButton(0));
-    await screen.findByText(/Nothing is saved until you press Create provisional booking/);
-    fireEvent.click(bookButton(0));
-    await screen.findByText('Booked in HMS – confirmation 98765-1');
-    expect(commit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        stayId: 's_aaaa1111_2',
-        workItemId: '11111111-1111-1111-1111-111111111111',
-      }),
-      PANE_DIGEST,
-    );
+    render(<QuoteBookingHost session={session} paneSave={client} workItemId="11111111-1111-1111-1111-111111111111"
+      savedStays={{ s_aaaa1111_1: { confirmationNumber: 'TEST-123', status: 'booked', screenshotRef: null } }} />);
+    const receipt = screen.getByText('Booked in HMS – confirmation TEST-123');
+    expect(receipt.closest('article')).toBeNull();
+    for (const button of screen.getAllByRole('button', { name: 'Preview in HMS' })) {
+      expect(button).toHaveProperty('disabled', true);
+    }
+    expect(commit).not.toHaveBeenCalled();
   });
-});
 
-describe('booking card save modes and the note fields', () => {
   it('names the Book action Create provisional booking in lab and on modes', () => {
     const lab = paneClient({ mode: () => 'lab' });
     const { unmount } = render(<BookingCards draft={draftReady()} paneSave={lab.client} />);
@@ -3052,16 +2957,16 @@ describe('booking card HMS notes copy', () => {
     expect(screen.queryByLabelText('Booker name')).toBeNull();
   });
 
-  it('the HMS notes retain the selected board and approval note, then add the confirmation', async () => {
+  it('the HMS notes retain the selected board and approval note, and do not attach an unbound confirmation', async () => {
     const writeText = stubClipboard();
     const { client } = paneClient();
-    const draft = draftReady();
+    const draft = previewableDraft();
     draft.draft.rooms[0]!.board = 'bb';
     const rowPrice = { source: 'override' as const, rateCode: 'NCOR1B', amountMinor: 185000, note: 'Thandi approved' };
     render(
       <BookingCards
         draft={draft}
-        groups={[{ ...g1, board: 'dinner_bb', rateCode: 'BARRO', specialRequests: ['Cot'], rowPrice }]}
+        groups={[{ ...g1, quantity: 1, board: 'dinner_bb', rateCode: 'BARRO', specialRequests: ['Cot'], rowPrice }]}
         paneSave={client}
         contact={{ ...CONTACT, email: 'booker@example.invalid' }}
       />,
@@ -3084,6 +2989,6 @@ describe('booking card HMS notes copy', () => {
     await screen.findByText('Booked in HMS – confirmation 98765-1');
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Copy for HMS notes' })[0]!);
-    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith([...quoted, 'Confirmation: 98765-1'].join('\n')));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(quoted.join('\n')));
   });
 });

@@ -310,30 +310,58 @@ export type SavedStayCommit = {
   cmsReason?: string;
 };
 
-function stayIdForRoom(
+function detachedReceipt(commit: CommitView | undefined): SavedStayCommit | null {
+  if (!commit || (commit.status !== 'booked' && !(commit.status === 'refused' && commit.statusChip === 'check'))) return null;
+  const confirmationNumber = commit.status === 'booked' ? commit.confirmationNumber || null : null;
+  const name = pickScreenshot(commit.screenshots ?? [], 'saved.png');
+  return {
+    confirmationNumber,
+    status: commit.status === 'booked' && !commit.unverified ? 'booked' : 'unknown',
+    screenshotRef: commit.runId && name ? { runId: commit.runId, name } : null,
+    ...(commit.runId ? { runId: commit.runId } : {}),
+    ...(commit.shots ? { shots: commit.shots } : {}),
+    ...(commit.status === 'booked' && commit.cmsMismatch ? { cmsReason: 'saved_cms_mismatch' } : {}),
+  };
+}
+
+/** A reversible room key, with a legacy-compatible extraction-stay prefix and a reserved numeric suffix. */
+export function stayIdForRoom(
   room: { groupId: string; roomIndex: number },
   groups: StayGroupRequirement[],
 ): string {
-  const group =
-    groups.find((item) => item.id === room.groupId) ??
-    groups.find((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
-  const stay = group?.stayId ?? room.groupId;
-  return `${stay}_${room.roomIndex}`;
+  const exact = groups.filter((item) => item.id === room.groupId);
+  const dated = exact.length ? [] : groups.filter((item) => `${item.arrivalDate ?? ''}:${item.departureDate ?? ''}` === room.groupId);
+  if (exact.length > 1 || dated.length > 1 || !Number.isInteger(room.roomIndex) || room.roomIndex < 1 || room.roomIndex > 999) return '';
+  const group = exact[0] ?? dated[0];
+  if (groups.length && !group) return '';
+  const groupId = group?.id ?? room.groupId;
+  const stay = group?.stayId ?? groupId;
+  const alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-:';
+  if (!/^[A-Za-z0-9_-]+$/.test(stay) || !groupId || groupId.length > 40) return '';
+  // A synthetic row can reuse its stay id (e.g. `s_12345678_row`). Encode only the suffix,
+  // with a distinct leading digit so it cannot collide with a full row id.
+  const relative = groupId.startsWith(stay) ? groupId.slice(stay.length) : null;
+  let row = relative === null ? 1n : 2n;
+  for (const char of relative ?? groupId) {
+    const digit = alphabet.indexOf(char);
+    if (digit < 0) return '';
+    row = row * BigInt(alphabet.length) + BigInt(digit);
+  }
+  // A leading zero separates these keys from the old `${stay}_${roomIndex}` keys.
+  const id = `${stay}_0${row * 1000n + BigInt(room.roomIndex)}`;
+  return id.length <= 40 ? id : '';
 }
 
-/** Only apply a stored save when exactly one visible room claims its id. */
-export function appliedSavedStayIds(
-  draft: BookingDraftReady,
-  groups: StayGroupRequirement[],
-  savedStays: Record<string, SavedStayCommit> | undefined,
-): string[] {
-  if (!savedStays) return [];
-  const claims = new Map<string, number>();
-  for (const room of draft.draft.rooms) {
-    const id = stayIdForRoom(room, groups);
-    claims.set(id, (claims.get(id) ?? 0) + 1);
+/** Keep conflicting or temporarily missing outcomes visible until independent evidence resolves them. */
+export function rememberSavedStays(stays: Record<string, SavedStayCommit>, incoming?: Record<string, SavedStayCommit>): void {
+  for (const [id, saved] of Object.entries(incoming ?? {})) {
+    const prior = stays[id];
+    if (prior && ((prior.confirmationNumber && saved.confirmationNumber && prior.confirmationNumber !== saved.confirmationNumber) ||
+      (prior.status === 'booked' && saved.status === 'unknown'))) {
+      stays[`${id}:prior:${prior.status}:${prior.confirmationNumber ?? 'none'}`] = prior;
+    } else if (prior?.confirmationNumber && !saved.confirmationNumber) continue;
+    stays[id] = saved;
   }
-  return [...claims.entries()].filter(([id, count]) => count === 1 && savedStays[id]).map(([id]) => id);
 }
 
 function paneStayPreviewKey(workItemId: string | undefined, stayId: string, inputKey: string): string {
@@ -374,24 +402,6 @@ function commitViewFromSaved(
     ...shotFields,
     statusChip: 'check',
   };
-}
-
-function savesFromSavedStays(
-  draft: BookingDraftReady,
-  groups: StayGroupRequirement[],
-  savedStays: Record<string, SavedStayCommit> | undefined,
-): Record<string, RoomSaveState> {
-  if (!savedStays) return {};
-  const shown = new Set(appliedSavedStayIds(draft, groups, savedStays));
-  const saves: Record<string, RoomSaveState> = {};
-  for (const room of draft.draft.rooms) {
-    const id = stayIdForRoom(room, groups);
-    if (!shown.has(id)) continue;
-    const saved = savedStays[id];
-    if (!saved) continue;
-    saves[`${room.groupId}:${room.roomIndex}`] = { commit: commitViewFromSaved(saved, room.request) };
-  }
-  return saves;
 }
 
 function pickScreenshot(names: string[], preferred: string): string | null {
@@ -489,6 +499,7 @@ function RoomSave({
   bookLabel,
   frozen = false,
   bookBlocked = false,
+  bookBlockedReason,
   onPreview,
   onBook,
 }: {
@@ -500,6 +511,7 @@ function RoomSave({
   bookLabel: string;
   frozen?: boolean;
   bookBlocked?: boolean;
+  bookBlockedReason?: string;
   onPreview: (stay: PaneStayInput) => void;
   onBook: (stay: PaneStayInput, previewDigest: string) => void;
 }) {
@@ -627,7 +639,7 @@ function RoomSave({
         </SecondaryButton>
         <PrimaryButton
           disabled={!fresh || busy || bookBlocked}
-          disabledReason={!stay || busy ? null : bookBlocked ? 'A booking is still unconfirmed' : 'Preview in HMS first'}
+          disabledReason={!stay || busy ? null : bookBlocked ? bookBlockedReason ?? 'A booking is still unconfirmed' : 'Preview in HMS first'}
           onClick={() => {
             if (stay && fresh) onBook(stay, fresh.digest);
           }}
@@ -854,7 +866,7 @@ export function SavedStayReceipt({
         {confirmed ? 'Booked' : 'Unconfirmed'}
       </span>
       {saved.confirmationNumber && saved.status !== 'unknown' ? (
-        <p className="text-[12.5px] font-semibold text-emerald-800">
+        <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
           {`Booked in HMS – confirmation ${saved.confirmationNumber}`}
         </p>
       ) : (
@@ -872,6 +884,9 @@ export function SavedStayReceipt({
       {saved.confirmationNumber ? <HmsLinkActions confirmation={saved.confirmationNumber} /> : null}
       {runId && shots.length > 0 && screenshot ? (
         <HmsShotsViewer key={runId} runId={runId} shots={shots} screenshot={screenshot} />
+      ) : runId && saved.screenshotRef && screenshot ? (
+        <PaneScreenshot caption={confirmed && saved.screenshotRef.name === SAVED_SHOT ? 'See what Nava saved in HMS' : 'View HMS screenshot'}
+          runId={runId} name={saved.screenshotRef.name} screenshot={screenshot} />
       ) : null}
     </div>
   );
@@ -892,6 +907,7 @@ export function BookingCards({
   propertyCode,
   confirmation,
   onSaveDefault,
+  onReceipt,
 }: {
   draft: BookingDraftReady;
   groups?: StayGroupRequirement[];
@@ -922,8 +938,21 @@ export function BookingCards({
   confirmation?: ConfirmationSources | null;
   /** Persists the current choice as this user's default. Omitted in card-only tests. */
   onSaveDefault?: (setting: ConfirmationSetting) => Promise<void>;
+  /** Host displays outcomes outside any date or guest card. */
+  onReceipt?: (stayId: string, receipt: SavedStayCommit | null, snapshot?: SavedStayCommit) => void;
 }) {
   const client = paneSave;
+  const drafts = session ? Object.values(session.bookingDrafts) : [draft];
+  if (!drafts.some((item) => item === draft || item.draft === draft.draft)) drafts.push(draft);
+  const allRooms = drafts.flatMap((item) => item.draft.rooms);
+  const allStayIds = allRooms.map((room) => stayIdForRoom(room, groups));
+  const roomIdentityHeld = (room: BookingDraftReady['draft']['rooms'][number]) => {
+    const id = stayIdForRoom(room, groups);
+    return !id || allStayIds.filter((candidate) => candidate === id).length !== 1;
+  };
+  // A partial draft can contain one room even when the request still asks for more.
+  const requestedRooms = groups.reduce((total, group) => total + (group.quantity && group.quantity > 0 ? group.quantity : 1), 0);
+  const multipleRooms = allRooms.length > 1 || requestedRooms > 1;
   const contactRef = useRef(contact);
   contactRef.current = contact;
   const requiredCreateFields = draft.options.requiredCreateFields ?? [];
@@ -973,53 +1002,34 @@ export function BookingCards({
       ),
   );
 
-  const [localSaves, setSaves] = useState<Record<string, RoomSaveState>>(() =>
-    savesFromSavedStays(draft, groups, savedStays),
-  );
+  const [localSaves, setSaves] = useState<Record<string, RoomSaveState>>({});
   const recentCommitsRef = useRef<Record<string, {
     workItemId: string | undefined; stayId: string | null; commit: CommitView;
   }>>({});
+  // A temporarily missing refresh must not make a prior receipt disappear or unlock another save.
+  const savedScope = JSON.stringify([workItemId, draft.messageId, draft.selectionEpoch]);
+  const savedCache = useRef<{ scope: string; stays: Record<string, SavedStayCommit> }>({ scope: savedScope, stays: Object.create(null) });
+  if (savedCache.current.scope !== savedScope) savedCache.current = { scope: savedScope, stays: Object.create(null) };
+  rememberSavedStays(savedCache.current.stays, savedStays);
   function recentCommitForRoom(roomKey: string): CommitView | undefined {
     const recent = recentCommitsRef.current[roomKey];
     const room = draft.draft.rooms.find((item) => roomKeyOf(item) === roomKey);
     return recent && room && recent.workItemId === workItemId && recent.stayId === stayIdForRoom(room, groups)
       ? recent.commit : undefined;
   }
-  // A work item can finish loading after this card mounts. Apply its saved outcomes immediately,
-  // then retain them locally even if a later refresh temporarily omits savedStays.
-  const storedSaves = savesFromSavedStays(draft, groups, savedStays);
   const saves = { ...localSaves };
-  for (const [key, stored] of Object.entries(storedSaves)) {
-    saves[key] = { ...saves[key], commit: stored.commit };
-  }
   const savesRef = useRef(saves);
   savesRef.current = saves;
-  const bookedInRunRef = useRef<Record<string, CommitView>>({});
   const committingRef = useRef(false);
-  const savedStaysRef = useRef(savedStays);
-  savedStaysRef.current = savedStays;
+  const savedStaysRef = useRef<Record<string, SavedStayCommit>>(savedCache.current.stays);
+  // The host retains receipts and can clear an exact proven claim, including after this card remounts.
+  savedStaysRef.current = onReceipt ? (savedStays ?? {}) : savedCache.current.stays;
   const savedStayForRoom = (roomKey: string): SavedStayCommit | undefined =>
     savedStaysRef.current?.[recentCommitsRef.current[roomKey]?.stayId ?? ''];
   for (const key of Object.keys(recentCommitsRef.current)) {
     const recent = recentCommitForRoom(key);
     if (recentCanReplaceUnknown(saves[key]?.commit, recent, savedStayForRoom(key))) saves[key] = { ...saves[key], commit: recent };
   }
-  useEffect(() => {
-    const restored = Object.entries(savesFromSavedStays(draft, groups, savedStays));
-    for (const [key, stored] of restored) {
-      const recent = recentCommitForRoom(key);
-      if (stored.commit?.status === 'booked' && !stored.commit.unverified && !(recent?.status === 'booked' && recent.unverified && recent.confirmationNumber !== stored.commit.confirmationNumber)) delete recentCommitsRef.current[key];
-    }
-    setSaves((current) => {
-      let next: typeof current | undefined;
-      for (const [key, stored] of restored) {
-        if (JSON.stringify(current[key]?.commit) === JSON.stringify(stored.commit)) continue;
-        next ??= { ...current };
-        next[key] = { ...current[key], commit: stored.commit };
-      }
-      return next ?? current;
-    });
-  }, [draft, groups, savedStays]);
   const previewReceipt = usePaneStayPreview();
   const previewInputsRef = useRef<Record<string, PreviewInput>>({});
   const [stayBooking, setStayBooking] = useState(false);
@@ -1196,7 +1206,7 @@ export function BookingCards({
     return Object.entries(savedStaysRef.current ?? {}).some(([stayId, saved]) => {
       if (saved.status !== 'unknown') return false;
       const rooms = draft.draft.rooms.filter((room) => stayIdForRoom(room, groups) === stayId);
-      if (rooms.length !== 1) return rooms.length > 1; // Other drafts are held by the server.
+      if (rooms.length !== 1) return true;
       const room = rooms[0]!;
       return !verifiedAfterClaim(roomKeyOf(room), commitViewFromSaved(saved, room.request));
     }) ||
@@ -1207,6 +1217,17 @@ export function BookingCards({
         return recent.workItemId === workItemId && isUncertainCommit(recent.commit) && !(saved?.status === 'booked' &&
           saved.confirmationNumber && (recent.commit.status !== 'booked' || saved.confirmationNumber === recent.commit.confirmationNumber));
       });
+  }
+
+  function hasSavedOutcome(): boolean {
+    return Object.entries(savedStaysRef.current).some(([id, saved]) => !clearedSavedOutcome(id, saved)) || Object.values(savesRef.current).some(({ commit }) =>
+      commit?.status === 'booked' || (commit?.status === 'refused' && commit.statusChip === 'check'));
+  }
+
+  function clearedSavedOutcome(id: string, saved: SavedStayCommit): boolean {
+    if (saved.status !== 'unknown' || saved.confirmationNumber) return false;
+    return Object.values(recentCommitsRef.current).some((recent) => recent.workItemId === workItemId && recent.stayId === id &&
+      recent.commit.status === 'refused' && recent.commit.clearedClaim?.snapshot === saved);
   }
 
   function patchSave(roomKey: string, patch: RoomSaveState, finishClaim = false) {
@@ -1231,7 +1252,8 @@ export function BookingCards({
   }
 
   async function previewRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput) {
-    if (!workItemId || savedOutcomeBlocksRoom(roomKey)) return;
+    const room = draft.draft.rooms.find((item) => roomKeyOf(item) === roomKey);
+    if (!workItemId || !room || roomIdentityHeld(room) || hasSavedOutcome() || savedOutcomeBlocksRoom(roomKey)) return;
     const inputKey = paneStayKey(stay);
     const input = previewInputsRef.current[roomKey];
     if (!input?.key || input.inputKey !== inputKey) return;
@@ -1385,7 +1407,7 @@ export function BookingCards({
   }
 
   async function bookThisStay(pane: PaneStayClient) {
-    if (!workItemId || committingRef.current || hasUncertainOutcome()) return;
+    if (!workItemId || multipleRooms || draft.draft.rooms.some(roomIdentityHeld) || hasSavedOutcome() || committingRef.current || hasUncertainOutcome()) return;
     const snapshot = bookableRooms()
       .filter((room) => {
         const commit = saves[roomKeyOf(room)]?.commit;
@@ -1397,7 +1419,6 @@ export function BookingCards({
       });
     if (snapshot.some((item) => item == null)) return;
     stayBookingRef.current = true;
-    bookedInRunRef.current = {};
     setStayBooking(true);
     try {
       for (const item of snapshot) {
@@ -1411,51 +1432,13 @@ export function BookingCards({
       }
     } finally {
       stayBookingRef.current = false;
-      bookedInRunRef.current = {};
       setStayBooking(false);
     }
   }
 
-  // Rooms 2+ join the first room already booked for the same guest and dates, so HMS holds one booking with
-  // several rooms (Associated Reservations) instead of separate bookings the duplicate check would refuse.
-  function bookedParentStayId(room: BookingDraftReady['draft']['rooms'][number], stay: PaneStayInput): string | null {
-    for (const other of draft.draft.rooms) {
-      if (other === room) continue;
-      const commit = bookedInRunRef.current[roomKeyOf(other)] ?? savesRef.current[roomKeyOf(other)]?.commit;
-      if (commit?.status !== 'booked' || commit.unverified || !commit.confirmationNumber) continue;
-      const otherStay = roomBuilt(other, contactRef.current).stay;
-      // Add Record keeps room 1's guest profile, so only a room for the same guest joins it.
-      if (otherStay && otherStay.lastName === stay.lastName && otherStay.firstName === stay.firstName &&
-        otherStay.arrival === stay.arrival && otherStay.departure === stay.departure &&
-        inheritedFieldsMatch(other, otherStay, room, stay)) return stayIdForRoom(other, groups);
-    }
-    return null;
-  }
-
-  // The added room copies room 1's booking-level fields, so a room staff set up differently stays its own booking.
-  // Nava's generated notes differ per room by design; a note staff typed must match.
-  function inheritedFieldsMatch(
-    parentRoom: BookingDraftReady['draft']['rooms'][number],
-    parent: PaneStayInput,
-    room: BookingDraftReady['draft']['rooms'][number],
-    stay: PaneStayInput,
-  ): boolean {
-    const shared = (value: PaneStayInput) => JSON.stringify([
-      value.guaranteeType, value.track, value.marketSegment ?? '', value.sourceOfBusiness, value.guestoptin4,
-      value.bookingAgency ?? null, value.organization ?? null, value.cmsMessageId ?? '', value.confirmationSendMail ?? false,
-      value.bookerName ?? '', value.bookerEmail ?? '', value.confirmationRecipient ?? null,
-    ]);
-    if (shared(parent) !== shared(stay)) return false;
-    const generated = (item: BookingDraftReady['draft']['rooms'][number]) => {
-      const choice = choices[roomKeyOf(item)];
-      return !reservationNoteDirty.current[roomKeyOf(item)] && choice?.generatedReservationNote !== undefined &&
-        choice.reservationNote === choice.generatedReservationNote;
-    };
-    return (parent.reservationNote ?? '') === (stay.reservationNote ?? '') || (generated(parentRoom) && generated(room));
-  }
-
   async function bookRoom(roomKey: string, pane: PaneStayClient, stay: PaneStayInput, previewDigest: string) {
-    if (!workItemId || committingRef.current || hasUncertainOutcome() || savedOutcomeBlocksRoom(roomKey)) return false;
+    const room = draft.draft.rooms.find((item) => roomKeyOf(item) === roomKey);
+    if (!workItemId || !room || multipleRooms || roomIdentityHeld(room) || hasSavedOutcome() || committingRef.current || hasUncertainOutcome() || savedOutcomeBlocksRoom(roomKey)) return false;
     delete recentCommitsRef.current[roomKey];
     committingRef.current = true;
     return performRoomCommit(roomKey, pane, stay, previewDigest).finally(() => { committingRef.current = false; });
@@ -1468,10 +1451,9 @@ export function BookingCards({
     patchSave(roomKey, { commit: { status: 'running', key } });
     let commit: CommitView;
     try {
-      const parentStayId = room && workItemId ? bookedParentStayId(room, stay) : null;
       const persist =
         workItemId && room
-          ? { stayId: stayIdForRoom(room, groups), workItemId, ...(parentStayId ? { parentStayId } : {}) }
+          ? { stayId: stayIdForRoom(room, groups), workItemId }
           : {};
       const result = await pane.commit({ ...stay, ...persist } as PaneStayInput, previewDigest);
       const outcome = commitOutcome(result, stay);
@@ -1502,8 +1484,12 @@ export function BookingCards({
     recentCommitsRef.current[roomKey] = {
       workItemId, stayId: room ? stayIdForRoom(room, groups) : null, commit,
     };
-    // The next room in a Book this stay run can start before React re-renders this result.
-    if (commit.status === 'booked' && !commit.unverified && stayBookingRef.current) bookedInRunRef.current[roomKey] = commit;
+    if (room && onReceipt) {
+      const stayId = stayIdForRoom(room, groups);
+      const receipt = detachedReceipt(commit);
+      if (receipt) onReceipt(stayId, receipt, savedStaysRef.current[stayId]);
+      else if (commit.status === 'refused' && commit.clearedClaim) onReceipt(stayId, null, commit.clearedClaim.snapshot);
+    }
     // Definite refusals can be previewed again; uncertain saves stay locked for an HMS check.
     patchSave(roomKey, commit.status === 'booked' ? { commit } : { commit, preview: undefined }, true);
     return commit.status === 'booked' && !commit.unverified;
@@ -1511,6 +1497,11 @@ export function BookingCards({
 
   const unconfirmed = hasUncertainOutcome();
   const commitInFlight = Object.values(saves).some((save) => save.commit?.status === 'running');
+  const savedOutcome = hasSavedOutcome();
+  const identityHeld = draft.draft.rooms.some(roomIdentityHeld);
+  const safetyCopy = multipleRooms ? 'Multiple rooms or stays need to be booked in HMS for now.'
+    : identityHeld ? 'Nava could not identify this room. Book it in HMS.'
+      : savedOutcome ? 'A booking may already exist for this request. Check HMS before booking more rooms.' : null;
 
   return (
     <section aria-label="Booking details" className="flex flex-col gap-2">
@@ -1522,6 +1513,7 @@ export function BookingCards({
       {client && savesOn && !workItemId ? (
         <p role="status">Nava could not connect this booking to the request. Reopen the request to continue.</p>
       ) : null}
+      {client && savesOn && safetyCopy ? <p role="status">{safetyCopy}</p> : null}
       <div className="flex flex-col gap-2 rounded-xs border border-[#e2e8f0] bg-white p-3">
         <label className="flex items-center gap-2 text-xs font-semibold text-[#475569]">
           <input type="checkbox" aria-label="Send confirmation from HMS" checked={sendConfirmation}
@@ -1667,7 +1659,7 @@ export function BookingCards({
         const price = group?.rowPrice;
         const override = price?.source === 'override' ? price : null;
         const commit = saves[key]?.commit;
-        const bookedCommit = commit?.status === 'booked' && !commit.unverified ? commit : null;
+        const receiptIsDetached = Boolean(detachedReceipt(commit));
         const roomCount = group?.quantity ?? Math.max(
           1,
           draft.draft.rooms.filter((candidate) => candidate.groupId === room.groupId).length,
@@ -1899,7 +1891,7 @@ export function BookingCards({
               block={hmsNotesBlock({
                 booker: contact ? textValue(contact.name) : textValue(request.bookerName),
                 company: choice.organization || contact?.company,
-                confirmations: bookedCommit ? [bookedCommit.confirmationNumber] : [],
+                confirmations: [],
                 rooms: [
                   {
                     label: roomLabel,
@@ -1919,7 +1911,7 @@ export function BookingCards({
                 ],
               })}
             />
-            {client && savesOn ? (
+            {receiptIsDetached ? null : client && savesOn ? (
               <RoomSave
                 stay={built.stay}
                 previewKey={previewKeyForRoom(room, built.stay)}
@@ -1927,8 +1919,9 @@ export function BookingCards({
                 save={saves[key] ?? {}}
                 screenshot={client.screenshot}
                 bookLabel={CREATE_PROVISIONAL_LABEL}
-                frozen={stayBooking || !workItemId}
-                bookBlocked={unconfirmed || commitInFlight}
+                frozen={stayBooking || !workItemId || roomIdentityHeld(room) || savedOutcome}
+                bookBlocked={unconfirmed || commitInFlight || multipleRooms || identityHeld || savedOutcome}
+                bookBlockedReason={safetyCopy ?? undefined}
                 onPreview={(stay) => void previewRoom(key, client, stay)}
                 onBook={(stay, previewDigest) => void bookRoom(key, client, stay, previewDigest)}
               />
@@ -1960,9 +1953,22 @@ export function BookingCards({
           pane={client}
           stayBooking={stayBooking || !workItemId}
           unconfirmed={unconfirmed}
+          blockedReason={safetyCopy}
           onBookStay={bookThisStay}
         />
       ) : null}
+      {!onReceipt && Object.entries(recentCommitsRef.current).flatMap(([key, recent]) => {
+        if (recent.workItemId !== workItemId) return [];
+        const receipt = detachedReceipt(recent.commit);
+        if (!receipt) return [];
+        const stored = savedStays?.[recent.stayId ?? ''];
+        if (stored && stored.confirmationNumber === receipt.confirmationNumber) return [];
+        return [<SavedStayReceipt key={`recent:${key}`} saved={receipt} screenshot={client?.screenshot ?? shotReader} />];
+      })}
+      {!onReceipt && Object.entries(savedStaysRef.current).flatMap(([id, saved]) =>
+        clearedSavedOutcome(id, saved) ? [] : [
+          <SavedStayReceipt key={`stored:${id}`} saved={saved} screenshot={client?.screenshot ?? shotReader} />,
+        ])}
     </section>
   );
 }
@@ -1974,6 +1980,7 @@ function StayBookBar({
   pane,
   stayBooking,
   unconfirmed,
+  blockedReason,
   onBookStay,
 }: {
   rooms: BookingDraftReady['draft']['rooms'];
@@ -1982,14 +1989,11 @@ function StayBookBar({
   pane: PaneStayClient;
   stayBooking: boolean;
   unconfirmed: boolean;
+  blockedReason: string | null;
   onBookStay: (pane: PaneStayClient) => Promise<void>;
 }) {
   const bookable = rooms;
   if (!bookable.length) return null;
-  const numbers = bookable.flatMap((room) => {
-    const commit = saves[`${room.groupId}:${room.roomIndex}`]?.commit;
-    return commit?.status === 'booked' && !commit.unverified && commit.confirmationNumber ? [commit.confirmationNumber] : [];
-  });
   const pending = bookable.filter((room) => {
     const commit = saves[`${room.groupId}:${room.roomIndex}`]?.commit;
     return commit?.status !== 'booked' && !(commit?.status === 'refused' && commit.statusChip === 'check');
@@ -2003,18 +2007,13 @@ function StayBookBar({
   const allPreviewed = pending.every(isPreviewReady);
   return (
     <div className="flex flex-col gap-2 border-t border-[#e2e8f0] pt-2">
-      {numbers.length > 0 ? (
-        <p data-pii className="text-[12.5px] font-semibold text-emerald-800">
-          {`Booked ${numbers.length} of ${bookable.length} – ${numbers.join(', ')}`}
-        </p>
-      ) : null}
       {unconfirmed ? (
         <p role="status" className="text-[11.5px] text-amber-900">A booking is still unconfirmed. Nava paused the remaining rooms.</p>
       ) : null}
       {pending.length > 0 ? (
         <PrimaryButton
-          disabled={!allPreviewed || busy || unconfirmed}
-          disabledReason={unconfirmed ? 'A booking is still unconfirmed' : !allPreviewed && !busy ? 'Preview in HMS first' : null}
+          disabled={!allPreviewed || busy || unconfirmed || Boolean(blockedReason)}
+          disabledReason={blockedReason ?? (unconfirmed ? 'A booking is still unconfirmed' : !allPreviewed && !busy ? 'Preview in HMS first' : null)}
           onClick={() => void onBookStay(pane)}
         >
           {BOOK_THIS_STAY_LABEL}

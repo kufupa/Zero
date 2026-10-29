@@ -126,6 +126,44 @@ describe('create runner exit and the save boundary', () => {
     });
   });
 
+  it('uses the completed independent create readback when only the runner exit fails', async () => {
+    await expect(commitWithRunnerResult({
+      outcome: 'committed', clickedSave: true, saved: true, confirmationNumber: '11111111-1', cmsReason: null,
+      proof: { confNo: '11111111-1', readbackMatch: true, unknownOutcome: null, mismatches: [], cmsReason: null },
+    }, { failed: true })).resolves.toMatchObject({
+      status: 'ok', outcome: 'committed', confirmationNumber: '11111111-1',
+    });
+  });
+
+  it.each([
+    { proof: undefined },
+    { proof: { confNo: '22222222-1', readbackMatch: true, unknownOutcome: null, mismatches: [], cmsReason: null } },
+    { proof: { confNo: '11111111-1', readbackMatch: true, unknownOutcome: 'unresolved', mismatches: [], cmsReason: null } },
+    { proof: { confNo: '11111111-1', readbackMatch: true, unknownOutcome: null, mismatches: [{ field: 'adults' }], cmsReason: null } },
+    { cmsReason: 'saved_cms_mismatch' },
+    { cmsReason: undefined },
+    { clickedSave: false },
+    { saved: false },
+  ])('does not promote a failed runner with incomplete or contradictory proof: %o', async (change) => {
+    const result = {
+      outcome: 'committed', clickedSave: true, saved: true, confirmationNumber: '11111111-1', cmsReason: null,
+      proof: { confNo: '11111111-1', readbackMatch: true, unknownOutcome: null, mismatches: [], cmsReason: null },
+      ...change,
+    };
+    await expect(commitWithRunnerResult(result, { failed: true })).resolves.toMatchObject({
+      status: 'refused', reason: 'pane_save_unconfirmed', confirmationNumber: '11111111-1',
+    });
+  });
+
+  it('never treats create proof as proof of a linked-room run', async () => {
+    await expect(commitWithRunnerResult({
+      outcome: 'committed', clickedSave: true, saved: true, confirmationNumber: '11111111-1', cmsReason: null,
+      proof: { confNo: '11111111-1', readbackMatch: true, unknownOutcome: null, mismatches: [], cmsReason: null },
+    }, { failed: true, parentConfirmation: '22222222-1' })).resolves.toMatchObject({
+      status: 'refused', reason: 'pane_save_unconfirmed', confirmationNumber: '11111111-1',
+    });
+  });
+
   it('preserves a confirmed result when temporary input cleanup or screenshot listing fails', async () => {
     filesystemFailures.cleanup = true;
     filesystemFailures.listing = true;

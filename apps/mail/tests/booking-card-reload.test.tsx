@@ -102,7 +102,7 @@ describe('booking card reload', () => {
     expect(screen.getByText('Booked')).toBeDefined();
     expect(screen.getByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
     expect(commit).not.toHaveBeenCalled();
     expect(screenshot).not.toHaveBeenCalled();
 
@@ -146,7 +146,7 @@ describe('booking card reload', () => {
         }}
       />,
     );
-    expect(screen.queryByText('Booked in HMS – confirmation 98765-1')).toBeNull();
+    expect(screen.getByText('Booked in HMS – confirmation 98765-1').closest('article')).toBeNull();
     expect(screen.getAllByRole('button', { name: 'Preview in HMS' })).toHaveLength(2);
 
     const session = initialQuoteSession();
@@ -186,7 +186,7 @@ describe('booking card reload', () => {
     };
     const direct = render(<BookingCards draft={draft} groups={[childGroup]} paneSave={client} savedStays={savedStays} />);
     expect(screen.getAllByText('Booked in HMS – confirmation 98765-1')).toHaveLength(1);
-    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
     direct.unmount();
     render(
       <QuoteBookingHost
@@ -205,7 +205,7 @@ describe('booking card reload', () => {
     );
     expect(screen.getAllByText('Booked in HMS – confirmation 98765-1')).toHaveLength(1);
     expect(screen.getByRole('button', { name: 'View HMS screenshots' })).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
   });
 
   it('never offers preview or retry after an unknown save without a confirmation number', () => {
@@ -222,9 +222,9 @@ describe('booking card reload', () => {
 
     const assertNoRetry = () => {
       expect(screen.getAllByText(/unconfirmed/i).length).toBeGreaterThan(0);
-      expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
-      expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
-      expect(screen.queryByRole('button', { name: 'Book this stay' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
+      expect(screen.getByRole('button', { name: 'Create provisional booking' })).toHaveProperty('disabled', true);
+      expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', true);
       expect(preview).not.toHaveBeenCalled();
       expect(commit).not.toHaveBeenCalled();
     };
@@ -247,11 +247,11 @@ describe('booking card reload', () => {
         cmsReason: 'saved_cms_mismatch' },
     }} />);
     expect(screen.getByText('HMS confirmation settings did not match. Booking is unverified.')).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Create provisional booking' })).toHaveProperty('disabled', true);
     view.rerender(<BookingCards draft={draft} groups={[group]} paneSave={client} />);
     expect(screen.getByText('HMS confirmation settings did not match. Booking is unverified.')).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
   });
 
   it('shows a stored CMS mismatch without offering another booking', () => {
@@ -268,8 +268,8 @@ describe('booking card reload', () => {
     const warning = 'HMS confirmation settings did not match. Booking is unverified.';
     const direct = render(<BookingCards draft={draft} groups={[group]} paneSave={client} savedStays={savedStays} />);
     expect(screen.getByText(warning)).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Create provisional booking' })).toHaveProperty('disabled', true);
     direct.unmount();
     // The same saved receipt must remain meaningful when no booking draft survives the reload.
     render(<QuoteBookingHost session={initialQuoteSession()} paneSave={client} savedStays={savedStays} />);

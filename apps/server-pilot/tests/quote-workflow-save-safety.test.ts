@@ -196,28 +196,31 @@ describe('quoteWorkflow commit safety with fake storage and HMS', () => {
     expect(spawn.mock.calls.filter(([request]) => request.paneCommit)).toHaveLength(1);
   });
 
-  it('preserves the confirmed parent when the linked child is uncertain', async () => {
+  it('holds an explicit or omitted parent after a confirmed room without changing its receipt', async () => {
     const { spawn } = fakeRunner();
-    let count = 0;
-    spawn.mockImplementation(async (request) => {
-      if (!request.paneCommit) return { outcome: 'previewed', clickedSave: false, confirmationNumber: '' };
-      count += 1;
-      return count === 1
-        ? { outcome: 'committed', clickedSave: true, confirmationNumber: '11111111-1' }
-        : { outcome: 'committed_unverified', clickedSave: true, confirmationNumber: '22222222-1' };
-    });
     const client = caller();
     const parentPreview = await preview(client);
     const childPreview = await preview(client, child);
     await client.quoteWorkflow.commitStay({ ...input, previewDigest: parentPreview });
-    await client.quoteWorkflow.commitStay({ ...child, parentStayId: parentId, previewDigest: childPreview });
-    expect(state.stays).toMatchObject({
-      [parentId]: booked,
-      [childId]: { status: 'unknown', confirmationNumber: '22222222-1' },
-    });
-    expect(spawn.mock.calls.filter(([request]) => request.paneCommit)[1]?.[0]).toMatchObject({
-      parentConfirmation: '11111111-1',
-    });
+    for (const parent of [{ parentStayId: parentId }, {}]) {
+      expect(await caller().quoteWorkflow.commitStay({ ...child, ...parent, previewDigest: childPreview }))
+        .toEqual({ status: 'refused', reason: 'pane_save_multiple_rooms_unavailable' });
+    }
+    expect(state.stays).toEqual({ [parentId]: booked });
+    expect(spawn.mock.calls.filter(([request]) => request.paneCommit)).toHaveLength(1);
+  });
+
+  it('does not choose among confirmed parents or accept another guest in the same work item', async () => {
+    state = { stays: { [parentId]: booked, another: { ...booked, confirmationNumber: '22222222-1' } } };
+    const { spawn, read } = fakeRunner();
+    const client = caller();
+    for (const extra of [{ parentStayId: 'another' }, { firstName: 'Other', lastName: 'Guest' }]) {
+      expect(await client.quoteWorkflow.commitStay({ ...child, ...extra, previewDigest: 'c'.repeat(64) }))
+        .toEqual({ status: 'refused', reason: 'pane_save_multiple_rooms_unavailable' });
+    }
+    expect(state.stays).toEqual({ [parentId]: booked, another: { ...booked, confirmationNumber: '22222222-1' } });
+    expect(read).not.toHaveBeenCalled();
+    expect(spawn).not.toHaveBeenCalled();
   });
 
   it('records an unknown intent before HMS and blocks a concurrent child until a verified result', async () => {
@@ -238,14 +241,9 @@ describe('quoteWorkflow commit safety with fake storage and HMS', () => {
     finish({ outcome: 'committed', clickedSave: true, confirmationNumber: '11111111-1' });
     expect(await first).toMatchObject({ status: 'ok', outcome: 'committed' });
     expect(state.stays).toMatchObject({ [parentId]: booked });
-    spawn.mockImplementation(async (request) => request.paneCommit
-      ? { outcome: 'committed', clickedSave: true, confirmationNumber: '22222222-1' }
-      : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' });
     expect(await caller().quoteWorkflow.commitStay({ ...child, parentStayId: parentId, previewDigest: childPreview }))
-      .toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '22222222-1' });
-    expect(spawn.mock.calls.filter(([request]) => request.paneCommit)[1]?.[0]).toMatchObject({
-      parentConfirmation: '11111111-1',
-    });
+      .toEqual({ status: 'refused', reason: 'pane_save_multiple_rooms_unavailable' });
+    expect(spawn.mock.calls.filter(([request]) => request.paneCommit)).toHaveLength(1);
   });
 
   it('releases the claim after a duplicate check proves Save was never attempted', async () => {
@@ -378,21 +376,56 @@ describe('quoteWorkflow commit safety with fake storage and HMS', () => {
     } });
   });
 
-  it('stores a known number as unknown after a transient receipt failure', async () => {
+  it('retries only the receipt after a transient failure and releases the verified claim', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
-    fakeRunner();
+    const { spawn } = fakeRunner();
     const client = caller();
     const parentPreview = await preview(client);
     // Claim, consume the preview, then fail the receipt write.
     failUpdateAt = updateCount + 3;
     expect(await client.quoteWorkflow.commitStay({ ...input, previewDigest: parentPreview })).toMatchObject({
+      status: 'ok', outcome: 'committed', confirmationNumber: '11111111-1',
+    });
+    expect(state.stays).toMatchObject({ [parentId]: booked });
+    expect(state.paneStaySaveClaims).toBeUndefined();
+    expect(await caller().quoteWorkflow.commitStay({ ...child, previewDigest: 'c'.repeat(64) })).toMatchObject({
+      status: 'refused', reason: 'pane_save_multiple_rooms_unavailable',
+    });
+    expect(spawn.mock.calls.filter(([request]) => request.paneCommit)).toHaveLength(1);
+  });
+
+  it('retries the receipt without promoting an unverified number', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { spawn } = fakeRunner();
+    spawn.mockImplementation(async (request) => request.paneCommit
+      ? { outcome: 'committed_unverified', clickedSave: true, confirmationNumber: '11111111-1' }
+      : { outcome: 'previewed', clickedSave: false, confirmationNumber: '' });
+    const client = caller();
+    const previewDigest = await preview(client);
+    failUpdateAt = updateCount + 3;
+    expect(await client.quoteWorkflow.commitStay({ ...input, previewDigest })).toMatchObject({
       status: 'ok', outcome: 'committed_unverified', confirmationNumber: '11111111-1',
     });
     expect(state.stays).toMatchObject({ [parentId]: { status: 'unknown', confirmationNumber: '11111111-1' } });
-    expect(state.paneStaySaveClaims).toBeUndefined();
     expect(await caller().quoteWorkflow.commitStay({ ...child, previewDigest: 'c'.repeat(64) })).toMatchObject({
       status: 'refused', reason: 'pane_save_dependency_unconfirmed',
     });
+    expect(spawn.mock.calls.filter(([request]) => request.paneCommit)).toHaveLength(1);
+  });
+
+  it('retries clearing a claim only when the runner proves Save was never reached', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { spawn, read } = fakeRunner();
+    read.mockResolvedValueOnce('duplicate');
+    const client = caller();
+    const previewDigest = await preview(client);
+    failUpdateAt = updateCount + 2; // Claim succeeds; the first attempt to clear it fails.
+    expect(await client.quoteWorkflow.commitStay({ ...input, previewDigest })).toMatchObject({
+      status: 'refused', reason: 'osress_duplicate', clickedSave: false,
+    });
+    expect(state.stays).toEqual({});
+    expect(state.paneStaySaveClaims).toBeUndefined();
+    expect(spawn.mock.calls.filter(([request]) => request.paneCommit)).toHaveLength(0);
   });
 
   it('retains a durable unknown claim during an ongoing receipt outage', async () => {
