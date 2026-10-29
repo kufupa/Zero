@@ -446,7 +446,7 @@ describe('staff quote strategy comparisons', () => {
     });
   });
 
-  it('keeps the HRCEN BAR and Government request values unchanged', async () => {
+  it('allows BAR and holds HRCEN Government without verified guest eligibility', async () => {
     const hrcenStrategies: QuoteSalesStrategy[] = [
       { code: 'BAR', label: 'BAR', requestValue: 'BAR' },
       { code: 'GOV', label: 'Government', requestValue: 'Government' },
@@ -466,14 +466,17 @@ describe('staff quote strategy comparisons', () => {
       };
     });
 
-    await bindStaffQuoteStrategies({
+    const outcomes = await bindStaffQuoteStrategies({
       ...args,
       propertyCode: HRCEN_PROPERTY_CODE,
       registryStrategies: hrcenStrategies,
       staffQuoteJob,
     });
 
-    expect(staffQuoteJob.mock.calls.map(([lookup]) => ('input' in lookup ? lookup.input.salesStrategy : '')).sort()).toEqual(['BAR', 'Government']);
+    expect(staffQuoteJob.mock.calls.map(([lookup]) => ('input' in lookup ? lookup.input.salesStrategy : ''))).toEqual(['BAR']);
+    expect(outcomes.find((outcome) => outcome.strategyCode === 'GOV')?.row).toMatchObject({
+      status: 'failed', message: expect.stringMatching(/government rates need confirmed guest eligibility/i),
+    });
   });
 
   it('does not let a dinner fallback be selected as an exact Centurion comparison', async () => {

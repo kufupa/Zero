@@ -666,11 +666,15 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     option.availability=availability.status;
     if(availability.reason)option.availabilityReason=availability.reason;
     const governmentFamily=!contextRequested.length&&windows.every(w=>w.criteria?.salesStrategy==='GOV')&&profile?.classifyRate(option.rate.code,strategyCode,option._rate.isNegotiatedRate,option.rate.label)==='government';
+    // A government rate appearing in HMS does not establish this guest's entitlement. Check its
+    // protected label even if it appeared under a different search or alongside a company context.
+    const unprovenGovernment=request.propertyCode==='HRCEN'&&profile?.classifyRate(option.rate.code,'GOV',false,option.rate.label)==='government';
     const requiredKind=strategyPartyKind(profile,strategyCode,option.rate.code);
     const strategyContextOk=!requiredKind||(contextVerified&&contextRequested.includes(requiredKind));
-    option.eligibility=invalid?'unknown':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified&&strategyContextOk?'verified':'conditional';
+    option.eligibility=invalid?'unknown':unprovenGovernment?'conditional':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified&&strategyContextOk?'verified':'conditional';
     if (option.availability==='restricted') option.eligibility='conditional';
     Object.assign(option,assessConstraints(room,sourceFacts(option)));
+    if(unprovenGovernment)option.conditions.push({kind:'required',field:'governmentEligibility',status:'unknown',requested:'confirmed entitlement',evidence:null,reason:'Government eligibility has not been confirmed.'});
     if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified&&strategyContextOk)) {
       // Public rows stay bookable without a proven party. Contextual rows without that party stay unresolved.
       if(option.rateScope==='public') {

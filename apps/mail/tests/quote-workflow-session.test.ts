@@ -4326,7 +4326,7 @@ describe('autoRunHeader', () => {
       ...quoteAnalysis,
       groups: quoteAnalysis.groups.map((group) => ({ ...group, board: 'dinner_bb' as const })),
       luna: {
-        ...quoteAnalysis.luna!,
+        workflow: 'quote', flags: [], groups: [], rateClaims: [], missing: [], evidence: [], tasks: [],
         party: { kind: 'government', name: 'Department X', reference: null },
       },
     };

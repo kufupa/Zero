@@ -277,7 +277,7 @@ describe('staff quote HMS job binding', () => {
     if (result.status === 'ok') expect(result.staffQuote.dinnerFallbackGroupIds).toBeUndefined();
   });
 
-  it('does not present a BAR fallback as the requested Government rate', async () => {
+  it('holds Government quotes without verified guest eligibility, including a BAR fallback', async () => {
     const run = async (reported: Record<string, unknown>) => bindExecuteStaffQuote({
       propertyCode: HRCEN_PROPERTY_CODE,
       queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
@@ -289,11 +289,23 @@ describe('staff quote HMS job binding', () => {
       header: { ...emptyStaffQuoteHeader(), salesStrategy: 'Government' },
     });
     expect(await run({ requestedSalesStrategy: 'Government', effectiveSalesStrategy: 'BAR' })).toMatchObject({
-      status: 'unavailable', noMatchingRate: true, reason: expect.stringMatching(/Choose BAR/),
+      status: 'unavailable', reason: expect.stringMatching(/Government rates need confirmed guest eligibility/i),
     });
     expect(await run({})).toMatchObject({
-      status: 'unavailable', reason: expect.stringMatching(/fallback rate type could not be verified/i),
+      status: 'unavailable', reason: expect.stringMatching(/Government rates need confirmed guest eligibility/i),
     });
+  });
+
+  it('refuses a returned HRCEN rate when HMS priced a different strategy', async () => {
+    const result = await bindExecuteStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
+      queue: vi.fn(async () => ({ runId: 'staff-job-1' })),
+      staffQuoteJob: vi.fn(async () => view('done', {
+        ...READY, requestedSalesStrategy: 'BAR', effectiveSalesStrategy: 'WS',
+      })),
+      source, selectionEpoch: 3, inputRevision: 4, groups, header: emptyStaffQuoteHeader(),
+    });
+    expect(result).toMatchObject({ status: 'unavailable', noMatchingRate: true });
   });
 
   it('surfaces the exact business refusal stored by the worker', async () => {

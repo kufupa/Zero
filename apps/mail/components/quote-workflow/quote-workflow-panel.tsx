@@ -750,16 +750,16 @@ export function QuoteWorkflowPanel({
       : header.salesStrategy === 'Government'
         ? 'government'
         : 'all';
-  // Government parties and Dinner B&B asks default to Government; "All rates" returns to that default.
+  // On Centurion, neither the meal request nor the party label proves government eligibility.
   const governmentParty = session.analysis?.luna?.party?.kind === 'government';
   const dinnerBbAsk = session.groups.length > 0 && session.groups.every((group) => group.board === 'dinner_bb');
   const changeRatePlan = (value: string) => {
     setRatePlanState({ selectionEpoch, analysis: session.analysis, value });
     // The search's sales strategy lives in the header. "All rates" restores the default for
-    // government parties and Dinner B&B asks; public and other plans ask HMS for BAR pricing.
+    // government parties and Dinner B&B asks on the older property; Centurion defaults to BAR.
     const government =
       value === 'all'
-        ? governmentParty || dinnerBbAsk
+        ? paneConfig?.propertyCode !== HRCEN_PROPERTY_CODE && (governmentParty || dinnerBbAsk)
         : value === 'government' || ratePlans.some((plan) => plan.code === value && plan.category === 'government');
     const salesStrategy = government ? 'Government' : 'BAR';
     const selectedComparisons = (session as Partial<QuoteWorkflowSession>).quoteStrategySelections ?? {};

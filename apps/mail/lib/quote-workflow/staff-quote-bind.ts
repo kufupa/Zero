@@ -1091,6 +1091,10 @@ function staffQuoteRequest(
   const stayKey =
     args.stayKey ?? `${first?.arrivalDate ?? 'unknown'}:${first?.departureDate ?? 'unknown'}`;
   const sent = staffHeaderForStay(args.header, stayKey);
+  const strategy = args.strategyRequestValue ?? sent.salesStrategy;
+  if (args.propertyCode === HRCEN_PROPERTY_CODE && (strategy === 'Government' || strategy === 'GOV')) {
+    return { error: 'Government rates need confirmed guest eligibility. Nava cannot use this rate yet; choose another rate.' };
+  }
   // A typed amount that cannot be read is never priced from the older saved amount.
   const fieldProblem = staffHeaderFieldProblem(sent);
   if (fieldProblem) return { error: `Fix the amounts before running this search. ${fieldProblem}` };

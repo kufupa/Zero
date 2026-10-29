@@ -1779,10 +1779,10 @@ describe('NavaPane', () => {
     await waitFor(() => {
       expect(within(table).getAllByRole('row')).toHaveLength(7);
       expect(within(table).getAllByText('Rates found')).toHaveLength(5);
-      expect(within(table).getByText('Not offered for these dates')).toBeDefined();
+      expect(within(table).getByText(/Government rates need confirmed guest eligibility/i)).toBeDefined();
     });
     expect(new Set(requestedStrategies)).toEqual(
-      new Set(COMPARISON_STRATEGIES.map((strategy) => strategy.requestValue)),
+      new Set(COMPARISON_STRATEGIES.filter((strategy) => strategy.code !== 'GOV').map((strategy) => strategy.requestValue)),
     );
     expect(requestedStrategies).not.toContain('AIR');
     await waitFor(() =>
