@@ -24,6 +24,20 @@ function notifyStayingGuestName(): void {
 }
 
 function inferredGuestName(session: QuoteSession, contact?: StoredContact | null): string {
+  const sourceGroups = session.analysis?.groups ?? [];
+  const hasStoredRoster = sourceGroups.some((group) => 'stayGuests' in group && Array.isArray(group.stayGuests));
+  if (hasStoredRoster) {
+    const source = sourceGroups[0];
+    const current = session.groups[0];
+    if (sourceGroups.length !== 1 || session.groups.length !== 1 || !source || !current ||
+      source.id !== current.id || source.stayId !== current.stayId || current.quantity !== 1) return '';
+    const details = source as typeof source & { guestNames?: unknown; stayGuests?: unknown };
+    const names = Array.isArray(details.guestNames) ? details.guestNames : [];
+    const roster = Array.isArray(details.stayGuests) ? details.stayGuests : [];
+    const name = names.length === 1 && typeof names[0] === 'string' ? names[0].trim() : '';
+    const listed = roster.length === 1 && typeof roster[0]?.name === 'string' ? roster[0].name.trim() : '';
+    return name && name === listed ? name : '';
+  }
   const storedGuestNames = session.groups.flatMap((group) =>
     'guestNames' in group && Array.isArray(group.guestNames)
       ? group.guestNames.filter((name): name is string => typeof name === 'string')

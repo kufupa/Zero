@@ -1,7 +1,7 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { unmaskedPii } from './helpers/pii-marks';
 import { AmendLookupPanel } from '../components/quote-workflow/amend-lookup-panel';
@@ -1111,6 +1111,84 @@ describe('AmendLookupPanel guest-name search', () => {
   const NO_NUMBER: QuoteAmendment = { ...AMEND, confirmationNumber: null };
   const SEARCH_BUTTON = 'Search HMS';
   const NO_ROWS_OK = { outcome: 'ok', rows: [], screenshots: [], runId: null };
+
+  function twoCases(): QuoteSession {
+    const session = sessionWith({
+      ...NO_NUMBER, guestLastName: null, arrival: null, departure: null, requestedChange: null,
+    });
+    const rows = ['a', 'b'].map((suffix) => ({
+      id: `r_${suffix}`,
+      stayId: `stay-${suffix}`,
+      caseScoped: true,
+      stayGuests: [],
+      arrivalDate: '2026-10-12',
+      departureDate: '2026-10-14',
+      quantity: 1,
+      childrenAges: [],
+      board: 'unknown' as const,
+      specialRequests: [],
+      fields: {},
+    }));
+    return { ...session, groups: rows, selectedStayKey: 'stay-a', analysis: { ...session.analysis!, groups: rows } };
+  }
+
+  async function searchAndPickFirstBooking() {
+    fireEvent.change(screen.getByLabelText('Guest surname'), { target: { value: 'Mokoena' } });
+    fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-10-12' } });
+    await pressSearch();
+    const list = await screen.findByRole('list', { name: 'Bookings found in HMS' });
+    fireEvent.click(within(list).getByRole('button', { name: 'Show booking in HMS' }));
+  }
+
+  it('keeps a lookup on a same-case reread, but clears it and the search form when staff select another case', async () => {
+    const session = twoCases();
+    const findStay = vi.fn().mockResolvedValue(found({ confirmation: ROW_MOKOENA.confirmation }));
+    const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [ROW_MOKOENA], screenshots: [], runId: null });
+    const trpc = lookupTrpc(findStay, undefined, search);
+    const view = render(<AmendLookupPanel session={session} trpc={trpc} />);
+    await searchAndPickFirstBooking();
+    expect(await screen.findByTestId('amend-hms-facts')).toBeTruthy();
+
+    const reread = { ...session, analysis: { ...session.analysis!, secondaryAsks: ['Check parking'] } };
+    view.rerender(<AmendLookupPanel session={reread} trpc={trpc} />);
+    expect(screen.getByTestId('amend-hms-facts')).toBeTruthy();
+    expect((screen.getByLabelText('Guest surname') as HTMLInputElement).value).toBe('Mokoena');
+
+    view.rerender(<AmendLookupPanel session={{ ...reread, selectedStayKey: 'stay-b' }} trpc={trpc} />);
+    expect(screen.queryByTestId('amend-hms-facts')).toBeNull();
+    expect((screen.getByLabelText('Guest surname') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('');
+  });
+
+  it('does not display a late booking result after the selected case changes', async () => {
+    const session = twoCases();
+    let finishFind!: (reply: FindStayReply) => void;
+    const findStay = vi.fn(() => new Promise<FindStayReply>((resolve) => { finishFind = resolve; }));
+    const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [ROW_MOKOENA], screenshots: [], runId: null });
+    const trpc = lookupTrpc(findStay, undefined, search);
+    const view = render(<AmendLookupPanel session={session} trpc={trpc} />);
+    await searchAndPickFirstBooking();
+    await waitFor(() => expect(findStay).toHaveBeenCalledTimes(1));
+    view.rerender(<AmendLookupPanel session={{ ...session, selectedStayKey: 'stay-b' }} trpc={trpc} />);
+    await act(async () => { finishFind(found({ confirmation: ROW_MOKOENA.confirmation })); });
+    expect(screen.queryByTestId('amend-hms-facts')).toBeNull();
+    expect((screen.getByLabelText('Guest surname') as HTMLInputElement).value).toBe('');
+  });
+
+  it('clears a lookup when the source identity changes under the same selected case key', async () => {
+    const session = twoCases();
+    const search = vi.fn().mockResolvedValue({ outcome: 'ok', rows: [ROW_MOKOENA], screenshots: [], runId: null });
+    const trpc = lookupTrpc(vi.fn().mockResolvedValue(found()), undefined, search);
+    const view = render(<AmendLookupPanel session={session} trpc={trpc} />);
+    await searchAndPickFirstBooking();
+    expect(await screen.findByTestId('amend-hms-facts')).toBeTruthy();
+    const groups = session.analysis!.groups.map((row, index) => index === 0
+      ? { ...row, stayGuests: [{ name: 'Another Guest', confirmationNumber: null }] }
+      : row);
+    view.rerender(<AmendLookupPanel session={{ ...session, analysis: { ...session.analysis!, groups } }} trpc={trpc} />);
+    expect(screen.queryByTestId('amend-hms-facts')).toBeNull();
+    expect((screen.getByLabelText('Guest surname') as HTMLInputElement).value).toBe('');
+  });
 
   it('prefills the name search from the email, and opens it when the email has no booking number', async () => {
     render(<AmendLookupPanel session={sessionWith(NO_NUMBER)} trpc={lookupTrpc(vi.fn())} />);
