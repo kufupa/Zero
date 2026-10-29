@@ -3539,9 +3539,10 @@ describe('type chosen by staff after stay edits', () => {
       patch: { arrivalDate: '2026-12-01', departureDate: '2026-12-03', quantity: 1, adults: 1 },
     });
     session = reduceQuoteSession(session, { type: 'analysis_started' });
+    const rememberedStaffRow = { ...session.groups[1]!, staffCreated: true };
     session = reduceQuoteSession(session, {
       type: 'analysis_ready',
-      analysis: { ...source, groups: [sourceRow, { ...session.groups[1]!, staffCreated: true }],
+      analysis: { ...source, groups: [sourceRow, rememberedStaffRow],
         luna: lunaQuote({ tasks: [{ kind: 'quote', groupIndexes: [0], note: '' }] }) },
     });
     expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toBeNull();
@@ -5049,7 +5050,19 @@ describe('fresh case evidence and mixed actions', () => {
       arrivalDate: quote.arrivalDate, departureDate: quote.departureDate }] }));
     expect(stayAskAction(same, STAY_A)).toBe('other');
     expect(quoteRunBlockReason(same, stepFor(same, STAY_A))).toMatch(/existing or unclear booking/i);
+    expect(reduceQuoteSession(same, staffQuoteFor(STAY_A, 'mixed-rate', 850000, same.inputRevision)).staffQuotes).toEqual({});
+    const compared = reduceQuoteSession(same, {
+      type: 'quote_strategy_comparison_started', stayKey: STAY_A, strategyCodes: ['BAR'],
+      selectionEpoch: same.binding!.selectionEpoch, stayRevision: quoteStrategyStayRevision(same, STAY_A),
+    });
+    expect(compared.quoteStrategyRows).toEqual({});
+    expect(reduceQuoteSession(same, {
+      type: 'results_ready', offers: [{ ...authorisedOffer, quoteRequestKey: STAY_A }],
+      selectionEpoch: same.binding!.selectionEpoch, inputRevision: same.inputRevision,
+      provenance: { kind: 'authorised', selectionEpoch: same.binding!.selectionEpoch, inputRevision: same.inputRevision },
+    }).offers).toEqual([]);
     const withRate = { ...same, staffQuotes: { [STAY_A]: { revisionRef: 'mixed-rev' } as QuoteSession['staffQuotes'][string] } };
+    expect(pdfBlocker(withRate)).toEqual({ kind: 'rates_stale' });
     const payload = {
       messageId: 'mail-1', selectionEpoch: 1, inputRevision: same.inputRevision, revisionRef: 'mixed-rev',
       draft: { rooms: [], rateCheck: [], missing: [], flags: [] },

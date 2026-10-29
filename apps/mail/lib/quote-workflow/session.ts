@@ -633,24 +633,8 @@ export function quoteRunBlockReason(
     Partial<Pick<QuoteSession, 'analysis'>>,
   step: QuoteToolStep,
 ): string | null {
-  if (step.kind === 'quote_stay' && step.shareKey && session.analysis) {
-    const cases = { groups: session.groups, analysis: session.analysis };
-    const rows = stayAskRows(cases, step.shareKey);
-    const sourceIds = new Set((session.analysis.groups as StayAskRow[]).filter((row) => !row.staffCreated).map(stayIdOf));
-    const rateIds = new Set((session.analysis.luna?.tasks ?? [])
-      .filter((task) => task.kind === 'quote' || task.kind === 'create_booking')
-      .flatMap((task) => taskStayIds(cases, task)));
-    // New rows created by staff can get rates, but they cannot become booking drafts without a case action.
-    const staffAdded = rows.some((row) => !sourceIds.has(stayIdOf(row))) && rows.every((row) => {
-      const id = stayIdOf(row);
-      return !sourceIds.has(id) || (rateIds.has(id) && ['quote', 'booking'].includes(stayAskAction(cases, id)));
-    });
-    const quoteOnly = stayAskAction(cases, step.shareKey) === 'quote' &&
-      rows.every((row) => rateIds.has(stayIdOf(row)));
-    if (caseReviewPending(session.analysis) ||
-      (blocksNewBooking(cases, step.shareKey) && !quoteOnly && !staffAdded)) {
-      return 'This stay includes an existing or unclear booking. Review it in HMS before making a new booking.';
-    }
+  if (step.kind === 'quote_stay' && step.shareKey && caseQuoteBlocked(session, step.shareKey)) {
+    return 'This stay includes an existing or unclear booking. Review it in HMS before making a new booking.';
   }
   if (
     step.kind === 'quote_stay' &&
@@ -673,6 +657,29 @@ export function quoteRunBlockReason(
   const targetIndex = keys.indexOf(step.shareKey);
   if (targetIndex < 0) return `Finish the PDF for option ${pendingLetter} first, then run this option.`;
   return `Finish the PDF for option ${pendingLetter} first, then run option ${optionLetter(targetIndex)}.`;
+}
+
+/** Whether this date set can be used for a quote, including restored and comparison results. */
+export function caseQuoteBlocked(
+  session: Pick<QuoteSession, 'groups'> & Partial<Pick<QuoteSession, 'analysis'>>,
+  stayKey: string,
+): boolean {
+  const analysis = session.analysis;
+  if (!analysis) return false;
+  if (caseReviewPending(analysis)) return true;
+  const cases = { groups: session.groups, analysis };
+  const rows = stayAskRows(cases, stayKey);
+  const sourceIds = new Set((analysis.groups as StayAskRow[]).filter((row) => !row.staffCreated).map(stayIdOf));
+  const rateIds = new Set((analysis.luna?.tasks ?? [])
+    .filter((task) => task.kind === 'quote' || task.kind === 'create_booking')
+    .flatMap((task) => taskStayIds(cases, task)));
+  // A staff-created row may be quoted, but still needs its own case action for a booking draft.
+  const staffAdded = rows.some((row) => !sourceIds.has(stayIdOf(row))) && rows.every((row) => {
+    const id = stayIdOf(row);
+    return !sourceIds.has(id) || (rateIds.has(id) && ['quote', 'booking'].includes(stayAskAction(cases, id)));
+  });
+  const quoteOnly = rows.length > 0 && stayAskAction(cases, stayKey) === 'quote' && rows.every((row) => rateIds.has(stayIdOf(row)));
+  return blocksNewBooking(cases, stayKey) && !quoteOnly && !staffAdded;
 }
 
 /** Children's ages as typed: whole years 0 to 17, at most 9, the same limits the saved work item takes. */
@@ -1018,6 +1025,9 @@ export type PdfBlocker =
   | { kind: 'occupancy' };
 
 export function pdfBlocker(session: QuoteSession): PdfBlocker | null {
+  if (caseReviewPending(session.analysis) || requestedQuoteKeys(session.groups).some((key) => caseQuoteBlocked(session, key))) {
+    return { kind: 'rates_stale' };
+  }
   if (session.groups.some((group) => !group.arrivalDate || !group.departureDate)) {
     return { kind: 'missing_stay_details' };
   }
@@ -1226,6 +1236,7 @@ function reduceQuoteStrategySession(
   action: QuoteStrategySessionAction,
 ): QuoteWorkflowSession {
   const state = session as QuoteWorkflowSession;
+  if (caseQuoteBlocked(state, action.stayKey)) return state;
   if (action.type === 'quote_strategy_comparison_started') {
     if (
       !state.binding ||
@@ -2290,6 +2301,7 @@ export function reduceQuoteSession(
       if (action.staffQuote.totalMinor <= 0) return session;
       if (action.offer.nightly.length) return session;
       const stayKey = action.offer.quoteRequestKey;
+      if (caseQuoteBlocked(session, stayKey)) return session;
       const staffQuote = { ...action.staffQuote, quoteRequestKey: stayKey };
       const strategyState = quoteStrategyState(session);
       const quoteStrategySelections = { ...strategyState.quoteStrategySelections };
@@ -2642,6 +2654,7 @@ export function reduceQuoteSession(
     }
     case 'results_ready': {
       if (!action.provenance) return session;
+      if (caseReviewPending(session.analysis) || action.offers.some((offer) => caseQuoteBlocked(session, offer.quoteRequestKey))) return session;
       if (!provenanceMatches(session, action.provenance, action.selectionEpoch, action.inputRevision)) {
         return session;
       }
