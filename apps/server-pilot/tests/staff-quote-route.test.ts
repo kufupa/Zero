@@ -75,6 +75,7 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
         departureDate: '2026-10-15',
         quantity: 2,
         adults: 1,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'room_only',
         roomCodes: ['SKNG'],
@@ -540,6 +541,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     it('exports a prepared quote only from its original mailbox and source messageId', async () => {
       await withSeededTestDb(async (db) => {
         installFixture(db, 'HRDAV');
+        vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-quote.json');
         vi.stubEnv('HMS_JOB_QUEUE', 'on');
         vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
         vi.stubEnv('QUOTE_PDF_RENDERER', 'html');
@@ -1099,6 +1102,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         installFixture(db);
         vi.stubEnv('HMS_JOB_QUEUE', 'on');
         vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-quote.json');
         const { DAVINCI_STAFF_TRANSPORT_IDS, DAVINCI_HMS_READ_TARGET } = await import(
           '../src/hms/hms-read-target.js'
         );
@@ -1131,6 +1135,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           propertyCode: 'HRCEN',
         });
         vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-quote.json');
         await expect(dv.quoteWorkflow.makeQuote()).resolves.toEqual({
           makeQuote: true,
           propertyCode: 'HRDAV',
