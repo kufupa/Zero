@@ -83,6 +83,15 @@ describe('create runner exit and the save boundary', () => {
     });
   });
 
+  it('keeps a refusal with a printed confirmation uncertain', async () => {
+    await expect(commitWithRunnerResult(
+      { outcome: 'refused_save_blank_required' },
+      { failed: false, stdout: 'refused_save_blank_required 11111111-1\n' },
+    )).resolves.toMatchObject({
+      status: 'refused', reason: 'pane_save_unconfirmed', confirmationNumber: '11111111-1',
+    });
+  });
+
   it.each<[Record<string, unknown> | null, string | undefined]>([
     [null, undefined],
     [{ outcome: 'execution_failure', clickedSave: false }, undefined],

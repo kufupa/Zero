@@ -817,7 +817,7 @@ describe('booking card staying-guest prefill', () => {
           contactEditorKey={guestEditorKey}
           scrollToStep={() => undefined}
         />
-        <BookingCards draft={draft} paneSave={client} contact={contact} guestEditorKey={guestEditorKey} />
+        <BookingCards draft={draft} paneSave={client} workItemId={testWorkItemId} contact={contact} guestEditorKey={guestEditorKey} />
       </>
     );
 
@@ -2279,7 +2279,7 @@ describe('booking card save modes and the note fields', () => {
             contact = { ...contact, [field]: value };
           }}
         />
-        <BookingCards draft={draft} paneSave={client} contact={contact} />
+        <BookingCards draft={draft} paneSave={client} workItemId={testWorkItemId} contact={contact} />
       </>
     );
     const { rerender } = render(view());

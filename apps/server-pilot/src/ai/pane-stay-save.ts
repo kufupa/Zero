@@ -624,11 +624,11 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
     // The result file may not exist when a runner exits before it creates the file.
   }
   if (failed && !preSaveSearchRefused && !(input.paneCommit && knownConfirmation)) throw failure;
-  if (input.paneCommit && knownConfirmation) clickedSave = true;
   const line = stdout.trim().split('\n').at(-1) ?? '';
   const [printedOutcome = '', printedConfirmation = ''] = line.split(/\s+/);
   const outcome = failed ? preSaveSearchRefused ? 'refused_save' : 'save_unconfirmed' : printedOutcome;
   const confirmationNumber = failed ? knownConfirmation : printedConfirmation || knownConfirmation;
+  if (input.paneCommit && confirmationNumber) clickedSave = true;
   const screenshots = (await readdir(dir)).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)).sort();
   return {
     outcome,
