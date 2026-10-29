@@ -354,6 +354,69 @@ describe('Insert saved reply in Outlook', () => {
     expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
   });
 
+  it('does not hold an unchanged quote when the party picker repeats its idle status', async () => {
+    let release!: (value: { ready: boolean }) => void;
+    quoteDraftPreflight.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const sendCommand = outlookSendCommand();
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession());
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(quoteDraftPreflight).toHaveBeenCalledTimes(1));
+    act(() => result.current.edit({ type: 'party_lookup_pending', kind: 'company', pending: false }));
+    await act(async () => release({ ready: true }));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(true);
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(true);
+  });
+
+  it.each(['CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT'] as const)(
+    'holds an Outlook %s when the quote changes while its ticket is pending', async (heldAction) => {
+      let release!: () => void;
+      const nativeWrites: string[] = [];
+      const sendCommand = outlookSendCommand();
+      sendCommand.mockImplementation(async (action: string, _payload?: unknown, beforeNative?: () => void) => {
+        if (action === 'GET_ACTIVE_EMAIL') return activeEmail;
+        if (action === heldAction) await new Promise<void>((resolve) => { release = resolve; });
+        beforeNative?.();
+        nativeWrites.push(action);
+        return action === 'CREATE_REPLY_DRAFT'
+          ? { entryId: 'outlook-draft-1', storeId: 'store-1', folderEntryId: 'drafts', displayed: true }
+          : undefined;
+      });
+      const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession());
+      act(() => result.current.trackedDraft('selected'));
+      await waitFor(() => expect(release).toBeTypeOf('function'));
+      act(() => result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } }));
+      await act(async () => release());
+      await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+      expect(nativeWrites).not.toContain(heldAction);
+      if (heldAction === 'ADD_ATTACHMENT_TO_DRAFT') {
+        expect(nativeWrites).toContain('CREATE_REPLY_DRAFT');
+        expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist'));
+      }
+    },
+  );
+
+  it('warns that a quote draft may be stale if the edit lands after Outlook receives its attachment', async () => {
+    let release!: () => void;
+    const sendCommand = outlookSendCommand();
+    sendCommand.mockImplementation(async (action: string, _payload?: unknown, beforeNative?: () => void) => {
+      if (action === 'GET_ACTIVE_EMAIL') return activeEmail;
+      beforeNative?.();
+      if (action === 'ADD_ATTACHMENT_TO_DRAFT') await new Promise<void>((resolve) => { release = resolve; });
+      return action === 'CREATE_REPLY_DRAFT'
+        ? { entryId: 'outlook-draft-1', storeId: 'store-1', folderEntryId: 'drafts', displayed: true }
+        : undefined;
+    });
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession());
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    act(() => result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } }));
+    await act(async () => release());
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist'));
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   it('does not attach the old PDF when the stay is edited during the second preflight', async () => {
     let release!: (value: { ready: boolean }) => void;
     quoteDraftPreflight.mockResolvedValueOnce({ ready: true })

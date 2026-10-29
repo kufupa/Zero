@@ -347,7 +347,7 @@ describe('Workstation Bridge Protocol', () => {
 
 const renderedSubjects: string[] = [];
 const renderedReplyAvailability: boolean[] = [];
-function BridgeProbe() {
+function BridgeProbe({ beforeNative }: { beforeNative?: () => void } = {}) {
   const {
     isConnected,
     activeEmail,
@@ -385,7 +385,7 @@ function BridgeProbe() {
             entryIds: ['mail-1'],
             folderEntryId: 'folder-inbox',
             operationId: createOperationId(),
-          }).then(
+          }, beforeNative).then(
             () => setErrorCode('draft-succeeded'),
             () => setErrorCode('draft-failed'),
           );
@@ -1853,6 +1853,35 @@ describe('v4 staff-authorized Outlook navigation', () => {
       maxFolderCount: 5000, maxFolderSnapshotItems: 5000, supportedActions,
     };
   }
+
+  it('rechecks a quote after its ticket arrives and before the native draft request', async () => {
+    security.userId = 'staff-1';
+    security.transportId = 'transport-1';
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-1' });
+    let stale = false;
+    const beforeNative = vi.fn(() => { if (stale) throw new Error('Quote changed'); });
+    render(<BridgeProbe beforeNative={beforeNative} />);
+    await registerPane();
+    respondV4(await waitForBridgeRequest('GET_CAPABILITIES'), capabilities(['GET_ACTIVE_EMAIL', 'CREATE_REPLY_DRAFT']));
+    respondV4(await waitForBridgeRequest('GET_ACTIVE_EMAIL'), null);
+    let release!: (value: { ticket: string; storeId: string; expiresInSeconds: number }) => void;
+    ticketMutate.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const before = nativeMessages().length;
+    fireEvent.click(screen.getByRole('button', { name: 'Create reply draft' }));
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    stale = true;
+    await act(async () => release({ ticket: 'one-use', storeId: 'store-approved', expiresInSeconds: 60 }));
+    await waitFor(() => expect(screen.getByTestId('bridge-error-code').textContent).toBe('draft-failed'));
+    expect(beforeNative).toHaveBeenCalledTimes(1);
+    expect(nativeMessages().slice(before).some((message) => message.action === 'CREATE_REPLY_DRAFT')).toBe(false);
+    expect(reportMutate.mock.calls.some(([input]) => input.action === 'CREATE_REPLY_DRAFT')).toBe(false);
+    expect(screen.getByTestId('connected').textContent).toBe('yes');
+
+    stale = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Create reply draft' }));
+    respondV4(await waitForBridgeRequest('CREATE_REPLY_DRAFT', before), { draftId: 'draft-1' });
+    await waitFor(() => expect(screen.getByTestId('bridge-error-code').textContent).toBe('draft-succeeded'));
+  });
 
   it('re-reads the selected email after a draft write so later clicks keep reaching the pane', async () => {
     security.userId = 'staff-1';
