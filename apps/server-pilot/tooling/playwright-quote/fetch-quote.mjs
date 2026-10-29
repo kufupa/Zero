@@ -720,10 +720,10 @@ export function limitOptions(ordered,max) {
 export function hiddenRowsMatter(ordered,max){return ordered.slice(max).some(o=>o.matchStatus!=='alternative');}
 
 export function reapplyBedAssessment(option,assessment) {
-  const contextConditions=option.conditions.filter(c=>c.field==='rateContext');
+  const contextConditions=option.conditions.filter(c=>c.field==='rateContext'||c.field==='governmentEligibility');
   Object.assign(option,assessment);
   option.conditions.push(...contextConditions);
-  if(contextConditions.some(c=>c.kind==='required')&&option.matchStatus==='match')option.matchStatus='unresolved';
+  if(contextConditions.some(c=>c.field==='rateContext'&&c.kind==='required')&&option.matchStatus==='match')option.matchStatus='unresolved';
   return option;
 }
 

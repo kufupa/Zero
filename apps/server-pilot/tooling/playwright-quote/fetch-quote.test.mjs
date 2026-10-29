@@ -429,6 +429,8 @@ test('Centurion government rates stay conditional without guest entitlement, reg
     const government=result.options.find(option=>option.rate.code==='NGOVDB');
     assert.equal(government?.eligibility,'conditional');
     assert.ok(government?.conditions.some(condition=>condition.field==='governmentEligibility'&&condition.status==='unknown'));
+    quote.reapplyBedAssessment(government,{matchStatus:'match',conditions:[]});
+    assert.ok(government.conditions.some(condition=>condition.field==='governmentEligibility'&&condition.status==='unknown'));
     assert.equal(quote.pricedEligibleOptions([government]).length,0);
     assert.equal(result.options.find(option=>option.rate.code==='BAR')?.eligibility,'verified');
   }
