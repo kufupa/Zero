@@ -9,6 +9,7 @@ import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { appRouter } from '../src/trpc/router.js';
+import { configureDraftArtifactStorage } from '../src/trpc/routes/drafts.js';
 import { findParty, panePartyLookupLoaders, resetPartyCacheForTests } from '../src/ai/pane-party-lookup.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-synced-selection.js';
 import { FAITH_TRANSPORT_EMAIL, FAITH_USER_ID } from '../src/db/seed.js';
@@ -76,9 +77,11 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
         departureDate: '2026-10-15',
         quantity: 2,
         adults: 1,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'room_only',
         roomCodes: ['SKNG'],
+        sourcePreference: { roomType: null, board: null },
       },
     ],
     salesStrategy: 'BAR',
@@ -140,6 +143,7 @@ async function nativeFixture(
             rate: { code: 'BARRO', label: 'Room Only' },
             board: 'Room Only R',
             appliedContext: {},
+            rateScope: 'public',
             eligibility: 'verified',
             availability: 'available',
             matchStatus: 'match',
@@ -312,6 +316,7 @@ afterEach(() => {
   panePartyLookupLoaders.lock = null;
   panePartyLookupLoaders.enabled = null;
   resetPartyCacheForTests();
+  configureDraftArtifactStorage(null);
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
 });
@@ -498,6 +503,55 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         expect(pdf).toMatchObject({ revisionId: quote.revisionRef, totalMinor: 220002 });
       });
     });
+
+    it('carries the selected Centurion email and saved edits through a quote, PDF and unsent draft', async () => {
+      await withSeededTestDb(async (db) => {
+        installFixture(db);
+        const objects = new Map<string, Buffer>();
+        configureDraftArtifactStorage({
+          stage: async (key, body) => { objects.set(key, Buffer.from(body)); },
+          read: async (key) => objects.get(key) ?? null,
+        });
+        const request = await seedRequest(db), api = caller();
+        const read = await api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId });
+        expect(read).toMatchObject({ status: 'ready', messageId: request.mail.id });
+
+        // A staff edit goes through the actual work-item route before pricing.
+        for (const [field, value] of [['arrival', '2027-10-12'], ['departure', '2027-10-15']] as const) {
+          await api.workItems.recordEvent({ workItemId: request.workItemId, type: 'field.edit',
+            fieldPath: `stays[s_default].requested.${field}`, value });
+        }
+        const input = { ...request.input, groups: [{ ...request.input.groups[0]!,
+          arrivalDate: '2027-10-12', departureDate: '2027-10-15' }] };
+        const quote = await api.workstation.executeStaffQuote(input);
+        expect(quote).toMatchObject({ status: 'ready', messageId: request.mail.id, totalMinor: 220002 });
+        expect(nativeRead).toHaveBeenCalledWith(expect.objectContaining({
+          propertyCode: 'HRCEN', arrivalDate: '2027-10-12', departureDate: '2027-10-15',
+        }), expect.any(AbortSignal));
+
+        const proposal = { ...pdfInput(quote), workItemId: request.workItemId };
+        const pdf = await api.workstation.qualifiedQuoteProposalPdf(proposal);
+        expect(pdf).toMatchObject({ revisionId: quote.revisionRef, totalMinor: quote.totalMinor });
+        const versions = [{ workflowRunId: quote.workflowRunId, revisionRef: quote.revisionRef }];
+        const preflight = { messageId: request.mail.id, threadId: request.mail.threadId,
+          pdfHashes: [pdf.pdfHash], preparedVersions: versions };
+        await expect(api.workstation.quoteDraftPreflight(preflight)).resolves.toEqual({ ready: true });
+        const bytes = Buffer.from(pdf.pdfBase64, 'base64');
+        const draft = await api.drafts.saveReply({ threadId: request.mail.threadId, replyToMessageId: request.mail.id,
+          to: ['guest@example.invalid'], subject: 'Re: Quote', html: '<p>Your quote is attached.</p>',
+          replyKind: 'quote', preparedVersions: versions,
+          attachments: [{ name: pdf.fileName, type: 'application/pdf', size: bytes.length,
+            lastModified: 1, base64: pdf.pdfBase64 }] });
+        expect(draft).toMatchObject({ id: expect.any(String), replaced: false });
+        expect(await api.drafts.savedReply({ threadId: request.mail.threadId })).toMatchObject({
+          id: draft.id, quoteBound: true, attachments: [{ fileName: pdf.fileName, pdfBase64: pdf.pdfBase64 }],
+        });
+
+        await api.workItems.recordEvent({ workItemId: request.workItemId, type: 'field.edit',
+          fieldPath: 'stays[s_default].rows[single].adults', value: 2 });
+        await expect(api.workstation.quoteDraftPreflight(preflight)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      });
+    }, 30_000);
 
     it('exports a reused prepared quote with the same header note as a fresh staff quote', async () => {
       await withSeededTestDb(async (db) => {
