@@ -624,7 +624,11 @@ export function useStoredWork(args: {
   const [saveFailed, setSaveFailed] = useState(false);
   // The work item whose translation is being asked for again, so "Translating…" shows for that mail only.
   const [translating, setTranslating] = useState<string | null>(null);
-  const [historyEpoch, setHistoryEpoch] = useState(0);
+  const [historyRefresh, setHistoryRefresh] = useState({
+    key: lookupKey, selectionEpoch: renderEpoch, epoch: 0, clearPaneEdits: false,
+  });
+  const historyIsCurrent = historyRefresh.key === lookupKey && historyRefresh.selectionEpoch === renderEpoch;
+  const historyEpoch = historyIsCurrent ? historyRefresh.epoch : 0;
   const [historyCursor, setHistoryCursor] = useState<HistorySeqCursor | null>(null);
   const [historyPending, setHistoryPending] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -1194,32 +1198,39 @@ export function useStoredWork(args: {
     }, settle);
   }, [readyWorkItemId]);
 
-  const refetchStored = useCallback((valid?: (result: StoredWork) => boolean): Promise<boolean> => {
+  const refetchStored = useCallback((valid?: (result: StoredWork) => boolean, clearPaneEdits = true): Promise<boolean> => {
     const getByMessage = workItemsFromTrpc(trpcRef.current).getByMessage;
     const messageId = internetMessageId;
     const keyNow = lookupKey;
     if (!getByMessage || !messageId || !keyNow) return Promise.resolve(false);
+    const epochNow = selection.current.epoch;
     const pinned = inMailbox(readyTransportId);
     const input = { internetMessageId: messageId };
     return (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input))
       .then((result) => {
-        if (lookupKeyRef.current !== keyNow || (valid && !valid(result))) return false;
+        if (lookupKeyRef.current !== keyNow || selection.current.epoch !== epochNow || (valid && !valid(result))) return false;
         partyEdits.current.delete(keyNow);
         confirmedParty.current.delete(keyNow);
         setLookup((prev) => (prev && prev.key === keyNow ? { ...prev, result } : prev));
-        setHistoryEpoch((n) => n + 1);
+        setHistoryRefresh((previous) => ({
+          key: keyNow,
+          selectionEpoch: epochNow,
+          epoch: previous.key === keyNow && previous.selectionEpoch === epochNow ? previous.epoch + 1 : 1,
+          clearPaneEdits,
+        }));
         setHistoryError(null);
         setHistoryNeedsReload(false);
         return true;
       })
       .catch(() => {
-        if (lookupKeyRef.current !== keyNow) return false;
+        if (lookupKeyRef.current !== keyNow || selection.current.epoch !== epochNow) return false;
         setHistoryError(HISTORY_REFRESH_COPY);
         setHistoryNeedsReload(true);
         return false;
       });
   }, [internetMessageId, lookupKey, readyTransportId]);
 
+  /** The optional callback must synchronously clear the pane's old edits, or return false without changing them. */
   const discardUnconfirmedEdits = useCallback(async (beforePublish?: () => boolean): Promise<boolean> => {
     if (!lookupKey || !internetMessageId || selection.current.epoch !== renderEpoch || !readyTransportId || !currentLookup?.userId || !scope || historyPending ||
         recovering.current.has(lookupKey) || discardInProgress.current ||
@@ -1243,7 +1254,7 @@ export function useStoredWork(args: {
       // Give the pane a synchronous chance to verify and reset its own edits before publishing the refreshed read.
       // Otherwise the old placeholder can be re-applied while this promise is settling.
       const ok = await refetchStored((result) => result.status === 'ready' && stillSelected() &&
-        editEpoch.current === revision && (!beforePublish || beforePublish()));
+        editEpoch.current === revision && (!beforePublish || beforePublish()), !beforePublish);
       if (!ok || !stillSelected() || editEpoch.current !== revision) {
         if (stillSelected()) setRecoveryProblem({ key: lookupKey, message: "Couldn't reload this request. Try again." });
         discardAwaitingRender.current = null;
@@ -1267,7 +1278,8 @@ export function useStoredWork(args: {
   const resetAvailable = Boolean(readyWorkItemId && !awaitingRecovery && historyRoutes.resetSection);
 
   useEffect(() => {
-    setHistoryEpoch(0);
+    setHistoryRefresh((previous) => previous.key === lookupKey && previous.selectionEpoch === selection.current.epoch
+      ? previous : { key: lookupKey, selectionEpoch: selection.current.epoch, epoch: 0, clearPaneEdits: false });
     setHistoryCursor(null);
     setHistoryPending(false);
     setHistoryError(null);
@@ -1446,6 +1458,9 @@ export function useStoredWork(args: {
     discardUnconfirmedEdits,
     retrySave,
     historyEpoch,
+    historyRefreshId: historyIsCurrent ? `${historyRefresh.selectionEpoch}:${historyRefresh.epoch}` : '',
+    /** Discard already cleared the pane synchronously; ordinary Undo/Reset still needs its cache cleared. */
+    historyClearsPaneEdits: historyIsCurrent && historyRefresh.clearPaneEdits,
     historyCursor: historyCursor
       ? { revision: historyCursor.revision, revisionHead: historyCursor.revisionHead }
       : null,
