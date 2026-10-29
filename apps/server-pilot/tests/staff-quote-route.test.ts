@@ -1131,6 +1131,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         installFixture(db);
         vi.stubEnv('HMS_JOB_QUEUE', 'on');
         vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-quote.json');
         const { DAVINCI_STAFF_TRANSPORT_IDS, DAVINCI_HMS_READ_TARGET } = await import(
           '../src/hms/hms-read-target.js'
         );
@@ -1163,6 +1164,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           propertyCode: 'HRCEN',
         });
         vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-quote.json');
         await expect(dv.quoteWorkflow.makeQuote()).resolves.toEqual({
           makeQuote: true,
           propertyCode: 'HRDAV',
