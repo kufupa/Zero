@@ -270,14 +270,16 @@ type StayAskRow = StayGroupRequirement & {
 
 export type PaneCaseSnapshot = { identity: string | null; tasks: string; propertyCode: string | null; aliases?: Record<string, string> };
 type CaseAnalysis = QuoteAnalysis & {
-  paneRead?: { groups: StayGroupRequirement[] | null; rememberedSource: PaneCaseSnapshot | null; propertyCode: string | null };
+  paneRead?: { groups: StayGroupRequirement[] | null; rememberedSource: PaneCaseSnapshot | null; propertyCode: string | null;
+    trustedStoredProjection?: boolean };
   caseActionsUncertain?: boolean; caseBaseline?: PaneCaseSnapshot | null; caseAliases?: Record<string, string>;
 };
 
 /** Keep the unmodified read as analysis.groups; remembered rows are only the editable pane projection. */
 export function withPaneRead(analysis: QuoteAnalysis, groups: StayGroupRequirement[] | null,
-  rememberedSource: PaneCaseSnapshot | null, propertyCode: string | null): QuoteAnalysis {
-  return { ...analysis, paneRead: { groups, rememberedSource, propertyCode } } as CaseAnalysis;
+  rememberedSource: PaneCaseSnapshot | null, propertyCode: string | null, trustedStoredProjection = false): QuoteAnalysis {
+  return { ...analysis, paneRead: { groups, rememberedSource, propertyCode,
+    ...(trustedStoredProjection ? { trustedStoredProjection: true } : {}) } } as CaseAnalysis;
 }
 /** The baseline is retained while case evidence is held, including across a pane switch. */
 export function paneCaseSnapshot(analysis: QuoteAnalysis | null): PaneCaseSnapshot | null {
@@ -351,7 +353,7 @@ function withoutCaseIdentity(group: StayGroupRequirement): StayGroupRequirement 
   return copy;
 }
 
-function restoreCaseIdentity(groups: StayGroupRequirement[], source: StayGroupRequirement[]): StayGroupRequirement[] {
+export function restoreCaseIdentity(groups: StayGroupRequirement[], source: StayGroupRequirement[]): StayGroupRequirement[] {
   return groups.map((group) => {
     const original = source.find((row) => row.id === group.id && stayIdOf(row) === stayIdOf(group)) as StayAskRow | undefined;
     const copy = withoutCaseIdentity(group) as StayAskRow;
@@ -2072,7 +2074,7 @@ export function reduceQuoteSession(
       const editsToKeep = staffEditedDuringRun || session.stayRevision > 1 || paneRead?.groups != null ||
         Boolean(!session.staffNote && session.analysis && session.groups.length && session.inputRevision > 1) ||
         session.groups.some((group) => group.stayId !== undefined || Object.values(group.fields).includes('staff_corrected'));
-      const unverifiedMemory = !session.analysis && paneRead?.groups != null && !paneRead.rememberedSource &&
+      const unverifiedMemory = !session.analysis && paneRead?.groups != null && !paneRead.rememberedSource && !paneRead.trustedStoredProjection &&
         JSON.stringify(paneRead.groups) !== JSON.stringify(action.analysis.groups);
       const explicitTypeChange = !wasHeld && Boolean(session.treatAs) &&
         action.analysis.luna?.workflow === session.treatAs && session.analysis?.luna?.workflow !== session.treatAs;

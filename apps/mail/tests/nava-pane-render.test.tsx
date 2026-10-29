@@ -266,15 +266,27 @@ vi.mock('../providers/query-provider', () => ({
         dismiss: { mutate: async () => ({ status: 'ok' }) },
       };
       if (!stored) return listRoutes;
+      // Centurion's current server returns both the original extraction and the saved projection.
+      const currentStored = () => bridgeMockState.quotePaneConfig?.propertyCode === 'HRCEN' && stored.status === 'ready'
+        ? {
+            contact: { name: null, company: null, endClient: null, email: null, phone: null },
+            fieldProvenance: {}, revisionSeq: 0, stateDigest: 'a'.repeat(64), ...stored,
+            sourceRead: Object.hasOwn(stored, 'sourceRead') ? stored.sourceRead : {
+              extractionId: stored.extractionId, kind: stored.kind, analysis: stored.analysis, refs: stored.refs,
+            },
+          }
+        : stored;
       return {
         ...listRoutes,
         getByMessage: {
           query: async () => {
             bridgeMockState.storedWorkLookups += 1;
             await bridgeMockState.storedLookupGate;
-            return stored;
+            return currentStored();
           },
         },
+        ...(bridgeMockState.quotePaneConfig?.propertyCode === 'HRCEN'
+          ? { open: { mutate: async () => currentStored() } } : {}),
         recordEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
         retryTranslation: { mutate: (input: unknown) => bridgeMockState.retryTranslation(input) },
       };
@@ -438,6 +450,13 @@ describe('NavaPane', () => {
     bridgeMockState.queueStaffQuoteMutation.mockReset().mockResolvedValue({ runId: null });
     bridgeMockState.staffQuoteSources = {};
     bridgeMockState.quotePaneConfig = null;
+    bridgeMockState.recordEvent.mockReset().mockImplementation(async (value: unknown) => {
+      const event = value as { value?: unknown; expected?: { extractionId: string; seq: number } };
+      return { aiValue: null, value: event.value ?? null, ...(event.expected ? { cursor: {
+        extractionId: event.expected.extractionId, seq: event.expected.seq + 1,
+        stateDigest: (event.expected.seq + 1).toString(16).padStart(64, '0'),
+      } } : {}) };
+    });
     bridgeMockState.findPartyMutation.mockReset().mockResolvedValue({
       outcome: 'no_match',
       results: [],
@@ -1689,6 +1708,34 @@ describe('NavaPane', () => {
       String((event as { fieldPath?: string }).fieldPath).includes('s_external'))).toBe(false);
   });
 
+  it('shows saved Centurion edits while retaining the original source case', async () => {
+    bridgeMockState.quotePaneConfig = { transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [] };
+    bridgeMockState.storedWork = { ...STORED_READY,
+      analysis: { ...STORED_READY.analysis, groups: [{ ...STORED_READY.analysis.groups[0]!, adults: 3 }] },
+      sourceRead: { extractionId: STORED_READY.extractionId, kind: STORED_READY.kind,
+        analysis: STORED_READY.analysis, refs: STORED_READY.refs },
+    };
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByText('3 adults per room')).toBeDefined();
+    expect(screen.queryByText(/The email case changed or could not be verified/)).toBeNull();
+  });
+
+  it('keeps a Centurion case on hold when its source is missing, including after a type override', async () => {
+    bridgeMockState.quotePaneConfig = { transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [] };
+    bridgeMockState.storedWork = { ...STORED_READY, sourceRead: null };
+    bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
+    render(<NavaPane bridge={fakeBridge} />);
+    expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
+    const reads = bridgeMockState.analyseCalls;
+    fireEvent.change(screen.getByLabelText('Change how Nava reads this email'), { target: { value: 'create_booking' } });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 100)); });
+    expect(screen.getByText(/The email case changed or could not be verified/)).toBeDefined();
+    expect(bridgeMockState.analyseCalls).toBe(reads);
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
   it.each([{ propertyCode: 'HRCEN', saves: true }, { propertyCode: null, saves: false }])(
     'saves a reclassified deferred edit only with verified property $propertyCode', async ({ propertyCode, saves }) => {
     const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!,
@@ -1726,6 +1773,11 @@ describe('NavaPane', () => {
     bridgeMockState.recordEvent.mockClear();
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
 
+    // The first edit above was acknowledged. A real server now projects it while keeping the raw extraction intact.
+    const savedStored = { ...stored, analysis: { ...stored.analysis, groups: [{ ...storedRow, adults: 3 }] },
+      sourceRead: { extractionId: stored.extractionId, kind: stored.kind, analysis: stored.analysis, refs: stored.refs } };
+    bridgeMockState.storedWork = savedStored;
+
     bridgeMockState.analysisOverride = { ...live, groups: [{ ...live.groups[0]!, guestNames: ['Bea Example'] }],
       luna: { ...live.luna, groups: [{ ...live.luna.groups[0]!, guestNames: ['Bea Example'] }] } };
     const heldPane = render(<NavaPane bridge={bridge} />);
@@ -1738,8 +1790,10 @@ describe('NavaPane', () => {
     heldPane.unmount();
 
     bridgeMockState.analysisOverride = live;
-    bridgeMockState.storedWork = { ...stored, analysis: { ...stored.analysis, groups: [{ ...storedRow,
-      stayGuests: [{ name: 'Bea Example', confirmationNumber: null }] }] } };
+    const changedSource = { ...stored.analysis, groups: [{ ...storedRow,
+      stayGuests: [{ name: 'Bea Example', confirmationNumber: null }] }] };
+    bridgeMockState.storedWork = { ...savedStored, analysis: { ...changedSource, groups: [{ ...changedSource.groups[0]!, adults: 3 }] },
+      sourceRead: { ...savedStored.sourceRead, analysis: changedSource } };
     const lookupCount = bridgeMockState.storedWorkLookups;
     const mismatchedPane = render(<NavaPane bridge={bridge} />);
     expect(await screen.findByText('4 adults per room')).toBeDefined();
@@ -1753,14 +1807,26 @@ describe('NavaPane', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
     mismatchedPane.unmount();
 
-    bridgeMockState.storedWork = stored;
+    bridgeMockState.storedWork = savedStored;
+    let finishSave: (() => void) | undefined;
+    if (saves) bridgeMockState.recordEvent.mockImplementationOnce((value: unknown) => new Promise((resolve) => {
+      const event = value as { value: unknown; expected: { extractionId: string; seq: number } };
+      finishSave = () => resolve({ aiValue: null, value: event.value, cursor: {
+        extractionId: event.expected.extractionId, seq: event.expected.seq + 1,
+        stateDigest: (event.expected.seq + 1).toString(16).padStart(64, '0'),
+      } });
+    }));
     const recoveredPane = render(<NavaPane bridge={bridge} />);
     expect(await screen.findByText('5 adults per room')).toBeDefined();
     if (saves) {
       await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(expect.objectContaining({
         fieldPath: 'stays[s_1].rows[r_1].adults', value: 5,
+        expected: expect.objectContaining({ extractionId: 'ex-1' }),
       })), { timeout: 4000 });
-      expect(screen.queryByText(/The email case changed or could not be verified/)).toBeNull();
+      expect(screen.getByText(/The email case changed or could not be verified/)).toBeDefined();
+      expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+      await act(async () => { finishSave?.(); });
+      await waitFor(() => expect(screen.queryByText(/The email case changed or could not be verified/)).toBeNull());
     } else {
       expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
       await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1000)); });

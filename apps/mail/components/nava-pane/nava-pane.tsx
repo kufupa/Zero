@@ -46,7 +46,7 @@ import {
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
 import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, recoverLegacySourcePreferences, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
-import { sectionHasStaffEdit, shownFieldPaths, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
+import { sectionHasStaffEdit, shownFieldPaths, storedDecision, useStoredWork, type StoredPane } from '@/lib/quote-workflow/use-work-item';
 import { WorkItemHistoryControls } from './screens/work-item-history-controls';
 import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
 import { bindPaneTelemetry, currentPaneOwner, setPaneTelemetryScope, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
@@ -109,6 +109,7 @@ import {
   caseReviewPending,
   paneCaseSnapshot,
   sameCaseSnapshot, singleCaseReclassification,
+  restoreCaseIdentity,
   withPaneRead,
   type PaneCaseSnapshot,
   nextSelectedOfferIds,
@@ -276,14 +277,21 @@ function analysisWithPaneEdits(
   transportId: string,
   messageKey: string | undefined,
   propertyCode: string | null,
-  storedRead = false,
+  storedPane?: Extract<StoredPane, { state: 'ready' }>,
 ): QuoteAnalysis {
+  const source = storedPane?.sourceRead;
+  const sourceVerified = Boolean(storedPane && source && source.extractionId === storedPane.extractionId && source.kind === storedPane.kind);
+  // Keep the source case separate from the saved form. Only the server's
+  // same-extraction projection may supply the initial edited rows.
+  const original = sourceVerified && source ? { ...analysis, intent: source.analysis.intent,
+    groups: source.analysis.groups, luna: source.analysis.luna, amendment: source.analysis.amendment,
+    requestedRoomsByStay: source.analysis.requestedRoomsByStay } : analysis;
   const key = messageKey ? paneEditKey(transportId, messageKey) : null;
   const remembered = key ? recalledPaneEdits(key) : null;
   if (key && remembered === null) rememberPaneSource(key, [], null);
   const rememberedSource = key && remembered ? recalledPaneSource(key, remembered) : null;
-  const freshSource = paneCaseSnapshot(withPaneRead(analysis, null, null, propertyCode));
-  const canRecoverLegacySource = storedRead && propertyCode === HRCEN_PROPERTY_CODE &&
+  const freshSource = paneCaseSnapshot(withPaneRead(original, null, null, propertyCode));
+  const canRecoverLegacySource = sourceVerified && propertyCode === HRCEN_PROPERTY_CODE &&
     rememberedSource?.propertyCode === HRCEN_PROPERTY_CODE && freshSource !== null &&
     sameCaseSnapshot(rememberedSource, freshSource);
   const recovered = remembered && canRecoverLegacySource
@@ -291,8 +299,13 @@ function analysisWithPaneEdits(
     : remembered;
   const groups = overlayRememberedGroups(analysis.groups, recovered);
   const overlaid = remembered !== null && groups !== analysis.groups;
-  const read = withPaneRead(analysis, overlaid ? groups : null,
-    overlaid ? rememberedSource : null, propertyCode);
+  const projected = Boolean(storedPane && sourceVerified);
+  let read = withPaneRead(original, projected || overlaid ? groups : null,
+    overlaid ? rememberedSource : null, propertyCode, projected && !overlaid);
+  if (storedPane?.sourceConflict || analysis.caseActionsUncertain ||
+      (storedPane && propertyCode === HRCEN_PROPERTY_CODE && !sourceVerified)) {
+    read = { ...read, caseActionsUncertain: true };
+  }
   return key && Array.isArray(paneSourceRecord(key)?.pendingBefore)
     ? { ...read, caseActionsUncertain: true, pendingRead: read } as QuoteAnalysis : read;
 }
@@ -393,6 +406,9 @@ export function NavaPane({
   }, []);
   const quoteSessionRef = useRef(quoteSession);
   quoteSessionRef.current = quoteSession;
+  const paneRecoveryInFlight = useRef(new Map<string, object>());
+  const paneRecoveryRetry = useRef<string | null>(null);
+  const [paneRecoveryAttempt, setPaneRecoveryAttempt] = useState(0);
   // True from the executeStaffQuote call until it settles. Drives the HMS queue poller.
   const [quoteRunPending, setQuoteRunPending] = useState(false);
   const [staffQuoteQueueMode, setStaffQuoteQueueMode] = useState<'checking' | 'on' | 'off'>(() =>
@@ -657,6 +673,8 @@ export function NavaPane({
     openMissingWorkItem: !isNonActionableBySourceOrSubject,
     scope: currentScope,
   });
+  const storedPaneRef = useRef(storedWork.pane);
+  storedPaneRef.current = storedWork.pane;
   const isExistingStayInformation =
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
@@ -853,17 +871,26 @@ export function NavaPane({
     const held = quoteSession.analysis as PendingPaneAnalysis | null;
     const analysis = held?.pendingRead ?? held;
     if (!binding?.internetMessageId || binding.internetMessageId !== activeEmail?.internetMessageId ||
-      !analysis || (caseReviewPending(held) && !held?.pendingRead) || storedWork.pane.state !== 'ready' ||
-      !storedWork.pane.workItemId || !storedWork.pane.refs || storedWork.historyPending || storedWork.historyNeedsReload ||
+      !analysis || caseReviewPending(analysis) || (caseReviewPending(held) && !held?.pendingRead) ||
+      storedWork.pane.state !== 'ready' || storedWork.pane.sourceConflict || storedWork.pane.analysis.caseActionsUncertain ||
+      !storedWork.pane.refs || storedWork.historyPending || storedWork.historyNeedsReload ||
       typeof workItemsFromTrpc(trpcClient).recordEvent?.mutate !== 'function') return;
+    const sourceRead = storedWork.pane.sourceRead;
+    const sourceVerified = sourceRead && sourceRead.extractionId === storedWork.pane.extractionId &&
+      sourceRead.kind === storedWork.pane.kind;
+    if (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && !sourceVerified) return;
     const key = paneEditKey(binding.transportId, binding.internetMessageId);
+    if (paneRecoveryInFlight.current.has(key)) return;
+    if (storedWork.saveFailed && paneRecoveryRetry.current !== key) return;
+    paneRecoveryRetry.current = null;
     let record = paneSourceRecord(key);
     const current = paneCaseSnapshot(analysis);
     if (record?.source && current?.aliases && record.source.identity !== current.identity) {
       rememberPaneSource(key, quoteSession.groups, current, record.pendingBefore);
       record = paneSourceRecord(key);
     }
-    const stored = paneCaseSnapshot(withPaneRead(storedWork.pane.analysis, null, null, activePaneConfig?.propertyCode ?? null));
+    const storedAnalysis = sourceVerified && sourceRead ? sourceRead.analysis : storedWork.pane.analysis;
+    const stored = paneCaseSnapshot(withPaneRead(storedAnalysis, null, null, activePaneConfig?.propertyCode ?? null));
     const retainedRows = quoteSession.groups.map((group) => group.id), refs = storedWork.pane.refs;
     if (!Array.isArray(record?.pendingBefore) || !record.source?.propertyCode || !current || !stored ||
       current.propertyCode !== stored.propertyCode || !sameCaseSnapshot(record.source, current, false, retainedRows) ||
@@ -871,18 +898,57 @@ export function NavaPane({
         !shownFieldPaths(refs, [group]).some((path) => path.includes('.rows[')))) return;
     const aliases = current.aliases ?? record.source.aliases;
     if (!sameCaseSnapshot(record.source, stored, false, retainedRows) && (!aliases || JSON.stringify(aliases) !==
-      JSON.stringify(singleCaseReclassification(storedWork.pane.analysis, analysis, quoteSession.treatAs)))) return;
-    storedWork.recordGroups(record.pendingBefore, quoteSession.groups);
-    rememberPaneSource(key, quoteSession.groups, { ...current, ...(aliases ? { aliases } : {}) });
-    if (held?.pendingRead) dispatchQuote({ type: 'analysis_ready',
-      analysis: { ...analysis, ...(aliases ? { caseAliases: aliases } : {}) } as QuoteAnalysis });
+      JSON.stringify(singleCaseReclassification(storedAnalysis, analysis, quoteSession.treatAs)))) return;
+    const groups = structuredClone(quoteSession.groups);
+    const rows = JSON.stringify(groups);
+    const before = JSON.stringify(record.pendingBefore);
+    // A held case hides identity in the form. Restore only the already-verified server identity
+    // before comparing the prior values and replaying through the server's revision check.
+    const beforeGroups = restoreCaseIdentity(record.pendingBefore, storedWork.pane.analysis.groups);
+    if (!storedWork.recordGroups(beforeGroups, groups,
+      { verifiedRecovery: activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE })) return;
+    const attempt = {};
+    const extractionId = storedWork.pane.extractionId;
+    paneRecoveryInFlight.current.set(key, attempt);
+    void storedWork.flushEdits().then((saved) => {
+      if (paneRecoveryInFlight.current.get(key) !== attempt) return;
+      paneRecoveryInFlight.current.delete(key);
+      if (!saved) return;
+      const now = quoteSessionRef.current;
+      const sameSelection = now.binding?.transportId === binding.transportId &&
+        now.binding.internetMessageId === binding.internetMessageId &&
+        now.binding.selectionEpoch === binding.selectionEpoch && now.binding.scopeEpoch === binding.scopeEpoch;
+      if (!sameSelection) return;
+      const savedPane = storedPaneRef.current;
+      if (savedPane.state !== 'ready' || savedPane.extractionId !== extractionId || savedPane.sourceConflict ||
+          savedPane.analysis.caseActionsUncertain || (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE &&
+          (savedPane.sourceRead?.extractionId !== extractionId || savedPane.sourceRead?.kind !== savedPane.kind))) return;
+      const savedSource = savedPane.sourceRead?.analysis ?? savedPane.analysis;
+      const savedCase = paneCaseSnapshot(withPaneRead(savedSource, null, null, activePaneConfig?.propertyCode ?? null));
+      if (!savedCase || !sameCaseSnapshot(stored, savedCase)) return;
+      const pending = paneSourceRecord(key);
+      if (now.inputRevision !== quoteSession.inputRevision || JSON.stringify(now.groups) !== rows ||
+          pending?.rows !== rows || JSON.stringify(pending.pendingBefore) !== before) {
+        setPaneRecoveryAttempt((value) => value + 1);
+        return;
+      }
+      rememberPaneSource(key, groups, { ...current, ...(aliases ? { aliases } : {}) });
+      if (held?.pendingRead) dispatchQuote({ type: 'analysis_ready',
+        analysis: { ...analysis, ...(aliases ? { caseAliases: aliases } : {}) } as QuoteAnalysis });
+    }).catch(() => {
+      if (paneRecoveryInFlight.current.get(key) === attempt) paneRecoveryInFlight.current.delete(key);
+    });
   }, [quoteSession.binding, quoteSession.analysis, quoteSession.groups, quoteSession.treatAs, storedWork.pane, storedWork.recordGroups,
-    storedWork.historyPending, storedWork.historyNeedsReload, activeEmail?.internetMessageId, activePaneConfig?.propertyCode]);
+    storedWork.flushEdits, storedWork.saveFailed, storedWork.historyPending, storedWork.historyNeedsReload, activeEmail?.internetMessageId,
+    activePaneConfig?.propertyCode, paneRecoveryAttempt]);
   // Keep the lookup deadline separate from its payload: a late ready result changes the decision to stored, not to
   // another live read. With a treat-as or note, only Retry read (its count) re-runs the live analysis.
+  const storedCaseGate = storedWork.pane.state === 'ready'
+    ? `${storedWork.pane.extractionId}|${storedWork.pane.sourceRead?.extractionId ?? ''}|${storedWork.pane.sourceRead?.kind ?? ''}|${Boolean(storedWork.pane.sourceConflict)}|${Boolean(storedWork.pane.analysis.caseActionsUncertain)}`
+    : '';
   const storedGate = storedOverridden
-    ? `override|${storedWork.retryCount}`
-    : `${storedWork.key}|timed-out:${storedWork.lookupTimedOut}`;
+    ? `override|${storedWork.retryCount}|${storedWork.historyEpoch}|${storedCaseGate}`
+    : `${storedWork.key}|timed-out:${storedWork.lookupTimedOut}|${storedCaseGate}`;
   useEffect(() => {
     if (isNonActionableMessage) return;
     const binding = quoteSession.binding;
@@ -892,7 +958,10 @@ export function NavaPane({
     dispatchQuote({ type: 'analysis_started' });
     const workflow = quoteWorkflowFromTrpc(trpcClient);
     const selectionEpoch = binding.selectionEpoch;
-    const decision = storedDecision(storedWork.pane, storedOverridden);
+    const pane = storedWork.pane;
+    const unverifiedCenturionSource = activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && pane.state === 'ready' &&
+      (!pane.sourceRead || pane.sourceRead.extractionId !== pane.extractionId || pane.sourceRead.kind !== pane.kind);
+    const decision = storedDecision(pane, storedOverridden && !unverifiedCenturionSource);
     if (decision.kind === 'ready') {
       const ready = {
         type: 'analysis_ready',
@@ -901,7 +970,7 @@ export function NavaPane({
           binding.transportId,
           binding.internetMessageId,
           activePaneConfig?.propertyCode ?? null,
-          true,
+          storedWork.pane.state === 'ready' ? storedWork.pane : undefined,
         ),
       } as const;
       const before = reduceQuoteSession(quoteSessionRef.current, { type: 'analysis_started' });
@@ -1688,8 +1757,12 @@ export function NavaPane({
   }
 
   const saveQuoteEdits = async () => {
-    if (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE &&
-        (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId)) return false;
+    if (caseReviewPending(quoteSessionRef.current.analysis)) return false;
+    if (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE) {
+      if (storedWork.pane.state !== 'ready' || storedWork.pane.sourceConflict ||
+          storedWork.pane.analysis.caseActionsUncertain) return false;
+      return storedWork.flushEdits();
+    }
     if (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) return true;
     return storedWork.flushEdits();
   };
@@ -2401,11 +2474,43 @@ export function NavaPane({
 
             {storedWork.saveFailed ? (
               <p role="status" className="flex items-center gap-2 px-1 text-[11px] text-[#b45309]">
-                Couldn&apos;t save change.
-                <button type="button" className="font-semibold underline" onClick={storedWork.retrySave}>
+                {storedWork.saveError ?? "Couldn't save change."}
+                <button type="button" className="font-semibold underline" onClick={() => {
+                  const binding = quoteSessionRef.current.binding;
+                  if (binding?.internetMessageId) paneRecoveryRetry.current = paneEditKey(binding.transportId, binding.internetMessageId);
+                  storedWork.retrySave();
+                  setPaneRecoveryAttempt((value) => value + 1);
+                }}>
                   Retry
                 </button>
               </p>
+            ) : null}
+            {(storedWork.saveError || (quoteSession.binding?.internetMessageId &&
+              Array.isArray(paneSourceRecord(paneEditKey(quoteSession.binding.transportId, quoteSession.binding.internetMessageId))?.pendingBefore))) ? (
+              <button type="button" className="self-start px-1 text-[11px] font-semibold underline text-[#b45309]"
+                onClick={() => {
+                  const binding = quoteSessionRef.current.binding;
+                  void storedWork.discardUnconfirmedEdits().then((discarded) => {
+                    if (!discarded) {
+                      toast.warning("Couldn't reload these changes yet. Retry saving or try again.");
+                      return;
+                    }
+                    const current = quoteSessionRef.current.binding;
+                    if (!binding || !current || current.transportId !== binding.transportId ||
+                        current.internetMessageId !== binding.internetMessageId || current.selectionEpoch !== binding.selectionEpoch ||
+                        current.scopeEpoch !== binding.scopeEpoch) return;
+                    // Invalidate in-flight pane results and start again from the server read.
+                    contextRevision.current.selectionEpoch += 1;
+                    const fresh = { ...binding, selectionEpoch: contextRevision.current.selectionEpoch };
+                    quoteSessionRef.current = reduceQuoteSession(reduceQuoteSession(quoteSessionRef.current, { type: 'reset' }),
+                      { type: 'selection', binding: fresh });
+                    dispatchQuote({ type: 'reset' });
+                    dispatchQuote({ type: 'selection', binding: fresh });
+                    resetReplyDraft();
+                  });
+                }}>
+                Discard unsaved changes and reload
+              </button>
             ) : null}
 
             {activeEmail && !quoteSession.staffQuote && quoteOrBookingEmail ? (

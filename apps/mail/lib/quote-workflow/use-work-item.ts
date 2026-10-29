@@ -99,6 +99,10 @@ export type StoredDecision =
  * result is not used. Loading waits, so the live read does not start twice.
  */
 export function storedDecision(pane: StoredPane, overridden: boolean): StoredDecision {
+  // A live re-read cannot clear a server conflict or a pinned older extraction.
+  if (pane.state === 'ready' && (pane.sourceConflict || pane.analysis.caseActionsUncertain)) {
+    return { kind: 'ready', analysis: pane.analysis };
+  }
   if (overridden) return { kind: 'live' };
   if (pane.state === 'loading') return { kind: 'wait' };
   if (pane.state === 'ready') return { kind: 'ready', analysis: pane.analysis };
@@ -441,6 +445,7 @@ function normalizedRecoveryGroups(
 /** Compare the case and every source row, even if a dates-only row has gained its synthetic id. */
 function sameRecoverySource(source: ReadyStored, opened: ReadyStored): boolean {
   if (!source.extractionId || opened.extractionId !== source.extractionId || opened.kind !== source.kind ||
+      source.sourceConflict || opened.sourceConflict ||
       opened.analysis.intent !== source.analysis.intent || opened.analysis.luna?.workflow !== source.analysis.luna?.workflow ||
       source.analysis.caseActionsUncertain || opened.analysis.caseActionsUncertain || !provenanceOf(opened)) return false;
   if (source.workItemStatus && !['needs_you', 'review'].includes(source.workItemStatus)) return false;
@@ -1002,25 +1007,30 @@ export function useStoredWork(args: {
 
   /** Logs one edit (a field patch or a stay/row action) as field events. Only a stored read has a work item. */
   const recordGroups = useCallback(
-    (before: StayGroupRequirement[], after: StayGroupRequirement[]) => {
-      if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch) { blockStaleSelection(selection.current.key); return; }
+    (before: StayGroupRequirement[], after: StayGroupRequirement[], options?: { verifiedRecovery?: boolean }): boolean => {
+      if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch) { blockStaleSelection(selection.current.key); return false; }
       editEpoch.current += 1;
-      if (historyPending || historyNeedsReload) return;
+      if (historyPending || historyNeedsReload || discardInProgress.current) return false;
       const workItemId = readyWorkItemId ?? cachedWorkItemId;
       let events: FieldEvent[];
-      if (!readyRefs || !workItemId || (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) {
-        if (JSON.stringify(before) === JSON.stringify(after)) return;
+      if (options?.verifiedRecovery || !readyRefs || !workItemId || (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) {
+        if (JSON.stringify(before) === JSON.stringify(after)) return true;
         const draft = draftForSelection();
-        if (!draft) return;
+        if (!draft) return false;
         setRecoveryMarked(draft.key, true);
         const captured = captureDeferredGroups(draft, before, after);
         if (!captured) {
           draft.blocked = true;
           draft.last = copyGroups(after);
           setRecoveryProblem({ key: draft.key, message: 'The saved details could not be verified. Review and re-enter your changes.' });
-          return;
+          return false;
         }
         events = captured;
+        if (options?.verifiedRecovery && !events.length) {
+          draft.blocked = true;
+          setRecoveryProblem({ key: draft.key, message: 'These changes could not be saved. Discard them and reload this request.' });
+          return false;
+        }
       } else events = fieldEventsBetween(readyRefs, before, after);
       if (events.length) {
         setLookup((prev) =>
@@ -1029,10 +1039,11 @@ export function useStoredWork(args: {
             : prev,
         );
       }
-      if (!workItemId || (lookupKey && deferred.current.has(lookupKey))) return;
+      if (!workItemId || (lookupKey && deferred.current.has(lookupKey))) return true;
       for (const event of events) {
         schedule(event.path, workItemId, readyTransportId, event.value);
       }
+      return true;
     },
     [blockStaleSelection, cachedWorkItemId, draftForSelection, historyNeedsReload, historyPending, lookupKey, readyRefs,
       readyWorkItemId, readyTransportId, renderEpoch, schedule],
@@ -1156,6 +1167,11 @@ export function useStoredWork(args: {
     if (!lookupKey || !internetMessageId || selection.current.epoch !== renderEpoch || !readyTransportId || !currentLookup?.userId || !scope || historyPending ||
         recovering.current.has(lookupKey) || discardInProgress.current ||
         !scope.startsWith(`${currentLookup.userId}:`) || !scope.endsWith(`:${readyTransportId}`)) return false;
+    // A request already sent may still land. Never reload and call it discarded while that save can complete later.
+    const itemId = readyWorkItemId ?? cachedWorkItemId;
+    const prefix = itemId ? `${itemId}\n` : null;
+    if (prefix && [pending.current, inFlight.current, latest.current, failed.current]
+      .some((entries) => [...entries.keys()].some((key) => key.startsWith(prefix)))) return false;
     const epoch = renderEpoch;
     const revision = editEpoch.current;
     const userId = currentLookup.userId;
@@ -1182,7 +1198,7 @@ export function useStoredWork(args: {
     } finally {
       if (stillSelected()) setHistoryPending(false);
     }
-  }, [currentLookup?.userId, historyEpoch, historyPending, internetMessageId, lookupKey, readyTransportId,
+  }, [cachedWorkItemId, currentLookup?.userId, historyEpoch, historyPending, internetMessageId, lookupKey, readyTransportId, readyWorkItemId,
     refetchStored, renderEpoch, scope]);
 
   const historyRoutes = historyRoutesFrom(trpc);

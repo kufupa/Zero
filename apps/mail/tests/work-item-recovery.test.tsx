@@ -5,7 +5,7 @@ import { setMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import type { RecordFieldEventInput, StoredWork } from '@/lib/quote-workflow/backend-bind';
 import type { StayGroupRequirement } from '@/lib/quote-workflow/types';
 import { caseQuoteBlocked, caseReviewPending } from '@/lib/quote-workflow/session';
-import { STORED_LOOKUP_TIMEOUT_MS, useStoredWork, type WorkItemProvenanceMap } from '@/lib/quote-workflow/use-work-item';
+import { STORED_LOOKUP_TIMEOUT_MS, storedDecision, useStoredWork, type WorkItemProvenanceMap } from '@/lib/quote-workflow/use-work-item';
 
 type Ready = Extract<StoredWork, { status: 'ready' }> & { fieldProvenance: WorkItemProvenanceMap };
 const ROW: StayGroupRequirement = {
@@ -102,6 +102,44 @@ describe('missing work item recovery', () => {
     const analysis = result.current.pane.analysis;
     expect(caseReviewPending(analysis)).toBe(true);
     expect(caseQuoteBlocked({ analysis, groups: analysis.groups }, 's_1')).toBe(true);
+    expect(storedDecision(result.current.pane, true)).toMatchObject({ kind: 'ready' });
+  });
+
+  it('revision-checks recovered edits even when the work item already exists', async () => {
+    mailbox();
+    const { trpc, query, open, record } = harness();
+    query.mockResolvedValueOnce(OPENED);
+    let finish!: () => void;
+    record.mockImplementationOnce((input) => new Promise((resolve) => { finish = () => resolve(acknowledge(input)); }));
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' }));
+    act(() => expect(result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }], { verifiedRecovery: true })).toBe(true));
+    let settled = false;
+    let flushed!: Promise<boolean>;
+    act(() => { flushed = result.current.flushEdits(); void flushed.then(() => { settled = true; }); });
+    await waitFor(() => expect(record).toHaveBeenCalledTimes(1));
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({
+      fieldPath: CHILD, expected: { extractionId: 'ex-1', seq: 0, stateDigest: INITIAL_DIGEST },
+    }), PINNED);
+    expect(settled).toBe(false);
+    await act(async () => { finish(); expect(await flushed).toBe(true); });
+    expect(record).toHaveBeenCalledTimes(2);
+  });
+
+  it('will not replay recovered edits when reopening finds a conflicting workflow', async () => {
+    mailbox();
+    const { trpc, query, open, record } = harness();
+    query.mockResolvedValueOnce(OPENED);
+    open.mockResolvedValueOnce({ ...OPENED, sourceConflict: {
+      reason: 'workflow_reclassified', previousItems: [{ workItemId: 'old', kind: 'booking', status: 'needs_you' }],
+    } });
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' }));
+    act(() => expect(result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }], { verifiedRecovery: true })).toBe(true));
+    await act(async () => expect(await result.current.flushEdits()).toBe(false));
+    expect(record).not.toHaveBeenCalled();
+    expect(result.current.saveError).toContain('could not be verified');
   });
 
   it('holds recovery when the initial server read has no source identity', async () => {
