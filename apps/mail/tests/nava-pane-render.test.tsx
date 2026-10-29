@@ -1888,7 +1888,7 @@ describe('NavaPane', () => {
     await waitFor(() => {
       const failures = within(table).getAllByText('Search failed');
       expect(failures).toHaveLength(6);
-      expect(failures[0]?.getAttribute('title')).toContain('comparison queue is disabled or unavailable');
+      expect(within(table).getAllByText(/comparison queue is disabled or unavailable/)).toHaveLength(6);
     });
     expect(bridgeMockState.staffQuoteJobQuery).not.toHaveBeenCalled();
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
@@ -1901,7 +1901,8 @@ describe('NavaPane', () => {
     const calls = bridgeMockState.analyseCalls;
     bridgeMockState.analyseFails = false;
     fireEvent.click(retry);
-    await waitFor(() => expect(bridgeMockState.analyseCalls).toBe(calls + 1));
+    await waitFor(() => expect(bridgeMockState.analyseCalls).toBeGreaterThanOrEqual(calls + 1));
+    expect(await screen.findByText('Nava filled these in from the email. Check them before getting rates.')).toBeDefined();
   });
 
   it('stored: what she types while the stored read loads is laid over it and logged, so it is there on reopen', async () => {

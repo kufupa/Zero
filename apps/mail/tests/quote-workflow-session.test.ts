@@ -3671,6 +3671,15 @@ describe('a header patched while Nava reads', () => {
 });
 
 describe('type changed after rates', () => {
+  it('accepts a first quote after staff change an empty non-quote read to quote', () => {
+    let s = analysisReady({ ...quoteAnalysis, intent: 'other', groups: [], luna: lunaQuote({ workflow: 'other' }) });
+    s = reduceQuoteSession(s, { type: 'treat_as', treatAs: 'quote' });
+    s = reduceQuoteSession(s, { type: 'analysis_started' });
+    s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
+    expect(s.groups.map((group) => group.id)).toEqual(['g1']);
+    expect(quoteRunBlockReason(s, stepFor(s, STAY_A))).toBeNull();
+  });
+
   it('drops the old rates and booking cards so Get rates runs again for the chosen type, keeping the stays', () => {
     let s = reduceQuoteSession(initialQuoteSession(), { type: 'selection', binding: bind() });
     s = reduceQuoteSession(s, { type: 'analysis_ready', analysis: { ...quoteAnalysis, luna: lunaQuote() } });
@@ -5027,6 +5036,16 @@ describe('fresh case evidence and mixed actions', () => {
   const overlaid = (fresh: QuoteAnalysis, remembered: QuoteAnalysis['groups'], prior: QuoteAnalysis | null, property: string | null = 'HRCEN') =>
     withPaneRead(fresh, overlayRememberedGroups(fresh.groups, remembered), paneCaseSnapshot(prior), property);
 
+  it('holds changed source identity after a header-only edit', () => {
+    let session = analysisReady(withPaneRead(source, null, null, 'HRCEN'));
+    session = reduceQuoteSession(session, { type: 'patch_staff_header', header: { company: 'Staff Co' } });
+    const changed = { ...source, groups: [{ ...first, confirmationNumber: '22222222-1' }, second] };
+    session = reduceQuoteSession(session, { type: 'analysis_ready', analysis: overlaid(changed, session.groups, session.analysis) });
+    expect(session.staffHeader.company).toBe('Staff Co');
+    expect(stayAskGuests(session, 'stay-a')).toEqual([]);
+    expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toMatch(/existing or unclear booking/i);
+  });
+
   it.each(['guest', 'reference', 'hotel', 'missing roster', 'mailbox property', 'missing mailbox property'])(
     'holds a %s change after the roster row was removed, even across further reducer transitions', (change) => {
       let session = analysisReady(withPaneRead(source, null, null, 'HRCEN'));
@@ -5090,6 +5109,87 @@ describe('fresh case evidence and mixed actions', () => {
     expect(quoteRunBlockReason(replayed, stepFor(replayed, STAY_A))).toMatch(/existing or unclear booking/i);
   });
 
+  it('accepts a saved room removal only when the retained case roster still matches', () => {
+    const firstWithoutAssignment = { ...first, confirmationNumber: undefined };
+    const before: QuoteAnalysis = { ...source, groups: [firstWithoutAssignment, second] };
+    const remainingWithRoster = { ...second, stayGuests: first.stayGuests };
+    const after: QuoteAnalysis = { ...before, groups: [remainingWithRoster],
+      luna: lunaQuote({ tasks: [{ kind: 'quote', groupIndexes: [0], note: '' }] }) };
+    let edited = analysisReady(withPaneRead(before, null, null, 'HRCEN'));
+    edited = reduceQuoteSession(edited, { type: 'remove_row', groupId: first.id });
+    const saved = reduceQuoteSession(edited, { type: 'analysis_ready', analysis: overlaid(after, edited.groups, edited.analysis) });
+    expect(saved.analysis?.groups).toEqual(after.groups);
+    expect(stayAskGuests(saved, 'stay-a')).toEqual(first.stayGuests);
+    expect(quoteRunBlockReason(saved, stepFor(saved, STAY_A))).toBeNull();
+    const reopened = analysisReady(overlaid(after, edited.groups, edited.analysis));
+    expect(stayAskGuests(reopened, 'stay-a')).toEqual(first.stayGuests);
+    expect(quoteRunBlockReason(reopened, stepFor(reopened, STAY_A))).toBeNull();
+
+    const missingRoster = { ...after, groups: [{ ...second, stayGuests: undefined }] };
+    const held = reduceQuoteSession(edited, { type: 'analysis_ready', analysis: overlaid(missingRoster, edited.groups, edited.analysis) });
+    expect(stayAskGuests(held, 'stay-a')).toEqual([]);
+    expect(quoteRunBlockReason(held, stepFor(held, STAY_A))).toMatch(/existing or unclear booking/i);
+    let noRemoval = analysisReady(withPaneRead(before, null, null, 'HRCEN'));
+    noRemoval = reduceQuoteSession(noRemoval, { type: 'patch_group', groupId: second.id, patch: { adults: 3 } });
+    const unexpected = reduceQuoteSession(noRemoval, { type: 'analysis_ready', analysis: overlaid(after, noRemoval.groups, noRemoval.analysis) });
+    expect(quoteRunBlockReason(unexpected, stepFor(unexpected, STAY_A))).toMatch(/existing or unclear booking/i);
+  });
+
+  it('reclassifies one matching stored quote using fresh live evidence and preserves the link on reopen', () => {
+    const storedRow = { ...quoteAnalysis.groups[0]!, id: 'r_single', stayId: 'stay-single',
+      stayGuests: [{ name: 'Ada Example', confirmationNumber: null }] };
+    const storedGroup = { arrival: storedRow.arrivalDate!, departure: storedRow.departureDate!, rooms: 1,
+      adultsPerRoom: 1, childAges: [], board: 'bb' as const, roomPreference: null, guestNames: [] as string[], stayId: 'stay-single' };
+    const stored: QuoteAnalysis = { ...quoteAnalysis, groups: [storedRow], luna: lunaQuote({
+      groups: [storedGroup], tasks: [{ kind: 'quote', groupIndexes: [0], note: '' }],
+    }) };
+    const live: QuoteAnalysis = { ...quoteAnalysis, luna: lunaQuote({ workflow: 'create_booking',
+      groups: [{ ...storedGroup, stayId: undefined, guestNames: ['Ada Example'] }],
+      tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }],
+    }) };
+    let session = withStaffSource(analysisReady(withPaneRead(stored, null, null, 'HRCEN')));
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: storedRow.id, patch: { adults: 3 } });
+    session = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'create_booking' });
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    const ready = (fresh: QuoteAnalysis, property = 'HRCEN') => overlaid(fresh, session.groups, session.analysis, property);
+    const accepted = reduceQuoteSession(session, { type: 'analysis_ready', analysis: ready(live) });
+    expect(accepted.groups[0]).toMatchObject({ id: 'r_single', adults: 3 });
+    expect(accepted.analysis?.groups[0]?.id).toBe('g1');
+    expect(stayAskAction(accepted, 'stay-single')).toBe('booking');
+    expect(quoteRunBlockReason(accepted, stepFor(accepted, STAY_A))).toBeNull();
+    const payload = { messageId: 'mail-1', selectionEpoch: 1, inputRevision: accepted.inputRevision, revisionRef: 'unquoted',
+      draft: { rooms: [], rateCheck: [], missing: [], flags: [] },
+      options: { track: [], sourceOfBusiness: [], guaranteeType: [], roomType: [] },
+    } as unknown as Extract<QuoteSessionAction, { type: 'booking_draft_ready' }>['payload'];
+    expect(reduceQuoteSession(accepted, { type: 'booking_draft_ready', payload, sourceHash: STAFF_HASH }).bookingDrafts[STAY_A]).toBeDefined();
+    const reopened = analysisReady(overlaid(live, accepted.groups, accepted.analysis));
+    expect(stayAskAction(reopened, 'stay-single')).toBe('booking');
+    expect(quoteRunBlockReason(reopened, stepFor(reopened, STAY_A))).toBeNull();
+
+    for (const field of ['arrival', 'departure']) {
+      const bookedSource = { ...stored, luna: { ...stored.luna!, [field]: '2026-11-12' } };
+      let booked = analysisReady(withPaneRead(bookedSource, null, null, 'HRCEN'));
+      booked = reduceQuoteSession(booked, { type: 'treat_as', treatAs: 'create_booking' });
+      booked = reduceQuoteSession(booked, { type: 'analysis_started' });
+      const held = reduceQuoteSession(booked, {
+        type: 'analysis_ready', analysis: overlaid(live, booked.groups, booked.analysis),
+      });
+      expect(stayAskAction(held, 'stay-single')).toBe('other');
+      expect(quoteRunBlockReason(held, stepFor(held, STAY_A))).toMatch(/existing or unclear booking/i);
+    }
+
+    const otherGuest = { ...live, luna: { ...live.luna!, groups: [{ ...live.luna!.groups[0]!, guestNames: ['Bea Example'] }] } };
+    const duplicateGuest = { ...live, luna: { ...live.luna!, groups: [{ ...live.luna!.groups[0]!, guestNames: ['Ada Example', 'Ada Example'] }] } };
+    const childAge = { ...live, groups: [{ ...live.groups[0]!, childrenAges: [7] }] };
+    const withRef = { ...live, luna: { ...live.luna!, confirmationNumber: '22222222-1' } };
+    const withHotel = { ...live, groups: [{ ...live.groups[0]!, hotel: 'Another hotel' }] };
+    for (const changed of [ready(otherGuest), ready(duplicateGuest), ready(childAge), ready(withRef), ready(withHotel), ready(live, 'HRDAV')]) {
+      const held = reduceQuoteSession(session, { type: 'analysis_ready', analysis: changed });
+      expect(stayAskAction(held, 'stay-single')).toBe('other');
+      expect(quoteRunBlockReason(held, stepFor(held, STAY_A))).toMatch(/existing or unclear booking/i);
+    }
+  });
+
   it.each(['amend', 'cancel'] as const)('blocks a %s case in a quote email, including same-date grouping', (kind) => {
     const quote = { ...quoteAnalysis.groups[0]!, id: 'quote-row', stayId: 'quote-stay' };
     const existing = { ...quoteAnalysis.groups[0]!, id: 'existing-row', stayId: 'existing-stay',
@@ -5148,6 +5248,25 @@ describe('fresh case evidence and mixed actions', () => {
         arrival: null, departure: null, requestedChange: null },
     });
     expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toMatch(/existing or unclear booking/i);
+  });
+
+  it('holds legacy quote cases with existing-booking evidence even without per-case tasks', () => {
+    const quote = { ...second, id: 'quote-row', stayId: 'quote-stay' };
+    const existing = { ...first, id: 'existing-row', stayId: 'existing-stay' };
+    const analysis: QuoteAnalysis = { ...quoteAnalysis, groups: [quote, existing], luna: lunaQuote() };
+    const same = analysisReady(analysis);
+    expect(quoteRunBlockReason(same, stepFor(same, STAY_A))).toMatch(/existing or unclear booking/i);
+    const distinct = analysisReady({ ...analysis, groups: [quote, { ...existing,
+      arrivalDate: '2026-12-01', departureDate: '2026-12-03' }] });
+    expect(quoteRunBlockReason(distinct, stepFor(distinct, STAY_A))).toBeNull();
+    expect(quoteRunBlockReason(distinct, stepFor(distinct, STAY_B))).toMatch(/existing or unclear booking/i);
+
+    const twoRooms = analysisReady({ ...analysis, groups: [existing, { ...quote, stayId: 'existing-stay' }] });
+    const removed = reduceQuoteSession(twoRooms, { type: 'remove_row', groupId: existing.id });
+    expect(quoteRunBlockReason(removed, stepFor(removed, STAY_A))).toMatch(/existing or unclear booking/i);
+    const lunaWithBookedDate = { ...lunaQuote(), arrival: '2026-11-12' };
+    const bookedDate = analysisReady({ ...analysis, groups: [quote], luna: lunaWithBookedDate });
+    expect(quoteRunBlockReason(bookedDate, stepFor(bookedDate, STAY_A))).toMatch(/existing or unclear booking/i);
   });
 
   it.each([false, true])('uses only the selected case confirmation for opposite actions (same dates: %s)', (sameDate) => {
