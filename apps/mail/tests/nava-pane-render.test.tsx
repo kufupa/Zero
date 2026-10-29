@@ -88,6 +88,7 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     staffQuoteSources: {} as Record<string, { messageId: string; threadId: string; sourceHash: string }>,
     quotePaneConfig: null as null | Record<string, unknown>,
     quotePaneConfigGate: null as null | Promise<void>,
+    quotePaneConfigFailures: 0,
     findPartyMutation: vi.fn().mockResolvedValue({
       outcome: 'no_match',
       results: [],
@@ -298,6 +299,10 @@ vi.mock('../providers/query-provider', () => ({
       rateCatalogue: {
         query: async () => {
           if (bridgeMockState.quotePaneConfigGate) await bridgeMockState.quotePaneConfigGate;
+          if (bridgeMockState.quotePaneConfigFailures > 0) {
+            bridgeMockState.quotePaneConfigFailures -= 1;
+            throw new Error('Property settings unavailable');
+          }
           return bridgeMockState.quotePaneConfig;
         },
       },
@@ -457,6 +462,7 @@ describe('NavaPane', () => {
     bridgeMockState.staffQuoteSources = {};
     bridgeMockState.quotePaneConfig = null;
     bridgeMockState.quotePaneConfigGate = null;
+    bridgeMockState.quotePaneConfigFailures = 0;
     bridgeMockState.recordEvent.mockReset().mockImplementation(async (value: unknown) => {
       const event = value as { value?: unknown; expected?: { extractionId: string; seq: number } };
       return { aiValue: null, value: event.value ?? null, ...(event.expected ? { cursor: {
@@ -750,6 +756,7 @@ describe('NavaPane', () => {
     bridgeMockState.analysisOverride = null;
     bridgeMockState.quotePaneConfig = null;
     bridgeMockState.quotePaneConfigGate = null;
+    bridgeMockState.quotePaneConfigFailures = 0;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
@@ -787,6 +794,7 @@ describe('NavaPane', () => {
     bridgeMockState.analysisOverride = null;
     bridgeMockState.quotePaneConfig = null;
     bridgeMockState.quotePaneConfigGate = null;
+    bridgeMockState.quotePaneConfigFailures = 0;
     bridgeMockState.analyseCalls = 0;
     bridgeMockState.analyseFails = false;
     bridgeMockState.storedWork = null;
@@ -2509,6 +2517,30 @@ describe('NavaPane', () => {
     expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
     await act(async () => releaseLookup());
   }, 15000);
+
+  it.each(['failed request', 'different mailbox'])(
+    'explains a %s property settings read and lets staff retry', async (failure) => {
+      const config = {
+        transportId: 'transport-1', propertyCode: HRDAV_PROPERTY_CODE, roomTypes: [], ratePlans: [],
+        boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+      };
+      bridgeMockState.quotePaneConfig = failure === 'different mailbox'
+        ? { ...config, transportId: 'other-mailbox' } : config;
+      bridgeMockState.quotePaneConfigFailures = failure === 'failed request' ? 1 : 0;
+      bridgeMockState.storedWork = STORED_READY;
+      setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
+      const { container } = render(<NavaPane bridge={fakeBridge} />);
+      const retry = await screen.findByRole('button', { name: 'Retry property settings' });
+      const edit = () => container.querySelector<HTMLButtonElement>('#quote-contact button[aria-expanded]');
+      await waitFor(() => expect(edit()?.disabled).toBe(true));
+      expect(screen.getByText(/Contact edits and rates are unavailable/)).toBeDefined();
+
+      bridgeMockState.quotePaneConfig = config;
+      fireEvent.click(retry);
+      await waitFor(() => expect(edit()?.disabled).toBe(false));
+      expect(screen.queryByRole('button', { name: 'Retry property settings' })).toBeNull();
+    }, 15000,
+  );
 
   it('stored: a contact name correction keeps other fields from the read that lands later', async () => {
     let releaseLookup = () => {};

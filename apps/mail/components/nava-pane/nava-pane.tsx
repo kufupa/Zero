@@ -419,6 +419,8 @@ export function NavaPane({
     [partyJobThreadId, partyJobMessageId],
   );
   const [quotePaneConfig, setQuotePaneConfig] = useState<QuotePaneConfig | null>(null);
+  const [quotePaneConfigError, setQuotePaneConfigError] = useState<string | null>(null);
+  const [quotePaneConfigAttempt, setQuotePaneConfigAttempt] = useState(0);
   // Preview/Book in HMS show only when create mode is lab or on. Until the read answers, the card stays copy-only.
   const [paneSaveOn, setPaneSaveOn] = useState(false);
   // Attach stays Labtest-only. Create=on never enables it.
@@ -566,23 +568,30 @@ export function NavaPane({
   useEffect(() => {
     let alive = true;
     setQuotePaneConfig(null);
+    setQuotePaneConfigError(null);
     const transportId = activeConnection?.id;
     if (!session?.user?.id || !transportId) {
       return () => {
         alive = false;
       };
     }
+    const configScope = JSON.stringify([session.user.id, transportId]);
     void trpcClient.quoteWorkflow.rateCatalogue.query()
       .then((config) => {
-        if (alive && config.transportId === transportId) setQuotePaneConfig(config);
+        if (!alive) return;
+        if (!config || config.transportId !== transportId || !config.propertyCode) {
+          setQuotePaneConfigError(configScope);
+          return;
+        }
+        setQuotePaneConfig(config);
       })
       .catch(() => {
-        if (alive) setQuotePaneConfig(null);
+        if (alive) setQuotePaneConfigError(configScope);
       });
     return () => {
       alive = false;
     };
-  }, [session?.user?.id, activeConnection?.id]);
+  }, [session?.user?.id, activeConnection?.id, quotePaneConfigAttempt]);
   const readOnlySyncStatus = Boolean(preview || onOpenThread);
   const sync = useOutlookSync({
     userId: session?.user?.id ?? null,
@@ -2367,6 +2376,15 @@ export function NavaPane({
   );
   const mailboxWarnings = (
     <>
+      {activeEmail && session?.user?.id && activeConnection?.id &&
+      quotePaneConfigError === JSON.stringify([session.user.id, activeConnection.id]) ? (
+        <div role="status" className="rounded-sm border border-amber-300 bg-amber-50 p-2.5 text-xs text-amber-800">
+          <p>Nava could not load this property's settings. Contact edits and rates are unavailable.</p>
+          <Button type="button" size="sm" onClick={() => setQuotePaneConfigAttempt((attempt) => attempt + 1)}>
+            Retry property settings
+          </Button>
+        </div>
+      ) : null}
       {isConnected && capabilities && capabilities.mailboxSync !== 1 ? (
         <p className="text-[11px] text-slate-600">Update the Outlook add-in to enable automatic email copying.</p>
       ) : null}
