@@ -19,7 +19,8 @@ import {
   stayTotals,
 } from '@/lib/quote-workflow/session';
 import { notNoise, openReviewItems } from '@/lib/quote-workflow/review-items';
-import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE } from '@/lib/quote-workflow/types';
+import { childOccupancyReady } from '@/lib/quote-workflow/child-occupancy';
+import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE, HRDAV_PROPERTY_CODE } from '@/lib/quote-workflow/types';
 import type { WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 import type { SavedStayCommit } from './booking-card';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
@@ -47,7 +48,6 @@ import {
   LinkButton,
   Notice,
   PrimaryButton,
-  Section,
   SecondaryButton,
   paneFieldClass,
   paneTextareaClass,
@@ -278,6 +278,7 @@ function missingQuestionAnswered(
   field: string,
   groups: StayGroupRequirement[],
   header: StaffQuoteHeader,
+  propertyCode: QuotePaneConfig['propertyCode'] | undefined,
 ): boolean {
   const key = field.toLowerCase().replace(/[\s_-]/g, '');
   if (CONTACT_QUESTION_FIELDS.has(key)) return true;
@@ -321,6 +322,9 @@ function missingQuestionAnswered(
   }
   if (['adult', 'adults', 'adultsperroom'].includes(key)) {
     return everyGroup((group) => (group.adults ?? 0) > 0);
+  }
+  if (propertyCode !== HRDAV_PROPERTY_CODE && ['childrenperroom', 'childages', 'childrenages'].includes(key)) {
+    return everyGroup(childOccupancyReady);
   }
   if (['childages', 'childrenages'].includes(key)) {
     return everyGroup((group) => group.childrenAges.length > 0);
@@ -930,7 +934,7 @@ export function QuoteWorkflowPanel({
             : 'Add a date range before searching.';
   const lunaMissing = session.analysis?.luna?.missing ?? [];
   const orderedMissing = lunaMissing
-    .filter((item) => !missingQuestionAnswered(item.field, formGroups, header))
+    .filter((item) => !missingQuestionAnswered(item.field, formGroups, header, paneConfig?.propertyCode))
     .map((item, index) => ({ item, index, priority: missingQuestionPriority(item.field) }))
     .sort((left, right) => left.priority - right.priority || left.index - right.index);
   const hasPartyBlocker = orderedMissing.some(({ priority }) => priority === 0);
