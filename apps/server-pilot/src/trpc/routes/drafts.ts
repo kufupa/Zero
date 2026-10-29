@@ -1976,7 +1976,7 @@ export const draftsRouter = tRouter({
         .limit(1);
       if (!draft) return null;
       const [saved] = await db
-        .select({ id: mailDraftRevision.id })
+        .select({ id: mailDraftRevision.id, htmlBody: mailDraftRevision.htmlBody, attachments: mailDraftRevision.attachments })
         .from(mailDraftRevision)
         .where(
           and(
@@ -2008,8 +2008,10 @@ export const draftsRouter = tRouter({
         }
         attachments.push({ fileName: a.filename, pdfBase64: body.toString('base64') });
       }
+      const unchanged = latest?.id === saved.id && saved.htmlBody === draft.htmlBody &&
+        JSON.stringify(saved.attachments ?? []) === JSON.stringify(draft.attachments ?? []);
       const quoteBound = saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}quote:`) ? true :
-        latest?.id === saved.id && saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}other:`) ? false : undefined;
+        unchanged && saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}other:`) ? false : undefined;
       return { id: draft.id, html: draft.htmlBody ?? '', attachments,
         ...(quoteBound === undefined ? {} : { quoteBound }) };
     }),
