@@ -12,6 +12,7 @@ import {
 // Exercise the real route and work-item guard with a serialized in-memory transaction, never a database.
 let state: Record<string, unknown> = {};
 let exists = true;
+let otherUnresolved = false;
 let updateCount = 0;
 let failUpdateAt = 0;
 let failUpdatesFrom = 0;
@@ -25,9 +26,12 @@ const fakeDb = {
     try {
       let nextState: Record<string, unknown> | undefined;
       const tx = {
-        select: () => ({ from: () => ({ where: () => ({ limit: () => ({
-          for: async () => exists ? [{ state: structuredClone(state) }] : [],
-        }) }) }) }),
+        execute: async () => undefined,
+        select: (fields: Record<string, unknown>) => ({ from: () => ({ where: () => ({
+          limit: () => 'id' in fields
+            ? Promise.resolve(otherUnresolved ? [{ id: 'other-work-item' }] : [])
+            : { for: async () => exists ? [{ state: structuredClone(state) }] : [] },
+        }) }) }),
         update: () => ({ set: (values: { state: Record<string, unknown> }) => ({
           where: async () => {
             updateCount += 1;
@@ -92,6 +96,7 @@ async function preview(client: ReturnType<typeof caller>, stay = input) {
 beforeEach(() => {
   state = {};
   exists = true;
+  otherUnresolved = false;
   updateCount = 0;
   failUpdateAt = 0;
   failUpdatesFrom = 0;
@@ -108,6 +113,18 @@ afterEach(() => {
 });
 
 describe('quoteWorkflow commit safety with fake storage and HMS', () => {
+  it('does not reach HMS for another work item while the property has an unresolved save', async () => {
+    const { spawn, read } = fakeRunner();
+    const client = caller();
+    const previewDigest = await preview(client);
+    otherUnresolved = true;
+    expect(await client.quoteWorkflow.commitStay({ ...input, previewDigest })).toMatchObject({
+      status: 'refused', reason: 'pane_save_dependency_unconfirmed',
+    });
+    expect(read).not.toHaveBeenCalled();
+    expect(spawn.mock.calls.filter(([request]) => request.paneCommit)).toHaveLength(0);
+  });
+
   it('requires a work item and stay identity before a direct commit', async () => {
     const { spawn, read } = fakeRunner();
     const client = caller();

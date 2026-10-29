@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { workItem } from '../db/schema/work.js';
+import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 import { PANE_STAY_ALREADY_BOOKED, stayCommitsOf, type StayCommitRecord } from './work-items.js';
 
 const CLAIMS_KEY = 'paneStaySaveClaims';
@@ -20,7 +21,10 @@ function object(value: unknown): State | null {
  * whole work item. Claim under its row lock before HMS so a concurrent request or a reload cannot pass the hold.
  */
 export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<ClaimResult> {
+  const property = resolvePropertyTransport(input.transportId);
+  if (property.kind !== 'property') return { status: 'refused', reason: 'pane_save_work_item_unavailable' };
   return db.transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext('pane-stay-commit'), hashtext(${property.property.propertyCode}))`);
     const [item] = await tx.select({ state: workItem.state }).from(workItem)
       .where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, input.transportId)))
       .limit(1).for('update');
@@ -42,6 +46,20 @@ export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<Cl
       record.status === 'unknown' || !record.confirmationNumber)) {
       return { status: 'refused', reason: 'pane_save_dependency_unconfirmed' };
     }
+
+    // Legacy receipts have no booking identity: an unresolved save holds the whole hotel, across its mailboxes.
+    const [unresolved] = await tx.select({ id: workItem.id }).from(workItem).where(and(
+      inArray(workItem.transportId, [...property.property.transportIds]), ne(workItem.id, input.workItemId), sql`(
+        jsonb_typeof(${workItem.state}) IS DISTINCT FROM 'object' OR ${workItem.state} ? 'paneStaySaveClaims'
+        OR (${workItem.state} ? 'stays' AND jsonb_typeof(${workItem.state}->'stays') IS DISTINCT FROM 'object')
+        OR EXISTS (SELECT 1 FROM jsonb_each(CASE WHEN jsonb_typeof(${workItem.state}->'stays') = 'object'
+          THEN ${workItem.state}->'stays' ELSE '{}'::jsonb END) AS s
+          WHERE s.key !~ '^[A-Za-z0-9_-]{1,40}$' OR s.value->>'status' IS DISTINCT FROM 'booked'
+          OR jsonb_typeof(s.value->'confirmationNumber') IS DISTINCT FROM 'string'
+          OR btrim(s.value->>'confirmationNumber') = '')
+      )`,
+    )).limit(1);
+    if (unresolved) return { status: 'refused', reason: 'pane_save_dependency_unconfirmed' };
 
     let parentConfirmation: string | undefined;
     if (input.parentStayId) {

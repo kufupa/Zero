@@ -472,10 +472,10 @@ async function takeBoundPreview(input: {
     });
     if (taken) {
       takePanePreview(input.owner, input.digest, input.now);
-      return true;
     }
+    return taken;
   }
-  // Preview today may omit work-item ids (memory only). Commit still sends them; honour the same-process grant.
+  // The standalone proof runner has no work-item identity; pane commits require the durable bound grant.
   return takePanePreview(input.owner, input.digest, input.now);
 }
 
@@ -742,7 +742,7 @@ export async function runPaneStay(input: {
         // Adding a room to this guest's own booking finds that booking on the same dates; that is the parent.
         if (status === 'duplicate' && !parent) return { refusal: 'osress_duplicate' };
         // The grant is taken under the lock, so two concurrent commits cannot both spawn.
-        // Durable work-item grant wins; if none, the in-memory grant still covers same-process preview.
+        // Work-item grants stay bound to that item and stay; standalone proofs use their in-memory grant.
         if (
           !(await takeBoundPreview({
             owner: input.owner,

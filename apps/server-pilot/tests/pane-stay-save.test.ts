@@ -1501,7 +1501,7 @@ describe('pane stay preview persist', () => {
     expect(spawned).toEqual(['preview', 'commit', 'preview']);
   });
 
-  it('same-process commit with work-item ids still uses the in-memory preview grant', async () => {
+  it('does not use an unbound in-memory preview for a work-item commit', async () => {
     enableSave();
     paneStaySaveLoaders.previewPersist = {
       record: () => undefined,
@@ -1524,6 +1524,31 @@ describe('pane stay preview persist', () => {
         stayId: 's_1',
         previewDigest: preview.previewDigest as string,
       }),
-    ).resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
+    ).resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required', clickedSave: false });
+  });
+
+  it('does not transfer a preview grant to another work item or stay', async () => {
+    enableSave();
+    const grants = new Map<string, string>();
+    const key = (workItemId: string, stayId: string) => `${workItemId}:${stayId}`;
+    paneStaySaveLoaders.previewPersist = {
+      record: ({ workItemId, stayId, digest }) => { grants.set(key(workItemId, stayId), digest); },
+      take: ({ workItemId, stayId, digest }) => {
+        const grant = grants.get(key(workItemId, stayId));
+        grants.delete(key(workItemId, stayId));
+        return grant === digest;
+      },
+    };
+    const owner = freshOwner();
+    const workItemId = randomUUID();
+    const stayId = 's_1';
+    const preview = await runPaneStay({ mode: 'preview', stay: labStay, owner, workItemId, stayId });
+    const previewDigest = preview.previewDigest as string;
+    for (const ids of [{ workItemId: randomUUID(), stayId }, { workItemId, stayId: 's_2' }]) {
+      await expect(runPaneStay({ mode: 'commit', stay: labStay, owner, ...ids, previewDigest }))
+        .resolves.toMatchObject({ status: 'refused', reason: 'pane_save_preview_required', clickedSave: false });
+    }
+    await expect(runPaneStay({ mode: 'commit', stay: labStay, owner, workItemId, stayId, previewDigest }))
+      .resolves.toMatchObject({ status: 'ok', outcome: 'committed', confirmationNumber: '46184891-1' });
   });
 });
