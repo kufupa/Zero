@@ -452,7 +452,12 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           groups: [{ ...request.input.groups[0]!, id: 'added_row', arrivalDate: '2026-10-26',
             departureDate: '2026-10-27' }] });
         expect(second.status).toBe('ready');
-        expect(nativeRead).toHaveBeenCalledTimes(2);
+        expect(nativeRead).toHaveBeenCalledWith(expect.objectContaining({
+          arrivalDate: '2026-10-12', departureDate: '2026-10-15',
+        }), expect.any(AbortSignal));
+        expect(nativeRead).toHaveBeenCalledWith(expect.objectContaining({
+          arrivalDate: '2026-10-26', departureDate: '2026-10-27',
+        }), expect.any(AbortSignal));
         const combined = { ...proposal, additionalStays: [{ workflowRunId: second.workflowRunId,
           revisionRef: second.revisionRef, factRefs: [] }] };
         const complete = await api.workstation.qualifiedQuoteProposalPdf(combined);
