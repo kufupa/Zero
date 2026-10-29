@@ -1,0 +1,973 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nava Pane Demo · Infor booking review</title>
+<style>
+
+      :root {
+        color-scheme: light;
+        --page: #f3f5f8;
+        --surface: #ffffff;
+        --surface-muted: #f8fafc;
+        --line: #dce2e9;
+        --line-strong: #c6d0db;
+        --ink: #18212b;
+        --muted: #5a6673;
+        --quiet: #7a8794;
+        --blue: #1769aa;
+        --blue-dark: #0d568f;
+        --blue-soft: #eaf4fc;
+        --green: #18794e;
+        --green-soft: #e8f5ee;
+        --amber: #805200;
+        --amber-soft: #fff5df;
+        --red: #a12d2d;
+        --red-soft: #fff0ee;
+        --radius: 8px;
+        --shadow: 0 2px 8px rgb(21 42 63 / 6%);
+      }
+
+      * { box-sizing: border-box; }
+      html, body { min-width: 320px; min-height: 100%; margin: 0; }
+      body {
+        background: var(--page);
+        color: var(--ink);
+        font: 13px/1.45 "Segoe UI", Arial, sans-serif;
+      }
+      button, input, select, textarea { font: inherit; }
+      button, select { cursor: pointer; }
+      button:disabled { cursor: not-allowed; opacity: .55; }
+      :focus-visible { outline: 3px solid #72b7eb; outline-offset: 2px; }
+      .appbar {
+        align-items: center;
+        background: #fff;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        gap: 12px;
+        height: 52px;
+        padding: 0 18px;
+      }
+      .app-mark {
+        align-items: center;
+        background: #e8f1fb;
+        border-radius: 7px;
+        color: var(--blue-dark);
+        display: inline-flex;
+        font-size: 14px;
+        font-weight: 700;
+        height: 28px;
+        justify-content: center;
+        width: 28px;
+      }
+      .app-name { font-size: 14px; font-weight: 700; }
+      .app-context { color: var(--muted); margin-left: auto; }
+      .offline-pill, .status-pill, .tag {
+        align-items: center;
+        border-radius: 999px;
+        display: inline-flex;
+        font-size: 11px;
+        font-weight: 600;
+        gap: 5px;
+        line-height: 1.2;
+        padding: 4px 8px;
+        white-space: nowrap;
+      }
+      .offline-pill { background: var(--amber-soft); color: var(--amber); }
+      .app-shell {
+        display: grid;
+        grid-template-columns: 224px minmax(320px, 1fr) minmax(370px, 420px);
+        height: calc(100vh - 52px);
+        min-height: 560px;
+      }
+      .mail-nav, .mail-reader, .nava-pane { min-width: 0; }
+      .mail-nav {
+        background: #f8fafc;
+        border-right: 1px solid var(--line);
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+      }
+      .nav-heading {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .04em;
+        padding: 17px 14px 9px;
+        text-transform: uppercase;
+      }
+      .case-list { min-height: 0; overflow-y: auto; padding: 0 8px 12px; }
+      .case-link {
+        border: 1px solid transparent;
+        border-radius: 7px;
+        color: var(--ink);
+        display: block;
+        margin: 2px 0;
+        min-width: 0;
+        padding: 9px 9px 8px;
+        text-decoration: none;
+      }
+      .case-link:hover { background: #eef3f8; }
+      .case-link[aria-current="page"] {
+        background: #e8f2fb;
+        border-color: #c8def1;
+        color: #113e62;
+      }
+      .case-subject, .case-sender {
+        display: block;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .case-subject { font-size: 12px; font-weight: 600; }
+      .case-sender { color: var(--muted); font-size: 11px; margin-top: 3px; }
+      .case-kind { color: var(--quiet); font-size: 10px; margin-top: 5px; }
+      .nav-footnote {
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: auto;
+        padding: 11px 13px;
+      }
+      .mail-reader {
+        background: #eef2f6;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+      }
+      .reader-toolbar {
+        align-items: center;
+        background: #fff;
+        border-bottom: 1px solid var(--line);
+        color: var(--muted);
+        display: flex;
+        height: 42px;
+        padding: 0 16px;
+      }
+      .message-card {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+        margin: 18px auto;
+        max-width: 760px;
+        min-height: 280px;
+        overflow: auto;
+        padding: 22px 24px;
+        width: calc(100% - 36px);
+      }
+      .message-subject { font-size: 19px; font-weight: 650; line-height: 1.25; margin: 0 0 16px; }
+      .message-from { color: var(--muted); font-size: 12px; }
+      .message-from strong { color: var(--ink); }
+      .message-date { color: var(--quiet); font-size: 11px; margin-top: 3px; }
+      .message-divider { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+      .message-body { color: #293541; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
+      .message-empty { color: var(--quiet); font-style: italic; }
+      .nava-pane {
+        background: var(--surface);
+        border-left: 1px solid var(--line-strong);
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+      }
+      .pane-heading {
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        gap: 8px;
+        min-height: 48px;
+        padding: 8px 14px;
+      }
+      .pane-heading strong { font-size: 14px; }
+      .pane-status { color: var(--muted); font-size: 11px; margin-left: auto; }
+      .pane-scroll { min-height: 0; overflow-y: auto; padding: 12px 14px 20px; }
+      .selected-email {
+        background: var(--surface-muted);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        margin-bottom: 11px;
+        padding: 9px 10px;
+      }
+      .selected-email-title { font-size: 12px; font-weight: 650; line-height: 1.35; }
+      .selected-email-meta { align-items: flex-start; color: var(--muted); display: flex; flex-wrap: wrap; font-size: 11px; gap: 4px 8px; margin-top: 4px; overflow-wrap: anywhere; }
+      .read-as-row { align-items: center; display: grid; gap: 8px; grid-template-columns: 64px 1fr; margin-bottom: 12px; }
+      .read-as-row label, .field-label { color: #344251; font-size: 11px; font-weight: 650; }
+      .read-as-select, .control {
+        background: #fff;
+        border: 1px solid var(--line-strong);
+        border-radius: 5px;
+        color: var(--ink);
+        min-height: 32px;
+        padding: 5px 8px;
+        width: 100%;
+      }
+      .reply-textarea { line-height: 1.5; min-height: 132px; resize: vertical; }
+      .pane-actions { display: flex; flex-wrap: wrap; gap: 7px; margin: 9px 0 12px; }
+      .primary-button, .secondary-button, .quiet-button {
+        align-items: center;
+        border: 1px solid transparent;
+        border-radius: 5px;
+        display: inline-flex;
+        font-size: 12px;
+        font-weight: 650;
+        justify-content: center;
+        min-height: 32px;
+        padding: 6px 10px;
+      }
+      .primary-button { background: var(--blue); color: #fff; }
+      .primary-button:hover:not(:disabled) { background: var(--blue-dark); }
+      .secondary-button { background: #fff; border-color: var(--line-strong); color: #263747; }
+      .secondary-button:hover:not(:disabled), .quiet-button:hover:not(:disabled) { background: #f1f5f8; }
+      .quiet-button { background: transparent; border-color: var(--line); color: var(--muted); }
+      .full-width { width: 100%; }
+      .needs-you {
+        background: var(--blue-soft);
+        border: 1px solid #d5e8f7;
+        border-radius: 6px;
+        color: #25455f;
+        font-size: 11px;
+        margin-bottom: 12px;
+        padding: 8px 9px;
+      }
+      .needs-you strong { display: block; font-size: 11px; margin-bottom: 2px; }
+      .section-card {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        margin: 9px 0;
+        padding: 10px;
+      }
+      .section-card h2, .section-card h3 { font-size: 13px; line-height: 1.35; margin: 0 0 8px; }
+      .section-card h3 { font-size: 12px; }
+      .muted { color: var(--muted); }
+      .quiet { color: var(--quiet); }
+      .small { font-size: 11px; }
+      .field-stack { display: grid; gap: 8px; grid-template-columns: 1fr; }
+      .field { display: grid; gap: 4px; min-width: 0; }
+      .field-label { align-items: baseline; display: flex; gap: 4px; }
+      .field-marker { color: var(--muted); font-size: 10px; font-weight: 700; }
+      .help-text { color: var(--muted); font-size: 10px; line-height: 1.35; }
+      .two-col { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
+      .assumption {
+        background: var(--amber-soft);
+        border: 1px solid #f0dfb9;
+        border-radius: 6px;
+        color: var(--amber);
+        font-size: 11px;
+        margin: 6px 0;
+        padding: 7px 8px;
+      }
+      .room-row, .change-row, .match-row {
+        border-top: 1px solid #edf0f3;
+        display: grid;
+        gap: 6px;
+        padding: 8px 0;
+      }
+      .room-row:first-of-type, .change-row:first-of-type, .match-row:first-of-type { border-top: 0; }
+      .room-row { grid-template-columns: minmax(0, 1fr) auto; }
+      .room-title { font-weight: 650; }
+      .room-detail { color: var(--muted); font-size: 11px; }
+      .room-count { align-self: start; background: #f1f5f8; border-radius: 5px; color: #3d4d5c; padding: 3px 7px; }
+      .proposal {
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        margin: 7px 0;
+        padding: 8px;
+      }
+      .proposal[aria-checked="true"] { background: #f2f8fc; border-color: #8bb8d9; }
+      .proposal-head { align-items: flex-start; display: flex; gap: 8px; }
+      .proposal-name { font-weight: 650; }
+      .proposal-plan { color: var(--muted); font-size: 10px; margin-top: 2px; }
+      .proposal-rate { margin-left: auto; max-width: 116px; }
+      .proposal-total { color: #34485b; font-size: 11px; font-weight: 650; margin-top: 7px; }
+      .output-box { background: #f7fafc; border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+      .output-box[data-output-state="stale"] { background: var(--amber-soft); border-color: #e8d7b4; }
+      .output-total { font-size: 14px; font-weight: 700; margin: 3px 0; }
+      .output-status { color: var(--muted); font-size: 10px; }
+      .workflow-view { min-width: 0; }
+      .workflow-title { align-items: center; display: flex; justify-content: space-between; margin: 0 0 6px; }
+      .workflow-title h1 { font-size: 16px; line-height: 1.25; margin: 0; }
+      .tag { background: #eef3f7; color: #455564; }
+      .tag-green { background: var(--green-soft); color: var(--green); }
+      .tag-amber { background: var(--amber-soft); color: var(--amber); }
+      .field-grid {
+        display: grid;
+        gap: 8px;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .booking-groups { display: grid; gap: 7px; }
+      .booking-group {
+        background: #fff;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        min-width: 0;
+      }
+      .booking-group summary {
+        align-items: center;
+        color: #263747;
+        cursor: pointer;
+        display: flex;
+        font-size: 12px;
+        font-weight: 700;
+        justify-content: space-between;
+        list-style: none;
+        min-height: 36px;
+        padding: 7px 9px;
+      }
+      .booking-group summary::-webkit-details-marker { display: none; }
+      .booking-group summary::after { color: var(--quiet); content: "+"; font-size: 16px; }
+      .booking-group[open] summary::after { content: "−"; }
+      .booking-fields { border-top: 1px solid #edf0f3; display: grid; gap: 9px; padding: 9px; }
+      .field-check { align-items: center; display: flex; gap: 7px; min-height: 32px; }
+      .field-check input { accent-color: var(--blue); height: 16px; width: 16px; }
+      .lookup-controls { align-items: center; display: flex; gap: 5px; min-width: 0; }
+      .lookup-controls .control { flex: 1; min-width: 0; }
+      .lookup-clear { flex: none; min-height: 32px; padding: 5px 8px; }
+      .cms-results { background: #fff; border: 1px solid var(--line-strong); border-radius: 5px; margin-top: 4px; max-height: 160px; overflow: auto; padding: 3px; }
+      .cms-results[hidden] { display: none; }
+      .cms-option { background: #fff; border: 0; border-radius: 4px; color: var(--ink); display: block; padding: 6px; text-align: left; width: 100%; }
+      .cms-option:hover, .cms-option:focus-visible { background: var(--blue-soft); }
+      .cms-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; margin-right: 7px; }
+      .cms-selection { color: var(--muted); font-size: 10px; margin-top: 4px; }
+      .review-list { display: grid; gap: 7px; }
+      .review-item { border-top: 1px solid #edf0f3; padding-top: 7px; }
+      .review-item:first-child { border-top: 0; padding-top: 0; }
+      .review-question { font-weight: 650; }
+      .review-answer, .review-comment { color: var(--muted); font-size: 11px; margin-top: 2px; overflow-wrap: anywhere; }
+      .status-message { color: var(--muted); font-size: 11px; min-height: 18px; padding: 2px 1px; }
+      .status-message[data-tone="success"] { color: var(--green); }
+      .status-message[data-tone="warning"] { color: var(--amber); }
+      .status-message[data-tone="error"] { color: var(--red); }
+      .dialog-backdrop {
+        align-items: center;
+        background: rgb(13 27 40 / 36%);
+        display: flex;
+        inset: 0;
+        justify-content: center;
+        padding: 16px;
+        position: fixed;
+        z-index: 5;
+      }
+      .dialog-backdrop[hidden] { display: none; }
+      .dialog-card { background: #fff; border: 1px solid var(--line); border-radius: 9px; box-shadow: 0 16px 50px rgb(10 24 38 / 22%); max-width: 420px; padding: 17px; width: 100%; }
+      .dialog-card h2 { font-size: 15px; margin: 0 0 5px; }
+      .dialog-card p { color: var(--muted); font-size: 11px; margin: 0 0 12px; }
+      .age-list { display: grid; gap: 7px; margin: 10px 0; }
+      .dialog-error { color: var(--red); font-size: 11px; margin-top: 7px; }
+      .dialog-error[hidden] { display: none; }
+      .dialog-footer { display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; margin-top: 13px; }
+      .review-area { margin-top: 12px; }
+      .review-area details summary { color: #344251; cursor: pointer; font-size: 12px; font-weight: 700; }
+      .review-area details[open] summary { margin-bottom: 8px; }
+      .legend { color: var(--muted); font-size: 10px; margin: 7px 0 2px; }
+      .empty-state { background: #f8fafc; border: 1px dashed var(--line-strong); border-radius: 6px; color: var(--muted); font-size: 11px; padding: 10px; }
+      .sr-only { clip: rect(0, 0, 0, 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
+
+      @media (max-width: 1040px) {
+        .app-shell { grid-template-columns: 195px minmax(280px, 1fr) 370px; }
+        .pane-scroll { padding-left: 11px; padding-right: 11px; }
+      }
+      @media (max-width: 820px) {
+        .app-shell { display: flex; flex-direction: column; height: auto; min-height: calc(100vh - 52px); }
+        .mail-nav { border-bottom: 1px solid var(--line); border-right: 0; flex: none; max-height: 142px; }
+        .nav-heading { padding: 9px 12px 5px; }
+        .case-list { display: flex; gap: 4px; overflow-x: auto; overflow-y: hidden; padding: 0 10px 8px; }
+        .case-link { flex: 0 0 210px; margin: 0; }
+        .nav-footnote { display: none; }
+        .mail-reader { flex: none; max-height: 280px; min-height: 220px; }
+        .message-card { margin: 10px auto; min-height: 140px; padding: 15px; width: calc(100% - 20px); }
+        .message-subject { font-size: 16px; }
+        .nava-pane { border-left: 0; border-top: 1px solid var(--line-strong); min-height: 65vh; }
+        .pane-scroll { overflow: visible; }
+      }
+      @media (max-width: 440px) {
+        .appbar { gap: 8px; height: 48px; padding: 0 12px; }
+        .app-shell { min-height: calc(100vh - 48px); }
+        .app-context { font-size: 10px; }
+        .offline-pill { font-size: 10px; padding: 4px 6px; }
+        .message-card { width: calc(100% - 16px); }
+        .pane-heading, .pane-scroll { padding-left: 12px; padding-right: 12px; }
+        .two-col, .field-grid { grid-template-columns: 1fr; }
+      }
+
+/* Original Outlook shell, with the current compact Nava pane. */
+
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font-family:"Segoe UI",system-ui,-apple-system,sans-serif;color:#1e293b;font-size:13px;background:#fff}
+button,select,input,textarea{font:inherit;color:inherit}
+svg.lucide{width:14px;height:14px;stroke-width:2;flex:none}
+.app{display:grid;grid-template-columns:250px minmax(0,1fr) 400px;height:100vh}
+
+/* left: Outlook folder-style list */
+.nav{background:#faf9f8;border-right:1px solid #e1dfdd;overflow:auto;padding:14px 10px}
+.brand{display:flex;gap:9px;align-items:center;padding:0 6px 12px}
+.brand .lg{width:28px;height:28px;border-radius:4px;background:#1a4332;color:#fff;display:grid;place-items:center;font-weight:800}
+.brand b{display:block;font-size:14px}.brand span{font-size:11.5px;color:#605e5c}
+.grp{font-size:11px;font-weight:600;color:#605e5c;margin:14px 8px 4px;text-transform:uppercase;letter-spacing:.04em}
+.it{display:block;padding:7px 9px;border-radius:4px;color:#242424;text-decoration:none;line-height:1.35;cursor:pointer}
+.it:hover{background:#edebe9}
+.it.on{background:#deecf9}
+.it b{display:block;font-weight:600;font-size:13px}
+.it span{display:block;font-size:12px;color:#605e5c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.it.on b{color:#0f548c}
+
+/* middle: Outlook reading pane */
+.read{display:flex;flex-direction:column;min-width:0}
+.tb{height:44px;flex:none;border-bottom:1px solid #e1dfdd;display:flex;align-items:center;gap:2px;padding:0 14px;color:#323130}
+.tb span{display:inline-flex;gap:6px;align-items:center;padding:6px 9px;border-radius:4px}
+.tb span:hover{background:#f3f2f1}
+.rs{overflow:auto;flex:1}
+.rin{max-width:820px;padding:22px 36px 60px}
+.rin h1{font-size:20px;font-weight:600;margin:0 0 16px}
+.snd{display:flex;gap:12px}
+.av{width:36px;height:36px;border-radius:50%;background:#c7e0f4;color:#0f548c;display:grid;place-items:center;font-weight:600;flex:none}
+.snd .w{flex:1}.snd .w div{font-size:12px;color:#605e5c;margin-top:2px}
+.snd time{font-size:12px;color:#605e5c}
+.mb{margin:18px 0 0 48px;white-space:pre-wrap;line-height:1.6;font-size:14px;color:#242424}
+.mb mark{background:#fff4ce;color:inherit;padding:0 1px}
+.qs{margin:28px 0 0 48px;border-top:1px solid #e1dfdd;padding-top:18px}
+.qs h2{font-size:15px;margin:0 0 4px}
+.qs p.l{margin:0 0 12px;color:#605e5c;font-size:13px}
+.q{border:1px solid #e1dfdd;border-radius:4px;padding:12px 14px;margin-bottom:8px}
+.q .d{font-weight:600;line-height:1.45}
+.q .y{color:#605e5c;margin-top:4px;line-height:1.5}
+.q .a{margin-top:8px;line-height:1.5}.q .a b{color:#0066cc}
+.q .o{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.q .o button{border:1px solid #cbd5e1;background:#fff;border-radius:3px;padding:4px 10px;cursor:pointer;font-size:12.5px}
+.q .o button.on{background:#1a4332;border-color:#1a4332;color:#fff}
+.q textarea{width:100%;margin-top:8px;border:1px solid #cbd5e1;border-radius:3px;padding:6px 8px;font-size:12.5px;min-height:32px;resize:vertical}
+
+
+.app { grid-template-columns: 250px minmax(0, 1fr) 400px; }
+.nav .case-list { overflow: visible; padding: 0; }
+.nav .it[aria-current="page"] { background: #deecf9; }
+.nav .it[aria-current="page"] b { color: #0f548c; }
+.read { background: #fff; overflow: hidden; }
+.rs { min-height: 0; }
+.rin { width: 100%; }
+.rin h1.message-subject { font-size: 20px; margin: 0 0 16px; }
+.message-from { font-size: 13px; color: #242424; }
+.message-date { margin-top: 0; }
+.message-body { overflow-wrap: anywhere; }
+.pane { background: #fff; border-left: 1px solid #cbd5e1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.pane-heading { flex: none; min-height: 40px; padding: 0 14px; border-bottom: 1px solid #e2e8f0; }
+.pane-heading strong { font-size: 13px; }
+.pane-mark { display:grid; place-items:center; width:20px; height:20px; border-radius:3px; background:#1a4332; color:white; font-size:11px; font-weight:800; }
+.pane-needs { margin-left:auto; color:#0066cc; font-size:11.5px; font-weight:600; }
+.demo-indicator { color:#64748b; font-size:10px; font-weight:600; }
+.mailbox-row { display:flex; align-items:center; gap:6px; min-height:32px; padding:0 14px; border-bottom:1px solid #e2e8f0; background:#f8fafc; color:#475569; font-size:11px; }
+.mailbox-row i { width:8px; height:8px; border-radius:50%; background:#64748b; }
+.pane-status { color:#475569; font-size:11px; margin-left:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mailbox-row .mailbox-note { margin-left:auto; white-space:nowrap; }
+.pane-scroll { flex:1; min-height:0; overflow-y:auto; padding:8px 12px 20px; }
+.selected-email { background:#fff; border:1px solid #e2e8f0; border-radius:4px; padding:8px 10px; margin-bottom:8px; }
+.selected-email-title { font-size:13px; font-weight:700; color:#1e293b; }
+.selected-email-meta { color:#475569; font-size:11.5px; font-weight:600; margin:0 0 2px; }
+.read-as-row { display:flex; align-items:center; gap:8px; padding:8px 12px; border:1px solid #bfdbfe; border-radius:4px; background:#eff6ff; margin-bottom:8px; }
+.read-as-row label { font-size:12.5px; color:#1e293b; white-space:nowrap; }
+.read-as-select { min-height:28px; max-width:180px; border-radius:3px; font-size:12px; }
+.pane-actions { margin:8px 0; }
+.needs-you { background:#fff; border:1px solid #e2e8f0; border-radius:4px; color:#475569; padding:8px 10px; margin-bottom:8px; }
+.section-card { border:1px solid #e2e8f0; border-radius:4px; padding:0 12px 12px; margin:8px 0; box-shadow:0 1px 3px rgba(0,0,0,.02); }
+.section-card > h2, .section-card > h3 { background:#f8fafc; color:#475569; border-bottom:1px solid #e2e8f0; font-size:13px; font-weight:700; margin:0 -12px 12px; padding:9px 12px; }
+.section-card.step-one > h2::before, .section-card.step-two > h2::before, .section-card.step-three > h2::before { display:inline-grid; place-items:center; width:18px; height:18px; margin-right:7px; border-radius:50%; background:#1a4332; color:#fff; font-size:10.5px; }
+.section-card.step-one > h2::before { content:'1'; } .section-card.step-two > h2::before { content:'2'; } .section-card.step-three > h2::before { content:'3'; }
+.workflow-title h1 { font-size:13px; }
+.booking-group { border-radius:4px; }
+.booking-group summary { background:#f8fafc; color:#475569; font-size:13px; padding:9px 12px; }
+.field-label, .read-as-row label { color:#475569; font-size:13px; font-weight:600; }
+.control { min-height:32px; border-radius:3px; border-color:#cbd5e1; padding:5px 10px; color:#1e293b; font-size:13px; }
+.primary-button, .secondary-button, .quiet-button { border-radius:3px; font-size:13px; min-height:32px; }
+.primary-button { background:#0066cc; } .primary-button:hover:not(:disabled) { background:#0052a3; }
+.field-marker { color:#c01823; }
+.q [data-review-answer] { display:none; }
+.q .o button { cursor:pointer; }
+.q .o button[aria-pressed="true"] { background:#1a4332; border-color:#1a4332; color:#fff; }
+.q textarea { font-family:inherit; }
+@media (max-width:1040px) { .app { grid-template-columns: 195px minmax(280px,1fr) 370px; } }
+@media (max-width:820px) {
+  .app { display:flex; flex-direction:column; height:auto; min-height:100vh; }
+  .nav { max-height:180px; overflow:auto; border-right:0; border-bottom:1px solid #e1dfdd; }
+  .read { max-height:55vh; min-height:220px; }
+  .rin { padding:16px; }
+  .pane { border-left:0; border-top:1px solid #cbd5e1; min-height:65vh; }
+  .pane-scroll { overflow:visible; }
+  .mb, .qs { margin-left:0; }
+}
+@media (max-width:440px) { .field-grid, .two-col { grid-template-columns:1fr; } }
+
+
+
+/* Synthetic booking fields in the existing Nava pane design. */
+.demo-settings { display:grid; gap:6px; padding:4px 8px; }
+.demo-settings label { color:#605e5c; font-size:11px; font-weight:600; }
+.demo-settings select, .demo-settings button { width:100%; }
+.demo-settings button { margin-top:4px; }
+.demo-settings p { color:#605e5c; font-size:11px; margin:3px 0; }
+.demo-settings a { color:#0066cc; font-size:11px; }
+.section { overflow:hidden; margin:8px 0; border:1px solid #e2e8f0; border-radius:4px; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.02); }
+.section-head { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:9px 12px; border-bottom:1px solid #e2e8f0; background:#f8fafc; color:#475569; font-size:13px; font-weight:700; }
+.section-body { display:grid; gap:12px; padding:12px; }
+.section-note { margin:0; color:#64748b; font-size:11px; line-height:1.4; }
+.text-button { padding:0; border:0; background:transparent; color:#0066cc; font-size:11px; font-weight:600; }
+.field-label { justify-content:space-between; gap:4px; color:#475569; font-size:13px; font-weight:600; }
+.required { color:#c01823; }
+.edited { color:#0066cc; font-size:10px; white-space:nowrap; }
+.field input:not([type=checkbox]), .field select, .field textarea { width:100%; min-height:32px; padding:5px 10px; border:1px solid #cbd5e1; border-radius:3px; background:#fff; color:#1e293b; }
+.field textarea { min-height:64px; resize:vertical; }
+.field input[readonly] { background:#f1f5f9; color:#475569; }
+.field input:disabled, .field select:disabled, .field textarea:disabled { background:#f8fafc; color:#64748b; }
+.checkbox { display:flex; align-items:center; gap:7px; min-height:30px; }
+.lookup-entry { display:flex; gap:3px; }
+.lookup-entry input { min-width:0; }
+.lookup-entry button { flex:none; width:31px; border:1px solid #cbd5e1; border-radius:3px; background:#fff; }
+.lookup-icon { color:#64748b; font-size:16px; font-weight:700; }
+.pair { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:8px; }
+.pair-caption { display:block; margin-bottom:3px; color:#64748b; font-size:10px; line-height:1.3; }
+.field-help { margin-top:4px; color:#64748b; font-size:11px; line-height:1.35; }
+.conflict { color:#8a4b08; }
+.child-edit { display:grid; gap:8px; margin-top:7px; padding:9px; border-left:2px solid #bfdbfe; background:#f8fafc; }
+.child-grid { display:grid; grid-template-columns:minmax(0,1fr) 80px; gap:8px; }
+.nightly { margin:2px 0 0; padding:8px; border:1px solid #e2e8f0; border-radius:3px; background:#f8fafc; }
+.line { display:flex; justify-content:space-between; gap:8px; padding:3px 0; line-height:1.35; }
+.line span:last-child { white-space:nowrap; text-align:right; }
+.nightly-title { margin-top:7px; font-weight:700; }
+.summary { margin:8px 0; padding:9px 10px; border:1px solid #e2e8f0; border-radius:4px; background:#f8fafc; line-height:1.4; }
+.summary strong { display:block; }
+.summary span { display:block; margin-top:3px; color:#64748b; font-size:11px; }
+.notice { margin:8px 0; padding:9px 10px; border:1px solid #f5cb80; border-radius:3px; background:#fff8eb; color:#7c4709; font-size:12px; line-height:1.4; }
+.notice.info { border-color:#bfdbfe; background:#eff6ff; color:#1e3a8a; }
+.notice.good { border-color:#a7e0c1; background:#ecfdf5; color:#166534; }
+.notice strong { display:block; margin-bottom:2px; }
+.outcome-row { display:flex; gap:7px; padding:6px 0; border-bottom:1px solid #edf2f7; line-height:1.4; }
+.outcome-row:last-child { border-bottom:0; }
+.status { flex:none; font-weight:700; }
+.status.good { color:#167143; }.status.warn { color:#a15d00; }.status.muted { color:#64748b; }
+.approval { padding:8px 0 16px; }
+.approval-total { display:flex; justify-content:space-between; margin-bottom:8px; font-weight:700; }
+.primary { width:100%; min-height:38px; border:0; border-radius:3px; background:#0066cc; color:white; font-weight:700; }
+.primary:disabled { background:#cbd5e1; color:#64748b; cursor:not-allowed; }
+.approval-caption { margin:6px 0 0; color:#64748b; font-size:11px; line-height:1.35; text-align:center; }
+.modal-shade { position:fixed; z-index:10; inset:0; display:grid; place-items:center; padding:16px; background:#0f172a88; }
+.modal { width:min(380px,100%); max-height:80vh; overflow:auto; padding:14px; border-radius:4px; background:#fff; box-shadow:0 10px 35px #0f172a55; }
+.modal h3 { margin:0 0 10px; font-size:15px; }
+.modal input { width:100%; min-height:32px; padding:5px 8px; border:1px solid #cbd5e1; border-radius:3px; }
+.modal-option { width:100%; display:block; padding:9px 4px; border:0; border-bottom:1px solid #e2e8f0; background:#fff; color:#1e293b; text-align:left; }
+.modal-option:hover { background:#eff6ff; }.modal-footer { display:flex; justify-content:space-between; margin-top:12px; }
+
+</style>
+</head>
+
+<body>
+  <div class="app" id="demo-root">
+    <aside class="nav" aria-label="Outlook folders">
+      <div class="brand"><div class="lg">N</div><div><b>Reservations</b><span>Reservations mailbox</span></div></div>
+      <div class="grp">New bookings</div>
+      <a class="it on" aria-current="page" href="#booking"><b>Sample travel agent</b><span>Booking request · two rooms</span></a>
+      <div class="grp">Demo controls</div>
+      <div class="demo-settings">
+        <label for="scenario">Example</label><select class="control" id="scenario"><option value="ready">Ready to review</option><option value="missing">Missing child age</option><option value="changed">Rate changed</option><option value="partial">Partial success</option><option value="uncertain">Uncertain save</option><option value="success">Completed</option></select>
+        <label for="cms-mode">CMS example</label><select class="control" id="cms-mode"><option value="permitted">Supported + permitted (example)</option><option value="unverified">Not verified / not permitted</option></select>
+        <button class="secondary-button" id="prefill">Bring in background data</button>
+        <a href="centurion-review.prototype.html?variant=b">Earlier layout examples</a>
+        <p>Synthetic example. No HMS connection or email.</p>
+      </div>
+      <pre id="state-readout" hidden></pre>
+    </aside>
+    <section class="read" aria-label="Selected email">
+      <div class="tb" aria-label="Outlook toolbar"><span>↶ Reply</span><span>↶ Reply all</span><span>→ Forward</span><span>▣ Archive</span><span>Message 1 of 1</span></div>
+      <div class="rs"><div class="rin">
+        <h1 class="message-subject">Booking request · two rooms</h1>
+        <div class="snd"><div class="av">S</div><div class="w"><div class="message-from"><b>Sample travel agent</b> · agent@example.test</div><div>To: centurion@example.test</div></div></div>
+        <div class="mb message-body">Hello,
+
+Please arrange two rooms at Centurion, 12–14 November 2027, including breakfast. One guest is travelling with a child aged 8.
+
+We also need one airport transfer on arrival. Please send the confirmation to our reservations address.
+
+Thank you.</div>
+      </div></div>
+    </section>
+    <aside class="pane" aria-label="Nava reservationist pane">
+      <header class="pane-heading"><span class="pane-mark" aria-hidden="true">N</span><strong>Nava Reservationist</strong><span class="pane-needs">Needs you</span><span class="demo-indicator">Demo</span></header>
+      <div class="mailbox-row"><i aria-hidden="true"></i><span class="pane-status">Local · not syncing</span><span class="mailbox-note">Not connected</span></div>
+      <main class="pane-scroll" id="pane-scroll">
+        <section class="selected-email" aria-label="Selected email summary"><div class="selected-email-meta">Sample travel agent · agent@example.test</div><div class="selected-email-title">Booking request · two rooms</div></section>
+        <div class="read-as-row"><label for="read-as-select">Nava reads this as:</label><select class="read-as-select" id="read-as-select" aria-label="Nava reads this as"><option>Booking</option></select></div>
+        <div class="needs-you"><strong>Needs you</strong><span>Review the proposed booking and confirmation.</span></div>
+        <div class="workflow-title"><h1>Booking review</h1><span class="tag tag-green">Draft</span></div>
+        <div id="review"></div>
+        <div class="approval" id="approval"></div>
+      </main>
+    </aside>
+  </div>
+  <div id="modal-root"></div>
+
+<script>
+    const values = {
+      agency: 'Tourvest Travel Services · Roggebaai', organization: '', arAccount: '', billingReference: '',
+      arrival: '2027-11-12', nights: '2', departure: '2027-11-14', adults: { queen: '1', twin: '1' },
+      reason: '', source: 'Email', walkIn: false, ignoreRestrictions: false, commission: '', note: '',
+      guarantee: 'Awaiting Voucher', roomType: { queen: 'STQN · Standard Queen', twin: 'STWN · Standard Twin' },
+      chargeRoomType: { queen: '', twin: '' }, ratePlan: { queen: 'Agency B&B · sample', twin: 'Agency B&B · sample' },
+      promotion: { queen: '', twin: '' }, mealPlan: { queen: 'Bed & Breakfast', twin: 'Bed & Breakfast' },
+      resortFee: { queen: '', twin: '' }, market: { queen: 'Wholesale · sample', twin: 'Wholesale · sample' },
+      track: { queen: 'Agency rate · sample', twin: 'Agency rate · sample' }, confidentialRate: false,
+      assignedRoom: { queen: '', twin: '' }, doNotMove: false, doNotMoveReason: '', scheduledRoom: { queen: '', twin: '' },
+      waitlistPriority: '', bookerName: 'Sample travel agent', bookerContact: 'agent@example.test', authorisedBy: '',
+      profileId: { queen: 'EX-PROFILE-Q', twin: 'EX-PROFILE-T' }, title: { queen: '', twin: '' },
+      lastName: { queen: 'Example', twin: 'Example' }, firstName: { queen: 'Alex', twin: 'Jordan' },
+      vip: { queen: '', twin: '' }, gender: { queen: '', twin: '' }, phoneType: { queen: '', twin: '' },
+      phoneNumber: { queen: '', twin: '' }, mobileNumber: { queen: '', twin: '' }, emailType: { queen: '', twin: '' },
+      emailAddress: { queen: '', twin: '' }, autoEmailFolio: { queen: false, twin: false }, legacyMarketing: { queen: false, twin: false },
+      lifestyleMarketing: { queen: false, twin: false }, legacyMember: { queen: false, twin: false }, terms: { queen: false, twin: false },
+      language: { queen: '', twin: '' }, passportReference: { queen: '', twin: '' },
+      passportDate: { queen: '', twin: '' }, addressType: { queen: '', twin: 'Billing · sample' },
+      address: { queen: '', twin: '' }, city: { queen: '', twin: '' }, postalCode: { queen: '', twin: '' },
+      country: { queen: '', twin: '' }, province: { queen: '', twin: '' }, nationality: { queen: '', twin: '' },
+      residence: { queen: '', twin: '' }, vat: { queen: '', twin: '' }, vehicle: { queen: '', twin: '' },
+      birthDate: { queen: '', twin: '' }, turndown: { queen: '', twin: '' }, cleaning: { queen: '', twin: '' },
+      settlementType: '', noPost: false,
+      flags: '', externalReference: '', agencyContract: '', wifiVoucher: '', wifiStatus: '', reservationSettlementType: '',
+      group: '', individualGroup: '', depositDueAmount: '', depositDueDate: '', depositReceived: '', balance: '',
+      lastProperty: '', lastRoom: '', lastCheckout: '', cmsFormStatus: '', cmsSend: true,
+      cmsMessage: '03 · sample confirmation', cmsEmail: 'reservations@example.test',
+      lifetimeRevenue: '', lifetimeNights: '', lifetimeStays: '', loyalty: '', legacyPoints: '',
+      legacyLifestyleUpdate: false, newExistingMember: false,
+      addOn: 'Airport transfer · sample', addOnDate: '2027-11-12', addOnTime: '10:30', addOnRoom: 'twin', addOnQuantity: '1',
+    };
+    const params = new URL(window.location.href).searchParams;
+    const scenarios = ['ready', 'missing', 'changed', 'partial', 'uncertain', 'success'];
+    const scenario = scenarios.includes(params.get('scenario')) ? params.get('scenario') : 'ready';
+    const state = { values, scenario, cmsMode: 'permitted', expanded: {}, dirty: {}, conflicts: {}, unbound: {}, lookup: null,
+      children: { queen: [], twin: [{ name: 'Taylor Example', age: scenario === 'missing' ? '' : '8' }] },
+      childEditor: false, rates: 'ready', rateChanged: scenario === 'changed', prefillArrived: false, recoveryOpen: false };
+    let lookupGeneration = 0;
+    const esc = (value) => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+    const money = (value) => 'R' + Number(value).toLocaleString('en-ZA');
+    const filled = (value) => typeof value === 'boolean' ? value : value !== '' && value !== null && value !== undefined;
+    const hasOutcome = () => ['partial', 'uncertain', 'success'].includes(state.scenario);
+    const cmsIncluded = () => state.cmsMode === 'permitted' && state.values.cmsSend;
+    const rooms = ['queen', 'twin'];
+    const roomTypeLabel = (room) => String(state.values.roomType[room]).split(' · ').slice(1).join(' · ') || state.values.roomType[room] || 'Room type needed';
+    const roomLabel = (room) => {
+      const label = roomTypeLabel(room);
+      if (rooms.filter((other) => roomTypeLabel(other) === label).length === 1) return label;
+      const name = state.values.firstName[room] || state.values.profileId[room];
+      const sameName = rooms.some((other) => other !== room && state.values.firstName[other] === state.values.firstName[room]);
+      return `${label} · ${name}${sameName ? ' · ' + state.values.profileId[room] : ''}`;
+    };
+    const childAgesValid = () => rooms.every((room) => state.children[room].every((child) => /^\d{1,2}$/.test(child.age) && Number(child.age) <= 17 && child.name.trim()));
+    function nightDates() {
+      const start = Date.parse(state.values.arrival + 'T12:00:00Z');
+      const end = Date.parse(state.values.departure + 'T12:00:00Z');
+      const count = (end - start) / 86400000;
+      if (!Number.isInteger(count) || count < 1 || count > 7) return [];
+      return Array.from({ length: count }, (_, index) => new Date(start + index * 86400000).toISOString().slice(0, 10));
+    }
+    function dateLabel(value) {
+      if (!/^\d{4}-\d\d-\d\d$/.test(value || '')) return '—';
+      const date = new Date(value + 'T12:00:00Z');
+      return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' });
+    }
+    function prices() {
+      const dates = nightDates();
+      const sampleBase = { STQN: 1200, STWN: 1400, DLXQN: 1800, DLXTWN: 2000 };
+      const nightly = Object.fromEntries(rooms.map((room) => [room, dates.map((_, i) => (sampleBase[state.values.roomType[room].split(' · ')[0]] ?? 0) + (i % 2) * 100 + (state.values.ratePlan[room].startsWith('BAR') ? 200 : 0) + (state.rateChanged && room === 'twin' && i === 1 ? 100 : 0))]));
+      const totals = Object.fromEntries(rooms.map((room) => [room, nightly[room].reduce((sum, value) => sum + value, 0)]));
+      const addOn = state.values.addOn === 'None' ? 0 : Math.max(0, Number(state.values.addOnQuantity) || 0) * 350;
+      return { dates, nightly, totals, addOn, grand: totals.queen + totals.twin + addOn };
+    }
+    function childBands(room) {
+      const ages = state.children[room].map((child) => child.age);
+      if (ages.some((age) => !/^\d{1,2}$/.test(age) || Number(age) > 17)) return ['—', '—', '—'];
+      return [ages.filter((age) => Number(age) <= 2).length, ages.filter((age) => Number(age) >= 3 && Number(age) <= 12).length, ages.filter((age) => Number(age) >= 13).length];
+    }
+    function selectionKey() { return JSON.stringify([state.values.agency, state.values.arrival, state.values.departure, state.values.adults, state.values.roomType, state.values.ratePlan, state.values.track, state.children]); }
+    const sampleIneligible = () => state.values.agency === 'No agency' && rooms.some((room) => state.values.ratePlan[room].startsWith('Agency') || state.values.track[room].startsWith('Agency'));
+    function refreshRates() {
+      lookupGeneration += 1;
+      if (!nightDates().length || !childAgesValid()) { state.rates = 'needs-details'; return; }
+      state.rates = 'checking';
+      const version = lookupGeneration, key = selectionKey();
+      setTimeout(() => { if (version === lookupGeneration && key === selectionKey()) { state.rates = 'ready'; render(); } }, 700);
+    }
+    const field = (key, label, kind, always = false, options = [], extra = {}) => ({ key, label, kind, always, options, ...extra });
+    const STAY = [
+      field('agency', 'Primary Booking Agency', 'lookup', true), field('organization', 'Organization', 'lookup'),
+      field('arAccount', 'A/R Account', 'lookup'), field('billingReference', 'Billing Reference', 'text'),
+      field('arrival', 'Arrival Date', 'date', true, [], { required: true }), field('nights', 'Nights', 'number', true),
+      field('departure', 'Departure Date', 'date', true, [], { required: true }), field('adults', 'Adults', 'pair-select', true, Array.from({length: 16}, (_, i) => String(i + 1))),
+      field('child0', 'Child 0–02', 'band', true, [], { band: 0 }), field('child3', 'Child 03–12', 'band', true, [], { band: 1 }),
+      field('child13', 'Child 13–17', 'band', true, [], { band: 2 }), field('children', 'Children', 'children', true),
+      field('reason', 'Reason for Stay', 'select', false, ['', 'Business · sample', 'Leisure · sample']),
+      field('source', 'Source of Business', 'lookup', true), field('walkIn', 'Walk In', 'checkbox'),
+      field('ignoreRestrictions', 'Ignore All Restrictions', 'checkbox'), field('commission', 'Commission Percent', 'readonly'),
+      field('note', 'Reservation Note / Billing Instructions', 'textarea', true),
+      field('guarantee', 'Guarantee Type', 'select', true, ['Awaiting Voucher', 'Guaranteed By Agent', 'Guaranteed By Company', 'Non-Guaranteed Individual']),
+      field('roomType', 'Room Type', 'pair-lookup', true), field('chargeRoomType', 'Room Type for Charge', 'pair-lookup'),
+      field('ratePlan', 'Rate Plan', 'pair-lookup', true), field('promotion', 'Promotion', 'pair-lookup'),
+      field('mealPlan', 'Meal Plan', 'pair-readonly', true), field('resortFee', 'Resort Fee', 'pair-readonly'),
+      field('market', 'Market Segment', 'pair-readonly', true), field('track', 'Track / Sub Segment', 'pair-lookup', true),
+      field('confidentialRate', 'Confidential Rate', 'checkbox'), field('assignedRoom', 'Room', 'pair-lookup'),
+      field('doNotMove', 'Do Not Move', 'checkbox'), field('doNotMoveReason', 'Do Not Move Reason', 'text'),
+      field('scheduledRoom', 'Scheduled Room', 'pair-readonly'), field('averageRate', 'Average Rate', 'computed-pair', true),
+      field('totalRate', 'Total Rate', 'computed-pair', true), field('addOnTotal', 'Add-On Total', 'computed-pair', true),
+      field('grandTotal', 'Grand Total', 'computed-pair', true), field('waitlistPriority', 'Waitlist Priority', 'readonly'),
+      field('bookerName', 'Booker Name', 'text'), field('bookerContact', 'Booker Contact', 'text'),
+      field('authorisedBy', 'Authorised by', 'text'),
+    ];
+    const GUEST = [
+      field('profileId', 'Profile ID', 'pair-readonly'), field('title', 'Title', 'pair-select', false, ['', 'Mr', 'Ms', 'Mx']),
+      field('lastName', 'Last Name', 'pair-name-lookup', false, [], { required: true }), field('firstName', 'First Name', 'pair-text', false, [], { required: true }),
+      field('vip', 'VIP Level', 'pair-select', false, ['', 'Example VIP']), field('gender', 'Gender', 'pair-select', false, ['', 'Example selection']),
+      field('phoneType', 'Phone Type', 'pair-select', false, ['', 'Primary', 'Other']), field('phoneNumber', 'Phone Number', 'pair-text'),
+      field('mobileNumber', 'Mobile Number', 'pair-text'), field('emailType', 'E-mail Type', 'pair-select', false, ['', 'Primary', 'Other']),
+      field('emailAddress', 'E-mail Address', 'pair-email'), field('autoEmailFolio', 'Auto Email Folio', 'pair-checkbox'),
+      field('legacyMarketing', 'Legacy Marketing Opt in', 'pair-checkbox'), field('lifestyleMarketing', 'Lifestyle Marketing Opt in', 'pair-checkbox'),
+      field('legacyMember', 'Legacy Lifestyle Member', 'pair-checkbox'), field('terms', 'Terms and Conditions', 'pair-checkbox'),
+      field('language', 'Language', 'pair-select', false, ['', 'English · sample']), field('passportReference', 'Scanned Passport Reference', 'pair-readonly'),
+      field('passportDate', 'Passport Scan Date', 'pair-date'), field('addressType', 'Address Type', 'pair-select', false, ['', 'Billing · sample', 'Home · sample']),
+      field('address', 'Address', 'pair-textarea'), field('city', 'City', 'pair-text'), field('postalCode', 'Postal Code', 'pair-lookup'),
+      field('country', 'Country', 'pair-lookup'), field('province', 'State / Province', 'pair-lookup'), field('nationality', 'Nationality', 'pair-lookup'),
+      field('residence', 'Country of Residence', 'pair-lookup'), field('vat', 'VAT Id', 'pair-text'), field('vehicle', 'Vehicle Reg No.', 'pair-text'),
+      field('birthDate', 'Date of Birth', 'pair-date'), field('turndown', 'Turndown Time', 'pair-select', false, ['', 'Example time']),
+      field('cleaning', 'Cleaning Time', 'pair-select', false, ['', 'Example time']),
+    ];
+    const SETTLEMENT = [field('settlementType', 'Settlement Type', 'lookup'), field('noPost', 'No Post', 'checkbox')];
+    const RESERVATION = [
+      field('flags', 'Flags', 'text'), field('status', 'Status', 'status', true), field('confirmation', 'Confirmation Number', 'confirmation', true),
+      field('externalReference', 'External Reference 1', 'text'), field('agencyContract', 'Booking Agency Contract', 'readonly'),
+      field('wifiVoucher', 'Wi-Fi Voucher', 'lookup'), field('wifiStatus', 'WIFI Status', 'readonly'),
+      field('group', 'Group', 'lookup'), field('individualGroup', 'Ind. Group', 'lookup'), field('depositDueAmount', 'Deposit Due Amount Required', 'readonly'),
+      field('depositDueDate', 'Deposit Due Date', 'date'), field('depositReceived', 'Deposit Received', 'readonly'), field('balance', 'Balance', 'readonly'),
+      field('lastProperty', 'Last Property', 'readonly'), field('lastRoom', 'Last Room Occupied', 'readonly'), field('lastCheckout', 'Last Checkout Date', 'readonly'),
+      field('reservationSettlementType', 'Settlement Type', 'lookup'),
+      field('cmsFormStatus', 'CMS Form Status', 'readonly'), field('cmsSend', 'CMS Send Mail', 'checkbox', true),
+      field('cmsMessage', 'CMS Message Id', 'lookup', true), field('cmsEmail', 'CMS Booker Email', 'email', true),
+      field('lifetimeRevenue', 'Lifetime Revenue', 'readonly'), field('lifetimeNights', 'Lifetime Nights', 'readonly'),
+      field('lifetimeStays', 'Lifetime Stays', 'readonly'), field('loyalty', 'Loyalty Number', 'readonly'), field('legacyPoints', 'Legacy Points Balance', 'readonly'),
+      field('legacyLifestyleUpdate', 'Legacy Lifestyle Update', 'checkbox'), field('newExistingMember', 'New / Existing Member', 'checkbox'),
+    ];
+    const ADDON = [field('addOn', 'Hotel Add-On', 'lookup', true), field('addOnDate', 'Date', 'date', true),
+      field('addOnTime', 'Arrival Time', 'time', true), field('addOnRoom', 'Attach to', 'select', true, ['queen', 'twin']),
+      field('addOnQuantity', 'Trips', 'number', true)];
+    function isVisible(item, expanded) {
+      if (expanded || item.always || item.required) return true;
+      const value = state.values[item.key];
+      return value && typeof value === 'object' ? rooms.some((room) => filled(value[room])) : filled(value);
+    }
+    function valueFor(item, room) {
+      const p = prices();
+      if (item.kind === 'band') return String(childBands(room)[item.band]);
+      if (item.key === 'averageRate') return p.dates.length ? money(p.totals[room] / p.dates.length) : '—';
+      if (item.key === 'totalRate') return p.dates.length ? money(p.totals[room]) : '—';
+      if (item.key === 'addOnTotal') return money(room === state.values.addOnRoom ? p.addOn : 0);
+      if (item.key === 'grandTotal') return money(p.totals[room] + (room === state.values.addOnRoom ? p.addOn : 0));
+      if (item.key === 'status') return state.scenario === 'uncertain' && room === 'twin' ? 'Uncertain · check HMS' : state.scenario === 'partial' && state.values.addOn === 'None' && room === 'twin' ? 'Not saved · needs attention' : hasOutcome() ? 'Confirmed · example' : 'New · not yet saved';
+      if (item.key === 'confirmation') return state.scenario === 'uncertain' && room === 'twin' ? 'May exist · check HMS' : state.scenario === 'partial' && state.values.addOn === 'None' && room === 'twin' ? 'Not assigned' : hasOutcome() ? (room === 'queen' ? 'SIM-Q-1042' : 'SIM-T-1043') : 'Not assigned';
+      const value = state.values[item.key];
+      return room ? value?.[room] ?? '' : value ?? '';
+    }
+    function control(item, room) {
+      const value = valueFor(item, room);
+      const id = `field-${item.key}${room ? '-' + room : ''}`;
+      const key = item.key + (room ? '.' + room : '');
+      const data = `data-field="${esc(item.key)}"${room ? ` data-room="${room}"` : ''}`;
+      const disabled = hasOutcome() || (item.key === 'cmsSend' && state.cmsMode === 'unverified') ? ' disabled' : '';
+      let html;
+      if (item.kind.includes('lookup')) html = `<div class="lookup-entry"><input id="${id}" ${data} ${item.kind === 'pair-name-lookup' ? '' : 'data-lookup-input'} type="text" value="${esc(value)}" placeholder="Search HMS…" aria-label="${esc(item.label)}${room ? ' · ' + esc(roomLabel(room)) : ''}"${disabled}><button type="button" data-lookup="${esc(item.key)}"${room ? ` data-room="${room}"` : ''} aria-label="Search ${esc(item.label)}${room ? ' · ' + esc(roomLabel(room)) : ''}"${disabled}><span class="lookup-icon" aria-hidden="true">⌕</span></button></div>`;
+      else if (item.kind.includes('checkbox')) html = `<label class="checkbox"><input id="${id}" ${data} type="checkbox" aria-label="${esc(item.label)}${room ? ' · ' + esc(roomLabel(room)) : ''}"${value && !(item.key === 'cmsSend' && state.cmsMode === 'unverified') ? ' checked' : ''}${disabled}>${room ? '' : ' ' + esc(item.label)}</label>`;
+      else if (item.kind.includes('select')) html = `<select id="${id}" ${data}${disabled}>${item.options.map((option) => `<option value="${esc(option)}"${String(option) === String(value) ? ' selected' : ''}>${esc(item.key === 'addOnRoom' ? roomLabel(option) : option || 'Select…')}</option>`).join('')}</select>`;
+      else if (item.kind.includes('textarea')) html = `<textarea id="${id}" ${data}${disabled}>${esc(value)}</textarea>`;
+      else {
+        const readOnly = ['readonly', 'pair-readonly', 'band', 'computed', 'computed-pair', 'status', 'confirmation'].includes(item.kind);
+        const type = item.kind.includes('date') ? 'date' : item.kind.includes('email') ? 'email' : item.kind === 'number' ? 'number' : item.kind === 'time' ? 'time' : 'text';
+        html = `<input id="${id}" ${data} type="${type}" value="${esc(value)}"${readOnly ? ' readonly' : disabled}>`;
+      }
+      const conflict = Object.hasOwn(state.conflicts, key) ? `<div class="field-help conflict">New suggestion: ${esc(state.conflicts[key] || 'empty')} · your edit was kept.</div>` : '';
+      const unbound = state.unbound[key] ? '<div class="field-help conflict">Select a matching example from the lookup.</div>' : '';
+      const fullValue = room && item.kind === 'pair-lookup' && String(value).length > 13 ? `<div class="field-help">${esc(value)}</div>` : '';
+      return `${html}${fullValue}${conflict}${unbound}`;
+    }
+    function childrenField() {
+      const counts = rooms.map((room) => `<div><span class="pair-caption">${esc(roomLabel(room))}</span><input readonly value="${state.children[room].length}"></div>`).join('');
+      const editors = state.childEditor ? `<div class="child-edit">${rooms.map((room) => `<div><strong>${esc(roomLabel(room))}</strong><div class="field-help">Number of children</div><input type="number" min="0" max="4" data-child-count="${room}" value="${state.children[room].length}"${hasOutcome() ? ' disabled' : ''}>${state.children[room].map((child, index) => `<div class="child-grid"><div class="field"><label class="field-label">Child name</label><input data-child-room="${room}" data-child-index="${index}" data-child-part="name" value="${esc(child.name)}"${hasOutcome() ? ' disabled' : ''}></div><div class="field"><label class="field-label">Age</label><input type="number" min="0" max="17" data-child-room="${room}" data-child-index="${index}" data-child-part="age" value="${esc(child.age)}"${hasOutcome() ? ' disabled' : ''}></div></div>`).join('')}</div>`).join('')}</div>` : '';
+      const ages = rooms.flatMap((room) => state.children[room].map((child) => `${esc(roomLabel(room))}: ${esc(child.name || 'Name missing')} · age ${esc(child.age || 'missing')}`)).join('<br>');
+      return `<div class="pair">${counts}</div>${ages ? `<div class="field-help">${ages}</div>` : ''}<button type="button" class="text-button" data-child-editor>${state.childEditor ? 'Hide child ages' : 'Edit child ages'}</button>${editors}`;
+    }
+    function renderField(item) {
+      const pair = item.kind.startsWith('pair-') || ['band', 'computed-pair', 'status', 'confirmation'].includes(item.kind);
+      const edited = pair ? rooms.some((room) => state.dirty[item.key + '.' + room]) : state.dirty[item.key];
+      const label = `<div class="field-label"><span>${esc(item.label)}${item.required ? '<span class="required"> *</span>' : ''}</span>${edited ? `<span class="edited">${state.prefillArrived ? 'Edit kept' : 'Edited'}</span>` : ''}</div>`;
+      let body;
+      if (item.kind === 'children') body = childrenField();
+      else if (pair) body = `<div class="pair">${rooms.map((room) => `<div><span class="pair-caption">${esc(roomLabel(room))}</span>${control(item, room)}</div>`).join('')}</div>`;
+      else body = control(item);
+      const help = item.key === 'cmsSend' && state.cmsMode === 'unverified' ? '<div class="field-help">Not included: combined confirmation support or send permission is not verified.</div>' : item.key === 'cmsEmail' ? '<div class="field-help">Proposed recipient. Actual HMS routing and combined contents still need verification.</div>' : item.kind === 'date' && valueFor(item) ? `<div class="field-help">${esc(dateLabel(valueFor(item)))}</div>` : '';
+      const nightly = item.key === 'ratePlan' ? nightlyRates() : '';
+      return `<div class="field">${item.kind === 'checkbox' ? '' : label}${body}${help}${nightly}</div>`;
+    }
+    function nightlyRates() {
+      const p = prices();
+      if (!p.dates.length) return '<div class="field-help">This prototype calculates sample rates for 1–7 nights.</div>';
+      const eligibility = state.rates !== 'ready' ? 'Sample eligibility is being checked or needs details.' : sampleIneligible() ? 'The agency rate or track is not eligible with no agency selected in this example.' : 'Eligible for the selected agency, party and dates in this example; live eligibility is not verified.';
+      return `<div class="nightly"><div class="field-help">${eligibility}</div>${rooms.map((room) => `<div class="nightly-title">${esc(roomLabel(room))} · nightly rates</div>${p.dates.map((date, i) => `<div class="line"><span>${esc(dateLabel(date))}</span><span>${money(p.nightly[room][i])}</span></div>`).join('')}`).join('')}</div>`;
+    }
+    function section(key, title, fields, note = '') {
+      const expanded = Boolean(state.expanded[key]);
+      const hidden = fields.filter((item) => !isVisible(item, false)).length;
+      return `<section class="section"><div class="section-head"><span>${title}</span><button type="button" class="text-button" data-section="${key}">${expanded ? 'Hide empty fields' : `Show all fields (${hidden} empty)`}</button></div><div class="section-body">${note ? `<p class="section-note">${note}</p>` : ''}${fields.filter((item) => isVisible(item, expanded)).map(renderField).join('')}</div></section>`;
+    }
+    function outcomeBlock() {
+      if (!hasOutcome()) return '';
+      let intro, rows;
+      const hasAddOn = state.values.addOn !== 'None';
+      const emailWaiting = cmsIncluded() ? 'HMS confirmation · waiting for the unfinished step' : 'HMS confirmation · excluded from this approval';
+      if (state.scenario === 'partial') {
+        intro = hasAddOn ? 'Partially completed · rooms saved, Add-On needs attention' : 'Partially completed · one room needs attention';
+        rows = [['good', 'Confirmed', `${roomLabel('queen')} · SIM-Q-1042`], hasAddOn ? ['good', 'Confirmed', `${roomLabel('twin')} · SIM-T-1043`] : ['warn', 'Not saved', `${roomLabel('twin')} · needs attention`], ...(hasAddOn ? [['warn', 'Not saved', `${state.values.addOn} · needs attention`]] : []), ['muted', 'Not sent', emailWaiting]];
+      } else if (state.scenario === 'uncertain') {
+        intro = 'Result uncertain · check HMS before trying again';
+        rows = [['good', 'Confirmed', `${roomLabel('queen')} · SIM-Q-1042`], ['warn', 'Uncertain', `${roomLabel('twin')} · may have been saved; check HMS`], ...(hasAddOn ? [['muted', 'Not started', state.values.addOn]] : []), ['muted', 'Not sent', cmsIncluded() ? 'HMS confirmation' : 'HMS confirmation · excluded from this approval']];
+      } else {
+        intro = 'Completed · simulated readback';
+        rows = [['good', 'Confirmed', `${roomLabel('queen')} · SIM-Q-1042`], ['good', 'Confirmed', `${roomLabel('twin')} · SIM-T-1043`], ...(hasAddOn ? [['good', 'Confirmed', state.values.addOn]] : []), [cmsIncluded() ? 'good' : 'muted', cmsIncluded() ? 'Sent' : 'Not sent', cmsIncluded() ? 'HMS confirmation · simulated' : 'HMS confirmation · excluded from this approval']];
+      }
+      const extra = state.recoveryOpen ? `<div class="notice info"><strong>${state.scenario === 'uncertain' ? 'Check the uncertain room first' : hasAddOn ? 'Review the unfinished Add-On' : 'Review the unfinished room'}</strong>${state.scenario === 'uncertain' ? 'The room may already exist. Reconcile it in HMS before retrying.' : 'Confirmed rooms remain booked. Review the remaining item before any further action.'} No HMS check runs in this prototype.</div>` : '';
+      return `<section class="section"><div class="section-head">Booking outcome</div><div class="section-body"><div class="notice ${state.scenario === 'success' ? 'good' : ''}"><strong>${intro}</strong>All results and confirmation numbers are simulated.</div>${rows.map(([tone, label, detail]) => `<div class="outcome-row"><span class="status ${tone}">${label}</span><span>${esc(detail)}</span></div>`).join('')}${extra}</div></section>`;
+    }
+    function notices() {
+      let html = '';
+      if (!childAgesValid() && !hasOutcome()) html += '<div class="notice"><strong>Child details needed</strong>Enter each child’s name and age to check the rate.</div>';
+      if (state.rates === 'checking' && !hasOutcome()) html += '<div class="notice info"><strong>Checking rates for your changes</strong>Your edits are kept while the example lookup finishes.</div>';
+      if (state.scenario === 'changed' && !hasOutcome()) { const p = prices(); html += `<div class="notice"><strong>Rate changed while you were reviewing</strong>${p.dates.length > 1 ? `${esc(roomLabel('twin'))}, ${esc(dateLabel(p.dates[1]))}: ${money(p.nightly.twin[1] - 100)} → ${money(p.nightly.twin[1])}.` : 'Check the current nightly rate.'} Review the updated total.</div>`; }
+      if (state.prefillArrived && Object.keys(state.dirty).length) html += '<div class="notice good"><strong>Background data arrived</strong>Your edits were kept. Filled fields remain visible when empty fields are hidden.</div>';
+      return html;
+    }
+    function disabledReason() {
+      if (!nightDates().length) return 'This prototype supports example stays of 1–7 nights.';
+      if (!childAgesValid()) return 'Enter each child’s name and age.';
+      if (state.rates !== 'ready') return 'Wait for the updated rates.';
+      if (Object.values(state.unbound).some(Boolean)) return 'Select matches for the typed lookup fields.';
+      if (!state.values.agency || !state.values.source || !state.values.guarantee) return 'Complete the booking details.';
+      if (rooms.some((room) => Number(state.values.adults[room]) !== 1)) return 'This example models one adult profile per room; further guests are not modeled.';
+      if (sampleIneligible()) return 'Select an eligible rate and track for each room.';
+      if (rooms.some((room) => !state.values.firstName[room].trim() || !state.values.lastName[room].trim() || !state.values.ratePlan[room] || !state.values.roomType[room] || !state.values.track[room])) return 'Complete the guest, room and rate details.';
+      if (state.values.addOn !== 'None' && (!state.values.addOnDate || !state.values.addOnTime || Number(state.values.addOnQuantity) < 1)) return 'Complete the Add-On details.';
+      if (cmsIncluded() && (!state.values.cmsEmail.includes('@') || !state.values.cmsMessage)) return 'Complete the CMS message and proposed recipient.';
+      if (cmsIncluded() && state.values.cmsMessage.startsWith('08')) return 'Choose a confirmation type that includes the total.';
+      return '';
+    }
+    function footer() {
+      const total = money(prices().grand);
+      if (state.scenario === 'success') return `<div class="approval-total"><span>Example total</span><span>${total}</span></div><p class="approval-caption">Example actions reviewed · Nava’s reply remains unsent.</p>`;
+      if (hasOutcome()) return `<div class="approval-total"><span>Example total</span><span>${total}</span></div><button class="primary" id="approve">${state.scenario === 'uncertain' ? 'Review uncertain result' : state.values.addOn === 'None' ? 'Review unfinished room' : 'Review unfinished Add-On'}</button><p class="approval-caption">Simulation only · Nava’s reply remains unsent.</p>`;
+      const reason = disabledReason();
+      const booking = `both rooms${state.values.addOn !== 'None' ? ' and the selected Add-On' : ''}`;
+      const included = cmsIncluded() ? `Includes ${booking} and one HMS email in this example.` : `Includes ${booking}. HMS email is not included.`;
+      return `<div class="approval-total"><span>Grand Total</span><span>${total}</span></div><button class="primary" id="approve"${reason ? ' disabled' : ''}>Approve &amp; create provisional booking</button><p class="approval-caption">${reason || included}</p>`;
+    }
+    const optionSets = {
+      agency: ['Tourvest Travel Services · Roggebaai', 'Alternative agency · simulated', 'No agency'], lastName: ['Example', 'Sample'],
+      roomType: ['STQN · Standard Queen', 'STWN · Standard Twin', 'DLXQN · Deluxe Queen', 'DLXTWN · Deluxe Twin'],
+      chargeRoomType: ['STQN · Standard Queen', 'STWN · Standard Twin'],
+      ratePlan: ['Agency B&B · sample', 'BAR B&B · sample'], source: ['Email', 'Telephone · sample'],
+      track: ['Agency rate · sample', 'Public rate · sample'], cmsMessage: ['03 · sample confirmation', '01 · sample confirmation', '08 · sample no-rate'],
+      settlementType: ['Invoice · sample', 'Card · sample'], reservationSettlementType: ['Invoice · sample', 'Card · sample'],
+      addOn: ['Airport transfer · sample', 'None'],
+    };
+    function modal() {
+      if (!state.lookup) return '';
+      const { key, room, query } = state.lookup;
+      const all = (optionSets[key] ?? [`Example ${key} · simulated`]).filter((value) => !['ratePlan', 'track'].includes(key) || state.values.agency !== 'No agency' || !value.startsWith('Agency'));
+      const options = all.filter((value) => value.toLowerCase().includes(query.toLowerCase()));
+      return `<div class="modal-shade"><div class="modal" role="dialog" aria-modal="true" aria-label="Search HMS choices"><h3>Search ${esc(key)}${room ? ' · ' + esc(roomLabel(room)) : ''}</h3><p class="section-note">Centurion example choices only. Actual options must come from this hotel’s HMS.</p><input aria-label="Search options" data-lookup-query value="${esc(query)}" placeholder="Search…">${options.map((value) => `<button type="button" class="modal-option" data-choice="${esc(value)}">${esc(value)}</button>`).join('') || '<p class="section-note">No example choices match.</p>'}<div class="modal-footer"><button type="button" class="text-button" data-clear-lookup>Clear selection</button><button type="button" class="text-button" data-close-lookup>Close</button></div></div></div>`;
+    }
+    function render() {
+      const active = document.activeElement;
+      const focusKey = active?.dataset?.field, focusRoom = active?.dataset?.room;
+      const focusQuery = active?.hasAttribute?.('data-lookup-query');
+      const childFocus = active?.dataset?.childRoom ? { room: active.dataset.childRoom, index: active.dataset.childIndex, part: active.dataset.childPart } : null;
+      const start = typeof active?.selectionStart === 'number' ? active.selectionStart : null, end = typeof active?.selectionEnd === 'number' ? active.selectionEnd : null;
+      const scroll = document.getElementById('pane-scroll').scrollTop;
+      const p = prices();
+      const planSummary = cmsIncluded() ? `Example: one HMS email to ${esc(state.values.cmsEmail || 'recipient needed')}, covering both rooms${state.values.addOn !== 'None' ? ' and the Add-On' : ''} and the complete total. HMS support and permission are unverified.` : `HMS email excluded. Proposed recipient, if supported and permitted: ${esc(state.values.cmsEmail || 'not entered')}.`;
+      document.getElementById('review').innerHTML = `${outcomeBlock()}${notices()}<div class="summary"><strong>2 rooms · ${p.dates.length || '—'} nights · ${money(p.grand)}</strong><span>${planSummary}</span><span>Always-shown and populated fields stay visible; empty optional fields can be expanded.</span></div>${section('stay', 'Stay', STAY, 'Fields shown once apply to both rooms in this example; two columns show per-room values.')}${section('guest', 'Guest', GUEST, 'Fields follow the screenshot order. One adult profile per room is modeled in this example.')}${section('settlement', 'Settlement', SETTLEMENT)}${section('reservation', 'Reservation', RESERVATION, 'CMS Booker Email is a proposed recipient; routing, combined contents and authority remain unverified.')}${section('addon', 'Hotel Add-On', ADDON, 'Illustrative airport → hotel transfer. The Centurion native Add-On catalog is not verified here.')}<div class="notice info"><strong>Proposed HMS confirmation</strong>${cmsIncluded() ? `This example includes one HMS email to ${esc(state.values.cmsEmail || 'recipient needed')}` : `No HMS email is included in this approval; the proposed recipient is ${esc(state.values.cmsEmail || 'not entered')}`}. If supported and permitted, it would cover both rooms${state.values.addOn !== 'None' ? ', the selected Add-On' : ''} and the complete ${money(p.grand)} total. Nava’s reply remains unsent.</div>`;
+      document.getElementById('approval').innerHTML = footer();
+      document.getElementById('modal-root').innerHTML = modal();
+      document.getElementById('scenario').value = state.scenario;
+      document.getElementById('cms-mode').value = state.cmsMode;
+      document.getElementById('prefill').disabled = hasOutcome();
+      document.getElementById('cms-mode').disabled = hasOutcome();
+      document.getElementById('state-readout').textContent = JSON.stringify({ property: 'Centurion · illustrative', values: state.values, children: state.children, scenario: state.scenario, rates: state.rates, dirty: Object.keys(state.dirty), suggestions: state.conflicts, totals: p }, null, 2);
+      document.getElementById('pane-scroll').scrollTop = scroll;
+      let replacement = null;
+      if (focusKey) replacement = document.querySelector(`[data-field="${focusKey}"]${focusRoom ? `[data-room="${focusRoom}"]` : ''}`);
+      else if (focusQuery) replacement = document.querySelector('[data-lookup-query]');
+      else if (childFocus) replacement = document.querySelector(`[data-child-room="${childFocus.room}"][data-child-index="${childFocus.index}"][data-child-part="${childFocus.part}"]`);
+      if (replacement && !replacement.disabled) { replacement.focus({ preventScroll: true }); if (start !== null && typeof replacement.setSelectionRange === 'function') { try { replacement.setSelectionRange(start, end); } catch (_) {} } }
+      document.getElementById('approve')?.addEventListener('click', () => { if (hasOutcome()) state.recoveryOpen = true; else if (!disabledReason()) state.scenario = 'success'; render(); document.getElementById('pane-scroll').scrollTop = 0; });
+    }
+    function setField(key, room, value) {
+      if (room) state.values[key][room] = value; else state.values[key] = value;
+      const dirtyKey = key + (room ? '.' + room : '');
+      state.dirty[dirtyKey] = true; delete state.conflicts[dirtyKey];
+      if (key === 'nights') {
+        const start = Date.parse(state.values.arrival + 'T12:00:00Z'), count = Number(value);
+        if (Number.isFinite(start) && Number.isInteger(count) && count >= 1 && count <= 7) { state.values.departure = new Date(start + count * 86400000).toISOString().slice(0, 10); state.dirty.departure = true; }
+      } else if (key === 'arrival' || key === 'departure') state.values.nights = String(nightDates().length || '');
+      if (['agency', 'arrival', 'departure', 'nights', 'adults', 'roomType', 'ratePlan', 'track'].includes(key)) refreshRates();
+    }
+    function updateInput(event) {
+      const el = event.target;
+      if (hasOutcome()) return;
+      if (el.hasAttribute('data-lookup-query')) { state.lookup.query = el.value; render(); return; }
+      if (el.dataset.childCount) {
+        const room = el.dataset.childCount, count = Math.max(0, Math.min(4, Number(el.value) || 0));
+        while (state.children[room].length < count) state.children[room].push({ name: '', age: '' });
+        state.children[room].length = count; state.dirty['children.' + room] = true; refreshRates(); render(); return;
+      }
+      if (el.dataset.childRoom) {
+        const room = el.dataset.childRoom, index = Number(el.dataset.childIndex), part = el.dataset.childPart;
+        state.children[room][index][part] = el.value; state.dirty[`children.${room}.${index}.${part}`] = true; refreshRates(); render(); return;
+      }
+      const key = el.dataset.field;
+      if (!key) return;
+      if (el.hasAttribute('data-lookup-input')) state.unbound[key + (el.dataset.room ? '.' + el.dataset.room : '')] = Boolean(el.value);
+      setField(key, el.dataset.room, el.type === 'checkbox' ? el.checked : el.value);
+      render();
+    }
+    document.addEventListener('input', (event) => { if (event.target.tagName !== 'SELECT' && event.target.type !== 'checkbox') updateInput(event); });
+    document.addEventListener('change', (event) => { if (event.target.tagName === 'SELECT' || event.target.type === 'checkbox') updateInput(event); });
+    document.addEventListener('click', (event) => {
+      const button = event.target.closest('button'); if (!button) return;
+      if (button.dataset.section) { state.expanded[button.dataset.section] = !state.expanded[button.dataset.section]; render(); }
+      else if (button.hasAttribute('data-child-editor')) { state.childEditor = !state.childEditor; render(); }
+      else if (button.dataset.lookup) { const key = button.dataset.lookup, room = button.dataset.room || null, dirtyKey = key + (room ? '.' + room : ''); const value = room ? state.values[key]?.[room] : state.values[key]; state.lookup = { key, room, query: state.unbound[dirtyKey] ? value : '' }; render(); document.querySelector('[data-lookup-query]')?.focus(); }
+      else if (button.dataset.choice !== undefined && state.lookup) { const { key, room } = state.lookup; delete state.unbound[key + (room ? '.' + room : '')]; setField(key, room, button.dataset.choice); state.lookup = null; render(); }
+      else if (button.hasAttribute('data-clear-lookup') && state.lookup) { const { key, room } = state.lookup; delete state.unbound[key + (room ? '.' + room : '')]; setField(key, room, ''); state.lookup = null; render(); }
+      else if (button.hasAttribute('data-close-lookup')) { state.lookup = null; render(); }
+    });
+    document.getElementById('scenario').addEventListener('change', (event) => {
+      state.scenario = event.target.value; state.rateChanged = state.scenario === 'changed'; state.recoveryOpen = false;
+      if (state.scenario === 'missing') { if (!state.children.twin.length && !state.dirty['children.twin']) state.children.twin = [{ name: 'Taylor Example', age: '' }]; else if (state.children.twin.length && !state.dirty['children.twin.0.age']) state.children.twin[0].age = ''; state.childEditor = true; refreshRates(); }
+      else if (state.children.twin.length === 1 && !state.children.twin[0].age && !state.dirty['children.twin.0.age']) { state.children.twin[0].age = '8'; state.rates = 'ready'; }
+      const url = new URL(window.location.href); url.searchParams.set('scenario', state.scenario); history.replaceState(null, '', url.href);
+      render(); document.getElementById('pane-scroll').scrollTop = 0;
+    });
+    document.getElementById('cms-mode').addEventListener('change', (event) => { state.cmsMode = event.target.value; render(); });
+    document.getElementById('prefill').addEventListener('click', () => {
+      const incoming = { note: 'Transfer on arrival · sample', cmsEmail: 'reservations@example.test', 'nationality.twin': 'Example nationality · simulated' };
+      Object.entries(incoming).forEach(([key, value]) => {
+        if (state.dirty[key]) { const [base, room] = key.split('.'); const current = room ? state.values[base][room] : state.values[base]; if (current !== value) state.conflicts[key] = value; }
+        else { const [base, room] = key.split('.'); if (room) state.values[base][room] = value; else state.values[base] = value; }
+      });
+      state.prefillArrived = true; render();
+    });
+    render();
+  </script>
+</body>
+</html>
