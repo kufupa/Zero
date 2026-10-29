@@ -507,6 +507,7 @@ export function availabilityBoardOf(result: QuoteEnvelope, request?: Availabilit
   truncated: boolean;
 } {
   const snapshot = availabilitySnapshotOf(result, request);
+  const requestedDays = request ? requestedNightDates(request) : null;
   const rows: AvailabilityBoardRow[] = [];
   for (const group of snapshot.groups) {
     const groupId = group.id ?? '';
@@ -524,7 +525,7 @@ export function availabilityBoardOf(result: QuoteEnvelope, request?: Availabilit
       const priceTotal = priced.reduce((sum, value) => sum + value, 0);
       const currency = nights[0]?.price.currency;
       const completePrices = request
-        ? nights.length > 0 && priced.length === nights.length && Number.isSafeInteger(priceTotal) &&
+        ? Boolean(requestedDays?.length) && nights.length === requestedDays?.length && priced.length === nights.length && Number.isSafeInteger(priceTotal) &&
           Boolean(currency) && nights.every((night) => night.price.currency === currency) &&
           (!expectedCurrency || currency === expectedCurrency)
         : priced.length > 0;
@@ -540,7 +541,7 @@ export function availabilityBoardOf(result: QuoteEnvelope, request?: Availabilit
         nightlyPriceMinor: completePrices
           ? Math.round(priceTotal / priced.length)
           : null,
-        roomsLeft: stocks.length > 0 && (!request || stocks.length === nights.length) ? Math.min(...stocks) : null,
+        roomsLeft: stocks.length > 0 && (!request || (Boolean(requestedDays?.length) && nights.length === requestedDays?.length && stocks.length === nights.length)) ? Math.min(...stocks) : null,
         ...(option.rateScope ? { rateScope: option.rateScope } : {}),
       });
     }

@@ -543,6 +543,8 @@ describe('U10 availability probe (pure)', () => {
     expect(missing).toMatchObject({ nightlyPriceMinor: null, roomsLeft: null });
     const mixedCurrency = [...nights.slice(0, 2), { ...nights[2]!, price: { amount: '300.00', currency: 'USD' } }];
     expect(availabilityBoardOf(envelope(mixedCurrency), request, 'ZAR').rows[0]?.nightlyPriceMinor).toBeNull();
+    expect(availabilityBoardOf(envelope(nights), { ...request, departure: request.arrival }, 'ZAR').rows[0])
+      .toMatchObject({ nightlyPriceMinor: null, roomsLeft: null });
   });
 
   it('preserves the existing partial-night board for callers without a stay request', () => {
