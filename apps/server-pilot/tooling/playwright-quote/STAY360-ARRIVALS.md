@@ -58,3 +58,42 @@ separate requested/additional schema or extra field metadata.
 
 Do not put guest values or credentials in source files, examples, or shared
 notes. Password fields remain excluded.
+
+## Search for a confirmation
+
+```sh
+node apps/server-pilot/tooling/playwright-quote/read-confirmation-ui.mjs --confirmation CONFIRMATION-NUMBER
+```
+
+The command starts the same Centurion browser, searches Stay 360, selects one
+exact confirmation match and prints JSON. No match, duplicate matches, or capped
+search results stop the lookup. `readConfirmationFromStay360(page, confirmation)`
+can also be called with an already-open page so another action can follow it.
+
+`selectedRow` contains the matching search row. `details.cards` contains the
+rendered Stay 360 cards, their source fields, raw card text and any rendered
+card grids; `details.visibleFormFields` and `details.visiblePageTextOutsideGrids`
+retain other rendered controls and text. Field values are raw UI text and can
+include adjacent labels; a `null` value means the control could not be read.
+Hidden or collapsed content and unopened tabs are not opened. This does not open
+Record View.
+
+The JSON contains guest information. Save it only in a private location, for
+example after `umask 077`; do not commit it or include it in shared notes.
+
+## Read Record View
+
+```sh
+node apps/server-pilot/tooling/playwright-quote/read-record-view-ui.mjs --confirmation CONFIRMATION-NUMBER
+```
+
+The command keeps the 1a result, opens Record View in the same browser, checks
+its confirmation number, expands the rendered form sections and returns fields,
+checkbox states, displayed text and current grid pages. Other tabs, hidden
+content and unloaded grid pages are excluded. The reusable page action is
+`readRecordViewFromStay360(page, confirmation)` after selecting the confirmation.
+
+An exact `Note` or `Notes` dialog is captured in the JSON and saved under the
+private `.private/stay360-confirmation/` directory before its Close button is
+clicked. Other dialogs stop the read. The browser's read-only guard is
+heuristic; it does not prove every possible mutating request is blocked.
