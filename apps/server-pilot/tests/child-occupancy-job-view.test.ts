@@ -151,6 +151,15 @@ describe('cached quote views use current selected occupancy', () => {
     expect(view?.result).toMatchObject({ status: 'ready', totalMinor: 10000 });
   });
 
+  it('holds an actual Centurion result even if the earlier queued target was HRDAV', async () => {
+    const { childrenPerRoom: _count, ...legacyGroup } = input.groups[0]!;
+    const run = job({ kind: 'staff_quote', input: { ...input, groups: [legacyGroup] } });
+    run.metrics = { ...run.metrics, propertyCode: 'HRDAV' };
+    run.readResult = { ...run.readResult, propertyCode: 'HRCEN' };
+    const view = await readHmsJobView(byId, fakeDb([[aiWorkflowRun, [run]]]));
+    expect(view).toMatchObject({ status: 'failed', result: { ok: false, code: 'staff_quote_child_occupancy_incomplete' } });
+  });
+
   it('keeps a non-quote job view unchanged without quote context', async () => {
     const find = job({ kind: 'find', confirmation: '123-1' });
     find.readResult = { kind: 'find', result: 'synthetic' };
