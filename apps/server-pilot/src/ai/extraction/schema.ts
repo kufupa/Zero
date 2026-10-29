@@ -108,7 +108,13 @@ const mailExtractionObjectSchema = z.object({
             .int()
             .nullable()
             .describe('Adults in EACH room, not in total.'),
-          childAges: z.array(z.number().int()).describe('Age of each child in these rooms.'),
+          childrenPerRoom: z
+            .number()
+            .int()
+            .nullable()
+            .optional()
+            .describe('Children in EACH room: 0 when none are requested, null when children are mentioned but their number per room is unknown. Absent only in older reads.'),
+          childAges: z.array(z.number().int()).describe('Known ages of children in EACH room; do not invent unknown ages.'),
           board: z.enum(['room_only', 'bb', 'dbb']).nullable(),
         }),
       ),
@@ -138,6 +144,8 @@ export type ExtractionRow = {
   roomType: string | null;
   rooms: number | null;
   adultsPerRoom: number | null;
+  /** Absent in legacy reads; null means children were mentioned but their per-room count is unknown. */
+  childrenPerRoom?: number | null;
   childAges: number[];
   board: ExtractionBoard | null;
 };
@@ -353,15 +361,21 @@ export function sanitizeExtraction(
       requested: dateRangeOf(anchorStayDateRange(stay.requested, dateAnchor)),
       booked: stay.booked ? dateRangeOf(stay.booked) : null,
       totalRooms: countOf(stay.totalRooms, 1, 999),
-      rows: stay.rows.slice(0, MAX_ROWS).map((row) => ({
-        roomType: cleanText(row.roomType),
-        rooms: countOf(row.rooms, 1, 999),
-        adultsPerRoom: countOf(row.adultsPerRoom, 1, 9),
-        childAges: row.childAges
+      rows: stay.rows.slice(0, MAX_ROWS).map((row) => {
+        const childAges = row.childAges
           .filter((age) => Number.isInteger(age) && age >= 0 && age <= 17)
-          .slice(0, 9),
-        board: row.board,
-      })),
+          .slice(0, 9);
+        return {
+          roomType: cleanText(row.roomType),
+          rooms: countOf(row.rooms, 1, 999),
+          adultsPerRoom: countOf(row.adultsPerRoom, 1, 9),
+          ...(row.childrenPerRoom !== undefined
+            ? { childrenPerRoom: childAges.length === row.childAges.length ? countOf(row.childrenPerRoom, 0, 9) : null }
+            : {}),
+          childAges,
+          board: row.board,
+        };
+      }),
       ...(guests !== undefined ? { guests } : {}),
       ...(stay.action !== undefined ? { action: stay.action } : {}),
     };
@@ -390,9 +404,19 @@ export function sanitizeExtraction(
       ? [{ field: 'stayDates', question: 'Departure date must be after arrival; confirm the requested stay dates.' }]
       : [];
   });
+  const incompleteChildren = stays.some((stay) => stay.rows.some((row) =>
+    row.childrenPerRoom === null ||
+    (row.childrenPerRoom !== undefined && row.childrenPerRoom !== row.childAges.length),
+  ));
+  const childWarnings = incompleteChildren && !output.missing.some((item) =>
+    item.field === 'childrenPerRoom' || item.field === 'childAges',
+  )
+    ? [{ field: 'childAges', question: 'Confirm the number of children per room and each child’s age.' }]
+    : [];
   const missing = [
-    ...output.missing.slice(0, Math.max(0, MAX_MISSING - reversedDateWarnings.length)),
+    ...output.missing.slice(0, Math.max(0, MAX_MISSING - reversedDateWarnings.length - childWarnings.length)),
     ...reversedDateWarnings,
+    ...childWarnings,
   ]
     .slice(0, MAX_MISSING)
     .map((item) => ({

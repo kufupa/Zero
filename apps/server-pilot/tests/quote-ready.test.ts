@@ -37,6 +37,7 @@ function payload(overrides: Record<string, unknown> = {}) {
             roomType: 'Standard King',
             rooms: null,
             adultsPerRoom: 2,
+            childrenPerRoom: 0,
             childAges: [],
             board: null,
           },
@@ -93,7 +94,7 @@ describe('prepared quote input from stored extraction', () => {
           booked: null,
           totalRooms: 1,
           rows: [{
-            id: 'row-1', roomType: 'SKNG', rooms: 1, adultsPerRoom: 2, childAges: [], board: 'dbb',
+            id: 'row-1', roomType: 'SKNG', rooms: 1, adultsPerRoom: 2, childrenPerRoom: 0, childAges: [], board: 'dbb',
           }],
         },
       ],
@@ -474,6 +475,7 @@ function payloadForEval47Shape(row: Eval47SummaryRow): Record<string, unknown> |
         roomType: room.roomCodes[0] ?? null,
         rooms: room.count,
         adultsPerRoom: room.adultsPerRoom,
+        childrenPerRoom: room.childCountPerRoom,
         childAges: Array.from({ length: room.childCountPerRoom }, () => 0),
         board: board === 'room_only' ? 'room_only' : board === 'dinner_bb' ? 'dbb' : 'bb',
       };

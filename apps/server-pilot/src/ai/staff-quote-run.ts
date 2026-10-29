@@ -10,6 +10,7 @@ import {
   staffQuoteDinnerGroupIdsToRetryAsBb,
   staffQuoteDinnerNoMatchFallback,
   staffQuoteGovernmentDinnerNote,
+  staffQuoteInput,
   staffQuoteSourceHash,
   type StaffQuoteAttestation,
   type StaffQuoteDinnerAddOn,
@@ -45,6 +46,7 @@ import { type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { ReservationistTaskEvidenceUnavailable } from './reservationist-execution.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js';
 import { mailExtraction } from '../db/schema/work.js';
+import { childOccupancyIsCurrent } from './child-occupancy.js';
 import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
 import { buildStaffRatePick } from './staff-rate-pick-history.js';
 import { otherBoardContractNotes, type RateOption } from './rate-options.js';
@@ -441,6 +443,8 @@ export function staffQuoteFailureMessage(
     native_quote_capture_oversized: HMS_UNPRICEABLE_COMBINATION_MESSAGE,
     staff_quote_source_changed:
       'The selected email or approved inputs changed; rerun the current quote.',
+    staff_quote_child_occupancy_incomplete:
+      'Confirm the number of children per room and enter an age for each child, then run the quote again.',
   };
   const business = Object.prototype.hasOwnProperty.call(actions, code) ? actions[code] : undefined;
   if (business) return business;
@@ -615,6 +619,7 @@ export async function runStaffQuote(
   db: DB,
   options: StaffQuoteRunOptions = {},
 ) {
+  input = staffQuoteInput.parse(input);
   const [mail] = await db
     .select()
     .from(message)
@@ -622,6 +627,14 @@ export async function runStaffQuote(
     .limit(1);
   if (!mail || mail.direction !== 'inbound')
     refuseQuote('mail_not_found', 'Selected inbound email not found', { code: 'NOT_FOUND' });
+  const occupancyScope = { transportId: identity.transportId, threadId: mail.threadId, messageId: mail.id };
+  if (!(await childOccupancyIsCurrent(db, input.groups, occupancyScope))) {
+    refuseQuote(
+      'child_occupancy_incomplete',
+      'Confirm the number of children per room and enter an age for each child, then run the quote again.',
+      { cause: { code: 'staff_quote_child_occupancy_incomplete' } },
+    );
+  }
   const systemPrepared = identity.user === undefined;
   const quoteTarget = await resolveHmsQuoteJobTarget({
     transportId: identity.transportId,
@@ -736,7 +749,8 @@ export async function runStaffQuote(
       (systemPrepared || latest?.id === generationId) &&
       !!current &&
       current.threadId === scope.threadId &&
-      staffQuoteSourceHash(current) === input.sourceHash
+      staffQuoteSourceHash(current) === input.sourceHash &&
+      await childOccupancyIsCurrent(db, input.groups, occupancyScope)
     );
   };
   const databaseUrl = process.env.DATABASE_URL;

@@ -138,6 +138,12 @@ function groupForStay(
       return { groups: [], reason: 'missing_rooms' };
     }
     const adults = row.adultsPerRoom ?? 2;
+    if (row.childrenPerRoom === null || row.childrenPerRoom === undefined) {
+      return { groups: [], reason: 'missing_children_count' };
+    }
+    if (row.childrenPerRoom !== row.childAges.length) {
+      return { groups: [], reason: 'missing_child_ages' };
+    }
     if (
       !Number.isInteger(adults) ||
       adults < 1 ||
@@ -158,6 +164,7 @@ function groupForStay(
       departureDate: departure,
       quantity,
       adults,
+      childrenPerRoom: row.childrenPerRoom,
       childrenAges: row.childAges,
       board: row.board === 'room_only' ? 'room_only' : row.board === 'dbb' ? 'dinner_bb' : 'bb',
       ...(roomCode ? { roomCodes: [roomCode] } : {}),
@@ -298,6 +305,7 @@ function priceShape(input: StaffQuoteInput): unknown {
       departureDate: group.departureDate,
       quantity: group.quantity,
       adults: group.adults,
+      childrenPerRoom: group.childrenPerRoom ?? null,
       childrenAges: group.childrenAges,
       board: group.board,
       roomCodes: [...(group.roomCodes ?? [])].sort(),
