@@ -43,6 +43,7 @@ export type StoredPane =
       /** Null when the read has no work item (it could not be opened): the read shows, edits are not logged. */
       workItemId: string | null;
       contact: StoredContact;
+      sourcePartyDigest?: string | null;
       /** Last HMS commits for this mail. The Book step shows them again after a reload. */
       savedStays?: Record<string, StoredStayCommit>;
       language: string | null;
@@ -566,6 +567,7 @@ export function useStoredWork(args: {
       workItemStatus: stored.workItemStatus,
       workItemId: stored.workItemId,
       contact: stored.contact,
+      sourcePartyDigest: stored.sourcePartyDigest ?? null,
       savedStays: stored.stays,
       language: stored.language,
       translation: stored.translation,

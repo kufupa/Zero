@@ -139,6 +139,18 @@ async function runStay(
 }
 
 describe('AE1 multi-stay: a succeeded stay run counts as rated', () => {
+  it('clears visible quote results when the saved source changes', async () => {
+    const session = aeSession();
+    const { session: priced } = await runStay(session, A, async () =>
+      serverSummary({ inputRevision: session.inputRevision, stay: A, totalMinor: 24720000 }));
+    expect(ratedStayCount(priced).rated).toBe(1);
+    const refreshed = reduceQuoteSession(priced, { type: 'quote_source_changed' });
+    expect(refreshed.inputRevision).toBe(priced.inputRevision + 1);
+    expect(ratedStayCount(refreshed).rated).toBe(0);
+    expect(refreshed.staffQuotes).toEqual({});
+    expect(refreshed.pdf).toBeNull();
+  });
+
   it('stay 1 run with the server summary shape is rated: "1 of 2 stays rated"', async () => {
     const session = aeSession();
     expect(requestedQuoteKeys(session.groups)).toEqual([A.key, B.key]);

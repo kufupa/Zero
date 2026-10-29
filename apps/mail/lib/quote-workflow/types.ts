@@ -897,6 +897,7 @@ export type QuoteSessionAction =
   | { type: 'staff_source_ready'; source: StaffQuoteSource }
   | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[] }
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
+  | { type: 'quote_source_changed' }
   | { type: 'patch_staff_stay_extras'; stayKey: string; extras: Partial<StaffStayExtras> }
   | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }
   | { type: 'room_rate_board_selected'; groupId: string; selection: QuoteRoomRateBoardSelection }

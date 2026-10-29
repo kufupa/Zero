@@ -99,6 +99,8 @@ export type ExecuteStaffQuoteInput = {
   salesStrategy: QuoteSalesStrategyValue;
   company: string;
   agency: string;
+  sourcePartyDigest?: string;
+  sourceExtractionId?: string;
   attention: string;
   clientEmail: string;
   clientTelephone: string;
@@ -178,7 +180,7 @@ function stableJson(value: unknown): string {
 }
 
 const STAFF_QUOTE_NON_PRICE_FIELDS = new Set(
-  'messageId sourceHash selectionEpoch inputRevision company agency attention clientEmail clientTelephone dinnerAllowanceLabel lunchAllowanceLabel notes maxOptionsPerGroup'.split(' '),
+  'messageId sourceHash selectionEpoch inputRevision sourceExtractionId company agency attention clientEmail clientTelephone dinnerAllowanceLabel lunchAllowanceLabel notes maxOptionsPerGroup'.split(' '),
 );
 
 const STAFF_QUOTE_DISPLAY_FIELDS = [
@@ -1062,6 +1064,9 @@ type StaffQuoteRequestArgs = {
   inputRevision: number;
   groups: StayGroupRequirement[];
   header: StaffQuoteHeader;
+  /** Work-item source observed by this pane, kept separate from staff's picked HMS parties. */
+  sourcePartyDigest?: string | null;
+  sourceExtractionId?: string | null;
   /** Prefer an explicit stay key when the request is built from a reconstructed stay. */
   stayKey?: string;
   /** Resolved quote-target property; staff quote requests refuse a missing or unknown code. */
@@ -1105,6 +1110,10 @@ function staffQuoteRequest(
         selectionEpoch: args.selectionEpoch,
         inputRevision: args.inputRevision,
         groups: prepared.ok,
+        ...(args.propertyCode === HRCEN_PROPERTY_CODE && args.sourcePartyDigest
+          ? { sourcePartyDigest: args.sourcePartyDigest } : {}),
+        ...(args.propertyCode === HRCEN_PROPERTY_CODE && args.sourceExtractionId
+          ? { sourceExtractionId: args.sourceExtractionId } : {}),
         ...header,
         ...(args.strategyRequestValue ? { salesStrategy: args.strategyRequestValue } : {}),
         ...(pickedParties(sent.parties) ? { parties: pickedParties(sent.parties) } : {}),

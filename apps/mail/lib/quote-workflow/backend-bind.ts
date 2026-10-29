@@ -215,6 +215,8 @@ export type StoredWork =
       refs: Record<string, { stayId: string; rowId: string | null }>;
       analysis: ReadyAnalyse;
       contact: StoredContact;
+      /** Fingerprint of the saved agency and end-client source, from this read. */
+      sourcePartyDigest?: string | null;
       /** Last HMS commit per stay id, including durable before/saved shots. Absent on older reads. */
       stays?: Record<string, StoredStayCommit>;
       /** The read's source language (ISO 639-1), or null when unclear. */

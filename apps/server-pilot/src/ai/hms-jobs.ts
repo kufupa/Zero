@@ -2436,6 +2436,7 @@ export function schedulePartyPrefetch(run: PartyPrefetchRun): void {
 }
 
 type QuoteReadyMessageSource = {
+  extractionId: string;
   extractionStatus: string;
   kind: string;
   payload: unknown;
@@ -2469,6 +2470,7 @@ async function quoteReadySourceForMessage(
 ): Promise<QuoteReadyMessageSource | null> {
   const [source] = await db
     .select({
+      extractionId: mailExtraction.id,
       extractionStatus: mailExtraction.status,
       kind: mailExtraction.kind,
       payload: mailExtraction.payload,
@@ -2661,6 +2663,7 @@ export async function evaluateQuoteReadyForMessage(
       htmlBody: source.htmlBody,
     }),
     payload: source.payload,
+    extractionId: source.extractionId,
     ...(parties ? { parties } : {}),
     now,
     ...(propertyCode ? { propertyCode } : {}),
@@ -4303,7 +4306,7 @@ async function toView(
     result = quoteSourceProofPredatesPolicy(quoteSourceProofFromRun(run))
       ? { ok: false, code: 'quote_source_outdated', message: quoteSourcePolicyChangedMessage }
       : { ok: false, code: 'child_occupancy_incomplete',
-        message: 'Refresh the selected email and confirm rooms, guests, room type and meal plan before using this price.' };
+        message: 'Refresh the selected email and confirm rooms, guests, room type, meal plan, agency and company before using this price.' };
   }
   return {
     runId: run.id,

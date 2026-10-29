@@ -6,12 +6,14 @@ import { HMS_JOB_PROMPT_VERSION, type AiWorkflowRun } from '../src/ai/run-ledger
 import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
+import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 
 const transportId = 'transport-centurion';
 const mail = { id: 'm1', transportId, threadId: 't1', direction: 'inbound',
   messageIdHeader: 'synthetic@example.invalid', subject: 'Synthetic quote',
   textBody: 'Please quote accommodation.', htmlBody: null };
 const input = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail), selectionEpoch: 1, inputRevision: 1,
+  sourcePartyDigest: quoteSourcePartyDigest({ agency: null, endClient: null }, {}), sourceExtractionId: 'extract-1',
   groups: [{ id: 'r1', arrivalDate: '2027-10-20', departureDate: '2027-10-21',
     quantity: 1, adults: 2, childrenPerRoom: 0, childrenAges: [], board: 'bb', sourcePreference: { roomType: null, board: null } }],
   salesStrategy: 'BAR', company: '', agency: '', attention: '', clientEmail: '', clientTelephone: '' });
@@ -97,6 +99,12 @@ describe('cached quote views use current selected occupancy', () => {
       expect(stale).toMatchObject({ status: 'failed', result: { ok: false } });
       expect(stale?.result).not.toHaveProperty('totalMinor');
     }
+  });
+
+  it.each(['contact.company', 'contact.endClient'])('hides a cached price when %s changed', async (path) => {
+    const stale = await readHmsJobView(byId, fakeDb(byIdReplies(item({ [path]: 'Another Party' }))));
+    expect(stale).toMatchObject({ status: 'failed', result: { ok: false } });
+    expect(stale?.result).not.toHaveProperty('totalMinor');
   });
 
   it('holds a pinned old or missing extraction until the work item adopts the latest read', async () => {

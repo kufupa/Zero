@@ -48,6 +48,24 @@ it('sends the raw Centurion source preference separately from a selected HMS rat
   if ('ok' in davinci) expect(davinci.ok[0]).not.toHaveProperty('sourcePreference');
 });
 
+it('forwards the pane-seen party source separately from the selected HMS party for Centurion only', async () => {
+  const mutate = vi.fn(async (_input: unknown) => { throw new Error('stop after capture'); });
+  const agency = { kind: 'agency' as const, nativeId: '42', name: 'Staff Pick' };
+  const request = {
+    mutate, source: { messageId: 'm1', threadId: 't1', sourceHash: 'a'.repeat(64) },
+    selectionEpoch: 1, inputRevision: 1, groups: [stay()],
+    header: { ...emptyStaffQuoteHeader(), salesStrategy: 'BAR' as const, agency: agency.name, parties: { agency } },
+    sourcePartyDigest: 'b'.repeat(64), sourceExtractionId: 'extract-1',
+  };
+  await bindExecuteStaffQuote({ ...request, propertyCode: HRCEN_PROPERTY_CODE });
+  expect(mutate.mock.calls[0]?.[0]).toMatchObject({ sourcePartyDigest: request.sourcePartyDigest,
+    sourceExtractionId: 'extract-1', agency: agency.name, parties: { agency } });
+  mutate.mockClear();
+  await bindExecuteStaffQuote({ ...request, propertyCode: HRDAV_PROPERTY_CODE });
+  expect(mutate.mock.calls[0]?.[0]).not.toHaveProperty('sourcePartyDigest');
+  expect(mutate.mock.calls[0]?.[0]).not.toHaveProperty('sourceExtractionId');
+});
+
 describe('HRDAV native room and board maps', () => {
   it('requires complete child occupancy for Centurion but preserves older Da Vinci reads', () => {
     const unknown = stay({ childrenPerRoom: undefined, childrenAges: [], roomPreference: 'STWN' });

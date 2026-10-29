@@ -67,6 +67,7 @@ import {
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
+import { quoteSourcePartyDigest } from './quote-source-party.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
 
 /**
@@ -1608,6 +1609,8 @@ export type StoredWork =
         hmsTodoCard: Awaited<ReturnType<typeof hmsTodoCardFromLuna>>;
       };
       contact: StoredContact;
+      /** Opaque snapshot of the saved agency and end client shown to the quote pane. */
+      sourcePartyDigest: string | null;
       /** Last HMS commit per stay, keyed by extraction stay id. Empty until a stay is booked. */
       stays: Record<string, StayCommitRecord>;
       /** Last Book preview grant per stay. Digest-bound status, never a reusable token. */
@@ -1776,6 +1779,7 @@ async function readyView(
           ),
     },
     contact: storedContact(read.payload, state),
+    sourcePartyDigest: quoteSourcePartyDigest(read.payload, state),
     stays: stayCommitsOf(state),
     stayPreviews: stayPreviewsOf(state),
     fieldProvenance: await latestFieldProvenance(db, {
