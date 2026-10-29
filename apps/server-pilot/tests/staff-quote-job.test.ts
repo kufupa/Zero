@@ -531,11 +531,12 @@ describe('staff_quote HMS job execution', () => {
       });
       return syntheticRevision(
         ['600.00', '600.00'],
-        'Dinner, Bed and Breakfast R',
+        'Dinner, Bed & Breakfast R',
         'SKNG',
         undefined,
         '2026-11-12',
         prepared.authorizationId,
+        { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] },
       );
     });
 
@@ -592,11 +593,12 @@ describe('staff_quote HMS job execution', () => {
       });
       return syntheticRevision(
         ['600.00', '600.00'],
-        requests.length === 1 ? 'Dinner, Bed and Breakfast R' : 'Bed & Breakfast R',
+        requests.length === 1 ? 'Dinner, Bed & Breakfast R' : 'Bed & Breakfast R',
         'SKNG',
         undefined,
         '2026-11-12',
         prepared.authorizationId,
+        { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] },
       );
     });
 
@@ -666,6 +668,7 @@ describe('staff_quote HMS job execution', () => {
         undefined,
         '2026-11-12',
         prepared.authorizationId,
+        { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] },
       );
     });
 
