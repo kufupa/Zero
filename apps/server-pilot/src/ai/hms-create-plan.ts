@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, gte, ne } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import type { DB } from '../db/client.js';
 import { aiDraftGeneration, aiWorkflowRun, attachment, mailboxTransport, message } from '../db/schema/mail.js';
-import { workEvent, workItem } from '../db/schema/work.js';
+import { mailExtraction, workEvent, workItem } from '../db/schema/work.js';
 import { occupiedDates, PRICED_QUOTE_REUSE_MS, quoteDigest, type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { profileFor, stayBookFieldRefusal } from '../../tooling/playwright-quote/property-profile.mjs';
 import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
@@ -68,6 +68,7 @@ type Context = {
   item: WorkRow;
   propertyCode: string;
   selectedSourceHash: string;
+  caseRead: { id: string; digest: string } | null;
   quoteSourceMessageId: string;
   quoteSourceHash: string;
   revision: QuoteRevision;
@@ -158,6 +159,13 @@ async function loadContext(db: DB, item: WorkRow, input: ParsedInput, now: Date)
   if (isSelfSentPreStayInformationMail({ fromAddress: selected.fromAddress, mailboxAddress: mailbox.email, subject: selected.subject })) {
     refuse('existing_stay_information');
   }
+  const caseReads = await db.select({ id: mailExtraction.id, kind: mailExtraction.kind, payload: mailExtraction.payload,
+    translation: mailExtraction.translation, attachments: mailExtraction.attachments }).from(mailExtraction).where(and(
+    eq(mailExtraction.messageId, selected.id), eq(mailExtraction.status, 'succeeded'),
+    ...(item.extractionId ? [eq(mailExtraction.id, item.extractionId)] : []),
+  )).orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
+  const caseRead = caseReads[0];
+  if (item.extractionId && !caseRead) refuse('case_read_changed');
   const [run] = await db.select().from(aiWorkflowRun).where(and(
     eq(aiWorkflowRun.id, input.quoteRunId), eq(aiWorkflowRun.transportId, item.transportId),
     eq(aiWorkflowRun.threadId, item.threadId), eq(aiWorkflowRun.runKind, 'candidate_draft'), eq(aiWorkflowRun.state, 'succeeded'),
@@ -196,6 +204,7 @@ async function loadContext(db: DB, item: WorkRow, input: ParsedInput, now: Date)
   assertHmsCreatePlanQuote(revisions[0]!, input, now);
   return {
     item, propertyCode, selectedSourceHash: await selectedMailHash(db, selected),
+    caseRead: caseRead ? { id: caseRead.id, digest: hmsStateDigest(caseRead) } : null,
     quoteSourceMessageId: quoteSource.id, quoteSourceHash: attestation.sourceHash,
     revision: revisions[0]!, previewExpiresAt: preview.expiresAt,
   };
@@ -211,7 +220,7 @@ function buildPlan(input: ParsedInput, context: Context, prepared: { id: string;
     expiresAt: new Date(expiresAt).toISOString(),
     propertyCode: context.propertyCode, transportId: context.item.transportId, workItemId: context.item.id,
     workItemRevision: context.item.revisionSeq, caseStateDigest: caseStateDigest(context.item.state), threadId: context.item.threadId!,
-    sourceMessageId: context.item.sourceMessageId!, selectedSourceHash: context.selectedSourceHash,
+    sourceMessageId: context.item.sourceMessageId!, selectedSourceHash: context.selectedSourceHash, caseRead: context.caseRead,
     quote: {
       runId: input.quoteRunId, revisionId: input.revisionId, groupId: input.groupId,
       sourceMessageId: context.quoteSourceMessageId, sourceHash: context.quoteSourceHash,

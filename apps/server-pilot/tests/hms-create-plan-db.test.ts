@@ -3,7 +3,7 @@ import { and, eq } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../src/db/schema/mail.js';
-import { workEvent, workItem } from '../src/db/schema/work.js';
+import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { consumeHmsCreatePlan, loadHmsCreatePlan, prepareHmsCreatePlan } from '../src/ai/hms-create-plan.js';
 import { approveHmsWrite } from '../src/ai/hms-approval.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
@@ -143,6 +143,19 @@ describe('durable create-plan approval', () => {
         digest: envelope.digest, claimId }, PLAN_NOW)).rejects.toThrow('quote_superseded');
       const approvals = await db.select().from(workEvent).where(and(eq(workEvent.workItemId, itemId), eq(workEvent.type, 'approval.granted')));
       expect(approvals).toHaveLength(0);
+    });
+  });
+
+  it('refuses a case re-extraction after staff saw the plan', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const { itemId, input } = await seed(db);
+      const envelope = await prepareHmsCreatePlan(db, scope, input, PLAN_NOW);
+      expect(envelope.plan.caseRead).toBeNull();
+      const claimId = await claim(db, itemId);
+      await db.insert(mailExtraction).values({ messageId: 'selected-message', extractorVersion: 'test-v1',
+        status: 'succeeded', kind: 'booking', payload: { changed: true } });
+      await expect(consumeHmsCreatePlan(db, { ...scope, workItemId: itemId, planId: envelope.plan.id,
+        digest: envelope.digest, claimId }, PLAN_NOW)).rejects.toThrow('plan_changed');
     });
   });
 });
