@@ -425,7 +425,10 @@ export async function approveHmsWrite(input: {
     if (!item) throw new HmsApprovalError('not_found');
     if (item.status === 'done' || item.status === 'dismissed') throw new HmsApprovalError('not_open');
     if (!item.threadId || !item.sourceMessageId) throw new HmsApprovalError('source_mail_missing');
-    if (paneCreateNeedsCheck(item.state)) throw new HmsApprovalError('needs_check_open');
+    // Only the new create-plan flow owns this fence; legacy pane receipts have no resolution path here.
+    if (item.state.hmsCreatePlan !== undefined && paneCreateNeedsCheck(item.state)) {
+      throw new HmsApprovalError('needs_check_open');
+    }
     if (input.formDigest !== undefined && input.formDigest !== formDigest(item.state)) {
       throw new HmsApprovalError('form_outdated');
     }

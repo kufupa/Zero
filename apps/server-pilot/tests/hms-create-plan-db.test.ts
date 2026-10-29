@@ -147,7 +147,8 @@ describe('durable create-plan approval', () => {
 
   it('does not treat a malformed or uncertain pane receipt as safe for another HMS write', async () => {
     await withIngestionDb(async ({ db }) => {
-      const { itemId } = await seed(db);
+      const { itemId, input } = await seed(db);
+      await prepareHmsCreatePlan(db, scope, input, PLAN_NOW);
       const [item] = await db.select().from(workItem).where(eq(workItem.id, itemId));
       for (const receipt of [null, [], { confirmationNumber: null }, { status: 'unknown', confirmationNumber: null },
         { status: 'booked', confirmationNumber: null }]) {
@@ -163,6 +164,18 @@ describe('durable create-plan approval', () => {
         await expect(approveHmsWrite({ db, ...scope, workItemId: itemId, now: PLAN_NOW }))
           .rejects.toMatchObject({ refusal: 'snapshot_missing' });
       }
+    });
+  });
+
+  it('preserves legacy generic approval handling when no create plan exists', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const { itemId } = await seed(db);
+      const [item] = await db.select().from(workItem).where(eq(workItem.id, itemId));
+      await db.update(workItem).set({ state: { ...item!.state, stays: {
+        [CASE_STAY_ID]: { status: 'unknown', confirmationNumber: null, screenshotRef: null },
+      } } }).where(eq(workItem.id, itemId));
+      await expect(approveHmsWrite({ db, ...scope, workItemId: itemId, now: PLAN_NOW }))
+        .rejects.toMatchObject({ refusal: 'snapshot_missing' });
     });
   });
 
