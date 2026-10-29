@@ -172,6 +172,7 @@ const GRID_STAY: StayGroupRequirement = {
   departureDate: '2026-11-14',
   quantity: 1,
   adults: 2,
+  childrenPerRoom: 0,
   childrenAges: [],
   board: 'bb',
   specialRequests: [],
