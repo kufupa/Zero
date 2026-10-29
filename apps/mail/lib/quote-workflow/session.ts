@@ -593,8 +593,17 @@ export function stayAskActionLabel(action: StayAskAction): string | null {
 function blocksNewBooking(session: Pick<QuoteSession, 'analysis' | 'groups'>, stayKey: string): boolean {
   const luna = session.analysis?.luna;
   if (caseReviewPending(session.analysis)) return true;
-  if (!luna?.tasks?.length) return luna?.workflow === 'amend' || luna?.workflow === 'cancel' ||
-    session.analysis?.amendment?.kind === 'amend' || session.analysis?.amendment?.kind === 'cancel';
+  if (!luna?.tasks?.length) {
+    const ids = new Set(stayAskRows(session, stayKey).map(stayIdOf));
+    const source = (session.analysis?.groups ?? []) as StayAskRow[];
+    const booked = luna as (LunaAnalysisWire & { confirmationNumber?: string | null; arrival?: string | null; departure?: string | null }) | undefined;
+    return luna?.workflow === 'amend' || luna?.workflow === 'cancel' || luna?.flags.includes('amendment_or_cancel') === true ||
+      session.analysis?.amendment?.kind === 'amend' || session.analysis?.amendment?.kind === 'cancel' ||
+      Boolean(trimmedConfirmation(booked?.confirmationNumber) || booked?.arrival || booked?.departure) ||
+      source.some((row, index) => ids.has(stayIdOf(row)) && Boolean(trimmedConfirmation(row.confirmationNumber) ||
+        trimmedConfirmation(row.caseLookupConfirmation) || row.stayGuests?.some((guest) => trimmedConfirmation(guest.confirmationNumber)) ||
+        trimmedConfirmation((luna?.groups[index] as LunaStayGroup | undefined)?.confirmationNumber)));
+  }
   const rows = stayAskRows(session, stayKey);
   const targeted = new Set(luna.tasks.flatMap((task) => taskStayIds(session, task)));
   const action = stayAskAction(session, stayKey);

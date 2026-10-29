@@ -5197,6 +5197,25 @@ describe('fresh case evidence and mixed actions', () => {
     expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toMatch(/existing or unclear booking/i);
   });
 
+  it('holds legacy quote cases with existing-booking evidence even without per-case tasks', () => {
+    const quote = { ...second, id: 'quote-row', stayId: 'quote-stay' };
+    const existing = { ...first, id: 'existing-row', stayId: 'existing-stay' };
+    const analysis: QuoteAnalysis = { ...quoteAnalysis, groups: [quote, existing], luna: lunaQuote() };
+    const same = analysisReady(analysis);
+    expect(quoteRunBlockReason(same, stepFor(same, STAY_A))).toMatch(/existing or unclear booking/i);
+    const distinct = analysisReady({ ...analysis, groups: [quote, { ...existing,
+      arrivalDate: '2026-12-01', departureDate: '2026-12-03' }] });
+    expect(quoteRunBlockReason(distinct, stepFor(distinct, STAY_A))).toBeNull();
+    expect(quoteRunBlockReason(distinct, stepFor(distinct, STAY_B))).toMatch(/existing or unclear booking/i);
+
+    const twoRooms = analysisReady({ ...analysis, groups: [existing, { ...quote, stayId: 'existing-stay' }] });
+    const removed = reduceQuoteSession(twoRooms, { type: 'remove_row', groupId: existing.id });
+    expect(quoteRunBlockReason(removed, stepFor(removed, STAY_A))).toMatch(/existing or unclear booking/i);
+    const lunaWithBookedDate = { ...lunaQuote(), arrival: '2026-11-12' };
+    const bookedDate = analysisReady({ ...analysis, groups: [quote], luna: lunaWithBookedDate });
+    expect(quoteRunBlockReason(bookedDate, stepFor(bookedDate, STAY_A))).toMatch(/existing or unclear booking/i);
+  });
+
   it.each([false, true])('uses only the selected case confirmation for opposite actions (same dates: %s)', (sameDate) => {
     const a = { ...first, caseScoped: true };
     const b = { ...second, id: 'r_other', stayId: 'stay-b', caseScoped: true,
