@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createReservationistBusinessServices } from '../src/ai/reservationist-business-services.js';
 import { staffQuoteInput, staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
+import { captureQuoteSourceProof } from '../src/ai/child-occupancy.js';
 import { aiDraftGeneration, aiWorkflowRun, mailThread, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { AiWorkflowRun } from '../src/ai/run-ledger.js';
@@ -446,9 +447,14 @@ describe('runStaffQuote child occupancy', () => {
     };
     const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail) });
     const quoteDb = staffQuoteRunDb(mail, input.groups);
+    const scope = { transportId: TRANSPORT_ID, threadId: 'thread-1', messageId: mail.id, propertyCode: 'HRCEN' };
+    expect(await captureQuoteSourceProof(quoteDb.db, input, scope)).not.toBeNull();
     quoteDb.occupancyState['contact.company'] = 'New Synthetic Agency';
+    expect(await captureQuoteSourceProof(quoteDb.db, input, scope)).toBeNull();
     await expect(actual.runStaffQuote(input, { transportId: TRANSPORT_ID, user }, quoteDb.db)).rejects.toMatchObject({
-      code: 'PRECONDITION_FAILED', cause: expect.objectContaining({ reason: 'child_occupancy_incomplete' }),
+      code: 'PRECONDITION_FAILED', cause: expect.objectContaining({
+        reason: 'inputs_incomplete', code: 'staff_quote_child_occupancy_incomplete',
+      }),
     });
     expect(quoteRunMocks.readConfiguration).not.toHaveBeenCalled();
     expect(workflowMocks.executeStaffQuote).not.toHaveBeenCalled();
