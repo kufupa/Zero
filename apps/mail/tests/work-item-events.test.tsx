@@ -549,6 +549,37 @@ describe('useStoredWork', () => {
     }
   });
 
+  it('blocks a quote already waiting for a save if a reset starts during that wait', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { trpc, mutate } = fakeTrpc(() => READY);
+      let finishSave: (value: { aiValue: null; value: null }) => void = () => undefined;
+      mutate.mockImplementationOnce(() => new Promise((resolve) => { finishSave = resolve; }));
+      let finishReset: (value: { reset: number }) => void = () => undefined;
+      const reset = vi.fn((_input: unknown) => new Promise<{ reset: number }>((resolve) => { finishReset = resolve; }));
+      const routes = { workItems: { ...trpc.workItems, resetSection: { mutate: reset } } };
+      const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
+      await act(async () => { await Promise.resolve(); });
+      let quote: Promise<boolean> = Promise.resolve(true);
+      act(() => {
+        result.current.recordGroups([G1], [{ ...G1, quantity: 4 }]);
+        quote = result.current.flushEdits();
+        result.current.resetSection({ type: 'stay', stayId: 'st-1' });
+      });
+      expect(mutate).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        finishSave({ aiValue: null, value: null });
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(await quote).toBe(false);
+      expect(reset).toHaveBeenCalledTimes(1);
+      await act(async () => { finishReset({ reset: 1 }); await vi.advanceTimersByTimeAsync(0); });
+      expect(await result.current.flushEdits()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps failed edits for another mailbox when resetting the same field on this one', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     try {
