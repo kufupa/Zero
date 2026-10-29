@@ -113,7 +113,7 @@ const mailExtractionObjectSchema = z.object({
             .int()
             .nullable()
             .optional()
-            .describe('Children in EACH room: 0 when none are requested, null when children are mentioned but their number per room is unknown. Absent only in older reads.'),
+            .describe('Children in EACH room: 0 only when explicitly stated; null when absent or unknown. Absent only in older reads.'),
           childAges: z.array(z.number().int()).describe('Known ages of children in EACH room; do not invent unknown ages.'),
           board: z.enum(['room_only', 'bb', 'dbb']).nullable(),
         }),
@@ -327,7 +327,7 @@ function rowStableId(
  */
 export function sanitizeExtraction(
   output: MailExtractionOutput,
-  input: { messageId: string; sourceText: string; dateAnchor?: StayDateAnchorContext },
+  input: { messageId: string; sourceText: string; dateAnchor?: StayDateAnchorContext; propertyCode?: string },
 ): SanitizedExtraction {
   const sourceLower = input.sourceText.toLowerCase();
   const email = cleanText(output.contact.email);
@@ -418,7 +418,7 @@ export function sanitizeExtraction(
     row.childrenPerRoom === null ||
     (row.childrenPerRoom !== undefined && row.childrenPerRoom !== row.childAges.length),
   ));
-  const childWarnings = incompleteChildren && !output.missing.some((item) =>
+  const childWarnings = input.propertyCode === 'HRCEN' && incompleteChildren && !output.missing.some((item) =>
     item.field === 'childrenPerRoom' || item.field === 'childAges',
   )
     ? [{ field: 'childAges', question: 'Confirm the number of children per room and each child’s age.' }]

@@ -19,6 +19,22 @@ const ACTION_OUTPUT = {
 };
 
 describe('mail extraction contract', () => {
+  it('preserves an explicit per-room child count, and makes it unknown if an age was discarded', () => {
+    const first = AE1_OUTPUT.stays[0]!;
+    const extracted = mailExtractionSchema.parse({
+      ...AE1_OUTPUT,
+      stays: [{ ...first, rows: [
+        { ...first.rows[0]!, childrenPerRoom: 2, childAges: [8, 11] },
+        { ...first.rows[1]!, childrenPerRoom: 1, childAges: [18] },
+      ] }],
+    });
+    const { payload } = sanitizeExtraction(extracted, { messageId: 'msg-child-count', sourceText: AE1_TEXT });
+    expect(mailExtractionPayloadSchema.parse(payload).stays[0]?.rows).toMatchObject([
+      { childrenPerRoom: 2, childAges: [8, 11] },
+      { childrenPerRoom: null, childAges: [] },
+    ]);
+  });
+
   it.each([
     ['person', 'person'],
     ['system_notice', 'system_notice'],

@@ -40,6 +40,7 @@ const input = () =>
         departureDate: '2026-10-15',
         quantity: 2,
         adults: 1,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'room_only',
         roomCodes: ['SKNG'],
@@ -154,6 +155,23 @@ async function fixture(confirmed = input()) {
 }
 afterEach(() => vi.useRealTimers());
 describe('staff-approved quotation beneath native guards', () => {
+  it('requires the Centurion child count and every age before preparing native pricing', () => {
+    const base = input();
+    const signer = { signerName: 'Staff', signerEmail: 'staff@example.test' };
+    const prepare = (childrenPerRoom: number | null | undefined, childrenAges: number[], propertyCode = 'HRCEN') =>
+      prepareStaffQuote(
+        { ...base, groups: [{ ...base.groups[0]!, childrenPerRoom, childrenAges }] },
+        { ...scope, propertyCode }, signer, new AbortController().signal,
+      );
+
+    for (const [count, ages] of [[undefined, []], [null, []], [2, []], [1, [8, 11]]] as const) {
+      expect(() => prepare(count, [...ages])).toThrow('staff_quote_child_occupancy_incomplete');
+    }
+    expect(prepare(0, []).request.rooms[0]).toMatchObject({ children: 0, childAges: [] });
+    expect(prepare(2, [8, 11]).request.rooms[0]).toMatchObject({ children: 2, childAges: [8, 11] });
+    expect(prepare(undefined, [], 'HRDAV').request.rooms[0]).toMatchObject({ children: 0 });
+  });
+
   it('retries dinner boards as B&B without changing any other quote input', () => {
     const source = input();
     source.groups[0]!.board = 'dinner_bb';
