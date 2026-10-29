@@ -1,4 +1,4 @@
-import { mailExtractionPayloadSchema } from './extraction/schema.js';
+import { hasInvalidStayDates, mailExtractionPayloadSchema } from './extraction/schema.js';
 import type { StaffQuoteInput } from './staff-quote-workflow.js';
 import type { QuoteRevision } from '../quote-proposal/quote-revision.js';
 import type { DB } from '../db/client.js';
@@ -26,6 +26,7 @@ export function childOccupancyMatchesStored(
   const parsed = mailExtractionPayloadSchema.safeParse(payload);
   if (!parsed.success || groups.length === 0) return false;
   const state = savedState ?? {};
+  const knownStayIds = parsed.data.stays.map((stay) => stay.id);
   const rows = parsed.data.stays.flatMap((stay) => stay.rows.map((row) => ({
     stayId: stay.id,
     rowId: row.id,
@@ -65,7 +66,7 @@ export function childOccupancyMatchesStored(
     const arrival = Object.hasOwn(state, arrivalPath) ? state[arrivalPath] : stay?.requested.arrival;
     let departure = Object.hasOwn(state, departurePath) ? state[departurePath] : stay?.requested.departure;
     if (departure == null && !Object.hasOwn(state, departurePath) && typeof arrival === 'string' &&
-      /^\d{4}-\d{2}-\d{2}$/.test(arrival) && !parsed.data.missing.some((item) => item.field === 'stayDates')) {
+      /^\d{4}-\d{2}-\d{2}$/.test(arrival) && !hasInvalidStayDates(parsed.data.missing, row.stayId, knownStayIds)) {
       const day = new Date(`${arrival}T00:00:00Z`);
       if (Number.isFinite(day.getTime()) && day.toISOString().slice(0, 10) === arrival) departure = addDays(arrival, 1);
     }
@@ -216,7 +217,7 @@ export function singleStayOccupancyGroup(
     const departurePath = `stays[${stay.id}].requested.departure`;
     let departure = field(departurePath, stay.requested.departure);
     if (departure == null && !Object.hasOwn(state, departurePath) && typeof arrival === 'string' &&
-      /^\d{4}-\d{2}-\d{2}$/.test(arrival) && !parsed.data.missing.some((item) => item.field === 'stayDates')) {
+      /^\d{4}-\d{2}-\d{2}$/.test(arrival) && !hasInvalidStayDates(parsed.data.missing, stay.id, parsed.data.stays.map((item) => item.id))) {
       const day = new Date(`${arrival}T00:00:00Z`);
       if (Number.isFinite(day.getTime()) && day.toISOString().slice(0, 10) === arrival) departure = addDays(arrival, 1);
     }
