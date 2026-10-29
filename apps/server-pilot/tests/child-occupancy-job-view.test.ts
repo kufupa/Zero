@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readHmsBatchView, readHmsJobView } from '../src/ai/hms-jobs.js';
+import { HMS_JOB_PRIORITY_USER, queueAutoStaffQuoteHmsJob, readHmsBatchView, readHmsJobView } from '../src/ai/hms-jobs.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { HMS_JOB_PROMPT_VERSION, type AiWorkflowRun } from '../src/ai/run-ledger.js';
 import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
@@ -189,6 +189,34 @@ describe('cached quote views use current selected occupancy', () => {
       preparedProposal: { revision: { propertyCode: 'HRCEN' } } };
     const view = await readHmsJobView(byId, fakeDb([[aiWorkflowRun, [conflicting]]]));
     expect(view).toMatchObject({ status: 'failed', result: { ok: false, code: 'staff_quote_property_unverified' } });
+  });
+
+  it('starts a fresh auto-quote instead of repeatedly reusing a price with an unknown property', async () => {
+    const legacy = job();
+    legacy.metrics = { ...legacy.metrics, propertyCode: 'HRCEN' };
+    legacy.readResult = { ...legacy.readResult, propertyCode: undefined };
+    const select = () => {
+      const query = Object.assign(Promise.resolve([legacy]), {
+        from() { return query; }, where() { return query; }, orderBy() { return query; },
+      });
+      return query;
+    };
+    let inserted: Record<string, unknown> | undefined;
+    const fake = {
+      select,
+      execute: async () => undefined,
+      insert: () => ({ values: (value: Record<string, unknown>) => {
+        inserted = value;
+        return { onConflictDoNothing: () => ({ returning: async () => [value] }) };
+      } }),
+      transaction: async (callback: (tx: unknown) => Promise<unknown>) => callback(fake),
+    } as unknown as DB;
+    const queued = await queueAutoStaffQuoteHmsJob({ transportId, threadId: mail.threadId,
+      triggerMessageId: mail.id, workItemId: 'item-1', userId: 'user-1',
+      request: { kind: 'staff_quote', input }, priority: HMS_JOB_PRIORITY_USER }, fake);
+    expect(queued.created).toBe(true);
+    expect(queued.run.id).not.toBe(legacy.id);
+    expect(inserted).toMatchObject({ state: 'queued', readRequest: { kind: 'staff_quote', input } });
   });
 
   it('keeps a non-quote job view unchanged without quote context', async () => {
