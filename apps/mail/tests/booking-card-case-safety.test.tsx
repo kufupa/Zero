@@ -65,7 +65,7 @@ describe('booking case safety', () => {
     const second = { ...group, id: 'g2' };
     render(<BookingCards draft={draft(['g1', 'g2'])} groups={[group, second]} paneSave={pane}
       workItemId={workItemId} confirmation={confirmation} />);
-    expect(screen.getByText('Multiple rooms need to be booked in HMS for now.')).toBeDefined();
+    expect(screen.getAllByText('Multiple rooms or stays need to be booked in HMS for now.').length).toBeGreaterThan(0);
     for (const button of screen.getAllByRole('button', { name: 'Preview in HMS' })) fireEvent.click(button);
     await waitFor(() => expect(preview).toHaveBeenCalledTimes(2));
     const firstId = (preview.mock.calls[0]![0] as { stayId?: string }).stayId;
@@ -79,6 +79,17 @@ describe('booking case safety', () => {
     const batch = screen.getByRole('button', { name: 'Book this stay' });
     expect(batch).toHaveProperty('disabled', true);
     fireEvent.click(batch);
+    expect(commit).not.toHaveBeenCalled();
+  });
+
+  it('does not create the first room from a partial draft of a multi-room request', async () => {
+    const { pane, preview, commit } = client();
+    render(<BookingCards draft={draft()} groups={[{ ...group, quantity: 2 }]} paneSave={pane}
+      workItemId={workItemId} confirmation={confirmation} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Preview in HMS' }));
+    await waitFor(() => expect(preview).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: 'Create provisional booking' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', true);
     expect(commit).not.toHaveBeenCalled();
   });
 
@@ -194,7 +205,8 @@ describe('booking case safety', () => {
     await waitFor(() => expect(book).toHaveProperty('disabled', false));
     fireEvent.click(book);
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
-    const id = (preview.mock.calls[0]![0] as { stayId: string }).stayId;
+    const id = (preview.mock.calls[0]![0] as { stayId?: string }).stayId;
+    if (!id) throw new Error('preview did not carry a stay id');
     rerender(view({ [id]: { status: 'unknown', confirmationNumber: null, screenshotRef: null } }));
     expect(screen.getByRole('region', { name: 'Booking outcomes' })).toBeDefined();
     await act(async () => finish({ status: 'refused', reason: 'pane_save_preflight_unavailable', clickedSave: false }));

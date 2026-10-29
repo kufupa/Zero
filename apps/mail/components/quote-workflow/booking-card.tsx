@@ -939,14 +939,16 @@ export function BookingCards({
 }) {
   const client = paneSave;
   const drafts = session ? Object.values(session.bookingDrafts) : [draft];
-  if (!drafts.includes(draft)) drafts.push(draft);
+  if (!drafts.some((item) => item === draft || item.draft === draft.draft)) drafts.push(draft);
   const allRooms = drafts.flatMap((item) => item.draft.rooms);
   const allStayIds = allRooms.map((room) => stayIdForRoom(room, groups));
   const roomIdentityHeld = (room: BookingDraftReady['draft']['rooms'][number]) => {
     const id = stayIdForRoom(room, groups);
     return !id || allStayIds.filter((candidate) => candidate === id).length !== 1;
   };
-  const multipleRooms = allRooms.length > 1;
+  // A partial draft can contain one room even when the request still asks for more.
+  const requestedRooms = groups.reduce((total, group) => total + (group.quantity && group.quantity > 0 ? group.quantity : 1), 0);
+  const multipleRooms = allRooms.length > 1 || requestedRooms > 1;
   const contactRef = useRef(contact);
   contactRef.current = contact;
   const requiredCreateFields = draft.options.requiredCreateFields ?? [];
@@ -1492,7 +1494,7 @@ export function BookingCards({
   const commitInFlight = Object.values(saves).some((save) => save.commit?.status === 'running');
   const savedOutcome = hasSavedOutcome();
   const identityHeld = draft.draft.rooms.some(roomIdentityHeld);
-  const safetyCopy = multipleRooms ? 'Multiple rooms need to be booked in HMS for now.'
+  const safetyCopy = multipleRooms ? 'Multiple rooms or stays need to be booked in HMS for now.'
     : identityHeld ? 'Nava could not identify this room. Book it in HMS.'
       : savedOutcome ? 'A booking may already exist for this request. Check HMS before booking more rooms.' : null;
 
