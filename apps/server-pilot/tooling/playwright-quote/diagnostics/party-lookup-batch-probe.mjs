@@ -5,8 +5,8 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loopbackCdpUrl, scrubNavError } from './hms-deeplink-probe.mjs';
-import { lookupParty, redactPartyLookupProbe } from './party-lookup.mjs';
+import { loopbackCdpUrl, scrubNavError } from '../hms-deeplink-probe.mjs';
+import { lookupParty, redactPartyLookupProbe } from '../party-lookup.mjs';
 
 const PROBE_SEARCHES = [
   { kind: 'organization', name: 'ZZPROBEAAA' },
