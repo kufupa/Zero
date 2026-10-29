@@ -43,7 +43,8 @@ async function fixture() {
       rows: [{ id: 'g1', roomType: null, rooms: 1, adultsPerRoom: 2, childrenPerRoom: 0, childAges: [], board: null }] }] };
   const state: Record<string, unknown> = {};
   const jobAvailable = { value: true };
-  const savedReply = { savedId: 'saved-reply:other:1', latestId: 'saved-reply:other:1' };
+  const savedReply = { savedId: 'saved-reply:other:1', latestId: 'saved-reply:other:1',
+    savedHtml: '<p>Synthetic</p>', savedAttachments: [] as unknown[] };
   let savedReplyRevisionReads = 0;
   const transaction = vi.fn(async () => { throw new Error('synthetic transaction reached'); });
   const db = { transaction, select(selection?: Record<string, unknown>) {
@@ -52,9 +53,9 @@ async function fixture() {
       where() { return query; }, orderBy() { return query; }, limit() {
         if (table === mailThread) return Promise.resolve([{ id: 't1', transportId }]);
         if (table === mailDraft) return Promise.resolve([{ id: 'draft-1', htmlBody: '<p>Synthetic</p>', attachments: [] }]);
-        if (table === mailDraftRevision) return Promise.resolve([{
-          id: savedReplyRevisionReads++ % 2 === 0 ? savedReply.savedId : savedReply.latestId,
-        }]);
+        if (table === mailDraftRevision) return Promise.resolve([savedReplyRevisionReads++ % 2 === 0
+          ? { id: savedReply.savedId, htmlBody: savedReply.savedHtml, attachments: savedReply.savedAttachments }
+          : { id: savedReply.latestId }]);
         if (table === message) return Promise.resolve([mail]);
         if (table === mailExtraction) return Promise.resolve([{ id: 'extract-1', kind: 'quote', payload }]);
         if (table === workItem) return Promise.resolve([{ id: itemId, extractionId: 'extract-1', state }]);
@@ -131,6 +132,12 @@ describe('priced draft preflight', () => {
     const { savedReply } = await fixture();
     const read = () => caller().drafts.savedReply({ threadId: 't1' });
     await expect(read()).resolves.toMatchObject({ quoteBound: false });
+    savedReply.savedHtml = '<p>A later replacement</p>';
+    expect(await read()).not.toHaveProperty('quoteBound');
+    savedReply.savedHtml = '<p>Synthetic</p>';
+    savedReply.savedAttachments = [{ filename: 'different.pdf' }];
+    expect(await read()).not.toHaveProperty('quoteBound');
+    savedReply.savedAttachments = [];
     savedReply.latestId = 'composer-edit-1';
     expect(await read()).not.toHaveProperty('quoteBound');
     savedReply.savedId = savedReply.latestId = 'saved-reply:quote:2';
