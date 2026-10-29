@@ -8,6 +8,8 @@ import {
   nativeQuoteGapDetail,
 } from '../src/ai/reservationist-evaluation-composition.js';
 import { ReservationistTaskEvidenceUnavailable } from '../src/ai/reservationist-execution.js';
+import { PARTY_SEARCH_INCOMPLETE_CODE } from '../src/ai/party-rate-failure.js';
+import { quoteWithPartyFallback } from '../src/ai/staff-quote-workflow.js';
 import {
   SHARED_INVENTORY_GAP_MESSAGE,
   staffQuoteFailureLog,
@@ -315,6 +317,36 @@ async function failureOf(evidence: string, req: { propertyCode: string }): Promi
     (error: unknown) => error,
   );
 }
+
+it('retries a public read when a narrowed Centurion contract row loses its entitlement flag', async () => {
+  const partyRequest = {
+    ...shortRequest,
+    rooms: [{ ...shortRequest.rooms[0], quantity: 1 }],
+    rateContext: { agency: { nativeId: '123', name: 'Example Agency' } },
+  };
+  const evidence = await captureFor(partyRequest, (rooms) => [{
+    id: 'room-1', request: rooms[0], outcome: 'partial', issues: [],
+    completeness: { search: 'complete', requiredFacts: 'complete' },
+    options: [{ ...rowFor(standardQueen, 34, 'available'), rateScope: 'unknown', eligibility: 'conditional', matchStatus: 'unresolved' }],
+  }], { outcome: 'partial' });
+  const input = { parties: { agency: { kind: 'agency', nativeId: '123', name: 'Example Agency' } } } as never;
+  const attempts: string[] = [];
+  const result = await quoteWithPartyFallback({
+    input, first: 'party', retry: () => 'public',
+    run: async (kind) => {
+      attempts.push(kind);
+      if (kind === 'party') {
+        const error = await failureOf(evidence, partyRequest);
+        expect(error).toMatchObject({ code: PARTY_SEARCH_INCOMPLETE_CODE });
+        throw error;
+      }
+      return { rateCode: 'BARRO' };
+    },
+  });
+  expect(attempts).toEqual(['party', 'public']);
+  expect(result).toMatchObject({ fellBack: true, result: { rateCode: 'BARRO' } });
+  expect(result.note).toContain("couldn't confirm contract rates for Example Agency");
+});
 
 const oneRow = (rooms: unknown[]) => [
   { id: 'room-1', request: rooms[0], outcome: 'unavailable', issues: [], completeness: { search: 'complete', requiredFacts: 'complete' }, options: [rowFor(standardQueen, 34, 'unavailable')] },
