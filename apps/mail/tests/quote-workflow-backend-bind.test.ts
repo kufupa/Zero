@@ -77,6 +77,41 @@ describe('quote workflow backend bind', () => {
     expect(open.mutate).not.toHaveBeenCalled();
   });
 
+  it('keeps a detected reclassification conflict without opening another item', async () => {
+    const sourceConflict = {
+      reason: 'workflow_reclassified' as const,
+      previousItems: [{ workItemId: 'old', kind: 'quote', status: 'needs_you' }],
+    };
+    const stored = {
+      status: 'ready' as const, kind: 'booking', workItemId: null, workItemStatus: null,
+      extractionId: 'ex-new', refs: {}, sourceConflict,
+      analysis: { intent: 'other' as const, groups: [], secondaryAsks: [], alternatives: [], caseActionsUncertain: true },
+      contact: { name: null, company: null, endClient: null, email: null, phone: null }, language: null, translation: null,
+    };
+    const open = { mutate: vi.fn() };
+    expect(await bindStoredWork({
+      query: { query: async () => stored }, open, internetMessageId: 'mail',
+    })).toEqual(stored);
+    expect(open.mutate).not.toHaveBeenCalled();
+  });
+
+  it('retains a conflict discovered during open even when no new item was created', async () => {
+    const stored = {
+      status: 'ready' as const, kind: 'booking', workItemId: null, workItemStatus: null,
+      extractionId: 'ex-new', refs: {},
+      analysis: { intent: 'other' as const, groups: [], secondaryAsks: [], alternatives: [] },
+      contact: { name: null, company: null, endClient: null, email: null, phone: null }, language: null, translation: null,
+    };
+    const conflict = { ...stored, analysis: { ...stored.analysis, caseActionsUncertain: true },
+      sourceConflict: { reason: 'workflow_reclassified' as const,
+        previousItems: [{ workItemId: 'old', kind: 'quote', status: 'needs_you' }] } };
+    const open = { mutate: vi.fn(async () => conflict) };
+    expect(await bindStoredWork({
+      query: { query: async () => stored }, open, internetMessageId: 'mail',
+    })).toEqual(conflict);
+    expect(open.mutate).toHaveBeenCalledTimes(1);
+  });
+
   it('reports unavailable when analyseSelection is not on the client', async () => {
     const result = await bindAnalyseSelection({
       input: {

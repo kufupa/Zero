@@ -334,6 +334,8 @@ export async function bindStoredWork(args: {
     stored.status !== 'ready' ||
     stored.workItemId ||
     stored.existingStayInformation ||
+    stored.sourceConflict ||
+    stored.analysis.caseActionsUncertain ||
     !args.open ||
     args.isStale?.()
   ) {
@@ -347,7 +349,8 @@ export async function bindStoredWork(args: {
   try {
     const opening = pinned ? args.open.mutate(input, pinned) : args.open.mutate(input);
     const opened = await Promise.race([opening, late]);
-    return opened.status === 'ready' && opened.workItemId ? opened : stored;
+    return opened.status === 'ready' && (opened.workItemId || opened.sourceConflict || opened.analysis.caseActionsUncertain)
+      ? opened : stored;
   } catch {
     return stored;
   } finally {
