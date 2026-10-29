@@ -97,7 +97,9 @@ import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { runStaffQuote } from '../../ai/staff-quote-run.js';
-import { childOccupancyIsCurrent, occupancyFromRevision, singleStayOccupancyIsCurrent, isCenturionQuoteTransport, isCenturionQuoteScope, importedOfferOccupancyHold } from '../../ai/child-occupancy.js';
+import { occupancyFromRevision, singleStayOccupancyIsCurrent, isCenturionQuoteScope, isCenturionQuoteTransport, importedOfferOccupancyHold, draftQuoteOccupancyMessage,
+  quoteSourceProofFromRun, quoteSourceProofIsCurrent, quoteSourceProofMatchesSingleStay, quoteSourceProofPredatesPolicy,
+  quoteSourcePolicyChangedMessage } from '../../ai/child-occupancy.js';
 import {
   enqueueHmsJob,
   queueAutoStaffQuoteHmsJob,
@@ -711,13 +713,14 @@ async function proposalStaysFor(
     } catch {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: resolveFailure });
     }
-    if (!(await childOccupancyIsCurrent(db, occupancyFromRevision(resolved.revision), {
+    const proof = quoteSourceProofFromRun(run);
+    if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(resolved.revision), {
       transportId: ctx.activeTransportId, threadId: current.threadId, messageId: input.messageId,
       propertyCode: resolved.revision.propertyCode,
-    }))) {
+    }, proof))) {
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
-        message: 'Confirm rooms, adults, and the number of children per room; enter each child’s age, then run the quote again.',
+        message: quoteSourceProofPredatesPolicy(proof) ? quoteSourcePolicyChangedMessage : draftQuoteOccupancyMessage,
       });
     }
     stays.push({
@@ -1062,7 +1065,7 @@ export const workstationRouter = router({
           transportId: ctx.activeTransportId, threadId: bound.run.threadId, messageId: input.messageId,
           propertyCode: revision.propertyCode,
         };
-        if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(revision), occupancyScope))) {
+        if (!(await quoteSourceProofIsCurrent(getDb(), occupancyFromRevision(revision), occupancyScope, quoteSourceProofFromRun(bound.run)))) {
           return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' };
         }
         const cloned = structuredClone(revision);
@@ -1077,7 +1080,7 @@ export const workstationRouter = router({
           extraTotalMinor,
           rowPrices,
         });
-        if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(revision), occupancyScope))) {
+        if (!(await quoteSourceProofIsCurrent(getDb(), occupancyFromRevision(revision), occupancyScope, quoteSourceProofFromRun(bound.run)))) {
           return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' };
         }
         return {
@@ -1251,12 +1254,14 @@ export const workstationRouter = router({
         analysis: input.analysis,
       });
       if (resolved.status !== 'ready') return resolved;
-      const occupancyScope = { transportId: ctx.activeTransportId, threadId: input.threadId, messageId: input.messageId,
-        propertyCode: resolved.revision.propertyCode };
-      // Across emails, only a single unambiguous saved room row can establish the same child occupancy.
-      const occupancyCurrent = () => run.triggerMessageId === input.messageId
-        ? childOccupancyIsCurrent(getDb(), occupancyFromRevision(resolved.revision), occupancyScope)
-        : singleStayOccupancyIsCurrent(getDb(), resolved.revision, occupancyScope);
+      const occupancyScope = { transportId: ctx.activeTransportId, threadId: input.threadId,
+        messageId: input.messageId, propertyCode: resolved.revision.propertyCode };
+      const proof = quoteSourceProofFromRun(run);
+      // The original source and the selected single-row follow-up must still match the same saved preferences.
+      const occupancyCurrent = async () => await quoteSourceProofIsCurrent(getDb(), occupancyFromRevision(resolved.revision),
+        { ...occupancyScope, messageId: run.triggerMessageId }, proof) &&
+        (run.triggerMessageId === input.messageId ||
+          await quoteSourceProofMatchesSingleStay(getDb(), resolved.revision, occupancyScope, proof));
       if (!(await occupancyCurrent())) return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' as const };
       const staff = run.metrics?.staffQuoteAttestation as
         | (StaffQuoteAttestation & { salesStrategy?: 'BAR' | 'Government' })
@@ -1424,10 +1429,10 @@ export const workstationRouter = router({
               revisionRef: ref,
               factRefs,
             });
-            if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(revision), {
+            if (!(await quoteSourceProofIsCurrent(getDb(), occupancyFromRevision(revision), {
               transportId: ctx.activeTransportId, threadId: mail.threadId, messageId: mail.id,
               propertyCode: revision.propertyCode,
-            }))) continue;
+            }, quoteSourceProofFromRun(run)))) continue;
             choices.push({
               workflowRunId: run.id,
               messageId: mail.id,
@@ -1511,10 +1516,10 @@ export const workstationRouter = router({
               factRefs: [],
               kind: 'approved_override',
             });
-            if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(offer.sourceRevision), {
+            if (!(await quoteSourceProofIsCurrent(getDb(), occupancyFromRevision(offer.sourceRevision), {
               transportId: ctx.activeTransportId, threadId: mail.threadId, messageId: mail.id,
               propertyCode: offer.sourceRevision.propertyCode,
-            }))) continue;
+            }, quoteSourceProofFromRun(run)))) continue;
             renderApprovedOverrideHtml(offer, {
               attention: '',
               company: '',
@@ -1584,7 +1589,10 @@ export const workstationRouter = router({
       let jobRun: Awaited<ReturnType<typeof enqueueQuotePdfJob>>['run'] | undefined;
       if (input.workItemId) {
         if (!mail) throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
-        await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
+        const stays = await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
+        const propertyCode = stays[0]!.revision.propertyCode;
+        if (stays.some((stay) => stay.revision.propertyCode !== propertyCode))
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Quote stays must belong to the same hotel.' });
         const stored = await readQuotePdfJob({
           transportId: ctx.activeTransportId,
           workItemId: input.workItemId,
@@ -1597,7 +1605,7 @@ export const workstationRouter = router({
           triggerMessageId: input.messageId,
           workItemId: input.workItemId,
           revisionId: documentKey,
-          propertyCode: hmsReadTargetForTransport(ctx.activeTransportId).propertyCode,
+          propertyCode,
           userId: ctx.sessionUser.id,
           signerName: ctx.sessionUser.name ?? '',
           signerEmail: ctx.sessionUser.email,
@@ -1759,12 +1767,12 @@ export const workstationRouter = router({
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: importedOfferOccupancyHold });
       const assertSourceOccupancy = async () => {
         if (selected.kind === 'approved_override' &&
-          !(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(selected.sourceRevision), {
+          !(await quoteSourceProofIsCurrent(getDb(), occupancyFromRevision(selected.sourceRevision), {
             transportId: ctx.activeTransportId, threadId: bound.run.threadId, messageId: input.messageId,
             propertyCode: selected.sourceRevision.propertyCode,
-          }))) {
+          }, quoteSourceProofFromRun(bound.run)))) {
           throw new TRPCError({ code: 'PRECONDITION_FAILED',
-            message: 'Confirm rooms, adults, and the number of children per room before using this quote.' });
+            message: draftQuoteOccupancyMessage });
         }
       };
       await assertSourceOccupancy();

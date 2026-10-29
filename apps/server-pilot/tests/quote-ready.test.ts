@@ -129,6 +129,14 @@ describe('prepared quote input from stored extraction', () => {
     expect(plan.inputs[0]).not.toHaveProperty('dinnerAllowanceMinor');
   });
 
+  it('preserves a stored half-board source and prices it as dinner B&B', () => {
+    const stay = payload().stays[0]!;
+    const plan = build({ stays: [{ ...stay, rows: [{ ...stay.rows[0]!, roomType: 'SKNG', board: 'half_board' }] }] });
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({
+      board: 'dinner_bb', sourcePreference: { roomType: 'SKNG', board: 'half_board' },
+    });
+  });
+
   it('keeps a mixed Dinner B&B + B&B mail on BAR, one strategy per mail like the pane', () => {
     const baseStay = payload().stays[0]!;
     const plan = build({

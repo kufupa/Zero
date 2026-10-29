@@ -235,6 +235,7 @@ describe('stored read for the pane', () => {
         roomPreference: 'Single',
         organisation: 'Horizon Trail Tours',
         board: 'bb',
+        sourcePreference: { roomType: 'Single', board: null },
       });
       expect(work.analysis.groups[0]!.fields).toMatchObject({
         arrivalDate: 'extracted',
@@ -1218,6 +1219,18 @@ describe('field events', () => {
     expect(projected.fields.quantity).toBe('defaulted');
     expect(analysis.requestedRoomsByStay).toEqual({ [STAY_TWO]: 6 });
   });
+
+  it('projects raw room and board source fields independently of quote defaults', () => {
+    const extracted = payload();
+    const base = `stays[${STAY_ONE}].rows[${ROW_SINGLE}]`;
+    const read = { kind: 'quote' as const, payload: extracted, attachments: [] };
+    const original = storedAnalysis(read, {}).analysis.groups[0]!;
+    expect(original.board).toBe('bb');
+    expect(original.sourcePreference).toEqual({ roomType: 'Single', board: null });
+    const edited = storedAnalysis(read, { [`${base}.roomType`]: null, [`${base}.board`]: 'dbb' }).analysis.groups[0]!;
+    expect(edited.sourcePreference).toEqual({ roomType: null, board: 'dbb' });
+  });
+
 
   it('keeps totalRooms at stay level when a second row makes the projected stay multi-row', () => {
     const extracted = payload();

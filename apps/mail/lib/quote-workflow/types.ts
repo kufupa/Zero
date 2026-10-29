@@ -6,6 +6,12 @@ export type FactProvenance = 'extracted' | 'staff_corrected' | 'missing' | 'defa
 
 export type QuoteBoard = 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
 
+/** Raw email/staff preference used to detect changes independently of a selected HMS rate. */
+export type QuoteSourcePreference = {
+  roomType: string | null;
+  board: 'room_only' | 'bb' | 'dbb' | 'half_board' | null;
+};
+
 export const HRDAV_PROPERTY_CODE = 'HRDAV' as const;
 export const HRCEN_PROPERTY_CODE = 'HRCEN' as const;
 export type HmsQuotePropertyCode = typeof HRCEN_PROPERTY_CODE | typeof HRDAV_PROPERTY_CODE;
@@ -82,6 +88,8 @@ export type StayGroupRequirement = {
   departureDate?: string;
   quantity?: number;
   roomPreference?: string;
+  /** Effective saved source fields; absent means the server did not provide source evidence. */
+  sourcePreference?: QuoteSourcePreference;
   /** Server projection of the same preference; absent when unmatched or from a mail-only draft. */
   roomTypeCode?: RoomTypeCode;
   /** Never collapsed to one guess when the extracted wording matches multiple native types. */
@@ -389,6 +397,8 @@ export type StaffQuoteAllocation = {
   totalMinor: number;
   currency: string;
   quoteRequestKey: string;
+  /** Strategy requested for this run; HMS may have used a documented fallback. */
+  requestedSalesStrategy?: QuoteSalesStrategyValue;
   dinnerAddOnRequired?: boolean;
   dinnerFallbackGroupIds?: string[];
   dinnerAddOn?: {
@@ -810,6 +820,8 @@ export type QuoteSession = {
   /** Per-date PDF bytes. Each option keeps its own PDF; the server issues one only for that option's latest run. */
   stayPdfs: Record<string, QuotePdf>;
   staffHeader: StaffQuoteHeader;
+  /** Hotel whose pane configuration is active for the current selection. */
+  quotePropertyCode?: string | null;
   /** Preserves an explicit staff rate-strategy choice against later automatic prefill. */
   staffSalesStrategyEdited?: boolean;
   staffActions: ReservationistStaffAction[];
@@ -886,6 +898,7 @@ export type QuoteSessionAction =
   | { type: 'review_documents_failed'; documents: QuoteDocumentFailure[] }
   | { type: 'staff_source_ready'; source: StaffQuoteSource }
   | { type: 'staff_actions_ready'; actions: ReservationistStaffAction[] }
+  | { type: 'quote_property_configured'; propertyCode: string | null }
   | { type: 'patch_staff_header'; header: Partial<StaffQuoteHeader> }
   | { type: 'patch_staff_stay_extras'; stayKey: string; extras: Partial<StaffStayExtras> }
   | { type: 'party_lookup_pending'; kind: StaffQuoteParty['kind']; pending: boolean }

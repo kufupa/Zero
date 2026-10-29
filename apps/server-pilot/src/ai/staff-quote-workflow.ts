@@ -49,6 +49,11 @@ const groupSchema = z
     adults: z.number().int().min(1).max(6),
     childrenPerRoom: z.number().int().min(0).max(6).nullable().optional(),
     childrenAges: z.array(z.number().int().min(0).max(17)).max(6).default([]),
+    // Raw persisted source facts, distinct from a selected rate-card room/board.
+    sourcePreference: z.object({
+      roomType: z.string().trim().max(256).nullable(),
+      board: z.enum(['room_only', 'bb', 'dbb', 'half_board']).nullable(),
+    }).strict().optional(),
     board: z.enum(['room_only', 'bb', 'dinner_bb']),
     roomCodes: z
       .array(z.string().regex(/^[A-Z0-9_-]{1,16}$/))

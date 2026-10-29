@@ -4,6 +4,8 @@ import type {
   PartyLookupRef,
   QuoteAmendment,
   QuoteAnalysis,
+  QuoteBoard,
+  QuoteSourcePreference,
   QuoteEvidenceProvenance,
   QuoteOffer,
   QuoteSession,
@@ -19,10 +21,12 @@ import type {
   StaffQuoteHeader,
   QuotePdf,
   QuoteSalesStrategyCode,
+  QuoteSalesStrategyValue,
   QuoteStrategyRow,
 } from './types';
 import {
   emptyStaffQuoteHeader,
+  HRCEN_PROPERTY_CODE,
   staffHeaderFieldProblem,
   staffStayExtrasFor,
   type StaffExtraField,
@@ -112,9 +116,17 @@ export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGr
 
 /**
  * The header an automatic (auto-start or read-back) rate run sends. It mirrors the background prepare in
- * quote-ready.ts: Government only when every requested row is Dinner B&B, else BAR, so the prepared run matches.
+ * quote-ready.ts. Centurion defaults to BAR; dinner alone does not establish government eligibility.
+ * An explicit Centurion staff choice wins over that background default.
  */
-export function autoRunHeader(session: Pick<QuoteSession, 'staffHeader' | 'groups'>): StaffQuoteHeader {
+export function autoRunHeader(
+  session: Pick<QuoteSession, 'staffHeader' | 'groups' | 'staffSalesStrategyEdited'>,
+  propertyCode?: string,
+): StaffQuoteHeader {
+  // A staff choice is a price term, even when a background or restored job is available.
+  if (propertyCode === HRCEN_PROPERTY_CODE) {
+    return session.staffSalesStrategyEdited ? session.staffHeader : { ...session.staffHeader, salesStrategy: 'BAR' };
+  }
   const allDinner = session.groups.length > 0 && session.groups.every((group) => group.board === 'dinner_bb');
   return { ...session.staffHeader, salesStrategy: allDinner ? 'Government' : 'BAR' };
 }
@@ -628,6 +640,18 @@ export function isMultiStay(session: Pick<QuoteSession, 'groups'>): boolean {
  * A stay's staff run when it still matches the session: the same selection and inputs, the same source and header,
  * and the offer it was booked on. Null when the stay has no run or the run is stale.
  */
+function strategyCodeMatches(code: QuoteSalesStrategyCode, actual: QuoteSalesStrategyValue): boolean {
+  return code === 'GOV' ? actual === 'GOV' || actual === 'Government' : code === actual;
+}
+
+function quoteStrategyMatchesSession(session: QuoteSession, key: string, quote: StaffQuoteAllocation): boolean {
+  const selected = (session as Partial<QuoteWorkflowSession>).quoteStrategySelections?.[key];
+  const requested = quote.requestedSalesStrategy ?? quote.approvedHeader.salesStrategy;
+  return selected
+    ? strategyCodeMatches(selected, requested)
+    : requested === session.staffHeader.salesStrategy && quote.approvedHeader.salesStrategy === session.staffHeader.salesStrategy;
+}
+
 export function currentStayRun(session: QuoteSession, key: string): StaffQuoteAllocation | null {
   const quote = session.staffQuotes[key];
   const source = session.staffSource;
@@ -649,7 +673,7 @@ export function currentStayRun(session: QuoteSession, key: string): StaffQuoteAl
     quote.sourceHash === source.sourceHash &&
     quote.messageId === source.messageId &&
     quote.threadId === source.threadId &&
-    quote.approvedHeader.salesStrategy === header.salesStrategy &&
+    quoteStrategyMatchesSession(session, key, quote) &&
     quote.approvedHeader.company === header.company &&
     quote.approvedHeader.agency === header.agency &&
     offer.stayTotalMinor === quote.totalMinor;
@@ -718,7 +742,7 @@ export function staffQuoteMatchesSession(session: QuoteSession): boolean {
   const approved = quote.approvedHeader;
   if (!approved) return false;
   if (current.company !== approved.company || current.agency !== approved.agency) return false;
-  if (current.salesStrategy !== approved.salesStrategy) return false;
+  if (!quoteStrategyMatchesSession(session, quote.quoteRequestKey, quote)) return false;
   return true;
 }
 
@@ -941,6 +965,7 @@ function quoteStrategyOutcomeIsCurrent(
   session: QuoteSession,
   stayKey: string,
   selectionEpoch: number,
+  strategyCode: QuoteSalesStrategyCode,
   outcome: { row: QuoteStrategyRow; result?: QuoteStrategyResult },
 ): outcome is { row: Extract<QuoteStrategyRow, { status: 'ready' }>; result: QuoteStrategyResult } {
   if (outcome.row.status !== 'ready' || !outcome.result) return false;
@@ -955,6 +980,7 @@ function quoteStrategyOutcomeIsCurrent(
     offer.kind === 'allocation' && offer.quoteRequestKey === stayKey &&
     offer.id === staffQuote.revisionRef && offer.stayTotalMinor === staffQuote.totalMinor &&
     staffQuote.totalMinor > 0 && staffQuote.selectionEpoch === selectionEpoch &&
+    strategyCodeMatches(strategyCode, staffQuote.requestedSalesStrategy ?? staffQuote.approvedHeader.salesStrategy) &&
     staffQuote.sourceHash === source.sourceHash && staffQuote.messageId === source.messageId &&
     staffQuote.threadId === source.threadId
   );
@@ -999,7 +1025,7 @@ function reduceQuoteStrategySession(
     const { row } = action.outcome;
     const results = { ...state.quoteStrategyResults[action.stayKey] };
     if (row.status === 'ready') {
-      if (!quoteStrategyOutcomeIsCurrent(state, action.stayKey, action.selectionEpoch, action.outcome)) return state;
+      if (!quoteStrategyOutcomeIsCurrent(state, action.stayKey, action.selectionEpoch, action.strategyCode, action.outcome)) return state;
       const result = action.outcome.result!;
       results[action.strategyCode] = {
         ...result,
@@ -1151,11 +1177,13 @@ function shuttleRequestedFromAnalysis(analysis: QuoteAnalysis): boolean {
   return texts.some((text) => /shuttle|airport/i.test(text));
 }
 
-/** Government for a government party or when every row asks Dinner B&B; otherwise BAR. */
+/** Centurion defaults to public rates; Da Vinci keeps its existing automatic strategy. */
 function automaticSalesStrategy(
   groups: readonly { board: string }[],
   partyKind: string | null | undefined,
+  propertyCode?: string | null,
 ): StaffQuoteHeader['salesStrategy'] {
+  if (propertyCode === HRCEN_PROPERTY_CODE) return 'BAR';
   const allDinner = groups.length > 0 && groups.every((group) => group.board === 'dinner_bb');
   return partyKind === 'government' || allDinner ? 'Government' : 'BAR';
 }
@@ -1164,6 +1192,7 @@ function prefillStaffHeaderFromLuna(
   header: StaffQuoteHeader,
   analysis: QuoteAnalysis,
   staffSalesStrategyEdited: boolean,
+  propertyCode?: string | null,
 ): StaffQuoteHeader {
   let next = header;
   const party = analysis.luna?.party;
@@ -1181,7 +1210,7 @@ function prefillStaffHeaderFromLuna(
   }
   // Until staff pick a strategy, each read decides it again, so a corrected read without dinner returns to BAR.
   if (!staffSalesStrategyEdited) {
-    next = { ...next, salesStrategy: automaticSalesStrategy(analysis.groups, party?.kind) };
+    next = { ...next, salesStrategy: automaticSalesStrategy(analysis.groups, party?.kind, propertyCode) };
   }
   if (!next.shuttleRequested && shuttleRequestedFromAnalysis(analysis)) {
     next = { ...next, shuttleRequested: true };
@@ -1219,6 +1248,10 @@ export function draftStayGroup(): StayGroupRequirement {
   return { id: DRAFT_GROUP_ID, childrenAges: [], board: 'unknown', specialRequests: [], fields: {} };
 }
 
+function sourceBoard(board: QuoteBoard): QuoteSourcePreference['board'] {
+  return board === 'dinner_bb' ? 'dbb' : board === 'unknown' ? null : board;
+}
+
 function applyGroupPatch(
   group: StayGroupRequirement,
   patch: Partial<StayGroupRequirement>,
@@ -1229,6 +1262,17 @@ function applyGroupPatch(
     fields[String(key)] = 'staff_corrected';
   }
   const next: StayGroupRequirement = { ...group, ...patch, id: group.id, fields };
+  if (group.sourcePreference) {
+    const sourcePreference = { ...group.sourcePreference };
+    // Mirror the field events: choosing the same displayed default does not create a saved source value.
+    if ('board' in patch && sourceBoard(group.board) !== sourceBoard(next.board)) {
+      sourcePreference.board = sourceBoard(next.board);
+    }
+    if ('roomPreference' in patch && (group.roomPreference || null) !== (next.roomPreference || null)) {
+      sourcePreference.roomType = next.roomPreference?.trim() || null;
+    }
+    next.sourcePreference = sourcePreference;
+  }
   // A rate pick sends its rateCode with the board and room. Editing one of those fields by hand unpins the rate.
   if (!('rateCode' in patch) && RATE_PIN_FIELDS.some((key) => key in patch)) delete next.rateCode;
   return next;
@@ -1304,7 +1348,10 @@ function blankRow(
   stayId: string,
   dates: Pick<StayGroupRequirement, 'arrivalDate' | 'departureDate' | 'board'>,
 ): StayGroupRequirement {
-  return { id, stayId, ...dates, childrenAges: [], specialRequests: [], fields: {} };
+  return {
+    id, stayId, ...dates, childrenAges: [], specialRequests: [], fields: {},
+    sourcePreference: { roomType: null, board: sourceBoard(dates.board) },
+  };
 }
 
 /**
@@ -1319,6 +1366,8 @@ function copyRow(source: StayGroupRequirement, id: string, stayId: string): Stay
     roomCodes: source.roomCodes?.slice(),
     childrenAges: [...source.childrenAges],
     specialRequests: [...source.specialRequests],
+    // A copied row is saved as new field events, not as the original row's raw source.
+    sourcePreference: { roomType: source.roomPreference?.trim() || null, board: sourceBoard(source.board) },
     fields: Object.fromEntries(Object.keys(source.fields).map((key) => [key, 'staff_corrected' as const])),
   };
   delete copy.rateCode;
@@ -1647,6 +1696,13 @@ export function reduceQuoteSession(
         binding: action.binding,
       };
     }
+    case 'quote_property_configured': {
+      if ((session.quotePropertyCode ?? null) === action.propertyCode) return session;
+      const salesStrategy = session.staffSalesStrategyEdited ? session.staffHeader.salesStrategy :
+        automaticSalesStrategy(session.groups, session.analysis?.luna?.party?.kind, action.propertyCode);
+      return clearDownstream({ ...session, quotePropertyCode: action.propertyCode,
+        staffHeader: { ...session.staffHeader, salesStrategy }, inputRevision: session.inputRevision + 1 });
+    }
     case 'treat_as': {
       if (action.treatAs === session.treatAs) return session;
       const chosen = { ...session, treatAs: action.treatAs };
@@ -1720,6 +1776,7 @@ export function reduceQuoteSession(
             session.staffHeader,
             action.analysis,
             session.staffSalesStrategyEdited === true,
+            session.quotePropertyCode,
           ),
           reviewItems,
           handledReviewItemIds: handled.filter((id) => reviewItems.some((item) => item.id === id)),
@@ -1774,6 +1831,7 @@ export function reduceQuoteSession(
             session.staffHeader,
             action.analysis,
             session.staffSalesStrategyEdited === true,
+            session.quotePropertyCode,
           ),
         };
       }
@@ -1805,6 +1863,7 @@ export function reduceQuoteSession(
           session.staffHeader,
           action.analysis,
           session.staffSalesStrategyEdited === true,
+          session.quotePropertyCode,
         ),
         reviewItems,
         handledSourceKey: sourceKey || null,
@@ -2189,7 +2248,7 @@ export function reduceQuoteSession(
       // A board edit can change the automatic strategy; a strategy staff picked stays.
       const salesStrategy = session.staffSalesStrategyEdited
         ? staffHeader.salesStrategy
-        : automaticSalesStrategy(groups, session.analysis?.luna?.party?.kind);
+        : automaticSalesStrategy(groups, session.analysis?.luna?.party?.kind, session.quotePropertyCode);
       const header = salesStrategy === staffHeader.salesStrategy ? staffHeader : { ...staffHeader, salesStrategy };
       // A rate pick or a row price keeps its own cards on screen while the re-run is pending. Other edits clear them.
       return editStays(

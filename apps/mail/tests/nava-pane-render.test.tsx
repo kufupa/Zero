@@ -1146,6 +1146,28 @@ describe('NavaPane', () => {
     await act(async () => { finishSave({}); });
   });
 
+  it('keeps all rooms on the edited stay dates after reopening the pane', async () => {
+    const first = { ...STORED_READY.analysis.groups[0]!, stayId: 's_1', quantity: 1 };
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      refs: {
+        r_1: { stayId: 's_1', rowId: 'r_1' },
+        r_2: { stayId: 's_1', rowId: 'r_2' },
+      },
+      analysis: { ...STORED_READY.analysis, groups: [first, { ...first, id: 'r_2' }] },
+    };
+    const pane = render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-11-04' } });
+    expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('2026-11-04');
+    pane.unmount();
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('2026-11-04'));
+    expect(screen.getByRole('article', { name: 'Stay 1 details' })).toBeDefined();
+    expect(screen.queryByRole('article', { name: 'Stay 2 details' })).toBeNull();
+  });
+
   it('stored: a stay she adds is logged under its own id, so it is there on reopen', async () => {
     bridgeMockState.storedWork = STORED_READY;
     render(<NavaPane bridge={fakeBridge} />);
@@ -1767,7 +1789,12 @@ describe('NavaPane', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Quotation total').textContent).toMatch(/R\s?2\s?220,00/),
     );
+    const wholesaleRow = within(table).getByRole('button', { name: 'Use Wholesale (WS) rates' }).closest('tr');
+    expect(wholesaleRow && within(wholesaleRow).getByText('Selected')).toBeTruthy();
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(queuedRunsBeforeSelection);
+
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'public' } });
+    await waitFor(() => expect(screen.queryByLabelText('Quotation total')?.textContent ?? '').not.toMatch(/R\s?2\s?220,00/));
   });
 
   it('retries a comparison bind when its prepared job appears after the primary quote', async () => {
@@ -2509,7 +2536,7 @@ describe('NavaPane', () => {
     expect(within(notice).getByRole('button', { name: 'Show' }).getAttribute('aria-controls')).toBe('quote-rates');
   });
 
-  it('auto-queues a Dinner B&B ask on the Government strategy the background prepare uses', async () => {
+  it('auto-queues a Centurion Dinner B&B ask on the public BAR strategy', async () => {
     configureCenturionPane();
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
     bridgeMockState.storedWork = {
@@ -2529,7 +2556,7 @@ describe('NavaPane', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
-    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({ autoStart: true, salesStrategy: 'Government' });
+    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({ autoStart: true, salesStrategy: 'BAR' });
   });
 
   it('auto-queues each complete date option once', async () => {
