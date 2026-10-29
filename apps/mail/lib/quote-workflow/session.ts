@@ -1973,15 +1973,15 @@ export function reduceQuoteSession(
       const paneRead = (action.analysis as CaseAnalysis).paneRead;
       let readGroups = paneRead?.groups ?? action.analysis.groups;
       const previous = paneCaseSnapshot(session.analysis) ?? (!session.analysis ? paneRead?.rememberedSource : null);
-      const fresh = paneCaseSnapshot(action.analysis)!;
+      const fresh = paneCaseSnapshot(action.analysis);
       const wasHeld = caseReviewPending(session.analysis);
       const editsToKeep = staffEditedDuringRun || hasStaffStayEdits(session) || paneRead?.groups != null;
       const unverifiedMemory = !session.analysis && paneRead?.groups != null && !paneRead.rememberedSource &&
         JSON.stringify(paneRead.groups) !== JSON.stringify(action.analysis.groups);
       const explicitTypeChange = !wasHeld && Boolean(session.treatAs) &&
         action.analysis.luna?.workflow === session.treatAs && session.analysis?.luna?.workflow !== session.treatAs;
-      const changed = Boolean(previous && editsToKeep && !sameCaseSnapshot(previous, fresh, explicitTypeChange));
-      if (unverifiedMemory || changed || (wasHeld && !previous)) {
+      const changed = Boolean(previous && fresh && editsToKeep && !sameCaseSnapshot(previous, fresh, explicitTypeChange));
+      if (!fresh || unverifiedMemory || changed || caseReviewPending(action.analysis) || (wasHeld && !previous)) {
         const groups = (session.analysis ? session.groups : readGroups).map(withoutCaseIdentity);
         const analysis = heldCaseAnalysis(action.analysis, previous ?? null);
         const reviewItems = session.reviewItems.filter((item) => item.id !== 'case-source-changed');

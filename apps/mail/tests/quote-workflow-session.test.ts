@@ -4994,6 +4994,8 @@ describe('fresh case evidence and mixed actions', () => {
       expect(stayAskGuests(session, 'stay-a')).toEqual([]);
       expect(stayAskAction(session, 'stay-a')).toBe('other');
       expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toMatch(/existing or unclear booking/i);
+      session = reduceQuoteSession(session, { type: 'analysis_ready', analysis: session.analysis! });
+      expect(quoteRunBlockReason(session, stepFor(session, STAY_A))).toMatch(/existing or unclear booking/i);
 
       session = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'quote' });
       session = reduceQuoteSession(session, { type: 'staff_note', staffNote: 'Check again' });
@@ -5029,6 +5031,8 @@ describe('fresh case evidence and mixed actions', () => {
     expect(quoteRunBlockReason(held, stepFor(held, STAY_A))).toMatch(/existing or unclear booking/i);
     const legacy = analysisReady(overlaid(source, remembered, null));
     expect(quoteRunBlockReason(legacy, stepFor(legacy, STAY_A))).toMatch(/existing or unclear booking/i);
+    const replayed = reduceQuoteSession(analysisReady(prior), { type: 'analysis_ready', analysis: legacy.analysis! });
+    expect(quoteRunBlockReason(replayed, stepFor(replayed, STAY_A))).toMatch(/existing or unclear booking/i);
   });
 
   it.each(['amend', 'cancel'] as const)('blocks a %s case in a quote email, including same-date grouping', (kind) => {
