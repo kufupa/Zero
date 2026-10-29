@@ -33,7 +33,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('approved draft evidence trans
     const threadId = randomUUID(), messageId = randomUUID(), userId = randomUUID();
     const generationId = randomUUID(), draftId = randomUUID(), revisionId = randomUUID();
     const selectedRunId = randomUUID(), pendingRunId = randomUUID();
-    let releaseWriter!: () => void, signalWriter!: (error?: unknown) => void;
+    let releaseWriter!: () => void, signalWriter!: (error: unknown) => void;
     const gate = new Promise<void>((resolve) => { releaseWriter = resolve; });
     const ready = new Promise<unknown>((resolve) => { signalWriter = resolve; });
     let holding: Promise<unknown> | undefined;
@@ -79,7 +79,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('approved draft evidence trans
           await tx.update(aiWorkflowRun).set({ state: 'succeeded', finishedAt: new Date('2026-10-02T00:00:00Z'),
             metrics: { modelRouteUnavailable: true } }).where(eq(aiWorkflowRun.id, target));
         }
-        signalWriter();
+        signalWriter(undefined);
         await gate;
       });
       void holding.catch((error) => signalWriter(error));
@@ -103,13 +103,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('approved draft evidence trans
       if (claim === 'enqueue' && changing === 'selected run') {
         await setup.db.update(aiWorkflowRun).set({ metrics: { routeBinding: { ...route, release } } })
           .where(eq(aiWorkflowRun.id, selectedRunId));
-        let signalReader!: (error?: unknown) => void;
+        let signalReader!: (error: unknown) => void;
         const readerGate = new Promise<void>((resolve) => { releaseReader = resolve; });
         const readerReady = new Promise<unknown>((resolve) => { signalReader = resolve; });
         holdingReader = reader.db.transaction(async (tx) => {
           await assertDraftApprovalCurrent({ db: tx as unknown as DB, approval, payload, signingSecret,
             loadThreadStateVersion: async () => threadStateVersion, lockQuoteOrigin: true });
-          signalReader();
+          signalReader(undefined);
           await readerGate;
         });
         void holdingReader.catch((error) => signalReader(error));
