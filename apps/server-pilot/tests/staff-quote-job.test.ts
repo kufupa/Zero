@@ -563,7 +563,9 @@ describe('staff_quote HMS job execution', () => {
         roomCodes: ['SKNG'],
       },
     ];
-    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), (error) => {
+      console.error('QUOTE_TEST_DIAGNOSTIC', error);
+    }, {
       groups,
       salesStrategy: 'Government',
     });
@@ -624,7 +626,9 @@ describe('staff_quote HMS job execution', () => {
         roomCodes: ['SKNG'],
       },
     ];
-    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
+    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve(), (error) => {
+      console.error('QUOTE_TEST_DIAGNOSTIC', error);
+    }, {
       groups,
       salesStrategy: 'BAR',
     });
@@ -692,7 +696,9 @@ describe('staff_quote HMS job execution', () => {
         roomCodes: ['SKNG'],
       },
     ];
-    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
+    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve(), (error) => {
+      console.error('QUOTE_TEST_DIAGNOSTIC', error);
+    }, {
       groups,
       salesStrategy: 'Government',
     });
