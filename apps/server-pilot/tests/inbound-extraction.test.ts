@@ -418,8 +418,10 @@ describe('inbound extraction stored read', () => {
       expect(model.calls).toHaveLength(2);
       expect(Object.keys(row!.usage as Record<string, unknown>).sort()).toEqual([
         'extraction',
+        'sourceWitness',
         'translation',
       ]);
+      expect(row!.usage).toMatchObject({ sourceWitness: { version: 1, status: 'unproven', reason: 'selection_override' } });
     }));
 
   it('a voucher with a Luhn-valid card reaches the model masked, and nothing stored carries the digits', () =>
@@ -1034,7 +1036,8 @@ describe('translation retry', () => {
       expect(after!.id).toBe(before!.id);
       expect(after!.payload).toEqual(before!.payload);
       expect(after!.translation).toMatchObject({ status: 'succeeded' });
-      expect(Object.keys(after!.usage as Record<string, unknown>).sort()).toEqual(['extraction', 'translation']);
+      expect(Object.keys(after!.usage as Record<string, unknown>).sort()).toEqual(['extraction', 'sourceWitness', 'translation']);
+      expect(after!.usage?.sourceWitness).toEqual(before!.usage?.sourceWitness);
     }));
 
   it('stores a failed retry as failed, with the reason the call ended', () =>

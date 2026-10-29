@@ -7,10 +7,11 @@ import { attachment, mailboxTransport, message } from '../src/db/schema/mail.js'
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { buildInboundPrompt } from '../src/ai/extraction/extract.js';
 import { captureCenturionExtractionSource } from '../src/ai/extraction/centurion-source-witness.js';
-import { __resetInboundExtractionCapForTests, EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
+import { __resetInboundExtractionCapForTests, EXTRACTION_VERSION, retryInboundTranslation, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
+import { TRANSLATE_RULES } from '../src/ai/extraction/translate.js';
 import { loadSyncedQuoteSelectionFromMailbox } from '../src/ai/quote-workflow-synced-selection.js';
 import { shouldRetryAiFailure } from '../src/ai/run-ledger.js';
-import { AE1_OUTPUT, fakeModel } from './fixtures/inbound-extraction.js';
+import { AE1_OUTPUT, AE2_OUTPUT, echoTranslation, fakeModel } from './fixtures/inbound-extraction.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 
@@ -180,5 +181,52 @@ describe('Centurion extraction input witness', () => {
       const [other] = await db.select().from(mailExtraction).where(and(eq(mailExtraction.messageId, dav.messageId),
         eq(mailExtraction.extractorVersion, EXTRACTION_VERSION)));
       expect((other?.usage as Record<string, unknown>)?.sourceWitness).toBeUndefined();
+    }));
+
+  it('invalidates a captured witness when a translation retry reads a changed body', () =>
+    withIngestionDb(async ({ db, sql }) => {
+      __setDbForTests({ db, conn: sql });
+      await db.insert(mailboxTransport).values({ id: 'transport-davinci', email: 'davinci@example.invalid',
+        ownerHeaderValue: 'davinci@example.invalid', mailboxType: 'personal' });
+      const cases = [
+        { name: 'translated', transport: transportId, attachment: false },
+        { name: 'translated-attachment', transport: transportId, attachment: true },
+        { name: 'translated-davinci', transport: 'transport-davinci', attachment: false },
+      ];
+      for (const scenario of cases) {
+        const scope = await seed(db, scenario.name, scenario.transport);
+        await db.update(message).set({ textBody: 'Bonjour, je souhaite une chambre.' }).where(eq(message.id, scope.messageId));
+        if (scenario.attachment) await db.insert(attachment).values({
+          id: `part-${scope.messageId}`, messageId: scope.messageId, filename: 'request.pdf', mimeType: 'application/pdf',
+          sizeBytes: 25_000, s3Key: `attachments/${scope.messageId}/request.pdf`, isInline: false,
+        });
+        const original = fakeModel((input) => input.systemPrompt === TRANSLATE_RULES ? { segments: [] } : AE2_OUTPUT);
+        expect(await run(db, scope.messageId, original.adapter, scenario.transport)).toBe('stored');
+        const [before] = await db.select().from(mailExtraction).where(eq(mailExtraction.messageId, scope.messageId));
+        const [item] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, scope.messageId));
+        if (!before || !item) throw new Error('translation retry fixture unavailable');
+        expect(before.translation).toMatchObject({ status: 'failed' });
+        if (!scenario.attachment && scenario.transport === transportId) {
+          expect(before.usage?.sourceWitness).toMatchObject({ version: 1, status: 'captured' });
+        } else if (scenario.attachment) {
+          expect(before.usage?.sourceWitness).toEqual({ version: 1, status: 'unproven', reason: 'attachments' });
+        } else {
+          expect(before.usage?.sourceWitness).toBeUndefined();
+        }
+
+        const changed = 'Bonjour, la demande est maintenant pour deux chambres.';
+        await db.update(message).set({ textBody: changed }).where(eq(message.id, scope.messageId));
+        const retry = fakeModel(echoTranslation);
+        expect(await retryInboundTranslation({ transportId: scenario.transport, workItemId: item.id },
+          { db, env, adapter: retry.adapter })).toMatchObject({ status: 'done', translation: { status: 'succeeded' } });
+        expect(retry.calls[0]?.userPrompt).toContain(changed);
+        const [after] = await db.select().from(mailExtraction).where(eq(mailExtraction.id, before.id));
+        expect(after?.payload).toEqual(before.payload);
+        expect(after?.usage?.sourceWitness).toEqual(
+          !scenario.attachment && scenario.transport === transportId
+            ? { version: 1, status: 'unproven', reason: 'translation_retry' }
+            : before.usage?.sourceWitness,
+        );
+      }
     }));
 });

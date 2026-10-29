@@ -674,12 +674,19 @@ export async function retryInboundTranslation(
     deadlineMs: deps.translationDeadlineMs ?? TRANSLATE_DEADLINE_MS,
   });
   const translation = done?.translation ?? null;
+  const witness = read.usage?.sourceWitness as { version?: unknown; status?: unknown } | undefined;
+  // This retry reads the current body rather than the original witnessed selection. Do not let a new
+  // translation leave the whole read appearing witnessed, even when the body happens to be unchanged.
+  const invalidatedWitness = centurionSourceFence(input.transportId) && witness?.status === 'captured'
+    ? { sourceWitness: { version: witness.version ?? CENTURION_SOURCE_WITNESS_VERSION,
+        status: 'unproven', reason: 'translation_retry' } }
+    : {};
   // Two retries can overlap. One that did not succeed never replaces a translation another retry saved meanwhile.
   const [saved] = await db
     .update(mailExtraction)
     .set({
       translation,
-      usage: { ...read.usage, ...(done ? { translation: done.usage } : {}) },
+      usage: { ...read.usage, ...(done ? { translation: done.usage } : {}), ...invalidatedWitness },
     })
     .where(
       and(
