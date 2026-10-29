@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { captureQuoteSourceProof, quoteSourceProofIsCurrent, quoteSourceProofMatchesCopy,
-  quoteSourceProofMatchesInput, quoteSourceProofMatchesSingleStay } from '../src/ai/child-occupancy.js';
+  quoteSourceProofMatchesInput, quoteSourceProofMatchesSingleStay, quoteSourceProofPredatesPolicy } from '../src/ai/child-occupancy.js';
 import { staffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
@@ -18,12 +18,12 @@ function evidence(stayId = 's1', rowId = 'r1') {
       action: 'quote_availability' as 'quote_availability' | 'new_booking',
       rows: [{ id: rowId, roomType: 'Standard King' as string | null, rooms: 1, adultsPerRoom: 2,
         childrenPerRoom: 0, childAges: [] as number[], board: 'dbb' as string | null }] }] },
-    state: {} as Record<string, unknown>, pinned: 'extract-1', latest: 'extract-1',
+    state: {} as Record<string, unknown>, pinned: 'extract-1', latest: 'extract-1', kind: 'quote',
     conflicts: [] as Array<{ workItemId: string; kind: string; status: string }> };
   const db = { select(selection?: Record<string, unknown>) {
     let table: unknown;
     const conflict = selection && 'workItemId' in selection && 'kind' in selection && 'status' in selection;
-    const read = () => conflict ? data.conflicts : table === mailExtraction ? [{ id: data.latest, kind: 'quote', payload: data.payload }] :
+    const read = () => conflict ? data.conflicts : table === mailExtraction ? [{ id: data.latest, kind: data.kind, payload: data.payload }] :
       table === workItem ? [{ extractionId: data.pinned, state: data.state }] : [];
     const query = Object.assign(Promise.resolve().then(read), {
       from(value: unknown) { table = value; return query; }, where() { return query; }, orderBy() { return query; },
@@ -49,17 +49,22 @@ describe('source preferences bound to a Centurion price', () => {
   it('rejects pre-policy proofs on every Centurion reuse path but preserves HRDAV', async () => {
     const { db } = evidence();
     const current = await captureQuoteSourceProof(db, input, scope);
-    expect(current?.version).toBe(2);
-    const old = { ...current!, version: 1 };
+    expect(current?.version).toBe(3);
     const revision = { groups: [{ arrivalDate: '2027-10-20', departureDate: '2027-10-21',
       quantity: 1, adults: 2, children: 0, childAges: [] }] };
-    expect(quoteSourceProofMatchesInput(old, input)).toBe(false);
-    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, old)).toBe(false);
-    expect(await quoteSourceProofMatchesCopy(db, input.groups, scope, old)).toBe(false);
-    expect(await quoteSourceProofMatchesSingleStay(db, revision, scope, old)).toBe(false);
-    expect(await quoteSourceProofIsCurrent(db, input.groups, { ...scope, propertyCode: 'HRDAV' }, old)).toBe(true);
-    expect(await quoteSourceProofMatchesCopy(db, input.groups, { ...scope, propertyCode: 'HRDAV' }, old)).toBe(true);
-    expect(await quoteSourceProofMatchesSingleStay(db, revision, { ...scope, propertyCode: 'HRDAV' }, old)).toBe(true);
+    for (const version of [1, 2]) {
+      const old = { ...current!, version };
+      expect(quoteSourceProofPredatesPolicy(old)).toBe(true);
+      expect(quoteSourceProofMatchesInput(old, input)).toBe(false);
+      expect(await quoteSourceProofIsCurrent(db, input.groups, scope, old)).toBe(false);
+      expect(await quoteSourceProofMatchesCopy(db, input.groups, scope, old)).toBe(false);
+      expect(await quoteSourceProofMatchesSingleStay(db, revision, scope, old)).toBe(false);
+      expect(await quoteSourceProofIsCurrent(db, input.groups, { ...scope, propertyCode: 'HRDAV' }, old)).toBe(true);
+      expect(await quoteSourceProofMatchesCopy(db, input.groups, { ...scope, propertyCode: 'HRDAV' }, old)).toBe(true);
+      expect(await quoteSourceProofMatchesSingleStay(db, revision, { ...scope, propertyCode: 'HRDAV' }, old)).toBe(true);
+    }
+    expect(quoteSourceProofPredatesPolicy(current)).toBe(false);
+    expect(quoteSourceProofMatchesInput({ ...current!, extractionDigest: undefined }, input)).toBe(false);
   });
 
   it('requires the client to have seen the current saved room and board before admission', async () => {
@@ -157,6 +162,10 @@ describe('source preferences bound to a Centurion price', () => {
     data.payload.agency = null;
 
     stay.action = 'new_booking';
+    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(false);
+    stay.action = 'quote_availability';
+
+    data.kind = 'booking';
     expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(false);
   });
 });

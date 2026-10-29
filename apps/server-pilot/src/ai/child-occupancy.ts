@@ -142,7 +142,7 @@ async function loadChildOccupancyEvidence(
   // A newer read has not been adopted yet. Do not apply old corrections to that read, or keep pricing the older one.
   // The existing work-item relink decides whether edits can safely carry; once it moves, the latest evidence is used.
   if ((!item && scope.lock) || (item && item.extractionId !== latest.id)) return null;
-  return { payload: latest.payload, state: item?.state ?? {} };
+  return { kind: latest.kind, payload: latest.payload, state: item?.state ?? {} };
 }
 
 export async function childOccupancyIsCurrent(
@@ -170,11 +170,12 @@ export function isCenturionQuoteScope(scope: { transportId: string; propertyCode
   return isCenturionQuoteTransport(scope.transportId);
 }
 
-const QUOTE_SOURCE_PROOF_VERSION = 2 as const;
+const QUOTE_SOURCE_PROOF_VERSION = 3 as const;
 type QuoteSourceProof = {
   version: typeof QUOTE_SOURCE_PROOF_VERSION;
   messageId: string;
   inputDigest: string;
+  extractionDigest: string;
   sourceDigest: string;
   singleRowDigest: string | null;
 };
@@ -232,7 +233,8 @@ function parseQuoteSourceProof(value: unknown): QuoteSourceProof | null {
   const proof = value as Partial<QuoteSourceProof>;
   const hash = (item: unknown) => typeof item === 'string' && /^[a-f0-9]{64}$/.test(item);
   return proof.version === QUOTE_SOURCE_PROOF_VERSION && typeof proof.messageId === 'string' && !!proof.messageId &&
-    hash(proof.inputDigest) && hash(proof.sourceDigest) && (proof.singleRowDigest === null || hash(proof.singleRowDigest))
+    hash(proof.inputDigest) && hash(proof.extractionDigest) && hash(proof.sourceDigest) &&
+    (proof.singleRowDigest === null || hash(proof.singleRowDigest))
     ? proof as QuoteSourceProof : null;
 }
 
@@ -240,19 +242,23 @@ function parseQuoteSourceProof(value: unknown): QuoteSourceProof | null {
 export async function captureQuoteSourceProof(db: DB, input: StaffQuoteInput, scope: QuoteSourceScope) {
   const evidence = await loadChildOccupancyEvidence(db, scope);
   const snapshot = evidence && quoteSourceSnapshot(input.groups, evidence.payload, evidence.state);
-  if (!snapshot || input.groups.some((group) => {
+  if (!evidence || !snapshot || input.groups.some((group) => {
     const source = snapshot.preferences.find((item) => item.id === group.id);
     return !group.sourcePreference || !source || group.sourcePreference.roomType !== source.roomType ||
       group.sourcePreference.board !== source.board;
   })) return null;
-  // Version 1 predates the Centurion Government-rate eligibility hold and cannot be reused.
+  // Bind the complete analyzed case as well as the saved pricing facts. A later
+  // read can change a guest, agency or action without changing the room rows.
+  // Store only a digest, and allow an identical later read to reuse the quote.
   return { version: QUOTE_SOURCE_PROOF_VERSION, messageId: scope.messageId, inputDigest: quoteDigest(input),
+    extractionDigest: quoteDigest({ kind: evidence.kind, payload: evidence.payload }),
     sourceDigest: snapshot.sourceDigest, singleRowDigest: snapshot.singleRowDigest };
 }
 
 /** Only used to explain a refusal; the proof parser, not this predicate, grants access. */
 export function quoteSourceProofPredatesPolicy(value: unknown): boolean {
-  return !!value && typeof value === 'object' && 'version' in value && value.version === 1;
+  return !!value && typeof value === 'object' && 'version' in value &&
+    (value.version === 1 || value.version === 2);
 }
 
 export function quoteSourceProofFromRun(run: { metrics?: unknown; readResult?: unknown }): unknown {
@@ -270,7 +276,8 @@ export async function quoteSourceProofIsCurrent(db: DB, groups: Group[], scope: 
   const proof = parseQuoteSourceProof(value);
   if (!proof || proof.messageId !== scope.messageId) return false;
   const evidence = await loadChildOccupancyEvidence(db, scope);
-  return !!evidence && quoteSourceSnapshot(groups, evidence.payload, evidence.state)?.sourceDigest === proof.sourceDigest;
+  return !!evidence && quoteDigest({ kind: evidence.kind, payload: evidence.payload }) === proof.extractionDigest &&
+    quoteSourceSnapshot(groups, evidence.payload, evidence.state)?.sourceDigest === proof.sourceDigest;
 }
 
 /** A copied message can reuse a price only for one unambiguous row with the same saved preference. */
