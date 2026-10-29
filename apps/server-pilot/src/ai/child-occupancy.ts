@@ -4,8 +4,10 @@ import type { QuoteRevision } from '../quote-proposal/quote-revision.js';
 import type { DB } from '../db/client.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { and, desc, eq } from 'drizzle-orm';
+import { addDays } from './stay-date-anchoring.js';
 
-type Group = Pick<StaffQuoteInput['groups'][number], 'id' | 'childrenAges' | 'childrenPerRoom'>;
+type Group = Pick<StaffQuoteInput['groups'][number],
+  'id' | 'arrivalDate' | 'departureDate' | 'childrenAges' | 'childrenPerRoom'>;
 type RowEvidence = { stayId: string; rowId: string; count: unknown; ages: unknown };
 type StayOccupancy = Pick<QuoteRevision['groups'][number],
   'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'children' | 'childAges'>;
@@ -49,6 +51,19 @@ export function childOccupancyMatchesStored(
     const row = candidates[0]!;
     const base = `stays[${row.stayId}].rows[${row.rowId}]`;
     if (state[`stays[${row.stayId}].removed`] === true || state[`${base}.removed`] === true) return false;
+    const stays = parsed.data.stays.filter((stay) => stay.id === row.stayId);
+    if (stays.length > 1) return false;
+    const stay = stays[0];
+    const arrivalPath = `stays[${row.stayId}].requested.arrival`;
+    const departurePath = `stays[${row.stayId}].requested.departure`;
+    const arrival = Object.hasOwn(state, arrivalPath) ? state[arrivalPath] : stay?.requested.arrival;
+    let departure = Object.hasOwn(state, departurePath) ? state[departurePath] : stay?.requested.departure;
+    if (departure == null && !Object.hasOwn(state, departurePath) && typeof arrival === 'string' &&
+      /^\d{4}-\d{2}-\d{2}$/.test(arrival) && !parsed.data.missing.some((item) => item.field === 'stayDates')) {
+      const day = new Date(`${arrival}T00:00:00Z`);
+      if (Number.isFinite(day.getTime()) && day.toISOString().slice(0, 10) === arrival) departure = addDays(arrival, 1);
+    }
+    if (arrival !== group.arrivalDate || departure !== group.departureDate) return false;
     const count = Object.hasOwn(state, `${base}.childrenPerRoom`) ? state[`${base}.childrenPerRoom`] : row.count;
     const ages = Object.hasOwn(state, `${base}.childAges`) ? state[`${base}.childAges`] : row.ages;
     return typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 6 &&
@@ -61,7 +76,8 @@ export function childOccupancyMatchesStored(
 
 export function occupancyFromRevision(revision: QuoteRevision): Group[] {
   return revision.groups.map((group) => ({
-    id: group.id, childrenPerRoom: Number.isInteger(group.children) ? group.children : null, childrenAges: group.childAges,
+    id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate,
+    childrenPerRoom: Number.isInteger(group.children) ? group.children : null, childrenAges: group.childAges,
   }));
 }
 
@@ -147,7 +163,10 @@ export function singleStayOccupancyMatchesRevision(
     quoted.children !== quoted.childAges.length || ages.length !== quoted.childAges.length) return false;
   const quotedAges = [...quoted.childAges].sort((a, b) => a - b);
   if ([...ages].sort((a, b) => a - b).some((age, i) => age !== quotedAges[i])) return false;
-  return childOccupancyMatchesStored([{ id: row.id, childrenPerRoom: quoted.children, childrenAges: ages }], parsed.data, state);
+  return childOccupancyMatchesStored([{
+    id: row.id, arrivalDate: quoted.arrivalDate, departureDate: quoted.departureDate,
+    childrenPerRoom: quoted.children, childrenAges: ages,
+  }], parsed.data, state);
 }
 
 export async function singleStayOccupancyIsCurrent(

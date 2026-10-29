@@ -118,6 +118,35 @@ describe('quote input bound to saved occupancy evidence', () => {
     expect(childOccupancyMatchesStored([group([])], duplicate, {})).toBe(false);
   });
 
+  it('does not let one case borrow another case’s adult-only row', () => {
+    const evidence = payload(0, []);
+    const first = evidence.stays[0]!;
+    const second = { ...first, id: 's_2', requested: { arrival: '2027-11-20', departure: '2027-11-21' },
+      rows: [{ ...first.rows[0]!, id: 'r_2', childrenPerRoom: null, childAges: [] }] };
+    expect(childOccupancyMatchesStored([{
+      ...group([], 0), arrivalDate: '2027-11-20', departureDate: '2027-11-21',
+    }], { ...evidence, stays: [first, second] }, {})).toBe(false);
+  });
+
+  it('uses saved date corrections and treats an explicit cleared date as unknown', () => {
+    const evidence = payload(0, []);
+    const moved = { ...group([], 0), arrivalDate: '2027-10-22', departureDate: '2027-10-23' };
+    expect(childOccupancyMatchesStored([moved], evidence, {})).toBe(false);
+    const dates = { [`stays[${stayId}].requested.arrival`]: moved.arrivalDate,
+      [`stays[${stayId}].requested.departure`]: moved.departureDate };
+    expect(childOccupancyMatchesStored([moved], evidence, dates)).toBe(true);
+    expect(childOccupancyMatchesStored([moved], evidence, { ...dates, [`stays[${stayId}].requested.departure`]: null })).toBe(false);
+  });
+
+  it('keeps the existing one-night default only for an unspecified checkout', () => {
+    const evidence = payload(0, []);
+    evidence.stays[0]!.requested.departure = null as never;
+    expect(childOccupancyMatchesStored([group([], 0)], evidence, {})).toBe(true);
+    expect(childOccupancyMatchesStored([group([], 0)], evidence, {
+      [`stays[${stayId}].requested.departure`]: null,
+    })).toBe(false);
+  });
+
   it('supports staff-added rows only with an explicit saved count and ages', () => {
     const evidence = payload(0, []);
     const added = { ...group([5], 1), id: 'r_added' };
