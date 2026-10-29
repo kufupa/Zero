@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { childOccupancyMatchesStored, singleStayOccupancyMatchesRevision } from '../src/ai/child-occupancy.js';
 import { mailExtractionSchema, sanitizeExtraction } from '../src/ai/extraction/schema.js';
 import { buildPreparedStaffQuotePlan } from '../src/ai/quote-ready.js';
-import { staffQuoteInput, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
+import { prepareStaffQuote, staffQuoteInput, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
+import { storedAnalysis } from '../src/ai/work-items.js';
 import { AE1_OUTPUT, AE1_TEXT } from './fixtures/inbound-extraction.js';
 
 const stayId = 's_1';
@@ -71,6 +72,40 @@ describe('child occupancy extraction and prefetch', () => {
     expect(prefetch(count, [...ages]).inputs[0]?.groups[0]).toMatchObject({
       childrenPerRoom: count, childrenAges: ages,
     });
+  });
+
+  it('does not let a missing-age warning change an HRDAV quote or reply requirements', () => {
+    const original = payload(null, []);
+    const warning = { ...original, missing: [{ field: 'childAges', question: 'Confirm each child’s age.' }] };
+    const quote = (source: unknown) => buildPreparedStaffQuotePlan({
+      messageId: 'm1', sourceHash: 'a'.repeat(64), payload: source, propertyCode: 'HRDAV',
+      now: new Date('2026-10-01T00:00:00Z'),
+    });
+    const cleanPlan = quote(original);
+    expect(cleanPlan.inputs).toHaveLength(1);
+    expect(quote(warning).inputs).toEqual(cleanPlan.inputs);
+    expect(cleanPlan.inputs[0]?.groups[0]).not.toHaveProperty('childrenPerRoom');
+    const analysis = (source: typeof warning) => storedAnalysis(
+      { kind: 'quote', payload: source, attachments: [] }, {}, undefined, 'HRDAV',
+    ).analysis;
+    const without = analysis(original), withWarning = analysis(warning);
+    expect(withWarning.groups).toEqual(without.groups);
+    expect(withWarning.intent).toBe(without.intent);
+    expect(withWarning.missingQuoteReplyFields).toEqual(without.missingQuoteReplyFields);
+    expect(withWarning.reviewItems).toEqual(expect.arrayContaining([
+      expect.objectContaining({ text: 'Confirm each child’s age.', blocking: false }),
+    ]));
+  });
+
+  it('keeps the request-level count check Centurion-only', () => {
+    const input = staffQuoteInput.parse({ messageId: 'm1', sourceHash: 'a'.repeat(64), selectionEpoch: 0,
+      inputRevision: 0, groups: [group([], null)] });
+    const scope = { transportId: 'transport-davinci', userId: 'staff', threadId: 't1', messageId: 'm1',
+      sourceHash: input.sourceHash, propertyCode: 'HRDAV', messageAt: '2026-10-01T00:00:00Z', messageText: '' };
+    const prepare = (propertyCode: string) => prepareStaffQuote(input, { ...scope, propertyCode },
+      { signerName: '', signerEmail: '' }, new AbortController().signal);
+    expect(() => prepare('HRDAV')).not.toThrow();
+    expect(() => prepare('HRCEN')).toThrow('staff_quote_child_occupancy_incomplete');
   });
 });
 

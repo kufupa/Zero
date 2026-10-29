@@ -146,6 +146,7 @@ export async function childOccupancyIsCurrent(
   groups: Group[],
   scope: { transportId: string; threadId: string; messageId: string; lock?: boolean },
 ): Promise<boolean> {
+  if (!isCenturionQuoteTransport(scope.transportId)) return true;
   const evidence = await loadChildOccupancyEvidence(db, scope);
   return !!evidence && childOccupancyMatchesStored(groups, evidence.payload, evidence.state);
 }
@@ -228,6 +229,7 @@ export async function singleStayOccupancyIsCurrent(
   revision: { groups: StayOccupancy[] },
   scope: { transportId: string; threadId: string; messageId: string },
 ): Promise<boolean> {
+  if (!isCenturionQuoteTransport(scope.transportId)) return true;
   const evidence = await loadChildOccupancyEvidence(db, scope);
   return !!evidence && singleStayOccupancyMatchesRevision(revision, evidence.payload, evidence.state);
 }

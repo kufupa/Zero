@@ -38,7 +38,7 @@ import {
   type RecordSenderPartyInput,
 } from './party-sender-map.js';
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
-import { childOccupancyIsCurrent, singleStayOccupancyIsCurrent } from './child-occupancy.js';
+import { childOccupancyIsCurrent, singleStayOccupancyIsCurrent, isCenturionQuoteTransport } from './child-occupancy.js';
 import {
   CENTURION_HMS_READ_TARGET,
   hmsReadAuditMetrics,
@@ -4263,7 +4263,8 @@ async function toView(
   const request = hmsJobRequestSchema.safeParse(run.readRequest);
   let status = STATUS_BY_STATE[run.state];
   let result = run.state === 'succeeded' && run.readResult ? run.readResult : null;
-  const quoteResult = objectRecord(run.readRequest).kind === 'staff_quote' || result?.kind === 'staff_quote';
+  const quoteResult = isCenturionQuoteTransport(options.quoteScope?.transportId ?? run.transportId) &&
+    (objectRecord(run.readRequest).kind === 'staff_quote' || result?.kind === 'staff_quote');
   if (quoteResult && result && (result.ok !== false || 'totalMinor' in result || 'rateOptions' in result || 'preparedProposal' in result) &&
     (!request.success || !(await quoteViewIsCurrent(db, run, request.data, options.quoteScope)))) {
     status = 'failed';
