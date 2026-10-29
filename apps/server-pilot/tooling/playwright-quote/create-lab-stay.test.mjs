@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { assertTrackReadyForGuarantee, loadCreateRequest, matchTrackRow, parseOutDir, parseShop, parseStopBefore, parseTrackLookupText, refuseRateRowClick, shopResult, shopRowsFromTexts, stayActions } from './create-request.mjs';
 import { blankRequiredCreateFields, createLabtestRefusal, createModeRefusal, createRoomTypeMismatch, parseCreateProperty } from './create-lab-stay.mjs';
 import { profileFor } from './property-profile.mjs';
+import { readSaveSnapshot, waitForSaveConfirmation } from './save-wait.mjs';
 
 function requiredRequest(extra = {}) {
   return {
@@ -249,7 +250,7 @@ test('proof mode is guarded before browser work and wires read-only reconciliati
   assert.match(source, /reconcileCreateSave/);
   assert.match(source, /saveClickMayHaveFired\(error\)/);
   assert.match(source, /save_click_unconfirmed/);
-  assert.match(source, /result\.saved = proof\.confNo \? true : null/);
+  assert.match(source, /result\.saved = proof\.readbackMatch === true \? true : null/);
   for (const field of ['confNo', 'readbackMatch', 'mismatches', 'screenshot']) {
     assert.match(source, new RegExp(`${field}:`));
   }
@@ -740,6 +741,58 @@ test('save polling preserves unconfirmed breadcrumbs and refuses conflicting num
     { ...blank, confirmationNumber: other },
   ]);
   assert.deepEqual(laterConflict.conflictingConfirmationNumbers, [prior, other]);
+});
+
+test('first save wait retains observations through blank, conflicting, and failed reads', async () => {
+  const rules = await loadReadbackRules();
+  const prior = '11111111-1';
+  const other = '22222222-1';
+  const masked = { maskVisible: true, confirmationNumber: prior, status: 'New' };
+  const blank = { maskVisible: false, confirmationNumber: '', status: 'Reserved' };
+  const run = (frames) => {
+    const evidence = { saved: null };
+    let clock = 0;
+    let reads = 0;
+    const wait = waitForSaveConfirmation(null, {
+      timeoutMs: 10, pollMs: 5, now: () => clock,
+      sleep: async (ms) => { clock += ms; },
+      read: async () => {
+        const frame = frames[Math.min(reads++, frames.length - 1)];
+        if (frame instanceof Error) throw frame;
+        return rules.rememberSaveSnapshot(evidence, frame);
+      },
+    });
+    return { evidence, wait };
+  };
+
+  const afterBlank = run([masked, blank]);
+  const blankSave = rules.applyObservedSaveNumbers(await afterBlank.wait, afterBlank.evidence);
+  assert.equal(blankSave.confirmed, false);
+  assert.equal(blankSave.confirmationNumber, prior);
+
+  const afterConflict = run([masked, { ...blank, confirmationNumber: other }]);
+  const conflictingSave = rules.applyObservedSaveNumbers(await afterConflict.wait, afterConflict.evidence);
+  assert.equal(conflictingSave.confirmed, false);
+  assert.equal(conflictingSave.confirmationNumber, null);
+  assert.deepEqual(conflictingSave.conflictingConfirmationNumbers, [prior, other]);
+  assert.equal(conflictingSave.reason, 'conflicting_confirmation_numbers');
+
+  const afterError = run([masked, new Error('snapshot_failed')]);
+  await assert.rejects(afterError.wait, /snapshot_failed/);
+  assert.equal(afterError.evidence.saved, null);
+  assert.equal(afterError.evidence.confirmationNumber, prior);
+  const errorSave = rules.applyObservedSaveNumbers({ confirmed: false, confirmationNumber: null }, afterError.evidence);
+  assert.equal(errorSave.confirmationNumber, prior);
+
+  const duringRead = { saved: null };
+  const page = {
+    locator: (selector) => ({ first: () => ({ inputValue: async () => selector.includes('confirmationnumber') ? prior : 'New' }) }),
+    getByText: () => ({ filter: () => ({ count: async () => { throw new Error('mask_read_failed'); } }) }),
+  };
+  await assert.rejects(readSaveSnapshot(page, {
+    onConfirmation: (confirmationNumber) => rules.rememberSaveSnapshot(duringRead, { confirmationNumber }),
+  }), /mask_read_failed/);
+  assert.equal(duringRead.confirmationNumber, prior);
 });
 
 test('confirmation find passes expected arrival so HMS can move the 60-day window', async () => {

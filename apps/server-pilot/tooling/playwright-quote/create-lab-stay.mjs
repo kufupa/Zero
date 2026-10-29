@@ -173,6 +173,37 @@ export function knownConfirmation(save) {
   return squashText(save?.confirmationNumber);
 }
 
+// Preserve every distinct number as soon as it is observed, even if polling later throws.
+export function rememberSaveSnapshot(result, snapshot) {
+  const confirmation = knownConfirmation(snapshot);
+  if (!confirmation) return snapshot;
+  const prior = knownConfirmation(result);
+  const observed = result.conflictingConfirmationNumbers ?? (prior ? [prior] : []);
+  if (!observed.includes(confirmation)) observed.push(confirmation);
+  if (observed.length === 1) result.confirmationNumber = observed[0];
+  else {
+    result.confirmationNumber = null;
+    result.conflictingConfirmationNumbers = observed;
+  }
+  return snapshot;
+}
+
+export function applyObservedSaveNumbers(save, result) {
+  if (result.conflictingConfirmationNumbers?.length > 1) {
+    return {
+      ...save,
+      confirmed: false,
+      confirmationNumber: null,
+      conflictingConfirmationNumbers: result.conflictingConfirmationNumbers,
+      reason: 'conflicting_confirmation_numbers',
+    };
+  }
+  if (!save.confirmed && result.confirmationNumber) {
+    return { ...save, confirmationNumber: result.confirmationNumber };
+  }
+  return save;
+}
+
 export function readbackSearchPlan(save) {
   const confirmation = knownConfirmation(save);
   if (save?.confirmed === true && confirmation) return { by: 'confirmation', confirmation };
@@ -1323,6 +1354,7 @@ export async function main(argv = process.argv.slice(2)) {
       result.saveError = String(error.message || error);
       saveClickUnknown = true;
     }
+    result.saved = null; // A click may have reached HMS; only independent readback can establish the outcome.
     // HMS masks the record while it saves. Read the number only once the mask is gone. A missing number is
     // save_unconfirmed, never a failed save: HMS may already have booked the stay.
     // Allowlisted no-rooms Ext box: click OK and keep waiting. Money/unknown abort.
@@ -1342,7 +1374,9 @@ export async function main(argv = process.argv.slice(2)) {
               error.messageBoxAbort = true;
               throw error;
             }
-            return readSaveSnapshot(p);
+            return readSaveSnapshot(p, {
+              onConfirmation: (confirmationNumber) => rememberSaveSnapshot(result, { confirmationNumber }),
+            });
           },
         });
       } catch (error) {
@@ -1355,7 +1389,8 @@ export async function main(argv = process.argv.slice(2)) {
         save = { confirmed: false, confirmationNumber: null, reason: 'save_observation_error' };
       }
     }
-    if (!save.confirmed) {
+    save = applyObservedSaveNumbers(save, result);
+    if (!save.confirmed && save.reason !== 'conflicting_confirmation_numbers') {
       try {
         save = await waitWhileStillProcessing({
           reason: save.reason,
@@ -1366,7 +1401,9 @@ export async function main(argv = process.argv.slice(2)) {
               error.messageBoxAbort = true;
               throw error;
             }
-            return readSaveSnapshot(page);
+            return readSaveSnapshot(page, {
+              onConfirmation: (confirmationNumber) => rememberSaveSnapshot(result, { confirmationNumber }),
+            });
           },
           sleep: (ms) => page.waitForTimeout(ms),
         });
@@ -1379,9 +1416,9 @@ export async function main(argv = process.argv.slice(2)) {
         result.saveError = String(error.message || error);
       }
     }
+    save = applyObservedSaveNumbers(save, result);
     result.confirmationNumber = save.confirmationNumber;
     if (save.conflictingConfirmationNumbers) result.conflictingConfirmationNumbers = save.conflictingConfirmationNumbers;
-    result.saved = save.confirmed;
     result.saveReason = save.reason;
     if (save.confirmed) {
       result.statusAfterSave = proofMode
@@ -1398,7 +1435,7 @@ export async function main(argv = process.argv.slice(2)) {
         browser, secret, stay, dir, save, savedScreenshot, existingRows,
       );
       result.confirmationNumber = proof.conflictingConfirmationNumbers ? null : (proof.confNo ?? save.confirmationNumber);
-      result.saved = proof.confNo ? true : null;
+      result.saved = proof.readbackMatch === true ? true : null;
       result.proof = proof;
       if (proof.conflictingConfirmationNumbers) result.conflictingConfirmationNumbers = proof.conflictingConfirmationNumbers;
       result.cmsReason = proof.cmsReason;
