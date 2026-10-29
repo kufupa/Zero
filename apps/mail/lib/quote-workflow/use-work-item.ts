@@ -598,6 +598,8 @@ export function useStoredWork(args: {
   openMissingWorkItem?: boolean;
   /** The signed-in user, session and mailbox. A mailbox switch looks the mail up again in the new mailbox. */
   scope?: string | null;
+  /** Independently bind request headers to the exact signed-in user and selected mailbox. */
+  expectedMailbox?: { userId: string | null; transportId: string | null };
   /** Centurion quotes bind the party facts the pane has actually seen. */
   verifyQuotePartySource?: boolean;
 }) {
@@ -606,8 +608,15 @@ export function useStoredWork(args: {
   const openMissingWorkItem = args.openMissingWorkItem !== false;
   const scope = args.scope ?? '';
   const mailboxScope = useSyncExternalStore(subscribeMailCacheScope, getMailCacheScope, getMailCacheScope);
-  const webOwnerReady = !expectedMessageId || storedWorkOwnerMatches(scope, expectedMessageId, mailboxScope);
-  const webOwnerIsCurrent = () => !expectedMessageId || storedWorkOwnerMatches(scope, expectedMessageId, getMailCacheScope());
+  const expectedMailbox = args.expectedMailbox;
+  const mailboxMatches = (owner: ReturnType<typeof getMailCacheScope>) => expectedMailbox === undefined || Boolean(
+    scope && expectedMailbox.userId && expectedMailbox.transportId && owner.userId === expectedMailbox.userId &&
+    owner.activeTransportId === expectedMailbox.transportId,
+  );
+  const ownerMatches = (owner: ReturnType<typeof getMailCacheScope>) => mailboxMatches(owner) &&
+    (!expectedMessageId || storedWorkOwnerMatches(scope, expectedMessageId, owner));
+  const ownerReady = ownerMatches(mailboxScope);
+  const ownerIsCurrent = () => ownerMatches(getMailCacheScope());
   // The lookup is for this mail in this mailbox. Either changing makes the last lookup someone else's.
   const lookupKey = internetMessageId ? `${scope}\n${internetMessageId}` : null;
   const [lookup, setLookup] = useState<Lookup | null>(null);
@@ -665,8 +674,8 @@ export function useStoredWork(args: {
   lookupKeyRef.current = lookupKey;
 
   useEffect(() => {
-    if (expectedMessageId && !webOwnerReady) setLookup(null);
-  }, [expectedMessageId, webOwnerReady]);
+    if (!ownerReady) setLookup(null);
+  }, [ownerReady]);
 
   useEffect(() => {
     trpcRef.current = trpc;
@@ -817,12 +826,12 @@ export function useStoredWork(args: {
   );
 
   // Without a stored-read route the pane reads live at once, with no extra render before the live read.
-  const canLookUp = Boolean(workItemsFromTrpc(trpc).getByMessage && webOwnerReady);
+  const canLookUp = Boolean(workItemsFromTrpc(trpc).getByMessage && ownerReady);
 
   // One lookup per mail and mailbox. Switching either or unmounting sends the last mail's pending edits first.
   useEffect(() => {
     if (!internetMessageId || !lookupKey || !canLookUp) return;
-    const ownerCurrent = webOwnerIsCurrent;
+    const ownerCurrent = ownerIsCurrent;
     if (!ownerCurrent()) return;
     let current = true;
     const epoch = selection.current.epoch;
@@ -873,14 +882,17 @@ export function useStoredWork(args: {
       flushAll();
       if (selection.current.key === lookupKey && selection.current.epoch === epoch) selection.current.epoch += 1;
     };
-  }, [internetMessageId, expectedMessageId, lookupKey, canLookUp, openMissingWorkItem, flushAll, scope]);
+  }, [internetMessageId, expectedMessageId, expectedMailbox?.userId, expectedMailbox?.transportId,
+    lookupKey, canLookUp, openMissingWorkItem, flushAll, scope]);
 
-  const currentLookup = webOwnerReady && lookup && lookup.key === lookupKey ? lookup : null;
+  const lookupHasOwner = expectedMailbox === undefined || Boolean(lookup && lookup.userId === expectedMailbox.userId &&
+    lookup.transportId === expectedMailbox.transportId);
+  const currentLookup = ownerReady && lookupHasOwner && lookup && lookup.key === lookupKey ? lookup : null;
   const stored = currentLookup?.result ?? null;
   const retried = retries.messageId === internetMessageId ? retries.count : 0;
   let pane: StoredPane;
   if (!internetMessageId) pane = { state: 'reading' };
-  else if (expectedMessageId && !webOwnerReady) pane = { state: 'loading' };
+  else if (!ownerReady) pane = { state: 'loading' };
   else if (!canLookUp && expectedMessageId) pane = {
     state: 'failed', hold: true, reason: 'The selected email could not be verified. Reopen it and try again.',
   };
@@ -1323,7 +1335,8 @@ export function useStoredWork(args: {
     if (!getByMessage || !messageId || !keyNow) return Promise.resolve(false);
     const epochNow = selection.current.epoch;
     const isCurrent = () => {
-      if (lookupKeyRef.current !== keyNow || selection.current.epoch !== epochNow) return false;
+      if (lookupKeyRef.current !== keyNow || selection.current.key !== keyNow ||
+          selection.current.epoch !== epochNow || selection.current.epoch !== renderEpoch || !ownerIsCurrent()) return false;
       if (!expectedMessageId) return true;
       const owner = getMailCacheScope();
       return selection.current.key === keyNow && selection.current.epoch === renderEpoch &&
@@ -1363,7 +1376,8 @@ export function useStoredWork(args: {
         setHistoryNeedsReload(true);
         return false;
       });
-  }, [currentLookup?.userId, expectedMessageId, internetMessageId, lookupKey, readyTransportId, renderEpoch, scope]);
+  }, [currentLookup?.userId, expectedMailbox?.userId, expectedMailbox?.transportId,
+    expectedMessageId, internetMessageId, lookupKey, readyTransportId, renderEpoch, scope]);
 
   /** The optional callback must synchronously clear the pane's old edits, or return false without changing them. */
   const discardUnconfirmedEdits = useCallback(async (beforePublish?: () => boolean): Promise<boolean> => {

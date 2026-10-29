@@ -742,6 +742,7 @@ export function NavaPane({
     expectedMessageId,
     openMissingWorkItem: !isNonActionableBySourceOrSubject,
     scope: expectedMessageId ? storedWorkScope(currentScope, activeConnection?.id, activeEmail, session?.user?.id) : currentScope,
+    expectedMailbox: { userId: session?.user?.id ?? null, transportId: activeConnection?.id ?? null },
     verifyQuotePartySource,
   });
   flushQuoteEditsRef.current = () => {
