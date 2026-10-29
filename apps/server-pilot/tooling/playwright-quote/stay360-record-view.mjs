@@ -19,7 +19,7 @@ export async function readRecordViewFromStay360(page, confirmation) {
   if (await stay.count() !== 1 || await button.count() !== 1) throw new Error('STAY_BUTTON_NOT_UNIQUE');
   await button.click();
 
-  const deadline = Date.now() + 10_000;
+  const deadline = Date.now() + 30_000;
   let frame;
   while (Date.now() < deadline) {
     notes.push(...await dismissNotesOrThrow(page, { allowRecordFrame: true }));
