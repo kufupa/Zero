@@ -7,7 +7,7 @@ Written in the 2026-10-14 retro: none of the 10 autonomous runs from Oct 6 to Oc
 | Work | Run it | Why |
 |---|---|---|
 | Measurable grind: eval sweeps, prompt iterations against a scored set, golden-set growth, scorer fixes, research | **Overnight**, unattended | a script decides pass/fail; no human taste or live staff needed |
-| Integration that ends in a deploy + live proof, flag flips, pane UX | **Daytime**, owner reachable | proof needs prod, staff traffic, owner taste; failures at 07:00 cost the client demo |
+| Integration that ends in a deploy + live proof, flag flips, pane UX | **Day or overnight** | Follow current owner direction and `PRODUCT.md`; there is no staff-hours deployment window or advance-warning requirement. |
 | New feature | Never overnight unless its pass/fail check and data already exist | quote-ready (2026-10-14) was the only new feature that night and the only item still unproven at 09:00 |
 
 ## 2. Contract (fill all fields; ≤ 15 lines)
@@ -21,7 +21,6 @@ Items (max 3, dependency order): <item → check → owner/lane>
 Not this run: <list>
 Critical path ETA: <ledger-scaled; longest chain incl. review + deploy + proof>
 Stop: pass bar met | <time> | score flat 2 rounds | blocked-with-file:line
-Deploy window: <times>; stable mark (last-good SHA + rollback) before the first deploy
 Budget: $<n> by model; report actuals at the end
 ```
 

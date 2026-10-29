@@ -8,7 +8,7 @@ Staff-facing name: **Nava**. Model name (Luna) never shown to staff.
 
 AI reservationist for Legacy Hotels Centurion. Staff stay in classic Outlook. A VSTO add-in hosts a WebView2 pane (`apps/mail` `/outlook-pane`). Same pane in webmail. Nava reads the selected email, pre-fills fields, and runs **deterministic** Infor HMS tools via Playwright. Human in the loop on every write.
 
-**Live with the client since 2026-10-14.** Never call it a demo. Every deploy and every flag flip reaches real staff: warn the owner before either during staff hours (staff start 05:00 UTC / 07:00 SAST), and record the last-good SHA first. Any pane feature ships on both surfaces (Outlook pane and the webmail panel at nava-admin).
+The client environment was recorded as live on 2026-10-14. The owner confirmed on 2026-10-29 that staff are not using Nava because the product is not complete. Never call it a demo. Deploys and flag flips can affect the client environment; bundle loads alone do not prove staff adoption. There is no staff-hours deployment window or advance-warning requirement. Any pane feature ships on both surfaces (Outlook pane and the webmail panel at nava-admin).
 
 ## Who it is for
 
