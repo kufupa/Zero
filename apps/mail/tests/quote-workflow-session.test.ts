@@ -4207,6 +4207,66 @@ describe('multi-ask stay cards: guests, action, split', () => {
     });
   }
 
+  it('shows the source guest roster while leaving a multi-room booking number unchosen', () => {
+    const guests = [
+      { name: 'Ada Example', confirmationNumber: '11111111-1' },
+      { name: 'Bea Example', confirmationNumber: '22222222-1' },
+    ];
+    const groups = [
+      { ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a', stayGuests: guests },
+      { ...quoteAnalysis.groups[0]!, id: 'r_2', stayId: 'stay-a' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis,
+      intent: 'other',
+      groups,
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0, 1], note: '' }],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: '11111111-1', guestLastName: null,
+        arrival: null, departure: null, requestedChange: null,
+      },
+    });
+    expect(stayAskGuests(session, 'stay-a')).toEqual(guests);
+    expect(amendmentOf(session)?.confirmationNumber).toBeNull();
+
+    const withoutFirstRow = reduceQuoteSession(session, { type: 'remove_row', groupId: 'r_1' });
+    expect(stayAskGuests(withoutFirstRow, 'stay-a')).toEqual(guests);
+    expect(amendmentOf(withoutFirstRow)?.confirmationNumber).toBeNull();
+  });
+
+  it('does not move a source booking number to a duplicated room or stay', () => {
+    const guest = { name: 'Ada Example', confirmationNumber: '11111111-1' };
+    const groups = [{ ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a', stayGuests: [guest], confirmationNumber: guest.confirmationNumber }];
+    const session = analysisReady({
+      ...quoteAnalysis,
+      intent: 'other',
+      groups,
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: guest.confirmationNumber, guestLastName: null,
+        arrival: null, departure: null, requestedChange: null,
+      },
+    });
+    expect(amendmentOf(session)?.confirmationNumber).toBe(guest.confirmationNumber);
+    const withCopy = reduceQuoteSession(session, { type: 'duplicate_row', groupId: 'r_1', token: 'copy' });
+    expect(amendmentOf(withCopy)?.confirmationNumber).toBeNull();
+    const onlyCopy = reduceQuoteSession(withCopy, { type: 'remove_row', groupId: 'r_1' });
+    expect(stayAskGuests(onlyCopy, 'stay-a')).toEqual([guest]);
+    expect(amendmentOf(onlyCopy)?.confirmationNumber).toBeNull();
+
+    const newStay = reduceQuoteSession(session, { type: 'duplicate_stay', stayId: 'stay-a', token: 'new' });
+    expect(stayAskGuests(newStay, 's_new')).toEqual([]);
+    expect(amendmentOf(newStay)?.confirmationNumber).toBeNull();
+  });
+
   it('lists each named guest on the stay with that guest confirmation', () => {
     const session = twoGuestStay(2, [
       { name: 'Ada Example', confirmationNumber: '11111111-1' },
@@ -4402,5 +4462,26 @@ describe('multi-ask stay cards: guests, action, split', () => {
     expect(stayAskAction(session, 'stay-b')).toBe('amend');
     const removed = reduceQuoteSession(session, { type: 'remove_stay', stayId: 'stay-a' });
     expect(stayAskAction(removed, 'stay-b')).toBe('amend');
+  });
+
+  it('does not label a conflicting or non-booking stay as a new booking from the mail-wide workflow', () => {
+    const session = analysisReady({
+      ...quoteAnalysis,
+      groups: [
+        { ...quoteAnalysis.groups[0]!, id: 'g1', stayId: 'stay-a' },
+        { ...quoteAnalysis.groups[0]!, id: 'g2', stayId: 'stay-b', arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+      ],
+      luna: {
+        workflow: 'create_booking', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [],
+        tasks: [
+          { kind: 'other', groupIndexes: [0], note: '' },
+          { kind: 'create_booking', groupIndexes: [1], note: '' },
+        ],
+      },
+    });
+    expect(stayAskAction(session, 'stay-a')).toBe('other');
+    expect(stayAskAction(session, 'stay-b')).toBe('booking');
   });
 });

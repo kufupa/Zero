@@ -76,6 +76,8 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
   if (!base) return null;
   const selectedKey = session.selectedStayKey;
   if (!selectedKey) return base;
+  const rows = stayAskRows(session, selectedKey);
+  if (new Set(rows.map(stayIdOf)).size > 1) return { ...base, confirmationNumber: null };
   const stays = groupStays(session.groups);
   const stay =
     stays.find((item) => item.id === selectedKey) ??
@@ -87,11 +89,22 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
   if (!stay) return base;
   const action = stayAskAction(session, selectedKey);
   if (action !== 'amend' && action !== 'cancel') return base;
-  const confirmation = stayAskGuests(session, selectedKey)
-    .map((guest) => guest.confirmationNumber)
-    .find((value) => value);
-  if (!confirmation) return base;
-  return { ...base, confirmationNumber: confirmation };
+  const roster = storedStayGuests(session, selectedKey);
+  if (roster !== null) {
+    const row = rows[0];
+    const original = row && session.analysis?.groups.find((item) => item.id === row.id && stayIdOf(item) === stayIdOf(row));
+    if (!row || !original || rows.length !== 1 || roster.length > 1 || (row.quantity != null && row.quantity !== 1)) {
+      return { ...base, confirmationNumber: null };
+    }
+    const assigned = trimmedConfirmation(row.confirmationNumber);
+    if (assigned) return { ...base, confirmationNumber: assigned };
+    // A thread-only number can identify the only unedited row, but must not follow a different or newly added row.
+    return session.analysis?.groups.length === 1 ? base : { ...base, confirmationNumber: null };
+  }
+  const confirmations = [...new Set(stayAskGuests(session, selectedKey)
+    .map((guest) => guest.confirmationNumber).filter((value): value is string => Boolean(value)))];
+  if (confirmations.length > 1) return { ...base, confirmationNumber: null };
+  return confirmations[0] ? { ...base, confirmationNumber: confirmations[0] } : base;
 }
 
 export function toApprovedStayGroup(group: StayGroupRequirement): ApprovedStayGroup {
@@ -204,6 +217,8 @@ type LunaStayGroup = LunaAnalysisWire['groups'][number] & { confirmationNumber?:
 type StayAskRow = StayGroupRequirement & {
   guestNames?: string[];
   confirmationNumber?: string | null;
+  /** Extraction-level guests; their position here does not assign them to this room. */
+  stayGuests?: StayAskGuest[];
 };
 
 function lunaStayGroups(session: Pick<QuoteSession, 'analysis'>): LunaStayGroup[] {
@@ -246,11 +261,24 @@ function lunaGroupsMatchingStay(session: QuoteSession, stayId: string): LunaStay
   return [];
 }
 
+/** The roster belongs to the source stay, even when staff remove or duplicate a room row. */
+function storedStayGuests(session: QuoteSession, stayId: string): StayAskGuest[] | null {
+  const ids = new Set(stayAskRows(session, stayId).map(stayIdOf));
+  const source = ((session.analysis?.groups ?? []) as StayAskRow[])
+    .filter((row) => ids.has(stayIdOf(row)) && Array.isArray(row.stayGuests));
+  if (!source.length) return null;
+  return source.flatMap((row) => (row.stayGuests ?? [])
+    .filter((guest) => guest.name.trim())
+    .map((guest) => ({ name: guest.name, confirmationNumber: trimmedConfirmation(guest.confirmationNumber) })));
+}
+
 /**
  * Named guests on this stay. A stored read puts names and booking numbers on analysis.groups (the session rows).
  * A live analysis puts names on luna.groups.
  */
 export function stayAskGuests(session: QuoteSession, stayId: string): StayAskGuest[] {
+  const stored = storedStayGuests(session, stayId);
+  if (stored !== null) return stored;
   const rows = stayAskRows(session, stayId);
   const luna = lunaGroupsMatchingStay(session, stayId);
   const fromRows = rows.flatMap((row) => guestsFromNamed(row.guestNames ?? [], trimmedConfirmation(row.confirmationNumber)));
@@ -268,6 +296,7 @@ function stayAskActionFromTask(kind: LunaAnalysisWire['tasks'][number]['kind']):
   if (kind === 'create_booking') return 'booking';
   if (kind === 'amend') return 'amend';
   if (kind === 'cancel') return 'cancel';
+  if (kind === 'other') return 'other';
   return null;
 }
 
@@ -1322,6 +1351,11 @@ function copyRow(source: StayGroupRequirement, id: string, stayId: string): Stay
   };
   delete copy.rateCode;
   delete copy.rowPrice;
+  // A copied row or stay is a new target; source names and booking numbers do not follow it.
+  const details = copy as StayAskRow;
+  delete details.guestNames;
+  delete details.confirmationNumber;
+  delete details.stayGuests;
   return copy;
 }
 

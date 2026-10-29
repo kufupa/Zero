@@ -404,7 +404,7 @@ describe('stored read for the pane', () => {
     );
   });
 
-  it('puts each stay guest name and confirmation on that stay, then top-level, never only the first stay', () => {
+  it('keeps a guest confirmation on its own stay and leaves an unattributed number unresolved', () => {
     const extracted = payload();
     extracted.confirmationNumbers = ['57291630-1'];
     extracted.stays[0] = {
@@ -418,27 +418,29 @@ describe('stored read for the pane', () => {
       booked: { arrival: '2026-12-01', departure: '2026-12-03' },
       requested: { arrival: '2026-12-10', departure: '2026-12-12' },
       guests: [{ name: 'Bea Example', confirmationNumber: '1111111-1' }],
+      rows: extracted.stays[1]!.rows.map((row) => ({ ...row, rooms: 1 })),
     };
     const { analysis, refs } = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {});
-    expect(analysis.luna.groups.map((group) => group.guestNames)).toEqual([
-      ['Ada Example'],
-      [],
-      ['Bea Example'],
+    expect(analysis.luna.groups.map((group) => group.guestNames)).toEqual([[], [], []]);
+    expect(analysis.groups.map((group) => group.stayGuests)).toEqual([
+      [{ name: 'Ada Example', confirmationNumber: null }],
+      undefined,
+      [{ name: 'Bea Example', confirmationNumber: '1111111-1' }],
     ]);
     expect(analysis.groups.map((group) => group.confirmationNumber)).toEqual([
-      '57291630-1',
-      '57291630-1',
+      undefined,
+      undefined,
       '1111111-1',
     ]);
-    expect(analysis.luna.confirmationNumber).toBe('1111111-1');
-    expect(analysis.luna.arrival).toBe('2026-12-01');
-    expect(analysis.luna.departure).toBe('2026-12-03');
-    expect(analysis.luna.requestedArrival).toBe('2026-12-10');
-    expect(analysis.luna.requestedDeparture).toBe('2026-12-12');
+    expect(analysis.luna.confirmationNumber).toBeNull();
+    expect(analysis.luna.arrival).toBeNull();
+    expect(analysis.luna.departure).toBeNull();
+    expect(analysis.luna.requestedArrival).toBeNull();
+    expect(analysis.luna.requestedDeparture).toBeNull();
     expect(Object.keys(refs)).toHaveLength(3);
   });
 
-  it('gives each room row of a stay its own guest once', () => {
+  it('keeps two guests on their stay without guessing a room row for either', () => {
     const extracted = payload();
     extracted.stays = [
       {
@@ -450,13 +452,16 @@ describe('stored read for the pane', () => {
         ],
       },
     ];
-    const names = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).analysis.luna.groups.map(
-      (group) => group.guestNames,
-    );
-    expect(names).toEqual([['Ada Example'], ['Bea Example']]);
+    const analysis = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).analysis;
+    expect(analysis.luna.groups.map((group) => group.guestNames)).toEqual([[], []]);
+    expect(analysis.groups[0]?.stayGuests).toEqual([
+      { name: 'Ada Example', confirmationNumber: null },
+      { name: 'Bea Example', confirmationNumber: null },
+    ]);
+    expect(analysis.groups[1]?.stayGuests).toBeUndefined();
   });
 
-  it('keeps both named guests on a row with two rooms', () => {
+  it('keeps two named guests visible without assigning them to the rooms', () => {
     const extracted = payload();
     const row = extracted.stays[0]!.rows[0]!;
     extracted.stays = [
@@ -470,10 +475,12 @@ describe('stored read for the pane', () => {
         ],
       },
     ];
-    const names = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).analysis.luna.groups.map(
-      (group) => group.guestNames,
-    );
-    expect(names).toEqual([['Ada Example', 'Bea Example']]);
+    const analysis = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).analysis;
+    expect(analysis.luna.groups.map((group) => group.guestNames)).toEqual([[]]);
+    expect(analysis.groups[0]?.stayGuests).toEqual([
+      { name: 'Ada Example', confirmationNumber: null },
+      { name: 'Bea Example', confirmationNumber: null },
+    ]);
   });
 
   it('keeps one work item for a multi-stay mail', () =>
@@ -500,6 +507,8 @@ describe('stored read for the pane', () => {
   it('fills a stored amendment confirmation from thread PDF evidence when the selected read has none', () => {
     const extracted = payload();
     extracted.confirmationNumbers = [];
+    extracted.stays = extracted.stays.slice(0, 1);
+    extracted.stays[0]!.rows = [{ ...extracted.stays[0]!.rows[0]!, rooms: 1 }];
     const analysis = storedAnalysis(
       { kind: 'amendment', payload: extracted, attachments: [] },
       {},
@@ -512,6 +521,8 @@ describe('stored read for the pane', () => {
   it('fails closed on the stored path when thread PDFs disagree, and never dashes a bare number', () => {
     const extracted = payload();
     extracted.confirmationNumbers = ['47360291'];
+    extracted.stays = extracted.stays.slice(0, 1);
+    extracted.stays[0]!.rows = [{ ...extracted.stays[0]!.rows[0]!, rooms: 1 }];
     const ambiguous = storedAnalysis(
       { kind: 'amendment', payload: extracted, attachments: [] },
       {},
@@ -561,10 +572,12 @@ describe('stored read for the pane', () => {
         s3Key: 'test/sib-pdf.pdf',
         isInline: false,
       });
+      const extracted = payload();
+      extracted.stays = [{ ...extracted.stays[0]!, rows: [{ ...extracted.stays[0]!.rows[0]!, rooms: 1 }] }];
       await insertRead(db, guestId, {
         version: 'extract-v1',
         kind: 'amendment',
-        payload: { ...payload(), confirmationNumbers: [] },
+        payload: extracted,
       });
       const work = await storedWorkFor(db, {
         transportId: CENTURION,
@@ -1059,6 +1072,74 @@ describe('corrections carry to a re-read', () => {
       expect(moved.extractionId).toBe(first);
       expect(second).not.toBe(first);
     }));
+
+  it('keeps a cleared field on its original read when an ambiguous same-date re-read reuses ids', () =>
+    withDb(async (db) => {
+      const before = payload();
+      before.stays[1]!.requested = { ...before.stays[0]!.requested };
+      const after = structuredClone(before);
+      after.stays = [
+        { ...after.stays[1]!, id: STAY_ONE },
+        { ...after.stays[0]!, id: STAY_TWO },
+      ];
+      const messageId = await seedMail(db, 'ambiguous-reread');
+      const firstRead = await insertRead(db, messageId, { version: 'extract-v1', payload: before });
+      const firstOpen = await readyWork(db, 'ambiguous-reread');
+      expect(await recordFieldEvent(db, {
+        transportId: CENTURION,
+        workItemId: firstOpen.workItemId,
+        userId: USER,
+        type: 'field.reject',
+        fieldPath: `stays[${STAY_ONE}].requested.departure`,
+      })).toMatchObject({ status: 'recorded', value: null });
+      const laterRead = await insertRead(db, messageId, { version: 'extract-v2', payload: after });
+      const linked = await ensureWorkItem(db, {
+        transportId: CENTURION,
+        threadId: 'thread-ambiguous-reread',
+        messageId,
+        kind: 'quote',
+        extractionId: laterRead,
+      });
+      expect(linked.extractionId).toBe(firstRead);
+      expect(linked.state[`stays[${STAY_ONE}].requested.departure`]).toBeNull();
+
+      const reopened = await readyWork(db, 'ambiguous-reread');
+      expect(reopened.extractionId).toBe(firstRead);
+      expect(reopened.analysis.groups.find((group) => group.id === ROW_SINGLE)).toMatchObject({
+        stayId: STAY_ONE,
+        fields: { departureDate: 'staff_corrected' },
+      });
+      expect(reopened.analysis.groups.find((group) => group.id === ROW_SINGLE)?.departureDate).toBeUndefined();
+    }));
+
+  it('keeps a saved edit on its read when the same dates later name another guest', () =>
+    withDb(async (db) => {
+      const before = payload();
+      before.stays = [{
+        ...before.stays[0]!,
+        rows: [before.stays[0]!.rows[0]!],
+        guests: [{ name: 'Ada Example', confirmationNumber: null }],
+      }];
+      const after = structuredClone(before);
+      after.stays[0]!.guests = [{ name: 'Bea Example', confirmationNumber: null }];
+      const messageId = await seedMail(db, 'conflicting-reread');
+      const firstRead = await insertRead(db, messageId, { version: 'extract-v1', payload: before });
+      const firstOpen = await readyWork(db, 'conflicting-reread');
+      await recordFieldEvent(db, {
+        transportId: CENTURION, workItemId: firstOpen.workItemId, userId: USER,
+        type: 'field.edit', fieldPath: `stays[${STAY_ONE}].rows[${ROW_SINGLE}].adults`, value: 3,
+      });
+      const laterRead = await insertRead(db, messageId, { version: 'extract-v2', payload: after });
+      const linked = await ensureWorkItem(db, {
+        transportId: CENTURION, threadId: 'thread-conflicting-reread', messageId,
+        kind: 'quote', extractionId: laterRead,
+      });
+      expect(linked.extractionId).toBe(firstRead);
+      const reopened = await readyWork(db, 'conflicting-reread');
+      expect(reopened.extractionId).toBe(firstRead);
+      expect(reopened.analysis.groups[0]?.adults).toBe(3);
+      expect(reopened.analysis.groups[0]?.stayGuests).toEqual([{ name: 'Ada Example', confirmationNumber: null }]);
+    }));
 });
 
 describe('field events', () => {
@@ -1130,7 +1211,7 @@ describe('field events', () => {
 
       const after = await readyWork(db, 'e2');
       expect(after.analysis.groups[0]).toMatchObject({ quantity: 2 });
-      expect(after.analysis.groups[0]!.departureDate).toBe('2027-10-27');
+      expect(after.analysis.groups[0]!.departureDate).toBeUndefined();
       expect(after.analysis.groups[0]!.fields.departureDate).toBe('staff_corrected');
       expect(await eventsFor(db, work.workItemId)).toHaveLength(3);
     }));

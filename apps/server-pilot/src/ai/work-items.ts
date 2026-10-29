@@ -564,12 +564,37 @@ function payloadConfirmationNumbers(payload: MailExtractionPayload): string[] {
   return [...new Set([...fromGuests, ...fromTop])];
 }
 
-function confirmationForStay(stay: ExtractionStay | undefined, payload: MailExtractionPayload): string | null {
-  return stayGuestConfirmations(stay)[0] ?? trimmedConfirmation(payload.confirmationNumbers[0] ?? null);
+/** A stay's guests have no room links; only a single original room can carry a guest's number. */
+function confirmationForGroup(
+  stay: ExtractionStay | undefined,
+  payload: MailExtractionPayload,
+  rowId: string | null | undefined,
+  rooms: number | null | undefined,
+  projectedRowCount: number,
+): string | null {
+  if (!stay || stay.rows.length > 1 || projectedRowCount !== 1) return null;
+  if (stay.rows.length === 1 && (
+    stay.rows[0]?.id !== rowId || rooms !== 1 || (stay.rows[0]?.rooms ?? 1) !== 1 || (stay.totalRooms ?? 1) !== 1
+  )) return null;
+  if (stay.rows.length === 0 && rowId !== null) return null;
+  if (payload.stays.length === 1 && payloadConfirmationNumbers(payload).length > 1) return null;
+  if (stay.guests?.length) {
+    if (stay.guests.length !== 1 || !stay.guests[0]?.name.trim()) return null;
+    const confirmation = trimmedConfirmation(stay.guests[0]?.confirmationNumber);
+    if (!confirmation) return null;
+    const owners = payload.stays.filter((item) => stayGuestConfirmations(item).includes(confirmation));
+    return owners.length === 1 && owners[0]?.id === stay.id ? confirmation : null;
+  }
+  // Legacy reads may have only a top-level number. It identifies a row only when there is one stay and one row.
+  if (payload.stays.length !== 1) return null;
+  const numbers = [...new Set(payload.confirmationNumbers.map(trimmedConfirmation).filter((value): value is string => Boolean(value)))];
+  return numbers.length === 1 ? numbers[0]! : null;
 }
 
-function guestNamesForStay(stay: ExtractionStay | undefined): string[] {
-  return (stay?.guests ?? []).map((guest) => guest.name).filter((name) => name.trim().length > 0);
+function guestsForStay(stay: ExtractionStay | undefined): Array<{ name: string; confirmationNumber: string | null }> {
+  return (stay?.guests ?? [])
+    .filter((guest) => guest.name.trim().length > 0)
+    .map((guest) => ({ name: guest.name, confirmationNumber: trimmedConfirmation(guest.confirmationNumber) }));
 }
 
 function stayOwningConfirmation(
@@ -578,6 +603,30 @@ function stayOwningConfirmation(
 ): ExtractionStay | undefined {
   if (!confirmation) return undefined;
   return payload.stays.find((stay) => stayGuestConfirmations(stay).includes(confirmation));
+}
+
+/** The top-level workflow is a summary; retain any explicit per-stay actions on their own rows. */
+function taskKindForStay(
+  stay: ExtractionStay | undefined,
+  workflow: LunaAnalysis['workflow'],
+  hasUnassignedConfirmation: boolean,
+): LunaAnalysis['tasks'][number]['kind'] | null {
+  switch (stay?.action) {
+    case 'quote_availability': return 'quote';
+    case 'new_booking': return stay.booked || stayGuestConfirmations(stay).length || hasUnassignedConfirmation ? 'other' : 'create_booking';
+    case 'amend': return 'amend';
+    case 'cancel': return 'cancel';
+    case 'no_action':
+    case 'payment_proof':
+    case 'billing':
+    case 'group_event':
+    case 'other_actionable': return 'other';
+    default:
+      // Legacy extractions may not have per-stay actions. Existing-booking evidence is not a new booking.
+      return stay && workflow === 'create_booking' && (stay.booked || stayGuestConfirmations(stay).length || hasUnassignedConfirmation)
+        ? 'other'
+        : null;
+  }
 }
 
 /**
@@ -638,8 +687,6 @@ export function storedAnalysis(
   const order: Array<GroupRef & { groupId: string }> = [];
   const groups: Array<LunaAnalysis['groups'][number] & { stayId?: string }> = [];
   for (const stay of stays) {
-    const sourceStay = payload.stays.find((item) => item.id === stay.id);
-    const guestNames = guestNamesForStay(sourceStay);
     const dates = {
       arrival: pick(`stays[${stay.id}].requested.arrival`, stay.requested.arrival),
       departure: pick(`stays[${stay.id}].requested.departure`, stay.requested.departure),
@@ -654,18 +701,14 @@ export function storedAnalysis(
         childAges: [],
         board: null,
         roomPreference: null,
-        guestNames,
+        guestNames: [],
         stayId: stay.id,
       });
       continue;
     }
-    let guestAt = 0;
     for (const row of stay.rows) {
       const at = (field: RowField) => `stays[${stay.id}].rows[${row.id}].${field}`;
       const rooms = pick(at('count'), row.rooms);
-      const take = typeof rooms === 'number' && rooms > 0 ? rooms : 1;
-      const rowNames = guestNames.slice(guestAt, guestAt + take);
-      guestAt += take;
       order.push({ groupId: row.id, stayId: stay.id, rowId: row.id });
       groups.push({
         ...dates,
@@ -675,18 +718,37 @@ export function storedAnalysis(
         childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
-        guestNames: rowNames,
+        // The booking draft matches rows by position after edits; a stay-level name is not a room assignment.
+        guestNames: [],
         stayId: stay.id,
       });
     }
   }
-  const selectedConfirmation = payloadConfirmationNumbers(payload)[0] ?? null;
-  const overlaid = overlayHmsConfirmation(selectedConfirmation, threadConfirmation);
-  const bookedStay = stayOwningConfirmation(payload, overlaid.confirmation) ?? payload.stays[0];
+  const confirmations = payloadConfirmationNumbers(payload);
+  const selectedConfirmation = confirmations.length === 1 ? confirmations[0]! : null;
+  const hasUnassignedConfirmation = payload.confirmationNumbers.some((number) => {
+    const confirmation = trimmedConfirmation(number);
+    return confirmation && payload.stays.filter((stay) => stayGuestConfirmations(stay).includes(confirmation)).length !== 1;
+  });
+  const multiplePeopleOrRooms = stays.some((stay) => {
+    const source = payload.stays.find((item) => item.id === stay.id);
+    return !source || (source.guests?.length ?? 0) > 1 || source.rows.length > 1 ||
+      (source.totalRooms ?? 0) > 1 || source.rows.some((row) => (row.rooms ?? 0) > 1) || stay.rows.length > 1 ||
+      source.rows.length !== stay.rows.length || stay.rows.some((row) => !source.rows.some((item) => item.id === row.id)) ||
+      stay.rows.some((row) => (pick(`stays[${stay.id}].rows[${row.id}].count`, row.rooms) ?? 0) > 1);
+  });
+  const ambiguous = confirmations.length > 1 ||
+    ((payload.stays.length > 1 || stays.length > 1 || multiplePeopleOrRooms) && Boolean(selectedConfirmation || threadConfirmation?.confirmation));
+  const overlaid = ambiguous
+    ? { confirmation: null, reason: 'This email may refer to more than one booking. Choose the right booking in HMS.' }
+    : overlayHmsConfirmation(selectedConfirmation, threadConfirmation);
+  const bookedStay = stayOwningConfirmation(payload, overlaid.confirmation) ??
+    (payload.stays.length === 1 ? payload.stays[0] : undefined);
   const booked = bookedStay?.booked;
   const requested = bookedStay?.requested;
+  const workflow = workflowForStoredRead(read);
   const luna: LunaAnalysis = {
-    workflow: workflowForStoredRead(read),
+    workflow,
     flags,
     groups,
     party: {
@@ -699,7 +761,12 @@ export function storedAnalysis(
       ? [...payload.missing, { field: 'confirmationNumber', question: overlaid.reason }]
       : payload.missing,
     evidence: [],
-    tasks: [],
+    tasks: stays.flatMap((stay) => {
+      const kind = taskKindForStay(payload.stays.find((item) => item.id === stay.id), workflow, hasUnassignedConfirmation);
+      if (!kind) return [];
+      const groupIndexes = order.flatMap((slot, index) => slot.stayId === stay.id ? [index] : []);
+      return groupIndexes.length ? [{ kind, groupIndexes, note: '' }] : [];
+    }),
     confirmationNumber: overlaid.confirmation,
     guestLastName: null,
     // The booking as it stands comes from the booked dates only. A missing booked date stays null: the requested
@@ -734,14 +801,40 @@ export function storedAnalysis(
         ['quantity', `${rowPath}.count`],
         ['adults', `${rowPath}.adults`],
         ['board', `${rowPath}.board`],
+        ['roomPreference', `${rowPath}.roomType`],
       );
       // "Not stated yet" saves null. Mapping fills a null board with the default, so her cleared choice is put back.
       if (Object.hasOwn(state, `${rowPath}.board`) && state[`${rowPath}.board`] === null) group.board = 'unknown';
     }
     for (const [key, path] of corrected) {
-      if (Object.hasOwn(state, path)) group.fields[key] = 'staff_corrected';
+      if (!Object.hasOwn(state, path)) continue;
+      group.fields[key] = 'staff_corrected';
+      // A deliberate clear must not be replaced by the quote mapper's one-night/occupancy defaults.
+      if (state[path] === null) {
+        if (key === 'arrivalDate') delete group.arrivalDate;
+        if (key === 'departureDate') delete group.departureDate;
+        if (key === 'quantity') delete group.quantity;
+        if (key === 'adults') delete group.adults;
+      }
     }
   });
+  // The mapper computed this list before the saved clears above were restored.
+  if (mapped.intent === 'quote' && mapped.groups.some((group) => !group.arrivalDate || !group.departureDate)) {
+    mapped.missingQuoteReplyFields = mapped.groups.flatMap((group, index) => {
+      const stay = index + 1;
+      const fields: string[] = [];
+      if (!group.arrivalDate) fields.push(`Arrival date for stay ${stay}`);
+      if (!group.departureDate) fields.push(`Departure date for stay ${stay}`);
+      if (group.quantity === undefined && group.adults === undefined) {
+        fields.push(`Number of rooms and occupancy per room for stay ${stay}`);
+      } else if (group.quantity === undefined) {
+        fields.push(`Number of rooms for stay ${stay}`);
+      } else if (group.adults === undefined) {
+        fields.push(`Number of guests per room for stay ${stay}`);
+      }
+      return fields;
+    });
+  }
   const refs: Record<string, GroupRef> = Object.fromEntries(
     order.map((slot) => [slot.groupId, { stayId: slot.stayId, rowId: slot.rowId }]),
   );
@@ -753,12 +846,25 @@ export function storedAnalysis(
         const roomType = matchRoomType(group.roomPreference, propertyCode);
         const stayId = order[index]?.stayId;
         const sourceStay = stayId ? payload.stays.find((item) => item.id === stayId) : undefined;
-        const confirmationNumber = confirmationForStay(sourceStay, payload);
+        const projectedRowCount = order.filter((slot) => slot.stayId === stayId).length;
+        const confirmationNumber = confirmationForGroup(sourceStay, payload, order[index]?.rowId, groups[index]?.rooms, projectedRowCount);
+        const firstRowOfStay = order.findIndex((slot) => slot.stayId === stayId) === index;
+        const onlyGuest = sourceStay?.guests?.length === 1 ? sourceStay.guests[0] : undefined;
+        const originalRoomCount = sourceStay?.rows[0]?.rooms ?? sourceStay?.totalRooms;
+        const singleRoomGuest = payload.stays.length === 1 && stays.length === 1 && sourceStay?.rows.length === 1 &&
+          projectedRowCount === 1 && order[index]?.rowId === sourceStay.rows[0]?.id && originalRoomCount === 1 &&
+          (sourceStay.totalRooms ?? 1) === 1 && groups[index]?.rooms === 1
+          ? onlyGuest?.name.trim()
+          : undefined;
         return {
           ...group,
           ...(roomType.code ? { roomTypeCode: roomType.code } : {}),
           roomTypeSuggestions: roomType.suggestions,
           stayId,
+          // Kept separately from room assignment so staff can see the names and numbers as reported in the email.
+          ...(firstRowOfStay ? { stayGuests: guestsForStay(sourceStay) } : {}),
+          // The People field may prefill only the one original room; the draft still must not match by row order.
+          ...(singleRoomGuest ? { guestNames: [singleRoomGuest] } : {}),
           ...(confirmationNumber ? { confirmationNumber } : {}),
         };
       }),
@@ -791,12 +897,32 @@ function contentKeepsId<T extends { id: string }>(
   keyOf: (item: T, among: T[]) => string | null,
 ): boolean {
   const was = before.find((item) => item.id === id);
-  if (!was) return true; // staff-added stay: id is hers
+  if (!was) return !after.some((item) => item.id === id); // a new extraction must not claim a staff-made id
   if (!after.some((item) => item.id === id)) return false; // extraction stay vanished
   const key = keyOf(was, before);
-  if (!key) return true;
+  if (!key) return false; // a positional id cannot prove that a re-read still means the same stay or row
   const hits = after.filter((item) => keyOf(item, after) === key);
   return hits.length === 1 && hits[0]!.id === id;
+}
+
+/** A unique date key is insufficient when the reads name conflicting properties, bookings or guests. */
+function stayKeepsIdentity(id: string, before: ExtractionStay[], after: ExtractionStay[]): boolean {
+  if (!contentKeepsId(id, before, after, stayContentKey)) return false;
+  const prior = before.find((stay) => stay.id === id);
+  const next = after.find((stay) => stay.id === id);
+  if (!prior || !next) return true; // A staff-added stay has no extraction counterpart in either read.
+  const priorHotel = prior.hotel?.trim().toLowerCase();
+  const nextHotel = next.hotel?.trim().toLowerCase();
+  if (priorHotel && nextHotel && priorHotel !== nextHotel) return false;
+  const priorNumbers = new Set(stayGuestConfirmations(prior));
+  const nextNumbers = new Set(stayGuestConfirmations(next));
+  if (priorNumbers.size && nextNumbers.size) {
+    return priorNumbers.size === nextNumbers.size && [...priorNumbers].every((number) => nextNumbers.has(number));
+  }
+  const names = (stay: ExtractionStay) => new Set(guestsForStay(stay).map((guest) => guest.name.trim().toLowerCase()));
+  const priorNames = names(prior);
+  const nextNames = names(next);
+  return !priorNames.size || !nextNames.size || [...priorNames].some((name) => nextNames.has(name));
 }
 
 /**
@@ -813,14 +939,14 @@ export function correctionsCarryTo(
   for (const key of Object.keys(state)) {
     const path = parseFieldPath(key);
     if (!path) continue;
-    if (!contentKeepsId(path.stayId, before.stays, after.stays, stayContentKey)) return false;
+    if (!stayKeepsIdentity(path.stayId, before.stays, after.stays)) return false;
     if (path.rowId === null) continue;
     const rowsBefore = before.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
     const rowsAfter = after.stays.find((stay) => stay.id === path.stayId)?.rows ?? [];
     if (!contentKeepsId(path.rowId, rowsBefore, rowsAfter, rowContentKey)) return false;
   }
   for (const key of Object.keys(stayCommitsOf(state))) {
-    if (!contentKeepsId(stayIdFromCommitKey(key), before.stays, after.stays, stayContentKey)) return false;
+    if (!stayKeepsIdentity(stayIdFromCommitKey(key), before.stays, after.stays)) return false;
   }
   return true;
 }
