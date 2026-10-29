@@ -1106,10 +1106,11 @@ describe('NavaPane', () => {
     const otherRowKey = paneEditKey('transport-1', messageId, 'row-b', 'staff-1');
     const otherUserKey = paneEditKey('transport-1', messageId, 'row-a', 'staff-2');
     const stored = twoCaseStoredWork();
-    const early = [{ ...stored.analysis.groups[0]!, id: 'draft-stay', arrivalDate: '2027-10-25',
-      fields: { arrivalDate: 'staff_corrected' as const } }];
-    const otherRow = [{ ...stored.analysis.groups[0]!, adults: 4 }];
-    const otherUser = [{ ...stored.analysis.groups[0]!, adults: 5 }];
+    const savedRow: StayGroupRequirement = { ...stored.analysis.groups[0]!, board: 'bb' };
+    const early: StayGroupRequirement[] = [{ ...savedRow, id: 'draft-stay', arrivalDate: '2027-10-25',
+      fields: { arrivalDate: 'staff_corrected' } }];
+    const otherRow: StayGroupRequirement[] = [{ ...savedRow, adults: 4 }];
+    const otherUser: StayGroupRequirement[] = [{ ...savedRow, adults: 5 }];
     rememberPaneEdits(selectedKey, early);
     rememberPaneEdits(otherRowKey, otherRow);
     rememberPaneEdits(otherUserKey, otherUser);
