@@ -158,7 +158,7 @@ function groupForStay(
       departureDate: departure,
       quantity,
       adults,
-      childrenPerRoom: row.childrenPerRoom,
+      ...(!propertyCode || propertyCode === 'HRCEN' ? { childrenPerRoom: row.childrenPerRoom } : {}),
       childrenAges: row.childAges,
       board: row.board === 'room_only' ? 'room_only' : row.board === 'dbb' ? 'dinner_bb' : 'bb',
       ...(roomCode ? { roomCodes: [roomCode] } : {}),

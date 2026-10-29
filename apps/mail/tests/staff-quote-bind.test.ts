@@ -42,6 +42,14 @@ describe('HRDAV native room and board maps', () => {
     });
   });
 
+  it('keeps Da Vinci requests compatible with prepared quotes that omit the new count', () => {
+    const prepared = staffQuoteGroupsFromStay([
+      stay({ childrenPerRoom: 1, childrenAges: [8] }),
+    ], HRDAV_PROPERTY_CODE);
+    expect(prepared).toMatchObject({ ok: [{ childrenAges: [8] }] });
+    if ('ok' in prepared) expect(prepared.ok[0]).not.toHaveProperty('childrenPerRoom');
+  });
+
   it('resolves Da Vinci room names on HRDAV and leaves Centurion-only types unknown', () => {
     expect(resolveNativeRoomCodes({ roomPreference: 'Junior Suite', propertyCode: HRDAV_PROPERTY_CODE })).toEqual({
       status: 'codes',

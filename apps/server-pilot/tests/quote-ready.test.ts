@@ -77,6 +77,18 @@ describe('prepared quote input from stored extraction', () => {
     }));
   });
 
+  it('leaves the child-count request field out of Da Vinci prepared quotes', () => {
+    const stay = payload().stays[0]!;
+    const plan = buildPreparedStaffQuotePlan({
+      messageId, sourceHash, propertyCode: 'HRDAV', now: new Date('2026-10-14T12:00:00.000Z'),
+      payload: payload({ stays: [{ ...stay, rows: [{
+        ...stay.rows[0]!, childrenPerRoom: 1, childAges: [8],
+      }] }] }),
+    });
+    expect(plan.inputs[0]?.groups[0]).toMatchObject({ childrenAges: [8] });
+    expect(plan.inputs[0]?.groups[0]).not.toHaveProperty('childrenPerRoom');
+  });
+
   it('defaults unspecified board to B&B and uses the single-row total without inventing occupancy', () => {
     const plan = build();
 

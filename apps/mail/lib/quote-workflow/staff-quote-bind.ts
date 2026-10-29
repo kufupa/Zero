@@ -539,7 +539,7 @@ export function staffQuoteGroupsFromStay(
       departureDate: group.departureDate,
       quantity: group.quantity,
       adults: group.adults,
-      childrenPerRoom: group.childrenPerRoom,
+      ...(propertyCode !== HRDAV_PROPERTY_CODE ? { childrenPerRoom: group.childrenPerRoom } : {}),
       childrenAges: [...group.childrenAges],
       board: group.board,
       ...(rooms.status === 'codes' ? { roomCodes: rooms.codes } : {}),
