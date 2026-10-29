@@ -44,6 +44,23 @@ export function overlayRememberedGroups(
   return kept;
 }
 
+/** Recover older remembered rows only from the same, unambiguously matched saved row. */
+export function recoverLegacySourcePreferences(
+  remembered: StayGroupRequirement[],
+  saved: StayGroupRequirement[],
+): StayGroupRequirement[] {
+  return remembered.map((row) => {
+    if (row.sourcePreference || !row.stayId) return row;
+    const matches = saved.filter((candidate) => candidate.id === row.id && candidate.stayId === row.stayId);
+    if (matches.length !== 1) return row;
+    const source = matches[0]!;
+    const room = (value: string | undefined) => value?.trim() || null;
+    if (!source.sourcePreference || row.board !== source.board ||
+        room(row.roomPreference) !== room(source.roomPreference)) return row;
+    return { ...row, sourcePreference: { ...source.sourcePreference } };
+  });
+}
+
 /** Drops remembered stay edits for one mail so a history refresh can show the server values. */
 export function forgetPaneEdits(key: string): void {
   memory.delete(key);

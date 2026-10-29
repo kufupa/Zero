@@ -44,7 +44,7 @@ import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
-import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
+import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, recoverLegacySourcePreferences, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
 import { sectionHasStaffEdit, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import { WorkItemHistoryControls } from './screens/work-item-history-controls';
 import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
@@ -275,14 +275,23 @@ function analysisWithPaneEdits(
   transportId: string,
   messageKey: string | undefined,
   propertyCode: string | null,
+  storedRead = false,
 ): QuoteAnalysis {
   const key = messageKey ? paneEditKey(transportId, messageKey) : null;
   const remembered = key ? recalledPaneEdits(key) : null;
   if (key && remembered === null) rememberPaneSource(key, [], null);
-  const groups = overlayRememberedGroups(analysis.groups, remembered);
+  const rememberedSource = key && remembered ? recalledPaneSource(key, remembered) : null;
+  const freshSource = paneCaseSnapshot(withPaneRead(analysis, null, null, propertyCode));
+  const canRecoverLegacySource = storedRead && propertyCode === HRCEN_PROPERTY_CODE &&
+    rememberedSource?.propertyCode === HRCEN_PROPERTY_CODE && freshSource !== null &&
+    sameCaseSnapshot(rememberedSource, freshSource);
+  const recovered = remembered && canRecoverLegacySource
+    ? recoverLegacySourcePreferences(remembered, analysis.groups)
+    : remembered;
+  const groups = overlayRememberedGroups(analysis.groups, recovered);
   const overlaid = remembered !== null && groups !== analysis.groups;
   return withPaneRead(analysis, overlaid ? groups : null,
-    overlaid && key && remembered ? recalledPaneSource(key, remembered) : null, propertyCode);
+    overlaid ? rememberedSource : null, propertyCode);
 }
 
 function staffQuoteNoticeView(jobId: string, result: BoundExecuteStaffQuote): HmsJobView {
@@ -875,6 +884,7 @@ export function NavaPane({
           binding.transportId,
           binding.internetMessageId,
           activePaneConfig?.propertyCode ?? null,
+          true,
         ),
       } as const;
       const before = reduceQuoteSession(quoteSessionRef.current, { type: 'analysis_started' });

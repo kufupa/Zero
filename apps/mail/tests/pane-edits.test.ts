@@ -7,6 +7,7 @@ import {
   overlayRememberedGroups,
   paneEditKey,
   recalledPaneEdits,
+  recoverLegacySourcePreferences,
   rememberPaneEdits,
   resetPaneEditsForTests,
 } from '../lib/quote-workflow/pane-edits';
@@ -59,5 +60,16 @@ describe('pane edits', () => {
     expect(recalledPaneEdits(key)).toEqual([]);
     expect(overlayRememberedGroups([extracted, extra], [])).toEqual([]);
     expect(overlayRememberedGroups([extracted, extra], [GROUP])).toEqual([GROUP]);
+  });
+
+  it('recovers old source terms only from a uniquely matching saved row with unchanged displayed terms', () => {
+    const sourcePreference = { roomType: null, board: null } as const;
+    const saved = { ...GROUP, adults: 2, sourcePreference };
+    expect(recoverLegacySourcePreferences([GROUP], [saved])).toEqual([{ ...GROUP, sourcePreference }]);
+    expect(recoverLegacySourcePreferences([{ ...GROUP, board: 'room_only' }], [saved])[0]?.sourcePreference).toBeUndefined();
+    expect(recoverLegacySourcePreferences([{ ...GROUP, roomPreference: 'Suite' }], [saved])[0]?.sourcePreference).toBeUndefined();
+    expect(recoverLegacySourcePreferences([GROUP], [saved, saved])[0]?.sourcePreference).toBeUndefined();
+    expect(recoverLegacySourcePreferences([GROUP], [{ ...saved, stayId: 's_2' }])[0]?.sourcePreference).toBeUndefined();
+    expect(recoverLegacySourcePreferences([{ ...GROUP, stayId: undefined }], [saved])[0]?.sourcePreference).toBeUndefined();
   });
 });
