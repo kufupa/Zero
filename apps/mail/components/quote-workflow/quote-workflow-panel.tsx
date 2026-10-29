@@ -426,6 +426,7 @@ export function QuoteWorkflowPanel({
   paneConfig,
   contact,
   contactEditorKey,
+  guestEditorKey,
   onContactEdit,
   contactReadOnly = false,
   makeQuote = true,
@@ -448,6 +449,8 @@ export function QuoteWorkflowPanel({
   contact?: StoredContact | null;
   /** Key keeps Contact corrections scoped to the selected request/work item. */
   contactEditorKey?: string;
+  /** Authenticated user, mailbox and message scoped cache key; absent while the scope is uncertain. */
+  guestEditorKey?: string | null;
   /** Saves PDF contact corrections to this request, not an HMS party profile. */
   onContactEdit?: (field: ContactField, value: string | null) => void;
   contactReadOnly?: boolean;
@@ -1059,6 +1062,7 @@ export function QuoteWorkflowPanel({
           partyJobTransport={partyJobTransport}
           contact={contact}
           contactEditorKey={contactEditorKey}
+          guestEditorKey={guestEditorKey}
           onContactEdit={onContactEdit}
           contactReadOnly={contactReadOnly}
           onPartyLookupPending={onPartyLookupPending}
@@ -1583,6 +1587,7 @@ export function QuoteWorkflowPanel({
         session={session}
         paneSave={paneSave}
         contact={contact}
+        guestEditorKey={guestEditorKey}
         workItemId={workItemId}
         savedStays={savedStays}
         screenshot={screenshot ?? paneSave?.screenshot}

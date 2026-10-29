@@ -775,14 +775,14 @@ describe('booking card staying-guest prefill', () => {
 
   it('keeps a message-level guest out of several rooms after a remount and lets staff edit each room', () => {
     const session = quotedSession();
-    const key = guestEditorKeyFor(session);
+    const key = guestEditorKeyFor(session, 'staff-1')!;
     rememberGuestName(key, 'Ada Example');
 
-    const view = render(<QuoteBookingHost session={session} workItemId="wi-1" />);
+    const view = render(<QuoteBookingHost session={session} workItemId="wi-1" guestEditorKey={key} />);
     expect(fieldValues('First name')).toEqual(['John', 'Jane']);
     expect(fieldValues('Last name')).toEqual(['Smith', 'Doe']);
     view.unmount();
-    render(<QuoteBookingHost session={session} workItemId="wi-1" />);
+    render(<QuoteBookingHost session={session} workItemId="wi-1" guestEditorKey={key} />);
     expect(recalledGuestName(key)).toBe('Ada Example');
     expect(fieldValues('First name')).toEqual(['John', 'Jane']);
     const second = screen.getAllByLabelText('First name')[1] as HTMLInputElement;
@@ -801,25 +801,25 @@ describe('booking card staying-guest prefill', () => {
     const secondKey = '2026-11-20:2026-11-22';
     const session = { ...quotedSession(null), groups: [first], analysis: { ...analysis, groups: [first] },
       bookingDrafts: { [firstKey]: firstDraft } };
-    const key = guestEditorKeyFor(session);
+    const key = guestEditorKeyFor(session, 'staff-1')!;
     rememberGuestName(key, 'Ada Example');
 
-    const view = render(<QuoteBookingHost session={session} />);
+    const view = render(<QuoteBookingHost session={session} guestEditorKey={key} />);
     expect(fieldValues('First name')).toEqual(['John']);
-    view.rerender(<QuoteBookingHost session={session} workItemId="wi-1" />);
+    view.rerender(<QuoteBookingHost session={session} workItemId="wi-1" guestEditorKey={key} />);
     expect(fieldValues('First name')).toEqual(['Ada']);
     expect(fieldValues('Last name')).toEqual(['Example']);
 
-    view.rerender(<QuoteBookingHost workItemId="wi-1" session={{ ...session,
+    view.rerender(<QuoteBookingHost workItemId="wi-1" guestEditorKey={key} session={{ ...session,
       analysis: { ...analysis, groups: [first], caseActionsUncertain: true } }} />);
     expect(fieldValues('First name')).toEqual(['John']);
-    view.rerender(<QuoteBookingHost workItemId="wi-1" session={{ ...session,
+    view.rerender(<QuoteBookingHost workItemId="wi-1" guestEditorKey={key} session={{ ...session,
       binding: { ...session.binding!, selectionEpoch: 2 } }} />);
     expect(fieldValues('First name')).toEqual(['John']);
 
     const multi = { ...session, groups: [first, second], analysis: { ...analysis, groups: [first, second] },
       bookingDrafts: { [firstKey]: firstDraft, [secondKey]: secondDraft } };
-    view.rerender(<QuoteBookingHost session={multi} workItemId="wi-1" />);
+    view.rerender(<QuoteBookingHost session={multi} workItemId="wi-1" guestEditorKey={key} />);
     expect(fieldValues('First name')).toEqual(['John', 'Jane']);
     expect(fieldValues('Last name')).toEqual(['Smith', 'Doe']);
     expect(recalledGuestName(key)).toBe('Ada Example');
@@ -834,13 +834,37 @@ describe('booking card staying-guest prefill', () => {
       analysis: { ...analysis, groups: [row], luna: { ...luna, party: { kind: 'private' as const, name: null, reference: null } } },
       bookingDrafts: { '2026-11-12:2026-11-14': draft } };
 
-    render(<QuoteBookingHost session={session} workItemId="wi-1" contact={CARD_CONTACT} />);
+    render(<QuoteBookingHost session={session} workItemId="wi-1" contact={CARD_CONTACT}
+      guestEditorKey={guestEditorKeyFor(session, 'staff-1')} />);
     const firstName = screen.getByLabelText('First name') as HTMLInputElement;
     expect(firstName.value).toBe('');
     expect((screen.getByLabelText('Last name') as HTMLInputElement).value).toBe('');
     expect(firstName.disabled).toBe(false);
     fireEvent.change(firstName, { target: { value: 'Ada' } });
     expect(firstName.value).toBe('Ada');
+  });
+
+  it('hides the booking while its owner is uncertain and does not carry room edits to another user', () => {
+    const row = { ...g1, quantity: 1 };
+    const draft = draftReady({ rooms: [draftReady().draft.rooms[0]!] });
+    const session = { ...quotedSession(null), groups: [row], analysis: { ...analysis, groups: [row] },
+      bookingDrafts: { '2026-11-12:2026-11-14': draft } };
+    const firstKey = guestEditorKeyFor(session, 'staff-1')!;
+    const secondKey = guestEditorKeyFor(session, 'staff-2')!;
+    rememberGuestName(firstKey, 'Ada Example');
+    rememberGuestName(secondKey, 'Bea Example');
+    const view = render(<QuoteBookingHost session={session} workItemId="wi-1" guestEditorKey={firstKey} />);
+    const firstName = () => screen.getByLabelText('First name') as HTMLInputElement;
+    const originalInput = firstName();
+    expect(originalInput.value).toBe('Ada');
+    fireEvent.change(originalInput, { target: { value: 'Edited' } });
+    view.rerender(<QuoteBookingHost session={session} workItemId="wi-1" guestEditorKey={null} />);
+    expect(originalInput.closest('[hidden]')).not.toBeNull();
+    view.rerender(<QuoteBookingHost session={session} workItemId="wi-1" guestEditorKey={firstKey} />);
+    expect(firstName().value).toBe('Edited');
+    const nextUser = { ...session, binding: { ...session.binding!, scopeEpoch: session.binding!.scopeEpoch + 1 } };
+    view.rerender(<QuoteBookingHost session={nextUser} workItemId="wi-1" guestEditorKey={secondKey} />);
+    expect(firstName().value).toBe('Bea');
   });
 
   it('prefills editable first and last names from the selected Guest, not Contact', () => {
@@ -875,6 +899,7 @@ describe('booking card staying-guest prefill', () => {
           header={emptyStaffQuoteHeader()}
           contact={contact}
           contactEditorKey={guestEditorKey}
+          guestEditorKey={guestEditorKey}
           scrollToStep={() => undefined}
         />
         <BookingCards draft={draft} paneSave={client} contact={contact} guestEditorKey={guestEditorKey} />

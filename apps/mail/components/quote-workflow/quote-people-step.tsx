@@ -4,7 +4,6 @@ import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
 import { recalledGuestName, rememberGuestName, subscribeStayingGuestName } from '@/lib/quote-workflow/guest-name-cache';
-import { paneEditKey } from '@/lib/quote-workflow/pane-edits';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type { QuoteSession, StaffQuoteHeader, StaffQuoteParty } from '@/lib/quote-workflow/types';
 import { sectionHasStaffEdit, type WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
@@ -43,16 +42,13 @@ function inferredGuestName(session: QuoteSession): string {
   return '';
 }
 
-export function guestEditorKeyFor(session: QuoteSession, fallback?: string | null): string {
-  const guestMessageKey = session.binding?.internetMessageId?.trim() || session.binding?.entryId;
-  return (
-    (session.binding && guestMessageKey
-      ? paneEditKey(session.binding.transportId, guestMessageKey)
-      : null) ??
-    fallback ??
-    session.staffSource?.messageId ??
-    'quote-guest'
-  );
+export function guestEditorKeyFor(session: QuoteSession, userId: string | null | undefined): string | null {
+  const binding = session.binding;
+  if (!userId?.trim() || !binding?.transportId?.trim()) return null;
+  const messageId = binding.internetMessageId?.trim();
+  const source = messageId ? ['message', messageId] :
+    binding.storeId && binding.entryId ? ['entry', binding.storeId, binding.entryId] : null;
+  return source ? JSON.stringify([userId, binding.transportId, source]) : null;
 }
 
 export function stayingGuestName(
@@ -60,8 +56,7 @@ export function stayingGuestName(
   _contact?: StoredContact | null,
   editorKey?: string,
 ): string {
-  const key = editorKey ?? guestEditorKeyFor(session);
-  return recalledGuestName(key) ?? inferredGuestName(session);
+  return (editorKey ? recalledGuestName(editorKey) : null) ?? inferredGuestName(session);
 }
 
 function GuestNameField({
@@ -69,11 +64,11 @@ function GuestNameField({
   guestEditorKey,
 }: {
   session: QuoteSession;
-  guestEditorKey: string;
+  guestEditorKey: string | null;
 }) {
   const editedName = useSyncExternalStore(subscribeStayingGuestName,
-    () => recalledGuestName(guestEditorKey), () => null);
-  const guestName = editedName ?? inferredGuestName(session);
+    () => guestEditorKey ? recalledGuestName(guestEditorKey) : null, () => null);
+  const guestName = guestEditorKey ? (editedName ?? inferredGuestName(session)) : '';
   const needsPrompt = guestName.trim().length === 0;
 
   return (
@@ -83,15 +78,17 @@ function GuestNameField({
         aria-describedby={needsPrompt ? 'quote-guest-name-prompt' : undefined}
         className={paneFieldClass}
         value={guestName}
+        disabled={!guestEditorKey}
         placeholder={needsPrompt ? 'Guest name?' : undefined}
         onChange={(event) => {
           const name = event.target.value;
-          rememberGuestName(guestEditorKey, name);
+          if (guestEditorKey) rememberGuestName(guestEditorKey, name);
         }}
       />
       {needsPrompt ? (
         <p id="quote-guest-name-prompt" className="text-[11px] text-[#64748b]">
-          Enter the staying guest’s name; the contact is not assumed to be the guest.
+          {guestEditorKey ? 'Enter the staying guest’s name; the contact is not assumed to be the guest.' :
+            'Select a signed-in mailbox and email to enter the guest’s name.'}
         </p>
       ) : null}
     </Field>
@@ -241,6 +238,7 @@ export function QuotePeopleStep({
   partyJobTransport,
   contact,
   contactEditorKey,
+  guestEditorKey = null,
   onContactEdit,
   contactReadOnly = false,
   onPartyLookupPending,
@@ -259,6 +257,7 @@ export function QuotePeopleStep({
   partyJobTransport?: HmsJobTransport | null;
   contact?: StoredContact | null;
   contactEditorKey?: string;
+  guestEditorKey?: string | null;
   onContactEdit?: (field: ContactField, value: string | null) => void;
   contactReadOnly?: boolean;
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
@@ -266,8 +265,6 @@ export function QuotePeopleStep({
   scrollToStep: (id: string) => void;
   workItemPane?: WorkItemPaneControls | null;
 }) {
-  const guestEditorKey = guestEditorKeyFor(session, contactEditorKey);
-
   return (
     <Section step={1} title="People" id="quote-party" action={<StepState state={partyState} />}>
       {onContactEdit ? (

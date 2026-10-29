@@ -3,7 +3,7 @@
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { QuotePeopleStep, stayingGuestName } from '../components/quote-workflow/quote-people-step';
+import { guestEditorKeyFor, QuotePeopleStep, stayingGuestName } from '../components/quote-workflow/quote-people-step';
 import type { ContactField, StoredContact } from '../lib/quote-workflow/backend-bind';
 import { forgetGuestName, guestNameRevision, recalledGuestName, rememberGuestName, resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import type { PartyFindReply } from '../lib/quote-workflow/party-lookup';
@@ -14,6 +14,7 @@ beforeEach(() => resetGuestNameCacheForTests());
 afterEach(() => {
   cleanup();
   resetGuestNameCacheForTests();
+  sessionStorage.removeItem('nava.guest-name.v1:mailbox-1::message-1');
 });
 
 const agency: StaffQuoteParty = {
@@ -77,6 +78,7 @@ describe('QuotePeopleStep', () => {
       },
       contact,
       contactEditorKey: 'request-1',
+      guestEditorKey: 'request-1',
       onContactEdit,
       onPatchStaffHeader,
       findParty,
@@ -133,6 +135,7 @@ describe('QuotePeopleStep', () => {
       header: emptyStaffQuoteHeader(),
       contact: agentContact,
       contactEditorKey: 'agent-message',
+      guestEditorKey: 'agent-message',
       scrollToStep: vi.fn(),
     } as unknown as Parameters<typeof QuotePeopleStep>[0];
 
@@ -152,7 +155,7 @@ describe('QuotePeopleStep', () => {
     const session = { staffSource: null, groups: [row],
       analysis: { groups: [row], luna: { party: { kind: 'private' }, groups: [] } } } as unknown as QuoteSession;
     const props = { session, partyState: 'Optional' as const, header: emptyStaffQuoteHeader(),
-      contact, contactEditorKey: 'private-contact-only', scrollToStep: vi.fn() };
+      contact, contactEditorKey: 'private-contact-only', guestEditorKey: 'private-contact-only', scrollToStep: vi.fn() };
 
     render(<QuotePeopleStep {...props} />);
     const guest = screen.getByLabelText('Guest') as HTMLInputElement;
@@ -174,7 +177,7 @@ describe('QuotePeopleStep', () => {
     } as unknown as QuoteSession;
     const props = {
       session, partyState: 'Optional' as const, header: emptyStaffQuoteHeader(),
-      contact, contactEditorKey: 'single-stored-room', scrollToStep: vi.fn(),
+      contact, contactEditorKey: 'single-stored-room', guestEditorKey: 'single-stored-room', scrollToStep: vi.fn(),
     } as unknown as Parameters<typeof QuotePeopleStep>[0];
     const view = render(<QuotePeopleStep {...props} />);
     expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('Ada Example');
@@ -234,6 +237,7 @@ describe('QuotePeopleStep', () => {
       header: emptyStaffQuoteHeader(),
       contact: agentContact,
       contactEditorKey: 'agent-message-cache-test',
+      guestEditorKey: 'agent-message-cache-test',
       scrollToStep: vi.fn(),
     } as unknown as Parameters<typeof QuotePeopleStep>[0];
 
@@ -242,7 +246,7 @@ describe('QuotePeopleStep', () => {
     firstRender.unmount();
 
     const otherMessage = render(
-      <QuotePeopleStep {...props} contactEditorKey="different-agent-message" />,
+      <QuotePeopleStep {...props} contactEditorKey="different-agent-message" guestEditorKey="different-agent-message" />,
     );
     const otherGuest = screen.getByLabelText('Guest') as HTMLInputElement;
     expect(otherGuest.value).toBe('');
@@ -288,6 +292,7 @@ describe('QuotePeopleStep', () => {
       header: emptyStaffQuoteHeader(),
       contact: agentContact,
       contactEditorKey: 'mailbox-1::message-1|reading',
+      guestEditorKey: 'user-1:mailbox-1:message-1',
       scrollToStep: vi.fn(),
     } as unknown as Parameters<typeof QuotePeopleStep>[0];
 
@@ -298,5 +303,37 @@ describe('QuotePeopleStep', () => {
     render(<QuotePeopleStep {...props} contactEditorKey="mailbox-1::message-1|ready:work-item-1" />);
 
     expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('Staff-entered value');
+  });
+
+  it('isolates users and messages, refuses unscoped legacy values, and keeps each user’s edits after remount', () => {
+    const binding = { transportId: 'mailbox-1', mailboxEmail: 'mailbox@example.invalid', storeId: 'store-1',
+      folderEntryId: 'folder-1', entryId: 'entry-1', internetMessageId: 'message-1', selectionEpoch: 1, scopeEpoch: 1 };
+    const session = { binding, staffSource: null, groups: [], analysis: { groups: [], luna: { groups: [] } } } as unknown as QuoteSession;
+    const first = guestEditorKeyFor(session, 'user-1')!;
+    const second = guestEditorKeyFor(session, 'user-2')!;
+    const other = guestEditorKeyFor({ ...session, binding: { ...binding, internetMessageId: 'message-2' } }, 'user-1')!;
+    expect(first).not.toBe(second);
+    expect(guestEditorKeyFor(session, null)).toBeNull();
+    sessionStorage.setItem('nava.guest-name.v1:mailbox-1::message-1', 'Legacy Guest');
+
+    const props = { session, partyState: 'Optional' as const, header: emptyStaffQuoteHeader(), scrollToStep: vi.fn() };
+    const view = render(<QuotePeopleStep {...props} guestEditorKey={first} />);
+    const guest = () => screen.getByLabelText('Guest') as HTMLInputElement;
+    expect(guest().value).toBe('');
+    fireEvent.change(guest(), { target: { value: 'First User Guest' } });
+    view.rerender(<QuotePeopleStep {...props} guestEditorKey={null} />);
+    expect(guest().disabled).toBe(true);
+    expect(guest().value).toBe('');
+    view.rerender(<QuotePeopleStep {...props} guestEditorKey={second} />);
+    expect(guest().value).toBe('');
+    fireEvent.change(guest(), { target: { value: 'Second User Guest' } });
+    view.rerender(<QuotePeopleStep {...props} guestEditorKey={other} />);
+    expect(guest().value).toBe('');
+    view.unmount();
+    resetGuestNameCacheForTests({ keepSession: true });
+    const again = render(<QuotePeopleStep {...props} guestEditorKey={first} />);
+    expect(guest().value).toBe('First User Guest');
+    again.rerender(<QuotePeopleStep {...props} guestEditorKey={second} />);
+    expect(guest().value).toBe('Second User Guest');
   });
 });
