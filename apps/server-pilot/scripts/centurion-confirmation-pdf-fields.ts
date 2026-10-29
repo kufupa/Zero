@@ -1,4 +1,4 @@
-const IDENTIFIER_PATTERN = /(?<![A-Z0-9])\d{6,10}(?:-\d{1,2})?(?![A-Z0-9])/gi;
+const IDENTIFIER_PATTERN = /(?<![A-Z0-9])\d{6,10}(?:-\d{1,2})?(?![A-Z0-9]|-\d)/gi;
 const PDF_FIELD_LABEL_PATTERN =
   /\b(Guest Name|Confirmation Number|Arrival Date|Departure Date|Accommodation Type|Number of Person\(s\)|Average Daily\s+Rate|Rate Includes|Total Accommodation for stay)\s*:/gi;
 const PDF_FIELD_KEYS: Record<string, PdfFieldKey> = {

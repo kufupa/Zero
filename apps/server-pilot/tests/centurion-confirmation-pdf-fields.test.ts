@@ -31,6 +31,6 @@ describe('Centurion confirmation PDF fields', () => {
   });
 
   it('does not match identifiers inside longer alphanumeric tokens', () => {
-    expect([...identifierValues('A123456B 123456-1 000001')]).toEqual(['123456-1', '000001']);
+    expect([...identifierValues('A123456B 123456-123 123456-1B 123456-1 000001')]).toEqual(['123456-1', '000001']);
   });
 });
