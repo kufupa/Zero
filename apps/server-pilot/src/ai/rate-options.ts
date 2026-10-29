@@ -50,6 +50,8 @@ export type RateOption = {
 
 /** HMS event rates. GNC3B and GNC4B are shown with a hint; they are never matched, ranked or priced differently. */
 const EVENT_RATE_CODES = new Set(['GNC3B', 'GNC4B']);
+// Share one profile across the rows in this observed quote, but refresh it for the next read.
+const RATE_PROFILE_CACHE=new WeakMap<QuoteSourceRecord,ReturnType<typeof profileFor>>();
 const staffBoard:Record<Board,RateOption['board']>={room_only:'room_only',breakfast:'bb',dinner_bed_breakfast:'dinner_bb'};
 const boardName:Record<RateOption['board'],string>={room_only:'room only',bb:'bed and breakfast',dinner_bb:'dinner, bed and breakfast'};
 
@@ -61,7 +63,9 @@ export function partyRowMatches(rateContext:Record<string,unknown>|undefined,opt
 export function rateEligibilityMatches(source:QuoteSourceRecord,option:NativeOption):boolean{
  if(option.eligibility!=='verified')return false;
  if(source.request.propertyCode==='HRCEN'){
-  const profile=profileFor('HRCEN'),code=option.rate.code,label=option.rate.label;
+  let profile=RATE_PROFILE_CACHE.get(source);
+  if(profile===undefined){profile=profileFor('HRCEN');RATE_PROFILE_CACHE.set(source,profile);}
+  const code=option.rate.code,label=option.rate.label;
   // Match the native reader's government hold even if a source incorrectly claims the row is verified.
   if(!profile||profile.classifyRate(code,'GOV',false,label)==='government'||/^(?:N)?GOV/i.test(code)||/\b(?:gov(?:ernment)?|govt)\b/i.test(label))return false;
   if(option.rateScope==='public'){
