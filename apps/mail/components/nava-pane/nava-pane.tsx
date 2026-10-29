@@ -2645,27 +2645,25 @@ export function NavaPane({
                 onClick={() => {
                   const binding = quoteSessionRef.current.binding;
                   const guestKey = guestEditorKeyRef.current;
-                  if (!guestKey) {
+                  if (!guestKey || !binding?.internetMessageId) {
                     toast.warning('Select a signed-in mailbox and email before discarding changes.');
                     return;
                   }
                   const guestName = recalledGuestName(guestKey);
                   const guestRevision = guestNameRevision(guestKey);
-                  void storedWork.discardUnconfirmedEdits().then((discarded) => {
-                    if (!discarded) {
-                      toast.warning("Couldn't reload these changes yet. Retry saving or try again.");
-                      return;
-                    }
+                  const paneRevision = quoteDraftRevision.live.current;
+                  void storedWork.discardUnconfirmedEdits(() => {
                     const current = quoteSessionRef.current.binding;
-                    if (!binding || !current || current.transportId !== binding.transportId ||
+                    if (!current || current.transportId !== binding.transportId ||
                         current.internetMessageId !== binding.internetMessageId || current.selectionEpoch !== binding.selectionEpoch ||
-                        current.scopeEpoch !== binding.scopeEpoch || guestEditorKeyRef.current !== guestKey ||
+                        current.scopeEpoch !== binding.scopeEpoch || current.storeId !== binding.storeId ||
+                        current.entryId !== binding.entryId || guestEditorKeyRef.current !== guestKey ||
                         contextRevision.current.scopeEpoch !== binding.scopeEpoch ||
-                        contextRevision.current.selectionEpoch !== binding.selectionEpoch) return;
-                    if (guestName !== null && !forgetGuestName(guestKey, guestRevision) &&
-                        guestNameRevision(guestKey) === guestRevision) {
-                      toast.warning("Couldn't discard the guest name. Check it before booking.");
-                    }
+                        contextRevision.current.selectionEpoch !== binding.selectionEpoch ||
+                        quoteDraftRevision.live.current !== paneRevision) return false;
+                    const editKey = paneEditKey(binding.transportId, binding.internetMessageId!);
+                    forgetPaneEdits(editKey);
+                    rememberPaneSource(editKey, [], null);
                     // Invalidate in-flight pane results and start again from the server read.
                     contextRevision.current.selectionEpoch += 1;
                     const fresh = { ...binding, selectionEpoch: contextRevision.current.selectionEpoch };
@@ -2674,6 +2672,13 @@ export function NavaPane({
                     dispatchQuote({ type: 'reset' });
                     dispatchQuote({ type: 'selection', binding: fresh });
                     resetReplyDraft();
+                    if (guestName !== null && !forgetGuestName(guestKey, guestRevision) &&
+                        guestNameRevision(guestKey) === guestRevision) {
+                      toast.warning("Couldn't discard the guest name. Check it before booking.");
+                    }
+                    return true;
+                  }).then((discarded) => {
+                    if (!discarded) toast.warning("Couldn't reload these changes yet. Retry saving or try again.");
                   });
                 }}>
                 Discard unsaved changes and reload
