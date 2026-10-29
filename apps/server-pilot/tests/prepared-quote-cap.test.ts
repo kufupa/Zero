@@ -31,6 +31,7 @@ const QUOTE_ON = {
   HMS_JOB_QUEUE: 'on',
   HMS_QUOTE_PREPARE: 'true',
   HMS_DAVINCI_MAKE_QUOTE: 'on',
+  RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV: '/tmp/hrdav-quote.json',
 };
 
 const PROPERTY_TARGETS: Array<{ transportId: string; propertyCode: string; expectedCount?: number }> = [
