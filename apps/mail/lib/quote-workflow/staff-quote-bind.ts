@@ -177,6 +177,11 @@ const STAFF_QUOTE_NON_PRICE_FIELDS = new Set(
   'messageId sourceHash selectionEpoch inputRevision company agency attention clientEmail clientTelephone dinnerAllowanceLabel lunchAllowanceLabel notes maxOptionsPerGroup'.split(' '),
 );
 
+const STAFF_QUOTE_DISPLAY_FIELDS = [
+  'company', 'agency', 'attention', 'clientEmail', 'clientTelephone',
+  'dinnerAllowanceLabel', 'lunchAllowanceLabel', 'notes', 'maxOptionsPerGroup',
+] as const;
+
 function staffQuoteRequestMatches(
   request: StaffQuoteJobView['request'],
   expected: ExecuteStaffQuoteInput,
@@ -1452,14 +1457,21 @@ export async function bindAutoStartStaffQuote(
       return { status: 'unavailable', reason: 'Nava could not read the queued quote. Try again in a minute.' };
     }
     const settled = await pollStaffQuoteJob(args.staffQuoteJob, first, built.input.messageId);
-    // The queue route returns a prepared run only after its server-side price-shape match. Its extracted display header
-    // can legitimately differ from the pane's edited header, so rebase counters for that same source as well.
-    const preparedForSource =
-      settled.prefetch &&
-      settled.request?.kind === 'staff_quote' &&
-      settled.request.input.messageId === built.input.messageId &&
-      settled.request.input.sourceHash === built.input.sourceHash;
-    const rebased = (preparedForSource || staffQuoteRequestMatches(settled.request, built.input)) && settled.result
+    // Prepared quotes may have an older display header, but their source and price terms must still match.
+    // A staff-started run must also match the submitted header before its pane counters can be rebased.
+    const requestMatches = staffQuoteRequestMatches(settled.request, built.input, settled.prefetch === true) &&
+      staffQuoteStayTermsMatch(settled.request, built.input) &&
+      (settled.prefetch === true || (
+        settled.request?.kind === 'staff_quote' &&
+        STAFF_QUOTE_DISPLAY_FIELDS.every((key) =>
+          stableJson(settled.request?.kind === 'staff_quote' ? settled.request.input[key] : null) ===
+          stableJson(built.input[key]),
+        )
+      ));
+    if (settled.request && !requestMatches) {
+      return { status: 'unavailable', reason: 'The quote is out of date because the stay details changed. Run it again.' };
+    }
+    const rebased = requestMatches && settled.result
       ? {
           ...settled,
           result: {
