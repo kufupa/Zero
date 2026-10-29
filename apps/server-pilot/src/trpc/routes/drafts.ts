@@ -1992,7 +1992,7 @@ export const draftsRouter = tRouter({
         .limit(1);
       if (!draft) return null;
       const [saved] = await db
-        .select({ id: mailDraftRevision.id, htmlBody: mailDraftRevision.htmlBody, attachments: mailDraftRevision.attachments })
+        .select({ id: mailDraftRevision.id, attachments: mailDraftRevision.attachments })
         .from(mailDraftRevision)
         .where(
           and(
@@ -2003,11 +2003,6 @@ export const draftsRouter = tRouter({
         .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
         .limit(1);
       if (!saved) return null;
-      // A later composer edit can change the reply or attachments without a
-      // saved-reply marker. Keep quotes guarded; trust "other" only if current.
-      const [latest] = await db.select({ id: mailDraftRevision.id }).from(mailDraftRevision)
-        .where(eq(mailDraftRevision.draftId, draft.id))
-        .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id)).limit(1);
       if (draft.attachments.length && !generatedArtifactStorage) {
         throw new TRPCError({ code: 'CONFLICT', message: 'ARTIFACT_STORAGE_UNAVAILABLE' });
       }
@@ -2024,14 +2019,14 @@ export const draftsRouter = tRouter({
         }
         attachments.push({ fileName: a.filename, pdfBase64: body.toString('base64') });
       }
-      const unchanged = latest?.id === saved.id && saved.htmlBody === draft.htmlBody &&
-        JSON.stringify(saved.attachments ?? []) === JSON.stringify(draft.attachments ?? []);
+      // A composer edit may change the body without changing which files the staff saved as non-quote.
+      const sameAttachments = JSON.stringify(saved.attachments ?? []) === JSON.stringify(draft.attachments ?? []);
       const recorded = await recordedQuotePdfHashes(db, transportId, draft.attachments.flatMap((raw) => {
         const sourceHash = (raw as typeof raw & { sourceHash?: string }).sourceHash;
         return sourceHash ? [sourceHash] : [];
       }));
       const quoteBound = recorded.size > 0 || saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}quote:`) ? true :
-        unchanged && saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}other:`) ? false : undefined;
+        sameAttachments && saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}other:`) ? false : undefined;
       return { id: draft.id, html: draft.htmlBody ?? '', attachments,
         ...(quoteBound === undefined ? {} : { quoteBound }) };
     }),

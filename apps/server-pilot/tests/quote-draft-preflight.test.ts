@@ -45,9 +45,8 @@ async function fixture() {
   const state: Record<string, unknown> = {};
   const jobAvailable = { value: true };
   const recordedHashes = { value: [hash] };
-  const savedReply = { savedId: 'saved-reply:other:1', latestId: 'saved-reply:other:1',
+  const savedReply = { savedId: 'saved-reply:other:1',
     savedHtml: '<p>Synthetic</p>', savedAttachments: [] as unknown[], draftAttachments: [] as unknown[] };
-  let savedReplyRevisionReads = 0;
   const transactionState = { enabled: false, active: false, committed: false, locks: [] as string[] };
   const transaction = vi.fn(async (run: (tx: DB) => Promise<unknown>) => {
     if (!transactionState.enabled) throw new Error('synthetic transaction reached');
@@ -69,9 +68,9 @@ async function fixture() {
         let rows: unknown[] = [];
         if (table === mailThread) rows = [{ id: 't1', transportId }];
         if (table === mailDraft && !transactionState.active) rows = [{ id: 'draft-1', htmlBody: '<p>Synthetic</p>', attachments: savedReply.draftAttachments }];
-        if (table === mailDraftRevision) rows = [savedReplyRevisionReads++ % 2 === 0
-          ? { id: savedReply.savedId, htmlBody: savedReply.savedHtml, attachments: savedReply.savedAttachments }
-          : { id: savedReply.latestId }];
+        if (table === mailDraftRevision) rows = [
+          { id: savedReply.savedId, htmlBody: savedReply.savedHtml, attachments: savedReply.savedAttachments },
+        ];
         if (table === message) rows = [mail];
         if (table === mailExtraction) rows = [{ id: 'extract-1', kind: 'quote', payload }];
         if (table === workItem) rows = [{ id: itemId, extractionId: 'extract-1', state }];
@@ -244,24 +243,27 @@ describe('priced draft preflight', () => {
     await expect(caller().workstation.quoteDraftPreflight(input)).resolves.toEqual({ ready: true });
   });
 
-  it('keeps an edited saved quote guarded and trusts a non-quote classification only while current', async () => {
-    const { savedReply } = await fixture();
+  it('keeps edited non-quotes available while guarding changed files and recorded quote PDFs', async () => {
+    const { savedReply, recordedHashes } = await fixture();
     const read = () => caller().drafts.savedReply({ threadId: 't1' });
     await expect(read()).resolves.toMatchObject({ quoteBound: false });
     savedReply.savedHtml = '<p>A later replacement</p>';
-    expect(await read()).not.toHaveProperty('quoteBound');
+    await expect(read()).resolves.toMatchObject({ quoteBound: false });
     savedReply.savedHtml = '<p>Synthetic</p>';
     savedReply.savedAttachments = [{ filename: 'different.pdf' }];
     expect(await read()).not.toHaveProperty('quoteBound');
     savedReply.savedAttachments = [];
-    savedReply.latestId = 'composer-edit-1';
-    expect(await read()).not.toHaveProperty('quoteBound');
-    savedReply.savedId = savedReply.latestId = 'saved-reply:quote:2';
-    await expect(read()).resolves.toMatchObject({ quoteBound: true });
-    savedReply.latestId = 'composer-edit-2';
+    await expect(read()).resolves.toMatchObject({ quoteBound: false });
+    savedReply.savedId = 'saved-reply:quote:2';
+    savedReply.savedHtml = '<p>Saved quote body</p>';
     await expect(read()).resolves.toMatchObject({ quoteBound: true });
     const attachment = { filename: 'quote.pdf', mimeType: 'application/pdf', s3Key: 'synthetic', sizeBytes: pdf.length, sourceHash: hash };
-    savedReply.savedId = savedReply.latestId = 'saved-reply:other:3';
+    savedReply.savedId = 'saved-reply:other:3';
+    savedReply.savedAttachments = [];
+    savedReply.draftAttachments = [attachment];
+    recordedHashes.value = [];
+    expect(await read()).not.toHaveProperty('quoteBound');
+    recordedHashes.value = [hash];
     savedReply.savedAttachments = savedReply.draftAttachments = [attachment];
     await expect(read()).resolves.toMatchObject({ quoteBound: true });
   });
