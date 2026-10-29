@@ -76,6 +76,8 @@ describe('Centurion extraction input witness', () => {
       expect(await run(db, scope.messageId, model.adapter)).toBe('stored');
       expect(model.calls).toHaveLength(1);
       expect(model.calls[0]).toMatchObject({ userPrompt: prompt.user, systemPrompt: prompt.system, images: [] });
+      expect(model.calls[0]!.userPrompt).toContain('From: guest@example.invalid');
+      expect(model.calls[0]!.userPrompt).toContain('Mailbox: centurion@legacyhotels.co.za');
       expect(model.calls[0]!.userPrompt).toContain('Earlier room details');
       expect(storage).not.toHaveBeenCalled();
       const [read] = await db.select().from(mailExtraction).where(eq(mailExtraction.messageId, scope.messageId));

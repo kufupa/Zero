@@ -294,7 +294,8 @@ describe('inbound extraction stored read', () => {
       expect(await readMail(db, messageId, selection, model.adapter)).toBe('stored');
       // The model sees the From address, so the agency can come from the sender domain, and the mailbox address, so
       // a sender on the hotel's own domain reads as staff.
-      expect(model.calls[0]?.userPrompt).toContain(`Mailbox: centurion@legacyhotels.co.za\nFrom: ${AE1_FROM}`);
+      expect(model.calls[0]?.userPrompt).toContain(`From: ${AE1_FROM}`);
+      expect(model.calls[0]?.userPrompt).toContain('Mailbox: centurion@legacyhotels.co.za');
       expect(model.calls[0]?.systemPrompt).toMatch(/agency is the organisation of the sender/);
       const row = await rowFor(db, messageId);
       expect(row).toMatchObject({ status: 'succeeded', kind: 'quote', language: 'en', translation: null });
@@ -379,9 +380,8 @@ describe('inbound extraction stored read', () => {
 
       expect(await readMail(db, messageId, selection, model.adapter)).toBe('stored');
       // The sender shares the mailbox's domain, so the model can tell the mail comes from staff.
-      expect(model.calls[0]?.userPrompt).toContain(
-        `Mailbox: centurion@legacyhotels.co.za\nFrom: ${STAFF_FORWARD_FROM}`,
-      );
+      expect(model.calls[0]?.userPrompt).toContain(`From: ${STAFF_FORWARD_FROM}`);
+      expect(model.calls[0]?.userPrompt).toContain('Mailbox: centurion@legacyhotels.co.za');
       expect(model.calls[0]?.systemPrompt).toMatch(/When staff pass on an outside request for the hotel to handle/);
       expect(model.calls[0]?.systemPrompt).toMatch(/The hotel and its group are never the agency/);
       const row = await rowFor(db, messageId);
