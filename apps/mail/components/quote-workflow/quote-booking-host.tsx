@@ -2,7 +2,7 @@ import { Fragment, useLayoutEffect, useRef } from 'react';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { caseReviewPending, isMultiStay, requestedQuoteKeys, stayIdOf } from '@/lib/quote-workflow/session';
-import type { QuoteSession } from '@/lib/quote-workflow/types';
+import { HRDAV_PROPERTY_CODE, type QuoteSession } from '@/lib/quote-workflow/types';
 import { appliedSavedStayIds, BookingCards, SavedStayReceipt, type SavedStayCommit } from './booking-card';
 import { saveConfirmationDefault, useConfirmationSources, type ConfirmationSetting } from './confirmation-recipient';
 import { stayingGuestName } from './quote-people-step';
@@ -49,12 +49,13 @@ export function QuoteBookingHost({
   const row = session.groups.length === 1 ? session.groups[0] : undefined;
   const sourceRow = session.analysis?.groups.length === 1 ? session.analysis.groups[0] : undefined;
   const onlyDraft = shownDrafts.length === 1 ? session.bookingDrafts[shownDrafts[0]!] : undefined;
-  // The People guest is keyed to a message, not to a case or room. Never apply it across rooms or a held source.
+  // The People guest is keyed to a message, not to a case or room. Centurion requires a single confirmed room.
   const singleRoomGuest = Boolean(guestEditorKey && workItemId && session.binding && session.staffSource && session.analysis &&
     !caseReviewPending(session.analysis) &&
     row && sourceRow && row.id === sourceRow.id && stayIdOf(row) === stayIdOf(sourceRow) && row.quantity === 1 &&
     onlyDraft?.messageId === session.staffSource.messageId && onlyDraft.selectionEpoch === session.binding.selectionEpoch &&
     onlyDraft.draft.rooms.length === 1 && onlyDraft.draft.rooms[0]?.groupId === row.id);
+  const canUsePeopleGuest = Boolean(guestEditorKey && (propertyCode === HRDAV_PROPERTY_CODE || singleRoomGuest));
   const coveredStayIds = new Set(
     shownDrafts.flatMap((key) =>
       appliedSavedStayIds(session.bookingDrafts[key]!, session.groups, savedStays),
@@ -67,7 +68,7 @@ export function QuoteBookingHost({
       {(shownDrafts.length > 0 || uncoveredStays.length > 0) && !guestEditorKey ? (
         <p className="text-[13px] text-[#64748b]">Select a signed-in mailbox and email to review bookings.</p>
       ) : null}
-      {shownDrafts.length > 0 && guestEditorKey && !singleRoomGuest ? (
+      {shownDrafts.length > 0 && guestEditorKey && !canUsePeopleGuest ? (
         <p className="text-[13px] text-[#64748b]">Check each room’s guest name.</p>
       ) : null}
       <div hidden={!guestEditorKey}>
@@ -85,8 +86,8 @@ export function QuoteBookingHost({
               savedStays={savedStays}
               screenshot={screenshot ?? paneSave?.screenshot}
               parties={session.staffHeader.parties}
-              guestName={singleRoomGuest ? stayingGuestName(session, contact ?? null, guestEditorKey ?? undefined) : ''}
-              guestEditorKey={singleRoomGuest ? guestEditorKey ?? undefined : undefined}
+              guestName={canUsePeopleGuest ? stayingGuestName(session, contact ?? null, guestEditorKey ?? undefined, propertyCode) : ''}
+              guestEditorKey={canUsePeopleGuest ? guestEditorKey ?? undefined : undefined}
               session={session}
               propertyCode={propertyCode}
               confirmation={confirmation}

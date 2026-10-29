@@ -606,7 +606,7 @@ export function NavaPane({
     guestBinding.selectionEpoch === contextRevision.current.selectionEpoch && guestBinding.entryId === activeEmail?.entryId &&
     guestBinding.storeId === (activeEmail?.storeId ?? '') && guestBinding.folderEntryId === (activeEmail?.folderEntryId ?? '') &&
     (guestBinding.internetMessageId ?? '') === (activeEmail?.internetMessageId ?? '')
-    ? guestEditorKeyFor(quoteSession, session.user.id) : null;
+    ? guestEditorKeyFor(quoteSession, session.user.id, activePaneConfig?.propertyCode ?? null) : null;
   const guestEditorKeyRef = useRef(guestEditorKey);
   guestEditorKeyRef.current = guestEditorKey;
   const flushQuoteEditsRef = useRef<() => Promise<boolean>>(async () => false);

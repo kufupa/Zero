@@ -7,7 +7,7 @@ import { guestEditorKeyFor, QuotePeopleStep, stayingGuestName } from '../compone
 import type { ContactField, StoredContact } from '../lib/quote-workflow/backend-bind';
 import { forgetGuestName, guestNameRevision, recalledGuestName, rememberGuestName, resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import type { PartyFindReply } from '../lib/quote-workflow/party-lookup';
-import { emptyStaffQuoteHeader } from '../lib/quote-workflow/types';
+import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE, HRDAV_PROPERTY_CODE } from '../lib/quote-workflow/types';
 import type { QuoteSession, StaffQuoteParty } from '../lib/quote-workflow/types';
 
 beforeEach(() => resetGuestNameCacheForTests());
@@ -150,18 +150,28 @@ describe('QuotePeopleStep', () => {
     expect(guest.value).toBe('Staff-entered value');
   });
 
-  it('does not treat a private contact as the staying guest when no guest was read', () => {
+  it.each([null, HRCEN_PROPERTY_CODE])('does not treat a private contact as the staying guest for property %s', (propertyCode) => {
     const row = { id: 'r_1', stayId: 's_1', quantity: 1 };
-    const session = { staffSource: null, groups: [row],
+    const session = { staffSource: null, groups: [row], quotePropertyCode: HRDAV_PROPERTY_CODE,
       analysis: { groups: [row], luna: { party: { kind: 'private' }, groups: [] } } } as unknown as QuoteSession;
     const props = { session, partyState: 'Optional' as const, header: emptyStaffQuoteHeader(),
-      contact, contactEditorKey: 'private-contact-only', guestEditorKey: 'private-contact-only', scrollToStep: vi.fn() };
+      contact, propertyCode, contactEditorKey: 'private-contact-only', guestEditorKey: 'private-contact-only', scrollToStep: vi.fn() };
 
     render(<QuotePeopleStep {...props} />);
     const guest = screen.getByLabelText('Guest') as HTMLInputElement;
     expect(guest.value).toBe('');
     expect(guest.getAttribute('placeholder')).toBe('Guest name?');
-    expect(stayingGuestName(session, contact, 'private-contact-only')).toBe('');
+    expect(stayingGuestName(session, contact, 'private-contact-only', propertyCode)).toBe('');
+  });
+
+  it('keeps the existing private-contact prefill for HRDAV', () => {
+    const row = { id: 'r_1', stayId: 's_1', quantity: 1 };
+    const session = { staffSource: null, groups: [row],
+      analysis: { groups: [row], luna: { party: { kind: 'private' }, groups: [] } } } as unknown as QuoteSession;
+    render(<QuotePeopleStep session={session} partyState="Optional" header={emptyStaffQuoteHeader()}
+      contact={contact} propertyCode={HRDAV_PROPERTY_CODE} guestEditorKey="hrdav-contact" scrollToStep={vi.fn()} />);
+    expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('Request contact');
+    expect(stayingGuestName(session, contact, 'hrdav-contact', HRDAV_PROPERTY_CODE)).toBe('Request contact');
   });
 
   it('prefills a stored guest only while the original single room remains selected', () => {
@@ -316,6 +326,15 @@ describe('QuotePeopleStep', () => {
     expect(first).not.toBe(other); // Two selected messages can share the same Internet Message-ID.
     expect(guestEditorKeyFor(session, null)).toBeNull();
     expect(guestEditorKeyFor({ ...session, binding: { ...binding, storeId: '' } }, 'user-1')).toBeNull();
+    const withoutStore = { ...session, binding: { ...binding, storeId: '' } };
+    expect(guestEditorKeyFor(withoutStore, 'user-1', HRCEN_PROPERTY_CODE)).toBeNull();
+    expect(guestEditorKeyFor(withoutStore, 'user-1', null)).toBeNull();
+    expect(guestEditorKeyFor({ ...withoutStore, quotePropertyCode: HRDAV_PROPERTY_CODE }, 'user-1', null)).toBeNull();
+    const hrdavKey = guestEditorKeyFor(withoutStore, 'user-1', HRDAV_PROPERTY_CODE);
+    expect(hrdavKey).toBeTruthy();
+    expect(hrdavKey).not.toBe(guestEditorKeyFor(withoutStore, 'user-2', HRDAV_PROPERTY_CODE));
+    expect(hrdavKey).not.toBe(guestEditorKeyFor({ ...withoutStore, binding: { ...withoutStore.binding, entryId: 'entry-2' } },
+      'user-1', HRDAV_PROPERTY_CODE));
     sessionStorage.setItem('nava.guest-name.v1:mailbox-1::message-1', 'Legacy Guest');
 
     const props = { session, partyState: 'Optional' as const, header: emptyStaffQuoteHeader(), scrollToStep: vi.fn() };

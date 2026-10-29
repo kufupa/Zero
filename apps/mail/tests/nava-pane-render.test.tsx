@@ -1292,6 +1292,35 @@ describe('NavaPane', () => {
     await waitFor(() => expect(guest()?.value).toBe('First User Guest'));
   }, 15000);
 
+  it.each([
+    ['Centurion', 'HRCEN', false],
+    ['unknown property', null, false],
+    ['HRDAV', HRDAV_PROPERTY_CODE, true],
+  ] as const)('handles an Outlook selection without a store ID for %s', async (_label, propertyCode, editable) => {
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
+    bridgeMockState.storedWork = twoCaseStoredWork();
+    bridgeMockState.quotePaneConfig = propertyCode ? {
+      transportId: 'transport-1', propertyCode, roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    } : null;
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, storeId: undefined,
+      internetMessageId: '<no-store-id@example.invalid>' } } as PaneBridge;
+    const pane = render(<NavaPane bridge={bridge} />);
+    const guest = () => screen.getByLabelText('Guest') as HTMLInputElement;
+    await screen.findByLabelText('Guest');
+    await waitFor(() => expect(bridgeMockState.storedWorkLookups).toBeGreaterThan(0));
+    if (!editable) {
+      expect(guest().disabled).toBe(true);
+      expect(guest().value).toBe('');
+      return;
+    }
+    await waitFor(() => expect(guest().disabled).toBe(false));
+    fireEvent.change(guest(), { target: { value: 'Staff-entered Guest' } });
+    pane.unmount();
+    render(<NavaPane bridge={bridge} />);
+    await waitFor(() => expect(guest().value).toBe('Staff-entered Guest'));
+  }, 15000);
+
   it('stored: a human-written amendment extraction renders Find booking without a live read or ApproveCard', async () => {
     bridgeMockState.storedWork = STORED_AMENDMENT;
     render(<NavaPane bridge={fakeBridge} />);
