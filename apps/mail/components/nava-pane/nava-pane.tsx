@@ -133,7 +133,7 @@ import { FollowUpCard } from './blocks/follow-up-card';
 import { DraftPreviewBlock } from './blocks/draft-preview';
 import { SystemCheckResultsBlock } from './blocks/system-check-results';
 import { ReplyBody } from './reply-body';
-import { useInsertAiDraft } from './use-insert-ai-draft';
+import { useInsertAiDraft, useQuoteDraftRevision } from './use-insert-ai-draft';
 import { useSavedReply } from './use-saved-reply';
 import { useQuotePdfJob } from './use-quote-pdf-job';
 import { useStaffQuoteAutostart } from './use-staff-quote-autostart';
@@ -317,7 +317,9 @@ export function NavaPane({
     refreshAuthorization,
     activateMailboxSync,
   } = bridge;
-  const [quoteSession, dispatchQuote] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
+  const [quoteSession, dispatchQuoteState] = useReducer(reduceQuoteSession, undefined, initialQuoteSession);
+  const quoteDraftRevision = useQuoteDraftRevision(dispatchQuoteState);
+  const dispatchQuote = quoteDraftRevision.dispatch;
   const partyJobThreadId = quoteSession.staffSource?.threadId ?? null;
   const partyJobMessageId = quoteSession.staffSource?.messageId ?? null;
   const partyJobTransport = useMemo(
@@ -513,6 +515,7 @@ export function NavaPane({
     contextRevision.current = { ...contextRevision.current, selection: selectedIdentity,
       selectionEpoch: contextRevision.current.selectionEpoch + 1 };
   }
+  const flushQuoteEditsRef = useRef<() => Promise<boolean>>(async () => false);
   const previousScope = useRef(currentScope);
   const detectedEmail = activeConnection?.email || 'Select an authorized mailbox';
   const {
@@ -531,6 +534,10 @@ export function NavaPane({
     currentScope,
     contextRevision,
     quoteSession,
+    quoteSessionRef,
+    quoteDraftRevision: quoteDraftRevision.live,
+    quoteDraftRenderedRevision: quoteDraftRevision.rendered,
+    flushQuoteEdits: () => flushQuoteEditsRef.current(),
     combinedEdit,
     sendCommand,
     supportsAction,
@@ -612,6 +619,11 @@ export function NavaPane({
     scope: currentScope,
     verifyQuotePartySource: activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE,
   });
+  flushQuoteEditsRef.current = () => {
+    const propertyCode = activePaneConfig?.propertyCode ?? quoteSessionRef.current.quotePropertyCode;
+    // Unknown property is held until edits can be checked; known other properties keep their existing path.
+    return propertyCode && propertyCode !== HRCEN_PROPERTY_CODE ? Promise.resolve(true) : storedWork.flushEdits();
+  };
   // Forward the source this pane actually read; HMS party picks remain separately editable.
   const quoteSourceBinding = storedWork.pane.state === 'ready'
     ? { sourcePartyDigest: storedWork.pane.sourcePartyDigest ?? null, sourceExtractionId: storedWork.pane.extractionId }
@@ -693,16 +705,17 @@ export function NavaPane({
           fieldProvenance: storedWork.pane.fieldProvenance,
           refs: storedWork.pane.refs ?? {},
           onResetContact: storedWork.resetAvailable
-            ? () => storedWork.resetSection({ type: 'contact' })
+            ? () => { quoteDraftRevision.mark(); storedWork.resetSection({ type: 'contact' }); }
             : undefined,
           onResetStay: storedWork.resetAvailable
-            ? (stayId: string) => storedWork.resetSection({ type: 'stay', stayId })
+            ? (stayId: string) => { quoteDraftRevision.mark(); storedWork.resetSection({ type: 'stay', stayId }); }
             : undefined,
           resetPending: storedWork.historyPending || storedWork.historyNeedsReload,
         }
       : null;
   const recordContact = (field: ContactField, value: string | null) => {
     if (storedWork.historyPending || storedWork.historyNeedsReload) return;
+    quoteDraftRevision.mark();
     const previous = documentContactRef.current ?? {
       name: null,
       company: null,
@@ -2023,7 +2036,7 @@ export function NavaPane({
       supportsAction={supportsAction}
       quoteSession={quoteSession}
       combinedEdit={combinedEdit}
-      onCombinedEditChange={setCombinedEdit}
+      onCombinedEditChange={(edit) => { quoteDraftRevision.mark(); setCombinedEdit(edit); }}
       quoteOrBookingEmail={quoteOrBookingEmail}
       isDraftPending={isDraftPending}
       statusMessage={draftStatusMessage}
@@ -2185,8 +2198,8 @@ export function NavaPane({
               <WorkItemHistoryControls
                 workItemId={paneWorkItemId}
                 serverCursor={storedWork.historyCursor}
-                onUndo={storedWork.undo}
-                onRedo={storedWork.redo}
+                onUndo={(id, revision) => { quoteDraftRevision.mark(); storedWork.undo(id, revision); }}
+                onRedo={(id, revision) => { quoteDraftRevision.mark(); storedWork.redo(id, revision); }}
                 pending={storedWork.historyPending || storedWork.historyNeedsReload}
               />
             ) : null}

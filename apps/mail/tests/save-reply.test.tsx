@@ -2,16 +2,19 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { useReducer, useRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { ReplyBody } from '../components/nava-pane/reply-body';
-import { useInsertAiDraft } from '../components/nava-pane/use-insert-ai-draft';
+import { useInsertAiDraft, useQuoteDraftRevision } from '../components/nava-pane/use-insert-ai-draft';
+import { initialQuoteSession, reduceQuoteSession } from '../lib/quote-workflow/session';
 import type { PaneBridge } from '../lib/workstation/pane-bridge-types';
 import type { QuoteSession } from '../lib/quote-workflow/types';
 
-const { saveReplyMutate, recordQuoteOutcomeMutate, reviewedDraftRef } = vi.hoisted(() => ({
+const { saveReplyMutate, recordQuoteOutcomeMutate, quoteDraftPreflight, reviewedDraftRef } = vi.hoisted(() => ({
   saveReplyMutate: vi.fn(),
   recordQuoteOutcomeMutate: vi.fn(),
+  quoteDraftPreflight: vi.fn(),
   reviewedDraftRef: {
     current: {
       html: '<p>Quote for you</p>',
@@ -28,6 +31,7 @@ vi.mock('../providers/query-provider', () => ({
   trpcClient: {
     drafts: { saveReply: { mutate: saveReplyMutate } },
     workItems: { recordQuoteOutcome: { mutate: recordQuoteOutcomeMutate } },
+    workstation: { quoteDraftPreflight: { mutate: quoteDraftPreflight } },
   },
 }));
 
@@ -73,8 +77,10 @@ function outlookSendCommand() {
 function renderInsertHook(
   sendCommand: ReturnType<typeof outlookSendCommand>,
   session: QuoteSession = quoteSession,
+  contextRevision = { current: { scopeEpoch: 1, selectionEpoch: 1 } },
 ) {
-  const contextRevision = { current: { scopeEpoch: 1, selectionEpoch: 1 } };
+  const quoteSessionRef = { current: session };
+  const quoteDraftRevision = { current: 0 };
   return renderHook(() =>
     useInsertAiDraft({
       activeEmail,
@@ -83,11 +89,56 @@ function renderInsertHook(
       currentScope: 'scope-1',
       contextRevision,
       quoteSession: session,
+      quoteSessionRef,
+      quoteDraftRevision,
+      quoteDraftRenderedRevision: 0,
+      flushQuoteEdits: async () => true,
       combinedEdit: null,
       sendCommand: sendCommand as unknown as PaneBridge['sendCommand'],
       supportsAction: () => true,
     }),
   );
+}
+
+function renderEditableInsertHook(
+  sendCommand: ReturnType<typeof outlookSendCommand>, session: QuoteSession,
+  flushQuoteEdits: () => Promise<boolean> = async () => true,
+) {
+  const contextRevision = { current: { scopeEpoch: 1, selectionEpoch: 1 } };
+  return renderHook(() => {
+    const [currentSession, dispatch] = useReducer(reduceQuoteSession, session);
+    const revision = useQuoteDraftRevision(dispatch);
+    const current = useRef(currentSession);
+    current.current = currentSession;
+    const insertion = useInsertAiDraft({
+      activeEmail,
+      mailboxEmail: 'centurion@legacyhotels.co.za',
+      transportLoading: false,
+      currentScope: 'scope-1',
+      contextRevision,
+      quoteSession: currentSession,
+      quoteSessionRef: current,
+      quoteDraftRevision: revision.live,
+      quoteDraftRenderedRevision: revision.rendered,
+      flushQuoteEdits,
+      combinedEdit: null,
+      sendCommand: sendCommand as unknown as PaneBridge['sendCommand'],
+      supportsAction: () => true,
+    });
+    return { ...insertion, edit: revision.dispatch };
+  });
+}
+
+function editableQuotedSession(): QuoteSession {
+  return {
+    ...initialQuoteSession(),
+    staffSource: quoteSession.staffSource,
+    staffQuote: quoteSession.staffQuote,
+    groups: [{
+      id: 'room-1', arrivalDate: '2027-11-12', departureDate: '2027-11-14', quantity: 1,
+      adults: 2, childrenPerRoom: 0, childrenAges: [], board: 'bb', specialRequests: [], fields: {},
+    }],
+  };
 }
 
 beforeEach(() => {
@@ -96,7 +147,9 @@ beforeEach(() => {
     pdf: { fileName: 'Quotation.pdf', pdfBase64: 'JVBERi0xLjQ=' },
   };
   saveReplyMutate.mockReset();
+  quoteDraftPreflight.mockReset().mockResolvedValue({ ready: true });
   recordQuoteOutcomeMutate.mockReset().mockResolvedValue({ recorded: true });
+  sessionStorage.removeItem('nava_outlook_unresolved_reply_v1');
   vi.mocked(toast.success).mockClear();
   vi.mocked(toast.error).mockClear();
 });
@@ -261,6 +314,166 @@ describe('Insert saved reply in Outlook', () => {
       expect.objectContaining({ entryId: 'entry-1', htmlBody: SAVED_HTML, replyAll: false }),
     );
     expect(saveReplyMutate).not.toHaveBeenCalled();
+    expect(quoteDraftPreflight).toHaveBeenCalledTimes(2);
+  });
+
+  it('holds a stale quote before Outlook creates the draft', async () => {
+    quoteDraftPreflight.mockRejectedValueOnce(new Error('stale'));
+    const sendCommand = outlookSendCommand();
+    const { result } = renderInsertHook(sendCommand);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('could not be verified')));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
+  });
+
+  it('rechecks before attaching and reports a partial Outlook draft if facts change', async () => {
+    quoteDraftPreflight.mockResolvedValueOnce({ ready: true }).mockRejectedValueOnce(new Error('changed'));
+    const sendCommand = outlookSendCommand();
+    const { result } = renderInsertHook(sendCommand);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist')));
+    expect(sendCommand.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT')).toHaveLength(1);
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
+  });
+
+  it('does not create an Outlook quote when the stay is edited while preflight is pending', async () => {
+    let release!: (value: { ready: boolean }) => void;
+    quoteDraftPreflight.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const sendCommand = outlookSendCommand();
+    const session = editableQuotedSession();
+    const { result } = renderEditableInsertHook(sendCommand, session);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(quoteDraftPreflight).toHaveBeenCalledTimes(1));
+
+    act(() => result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } }));
+    await act(async () => release({ ready: true }));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
+  });
+
+  it('does not attach the old PDF when the stay is edited during the second preflight', async () => {
+    let release!: (value: { ready: boolean }) => void;
+    quoteDraftPreflight.mockResolvedValueOnce({ ready: true })
+      .mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const sendCommand = outlookSendCommand();
+    const session = editableQuotedSession();
+    const { result } = renderEditableInsertHook(sendCommand, session);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(quoteDraftPreflight).toHaveBeenCalledTimes(2));
+
+    act(() => result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } }));
+    await act(async () => release({ ready: true }));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+
+    expect(sendCommand.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT')).toHaveLength(1);
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist'));
+  });
+
+  it('holds a quote if the reviewed reply changes while preflight is pending', async () => {
+    let release!: (value: { ready: boolean }) => void;
+    quoteDraftPreflight.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const sendCommand = outlookSendCommand();
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession());
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(quoteDraftPreflight).toHaveBeenCalledTimes(1));
+
+    act(() => result.current.edit({ type: 'set_reviewed_reply', html: '<p>Updated reply</p>', staffEdited: true }));
+    await act(async () => release({ ready: true }));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('quote changed in the pane'));
+  });
+
+  it('holds an edit dispatched before the old render starts a quote draft', async () => {
+    const sendCommand = outlookSendCommand();
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession());
+    act(() => {
+      result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } });
+      result.current.trackedDraft('selected');
+    });
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('quote changed in the pane'));
+  });
+
+  it('checks a queued edit again immediately before the Outlook create command', async () => {
+    let release!: (value: { ready: boolean }) => void;
+    quoteDraftPreflight.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const sendCommand = outlookSendCommand();
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession());
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(quoteDraftPreflight).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      release({ ready: true });
+      queueMicrotask(() => result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } }));
+    });
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
+  });
+
+  it('holds a quote while a pending work-item reset or edit cannot be flushed', async () => {
+    const flush = vi.fn().mockResolvedValue(false);
+    const sendCommand = outlookSendCommand();
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession(), flush);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('could not be saved')));
+    expect(flush).toHaveBeenCalledTimes(1);
+    expect(quoteDraftPreflight).not.toHaveBeenCalled();
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
+  });
+
+  it('reports a partial draft if work-item edits cannot be flushed before attachment', async () => {
+    const flush = vi.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const sendCommand = outlookSendCommand();
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession(), flush);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist')));
+    expect(sendCommand.mock.calls.filter(([action]) => action === 'CREATE_REPLY_DRAFT')).toHaveLength(1);
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
+  });
+
+  it('does not flush quote edits for an unrelated saved reply', async () => {
+    const flush = vi.fn().mockResolvedValue(false);
+    const sendCommand = outlookSendCommand();
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession(), flush);
+    act(() => result.current.trackedDraft('saved', { html: SAVED_HTML, quoteBound: false, attachments: [] }));
+    await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything()));
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('holds the attachment and reports a partial quote draft after the selected email changes', async () => {
+    type CreatedReply = { entryId: string; storeId: string; folderEntryId: string; displayed: boolean };
+    let finish!: (value: CreatedReply) => void;
+    const sendCommand = outlookSendCommand();
+    sendCommand.mockImplementation(async (action: string) => {
+      if (action === 'GET_ACTIVE_EMAIL') return activeEmail;
+      if (action === 'CREATE_REPLY_DRAFT') return await new Promise<CreatedReply>((resolve) => { finish = resolve; });
+      return undefined;
+    });
+    const contextRevision = { current: { scopeEpoch: 1, selectionEpoch: 1 } };
+    const { result } = renderInsertHook(sendCommand, quoteSession, contextRevision);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything()));
+    contextRevision.current.selectionEpoch = 2;
+    await act(async () => finish({ entryId: 'original-draft', storeId: 'store-1', folderEntryId: 'drafts', displayed: true }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist')));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
+    expect(quoteDraftPreflight).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a saved non-quote reply available without quote preflight', async () => {
+    const sendCommand = outlookSendCommand();
+    const { result } = renderInsertHook(sendCommand);
+    act(() => result.current.trackedDraft('saved', { html: SAVED_HTML, quoteBound: false,
+      attachments: [{ fileName: 'document.pdf', pdfBase64: SAVED_PDF }] }));
+    await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything()));
+    expect(quoteDraftPreflight).not.toHaveBeenCalled();
   });
 
   it('does not record a missing-details Outlook reply as a quote outcome', async () => {

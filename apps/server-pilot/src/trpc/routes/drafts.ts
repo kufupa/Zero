@@ -32,7 +32,7 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
-import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
+import { MAX_QUOTE_OUTCOME_VERSIONS, recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
 import {
   EvidenceRefSchema,
   isEvidenceFresh,
@@ -43,7 +43,9 @@ import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assert
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
-import { draftQuoteOccupancyHold, quoteSourceProofFromRun } from '../../ai/child-occupancy.js';
+import { draftQuoteOccupancyHold, isCenturionQuoteTransport, quoteSourceProofFromRun } from '../../ai/child-occupancy.js';
+import { QUOTE_PDF_PROMPT_VERSION } from '../../ai/quote-pdf-jobs.js';
+import { assertCurrentDraftQuotePdf, assertDraftQuoteSourcesLocked } from './workstation.js';
 import { readAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
 import { enqueueAiRun } from '../../ai/run-ledger.js';
@@ -69,6 +71,17 @@ function isPostgresUniqueViolation(err: unknown): boolean {
   }
   if (err instanceof Error && err.cause !== undefined) {
     return isPostgresUniqueViolation(err.cause);
+  }
+  return false;
+}
+
+function isPostgresLockUnavailable(err: unknown): boolean {
+  const visited = new Set<object>();
+  while (err && typeof err === 'object' && !visited.has(err)) {
+    visited.add(err);
+    const { code, cause } = err as { code?: unknown; cause?: unknown };
+    if (code === '55P03' || code === '40P01') return true;
+    err = cause;
   }
   return false;
 }
@@ -108,6 +121,16 @@ function decodeStaffAttachments(files: z.infer<typeof serializedAttachmentInput>
       throw new TRPCError({ code: 'BAD_REQUEST', message: 'INVALID_DRAFT_ATTACHMENTS' });
     return { file, body, sourceHash: createHash('sha256').update(body).digest('hex') };
   });
+}
+/** Client labels and MIME types cannot turn a recorded quote PDF into an unrelated attachment. */
+async function recordedQuotePdfHashes(db: DB, transportId: string, hashes: string[]): Promise<Set<string>> {
+  if (!isCenturionQuoteTransport(transportId) || !hashes.length) return new Set();
+  const hash = sql<string>`${aiWorkflowRun.readResult}->>'pdfHash'`;
+  const rows = await db.selectDistinct({ hash }).from(aiWorkflowRun).where(and(
+    eq(aiWorkflowRun.transportId, transportId), eq(aiWorkflowRun.promptVersion, QUOTE_PDF_PROMPT_VERSION),
+    eq(aiWorkflowRun.state, 'succeeded'), inArray(hash, [...new Set(hashes)]),
+  )).limit(32);
+  return new Set(rows.map((row) => row.hash));
 }
 async function persistStaffAttachments(
   decoded: ReturnType<typeof decodeStaffAttachments>, transportId: string, draftId: string,
@@ -1813,7 +1836,7 @@ export const draftsRouter = tRouter({
         subject: z.string().max(998).default(''),
         html: z.string(),
         replyKind: z.enum(['quote', 'decline', 'missing_details', 'other']).default('other'),
-        preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(32).default([]),
+        preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(MAX_QUOTE_OUTCOME_VERSIONS).default([]),
         attachments: z.array(serializedAttachmentInput).max(32).default([]),
         replaceDraft: z.string().max(200).optional(),
       }),
@@ -1827,9 +1850,22 @@ export const draftsRouter = tRouter({
       if (replyParent.threadId !== input.threadId) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'REPLY_PARENT_THREAD_MISMATCH' });
       }
+      const recorded = await recordedQuotePdfHashes(db, transportId, decodedAttachments.map(({ sourceHash }) => sourceHash));
+      const quoteBound = input.replyKind === 'quote' || input.preparedVersions.length > 0 || recorded.size > 0;
+      const preflightInput = {
+        messageId: input.replyToMessageId, threadId: input.threadId,
+        pdfHashes: decodedAttachments.filter(({ file, body, sourceHash }) =>
+          (file.type === 'application/pdf' && body.length > 0) || recorded.has(sourceHash)).map(({ sourceHash }) => sourceHash),
+        ...(input.preparedVersions.length ? { preparedVersions: input.preparedVersions } : {}),
+      };
+      const quoteSources = quoteBound ? await assertCurrentDraftQuotePdf(preflightInput, ctx) : [];
       const html = sanitizeHtmlBodyForStorage(input.html) ?? '';
+      const lockQuote = quoteBound && isCenturionQuoteTransport(transportId);
       try {
         return await db.transaction(async (tx) => {
+          if (lockQuote) await assertDraftQuoteSourcesLocked(tx as unknown as DB, {
+            transportId, threadId: input.threadId, messageId: input.replyToMessageId,
+          }, quoteSources);
           const [prior] = await tx
             .select()
             .from(mailDraft)
@@ -1842,7 +1878,7 @@ export const draftsRouter = tRouter({
               ),
             )
             .limit(1)
-            .for('update');
+            .for('update', lockQuote ? { noWait: true } : undefined);
           // The draft the confirm named was discarded or sent meanwhile: ask again rather than undo that.
           if (!prior && input.replaceDraft !== undefined) {
             throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_CHANGED' });
@@ -1915,7 +1951,7 @@ export const draftsRouter = tRouter({
             });
           }
           await tx.insert(mailDraftRevision).values({
-            id: `${SAVED_REPLY_REVISION_PREFIX}${randomUUID()}`,
+            id: `${SAVED_REPLY_REVISION_PREFIX}${quoteBound ? 'quote:' : 'other:'}${randomUUID()}`,
             draftId,
             actorUserId: ctx.sessionUser.id,
             kind: updateInPlace ? 'edited' : 'created',
@@ -1936,9 +1972,14 @@ export const draftsRouter = tRouter({
             preparedVersions: input.preparedVersions,
             attachments: decodedAttachments,
           });
+          // Recheck all document, approval, email and saved-source evidence inside the locked transaction.
+          if (lockQuote) await assertCurrentDraftQuotePdf(preflightInput, ctx, { db: tx as unknown as DB, skipPending: true });
           return { id: draftId, replaced: prior !== undefined && !untouchedSavedReply };
         });
       } catch (error) {
+        if (lockQuote && isPostgresLockUnavailable(error)) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The quote is being updated. Wait a moment, then try saving again.' });
+        }
         if (isPostgresUniqueViolation(error)) {
           throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_CHANGED' });
         }
@@ -1968,7 +2009,7 @@ export const draftsRouter = tRouter({
         .limit(1);
       if (!draft) return null;
       const [saved] = await db
-        .select({ id: mailDraftRevision.id })
+        .select({ id: mailDraftRevision.id, attachments: mailDraftRevision.attachments })
         .from(mailDraftRevision)
         .where(
           and(
@@ -1976,6 +2017,7 @@ export const draftsRouter = tRouter({
             like(mailDraftRevision.id, `${SAVED_REPLY_REVISION_PREFIX}%`),
           ),
         )
+        .orderBy(desc(mailDraftRevision.createdAt), desc(mailDraftRevision.id))
         .limit(1);
       if (!saved) return null;
       if (draft.attachments.length && !generatedArtifactStorage) {
@@ -1994,6 +2036,15 @@ export const draftsRouter = tRouter({
         }
         attachments.push({ fileName: a.filename, pdfBase64: body.toString('base64') });
       }
-      return { id: draft.id, html: draft.htmlBody ?? '', attachments };
+      // A composer edit may change the body without changing which files the staff saved as non-quote.
+      const sameAttachments = JSON.stringify(saved.attachments ?? []) === JSON.stringify(draft.attachments ?? []);
+      const recorded = await recordedQuotePdfHashes(db, transportId, draft.attachments.flatMap((raw) => {
+        const sourceHash = (raw as typeof raw & { sourceHash?: string }).sourceHash;
+        return sourceHash ? [sourceHash] : [];
+      }));
+      const quoteBound = recorded.size > 0 || saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}quote:`) ? true :
+        sameAttachments && saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}other:`) ? false : undefined;
+      return { id: draft.id, html: draft.htmlBody ?? '', attachments,
+        ...(quoteBound === undefined ? {} : { quoteBound }) };
     }),
 });

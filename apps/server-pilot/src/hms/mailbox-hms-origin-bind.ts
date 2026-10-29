@@ -1,5 +1,5 @@
 import { normalizeEmailAddress } from '../ai/never-spam.js';
-import { getDb } from '../db/client.js';
+import { getDb, type DB } from '../db/client.js';
 import { message } from '../db/schema/mail.js';
 import { workItem } from '../db/schema/work.js';
 import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
@@ -90,6 +90,7 @@ export type MailboxHmsOriginLoadInput = {
   transportId: string;
   threadId: string;
   messageId?: string;
+  db?: DB;
 };
 
 export type MailboxHmsWorkItemAnchor = {
@@ -204,7 +205,7 @@ export async function loadWorkItemMailboxHmsOriginAnchors(input: {
 async function loadThreadMailboxHmsOriginScanFromDb(
   input: MailboxHmsOriginLoadInput,
 ): Promise<MailboxHmsOriginScan> {
-  const rows = await getDb()
+  const rows = await (input.db ?? getDb())
     .select({
       id: message.id,
       direction: message.direction,

@@ -62,7 +62,9 @@ import {
 } from '../../ai/hitl-tool-run.js';
 import { mailboxProcedure, privateProcedure, publicProcedure, router } from '../trpc.js';
 import { assertReservationistResultFreshForAction } from '../../ai/draft-approval.js';
-import { aiWorkflowRun, aiDraftGeneration, message } from '../../db/schema/mail.js';
+import { aiWorkflowRun, aiDraftGeneration, mailThread, message } from '../../db/schema/mail.js';
+import { MAX_QUOTE_OUTCOME_VERSIONS } from '../../ai/quote-outcomes.js';
+import { mailExtraction, workItem } from '../../db/schema/work.js';
 import {
   countOtherInFlightQuoteRuns,
   describeHmsQueueStatus,
@@ -85,8 +87,8 @@ import {
   quotePdfSenderDisplayName,
   retargetQuotePdfFileName,
 } from '../../quote-proposal/filename.js';
-import { and, eq, desc, sql } from 'drizzle-orm';
-import { getDb } from '../../db/client.js';
+import { and, eq, desc, inArray, sql } from 'drizzle-orm';
+import { getDb, type DB } from '../../db/client.js';
 import {
   assertHmsQuoteOriginAllowed,
   resolveHmsQuoteJobTarget,
@@ -118,6 +120,7 @@ import {
   quotePdfJobIdentity,
   quotePdfRequestSchema,
   quotePdfResultOf,
+  QUOTE_PDF_PROMPT_VERSION,
   readQuotePdfJob,
   type QuotePdfRequest,
   type QuotePdfResult,
@@ -253,10 +256,16 @@ export const qualifiedProposalInput = z
     agency: z.string().max(256).default('Quote'),
     notes: z.string().trim().max(1000).optional(),
     // Empty for one stay. A combined quote lists its other stays here; the first stay stays in the fields above.
-    additionalStays: z.array(qualifiedStayInput).max(62).default([]),
+    additionalStays: z.array(qualifiedStayInput).max(MAX_QUOTE_OUTCOME_VERSIONS - 1).default([]),
     workItemId: z.string().uuid().optional(),
   })
   .strict();
+export const quoteDraftPreflightInput = z.object({
+  messageId: z.string().min(1),
+  threadId: z.string().min(1),
+  pdfHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(32),
+  preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1), revisionRef: z.string().min(1) }).strict()).max(MAX_QUOTE_OUTCOME_VERSIONS).optional(),
+}).strict();
 export function resolveLedgerProposal(
   run: {
     transportId: string;
@@ -502,6 +511,8 @@ type ProposalStay = {
   rowPrices?: RowPrice[];
 };
 
+type DraftQuoteSource = { revision: QuoteRevision; proof: unknown };
+
 /** The dates an approval covers, read from the revision its run attested. Null when unknown. */
 function attestedStaySpan(metrics: Record<string, unknown> | null | undefined): string | null {
   const staff = metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
@@ -525,8 +536,9 @@ async function staffApprovalsFor(
   ctx: { activeTransportId: string; sessionUser: { id: string } },
   threadId: string,
   messageId: string,
+  db: DB = getDb(),
 ) {
-  const rows = await getDb()
+  const rows = await db
     .select({
       id: aiDraftGeneration.id,
       createdAt: aiDraftGeneration.createdAt,
@@ -559,6 +571,8 @@ async function proposalStaysFor(
   input: z.infer<typeof qualifiedProposalInput>,
   ctx: { activeTransportId: string; sessionUser: { id: string; email: string; name: string | null } },
   resolveFailure: string,
+  draftSources?: DraftQuoteSource[],
+  options?: { db?: DB; skipPending?: boolean },
 ): Promise<ProposalStay[]> {
   const requests = [
     {
@@ -571,8 +585,8 @@ async function proposalStaysFor(
   ];
   if (new Set(requests.map((request) => request.workflowRunId)).size !== requests.length)
     throw new TRPCError({ code: 'BAD_REQUEST', message: 'Each stay needs its own approved quote' });
-  const db = getDb();
-  await Promise.all(requests.map((request) => awaitPendingStaffQuote(request.workflowRunId)));
+  const db = options?.db ?? getDb();
+  if (!options?.skipPending) await Promise.all(requests.map((request) => awaitPendingStaffQuote(request.workflowRunId)));
   const [current] = await db
     .select()
     .from(message)
@@ -627,7 +641,7 @@ async function proposalStaysFor(
   const threadId = runs[0]!.run.threadId;
   const approvals = combined
     ? [
-        ...(await staffApprovalsFor(ctx, threadId, input.messageId)),
+        ...(await staffApprovalsFor(ctx, threadId, input.messageId, db)),
         ...runs.flatMap(({ run, systemPrepared }) =>
           systemPrepared
             ? [{ generationId: run.id, createdAt: run.createdAt, span: preparedStaySpan(run.readResult) }]
@@ -713,16 +727,17 @@ async function proposalStaysFor(
     } catch {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: resolveFailure });
     }
-    const proof = quoteSourceProofFromRun(run);
+    const sourceProof = quoteSourceProofFromRun(run);
     if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(resolved.revision), {
       transportId: ctx.activeTransportId, threadId: current.threadId, messageId: input.messageId,
       propertyCode: resolved.revision.propertyCode,
-    }, proof))) {
+    }, sourceProof))) {
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
-        message: quoteSourceProofPredatesPolicy(proof) ? quoteSourcePolicyChangedMessage : draftQuoteOccupancyMessage,
+        message: quoteSourceProofPredatesPolicy(sourceProof) ? quoteSourcePolicyChangedMessage : draftQuoteOccupancyMessage,
       });
     }
+    draftSources?.push({ revision: resolved.revision, proof: sourceProof });
     stays.push({
       ...resolved,
       staff,
@@ -731,6 +746,138 @@ async function proposalStaysFor(
     });
   }
   return stays;
+}
+
+/** A durable PDF must be stored under the work item for its actual selected email. */
+async function quoteWorkItemBelongsToSource(scope: {
+  workItemId: string; transportId: string; threadId: string; messageId: string;
+}, db: DB = getDb()): Promise<boolean> {
+  const [item] = await db.select({ id: workItem.id }).from(workItem)
+    .innerJoin(message, and(eq(message.id, workItem.sourceMessageId),
+      eq(message.transportId, workItem.transportId), eq(message.threadId, workItem.threadId)))
+    .where(and(eq(workItem.id, scope.workItemId), eq(workItem.transportId, scope.transportId),
+      eq(workItem.threadId, scope.threadId), eq(workItem.sourceMessageId, scope.messageId))).limit(1);
+  return !!item;
+}
+
+/** Revalidate the stored PDF's exact revisions and source before a price-bearing draft is created or attached. */
+export async function assertCurrentDraftQuotePdf(
+  input: z.infer<typeof quoteDraftPreflightInput>,
+  ctx: { activeTransportId: string; sessionUser: { id: string; email: string; name: string | null } },
+  options?: { db?: DB; skipPending?: boolean },
+): Promise<DraftQuoteSource[]> {
+  if (!isCenturionQuoteTransport(ctx.activeTransportId)) return [];
+  const unavailable = () => new TRPCError({ code: 'PRECONDITION_FAILED',
+    message: 'The quote PDF could not be verified for this email. Refresh the email and prepare the quote again.' });
+  const db = options?.db ?? getDb();
+  const target = await resolveHmsQuoteJobTarget({ transportId: ctx.activeTransportId,
+    threadId: input.threadId, messageId: input.messageId, db });
+  if (!target.ok) throw unavailable();
+  if (target.target.propertyCode !== 'HRCEN') {
+    if (input.pdfHashes.length) {
+      const [protectedPdf] = await db.select({ request: aiWorkflowRun.readRequest }).from(aiWorkflowRun).where(and(
+        eq(aiWorkflowRun.transportId, ctx.activeTransportId), eq(aiWorkflowRun.promptVersion, QUOTE_PDF_PROMPT_VERSION),
+        eq(aiWorkflowRun.state, 'succeeded'), inArray(sql<string>`${aiWorkflowRun.readResult}->>'pdfHash'`, input.pdfHashes),
+        sql`coalesce(${aiWorkflowRun.readRequest}->>'propertyCode', '') <> 'HRDAV'`,
+      )).limit(1);
+      // A later thread message can change the resolved hotel. Never let it exempt a previously recorded Centurion PDF.
+      if (protectedPdf) throw unavailable();
+    }
+    return [];
+  }
+  if (!input.pdfHashes.length) throw unavailable();
+  if (input.preparedVersions && (!input.preparedVersions.length ||
+    new Set(input.preparedVersions.map((ref) => `${ref.workflowRunId}\n${ref.revisionRef}`)).size !== input.preparedVersions.length))
+    throw unavailable();
+  const hashColumn = sql<string>`${aiWorkflowRun.readResult}->>'pdfHash'`;
+  const recorded = await db.selectDistinct({ hash: hashColumn }).from(aiWorkflowRun).where(and(
+    eq(aiWorkflowRun.transportId, ctx.activeTransportId), eq(aiWorkflowRun.promptVersion, QUOTE_PDF_PROMPT_VERSION),
+    eq(aiWorkflowRun.state, 'succeeded'), inArray(hashColumn, input.pdfHashes),
+  )).limit(32);
+  const quoteHashes = new Set(recorded.map(({ hash }) => hash).filter((hash) => input.pdfHashes.includes(hash)));
+  // Ordinary supporting files may accompany a quote, but at least one server-recorded quote must be present.
+  if (!quoteHashes.size) throw unavailable();
+  const foundRefs: string[] = [];
+  const sources: DraftQuoteSource[] = [];
+  for (const hash of quoteHashes) {
+    const candidates = await db.select().from(aiWorkflowRun).where(and(
+      eq(aiWorkflowRun.transportId, ctx.activeTransportId), eq(aiWorkflowRun.threadId, input.threadId),
+      eq(aiWorkflowRun.triggerMessageId, input.messageId), eq(aiWorkflowRun.promptVersion, QUOTE_PDF_PROMPT_VERSION),
+      eq(aiWorkflowRun.state, 'succeeded'), sql`${aiWorkflowRun.readResult}->>'pdfHash' = ${hash}`,
+    )).orderBy(desc(aiWorkflowRun.createdAt)).limit(20);
+    let matched = false;
+    let error: unknown;
+    for (const job of candidates) {
+      const request = quotePdfRequestSchema.safeParse(job.readRequest);
+      const result = quotePdfResultOf(job);
+      const proposal = qualifiedProposalInput.safeParse(request.success ? request.data.proposal : null);
+      if (!request.success || !proposal.success || !result || request.data.propertyCode !== 'HRCEN' ||
+        request.data.transportId !== ctx.activeTransportId || request.data.workItemId !== job.workItemId ||
+        proposal.data.messageId !== input.messageId ||
+        (proposal.data.workItemId && proposal.data.workItemId !== request.data.workItemId) ||
+        request.data.revisionId !== quotePdfJobIdentity(proposal.data) || result.pdfHash !== hash ||
+        createHash('sha256').update(Buffer.from(result.pdfBase64, 'base64')).digest('hex') !== hash) continue;
+      if (!(await quoteWorkItemBelongsToSource({ workItemId: request.data.workItemId,
+        transportId: ctx.activeTransportId, threadId: input.threadId, messageId: input.messageId }, db))) continue;
+      try {
+        const candidateSources: DraftQuoteSource[] = [];
+        // The PDF job records the mailbox member who approved its source; a colleague may use the shared saved draft.
+        const proposalCtx = request.data.userId
+          ? { ...ctx, sessionUser: { ...ctx.sessionUser, id: request.data.userId } }
+          : ctx;
+        const stays = await proposalStaysFor(proposal.data, proposalCtx, 'The quote PDF is no longer ready.', candidateSources, options);
+        if (stays.some((stay) => stay.revision.propertyCode !== 'HRCEN')) continue;
+        sources.push(...candidateSources);
+      } catch (problem) { error = problem; continue; }
+      foundRefs.push(...[proposal.data, ...proposal.data.additionalStays].map((ref) => `${ref.workflowRunId}\n${ref.revisionRef}`));
+      matched = true;
+      break;
+    }
+    if (!matched) throw error instanceof TRPCError ? error : unavailable();
+  }
+  if (input.preparedVersions) {
+    const expected = input.preparedVersions.map((ref) => `${ref.workflowRunId}\n${ref.revisionRef}`).sort();
+    if (JSON.stringify(foundRefs.sort()) !== JSON.stringify(expected)) throw unavailable();
+  }
+  return sources;
+}
+
+/** Lock the thread and all proof inputs until the enclosing draft transaction commits. */
+export async function assertDraftQuoteSourcesLocked(
+  db: DB, scope: { transportId: string; threadId: string; messageId: string }, sources: DraftQuoteSource[],
+): Promise<void> {
+  // Bound implicit FK and unique-index waits too; this setting ends with the enclosing transaction.
+  await db.execute(sql`set local lock_timeout = '1s'`);
+  const unavailable = () => new TRPCError({ code: 'PRECONDITION_FAILED', message: draftQuoteOccupancyMessage });
+  // The parent locks also prevent new messages, extractions, work items and approvals through their foreign keys.
+  // Writers may already hold a child row before acquiring a parent FK lock. After the thread is locked,
+  // fail fast on any busy child so neither transaction can wait on the other in the opposite order.
+  const [thread] = await db.select({ id: mailThread.id }).from(mailThread).where(and(
+    eq(mailThread.id, scope.threadId), eq(mailThread.transportId, scope.transportId),
+  )).limit(1).for('update');
+  if (!thread) throw unavailable();
+  const messages = await db.select({ id: message.id }).from(message).where(and(
+    eq(message.threadId, scope.threadId), eq(message.transportId, scope.transportId),
+  )).orderBy(message.id).for('update', { noWait: true });
+  if (!messages.some((row) => row.id === scope.messageId)) throw unavailable();
+  await db.select({ id: mailExtraction.id }).from(mailExtraction)
+    .where(eq(mailExtraction.messageId, scope.messageId)).orderBy(mailExtraction.id).for('share', { noWait: true });
+  // FOR UPDATE also blocks inserting events on a sibling work item while checking earlier human decisions.
+  await db.select({ id: workItem.id }).from(workItem).where(and(
+    eq(workItem.transportId, scope.transportId), eq(workItem.threadId, scope.threadId),
+    eq(workItem.sourceMessageId, scope.messageId),
+  )).orderBy(workItem.id).for('update', { noWait: true });
+  await db.select({ id: aiDraftGeneration.id }).from(aiDraftGeneration).where(and(
+    eq(aiDraftGeneration.transportId, scope.transportId), eq(aiDraftGeneration.threadId, scope.threadId),
+  )).orderBy(aiDraftGeneration.id).for('share', { noWait: true });
+  await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
+    eq(aiWorkflowRun.transportId, scope.transportId), eq(aiWorkflowRun.threadId, scope.threadId),
+  )).orderBy(aiWorkflowRun.id).for('share', { noWait: true });
+  for (const source of sources) {
+    if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(source.revision), {
+      ...scope, propertyCode: source.revision.propertyCode, lock: true,
+    }, source.proof))) throw unavailable();
+  }
 }
 
 /** The staff notes approved with each stay, each kept once and one per line. */
@@ -830,6 +977,10 @@ const staffQuoteJobInput = z.union([
 ]);
 
 export const workstationRouter = router({
+  quoteDraftPreflight: mailboxProcedure.input(quoteDraftPreflightInput).mutation(async ({ input, ctx }) => {
+    await assertCurrentDraftQuotePdf(input, ctx);
+    return { ready: true as const };
+  }),
   outlookSync: outlookSyncRouter,
   /** Own staff quote run status. HMS-free and cheap; the pane polls only while pending. */
   hmsQueueStatus: mailboxProcedure.query(async ({ ctx }): Promise<HmsQueueStatus> => {
@@ -1587,15 +1738,30 @@ export const workstationRouter = router({
         .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
         .limit(1);
       let jobRun: Awaited<ReturnType<typeof enqueueQuotePdfJob>>['run'] | undefined;
-      if (input.workItemId) {
+      let documentWorkItemId = input.workItemId;
+      if (!documentWorkItemId && mail && isCenturionQuoteTransport(ctx.activeTransportId)) {
+        const target = await resolveHmsQuoteJobTarget({ transportId: ctx.activeTransportId,
+          threadId: mail.threadId, messageId: input.messageId });
+        if (target.ok && target.target.propertyCode === 'HRCEN') {
+          const [item] = await getDb().select({ id: workItem.id }).from(workItem).where(and(
+            eq(workItem.transportId, ctx.activeTransportId), eq(workItem.sourceMessageId, input.messageId),
+            eq(workItem.threadId, mail.threadId), eq(workItem.kind, 'quote'),
+          )).limit(1);
+          documentWorkItemId = item?.id;
+        }
+      }
+      if (documentWorkItemId) {
         if (!mail) throw new TRPCError({ code: 'NOT_FOUND', message: 'Selected inbound email not found' });
         const stays = await proposalStaysFor(input, ctx, 'Proposal evidence is not ready');
         const propertyCode = stays[0]!.revision.propertyCode;
         if (stays.some((stay) => stay.revision.propertyCode !== propertyCode))
           throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'Quote stays must belong to the same hotel.' });
+        if (propertyCode === 'HRCEN' && !(await quoteWorkItemBelongsToSource({ workItemId: documentWorkItemId,
+          transportId: ctx.activeTransportId, threadId: mail.threadId, messageId: input.messageId })))
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote is no longer ready. Run it again.' });
         const stored = await readQuotePdfJob({
           transportId: ctx.activeTransportId,
-          workItemId: input.workItemId,
+          workItemId: documentWorkItemId,
           revisionId: documentKey,
         });
         if (stored?.result) return asPdf(stored.result);
@@ -1603,13 +1769,13 @@ export const workstationRouter = router({
           transportId: ctx.activeTransportId,
           threadId: mail.threadId,
           triggerMessageId: input.messageId,
-          workItemId: input.workItemId,
+          workItemId: documentWorkItemId,
           revisionId: documentKey,
           propertyCode,
           userId: ctx.sessionUser.id,
           signerName: ctx.sessionUser.name ?? '',
           signerEmail: ctx.sessionUser.email,
-          proposal: input,
+          proposal: { ...input, workItemId: documentWorkItemId },
         });
         jobRun = enqueued.run;
         const already = quotePdfResultOf(enqueued.run);
@@ -1642,18 +1808,24 @@ export const workstationRouter = router({
         revisionId: quotePdfJobIdentity(input),
       });
       if (!job?.result || !isCenturionQuoteTransport(ctx.activeTransportId)) return job;
-      const [stored] = await getDb().select({ request: aiWorkflowRun.readRequest, messageId: aiWorkflowRun.triggerMessageId })
+      const [stored] = await getDb().select({ request: aiWorkflowRun.readRequest,
+        messageId: aiWorkflowRun.triggerMessageId, threadId: aiWorkflowRun.threadId })
         .from(aiWorkflowRun)
         .where(and(eq(aiWorkflowRun.id, job.runId), eq(aiWorkflowRun.transportId, ctx.activeTransportId)))
         .limit(1);
       const request = quotePdfRequestSchema.safeParse(stored?.request);
-      if (request.success && request.data.propertyCode === 'HRDAV') return job;
       const proposal = qualifiedProposalInput.safeParse(request.success ? request.data.proposal : null);
-      if (!request.success || !proposal.success || request.data.workItemId !== input.workItemId ||
-        request.data.transportId !== ctx.activeTransportId || proposal.data.workItemId !== input.workItemId ||
-        proposal.data.messageId !== stored?.messageId) {
-        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote is no longer ready. Run it again.' });
+      const unavailable = () => new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote is no longer ready. Run it again.' });
+      if (!stored || !request.success || !proposal.success || request.data.workItemId !== input.workItemId ||
+        request.data.transportId !== ctx.activeTransportId ||
+        (proposal.data.workItemId !== input.workItemId &&
+          !(request.data.propertyCode === 'HRCEN' && proposal.data.workItemId === undefined)) ||
+        proposal.data.messageId !== stored.messageId) {
+        throw unavailable();
       }
+      if (request.data.propertyCode === 'HRDAV') return job;
+      if (!(await quoteWorkItemBelongsToSource({ workItemId: input.workItemId, transportId: ctx.activeTransportId,
+        threadId: stored.threadId, messageId: proposal.data.messageId }))) throw unavailable();
       await proposalStaysFor(proposal.data, ctx, 'Proposal evidence is not ready');
       return job;
     }),

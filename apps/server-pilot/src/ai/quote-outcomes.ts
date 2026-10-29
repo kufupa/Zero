@@ -16,6 +16,8 @@ export type QuoteOutcomeVersion = {
   totalMinor: number; currency: string;
 };
 export type QuoteOutcomePreparedRef = { workflowRunId: string; revisionRef: string };
+/** One primary stay and up to 62 additional stays can share a quoted document. */
+export const MAX_QUOTE_OUTCOME_VERSIONS = 63;
 export type QuoteReplyKind = 'quote' | 'decline' | 'missing_details' | 'other';
 export type QuoteOutcomeFinalOutput = { replyHtml: string;
   attachments: Array<{ fileName: string; mimeType: string; sizeBytes: number; sha256: string }>;
@@ -222,7 +224,7 @@ export type MatchedPreparedQuote = {
 export function selectPreparedQuoteOutcomes(
   events: readonly PreparedQuoteOutcomeEvent[], sourceMessageId: string, refs: readonly QuoteOutcomePreparedRef[],
 ): MatchedPreparedQuote[] | null {
-  if (!refs.length || refs.length > 32) return null;
+  if (!refs.length || refs.length > MAX_QUOTE_OUTCOME_VERSIONS) return null;
   const keys = refs.map(({ workflowRunId, revisionRef }) => `${workflowRunId}\0${revisionRef}`);
   if (new Set(keys).size !== keys.length) return null;
   const selected = refs.map((ref) => {
