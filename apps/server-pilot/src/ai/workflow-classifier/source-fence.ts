@@ -21,7 +21,7 @@ export function classifierSourceMode(usage: unknown): SourceMode {
   const witness = record(metadata?.sourceWitness);
   const proof = metadata?.classifierSourceProof;
   if (metadata?.sourceWitness === undefined && proof === undefined) return 'legacy';
-  if (witness?.status === 'unproven' && proof === undefined) return 'legacy';
+  if (witness?.status === 'unproven' && witness.reason !== 'translation_retry' && proof === undefined) return 'legacy';
   if (witness?.version === CENTURION_SOURCE_WITNESS_VERSION && witness.status === 'captured' &&
       typeof witness.digest === 'string' && /^[a-f0-9]{64}$/.test(witness.digest)) return 'captured';
   return 'hold';

@@ -119,6 +119,15 @@ describe('Centurion classifier source fence', () => {
       await storeWorkflowClassifierForInbound(db, scope.messageId, classify);
       expect(classify).toHaveBeenCalledOnce();
       expect(await storedWorkFor(db, lookup)).toMatchObject({ status: 'ready', analysis: { luna: { workflow: 'send_document' } } });
+
+      // A retry invalidates an originally captured witness, even if an older worker left an unbound classifier.
+      await db.update(mailExtraction).set({ usage: { ...original.usage, classifier: result,
+        sourceWitness: { version: 1, status: 'unproven', reason: 'translation_retry' } } })
+        .where(eq(mailExtraction.id, original.id));
+      classify.mockClear();
+      await storeWorkflowClassifierForInbound(db, scope.messageId, classify);
+      expect(classify).not.toHaveBeenCalled();
+      expect(await storedWorkFor(db, lookup)).toMatchObject({ status: 'ready', analysis: { luna: { workflow: 'quote' } } });
     }));
 
   it('discards a classifier if the source, origin, attachment, extraction, or latest read changes during the model call', () =>
