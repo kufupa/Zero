@@ -2,7 +2,7 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { StayCard } from '@/components/quote-workflow/requirement-card';
 import { childOccupancyMatchesStored } from '../../server-pilot/src/ai/child-occupancy';
@@ -64,6 +64,14 @@ const G1 = row('g1', 'st-1');
 const G2 = row('g2', 'st-1');
 const G3 = row('g3', 'st-2', { arrivalDate: '2026-11-01', departureDate: '2026-11-03' });
 
+afterEach(() => {
+  cleanup();
+  for (let i = sessionStorage.length - 1; i >= 0; i -= 1) {
+    const key = sessionStorage.key(i);
+    if (key?.startsWith('nava.pending-work-item.v1:')) sessionStorage.removeItem(key);
+  }
+});
+
 function fakeTrpc(lookup: () => unknown) {
   const query = vi.fn(async (_input: unknown) => lookup());
   const mutate = vi.fn(async (_input: unknown, _opts?: unknown) => ({ aiValue: null, value: null }));
@@ -77,6 +85,7 @@ describe('storedDecision', () => {
     kind: 'quote',
     workItemStatus: 'needs_you',
     workItemId: 'wi-1',
+    extractionId: 'ex-1',
     contact: NO_CONTACT,
     language: null,
     translation: null,

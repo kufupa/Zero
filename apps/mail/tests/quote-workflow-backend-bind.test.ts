@@ -413,6 +413,7 @@ describe('staff quote execute/PDF header bind', () => {
     departureDate: '2026-11-14',
     quantity: 1,
     adults: 1,
+    childrenPerRoom: 0,
     childrenAges: [] as number[],
     board: 'bb' as const,
     specialRequests: [] as string[],
@@ -442,6 +443,16 @@ describe('staff quote execute/PDF header bind', () => {
     departureDate: '2026-11-14',
     description: 'STWN NGOVDB',
   };
+
+  it('holds a Centurion quote when the child count is unknown', async () => {
+    const mutate = vi.fn();
+    const result = await bindExecuteStaffQuote({
+      mutate, source, selectionEpoch: 1, inputRevision: 1,
+      groups: [{ ...stay, childrenPerRoom: null, roomPreference: 'STWN' }], header: government,
+    });
+    expect(result).toMatchObject({ status: 'unavailable', reason: expect.stringMatching(/Confirm the number of children/) });
+    expect(mutate).not.toHaveBeenCalled();
+  });
 
   it('sends staff-approved Government/contact and the actual native room-code set', async () => {
     expect(nativeRoomCodes('SUITE')).toEqual(['SUITE']);
@@ -916,6 +927,7 @@ describe('staff quote execute/PDF header bind', () => {
       quantity: 1,
       roomPreference: 'double',
       adults: 2,
+      childrenPerRoom: 0,
       childrenAges: [],
       board: 'bb',
       specialRequests: [],
@@ -929,6 +941,7 @@ describe('staff quote execute/PDF header bind', () => {
         departureDate: '2026-11-14',
         quantity: 1,
         adults: 2,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'bb',
       }],
@@ -943,6 +956,7 @@ describe('staff quote execute/PDF header bind', () => {
       quantity: 1,
       roomPreference: 'Twin',
       adults: 2,
+      childrenPerRoom: 0,
       childrenAges: [],
       board: 'bb',
       specialRequests: [],
@@ -956,6 +970,7 @@ describe('staff quote execute/PDF header bind', () => {
         departureDate: '2026-11-14',
         quantity: 1,
         adults: 2,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'bb',
         roomCodes: ['STWN'],
@@ -972,6 +987,7 @@ describe('staff quote no-matching-rate flag', () => {
     departureDate: '2026-11-14',
     quantity: 1,
     adults: 1,
+    childrenPerRoom: 0,
     childrenAges: [] as number[],
     board: 'dinner_bb' as const,
     specialRequests: [] as string[],

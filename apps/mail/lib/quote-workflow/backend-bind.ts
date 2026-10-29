@@ -338,6 +338,26 @@ export async function bindStoredWork(args: {
   }
 }
 
+/** Retry a missing work item only in the mailbox that owned the stored read. A late open is ignored. */
+export async function reopenStoredWork(args: {
+  open?: WorkItemsClient['open'];
+  internetMessageId: string;
+  transportId: string | null;
+  timeoutMs: number;
+}): Promise<StoredWork | null> {
+  const pinned = inMailbox(args.transportId);
+  if (!args.open || !pinned) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), args.timeoutMs); });
+    return await Promise.race([args.open.mutate({ internetMessageId: args.internetMessageId }, pinned), timeout]);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export type BoundRunStep =
   | { status: 'unavailable'; reason: string }
   | { status: 'integration_unavailable'; reason: string }
