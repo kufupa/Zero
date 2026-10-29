@@ -423,6 +423,8 @@ function sameRecoverySource(source: ReadyStored, opened: ReadyStored): boolean {
   if (!source.extractionId || opened.extractionId !== source.extractionId || opened.kind !== source.kind ||
       opened.analysis.intent !== source.analysis.intent || opened.analysis.luna?.workflow !== source.analysis.luna?.workflow ||
       source.analysis.caseActionsUncertain || opened.analysis.caseActionsUncertain || !provenanceOf(opened)) return false;
+  if (source.workItemStatus && source.workItemStatus !== opened.workItemStatus) return false;
+  if (opened.workItemId && !source.workItemStatus && !['needs_you', 'review'].includes(opened.workItemStatus ?? '')) return false;
   if (!recoveryValuesEqual(source.stays ?? {}, opened.stays ?? {})) return false;
   const raw = (opened as { fieldProvenance?: unknown }).fieldProvenance;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.values(raw).some((entry) =>
@@ -868,12 +870,15 @@ export function useStoredWork(args: {
           draft.workItemId = opened.workItemId;
           const provenance = provenanceOf(opened)!;
           const baseline = recoveryBaselineValues(source);
-          const noConflict = () => Object.entries(provenance).every(([path, saved]) => {
+          const reopenedValues = recoveryBaselineValues(opened);
+          const allowed = (path: string, value: unknown) => {
             const wanted = draft.events.get(path);
-            if (wanted && recoveryValuesEqual(saved.value, wanted.value)) return true;
-            if (draft.acknowledged.has(path) && recoveryValuesEqual(saved.value, draft.acknowledged.get(path))) return true;
-            return baseline.has(path) && recoveryValuesEqual(saved.value, baseline.get(path));
-          });
+            if (wanted && recoveryValuesEqual(value, wanted.value)) return true;
+            if (draft.acknowledged.has(path) && recoveryValuesEqual(value, draft.acknowledged.get(path))) return true;
+            return baseline.has(path) && recoveryValuesEqual(value, baseline.get(path));
+          };
+          const noConflict = () => Object.entries(provenance).every(([path, saved]) => allowed(path, saved.value)) &&
+            [...reopenedValues].every(([path, value]) => allowed(path, value));
           const record = routes.recordEvent;
           if (!record) return fail("Nava couldn't save your changes. Retry saving.");
           while (true) {

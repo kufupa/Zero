@@ -90,7 +90,7 @@ export type FieldPath =
 export type WorkState = Record<string, unknown>;
 
 /** Fingerprint only; never send or log the underlying state for recovery validation. */
-function recoveryStateDigest(state: WorkState): string {
+function recoveryStateDigest(state: WorkState, status: string): string {
   const canonical = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(canonical);
     if (value && typeof value === 'object') {
@@ -99,7 +99,7 @@ function recoveryStateDigest(state: WorkState): string {
     }
     return value;
   };
-  return createHash('sha256').update(JSON.stringify(canonical(state))).digest('hex');
+  return createHash('sha256').update(JSON.stringify(canonical({ state, status }))).digest('hex');
 }
 
 const ID = '[A-Za-z0-9_-]{1,40}';
@@ -1781,7 +1781,7 @@ export type StoredWork =
       extractionId: string;
       /** Revision of the work-item state in this read, or null when it has no work item. */
       revisionSeq: number | null;
-      /** Fingerprint of the same persisted state; detects non-field writes between recovery steps. */
+      /** Fingerprint of the same persisted state and status; detects other writes between recovery steps. */
       stateDigest: string | null;
       refs: Record<string, GroupRef>;
       /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
@@ -1958,7 +1958,7 @@ async function readyView(
     workItemStatus: paneItem?.status ?? null,
     extractionId: read.id,
     revisionSeq: paneItem?.revisionSeq ?? null,
-    stateDigest: paneItem ? recoveryStateDigest(state) : null,
+    stateDigest: paneItem ? recoveryStateDigest(state, paneItem.status) : null,
     refs: stored.refs,
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
     analysis: {
@@ -2084,6 +2084,7 @@ export async function recordFieldEvent(
       .select({
         extractionId: workItem.extractionId,
         state: workItem.state,
+        status: workItem.status,
         revision: workItem.revision,
         revisionHead: workItem.revisionHead,
         revisionSeq: workItem.revisionSeq,
@@ -2094,7 +2095,7 @@ export async function recordFieldEvent(
       .for('update');
     if (!item) return { status: 'not_found' as const };
     if (input.expected && (item.extractionId !== input.expected.extractionId || item.revisionSeq !== input.expected.seq ||
-        recoveryStateDigest(item.state) !== input.expected.stateDigest)) {
+        recoveryStateDigest(item.state, item.status) !== input.expected.stateDigest)) {
       return { status: 'stale' as const };
     }
     const [read] = item.extractionId
@@ -2147,11 +2148,11 @@ export async function recordFieldEvent(
       await update;
       return { status: 'recorded' as const, aiValue, value };
     }
-    const [persisted] = await update.returning({ state: workItem.state });
+    const [persisted] = await update.returning({ state: workItem.state, status: workItem.status });
     if (!persisted) throw new Error('Work item disappeared while locked.');
     return { status: 'recorded' as const, aiValue, value, cursor: {
       extractionId: input.expected.extractionId, seq: item.revisionSeq + 1,
-      stateDigest: recoveryStateDigest(persisted.state),
+      stateDigest: recoveryStateDigest(persisted.state, persisted.status),
     } };
   });
 }

@@ -260,7 +260,14 @@ describe('missing work item recovery', () => {
     ['staff conflict', { ...OPENED, fieldProvenance: { [CHILD]: { source: 'staff', value: 2 } } }],
     ['unknown conflicting provenance', { ...OPENED, fieldProvenance: { [CHILD]: { source: 'unknown', value: 2 } } }],
     ['other changed staff value', { ...OPENED, fieldProvenance: { 'contact.name': { source: 'staff', value: 'Someone else' } } }],
+    ['changed value after undo despite old provenance', {
+      ...OPENED,
+      analysis: { ...OPENED.analysis, groups: [{ ...ROW, childrenPerRoom: 2 }] },
+      fieldProvenance: { [CHILD]: { source: 'ai', value: null } },
+    }],
     ['newly saved booking', { ...OPENED, stays: { s_1: { status: 'booked', confirmationNumber: 'LAB-1', screenshotRef: null } } }],
+    ['closed work item', { ...OPENED, workItemStatus: 'done' }],
+    ['dismissed work item', { ...OPENED, workItemStatus: 'dismissed' }],
   ])('holds an edit on %s', async (_why, changed) => {
     mailbox();
     const { trpc, open, record } = harness();

@@ -1264,16 +1264,39 @@ describe('field events', () => {
         await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') })
           .where(eq(mailExtraction.id, secondRead));
         const link = { transportId: CENTURION, threadId: 'thread-cas-1', messageId, kind: 'quote' as const };
-        expect((await ensureWorkItem(db, { ...link, extractionId: secondRead })).revisionSeq).toBe(4);
+        const [raceWrite, forward] = await Promise.all([
+          recordFieldEvent(db, { ...base, value: 6, expected: {
+            extractionId: firstRead, seq: 3, stateDigest: afterBooking.stateDigest!,
+          } }),
+          ensureWorkItem(otherDb, { ...link, extractionId: secondRead }),
+        ]);
+        expect(['recorded', 'stale']).toContain(raceWrite.status);
+        expect(forward.extractionId).toBe(secondRead);
+        expect(forward.revisionSeq).toBe(raceWrite.status === 'recorded' ? 5 : 4);
+        const currentCount = raceWrite.status === 'recorded' ? 6 : winner.value;
         const back = await ensureWorkItem(db, { ...link, extractionId: firstRead });
-        expect(back).toMatchObject({ extractionId: firstRead, revisionSeq: 5 });
+        expect(back).toMatchObject({ extractionId: firstRead, revisionSeq: forward.revisionSeq + 1 });
         const beforeConflict = await eventsFor(db, opened.workItemId);
         await expect(caller.recordEvent({ ...event, expected: {
           extractionId: firstRead, seq: 3, stateDigest: afterBooking.stateDigest!,
         } }))
           .rejects.toMatchObject({ code: 'CONFLICT' });
         expect(await eventsFor(db, opened.workItemId)).toHaveLength(beforeConflict.length);
-        expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]?.state[path]).toBe(winner.value);
+        expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]?.state[path]).toBe(currentCount);
+
+        const beforeDismissal = await storedWorkFor(db, { transportId: CENTURION, internetMessageId: '<cas-1@example.com>' });
+        if (beforeDismissal.status !== 'ready') throw new Error('missing current read');
+        expect(await dismissWorkItem(db, { transportId: CENTURION, workItemId: opened.workItemId, userId: USER }))
+          .toEqual({ status: 'dismissed' });
+        const afterDismissal = await storedWorkFor(db, { transportId: CENTURION, internetMessageId: '<cas-1@example.com>' });
+        if (afterDismissal.status !== 'ready') throw new Error('missing dismissed read');
+        expect(afterDismissal.revisionSeq).toBe(beforeDismissal.revisionSeq);
+        expect(afterDismissal.stateDigest).not.toBe(beforeDismissal.stateDigest);
+        const beforeDismissConflict = await eventsFor(db, opened.workItemId);
+        await expect(caller.recordEvent({ ...event, expected: {
+          extractionId: beforeDismissal.extractionId, seq: beforeDismissal.revisionSeq!, stateDigest: beforeDismissal.stateDigest!,
+        } })).rejects.toMatchObject({ code: 'CONFLICT' });
+        expect(await eventsFor(db, opened.workItemId)).toHaveLength(beforeDismissConflict.length);
       } finally {
         await otherConn.end();
       }
