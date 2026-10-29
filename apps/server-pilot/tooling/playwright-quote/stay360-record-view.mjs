@@ -95,7 +95,7 @@ export async function readRecordViewFromStay360(page, confirmation) {
         if (type === 'checkbox' || type === 'radio') {
           const aria = element.getAttribute('aria-checked');
           value = aria === 'true' || (aria !== 'false' && (element.checked ||
-            element.closest('.x-form-item')?.classList.contains('x-form-cb-checked'))) || false;
+            element.closest('.x-form-cb-checked, .x-form-checkbox-checked'))) || false;
         } else if (element.tagName === 'SELECT') {
           value = [...element.selectedOptions].map((option) => normalize(option.textContent)).join(', ');
         } else {
