@@ -20,6 +20,12 @@ import {
   type StoredPane,
 } from '@/lib/quote-workflow/use-work-item';
 
+// This browser test exercises occupancy matching, not the server-only quote
+// digest or its native module loader. Keep that loader out of happy-dom.
+vi.mock('../../server-pilot/src/quote-proposal/quote-revision.js', () => ({
+  quoteDigest: () => { throw new Error('quote digest is not used by this test'); },
+}));
+
 type Ready = Extract<StoredWork, { status: 'ready' }>;
 
 const ANALYSIS = { intent: 'quote', groups: [], secondaryAsks: [], alternatives: [] } as unknown as Ready['analysis'];
