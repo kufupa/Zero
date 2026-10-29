@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { toast } from 'sonner';
 import { createOperationId, type MailLocation, type WorkstationEmailPayload } from '@/lib/workstation/bridge-protocol';
 import { beginMutation, endMutation } from '@/lib/workstation/mutations-in-flight';
+import { inMailbox } from '@/lib/mail/mail-cache-scope';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import { completedDateOptions, requireMultiOptionDraft, type CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
 import { requireReviewedNativeDraft } from '@/lib/quote-workflow/native-draft';
@@ -67,11 +68,12 @@ function replaceDraftToken(error: unknown): string | null {
 export type ReplyDraftScope = 'selected' | 'all' | 'saved';
 
 /** A reply and its PDFs: what Insert puts into Outlook and what Save reply stores as the thread's draft. */
-export type ReviewedReply = { html: string; attachments: Array<{ fileName: string; pdfBase64: string }> };
+export type ReviewedReply = { html: string; attachments: Array<{ fileName: string; pdfBase64: string }>; quoteBound?: boolean };
 type ReplyKind = 'quote' | 'decline' | 'missing_details' | 'other';
 type PreparedQuoteRef = { workflowRunId: string; revisionRef: string };
 
 function quoteReplyKind(scope: ReplyDraftScope, session: QuoteSession, reply: ReviewedReply): ReplyKind {
+  if (scope === 'saved' && reply.quoteBound !== undefined) return reply.quoteBound ? 'quote' : 'other';
   if (scope !== 'saved' && quoteDeclineReplyOnly(session)) return 'decline';
   if (scope !== 'saved' && missingQuoteDetailsReplyOnly(session)) return 'missing_details';
   return reply.attachments.some(({ pdfBase64 }) => pdfBase64.length > 0) ? 'quote' : 'other';
@@ -119,6 +121,8 @@ type PendingReplyOperation = {
   scope: ReplyDraftScope;
   pdfs?: Array<{ fileName: string; pdfBase64: string }>;
   reviewedHtml?: string;
+  quotePreflight?: { messageId: string; threadId: string; pdfHashes: string[];
+    preparedVersions?: PreparedQuoteRef[]; transportId: string | null } | null;
   replyPayload?: {
     operationId: string;
     entryId: string;
@@ -139,6 +143,8 @@ type PendingReplyOperation = {
   }>;
   attachmentsAdded?: number;
 };
+
+class QuoteDraftPreflightError extends Error {}
 
 export function singleReplyDraft(draft: ReturnType<typeof requireReviewedNativeDraft>) {
   return draft
@@ -274,7 +280,7 @@ export function useInsertAiDraft({
       if (expiredOutcomeConfirmationKey.current !== key) {
         expiredOutcomeConfirmationKey.current = key;
         toast.error(
-          `${replyLabel}The retry window has closed. Check Outlook Drafts, then click again to continue.`,
+          `${replyLabel}The earlier draft may be incomplete or its retry window has closed. Check Outlook Drafts, then click again to continue.`,
         );
         return;
       }
@@ -344,7 +350,7 @@ export function useInsertAiDraft({
       replyRetries.current.delete(key);
       previousAttempt = undefined;
     }
-    const reviewedDraft =
+    const reviewedDraft: ReviewedReply | null =
       scope === 'saved'
         ? saved ?? null
         : replyOnly
@@ -383,6 +389,7 @@ export function useInsertAiDraft({
         fileName: item.fileName,
         pdfBase64: item.pdfBase64,
       }));
+      attempt.quotePreflight = undefined;
     }
     const quotationHtml = attempt.reviewedHtml ?? reviewedDraft.html;
     let draftCreated = false;
@@ -397,6 +404,34 @@ export function useInsertAiDraft({
         return;
       }
       attempt.pdfs = pdfs;
+      if (attempt.quotePreflight === undefined) {
+        const kind = quoteReplyKind(scope, quoteSession, { html: quotationHtml, attachments: pdfs,
+          ...(scope === 'saved' ? { quoteBound: reviewedDraft.quoteBound } : {}) });
+        if (kind === 'quote') {
+          const source = quoteSession.staffSource;
+          if (!source) throw new QuoteDraftPreflightError('Select the email and prepare the quote again.');
+          attempt.quotePreflight = {
+            messageId: source.messageId, threadId: source.threadId,
+            pdfHashes: await Promise.all(pdfs.map((pdf) => sha256Base64(pdf.pdfBase64))),
+            ...(scope === 'saved' ? {} : { preparedVersions: preparedQuoteRefs(quoteSession, scope) }),
+            transportId: owner?.transportId ?? quoteSession.binding?.transportId ?? null,
+          };
+        } else attempt.quotePreflight = null;
+      }
+      const recheckQuote = async (requireSelectedEmail: boolean) => {
+        const proof = attempt.quotePreflight;
+        if (!proof) return;
+        const preflight = trpcClient.workstation?.quoteDraftPreflight?.mutate;
+        if (!preflight) throw new QuoteDraftPreflightError('Refresh the pane and prepare the quote again.');
+        try {
+          await preflight({ messageId: proof.messageId, threadId: proof.threadId, pdfHashes: proof.pdfHashes,
+            ...(proof.preparedVersions ? { preparedVersions: proof.preparedVersions } : {}) }, inMailbox(proof.transportId));
+        } catch {
+          throw new QuoteDraftPreflightError('The quote changed or could not be verified. Refresh the email and prepare it again.');
+        }
+        if (!sameStaffScope() || (requireSelectedEmail && contextRevision.current.selectionEpoch !== startedSelectionEpoch))
+          throw new QuoteDraftPreflightError('The selected email changed. Select it again.');
+      };
       if (!attempt.draftLocation) {
         // Renewal may suppress selection events while Outlook is busy. A PDF
         // generated for A must not turn into a reply to A after staff select B.
@@ -424,6 +459,7 @@ export function useInsertAiDraft({
         replyAll: false,
         openInComposer: false,
       };
+      if (!attempt.draftLocation) await recheckQuote(true);
       attempt.replyPayload = replyPayload;
       if (!attempt.draftLocation) {
         replyMarkerBelongsToCurrentScope.current = true;
@@ -458,6 +494,7 @@ export function useInsertAiDraft({
       const alreadyAdded = attempt.attachmentsAdded ?? 0;
       for (const [index, payload] of attachmentPayloads.entries()) {
         if (index < alreadyAdded) continue;
+        await recheckQuote(false);
         await sendCommand('ADD_ATTACHMENT_TO_DRAFT', payload);
         attempt.attachmentsAdded = index + 1;
         if (!sameStaffScope()) return;
@@ -465,8 +502,8 @@ export function useInsertAiDraft({
       const outcomeRoute = (trpcClient as unknown as {
         workItems?: { recordQuoteOutcome?: { mutate?: (input: unknown) => Promise<unknown> } };
       }).workItems?.recordQuoteOutcome;
-      const replyKind = quoteReplyKind(scope, quoteSession, { html: quotationHtml, attachments: pdfs });
-      const preparedVersions = preparedQuoteRefs(quoteSession, scope);
+      const replyKind = attempt.quotePreflight ? 'quote' : 'other';
+      const preparedVersions = attempt.quotePreflight?.preparedVersions ?? [];
       if (replyKind === 'quote' && preparedVersions.length > 0 && quoteSession.staffSource?.messageId &&
         typeof outcomeRoute?.mutate === 'function') {
         try {
@@ -539,6 +576,15 @@ export function useInsertAiDraft({
       const mayHaveReachedOutlook = Boolean(attempt.replyPayload);
       if (!timedOut && !hasUnknownOutcome && !draftCreated && !mayHaveReachedOutlook) {
         replyRetries.current.delete(key);
+      }
+      if (err instanceof QuoteDraftPreflightError) {
+        const partial = mayHaveReachedOutlook || draftCreated ? ' Check Outlook Drafts; a partial draft may exist.' : '';
+        if (partial) {
+          rememberExpiredOutcome(key);
+          replyRetries.current.delete(key);
+        }
+        toast.error(`${replyLabel}${err.message}${partial}`);
+        return;
       }
       if (
         hasUnknownOutcome ||
@@ -641,7 +687,9 @@ export function useInsertAiDraft({
       toast.error(
         draftChanged
           ? 'The draft changed while saving. Save the reply again.'
-          : 'Could not save the reply. Try again.',
+          : (error as { data?: { code?: string }; message?: string }).data?.code === 'PRECONDITION_FAILED'
+            ? (error as { message?: string }).message ?? 'Refresh the email and prepare the quote again.'
+            : 'Could not save the reply. Try again.',
       );
     } finally {
       saveInFlight.current = false;
