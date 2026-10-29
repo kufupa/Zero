@@ -199,6 +199,23 @@ describe('priced draft preflight', () => {
     expect(transactionState.committed).toBe(false);
   });
 
+  it('rechecks each document for a stay added after the initial draft preflight', async () => {
+    const { state, transactionState } = await fixture();
+    transactionState.enabled = true;
+    configureDraftArtifactStorage({ read: async () => pdf, stage: async () => {
+      Object.assign(state, { 'stays[s2].requested.arrival': '2027-11-20',
+        'stays[s2].requested.departure': '2027-11-21', 'stays[s2].rows[g2].count': 1,
+        'stays[s2].rows[g2].adults': 2, 'stays[s2].rows[g2].childrenPerRoom': 0,
+        'stays[s2].rows[g2].childAges': [] });
+    } } as never);
+    await expect(caller().drafts.saveReply({ threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>',
+      replyKind: 'quote', attachments: [{ name: 'quote.pdf', type: 'application/pdf', size: pdf.length,
+        lastModified: 1, base64: pdf.toString('base64') }] })).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED', message: expect.stringContaining('all stays'),
+    });
+    expect(transactionState.committed).toBe(false);
+  });
+
   it('can use the selected email work item for a durable PDF when the pane did not supply its id', async () => {
     const { proposal, state, transactionState } = await fixture();
     transactionState.enabled = true;

@@ -55,7 +55,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-async function seedRequest(db: DB, transportId = 'transport-centurion') {
+async function seedRequest(db: DB, transportId = 'transport-centurion', multiStay = false) {
   const threadId = randomUUID(),
     messageId = randomUUID(),
     // Outlook reports PR_INTERNET_MESSAGE_ID raw (angle brackets, mixed case); ingest stores the canonical form.
@@ -117,11 +117,10 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
       version: CENTURION_SOURCE_WITNESS_VERSION, status: 'captured', digest: source.digest,
     } } } : {}),
     payload: { contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
-      confirmationNumbers: [], missing: [], stays: [
-        stay('s_default', 'single', '2026-10-12', '2026-10-15'),
-        stay('s_oct', 'single_oct', '2026-10-26', '2026-10-27'),
-        stay('s_nov', 'single_nov', '2026-11-17', '2026-11-18'),
-      ] },
+      confirmationNumbers: [], missing: [], stays: multiStay ? [
+        { ...stay('s_oct', 'single_oct', '2026-10-26', '2026-10-27'), action: 'quote_availability' },
+        { ...stay('s_nov', 'single_nov', '2026-11-17', '2026-11-18'), action: 'quote_availability' },
+      ] : [stay('s_default', 'single', '2026-10-12', '2026-10-15')] },
   }).returning({ id: mailExtraction.id });
   const [item] = await db.insert(workItem).values({
     transportId, threadId, sourceMessageId: messageId, kind: 'quote', extractionId: extraction!.id,
@@ -409,6 +408,66 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         revisionRef: quote.revisionRef, messageId: quote.messageId });
       return { request, api, quote, proposal };
     }
+
+    it('holds a partial document and draft after a saved stay is added, while allowing the complete quote', async () => {
+      await withSeededTestDb(async (db) => {
+        const { request, api, quote, proposal } = await readyQuoteForPdf(db);
+        const objects = new Map<string, Buffer>();
+        configureDraftArtifactStorage({
+          stage: async (key, body) => { objects.set(key, Buffer.from(body)); },
+          read: async (key) => objects.get(key) ?? null,
+        });
+        let conversion = 0;
+        vi.stubGlobal('fetch', vi.fn(async () => new Response(`%PDF-synthetic-${++conversion}`, {
+          headers: { 'content-type': 'application/pdf' },
+        })));
+        const partial = await api.workstation.qualifiedQuoteProposalPdf(proposal);
+        const partialVersions = [{ workflowRunId: quote.workflowRunId, revisionRef: quote.revisionRef }];
+        const partialPreflight = { messageId: request.mail.id, threadId: request.mail.threadId,
+          pdfHashes: [partial.pdfHash], preparedVersions: partialVersions };
+        await expect(api.workstation.quoteDraftPreflight(partialPreflight)).resolves.toEqual({ ready: true });
+
+        // Another tab adds a complete second stay to the same saved work item, without editing the first.
+        await saveStayEdits(db, request.workItemId, {
+          'stays[added].requested.arrival': '2026-10-26', 'stays[added].requested.departure': '2026-10-27',
+          'stays[added].rows[added_row].count': 2, 'stays[added].rows[added_row].adults': 1,
+          'stays[added].rows[added_row].childrenPerRoom': 0, 'stays[added].rows[added_row].childAges': [],
+        });
+        const [run] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, quote.workflowRunId));
+        expect(await quoteSourceProofIsCurrent(db, request.input.groups, {
+          transportId: request.mail.transportId, threadId: request.mail.threadId, messageId: request.mail.id,
+          propertyCode: 'HRCEN',
+        }, quoteSourceProofFromRun(run!))).toBe(true); // The original per-stay proof remains usable for a rate search.
+        const hold = { code: 'PRECONDITION_FAILED', message: expect.stringContaining('all stays') };
+        await expect(api.workstation.qualifiedQuoteProposalPdf(proposal)).rejects.toMatchObject(hold);
+        await expect(api.workstation.quoteWorkbook(proposal)).rejects.toMatchObject(hold);
+        await expect(api.workstation.quoteDraftPreflight(partialPreflight)).rejects.toMatchObject(hold);
+        const partialBytes = Buffer.from(partial.pdfBase64, 'base64');
+        await expect(api.drafts.saveReply({ threadId: request.mail.threadId, replyToMessageId: request.mail.id,
+          html: '<p>Synthetic quote</p>', replyKind: 'quote', preparedVersions: partialVersions,
+          attachments: [{ name: partial.fileName, type: 'application/pdf', size: partialBytes.length,
+            lastModified: 1, base64: partial.pdfBase64 }] })).rejects.toMatchObject(hold);
+
+        const second = await api.workstation.executeStaffQuote({ ...request.input, inputRevision: 2,
+          groups: [{ ...request.input.groups[0]!, id: 'added_row', arrivalDate: '2026-10-26',
+            departureDate: '2026-10-27' }] });
+        expect(second.status).toBe('ready');
+        expect(nativeRead).toHaveBeenCalledTimes(2);
+        const combined = { ...proposal, additionalStays: [{ workflowRunId: second.workflowRunId,
+          revisionRef: second.revisionRef, factRefs: [] }] };
+        const complete = await api.workstation.qualifiedQuoteProposalPdf(combined);
+        expect(complete.totalMinor).toBe(quote.totalMinor + second.totalMinor);
+        expect((await api.workstation.quoteWorkbook(combined)).totalMinor).toBe(complete.totalMinor);
+        const versions = [...partialVersions, { workflowRunId: second.workflowRunId, revisionRef: second.revisionRef }];
+        await expect(api.workstation.quoteDraftPreflight({ ...partialPreflight, pdfHashes: [complete.pdfHash],
+          preparedVersions: versions })).resolves.toEqual({ ready: true });
+        const bytes = Buffer.from(complete.pdfBase64, 'base64');
+        await expect(api.drafts.saveReply({ threadId: request.mail.threadId, replyToMessageId: request.mail.id,
+          html: '<p>Synthetic quote</p>', replyKind: 'quote', preparedVersions: versions,
+          attachments: [{ name: complete.fileName, type: 'application/pdf', size: bytes.length,
+            lastModified: 1, base64: complete.pdfBase64 }] })).resolves.toMatchObject({ id: expect.any(String) });
+      });
+    }, 30_000);
 
     it('holds a Centurion quote and PDF when a newer analysis has not been reconciled', async () => {
       await withSeededTestDb(async (db) => {
@@ -1215,7 +1274,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         installFixture(db);
         vi.stubEnv('HMS_JOB_QUEUE', 'on');
         vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
-        const request = await seedRequest(db),
+        const request = await seedRequest(db, 'transport-centurion', true),
           api = caller();
         const stayOn = (inputRevision: number, arrivalDate: string, departureDate: string, quantity = 2) =>
           api.workstation.executeStaffQuote({
@@ -1314,7 +1373,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     it('builds one combined PDF and Excel from two approved stays, and refuses a stay a newer approval superseded', async () => {
       await withSeededTestDb(async (db) => {
         installFixture(db);
-        const request = await seedRequest(db),
+        const request = await seedRequest(db, 'transport-centurion', true),
           api = caller();
         const stayOn = (inputRevision: number, arrivalDate: string, departureDate: string) =>
           api.workstation.executeStaffQuote({
@@ -1363,7 +1422,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     it('AE1: two stays, one shuttle on the first stay, give one document with a row per stay and the shuttle once', async () => {
       await withSeededTestDb(async (db) => {
         installFixture(db);
-        const request = await seedRequest(db),
+        const request = await seedRequest(db, 'transport-centurion', true),
           api = caller();
         // The pane sends the once-per-quote shuttle with the first stay only.
         const october = await api.workstation.executeStaffQuote({

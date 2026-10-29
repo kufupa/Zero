@@ -212,6 +212,18 @@ describe('stored quote export and draft occupancy', () => {
     expect((await api.quotePdfJob({ workItemId: itemId, revisionRef: revision.id, company: '', agency: '' }))?.result).toEqual(artifact);
   });
 
+  it.each(['transport-davinci', 'transport-centurion'])(
+    'preserves HRDAV single-stay export with another saved stay on %s', async (transport) => {
+      setThreadHotel('HRDAV');
+      const { proposal, state } = await fixture(transport, 'HRDAV');
+      Object.assign(state, { 'stays[added].requested.arrival': '2027-11-20',
+        'stays[added].requested.departure': '2027-11-21', 'stays[added].rows[added_row].count': 1,
+        'stays[added].rows[added_row].adults': 2, 'stays[added].rows[added_row].childrenPerRoom': 0,
+        'stays[added].rows[added_row].childAges': [] });
+      const { workItemId: _item, ...uncached } = proposal;
+      expect((await caller(transport).workstation.quoteWorkbook(uncached)).xlsxBase64).toBeTruthy();
+    });
+
   it('holds saved choices, PDF, workbook and override after the thread changes hotel', async () => {
     const { proposal, revision, run, artifact, db } = await fixture();
     const now = new Date().toISOString();
@@ -433,6 +445,19 @@ describe('stored quote export and draft occupancy', () => {
     await expect(assertHmsDraftFreshForAction({ db, transportId, draft: draft as never, conflict: 'STALE_AI_CANDIDATE' }))
       .resolves.toBeUndefined();
     expect(revision.groups[0]?.children).toBe(0);
+  });
+
+  it('holds a priced candidate when another stay was added to the selected saved case', async () => {
+    const { run, state, db, proof } = await fixture();
+    const scope = { transportId, threadId: 't1', messageId: 'm1', triggerMessageId: 'm1',
+      result: run.metrics.reservationistResult, quoteSourceProof: proof };
+    expect(await draftQuoteOccupancyHold(db, scope)).toBeNull();
+    Object.assign(state, { 'stays[added].requested.arrival': '2027-11-20',
+      'stays[added].requested.departure': '2027-11-21', 'stays[added].rows[added_row].count': 1,
+      'stays[added].rows[added_row].adults': 2, 'stays[added].rows[added_row].childrenPerRoom': 0,
+      'stays[added].rows[added_row].childAges': [] });
+    expect(await draftQuoteOccupancyHold(db, scope)).toContain('all stays');
+    expect(await draftQuoteOccupancyHold(db, { ...scope, result: { version: 1, tasks: [] } })).toBeNull();
   });
 
   it('rejects a now-stale priced approval at the same recheck used by the SMTP queue', async () => {

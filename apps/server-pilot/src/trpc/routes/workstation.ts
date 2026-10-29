@@ -105,7 +105,7 @@ import { runStaffQuote } from '../../ai/staff-quote-run.js';
 import { occupancyFromRevision, singleStayOccupancyIsCurrent, isCenturionQuoteScope, isCenturionQuoteTransport, importedOfferOccupancyHold, draftQuoteOccupancyMessage,
   quoteDocumentContactIsCurrent,
   quoteSourceProofFromRun, quoteSourceProofIsCurrent, quoteSourceProofMatchesSingleStay, quoteSourceProofPredatesPolicy,
-  quoteSourcePolicyChangedMessage, quoteSourceUnverifiedMessage } from '../../ai/child-occupancy.js';
+  quoteDocumentCoverageMessage, quoteSourcePolicyChangedMessage, quoteSourceUnverifiedMessage } from '../../ai/child-occupancy.js';
 import {
   enqueueHmsJob,
   queueAutoStaffQuoteHmsJob,
@@ -697,6 +697,7 @@ async function proposalStaysFor(
           .limit(1)
       )[0];
   const stays: ProposalStay[] = [];
+  let documentSource: DraftQuoteSource | undefined;
   for (const { run, request, systemPrepared } of runs) {
     const staff = run.metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
     if (combined && !staff && !systemPrepared)
@@ -770,7 +771,9 @@ async function proposalStaysFor(
         message: quoteSourceProofPredatesPolicy(sourceProof) ? quoteSourcePolicyChangedMessage : quoteSourceUnverifiedMessage,
       });
     }
-    draftSources?.push({ revision: resolved.revision, proof: sourceProof });
+    const source = { revision: resolved.revision, proof: sourceProof };
+    draftSources?.push(source);
+    if (resolved.revision.propertyCode === 'HRCEN') documentSource ??= source;
     stays.push({
       ...resolved,
       staff,
@@ -778,7 +781,13 @@ async function proposalStaysFor(
       ...(systemPrepared && request.notes ? { preparedNotes: request.notes } : {}),
     });
   }
-  if (stays.some((stay) => stay.revision.propertyCode === 'HRCEN')) {
+  if (documentSource) {
+    if (stays.some((stay) => stay.revision.propertyCode !== 'HRCEN') ||
+      !(await quoteSourceProofIsCurrent(db, occupancyFromRevision(documentSource.revision), {
+        transportId: ctx.activeTransportId, threadId: current.threadId, messageId: input.messageId, propertyCode: 'HRCEN',
+      }, documentSource.proof, { documentGroups: stays.flatMap((stay) => occupancyFromRevision(stay.revision)) }))) {
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: quoteDocumentCoverageMessage });
+    }
     await assertCurrentQuoteDocumentContact(input, db, { transportId: ctx.activeTransportId, threadId: current.threadId });
   }
   return stays;

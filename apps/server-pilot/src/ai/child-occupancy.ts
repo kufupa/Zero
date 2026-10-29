@@ -5,7 +5,7 @@ import type { DB } from '../db/client.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { and, desc, eq } from 'drizzle-orm';
 import { addDays } from './stay-date-anchoring.js';
-import { formStays, storedContact } from './work-items.js';
+import { formStays, parseFieldPath, storedContact } from './work-items.js';
 import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
 import { priorKindConflict } from './work-item-source-conflict.js';
 import { quoteSourcePartyDigest } from './quote-source-party.js';
@@ -116,6 +116,53 @@ export function childOccupancyMatchesStored(
     selectedRows.has(`${row.stayId}\n${row.rowId}`));
 }
 
+/** A final document covers the active rows of this saved case, not merely one valid per-stay search. */
+export function quoteDocumentMatchesStored(
+  groups: Group[], payload: unknown, savedState: Record<string, unknown> | null | undefined, kind: string,
+): boolean {
+  const parsed = mailExtractionPayloadSchema.safeParse(payload);
+  const state = savedState ?? {};
+  if (!parsed.success || !childOccupancyMatchesStored(groups, payload, state)) return false;
+  const action = kind === 'quote' ? 'quote_availability' : kind === 'booking' ? 'new_booking' : null;
+  if (!action || parsed.data.needsAction === false || (parsed.data.action && parsed.data.action !== action)) return false;
+  // The saved form's removal set uses bare ids; colliding stay/row ids must not hide an unrelated stay.
+  const identities = new Map<string, string>();
+  const remember = (id: string, owner: string) => {
+    if (identities.has(id) && identities.get(id) !== owner) return false;
+    identities.set(id, owner);
+    return true;
+  };
+  for (const stay of parsed.data.stays) {
+    if (!remember(stay.id, JSON.stringify(['stay', stay.id]))) return false;
+    for (const row of stay.rows)
+      if (!remember(row.id, JSON.stringify(['row', stay.id, row.id]))) return false;
+  }
+  for (const key of Object.keys(state)) {
+    const path = parseFieldPath(key);
+    if (path && (!remember(path.stayId, JSON.stringify(['stay', path.stayId])) ||
+      (path.rowId !== null && !remember(path.rowId, JSON.stringify(['row', path.stayId, path.rowId]))))) return false;
+  }
+  const stays = formStays(parsed.data, state);
+  const original = parsed.data.stays.filter((stay) => stays.some((active) => active.id === stay.id));
+  // A partly assigned or mixed-action case does not prove which stays belong to this quotation.
+  if (original.some((stay) => stay.action && stay.action !== action) ||
+    (original.length > 1 && original.some((stay) => !stay.action))) return false;
+  if (!stays.length || stays.some((stay) => !stay.rows.length)) return false;
+  const rows = stays.flatMap((stay) => stay.rows.map((row) => ({
+    id: row.id,
+    alias: parsed.data.stays.some((source) => source.id === stay.id && !source.rows.length) &&
+      row.id === `${stay.id}_row` ? stay.id : null,
+  })));
+  if (groups.length !== rows.length) return false;
+  const used = new Set<number>();
+  return groups.every((group) => {
+    const matching = rows.flatMap((row, index) => row.id === group.id || row.alias === group.id ? [index] : []);
+    if (matching.length !== 1 || used.has(matching[0]!)) return false;
+    used.add(matching[0]!);
+    return true;
+  }) && used.size === rows.length;
+}
+
 export function occupancyFromRevision(revision: QuoteRevision): Group[] {
   return revision.groups.map((group) => ({
     id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate,
@@ -203,6 +250,7 @@ export const importedOfferOccupancyHold = 'The original offer cannot yet be matc
 export const draftQuoteOccupancyMessage = 'Refresh the email, confirm rooms, adults, the number of children per room and each age; check room type, meal plan, agency and company, then run the quote again.';
 export const quoteSourcePolicyChangedMessage = 'Rate checks have changed. A fresh supported email read is needed before pricing here; otherwise quote in HMS.';
 export const quoteSourceUnverifiedMessage = 'Nava cannot verify this email and its saved quote details. Refresh and confirm rooms, adults, the number of children per room and their ages, room type, meal plan, agency and company. Quote older emails or emails with attachments in HMS.';
+export const quoteDocumentCoverageMessage = 'The saved request has other stays or mixed actions. Review all stays for this email, or quote in HMS.';
 export const CENTURION_QUOTE_SOURCE_CHANGED = 'staff_quote_centurion_source_changed';
 
 export function isCenturionQuoteTransport(transportId: string): boolean {
@@ -337,7 +385,8 @@ export function quoteSourceProofMatchesInput(proof: unknown, input: StaffQuoteIn
   return parseQuoteSourceProof(proof)?.inputDigest === quoteDigest(input);
 }
 
-export async function quoteSourceProofIsCurrent(db: DB, groups: Group[], scope: QuoteSourceScope, value: unknown) {
+export async function quoteSourceProofIsCurrent(db: DB, groups: Group[], scope: QuoteSourceScope, value: unknown,
+  options?: { documentGroups?: Group[] }) {
   if (!isCenturionQuoteScope(scope)) return true;
   const proof = parseQuoteSourceProof(value);
   if (!proof || proof.messageId !== scope.messageId) return false;
@@ -347,7 +396,8 @@ export async function quoteSourceProofIsCurrent(db: DB, groups: Group[], scope: 
       quoteDigest({ extraction: read.extractionDigest, classifier: classifierForExtraction(read.read) }) !== proof.extractionDigest) return false;
     const evidence = await loadChildOccupancyEvidence(locked, { ...scope, lock: true });
     return !!evidence && evidence.extractionId === proof.extractionId &&
-      quoteSourceSnapshot(groups, evidence.payload, evidence.state)?.sourceDigest === proof.sourceDigest;
+      quoteSourceSnapshot(groups, evidence.payload, evidence.state)?.sourceDigest === proof.sourceDigest &&
+      (!options?.documentGroups || quoteDocumentMatchesStored(options.documentGroups, evidence.payload, evidence.state, evidence.kind));
   });
 }
 
@@ -406,10 +456,15 @@ export async function draftQuoteOccupancyHold(db: DB, input: {
   if (selectedQuotes.length && quoteSourceProofPredatesPolicy(input.quoteSourceProof)) return quoteSourcePolicyChangedMessage;
   try {
     for (const quote of selectedQuotes) {
-      if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(quote), {
+      const groups = occupancyFromRevision(quote);
+      const scope = {
         transportId: input.transportId, threadId: input.threadId, messageId: input.messageId,
         propertyCode: quote.propertyCode, lock: true,
-      }, input.quoteSourceProof))) return quoteSourceUnverifiedMessage;
+      };
+      if (!(await quoteSourceProofIsCurrent(db, groups, scope, input.quoteSourceProof))) return quoteSourceUnverifiedMessage;
+      // Candidate revisions can be alternatives with separate artifacts; each must cover the whole saved case.
+      if (!(await quoteSourceProofIsCurrent(db, groups, scope, input.quoteSourceProof, { documentGroups: groups })))
+        return quoteDocumentCoverageMessage;
     }
   } catch (error) {
     if (isQuoteSourceLockBusy(error)) throw quoteSourceBusyError();
