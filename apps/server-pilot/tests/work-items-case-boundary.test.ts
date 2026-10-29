@@ -249,8 +249,14 @@ describe('stored case boundaries', () => {
       { kind: 'amendment', payload, attachments: [] }, {},
       { confirmation: '57291630-1', reason: null },
     ).analysis;
-    expect(threadOnly.groups[0]?.caseLookupConfirmation).toBeUndefined();
+    expect(threadOnly.groups[0]?.caseLookupConfirmation).toBe('57291630-1');
     expect(threadOnly.groups[0]?.confirmationNumber).toBeUndefined();
+
+    const conflicting = storedAnalysis(
+      { kind: 'amendment', payload, attachments: [] }, {},
+      { confirmation: null, reason: 'Choose the right booking' },
+    ).analysis;
+    expect(conflicting.groups[0]?.caseLookupConfirmation).toBeUndefined();
 
     payload.confirmationNumbers = ['57291630-1'];
     payload.stays[0]!.guests!.push({ name: 'Bea Example', confirmationNumber: null });

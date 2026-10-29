@@ -100,13 +100,17 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
     const row = rows[0];
     const original = row && session.analysis?.groups.find((item) => item.id === row.id && stayIdOf(item) === stayIdOf(row));
     if (!row || !original) return unbound();
+    const requested = (original as StayAskRow).caseScoped ? {
+      requestedArrival: rows.every((item) => item.arrivalDate === row.arrivalDate) ? row.arrivalDate ?? null : null,
+      requestedDeparture: rows.every((item) => item.departureDate === row.departureDate) ? row.departureDate ?? null : null,
+    } : {};
     if (rows.length !== 1 || roster.length > 1 || (row.quantity != null && row.quantity !== 1)) {
-      return { ...base, confirmationNumber: null };
+      return { ...base, ...requested, confirmationNumber: null };
     }
     const assigned = trimmedConfirmation(row.confirmationNumber);
-    // A unique selected-email number can identify this case for lookup even when no room is identified.
+    // A unique mail or thread number can find this case even when no room is identified.
     const caseHint = trimmedConfirmation((original as StayAskRow).caseLookupConfirmation);
-    return { ...base, confirmationNumber: assigned ?? caseHint };
+    return { ...base, ...requested, confirmationNumber: assigned ?? caseHint };
   }
   // Stored rosters are case-scoped; a newly added or copied stay cannot inherit another case's lookup.
   if (session.analysis?.groups.some((group) => 'stayGuests' in group && Array.isArray(group.stayGuests))) return unbound();
@@ -511,9 +515,11 @@ export function quoteRunBlockReason(
     Partial<Pick<QuoteSession, 'analysis'>>,
   step: QuoteToolStep,
 ): string | null {
-  if (step.kind === 'quote_stay' && step.shareKey && session.analysis &&
-      blocksNewBooking({ groups: session.groups, analysis: session.analysis }, step.shareKey)) {
-    return 'This stay includes an existing or unclear booking. Review it in HMS before making a new booking.';
+  if (step.kind === 'quote_stay' && step.shareKey && session.analysis) {
+    const cases = { groups: session.groups, analysis: session.analysis };
+    if (blocksNewBooking(cases, step.shareKey) && (caseReviewPending(session.analysis) || stayAskAction(cases, step.shareKey) !== 'quote')) {
+      return 'This stay includes an existing or unclear booking. Review it in HMS before making a new booking.';
+    }
   }
   if (
     step.kind === 'quote_stay' &&

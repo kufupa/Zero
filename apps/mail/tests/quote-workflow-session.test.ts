@@ -4385,10 +4385,34 @@ describe('multi-ask stay cards: guests, action, split', () => {
       amendment: { kind: 'cancel', confirmationNumber: null, guestLastName: null, arrival: null, departure: null, requestedChange: null },
     });
     expect(groupStays(session.groups).map((stay) => stay.id)).toEqual(['stay-a', 'stay-b']);
-    expect(amendmentOf(reduceQuoteSession(session, { type: 'select_stay_key', stayKey: 'stay-a' }))?.confirmationNumber).toBe('11111111-1');
-    expect(amendmentOf(reduceQuoteSession(session, { type: 'select_stay_key', stayKey: 'stay-b' }))?.confirmationNumber).toBe('22222222-1');
+    expect(amendmentOf(reduceQuoteSession(session, { type: 'select_stay_key', stayKey: 'stay-a' }))).toMatchObject({
+      confirmationNumber: '11111111-1', requestedArrival: '2026-11-12', requestedDeparture: '2026-11-14',
+    });
+    const moved = reduceQuoteSession(session, {
+      type: 'patch_group', groupId: 'r_b', patch: { arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+    });
+    expect(amendmentOf(reduceQuoteSession(moved, { type: 'select_stay_key', stayKey: 'stay-b' }))).toMatchObject({
+      confirmationNumber: '22222222-1', requestedArrival: '2026-12-01', requestedDeparture: '2026-12-03',
+    });
     const asQuote = reduceQuoteSession(session, { type: 'treat_as', treatAs: 'quote' });
     expect(groupStays(asQuote.groups)).toHaveLength(1);
+  });
+
+  it('does not choose a requested date when rows on an existing case disagree', () => {
+    const groups = [
+      { ...quoteAnalysis.groups[0]!, id: 'r_a', stayId: 'stay-a', caseScoped: true, stayGuests: [] },
+      { ...quoteAnalysis.groups[0]!, id: 'r_b', stayId: 'stay-a', caseScoped: true, arrivalDate: '2026-11-13' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis, intent: 'other', groups,
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0, 1], note: '' }],
+      },
+      amendment: { kind: 'amend', confirmationNumber: null, guestLastName: null, arrival: null, departure: null, requestedChange: null },
+    });
+    expect(amendmentOf(session)).toMatchObject({ requestedArrival: null, requestedDeparture: '2026-11-14' });
   });
 
   it('lists each named guest on the stay with that guest confirmation', () => {
@@ -4663,6 +4687,15 @@ describe('multi-ask stay cards: guests, action, split', () => {
     });
     expect(quoteRunBlockReason(distinct, stepFor(distinct, dateKey))).toBeNull();
     expect(quoteRunBlockReason(distinct, stepFor(distinct, '2026-12-01:2026-12-03'))).toMatch(/existing or unclear booking/i);
+
+    const quoteOnly = withStaffSource(analysisReady({
+      ...analysis, groups: [newGroup],
+      luna: { ...analysis.luna!, tasks: [{ kind: 'quote', groupIndexes: [0], note: '' }] },
+    }));
+    expect(quoteRunBlockReason(quoteOnly, stepFor(quoteOnly, dateKey))).toBeNull();
+    expect(reduceQuoteSession(quoteOnly, {
+      type: 'booking_draft_ready', payload: { ...draft, inputRevision: quoteOnly.inputRevision }, sourceHash: STAFF_HASH,
+    }).bookingDrafts).toEqual({});
 
     const onlyNew = withStaffSource(analysisReady({
       ...analysis, groups: [newGroup],
