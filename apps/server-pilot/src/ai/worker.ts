@@ -209,6 +209,8 @@ import {
   classifyWorkflow,
   parseStoredClassifier,
 } from './workflow-classifier/index.js';
+import { classifierSourceMode, storeCapturedClassifier } from './workflow-classifier/source-fence.js';
+import { centurionSourceFence } from './work-item-source-lock.js';
 import { executeQuoteFollowupRun } from './quote-followup.js';
 import { executeReplyCheckRun } from './reply-check.js';
 import { createMastraRuntime } from './mastra.js';
@@ -626,6 +628,9 @@ async function failAiRun(
     nextRunAt: new Date(Date.now() + attempts * 60_000),
     lastError: message,
     failureClass,
+    // This one bounded inbound reread starts after a 60s backoff and needs a fresh model budget.
+    resetDeadline: run.runKind === 'inbound_extraction' && centurionSourceFence(run.transportId) &&
+      (failureClass === 'SOURCE_LOCK_BUSY' || failureClass === 'SOURCE_CHANGED'),
   });
   return { runId: run.id, state: 'retry_wait' };
 }
@@ -4141,9 +4146,16 @@ export async function storeWorkflowClassifierForInbound(
       })
       .from(mailExtraction)
       .where(and(eq(mailExtraction.messageId, messageId), eq(mailExtraction.status, 'succeeded')))
-      .orderBy(desc(mailExtraction.createdAt))
+      .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
       .limit(1);
-    if (!row || parseStoredClassifier(row.usage)) return;
+    if (!row) return;
+    const sourceMode = classifierSourceMode(row.usage);
+    if (sourceMode === 'hold') return;
+    if (sourceMode === 'captured') {
+      await storeCapturedClassifier(db, messageId, row.id, classify, CLASSIFIER_DEADLINE_MS);
+      return;
+    }
+    if (parseStoredClassifier(row.usage)) return;
     const [msg] = await db
       .select({ subject: message.subject, textBody: message.textBody })
       .from(message)
@@ -4169,10 +4181,15 @@ export async function storeWorkflowClassifierForInbound(
       return;
     }
     const patch = JSON.stringify({ classifier: result });
+    const originalWitness = row.usage?.sourceWitness;
+    const sameWitness = originalWitness === undefined
+      ? sql`${mailExtraction.usage}->'sourceWitness' IS NULL`
+      : sql`${mailExtraction.usage}->'sourceWitness' = ${JSON.stringify(originalWitness)}::jsonb`;
     await db
       .update(mailExtraction)
       .set({ usage: sql`coalesce(${mailExtraction.usage}, '{}'::jsonb) || ${patch}::jsonb` })
-      .where(eq(mailExtraction.id, row.id));
+      .where(and(eq(mailExtraction.id, row.id), sameWitness,
+        sql`${mailExtraction.usage}->'classifierSourceProof' IS NULL`));
   } catch (error) {
     // Extraction already succeeded; pane keeps WORKFLOW_BY_KIND.
     console.error('ingest_classifier_failed', messageId, error instanceof Error ? error.message : String(error));

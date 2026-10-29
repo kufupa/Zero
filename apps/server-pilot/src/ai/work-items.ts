@@ -58,10 +58,10 @@ import {
 } from '../../tooling/playwright-quote/property-registry.mjs';
 import {
   COARSE_TO_AGENT,
-  parseStoredClassifier,
   shouldAttachWorkflowHint,
   type ClassifierResult,
 } from './workflow-classifier/index.js';
+import { classifierExtractionDigest, classifierForExtraction, classifierSourceMode, currentCapturedClassifier } from './workflow-classifier/source-fence.js';
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
@@ -1159,6 +1159,7 @@ async function succeededRead(db: DB, messageId: string, id?: string) {
     .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
     .limit(1);
   if (!row?.kind || !row.payload) return null;
+  const classifier = classifierForExtraction(row);
   return {
     id: row.id,
     createdAt: row.createdAt,
@@ -1167,7 +1168,9 @@ async function succeededRead(db: DB, messageId: string, id?: string) {
     attachments: row.attachments as AttachmentRead[] | null,
     language: row.language,
     translation: row.translation,
-    classifier: parseStoredClassifier(row.usage),
+    classifier,
+    classifierExtractionDigest: classifier && classifierSourceMode(row.usage) === 'captured'
+      ? classifierExtractionDigest(row) : null,
   };
 }
 
@@ -1994,10 +1997,17 @@ async function readyView(
   const threadConfirmation = isHmsConfirmation(selectedConfirmation)
     ? undefined
     : synced?.threadConfirmation;
+  const currentClassifier = async (selected: ReadyRead) => selected.classifier && selected.classifierExtractionDigest
+    ? currentCapturedClassifier(db, { transportId, threadId: msg.threadId, messageId }, selected.id,
+        selected.classifierExtractionDigest)
+    : selected.classifier;
+  const readClassifier = await currentClassifier(read);
+  const latestClassifier = read.id === latest.id ? readClassifier : await currentClassifier(latest);
   const resolvedProperty = resolvePropertyTransport(transportId);
   const stored = storedAnalysis(
     {
       ...read,
+      classifier: readClassifier,
       fromAddress: msg.fromAddress,
       subject: msg.subject,
       bodyText: msg.textBody,
@@ -2014,7 +2024,7 @@ async function readyView(
     confirmationNumbers: latestConfirmations,
   });
   const source = storedAnalysis(
-    { ...latest, fromAddress: msg.fromAddress, subject: msg.subject, bodyText: msg.textBody },
+    { ...latest, classifier: latestClassifier, fromAddress: msg.fromAddress, subject: msg.subject, bodyText: msg.textBody },
     {},
     isHmsConfirmation(latestConfirmations[0] ?? '') ? undefined : synced?.threadConfirmation,
     resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined,
@@ -2035,6 +2045,18 @@ async function readyView(
   if (hmsTodoCard?.kind === 'amend' && todoGuests.length) {
     hmsTodoCard.steps.push({ label: 'Guests named in email', value: todoGuests.map((guest) => guest.name).join(', '), source: 'mail' });
   }
+  const fieldProvenance = priorMissing ? {} : await latestFieldProvenance(db, {
+    transportId,
+    workItemId: paneItem?.id ?? null,
+  });
+  // The view may have awaited artifact and card work. Do not return a classifier that changed meanwhile.
+  const stillSame = async (selected: ReadyRead, expected: ClassifierResult | null) => {
+    if (!expected || !selected.classifierExtractionDigest) return true;
+    const current = await currentClassifier(selected);
+    return Boolean(current && current.workflow === expected.workflow && current.confidence === expected.confidence);
+  };
+  if (!await stillSame(read, readClassifier) ||
+      (read.id !== latest.id && !await stillSame(latest, latestClassifier))) return BUSY_CENTURION_READ;
   return {
     status: 'ready',
     kind: existingStayInformation ? 'other' : read.kind,
@@ -2068,10 +2090,7 @@ async function readyView(
     sourcePartyFields: quoteSourcePartyFields(read.payload, projection),
     stays: priorMissing ? {} : stayCommitsOf(state),
     stayPreviews: priorMissing ? {} : stayPreviewsOf(state),
-    fieldProvenance: priorMissing ? {} : await latestFieldProvenance(db, {
-      transportId,
-      workItemId: paneItem?.id ?? null,
-    }),
+    fieldProvenance,
     language: read.language,
     translation: storedTranslation(read.translation),
   };
