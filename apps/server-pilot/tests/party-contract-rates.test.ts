@@ -813,6 +813,10 @@ describe('a public-only party read is no contract only when its search covered e
   it('unknown rate scope leaves the party search incomplete', () => {
     expect(partyReadingOf([group([row('public'), row('unknown')])], withContext, 'HRCEN')).toBe('incomplete');
     expect(partyReadingOf([group([row('public'), {}])], withContext, 'HRCEN')).toBe('incomplete');
+    expect(partyReadingOf([group([row('unknown')])], withContext, 'HRCEN')).toBe('incomplete');
+    expect(partyReadingOf([group([{}])], withContext, 'HRCEN')).toBe('incomplete');
+    expect(partyReadingOf([group([])], withContext, 'HRCEN')).toBeNull();
+    expect(partyReadingOf([group([row('unknown')])], withContext, 'HRDAV')).toBeNull();
     expect(partyReadingOf([group([row('public')])], withContext, 'HRCEN')).toBe('no_contract');
     expect(partyReadingOf([group([row('public'), row('unknown')])], withContext, 'HRDAV')).toBe('no_contract');
   });
