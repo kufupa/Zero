@@ -72,7 +72,7 @@ async function fixture() {
   const proof = await captureQuoteSourceProof(db, quoteInput, { transportId, threadId: 't1', messageId: 'm1' });
   Object.assign(staff, { quoteSourceProof: proof });
   __setDbForTests({ db, conn: null as never });
-  return { revision, job, state, mail, transaction, savedReply, jobAvailable };
+  return { revision, job, state, mail, transaction, savedReply, jobAvailable, proposal };
 }
 
 beforeEach(() => {
@@ -81,6 +81,14 @@ beforeEach(() => {
 afterEach(() => { mailboxHmsOriginBindLoaders.loadThreadOriginScan = null; __setDbForTests(null); });
 
 describe('priced draft preflight', () => {
+  it('can use the selected email work item for a durable PDF when the pane did not supply its id', async () => {
+    const { proposal, state } = await fixture();
+    const { workItemId: _workItemId, ...input } = proposal;
+    await expect(caller().workstation.qualifiedQuoteProposalPdf(input)).resolves.toMatchObject({ pdfBase64: pdf.toString('base64') });
+    state['stays[s1].rows[g1].board'] = 'bb';
+    await expect(caller().workstation.qualifiedQuoteProposalPdf(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
   it('checks the recorded PDF bytes, selected source, revisions and current saved facts', async () => {
     const { revision, state, job, jobAvailable } = await fixture();
     const refs = [{ workflowRunId: 'run-1', revisionRef: revision.id }];

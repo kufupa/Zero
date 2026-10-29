@@ -350,7 +350,7 @@ export function useInsertAiDraft({
       replyRetries.current.delete(key);
       previousAttempt = undefined;
     }
-    const reviewedDraft =
+    const reviewedDraft: ReviewedReply | null =
       scope === 'saved'
         ? saved ?? null
         : replyOnly
