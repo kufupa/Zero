@@ -1195,7 +1195,7 @@ export function BookingCards({
     return Object.entries(savedStaysRef.current ?? {}).some(([stayId, saved]) => {
       if (saved.status !== 'unknown') return false;
       const rooms = draft.draft.rooms.filter((room) => stayIdForRoom(room, groups) === stayId);
-      if (rooms.length !== 1) return true;
+      if (rooms.length !== 1) return rooms.length > 1; // Other drafts are held by the server.
       const room = rooms[0]!;
       return !verifiedAfterClaim(roomKeyOf(room), commitViewFromSaved(saved, room.request));
     }) ||

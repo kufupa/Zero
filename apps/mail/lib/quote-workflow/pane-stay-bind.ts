@@ -39,7 +39,7 @@ const REFUSAL_COPY: Record<string, string> = {
   pane_save_parent_not_booked:
     "The first room of this booking isn't confirmed in HMS yet, so Nava didn't add this room. Check HMS, then try again.",
   pane_save_dependency_unconfirmed:
-    'Another booking is still being checked. Nava did not save this room. Preview again when the check finishes.',
+    'An earlier booking is unconfirmed, so Nava did not save this room.',
   pane_save_identity_required:
     "Nava couldn't connect this booking to the request, so nothing was saved. Reopen the request and try again.",
   pane_save_work_item_unavailable:

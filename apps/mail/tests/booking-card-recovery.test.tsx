@@ -77,13 +77,13 @@ async function previewBoth() {
 }
 
 describe('multi-room save recovery', () => {
-  it('allows a fresh attempt after another booking has cleared a temporary server hold', async () => {
+  it('lets another date retry after the server clears a hold, even with a stale off-draft receipt', async () => {
     const commit = vi.fn<PaneStayClient['commit']>()
       .mockResolvedValueOnce({ status: 'refused', reason: 'pane_save_dependency_unconfirmed' })
       .mockResolvedValueOnce(firstVerified).mockResolvedValueOnce(secondVerified);
-    renderCase(commit);
+    renderCase(commit, { s_other_1: { confirmationNumber: null, status: 'unknown', screenshotRef: null } });
     fireEvent.click(await previewBoth());
-    await screen.findByText('Another booking is still being checked. Nava did not save this room. Preview again when the check finishes.');
+    await screen.findByText('An earlier booking is unconfirmed, so Nava did not save this room.');
     expect(commit).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getAllByRole('button', { name: 'Preview in HMS' })[0]!);
     const batch = screen.getByRole('button', { name: 'Book this stay' });
@@ -169,15 +169,6 @@ describe('multi-room save recovery', () => {
     render(<SavedStayReceipt saved={saved} />);
     expect(screen.getByText('Possible confirmation: TEST-UNCERTAIN (not verified)')).toBeDefined();
     expect(screen.queryByText(/^Booked/)).toBeNull();
-  });
-
-  it('holds even when the unknown saved stay is not in the currently displayed draft', () => {
-    renderCase(vi.fn<PaneStayClient['commit']>(), {
-      s_other_1: { confirmationNumber: null, status: 'unknown', screenshotRef: null },
-    });
-    expect(screen.getByRole('button', { name: 'Book this stay' })).toHaveProperty('disabled', true);
-    expect(screen.getAllByRole('button', { name: 'Create provisional booking' })
-      .every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
   });
 
   it('retains the first confirmed number when a linked second room is uncertain', async () => {
