@@ -9,11 +9,12 @@ import { profileFor, stayBookFieldRefusal } from '../../tooling/playwright-quote
 import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 import { assertReservationistResultFreshForAction } from './draft-approval.js';
 import { isSelfSentPreStayInformationMail } from './existing-stay-information.js';
+import { mailExtractionPayloadSchema } from './extraction/schema.js';
 import { assertNoOpenWrite, hmsStateDigest } from './hms-approval.js';
 import { paneStayDigest, PANE_PREVIEW_TTL_MS } from './pane-stay-save.js';
 import { stayPreviewGrantOf, stayPreviewOf } from './pane-stay-preview-persist.js';
 import { staffQuoteSourceHash } from './staff-quote-workflow.js';
-import { stayCommitOf } from './work-items.js';
+import { formStays, stayCommitOf } from './work-items.js';
 
 const PLAN_KEY = 'hmsCreatePlan';
 const DIGEST = /^[a-f0-9]{64}$/;
@@ -94,6 +95,21 @@ async function selectedMailHash(db: DB, mail: typeof message.$inferSelect): Prom
   });
 }
 
+/** The first slice cannot silently approve one room from a case with other displayed rooms. */
+export function assertOneRoomCaseScope(payload: unknown, state: Record<string, unknown>): void {
+  const parsed = mailExtractionPayloadSchema.safeParse(payload);
+  if (!parsed.success) refuse('case_scope_unverified');
+  const stays = formStays(parsed.data, state);
+  if (stays.length !== 1 || stays[0]!.rows.length > 1 ||
+      (stays[0]!.totalRooms !== null && stays[0]!.totalRooms !== 1)) refuse('case_multiple_rooms_unsupported');
+  const row = stays[0]!.rows[0];
+  if (row) {
+    const path = `stays[${stays[0]!.id}].rows[${row.id}].count`;
+    const count = Object.hasOwn(state, path) ? state[path] : row.rooms;
+    if (count !== null && count !== 1) refuse('case_multiple_rooms_unsupported');
+  }
+}
+
 export function assertHmsCreatePlanQuote(revision: QuoteRevision, input: ParsedInput, now: Date): void {
   const { id, ...data } = revision;
   if (id !== `quote:${quoteDigest(data)}` || id !== input.revisionId || revision.version !== 1 ||
@@ -165,7 +181,8 @@ async function loadContext(db: DB, item: WorkRow, input: ParsedInput, now: Date)
     ...(item.extractionId ? [eq(mailExtraction.id, item.extractionId)] : []),
   )).orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
   const caseRead = caseReads[0];
-  if (item.extractionId && !caseRead) refuse('case_read_changed');
+  if (!caseRead || caseRead.kind !== item.kind) refuse('case_scope_unverified');
+  assertOneRoomCaseScope(caseRead.payload, item.state);
   const [run] = await db.select().from(aiWorkflowRun).where(and(
     eq(aiWorkflowRun.id, input.quoteRunId), eq(aiWorkflowRun.transportId, item.transportId),
     eq(aiWorkflowRun.threadId, item.threadId), eq(aiWorkflowRun.runKind, 'candidate_draft'), eq(aiWorkflowRun.state, 'succeeded'),
@@ -204,7 +221,7 @@ async function loadContext(db: DB, item: WorkRow, input: ParsedInput, now: Date)
   assertHmsCreatePlanQuote(revisions[0]!, input, now);
   return {
     item, propertyCode, selectedSourceHash: await selectedMailHash(db, selected),
-    caseRead: caseRead ? { id: caseRead.id, digest: hmsStateDigest(caseRead) } : null,
+    caseRead: { id: caseRead.id, digest: hmsStateDigest(caseRead) },
     quoteSourceMessageId: quoteSource.id, quoteSourceHash: attestation.sourceHash,
     revision: revisions[0]!, previewExpiresAt: preview.expiresAt,
   };

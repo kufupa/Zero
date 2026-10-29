@@ -1,13 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { and, eq } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/postgres-js';
+import postgres from 'postgres';
 import { describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client.js';
+import * as schema from '../src/db/schema/index.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { consumeHmsCreatePlan, loadHmsCreatePlan, prepareHmsCreatePlan } from '../src/ai/hms-create-plan.js';
 import { approveHmsWrite } from '../src/ai/hms-approval.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
-import { PLAN_NOW, quotedPlanFixture } from './helpers/hms-create-plan-fixture.js';
+import { CASE_READ, PLAN_NOW, quotedPlanFixture } from './helpers/hms-create-plan-fixture.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 
@@ -21,8 +24,10 @@ async function seed(db: DB) {
   await seedInboxThread(db, { threadId: 'thread-1', transportId: scope.transportId, transportEmail: email,
     messageId: 'selected-message', subject: 'Please book', textBody: 'The selected booking request' });
   const [quoteMail] = await db.select().from(message).where(eq(message.id, 'quote-message')).limit(1);
+  const [caseRead] = await db.insert(mailExtraction).values({ messageId: 'selected-message', extractorVersion: 'test-v1',
+    status: 'succeeded', kind: 'booking', payload: CASE_READ }).returning();
   const [item] = await db.insert(workItem).values({ transportId: scope.transportId, threadId: 'thread-1',
-    sourceMessageId: 'selected-message', kind: 'booking', state: { selectedCase: 'case-1', stayPreviews: {
+    sourceMessageId: 'selected-message', kind: 'booking', extractionId: caseRead!.id, state: { selectedCase: 'case-1', stayPreviews: {
       room1: { status: 'previewed', digest: template.previewDigest, expiresAt: PLAN_NOW.getTime() + 600_000 },
     } } }).returning();
   await db.insert(aiDraftGeneration).values({ id: 'quote-generation', transportId: scope.transportId,
@@ -51,7 +56,7 @@ async function claim(db: DB, itemId: string) {
 
 describe('durable create-plan approval', () => {
   it('stores the displayed plan, uses only its captured stay, and consumes one grant', async () => {
-    await withIngestionDb(async ({ db }) => {
+    await withIngestionDb(async ({ db, url }) => {
       const { itemId, input } = await seed(db);
       const envelope = await prepareHmsCreatePlan(db, scope, input, PLAN_NOW);
       expect(envelope.plan).toMatchObject({ propertyCode: 'HRCEN', workItemId: itemId,
@@ -71,8 +76,17 @@ describe('durable create-plan approval', () => {
         .rejects.toThrow('claim_missing');
       const claimId = await claim(db, itemId);
       await expect(approveHmsWrite({ db, ...scope, workItemId: itemId, now: PLAN_NOW })).rejects.toMatchObject({ refusal: 'needs_check_open' });
-      const attempts = await Promise.allSettled([1, 2].map(() => consumeHmsCreatePlan(db,
-        { ...ref, actorUserId: scope.actorUserId, claimId }, PLAN_NOW)));
+      // The test helper's normal pool has one connection; use two so the transactions can overlap.
+      const pool = postgres(url, { max: 2, onnotice: () => undefined });
+      const concurrentDb = drizzle(pool, { schema });
+      let attempts: PromiseSettledResult<unknown>[];
+      try {
+        await Promise.all([pool`SELECT 1`, pool`SELECT 1`]);
+        attempts = await Promise.allSettled([1, 2].map(() => consumeHmsCreatePlan(concurrentDb,
+          { ...ref, actorUserId: scope.actorUserId, claimId }, PLAN_NOW)));
+      } finally {
+        await pool.end();
+      }
       expect(attempts.filter((attempt) => attempt.status === 'fulfilled')).toHaveLength(1);
       expect(attempts.filter((attempt) => attempt.status === 'rejected')).toHaveLength(1);
       const events = await db.select().from(workEvent).where(eq(workEvent.workItemId, itemId));
@@ -150,10 +164,11 @@ describe('durable create-plan approval', () => {
     await withIngestionDb(async ({ db }) => {
       const { itemId, input } = await seed(db);
       const envelope = await prepareHmsCreatePlan(db, scope, input, PLAN_NOW);
-      expect(envelope.plan.caseRead).toBeNull();
+      expect(envelope.plan.caseRead?.id).toBeTruthy();
       const claimId = await claim(db, itemId);
-      await db.insert(mailExtraction).values({ messageId: 'selected-message', extractorVersion: 'test-v1',
-        status: 'succeeded', kind: 'booking', payload: { changed: true } });
+      const [changed] = await db.insert(mailExtraction).values({ messageId: 'selected-message', extractorVersion: 'test-v2',
+        status: 'succeeded', kind: 'booking', payload: { ...CASE_READ, contact: { name: 'Changed', email: null, phone: null } } }).returning();
+      await db.update(workItem).set({ extractionId: changed!.id }).where(eq(workItem.id, itemId));
       await expect(consumeHmsCreatePlan(db, { ...scope, workItemId: itemId, planId: envelope.plan.id,
         digest: envelope.digest, claimId }, PLAN_NOW)).rejects.toThrow('plan_changed');
     });

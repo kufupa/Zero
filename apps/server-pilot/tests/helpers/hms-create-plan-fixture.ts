@@ -9,6 +9,13 @@ export const PLAN_STAY = {
   track: 'BAR', guaranteeType: 'Awaiting Voucher', cmsMessageId: '01', propertyCode: 'HRCEN',
 };
 
+export const CASE_READ = {
+  agency: null, endClient: null, contact: { name: null, email: null, phone: null }, confirmationNumbers: [],
+  stays: [{ id: 'case-stay', hotel: null, requested: { arrival: PLAN_STAY.arrival, departure: PLAN_STAY.departure },
+    booked: null, totalRooms: 1, rows: [{ id: 'case-row', roomType: null, rooms: 1, adultsPerRoom: 2,
+      childAges: [6], board: null }] }], missing: [],
+};
+
 export async function quotedPlanFixture(): Promise<{ revision: Awaited<ReturnType<typeof resolveQuoteRevision>>; input: HmsCreatePlanInput }> {
   const room = { id: 'g1', quantity: 1, adults: 2, children: 1, childAges: [6] };
   const source: QuoteSourceRecord = {

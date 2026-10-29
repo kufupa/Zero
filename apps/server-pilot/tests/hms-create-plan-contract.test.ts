@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { assertHmsCreatePlanQuote, prepareHmsCreatePlanInput } from '../src/ai/hms-create-plan.js';
+import { assertHmsCreatePlanQuote, assertOneRoomCaseScope, prepareHmsCreatePlanInput } from '../src/ai/hms-create-plan.js';
 import { quoteDigest, type QuoteRevision } from '../src/quote-proposal/quote-revision.js';
-import { PLAN_NOW, quotedPlanFixture } from './helpers/hms-create-plan-fixture.js';
+import { CASE_READ, PLAN_NOW, quotedPlanFixture } from './helpers/hms-create-plan-fixture.js';
 
 function rehash(revision: QuoteRevision): QuoteRevision {
   const { id: _id, ...data } = revision;
@@ -9,6 +9,17 @@ function rehash(revision: QuoteRevision): QuoteRevision {
 }
 
 describe('one-room HMS create plan contract', () => {
+  it('refuses a case with another displayed room or an unknown case read', () => {
+    expect(() => assertOneRoomCaseScope(CASE_READ, {})).not.toThrow();
+    expect(() => assertOneRoomCaseScope(null, {})).toThrow('case_scope_unverified');
+    expect(() => assertOneRoomCaseScope({ ...CASE_READ, stays: [...CASE_READ.stays, CASE_READ.stays[0]] }, {}))
+      .toThrow('case_multiple_rooms_unsupported');
+    expect(() => assertOneRoomCaseScope(CASE_READ, { 'stays[case-stay].rows[case-row].count': 2 }))
+      .toThrow('case_multiple_rooms_unsupported');
+    expect(() => assertOneRoomCaseScope(CASE_READ, { 'stays[case-stay].rows[other].count': 1 }))
+      .toThrow('case_multiple_rooms_unsupported');
+  });
+
   it('accepts only the matching, fresh native quote with every nightly amount', async () => {
     const { revision, input } = await quotedPlanFixture();
     const parsed = prepareHmsCreatePlanInput.parse(input);
