@@ -1,29 +1,15 @@
-import { useState } from 'react';
+import { useSyncExternalStore } from 'react';
 import { Field, Section, SecondaryButton, StepState, paneFieldClass } from '@/components/nava-pane/pane-ui';
 import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
-import { recalledGuestName, rememberGuestName } from '@/lib/quote-workflow/guest-name-cache';
-import { paneEditKey } from '@/lib/quote-workflow/pane-edits';
+import { recalledGuestName, rememberGuestName, subscribeStayingGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
-import type { QuoteSession, StaffQuoteHeader, StaffQuoteParty } from '@/lib/quote-workflow/types';
+import { HRDAV_PROPERTY_CODE, type QuoteSession, type StaffQuoteHeader, type StaffQuoteParty } from '@/lib/quote-workflow/types';
 import { sectionHasStaffEdit, type WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 import { PartyPicker } from './party-picker';
 
-const stayingGuestListeners = new Set<() => void>();
-
-export function subscribeStayingGuestName(onStoreChange: () => void): () => void {
-  stayingGuestListeners.add(onStoreChange);
-  return () => {
-    stayingGuestListeners.delete(onStoreChange);
-  };
-}
-
-function notifyStayingGuestName(): void {
-  stayingGuestListeners.forEach((listener) => listener());
-}
-
-function inferredGuestName(session: QuoteSession, contact?: StoredContact | null): string {
+function inferredGuestName(session: QuoteSession, contact?: StoredContact | null, propertyCode?: string | null): string {
   const sourceGroups = session.analysis?.groups ?? [];
   const hasStoredRoster = sourceGroups.some((group) => 'stayGuests' in group && Array.isArray(group.stayGuests));
   if (hasStoredRoster) {
@@ -53,42 +39,46 @@ function inferredGuestName(session: QuoteSession, contact?: StoredContact | null
 
   if (uniqueGuestNames.length === 1) return uniqueGuestNames[0] ?? '';
   if (uniqueGuestNames.length > 1) return '';
-  if (session.analysis?.luna?.party?.kind === 'private') return contact?.name?.trim() ?? '';
+  if (propertyCode === HRDAV_PROPERTY_CODE && session.analysis?.luna?.party?.kind === 'private') {
+    return contact?.name?.trim() ?? '';
+  }
   return '';
 }
 
-export function guestEditorKeyFor(session: QuoteSession, fallback?: string | null): string {
-  const guestMessageKey = session.binding?.internetMessageId?.trim() || session.binding?.entryId;
-  return (
-    (session.binding && guestMessageKey
-      ? paneEditKey(session.binding.transportId, guestMessageKey)
-      : null) ??
-    fallback ??
-    session.staffSource?.messageId ??
-    'quote-guest'
-  );
+export function guestEditorKeyFor(session: QuoteSession, userId: string | null | undefined, propertyCode?: string | null): string | null {
+  const binding = session.binding;
+  const property = propertyCode === undefined ? session.quotePropertyCode : propertyCode;
+  if (!userId?.trim() || !binding?.transportId?.trim() || !binding.entryId?.trim() ||
+      (!binding.storeId?.trim() && property !== HRDAV_PROPERTY_CODE)) return null;
+  // Message-ID headers are not unique. Outlook supplies store/entry IDs; webmail uses the stored message ID as entryId.
+  // Older HRDAV bridges may omit the store; its entry ID remains user- and transport-scoped.
+  return JSON.stringify([userId, binding.transportId, binding.storeId?.trim() ? binding.storeId : null, binding.entryId]);
 }
 
 export function stayingGuestName(
   session: QuoteSession,
   contact?: StoredContact | null,
   editorKey?: string,
+  propertyCode?: string | null,
 ): string {
-  const key = editorKey ?? guestEditorKeyFor(session);
-  return recalledGuestName(key) ?? inferredGuestName(session, contact);
+  const property = propertyCode === undefined ? session.quotePropertyCode : propertyCode;
+  return (editorKey ? recalledGuestName(editorKey) : null) ?? inferredGuestName(session, contact, property);
 }
 
 function GuestNameField({
   session,
-  contact,
   guestEditorKey,
+  contact,
+  propertyCode,
 }: {
   session: QuoteSession;
+  guestEditorKey: string | null;
   contact?: StoredContact | null;
-  guestEditorKey: string;
+  propertyCode?: string | null;
 }) {
-  const [editedName, setEditedName] = useState<string | null>(() => recalledGuestName(guestEditorKey));
-  const guestName = editedName ?? inferredGuestName(session, contact);
+  const editedName = useSyncExternalStore(subscribeStayingGuestName,
+    () => guestEditorKey ? recalledGuestName(guestEditorKey) : null, () => null);
+  const guestName = guestEditorKey ? (editedName ?? inferredGuestName(session, contact, propertyCode)) : '';
   const needsPrompt = guestName.trim().length === 0;
 
   return (
@@ -98,17 +88,18 @@ function GuestNameField({
         aria-describedby={needsPrompt ? 'quote-guest-name-prompt' : undefined}
         className={paneFieldClass}
         value={guestName}
+        disabled={!guestEditorKey}
         placeholder={needsPrompt ? 'Guest name?' : undefined}
         onChange={(event) => {
           const name = event.target.value;
-          rememberGuestName(guestEditorKey, name);
-          notifyStayingGuestName();
-          setEditedName(name);
+          if (guestEditorKey) rememberGuestName(guestEditorKey, name);
         }}
       />
       {needsPrompt ? (
         <p id="quote-guest-name-prompt" className="text-[11px] text-[#64748b]">
-          Enter the staying guest’s name; the contact is not assumed to be the guest.
+          {guestEditorKey ? (propertyCode === HRDAV_PROPERTY_CODE ? 'Enter the staying guest’s name.' :
+            'Enter the staying guest’s name; the contact is not assumed to be the guest.') :
+            'Select a signed-in mailbox and email to enter the guest’s name.'}
         </p>
       ) : null}
     </Field>
@@ -257,7 +248,9 @@ export function QuotePeopleStep({
   partyIndex,
   partyJobTransport,
   contact,
+  propertyCode,
   contactEditorKey,
+  guestEditorKey = null,
   onContactEdit,
   contactReadOnly = false,
   onPartyLookupPending,
@@ -275,7 +268,9 @@ export function QuotePeopleStep({
   partyIndex?: PartyIndexSearcher | null;
   partyJobTransport?: HmsJobTransport | null;
   contact?: StoredContact | null;
+  propertyCode?: string | null;
   contactEditorKey?: string;
+  guestEditorKey?: string | null;
   onContactEdit?: (field: ContactField, value: string | null) => void;
   contactReadOnly?: boolean;
   onPartyLookupPending?: (kind: 'company' | 'agency', pending: boolean) => void;
@@ -283,8 +278,6 @@ export function QuotePeopleStep({
   scrollToStep: (id: string) => void;
   workItemPane?: WorkItemPaneControls | null;
 }) {
-  const guestEditorKey = guestEditorKeyFor(session, contactEditorKey);
-
   return (
     <Section step={1} title="People" id="quote-party" action={<StepState state={partyState} />}>
       {onContactEdit ? (
@@ -306,8 +299,9 @@ export function QuotePeopleStep({
       <GuestNameField
         key={`guest:${guestEditorKey}`}
         session={session}
-        contact={contact}
         guestEditorKey={guestEditorKey}
+        contact={contact}
+        propertyCode={propertyCode === undefined ? session.quotePropertyCode : propertyCode}
       />
       <StaffPartyFields
         header={header}

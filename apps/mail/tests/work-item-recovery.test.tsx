@@ -522,6 +522,7 @@ describe('missing work item recovery', () => {
     expect(record).not.toHaveBeenCalled();
     await act(async () => expect(await next.result.current.discardUnconfirmedEdits()).toBe(true));
     expect(next.result.current.historyEpoch).toBe(1);
+    expect(next.result.current.historyClearsPaneEdits).toBe(true);
     expect(next.result.current.saveError).toBeNull();
     expect(marker && sessionStorage.getItem(marker)).toBeNull();
     act(() => next.result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }]));
@@ -562,11 +563,59 @@ describe('missing work item recovery', () => {
     let finishRead!: (value: StoredWork) => void;
     query.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
     let discarded!: Promise<boolean>;
-    act(() => { discarded = result.current.discardUnconfirmedEdits(); });
+    const beforePublish = vi.fn(() => true);
+    act(() => { discarded = result.current.discardUnconfirmedEdits(beforePublish); });
     rerender({ messageId: 'm-2' });
     await act(async () => { finishRead(READ); expect(await discarded).toBe(false); });
     expect(markerKeys()).toHaveLength(1);
     expect(record).not.toHaveBeenCalled();
+    expect(beforePublish).not.toHaveBeenCalled();
+  });
+
+  it('keeps the recovery marker until the pane accepts the refreshed read', async () => {
+    mailbox();
+    const { trpc, open, record } = harness();
+    open.mockRejectedValueOnce(new Error('initial'));
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
+    act(() => result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }]));
+    const beforePublish = vi.fn(() => false);
+    await act(async () => expect(await result.current.discardUnconfirmedEdits(beforePublish)).toBe(false));
+    expect(beforePublish).toHaveBeenCalledTimes(1);
+    expect(result.current.historyEpoch).toBe(0);
+    expect(markerKeys()).toHaveLength(1);
+    expect(record).not.toHaveBeenCalled();
+
+    beforePublish.mockReturnValue(true);
+    await act(async () => expect(await result.current.discardUnconfirmedEdits(beforePublish)).toBe(true));
+    expect(result.current.historyEpoch).toBe(1);
+    expect(result.current.historyClearsPaneEdits).toBe(false);
+    expect(markerKeys()).toHaveLength(0);
+    act(() => result.current.reloadHistory());
+    await waitFor(() => expect(result.current.historyEpoch).toBe(2));
+    expect(result.current.historyClearsPaneEdits).toBe(true);
+  });
+
+  it('does not apply an old history refresh after leaving and reopening the same mail', async () => {
+    mailbox();
+    const { trpc, query } = harness();
+    query.mockResolvedValue(OPENED);
+    const { result, rerender } = renderHook(
+      ({ messageId }: { messageId: string }) => useStoredWork({ trpc, internetMessageId: messageId, scope: SCOPE }),
+      { initialProps: { messageId: 'm-1' } },
+    );
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' }));
+    let finishRead!: (value: StoredWork) => void;
+    query.mockImplementationOnce(() => new Promise((resolve) => { finishRead = resolve; }));
+    act(() => result.current.reloadHistory());
+    rerender({ messageId: 'm-2' });
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' }));
+    rerender({ messageId: 'm-1' });
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' }));
+    await act(async () => { finishRead(READ); await Promise.resolve(); });
+    expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' });
+    expect(result.current.historyEpoch).toBe(0);
+    expect(result.current.historyClearsPaneEdits).toBe(false);
   });
 
   it('clears the no-values marker only after all edits are acknowledged', async () => {

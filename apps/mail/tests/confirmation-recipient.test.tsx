@@ -164,7 +164,7 @@ function renderHost(
   const api = pane();
   render(
     <ConfirmationSourcesProvider value={sources}>
-      <QuoteBookingHost
+      <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY}
         session={session()}
         paneSave={api.client}
         contact={contact}
@@ -174,6 +174,8 @@ function renderHost(
   );
   return api;
 }
+
+const GUEST_TEST_KEY = JSON.stringify(['staff-test', 'transport-test', 'store-test', 'entry-test']);
 
 describe('confirmation recipient', () => {
   it('prefills the saved choice and sends the edited recipient on create', async () => {
@@ -222,7 +224,7 @@ describe('confirmation recipient', () => {
     const missingClient = pane();
     render(
       <ConfirmationSourcesProvider value={{ userEmail: STAFF, setting: { mode: 'client' } }}>
-        <QuoteBookingHost
+        <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY}
           session={session()}
           paneSave={missingClient.client}
           contact={{ ...contact, email: null }}
@@ -295,7 +297,7 @@ describe('confirmation recipient', () => {
     const api = pane();
     render(
       <ConfirmationSourcesBridge userId="user-a" mailbox="box-a@example.invalid" userEmail={STAFF}>
-        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+        <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session()} paneSave={api.client} contact={contact} />
       </ConfirmationSourcesBridge>,
     );
     await waitFor(() => {
@@ -328,7 +330,7 @@ describe('confirmation recipient', () => {
     settingsDouble.invalidated.splice(0, settingsDouble.invalidated.length);
     const held = render(
       <ConfirmationSourcesBridge userId="user-a" mailbox="box-a@example.invalid" userEmail={STAFF}>
-        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+        <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session()} paneSave={api.client} contact={contact} />
       </ConfirmationSourcesBridge>,
     );
     await waitFor(() => {
@@ -345,7 +347,7 @@ describe('confirmation recipient', () => {
     });
     held.rerender(
       <ConfirmationSourcesBridge userId="user-b" mailbox="box-b@example.invalid" userEmail="other@example.invalid">
-        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+        <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session()} paneSave={api.client} contact={contact} />
       </ConfirmationSourcesBridge>,
     );
     release();
@@ -366,7 +368,7 @@ describe('confirmation recipient', () => {
     const api = pane();
     const view = render(
       <ConfirmationSourcesBridge userEmail="first@example.invalid">
-        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+        <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session()} paneSave={api.client} contact={contact} />
       </ConfirmationSourcesBridge>,
     );
     await waitFor(() => {
@@ -374,7 +376,7 @@ describe('confirmation recipient', () => {
     });
     view.rerender(
       <ConfirmationSourcesBridge userEmail="second@example.invalid">
-        <QuoteBookingHost session={session()} paneSave={api.client} contact={contact} />
+        <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session()} paneSave={api.client} contact={contact} />
       </ConfirmationSourcesBridge>,
     );
     await waitFor(() => {

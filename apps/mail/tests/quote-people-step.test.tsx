@@ -3,17 +3,18 @@
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { QuotePeopleStep, stayingGuestName } from '../components/quote-workflow/quote-people-step';
+import { guestEditorKeyFor, QuotePeopleStep, stayingGuestName } from '../components/quote-workflow/quote-people-step';
 import type { ContactField, StoredContact } from '../lib/quote-workflow/backend-bind';
-import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
+import { forgetGuestName, guestNameRevision, recalledGuestName, rememberGuestName, resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import type { PartyFindReply } from '../lib/quote-workflow/party-lookup';
-import { emptyStaffQuoteHeader } from '../lib/quote-workflow/types';
+import { emptyStaffQuoteHeader, HRCEN_PROPERTY_CODE, HRDAV_PROPERTY_CODE } from '../lib/quote-workflow/types';
 import type { QuoteSession, StaffQuoteParty } from '../lib/quote-workflow/types';
 
 beforeEach(() => resetGuestNameCacheForTests());
 afterEach(() => {
   cleanup();
   resetGuestNameCacheForTests();
+  sessionStorage.removeItem('nava.guest-name.v1:mailbox-1::message-1');
 });
 
 const agency: StaffQuoteParty = {
@@ -37,6 +38,27 @@ const contact: StoredContact = {
 };
 
 describe('QuotePeopleStep', () => {
+  it('discards only the captured guest edit and keeps the name visible if storage cannot remove it', () => {
+    const key = 'discard-test';
+    rememberGuestName(key, 'Ada Example');
+    const firstRevision = guestNameRevision(key);
+    rememberGuestName(key, 'Ada Example');
+    expect(forgetGuestName(key, firstRevision)).toBe(false);
+    expect(recalledGuestName(key)).toBe('Ada Example');
+
+    const currentRevision = guestNameRevision(key);
+    const storage = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('blocked'); });
+    try {
+      expect(forgetGuestName(key, currentRevision)).toBe(false);
+      expect(recalledGuestName(key)).toBe('Ada Example');
+    } finally {
+      storage.mockRestore();
+    }
+    expect(forgetGuestName(key, currentRevision)).toBe(true);
+    resetGuestNameCacheForTests({ keepSession: true });
+    expect(recalledGuestName(key)).toBeNull();
+  });
+
   it('keeps request contact edits separate from distinct HMS agency and company profiles', () => {
     const onContactEdit = vi.fn<(field: ContactField, value: string | null) => void>();
     const onPatchStaffHeader = vi.fn();
@@ -56,6 +78,7 @@ describe('QuotePeopleStep', () => {
       },
       contact,
       contactEditorKey: 'request-1',
+      guestEditorKey: 'request-1',
       onContactEdit,
       onPatchStaffHeader,
       findParty,
@@ -112,6 +135,7 @@ describe('QuotePeopleStep', () => {
       header: emptyStaffQuoteHeader(),
       contact: agentContact,
       contactEditorKey: 'agent-message',
+      guestEditorKey: 'agent-message',
       scrollToStep: vi.fn(),
     } as unknown as Parameters<typeof QuotePeopleStep>[0];
 
@@ -124,6 +148,30 @@ describe('QuotePeopleStep', () => {
 
     fireEvent.change(guest, { target: { value: 'Staff-entered value' } });
     expect(guest.value).toBe('Staff-entered value');
+  });
+
+  it.each([null, HRCEN_PROPERTY_CODE])('does not treat a private contact as the staying guest for property %s', (propertyCode) => {
+    const row = { id: 'r_1', stayId: 's_1', quantity: 1 };
+    const session = { staffSource: null, groups: [row], quotePropertyCode: HRDAV_PROPERTY_CODE,
+      analysis: { groups: [row], luna: { party: { kind: 'private' }, groups: [] } } } as unknown as QuoteSession;
+    const props = { session, partyState: 'Optional' as const, header: emptyStaffQuoteHeader(),
+      contact, propertyCode, contactEditorKey: 'private-contact-only', guestEditorKey: 'private-contact-only', scrollToStep: vi.fn() };
+
+    render(<QuotePeopleStep {...props} />);
+    const guest = screen.getByLabelText('Guest') as HTMLInputElement;
+    expect(guest.value).toBe('');
+    expect(guest.getAttribute('placeholder')).toBe('Guest name?');
+    expect(stayingGuestName(session, contact, 'private-contact-only', propertyCode)).toBe('');
+  });
+
+  it('keeps the existing private-contact prefill for HRDAV', () => {
+    const row = { id: 'r_1', stayId: 's_1', quantity: 1 };
+    const session = { staffSource: null, groups: [row],
+      analysis: { groups: [row], luna: { party: { kind: 'private' }, groups: [] } } } as unknown as QuoteSession;
+    render(<QuotePeopleStep session={session} partyState="Optional" header={emptyStaffQuoteHeader()}
+      contact={contact} propertyCode={HRDAV_PROPERTY_CODE} guestEditorKey="hrdav-contact" scrollToStep={vi.fn()} />);
+    expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('Request contact');
+    expect(stayingGuestName(session, contact, 'hrdav-contact', HRDAV_PROPERTY_CODE)).toBe('Request contact');
   });
 
   it('prefills a stored guest only while the original single room remains selected', () => {
@@ -139,7 +187,7 @@ describe('QuotePeopleStep', () => {
     } as unknown as QuoteSession;
     const props = {
       session, partyState: 'Optional' as const, header: emptyStaffQuoteHeader(),
-      contact, contactEditorKey: 'single-stored-room', scrollToStep: vi.fn(),
+      contact, contactEditorKey: 'single-stored-room', guestEditorKey: 'single-stored-room', scrollToStep: vi.fn(),
     } as unknown as Parameters<typeof QuotePeopleStep>[0];
     const view = render(<QuotePeopleStep {...props} />);
     expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('Ada Example');
@@ -199,6 +247,7 @@ describe('QuotePeopleStep', () => {
       header: emptyStaffQuoteHeader(),
       contact: agentContact,
       contactEditorKey: 'agent-message-cache-test',
+      guestEditorKey: 'agent-message-cache-test',
       scrollToStep: vi.fn(),
     } as unknown as Parameters<typeof QuotePeopleStep>[0];
 
@@ -207,7 +256,7 @@ describe('QuotePeopleStep', () => {
     firstRender.unmount();
 
     const otherMessage = render(
-      <QuotePeopleStep {...props} contactEditorKey="different-agent-message" />,
+      <QuotePeopleStep {...props} contactEditorKey="different-agent-message" guestEditorKey="different-agent-message" />,
     );
     const otherGuest = screen.getByLabelText('Guest') as HTMLInputElement;
     expect(otherGuest.value).toBe('');
@@ -253,6 +302,7 @@ describe('QuotePeopleStep', () => {
       header: emptyStaffQuoteHeader(),
       contact: agentContact,
       contactEditorKey: 'mailbox-1::message-1|reading',
+      guestEditorKey: 'user-1:mailbox-1:message-1',
       scrollToStep: vi.fn(),
     } as unknown as Parameters<typeof QuotePeopleStep>[0];
 
@@ -263,5 +313,48 @@ describe('QuotePeopleStep', () => {
     render(<QuotePeopleStep {...props} contactEditorKey="mailbox-1::message-1|ready:work-item-1" />);
 
     expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('Staff-entered value');
+  });
+
+  it('isolates users and messages, refuses unscoped legacy values, and keeps each user’s edits after remount', () => {
+    const binding = { transportId: 'mailbox-1', mailboxEmail: 'mailbox@example.invalid', storeId: 'store-1',
+      folderEntryId: 'folder-1', entryId: 'entry-1', internetMessageId: 'message-1', selectionEpoch: 1, scopeEpoch: 1 };
+    const session = { binding, staffSource: null, groups: [], analysis: { groups: [], luna: { groups: [] } } } as unknown as QuoteSession;
+    const first = guestEditorKeyFor(session, 'user-1')!;
+    const second = guestEditorKeyFor(session, 'user-2')!;
+    const other = guestEditorKeyFor({ ...session, binding: { ...binding, entryId: 'entry-2' } }, 'user-1')!;
+    expect(first).not.toBe(second);
+    expect(first).not.toBe(other); // Two selected messages can share the same Internet Message-ID.
+    expect(guestEditorKeyFor(session, null)).toBeNull();
+    expect(guestEditorKeyFor({ ...session, binding: { ...binding, storeId: '' } }, 'user-1')).toBeNull();
+    const withoutStore = { ...session, binding: { ...binding, storeId: '' } };
+    expect(guestEditorKeyFor(withoutStore, 'user-1', HRCEN_PROPERTY_CODE)).toBeNull();
+    expect(guestEditorKeyFor(withoutStore, 'user-1', null)).toBeNull();
+    expect(guestEditorKeyFor({ ...withoutStore, quotePropertyCode: HRDAV_PROPERTY_CODE }, 'user-1', null)).toBeNull();
+    const hrdavKey = guestEditorKeyFor(withoutStore, 'user-1', HRDAV_PROPERTY_CODE);
+    expect(hrdavKey).toBeTruthy();
+    expect(hrdavKey).not.toBe(guestEditorKeyFor(withoutStore, 'user-2', HRDAV_PROPERTY_CODE));
+    expect(hrdavKey).not.toBe(guestEditorKeyFor({ ...withoutStore, binding: { ...withoutStore.binding, entryId: 'entry-2' } },
+      'user-1', HRDAV_PROPERTY_CODE));
+    sessionStorage.setItem('nava.guest-name.v1:mailbox-1::message-1', 'Legacy Guest');
+
+    const props = { session, partyState: 'Optional' as const, header: emptyStaffQuoteHeader(), scrollToStep: vi.fn() };
+    const view = render(<QuotePeopleStep {...props} guestEditorKey={first} />);
+    const guest = () => screen.getByLabelText('Guest') as HTMLInputElement;
+    expect(guest().value).toBe('');
+    fireEvent.change(guest(), { target: { value: 'First User Guest' } });
+    view.rerender(<QuotePeopleStep {...props} guestEditorKey={null} />);
+    expect(guest().disabled).toBe(true);
+    expect(guest().value).toBe('');
+    view.rerender(<QuotePeopleStep {...props} guestEditorKey={second} />);
+    expect(guest().value).toBe('');
+    fireEvent.change(guest(), { target: { value: 'Second User Guest' } });
+    view.rerender(<QuotePeopleStep {...props} guestEditorKey={other} />);
+    expect(guest().value).toBe('');
+    view.unmount();
+    resetGuestNameCacheForTests({ keepSession: true });
+    const again = render(<QuotePeopleStep {...props} guestEditorKey={first} />);
+    expect(guest().value).toBe('First User Guest');
+    again.rerender(<QuotePeopleStep {...props} guestEditorKey={second} />);
+    expect(guest().value).toBe('Second User Guest');
   });
 });

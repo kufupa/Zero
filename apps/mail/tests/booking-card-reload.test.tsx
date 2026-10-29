@@ -67,6 +67,8 @@ function bookedDraft(): BookingDraftReady {
   };
 }
 
+const GUEST_TEST_KEY = JSON.stringify(['staff-test', 'transport-test', 'store-test', 'entry-test']);
+
 describe('booking card reload', () => {
   it('shows the stored booking, confirmation, and before/saved screenshots', async () => {
     const screenshot = vi.fn<PaneStayClient['screenshot']>(async (_runId, name) => `data:image/png;base64,${name}`);
@@ -154,7 +156,7 @@ describe('booking card reload', () => {
     session.bookingDrafts = { '2026-11-12:2026-11-14': draft };
     cleanup();
     render(
-      <QuoteBookingHost session={session} paneSave={client} savedStays={{
+      <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session} paneSave={client} savedStays={{
         s_aaaa1111_1: {
           confirmationNumber: '98765-1',
           status: 'booked',
@@ -189,7 +191,7 @@ describe('booking card reload', () => {
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     direct.unmount();
     render(
-      <QuoteBookingHost
+      <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY}
         session={session}
         paneSave={client}
         savedStays={{
@@ -231,7 +233,7 @@ describe('booking card reload', () => {
     const direct = render(<BookingCards draft={draft} groups={[group]} paneSave={client} savedStays={savedStays} />);
     assertNoRetry();
     direct.unmount();
-    render(<QuoteBookingHost session={session} paneSave={client} savedStays={savedStays} />);
+    render(<QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={session} paneSave={client} savedStays={savedStays} />);
     assertNoRetry();
   });
 
@@ -272,7 +274,7 @@ describe('booking card reload', () => {
     expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
     direct.unmount();
     // The same saved receipt must remain meaningful when no booking draft survives the reload.
-    render(<QuoteBookingHost session={initialQuoteSession()} paneSave={client} savedStays={savedStays} />);
+    render(<QuoteBookingHost guestEditorKey={GUEST_TEST_KEY} session={initialQuoteSession()} paneSave={client} savedStays={savedStays} />);
     expect(screen.getByText(warning)).toBeDefined();
     expect(screen.queryByRole('button', { name: 'Preview in HMS' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Create provisional booking' })).toBeNull();
@@ -287,7 +289,7 @@ describe('booking card reload', () => {
       mode: () => 'on',
     };
     render(
-      <QuoteBookingHost
+      <QuoteBookingHost guestEditorKey={GUEST_TEST_KEY}
         session={initialQuoteSession()}
         paneSave={client}
         savedStays={{
@@ -305,5 +307,14 @@ describe('booking card reload', () => {
     expect(screen.getByText('Booked in HMS – confirmation 98765-1')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'View HMS screenshots' })).toBeDefined();
+  });
+
+  it('holds a stored receipt while the signed-in message identity is unavailable', () => {
+    const savedStays = { s_aaaa1111_1: { confirmationNumber: '98765-1', status: 'booked' as const, screenshotRef: null } };
+    const view = render(<QuoteBookingHost session={initialQuoteSession()} savedStays={savedStays} />);
+    expect(screen.getByText('Select a signed-in mailbox and email to review bookings.')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Copy confirmation' })).toBeNull();
+    view.rerender(<QuoteBookingHost session={initialQuoteSession()} savedStays={savedStays} guestEditorKey={GUEST_TEST_KEY} />);
+    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeDefined();
   });
 });
