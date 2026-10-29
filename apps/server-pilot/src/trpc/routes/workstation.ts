@@ -97,6 +97,7 @@ import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { runStaffQuote } from '../../ai/staff-quote-run.js';
+import { childOccupancyIsCurrent, occupancyFromRevision, singleStayOccupancyIsCurrent } from '../../ai/child-occupancy.js';
 import {
   enqueueHmsJob,
   queueAutoStaffQuoteHmsJob,
@@ -113,6 +114,7 @@ import {
   enqueueQuotePdfJob,
   persistQuotePdfResult,
   quotePdfJobIdentity,
+  quotePdfRequestSchema,
   quotePdfResultOf,
   readQuotePdfJob,
   type QuotePdfRequest,
@@ -709,6 +711,14 @@ async function proposalStaysFor(
     } catch {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: resolveFailure });
     }
+    if (!(await childOccupancyIsCurrent(db, occupancyFromRevision(resolved.revision), {
+      transportId: ctx.activeTransportId, threadId: current.threadId, messageId: input.messageId,
+    }))) {
+      throw new TRPCError({
+        code: 'PRECONDITION_FAILED',
+        message: 'Confirm the number of children per room and each child’s age, then run the quote again.',
+      });
+    }
     stays.push({
       ...resolved,
       staff,
@@ -1046,6 +1056,12 @@ export const workstationRouter = router({
           revisionRef: input.revisionRef,
           factRefs: proposalFactRefsForRevision(bound.run, input.revisionRef),
         });
+        const occupancyScope = {
+          transportId: ctx.activeTransportId, threadId: bound.run.threadId, messageId: input.messageId,
+        };
+        if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(revision), occupancyScope))) {
+          return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' };
+        }
         const cloned = structuredClone(revision);
         const rowPrices = storedRowPrices(bound.run, cloned.id);
         const extraTotalMinor =
@@ -1058,6 +1074,9 @@ export const workstationRouter = router({
           extraTotalMinor,
           rowPrices,
         });
+        if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(revision), occupancyScope))) {
+          return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' };
+        }
         return {
           status: 'ready' as const,
           draft,
@@ -1086,10 +1105,24 @@ export const workstationRouter = router({
       const group = groups[0];
       if (
         !group?.arrival ||
+        !group.departure ||
         groups.length !== 1 ||
         groups.some((r) => !Number.isInteger(r.rooms) || (r.rooms ?? 0) < 1 || !Number.isInteger(r.adultsPerRoom) || (r.adultsPerRoom ?? 0) < 1)
       ) {
         return unavailable;
+      }
+      const [selected] = await getDb().select({ threadId: message.threadId }).from(message)
+        .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
+        .limit(1);
+      if (!selected) return unavailable;
+      const occupancyScope = { transportId: ctx.activeTransportId, threadId: selected.threadId, messageId: input.messageId };
+      const occupancy = { groups: [{
+        arrivalDate: group.arrival, departureDate: group.departure,
+        quantity: group.rooms ?? 0, adults: group.adultsPerRoom ?? 0,
+        children: group.childAges.length, childAges: group.childAges,
+      }] };
+      if (!(await singleStayOccupancyIsCurrent(getDb(), occupancy, occupancyScope))) {
+        return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' };
       }
       const party = input.analysis.party;
       try {
@@ -1108,6 +1141,9 @@ export const workstationRouter = router({
           propertyCode,
         });
         if (!prefill.requests.length) return unavailable;
+        if (!(await singleStayOccupancyIsCurrent(getDb(), occupancy, occupancyScope))) {
+          return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' };
+        }
         return {
           status: 'ready' as const,
           draft: bookingDraftFromPrefill({
@@ -1188,6 +1224,7 @@ export const workstationRouter = router({
           id: aiWorkflowRun.id,
           transportId: aiWorkflowRun.transportId,
           threadId: aiWorkflowRun.threadId,
+          triggerMessageId: aiWorkflowRun.triggerMessageId,
           state: aiWorkflowRun.state,
           createdAt: aiWorkflowRun.createdAt,
           finishedAt: aiWorkflowRun.finishedAt,
@@ -1211,6 +1248,12 @@ export const workstationRouter = router({
         analysis: input.analysis,
       });
       if (resolved.status !== 'ready') return resolved;
+      const occupancyScope = { transportId: ctx.activeTransportId, threadId: input.threadId, messageId: input.messageId };
+      // Across emails, only a single unambiguous saved room row can establish the same child occupancy.
+      const occupancyCurrent = () => run.triggerMessageId === input.messageId
+        ? childOccupancyIsCurrent(getDb(), occupancyFromRevision(resolved.revision), occupancyScope)
+        : singleStayOccupancyIsCurrent(getDb(), resolved.revision, occupancyScope);
+      if (!(await occupancyCurrent())) return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' as const };
       const staff = run.metrics?.staffQuoteAttestation as
         | (StaffQuoteAttestation & { salesStrategy?: 'BAR' | 'Government' })
         | undefined;
@@ -1225,6 +1268,7 @@ export const workstationRouter = router({
         extraTotalMinor,
         rowPrices,
       });
+      if (!(await occupancyCurrent())) return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' as const };
       return {
         status: 'ready' as const,
         draft,
@@ -1566,13 +1610,27 @@ export const workstationRouter = router({
         })
         .strict(),
     )
-    .query(({ input, ctx }) =>
-      readQuotePdfJob({
+    .query(async ({ input, ctx }) => {
+      const job = await readQuotePdfJob({
         transportId: ctx.activeTransportId,
         workItemId: input.workItemId,
         revisionId: quotePdfJobIdentity(input),
-      }),
-    ),
+      });
+      if (!job?.result) return job;
+      const [stored] = await getDb().select({ request: aiWorkflowRun.readRequest, messageId: aiWorkflowRun.triggerMessageId })
+        .from(aiWorkflowRun)
+        .where(and(eq(aiWorkflowRun.id, job.runId), eq(aiWorkflowRun.transportId, ctx.activeTransportId)))
+        .limit(1);
+      const request = quotePdfRequestSchema.safeParse(stored?.request);
+      const proposal = qualifiedProposalInput.safeParse(request.success ? request.data.proposal : null);
+      if (!request.success || !proposal.success || request.data.workItemId !== input.workItemId ||
+        request.data.transportId !== ctx.activeTransportId || proposal.data.workItemId !== input.workItemId ||
+        proposal.data.messageId !== stored?.messageId) {
+        throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'This quote is no longer ready. Run it again.' });
+      }
+      await proposalStaysFor(proposal.data, ctx, 'Proposal evidence is not ready');
+      return job;
+    }),
   /**
    * Excel twin of qualifiedQuoteProposalPdf: the same ownership, transport and currency checks, then every approved
    * stay's revision and authorised extras written into the staff quotation template.
