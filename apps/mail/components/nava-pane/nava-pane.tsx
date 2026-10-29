@@ -237,11 +237,13 @@ function analysisWithPaneEdits(
   analysis: QuoteAnalysis,
   transportId: string,
   messageKey: string | undefined,
+  recoverSavedPreferences = false,
 ): QuoteAnalysis {
   if (!messageKey) return analysis;
   const groups = overlayRememberedGroups(
     analysis.groups,
     recalledPaneEdits(paneEditKey(transportId, messageKey)),
+    recoverSavedPreferences,
   );
   return groups === analysis.groups ? analysis : { ...analysis, groups };
 }
@@ -844,6 +846,7 @@ export function NavaPane({
           decision.analysis,
           binding.transportId,
           binding.internetMessageId,
+          true,
         ),
       } as const;
       const before = reduceQuoteSession(quoteSessionRef.current, { type: 'analysis_started' });

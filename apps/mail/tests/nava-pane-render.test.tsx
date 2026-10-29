@@ -26,7 +26,7 @@ import { AMEND_SAVE_COPY } from '../lib/quote-workflow/amend-cancel';
 import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
-import { resetPaneEditsForTests } from '../lib/quote-workflow/pane-edits';
+import { paneEditKey, rememberPaneEdits, resetPaneEditsForTests } from '../lib/quote-workflow/pane-edits';
 
 // The pane reloads only through reloadPane(). Tests observe it; the real reload is never called.
 vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
@@ -86,6 +86,7 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     queueStaffQuoteMutation: vi.fn().mockResolvedValue({ runId: null }),
     staffQuoteSources: {} as Record<string, { messageId: string; threadId: string; sourceHash: string }>,
     quotePaneConfig: null as null | Record<string, unknown>,
+    quotePaneConfigGate: null as null | Promise<void>,
     findPartyMutation: vi.fn().mockResolvedValue({
       outcome: 'no_match',
       results: [],
@@ -281,7 +282,10 @@ vi.mock('../providers/query-provider', () => ({
     },
     quoteWorkflow: {
       rateCatalogue: {
-        query: async () => bridgeMockState.quotePaneConfig,
+        query: async () => {
+          await bridgeMockState.quotePaneConfigGate;
+          return bridgeMockState.quotePaneConfig;
+        },
       },
       voucherFind: { query: voucherFindQuery },
       analyseSelection: {
@@ -720,6 +724,7 @@ describe('NavaPane', () => {
     sessionStorage.clear();
     bridgeMockState.analysisOverride = null;
     bridgeMockState.quotePaneConfig = null;
+    bridgeMockState.quotePaneConfigGate = null;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
@@ -758,6 +763,7 @@ describe('NavaPane', () => {
     bridgeMockState.analyseFails = false;
     bridgeMockState.storedWork = null;
     bridgeMockState.storedLookupGate = null;
+    bridgeMockState.quotePaneConfigGate = null;
     bridgeMockState.staffQuoteJobCalls.length = 0;
     setMailCacheScope({ userId: null, activeTransportId: null });
     bridgeMockState.recordEvent.mockReset();
@@ -1055,6 +1061,32 @@ describe('NavaPane', () => {
     await settle();
     expect(bridgeMockState.analyseCalls).toBe(0);
     expect(screen.getByLabelText('Stay action').textContent).toBe('Quote');
+  });
+
+  it('restores old saved preference evidence before a late Centurion catalogue arrives', async () => {
+    configureCenturionPane();
+    let loadCatalogue!: () => void;
+    bridgeMockState.quotePaneConfigGate = new Promise<void>((resolve) => { loadCatalogue = resolve; });
+    let enableQueue!: (value: boolean) => void;
+    bridgeMockState.jobQueueEnabledQuery.mockImplementation(() => new Promise((resolve) => { enableQueue = resolve; }));
+    bridgeMockState.queueStaffQuoteMutation.mockResolvedValue({ runId: 'staff-job-old-edit' });
+    const old = { ...STORED_READY.analysis.groups[0]!, stayId: 's_1' } as StayGroupRequirement;
+    const sourcePreference = { roomType: null, board: null };
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      analysis: { ...STORED_READY.analysis, groups: [{ ...old, sourcePreference }] },
+    };
+    rememberPaneEdits(paneEditKey('transport-1', '<quote-request@example.invalid>'), [old]);
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    await act(async () => { loadCatalogue(); });
+    await waitFor(() => expect(enableQueue).toBeTypeOf('function'));
+    await act(async () => { enableQueue(true); });
+    fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
+    await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'mail-1', groups: [expect.objectContaining({ sourcePreference })],
+    })));
   });
 
   it('stored: a human-written amendment extraction renders Find booking without a live read or ApproveCard', async () => {

@@ -36,12 +36,25 @@ export function recalledPaneEdits(key: string): StayGroupRequirement[] | null {
 export function overlayRememberedGroups(
   groups: StayGroupRequirement[],
   remembered: StayGroupRequirement[] | null,
+  recoverSavedPreferences = false,
 ): StayGroupRequirement[] {
   if (!remembered) return groups;
   const kept = remembered.filter((row) => row.id !== DRAFT_GROUP_ID);
   if (!remembered.length) return kept;
   if (!kept.length) return groups;
-  return kept;
+  if (!recoverSavedPreferences) return kept;
+  // Older pane edits did not store raw pricing preferences. Only a unique, matching saved row can restore them.
+  // This metadata is harmless for other properties; only Centurion's quote binder submits it.
+  return kept.map((row) => {
+    if (row.sourcePreference) return row;
+    const matches = groups.filter((group) => group.id === row.id);
+    if (matches.length !== 1) return row;
+    const saved = matches[0]!;
+    const room = (value: string | undefined) => typeof value === 'string' ? value.trim() || null : null;
+    if (!saved.sourcePreference || (row.stayId && saved.stayId && row.stayId !== saved.stayId) ||
+        room(row.roomPreference) !== room(saved.roomPreference) || row.board !== saved.board) return row;
+    return { ...row, sourcePreference: { ...saved.sourcePreference } };
+  });
 }
 
 /** Drops remembered stay edits for one mail so a history refresh can show the server values. */
