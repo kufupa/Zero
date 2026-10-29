@@ -1046,7 +1046,7 @@ describe('QuoteWorkflowPanel', () => {
     fireEvent.click(stay);
     expect(onRunStep).toHaveBeenCalled();
     expect(screen.getByRole('button', { name: '− Children / requests' }).getAttribute('aria-expanded')).toBe('true');
-    expect((screen.getByLabelText('Children per room') as HTMLSelectElement).value).toBe('unknown');
+    expect((screen.getByLabelText('Children per room') as unknown as HTMLSelectElement).value).toBe('unknown');
     fireEvent.change(screen.getByLabelText('Children ages'), { target: { value: ' , ' } });
     expect(onPatchGroup).toHaveBeenCalledWith('g1', { childrenAges: [] });
   });
