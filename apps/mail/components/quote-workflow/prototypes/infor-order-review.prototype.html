@@ -528,8 +528,26 @@ svg.lucide{width:14px;height:14px;stroke-width:2;flex:none}
 .pair-caption { display:block; margin-bottom:3px; color:#64748b; font-size:10px; line-height:1.3; }
 .field-help { margin-top:4px; color:#64748b; font-size:11px; line-height:1.35; }
 .conflict { color:#8a4b08; }
-.child-edit { display:grid; gap:8px; margin-top:7px; padding:9px; border-left:2px solid #bfdbfe; background:#f8fafc; }
-.child-grid { display:grid; grid-template-columns:minmax(0,1fr) 80px; gap:8px; }
+.child-edit { display:grid; gap:10px; margin-top:8px; padding:12px; border:1px solid #cbd5e1; border-radius:3px; background:#fff; box-shadow:0 4px 12px #0f172a1a; }
+.child-edit h3 { margin:0; font-size:13px; }
+.child-count-row, .currency-entry { display:flex; gap:4px; align-items:center; }
+.child-count-row input, .currency-entry input { min-width:0; }
+.child-count-row button { flex:none; min-height:32px; padding:4px 8px; border:1px solid #cbd5e1; border-radius:3px; background:#fff; color:#0066cc; }
+.child-count-row button:disabled { color:#94a3b8; }
+.currency-entry span { flex:none; padding:6px; border:1px solid #cbd5e1; border-radius:3px; background:#f1f5f9; color:#475569; font-size:11px; }
+.field-origin { margin-left:auto; color:#64748b; font-size:10px; font-weight:600; white-space:nowrap; }
+.party-step { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+.stepper { display:flex; align-items:center; border:1px solid #cbd5e1; border-radius:3px; overflow:hidden; }
+.stepper button { min-width:34px; min-height:32px; border:0; background:#f8fafc; color:#0066cc; font-size:17px; }
+.stepper button:disabled { color:#cbd5e1; }
+.stepper output { min-width:38px; text-align:center; }
+.child-editor-actions { display:flex; justify-content:flex-end; gap:8px; }
+.child-editor-actions button { padding:6px 10px; border:1px solid #cbd5e1; border-radius:3px; background:#fff; color:#0066cc; font-weight:600; }
+.child-editor-actions button:last-child { border-color:#0066cc; background:#0066cc; color:#fff; }
+.child-editor-error { color:#b42318; font-size:11px; }
+.inline-lookup { padding:9px; border:1px solid #cbd5e1; border-radius:3px; background:#fff; box-shadow:0 4px 12px #0f172a1a; }
+.inline-lookup h3 { margin:0 0 8px; font-size:13px; }
+.inline-lookup > input { margin:8px 0; }
 .nightly { margin:2px 0 0; padding:8px; border:1px solid #e2e8f0; border-radius:3px; background:#f8fafc; }
 .line { display:flex; justify-content:space-between; gap:8px; padding:3px 0; line-height:1.35; }
 .line span:last-child { white-space:nowrap; text-align:right; }
@@ -625,7 +643,7 @@ Thank you.</div>
       guarantee: 'Awaiting Voucher', roomType: { queen: 'STQN · Standard Queen', twin: 'STWN · Standard Twin' },
       chargeRoomType: { queen: '', twin: '' }, ratePlan: { queen: 'Agency B&B · sample', twin: 'Agency B&B · sample' },
       promotion: { queen: '', twin: '' }, mealPlan: { queen: 'Bed & Breakfast', twin: 'Bed & Breakfast' },
-      resortFee: { queen: '', twin: '' }, market: { queen: 'Wholesale · sample', twin: 'Wholesale · sample' },
+      resortFee: { queen: '', twin: '' }, resortFeeAmount: { queen: '0.00', twin: '0.00' }, market: { queen: 'Wholesale · sample', twin: 'Wholesale · sample' },
       track: { queen: 'Agency rate · sample', twin: 'Agency rate · sample' }, confidentialRate: false,
       assignedRoom: { queen: '', twin: '' }, doNotMove: false, doNotMoveReason: '', scheduledRoom: { queen: '', twin: '' },
       waitlistPriority: '', bookerName: 'Sample travel agent', bookerContact: 'agent@example.test', authorisedBy: '',
@@ -647,7 +665,7 @@ Thank you.</div>
       lastProperty: '', lastRoom: '', lastCheckout: '', cmsFormStatus: '', cmsSend: true,
       cmsMessage: '03 · sample confirmation', cmsEmail: 'reservations@example.test',
       lifetimeRevenue: '', lifetimeNights: '', lifetimeStays: '', loyalty: '', legacyPoints: '',
-      legacyLifestyleUpdate: false, newExistingMember: false,
+      legacyLifestyleUpdate: '', newExistingMember: '',
       addOn: 'Airport transfer · sample', addOnDate: '2027-11-12', addOnTime: '10:30', addOnRoom: 'twin', addOnQuantity: '1',
     };
     const params = new URL(window.location.href).searchParams;
@@ -656,7 +674,7 @@ Thank you.</div>
     const scenario = scenarios.includes(params.get('scenario')) ? params.get('scenario') : 'ready';
     const state = { values, scenario, cmsMode: 'permitted', expanded: {}, dirty: {}, conflicts: {}, unbound: {}, lookup: null,
       children: { queen: [], twin: [{ name: 'Taylor Example', age: scenario === 'missing' ? '' : '8' }] },
-      childEditor: false, rates: 'ready', rateChanged: scenario === 'changed', prefillArrived: false, recoveryOpen: false };
+      childEditor: null, updateChildCategories: { queen: true, twin: true }, rates: 'ready', rateChanged: scenario === 'changed', prefillArrived: false, recoveryOpen: false };
     let lookupGeneration = 0;
     const esc = (value) => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
     const money = (value) => 'R' + Number(value).toLocaleString('en-ZA');
@@ -672,7 +690,8 @@ Thank you.</div>
       const sameName = rooms.some((other) => other !== room && state.values.firstName[other] === state.values.firstName[room]);
       return `${label} · ${name}${sameName ? ' · ' + state.values.profileId[room] : ''}`;
     };
-    const childAgesValid = () => rooms.every((room) => state.children[room].every((child) => /^\d{1,2}$/.test(child.age) && Number(child.age) <= 17 && child.name.trim()));
+    const validAge = (age) => /^\d{1,2}$/.test(String(age)) && Number(age) <= 17;
+    const childAgesValid = () => rooms.every((room) => state.children[room].every((child) => validAge(child.age)));
     function nightDates() {
       const start = Date.parse(state.values.arrival + 'T12:00:00Z');
       const end = Date.parse(state.values.departure + 'T12:00:00Z');
@@ -700,6 +719,7 @@ Thank you.</div>
     }
     function selectionKey() { return JSON.stringify([state.values.agency, state.values.arrival, state.values.departure, state.values.adults, state.values.roomType, state.values.ratePlan, state.values.track, state.children]); }
     const sampleIneligible = () => state.values.agency === 'No agency' && rooms.some((room) => state.values.ratePlan[room].startsWith('Agency') || state.values.track[room].startsWith('Agency'));
+    const pricesReady = () => state.rates === 'ready' && childAgesValid() && nightDates().length > 0 && !sampleIneligible() && !state.unbound.agency && rooms.every((room) => state.values.roomType[room] && state.values.ratePlan[room] && !state.unbound['roomType.' + room] && !state.unbound['ratePlan.' + room]);
     function refreshRates() {
       lookupGeneration += 1;
       if (!nightDates().length || !childAgesValid()) { state.rates = 'needs-details'; return; }
@@ -712,7 +732,7 @@ Thank you.</div>
       field('agency', 'Primary Booking Agency', 'lookup', true), field('organization', 'Organization', 'lookup'),
       field('arAccount', 'A/R Account', 'lookup'), field('billingReference', 'Billing Reference', 'text'),
       field('arrival', 'Arrival Date', 'date', true, [], { required: true }), field('nights', 'Nights', 'number', true),
-      field('departure', 'Departure Date', 'date', true, [], { required: true }), field('adults', 'Adults', 'pair-select', true, Array.from({length: 16}, (_, i) => String(i + 1))),
+      field('departure', 'Departure Date', 'date', true, [], { required: true }), field('adults', 'Adults', 'pair-select', true, Array.from({length: 99}, (_, i) => String(i + 1))),
       field('child0', 'Child 0–02', 'band', true, [], { band: 0 }), field('child3', 'Child 03–12', 'band', true, [], { band: 1 }),
       field('child13', 'Child 13–17', 'band', true, [], { band: 2 }), field('children', 'Children', 'children', true),
       field('reason', 'Reason for Stay', 'select', false, ['', 'Business · sample', 'Leisure · sample']),
@@ -722,10 +742,10 @@ Thank you.</div>
       field('guarantee', 'Guarantee Type', 'select', true, ['Awaiting Voucher', 'Guaranteed By Agent', 'Guaranteed By Company', 'Non-Guaranteed Individual']),
       field('roomType', 'Room Type', 'pair-lookup', true), field('chargeRoomType', 'Room Type for Charge', 'pair-lookup'),
       field('ratePlan', 'Rate Plan', 'pair-lookup', true), field('promotion', 'Promotion', 'pair-lookup'),
-      field('mealPlan', 'Meal Plan', 'pair-readonly', true), field('resortFee', 'Resort Fee', 'pair-readonly'),
-      field('market', 'Market Segment', 'pair-readonly', true), field('track', 'Track / Sub Segment', 'pair-lookup', true),
+      field('mealPlan', 'Meal Plan', 'pair-readonly', true), field('resortFee', 'Resort Fee', 'pair-readonly'), field('resortFeeAmount', 'Resort Fee Amount', 'pair-readonly'),
+      field('market', 'Market Segment', 'pair-readonly', true), field('track', 'Track / Sub Segment', 'pair-readonly', true),
       field('confidentialRate', 'Confidential Rate', 'checkbox'), field('assignedRoom', 'Room', 'pair-lookup'),
-      field('doNotMove', 'Do Not Move', 'checkbox'), field('doNotMoveReason', 'Do Not Move Reason', 'text'),
+      field('doNotMove', 'Do Not Move', 'checkbox'), field('doNotMoveReason', 'Do Not Move Reason', 'conditional-text'),
       field('scheduledRoom', 'Scheduled Room', 'pair-readonly'), field('averageRate', 'Average Rate', 'computed-pair', true),
       field('totalRate', 'Total Rate', 'computed-pair', true), field('addOnTotal', 'Add-On Total', 'computed-pair', true),
       field('grandTotal', 'Grand Total', 'computed-pair', true), field('waitlistPriority', 'Waitlist Priority', 'readonly'),
@@ -742,7 +762,7 @@ Thank you.</div>
       field('legacyMarketing', 'Legacy Marketing Opt in', 'pair-checkbox'), field('lifestyleMarketing', 'Lifestyle Marketing Opt in', 'pair-checkbox'),
       field('legacyMember', 'Legacy Lifestyle Member', 'pair-checkbox'), field('terms', 'Terms and Conditions', 'pair-checkbox'),
       field('language', 'Language', 'pair-select', false, ['', 'English · sample']), field('passportReference', 'Scanned Passport Reference', 'pair-readonly'),
-      field('passportDate', 'Passport Scan Date', 'pair-date'), field('addressType', 'Address Type', 'pair-select', false, ['', 'Billing · sample', 'Home · sample']),
+      field('passportDate', 'Passport Scan Date', 'pair-readonly'), field('addressType', 'Address Type', 'pair-select', false, ['', 'Billing · sample', 'Home · sample']),
       field('address', 'Address', 'pair-textarea'), field('city', 'City', 'pair-text'), field('postalCode', 'Postal Code', 'pair-lookup'),
       field('country', 'Country', 'pair-lookup'), field('province', 'State / Province', 'pair-lookup'), field('nationality', 'Nationality', 'pair-lookup'),
       field('residence', 'Country of Residence', 'pair-lookup'), field('vat', 'VAT Id', 'pair-text'), field('vehicle', 'Vehicle Reg No.', 'pair-text'),
@@ -754,7 +774,7 @@ Thank you.</div>
       field('flags', 'Flags', 'text'), field('status', 'Status', 'status', true), field('confirmation', 'Confirmation Number', 'confirmation', true),
       field('externalReference', 'External Reference 1', 'text'), field('agencyContract', 'Booking Agency Contract', 'readonly'),
       field('wifiVoucher', 'Wi-Fi Voucher', 'lookup'), field('wifiStatus', 'WIFI Status', 'readonly'),
-      field('group', 'Group', 'lookup'), field('individualGroup', 'Ind. Group', 'lookup'), field('depositDueAmount', 'Deposit Due Amount Required', 'readonly'),
+      field('group', 'Group', 'lookup'), field('individualGroup', 'Ind. Group', 'text'), field('depositDueAmount', 'Deposit Due Amount Required', 'number'),
       field('depositDueDate', 'Deposit Due Date', 'date'), field('depositReceived', 'Deposit Received', 'readonly'), field('balance', 'Balance', 'readonly'),
       field('lastProperty', 'Last Property', 'readonly'), field('lastRoom', 'Last Room Occupied', 'readonly'), field('lastCheckout', 'Last Checkout Date', 'readonly'),
       field('reservationSettlementType', 'Settlement Type', 'lookup'),
@@ -762,7 +782,7 @@ Thank you.</div>
       field('cmsMessage', 'CMS Message Id', 'lookup', true), field('cmsEmail', 'CMS Booker Email', 'email', true),
       field('lifetimeRevenue', 'Lifetime Revenue', 'readonly'), field('lifetimeNights', 'Lifetime Nights', 'readonly'),
       field('lifetimeStays', 'Lifetime Stays', 'readonly'), field('loyalty', 'Loyalty Number', 'readonly'), field('legacyPoints', 'Legacy Points Balance', 'readonly'),
-      field('legacyLifestyleUpdate', 'Legacy Lifestyle Update', 'checkbox'), field('newExistingMember', 'New / Existing Member', 'checkbox'),
+      field('legacyLifestyleUpdate', 'Legacy Lifestyle Update', 'readonly'), field('newExistingMember', 'New / Existing Member', 'readonly'),
     ];
     const ADDON = [field('addOn', 'Hotel Add-On', 'lookup', true), field('addOnDate', 'Date', 'date', true),
       field('addOnTime', 'Arrival Time', 'time', true), field('addOnRoom', 'Attach to', 'select', true, ['queen', 'twin']),
@@ -775,10 +795,10 @@ Thank you.</div>
     function valueFor(item, room) {
       const p = prices();
       if (item.kind === 'band') return String(childBands(room)[item.band]);
-      if (item.key === 'averageRate') return p.dates.length ? money(p.totals[room] / p.dates.length) : '—';
-      if (item.key === 'totalRate') return p.dates.length ? money(p.totals[room]) : '—';
+      if (item.key === 'averageRate') return pricesReady() ? money(p.totals[room] / p.dates.length) : '—';
+      if (item.key === 'totalRate') return pricesReady() ? money(p.totals[room]) : '—';
       if (item.key === 'addOnTotal') return money(room === state.values.addOnRoom ? p.addOn : 0);
-      if (item.key === 'grandTotal') return money(p.totals[room] + (room === state.values.addOnRoom ? p.addOn : 0));
+      if (item.key === 'grandTotal') return pricesReady() ? money(p.totals[room] + (room === state.values.addOnRoom ? p.addOn : 0)) : '—';
       if (item.key === 'status') return state.scenario === 'uncertain' && room === 'twin' ? 'Uncertain · check HMS' : state.scenario === 'partial' && state.values.addOn === 'None' && room === 'twin' ? 'Not saved · needs attention' : hasOutcome() ? 'Confirmed · example' : 'New · not yet saved';
       if (item.key === 'confirmation') return state.scenario === 'uncertain' && room === 'twin' ? 'May exist · check HMS' : state.scenario === 'partial' && state.values.addOn === 'None' && room === 'twin' ? 'Not assigned' : hasOutcome() ? (room === 'queen' ? 'SIM-Q-1042' : 'SIM-T-1043') : 'Not assigned';
       const value = state.values[item.key];
@@ -789,44 +809,50 @@ Thank you.</div>
       const id = `field-${item.key}${room ? '-' + room : ''}`;
       const key = item.key + (room ? '.' + room : '');
       const data = `data-field="${esc(item.key)}"${room ? ` data-room="${room}"` : ''}`;
-      const disabled = hasOutcome() || (item.key === 'cmsSend' && state.cmsMode === 'unverified') ? ' disabled' : '';
+      const disabled = hasOutcome() || (item.key === 'cmsSend' && state.cmsMode === 'unverified') || (item.key === 'adults' && state.childEditor?.room === room) ? ' disabled' : '';
       let html;
       if (item.kind.includes('lookup')) html = `<div class="lookup-entry"><input id="${id}" ${data} ${item.kind === 'pair-name-lookup' ? '' : 'data-lookup-input'} type="text" value="${esc(value)}" placeholder="Search HMS…" aria-label="${esc(item.label)}${room ? ' · ' + esc(roomLabel(room)) : ''}"${disabled}><button type="button" data-lookup="${esc(item.key)}"${room ? ` data-room="${room}"` : ''} aria-label="Search ${esc(item.label)}${room ? ' · ' + esc(roomLabel(room)) : ''}"${disabled}><span class="lookup-icon" aria-hidden="true">⌕</span></button></div>`;
       else if (item.kind.includes('checkbox')) html = `<label class="checkbox"><input id="${id}" ${data} type="checkbox" aria-label="${esc(item.label)}${room ? ' · ' + esc(roomLabel(room)) : ''}"${value && !(item.key === 'cmsSend' && state.cmsMode === 'unverified') ? ' checked' : ''}${disabled}>${room ? '' : ' ' + esc(item.label)}</label>`;
       else if (item.kind.includes('select')) html = `<select id="${id}" ${data}${disabled}>${item.options.map((option) => `<option value="${esc(option)}"${String(option) === String(value) ? ' selected' : ''}>${esc(item.key === 'addOnRoom' ? roomLabel(option) : option || 'Select…')}</option>`).join('')}</select>`;
       else if (item.kind.includes('textarea')) html = `<textarea id="${id}" ${data}${disabled}>${esc(value)}</textarea>`;
       else {
-        const readOnly = ['readonly', 'pair-readonly', 'band', 'computed', 'computed-pair', 'status', 'confirmation'].includes(item.kind);
+        const readOnly = ['readonly', 'pair-readonly', 'band', 'computed', 'computed-pair', 'status', 'confirmation'].includes(item.kind) || (item.key === 'doNotMoveReason' && !state.values.doNotMove);
         const type = item.kind.includes('date') ? 'date' : item.kind.includes('email') ? 'email' : item.kind === 'number' ? 'number' : item.kind === 'time' ? 'time' : 'text';
-        html = `<input id="${id}" ${data} type="${type}" value="${esc(value)}"${readOnly ? ' readonly' : disabled}>`;
+        html = `<input id="${id}" ${data} type="${type}" value="${esc(value)}"${item.key === 'depositDueAmount' ? ' min="0" step="0.01"' : ''}${readOnly ? ' readonly' : disabled}>`;
       }
+      if (['resortFeeAmount', 'averageRate', 'totalRate', 'addOnTotal', 'grandTotal'].includes(item.key)) html = `<div class="currency-entry">${html}<span>ZAR</span></div>`;
       const conflict = Object.hasOwn(state.conflicts, key) ? `<div class="field-help conflict">New suggestion: ${esc(state.conflicts[key] || 'empty')} · your edit was kept.</div>` : '';
       const unbound = state.unbound[key] ? '<div class="field-help conflict">Select a matching example from the lookup.</div>' : '';
       const fullValue = room && item.kind === 'pair-lookup' && String(value).length > 13 ? `<div class="field-help">${esc(value)}</div>` : '';
       return `${html}${fullValue}${conflict}${unbound}`;
     }
     function childrenField() {
-      const counts = rooms.map((room) => `<div><span class="pair-caption">${esc(roomLabel(room))}</span><input readonly value="${state.children[room].length}"></div>`).join('');
-      const editors = state.childEditor ? `<div class="child-edit">${rooms.map((room) => `<div><strong>${esc(roomLabel(room))}</strong><div class="field-help">Number of children</div><input type="number" min="0" max="4" data-child-count="${room}" value="${state.children[room].length}"${hasOutcome() ? ' disabled' : ''}>${state.children[room].map((child, index) => `<div class="child-grid"><div class="field"><label class="field-label">Child name</label><input data-child-room="${room}" data-child-index="${index}" data-child-part="name" value="${esc(child.name)}"${hasOutcome() ? ' disabled' : ''}></div><div class="field"><label class="field-label">Age</label><input type="number" min="0" max="17" data-child-room="${room}" data-child-index="${index}" data-child-part="age" value="${esc(child.age)}"${hasOutcome() ? ' disabled' : ''}></div></div>`).join('')}</div>`).join('')}</div>` : '';
-      const ages = rooms.flatMap((room) => state.children[room].map((child) => `${esc(roomLabel(room))}: ${esc(child.name || 'Name missing')} · age ${esc(child.age || 'missing')}`)).join('<br>');
-      return `<div class="pair">${counts}</div>${ages ? `<div class="field-help">${ages}</div>` : ''}<button type="button" class="text-button" data-child-editor>${state.childEditor ? 'Hide child ages' : 'Edit child ages'}</button>${editors}`;
+      const counts = rooms.map((room) => `<div><span class="pair-caption">${esc(roomLabel(room))}</span><div class="child-count-row"><input readonly aria-label="Children · ${esc(roomLabel(room))}" value="${state.children[room].length}"><button type="button" data-child-editor="${room}" aria-label="Edit adults and children · ${esc(roomLabel(room))}"${hasOutcome() || state.childEditor ? ' disabled' : ''}>Edit</button></div></div>`).join('');
+      const ages = rooms.flatMap((room) => state.children[room].map((child, index) => `${esc(roomLabel(room))}: child ${index + 1} · age ${validAge(child.age) ? esc(child.age) : 'not entered'}`)).join('<br>');
+      const draft = state.childEditor;
+      const stepper = (kind, label, value, min) => `<div class="party-step"><span>${label}${kind === 'adults' ? ' <span class="required">*</span>' : ''}</span><div class="stepper"><button type="button" data-child-step="${kind}" data-delta="-1" aria-label="Decrease ${label}"${value <= min ? ' disabled' : ''}>−</button><output aria-label="${label} count">${value}</output><button type="button" data-child-step="${kind}" data-delta="1" aria-label="Increase ${label}"${value >= 99 ? ' disabled' : ''}>+</button></div></div>`;
+      const editor = draft ? `<section class="child-edit" role="dialog" aria-label="Adults and children · ${esc(roomLabel(draft.room))}"><h3>Adults and children · ${esc(roomLabel(draft.room))}</h3>${stepper('adults', 'Adults', draft.adults, 1)}${stepper('children', 'Children', draft.children.length, 0)}<label class="checkbox"><input type="checkbox" data-child-update-categories${draft.updateCategories ? ' checked' : ''}> Update Child Categories</label>${draft.children.map((child, index) => `<label class="field"><span class="field-label">Age of Child ${index + 1} <span class="required">*</span></span><select data-child-draft-age="${index}" aria-label="Age of Child ${index + 1}" required><option value="">Select age…</option>${Array.from({length: 18}, (_, age) => `<option value="${age}"${String(child.age) === String(age) ? ' selected' : ''}>${age}</option>`).join('')}</select></label>`).join('')}${draft.error ? `<div class="child-editor-error" role="alert">${esc(draft.error)}</div>` : ''}<div class="child-editor-actions"><button type="button" data-child-cancel>Cancel</button><button type="button" data-child-apply>Apply</button></div></section>` : '';
+      return `<div class="pair">${counts}</div>${ages ? `<div class="field-help">${ages}</div>` : ''}${editor}`;
     }
     function renderField(item) {
       const pair = item.kind.startsWith('pair-') || ['band', 'computed-pair', 'status', 'confirmation'].includes(item.kind);
       const edited = pair ? rooms.some((room) => state.dirty[item.key + '.' + room]) : state.dirty[item.key];
-      const label = `<div class="field-label"><span>${esc(item.label)}${item.required ? '<span class="required"> *</span>' : ''}</span>${edited ? `<span class="edited">${state.prefillArrived ? 'Edit kept' : 'Edited'}</span>` : ''}</div>`;
+      const derived = ['mealPlan', 'resortFee', 'resortFeeAmount', 'market', 'track', 'averageRate', 'totalRate', 'addOnTotal', 'grandTotal'].includes(item.key);
+      const label = `<div class="field-label"><span>${esc(item.label)}${item.required ? '<span class="required"> *</span>' : ''}</span>${derived ? '<span class="field-origin">Auto-filled</span>' : ''}${edited ? `<span class="edited">${state.prefillArrived ? 'Edit kept' : 'Edited'}</span>` : ''}</div>`;
       let body;
       if (item.kind === 'children') body = childrenField();
       else if (pair) body = `<div class="pair">${rooms.map((room) => `<div><span class="pair-caption">${esc(roomLabel(room))}</span>${control(item, room)}</div>`).join('')}</div>`;
       else body = control(item);
-      const help = item.key === 'cmsSend' && state.cmsMode === 'unverified' ? '<div class="field-help">Not included: combined confirmation support or send permission is not verified.</div>' : item.key === 'cmsEmail' ? '<div class="field-help">Proposed recipient. Actual HMS routing and combined contents still need verification.</div>' : item.kind === 'date' && valueFor(item) ? `<div class="field-help">${esc(dateLabel(valueFor(item)))}</div>` : '';
+      const help = item.key === 'cmsSend' && state.cmsMode === 'unverified' ? '<div class="field-help">Not included: combined confirmation support or send permission is not verified.</div>' : item.key === 'cmsEmail' ? '<div class="field-help">Proposed recipient. Actual HMS routing and combined contents still need verification.</div>' : item.key === 'doNotMoveReason' ? '<div class="field-help">Available when Do Not Move is selected in this example.</div>' : item.kind === 'date' && valueFor(item) ? `<div class="field-help">${esc(dateLabel(valueFor(item)))}</div>` : '';
       const nightly = item.key === 'ratePlan' ? nightlyRates() : '';
-      return `<div class="field">${item.kind === 'checkbox' ? '' : label}${body}${help}${nightly}</div>`;
+      const lookup = state.lookup?.key === item.key ? modal() : '';
+      return `<div class="field">${item.kind === 'checkbox' ? '' : label}${body}${help}${nightly}${lookup}</div>`;
     }
     function nightlyRates() {
       const p = prices();
       if (!p.dates.length) return '<div class="field-help">This prototype calculates sample rates for 1–7 nights.</div>';
-      const eligibility = state.rates !== 'ready' ? 'Sample eligibility is being checked or needs details.' : sampleIneligible() ? 'The agency rate or track is not eligible with no agency selected in this example.' : 'Eligible for the selected agency, party and dates in this example; live eligibility is not verified.';
+      if (!pricesReady()) return '<div class="field-help">Select the room and rate and complete child ages to see the example nightly rates.</div>';
+      const eligibility = 'Eligible for the selected agency, party and dates in this example; live eligibility is not verified.';
       return `<div class="nightly"><div class="field-help">${eligibility}</div>${rooms.map((room) => `<div class="nightly-title">${esc(roomLabel(room))} · nightly rates</div>${p.dates.map((date, i) => `<div class="line"><span>${esc(dateLabel(date))}</span><span>${money(p.nightly[room][i])}</span></div>`).join('')}`).join('')}</div>`;
     }
     function section(key, title, fields, note = '') {
@@ -854,20 +880,21 @@ Thank you.</div>
     }
     function notices() {
       let html = '';
-      if (!childAgesValid() && !hasOutcome()) html += '<div class="notice"><strong>Child details needed</strong>Enter each child’s name and age to check the rate.</div>';
+      if (!childAgesValid() && !hasOutcome()) html += '<div class="notice"><strong>Child ages needed</strong>Enter each child’s age to check the rate.</div>';
       if (state.rates === 'checking' && !hasOutcome()) html += '<div class="notice info"><strong>Checking rates for your changes</strong>Your edits are kept while the example lookup finishes.</div>';
       if (state.scenario === 'changed' && !hasOutcome()) { const p = prices(); html += `<div class="notice"><strong>Rate changed while you were reviewing</strong>${p.dates.length > 1 ? `${esc(roomLabel('twin'))}, ${esc(dateLabel(p.dates[1]))}: ${money(p.nightly.twin[1] - 100)} → ${money(p.nightly.twin[1])}.` : 'Check the current nightly rate.'} Review the updated total.</div>`; }
       if (state.prefillArrived && Object.keys(state.dirty).length) html += '<div class="notice good"><strong>Background data arrived</strong>Your edits were kept. Filled fields remain visible when empty fields are hidden.</div>';
       return html;
     }
     function disabledReason() {
+      if (state.childEditor) return 'Apply or cancel the adults and children changes.';
       if (!nightDates().length) return 'This prototype supports example stays of 1–7 nights.';
-      if (!childAgesValid()) return 'Enter each child’s name and age.';
+      if (!childAgesValid()) return 'Enter each child’s age.';
       if (state.rates !== 'ready') return 'Wait for the updated rates.';
       if (Object.values(state.unbound).some(Boolean)) return 'Select matches for the typed lookup fields.';
       if (!state.values.agency || !state.values.source || !state.values.guarantee) return 'Complete the booking details.';
-      if (rooms.some((room) => Number(state.values.adults[room]) !== 1)) return 'This example models one adult profile per room; further guests are not modeled.';
-      if (sampleIneligible()) return 'Select an eligible rate and track for each room.';
+      if (rooms.some((room) => !Number.isInteger(Number(state.values.adults[room])) || Number(state.values.adults[room]) < 1)) return 'Enter the number of adults in each room.';
+      if (sampleIneligible()) return 'Select an eligible rate for each room.';
       if (rooms.some((room) => !state.values.firstName[room].trim() || !state.values.lastName[room].trim() || !state.values.ratePlan[room] || !state.values.roomType[room] || !state.values.track[room])) return 'Complete the guest, room and rate details.';
       if (state.values.addOn !== 'None' && (!state.values.addOnDate || !state.values.addOnTime || Number(state.values.addOnQuantity) < 1)) return 'Complete the Add-On details.';
       if (cmsIncluded() && (!state.values.cmsEmail.includes('@') || !state.values.cmsMessage)) return 'Complete the CMS message and proposed recipient.';
@@ -875,7 +902,7 @@ Thank you.</div>
       return '';
     }
     function footer() {
-      const total = money(prices().grand);
+      const total = pricesReady() ? money(prices().grand) : 'Awaiting rates';
       if (state.scenario === 'success') return `<div class="approval-total"><span>Example total</span><span>${total}</span></div><p class="approval-caption">Example actions reviewed · Nava’s reply remains unsent.</p>`;
       if (hasOutcome()) return `<div class="approval-total"><span>Example total</span><span>${total}</span></div><button class="primary" id="approve">${state.scenario === 'uncertain' ? 'Review uncertain result' : state.values.addOn === 'None' ? 'Review unfinished room' : 'Review unfinished Add-On'}</button><p class="approval-caption">Simulation only · Nava’s reply remains unsent.</p>`;
       const reason = disabledReason();
@@ -887,30 +914,32 @@ Thank you.</div>
       agency: ['Tourvest Travel Services · Roggebaai', 'Alternative agency · simulated', 'No agency'], lastName: ['Example', 'Sample'],
       roomType: ['STQN · Standard Queen', 'STWN · Standard Twin', 'DLXQN · Deluxe Queen', 'DLXTWN · Deluxe Twin'],
       chargeRoomType: ['STQN · Standard Queen', 'STWN · Standard Twin'],
-      ratePlan: ['Agency B&B · sample', 'BAR B&B · sample'], source: ['Email', 'Telephone · sample'],
-      track: ['Agency rate · sample', 'Public rate · sample'], cmsMessage: ['03 · sample confirmation', '01 · sample confirmation', '08 · sample no-rate'],
+      ratePlan: ['Agency B&B · sample', 'BAR Room Only · sample'], source: ['Email', 'Telephone · sample'],
+      cmsMessage: ['03 · sample confirmation', '01 · sample confirmation', '08 · sample no-rate'],
       settlementType: ['Invoice · sample', 'Card · sample'], reservationSettlementType: ['Invoice · sample', 'Card · sample'],
       addOn: ['Airport transfer · sample', 'None'],
     };
     function modal() {
       if (!state.lookup) return '';
       const { key, room, query } = state.lookup;
-      const all = (optionSets[key] ?? [`Example ${key} · simulated`]).filter((value) => !['ratePlan', 'track'].includes(key) || state.values.agency !== 'No agency' || !value.startsWith('Agency'));
+      const all = (optionSets[key] ?? [`Example ${key} · simulated`]).filter((value) => key !== 'ratePlan' || state.values.agency !== 'No agency' || !value.startsWith('Agency'));
       const options = all.filter((value) => value.toLowerCase().includes(query.toLowerCase()));
-      return `<div class="modal-shade"><div class="modal" role="dialog" aria-modal="true" aria-label="Search HMS choices"><h3>Search ${esc(key)}${room ? ' · ' + esc(roomLabel(room)) : ''}</h3><p class="section-note">Centurion example choices only. Actual options must come from this hotel’s HMS.</p><input aria-label="Search options" data-lookup-query value="${esc(query)}" placeholder="Search…">${options.map((value) => `<button type="button" class="modal-option" data-choice="${esc(value)}">${esc(value)}</button>`).join('') || '<p class="section-note">No example choices match.</p>'}<div class="modal-footer"><button type="button" class="text-button" data-clear-lookup>Clear selection</button><button type="button" class="text-button" data-close-lookup>Close</button></div></div></div>`;
+      return `<div class="inline-lookup" role="dialog" aria-label="Search HMS choices"><h3>Search ${esc(key)}${room ? ' · ' + esc(roomLabel(room)) : ''}</h3><p class="section-note">Centurion example choices only. Actual options must come from this hotel’s HMS.</p><input aria-label="Search options" data-lookup-query value="${esc(query)}" placeholder="Search…">${options.map((value) => `<button type="button" class="modal-option" data-choice="${esc(value)}">${esc(value)}</button>`).join('') || '<p class="section-note">No example choices match.</p>'}<div class="modal-footer"><button type="button" class="text-button" data-clear-lookup>Clear selection</button><button type="button" class="text-button" data-close-lookup>Close</button></div></div>`;
     }
     function render() {
       const active = document.activeElement;
       const focusKey = active?.dataset?.field, focusRoom = active?.dataset?.room;
       const focusQuery = active?.hasAttribute?.('data-lookup-query');
-      const childFocus = active?.dataset?.childRoom ? { room: active.dataset.childRoom, index: active.dataset.childIndex, part: active.dataset.childPart } : null;
+      const childAgeFocus = active?.dataset?.childDraftAge;
+      const childCheckboxFocus = active?.hasAttribute?.('data-child-update-categories');
       const start = typeof active?.selectionStart === 'number' ? active.selectionStart : null, end = typeof active?.selectionEnd === 'number' ? active.selectionEnd : null;
       const scroll = document.getElementById('pane-scroll').scrollTop;
       const p = prices();
+      const total = pricesReady() ? money(p.grand) : 'awaiting rates';
       const planSummary = cmsIncluded() ? `Example: one HMS email to ${esc(state.values.cmsEmail || 'recipient needed')}, covering both rooms${state.values.addOn !== 'None' ? ' and the Add-On' : ''} and the complete total. HMS support and permission are unverified.` : `HMS email excluded. Proposed recipient, if supported and permitted: ${esc(state.values.cmsEmail || 'not entered')}.`;
-      document.getElementById('review').innerHTML = `${outcomeBlock()}${notices()}<div class="summary"><strong>2 rooms · ${p.dates.length || '—'} nights · ${money(p.grand)}</strong><span>${planSummary}</span><span>Always-shown and populated fields stay visible; empty optional fields can be expanded.</span></div>${section('stay', 'Stay', STAY, 'Fields shown once apply to both rooms in this example; two columns show per-room values.')}${section('guest', 'Guest', GUEST, 'Fields follow the screenshot order. One adult profile per room is modeled in this example.')}${section('settlement', 'Settlement', SETTLEMENT)}${section('reservation', 'Reservation', RESERVATION, 'CMS Booker Email is a proposed recipient; routing, combined contents and authority remain unverified.')}${section('addon', 'Hotel Add-On', ADDON, 'Illustrative airport → hotel transfer. The Centurion native Add-On catalog is not verified here.')}<div class="notice info"><strong>Proposed HMS confirmation</strong>${cmsIncluded() ? `This example includes one HMS email to ${esc(state.values.cmsEmail || 'recipient needed')}` : `No HMS email is included in this approval; the proposed recipient is ${esc(state.values.cmsEmail || 'not entered')}`}. If supported and permitted, it would cover both rooms${state.values.addOn !== 'None' ? ', the selected Add-On' : ''} and the complete ${money(p.grand)} total. Nava’s reply remains unsent.</div>`;
+      document.getElementById('review').innerHTML = `${outcomeBlock()}${notices()}<div class="summary"><strong>2 rooms · ${p.dates.length || '—'} nights · ${total}</strong><span>${planSummary}</span><span>Grey fields are auto-filled examples. Empty optional fields can be expanded.</span></div>${section('reservation', 'Reservation', RESERVATION, 'CMS Booker Email is a proposed recipient; routing, combined contents and authority remain unverified.')}${section('stay', 'Stay', STAY, 'Fields shown once apply to both rooms in this example; two columns show per-room values.')}${section('guest', 'Guest', GUEST, 'Fields follow the screenshot order. One lead guest profile per room is modeled in this example.')}${section('settlement', 'Settlement', SETTLEMENT)}${section('addon', 'Hotel Add-On', ADDON, 'Illustrative airport → hotel transfer. The Centurion native Add-On catalog is not verified here.')}<div class="notice info"><strong>Proposed HMS confirmation</strong>${cmsIncluded() ? `This example includes one HMS email to ${esc(state.values.cmsEmail || 'recipient needed')}` : `No HMS email is included in this approval; the proposed recipient is ${esc(state.values.cmsEmail || 'not entered')}`}. If supported and permitted, it would cover both rooms${state.values.addOn !== 'None' ? ', the selected Add-On' : ''} and the complete total (${total}). Nava’s reply remains unsent.</div>`;
       document.getElementById('approval').innerHTML = footer();
-      document.getElementById('modal-root').innerHTML = modal();
+      document.getElementById('modal-root').innerHTML = '';
       document.getElementById('scenario').value = state.scenario;
       document.getElementById('cms-mode').value = state.cmsMode;
       document.getElementById('prefill').disabled = hasOutcome();
@@ -920,7 +949,8 @@ Thank you.</div>
       let replacement = null;
       if (focusKey) replacement = document.querySelector(`[data-field="${focusKey}"]${focusRoom ? `[data-room="${focusRoom}"]` : ''}`);
       else if (focusQuery) replacement = document.querySelector('[data-lookup-query]');
-      else if (childFocus) replacement = document.querySelector(`[data-child-room="${childFocus.room}"][data-child-index="${childFocus.index}"][data-child-part="${childFocus.part}"]`);
+      else if (childAgeFocus !== undefined) replacement = document.querySelector(`[data-child-draft-age="${childAgeFocus}"]`);
+      else if (childCheckboxFocus) replacement = document.querySelector('[data-child-update-categories]');
       if (replacement && !replacement.disabled) { replacement.focus({ preventScroll: true }); if (start !== null && typeof replacement.setSelectionRange === 'function') { try { replacement.setSelectionRange(start, end); } catch (_) {} } }
       document.getElementById('approve')?.addEventListener('click', () => { if (hasOutcome()) state.recoveryOpen = true; else if (!disabledReason()) state.scenario = 'success'; render(); document.getElementById('pane-scroll').scrollTop = 0; });
     }
@@ -928,25 +958,54 @@ Thank you.</div>
       if (room) state.values[key][room] = value; else state.values[key] = value;
       const dirtyKey = key + (room ? '.' + room : '');
       state.dirty[dirtyKey] = true; delete state.conflicts[dirtyKey];
+      if (key === 'ratePlan' && room) {
+        const matched = !state.unbound[dirtyKey] && optionSets.ratePlan.includes(value);
+        const agencyRate = matched && value.startsWith('Agency');
+        state.values.mealPlan[room] = matched ? agencyRate ? 'Bed & Breakfast · sample' : 'Room Only · sample' : '';
+        state.values.market[room] = matched ? agencyRate ? 'Wholesale · sample' : 'Transient · sample' : '';
+        state.values.track[room] = matched ? agencyRate ? 'Agency rate · sample' : 'Public rate · sample' : '';
+        state.values.resortFeeAmount[room] = matched ? '0.00' : '';
+      }
       if (key === 'nights') {
         const start = Date.parse(state.values.arrival + 'T12:00:00Z'), count = Number(value);
         if (Number.isFinite(start) && Number.isInteger(count) && count >= 1 && count <= 7) { state.values.departure = new Date(start + count * 86400000).toISOString().slice(0, 10); state.dirty.departure = true; }
       } else if (key === 'arrival' || key === 'departure') state.values.nights = String(nightDates().length || '');
-      if (['agency', 'arrival', 'departure', 'nights', 'adults', 'roomType', 'ratePlan', 'track'].includes(key)) refreshRates();
+      if (['agency', 'arrival', 'departure', 'nights', 'adults', 'roomType', 'ratePlan'].includes(key)) refreshRates();
+    }
+    function openChildEditor(room) {
+      if (state.childEditor || !rooms.includes(room)) return;
+      state.childEditor = { room, adults: Number(state.values.adults[room]) || 1,
+        children: state.children[room].map((child) => ({ ...child })),
+        updateCategories: state.updateChildCategories[room], error: '' };
+    }
+    function applyChildEditor() {
+      const draft = state.childEditor;
+      if (!draft) return;
+      if (draft.children.some((child) => !validAge(child.age))) { draft.error = 'Select an age for every child.'; return; }
+      const before = state.children[draft.room].map((child) => String(child.age));
+      const after = draft.children.map((child) => String(child.age));
+      const changedChildren = JSON.stringify(before) !== JSON.stringify(after);
+      if (changedChildren && !draft.updateCategories) { draft.error = 'Select Update Child Categories to apply child changes.'; return; }
+      const changedAdults = String(draft.adults) !== String(state.values.adults[draft.room]);
+      if (changedAdults) {
+        state.values.adults[draft.room] = String(draft.adults);
+        state.dirty['adults.' + draft.room] = true;
+      }
+      if (changedChildren) {
+        state.children[draft.room] = draft.children.map((child) => ({ ...child }));
+        state.dirty['children.' + draft.room] = true;
+        draft.children.forEach((child, index) => { state.dirty[`children.${draft.room}.${index}.age`] = true; });
+      }
+      state.updateChildCategories[draft.room] = draft.updateCategories;
+      state.childEditor = null;
+      if (changedAdults || changedChildren) refreshRates();
     }
     function updateInput(event) {
       const el = event.target;
       if (hasOutcome()) return;
       if (el.hasAttribute('data-lookup-query')) { state.lookup.query = el.value; render(); return; }
-      if (el.dataset.childCount) {
-        const room = el.dataset.childCount, count = Math.max(0, Math.min(4, Number(el.value) || 0));
-        while (state.children[room].length < count) state.children[room].push({ name: '', age: '' });
-        state.children[room].length = count; state.dirty['children.' + room] = true; refreshRates(); render(); return;
-      }
-      if (el.dataset.childRoom) {
-        const room = el.dataset.childRoom, index = Number(el.dataset.childIndex), part = el.dataset.childPart;
-        state.children[room][index][part] = el.value; state.dirty[`children.${room}.${index}.${part}`] = true; refreshRates(); render(); return;
-      }
+      if (state.childEditor && el.hasAttribute('data-child-draft-age')) { state.childEditor.children[Number(el.dataset.childDraftAge)].age = el.value; state.childEditor.error = ''; render(); return; }
+      if (state.childEditor && el.hasAttribute('data-child-update-categories')) { state.childEditor.updateCategories = el.checked; state.childEditor.error = ''; render(); return; }
       const key = el.dataset.field;
       if (!key) return;
       if (el.hasAttribute('data-lookup-input')) state.unbound[key + (el.dataset.room ? '.' + el.dataset.room : '')] = Boolean(el.value);
@@ -958,7 +1017,19 @@ Thank you.</div>
     document.addEventListener('click', (event) => {
       const button = event.target.closest('button'); if (!button) return;
       if (button.dataset.section) { state.expanded[button.dataset.section] = !state.expanded[button.dataset.section]; render(); }
-      else if (button.hasAttribute('data-child-editor')) { state.childEditor = !state.childEditor; render(); }
+      else if (button.hasAttribute('data-child-editor')) { openChildEditor(button.dataset.childEditor); render(); }
+      else if (button.dataset.childStep && state.childEditor) {
+        const draft = state.childEditor, delta = Number(button.dataset.delta);
+        if (button.dataset.childStep === 'adults') draft.adults = Math.max(1, Math.min(99, draft.adults + delta));
+        else if (button.dataset.childStep === 'children') {
+          if (delta > 0 && draft.children.length < 99) draft.children.push({ name: '', age: '' });
+          if (delta < 0 && draft.children.length) draft.children.pop();
+        }
+        draft.error = ''; render();
+        document.querySelector(`[data-child-step="${button.dataset.childStep}"][data-delta="${delta}"]`)?.focus({ preventScroll: true });
+      }
+      else if (button.hasAttribute('data-child-cancel')) { state.childEditor = null; render(); }
+      else if (button.hasAttribute('data-child-apply')) { applyChildEditor(); render(); }
       else if (button.dataset.lookup) { const key = button.dataset.lookup, room = button.dataset.room || null, dirtyKey = key + (room ? '.' + room : ''); const value = room ? state.values[key]?.[room] : state.values[key]; state.lookup = { key, room, query: state.unbound[dirtyKey] ? value : '' }; render(); document.querySelector('[data-lookup-query]')?.focus(); }
       else if (button.dataset.choice !== undefined && state.lookup) { const { key, room } = state.lookup; delete state.unbound[key + (room ? '.' + room : '')]; setField(key, room, button.dataset.choice); state.lookup = null; render(); }
       else if (button.hasAttribute('data-clear-lookup') && state.lookup) { const { key, room } = state.lookup; delete state.unbound[key + (room ? '.' + room : '')]; setField(key, room, ''); state.lookup = null; render(); }
@@ -966,7 +1037,7 @@ Thank you.</div>
     });
     document.getElementById('scenario').addEventListener('change', (event) => {
       state.scenario = event.target.value; state.rateChanged = state.scenario === 'changed'; state.recoveryOpen = false;
-      if (state.scenario === 'missing') { if (!state.children.twin.length && !state.dirty['children.twin']) state.children.twin = [{ name: 'Taylor Example', age: '' }]; else if (state.children.twin.length && !state.dirty['children.twin.0.age']) state.children.twin[0].age = ''; state.childEditor = true; refreshRates(); }
+      if (state.scenario === 'missing') { if (!state.children.twin.length && !state.dirty['children.twin']) state.children.twin = [{ name: '', age: '' }]; else if (state.children.twin.length && !state.dirty['children.twin.0.age']) state.children.twin[0].age = ''; openChildEditor('twin'); refreshRates(); }
       else if (state.children.twin.length === 1 && !state.children.twin[0].age && !state.dirty['children.twin.0.age']) { state.children.twin[0].age = '8'; state.rates = 'ready'; }
       if (!document.body.classList.contains('embed-review')) { const url = new URL(window.location.href); url.searchParams.set('scenario', state.scenario); history.replaceState(null, '', url.href); }
       render(); document.getElementById('pane-scroll').scrollTop = 0;
