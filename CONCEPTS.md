@@ -4,6 +4,10 @@
 
 ## Mail pilot domain
 
+### Supported-workflow parity
+
+Coverage of every HMS field, lookup and hotel-specific option needed to complete a supported reservation workflow within its stated scope.
+
 ### Server-pilot
 
 The production-shaped per-mailbox email backend running on EC2 (`apps/server-pilot`). Replaces the legacy Cloudflare Workers `@zero/server` for the Centurion hotel pilot. Exposes tRPC routes the `apps/mail` SPA calls over HTTP.

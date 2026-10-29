@@ -1,9 +1,46 @@
 # Research index
 
+- [2026-10-28 native Codex Pomerado trial](2026-10-28-pomerado-native-codex-trial.md) — Centurion setup, initial approval failure, guarded native retry and observed results.
+
+- [2026-10-28 Pomerado live mint diagnosis](2026-10-28-pomerado-live-mint-debug.md) — live process and generated-code evidence, vendor lifecycle, setup caveats and unresolved delay.
+
 Read conclusions and the evidence for the current decision, not every archive. `docs/context/ACTIVE.md` holds living state; `PRODUCT.md` holds owner requirements. This index is a navigation map, not fresh production proof.
 
 | Report                                                                      | Use for                                                                                                               | Evidence status                                                                                               |
 | --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| [2026-10-28 Pomerado no-click mint](2026-10-28-pomerado-noclick-mint.md) | Vendor mint example, job output versus tool run, current-screen prompt and limits; source only. |
+| [2026-10-28 Pomerado early screen evidence](2026-10-28-pomerado-early-screen-evidence.md) | Native live-capture visibility, snapshot limits, cancellation and privacy; source only, not a live trial. |
+| [2026-10-27 booking completeness plan](../plans/2026-10-27-001-booking-completeness-plan.md) | Next-run scope, native Add-On trial, new-booking parity, preparation, ownership, acceptance and policy holds | Proposed plan; no execution launched |
+| [2026-10-27 execution PR delta](2026-10-27-next-run/run-delta.md) | Exact original/split/repair/infrastructure/new-behavior classification and Phase 1 proof ownership | GitHub/run evidence through #654; pending live checks are not passes |
+| [2026-10-27 new-booking parity](2026-10-27-next-run/booking-parity.md) | Child gate, required fields, native party association, Add-On absence and native-status receipt | Source-only at 92be0e5d2; no rendered UI or HMS proof |
+| [2026-10-27 preparation-to-pane parity](2026-10-27-next-run/prefetch-parity.md) | Quote/new-booking triggers, saved readers, V2 property metadata, overflow and edit precedence | Source-only at 92be0e5d2; runtime settings/readiness unverified |
+| [2026-10-27 amend/cancel diagnosis](2026-10-27-next-run/amend-cancel.md) | Date persistence failure, cancellation-before-fee-dialog hazard and approved-snapshot gap | Current source plus saved Labtest evidence; no new live action |
+| [2026-10-27 HRCEN advisory-lock split](2026-10-27-hrcen-two-locks.md) | Two production tenant selectors yield different Centurion keys; trial guard implications | Read-only EC2 and deployed-source inspection; overlap and mitigation unproven |
+| [2026-10-27 Pomerado controlled trial](2026-10-27-next-run/pomerado-trial.md) | Exact .439 package, browser/provider/lock compatibility and native Add-On readback prerequisites | Source/npm audit only; no install, model invocation or HMS trial |
+| [2026-10-27 Grok Pomerado plan review](2026-10-27-pomerado-grok-plan-review.md) | Adversarial Grok review, independent adjudication, routing/lock/write-switch/ETA findings | Review only; plan unchanged; no trial or runtime actions |
+| [2026-10-27 Pomerado speed and Mastra](2026-10-27-pomerado-speed-mastra.md) | Vendor mint-time evidence, Pomerado replacement seam, Luna max roles and corrected estimates | Source research only; no publication or runtime proof; trial paused |
+| [2026-10-27 Pomerado read-stay test](2026-10-27-pomerado-readstay-test.md) | HRCEN mint outcomes, setup audit, Guardian diagnostics, costs and screen evidence | Trial paused; no publication; three reference confirmations matched, full coverage unverified; cleanup verified |
+| [2026-10-27 Pomerado trial retrospective](../context/ledger/2026-10-27-pomerado-trial-retro.md) | Goal vs outcome, coordinator mistakes, unresolved vendor causes, cost limits and decision | Paused; recommendation only; vendor suitability unproven |
+| [2026-10-27 Pomerado main update](2026-10-27-pomerado-main-update.md) | Source SHA, EC2 build and entrypoints, retained package, model/cache overrides and rollback | Build and offline CLI help pass; no mint or browser action |
+| [2026-10-27 Pomerado setup recovery plan](../plans/2026-10-27-005-pomerado-setup-debug-plan.md) | Historical vendor setup comparison and safety gates | Public-baseline recommendation superseded by ask 298; no new mint |
+| [2026-10-27 Pomerado model routing research](2026-10-27-pomerado-model-routing-research.md) | Model roles, vendor guidance, read-only controls and pricing correction | Research only; account billing and model performance unverified |
+| [2026-10-27 Pomerado model and trial plan](../plans/2026-10-27-006-pomerado-read-trial-model-plan.md) | Direct HRCEN mint, model roles, complete three-case comparison and cleanup | Planning only; no public baseline; owner confirmation required before execution |
+| [2026-10-27 fast Pomerado proof plan](../plans/2026-10-27-008-pomerado-fast-proof.md) | Screenshot example, Luna max and staged selected-case/full-proof timing | Planning only; no model change or trial launch |
+| [2026-10-27 fresh Pomerado trial plan](../plans/2026-10-27-007-pomerado-fresh-read-trial-plan.md) | Minimal mint, current setup, three-case proof, failure handling and conditional forecast | Static vendor source cross-check complete; execution paused |
+| [2026-10-27 Pomerado estimate critique](2026-10-27-pomerado-estimate-critique.md) | Prior estimate retraction, critical path and source evidence | Source and prior retros; no new benchmark or trial |
+| [2026-10-27 Pomerado fast stop](2026-10-27-pomerado-fast-stop.md) | Per-mint dispatch latch, minimal seam checks and limitations | Source-only; stop coverage and publication unproved |
+| [2026-10-27 Pomerado context handoff](2026-10-27-pomerado-context-handoff.md) | Local vendor setup, page-init and cold-run seams, stop versus cancel, publication and secrets limits | Pinned source only; no live trial or implementation; key integration behavior unproved |
+| [2026-10-27 Pomerado login reuse scope](2026-10-27-pomerado-login-reuse-scope.md) | Existing Nava hotel login, per-property configuration, page lease and Pomerado handoff scope | Source-only; direct Pomerado reuse and runtime time savings unproved |
+| [2026-10-27 Pomerado handoff Grok review](2026-10-27-pomerado-handoff-grok-review.md) | Anchored Grok review of the local session handoff, with source-checked accept/disagree decisions | Plan corrected; vendor integration, screen read, publication and replay remain unproved |
+| [2026-10-27 Pomerado authentication diagnosis](2026-10-27-pomerado-auth-diagnosis.md) | Cloud verified/saved login and failed fresh run; local Pomerado session integration options and discriminating checks | Read-only metadata + pinned source; cause and live handoff unverified; no new trial |
+| [2026-10-27 Pomerado native MCP](2026-10-27-pomerado-native-mcp.md) | Native tool schema, input expiry, job lifetime, site-root replay and authority limits | Pinned source only; credential answer wire shape and live behavior unverified |
+| [2026-10-27 Pomerado review speed](2026-10-27-pomerado-review-speed.md) | Greptile Apex CLI constraints, private artifact review and safe overlap | Public docs and local help only; no review, mint or HMS action |
+| [2026-10-27 booking plan document review](2026-10-27-next-run/plan-review.md) | Independent plan findings, applied completeness/UI/auth/ownership corrections and remaining gates | Seven Sonnet-slot reviews complete; edits are not implementation proof |
+| [2026-10-27 Argon review attempt](2026-10-27-next-run/plan-argon-review.md) | Why the required Argon plan gate remains blocked | Subscription quota exhausted before review; no bypass |
+| [2026-10-27 Pomerado and delivery reassessment](2026-10-27-next-run/pomerado-delivery-reassessment.md) | Newest Phase 1 receipts vs claims, deterministic tools vs Pomerado authoring, Centurion move, official API prices, parallel/cost routing | Receipts + current source + official pricing pages; no live action, install or test |
+| [2026-10-27 Pane extraction + triage taxonomy](2026-10-27-next-run/pane-extraction-triage.md) | Ask 278: which extraction fields the pane shows, header scroll layout, triage enums vs owner subtypes (paid/provisional, Excel/HMS, prepaid) | Source-only Luna lane; Salute PII evidence in .private only |
+| [2026-10-27 Ask 280 lanes](2026-10-27-next-run/ask280-lanes.md) | One mail → N HMS bookings already works (receipt-key collision bug); STO default unproven (13% STO proxy); Jarat = stay + external shuttle; Pomerado self-host needs Node 24, own browser + sign-in, 4–8 h to first read | 4 Luna max lanes, source/corpus only |
+| [2026-10-27 Pomerado/parallel shape](../plans/2026-10-27-002-pomerado-delivery-shape.md) | Requirements-only shape for ask 277: full remaining inventory, G1–G10, decision frontier | Shaping only; no execution launch |
 | [2026-10-26 or2 close handoff](../plans/2026-10-26-006-or2-close-handoff.md) | Next-chat entry point: live state, open acceptance checks, T0 scripts, small fixes, R-SEED, owner decision | or2 closeout, retro |
 | [2026-10-26 or2 afternoon retro + 10× plan](../context/ledger/2026-10-26-or2-retro-pm.md) | T1/T2 afternoon: 17 PRs, unit p50 88 min, 17 vs 208 min, ETA table, 0/5 morning fixes built, ranked 10× levers | 5 Luna lanes ([reports](2026-10-26-or2-retro-pm/)), coord.log, GitHub/Greptile, ETA ledger |
 | [2026-10-26 or2 overnight retro](../context/ledger/2026-10-26-or2-retro.md) | Speed-mode run: 39 PRs / 10.6 h (2.6× mh1024), 240→633 min ETA miss, where time went, repeat table, 5 script fixes | coord.log, 61 lane logs (Luna + parser), GitHub #554–#594, ETA ledger |
@@ -53,3 +90,28 @@ Read conclusions and the evidence for the current decision, not every archive. `
 - Refresh price/inventory facts, runtime state and current adoption when needed. Historical scores do not certify live readiness.
 - Add a dated report and source-index row when findings materially change. Update ACTIVE.md for living state rather than growing an all-purpose root context file.
 - [2026-10-26 Da Vinci readiness for Faith call](2026-10-26-dv-faith-readiness.md) — quote outage cause/fix (#614), DV rate gates (scope/5-row cap/NR/terms doc), create+return gaps, amend/cancel state, suggestions, Centurion login
+
+## Claude Code setup audit
+
+- [2026-10-28 additional agent-rule cleanup](2026-10-28-agent-rule-cleanup-373-claude-783c2180.md) — startup and hook cuts, review-rule corrections, scoped sync review and verification limits.
+
+- [2026-10-28 audit evidence](2026-10-28-claude-code-audit.md) — retrospective and accessible session coverage, contradictory instructions, hook observations, safety counterevidence and privacy limitation; research and planning only.
+- [2026-10-28 simplification execution](2026-10-28-claude-code-simplification-execution-783c2180.md) — applied changes, preserved safety, staged handoff and hook, validation limits and the owner’s updated test policy.
+
+- [2026-10-28 targeted agent-rule cleanup](2026-10-28-agent-rule-cleanup-371-claude-783c2180.md) — applied project/memory changes, cross-harness scope and shared-skill sync blocker.
+
+## Centurion SaaS Stagehand trial — 2026-10-28
+
+- [SaaS tool evidence, Labtest parity and trial brief](2026-10-28-centurion-saas-stagehand-parity-codex-93f4b8e2.md) — cloud read/quote evidence, exact fake reservation, profile-count caveats, local Stagehand integration, and next acceptance; research only.
+
+- [2026-10-28 HRCEN Labtest Stagehand experiment](2026-10-28-stagehand-labtest-fable-f777f33d.md) — native profile count, synthetic bridge, matched live stay extraction, failed profile-iframe extraction, and cleanup evidence.
+
+- [2026-10-28 Stagehand booking Grok review](2026-10-28-stagehand-booking-grok-review-f777f33d.md) — sanitized-draft-only Grok 4.7 xhigh critique, with final plan decisions and estimates kept separately.
+
+- [2026-10-28 Stagehand rate-grid assessment](2026-10-28-stagehand-rate-grid-assessment-f777f33d.md) — narrower read-only create-form and Rate Shop scope, reuse limitations and conditional ETA.
+
+- [2026-10-28 Da Vinci first-pane preflight](2026-10-28-davinci-pane-preflight-d1bc38f9.md) — Labtest input exists; same HRDAV browser has distinct lock identities; no pane save attempted.
+
+- [Fresh Stagehand HRCEN trial and DOM diagnosis](2026-10-28-stagehand-fresh-trial-f777f33d.md) — read-only live result, login timing, unlabeled toolbar and assisted-retry status.
+
+- [2026-10-28 local Pomerado versus Stagehand SDK](2026-10-28-local-pomerado-stagehand-comparison-0b0c189d.md) — local features, cloud boundaries, claims and prior HMS evidence.

@@ -1,0 +1,50 @@
+# Pomerado as Nava's HMS tool layer
+
+Date: 2026-10-28. Research only. Zero `origin/main` and worktree `738a41aed`; local Pomerado source `f45faa8b`. The parallel Codex mint was still running at 14:01 UTC. No application, configuration, live HMS, or Pomerado job was changed by this assessment.
+
+## Decision
+
+Pomerado can plausibly replace individual HMS browser operations while Nava keeps its existing workflow and staff experience. A full application rewrite or a Codex production workflow is not necessary to try this. Neither compatibility nor a portfolio-wide replacement is proven: the first integration has not yet published and replayed, and self-hosted automatic repair is absent from the vendor's stated offering.
+
+The relevant prior assessment is [Pomerado speed and Nava compatibility](2026-10-27-pomerado-speed-mastra.md). This update adds current local Pomerado source, the active Codex thread, concrete pane entry points, a replacement sequence, and a controlled-change repair experiment. The prior assessment was insufficient for today's question because it preceded this mint and used older source revisions.
+
+## What is actually in the product
+
+| Layer | Present behavior | Proposed change |
+|---|---|---|
+| Staff and workflow | Outlook/webmail panes, mail extraction, approval, result display, background jobs and audit | Preserve while evaluating the HMS layer. |
+| Dispatch | [HMS jobs](../../apps/server-pilot/src/ai/hms-jobs.ts) persist pane jobs and give staff work priority; [pane stay lookup](../../apps/server-pilot/src/ai/pane-stay-lookup.ts) directly invokes a runner under the property lock. [Mastra tools](../../apps/server-pilot/src/ai/reservationist-agent.ts) are another entry point. | An adapter under both caller types, with existing property, job, result and failure contracts. A Mastra MCP registration alone is insufficient. |
+| Browser operations | Current tools use deterministic Playwright, including party lookup, stay lookup, quote, booking, amend and cancel. The [earlier source analysis](2026-10-27-next-run/pomerado-delivery-reassessment.md) also identifies browser response inspection and internal web requests; it is not a supported Infor API. | Try generated Pomerado operations one at a time. Keep the existing implementations available until each new path meets its comparison bar. |
+| Party | [Pane party lookup](../../apps/server-pilot/src/ai/pane-party-lookup.ts) already automates company/agency searches, returns native IDs and distinguishes ambiguous, truncated, empty and failed results. Separate matching and job code determine what gets suggested or bound. | Test whether a minted search captures all candidates and exact IDs; separately wire and score automatic matching. Minting alone does not remove staff selection. |
+
+## Vendor capabilities and limits
+
+- [Pomerado's current README](https://github.com/Pomerado/pomerado/blob/f45faa8b/README.md) describes AI-assisted minting of deterministic source. Each local integration exposes its own MCP server and one operation plus job/input helpers. More operations can be minted; four mint-management commands are not a four-operation limit.
+- The published runtime invokes no model for a normal generated run. This makes it comparable in kind to Nava's existing deterministic browser tools, not proof of a speed or cost win against them. The [vendor benchmark](https://pomerado.ai/) compares pre-minted integrations against computer-use agents, rather than Nava's current runners, and excludes minting in that comparison.
+- The same README assigns breakage detection and automatic repair to Pomerado Cloud. Local [failure rendering](https://github.com/Pomerado/pomerado/blob/f45faa8b/typescript/src/standalone/failure-text.ts) says the local host repairs nothing. A self-hosted healing loop would have to be built and verified around minting; open core is not a complete automatic repair product.
+- Local [standalone session](https://github.com/Pomerado/pomerado/blob/f45faa8b/typescript/src/standalone/session.ts) rejects attaching over CDP because its resets can close tabs and reset site data. Nava's current slot uses persistent Chromium/CDP. A separate Pomerado browser or a supported/custom session seam must integrate with the existing **one hotel lock**; neither is proved compatible yet. The local runtime's [run operation](https://github.com/Pomerado/pomerado/blob/f45faa8b/typescript/src/standalone/run-operation.ts) starts at a site root and handles sign-in, so tenant path, session freshness and property identity matter.
+- The README says a mint with write authority performs a write during the build. Runtime does not re-check mint-time authority or Guardian review. A Pomerado failure can indicate `possible_commit`; reconcile HMS before a retry. Product's existing Labtest and staff approval rules still apply.
+- The vendor's source has moved: earlier trial evidence used `7349a1c2`, while the local checkout now points to `f45faa8b`, with 89 changed files. Pin and record the actual executable and artifacts for each comparison; a source checkout alone does not prove what the active process runs.
+
+## Current trial and time
+
+The active `codex pomerado` thread began at 13:11:44 UTC. Its current mint was invoked at 13:51:58 UTC. At 14:01 UTC, the thread reported a private capture of 41 fields and two nightly rows during the mint, but no published integration or fresh replay. Thus about 50 minutes of session time and 10 minutes since mint invocation had elapsed; session time includes setup, interruptions and waiting. This is not a successful-tool build duration or a complete benchmark. The prior [06:00 run](../context/ledger/2026-10-28-pomerado-run-close-retro.md) also ended without publication; diagnosis and added controls affected those attempts, and the root cause is not proven.
+
+## Evaluation and migration
+
+1. Finish the active read: capture its actual outcome and version, review the artifact, replay in a fresh session and compare the same exact booking against an independently captured reference. Then compare the original three selected cases, including blanks and repeated rows.
+2. Put this one operation behind a Nava adapter: property identity, lock, credentials, MCP job/input lifecycle, timeout, error/empty distinctions and output schema. Exercise the actual pane and background job entry points, not only a Codex call. Keep results and guest information private. Pin dependencies and generated code.
+3. Compare current and Pomerado runners on the same held-out cases and hotels. Check cold/warm login, pagination, alternate layouts, partial/no-result/failed outcomes, staff-priority contention and restart. Report correct complete answers, wrong answers, no-results, failures, p50/p95 elapsed time, slot occupancy, and total dollars per accepted result. Count mint, model, retries, browser/hosting, maintenance and engineering work separately; amortize mint by call volume. Do not treat a schema-valid answer or the minter's own test as independent truth.
+4. Next assess party search and Add-On catalog/existing-row reads. Party truth needs exact native IDs, duplicates, truncation, company/agency and property checks. The [product bar](../../PRODUCT.md) is zero wrong auto-binds, at least 70% auto-bind and at least 95% correct party in the top three; accuracy evaluations use at least 100 independent truth rows. Matching/ingest and search must be measured separately.
+5. Test a representative Labtest write only after a read-and-reconcile path exists. Cover create, add/remove Add-On, amend and cancel progressively, including multi-room, child ages, price/fee semantics and uncertain-commit recovery. Existing staff approval and reservation rules remain. Demonstrate an actual native change and readback, not a success message alone.
+6. Test self-healing deliberately: break a selector in a disposable fixture or local copy, detect a failure or semantic mismatch, generate a candidate with Pomerado, compare it against independent truth, and record time/cost and false repairs. Then revalidate against the actual site within the applicable authorization. Keep the last known-good version and require an appropriate validation/promotion path. Include silent wrong results, not only thrown errors.
+
+For each operation, cut over only when it meets the existing product bar and matches or improves agreed reliability, staff latency and cost. Roll back individually; do not require a portfolio-wide switch. Product completion still requires the versioned end-to-end golden set.
+
+## Effort and unresolved points
+
+No defensible first-success or full-portfolio ETA exists. A **one engineer-day measurement budget** after the current mint is a proposed checkpoint, not a promised completion: aim to establish replay, the narrow adapter and side-by-side instrumentation; revise immediately if login or session compatibility blocks it. Use actual first and second operation timings to estimate the rest. Historical unrelated PRs had a median 18-minute open-to-merge time across 16 product PRs, but that excludes this mint and its domain proof and cannot be used as a Pomerado ETA. See [development-speed ledger](2026-10-26-dev-speed-analysis.md).
+
+Critical unknowns: the first published artifact and fresh replay, real MCP/client and pinned package compatibility, the production browser/auth/lock seam, price and latency against existing tools, breadth across both hotels and operations, and the cost and reliability of self-hosted repair. Rewriting the whole stack now would assume answers to each of those questions.
+
+Research route: project files and current Pomerado source; the active Codex thread and timestamp-only local session metadata; Exa basic plus official sources. CodeGraph's Zero index pointed to a different worktree, so current worktree claims were checked in its files. Pomerado has no CodeGraph index, so its source was inspected directly. Hindsight tools were unavailable after the other session disabled them; no Hindsight memory was used. Research model charges are not available in this session.
