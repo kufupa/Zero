@@ -55,6 +55,7 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
     }],
   };
   const state: Record<string, unknown> = {};
+  const locks = { busy: false };
   const draft = { id: 'draft-1', origin: 'ai', generationId: 'generation-1', threadId: 't1', replyToMessageId: mail.id };
   const proposal = { workflowRunId: run.id, revisionRef: revision.id, messageId: mail.id,
     outlookEmail: transportId === 'transport-centurion' ? 'centurion@legacyhotels.co.za' : 'davinci@legacyhotels.co.za',
@@ -72,7 +73,10 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
         innerJoin() { return query; },
         where() { return query; },
         orderBy() { return query; },
-        for() { return Promise.resolve([{ id: 'extract-1' }]); },
+        for() {
+          if (locks.busy && table === workItem) throw Object.assign(new Error('source busy'), { code: '55P03' });
+          return Promise.resolve([{ id: 'extract-1' }]);
+        },
         limit() {
           if (table === message) return Promise.resolve([mail]);
           if (table === mailExtraction) return Promise.resolve([{ id: 'extract-1', kind: 'quote', payload }]);
@@ -101,7 +105,7 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
     },
   } as unknown as DB;
   __setDbForTests({ db, conn: null as never });
-  return { revision, proposal, state, artifact, db, draft, run };
+  return { revision, proposal, state, artifact, db, draft, run, locks };
 }
 
 function setThreadHotel(hotel: 'HRCEN' | 'HRDAV') {
@@ -360,6 +364,32 @@ describe('stored quote export and draft occupancy', () => {
     await expect(assertQueuedDraftApproval(approval, { from: 'centurion@example.invalid', to: payload.to,
       cc: payload.cc, bcc: payload.bcc, subject: payload.subject, html: payload.html, text: payload.text }, db))
       .rejects.toBeInstanceOf(DraftApprovalInvalidError);
+  });
+
+  it('keeps a busy saved-room check distinct from an invalid queued approval', async () => {
+    const { db, locks, run } = await fixture();
+    const secret = 'synthetic-signing-secret';
+    const release = { releaseId: 'release', releaseVersion: '1', sourceRevision: 'source', fingerprint: 'e'.repeat(64),
+      purpose: 'draft' as const, capabilityFamilyVersions: { draft: '1' }, issuedAt: '2026-01-01T00:00:00.000Z',
+      expiresAt: '2099-01-01T00:00:00.000Z', withdrawn: false };
+    const payload: DraftApprovalPayload = { draftId: 'draft-1', generationId: 'generation-1', transportId,
+      threadId: 't1', revisionId: 'revision-1', threadStateVersion: 'state-1', evidence: [],
+      policyVersion: DRAFT_APPROVAL_POLICY_VERSION, approvedByUserId: userId, approvedAt: new Date().toISOString(),
+      origin: 'ai', subject: 'Synthetic quote', html: '<p>Quote attached.</p>', text: 'Quote attached.',
+      to: ['guest@example.invalid'], cc: [], bcc: [], attachments: [], routeBinding: { ...AZURE_DRAFT_ROUTE, release } };
+    const approval = buildDraftApproval(payload, secret);
+    locks.busy = true;
+    vi.stubEnv('BETTER_AUTH_SECRET', secret);
+    const retry = { code: 'PRECONDITION_FAILED', message: 'The email is being updated. Wait a moment, then try again.',
+      cause: expect.objectContaining({ code: 'QUOTE_SOURCE_BUSY' }) };
+    await expect(draftQuoteOccupancyHold(db, { transportId, threadId: 't1', messageId: 'm1', triggerMessageId: 'm1',
+      result: run.metrics.reservationistResult })).rejects.toMatchObject(retry);
+    await expect(assertQueuedDraftApproval(approval, { from: 'centurion@example.invalid', to: payload.to,
+      cc: payload.cc, bcc: payload.bcc, subject: payload.subject, html: payload.html, text: payload.text }, db))
+      .rejects.toMatchObject(retry);
+    locks.busy = false;
+    await expect(draftQuoteOccupancyHold(db, { transportId, threadId: 't1', messageId: 'm1', triggerMessageId: 'm1',
+      result: run.metrics.reservationistResult })).resolves.toBeNull();
   });
 
   it('reports a retry hold before claiming a draft when the origin source is locked', async () => {

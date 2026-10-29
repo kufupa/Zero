@@ -8,7 +8,7 @@ import { addDays } from './stay-date-anchoring.js';
 import { formStays } from './work-items.js';
 import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
 import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin } from '../hms/hms-quote-target.js';
-import { isQuoteSourceLockBusy, QUOTE_SOURCE_BUSY_MESSAGE } from '../hms/quote-source-contention.js';
+import { isQuoteSourceLockBusy, quoteSourceBusyError } from '../hms/quote-source-contention.js';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
   'id' | 'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'childrenAges' | 'childrenPerRoom'>;
@@ -130,6 +130,11 @@ async function loadChildOccupancyEvidence(
     await db.select({ id: mailExtraction.id }).from(mailExtraction)
       .where(eq(mailExtraction.messageId, scope.messageId)).orderBy(mailExtraction.id)
       .for('share', { noWait: true });
+    // A decision on a different kind can change the saved source without updating the current item.
+    await db.select({ id: workItem.id }).from(workItem).where(and(
+      eq(workItem.transportId, scope.transportId), eq(workItem.threadId, scope.threadId),
+      eq(workItem.sourceMessageId, scope.messageId),
+    )).orderBy(workItem.id).for('update', { noWait: true });
   }
   const [latest] = await db
     .select({ id: mailExtraction.id, kind: mailExtraction.kind, payload: mailExtraction.payload })
@@ -222,7 +227,8 @@ export async function draftQuoteOccupancyHold(db: DB, input: {
       }))) return draftQuoteOccupancyMessage;
     }
   } catch (error) {
-    return isQuoteSourceLockBusy(error) ? QUOTE_SOURCE_BUSY_MESSAGE : draftQuoteOccupancyMessage;
+    if (isQuoteSourceLockBusy(error)) throw quoteSourceBusyError();
+    return draftQuoteOccupancyMessage;
   }
   return null;
 }
