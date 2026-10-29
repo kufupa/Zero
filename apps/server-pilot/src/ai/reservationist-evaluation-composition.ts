@@ -268,7 +268,7 @@ export function createExistingOwnerNativeQuoteReader(options:ExistingOwnerNative
   }
   // Quote captures may keep unread detail rows (details.status='not_read', time-budget leftover). Those rows stay in evidence and are excluded from pricing; they are not a completeness invalid.
   if(source.outcome!=='quote'&&!summaryPartial){
-   const reading=source.outcome==='partial'?partyReadingOf(source.groups,request.rateContext):null;
+   const reading=source.outcome==='partial'?partyReadingOf(source.groups,request.rateContext,request.propertyCode):null;
    if(reading==='no_contract')throw new PartyRateFailure(PARTY_NO_CONTRACT_CODE);
    if(reading==='incomplete')throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
    // Intact full captures with unqualified business facts need staff evidence, never quote admission.
