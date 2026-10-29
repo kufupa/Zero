@@ -45,6 +45,35 @@ test('the existing HRDAV reader remains available without the Centurion policy',
   assert.deepEqual(calls,['page']);
   assert.equal(result.guard,null);
 });
+test('both property attachment paths reuse private slot state before login',async t=>{
+  const {mkdtemp,writeFile}=await import('node:fs/promises');
+  const {tmpdir}=await import('node:os');
+  const dir=await mkdtemp(join(tmpdir(),'quote-slot-state-'));
+  t.after(()=>rm(dir,{recursive:true,force:true}));
+  const storage=join(dir,'storageState.json');
+  await writeFile(storage,'{}',{mode:0o600});
+  for(const propertyCode of ['HRCEN','HRDAV']) {
+    let options,closedPages=0;
+    const listeners={};
+    const context={
+      route:async()=>{},routeWebSocket:async()=>{},on:(name,handler)=>{listeners[name]=handler;},
+      newPage:async()=>{
+        const page={on(){},setDefaultTimeout(){},close:async()=>{closedPages+=1;}};
+        listeners.page?.(page);
+        return page;
+      },
+      close:async()=>{},
+    };
+    const browser={newContext:async value=>{options=value;return context;},close:async()=>{}};
+    const attached=await quote.attachQuoteSession({href:'ws://localhost:1',env:{HMS_SLOT_STORAGE_STATE:storage},
+      property:{propertyCode},secret:{},connectOverCDP:async()=>browser,buildPolicy:async()=>({})});
+    assert.equal(options.storageState,storage,propertyCode);
+    assert.equal(options.serviceWorkers,'block',propertyCode);
+    assert.equal(options.acceptDownloads,false,propertyCode);
+    assert.equal(closedPages,1,propertyCode);
+    assert.equal(Boolean(attached.guard),propertyCode==='HRCEN');
+  }
+});
 test('an unreviewed property cannot use either quote attachment path',async()=>{
   await assert.rejects(quote.attachQuoteSession({property:{propertyCode:'OTHER'}}),/HMS_QUOTE_PROPERTY_POLICY_UNREVIEWED/);
 });
