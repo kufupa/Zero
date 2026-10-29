@@ -1408,6 +1408,50 @@ describe('runStaffQuote property installation', () => {
     return actual.runStaffQuote(input, { transportId, user }, staffQuoteRunDb(mail).db);
   }
 
+  it.each(['Government', 'GOV'] as const)('holds direct Centurion %s requests before installation or HMS', async (salesStrategy) => {
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
+    const mail = mailFor('transport-centurion');
+    const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail), salesStrategy });
+    await expect(actual.runStaffQuote(input, { transportId: 'transport-centurion', user }, staffQuoteRunDb(mail).db))
+      .rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED', message: actual.CENTURION_GOVERNMENT_HOLD,
+        cause: expect.objectContaining({ reason: 'government_eligibility_unverified' }),
+      });
+    expect(quoteRunMocks.readConfiguration).not.toHaveBeenCalled();
+    expect(workflowMocks.executeStaffQuote).not.toHaveBeenCalled();
+  });
+
+  it.each(['Government', 'GOV'] as const)('does not apply the Centurion %s hold to a resolved HRDAV quote', async (salesStrategy) => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    originMocks.guard.mockResolvedValue({ ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin' });
+    quoteRunMocks.readConfiguration.mockReturnValue({ tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRDAV' } });
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
+    const mail = mailFor('transport-centurion');
+    const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail), salesStrategy });
+    await expect(actual.runStaffQuote(input, { transportId: 'transport-centurion', user }, staffQuoteRunDb(mail).db))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'Staff quotation database unavailable' });
+    expect(quoteRunMocks.readConfiguration).toHaveBeenCalledWith('HRDAV');
+  });
+
+  it.each([
+    ['manual', 'Government', false, false],
+    ['auto-start', 'Government', false, true],
+    ['system prefetch', 'GOV', true, false],
+  ] as const)('stores a non-retryable Government refusal for a %s job', async (_name, salesStrategy, prepared, autoStart) => {
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(
+      Promise.resolve(), undefined, { salesStrategy }, prepared, 'transport-centurion',
+    );
+    if (autoStart) run.metrics = { ...run.metrics, autoStart: true };
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      readResult: expect.objectContaining({ ok: false, message: actual.CENTURION_GOVERNMENT_HOLD }),
+    }), quoteDb);
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+    expect(quoteRunMocks.readConfiguration).not.toHaveBeenCalled();
+    expect(workflowMocks.executeStaffQuote).not.toHaveBeenCalled();
+  });
+
   it('uses the HRDAV installation for a Da Vinci transport when the quote flag is on', async () => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
     quoteRunMocks.readConfiguration.mockReturnValue({

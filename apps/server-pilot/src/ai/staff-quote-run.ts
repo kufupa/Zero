@@ -89,6 +89,8 @@ const HMS_UNPRICEABLE_COMBINATION_MESSAGE =
   "HMS couldn't price this exact combination of rooms, guests and meals. Try one room type or B&B first, or quote this one in HMS.";
 const HMS_CONTRACT_AGENCY_REQUIRED_MESSAGE =
   'Wholesale/contract rates need the agency confirmed. Pick the agency in step 1, then Get rates.';
+export const CENTURION_GOVERNMENT_HOLD =
+  "Nava can't yet verify Government rate eligibility. Check the guest's eligibility and quote in HMS, or choose another rate.";
 const HMS_EXECUTION_CODES = new Set([
   'EXECUTION_FAILURE',
   'AUTHENTICATED_SHELL_TIMEOUT',
@@ -445,6 +447,7 @@ export function staffQuoteFailureMessage(
       'The selected email or approved inputs changed; rerun the current quote.',
     staff_quote_child_occupancy_incomplete:
       draftQuoteOccupancyMessage,
+    staff_quote_government_eligibility_unverified: CENTURION_GOVERNMENT_HOLD,
   };
   const business = Object.prototype.hasOwnProperty.call(actions, code) ? actions[code] : undefined;
   if (business) return business;
@@ -637,6 +640,14 @@ export async function runStaffQuote(
   if (!quoteTarget.ok) {
     refuseQuote('quote_davinci_disabled', quoteTarget.message, {
       cause: { code: quoteTarget.code },
+    });
+  }
+  // Showing a Government rate in HMS does not establish that this guest is entitled to it.
+  // Apply the hold at the shared execution boundary, including staff, auto-start and prepared jobs.
+  if (quoteTarget.target.propertyCode === 'HRCEN' &&
+    (input.salesStrategy === 'Government' || input.salesStrategy === 'GOV')) {
+    refuseQuote('government_eligibility_unverified', CENTURION_GOVERNMENT_HOLD, {
+      cause: { code: 'staff_quote_government_eligibility_unverified' },
     });
   }
   const occupancyScope = { transportId: identity.transportId, threadId: mail.threadId, messageId: mail.id,

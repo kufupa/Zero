@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from 'vitest';
 import { readHmsBatchView, readHmsJobView } from '../src/ai/hms-jobs.js';
 import { staffQuoteInput, staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
-import { captureQuoteSourceProof } from '../src/ai/child-occupancy.js';
+import { captureQuoteSourceProof, quoteSourcePolicyChangedMessage } from '../src/ai/child-occupancy.js';
 import { HMS_JOB_PROMPT_VERSION, type AiWorkflowRun } from '../src/ai/run-ledger.js';
 import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
@@ -65,6 +65,16 @@ const byIdReplies = (saved = item()) => [
 ] as Array<[unknown, unknown[]]>;
 
 describe('cached quote views use current selected occupancy', () => {
+  it('does not expose a cached Centurion quote created before the rate policy', async () => {
+    const old = job();
+    Object.assign(old.readResult!, { quoteSourceProof: { ...(quoteProof as object), version: 1 } });
+    const view = await readHmsJobView(byId, fakeDb([[aiWorkflowRun, [old]], [message, [mail]]]));
+    expect(view).toMatchObject({ status: 'failed', result: {
+      ok: false, code: 'quote_source_outdated', message: quoteSourcePolicyChangedMessage,
+    } });
+    expect(view?.result).not.toHaveProperty('totalMinor');
+  });
+
   it('returns a matching legacy quote only while saved child evidence is complete', async () => {
     const current = await readHmsJobView(byId, fakeDb(byIdReplies()));
     expect(current?.result).toMatchObject({ status: 'ready', totalMinor: 10000 });

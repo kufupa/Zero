@@ -31,6 +31,22 @@ function evidence(stayId = 's1', rowId = 'r1') {
 }
 
 describe('source preferences bound to a Centurion price', () => {
+  it('rejects pre-policy proofs on every Centurion reuse path but preserves HRDAV', async () => {
+    const { db } = evidence();
+    const current = await captureQuoteSourceProof(db, input, scope);
+    expect(current?.version).toBe(2);
+    const old = { ...current!, version: 1 };
+    const revision = { groups: [{ arrivalDate: '2027-10-20', departureDate: '2027-10-21',
+      quantity: 1, adults: 2, children: 0, childAges: [] }] };
+    expect(quoteSourceProofMatchesInput(old, input)).toBe(false);
+    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, old)).toBe(false);
+    expect(await quoteSourceProofMatchesCopy(db, input.groups, scope, old)).toBe(false);
+    expect(await quoteSourceProofMatchesSingleStay(db, revision, scope, old)).toBe(false);
+    expect(await quoteSourceProofIsCurrent(db, input.groups, { ...scope, propertyCode: 'HRDAV' }, old)).toBe(true);
+    expect(await quoteSourceProofMatchesCopy(db, input.groups, { ...scope, propertyCode: 'HRDAV' }, old)).toBe(true);
+    expect(await quoteSourceProofMatchesSingleStay(db, revision, { ...scope, propertyCode: 'HRDAV' }, old)).toBe(true);
+  });
+
   it('requires the client to have seen the current saved room and board before admission', async () => {
     const { data, db } = evidence();
     expect(await captureQuoteSourceProof(db, input, scope)).not.toBeNull();

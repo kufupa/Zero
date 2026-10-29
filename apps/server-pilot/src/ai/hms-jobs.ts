@@ -40,7 +40,7 @@ import {
 import { staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { childOccupancyIsCurrent, isCenturionQuoteScope, quoteSourceProofFromRun,
   quoteSourceProofIsCurrent, quoteSourceProofMatchesCopy, quoteSourceProofMatchesInput,
-  quoteSourceProofMatchesSingleStay } from './child-occupancy.js';
+  quoteSourceProofMatchesSingleStay, quoteSourceProofPredatesPolicy, quoteSourcePolicyChangedMessage } from './child-occupancy.js';
 import {
   CENTURION_HMS_READ_TARGET,
   hmsReadAuditMetrics,
@@ -4291,8 +4291,10 @@ async function toView(
   if (quoteResult && result && (result.ok !== false || 'totalMinor' in result || 'rateOptions' in result || 'preparedProposal' in result) &&
     (!request.success || !(await quoteViewIsCurrent(db, run, request.data, options.quoteScope)))) {
     status = 'failed';
-    result = { ok: false, code: 'child_occupancy_incomplete',
-      message: 'Refresh the selected email and confirm rooms, guests, room type and meal plan before using this price.' };
+    result = quoteSourceProofPredatesPolicy(quoteSourceProofFromRun(run))
+      ? { ok: false, code: 'quote_source_outdated', message: quoteSourcePolicyChangedMessage }
+      : { ok: false, code: 'child_occupancy_incomplete',
+        message: 'Refresh the selected email and confirm rooms, guests, room type and meal plan before using this price.' };
   }
   return {
     runId: run.id,

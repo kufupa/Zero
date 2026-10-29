@@ -153,6 +153,7 @@ export async function childOccupancyIsCurrent(
 
 export const importedOfferOccupancyHold = 'The original offer cannot yet be matched to the requested rooms and child ages. Review it in HMS and run a new quote.';
 export const draftQuoteOccupancyMessage = 'Confirm rooms, adults, the number of children per room and each age; check room type and meal plan, then run the quote again.';
+export const quoteSourcePolicyChangedMessage = 'Rate checks have changed since this quote. Run rates again before using it.';
 
 export function isCenturionQuoteTransport(transportId: string): boolean {
   return getPropertyTransportIds('HRCEN').includes(transportId.trim());
@@ -165,8 +166,9 @@ export function isCenturionQuoteScope(scope: { transportId: string; propertyCode
   return isCenturionQuoteTransport(scope.transportId);
 }
 
+const QUOTE_SOURCE_PROOF_VERSION = 2 as const;
 type QuoteSourceProof = {
-  version: 1;
+  version: typeof QUOTE_SOURCE_PROOF_VERSION;
   messageId: string;
   inputDigest: string;
   sourceDigest: string;
@@ -225,7 +227,7 @@ function parseQuoteSourceProof(value: unknown): QuoteSourceProof | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const proof = value as Partial<QuoteSourceProof>;
   const hash = (item: unknown) => typeof item === 'string' && /^[a-f0-9]{64}$/.test(item);
-  return proof.version === 1 && typeof proof.messageId === 'string' && !!proof.messageId &&
+  return proof.version === QUOTE_SOURCE_PROOF_VERSION && typeof proof.messageId === 'string' && !!proof.messageId &&
     hash(proof.inputDigest) && hash(proof.sourceDigest) && (proof.singleRowDigest === null || hash(proof.singleRowDigest))
     ? proof as QuoteSourceProof : null;
 }
@@ -239,8 +241,14 @@ export async function captureQuoteSourceProof(db: DB, input: StaffQuoteInput, sc
     return !group.sourcePreference || !source || group.sourcePreference.roomType !== source.roomType ||
       group.sourcePreference.board !== source.board;
   })) return null;
-  return { version: 1 as const, messageId: scope.messageId, inputDigest: quoteDigest(input),
+  // Version 1 predates the Centurion Government-rate eligibility hold and cannot be reused.
+  return { version: QUOTE_SOURCE_PROOF_VERSION, messageId: scope.messageId, inputDigest: quoteDigest(input),
     sourceDigest: snapshot.sourceDigest, singleRowDigest: snapshot.singleRowDigest };
+}
+
+/** Only used to explain a refusal; the proof parser, not this predicate, grants access. */
+export function quoteSourceProofPredatesPolicy(value: unknown): boolean {
+  return !!value && typeof value === 'object' && 'version' in value && value.version === 1;
 }
 
 export function quoteSourceProofFromRun(run: { metrics?: unknown; readResult?: unknown }): unknown {
@@ -316,6 +324,7 @@ export async function draftQuoteOccupancyHold(db: DB, input: {
   if (!selectedQuotes.length && (quotes.length || overrides.length || !isCenturionQuoteTransport(input.transportId))) return null;
   if (!input.messageId || input.messageId !== input.triggerMessageId ||
     refs.some((id) => ![...quotes, ...overrides].some((offer) => offer?.id === id))) return draftQuoteOccupancyMessage;
+  if (selectedQuotes.length && quoteSourceProofPredatesPolicy(input.quoteSourceProof)) return quoteSourcePolicyChangedMessage;
   try {
     for (const quote of selectedQuotes) {
       if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(quote), {

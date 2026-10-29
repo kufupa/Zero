@@ -3,7 +3,8 @@ import { __setDbForTests, type DB } from '../src/db/client.js';
 import { aiDraftGeneration, aiWorkflowRun, mailDraft, mailDraftRevision, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { staffQuoteInput, staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
-import { captureQuoteSourceProof, draftQuoteOccupancyHold, draftQuoteOccupancyMessage, importedOfferOccupancyHold } from '../src/ai/child-occupancy.js';
+import { captureQuoteSourceProof, draftQuoteOccupancyHold, draftQuoteOccupancyMessage, importedOfferOccupancyHold,
+  quoteSourcePolicyChangedMessage } from '../src/ai/child-occupancy.js';
 import { DRAFT_APPROVAL_POLICY_VERSION, DraftQuoteOccupancyError, assertDraftApprovalCurrent, buildDraftApproval, type DraftApprovalPayload } from '../src/ai/draft-approval.js';
 import { AZURE_DRAFT_ROUTE } from '../src/ai/draft-route-factory.js';
 import { assertQueuedDraftApproval, DraftApprovalInvalidError } from '../src/mail/send/outbound-queue.js';
@@ -109,6 +110,24 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
 afterEach(() => { __setDbForTests(null); vi.unstubAllEnvs(); });
 
 describe('stored quote export and draft occupancy', () => {
+  it('holds old Centurion revisions from choices, PDFs, workbooks and draft promotion', async () => {
+    const { proposal, revision, run, proof, db, draft } = await fixture();
+    Object.assign(run.metrics.staffQuoteAttestation, { quoteSourceProof: { ...proof!, version: 1 } });
+    const api = caller().workstation;
+    const { workItemId: _item, ...uncached } = proposal;
+    expect((await api.qualifiedProposalChoices({ internetMessageId: '<synthetic@example.invalid>' })).choices).toHaveLength(0);
+    await expect(api.qualifiedQuoteProposalPdf(uncached)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED', message: quoteSourcePolicyChangedMessage,
+    });
+    await expect(api.quoteWorkbook(uncached)).rejects.toMatchObject({
+      code: 'PRECONDITION_FAILED', message: quoteSourcePolicyChangedMessage,
+    });
+    await expect(api.quotePdfJob({ workItemId: itemId, revisionRef: revision.id, company: '', agency: '' }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: quoteSourcePolicyChangedMessage });
+    await expect(assertHmsDraftFreshForAction({ db, transportId, draft: draft as never, conflict: 'STALE_AI_CANDIDATE' }))
+      .rejects.toMatchObject({ code: 'CONFLICT', message: quoteSourcePolicyChangedMessage });
+  });
+
   it('preserves HRDAV quote choices, export and booking use without Centurion child evidence', async () => {
     const davinci = 'transport-davinci';
     const { proposal, revision, run, state, artifact } = await fixture(davinci);

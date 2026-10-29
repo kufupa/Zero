@@ -98,7 +98,8 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { runStaffQuote } from '../../ai/staff-quote-run.js';
 import { occupancyFromRevision, singleStayOccupancyIsCurrent, isCenturionQuoteScope, isCenturionQuoteTransport, importedOfferOccupancyHold, draftQuoteOccupancyMessage,
-  quoteSourceProofFromRun, quoteSourceProofIsCurrent, quoteSourceProofMatchesSingleStay } from '../../ai/child-occupancy.js';
+  quoteSourceProofFromRun, quoteSourceProofIsCurrent, quoteSourceProofMatchesSingleStay, quoteSourceProofPredatesPolicy,
+  quoteSourcePolicyChangedMessage } from '../../ai/child-occupancy.js';
 import {
   enqueueHmsJob,
   queueAutoStaffQuoteHmsJob,
@@ -712,13 +713,14 @@ async function proposalStaysFor(
     } catch {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: resolveFailure });
     }
+    const proof = quoteSourceProofFromRun(run);
     if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(resolved.revision), {
       transportId: ctx.activeTransportId, threadId: current.threadId, messageId: input.messageId,
       propertyCode: resolved.revision.propertyCode,
-    }, quoteSourceProofFromRun(run)))) {
+    }, proof))) {
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
-        message: draftQuoteOccupancyMessage,
+        message: quoteSourceProofPredatesPolicy(proof) ? quoteSourcePolicyChangedMessage : draftQuoteOccupancyMessage,
       });
     }
     stays.push({
