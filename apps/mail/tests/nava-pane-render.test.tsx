@@ -933,6 +933,13 @@ describe('NavaPane', () => {
     { code: 'GOV', label: 'Government', requestValue: 'Government' },
   ] as const;
 
+  function configureCenturionPane() {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['room_only', 'bb', 'dinner_bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+  }
+
   function configureStrategyComparisons() {
     bridgeMockState.quotePaneConfig = {
       transportId: 'transport-1',
@@ -1085,6 +1092,7 @@ describe('NavaPane', () => {
   }, 15_000);
 
   it('waits for a room edit to be saved before starting the selected quote', async () => {
+    configureCenturionPane();
     let finishSave!: (value: unknown) => void;
     const save = new Promise<unknown>((resolve) => { finishSave = resolve; });
     let enableQueue!: (value: boolean) => void;
@@ -1104,6 +1112,28 @@ describe('NavaPane', () => {
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
     await act(async () => { finishSave({}); });
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+  });
+
+  it('keeps all rooms on the edited stay dates after reopening the pane', async () => {
+    const first = { ...STORED_READY.analysis.groups[0]!, stayId: 's_1', quantity: 1 };
+    bridgeMockState.storedWork = {
+      ...STORED_READY,
+      refs: {
+        r_1: { stayId: 's_1', rowId: 'r_1' },
+        r_2: { stayId: 's_1', rowId: 'r_2' },
+      },
+      analysis: { ...STORED_READY.analysis, groups: [first, { ...first, id: 'r_2' }] },
+    };
+    const pane = render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    fireEvent.change(screen.getByLabelText('Arrival'), { target: { value: '2026-11-04' } });
+    expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('2026-11-04');
+    pane.unmount();
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await waitFor(() => expect((screen.getByLabelText('Arrival') as HTMLInputElement).value).toBe('2026-11-04'));
+    expect(screen.getByRole('article', { name: 'Stay 1 details' })).toBeDefined();
+    expect(screen.queryByRole('article', { name: 'Stay 2 details' })).toBeNull();
   });
 
   it('stored: a stay she adds is logged under its own id, so it is there on reopen', async () => {
@@ -1764,7 +1794,12 @@ describe('NavaPane', () => {
     await waitFor(() =>
       expect(screen.getByLabelText('Quotation total').textContent).toMatch(/R\s?2\s?220,00/),
     );
+    const wholesaleRow = within(table).getByRole('button', { name: 'Use Wholesale (WS) rates' }).closest('tr');
+    expect(wholesaleRow && within(wholesaleRow).getByText('Selected')).toBeTruthy();
     expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(queuedRunsBeforeSelection);
+
+    fireEvent.change(screen.getByLabelText('Rate plan'), { target: { value: 'public' } });
+    await waitFor(() => expect(screen.queryByLabelText('Quotation total')?.textContent ?? '').not.toMatch(/R\s?2\s?220,00/));
   });
 
   it('retries a comparison bind when its prepared job appears after the primary quote', async () => {
@@ -2263,6 +2298,7 @@ describe('NavaPane', () => {
   });
 
   it('drops a restored rate when the stay changes while its persisted job is being read', async () => {
+    configureCenturionPane();
     let resolveReadback!: (view: ReturnType<typeof completedStaffQuoteJob>) => void;
     let readbackCalls = 0;
     bridgeMockState.storedWork = bookingStoredWork();
@@ -2435,6 +2471,7 @@ describe('NavaPane', () => {
   });
 
   it('auto-queues a complete stay and reports the rate run in the pane notice system', async () => {
+    configureCenturionPane();
     let staffQuotePolls = 0;
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
     bridgeMockState.storedWork = {
@@ -2829,6 +2866,7 @@ describe('NavaPane', () => {
   });
 
   it('waits for staff to run rates after they edit the stay while the queue flag is loading', async () => {
+    configureCenturionPane();
     let enableQueueMode!: (enabled: boolean) => void;
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
     bridgeMockState.storedWork = STORED_READY;
@@ -2857,6 +2895,7 @@ describe('NavaPane', () => {
   });
 
   it('suppresses auto-start after staff quote edits and uses the edited header, party, and rate plan for Get rates', async () => {
+    configureCenturionPane();
     const queueModeResolvers: Array<(enabled: boolean) => void> = [];
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
     bridgeMockState.storedWork = {

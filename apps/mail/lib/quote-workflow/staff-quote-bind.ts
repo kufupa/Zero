@@ -31,6 +31,7 @@ import type {
   QuoteSalesStrategyValue,
   QuoteStrategyRow,
   QuoteFailureCauseClass,
+  QuoteSourcePreference,
 } from './types';
 import {
   HRCEN_PROPERTY_CODE,
@@ -76,6 +77,7 @@ export type StaffQuoteGroupInput = {
   adults: number;
   childrenPerRoom?: number | null;
   childrenAges: number[];
+  sourcePreference?: QuoteSourcePreference;
   board: 'room_only' | 'bb' | 'dinner_bb';
   roomCodes?: string[];
   /** The HMS rate a rate card pinned. Absent means HMS picks the rate, as before. */
@@ -201,6 +203,7 @@ function staffQuoteRequestMatches(
     groups: input.groups.map((group) => ({
       id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate, quantity: group.quantity,
       adults: group.adults, childrenPerRoom: group.childrenPerRoom ?? null, childrenAges: group.childrenAges, board: group.board,
+      sourcePreference: group.sourcePreference ?? null,
       roomCodes: [...(group.roomCodes ?? [])].sort(), rateCode: group.rateCode ?? null,
     })),
   });
@@ -222,6 +225,7 @@ function staffQuoteStayTermsMatch(
         childrenPerRoom: group.childrenPerRoom ?? null,
         childrenAges: group.childrenAges,
         board: group.board,
+        sourcePreference: group.sourcePreference ?? null,
         roomCodes: [...(group.roomCodes ?? [])].sort(),
       })),
     );
@@ -546,6 +550,9 @@ export function staffQuoteGroupsFromStay(
       childrenPerRoom: group.childrenPerRoom,
       childrenAges: [...group.childrenAges],
       board: group.board,
+      ...(propertyCode === HRCEN_PROPERTY_CODE && group.sourcePreference
+        ? { sourcePreference: { ...group.sourcePreference } }
+        : {}),
       ...(rooms.status === 'codes' ? { roomCodes: rooms.codes } : {}),
       ...(group.rateCode ? { rateCode: group.rateCode } : {}),
     });
@@ -1196,6 +1203,7 @@ function boundStaffQuoteResult(
     totalMinor: result.totalMinor,
     currency: result.currency,
     quoteRequestKey: `${result.arrivalDate}:${result.departureDate}`,
+    requestedSalesStrategy: built.input.salesStrategy,
     ...(typeof result.dinnerAddOnRequired === 'boolean' && !hrdavQuote
       ? { dinnerAddOnRequired: result.dinnerAddOnRequired }
       : {}),
@@ -1466,7 +1474,9 @@ export async function bindAutoStartStaffQuote(
     const settled = await pollStaffQuoteJob(args.staffQuoteJob, first, built.input.messageId);
     // Prepared quotes may have an older display header, but their source and price terms must still match.
     // A staff-started run must also match the submitted header before its pane counters can be rebased.
-    const requestMatches = staffQuoteRequestMatches(settled.request, built.input, settled.prefetch === true) &&
+    const requestMatches = staffQuoteRequestMatches(
+      settled.request, built.input, settled.prefetch === true && args.propertyCode === HRDAV_PROPERTY_CODE,
+    ) &&
       staffQuoteStayTermsMatch(settled.request, built.input) &&
       (settled.prefetch === true || (
         settled.request?.kind === 'staff_quote' &&
@@ -1511,7 +1521,7 @@ export async function bindReadBackStaffQuote(
     if (!first || args.signal?.aborted) return null;
     if (first.request && (
       !staffQuoteStayTermsMatch(first.request, built.input) ||
-      !staffQuoteRequestMatches(first.request, built.input, first.prefetch === true)
+      !staffQuoteRequestMatches(first.request, built.input, first.prefetch === true && args.propertyCode === HRDAV_PROPERTY_CODE)
     )) return null;
     if (
       first.status === 'done' &&
@@ -1523,7 +1533,9 @@ export async function bindReadBackStaffQuote(
     }
     const settled = await pollStaffQuoteJob(args.query, first, built.input.messageId, args.signal);
     if (args.signal?.aborted) return null;
-    if (settled.request && !staffQuoteRequestMatches(settled.request, built.input, settled.prefetch === true)) return null;
+    if (settled.request && !staffQuoteRequestMatches(
+      settled.request, built.input, settled.prefetch === true && args.propertyCode === HRDAV_PROPERTY_CODE,
+    )) return null;
     const rebased = settled.result
       ? {
           ...settled,
@@ -1635,6 +1647,8 @@ export async function bindStaffQuoteStrategy(
     if ('error' in request) return failedQuoteStrategy(args.strategyCode, request.error, 'needs_staff');
     const query: StaffQuoteJobQuery = async (lookup, options) => {
       const view = await args.staffQuoteJob!(lookup, options);
+      // A comparison must prove which strategy its saved request actually asked HMS to price.
+      if (view && args.propertyCode === HRCEN_PROPERTY_CODE && view.request?.kind !== 'staff_quote') return null;
       if (
         view?.request?.kind === 'staff_quote' &&
         !staffQuoteRequestMatches(view.request, request.input)

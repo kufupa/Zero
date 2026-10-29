@@ -111,7 +111,7 @@ export function useStaffQuoteAutostart({
         selectionEpoch: binding.selectionEpoch,
         inputRevision: quoteSession.inputRevision,
         groups: groupsForQuoteStep(quoteSession, candidate),
-        header: autoRunHeader(quoteSession),
+        header: autoRunHeader(quoteSession, activePaneConfig?.propertyCode),
         propertyCode: activePaneConfig?.propertyCode,
         stayKey: candidate.shareKey,
       });

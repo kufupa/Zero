@@ -6,6 +6,12 @@ export type FactProvenance = 'extracted' | 'staff_corrected' | 'missing' | 'defa
 
 export type QuoteBoard = 'dinner_bb' | 'bb' | 'room_only' | 'unknown';
 
+/** Raw email/staff preference used to detect changes independently of a selected HMS rate. */
+export type QuoteSourcePreference = {
+  roomType: string | null;
+  board: 'room_only' | 'bb' | 'dbb' | 'half_board' | null;
+};
+
 export const HRDAV_PROPERTY_CODE = 'HRDAV' as const;
 export const HRCEN_PROPERTY_CODE = 'HRCEN' as const;
 export type HmsQuotePropertyCode = typeof HRCEN_PROPERTY_CODE | typeof HRDAV_PROPERTY_CODE;
@@ -84,6 +90,8 @@ export type StayGroupRequirement = {
   departureDate?: string;
   quantity?: number;
   roomPreference?: string;
+  /** Effective saved source fields; absent means the server did not provide source evidence. */
+  sourcePreference?: QuoteSourcePreference;
   /** Server projection of the same preference; absent when unmatched or from a mail-only draft. */
   roomTypeCode?: RoomTypeCode;
   /** Never collapsed to one guess when the extracted wording matches multiple native types. */
@@ -393,6 +401,8 @@ export type StaffQuoteAllocation = {
   totalMinor: number;
   currency: string;
   quoteRequestKey: string;
+  /** Strategy requested for this run; HMS may have used a documented fallback. */
+  requestedSalesStrategy?: QuoteSalesStrategyValue;
   dinnerAddOnRequired?: boolean;
   dinnerFallbackGroupIds?: string[];
   dinnerAddOn?: {

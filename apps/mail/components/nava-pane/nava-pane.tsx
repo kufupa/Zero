@@ -39,7 +39,7 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
-import type { QuoteAnalysis, QuotePaneConfig, QuoteSessionAction } from '@/lib/quote-workflow/types';
+import { HRCEN_PROPERTY_CODE, type QuoteAnalysis, type QuotePaneConfig, type QuoteSessionAction } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   quoteWorkflowFromTrpc,
@@ -820,8 +820,11 @@ export function NavaPane({
   const editStayRows = (action: QuoteSessionAction) => {
     suppressAutoStaffQuoteForCurrentEmail();
     const before = quoteSessionRef.current;
-    dispatchQuote(action);
     const after = reduceQuoteSession(before, action);
+    // One UI action can patch several rooms before React renders. Each save and remembered
+    // snapshot must include the earlier patches from that same action.
+    quoteSessionRef.current = after;
+    dispatchQuote(action);
     const held = caseReviewPending(after.analysis);
     if (!held) storedWork.recordGroups(before.groups, after.groups);
     const messageKey = after.binding?.internetMessageId ?? before.binding?.internetMessageId;
@@ -1659,6 +1662,8 @@ export function NavaPane({
   }
 
   const saveQuoteEdits = async () => {
+    if (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE &&
+        (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId)) return false;
     if (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) return true;
     return storedWork.flushEdits();
   };
@@ -1876,9 +1881,10 @@ export function NavaPane({
           return trackedStaffQuoteJob(input, options);
         }
       : undefined;
-    // Auto-start and read-back use the session strategy, as the background prepare does (Government only when every
-    // row is Dinner B&B), so a prepared run's price shape matches.
-    const runHeader = autoStart || readBack ? autoRunHeader(quoteSession) : quoteSession.staffHeader;
+    // Use the background default unless Centurion staff explicitly chose a different strategy.
+    const runHeader = autoStart || readBack
+      ? autoRunHeader(quoteSession, activePaneConfig?.propertyCode)
+      : quoteSession.staffHeader;
     const noticeEmail = {
       emailKey: activeEmail?.internetMessageId ?? activeEmail?.entryId ?? null,
       emailSubject: activeEmail?.subject?.trim() || null,

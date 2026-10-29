@@ -863,6 +863,7 @@ export function storedAnalysis(
       intent: mapped.intent,
       // Each group names its stay, so the pane groups rows by the read's stays and logs edits to the stay's id.
       groups: mapped.groups.map((group, index) => {
+        const sourceGroup = groups[index];
         const roomType = matchRoomType(group.roomPreference, propertyCode);
         const stayId = order[index]?.stayId;
         const sourceStay = stayId ? payload.stays.find((item) => item.id === stayId) : undefined;
@@ -889,6 +890,10 @@ export function storedAnalysis(
           : undefined;
         return {
           ...group,
+          sourcePreference: {
+            roomType: sourceGroup?.roomPreference?.trim() || null,
+            board: sourceGroup?.board ?? null,
+          },
           ...(roomType.code ? { roomTypeCode: roomType.code } : {}),
           roomTypeSuggestions: roomType.suggestions,
           stayId,

@@ -13,6 +13,7 @@ import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 import {
   emptyStaffQuoteHeader,
   HRCEN_PROPERTY_CODE,
+  HRDAV_PROPERTY_CODE,
   type StayGroupRequirement,
 } from '../lib/quote-workflow/types';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -603,6 +604,55 @@ describe('staff quote HMS job binding', () => {
       status: 'unavailable',
       reason: 'The quote is out of date because the stay details changed. Run it again.',
     });
+  });
+
+  it('does not relabel a prepared contract price as the selected Centurion strategy', async () => {
+    const header = {
+      ...emptyStaffQuoteHeader(),
+      salesStrategy: 'Government' as const,
+      agency: 'Example Agency',
+      parties: { agency: { kind: 'agency' as const, nativeId: 'A123', name: 'Example Agency' } },
+    };
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-contract' }));
+    const prepared = vi.fn(async () => ({
+      ...view('done', READY, undefined, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { salesStrategy: 'WS' }),
+    }));
+    const auto = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE, queue, staffQuoteJob: prepared, source,
+      selectionEpoch: 3, inputRevision: 4, groups, header,
+    });
+    expect(auto).toMatchObject({ status: 'unavailable' });
+
+    const query = vi.fn(async (lookup: { input: ExecuteStaffQuoteInput } | { runId: string; messageId: string }) => {
+      if (!('input' in lookup)) throw new Error('unexpected poll');
+      return {
+        ...view('done', READY, undefined, true),
+        request: storedStaffQuoteRequest(lookup.input, { salesStrategy: 'WS' }),
+      };
+    });
+    expect(await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE, query, source,
+      selectionEpoch: 3, inputRevision: 4, groups, header,
+    })).toBeNull();
+  });
+
+  it('preserves the existing Da Vinci prepared-contract preference', async () => {
+    const header = {
+      ...emptyStaffQuoteHeader(),
+      agency: 'Example Agency',
+      parties: { agency: { kind: 'agency' as const, nativeId: 'A123', name: 'Example Agency' } },
+    };
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-contract' }));
+    const prepared = vi.fn(async () => ({
+      ...view('done', READY, undefined, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { salesStrategy: 'WS' }),
+    }));
+    const result = await bindAutoStartStaffQuote({
+      propertyCode: HRDAV_PROPERTY_CODE, queue, staffQuoteJob: prepared, source,
+      selectionEpoch: 3, inputRevision: 4, groups: [{ ...groups[0]!, roomCodes: ['STKNG'] }], header,
+    });
+    expect(result).toMatchObject({ status: 'ok' });
   });
 
   it('does not rebase a reused auto-start result for a different stored request', async () => {
