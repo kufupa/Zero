@@ -900,6 +900,7 @@ export type QuoteSessionAction =
   | { type: 'treat_as'; treatAs: 'quote' | 'create_booking' }
   | { type: 'staff_note'; staffNote: string }
   | { type: 'analysis_ready'; analysis: QuoteAnalysis }
+  | { type: 'adopt_verified_read'; analysis: QuoteAnalysis; expectedSnapshot: string }
   | { type: 'analysis_unsynced' }
   | { type: 'analysis_missing_source'; missing: string[]; documents?: QuoteDocumentFailure[] }
   | { type: 'analysis_failed'; message: string }

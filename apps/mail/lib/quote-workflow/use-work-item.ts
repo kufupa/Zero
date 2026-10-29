@@ -76,8 +76,9 @@ export type StoredPane =
       /** Null when the read has no work item yet. Edits must be flushed before using them. */
       workItemId: string | null;
       extractionId: string;
+      extractionDigest?: string | null;
       /** Source identity comes from the latest extraction, not the editable staff-projected form. */
-      sourceRead?: { extractionId: string; kind: string; analysis: QuoteAnalysis; refs: Refs } | null;
+      sourceRead?: { extractionId: string; kind: string; digest?: string; analysis: QuoteAnalysis; refs: Refs } | null;
       sourceConflict?: StoredSourceConflict | null;
       contact: StoredContact;
       sourcePartyDigest?: string | null;
@@ -607,6 +608,10 @@ export function useStoredWork(args: {
   const confirmedParty = useRef(new Map<string, { epoch: number; extractionId: string; digest: string }>());
   const discardInProgress = useRef(false);
   const discardAwaitingRender = useRef<{ key: string; historyEpoch: number } | null>(null);
+  const mounted = useRef(false);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const relinkBusy = useRef(false);
+  const [relinkPending, setRelinkPending] = useState(false);
   // Retries asked for on the mail on screen. A retry reads live, so the stored failure stops showing for that mail.
   const [retries, setRetries] = useState<{ messageId: string | null; count: number }>({ messageId: null, count: 0 });
   const readyAt = useRef(0);
@@ -804,6 +809,7 @@ export function useStoredWork(args: {
       workItemStatus: stored.workItemStatus,
       workItemId: stored.workItemId,
       extractionId: stored.extractionId,
+      extractionDigest: stored.extractionDigest,
       sourceRead: stored.sourceRead ? {
         ...stored.sourceRead, analysis: quoteAnalysisOf(stored.sourceRead.analysis),
       } : null,
@@ -855,7 +861,7 @@ export function useStoredWork(args: {
 
   /** A price request must see the edits the person just made, not an older saved row. */
   const flushEdits = useCallback(async (): Promise<boolean> => {
-    if (!lookupKey || !internetMessageId || selection.current.epoch !== renderEpoch || historyPending || historyNeedsReload || discardInProgress.current ||
+    if (!lookupKey || !internetMessageId || selection.current.epoch !== renderEpoch || historyPending || historyNeedsReload || discardInProgress.current || relinkBusy.current ||
         !workItemsFromTrpc(trpcRef.current).recordEvent) return false;
     const epoch = renderEpoch;
     let workItemId = readyWorkItemId ?? cachedWorkItemId;
@@ -1047,7 +1053,7 @@ export function useStoredWork(args: {
     (before: StayGroupRequirement[], after: StayGroupRequirement[], options?: { verifiedRecovery?: boolean }): boolean => {
       if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch) { blockStaleSelection(selection.current.key); return false; }
       editEpoch.current += 1;
-      if (historyPending || historyNeedsReload || discardInProgress.current || sourceHeld) return false;
+      if (historyPending || historyNeedsReload || discardInProgress.current || sourceHeld || relinkBusy.current) return false;
       const workItemId = readyWorkItemId ?? cachedWorkItemId;
       let events: FieldEvent[];
       if (options?.verifiedRecovery || !readyRefs || !workItemId || (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) {
@@ -1091,7 +1097,7 @@ export function useStoredWork(args: {
     (field: ContactField, value: string | null) => {
       if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch) { blockStaleSelection(selection.current.key); return; }
       editEpoch.current += 1;
-      if (historyPending || historyNeedsReload || sourceHeld) return;
+      if (historyPending || historyNeedsReload || sourceHeld || relinkBusy.current) return;
       if (args.verifyQuotePartySource && lookupKey && (field === 'company' || field === 'endClient')) {
         const current = lookupRef.current;
         const previous = partyEdits.current.get(lookupKey);
@@ -1146,7 +1152,7 @@ export function useStoredWork(args: {
   const acceptUnedited = useCallback(
     (groups: StayGroupRequirement[]) => {
       const accept = workItemsFromTrpc(trpcRef.current).acceptFields;
-      if (!accept || !readyWorkItemId || !readyRefs || sourceHeld || selection.current.epoch !== renderEpoch ||
+      if (!accept || !readyWorkItemId || !readyRefs || sourceHeld || relinkBusy.current || selection.current.epoch !== renderEpoch ||
           (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
       flushAll();
       const workItemId = readyWorkItemId;
@@ -1215,7 +1221,7 @@ export function useStoredWork(args: {
 
   const discardUnconfirmedEdits = useCallback(async (): Promise<boolean> => {
     if (!lookupKey || !internetMessageId || selection.current.epoch !== renderEpoch || !readyTransportId || !currentLookup?.userId || !scope || historyPending ||
-        recovering.current.has(lookupKey) || discardInProgress.current ||
+        recovering.current.has(lookupKey) || discardInProgress.current || relinkBusy.current ||
         !scope.startsWith(`${currentLookup.userId}:`) || !scope.endsWith(`:${readyTransportId}`)) return false;
     // A request already sent may still land. Never reload and call it discarded while that save can complete later.
     const itemId = readyWorkItemId ?? cachedWorkItemId;
@@ -1250,6 +1256,78 @@ export function useStoredWork(args: {
     }
   }, [cachedWorkItemId, currentLookup?.userId, historyEpoch, historyPending, internetMessageId, lookupKey, readyTransportId, readyWorkItemId,
     refetchStored, renderEpoch, scope]);
+  const relinkCandidate = stored?.status === 'ready' && stored.analysis.caseActionsUncertain && !stored.sourceConflict &&
+    stored.workItemId && stored.sourceMessageId && stored.sourceMessageDigest && stored.extractionDigest && stored.sourceRead?.digest &&
+    /^[a-f0-9]{64}$/.test(stored.sourceMessageDigest) && /^[a-f0-9]{64}$/.test(stored.extractionDigest) &&
+    /^[a-f0-9]{64}$/.test(stored.sourceRead.digest) && /^[a-f0-9]{64}$/.test(stored.stateDigest ?? '') &&
+    Number.isSafeInteger(stored.revisionSeq) && (stored.revisionSeq ?? -1) >= 0 &&
+    stored.extractionDigest === stored.sourceRead.digest && stored.sourceRead.extractionId !== stored.extractionId &&
+    stored.sourceRead.kind === stored.kind && ['needs_you', 'review'].includes(stored.workItemStatus ?? '') &&
+    !stored.existingStayInformation ? stored : null;
+  const canRetryRelink = Boolean(relinkCandidate && workItemsFromTrpc(trpc).retryRelink &&
+    workItemsFromTrpc(trpc).getByMessage && !historyPending && !historyNeedsReload && !relinkPending);
+
+  /** Adopt only the unchanged source and saved state that this pane has reviewed. */
+  const retryRelink = useCallback(async (paneStillCurrent: () => boolean): Promise<
+    { status: 'linked'; read: Extract<StoredWork, { status: 'ready' }> } |
+    { status: 'held' | 'stale' | 'busy' | 'unavailable' }
+  > => {
+    const candidate = relinkCandidate;
+    const routes = workItemsFromTrpc(trpcRef.current);
+    const userId = getMailCacheScope().userId;
+    if (!canRetryRelink || relinkBusy.current || !candidate?.workItemId || !candidate.sourceMessageId ||
+        !candidate.sourceMessageDigest || !candidate.extractionDigest || !candidate.sourceRead?.digest ||
+        candidate.revisionSeq == null || !candidate.stateDigest || !routes.retryRelink || !routes.getByMessage ||
+        !lookupKey || !internetMessageId || !readyTransportId || !userId || !scope ||
+        !scope.startsWith(`${userId}:`) || !scope.endsWith(`:${readyTransportId}`)) return { status: 'unavailable' };
+    const prefix = `${candidate.workItemId}\n`;
+    const hasPending = () => discardInProgress.current || deferred.current.has(lookupKey) ||
+      recoveryMarked(lookupKey) || recovering.current.has(lookupKey) || partyEdits.current.has(lookupKey) ||
+      [pending.current, inFlight.current, latest.current, failed.current]
+        .some((entries) => [...entries.keys()].some((key) => key.startsWith(prefix)));
+    const selected = () => mounted.current && selection.current.key === lookupKey && selection.current.epoch === renderEpoch &&
+      getMailCacheScope().userId === userId && getMailCacheScope().activeTransportId === readyTransportId;
+    const unchanged = () => selected() && lookupRef.current?.key === lookupKey && lookupRef.current.result === candidate &&
+      !hasPending() && paneStillCurrent();
+    if (!unchanged()) return { status: 'unavailable' };
+    const expected = { workItemId: candidate.workItemId, messageDigest: candidate.sourceMessageDigest,
+      extractionId: candidate.extractionId, extractionDigest: candidate.extractionDigest,
+      latestExtractionId: candidate.sourceRead.extractionId, latestDigest: candidate.sourceRead.digest,
+      seq: candidate.revisionSeq, stateDigest: candidate.stateDigest };
+    const pinned = inMailbox(readyTransportId);
+    if (!pinned) return { status: 'unavailable' };
+    relinkBusy.current = true;
+    setRelinkPending(true);
+    const requireRefresh = () => {
+      if (selected()) {
+        setHistoryNeedsReload(true);
+        setHistoryError('This request changed. Close and reopen it before continuing.');
+      }
+      return { status: 'stale' as const };
+    };
+    try {
+      const result = await routes.retryRelink.mutate({ internetMessageId, sourceMessageId: candidate.sourceMessageId, expected }, pinned);
+      if (!result || typeof result !== 'object' || !('status' in result)) return requireRefresh();
+      if (result.status === 'held' || result.status === 'busy') return { status: result.status };
+      if (result.status === 'stale') return requireRefresh();
+      if (result.status !== 'linked' || result.extractionId !== expected.latestExtractionId || result.seq !== expected.seq + 1 ||
+          result.stateDigest !== expected.stateDigest || !unchanged()) return requireRefresh();
+      const read = await routes.getByMessage.query({ internetMessageId }, pinned);
+      if (!unchanged() || read.status !== 'ready' || read.workItemId !== expected.workItemId ||
+          read.sourceMessageId !== candidate.sourceMessageId || read.sourceMessageDigest !== expected.messageDigest ||
+          read.extractionId !== expected.latestExtractionId || read.extractionDigest !== expected.latestDigest ||
+          read.sourceRead?.extractionId !== expected.latestExtractionId || read.sourceRead.digest !== expected.latestDigest ||
+          read.sourceRead.kind !== read.kind || read.revisionSeq !== expected.seq + 1 || read.stateDigest !== expected.stateDigest ||
+          read.sourceConflict || read.analysis.caseActionsUncertain) return requireRefresh();
+      setLookup((prev) => prev && prev.key === lookupKey && prev.result === candidate ? { ...prev, result: read } : prev);
+      return { status: 'linked', read };
+    } catch {
+      return requireRefresh();
+    } finally {
+      relinkBusy.current = false;
+      if (mounted.current) setRelinkPending(false);
+    }
+  }, [canRetryRelink, internetMessageId, lookupKey, readyTransportId, relinkCandidate, renderEpoch, scope]);
 
   const historyRoutes = historyRoutesFrom(trpc);
   const awaitingRecovery = Boolean(lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)));
@@ -1305,7 +1383,7 @@ export function useStoredWork(args: {
   const runHistoryMove = useCallback(
     (mutate: HistoryMutate | undefined, message: string) => {
       const seq = historyCursor?.seq;
-      if (!readyWorkItemId || !mutate || seq === undefined || discardInProgress.current ||
+      if (!readyWorkItemId || !mutate || seq === undefined || discardInProgress.current || relinkBusy.current ||
           (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
       const keyNow = lookupKey;
       setHistoryPending(true);
@@ -1359,7 +1437,7 @@ export function useStoredWork(args: {
   const resetSection = useCallback(
     (section: WorkItemSection) => {
       const mutate = historyRoutesFrom(trpcRef.current).resetSection?.mutate;
-      if (!readyWorkItemId || !mutate || discardInProgress.current ||
+      if (!readyWorkItemId || !mutate || discardInProgress.current || relinkBusy.current ||
           (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
       const keyNow = lookupKey;
       setHistoryPending(true);
@@ -1439,7 +1517,7 @@ export function useStoredWork(args: {
     historyCursor: historyCursor
       ? { revision: historyCursor.revision, revisionHead: historyCursor.revisionHead }
       : null,
-    historyPending,
+    historyPending: historyPending || relinkPending,
     historyError,
     historyNeedsReload,
     historyAvailable,
@@ -1448,6 +1526,8 @@ export function useStoredWork(args: {
     redo,
     resetSection,
     reloadHistory,
+    canRetryRelink,
+    retryRelink,
   };
 }
 

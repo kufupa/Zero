@@ -84,6 +84,88 @@ function fakeTrpc(lookup: () => unknown) {
   return { trpc: { workItems: { getByMessage: { query }, recordEvent: { mutate } } }, query, mutate };
 }
 
+describe('guarded identical-source recovery', () => {
+  const digest = 'a'.repeat(64), messageDigest = 'c'.repeat(64), stateDigest = 'd'.repeat(64);
+  const held: Ready = { ...READY, sourceMessageId: 'source-1', sourceMessageDigest: messageDigest,
+    extractionDigest: digest, revisionSeq: 5, stateDigest, analysis: { ...ANALYSIS, caseActionsUncertain: true },
+    sourceRead: { extractionId: 'ex-2', kind: 'quote', digest, analysis: ANALYSIS, refs: READY.refs } };
+  const linked: Ready = { ...held, extractionId: 'ex-2', revisionSeq: 6,
+    sourceRead: { ...held.sourceRead!, extractionId: 'ex-2' }, analysis: ANALYSIS };
+  const ack = { status: 'linked', extractionId: 'ex-2', seq: 6, stateDigest };
+  const scope = 'user:session:transport-a';
+
+  it('pins the shown state and displays only the acknowledged, matching read', async () => {
+    setMailCacheScope({ userId: 'user', activeTransportId: 'transport-a' });
+    try {
+      const query = vi.fn().mockResolvedValueOnce(held).mockResolvedValue(linked);
+      const mutate = vi.fn(async () => ack);
+      const trpc = { workItems: { getByMessage: { query }, retryRelink: { mutate } } };
+      const { result, unmount } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope }));
+      await waitFor(() => expect(result.current.canRetryRelink).toBe(true));
+      await act(async () => expect(await result.current.retryRelink(() => true)).toEqual({ status: 'linked', read: linked }));
+      expect(mutate).toHaveBeenCalledWith({ internetMessageId: 'm-1', sourceMessageId: 'source-1', expected: {
+        workItemId: 'wi-1', messageDigest, extractionId: 'ex-1', extractionDigest: digest,
+        latestExtractionId: 'ex-2', latestDigest: digest, seq: 5, stateDigest,
+      } }, { context: { activeTransportId: 'transport-a' } });
+      expect(result.current.pane).toMatchObject({ state: 'ready', extractionId: 'ex-2' });
+      unmount();
+    } finally { setMailCacheScope({ userId: null, activeTransportId: null }); }
+  });
+
+  it('does not offer changed or missing source proof and refuses unsaved pane changes', async () => {
+    setMailCacheScope({ userId: 'user', activeTransportId: 'transport-a' });
+    try {
+      const mutate = vi.fn(async () => ack);
+      for (const read of [held, { ...held, extractionDigest: null },
+        { ...held, sourceRead: { ...held.sourceRead!, digest: 'b'.repeat(64) } }]) {
+        const trpc = { workItems: { getByMessage: { query: vi.fn(async () => read) }, retryRelink: { mutate } } };
+        const hook = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope }));
+        await waitFor(() => expect(hook.result.current.pane.state).toBe('ready'));
+        if (read === held) {
+          expect(hook.result.current.canRetryRelink).toBe(true);
+          await act(async () => expect(await hook.result.current.retryRelink(() => false)).toEqual({ status: 'unavailable' }));
+        } else expect(hook.result.current.canRetryRelink).toBe(false);
+        expect(mutate).not.toHaveBeenCalled();
+        hook.unmount();
+      }
+    } finally { setMailCacheScope({ userId: null, activeTransportId: null }); }
+  });
+
+  it('does not replace a different visit after the request starts, including switching away and back', async () => {
+    setMailCacheScope({ userId: 'user', activeTransportId: 'transport-a' });
+    try {
+      let finish!: (value: unknown) => void;
+      const mutate = vi.fn(() => new Promise<unknown>((resolve) => { finish = resolve; }));
+      const query = vi.fn(async ({ internetMessageId }: { internetMessageId: string }) => internetMessageId === 'm-1' ? held : READY);
+      const trpc = { workItems: { getByMessage: { query }, retryRelink: { mutate } } };
+      const hook = renderHook(({ id }) => useStoredWork({ trpc, internetMessageId: id, scope }), { initialProps: { id: 'm-1' } });
+      await waitFor(() => expect(hook.result.current.canRetryRelink).toBe(true));
+      let attempt!: ReturnType<typeof hook.result.current.retryRelink>;
+      act(() => { attempt = hook.result.current.retryRelink(() => true); });
+      hook.rerender({ id: 'm-2' });
+      hook.rerender({ id: 'm-1' });
+      await waitFor(() => expect(hook.result.current.pane.state).toBe('ready'));
+      await act(async () => { finish(ack); expect(await attempt).toEqual({ status: 'stale' }); });
+      expect(hook.result.current.pane).toMatchObject({ state: 'ready', extractionId: 'ex-1' });
+      hook.unmount();
+    } finally { setMailCacheScope({ userId: null, activeTransportId: null }); }
+  });
+
+  it('holds the old view when a competing edit lands after acknowledgement', async () => {
+    setMailCacheScope({ userId: 'user', activeTransportId: 'transport-a' });
+    try {
+      const query = vi.fn().mockResolvedValueOnce(held).mockResolvedValue({ ...linked, revisionSeq: 7 });
+      const trpc = { workItems: { getByMessage: { query }, retryRelink: { mutate: vi.fn(async () => ack) } } };
+      const hook = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope }));
+      await waitFor(() => expect(hook.result.current.canRetryRelink).toBe(true));
+      await act(async () => expect(await hook.result.current.retryRelink(() => true)).toEqual({ status: 'stale' }));
+      expect(hook.result.current.historyNeedsReload).toBe(true);
+      expect(hook.result.current.pane).toMatchObject({ extractionId: 'ex-1' });
+      hook.unmount();
+    } finally { setMailCacheScope({ userId: null, activeTransportId: null }); }
+  });
+});
+
 describe('storedDecision', () => {
   const ready: StoredPane = {
     state: 'ready',

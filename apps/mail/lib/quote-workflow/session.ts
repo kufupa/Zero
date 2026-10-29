@@ -353,6 +353,11 @@ function withoutCaseIdentity(group: StayGroupRequirement): StayGroupRequirement 
   return copy;
 }
 
+/** A held form may be replaced only when its visible values already equal the saved projection. */
+export function heldFormMatchesSaved(groups: StayGroupRequirement[], saved: StayGroupRequirement[]): boolean {
+  return JSON.stringify(groups.map(withoutCaseIdentity)) === JSON.stringify(saved.map(withoutCaseIdentity));
+}
+
 export function restoreCaseIdentity(groups: StayGroupRequirement[], source: StayGroupRequirement[]): StayGroupRequirement[] {
   return groups.map((group) => {
     const original = source.find((row) => row.id === group.id && stayIdOf(row) === stayIdOf(group)) as StayAskRow | undefined;
@@ -2063,6 +2068,17 @@ export function reduceQuoteSession(
         errorMessage: null,
         analysisStartStayRevision: session.stayRevision,
       };
+    case 'adopt_verified_read': {
+      if (!caseReviewPending(session.analysis) || caseReviewPending(action.analysis) || session.staffNote || session.treatAs ||
+          session.reviewedReplyEdited || JSON.stringify(session) !== action.expectedSnapshot) return session;
+      // Discard downstream rates/drafts and advance the revision, so any older in-flight result cannot be accepted.
+      const reviewed = clearDownstream({ ...session, inputRevision: session.inputRevision + 1 });
+      const adopted = reduceQuoteSession({ ...reviewed, analysis: null, groups: [], selectedStayKey: null,
+        phase: 'analysing', stayRevision: 1, analysisStartStayRevision: null, staffActions: [],
+        reviewedReplyHtml: '', reviewedReplySource: undefined, handledSourceKey: null, handledReviewItemIds: [] },
+      { type: 'analysis_ready', analysis: action.analysis });
+      return { ...adopted, stayRevision: session.stayRevision + 1 };
+    }
     case 'analysis_ready': {
       const draft = session.groups.length === 1 && session.groups[0]!.id === DRAFT_GROUP_ID ? session.groups[0]! : null;
       if (draft) {

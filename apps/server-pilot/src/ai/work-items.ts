@@ -91,8 +91,8 @@ export type FieldPath =
   | { stayId: string; rowId: string; field: RowField | 'removed' };
 export type WorkState = Record<string, unknown>;
 
-/** Fingerprint only; never send or log the underlying state for recovery validation. */
-function recoveryStateDigest(state: WorkState, status: string): string {
+/** Fingerprint persisted values without exposing them in a recovery cursor. */
+function canonicalDigest(value: unknown): string {
   const canonical = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(canonical);
     if (value && typeof value === 'object') {
@@ -101,7 +101,23 @@ function recoveryStateDigest(state: WorkState, status: string): string {
     }
     return value;
   };
-  return createHash('sha256').update(JSON.stringify(canonical({ state, status }))).digest('hex');
+  return createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
+}
+
+function recoveryStateDigest(state: WorkState, status: string): string {
+  return canonicalDigest({ state, status });
+}
+
+function extractionDigest(read: ReadyRead): string {
+  return canonicalDigest({ kind: read.kind, payload: read.payload, attachments: read.attachments,
+    classifier: read.classifier, language: read.language, translation: read.translation });
+}
+
+function relinkMessageDigest(msg: {
+  id: string; threadId: string; fromAddress: string | null; subject: string | null;
+  textBody: string | null; mailboxAddress: string | null;
+}): string {
+  return canonicalDigest(msg);
 }
 
 const ID = '[A-Za-z0-9_-]{1,40}';
@@ -1020,6 +1036,42 @@ export function correctionsCarryTo(
   return true;
 }
 
+/** Reject duplicate extraction ids, including collisions with paths for staff-added or removed rows. */
+function uniqueRelinkIds(stays: ReadonlyArray<{ id: string; rows: ReadonlyArray<{ id: string }> }>, state: WorkState): boolean {
+  const owners = new Map<string, string>();
+  for (const stay of stays) {
+    if (owners.has(stay.id)) return false;
+    owners.set(stay.id, 'stay');
+    for (const row of stay.rows) {
+      if (owners.has(row.id)) return false;
+      owners.set(row.id, `row:${stay.id}`);
+    }
+  }
+  for (const key of Object.keys(state)) {
+    const path = parseFieldPath(key);
+    if (!path) continue;
+    if (owners.has(path.stayId) && owners.get(path.stayId) !== 'stay') return false;
+    owners.set(path.stayId, 'stay');
+    if (path.rowId === null) continue;
+    const owner = `row:${path.stayId}`;
+    if (owners.has(path.rowId) && owners.get(path.rowId) !== owner) return false;
+    owners.set(path.rowId, owner);
+  }
+  return true;
+}
+
+function sameRelinkCases(before: MailExtractionPayload, after: MailExtractionPayload, state: WorkState): boolean {
+  if (!before.stays.length || before.stays.length !== after.stays.length ||
+      before.action !== after.action || before.needsAction !== after.needsAction ||
+      !uniqueRelinkIds(before.stays, state) || !uniqueRelinkIds(after.stays, state)) return false;
+  return before.stays.every((stay) => {
+    const next = after.stays.find((candidate) => candidate.id === stay.id);
+    return Boolean(next && stayKeepsIdentity(stay.id, before, after) && stay.action === next.action &&
+      stay.rows.length === next.rows.length &&
+      stay.rows.every((row) => contentKeepsId(row.id, stay.rows, next.rows, rowContentKey)));
+  });
+}
+
 /**
  * Whether the item moves from its read to `nextId`. Never to an older read (a slow caller can hold an old one), and
  * never when her saved values would land on other stays or rows in the next read.
@@ -1774,14 +1826,17 @@ export type StoredWork =
       /** Null when the read has no work item yet. The pane then opens one (openStoredWork) before it logs edits. */
       workItemId: string | null;
       workItemStatus: string | null;
+      sourceMessageId: string;
+      sourceMessageDigest: string;
       extractionId: string;
-      /** Revision of the work-item state in this read, or null when it has no work item. */
+      extractionDigest: string | null;
+      /** Revision and fingerprint of the work-item state, when present. */
       revisionSeq: number | null;
       /** Fingerprint of the same persisted state and status; detects other writes between recovery steps. */
       stateDigest: string | null;
       refs: Record<string, GroupRef>;
       /** Latest extraction mapped without work-item edits. It may differ from the linked, projected analysis below. */
-      sourceRead: { extractionId: string; kind: string; analysis: StoredAnalysis; refs: Record<string, GroupRef> };
+      sourceRead: { extractionId: string; kind: string; digest: string; analysis: StoredAnalysis; refs: Record<string, GroupRef> };
       /** A different kind has saved work that cannot safely be carried to this read. */
       sourceConflict?: StoredSourceConflict;
       /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
@@ -1789,7 +1844,6 @@ export type StoredWork =
         noReplySender: boolean;
         caseActionsUncertain?: boolean;
         hmsTodoCard: Awaited<ReturnType<typeof hmsTodoCardFromLuna>>;
-        caseActionsUncertain?: boolean;
       };
       contact: StoredContact;
       /** Opaque snapshot of the saved agency and end client shown to the quote pane. */
@@ -1982,13 +2036,17 @@ async function readyView(
     confirmationNumbers,
     workItemId: paneItem?.id ?? null,
     workItemStatus: paneItem?.status ?? null,
+    sourceMessageId: msg.id,
+    sourceMessageDigest: relinkMessageDigest(msg),
     extractionId: read.id,
+    extractionDigest: priorMissing ? null : extractionDigest(read),
     revisionSeq: paneItem?.revisionSeq ?? null,
     stateDigest: paneItem ? recoveryStateDigest(state, paneItem.status) : null,
     refs: stored.refs,
     sourceRead: {
       extractionId: latest.id,
       kind: latestExistingStayInformation ? 'other' : latest.kind,
+      digest: extractionDigest(latest),
       analysis: source.analysis,
       refs: source.refs,
     },
@@ -2100,6 +2158,75 @@ export async function openStoredWork(
     extractionId: latest.id,
   });
   return readyView(db, msg, latest, item, input.transportId);
+}
+
+/** Carry saved corrections only to the exact identical newer read shown in the pane. */
+export async function retryStoredRelink(db: DB, input: {
+  transportId: string;
+  internetMessageId: string;
+  sourceMessageId: string;
+  expected: {
+    workItemId: string; messageDigest: string; extractionId: string; extractionDigest: string;
+    latestExtractionId: string; latestDigest: string; seq: number; stateDigest: string;
+  };
+}): Promise<
+  | { status: 'linked'; extractionId: string; seq: number; stateDigest: string }
+  | { status: 'stale' | 'held' | 'busy' }
+> {
+  if (!centurionSourceFence(input.transportId)) return { status: 'stale' };
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`set local lock_timeout = '250ms'`);
+    const scoped = tx as unknown as DB;
+    const [transport] = await tx.select({ id: mailboxTransport.id }).from(mailboxTransport)
+      .where(eq(mailboxTransport.id, input.transportId)).limit(1).for('share');
+    if (!transport) return { status: 'stale' as const };
+    const [lockedMessage] = await tx.select({ id: message.id }).from(message)
+      .where(and(eq(message.id, input.sourceMessageId), eq(message.transportId, input.transportId)))
+      .limit(1).for('update');
+    if (!lockedMessage) return { status: 'stale' as const };
+    const msg = await messageFor(scoped, input);
+    if (!msg || msg.id !== lockedMessage.id || relinkMessageDigest(msg) !== input.expected.messageDigest) {
+      return { status: 'stale' as const };
+    }
+    // A message lock fences new FK inserts; lock every existing read before comparing, including pending ones.
+    await tx.select({ id: mailExtraction.id }).from(mailExtraction)
+      .where(eq(mailExtraction.messageId, msg.id)).orderBy(asc(mailExtraction.id)).for('update');
+    const items = await tx.select({ id: workItem.id, kind: workItem.kind, status: workItem.status, state: workItem.state,
+      extractionId: workItem.extractionId, revisionSeq: workItem.revisionSeq }).from(workItem)
+      .where(and(eq(workItem.transportId, input.transportId), eq(workItem.sourceMessageId, msg.id)))
+      .orderBy(asc(workItem.id)).for('update');
+    const item = items.find((row) => row.id === input.expected.workItemId);
+    if (!item || item.extractionId !== input.expected.extractionId || item.revisionSeq !== input.expected.seq ||
+      recoveryStateDigest(item.state, item.status) !== input.expected.stateDigest) return { status: 'stale' as const };
+    // Any competing kind and any staff note require review; neither is represented in the extraction fingerprint.
+    if (items.some((row) => row.id !== item.id && row.kind !== item.kind)) return { status: 'held' as const };
+    const [note] = await tx.select({ id: workEvent.id }).from(workEvent)
+      .where(and(eq(workEvent.workItemId, item.id), eq(workEvent.type, 'note.staff'))).limit(1);
+    if (note) return { status: 'held' as const };
+    const latest = await succeededRead(scoped, msg.id);
+    const before = item.extractionId ? await succeededRead(scoped, msg.id, item.extractionId) : null;
+    if (!latest || latest.id !== input.expected.latestExtractionId || extractionDigest(latest) !== input.expected.latestDigest ||
+      !before || extractionDigest(before) !== input.expected.extractionDigest) return { status: 'stale' as const };
+    const oldPayload = mailExtractionPayloadSchema.safeParse(before.payload);
+    const newPayload = mailExtractionPayloadSchema.safeParse(latest.payload);
+    if (!oldPayload.success || !newPayload.success || before.kind !== item.kind || latest.kind !== item.kind ||
+      latest.createdAt < before.createdAt || item.extractionId === latest.id ||
+      (item.status !== 'needs_you' && item.status !== 'review') ||
+      extractionDigest(before) !== extractionDigest(latest) ||
+      isSelfSentPreStayInformationMail({ fromAddress: msg.fromAddress, mailboxAddress: msg.mailboxAddress,
+        subject: msg.subject, confirmationNumbers: newPayload.data.confirmationNumbers })) return { status: 'held' as const };
+    const context = { fromAddress: msg.fromAddress, subject: msg.subject, bodyText: msg.textBody };
+    if (!sameRelinkCases(oldPayload.data, newPayload.data, item.state) ||
+      workflowForStoredRead({ ...before, ...context }) !== workflowForStoredRead({ ...latest, ...context }) ||
+      !correctionsCarryTo(oldPayload.data, newPayload.data, item.state)) return { status: 'held' as const };
+    const seq = item.revisionSeq + 1;
+    await tx.update(workItem).set({ extractionId: latest.id, revisionSeq: seq, updatedAt: new Date() })
+      .where(eq(workItem.id, item.id));
+    return { status: 'linked' as const, extractionId: latest.id, seq, stateDigest: recoveryStateDigest(item.state, item.status) };
+  }).catch((error: unknown) => {
+    if (isWorkItemSourceBusy(error)) return { status: 'busy' as const };
+    throw error;
+  });
 }
 
 export type FieldEventResult =

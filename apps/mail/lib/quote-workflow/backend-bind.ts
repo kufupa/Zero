@@ -220,20 +220,24 @@ export type StoredWork =
       confirmationNumbers?: string[];
       workItemId: string | null;
       workItemStatus: string | null;
+      sourceMessageId?: string;
+      sourceMessageDigest?: string;
       extractionId: string;
+      extractionDigest?: string | null;
       /** The state revision seen in this read. Older servers may omit it. */
       revisionSeq?: number | null;
       stateDigest?: string | null;
       /** Group id to the stay and row it came from. A stay with dates and no rows has a null rowId. */
       refs: Record<string, { stayId: string; rowId: string | null }>;
-      analysis: ReadyAnalyse;
       /** Latest extraction without staff edits; absent when an older server cannot provide source identity. */
       sourceRead?: {
         extractionId: string;
         kind: string;
+        digest?: string;
         analysis: ReadyAnalyse;
         refs: Record<string, { stayId: string; rowId: string | null }>;
       };
+      analysis: ReadyAnalyse;
       sourceConflict?: StoredSourceConflict;
       contact: StoredContact;
       /** Fingerprint of the saved agency and end-client source, from this read. */
@@ -257,6 +261,25 @@ export type RecordFieldEventInput = {
   /** Required for recovery, so a later writer cannot be overwritten. */
   expected?: { extractionId: string; seq: number; stateDigest: string };
 };
+
+export type RetryRelinkInput = {
+  internetMessageId: string;
+  sourceMessageId: string;
+  expected: {
+    workItemId: string;
+    messageDigest: string;
+    extractionId: string;
+    extractionDigest: string;
+    latestExtractionId: string;
+    latestDigest: string;
+    seq: number;
+    stateDigest: string;
+  };
+};
+
+export type RetryRelinkResult =
+  | { status: 'linked'; extractionId: string; seq: number; stateDigest: string }
+  | { status: 'stale' | 'held' | 'busy' };
 
 /** The outcome of a translation retry. Only `done` carries a translation; the rest say why it did not run. */
 export type TranslationRetryResult = { status: string; translation?: StoredTranslation };
@@ -283,6 +306,9 @@ type WorkItemsClient = {
   };
   open?: {
     mutate: (input: { internetMessageId: string }, opts?: { context: Record<string, unknown> }) => Promise<StoredWork>;
+  };
+  retryRelink?: {
+    mutate: (input: RetryRelinkInput, opts?: { context: Record<string, unknown> }) => Promise<RetryRelinkResult>;
   };
   recordEvent?: {
     mutate: (input: RecordFieldEventInput, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
