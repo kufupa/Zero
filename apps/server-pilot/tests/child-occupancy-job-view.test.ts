@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { readHmsBatchView, readHmsJobView } from '../src/ai/hms-jobs.js';
-import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
+import { staffQuoteInput, staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
+import { captureQuoteSourceProof } from '../src/ai/child-occupancy.js';
 import { HMS_JOB_PROMPT_VERSION, type AiWorkflowRun } from '../src/ai/run-ledger.js';
 import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
@@ -10,10 +11,10 @@ const transportId = 'transport-centurion';
 const mail = { id: 'm1', transportId, threadId: 't1', direction: 'inbound',
   messageIdHeader: 'synthetic@example.invalid', subject: 'Synthetic quote',
   textBody: 'Please quote accommodation.', htmlBody: null };
-const input = { messageId: mail.id, sourceHash: staffQuoteSourceHash(mail), selectionEpoch: 1, inputRevision: 1,
+const input = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail), selectionEpoch: 1, inputRevision: 1,
   groups: [{ id: 'r1', arrivalDate: '2027-10-20', departureDate: '2027-10-21',
-    quantity: 1, adults: 2, childrenAges: [], board: 'bb' as const }],
-  salesStrategy: 'BAR' as const, company: '', agency: '', attention: '', clientEmail: '', clientTelephone: '' };
+    quantity: 1, adults: 2, childrenAges: [], board: 'bb', sourcePreference: { roomType: null, board: null } }],
+  salesStrategy: 'BAR', company: '', agency: '', attention: '', clientEmail: '', clientTelephone: '' });
 const extraction = { id: 'extract-1', kind: 'quote', payload: {
   contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
   confirmationNumbers: [], missing: [], stays: [{ id: 's1', hotel: null,
@@ -22,15 +23,22 @@ const extraction = { id: 'extract-1', kind: 'quote', payload: {
 } };
 const item = (state: Record<string, unknown> = {}, extractionId: string | null = extraction.id) =>
   ({ extractionId, state, sourceMessageId: mail.id });
+let quoteProof: unknown;
 function job(request: unknown = { kind: 'staff_quote', input }) {
   return { id: 'run-1', transportId, threadId: mail.threadId, triggerMessageId: mail.id,
     workItemId: 'item-1', runKind: 'read_tool', promptVersion: HMS_JOB_PROMPT_VERSION, priority: 10,
     state: 'succeeded', attempts: 1, failureClass: null, createdAt: new Date(),
-    readRequest: request, readResult: { kind: 'staff_quote', status: 'ready', totalMinor: 10000, asOf: new Date().toISOString() },
+    readRequest: request, readResult: { kind: 'staff_quote', status: 'ready', totalMinor: 10000,
+      quoteSourceProof: quoteProof, asOf: new Date().toISOString() },
     readResultExpiresAt: new Date(Date.now() + 60_000),
     metrics: { userId: 'user-1', batchId: 'batch-1', itemIndex: 0 },
   } as unknown as AiWorkflowRun;
 }
+beforeAll(async () => {
+  quoteProof = await captureQuoteSourceProof(fakeDb([[mailExtraction, [extraction]], [workItem, [item()]]]), input,
+    { transportId, threadId: mail.threadId, messageId: mail.id });
+  expect(quoteProof).not.toBeNull();
+});
 
 /** Each select has an explicit reply so the test exercises the real view and evidence readers. */
 function fakeDb(replies: Array<[unknown, unknown[]]>): DB {
@@ -70,6 +78,18 @@ describe('cached quote views use current selected occupancy', () => {
     expect(noSelection).toMatchObject({ status: 'failed', result: { ok: false } });
     const cleared = await readHmsJobView(byId, fakeDb(byIdReplies(item({ 'stays[s1].rows[r1].childAges': null }))));
     expect(cleared).toMatchObject({ status: 'failed', result: { ok: false } });
+  });
+
+  it('holds legacy prices without proof and prices whose saved room or board changed', async () => {
+    const legacy = job();
+    delete (legacy.readResult as { quoteSourceProof?: unknown }).quoteSourceProof;
+    expect(await readHmsJobView(byId, fakeDb([[aiWorkflowRun, [legacy]], [message, [mail]]])))
+      .toMatchObject({ status: 'failed', result: { ok: false } });
+    for (const field of ['roomType', 'board']) {
+      const stale = await readHmsJobView(byId, fakeDb(byIdReplies(item({ [`stays[s1].rows[r1].${field}`]: field === 'board' ? 'dbb' : 'Standard Twin' }))));
+      expect(stale).toMatchObject({ status: 'failed', result: { ok: false } });
+      expect(stale?.result).not.toHaveProperty('totalMinor');
+    }
   });
 
   it('holds a pinned old or missing extraction until the work item adopts the latest read', async () => {
@@ -134,6 +154,20 @@ describe('cached quote views use current selected occupancy', () => {
     const batch = await readHmsBatchView({ transportId: 'transport-davinci', batchId: 'batch-1' },
       fakeDb([[aiWorkflowRun, [davinci]]]));
     expect(batch).toMatchObject({ status: 'done', items: [{ job: { result: { totalMinor: 10000 } } }] });
+  });
+
+  it('keeps a trusted HRDAV quote on a Centurion mailbox available without Centurion evidence', async () => {
+    const davinci = job();
+    davinci.readResult = { status: 'ready', totalMinor: 10000, propertyCode: 'HRDAV' };
+    const view = await readHmsJobView({ ...byId, messageId: undefined }, fakeDb([[aiWorkflowRun, [davinci]]]));
+    expect(view?.result).toMatchObject({ status: 'ready', totalMinor: 10000 });
+  });
+
+  it('does not let unknown property metadata release a Centurion price', async () => {
+    const unknown = job();
+    unknown.readResult = { status: 'ready', totalMinor: 10000, propertyCode: 'UNKNOWN' };
+    const view = await readHmsJobView({ ...byId, messageId: undefined }, fakeDb([[aiWorkflowRun, [unknown]]]));
+    expect(view).toMatchObject({ status: 'failed', result: { ok: false } });
   });
 
   it('keeps a non-quote job view unchanged without quote context', async () => {

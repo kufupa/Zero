@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { readHmsJobView } from '../src/ai/hms-jobs.js';
+import { hmsMailReadIdempotencyKey, readHmsJobView } from '../src/ai/hms-jobs.js';
 import { staffQuoteInput, staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
+import { captureQuoteSourceProof } from '../src/ai/child-occupancy.js';
 import { HMS_JOB_PROMPT_VERSION, type AiWorkflowRun } from '../src/ai/run-ledger.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
@@ -10,7 +11,7 @@ const mail = { id: 'm1', transportId: 'transport-centurion', threadId: 't1', dir
   messageIdHeader: null, subject: 'Synthetic quote', textBody: 'Please quote accommodation.', htmlBody: null };
 const base = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail), selectionEpoch: 1, inputRevision: 1,
   groups: [{ id: 'r1', arrivalDate: '2027-10-20', departureDate: '2027-10-21', quantity: 1,
-    adults: 2, childrenPerRoom: 0, childrenAges: [], board: 'bb' }],
+    adults: 2, childrenPerRoom: 0, childrenAges: [], board: 'bb', sourcePreference: { roomType: null, board: null } }],
   salesStrategy: 'BAR', parties: { agency: { kind: 'agency', nativeId: '42', name: 'Example Agency' } } });
 const extraction = { id: 'extract-1', kind: 'quote', payload: {
   contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
@@ -19,12 +20,14 @@ const extraction = { id: 'extract-1', kind: 'quote', payload: {
     rows: [{ id: 'r1', roomType: null, rooms: 1, adultsPerRoom: 2, childrenPerRoom: 0, childAges: [], board: null }] }],
 } };
 const item = { extractionId: extraction.id, state: {}, sourceMessageId: mail.id };
-function prepared(id: string, input: typeof base, transportId = mail.transportId): AiWorkflowRun {
+async function prepared(id: string, input: typeof base, transportId = mail.transportId): Promise<AiWorkflowRun> {
+  const quoteSourceProof = await captureQuoteSourceProof(fakeDb([[mailExtraction, [extraction]], [workItem, [item]]]), input,
+    { transportId, threadId: mail.threadId, messageId: mail.id });
   return { id, transportId, threadId: mail.threadId, triggerMessageId: mail.id,
     runKind: 'read_tool', promptVersion: HMS_JOB_PROMPT_VERSION, priority: 0,
     state: 'succeeded', attempts: 1, failureClass: null, createdAt: new Date(Date.now() - 1000),
     readRequest: { kind: 'staff_quote', input },
-    readResult: { status: 'ready', totalMinor: 10000, asOf: new Date(Date.now() - 1000).toISOString(),
+    readResult: { status: 'ready', totalMinor: 10000, quoteSourceProof, asOf: new Date(Date.now() - 1000).toISOString(),
       rateOptions: [{ selected: true, contract: input.salesStrategy === 'WS' }] },
     readResultExpiresAt: new Date(Date.now() + 60_000), metrics: { userId: null, quotePrepared: true },
   } as unknown as AiWorkflowRun;
@@ -52,8 +55,8 @@ describe('prepared quote strategy on the selected property', () => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
     const selected = { ...base, salesStrategy: strategy };
-    const wrong = prepared('ws', { ...base, salesStrategy: 'WS' });
-    const right = prepared('selected', selected);
+    const wrong = await prepared('ws', { ...base, salesStrategy: 'WS' });
+    const right = await prepared('selected', selected);
     const replies: Array<[unknown, unknown[]]> = [[message, [mail]], [aiWorkflowRun, [wrong, right]],
       [aiDraftGeneration, []], [message, [mail]], [mailExtraction, [extraction]], [workItem, [item]],
       [mailExtraction, [extraction]], [workItem, [item]]];
@@ -65,8 +68,9 @@ describe('prepared quote strategy on the selected property', () => {
   it('does not return a different strategy when it is the only prepared Centurion price', async () => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+    const wrong = await prepared('ws', { ...base, salesStrategy: 'WS' });
     const view = await readHmsJobView({ transportId: mail.transportId, userId: 'u1', messageId: mail.id,
-      kind: 'staff_quote', input: base }, fakeDb([[message, [mail]], [aiWorkflowRun, [prepared('ws', { ...base, salesStrategy: 'WS' })]]]));
+      kind: 'staff_quote', input: base }, fakeDb([[message, [mail]], [aiWorkflowRun, [wrong]]]));
     expect(view).toBeNull();
   });
 
@@ -74,10 +78,21 @@ describe('prepared quote strategy on the selected property', () => {
     vi.stubEnv('HMS_JOB_QUEUE', 'on');
     vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
     const transportId = 'transport-faith';
-    const wrong = prepared('ws', { ...base, salesStrategy: 'WS' }, transportId);
-    const right = prepared('bar', base, transportId);
+    const { sourcePreference: _sourcePreference, ...oldGroup } = base.groups[0]!;
+    const wrong = await prepared('ws', { ...base, groups: [oldGroup], salesStrategy: 'WS' }, transportId);
+    const right = await prepared('bar', base, transportId);
     const view = await readHmsJobView({ transportId, userId: 'u1', messageId: mail.id, kind: 'staff_quote', input: base },
       fakeDb([[message, [mail]], [aiWorkflowRun, [right, wrong]], [aiDraftGeneration, []]]));
     expect(view?.runId).toBe('ws');
+  });
+
+  it('keeps HRDAV mail deduplication stable while binding Centurion to the source preference', () => {
+    const { sourcePreference: _sourcePreference, ...oldGroup } = base.groups[0]!;
+    const oldRequest = { kind: 'staff_quote' as const, input: { ...base, groups: [oldGroup] } };
+    const currentRequest = { kind: 'staff_quote' as const, input: base };
+    const key = (property: string, request: typeof oldRequest) => hmsMailReadIdempotencyKey(
+      property, 'synthetic@example.invalid', request, new Date('2027-01-01T00:00:00Z'), 'retry', 't1');
+    expect(key('HRDAV', oldRequest)).toBe(key('HRDAV', currentRequest));
+    expect(key('HRCEN', oldRequest)).not.toBe(key('HRCEN', currentRequest));
   });
 });
