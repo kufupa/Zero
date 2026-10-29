@@ -349,7 +349,6 @@ export const quoteWorkflowRouter = router({
         result = await runPaneStay({
           mode: 'commit', stay, previewDigest, owner, workItemId, stayId,
           previewPersist: createWorkItemPreviewPersist(db, ctx.activeTransportId, PANE_PREVIEW_TTL_MS),
-          ...(claim.parentConfirmation ? { parentConfirmation: claim.parentConfirmation } : {}),
         });
       } catch {
         // A crashed runner might have reached HMS; its already-persisted claim remains unknown.
@@ -372,6 +371,13 @@ export const quoteWorkflowRouter = router({
       } catch {
         // No exception text: database errors can contain connection details.
         console.warn('stay_commit_persist_failed', { stayId, workItemId, runId: result.runId, confirmationNumber: result.confirmationNumber });
+      }
+      // The HMS runner is finished. Retry only the receipt write, using the same claim and the same evidence;
+      // never run Save again. A failed or raced write leaves the original unknown claim in place.
+      try {
+        if ((record || definitelyNotSaved) && await finishPaneStayCommit(db, { ...scope, claimId: claim.claimId, record })) return result;
+      } catch {
+        // Preserve the unknown claim below if storage remains unavailable.
       }
       // Keep any known number visible, but never claim a durable verified result when persistence failed.
       if (result.status === 'ok') {

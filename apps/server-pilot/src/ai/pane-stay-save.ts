@@ -604,6 +604,7 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   let clickedSave = input.paneCommit;
   let preSaveSearchRefused = false;
   let knownConfirmation = '';
+  let verifiedBeforeExit = false;
   let cmsReason: 'saved_cms_mismatch' | undefined;
   let cmsMismatches: PaneStayResult['cmsMismatches'];
   try {
@@ -613,10 +614,24 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
       confirmationNumber?: unknown;
       outcome?: unknown;
       refusalReason?: unknown;
-      proof?: { mismatches?: PaneStayResult['cmsMismatches'] };
+      saved?: unknown;
+      proof?: {
+        cmsReason?: unknown;
+        confNo?: unknown;
+        readbackMatch?: unknown;
+        unknownOutcome?: unknown;
+        mismatches?: PaneStayResult['cmsMismatches'];
+      };
     };
     if (typeof result.clickedSave === 'boolean') clickedSave = result.clickedSave;
     if (typeof result.confirmationNumber === 'string') knownConfirmation = result.confirmationNumber.trim();
+    // The create runner records its complete independent HMS readback before it exits. If only the
+    // process exit failed, that finished proof is still usable; an incomplete or contradictory file is not.
+    verifiedBeforeExit = input.paneCommit && !input.parentConfirmation && result.outcome === 'committed' &&
+      result.clickedSave === true && result.saved === true && PARENT_CONFIRMATION.test(knownConfirmation) &&
+      result.cmsReason === null && result.proof?.cmsReason === null && result.proof?.readbackMatch === true &&
+      result.proof?.unknownOutcome === null && result.proof?.confNo === knownConfirmation &&
+      Array.isArray(result.proof?.mismatches) && result.proof.mismatches.length === 0;
     // These create-runner outcomes are emitted before Save; other failures may occur during a click.
     if (!input.parentConfirmation && result.outcome === 'refused_save_blank_required' && result.clickedSave === undefined) {
       clickedSave = false;
@@ -633,7 +648,7 @@ async function defaultSpawn(input: PaneStaySpawnInput): Promise<PaneStaySpawnRes
   if (failed && !preSaveSearchRefused && !(input.paneCommit && knownConfirmation)) throw failure;
   const line = stdout.trim().split('\n').at(-1) ?? '';
   const [printedOutcome = '', printedConfirmation = ''] = line.split(/\s+/);
-  const outcome = failed ? preSaveSearchRefused ? 'refused_save' : 'save_unconfirmed' : printedOutcome;
+  const outcome = failed ? preSaveSearchRefused ? 'refused_save' : verifiedBeforeExit ? 'committed' : 'save_unconfirmed' : printedOutcome;
   const confirmationNumber = failed ? knownConfirmation : printedConfirmation || knownConfirmation;
   if (input.paneCommit && confirmationNumber) clickedSave = true;
   const screenshots = (await readdir(dir).catch(() => [])).filter((name) => PANE_SCREENSHOT_NAME_PATTERN.test(name)).sort();

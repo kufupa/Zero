@@ -8,7 +8,7 @@ import { PANE_STAY_ALREADY_BOOKED, stayCommitsOf, type StayCommitRecord } from '
 const CLAIMS_KEY = 'paneStaySaveClaims';
 type State = Record<string, unknown>;
 type ClaimInput = { transportId: string; workItemId: string; stayId: string; parentStayId?: string };
-type ClaimResult = { status: 'ready'; claimId: string; parentConfirmation?: string } | { status: 'refused'; reason: string };
+type ClaimResult = { status: 'ready'; claimId: string } | { status: 'refused'; reason: string };
 
 const object = (value: unknown): State | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as State : null;
@@ -51,12 +51,10 @@ export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<Cl
     )).limit(1);
     if (unresolved) return { status: 'refused', reason: 'pane_save_dependency_unconfirmed' };
 
-    let parentConfirmation: string | undefined;
-    if (input.parentStayId) {
-      const parent = input.parentStayId !== input.stayId ? commits[input.parentStayId] : undefined;
-      if (parent?.status !== 'booked' || !parent.confirmationNumber)
-        return { status: 'refused', reason: 'pane_save_parent_not_booked' };
-      parentConfirmation = parent.confirmationNumber;
+    // Receipts do not yet bind a parent to an immutable booking case. Refuse both an explicit parent and
+    // an omitted parent after any saved room; a different case in this work item is held conservatively too.
+    if (input.parentStayId || Object.keys(commits).length) {
+      return { status: 'refused', reason: 'pane_save_multiple_rooms_unavailable' };
     }
     const claimId = randomUUID();
     const next: State = {
@@ -65,7 +63,7 @@ export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<Cl
       [CLAIMS_KEY]: { ...claims, [input.stayId]: claimId },
     };
     await tx.update(workItem).set({ state: next, updatedAt: new Date() }).where(eq(workItem.id, input.workItemId));
-    return { status: 'ready', claimId, ...(parentConfirmation ? { parentConfirmation } : {}) };
+    return { status: 'ready', claimId };
   });
 }
 
