@@ -2643,6 +2643,12 @@ export async function evaluateQuoteReadyForMessage(
     parties = historyProperty ? withSenderHistoryProperty(historyProperty, readParties) : readParties();
   }
   const resolvedProperty = resolvePropertyTransport(source.transportId);
+  let propertyCode = resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined;
+  if (propertyCode === 'HRCEN') {
+    const target = await resolveHmsQuoteJobTarget({ transportId: source.transportId,
+      threadId: source.threadId, messageId: source.messageId, env });
+    if (target.ok) propertyCode = target.target.propertyCode;
+  }
   const plan = buildPreparedStaffQuotePlan({
     messageId: source.messageId,
     sourceHash: staffQuoteSourceHash({
@@ -2654,9 +2660,7 @@ export async function evaluateQuoteReadyForMessage(
     payload: source.payload,
     ...(parties ? { parties } : {}),
     now,
-    ...(resolvedProperty.kind === 'property'
-      ? { propertyCode: resolvedProperty.property.propertyCode }
-      : {}),
+    ...(propertyCode ? { propertyCode } : {}),
   });
   return {
     messageId: source.messageId,
