@@ -1,5 +1,5 @@
 import {assertCurrentLookupTargetReceipt} from './reservationist-lookup-target.js';
-import {draftQuoteOccupancyHold,quoteSourceProofFromRun} from './child-occupancy.js';
+import {draftQuoteOccupancyHold,isCenturionQuoteTransport,quoteSourceProofFromRun} from './child-occupancy.js';
 import {isQuoteSourceLockBusy,QUOTE_SOURCE_BUSY_MESSAGE} from '../hms/quote-source-contention.js';
 import {assertReservationistRecipientReceipt,RECIPIENT_PREPARATION_CLAUSE,type RecipientPreparationReceipt} from './reservationist-recipient-preparation.js';
 import {assertReservationistChannelBookingSyncPacket} from './reservationist-pending-action.js';
@@ -18,7 +18,7 @@ import {
 } from '../db/schema/mail.js';
 import { EvidenceRefSchema, isEvidenceFresh } from './draft-evidence.js';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { and, desc, eq, or } from 'drizzle-orm';
+import { and, asc, desc, eq, or } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { z } from 'zod';
 import { load } from 'cheerio';
@@ -743,7 +743,8 @@ export async function assertDraftApprovalCurrent(input: {
     throw new DraftApprovalError('draft changed after approval');
   }
 
-  const [generation] = await input.db
+  const lockEvidence = input.lockQuoteOrigin === true && isCenturionQuoteTransport(approval.transportId);
+  const generationQuery = input.db
     .select()
     .from(aiDraftGeneration)
     .where(
@@ -754,6 +755,8 @@ export async function assertDraftApprovalCurrent(input: {
       ),
     )
     .limit(1);
+  // UPDATE also excludes a new run acquiring a FK reference to this generation.
+  const [generation] = await (lockEvidence ? generationQuery.for('update', { noWait: true }) : generationQuery);
   if (!generation || generation.status !== 'succeeded') {
     throw new DraftApprovalError('approved generation is unavailable');
   }
@@ -764,7 +767,14 @@ export async function assertDraftApprovalCurrent(input: {
     throw new DraftApprovalError('draft evidence is no longer fresh');
   }
 
-  const [run] = await input.db
+  if (lockEvidence) {
+    // Lock every existing run: a running sibling may otherwise become the
+    // newest candidate while the already-selected candidate is being checked.
+    await input.db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun)
+      .where(eq(aiWorkflowRun.generationId, approval.generationId))
+      .orderBy(asc(aiWorkflowRun.id)).for('share', { noWait: true });
+  }
+  const candidateQuery = input.db
     .select({ metrics: aiWorkflowRun.metrics, triggerMessageId: aiWorkflowRun.triggerMessageId })
     .from(aiWorkflowRun)
     .where(
@@ -776,6 +786,8 @@ export async function assertDraftApprovalCurrent(input: {
     )
     .orderBy(desc(aiWorkflowRun.finishedAt), desc(aiWorkflowRun.createdAt))
     .limit(1);
+  // Re-read the exact candidate while holding its metrics through this claim.
+  const [run] = await (lockEvidence ? candidateQuery.for('share', { noWait: true }) : candidateQuery);
   if (
     (run?.metrics as { modelRouteUnavailable?: unknown } | null)?.modelRouteUnavailable === true
   ) {
