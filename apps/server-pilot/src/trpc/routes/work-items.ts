@@ -164,6 +164,9 @@ export const workItemsRouter = router({
     if (result.status === 'stale') {
       throw new TRPCError({ code: 'CONFLICT', message: 'The saved details changed. Refresh and review your changes.' });
     }
+    if (result.status === 'busy') {
+      throw new TRPCError({ code: 'CONFLICT', message: 'The email is being updated. Wait a moment, then try again.' });
+    }
     return { aiValue: result.aiValue, value: result.value, ...(result.cursor ? { cursor: result.cursor } : {}) };
   }),
   /** Owner/developer review of exactly the succeeded extraction shown by the workflow console. */
@@ -301,6 +304,8 @@ export const workItemsRouter = router({
         fieldPaths: input.fieldPaths,
       });
       if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+      if (result.status === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email was re-read. Refresh and review your changes.' });
+      if (result.status === 'busy') throw new TRPCError({ code: 'CONFLICT', message: 'The email is being updated. Wait a moment, then try again.' });
       return { accepted: result.accepted };
     }),
   /** Translates the read again (U16 Retry). Returns the translation the pane shows, or why it could not run. */
@@ -426,6 +431,8 @@ export const workItemsRouter = router({
       });
       if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
       if (result.status === 'invalid_section') throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown section.' });
+      if (result.status === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email was re-read. Refresh and review your changes.' });
+      if (result.status === 'busy') throw new TRPCError({ code: 'CONFLICT', message: 'The email is being updated. Wait a moment, then try again.' });
       return { reset: result.reset };
     }),
 });
@@ -435,6 +442,9 @@ function historyMoveResult(
 ): { revision: number; revisionHead: number; seq: number } {
   if (result.status === 'not_found') {
     throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+  }
+  if (result.status === 'busy') {
+    throw new TRPCError({ code: 'CONFLICT', message: 'The email is being updated. Wait a moment, then try again.' });
   }
   if (result.status === 'stale') {
     throw new TRPCError({

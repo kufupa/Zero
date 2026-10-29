@@ -1182,6 +1182,141 @@ describe('corrections carry to a re-read', () => {
 });
 
 describe('field events', () => {
+  it('fences all Centurion field writes when a newer source exists or the item is closed', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'source-fence');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') }).where(eq(mailExtraction.id, first));
+      const opened = await readyWork(db, 'source-fence');
+      const caller = centurionCaller().workItems;
+      const path = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].adults`;
+      await caller.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath: path, value: 3 });
+      await caller.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath: 'contact.name', value: 'Example' });
+      const current = await readyWork(db, 'source-fence');
+      const cursor = { extractionId: first, seq: current.revisionSeq!, stateDigest: current.stateDigest! };
+      const [saved] = await db.select().from(workItem).where(eq(workItem.id, opened.workItemId));
+      const events = await eventsFor(db, opened.workItemId);
+      await insertRead(db, messageId, { version: 'extract-v2', payload: payload({ stayOneArrival: '2027-10-25' }) });
+
+      const refuseAll = async () => {
+        const actions = [
+          () => caller.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath: path, value: 4 }),
+          () => caller.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath: 'contact.name', value: 'Other', expected: cursor }),
+          () => caller.acceptFields({ workItemId: opened.workItemId, fieldPaths: ['contact.company'] }),
+          () => caller.resetSection({ workItemId: opened.workItemId, section: { type: 'contact' } }),
+          () => caller.undoRevision({ workItemId: opened.workItemId, expectedSeq: cursor.seq }),
+          () => caller.redoRevision({ workItemId: opened.workItemId, expectedSeq: cursor.seq }),
+        ];
+        for (const action of actions) await expect(action()).rejects.toMatchObject({ code: 'CONFLICT' });
+      };
+      await refuseAll();
+      expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]).toEqual(saved);
+      expect(await eventsFor(db, opened.workItemId)).toEqual(events);
+
+      // Even if the new read disappears, a closed item cannot accept recovery or legacy field writes.
+      await db.delete(mailExtraction).where(and(eq(mailExtraction.messageId, messageId), eq(mailExtraction.extractorVersion, 'extract-v2')));
+      for (const status of ['done', 'dismissed']) {
+        await db.update(workItem).set({ status }).where(eq(workItem.id, opened.workItemId));
+        await refuseAll();
+        expect(await eventsFor(db, opened.workItemId)).toEqual(events);
+        expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]?.state).toEqual(saved?.state);
+      }
+    }));
+
+  it('returns a retryable conflict while a third read holds the source, then refuses the stale recovery cursor', () =>
+    withDb(async (db, url) => {
+      const messageId = await seedMail(db, 'source-race');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') }).where(eq(mailExtraction.id, first));
+      const opened = await readyWork(db, 'source-race');
+      const caller = centurionCaller().workItems;
+      const fieldPath = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].adults`;
+      await caller.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath, value: 3 });
+      const snapshot = await readyWork(db, 'source-race');
+      const expected = { extractionId: first, seq: snapshot.revisionSeq!, stateDigest: snapshot.stateDigest! };
+      const [before] = await db.select().from(workItem).where(eq(workItem.id, opened.workItemId));
+      const events = await eventsFor(db, opened.workItemId);
+      await insertRead(db, messageId, { version: 'extract-v2', payload: payload({ stayOneArrival: '2027-10-25' }) });
+      const otherConn = postgres(url, { max: 1, connect_timeout: 5, ssl: false, onnotice: () => undefined });
+      let release!: () => void;
+      let started!: () => void;
+      const hold = new Promise<void>((resolve) => { release = resolve; });
+      const locked = new Promise<void>((resolve) => { started = resolve; });
+      const otherDb = drizzle(otherConn, { schema });
+      const writer = otherDb.transaction(async (tx) => {
+        await tx.select({ id: message.id }).from(message).where(eq(message.id, messageId)).for('update');
+        await tx.insert(mailExtraction).values({ messageId, extractorVersion: 'extract-v3', status: 'succeeded',
+          kind: 'quote', payload: payload({ stayOneArrival: '2027-10-24' }) });
+        started();
+        await hold;
+      });
+      try {
+        await locked;
+        const edit = { workItemId: opened.workItemId, type: 'field.edit' as const, fieldPath, value: 4, expected };
+        await expect(caller.recordEvent(edit)).rejects.toMatchObject({ code: 'CONFLICT',
+          message: 'The email is being updated. Wait a moment, then try again.' });
+        release();
+        await writer;
+        await expect(caller.recordEvent(edit)).rejects.toMatchObject({ code: 'CONFLICT' });
+        expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]).toEqual(before);
+        expect(await eventsFor(db, opened.workItemId)).toEqual(events);
+      } finally {
+        release();
+        await writer;
+        await otherConn.end();
+      }
+    }));
+
+  it('fences a pending extraction becoming successful during a field write', () =>
+    withDb(async (db, url) => {
+      const messageId = await seedMail(db, 'source-transition');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') }).where(eq(mailExtraction.id, first));
+      const opened = await readyWork(db, 'source-transition');
+      const pending = await insertRead(db, messageId, { version: 'extract-v2', status: 'failed' });
+      const otherConn = postgres(url, { max: 1, connect_timeout: 5, ssl: false, onnotice: () => undefined });
+      let release!: () => void;
+      let started!: () => void;
+      const hold = new Promise<void>((resolve) => { release = resolve; });
+      const locked = new Promise<void>((resolve) => { started = resolve; });
+      const writer = drizzle(otherConn, { schema }).transaction(async (tx) => {
+        await tx.update(mailExtraction).set({ status: 'succeeded', payload: payload() }).where(eq(mailExtraction.id, pending));
+        started();
+        await hold;
+      });
+      try {
+        await locked;
+        const edit = { workItemId: opened.workItemId, type: 'field.edit' as const, fieldPath: 'contact.name', value: 'Example' };
+        await expect(centurionCaller().workItems.recordEvent(edit)).rejects.toMatchObject({ code: 'CONFLICT',
+          message: 'The email is being updated. Wait a moment, then try again.' });
+        release();
+        await writer;
+        await expect(centurionCaller().workItems.recordEvent(edit)).rejects.toMatchObject({ code: 'CONFLICT' });
+        expect(await eventsFor(db, opened.workItemId)).toHaveLength(0);
+        expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]?.state).toEqual({});
+      } finally {
+        release();
+        await writer;
+        await otherConn.end();
+      }
+    }));
+
+  it('preserves other-property legacy writes while fencing explicit recovery cursors', () =>
+    withDb(async (db) => {
+      await addDaVinciMailboxes(db);
+      const messageId = await seedMailForTransport(db, 'source-davinci', DAVINCI, DAVINCI_TRANSPORT_EMAIL);
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') }).where(eq(mailExtraction.id, first));
+      const caller = callerForTransport(DAVINCI, DAVINCI_TRANSPORT_EMAIL).workItems;
+      const opened = await caller.open({ internetMessageId: '<source-davinci@example.com>' });
+      if (opened.status !== 'ready' || !opened.workItemId) throw new Error('missing opened item');
+      await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
+      const edit = { workItemId: opened.workItemId, type: 'field.edit' as const, fieldPath: 'contact.name', value: 'Example' };
+      await expect(caller.recordEvent({ ...edit, expected: { extractionId: first, seq: opened.revisionSeq!,
+        stateDigest: opened.stateDigest! } })).rejects.toMatchObject({ code: 'CONFLICT' });
+      await expect(caller.recordEvent(edit)).resolves.toMatchObject({ value: 'Example' });
+    }));
+
   it('guards competing recovery writes with the reopened revision and extraction', () =>
     withDb(async (db, url) => {
       const messageId = await seedMail(db, 'cas-1');

@@ -68,6 +68,7 @@ import {
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
+import { centurionSourceFence, isWorkItemSourceBusy, lockWorkItemSource } from './work-item-source-lock.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
 
 /**
@@ -1128,7 +1129,7 @@ async function succeededRead(db: DB, messageId: string, id?: string) {
         id ? eq(mailExtraction.id, id) : undefined,
       ),
     )
-    .orderBy(desc(mailExtraction.createdAt))
+    .orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id))
     .limit(1);
   if (!row?.kind || !row.payload) return null;
   return {
@@ -2054,6 +2055,7 @@ export type FieldEventResult =
   | { status: 'invalid_path' }
   | { status: 'invalid_value' }
   | { status: 'stale' }
+  | { status: 'busy' }
   | { status: 'recorded'; aiValue: unknown; value: unknown; cursor?: { extractionId: string; seq: number; stateDigest: string } };
 
 /**
@@ -2082,6 +2084,9 @@ export async function recordFieldEvent(
   const fits = contact ? validContactValue(personValue) : path !== null && validFieldValue(path.field, personValue);
   if (input.type !== 'field.accept' && !fits) return { status: 'invalid_value' };
   return db.transaction(async (tx) => {
+    const source = await lockWorkItemSource(tx, { ...input, recovery: Boolean(input.expected) });
+    if (source === 'not_found') return { status: 'not_found' as const };
+    if (source === 'held') return { status: 'stale' as const };
     const [item] = await tx
       .select({
         extractionId: workItem.extractionId,
@@ -2156,6 +2161,11 @@ export async function recordFieldEvent(
       extractionId: input.expected.extractionId, seq: item.revisionSeq + 1,
       stateDigest: recoveryStateDigest(persisted.state, persisted.status),
     } };
+  }).catch((error: unknown) => {
+    if ((centurionSourceFence(input.transportId) || input.expected) && isWorkItemSourceBusy(error)) {
+      return { status: 'busy' as const };
+    }
+    throw error;
   });
 }
 
@@ -2240,8 +2250,11 @@ export async function loadStayCommit(
 export async function acceptUneditedFields(
   db: DB,
   input: { transportId: string; workItemId: string; userId: string; fieldPaths: string[] },
-): Promise<{ status: 'not_found' } | { status: 'recorded'; accepted: number }> {
+): Promise<{ status: 'not_found' } | { status: 'stale' } | { status: 'busy' } | { status: 'recorded'; accepted: number }> {
   return db.transaction(async (tx) => {
+    const source = await lockWorkItemSource(tx, input);
+    if (source === 'not_found') return { status: 'not_found' as const };
+    if (source === 'held') return { status: 'stale' as const };
     const [item] = await tx
       .select({ extractionId: workItem.extractionId })
       .from(workItem)
@@ -2292,6 +2305,9 @@ export async function acceptUneditedFields(
       })),
     );
     return { status: 'recorded' as const, accepted: accepts.length };
+  }).catch((error: unknown) => {
+    if (centurionSourceFence(input.transportId) && isWorkItemSourceBusy(error)) return { status: 'busy' as const };
+    throw error;
   });
 }
 
@@ -2461,6 +2477,8 @@ export type WorkItemSection = { type: 'contact' } | { type: 'stay'; stayId: stri
 export type ResetWorkSectionResult =
   | { status: 'not_found' }
   | { status: 'invalid_section' }
+  | { status: 'stale' }
+  | { status: 'busy' }
   | { status: 'recorded'; reset: number };
 
 /** Restores extraction-backed overrides in one contact or stay section and logs each cleared field atomically. */
@@ -2472,6 +2490,9 @@ export async function resetWorkSection(
     return { status: 'invalid_section' };
   }
   return db.transaction(async (tx) => {
+    const source = await lockWorkItemSource(tx, input);
+    if (source === 'not_found') return { status: 'not_found' as const };
+    if (source === 'held') return { status: 'stale' as const };
     const [item] = await tx
       .select({
         extractionId: workItem.extractionId,
@@ -2541,6 +2562,9 @@ export async function resetWorkSection(
       })
       .where(eq(workItem.id, input.workItemId));
     return { status: 'recorded' as const, reset: resets.length };
+  }).catch((error: unknown) => {
+    if (centurionSourceFence(input.transportId) && isWorkItemSourceBusy(error)) return { status: 'busy' as const };
+    throw error;
   });
 }
 
