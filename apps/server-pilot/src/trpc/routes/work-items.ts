@@ -30,7 +30,7 @@ import {
   recordPaneActions,
 } from '../../ai/work-events.js';
 import type { MailKind } from '../../ai/extraction/schema.js';
-import { recordFinalQuoteOutcome } from '../../ai/quote-outcomes.js';
+import { MAX_QUOTE_OUTCOME_VERSIONS, recordFinalQuoteOutcome } from '../../ai/quote-outcomes.js';
 import {
   dismissFollowUpDraft,
   followUpForMessage,
@@ -74,7 +74,7 @@ const paneActionEvent = z
 const quoteOutcomeInput = z.object({
   sourceMessageId: z.string().min(1).max(998), replyHtml: z.string().max(400_000), insertedAt: z.string().datetime(),
   replyKind: z.enum(['quote', 'decline', 'missing_details', 'other']),
-  preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(32),
+  preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(MAX_QUOTE_OUTCOME_VERSIONS),
   attachments: z.array(z.object({ fileName: z.string().min(1).max(255), mimeType: z.string().min(1).max(128),
     sizeBytes: z.number().int().min(0).max(32 * 1024 * 1024), sha256: z.string().regex(/^[a-f0-9]{64}$/),
   }).strict()).max(32),

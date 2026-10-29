@@ -3,12 +3,16 @@
  * reads it back with its PDF for the Outlook pane's Insert saved reply.
  */
 import { TRPCError } from '@trpc/server';
+import { readFileSync } from 'node:fs';
 import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client.js';
 import { aiDraftGeneration, mailDraft, mailDraftRevision } from '../src/db/schema/mail.js';
-import { CENTURION_USER_ID, NAVA_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
+import { CENTURION_USER_ID, NAVA_TRANSPORT_EMAIL, NAVA_TRANSPORT_ID, NAVA_USER_ID, TRANSPORT_EMAIL, TRANSPORT_ID } from '../src/db/seed.js';
+import { workEvent, workItem } from '../src/db/schema/work.js';
 import { configureDraftArtifactStorage } from '../src/trpc/routes/drafts.js';
+import { appRouter } from '../src/trpc/router.js';
+import { parseQuoteOutcomeFixture } from '../scripts/quote-outcome-eval.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread';
 import { TEST_DB_AVAILABLE, probeTestDb, withSeededTestDb } from './helpers/test-db';
 import { callerFor } from './helpers/trpc-caller';
@@ -133,6 +137,40 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
       },
       30000,
     );
+
+    it('records every prepared stay for large saved and Outlook quote replies', async () => {
+      await withSeededTestDb(async (db) => {
+        const threadId = 'thread-large-quote-outcome', messageId = 'message-large-quote-outcome';
+        await seedInboxThread(db, { threadId, transportId: NAVA_TRANSPORT_ID, transportEmail: NAVA_TRANSPORT_EMAIL,
+          messageId, fromAddress: 'guest@example.com' });
+        const [item] = await db.insert(workItem).values({ transportId: NAVA_TRANSPORT_ID, threadId,
+          sourceMessageId: messageId, kind: 'quote' }).returning({ id: workItem.id });
+        const template = parseQuoteOutcomeFixture(readFileSync(new URL('./fixtures/quote-outcome-eval.jsonl', import.meta.url), 'utf8'))[0]!;
+        const preparedVersions = Array.from({ length: 63 }, (_, i) => ({ workflowRunId: `run-${i}`, revisionRef: `rev-${i}` }));
+        await db.insert(workEvent).values(preparedVersions.map((ref) => ({
+          workItemId: item!.id, actorKind: 'ai', type: 'quote.prepared' as const, aiSource: ref.workflowRunId,
+          aiValue: { ...template.prepared, ...ref, sourceMessageId: messageId },
+          value: { ...template.staffFinal, ...ref, sourceMessageId: messageId },
+        })));
+        const nava = await callerFor(NAVA_USER_ID, { db, requestedTransportId: NAVA_TRANSPORT_ID });
+        await nava.drafts.saveReply({ threadId, replyToMessageId: messageId, to: ['guest@example.com'],
+          subject: 'Re: Quote request', html: '<p>Saved quote</p>', attachments: [PDF], replyKind: 'quote', preparedVersions });
+        const finalized = () => db.select().from(workEvent).where(and(eq(workEvent.workItemId, item!.id), eq(workEvent.type, 'quote.finalized')));
+        const saved = await finalized();
+        expect(saved).toHaveLength(1);
+        expect((saved[0]!.value as { quotes: unknown[] }).quotes).toHaveLength(63);
+
+        const workItems = appRouter.createCaller({ ...nava.ctx, auth: null as never, reqHeaders: new Headers() } as never).workItems;
+        const outlook = { sourceMessageId: messageId, replyHtml: '<p>Outlook quote</p>', insertedAt: new Date().toISOString(),
+          replyKind: 'quote' as const, preparedVersions, attachments: [{ fileName: 'Quotation.pdf', mimeType: 'application/pdf',
+            sizeBytes: PDF.size, sha256: 'a'.repeat(64) }] };
+        await expect(workItems.recordQuoteOutcome(outlook)).resolves.toEqual({ recorded: true });
+        await expect(workItems.recordQuoteOutcome(outlook)).resolves.toEqual({ recorded: true });
+        const both = await finalized();
+        expect(both).toHaveLength(2);
+        expect(both.map((event) => (event.value as { quotes: unknown[] }).quotes.length)).toEqual([63, 63]);
+      });
+    }, 30000);
 
     it(
       'an untouched saved reply is updated in place, without a replace prompt',

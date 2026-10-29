@@ -63,6 +63,7 @@ import {
 import { mailboxProcedure, privateProcedure, publicProcedure, router } from '../trpc.js';
 import { assertReservationistResultFreshForAction } from '../../ai/draft-approval.js';
 import { aiWorkflowRun, aiDraftGeneration, mailThread, message } from '../../db/schema/mail.js';
+import { MAX_QUOTE_OUTCOME_VERSIONS } from '../../ai/quote-outcomes.js';
 import { mailExtraction, workItem } from '../../db/schema/work.js';
 import {
   countOtherInFlightQuoteRuns,
@@ -255,7 +256,7 @@ export const qualifiedProposalInput = z
     agency: z.string().max(256).default('Quote'),
     notes: z.string().trim().max(1000).optional(),
     // Empty for one stay. A combined quote lists its other stays here; the first stay stays in the fields above.
-    additionalStays: z.array(qualifiedStayInput).max(62).default([]),
+    additionalStays: z.array(qualifiedStayInput).max(MAX_QUOTE_OUTCOME_VERSIONS - 1).default([]),
     workItemId: z.string().uuid().optional(),
   })
   .strict();
@@ -263,7 +264,7 @@ export const quoteDraftPreflightInput = z.object({
   messageId: z.string().min(1),
   threadId: z.string().min(1),
   pdfHashes: z.array(z.string().regex(/^[a-f0-9]{64}$/)).max(32),
-  preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1), revisionRef: z.string().min(1) }).strict()).max(63).optional(),
+  preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1), revisionRef: z.string().min(1) }).strict()).max(MAX_QUOTE_OUTCOME_VERSIONS).optional(),
 }).strict();
 export function resolveLedgerProposal(
   run: {
@@ -847,27 +848,29 @@ export async function assertDraftQuoteSourcesLocked(
 ): Promise<void> {
   const unavailable = () => new TRPCError({ code: 'PRECONDITION_FAILED', message: draftQuoteOccupancyMessage });
   // The parent locks also prevent new messages, extractions, work items and approvals through their foreign keys.
+  // Writers may already hold a child row before acquiring a parent FK lock. After the thread is locked,
+  // fail fast on any busy child so neither transaction can wait on the other in the opposite order.
   const [thread] = await db.select({ id: mailThread.id }).from(mailThread).where(and(
     eq(mailThread.id, scope.threadId), eq(mailThread.transportId, scope.transportId),
   )).limit(1).for('update');
   if (!thread) throw unavailable();
   const messages = await db.select({ id: message.id }).from(message).where(and(
     eq(message.threadId, scope.threadId), eq(message.transportId, scope.transportId),
-  )).orderBy(message.id).for('update');
+  )).orderBy(message.id).for('update', { noWait: true });
   if (!messages.some((row) => row.id === scope.messageId)) throw unavailable();
   await db.select({ id: mailExtraction.id }).from(mailExtraction)
-    .where(eq(mailExtraction.messageId, scope.messageId)).orderBy(mailExtraction.id).for('share');
+    .where(eq(mailExtraction.messageId, scope.messageId)).orderBy(mailExtraction.id).for('share', { noWait: true });
   // FOR UPDATE also blocks inserting events on a sibling work item while checking earlier human decisions.
   await db.select({ id: workItem.id }).from(workItem).where(and(
     eq(workItem.transportId, scope.transportId), eq(workItem.threadId, scope.threadId),
     eq(workItem.sourceMessageId, scope.messageId),
-  )).orderBy(workItem.id).for('update');
+  )).orderBy(workItem.id).for('update', { noWait: true });
   await db.select({ id: aiDraftGeneration.id }).from(aiDraftGeneration).where(and(
     eq(aiDraftGeneration.transportId, scope.transportId), eq(aiDraftGeneration.threadId, scope.threadId),
-  )).orderBy(aiDraftGeneration.id).for('share');
+  )).orderBy(aiDraftGeneration.id).for('share', { noWait: true });
   await db.select({ id: aiWorkflowRun.id }).from(aiWorkflowRun).where(and(
     eq(aiWorkflowRun.transportId, scope.transportId), eq(aiWorkflowRun.threadId, scope.threadId),
-  )).orderBy(aiWorkflowRun.id).for('share');
+  )).orderBy(aiWorkflowRun.id).for('share', { noWait: true });
   for (const source of sources) {
     if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(source.revision), {
       ...scope, propertyCode: source.revision.propertyCode, lock: true,

@@ -32,7 +32,7 @@ import {
   message,
 } from '../../db/schema/mail.js';
 import { workItem } from '../../db/schema/work.js';
-import { recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
+import { MAX_QUOTE_OUTCOME_VERSIONS, recordFinalQuoteOutcome, type QuoteOutcomePreparedRef, type QuoteReplyKind } from '../../ai/quote-outcomes.js';
 import {
   EvidenceRefSchema,
   isEvidenceFresh,
@@ -73,6 +73,11 @@ function isPostgresUniqueViolation(err: unknown): boolean {
     return isPostgresUniqueViolation(err.cause);
   }
   return false;
+}
+
+function isPostgresLockUnavailable(err: unknown): boolean {
+  if (err && typeof err === 'object' && 'code' in err && (err as { code: string }).code === '55P03') return true;
+  return err instanceof Error && err.cause !== undefined && isPostgresLockUnavailable(err.cause);
 }
 
 type InboundAttachmentIdentityReader = (input: {
@@ -1825,7 +1830,7 @@ export const draftsRouter = tRouter({
         subject: z.string().max(998).default(''),
         html: z.string(),
         replyKind: z.enum(['quote', 'decline', 'missing_details', 'other']).default('other'),
-        preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(63).default([]),
+        preparedVersions: z.array(z.object({ workflowRunId: z.string().min(1).max(200), revisionRef: z.string().min(1).max(200) }).strict()).max(MAX_QUOTE_OUTCOME_VERSIONS).default([]),
         attachments: z.array(serializedAttachmentInput).max(32).default([]),
         replaceDraft: z.string().max(200).optional(),
       }),
@@ -1867,7 +1872,7 @@ export const draftsRouter = tRouter({
               ),
             )
             .limit(1)
-            .for('update');
+            .for('update', lockQuote ? { noWait: true } : undefined);
           // The draft the confirm named was discarded or sent meanwhile: ask again rather than undo that.
           if (!prior && input.replaceDraft !== undefined) {
             throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_CHANGED' });
@@ -1966,6 +1971,9 @@ export const draftsRouter = tRouter({
           return { id: draftId, replaced: prior !== undefined && !untouchedSavedReply };
         });
       } catch (error) {
+        if (isPostgresLockUnavailable(error)) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: 'The quote is being updated. Wait a moment, then try saving again.' });
+        }
         if (isPostgresUniqueViolation(error)) {
           throw new TRPCError({ code: 'CONFLICT', message: 'DRAFT_CHANGED' });
         }

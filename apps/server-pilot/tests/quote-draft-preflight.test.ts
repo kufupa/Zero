@@ -192,6 +192,16 @@ describe('priced draft preflight', () => {
     expect(transaction).toHaveBeenCalledOnce();
   });
 
+  it('asks staff to retry when a quote source is being updated', async () => {
+    const { transaction } = await fixture();
+    transaction.mockRejectedValueOnce(Object.assign(new Error('wrapped lock'), { cause: { code: '55P03' } }));
+    await expect(caller().drafts.saveReply({ threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>',
+      replyKind: 'quote', attachments: [{ name: 'quote.pdf', type: 'application/pdf', size: pdf.length,
+        lastModified: 1, base64: pdf.toString('base64') }] })).rejects.toMatchObject({
+          code: 'PRECONDITION_FAILED', message: 'The quote is being updated. Wait a moment, then try saving again.',
+        });
+  });
+
   it('refuses a saved quote if source facts change during attachment staging', async () => {
     const { state, transactionState } = await fixture();
     transactionState.enabled = true;
