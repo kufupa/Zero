@@ -2,19 +2,19 @@
  * @vitest-environment happy-dom
  */
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { StayCard } from '@/components/quote-workflow/requirement-card';
 import { childOccupancyMatchesStored } from '../../server-pilot/src/ai/child-occupancy';
 import { DRAFT_GROUP_ID, initialQuoteSession, reduceQuoteSession } from '@/lib/quote-workflow/session';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
-import { setMailCacheScope, transportForCall } from '@/lib/mail/mail-cache-scope';
+import { getMailCacheScope, setMailCacheScope, transportForCall } from '@/lib/mail/mail-cache-scope';
 import type { QuoteAnalysis, QuoteSession, StayGroupRequirement } from '@/lib/quote-workflow/types';
 import {
   fieldEventsBetween,
   STORED_LOOKUP_TIMEOUT_MS,
   storedDecision,
-  useStoredWork,
+  useStoredWork as useStoredWorkRaw,
   WORK_EVENT_DEBOUNCE_MS,
   WORK_EVENT_RETRY_MS,
   type StoredPane,
@@ -73,9 +73,20 @@ function row(id: string, stayId: string | undefined, values: Partial<StayGroupRe
 const G1 = row('g1', 'st-1');
 const G2 = row('g2', 'st-1');
 const G3 = row('g3', 'st-2', { arrivalDate: '2026-11-01', departureDate: '2026-11-03' });
+const PINNED = { context: { activeTransportId: 'test-transport' } };
+
+// Production callers supply the signed-in user's mailbox scope. Model that binding in the hook harness too.
+function useStoredWork(args: Parameters<typeof useStoredWorkRaw>[0]) {
+  const { userId, activeTransportId } = getMailCacheScope();
+  const scope = userId && activeTransportId ? `${userId}:session:${activeTransportId}` : undefined;
+  return useStoredWorkRaw({ ...args, scope: args.scope === undefined ? scope : args.scope });
+}
+
+beforeEach(() => setMailCacheScope({ userId: 'test-user', activeTransportId: 'test-transport' }));
 
 afterEach(() => {
   cleanup();
+  setMailCacheScope({ userId: null, activeTransportId: null });
   for (let i = sessionStorage.length - 1; i >= 0; i -= 1) {
     const key = sessionStorage.key(i);
     if (key?.startsWith('nava.pending-work-item.v1:')) sessionStorage.removeItem(key);
@@ -85,7 +96,7 @@ afterEach(() => {
 function fakeTrpc(lookup: () => unknown) {
   const query = vi.fn(async (_input: unknown) => lookup());
   const mutate = vi.fn(async (_input: unknown, _opts?: unknown) => ({ aiValue: null, value: null }));
-  return { trpc: { workItems: { getByMessage: { query }, recordEvent: { mutate } } }, query, mutate };
+  return { trpc: { workItems: { getByMessage: { query }, recordEvent: { mutate }, recordOwnedEvent: { mutate } } }, query, mutate };
 }
 
 describe('storedDecision', () => {
@@ -330,7 +341,7 @@ describe('useStoredWork', () => {
     let finish!: (value: unknown) => void;
     const saved = new Promise<unknown>((resolve) => { finish = resolve; });
     const mutate = vi.fn(() => saved);
-    const trpc = { workItems: { getByMessage: { query: async () => READY }, recordEvent: { mutate } } };
+    const trpc = { workItems: { getByMessage: { query: async () => READY }, recordEvent: { mutate }, recordOwnedEvent: { mutate } } };
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
     await waitFor(() => expect(result.current.pane.state).toBe('ready'));
     act(() => result.current.recordGroups([G1], [{ ...G1, childrenPerRoom: 1, childrenAges: [7] }]));
@@ -374,7 +385,7 @@ describe('useStoredWork', () => {
         workItemStatus: 'needs_you',
       }),
     );
-    expect(query).toHaveBeenCalledWith({ internetMessageId: 'm-1' });
+    expect(query).toHaveBeenCalledWith({ internetMessageId: 'm-1' }, PINNED);
   });
 
   it('opens a work item once for a stored read that has none, then logs edits against it', async () => {
@@ -385,10 +396,10 @@ describe('useStoredWork', () => {
     await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'wi-1' }));
     expect(query).toHaveBeenCalledTimes(1);
     expect(open).toHaveBeenCalledTimes(1);
-    expect(open).toHaveBeenCalledWith({ internetMessageId: 'm-1' });
+    expect(open).toHaveBeenCalledWith({ internetMessageId: 'm-1' }, PINNED);
     act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 3 }]));
     unmount();
-    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'wi-1', value: 3 }));
+    expect(mutate).toHaveBeenCalledWith(expect.objectContaining({ workItemId: 'wi-1', expectedUserId: 'test-user', value: 3 }), PINNED);
   });
 
   it('can inspect a stored read without opening a new work item', async () => {
@@ -547,7 +558,9 @@ describe('useStoredWork', () => {
         fieldPath: 'stays[st-1].rows[rw-1].count',
         value: 6,
         msSinceOpen: expect.any(Number),
+        expectedUserId: 'test-user',
       }),
+      PINNED,
     );
   });
 
@@ -560,6 +573,7 @@ describe('useStoredWork', () => {
     expect(mutate).toHaveBeenCalledTimes(1);
     expect(mutate).toHaveBeenCalledWith(
       expect.objectContaining({ fieldPath: 'stays[st-1].rows[rw-2].adults', value: 3 }),
+      PINNED,
     );
   });
 
@@ -593,6 +607,7 @@ describe('useStoredWork', () => {
       expect(mutate).toHaveBeenCalledTimes(3);
       expect(mutate).toHaveBeenLastCalledWith(
         expect.objectContaining({ fieldPath: 'stays[st-1].rows[rw-1].count', value: 4 }),
+        PINNED,
       );
       expect(result.current.saveFailed).toBe(false);
     } finally {
@@ -697,7 +712,7 @@ describe('useStoredWork', () => {
       await Promise.resolve();
     });
     await waitFor(() => expect(mutate).toHaveBeenCalledTimes(2));
-    expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({ fieldPath: 'stays[st-1].rows[rw-1].count', value: 5 }));
+    expect(mutate).toHaveBeenLastCalledWith(expect.objectContaining({ fieldPath: 'stays[st-1].rows[rw-1].count', value: 5 }), PINNED);
   });
 
   it('saves a correction queued across a mailbox switch to the mailbox that owns its work item', async () => {
@@ -774,6 +789,7 @@ describe('useStoredWork', () => {
       });
       expect(mutate).toHaveBeenCalledWith(
         expect.objectContaining({ workItemId: 'wi-1', fieldPath: 'contact.phone', value: '+27 82 555 0100' }),
+        PINNED,
       );
     } finally {
       vi.useRealTimers();

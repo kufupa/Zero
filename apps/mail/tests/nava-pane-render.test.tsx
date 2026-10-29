@@ -292,6 +292,7 @@ vi.mock('../providers/query-provider', () => ({
         ...(bridgeMockState.quotePaneConfig?.propertyCode === 'HRCEN'
           ? { open: { mutate: async () => currentStored() } } : {}),
         recordEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
+        recordOwnedEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
         retryTranslation: { mutate: (input: unknown) => bridgeMockState.retryTranslation(input) },
       };
     },
@@ -445,6 +446,7 @@ describe('NavaPane', () => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: bridgeMockState.transportId });
     sendCommandMock.mockClear();
     bridgeMockState.analysisOverride = null;
     bridgeMockState.analyseCalls = 0;
@@ -759,6 +761,7 @@ describe('NavaPane', () => {
     bridgeMockState.quotePaneConfigFailures = 0;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: bridgeMockState.transportId });
     sendCommandMock.mockClear();
     bridgeMockState.hmsQueueStatus = null;
     saveReplyMutate.mockReset().mockResolvedValue({ id: 'draft-1', replaced: false });

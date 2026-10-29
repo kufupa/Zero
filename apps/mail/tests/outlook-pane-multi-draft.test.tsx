@@ -4,6 +4,7 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import OutlookPanePage from '../app/(routes)/outlook-pane/page';
+import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
 import { toast } from 'sonner';
 import { OUTLOOK_CENTURION_ROOM_TYPES, outlookRecordEvent, outlookStoredQuote } from './helpers/outlook-stored-quote';
 
@@ -147,6 +148,7 @@ vi.mock('../providers/query-provider', () => {
       workItems: {
         getByMessage: { query: async () => outlookStoredQuote(analysis()) },
         recordEvent: { mutate: (...args: Parameters<typeof outlookRecordEvent>) => outlookRecordEvent(...args) },
+        recordOwnedEvent: { mutate: (...args: Parameters<typeof outlookRecordEvent>) => outlookRecordEvent(...args) },
       },
       workstation: {
         ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
@@ -283,6 +285,7 @@ function callsFor(action: string) {
 describe('Outlook pane: one reply for every completed date option', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: 'transport-shared' });
     sessionState.timeoutFirstCreate = false;
     sendCommandMock.mockReset();
     sendCommandMock.mockImplementation(async (action: string) => {
@@ -306,10 +309,11 @@ describe('Outlook pane: one reply for every completed date option', () => {
   });
 
   afterEach(() => {
+    cleanup();
+    setMailCacheScope({ userId: null, activeTransportId: null });
     localStorage.clear();
     sessionStorage.clear();
     vi.restoreAllMocks();
-    cleanup();
     vi.mocked(toast.error).mockClear();
     vi.mocked(toast.warning).mockClear();
   });

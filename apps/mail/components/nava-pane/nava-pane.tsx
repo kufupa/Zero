@@ -1016,7 +1016,7 @@ export function NavaPane({
       !analysis || caseReviewPending(analysis) || (caseReviewPending(held) && !held?.pendingRead) ||
       storedWork.pane.state !== 'ready' || storedWork.pane.sourceConflict || storedWork.pane.analysis.caseActionsUncertain ||
       !storedWork.pane.refs || storedWork.historyPending || storedWork.historyNeedsReload ||
-      typeof workItemsFromTrpc(trpcClient).recordEvent?.mutate !== 'function') return;
+      typeof workItemsFromTrpc(trpcClient).recordOwnedEvent?.mutate !== 'function') return;
     const sourceRead = storedWork.pane.sourceRead;
     const sourceVerified = sourceRead && sourceRead.extractionId === storedWork.pane.extractionId &&
       sourceRead.kind === storedWork.pane.kind;

@@ -28,7 +28,7 @@ const INITIAL: Ready = {
 function harness(saved: Ready = INITIAL) {
   const query = vi.fn(async (): Promise<StoredWork> => saved).mockResolvedValueOnce(INITIAL);
   const record = vi.fn(async (input: RecordFieldEventInput) => ({ aiValue: null, value: input.value }));
-  const trpc = { workItems: { getByMessage: { query }, recordEvent: { mutate: record } } };
+  const trpc = { workItems: { getByMessage: { query }, recordEvent: { mutate: record }, recordOwnedEvent: { mutate: record } } };
   return { trpc, query, record };
 }
 

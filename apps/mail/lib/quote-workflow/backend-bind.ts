@@ -300,6 +300,9 @@ type WorkItemsClient = {
   recordEvent?: {
     mutate: (input: RecordFieldEventInput, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
   };
+  recordOwnedEvent?: {
+    mutate: (input: RecordFieldEventInput & { expectedUserId: string }, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
+  };
   acceptFields?: {
     mutate: (
       input: { workItemId: string; fieldPaths: string[] },

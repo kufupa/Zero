@@ -106,6 +106,28 @@ const fieldEventInput = z
   })
   .strict();
 
+async function saveFieldEvent(
+  input: z.infer<typeof fieldEventInput>,
+  ctx: { activeTransportId: string; sessionUser: { id: string } },
+) {
+  const result = await recordFieldEvent(getDb(), {
+    transportId: ctx.activeTransportId,
+    workItemId: input.workItemId,
+    userId: ctx.sessionUser.id,
+    type: input.type,
+    fieldPath: input.fieldPath,
+    value: input.value,
+    msSinceOpen: input.msSinceOpen,
+    expected: input.expected,
+  });
+  if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+  if (result.status === 'invalid_path') throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown field path.' });
+  if (result.status === 'invalid_value') throw new TRPCError({ code: 'BAD_REQUEST', message: 'Value does not fit this field.' });
+  if (result.status === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The saved details changed. Reload and review your changes.' });
+  if (result.status === 'busy') throw new TRPCError({ code: 'CONFLICT', message: 'The email is being updated. Wait a moment, then try again.' });
+  return { aiValue: result.aiValue, value: result.value, ...(result.cursor ? { cursor: result.cursor } : {}) };
+}
+
 export const workItemsRouter = router({
   getByMessage: mailboxProcedure
     .input(storedWorkLookupInput)
@@ -153,34 +175,16 @@ export const workItemsRouter = router({
         ...(receivedSince ? { receivedSince } : {}),
       });
     }),
-  recordEvent: mailboxProcedure.input(fieldEventInput).mutation(async ({ input, ctx }) => {
-    const result = await recordFieldEvent(getDb(), {
-      transportId: ctx.activeTransportId,
-      workItemId: input.workItemId,
-      userId: ctx.sessionUser.id,
-      type: input.type,
-      fieldPath: input.fieldPath,
-      value: input.value,
-      msSinceOpen: input.msSinceOpen,
-      expected: input.expected,
-    });
-    if (result.status === 'not_found') {
-      throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
-    }
-    if (result.status === 'invalid_path') {
-      throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown field path.' });
-    }
-    if (result.status === 'invalid_value') {
-      throw new TRPCError({ code: 'BAD_REQUEST', message: 'Value does not fit this field.' });
-    }
-    if (result.status === 'stale') {
-      throw new TRPCError({ code: 'CONFLICT', message: 'The saved details changed. Reload and review your changes.' });
-    }
-    if (result.status === 'busy') {
-      throw new TRPCError({ code: 'CONFLICT', message: 'The email is being updated. Wait a moment, then try again.' });
-    }
-    return { aiValue: result.aiValue, value: result.value, ...(result.cursor ? { cursor: result.cursor } : {}) };
-  }),
+  recordEvent: mailboxProcedure.input(fieldEventInput).mutation(({ input, ctx }) => saveFieldEvent(input, ctx)),
+  // A separate route makes older servers fail closed rather than ignore an unrecognised owner fence.
+  recordOwnedEvent: mailboxProcedure
+    .input(fieldEventInput.extend({ expectedUserId: z.string().min(1).max(256) }).strict())
+    .mutation(({ input, ctx }) => {
+      if (input.expectedUserId !== ctx.sessionUser.id) {
+        throw new TRPCError({ code: 'CONFLICT', message: 'The staff account changed. Reopen the email and retry.' });
+      }
+      return saveFieldEvent(input, ctx);
+    }),
   /** Owner/developer review of exactly the succeeded extraction shown by the workflow console. */
   adminReview: mailboxProcedure.input(adminReviewInput).mutation(async ({ input, ctx }) => {
     // Owner console only: hotel staff with member access must not change review counts.

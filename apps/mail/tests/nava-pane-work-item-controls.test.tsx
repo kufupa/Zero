@@ -285,6 +285,7 @@ vi.mock('../providers/query-provider', () => ({
           },
         },
         recordEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
+        recordOwnedEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
         retryTranslation: { mutate: (input: unknown) => bridgeMockState.retryTranslation(input) },
         revisionCursor: { query: () => bridgeMockState.revisionCursor() },
         undoRevision: { mutate: (input: unknown) => bridgeMockState.undoRevision(input as never) },
@@ -402,6 +403,7 @@ describe('Nava pane work-item controls', () => {
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     bridgeMockState.transportLoading = false;
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: bridgeMockState.transportId });
     bridgeMockState.storedWork = null;
     bridgeMockState.storedLookupGate = null;
     bridgeMockState.storedWorkLookups = 0;
@@ -423,11 +425,11 @@ describe('Nava pane work-item controls', () => {
   });
 
   afterEach(() => {
+    cleanup();
     setMailCacheScope({ userId: null, activeTransportId: null });
     localStorage.clear();
     sessionStorage.clear();
     resetPaneEditsForTests();
-    cleanup();
   });
 
   it('holds a web selection when the quote source identifies a different mail row', async () => {

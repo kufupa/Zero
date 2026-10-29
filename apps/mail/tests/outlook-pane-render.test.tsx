@@ -156,6 +156,7 @@ vi.mock('../providers/query-provider', () => ({
     workItems: {
       getByMessage: { query: async () => outlookStoredQuote(OUTLOOK_QUOTE_ANALYSIS) },
       recordEvent: { mutate: (...args: Parameters<typeof outlookRecordEvent>) => outlookRecordEvent(...args) },
+      recordOwnedEvent: { mutate: (...args: Parameters<typeof outlookRecordEvent>) => outlookRecordEvent(...args) },
     },
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
@@ -256,6 +257,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
 
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: bridgeMockState.transportId });
     quotePdfMutate.mockReset();
     quotePdfMutate.mockResolvedValue({ fileName: 'Quote - CIDB 15-17 Sep.pdf', pdfBase64: 'JVBERw==' });
     quoteDraftPreflightMock.mockReset().mockResolvedValue({ ready: true });

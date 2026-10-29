@@ -147,6 +147,10 @@ type FieldSend = {
   workItemId: string;
   /** The mailbox that owns the work item. A save queued across a mailbox switch still goes there. */
   transportId: string | null;
+  /** The staff account that made this edit; the server must compare it to the request session. */
+  userId: string;
+  /** A later account or competing edit requires staff review rather than an automatic retry. */
+  needsReview?: boolean;
   path: string;
   value: RecordFieldEventInput['value'];
   msSinceOpen: number;
@@ -585,9 +589,21 @@ function recoveryValuesEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
-/** One save slot: a field of one work item, so the same field on two mails never shares a pending or failed save. */
-function saveKey(workItemId: string, path: string): string {
+/** One field's in-flight serialization slot, shared even when the signed-in account changes. */
+function fieldSlot(workItemId: string, path: string): string {
   return `${workItemId}\n${path}`;
+}
+
+/** Pending and failed values belong to their owner and must not replace another owner's value. */
+function saveKey(workItemId: string, path: string, userId: string): string {
+  return `${workItemId}\n${JSON.stringify([userId, path])}`;
+}
+
+function lookupOwner(lookup: Lookup | null, scope: string, transportId: string | null): string | null {
+  const userId = lookup?.userId;
+  const mailbox = getMailCacheScope();
+  return userId && transportId && scope.startsWith(`${userId}:`) && scope.endsWith(`:${transportId}`) &&
+    mailbox.userId === userId && mailbox.activeTransportId === transportId ? userId : null;
 }
 
 export function useStoredWork(args: {
@@ -647,7 +663,7 @@ export function useStoredWork(args: {
   // Every save slot she edited on this screen. A save still pending, failed or retrying has not reached the server yet,
   // so its field is never sent as an accept.
   const edited = useRef(new Set<string>());
-  const [saveFailed, setSaveFailed] = useState(false);
+  const [, setFailureRevision] = useState(0);
   // The work item whose translation is being asked for again, so "Translating…" shows for that mail only.
   const [translating, setTranslating] = useState<string | null>(null);
   const [historyRefresh, setHistoryRefresh] = useState({
@@ -673,16 +689,24 @@ export function useStoredWork(args: {
   }, [trpc]);
 
   const post = useCallback((entry: FieldSend, retried: boolean) => {
-    const recordEvent = workItemsFromTrpc(trpcRef.current).recordEvent;
-    if (!recordEvent) return;
-    const key = saveKey(entry.workItemId, entry.path);
+    const key = saveKey(entry.workItemId, entry.path, entry.userId);
+    const slot = fieldSlot(entry.workItemId, entry.path);
     latest.current.set(key, entry);
     const send = async () => {
       // A newer value queued behind this one is sent instead.
       if (latest.current.get(key) !== entry) return;
+      const recordEvent = workItemsFromTrpc(trpcRef.current).recordOwnedEvent;
+      if (!recordEvent || getMailCacheScope().userId !== entry.userId || entry.needsReview) {
+        if (getMailCacheScope().userId !== entry.userId) entry.needsReview = true;
+        latest.current.delete(key);
+        failed.current.set(key, entry);
+        setFailureRevision((n) => n + 1);
+        return;
+      }
       try {
         const input = {
           workItemId: entry.workItemId,
+          expectedUserId: entry.userId,
           type: 'field.edit' as const,
           fieldPath: entry.path,
           value: entry.value,
@@ -694,22 +718,22 @@ export function useStoredWork(args: {
         setCursorEpoch((n) => n + 1);
       } catch {
         if (latest.current.get(key) !== entry) return;
-        if (!retried) {
+        if (!retried && !entry.needsReview) {
           setTimeout(() => {
             if (latest.current.get(key) === entry) post(entry, true);
           }, WORK_EVENT_RETRY_MS);
           return;
         }
         failed.current.set(key, entry);
-        setSaveFailed(true);
+        setFailureRevision((n) => n + 1);
       }
     };
     // Nothing in flight: send now, so an unmount flush reaches the server before the pane goes.
-    const prior = inFlight.current.get(key);
+    const prior = inFlight.current.get(slot);
     const run = prior ? prior.then(send) : send();
-    inFlight.current.set(key, run);
+    inFlight.current.set(slot, run);
     void run.finally(() => {
-      if (inFlight.current.get(key) === run) inFlight.current.delete(key);
+      if (inFlight.current.get(slot) === run) inFlight.current.delete(slot);
     });
   }, []);
 
@@ -723,6 +747,8 @@ export function useStoredWork(args: {
         {
           workItemId: entry.workItemId,
           transportId: entry.transportId,
+          userId: entry.userId,
+          needsReview: entry.needsReview,
           path: entry.path,
           value: entry.value,
           msSinceOpen: entry.msSinceOpen,
@@ -735,10 +761,11 @@ export function useStoredWork(args: {
 
   /** Sends every failed change again. One that fails twice more shows the retry again. */
   const retrySave = useCallback(() => {
-    const entries = [...failed.current.values()];
-    failed.current.clear();
-    setSaveFailed(false);
-    for (const entry of entries) post(entry, false);
+    const userId = getMailCacheScope().userId;
+    const entries = [...failed.current.entries()].filter(([, entry]) => userId && entry.userId === userId && !entry.needsReview);
+    for (const [key] of entries) failed.current.delete(key);
+    if (entries.length) setFailureRevision((n) => n + 1);
+    for (const [, entry] of entries) post(entry, false);
     retryRecovery.current();
   }, [post]);
 
@@ -747,8 +774,9 @@ export function useStoredWork(args: {
     for (const key of pending.current.keys()) send(key);
   }, [send]);
 
-  const dropQueuedSaves = useCallback((section?: WorkItemSection) => {
+  const dropQueuedSaves = useCallback((workItemId: string, userId: string, section?: WorkItemSection) => {
     for (const [key, entry] of pending.current) {
+      if (entry.workItemId !== workItemId || entry.userId !== userId) continue;
       if (section && !fieldPathInSection(entry.path, section)) continue;
       clearTimeout(entry.timer);
       pending.current.delete(key);
@@ -756,19 +784,27 @@ export function useStoredWork(args: {
   }, []);
 
   const schedule = useCallback(
-    (path: string, workItemId: string, transportId: string | null, value: RecordFieldEventInput['value']) => {
-      const key = saveKey(workItemId, path);
-      edited.current.add(key);
+    (path: string, workItemId: string, transportId: string | null, userId: string, value: RecordFieldEventInput['value']) => {
+      const key = saveKey(workItemId, path, userId);
+      let changedOther = false;
+      for (const previous of [...pending.current.values(), ...latest.current.values(), ...failed.current.values()]) {
+        if (previous.workItemId === workItemId && previous.path === path && previous.userId !== userId && !previous.needsReview) {
+          previous.needsReview = true;
+          changedOther = true;
+        }
+      }
+      if (changedOther) setFailureRevision((n) => n + 1);
+      edited.current.add(fieldSlot(workItemId, path));
       const existing = pending.current.get(key);
       if (existing) clearTimeout(existing.timer);
       // A newer value for the field replaces one that failed to save.
-      if (failed.current.delete(key)) setSaveFailed(failed.current.size > 0);
+      if (failed.current.delete(key)) setFailureRevision((n) => n + 1);
       latest.current.delete(key);
       // The clock starts at the field's first change in the quiet window, so later keystrokes do not move it.
       const elapsed = Math.round(Date.now() - readyAt.current);
       const msSinceOpen = existing?.msSinceOpen ?? Math.min(MAX_MS_SINCE_OPEN, Math.max(0, elapsed));
       const timer = setTimeout(() => send(key), WORK_EVENT_DEBOUNCE_MS);
-      pending.current.set(key, { workItemId, transportId, path, value, msSinceOpen, timer });
+      pending.current.set(key, { workItemId, transportId, userId, path, value, msSinceOpen, timer });
     },
     [send],
   );
@@ -908,7 +944,7 @@ export function useStoredWork(args: {
   /** A price request must see the edits the person just made, not an older saved row. */
   const flushEdits = useCallback(async (): Promise<boolean> => {
     if (!lookupKey || !internetMessageId || selection.current.epoch !== renderEpoch || historyPending || historyNeedsReload || discardInProgress.current ||
-        !workItemsFromTrpc(trpcRef.current).recordEvent) return false;
+        !workItemsFromTrpc(trpcRef.current).recordOwnedEvent) return false;
     const epoch = renderEpoch;
     let workItemId = readyWorkItemId ?? cachedWorkItemId;
     const fail = (message: string) => {
@@ -917,6 +953,8 @@ export function useStoredWork(args: {
       }
       return false;
     };
+    const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
+    if (!ownerId) return fail('The staff account changed. Reopen the email and retry saving.');
 
     if (!workItemId || deferred.current.has(lookupKey) || recoveryMarked(lookupKey)) {
       const draft = draftForSelection();
@@ -926,6 +964,7 @@ export function useStoredWork(args: {
         return fail('The saved details could not be verified. Review and re-enter your changes.');
       }
       const source = draft.source;
+      const recoveryOwner = draft.userId;
       const isSelected = () => {
         const current = lookupRef.current;
         const mailbox = getMailCacheScope();
@@ -975,7 +1014,7 @@ export function useStoredWork(args: {
           };
           const noConflict = () => Object.entries(provenance).every(([path, saved]) => allowed(path, saved.value)) &&
             [...reopenedValues].every(([path, value]) => allowed(path, value));
-          const record = routes.recordEvent;
+          const record = routes.recordOwnedEvent;
           if (!record) return fail("Nava couldn't save your changes. Retry saving.");
           while (true) {
             if (!isSelected()) return false;
@@ -986,6 +1025,7 @@ export function useStoredWork(args: {
             try {
               const result = await record.mutate({
                 workItemId: opened.workItemId, type: 'field.edit', fieldPath: event.path, value: event.value,
+                expectedUserId: recoveryOwner,
                 msSinceOpen: Math.min(MAX_MS_SINCE_OPEN, Math.max(0, Math.round(Date.now() - readyAt.current))),
                 expected: { extractionId: source.extractionId, seq, stateDigest },
               }, inMailbox(draft.transportId));
@@ -1001,7 +1041,7 @@ export function useStoredWork(args: {
               seq += 1;
               stateDigest = cursor.stateDigest;
               draft.acknowledged.set(event.path, event.value);
-              edited.current.add(saveKey(opened.workItemId, event.path));
+              edited.current.add(fieldSlot(opened.workItemId, event.path));
             } catch {
               // A lost response does not prove the server did not save the older value.
               draft.blocked = true;
@@ -1045,10 +1085,12 @@ export function useStoredWork(args: {
       const active = [...inFlight.current.entries()]
         .filter(([key]) => key.startsWith(prefix)).map(([, promise]) => promise);
       if (active.length) await Promise.allSettled(active);
-      if (lookupKeyRef.current !== lookupKey || selection.current.epoch !== epoch) return false;
-      if ([...pending.current.keys()].some((key) => key.startsWith(prefix))) continue;
+      if (lookupKeyRef.current !== lookupKey || selection.current.epoch !== epoch ||
+          lookupOwner(currentLookup, scope, readyTransportId) !== ownerId) return false;
+      if ([...pending.current.values()].some((entry) => entry.workItemId === workItemId && entry.userId === ownerId)) continue;
       // A failed send may have scheduled its automatic retry after its promise settled.
-      if ([...latest.current.keys(), ...failed.current.keys()].some((key) => key.startsWith(prefix))) return false;
+      if ([...latest.current.values(), ...failed.current.values()]
+        .some((entry) => entry.workItemId === workItemId && entry.userId === ownerId)) return false;
       const party = partyEdits.current.get(lookupKey);
       if (party) {
         const query = workItemsFromTrpc(trpcRef.current).getByMessage;
@@ -1081,7 +1123,7 @@ export function useStoredWork(args: {
       return true;
     }
     return false;
-  }, [cachedWorkItemId, draftForSelection, expectedMessageId, flushAll, historyNeedsReload, historyPending, internetMessageId,
+  }, [cachedWorkItemId, currentLookup, draftForSelection, expectedMessageId, flushAll, historyNeedsReload, historyPending, internetMessageId,
     lookupKey, openMissingWorkItem, readyTransportId, readyWorkItemId, renderEpoch, scope]);
 
   retryRecovery.current = () => {
@@ -1103,6 +1145,12 @@ export function useStoredWork(args: {
       editEpoch.current += 1;
       if (historyPending || historyNeedsReload || discardInProgress.current || sourceHeld) return false;
       const workItemId = readyWorkItemId ?? cachedWorkItemId;
+      const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
+      if (workItemId && !ownerId) {
+        if (lookupKey) setRecoveryMarked(lookupKey, true);
+        setRecoveryProblem({ key: lookupKey ?? '', message: 'The staff account changed. Reopen the email and review your changes.' });
+        return false;
+      }
       let events: FieldEvent[];
       if (options?.verifiedRecovery || !readyRefs || !workItemId || (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) {
         if (JSON.stringify(before) === JSON.stringify(after)) return true;
@@ -1132,12 +1180,12 @@ export function useStoredWork(args: {
       }
       if (!workItemId || (lookupKey && deferred.current.has(lookupKey))) return true;
       for (const event of events) {
-        schedule(event.path, workItemId, readyTransportId, event.value);
+        schedule(event.path, workItemId, readyTransportId, ownerId!, event.value);
       }
       return true;
     },
-    [blockStaleSelection, cachedWorkItemId, draftForSelection, historyNeedsReload, historyPending, lookupKey, readyRefs,
-      readyWorkItemId, readyTransportId, renderEpoch, schedule, sourceHeld],
+    [blockStaleSelection, cachedWorkItemId, currentLookup, draftForSelection, historyNeedsReload, historyPending, lookupKey, readyRefs,
+      readyWorkItemId, readyTransportId, renderEpoch, schedule, scope, sourceHeld],
   );
 
   /** Logs one contact edit as a `contact.<field>` event. Nothing is logged until the mail has a stored read. */
@@ -1146,6 +1194,13 @@ export function useStoredWork(args: {
       if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch) { blockStaleSelection(selection.current.key); return; }
       editEpoch.current += 1;
       if (historyPending || historyNeedsReload || sourceHeld) return;
+      const workItemId = readyWorkItemId ?? cachedWorkItemId;
+      const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
+      if (workItemId && !ownerId) {
+        if (lookupKey) setRecoveryMarked(lookupKey, true);
+        setRecoveryProblem({ key: lookupKey ?? '', message: 'The staff account changed. Reopen the email and review your changes.' });
+        return;
+      }
       if (args.verifyQuotePartySource && lookupKey && (field === 'company' || field === 'endClient')) {
         const current = lookupRef.current;
         const previous = partyEdits.current.get(lookupKey);
@@ -1169,7 +1224,6 @@ export function useStoredWork(args: {
             }
           : prev,
       );
-      const workItemId = readyWorkItemId ?? cachedWorkItemId;
       if (!workItemId || (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) {
         const draft = draftForSelection();
         if (!draft) return;
@@ -1183,10 +1237,10 @@ export function useStoredWork(args: {
         draft.events.set(event.path, event);
         return;
       }
-      schedule(`contact.${field}`, workItemId, readyTransportId, value);
+      schedule(`contact.${field}`, workItemId, readyTransportId, ownerId!, value);
     },
-    [args.verifyQuotePartySource, blockStaleSelection, cachedWorkItemId, draftForSelection, historyNeedsReload, historyPending, lookupKey, readyWorkItemId,
-      readyTransportId, renderEpoch, schedule, sourceHeld],
+    [args.verifyQuotePartySource, blockStaleSelection, cachedWorkItemId, currentLookup, draftForSelection, historyNeedsReload, historyPending, lookupKey, readyWorkItemId,
+      readyTransportId, renderEpoch, schedule, scope, sourceHeld],
   );
 
   /**
@@ -1210,7 +1264,7 @@ export function useStoredWork(args: {
         .then(() => {
           if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch) return;
           // Every field she edited on this screen, including one still pending, failed or retrying, is left out.
-          const fieldPaths = shown.filter((path) => !edited.current.has(saveKey(workItemId, path)));
+          const fieldPaths = shown.filter((path) => !edited.current.has(fieldSlot(workItemId, path)));
           if (!fieldPaths.length) return;
           const input = { workItemId, fieldPaths };
           return pinned ? accept.mutate(input, pinned) : accept.mutate(input);
@@ -1392,23 +1446,28 @@ export function useStoredWork(args: {
       if (!readyWorkItemId || !mutate || seq === undefined || discardInProgress.current ||
           !webOwnerIsCurrent() || (expectedMessageId && selection.current.epoch !== renderEpoch) ||
           (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
+      const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
+      if (!ownerId) {
+        setHistoryError('The staff account changed. Reopen the email and try again.');
+        return;
+      }
       const keyNow = lookupKey;
       const isCurrent = () => lookupKeyRef.current === keyNow && (!expectedMessageId ||
         (selection.current.epoch === renderEpoch && webOwnerIsCurrent()));
       setHistoryPending(true);
       setHistoryError(null);
       setHistoryNeedsReload(false);
-      dropQueuedSaves();
+      dropQueuedSaves(readyWorkItemId, ownerId);
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, expectedSeq: seq };
       void Promise.allSettled(inFlight.current.values())
         .then(() => {
-          if (!isCurrent()) return;
-          dropQueuedSaves();
+          if (!isCurrent() || lookupOwner(currentLookup, scope, readyTransportId) !== ownerId) return;
+          dropQueuedSaves(readyWorkItemId, ownerId);
           return pinned ? mutate(input, pinned) : mutate(input);
         })
         .then((result) => {
-          if (!isCurrent()) return;
+          if (!isCurrent() || lookupOwner(currentLookup, scope, readyTransportId) !== ownerId) return;
           if (historyStaleOf(result)) {
             setHistoryError(HISTORY_STALE_COPY);
             return;
@@ -1426,7 +1485,7 @@ export function useStoredWork(args: {
           if (!expectedMessageId || isCurrent()) setHistoryPending(false);
         });
     },
-    [dropQueuedSaves, historyCursor, lookupKey, readyWorkItemId, readyTransportId, refetchStored, expectedMessageId, renderEpoch, scope],
+    [currentLookup, dropQueuedSaves, historyCursor, lookupKey, readyWorkItemId, readyTransportId, refetchStored, expectedMessageId, renderEpoch, scope],
   );
 
   const undo = useCallback(
@@ -1449,23 +1508,28 @@ export function useStoredWork(args: {
       if (!readyWorkItemId || !mutate || discardInProgress.current ||
           !webOwnerIsCurrent() || (expectedMessageId && selection.current.epoch !== renderEpoch) ||
           (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
+      const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
+      if (!ownerId) {
+        setHistoryError('The staff account changed. Reopen the email and try again.');
+        return;
+      }
       const keyNow = lookupKey;
       const isCurrent = () => lookupKeyRef.current === keyNow && (!expectedMessageId ||
         (selection.current.epoch === renderEpoch && webOwnerIsCurrent()));
       setHistoryPending(true);
       setHistoryError(null);
       setHistoryNeedsReload(false);
-      dropQueuedSaves(section);
+      dropQueuedSaves(readyWorkItemId, ownerId, section);
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, section };
       void Promise.allSettled(inFlight.current.values())
         .then(() => {
-          if (!isCurrent()) return;
-          dropQueuedSaves(section);
+          if (!isCurrent() || lookupOwner(currentLookup, scope, readyTransportId) !== ownerId) return;
+          dropQueuedSaves(readyWorkItemId, ownerId, section);
           return pinned ? mutate(input, pinned) : mutate(input);
         })
         .then((result) => {
-          if (!isCurrent()) return;
+          if (!isCurrent() || lookupOwner(currentLookup, scope, readyTransportId) !== ownerId) return;
           if (historyStaleOf(result)) {
             setHistoryError(HISTORY_STALE_COPY);
             return;
@@ -1479,7 +1543,7 @@ export function useStoredWork(args: {
           if (!expectedMessageId || isCurrent()) setHistoryPending(false);
         });
     },
-    [dropQueuedSaves, lookupKey, readyWorkItemId, readyTransportId, refetchStored, expectedMessageId, renderEpoch, scope],
+    [currentLookup, dropQueuedSaves, lookupKey, readyWorkItemId, readyTransportId, refetchStored, expectedMessageId, renderEpoch, scope],
   );
 
   const reloadHistory = useCallback(() => {
@@ -1492,9 +1556,12 @@ export function useStoredWork(args: {
 
   const missingRecoveryBaseline = Boolean(lookupKey && recoveryMarked(lookupKey) && !deferred.current.has(lookupKey));
   const unattributedRecovery = Boolean(expectedMessageId && lookupKey && legacyRecoveryMarked(lookupKey));
+  const needsOwnerReview = Boolean(currentLookup?.userId && [...failed.current.values()]
+    .some((entry) => entry.userId === currentLookup.userId && entry.needsReview));
   const saveError = unattributedRecovery ? 'Earlier changes are not assigned to this email. Reopen the original email to recover them.'
     : recoveryProblem && recoveryProblem.key === lookupKey ? recoveryProblem.message
-    : missingRecoveryBaseline ? 'Earlier changes were not confirmed. Discard them and reload this request.' : null;
+    : missingRecoveryBaseline ? 'Earlier changes were not confirmed. Discard them and reload this request.'
+    : needsOwnerReview ? 'The staff account changed. Review and re-enter your unsaved change.' : null;
 
   return {
     pane,
@@ -1524,7 +1591,8 @@ export function useStoredWork(args: {
     },
     retryTranslation,
     translationBusy: translating !== null && translating === readyWorkItemId,
-    saveFailed: saveFailed || Boolean(saveError),
+    saveFailed: Boolean(currentLookup?.userId && [...failed.current.values()]
+      .some((entry) => entry.userId === currentLookup.userId)) || Boolean(saveError),
     saveError,
     unattributedRecovery,
     discardUnconfirmedEdits,

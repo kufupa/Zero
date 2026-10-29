@@ -103,7 +103,7 @@ describe('web selected-row stored work', () => {
     const query = vi.fn(async ({ expectedMessageId }: { expectedMessageId?: string }) =>
       ready(expectedMessageId!, expectedMessageId === 'row-a' ? 'work-a' : 'work-b'));
     const record = vi.fn(async (_input: unknown, _opts?: unknown) => { throw new Error('offline'); });
-    const trpc = { workItems: { getByMessage: { query }, recordEvent: { mutate: record } } };
+    const trpc = { workItems: { getByMessage: { query }, recordEvent: { mutate: record }, recordOwnedEvent: { mutate: record } } };
     const { result, rerender } = renderHook(({ entryId }) => useStoredWork({
       trpc, internetMessageId: HEADER, expectedMessageId: entryId, scope: scope(entryId),
     }), { initialProps: { entryId: 'row-a' } });

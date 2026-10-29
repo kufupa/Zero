@@ -141,6 +141,7 @@ vi.mock('../providers/query-provider', () => ({
         (await analyseOverride.current?.({})) as ReadyAnalyse | undefined ?? OUTLOOK_QUOTE_ANALYSIS,
       ) },
       recordEvent: { mutate: (...args: Parameters<typeof outlookRecordEvent>) => outlookRecordEvent(...args) },
+      recordOwnedEvent: { mutate: (...args: Parameters<typeof outlookRecordEvent>) => outlookRecordEvent(...args) },
     },
     workstation: {
       ping: { mutate: vi.fn().mockResolvedValue({ status: 'ok' }) },
@@ -634,6 +635,7 @@ describe('Outlook pane quote proposal PDF', () => {
     sessionState.email = 'ropperman@legacyhotels.co.za';
     sessionState.outlookEmail = 'ropperman@legacyhotels.co.za';
     sessionState.transportId = 'transport-shared';
+    setMailCacheScope({ userId: sessionState.userId, activeTransportId: sessionState.transportId });
     sessionState.transportEmail = 'centurion@legacyhotels.co.za';
     sessionState.propertyCode = 'HRCEN';
     sessionState.requiresRelogin = false;

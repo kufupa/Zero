@@ -38,7 +38,7 @@ function harness() {
   const query = vi.fn(async (_input: { internetMessageId: string }, _opts?: unknown): Promise<StoredWork> => READ);
   const open = vi.fn(async (_input: { internetMessageId: string }, _opts?: unknown): Promise<StoredWork> => OPENED);
   const record = vi.fn(async (input: RecordFieldEventInput, _opts?: unknown) => acknowledge(input));
-  const trpc = { workItems: { getByMessage: { query }, open: { mutate: open }, recordEvent: { mutate: record } } };
+  const trpc = { workItems: { getByMessage: { query }, open: { mutate: open }, recordEvent: { mutate: record }, recordOwnedEvent: { mutate: record } } };
   return { trpc, query, open, record };
 }
 

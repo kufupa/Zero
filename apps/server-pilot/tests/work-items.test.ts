@@ -1654,6 +1654,37 @@ describe('corrections carry to a re-read', () => {
 });
 
 describe('field events', () => {
+  it('refuses an owner-bound field event under another authenticated account without writing', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'field-owner-fence');
+      const extractionId = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const opened = await readyWork(db, 'field-owner-fence');
+      const [before] = await db.select().from(workItem).where(eq(workItem.id, opened.workItemId));
+      const events = await eventsFor(db, opened.workItemId);
+      const other = appRouter.createCaller({
+        auth: null as never, reqHeaders: new Headers(),
+        sessionUser: { id: 'other-staff', email: 'other@example.invalid', name: null },
+        activeTransportId: CENTURION, transportEmail: CENTURION_EMAIL, accessRole: 'owner',
+      } as never).workItems;
+      const edit = { workItemId: opened.workItemId, type: 'field.edit' as const,
+        fieldPath: `stays[${STAY_ONE}].rows[${ROW_SINGLE}].adults`, value: 3, expectedUserId: USER,
+        expected: { extractionId, seq: opened.revisionSeq!, stateDigest: opened.stateDigest! } };
+
+      await expect(other.recordOwnedEvent(edit)).rejects.toMatchObject({ code: 'CONFLICT' });
+      expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]).toEqual(before);
+      expect(await eventsFor(db, opened.workItemId)).toEqual(events);
+
+      const saved = await centurionCaller().workItems.recordOwnedEvent(edit);
+      expect(saved).toMatchObject({ value: 3, cursor: { extractionId, seq: edit.expected.seq + 1 } });
+      expect(await eventsFor(db, opened.workItemId)).toEqual([
+        expect.objectContaining({ actorUserId: USER, fieldPath: edit.fieldPath, value: 3 }),
+      ]);
+      // Existing callers of the original route remain compatible.
+      await centurionCaller().workItems.recordEvent({ workItemId: opened.workItemId,
+        type: 'field.edit', fieldPath: edit.fieldPath, value: 4 });
+      expect(await eventsFor(db, opened.workItemId)).toHaveLength(2);
+    }));
+
   it('fences all Centurion field writes when a newer source exists or the item is closed', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'source-fence');
