@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { unzipSync } from 'fflate';
 import { and, eq } from 'drizzle-orm';
 import { QUOTE_PDF_PROMPT_VERSION } from '../src/ai/quote-pdf-jobs.js';
+import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
 
 const installation = vi.hoisted(() => ({ configure: vi.fn(), services: vi.fn() }));
 vi.mock('../src/ai/staff-quote-installation.js', () => ({
@@ -110,6 +111,8 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
   const [item] = await db.insert(workItem).values({
     transportId, threadId, sourceMessageId: messageId, kind: 'quote', extractionId: extraction!.id,
   }).returning({ id: workItem.id });
+  input.sourcePartyDigest = quoteSourcePartyDigest({ agency: null, endClient: null }, {})!;
+  input.sourceExtractionId = extraction!.id;
   return { mail, input, internetMessageId, storedMessageId, workItemId: item!.id };
 }
 
