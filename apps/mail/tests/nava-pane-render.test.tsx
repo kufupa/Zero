@@ -739,6 +739,7 @@ describe('NavaPane', () => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     sessionStorage.clear();
     bridgeMockState.analysisOverride = null;
+    bridgeMockState.quotePaneConfig = null;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
@@ -773,6 +774,7 @@ describe('NavaPane', () => {
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     bridgeMockState.analysisOverride = null;
+    bridgeMockState.quotePaneConfig = null;
     bridgeMockState.analyseCalls = 0;
     bridgeMockState.analyseFails = false;
     bridgeMockState.storedWork = null;
@@ -1131,10 +1133,40 @@ describe('NavaPane', () => {
     await waitFor(() => expect(enableQueue).toBeTypeOf('function'));
     await act(async () => enableQueue(true));
     fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
-    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalled());
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ workItemId: 'wi-1', fieldPath: 'stays[s_1].rows[r_1].count', value: 3 }),
+    ));
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
     await act(async () => { finishSave({}); });
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+    expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'mail-1',
+      groups: [expect.objectContaining({ id: 'r_1', quantity: 3, childrenPerRoom: 0 })],
+    }));
+  });
+
+  it('keeps Da Vinci quoting independent of a pending room edit save', async () => {
+    configureCenturionPane();
+    bridgeMockState.quotePaneConfig = { ...bridgeMockState.quotePaneConfig!, propertyCode: HRDAV_PROPERTY_CODE };
+    let finishSave!: (value: unknown) => void;
+    const save = new Promise<unknown>((resolve) => { finishSave = resolve; });
+    let enableQueue!: (value: boolean) => void;
+    bridgeMockState.storedWork = STORED_READY;
+    bridgeMockState.recordEvent.mockImplementation(() => save);
+    bridgeMockState.jobQueueEnabledQuery.mockImplementation(() => new Promise((resolve) => { enableQueue = resolve; }));
+    bridgeMockState.queueStaffQuoteMutation.mockResolvedValue({ runId: 'staff-job-hrdav' });
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    fireEvent.click(screen.getByRole('button', { name: 'More: Rooms for stay 1, room 1' }));
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ workItemId: 'wi-1', fieldPath: 'stays[s_1].rows[r_1].count', value: 3 }),
+    ), { timeout: 3000 });
+    await waitFor(() => expect(enableQueue).toBeTypeOf('function'));
+    await act(async () => enableQueue(true));
+    fireEvent.click(screen.getByRole('button', { name: /^Search availability$/i }));
+    await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
+    await act(async () => { finishSave({}); });
   });
 
   it('keeps all rooms on the edited stay dates after reopening the pane', async () => {
@@ -2730,7 +2762,8 @@ describe('NavaPane', () => {
     expect(within(notice).getByRole('button', { name: 'Show' }).getAttribute('aria-controls')).toBe('quote-rates');
   });
 
-  it('auto-queues a Dinner B&B ask on the Government strategy the background prepare uses', async () => {
+  it('auto-queues a Centurion Dinner B&B ask on the public BAR strategy', async () => {
+    configureCenturionPane();
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
     bridgeMockState.storedWork = {
       ...STORED_READY,
@@ -2749,7 +2782,7 @@ describe('NavaPane', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
-    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({ autoStart: true, salesStrategy: 'Government' });
+    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({ autoStart: true, salesStrategy: 'BAR' });
   });
 
   it('auto-queues each complete date option once', async () => {
@@ -3404,10 +3437,12 @@ describe('NavaPane contact and translation on both surfaces', () => {
 
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    bridgeMockState.quotePaneConfig = null;
   });
 
   afterEach(() => {
     bridgeMockState.storedWork = null;
+    bridgeMockState.quotePaneConfig = null;
     bridgeMockState.retryTranslation.mockClear();
     localStorage.clear();
     sessionStorage.clear();

@@ -40,7 +40,7 @@ import {
 } from '@/lib/quote-workflow/fixtures';
 import { isQuoteFixturePreview } from '@/lib/quote-workflow/preview';
 import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft';
-import { HRCEN_PROPERTY_CODE, type QuoteAnalysis, type QuotePaneConfig, type QuoteSessionAction } from '@/lib/quote-workflow/types';
+import { HRCEN_PROPERTY_CODE, HRDAV_PROPERTY_CODE, type QuoteAnalysis, type QuotePaneConfig, type QuoteSessionAction } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
   workItemsFromTrpc,
@@ -1875,6 +1875,8 @@ export function NavaPane({
 
   const saveQuoteEdits = async () => {
     if (caseReviewPending(quoteSessionRef.current.analysis)) return false;
+    // Da Vinci's quote request carries the current form values; it must not wait on its background edit log.
+    if (activePaneConfig?.propertyCode === HRDAV_PROPERTY_CODE) return true;
     if (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE) {
       if (storedWork.pane.state !== 'ready' || storedWork.pane.sourceConflict ||
           storedWork.pane.analysis.caseActionsUncertain) return false;
