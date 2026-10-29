@@ -35,6 +35,7 @@ const previousSelfBcc = process.env.MAIL_SELF_BCC;
 const initialModelRoute = process.env.AI_MODEL_ROUTE;
 const initialDraftConfig = process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG;
 const initialDraftsEnabled = process.env.AI_DRAFTS_ENABLED;
+const initialSigningSecret = process.env.BETTER_AUTH_SECRET;
 
 const TRUSTED_DRAFT_MODULE = new URL('./fixtures/u6-approved-local-draft.cjs', import.meta.url)
   .pathname;
@@ -134,12 +135,15 @@ afterEach(() => {
   else process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = initialDraftConfig;
   if (initialDraftsEnabled === undefined) delete process.env.AI_DRAFTS_ENABLED;
   else process.env.AI_DRAFTS_ENABLED = initialDraftsEnabled;
+  if (initialSigningSecret === undefined) delete process.env.BETTER_AUTH_SECRET;
+  else process.env.BETTER_AUTH_SECRET = initialSigningSecret;
 });
 
 beforeEach(() => {
   process.env.AI_DRAFTS_ENABLED = 'true';
   process.env.AI_MODEL_ROUTE = 'approved-local';
   process.env.AI_APPROVED_LOCAL_DRAFT_CONFIG = trustedDraftConfig();
+  process.env.BETTER_AUTH_SECRET = 'synthetic-draft-approval-test-secret';
 });
 
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('stale draft conflict', () => {
