@@ -42,7 +42,7 @@ describe('child occupancy extraction and prefetch', () => {
       { ...row, childrenPerRoom: null, childAges: [] },
       { ...row, childAges: [] },
     ] }] });
-    const result = sanitizeExtraction(parsed, { messageId: 'm1', sourceText: AE1_TEXT }).payload;
+    const result = sanitizeExtraction(parsed, { messageId: 'm1', sourceText: AE1_TEXT, propertyCode: 'HRCEN' }).payload;
     expect(result.stays[0]?.rows.map((item) => item.childrenPerRoom)).toEqual([0, 2, null, undefined]);
     expect(result.missing).toContainEqual(expect.objectContaining({ field: 'childAges' }));
   });
@@ -52,7 +52,7 @@ describe('child occupancy extraction and prefetch', () => {
     const parsed = mailExtractionSchema.parse({ ...AE1_OUTPUT, stays: [{ ...original, rows: [
       { ...original.rows[0]!, childrenPerRoom: 0, childAges: [-1] },
     ] }] });
-    const result = sanitizeExtraction(parsed, { messageId: 'm1', sourceText: AE1_TEXT }).payload;
+    const result = sanitizeExtraction(parsed, { messageId: 'm1', sourceText: AE1_TEXT, propertyCode: 'HRCEN' }).payload;
     expect(result.stays[0]?.rows[0]).toMatchObject({ childrenPerRoom: null, childAges: [] });
     expect(result.missing).toContainEqual(expect.objectContaining({ field: 'childAges' }));
   });
