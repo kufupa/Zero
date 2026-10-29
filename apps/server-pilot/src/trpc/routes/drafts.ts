@@ -43,7 +43,8 @@ import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assert
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
-import { draftQuoteOccupancyHold, quoteSourceProofFromRun } from '../../ai/child-occupancy.js';
+import { draftQuoteOccupancyHold, isCenturionQuoteTransport, quoteSourceProofFromRun } from '../../ai/child-occupancy.js';
+import { QUOTE_PDF_PROMPT_VERSION } from '../../ai/quote-pdf-jobs.js';
 import { assertCurrentDraftQuotePdf } from './workstation.js';
 import { readAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
@@ -109,6 +110,16 @@ function decodeStaffAttachments(files: z.infer<typeof serializedAttachmentInput>
       throw new TRPCError({ code: 'BAD_REQUEST', message: 'INVALID_DRAFT_ATTACHMENTS' });
     return { file, body, sourceHash: createHash('sha256').update(body).digest('hex') };
   });
+}
+/** Client labels and MIME types cannot turn a recorded quote PDF into an unrelated attachment. */
+async function recordedQuotePdfHashes(db: DB, transportId: string, hashes: string[]): Promise<Set<string>> {
+  if (!isCenturionQuoteTransport(transportId) || !hashes.length) return new Set();
+  const hash = sql<string>`${aiWorkflowRun.readResult}->>'pdfHash'`;
+  const rows = await db.selectDistinct({ hash }).from(aiWorkflowRun).where(and(
+    eq(aiWorkflowRun.transportId, transportId), eq(aiWorkflowRun.promptVersion, QUOTE_PDF_PROMPT_VERSION),
+    eq(aiWorkflowRun.state, 'succeeded'), inArray(hash, [...new Set(hashes)]),
+  )).limit(32);
+  return new Set(rows.map((row) => row.hash));
 }
 async function persistStaffAttachments(
   decoded: ReturnType<typeof decodeStaffAttachments>, transportId: string, draftId: string,
@@ -1828,12 +1839,13 @@ export const draftsRouter = tRouter({
       if (replyParent.threadId !== input.threadId) {
         throw new TRPCError({ code: 'BAD_REQUEST', message: 'REPLY_PARENT_THREAD_MISMATCH' });
       }
-      const quoteBound = input.replyKind === 'quote' || input.preparedVersions.length > 0;
+      const recorded = await recordedQuotePdfHashes(db, transportId, decodedAttachments.map(({ sourceHash }) => sourceHash));
+      const quoteBound = input.replyKind === 'quote' || input.preparedVersions.length > 0 || recorded.size > 0;
       if (quoteBound) await assertCurrentDraftQuotePdf({
         messageId: input.replyToMessageId, threadId: input.threadId,
-        pdfHashes: decodedAttachments.filter(({ file, body }) => file.type === 'application/pdf' && body.length > 0)
-          .map(({ sourceHash }) => sourceHash),
-        preparedVersions: input.preparedVersions,
+        pdfHashes: decodedAttachments.filter(({ file, body, sourceHash }) =>
+          (file.type === 'application/pdf' && body.length > 0) || recorded.has(sourceHash)).map(({ sourceHash }) => sourceHash),
+        ...(input.preparedVersions.length ? { preparedVersions: input.preparedVersions } : {}),
       }, ctx);
       const html = sanitizeHtmlBodyForStorage(input.html) ?? '';
       try {
@@ -2010,7 +2022,11 @@ export const draftsRouter = tRouter({
       }
       const unchanged = latest?.id === saved.id && saved.htmlBody === draft.htmlBody &&
         JSON.stringify(saved.attachments ?? []) === JSON.stringify(draft.attachments ?? []);
-      const quoteBound = saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}quote:`) ? true :
+      const recorded = await recordedQuotePdfHashes(db, transportId, draft.attachments.flatMap((raw) => {
+        const sourceHash = (raw as typeof raw & { sourceHash?: string }).sourceHash;
+        return sourceHash ? [sourceHash] : [];
+      }));
+      const quoteBound = recorded.size > 0 || saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}quote:`) ? true :
         unchanged && saved.id.startsWith(`${SAVED_REPLY_REVISION_PREFIX}other:`) ? false : undefined;
       return { id: draft.id, html: draft.htmlBody ?? '', attachments,
         ...(quoteBound === undefined ? {} : { quoteBound }) };
