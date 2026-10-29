@@ -103,6 +103,33 @@ describe('owner-bound pane actions', () => {
     expect(result.current.saveFailed).toBe(false);
   });
 
+  it('holds the pending edit if the server response lacks a valid acknowledgement', async () => {
+    mailbox('staff-a');
+    const h = harness();
+    h.action.mockResolvedValueOnce({});
+    const { result } = renderHook(() => useStoredWork({ trpc: h.trpc, internetMessageId: 'm-1', scope: scope('staff-a') }));
+    await waitFor(() => expect(result.current.historyCursor).toMatchObject({ revision: 1 }));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    act(() => { result.current.recordGroups([row], [{ ...row, quantity: 4 }]); result.current.undo('wi-1', 1); });
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(result.current.saveError).toMatch(/could not be confirmed.*re-enter/i);
+    await act(async () => { result.current.retrySave(); await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS * 2); });
+    expect(h.record).not.toHaveBeenCalled();
+  });
+
+  it('retains an unrelated unsaved stay edit when reset targets contact', async () => {
+    mailbox('staff-a');
+    const h = harness();
+    const { result } = renderHook(() => useStoredWork({ trpc: h.trpc, internetMessageId: 'm-1', scope: scope('staff-a') }));
+    await waitFor(() => expect(result.current.historyCursor).toMatchObject({ revision: 1 }));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    act(() => { result.current.recordGroups([row], [{ ...row, quantity: 4 }]); result.current.resetSection({ type: 'contact' }); });
+    expect(result.current.historyError).toMatch(/other unsaved changes/i);
+    expect(h.action).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(WORK_EVENT_DEBOUNCE_MS); });
+    expect(h.record).toHaveBeenCalledWith(expect.objectContaining({ value: 4, expectedUserId: 'staff-a' }), PINNED);
+  });
+
   it('keeps an action pinned to the original mailbox when the same user switches during the request', async () => {
     mailbox('staff-a');
     const h = harness();

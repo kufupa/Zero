@@ -1657,7 +1657,8 @@ describe('field events', () => {
   it('fences accept, undo, redo and reset to the authenticated owner', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'pane-action-owner-fence');
-      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      await insertRead(db, messageId, { version: 'extract-v1',
+        payload: { ...payload(), contact: { ...payload().contact, name: 'Original' } } });
       const opened = await readyWork(db, 'pane-action-owner-fence');
       const owner = centurionCaller().workItems;
       await owner.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath: 'contact.name', value: 'Edited' });
