@@ -207,7 +207,8 @@ test('create-lab-stay validates before browser and keeps shot names', async () =
   const cancelClick = source.indexOf("clickTip(page, 'Cancel')");
   assert.ok(shopReturn !== -1 && saveClick !== -1 && shopReturn < saveClick);
   assert.ok(checkAvail !== -1 && saveStop !== -1 && checkAvail < saveStop && saveStop < saveClick);
-  assert.ok(paneCommit !== -1 && cancelClick !== -1 && paneCommit < cancelClick);
+  assert.ok(paneCommit !== -1 && paneCommit < saveClick);
+  assert.equal(cancelClick, -1, 'create must not automatically cancel a saved stay');
   assert.match(source, /outcome = 'previewed'/);
   assert.match(source, /paneCommitOutcome\(proof\)/);
   assert.equal(source.includes('x-tree-expander'), false);
