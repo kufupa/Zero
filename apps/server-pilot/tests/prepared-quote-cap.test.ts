@@ -214,6 +214,11 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote profile cap', 
       const env = { ...QUOTE_ON, RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRCEN: '/tmp/centurion-quote.json',
         HMS_QUOTE_PREPARE_PER_HOUR: String(Math.max(1, count - 1)) };
       for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      vi.stubEnv('PORT', '3000');
+      vi.stubEnv('BETTER_AUTH_URL', 'https://nava.legacy.local');
+      vi.stubEnv('BETTER_AUTH_SECRET', 'x'.repeat(32));
+      vi.stubEnv('AWS_REGION', 'synthetic-region-1');
+      vi.stubEnv('S3_BUCKET', 'prepared-quote-synthetic');
 
       expect(await prefetchQuoteReadyForExtraction(source.run, db, env)).toBe(count);
       await db.update(aiWorkflowRun).set({ state: 'succeeded', finishedAt: new Date() })
