@@ -315,11 +315,16 @@ export function expiredPriorQuoteToastMessage(): string {
   return 'This quote has expired. Re-quote the same stay, or run the search again.';
 }
 
+/** A held prior quote must not re-populate the form from its old stay details. */
+export const FRESH_PRIOR_QUOTE_MESSAGE =
+  'This earlier quote may not match the guests or hotel. Check the stay details and search rates again.';
+
 /** Prefer a matching expired revision over unrelated stay mismatches on the same thread. */
 export function expiredPriorQuoteNotice(
   reasons: readonly string[],
   expiredPrior: PriorStaffQuoteRequoteRow | null,
-): 'requote' | 'mismatch' | null {
+): 'fresh_search' | 'requote' | 'mismatch' | null {
+  if (reasons.includes('fresh_quote_required')) return 'fresh_search';
   if (expiredPrior) return 'requote';
   if (reasons.includes('scope_mismatch')) return 'mismatch';
   return null;

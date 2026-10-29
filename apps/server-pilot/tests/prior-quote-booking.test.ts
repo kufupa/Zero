@@ -723,7 +723,7 @@ describe('resolvePriorQuoteForBooking', () => {
       metrics: { reservationistResult: { quoteRevisionIds: [revision.id], quoteRevisions: [revision] } } };
     expect(resolvePriorQuoteForBooking(run, { transportId, threadId: 'thread-1', revisionRef: revision.id,
       analysis: requested, now: new Date('2026-10-07T03:00:00Z') }))
-      .toEqual({ status: 'unavailable', reason: 'fresh_quote_required' });
+      .toMatchObject({ status: 'unavailable', reason: 'fresh_quote_required', message: expect.stringMatching(/search rates again/i) });
   });
 
   it('still reuses a matching HRDAV quote in an HRDAV mailbox', async () => {
@@ -738,6 +738,7 @@ describe('resolvePriorQuoteForBooking', () => {
 
   it('returns ready when the thread run is fresh and dates match', async () => {
     const revision = await freshRevision();
+    revision.propertyCode = 'HRDAV';
     const resolved = resolvePriorQuoteForBooking(
       {
         transportId: 't1',
@@ -794,6 +795,7 @@ describe('resolvePriorQuoteForBooking', () => {
 
   it('returns expired when the authored window has lapsed', async () => {
     const revision = await freshRevision();
+    revision.propertyCode = 'HRDAV';
     revision.authoredDate = '2026-09-01';
     const resolved = resolvePriorQuoteForBooking(
       {
@@ -846,6 +848,7 @@ describe('resolvePriorQuoteForBooking', () => {
 
   it('returns scope_mismatch when booking dates disagree with the quote', async () => {
     const revision = await freshRevision();
+    revision.propertyCode = 'HRDAV';
     const resolved = resolvePriorQuoteForBooking(
       {
         transportId: 't1',
@@ -874,6 +877,7 @@ describe('resolvePriorQuoteForBooking', () => {
 
   it('returns scope_mismatch for an expired revision whose stay does not match', async () => {
     const revision = await freshRevision();
+    revision.propertyCode = 'HRDAV';
     revision.authoredDate = '2026-09-01';
     const resolved = resolvePriorQuoteForBooking(
       {
@@ -968,7 +972,7 @@ describe('prior-quote routes', () => {
       workflowRunId: run.id, revisionRef: revision.id, threadId: run.threadId, messageId: 'message-1',
       selectionEpoch: 1, inputRevision: 1, analysis: analysis({ groups: [{ ...analysis().groups[0]!, childAges: [7, 10] }] }),
     });
-    expect(result).toEqual({ status: 'unavailable', reason: 'fresh_quote_required' });
+    expect(result).toMatchObject({ status: 'unavailable', reason: 'fresh_quote_required', message: expect.stringMatching(/search rates again/i) });
   });
 
   it.skipIf(!TEST_DB_AVAILABLE || !reachable)('does not list an unadopted prepared quote as a prior offer', async () => {
