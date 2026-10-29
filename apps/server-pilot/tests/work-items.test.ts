@@ -334,6 +334,7 @@ describe('stored read for the pane', () => {
 
       const unopened = await storedWorkFor(db, lookup);
       expect(unopened).toMatchObject({ status: 'ready', workItemId: null, workItemStatus: null, extractionId: first });
+      expect(unopened.status === 'ready' && unopened.sourceRead.extractionId).toBe(first);
       expect(unopened.status === 'ready' && unopened.analysis.groups).toHaveLength(3);
       expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(0);
 
@@ -345,7 +346,7 @@ describe('stored read for the pane', () => {
       const [before] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
       const second = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
       expect(await storedWorkFor(db, lookup)).toMatchObject({
-        extractionId: first, analysis: { caseActionsUncertain: true },
+        extractionId: first, sourceRead: { extractionId: second }, analysis: { caseActionsUncertain: true },
       });
       const [after] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
       expect(after).toEqual(before);
@@ -353,6 +354,34 @@ describe('stored read for the pane', () => {
       const relinked = await storedWorkFor(db, lookup);
       expect(relinked).toMatchObject({ extractionId: second });
       expect(relinked.status === 'ready' && relinked.analysis.caseActionsUncertain).toBeFalsy();
+    }));
+
+  it('returns the unedited extraction separately from saved dates and staff-added rows', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'source-projection');
+      const extracted = payload();
+      extracted.stays = [{ ...extracted.stays[0]!, rows: [extracted.stays[0]!.rows[0]!] }];
+      const extractionId = await insertRead(db, messageId, { version: 'extract-v1', payload: extracted });
+      const opened = await readyWork(db, 'source-projection');
+      for (const [fieldPath, value] of [
+        [`stays[${STAY_ONE}].requested.arrival`, '2027-10-25'],
+        [`stays[${STAY_ONE}].rows[r_staff].count`, 1],
+      ] as const) {
+        expect(await recordFieldEvent(db, {
+          transportId: CENTURION, workItemId: opened.workItemId, userId: USER,
+          type: 'field.edit', fieldPath, value,
+        })).toMatchObject({ status: 'recorded' });
+      }
+      const work = await readyWork(db, 'source-projection');
+      expect(work.extractionId).toBe(extractionId);
+      expect(work.analysis.groups.find((group) => group.id === ROW_SINGLE)).toMatchObject({ arrivalDate: '2027-10-25' });
+      expect(work.analysis.groups.find((group) => group.id === 'r_staff')).toMatchObject({ staffCreated: true });
+      expect(work.sourceRead).toMatchObject({ extractionId, kind: 'quote' });
+      expect(work.sourceRead.analysis.groups).toHaveLength(1);
+      expect(work.sourceRead.analysis.groups[0]).toMatchObject({ id: ROW_SINGLE, arrivalDate: '2027-10-26' });
+      expect(work.sourceRead.analysis.groups[0]?.staffCreated).toBeUndefined();
+      expect(work.sourceRead.refs).toEqual({ [ROW_SINGLE]: { stayId: STAY_ONE, rowId: ROW_SINGLE } });
+      expect(work.refs.r_staff).toEqual({ stayId: STAY_ONE, rowId: 'r_staff' });
     }));
 
   it('the open route makes the work item, and the lookup route only reads', () =>
@@ -443,6 +472,22 @@ describe('stored read for the pane', () => {
     expect(storedAnalysis({ kind: 'quote', payload: payload(), attachments: [] }, {}).analysis.luna.flags).toContain(
       'multi_date',
     );
+  });
+
+  it('marks only a staff-added row, preserving the synthetic dates-only source alias', () => {
+    const extracted = payload();
+    extracted.stays = [{ ...extracted.stays[0]!, rows: [] }];
+    const synthetic = `${STAY_ONE}_row`;
+    const state = {
+      [`stays[${STAY_ONE}].rows[${synthetic}].adults`]: 2,
+      [`stays[${STAY_ONE}].rows[r_staff].count`]: 1,
+    };
+    const projected = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, state);
+    expect(projected.analysis.groups.find((group) => group.id === synthetic)?.staffCreated).toBeUndefined();
+    expect(projected.analysis.groups.find((group) => group.id === 'r_staff')?.staffCreated).toBe(true);
+    expect(storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {}).refs).toEqual({
+      [STAY_ONE]: { stayId: STAY_ONE, rowId: null },
+    });
   });
 
   it('keeps a guest confirmation on its own stay and leaves an unattributed number unresolved', () => {
@@ -1181,8 +1226,12 @@ describe('corrections carry to a re-read', () => {
       expect(linked.extractionId).toBe(firstRead);
       const reopened = await readyWork(db, 'conflicting-reread');
       expect(reopened.extractionId).toBe(firstRead);
+      expect(reopened.analysis.caseActionsUncertain).toBe(true);
       expect(reopened.analysis.groups[0]?.adults).toBe(3);
       expect(reopened.analysis.groups[0]?.stayGuests).toEqual([{ name: 'Ada Example', confirmationNumber: null }]);
+      expect(reopened.sourceRead.extractionId).toBe(laterRead);
+      expect(reopened.sourceRead.analysis.groups[0]?.adults).toBe(1);
+      expect(reopened.sourceRead.analysis.groups[0]?.stayGuests).toEqual([{ name: 'Bea Example', confirmationNumber: null }]);
     }));
 });
 

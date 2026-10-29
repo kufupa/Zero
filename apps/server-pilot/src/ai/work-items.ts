@@ -883,6 +883,10 @@ export function storedAnalysis(
         const sourceStay = stayId ? payload.stays.find((item) => item.id === stayId) : undefined;
         const projectedRowCount = order.filter((slot) => slot.stayId === stayId).length;
         const rowId = order[index]?.rowId;
+        // The dates-only form uses this synthetic row when staff enter its room details; it is still the
+        // extracted stay's original placeholder. Other rows absent from the extraction were added by staff.
+        const originalRow = rowId == null || sourceStay?.rows.some((row) => row.id === rowId) ||
+          (sourceStay?.rows.length === 0 && rowId === `${sourceStay.id}_row`);
         const rooms = groups[index]?.rooms;
         const confirmationNumber = confirmationForGroup(sourceStay, payload, rowId, rooms, projectedRowCount) ??
           (!ambiguous && payload.stays.length === 1 && singleOriginalRoom(sourceStay, rowId, rooms, projectedRowCount)
@@ -912,7 +916,7 @@ export function storedAnalysis(
           roomTypeSuggestions: roomType.suggestions,
           stayId,
           ...(sourceStay ? { stayHotel: sourceStay.hotel } : {}),
-          ...(!sourceStay ? { staffCreated: true } : {}),
+          ...(!sourceStay || !originalRow ? { staffCreated: true } : {}),
           ...(caseScoped ? { caseScoped: true } : {}),
           ...(caseLookupConfirmation ? { caseLookupConfirmation } : {}),
           ...(firstRowOfStay ? { stayGuests: guestsForStay(sourceStay) } : {}),
@@ -1784,6 +1788,8 @@ export type StoredWork =
       /** Fingerprint of the same persisted state and status; detects other writes between recovery steps. */
       stateDigest: string | null;
       refs: Record<string, GroupRef>;
+      /** Latest extraction mapped without work-item edits. It may differ from the linked, projected analysis below. */
+      sourceRead: { extractionId: string; kind: string; analysis: StoredAnalysis; refs: Record<string, GroupRef> };
       /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
       analysis: StoredAnalysis & {
         noReplySender: boolean;
@@ -1933,6 +1939,19 @@ async function readyView(
     threadConfirmation,
     resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined,
   );
+  const latestConfirmations = payloadConfirmationNumbers(latest.payload);
+  const latestExistingStayInformation = isSelfSentPreStayInformationMail({
+    fromAddress: msg.fromAddress,
+    mailboxAddress: msg.mailboxAddress,
+    subject: msg.subject,
+    confirmationNumbers: latestConfirmations,
+  });
+  const source = storedAnalysis(
+    { ...latest, fromAddress: msg.fromAddress, subject: msg.subject, bodyText: msg.textBody },
+    {},
+    isHmsConfirmation(latestConfirmations[0] ?? '') ? undefined : synced?.threadConfirmation,
+    resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined,
+  );
   const sourceText = synced
     ? currentSourceText(synced)
     : [msg.subject ?? '', msg.textBody ?? ''].join('\n');
@@ -1960,6 +1979,12 @@ async function readyView(
     revisionSeq: paneItem?.revisionSeq ?? null,
     stateDigest: paneItem ? recoveryStateDigest(state, paneItem.status) : null,
     refs: stored.refs,
+    sourceRead: {
+      extractionId: latest.id,
+      kind: latestExistingStayInformation ? 'other' : latest.kind,
+      analysis: source.analysis,
+      refs: source.refs,
+    },
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
     analysis: {
       ...stored.analysis,

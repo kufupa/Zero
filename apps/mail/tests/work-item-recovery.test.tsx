@@ -11,10 +11,16 @@ const ROW: StayGroupRequirement = {
   id: 's_1', stayId: 's_1', arrivalDate: '2027-10-20', departureDate: '2027-10-21',
   quantity: 1, adults: 2, childrenPerRoom: null, childrenAges: [], board: 'bb', specialRequests: [], fields: {},
 };
+const SOURCE_READ = {
+  extractionId: 'ex-1', kind: 'quote',
+  refs: { s_1: { stayId: 's_1', rowId: null } },
+  analysis: { intent: 'quote' as const, groups: [ROW], secondaryAsks: [], alternatives: [] },
+};
 const READ: Ready = {
   status: 'ready', kind: 'quote', workItemId: null, workItemStatus: null, extractionId: 'ex-1',
   refs: { s_1: { stayId: 's_1', rowId: null } },
   analysis: { intent: 'quote', groups: [ROW], secondaryAsks: [], alternatives: [] },
+  sourceRead: SOURCE_READ,
   contact: { name: null, company: null, endClient: null, email: null, phone: null },
   language: null, translation: null, fieldProvenance: {},
 };
@@ -23,6 +29,7 @@ const digestAt = (seq: number) => seq.toString(16).padStart(64, '0');
 const OPENED: Ready = { ...READ, workItemId: 'wi-1', workItemStatus: 'needs_you', revisionSeq: 0, stateDigest: INITIAL_DIGEST };
 const CHILD = 'stays[s_1].rows[s_1_row].childrenPerRoom';
 const AGES = 'stays[s_1].rows[s_1_row].childAges';
+const ARRIVAL = 'stays[s_1].requested.arrival';
 const PINNED = { context: { activeTransportId: 'transport-a' } };
 const SCOPE = 'staff:session:transport-a';
 
@@ -63,6 +70,34 @@ afterEach(() => {
 });
 
 describe('missing work item recovery', () => {
+  it('exposes the unedited source separately from a saved staff projection', async () => {
+    mailbox();
+    const { trpc, query } = harness();
+    const corrected = { ...ROW, arrivalDate: '2027-10-22' };
+    query.mockResolvedValueOnce({
+      ...OPENED, analysis: { ...OPENED.analysis, groups: [corrected] },
+    });
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready' }));
+    if (result.current.pane.state !== 'ready') throw new Error('expected ready pane');
+    expect(result.current.pane.analysis.groups[0]?.arrivalDate).toBe('2027-10-22');
+    expect(result.current.pane.sourceRead?.analysis.groups[0]?.arrivalDate).toBe('2027-10-20');
+    expect(result.current.pane.sourceRead?.refs).toEqual(READ.refs);
+  });
+
+  it('holds recovery when the initial server read has no source identity', async () => {
+    mailbox();
+    const { trpc, query, open, record } = harness();
+    query.mockResolvedValueOnce({ ...READ, sourceRead: undefined });
+    open.mockRejectedValueOnce(new Error('initial'));
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', sourceRead: null }));
+    act(() => result.current.recordGroups([ROW], [{ ...ROW, childrenPerRoom: 0 }]));
+    await act(async () => expect(await result.current.flushEdits()).toBe(false));
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(record).not.toHaveBeenCalled();
+  });
+
   it('reopens in the original mailbox and waits for child and contact edits to be acknowledged', async () => {
     mailbox();
     const { trpc, open, record } = harness();
@@ -237,6 +272,22 @@ describe('missing work item recovery', () => {
     expect(record).toHaveBeenCalledWith(expect.objectContaining({ fieldPath: CHILD, value: 0 }), PINNED);
   });
 
+  it('accepts the wanted saved date only when the original source is unchanged', async () => {
+    mailbox();
+    const { trpc, open, record } = harness();
+    const corrected = { ...ROW, arrivalDate: '2027-10-22' };
+    open.mockRejectedValueOnce(new Error('initial')).mockResolvedValueOnce({
+      ...OPENED,
+      analysis: { ...OPENED.analysis, groups: [corrected] },
+      fieldProvenance: { [ARRIVAL]: { source: 'staff', value: '2027-10-22' } },
+    });
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
+    act(() => result.current.recordGroups([ROW], [corrected]));
+    await act(async () => expect(await result.current.flushEdits()).toBe(true));
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ fieldPath: ARRIVAL, value: '2027-10-22' }), PINNED);
+  });
+
   it('replays a new edit over unchanged seeded provenance', async () => {
     mailbox();
     const { trpc, open, record } = harness();
@@ -257,6 +308,11 @@ describe('missing work item recovery', () => {
     ['new extraction', { ...OPENED, extractionId: 'ex-2' }],
     ['different row', { ...OPENED, refs: { s_1: { stayId: 's_1', rowId: 'different' } } }],
     ['changed case', { ...OPENED, analysis: { ...OPENED.analysis, groups: [{ ...ROW, arrivalDate: '2027-10-22' }] } }],
+    ['changed original source', { ...OPENED, sourceRead: { ...SOURCE_READ,
+      analysis: { ...SOURCE_READ.analysis, groups: [{ ...ROW, arrivalDate: '2027-10-22' }] } } }],
+    ['changed original row', { ...OPENED, sourceRead: { ...SOURCE_READ,
+      refs: { s_1: { stayId: 's_1', rowId: 'different' } } } }],
+    ['missing original source from older server', { ...OPENED, sourceRead: undefined }],
     ['changed intent', { ...OPENED, analysis: { ...OPENED.analysis, intent: 'other' } }],
     ['staff conflict', { ...OPENED, fieldProvenance: { [CHILD]: { source: 'staff', value: 2 } } }],
     ['unknown conflicting provenance', { ...OPENED, fieldProvenance: { [CHILD]: { source: 'unknown', value: 2 } } }],

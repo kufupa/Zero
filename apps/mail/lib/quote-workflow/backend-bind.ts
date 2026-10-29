@@ -219,6 +219,13 @@ export type StoredWork =
       /** Group id to the stay and row it came from. A stay with dates and no rows has a null rowId. */
       refs: Record<string, { stayId: string; rowId: string | null }>;
       analysis: ReadyAnalyse;
+      /** Latest extraction without staff edits; absent when an older server cannot provide source identity. */
+      sourceRead?: {
+        extractionId: string;
+        kind: string;
+        analysis: ReadyAnalyse;
+        refs: Record<string, { stayId: string; rowId: string | null }>;
+      };
       contact: StoredContact;
       /** Last HMS commit per stay id, including durable before/saved shots. Absent on older reads. */
       stays?: Record<string, StoredStayCommit>;

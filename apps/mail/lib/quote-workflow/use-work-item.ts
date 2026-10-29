@@ -74,6 +74,8 @@ export type StoredPane =
       /** Null when the read has no work item yet. Edits must be flushed before using them. */
       workItemId: string | null;
       extractionId: string;
+      /** Source identity comes from the latest extraction, not the editable staff-projected form. */
+      sourceRead?: { extractionId: string; kind: string; analysis: QuoteAnalysis; refs: Refs } | null;
       contact: StoredContact;
       /** Last HMS commits for this mail. The Book step shows them again after a reload. */
       savedStays?: Record<string, StoredStayCommit>;
@@ -406,9 +408,9 @@ function recoveryRefKey(ref: Refs[string]): string | null {
   return STABLE_ID.test(ref.stayId) && STABLE_ID.test(rowId) ? `${ref.stayId}\n${rowId}` : null;
 }
 
-function recoveryGroups(stored: ReadyStored): Map<string, StayGroupRequirement> | null {
+function recoveryGroups(stored: Pick<ReadyStored, 'analysis' | 'refs'>): Map<string, StayGroupRequirement> | null {
   const groups = new Map<string, StayGroupRequirement>();
-  if (!Array.isArray(stored.analysis.groups) || !stored.refs) return null;
+  if (!stored.analysis || !Array.isArray(stored.analysis.groups) || !stored.refs) return null;
   for (const group of stored.analysis.groups) {
     const ref = stored.refs[group.id];
     const key = ref && recoveryRefKey(ref);
@@ -416,6 +418,22 @@ function recoveryGroups(stored: ReadyStored): Map<string, StayGroupRequirement> 
     groups.set(key, group);
   }
   return groups;
+}
+
+function normalizedRecoveryGroups(
+  source: Pick<ReadyStored, 'analysis' | 'refs'>,
+  opened: Pick<ReadyStored, 'analysis' | 'refs'>,
+): StayGroupRequirement[] | null {
+  const original = recoveryGroups(source);
+  const fresh = recoveryGroups(opened);
+  if (!original || !fresh || original.size !== fresh.size) return null;
+  const normalized = opened.analysis.groups.map((group) => {
+    const ref = opened.refs[group.id];
+    const old = ref && original.get(recoveryRefKey(ref) ?? '');
+    if (!old || (old.stayHotel ?? null) !== (group.stayHotel ?? null)) return null;
+    return { ...group, id: old.id, stayId: old.stayId };
+  });
+  return normalized.some((group) => !group) ? null : normalized as StayGroupRequirement[];
 }
 
 /** Compare the case and every source row, even if a dates-only row has gained its synthetic id. */
@@ -431,22 +449,26 @@ function sameRecoverySource(source: ReadyStored, opened: ReadyStored): boolean {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || Object.values(raw).some((entry) =>
     !entry || typeof entry !== 'object' || Array.isArray(entry) || !Object.hasOwn(entry, 'value') ||
     !['ai', 'staff', 'unknown'].includes((entry as { source?: string }).source ?? ''))) return false;
-  const original = recoveryGroups(source);
-  const fresh = recoveryGroups(opened);
-  if (!original || !fresh || original.size !== fresh.size) return false;
-  const normalized = opened.analysis.groups.map((group) => {
-    const ref = opened.refs[group.id];
-    const old = ref && original.get(recoveryRefKey(ref) ?? '');
-    if (!old || (old.stayHotel ?? null) !== (group.stayHotel ?? null)) return null;
-    return { ...group, id: old.id, stayId: old.stayId };
-  });
-  if (normalized.some((group) => !group)) return false;
-  const before = paneCaseSnapshot(quoteAnalysisOf(source.analysis));
-  const after = paneCaseSnapshot({
-    ...quoteAnalysisOf(opened.analysis),
-    groups: normalized as StayGroupRequirement[],
-  });
-  return Boolean(before && after && sameCaseSnapshot(before, after));
+  const originalRead = source.sourceRead, reopenedRead = opened.sourceRead;
+  if (!originalRead || !reopenedRead || originalRead.extractionId !== source.extractionId ||
+      reopenedRead.extractionId !== opened.extractionId || originalRead.kind !== source.kind ||
+      reopenedRead.kind !== opened.kind || originalRead.kind !== reopenedRead.kind ||
+      !originalRead.analysis || !reopenedRead.analysis || originalRead.analysis.intent !== reopenedRead.analysis.intent ||
+      originalRead.analysis.luna?.workflow !== reopenedRead.analysis.luna?.workflow) return false;
+  const sourceGroups = normalizedRecoveryGroups(originalRead, reopenedRead);
+  const projectedGroups = normalizedRecoveryGroups(source, opened);
+  if (!sourceGroups || !projectedGroups) return false;
+  const before = paneCaseSnapshot(quoteAnalysisOf(originalRead.analysis));
+  const after = paneCaseSnapshot({ ...quoteAnalysisOf(reopenedRead.analysis), groups: sourceGroups });
+  if (!before || !after || !sameCaseSnapshot(before, after)) return false;
+  // Dates in the form may already be saved staff corrections. Compare the remaining projected identity too;
+  // noConflict below independently checks whether a changed date is baseline, wanted or acknowledged.
+  const withoutDates = (groups: StayGroupRequirement[]) => groups.map((group) => ({
+    ...group, arrivalDate: undefined, departureDate: undefined,
+  }));
+  const beforeForm = paneCaseSnapshot({ ...quoteAnalysisOf(source.analysis), groups: withoutDates(source.analysis.groups) });
+  const afterForm = paneCaseSnapshot({ ...quoteAnalysisOf(opened.analysis), groups: withoutDates(projectedGroups) });
+  return Boolean(beforeForm && afterForm && sameCaseSnapshot(beforeForm, afterForm));
 }
 
 /** The first editable rows must still be exactly the stored rows, not a loading placeholder or remembered draft. */
@@ -769,6 +791,9 @@ export function useStoredWork(args: {
       workItemStatus: stored.workItemStatus,
       workItemId: stored.workItemId,
       extractionId: stored.extractionId,
+      sourceRead: stored.sourceRead ? {
+        ...stored.sourceRead, analysis: quoteAnalysisOf(stored.sourceRead.analysis),
+      } : null,
       contact: stored.contact,
       savedStays: stored.stays,
       language: stored.language,
