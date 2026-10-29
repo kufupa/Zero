@@ -43,7 +43,7 @@ import {RESERVATIONIST_DRAFT_PROPERTY_CODE,assertSourcePreparedDraftFacts,assert
 import {createDraftArtifactStorage, typedResultDigest, type ReservationistPersistedResult, type PersistedGeneratedArtifact, type DraftArtifactStorage, loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFacts } from '../../quote-proposal/quote-lines.js';
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
-import { draftQuoteOccupancyHold } from '../../ai/child-occupancy.js';
+import { draftQuoteOccupancyHold, quoteSourceProofFromRun } from '../../ai/child-occupancy.js';
 import { readAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
 import { enqueueAiRun } from '../../ai/run-ledger.js';
@@ -925,7 +925,7 @@ export async function assertHmsDraftFreshForAction(input: {
   const [qualifiedRun] = await input.db.select({ metrics: aiWorkflowRun.metrics, triggerMessageId: aiWorkflowRun.triggerMessageId }).from(aiWorkflowRun).where(and(eq(aiWorkflowRun.generationId, input.draft.generationId), eq(aiWorkflowRun.transportId, input.transportId), eq(aiWorkflowRun.threadId, input.draft.threadId), eq(aiWorkflowRun.runKind, 'candidate_draft'))).orderBy(desc(aiWorkflowRun.createdAt)).limit(1);
   const occupancyHold = await draftQuoteOccupancyHold(input.db, { transportId: input.transportId, threadId: input.draft.threadId,
     messageId: input.draft.replyToMessageId, triggerMessageId: qualifiedRun?.triggerMessageId ?? null,
-    result: qualifiedRun?.metrics?.reservationistResult });
+    result: qualifiedRun?.metrics?.reservationistResult, quoteSourceProof: quoteSourceProofFromRun(qualifiedRun ?? {}) });
   if (occupancyHold) throw new TRPCError({ code: 'CONFLICT', message: occupancyHold });
   try {
     assertReservationistResultFreshForAction(qualifiedRun?.metrics?.reservationistResult, input.now);

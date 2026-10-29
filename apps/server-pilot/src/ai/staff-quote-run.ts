@@ -48,7 +48,7 @@ import { type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import { ReservationistTaskEvidenceUnavailable } from './reservationist-execution.js';
 import { aiDraftGeneration, aiWorkflowRun, message } from '../db/schema/mail.js';
 import { mailExtraction } from '../db/schema/work.js';
-import { childOccupancyIsCurrent } from './child-occupancy.js';
+import { captureQuoteSourceProof, draftQuoteOccupancyMessage, quoteSourceProofIsCurrent } from './child-occupancy.js';
 import { ensureQuoteOutcomeWorkItem, recordPreparedQuoteOutcome } from './quote-outcomes.js';
 import { buildStaffRatePick } from './staff-rate-pick-history.js';
 import { otherBoardContractNotes, type RateOption } from './rate-options.js';
@@ -448,7 +448,7 @@ export function staffQuoteFailureMessage(
     staff_quote_source_changed:
       'The selected email or approved inputs changed; rerun the current quote.',
     staff_quote_child_occupancy_incomplete:
-      'Confirm rooms, adults, and the number of children per room; enter each child’s age, then run the quote again.',
+      draftQuoteOccupancyMessage,
     staff_quote_government_eligibility_unverified: CENTURION_GOVERNMENT_HOLD,
   };
   const business = Object.prototype.hasOwnProperty.call(actions, code) ? actions[code] : undefined;
@@ -653,10 +653,12 @@ export async function runStaffQuote(
   }
   const occupancyScope = { transportId: identity.transportId, threadId: mail.threadId, messageId: mail.id,
     propertyCode: quoteTarget.target.propertyCode };
-  if (!(await childOccupancyIsCurrent(db, input.groups, occupancyScope))) {
+  const quoteSourceProof = quoteTarget.target.propertyCode === 'HRCEN'
+    ? await captureQuoteSourceProof(db, input, occupancyScope) : null;
+  if (quoteTarget.target.propertyCode === 'HRCEN' && !quoteSourceProof) {
     refuseQuote(
       'inputs_incomplete',
-      'Confirm rooms, adults, and the number of children per room; enter each child’s age, then run the quote again.',
+      draftQuoteOccupancyMessage,
       { cause: { code: 'staff_quote_child_occupancy_incomplete' } },
     );
   }
@@ -766,7 +768,7 @@ export async function runStaffQuote(
       !!current &&
       current.threadId === scope.threadId &&
       staffQuoteSourceHash(current) === input.sourceHash &&
-      await childOccupancyIsCurrent(db, input.groups, occupancyScope)
+      (!quoteSourceProof || await quoteSourceProofIsCurrent(db, input.groups, occupancyScope, quoteSourceProof))
     );
   };
   const databaseUrl = process.env.DATABASE_URL;
@@ -1016,6 +1018,7 @@ export async function runStaffQuote(
               staffQuoteAttestation: {
                 ...attestation!,
                 salesStrategy: effectiveQuoteInput.salesStrategy,
+                ...(quoteSourceProof ? { quoteSourceProof } : {}),
               },
               reservationistResult: {
                 readiness: 'ready_for_staff_review',
@@ -1099,6 +1102,12 @@ export async function runStaffQuote(
       revisionRef: revision.id,
       messageId: mail.id,
       threadId: mail.threadId,
+      propertyCode: scope.propertyCode,
+      requestedSalesStrategy: input.salesStrategy,
+      effectiveSalesStrategy: effectiveQuoteInput.salesStrategy,
+      ...(input.salesStrategy !== effectiveQuoteInput.salesStrategy ? {
+        salesStrategyFallback: { from: input.salesStrategy, to: effectiveQuoteInput.salesStrategy, reason: 'no_matching_rate' as const },
+      } : {}),
       factRefs: proposal.factRefs,
       extrasReviewItems: [...notes, ...proposal.extrasReviewItems],
       dinnerAddOnRequired: proposal.dinnerAddOnRequired,
@@ -1110,6 +1119,7 @@ export async function runStaffQuote(
       selectionEpoch: input.selectionEpoch,
       inputRevision: input.inputRevision,
       inputDigest: prepared.inputDigest,
+      ...(quoteSourceProof ? { quoteSourceProof } : {}),
       totalMinor: pricedRoomTotal(revision, rowPrices) + extraTotal,
       currency: revision.currency,
       arrivalDate: revision.groups[0].arrivalDate,
