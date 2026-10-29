@@ -210,6 +210,7 @@ import {
   parseStoredClassifier,
 } from './workflow-classifier/index.js';
 import { classifierSourceMode, storeCapturedClassifier } from './workflow-classifier/source-fence.js';
+import { centurionSourceFence } from './work-item-source-lock.js';
 import { executeQuoteFollowupRun } from './quote-followup.js';
 import { executeReplyCheckRun } from './reply-check.js';
 import { createMastraRuntime } from './mastra.js';
@@ -627,6 +628,9 @@ async function failAiRun(
     nextRunAt: new Date(Date.now() + attempts * 60_000),
     lastError: message,
     failureClass,
+    // This one bounded inbound reread starts after a 60s backoff and needs a fresh model budget.
+    resetDeadline: run.runKind === 'inbound_extraction' && centurionSourceFence(run.transportId) &&
+      (failureClass === 'SOURCE_LOCK_BUSY' || failureClass === 'SOURCE_CHANGED'),
   });
   return { runId: run.id, state: 'retry_wait' };
 }
