@@ -10,10 +10,13 @@ export function outlookStoredQuote(analysis: ReadyAnalyse): Extract<StoredWork, 
       board: group.board === 'dinner_bb' ? 'dbb' as const : group.board === 'unknown' ? null : group.board,
     },
   }));
+  const refs = Object.fromEntries(groups.map((group) => [group.id, { stayId: group.stayId, rowId: group.id }]));
+  const savedAnalysis = { ...analysis, groups };
   return {
     status: 'ready', kind: 'quote', workItemId: 'wi-outlook', workItemStatus: 'needs_you', extractionId: 'ex-outlook',
-    refs: Object.fromEntries(groups.map((group) => [group.id, { stayId: group.stayId, rowId: group.id }])),
-    analysis: { ...analysis, groups },
+    refs, analysis: savedAnalysis,
+    sourceRead: { extractionId: 'ex-outlook', kind: 'quote', payloadDigest: 'b'.repeat(64),
+      analysis: savedAnalysis, refs },
     contact: { name: null, email: null, phone: null, company: null, endClient: null },
     sourcePartyDigest: 'a'.repeat(64), sourcePartyFields: { company: ['missing'], endClient: ['missing'] },
     language: null, translation: null,
