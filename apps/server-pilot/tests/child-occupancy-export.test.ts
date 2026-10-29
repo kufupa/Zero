@@ -120,6 +120,15 @@ describe('stored quote export and draft occupancy', () => {
     await expect(api.quotePdfJob(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 
+  it('hides stored priced choices after the saved occupancy changes', async () => {
+    const { state } = await fixture();
+    const api = caller().workstation;
+    const input = { internetMessageId: '<synthetic@example.invalid>' };
+    expect((await api.qualifiedProposalChoices(input)).choices).toHaveLength(1);
+    state[`${rowPath}.childrenPerRoom`] = 1;
+    expect((await api.qualifiedProposalChoices(input)).choices).toHaveLength(0);
+  });
+
   it('refuses a booking draft from a quote when the saved count changed', async () => {
     const { proposal, state } = await fixture();
     state[`${rowPath}.childrenPerRoom`] = 1;

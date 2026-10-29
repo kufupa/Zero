@@ -1003,7 +1003,7 @@ export const workstationRouter = router({
             transportId: ctx.activeTransportId,
             userId: ctx.sessionUser.id,
             runId: input.runId,
-            messageId: input.messageId,
+            ...(input.messageId ? { messageId: input.messageId } : {}),
             staffQuoteOwnerId: ctx.sessionUser.id,
           }
         : {
@@ -1420,6 +1420,9 @@ export const workstationRouter = router({
               revisionRef: ref,
               factRefs,
             });
+            if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(revision), {
+              transportId: ctx.activeTransportId, threadId: mail.threadId, messageId: mail.id,
+            }))) continue;
             choices.push({
               workflowRunId: run.id,
               messageId: mail.id,
