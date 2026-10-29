@@ -47,6 +47,7 @@ const stay: StayGroupRequirement = {
   departureDate: '2026-11-14',
   quantity: 2,
   adults: 2,
+  childrenPerRoom: 0,
   childrenAges: [],
   roomPreference: 'STWN',
   board: 'bb',
