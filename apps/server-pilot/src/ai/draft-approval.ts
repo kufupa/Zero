@@ -1,5 +1,5 @@
 import {assertCurrentLookupTargetReceipt} from './reservationist-lookup-target.js';
-import {draftQuoteOccupancyHold} from './child-occupancy.js';
+import {draftQuoteOccupancyHold,quoteSourceProofFromRun} from './child-occupancy.js';
 import {assertReservationistRecipientReceipt,RECIPIENT_PREPARATION_CLAUSE,type RecipientPreparationReceipt} from './reservationist-recipient-preparation.js';
 import {assertReservationistChannelBookingSyncPacket} from './reservationist-pending-action.js';
 import {assertReservationistExistingDocumentReceiptFresh,type ReservationistExistingDocumentReceipt} from './reservationist-existing-document.js';
@@ -784,7 +784,7 @@ export async function assertDraftApprovalCurrent(input: {
   }
   const occupancyHold = await draftQuoteOccupancyHold(input.db, { transportId: approval.transportId,
     threadId: approval.threadId, messageId: draft.replyToMessageId, triggerMessageId: run?.triggerMessageId ?? null,
-    result: run?.metrics?.reservationistResult });
+    result: run?.metrics?.reservationistResult, quoteSourceProof: quoteSourceProofFromRun(run ?? {}) });
   if (occupancyHold) throw new DraftQuoteOccupancyError(occupancyHold);
   assertReservationistResultFreshForAction(run?.metrics?.reservationistResult, now);
   assertReservationistResultWording(run?.metrics?.reservationistResult, input.payload, now);

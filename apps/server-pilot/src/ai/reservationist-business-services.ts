@@ -8,7 +8,7 @@ import {resolveReservationistAcceptedQuoteSource,type ReservationistAcceptedQuot
 import {ReservationistTaskEvidenceUnavailable,deriveStaffAnswerTopics,type ReservationistExecutionServices} from './reservationist-execution.js';
 import {isReservationistSignatureNoise} from './reservationist-attachment-input.js';
 import {PartyRateFailure,PARTY_NO_CONTRACT_CODE,PARTY_SEARCH_INCOMPLETE_CODE,partySearchCovered} from './party-rate-failure.js';
-import {boards,boardsFor,norm,buildRateOptions,requestMatches,sellable,type RateOption} from './rate-options.js';
+import {boards,boardsFor,norm,buildRateOptions,rateEligibilityMatches,requestMatches,sellable,type RateOption} from './rate-options.js';
 import {availabilityBoardOf,type AvailabilityBoardRow,type QuoteEnvelope} from './hms-availability.js';
 import {profileFor} from '../../tooling/playwright-quote/property-profile.mjs';
 type Context=Parameters<NonNullable<ReservationistExecutionServices['resolveQuoteTask']>>[0];
@@ -205,7 +205,7 @@ export function createReservationistBusinessServices(options:{authorizationId:st
   if(totals.some(v=>v.o.rateScope==='contextual'))continue;
   const rows=summary.source.result.groups.find(g=>g.id===room.id)!.options,contract=rows.some(o=>o.rateScope==='contextual');
   if(!staffApproval){if(contract)missing('business_selected_price_unavailable',['qualified available option covering every requested room-night']);continue;}
-  if(!contract)throw new PartyRateFailure(PARTY_NO_CONTRACT_CODE);
+  if(!contract)throw new PartyRateFailure(request.propertyCode==='HRCEN'&&rows.some(o=>o.rateScope!=='public')?PARTY_SEARCH_INCOMPLETE_CODE:PARTY_NO_CONTRACT_CODE);
   if(rows.some(o=>o.rateScope==='contextual'&&requestMatches(room,o,request.propertyCode)))throw new PartyRateFailure('business_selected_price_unavailable');
  }
  // Price the cheapest qualified room for each observed board, as separate selected alternatives.
@@ -219,11 +219,30 @@ export function createReservationistBusinessServices(options:{authorizationId:st
  const results=[];
  for(const chosen of selectionSets){
  const selectedRequest={...request,rooms:request.rooms.map(room=>{const selection=chosen.find(s=>s.groupId===room.id),group=summary.source.result.groups.find(g=>g.id===room.id),option=group?.options.find(o=>o.id===selection?.optionId);if(!option)throw new Error('business_selected_source_missing');return{...room,required:{...room.required,roomCodes:[option.room.code],rateCodes:[option.rate.code],...(alternativeRequest||!room.required?.boardBases?.length?{boardBases:[boardsFor(request.propertyCode)[norm(option.board??'')]!]}:{})}};})};
- const {source,sourceAt,expected}=await readBound(selectedRequest);if(source.result.outcome!=='quote')missing('business_selected_scope_unavailable',['complete narrowed full native quote source']);const selections=selectReservationistQuoteOptions(source,normalize.profileHolds(source.request.propertyCode,source.result.groups));const taskSources=revisions.get(ctx.task.id)??new Set<string>();taskSources.add(source.sha256);revisions.set(ctx.task.id,taskSources);if(!alternativeRequest)claimSources.set(ctx.task.id,{contextDigest:claimContextDigest(ctx),source:structuredClone(source)});
+ const {source,sourceAt,expected}=await readBound(selectedRequest);if(source.result.outcome!=='quote')missing('business_selected_scope_unavailable',['complete narrowed full native quote source']);
+ // Diagnose a changed entitlement before the selector rejects the now-unqualified full row.
+ if(request.propertyCode==='HRCEN'&&request.rateContext)for(const selection of chosen){
+  const summaryOption=summary.source.result.groups.find(group=>group.id===selection.groupId)?.options.find(option=>option.id===selection.optionId);
+  const fullOption=source.result.groups.find(group=>group.id===selection.groupId)?.options.find(option=>option.id===selection.optionId);
+  if(summaryOption&&fullOption&&summaryOption.rateScope!==fullOption.rateScope)throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
+ }
+ const selections=selectReservationistQuoteOptions(source,normalize.profileHolds(source.request.propertyCode,source.result.groups));
+ if(request.propertyCode==='HRCEN'&&request.rateContext)for(const selection of selections){
+  const previous=chosen.find(item=>item.groupId===selection.groupId);
+  const summaryOption=summary.source.result.groups.find(group=>group.id===selection.groupId)?.options.find(option=>option.id===previous?.optionId);
+  const fullOption=source.result.groups.find(group=>group.id===selection.groupId)?.options.find(option=>option.id===selection.optionId);
+  if(!summaryOption||!fullOption||summaryOption.rateScope!==fullOption.rateScope)throw new PartyRateFailure(PARTY_SEARCH_INCOMPLETE_CODE);
+ }
+ const taskSources=revisions.get(ctx.task.id)??new Set<string>();taskSources.add(source.sha256);revisions.set(ctx.task.id,taskSources);if(!alternativeRequest)claimSources.set(ctx.task.id,{contextDigest:claimContextDigest(ctx),source:structuredClone(source)});
  results.push({propertyCode:ctx.input.propertyCode,authoredDate:sourceAt.slice(0,10),selections,resolveSource:async(ref:string)=>{await guard(ctx);if(ref!==source.ref)throw new Error('business_quote_source_unknown');return source;},resolvePolicy:async(property:string,rate:string,board:Board)=>{await guard(ctx);const policy=options.resolveSelectedPolicy?await options.resolveSelectedPolicy(ctx,source,selections,property,rate,board):await options.resolvePolicy(property,rate,board);await guard(ctx);if(policy===null)throw new ReservationistTaskEvidenceUnavailable('business_quote_policy_unavailable',['source-backed VAT and tourism levy inclusions'],['tax_inclusion']);return policy;},admission:{authorizationId:options.authorizationId,sourceEvaluationAt:sourceAt,maxSourceAgeMs:maxAge,expectedRequests:{[source.ref]:expected},authorizeSource:async(ref:string,id:string)=>{await guard(ctx);return ref===source.ref&&id===options.authorizationId;}}});
  }
  // ponytail: the option cards are optional. A failure building them must never fail a quote that already priced.
- if(staffApproval){try{staffApproval.onRateOptions?.(buildRateOptions(summary.source,selectionSets[0]!));}catch{/* cards stay empty */}try{staffApproval.onAvailabilityBoard?.(availabilityBoardOf(summary.source.result as QuoteEnvelope));}catch{/* grid stays empty */}}
+ if(staffApproval){try{staffApproval.onRateOptions?.(buildRateOptions(summary.source,selectionSets[0]!));}catch{/* cards stay empty */}try{
+  const centurion=request.propertyCode==='HRCEN';
+  const result=centurion?{...summary.source.result,groups:summary.source.result.groups.map(group=>({...group,options:group.options.filter(option=>rateEligibilityMatches(summary.source,option))}))}:summary.source.result;
+  const boardRequest=centurion?{kind:'availability' as const,arrival:request.arrivalDate,departure:request.departureDate,rooms:request.rooms.map(room=>({roomType:room.required?.roomCodes?.join(', ')||'All rooms',quantity:room.quantity,adults:room.adults,childAges:room.childAges}))}:undefined;
+  staffApproval.onAvailabilityBoard?.(availabilityBoardOf(result as QuoteEnvelope,boardRequest,centurion?request.requestedCurrency:undefined));
+ }catch{/* grid stays empty */}}
  return{...results[0]!,...(alternativeRequest?{alternatives:results.slice(1)}:{})};},
  resolveProposalHeader:async(ctx)=>{await guard(ctx);return deriveReservationistProposalHeader(ctx,options.signer);},
  authorizeGuestProposal:async(ctx,revision:QuoteRevision,facts)=>{await guard(ctx);return facts===null&&revision.authorizationId===options.authorizationId&&revision.held===false&&revision.groups.every(g=>revisions.get(ctx.task.id)?.has(g.sourceHash)===true);}

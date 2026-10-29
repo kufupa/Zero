@@ -47,6 +47,9 @@ describe('staffQuoteFailureMessage', () => {
     expect(staffQuoteFailureMessage(coded('staff_quote_source_changed'))).toBe(
       'The selected email or approved inputs changed; rerun the current quote.',
     );
+    expect(staffQuoteFailureMessage(coded('staff_quote_government_eligibility_unverified'))).toBe(
+      "Nava can't yet verify Government rate eligibility. Check the guest's eligibility and quote in HMS, or choose another rate.",
+    );
   });
 
   it('maps native capture scope and completeness failures to the plain combination message', () => {

@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import { aiDraftGeneration, aiWorkflowRun, mailDraft, mailDraftRevision, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
-import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
-import { draftQuoteOccupancyHold, draftQuoteOccupancyMessage, importedOfferOccupancyHold } from '../src/ai/child-occupancy.js';
+import { staffQuoteInput, staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
+import { captureQuoteSourceProof, draftQuoteOccupancyHold, draftQuoteOccupancyMessage, importedOfferOccupancyHold } from '../src/ai/child-occupancy.js';
 import { DRAFT_APPROVAL_POLICY_VERSION, DraftQuoteOccupancyError, assertDraftApprovalCurrent, buildDraftApproval, type DraftApprovalPayload } from '../src/ai/draft-approval.js';
 import { AZURE_DRAFT_ROUTE } from '../src/ai/draft-route-factory.js';
 import { assertQueuedDraftApproval, DraftApprovalInvalidError } from '../src/mail/send/outbound-queue.js';
@@ -95,8 +95,15 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
       return query;
     },
   } as unknown as DB;
+  const sourceInput = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail),
+    selectionEpoch: 1, inputRevision: 1, salesStrategy: 'BAR', groups: [{ id: 'g1',
+      arrivalDate: '2027-10-20', departureDate: '2027-10-21', quantity: 2, adults: 1,
+      childrenPerRoom: 0, childrenAges: [], board: 'room_only', sourcePreference: { roomType: null, board: null } }] });
+  const proof = await captureQuoteSourceProof(db, sourceInput, { transportId, threadId: mail.threadId, messageId: mail.id });
+  expect(proof).not.toBeNull();
+  Object.assign(staff, { quoteSourceProof: proof });
   __setDbForTests({ db, conn: null as never });
-  return { revision, proposal, state, artifact, db, draft, run };
+  return { revision, proposal, state, artifact, db, draft, run, proof };
 }
 
 afterEach(() => { __setDbForTests(null); vi.unstubAllEnvs(); });
@@ -135,6 +142,7 @@ describe('stored quote export and draft occupancy', () => {
 
   it('keeps HRDAV exports and draft checks working from a Centurion mailbox', async () => {
     const { proposal, revision, run, state, artifact, db } = await fixture('transport-centurion', 'HRDAV');
+    delete (run.metrics.staffQuoteAttestation as { quoteSourceProof?: unknown }).quoteSourceProof;
     state[`${rowPath}.childAges`] = null;
     const api = caller().workstation;
     const { workItemId: _item, ...uncached } = proposal;
@@ -181,6 +189,25 @@ describe('stored quote export and draft occupancy', () => {
     state[`${rowPath}.count`] = 2;
     state[`${rowPath}.adults`] = 2;
     await expect(api.quotePdfJob(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+  });
+
+  it('rechecks saved room and board preferences on PDF, workbook, choices and priced draft', async () => {
+    const { proposal, revision, run, state, db, draft } = await fixture();
+    const api = caller().workstation;
+    const { workItemId: _item, ...uncached } = proposal;
+    expect((await api.quoteWorkbook(uncached)).xlsxBase64).toBeTruthy();
+    for (const [field, value] of [['roomType', 'Standard Twin'], ['board', 'bb']] as const) {
+      state[`${rowPath}.${field}`] = value;
+      await expect(api.quoteWorkbook(uncached)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      await expect(api.quotePdfJob({ workItemId: itemId, revisionRef: revision.id, company: '', agency: '' }))
+        .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+      expect((await api.qualifiedProposalChoices({ internetMessageId: '<synthetic@example.invalid>' })).choices).toHaveLength(0);
+      await expect(assertHmsDraftFreshForAction({ db, transportId, draft: draft as never, conflict: 'STALE_AI_CANDIDATE' }))
+        .rejects.toMatchObject({ code: 'CONFLICT', message: draftQuoteOccupancyMessage });
+      delete state[`${rowPath}.${field}`];
+    }
+    delete (run.metrics.staffQuoteAttestation as { quoteSourceProof?: unknown }).quoteSourceProof;
+    await expect(api.quoteWorkbook(uncached)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 
   it('hides stored priced choices after the saved occupancy changes', async () => {
@@ -238,8 +265,9 @@ describe('stored quote export and draft occupancy', () => {
   });
 
   it('keeps non-quote candidates available and holds old priced candidates after an edit', async () => {
-    const { revision, run, state, draft, db } = await fixture();
-    const scope = { transportId, threadId: 't1', messageId: 'm1', triggerMessageId: 'm1', result: run.metrics.reservationistResult };
+    const { revision, run, state, draft, db, proof } = await fixture();
+    const scope = { transportId, threadId: 't1', messageId: 'm1', triggerMessageId: 'm1',
+      result: run.metrics.reservationistResult, quoteSourceProof: proof };
     expect(await draftQuoteOccupancyHold(db, scope)).toBeNull();
     expect(await draftQuoteOccupancyHold(db, { ...scope, triggerMessageId: 'another-message' }))
       .toBe(draftQuoteOccupancyMessage);

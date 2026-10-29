@@ -219,6 +219,7 @@ const QUOTE_REFUSAL_REASONS = new Set([
   'invalid_extras',
   'mail_not_found',
   'quote_davinci_disabled',
+  'government_eligibility_unverified',
   'installation_unavailable',
   'inputs_incomplete',
   'database_unavailable',

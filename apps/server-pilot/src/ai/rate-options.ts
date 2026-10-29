@@ -57,6 +57,21 @@ const boardName:Record<RateOption['board'],string>={room_only:'room only',bb:'be
 export function partyRowMatches(rateContext:Record<string,unknown>|undefined,option:NativeOption):boolean{
  return Object.entries(rateContext??{}).every(([kind,wanted])=>{const got=(option.appliedContext as Record<string,{id?:string;code?:string;name?:string}>|undefined)?.[kind],ref=wanted as {nativeId?:string;code?:string;name?:string};return!!got&&(ref.nativeId?String(got.id)===String(ref.nativeId):(!ref.code||got.code===ref.code)&&(!ref.name||got.name===ref.name));});
 }
+/** A verified Centurion row must also prove its public or requested-party entitlement. */
+export function rateEligibilityMatches(source:QuoteSourceRecord,option:NativeOption):boolean{
+ if(option.eligibility!=='verified')return false;
+ if(source.request.propertyCode==='HRCEN'){
+  const profile=profileFor('HRCEN'),code=option.rate.code,label=option.rate.label;
+  // Match the native reader's government hold even if a source incorrectly claims the row is verified.
+  if(!profile||profile.classifyRate(code,'GOV',false,label)==='government'||/^(?:N)?GOV/i.test(code)||/\b(?:gov(?:ernment)?|govt)\b/i.test(label))return false;
+  if(option.rateScope==='public'){
+   if(!profile.rates?.public?.includes(code))return false;
+  }else if(option.rateScope==='contextual'){
+   if(!Object.keys(source.request.rateContext??{}).length)return false;
+  }else return false;
+ }
+ return partyRowMatches(source.request.rateContext,option);
+}
 /** The requested room, pinned rate code and board. */
 export function requestMatches(request:RoomRequest,option:NativeOption,propertyCode?:string):boolean{
  const mapped=boardsFor(propertyCode)[norm(option.board??'')];
@@ -67,7 +82,7 @@ export function sellable(source:QuoteSourceRecord,quantity:number,option:NativeO
  const dates=occupiedDates(source.request.arrivalDate,source.request.departureDate);
  const detailStatus=(option as NativeOption&{details?:{status?:string}}).details?.status;
  const boardMap=boardsFor(source.request.propertyCode);
- return detailStatus!=='not_read'&&detailStatus!=='partial'&&option.eligibility==='verified'&&option.availability==='available'&&option.held===false&&!!boardMap[norm(option.board??'')]&&partyRowMatches(source.request.rateContext,option)&&option.nightly.length===dates.length&&new Set(option.nightly.map(n=>n.date)).size===dates.length&&option.nightly.every(n=>dates.includes(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory>=quantity&&exactMinor(n.price.amount)>0&&n.price.currency===source.request.requestedCurrency);
+ return detailStatus!=='not_read'&&detailStatus!=='partial'&&rateEligibilityMatches(source,option)&&option.availability==='available'&&option.held===false&&!!boardMap[norm(option.board??'')]&&option.nightly.length===dates.length&&new Set(option.nightly.map(n=>n.date)).size===dates.length&&option.nightly.every(n=>dates.includes(n.date)&&Number.isSafeInteger(n.inventory)&&n.inventory>=quantity&&exactMinor(n.price.amount)>0&&n.price.currency===source.request.requestedCurrency);
 }
 
 /**

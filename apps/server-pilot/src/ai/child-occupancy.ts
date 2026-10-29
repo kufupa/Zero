@@ -1,6 +1,6 @@
 import { mailExtractionPayloadSchema } from './extraction/schema.js';
 import type { StaffQuoteInput } from './staff-quote-workflow.js';
-import type { QuoteRevision } from '../quote-proposal/quote-revision.js';
+import { quoteDigest, type QuoteRevision } from '../quote-proposal/quote-revision.js';
 import type { DB } from '../db/client.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { and, desc, eq } from 'drizzle-orm';
@@ -138,13 +138,13 @@ async function loadChildOccupancyEvidence(
   // A newer read has not been adopted yet. Do not apply old corrections to that read, or keep pricing the older one.
   // The existing work-item relink decides whether edits can safely carry; once it moves, the latest evidence is used.
   if ((!item && scope.lock) || (item && item.extractionId !== latest.id)) return null;
-  return { payload: latest.payload, state: item?.state ?? {} };
+  return { kind: latest.kind, payload: latest.payload, state: item?.state ?? {} };
 }
 
 export async function childOccupancyIsCurrent(
   db: DB,
   groups: Group[],
-  scope: { transportId: string; threadId: string; messageId: string; propertyCode?: string; lock?: boolean },
+  scope: QuoteSourceScope,
 ): Promise<boolean> {
   if (!isCenturionQuoteScope(scope)) return true;
   const evidence = await loadChildOccupancyEvidence(db, scope);
@@ -152,22 +152,168 @@ export async function childOccupancyIsCurrent(
 }
 
 export const importedOfferOccupancyHold = 'The original offer cannot yet be matched to the requested rooms and child ages. Review it in HMS and run a new quote.';
-export const draftQuoteOccupancyMessage = 'Confirm the rooms, adults, and children per room, including each child’s age, then run the quote again.';
+export const draftQuoteOccupancyMessage = 'Confirm rooms, adults, the number of children per room and each age; check room type and meal plan, then run the quote again.';
+export const quoteSourcePolicyChangedMessage = 'Rate checks have changed since this quote. Run rates again before using it.';
 
 export function isCenturionQuoteTransport(transportId: string): boolean {
   return getPropertyTransportIds('HRCEN').includes(transportId.trim());
 }
 
-/** A resolved quote property overrides the mailbox; unknown metadata cannot turn a Centurion hold off. */
+/** A known, resolved quote property overrides the mailbox; unknown metadata cannot turn a Centurion hold off. */
 export function isCenturionQuoteScope(scope: { transportId: string; propertyCode?: string }): boolean {
   if (scope.propertyCode === 'HRCEN') return true;
   if (scope.propertyCode === 'HRDAV') return false;
   return isCenturionQuoteTransport(scope.transportId);
 }
 
+const QUOTE_SOURCE_PROOF_VERSION = 3 as const;
+type QuoteSourceProof = {
+  version: typeof QUOTE_SOURCE_PROOF_VERSION;
+  messageId: string;
+  inputDigest: string;
+  extractionDigest: string;
+  sourceDigest: string;
+  singleRowDigest: string | null;
+};
+type QuoteSourceScope = { transportId: string; threadId: string; messageId: string; propertyCode?: string; lock?: boolean };
+
+/** Snapshot the saved source preferences, separately from the room/rate actually chosen by the quote. */
+function quoteSourceSnapshot(groups: Group[], payload: unknown, state: Record<string, unknown>) {
+  if (!childOccupancyMatchesStored(groups, payload, state)) return null;
+  const parsed = mailExtractionPayloadSchema.safeParse(payload);
+  if (!parsed.success) return null;
+  const rows = new Map<string, { stayId: string; rowId: string; roomType: unknown; board: unknown }>();
+  for (const stay of parsed.data.stays) for (const row of stay.rows) {
+    rows.set(`${stay.id}\n${row.id}`, { stayId: stay.id, rowId: row.id, roomType: row.roomType, board: row.board });
+  }
+  const rowPath = /^stays\[([A-Za-z0-9_-]{1,40})\]\.rows\[([A-Za-z0-9_-]{1,40})\]\./;
+  for (const path of Object.keys(state)) {
+    const match = rowPath.exec(path);
+    if (!match?.[1] || !match[2]) continue;
+    const key = `${match[1]}\n${match[2]}`;
+    if (!rows.has(key)) rows.set(key, { stayId: match[1], rowId: match[2], roomType: undefined, board: undefined });
+  }
+  const values: Array<{ id: string; roomType: string[]; board: string[] }> = [];
+  for (const group of groups) {
+    const empty = parsed.data.stays.find((stay) => stay.id === group.id && stay.rows.length === 0);
+    const matches = [...rows.values()].filter((row) => row.rowId === group.id ||
+      (empty && row.stayId === empty.id && row.rowId === `${empty.id}_row`));
+    if (matches.length !== 1) return null;
+    const row = matches[0]!;
+    const base = `stays[${row.stayId}].rows[${row.rowId}]`;
+    const field = (name: 'roomType' | 'board', fallback: unknown) => {
+      const path = `${base}.${name}`;
+      const edited = Object.hasOwn(state, path);
+      const value = edited ? state[path] : fallback;
+      if (value == null) return [edited ? 'cleared' : 'missing'];
+      if (typeof value !== 'string' || (name === 'board' && !['room_only', 'bb', 'dbb', 'half_board'].includes(value))) return null;
+      return ['value', value];
+    };
+    const roomType = field('roomType', row.roomType), board = field('board', row.board);
+    if (!roomType || !board) return null;
+    values.push({ id: group.id, roomType, board });
+  }
+  values.sort((a, b) => a.id.localeCompare(b.id));
+  return {
+    sourceDigest: quoteDigest(values),
+    singleRowDigest: values.length === 1 ? quoteDigest([values[0]!.roomType, values[0]!.board]) : null,
+    preferences: values.map(({ id, roomType, board }) => ({
+      id, roomType: roomType[0] === 'value' ? roomType[1]?.trim() || null : null,
+      board: board[0] === 'value' ? board[1] : null,
+    })),
+  };
+}
+
+function parseQuoteSourceProof(value: unknown): QuoteSourceProof | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const proof = value as Partial<QuoteSourceProof>;
+  const hash = (item: unknown) => typeof item === 'string' && /^[a-f0-9]{64}$/.test(item);
+  return proof.version === QUOTE_SOURCE_PROOF_VERSION && typeof proof.messageId === 'string' && !!proof.messageId &&
+    hash(proof.inputDigest) && hash(proof.extractionDigest) && hash(proof.sourceDigest) &&
+    (proof.singleRowDigest === null || hash(proof.singleRowDigest))
+    ? proof as QuoteSourceProof : null;
+}
+
+/** The proof comes from the server's submitted input and saved source before an HMS read starts. */
+export async function captureQuoteSourceProof(db: DB, input: StaffQuoteInput, scope: QuoteSourceScope) {
+  const evidence = await loadChildOccupancyEvidence(db, scope);
+  const snapshot = evidence && quoteSourceSnapshot(input.groups, evidence.payload, evidence.state);
+  if (!evidence || !snapshot || input.groups.some((group) => {
+    const source = snapshot.preferences.find((item) => item.id === group.id);
+    return !group.sourcePreference || !source || group.sourcePreference.roomType !== source.roomType ||
+      group.sourcePreference.board !== source.board;
+  })) return null;
+  // Bind the analyzed case as well as pricing facts: a guest, agency, or action can change without changing the room.
+  // Store a digest, so an identical re-read can reuse the price without retaining additional guest details.
+  return { version: QUOTE_SOURCE_PROOF_VERSION, messageId: scope.messageId, inputDigest: quoteDigest(input),
+    extractionDigest: quoteDigest({ kind: evidence.kind, payload: evidence.payload }),
+    sourceDigest: snapshot.sourceDigest, singleRowDigest: snapshot.singleRowDigest };
+}
+
+/** Only explains a refusal; the proof parser is the authority for reuse. */
+export function quoteSourceProofPredatesPolicy(value: unknown): boolean {
+  return !!value && typeof value === 'object' && 'version' in value &&
+    (value.version === 1 || value.version === 2);
+}
+
+export function quoteSourceProofFromRun(run: { metrics?: unknown; readResult?: unknown }): unknown {
+  const record = (value: unknown): Record<string, unknown> =>
+    value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return record(record(run.metrics).staffQuoteAttestation).quoteSourceProof ?? record(run.readResult).quoteSourceProof;
+}
+
+export function quoteSourceProofMatchesInput(proof: unknown, input: StaffQuoteInput): boolean {
+  return parseQuoteSourceProof(proof)?.inputDigest === quoteDigest(input);
+}
+
+export async function quoteSourceProofIsCurrent(db: DB, groups: Group[], scope: QuoteSourceScope, value: unknown) {
+  if (!isCenturionQuoteScope(scope)) return true;
+  const proof = parseQuoteSourceProof(value);
+  if (!proof || proof.messageId !== scope.messageId) return false;
+  const evidence = await loadChildOccupancyEvidence(db, scope);
+  return !!evidence && quoteDigest({ kind: evidence.kind, payload: evidence.payload }) === proof.extractionDigest &&
+    quoteSourceSnapshot(groups, evidence.payload, evidence.state)?.sourceDigest === proof.sourceDigest;
+}
+
+/** A copied message can reuse a price only for one unambiguous row with the same saved preference. */
+export async function quoteSourceProofMatchesCopy(db: DB, groups: Group[], scope: QuoteSourceScope, value: unknown) {
+  if (!isCenturionQuoteScope(scope)) return true;
+  const proof = parseQuoteSourceProof(value);
+  if (!proof?.singleRowDigest || groups.length !== 1) return false;
+  const evidence = await loadChildOccupancyEvidence(db, scope);
+  return !!evidence && quoteSourceSnapshot(groups, evidence.payload, evidence.state)?.singleRowDigest === proof.singleRowDigest;
+}
+
+export async function quoteSourceProofMatchesSingleStay(
+  db: DB, revision: { groups: StayOccupancy[] }, scope: QuoteSourceScope, value: unknown,
+) {
+  if (!isCenturionQuoteScope(scope)) return true;
+  const evidence = await loadChildOccupancyEvidence(db, scope);
+  if (!evidence || !singleStayOccupancyMatchesRevision(revision, evidence.payload, evidence.state)) return false;
+  const parsed = mailExtractionPayloadSchema.safeParse(evidence.payload);
+  if (!parsed.success) return false;
+  const quoted = revision.groups[0]!;
+  const stay = parsed.data.stays.find((item) => {
+    const arrival = `stays[${item.id}].requested.arrival`, departure = `stays[${item.id}].requested.departure`;
+    return evidence.state[`stays[${item.id}].removed`] !== true &&
+      (Object.hasOwn(evidence.state, arrival) ? evidence.state[arrival] : item.requested.arrival) === quoted.arrivalDate &&
+      (Object.hasOwn(evidence.state, departure) ? evidence.state[departure] : item.requested.departure) === quoted.departureDate;
+  });
+  const row = stay?.rows[0];
+  if (!stay || !row) return false;
+  const path = `stays[${stay.id}].rows[${row.id}].childAges`;
+  const ages = Object.hasOwn(evidence.state, path) ? evidence.state[path] : row.childAges;
+  if (!Array.isArray(ages)) return false;
+  const snapshot = quoteSourceSnapshot([{ id: row.id, arrivalDate: quoted.arrivalDate, departureDate: quoted.departureDate,
+    quantity: quoted.quantity, adults: quoted.adults, childrenPerRoom: quoted.children, childrenAges: ages }], evidence.payload, evidence.state);
+  const proof = parseQuoteSourceProof(value);
+  return !!proof?.singleRowDigest && snapshot?.singleRowDigest === proof.singleRowDigest;
+}
+
 /** A priced candidate must still match the selected email and persisted room facts at promotion and send. */
 export async function draftQuoteOccupancyHold(db: DB, input: {
   transportId: string; threadId: string; messageId: string | null; triggerMessageId: string | null; result: unknown;
+  quoteSourceProof?: unknown;
 }): Promise<string | null> {
   if (!input.result || typeof input.result !== 'object') return null;
   const result = input.result as { importedOffers?: unknown; quoteRevisions?: unknown; quoteRevisionIds?: unknown; approvedOverrides?: unknown };
@@ -184,12 +330,13 @@ export async function draftQuoteOccupancyHold(db: DB, input: {
   if (!selectedQuotes.length && (quotes.length || overrides.length || !isCenturionQuoteTransport(input.transportId))) return null;
   if (!input.messageId || input.messageId !== input.triggerMessageId ||
     refs.some((id) => ![...quotes, ...overrides].some((offer) => offer?.id === id))) return draftQuoteOccupancyMessage;
+  if (selectedQuotes.length && quoteSourceProofPredatesPolicy(input.quoteSourceProof)) return quoteSourcePolicyChangedMessage;
   try {
     for (const quote of selectedQuotes) {
-      if (!(await childOccupancyIsCurrent(db, occupancyFromRevision(quote), {
+      if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(quote), {
         transportId: input.transportId, threadId: input.threadId, messageId: input.messageId,
         propertyCode: quote.propertyCode, lock: true,
-      }))) return draftQuoteOccupancyMessage;
+      }, input.quoteSourceProof))) return draftQuoteOccupancyMessage;
     }
   } catch { return draftQuoteOccupancyMessage; }
   return null;
@@ -240,7 +387,7 @@ export function singleStayOccupancyMatchesRevision(
 export async function singleStayOccupancyIsCurrent(
   db: DB,
   revision: { groups: StayOccupancy[] },
-  scope: { transportId: string; threadId: string; messageId: string; propertyCode?: string },
+  scope: QuoteSourceScope,
 ): Promise<boolean> {
   if (!isCenturionQuoteScope(scope)) return true;
   const evidence = await loadChildOccupancyEvidence(db, scope);

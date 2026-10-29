@@ -15,7 +15,7 @@ import { anchorStayDateRange, type StayDateAnchorContext } from '../stay-date-an
 
 export type MailKind = (typeof MAIL_KINDS)[number];
 export type { MailAction };
-export type ExtractionBoard = 'room_only' | 'bb' | 'dbb';
+export type ExtractionBoard = 'room_only' | 'bb' | 'dbb' | 'half_board';
 export type DateRange = { arrival: string | null; departure: string | null };
 export const ACTION_CONFIDENCE_LEVELS = ['high', 'medium', 'low'] as const;
 export type ActionConfidence = (typeof ACTION_CONFIDENCE_LEVELS)[number];
@@ -167,6 +167,8 @@ export type ExtractionStay = {
 
 const storedExtractionRowSchema = mailExtractionObjectSchema.shape.stays.element.shape.rows.element.extend({
   id: z.string(),
+  // Older saved payloads can use the pane's half-board spelling; new model reads still use dbb.
+  board: z.enum(['room_only', 'bb', 'dbb', 'half_board']).nullable(),
 });
 const storedExtractionStaySchema = mailExtractionObjectSchema.shape.stays.element.extend({
   id: z.string(),

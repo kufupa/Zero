@@ -508,9 +508,19 @@ function profileStrategyCode(request) {
   return SEARCH_STRATEGY_CODES[label] ?? label.trim().toUpperCase();
 }
 
-/** rateScope stays public|contextual|unknown. classifyRate 'government' is only used for eligibility. */
-function quoteRateScope(profile, code, strategy, isNegotiatedRate) {
+function governmentRateHint(profile,code,label) {
+  return profile?.classifyRate(code,'GOV',false,label)==='government' ||
+    /^(?:N)?GOV/i.test(code??'') || /\b(?:gov(?:ernment)?|govt)\b/i.test(label??'');
+}
+
+/** A BAR search alone does not prove that every returned Centurion rate is public. */
+function quoteRateScope(profile, code, strategy, isNegotiatedRate, label) {
   if (!profile) return 'unknown';
+  if (profile.propertyCode==='HRCEN') {
+    if (governmentRateHint(profile,code,label)) return 'unknown';
+    if (isNegotiatedRate===true) return 'contextual';
+    return isNegotiatedRate===false&&profile.rates?.public?.includes(code)?'public':'unknown';
+  }
   const classified = profile.classifyRate(code, strategy, isNegotiatedRate);
   if (classified === 'public') return 'public';
   if (classified === 'contextual') return 'contextual';
@@ -583,7 +593,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
         option={id,room:{code:nativeRoom.code,label:nativeRoom.desc,buildingCode:nativeRoom.buildingCode??null},
           rate:{code:rate.code,label:rate.desc,...(nativeBundleLabels(rate.nonroombundleslist).length?{bundleLabels:nativeBundleLabels(rate.nonroombundleslist)}:{})},roomCode:nativeRoom.code,rateCode:rate.code,board:null,
           nightly:[],observations:new Map(),issues:[],held:false,_rate:rate,_nativeRoom:nativeRoom,
-          sourceCurrency:property.currency,rateScope:quoteRateScope(profile,rate.code,strategyCode,rate.isNegotiatedRate)};
+          sourceCurrency:property.currency,rateScope:quoteRateScope(profile,rate.code,strategyCode,rate.isNegotiatedRate,rate.desc)};
         candidates.set(id,option);
       }
       if(windowIds.has(id))option.issues.push(issue('AMBIGUOUS_NATIVE_ID',id,'Multiple native rows share this identity.'));
@@ -628,7 +638,7 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
   const coverageIncomplete=issues.some(i=>['NULL_OR_INVALID_CALENDAR','CHANGED_CALENDAR_HEADERS','STALE_CALENDAR_PAGE','PROPERTY_RESULT_MISSING'].includes(i.code));
   const noSpecialRates=!coverageIncomplete&&unfiltered&&contextRequested.length>0&&contextVerified&&candidates.size>0
     &&[...candidates.values()].some(o=>o.rateScope==='public')
-    &&[...candidates.values()].every(o=>o.rateScope!=='contextual');
+    &&[...candidates.values()].every(o=>request.propertyCode==='HRCEN'?o.rateScope==='public':o.rateScope!=='contextual');
   if(noSpecialRates)issues.push(issue('NO_SPECIAL_RATES','rateContext','No special/negotiated rates for this party. Public BAR is returned.','Tell the guest this is BAR, not a contracted rate.'));
   if(contextRequested.length&&!contextVerified&&[...candidates.values()].some(o=>o.rateScope==='public')) {
     issues.push(issue('PARTY_RATES_NOT_CHECKED','rateContext','Party rates were not checked; public BAR shown.','Tell the guest this is public BAR; party rates were not checked.'));
@@ -644,11 +654,15 @@ export function extractOptions(request,room,windows,resolvedContext={}) {
     option.availability=availability.status;
     if(availability.reason)option.availabilityReason=availability.reason;
     const governmentFamily=!contextRequested.length&&windows.every(w=>w.criteria?.salesStrategy==='GOV')&&profile?.classifyRate(option.rate.code,strategyCode,option._rate.isNegotiatedRate,option.rate.label)==='government';
+    // A government rate appearing in HMS does not establish this guest's entitlement. Check its
+    // protected label even if it appeared under a different search or alongside a company context.
+    const unprovenGovernment=request.propertyCode==='HRCEN'&&governmentRateHint(profile,option.rate.code,option.rate.label);
     const requiredKind=strategyPartyKind(profile,strategyCode,option.rate.code);
     const strategyContextOk=!requiredKind||(contextVerified&&contextRequested.includes(requiredKind));
-    option.eligibility=invalid?'unknown':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified&&strategyContextOk?'verified':'conditional';
+    option.eligibility=invalid?'unknown':unprovenGovernment?'conditional':governmentFamily||option.rateScope==='public'?'verified':option.rateScope==='contextual'&&contextVerified&&strategyContextOk?'verified':'conditional';
     if (option.availability==='restricted') option.eligibility='conditional';
     Object.assign(option,assessConstraints(room,sourceFacts(option)));
+    if(unprovenGovernment)option.conditions.push({kind:'required',field:'governmentEligibility',status:'unknown',requested:'confirmed entitlement',evidence:null,reason:'Government eligibility has not been confirmed.'});
     if (contextRequested.length&&!(option.rateScope==='contextual'&&contextVerified&&strategyContextOk)) {
       // Public rows stay bookable without a proven party. Contextual rows without that party stay unresolved.
       if(option.rateScope==='public') {
@@ -694,10 +708,10 @@ export function limitOptions(ordered,max) {
 export function hiddenRowsMatter(ordered,max){return ordered.slice(max).some(o=>o.matchStatus!=='alternative');}
 
 export function reapplyBedAssessment(option,assessment) {
-  const contextConditions=option.conditions.filter(c=>c.field==='rateContext');
+  const contextConditions=option.conditions.filter(c=>c.field==='rateContext'||c.field==='governmentEligibility');
   Object.assign(option,assessment);
   option.conditions.push(...contextConditions);
-  if(contextConditions.some(c=>c.kind==='required')&&option.matchStatus==='match')option.matchStatus='unresolved';
+  if(contextConditions.some(c=>c.field==='rateContext'&&c.kind==='required')&&option.matchStatus==='match')option.matchStatus='unresolved';
   return option;
 }
 

@@ -90,7 +90,7 @@ export function BarAvailabilityGrid({
             <th className="py-1 pr-2 font-semibold">Room</th>
             <th className="py-1 pr-2 font-semibold">Rate</th>
             <th className="py-1 pr-2 font-semibold">Board</th>
-            <th className="py-1 pr-2 font-semibold">Nightly</th>
+            <th className="py-1 pr-2 font-semibold">Avg / room / night</th>
             <th className="py-1 font-semibold">Rooms left</th>
           </tr>
         </thead>

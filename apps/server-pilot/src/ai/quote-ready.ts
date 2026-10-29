@@ -166,7 +166,9 @@ function groupForStay(
       adults,
       ...(!propertyCode || propertyCode === 'HRCEN' ? { childrenPerRoom: row.childrenPerRoom } : {}),
       childrenAges: row.childAges,
-      board: row.board === 'room_only' ? 'room_only' : row.board === 'dbb' ? 'dinner_bb' : 'bb',
+      ...(!propertyCode || propertyCode === 'HRCEN'
+        ? { sourcePreference: { roomType: roomType || null, board: row.board } } : {}),
+      board: row.board === 'room_only' ? 'room_only' : row.board === 'dbb' || row.board === 'half_board' ? 'dinner_bb' : 'bb',
       ...(roomCode ? { roomCodes: [roomCode] } : {}),
     });
   }
@@ -297,7 +299,7 @@ export function buildPreparedStaffQuotePlan(input: {
   };
 }
 
-function priceShape(input: StaffQuoteInput): unknown {
+function priceShape(input: StaffQuoteInput, includeSourcePreference: boolean): unknown {
   return {
     groups: input.groups.map((group) => ({
       id: group.id,
@@ -307,6 +309,7 @@ function priceShape(input: StaffQuoteInput): unknown {
       adults: group.adults,
       childrenPerRoom: group.childrenPerRoom ?? null,
       childrenAges: group.childrenAges,
+      ...(includeSourcePreference ? { sourcePreference: group.sourcePreference ?? null } : {}),
       board: group.board,
       roomCodes: [...(group.roomCodes ?? [])].sort(),
       rateCode: group.rateCode ?? null,
@@ -328,18 +331,20 @@ function priceShape(input: StaffQuoteInput): unknown {
 }
 
 /** Pane counters and display headers do not affect a price; row identity, stay terms and paid extras do. */
-export function staffQuotePriceKey(input: StaffQuoteInput): string {
-  return JSON.stringify(priceShape(input));
+export function staffQuotePriceKey(input: StaffQuoteInput, includeSourcePreference = true): string {
+  return JSON.stringify(priceShape(input, includeSourcePreference));
 }
 
 export function staffQuoteInputsPriceEquivalent(
   left: StaffQuoteInput,
   right: StaffQuoteInput,
   allowBoundStrategyMismatch = false,
+  includeSourcePreference = true,
 ): boolean {
-  if (staffQuotePriceKey(left) === staffQuotePriceKey(right)) return true;
+  if (staffQuotePriceKey(left, includeSourcePreference) === staffQuotePriceKey(right, includeSourcePreference)) return true;
   // Only an explicitly party-bound prepared quote may ignore the pane's default strategy.
   // The price key still requires identical parties, stay terms, and charges.
   if (!allowBoundStrategyMismatch || (!left.parties?.agency && !left.parties?.company)) return false;
-  return staffQuotePriceKey(left) === staffQuotePriceKey({ ...right, salesStrategy: left.salesStrategy });
+  return staffQuotePriceKey(left, includeSourcePreference) ===
+    staffQuotePriceKey({ ...right, salesStrategy: left.salesStrategy }, includeSourcePreference);
 }
