@@ -5095,9 +5095,11 @@ describe('fresh case evidence and mixed actions', () => {
     expect(quoteRunBlockReason(reopened, stepFor(reopened, STAY_A))).toBeNull();
 
     const otherGuest = { ...live, luna: { ...live.luna!, groups: [{ ...live.luna!.groups[0]!, guestNames: ['Bea Example'] }] } };
+    const duplicateGuest = { ...live, luna: { ...live.luna!, groups: [{ ...live.luna!.groups[0]!, guestNames: ['Ada Example', 'Ada Example'] }] } };
+    const childAge = { ...live, groups: [{ ...live.groups[0]!, childrenAges: [7] }] };
     const withRef = { ...live, luna: { ...live.luna!, confirmationNumber: '22222222-1' } };
     const withHotel = { ...live, groups: [{ ...live.groups[0]!, hotel: 'Another hotel' }] };
-    for (const changed of [ready(otherGuest), ready(withRef), ready(withHotel), ready(live, 'HRDAV')]) {
+    for (const changed of [ready(otherGuest), ready(duplicateGuest), ready(childAge), ready(withRef), ready(withHotel), ready(live, 'HRDAV')]) {
       const held = reduceQuoteSession(session, { type: 'analysis_ready', analysis: changed });
       expect(stayAskAction(held, 'stay-single')).toBe('other');
       expect(quoteRunBlockReason(held, stepFor(held, STAY_A))).toMatch(/existing or unclear booking/i);

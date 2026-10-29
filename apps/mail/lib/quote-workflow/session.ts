@@ -288,7 +288,6 @@ export function paneCaseSnapshot(analysis: QuoteAnalysis | null): PaneCaseSnapsh
     propertyCode: source.paneRead?.propertyCode ?? null, ...(source.caseAliases ? { aliases: source.caseAliases } : {}),
   };
 }
-
 function sameCaseAfterRemovedRows(before: string | null, after: string | null, retained: readonly string[]): boolean {
   if (!before || !after) return false;
   try {
@@ -319,8 +318,8 @@ function singleCaseReclassification(before: QuoteAnalysis, after: QuoteAnalysis,
     before.amendment || after.amendment || !after.luna || after.luna.groups.length !== 1) return null;
   const identity = (analysis: QuoteAnalysis, row: StayAskRow) => {
     const luna = analysis.luna as (LunaAnalysisWire & { confirmationNumber?: string | null }) | undefined;
-    const guests = [...(row.stayGuests ?? []).map((guest) => guest.name), ...(row.guestNames ?? []),
-      ...(luna?.groups ?? []).flatMap((group) => group.guestNames)];
+    const guests = row.stayGuests ? row.stayGuests.map((guest) => guest.name) : row.guestNames?.length ? row.guestNames
+      : (luna?.groups ?? []).flatMap((group) => group.guestNames);
     const refs = [row.confirmationNumber, row.caseLookupConfirmation, luna?.confirmationNumber,
       ...(row.stayGuests ?? []).map((guest) => guest.confirmationNumber),
       ...(luna?.groups ?? []).map((group) => (group as LunaStayGroup).confirmationNumber)];
@@ -328,7 +327,8 @@ function singleCaseReclassification(before: QuoteAnalysis, after: QuoteAnalysis,
       (luna?.tasks ?? []).some((task) => task.groupIndexes.length &&
       task.kind !== 'quote' && task.kind !== 'create_booking')) return null;
     return JSON.stringify([row.arrivalDate, row.departureDate, row.hotel?.trim().toLowerCase() ?? null,
-      row.propertyCode?.trim().toUpperCase() ?? null, [...new Set(guests.map((name) => name.trim().toLowerCase()).filter(Boolean))].sort()]);
+      row.propertyCode?.trim().toUpperCase() ?? null, [...row.childrenAges].sort((a, b) => a - b),
+      guests.map((name) => name.trim().toLowerCase()).filter(Boolean).sort()]);
   };
   const oldIdentity = identity(before, a[0]), newIdentity = identity(after, b[0]);
   const tasks = after.luna.tasks.filter((task) => task.groupIndexes.length);
