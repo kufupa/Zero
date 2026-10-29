@@ -712,10 +712,10 @@ export function NavaPane({
       ? {
           fieldProvenance: storedWork.pane.fieldProvenance,
           refs: storedWork.pane.refs ?? {},
-          onResetContact: storedWork.resetAvailable
+          onResetContact: storedWork.resetAvailable && !caseReviewPending(quoteSession.analysis)
             ? () => storedWork.resetSection({ type: 'contact' })
             : undefined,
-          onResetStay: storedWork.resetAvailable
+          onResetStay: storedWork.resetAvailable && !caseReviewPending(quoteSession.analysis)
             ? (stayId: string) => storedWork.resetSection({ type: 'stay', stayId })
             : undefined,
           resetPending: storedWork.historyPending || storedWork.historyNeedsReload,
@@ -2237,7 +2237,7 @@ export function NavaPane({
                 serverCursor={storedWork.historyCursor}
                 onUndo={storedWork.undo}
                 onRedo={storedWork.redo}
-                pending={storedWork.historyPending || storedWork.historyNeedsReload}
+                pending={storedWork.historyPending || storedWork.historyNeedsReload || caseReviewPending(quoteSession.analysis)}
               />
             ) : null}
             {storedWork.historyError ? (
@@ -2246,7 +2246,7 @@ export function NavaPane({
                 {storedWork.historyNeedsReload ? (
                   <button
                     type="button"
-                    disabled={storedWork.historyPending}
+                    disabled={storedWork.historyPending || caseReviewPending(quoteSession.analysis)}
                     onClick={storedWork.reloadHistory}
                     className="rounded-[3px] text-[11px] font-semibold text-[#64748b] hover:underline disabled:cursor-not-allowed disabled:no-underline disabled:text-[#94a3b8]"
                   >
