@@ -261,22 +261,30 @@ describe('QuoteWorkflowPanel Nava extras', () => {
     expect(panel.textContent).not.toContain('Extend stay');
   });
 
-  it('does not offer a lookup button when the matching amendment panel is unavailable', () => {
+  it.each([
+    { action: 'amend', label: 'Amendment' },
+    { action: 'cancel', label: 'Cancellation' },
+  ] as const)('selects an $action case in a new-booking email without an email-wide amendment', ({ action, label }) => {
+    const onSelectStayKey = vi.fn();
     const groups = [
       { ...g1, id: 'r_new', stayId: 'new-stay' },
-      { ...g1, id: 'r_old', stayId: 'old-stay', arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+      { ...g1, id: 'r_old', stayId: 'old-stay', caseScoped: true, arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
     ];
     const session = sessionWithAnalysis({
       intent: 'quote', groups, secondaryAsks: [], alternatives: [],
       luna: lunaWire({
         workflow: 'create_booking',
-        tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }, { kind: 'amend', groupIndexes: [1], note: '' }],
+        tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }, { kind: action, groupIndexes: [1], note: '' }],
       }),
       amendment: null,
     });
-    render(<QuoteWorkflowPanel session={session} />);
-    expect(screen.getAllByLabelText('Stay action').map((node) => node.textContent)).toEqual(['New booking', 'Amendment']);
+    const uncertainSession = { ...session, analysis: { ...session.analysis!, caseActionsUncertain: true } };
+    const view = render(<QuoteWorkflowPanel session={uncertainSession} onSelectStayKey={onSelectStayKey} />);
     expect(screen.queryByRole('button', { name: 'Find this booking' })).toBeNull();
+    view.rerender(<QuoteWorkflowPanel session={session} onSelectStayKey={onSelectStayKey} />);
+    expect(screen.getAllByLabelText('Stay action').map((node) => node.textContent)).toEqual(['New booking', label]);
+    fireEvent.click(screen.getByRole('button', { name: 'Find this booking' }));
+    expect(onSelectStayKey).toHaveBeenCalledWith('old-stay');
   });
 
   it('drops the "not a quote or booking" notice when the change card carries the amendment (AE2)', () => {
