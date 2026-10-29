@@ -47,28 +47,40 @@ async function fixture() {
   const savedReply = { savedId: 'saved-reply:other:1', latestId: 'saved-reply:other:1',
     savedHtml: '<p>Synthetic</p>', savedAttachments: [] as unknown[], draftAttachments: [] as unknown[] };
   let savedReplyRevisionReads = 0;
-  const transaction = vi.fn(async () => { throw new Error('synthetic transaction reached'); });
+  const transactionState = { enabled: false, active: false, committed: false, locks: [] as string[] };
+  const transaction = vi.fn(async (run: (tx: DB) => Promise<unknown>) => {
+    if (!transactionState.enabled) throw new Error('synthetic transaction reached');
+    transactionState.active = true;
+    transactionState.committed = false;
+    try {
+      const result = await run(db);
+      transactionState.committed = true;
+      return result;
+    } finally { transactionState.active = false; }
+  });
   const select = (selection?: Record<string, unknown>) => {
     let table: unknown;
     const query = { from(value: unknown) { table = value; return query; }, innerJoin() { return query; },
       where() { return query; }, orderBy() { return query; }, limit() {
-        if (table === mailThread) return Promise.resolve([{ id: 't1', transportId }]);
-        if (table === mailDraft) return Promise.resolve([{ id: 'draft-1', htmlBody: '<p>Synthetic</p>', attachments: savedReply.draftAttachments }]);
-        if (table === mailDraftRevision) return Promise.resolve([savedReplyRevisionReads++ % 2 === 0
+        let rows: unknown[] = [];
+        if (table === mailThread) rows = [{ id: 't1', transportId }];
+        if (table === mailDraft && !transactionState.active) rows = [{ id: 'draft-1', htmlBody: '<p>Synthetic</p>', attachments: savedReply.draftAttachments }];
+        if (table === mailDraftRevision) rows = [savedReplyRevisionReads++ % 2 === 0
           ? { id: savedReply.savedId, htmlBody: savedReply.savedHtml, attachments: savedReply.savedAttachments }
-          : { id: savedReply.latestId }]);
-        if (table === message) return Promise.resolve([mail]);
-        if (table === mailExtraction) return Promise.resolve([{ id: 'extract-1', kind: 'quote', payload }]);
-        if (table === workItem) return Promise.resolve([{ id: itemId, extractionId: 'extract-1', state }]);
-        if (table === aiDraftGeneration) return Promise.resolve([{ id: 'generation-1', createdAt: new Date() }]);
-        if (table === aiWorkflowRun && selection && 'run' in selection) return Promise.resolve([{ run }]);
-        if (table === aiWorkflowRun && selection && 'hash' in selection) return Promise.resolve(jobAvailable.value ? [{ hash }] : []);
-        if (table === aiWorkflowRun) return Promise.resolve(jobAvailable.value ? [job] : []);
-        return Promise.resolve([]);
+          : { id: savedReply.latestId }];
+        if (table === message) rows = [mail];
+        if (table === mailExtraction) rows = [{ id: 'extract-1', kind: 'quote', payload }];
+        if (table === workItem) rows = [{ id: itemId, extractionId: 'extract-1', state }];
+        if (table === aiDraftGeneration) rows = [{ id: 'generation-1', createdAt: new Date() }];
+        if (table === aiWorkflowRun && selection && 'run' in selection) rows = [{ run }];
+        else if (table === aiWorkflowRun && selection && 'hash' in selection) rows = jobAvailable.value ? [{ hash }] : [];
+        else if (table === aiWorkflowRun) rows = jobAvailable.value ? [job] : [];
+        const result = Promise.resolve(rows);
+        return Object.assign(result, { for(mode: string) { transactionState.locks.push(mode); return result; } });
       } };
     return query;
   };
-  const db = { transaction, select, selectDistinct: select } as unknown as DB;
+  const db = { transaction, select, selectDistinct: select, insert: () => ({ values: async () => undefined }) } as unknown as DB;
   const quoteInput = staffQuoteInput.parse({ messageId: mail.id, sourceHash: staffQuoteSourceHash(mail),
     selectionEpoch: 1, inputRevision: 1, salesStrategy: 'BAR', groups: [{ id: 'g1', arrivalDate: '2027-10-20',
       departureDate: '2027-10-21', quantity: 1, adults: 2, childrenPerRoom: 0, childrenAges: [], board: 'room_only',
@@ -77,7 +89,7 @@ async function fixture() {
   Object.assign(staff, { quoteSourceProof: proof });
   __setDbForTests({ db, conn: null as never });
   configureDraftArtifactStorage({ read: async () => pdf } as never);
-  return { revision, job, state, mail, transaction, savedReply, jobAvailable, proposal };
+  return { revision, job, state, mail, transaction, transactionState, savedReply, jobAvailable, proposal };
 }
 
 beforeEach(() => {
@@ -131,6 +143,26 @@ describe('priced draft preflight', () => {
     await expect(caller().drafts.saveReply({ ...base, replyKind: 'other', preparedVersions: [] }))
       .rejects.toThrow('synthetic transaction reached');
     expect(transaction).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a saved quote if source facts change during attachment staging', async () => {
+    const { state, transactionState } = await fixture();
+    transactionState.enabled = true;
+    const input = { threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>', replyKind: 'other' as const,
+      attachments: [{ name: 'quote.pdf', type: 'application/pdf', size: pdf.length,
+        lastModified: 1, base64: pdf.toString('base64') }] };
+    configureDraftArtifactStorage({ read: async () => pdf, stage: async () => {
+      state['stays[s1].rows[g1].roomType'] = 'Standard Twin';
+    } } as never);
+
+    await expect(caller().drafts.saveReply(input)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(transactionState.committed).toBe(false);
+    expect(transactionState.locks).toContain('share');
+
+    delete state['stays[s1].rows[g1].roomType'];
+    configureDraftArtifactStorage({ read: async () => pdf, stage: async () => undefined } as never);
+    await expect(caller().drafts.saveReply(input)).resolves.toMatchObject({ id: expect.any(String), replaced: false });
+    expect(transactionState.committed).toBe(true);
   });
 
   it('does not impose the Centurion proof on an HRDAV mailbox', async () => {
