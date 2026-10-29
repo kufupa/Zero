@@ -1022,7 +1022,8 @@ export function BookingCards({
   savesRef.current = saves;
   const committingRef = useRef(false);
   const savedStaysRef = useRef<Record<string, SavedStayCommit>>(savedCache.current.stays);
-  savedStaysRef.current = savedCache.current.stays;
+  // The host retains receipts and can clear an exact proven claim, including after this card remounts.
+  savedStaysRef.current = onReceipt ? (savedStays ?? {}) : savedCache.current.stays;
   const savedStayForRoom = (roomKey: string): SavedStayCommit | undefined =>
     savedStaysRef.current?.[recentCommitsRef.current[roomKey]?.stayId ?? ''];
   for (const key of Object.keys(recentCommitsRef.current)) {

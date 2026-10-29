@@ -262,6 +262,37 @@ describe('booking case safety', () => {
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
+  it('releases a replacement card after the host clears its exact pre-save claim', async () => {
+    let finish!: (result: Awaited<ReturnType<PaneStayClient['commit']>>) => void;
+    const { pane, preview, commit } = client();
+    commit.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const session = initialQuoteSession();
+    session.groups = [group];
+    session.bookingDrafts = { '2027-01-15:2027-01-17': draft() };
+    const view = (savedStays?: Record<string, { status: 'unknown'; confirmationNumber: null; screenshotRef: null }>) =>
+      <ConfirmationSourcesProvider value={confirmation}>
+        <QuoteBookingHost session={session} paneSave={pane} workItemId={workItemId} savedStays={savedStays} />
+      </ConfirmationSourcesProvider>;
+    const { rerender } = render(view());
+    fireEvent.click(screen.getByRole('button', { name: 'Preview in HMS' }));
+    const book = screen.getByRole('button', { name: 'Create provisional booking' });
+    await waitFor(() => expect(book).toHaveProperty('disabled', false));
+    fireEvent.click(book);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    const id = (preview.mock.calls[0]![0] as { stayId?: string }).stayId;
+    if (!id) throw new Error('preview did not carry a stay id');
+    const claim = { [id]: { status: 'unknown' as const, confirmationNumber: null, screenshotRef: null } };
+    rerender(view(claim));
+    session.groups = [{ ...group, id: 'g2', stayId: 's_bbbb2222', arrivalDate: '2027-02-15', departureDate: '2027-02-17' }];
+    session.bookingDrafts = { '2027-02-15:2027-02-17': draft(['g2']) };
+    rerender(view(claim));
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', true);
+    await act(async () => finish({ status: 'refused', reason: 'pane_save_preflight_unavailable', clickedSave: false }));
+    expect(screen.queryByRole('region', { name: 'Booking outcomes' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Preview in HMS' })).toHaveProperty('disabled', false);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps a completed result outside any replacement guest or date after the original card unmounts', async () => {
     let finish!: (result: Awaited<ReturnType<PaneStayClient['commit']>>) => void;
     const { pane, commit } = client();
