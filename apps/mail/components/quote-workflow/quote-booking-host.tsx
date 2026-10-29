@@ -64,7 +64,7 @@ export function QuoteBookingHost({
 
   return (
     <>
-      {shownDrafts.length > 0 && !guestEditorKey ? (
+      {(shownDrafts.length > 0 || uncoveredStays.length > 0) && !guestEditorKey ? (
         <p className="text-[13px] text-[#64748b]">Select a signed-in mailbox and email to review bookings.</p>
       ) : null}
       {shownDrafts.length > 0 && guestEditorKey && !singleRoomGuest ? (

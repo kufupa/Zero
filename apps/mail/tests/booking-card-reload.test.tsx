@@ -308,4 +308,13 @@ describe('booking card reload', () => {
     expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeDefined();
     expect(screen.getByRole('button', { name: 'View HMS screenshots' })).toBeDefined();
   });
+
+  it('holds a stored receipt while the signed-in message identity is unavailable', () => {
+    const savedStays = { s_aaaa1111_1: { confirmationNumber: '98765-1', status: 'booked' as const, screenshotRef: null } };
+    const view = render(<QuoteBookingHost session={initialQuoteSession()} savedStays={savedStays} />);
+    expect(screen.getByText('Select a signed-in mailbox and email to review bookings.')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Copy confirmation' })).toBeNull();
+    view.rerender(<QuoteBookingHost session={initialQuoteSession()} savedStays={savedStays} guestEditorKey={GUEST_TEST_KEY} />);
+    expect(screen.getByRole('button', { name: 'Copy confirmation' })).toBeDefined();
+  });
 });
