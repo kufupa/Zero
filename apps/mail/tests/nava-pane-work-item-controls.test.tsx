@@ -455,6 +455,45 @@ describe('Nava pane work-item controls', () => {
     });
   });
 
+  it('keeps history and resets from discarding edits during a case hold', async () => {
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!,
+      internetMessageId: '<history-case-hold@example.invalid>' } } as PaneBridge;
+    const row = { ...READY_WORK.analysis.groups[0]!,
+      stayGuests: [{ name: 'Ada Example', confirmationNumber: null }] };
+    const stored = { ...READY_WORK, analysis: { ...READY_WORK.analysis, groups: [row] } };
+    bridgeMockState.storedWork = stored;
+    bridgeMockState.revisionCursor.mockResolvedValue({ revision: 1, revisionHead: 2, seq: 5 });
+    const first = render(<NavaPane bridge={bridge} />);
+    await screen.findByRole('button', { name: 'Undo' }, { timeout: 4000 });
+    await screen.findByText('2 adults per room');
+    expect((screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByRole('button', { name: 'Reset to AI' })).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
+    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalled(), { timeout: 4000 });
+    first.unmount();
+    bridgeMockState.recordEvent.mockClear();
+    bridgeMockState.storedWork = { ...stored, analysis: { ...stored.analysis, groups: [{ ...row,
+      stayGuests: [{ name: 'Bea Example', confirmationNumber: null }] }] } };
+    render(<NavaPane bridge={bridge} />);
+    expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
+    const undo = screen.getByRole('button', { name: 'Undo' }) as HTMLButtonElement;
+    const redo = screen.getByRole('button', { name: 'Redo' }) as HTMLButtonElement;
+    expect(undo.disabled).toBe(true);
+    expect(redo.disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: 'Reset to AI' })).toBeNull();
+    fireEvent.click(undo);
+    fireEvent.click(redo);
+    expect(bridgeMockState.undoRevision).not.toHaveBeenCalled();
+    expect(bridgeMockState.redoRevision).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
+    await waitFor(() => expect(screen.getByText('4 adults per room')).toBeDefined());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1000)); });
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+  });
+
   it('disables contact edits while Undo is refreshing', async () => {
     let releaseLookup: (() => void) | undefined;
     await renderReadyPane();
