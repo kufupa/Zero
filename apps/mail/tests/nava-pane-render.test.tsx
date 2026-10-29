@@ -100,6 +100,7 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     prepareBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
     prepareUnquotedBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
     recordEvent: vi.fn(async (_input: unknown): Promise<unknown> => ({ aiValue: null, value: null })),
+    resetSectionMutation: null as null | ((input: unknown) => Promise<unknown>),
     retryTranslation: vi.fn(async (_input: unknown): Promise<unknown> => ({ status: 'capped', translation: null })),
   },
 }));
@@ -277,6 +278,9 @@ vi.mock('../providers/query-provider', () => ({
           },
         },
         recordEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
+        ...(bridgeMockState.resetSectionMutation ? {
+          resetSection: { mutate: (input: unknown) => bridgeMockState.resetSectionMutation!(input) },
+        } : {}),
         retryTranslation: { mutate: (input: unknown) => bridgeMockState.retryTranslation(input) },
       };
     },
@@ -725,6 +729,7 @@ describe('NavaPane', () => {
     bridgeMockState.analysisOverride = null;
     bridgeMockState.quotePaneConfig = null;
     bridgeMockState.quotePaneConfigGate = null;
+    bridgeMockState.resetSectionMutation = null;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
@@ -764,6 +769,10 @@ describe('NavaPane', () => {
     bridgeMockState.storedWork = null;
     bridgeMockState.storedLookupGate = null;
     bridgeMockState.quotePaneConfigGate = null;
+    bridgeMockState.resetSectionMutation = null;
+    bridgeMockState.findPartyMutation.mockReset().mockResolvedValue({
+      outcome: 'no_match', results: [], truncated: false, best: null, searchedFor: null,
+    });
     bridgeMockState.staffQuoteJobCalls.length = 0;
     setMailCacheScope({ userId: null, activeTransportId: null });
     bridgeMockState.recordEvent.mockReset();
@@ -1089,6 +1098,37 @@ describe('NavaPane', () => {
       messageId: 'mail-1', groups: [expect.objectContaining({ sourcePreference })],
     })));
   });
+
+  it('asks staff to review an HMS agency when the saved contact resets before the Centurion catalogue loads', async () => {
+    configureCenturionPane();
+    let loadCatalogue!: () => void;
+    bridgeMockState.quotePaneConfigGate = new Promise<void>((resolve) => { loadCatalogue = resolve; });
+    const oldAgency = { kind: 'agency' as const, nativeId: 'old-agency', name: 'Old Agency' };
+    bridgeMockState.findPartyMutation.mockResolvedValue({
+      outcome: 'resolved', results: [oldAgency], truncated: false, best: oldAgency, searchedFor: 'Old Agency',
+    });
+    const stored = { ...STORED_READY,
+      contact: { name: 'Guest', company: 'Old Agency', endClient: null, email: null, phone: null },
+      sourcePartyFields: { company: ['value', 'Old Agency'], endClient: ['missing'] },
+      fieldProvenance: { 'contact.company': { source: 'staff', value: 'Old Agency' } },
+    };
+    bridgeMockState.storedWork = stored;
+    bridgeMockState.resetSectionMutation = vi.fn(async () => {
+      Object.assign(stored, { contact: { ...stored.contact, company: 'New Agency' },
+        sourcePartyDigest: 'b'.repeat(64), sourcePartyFields: { company: ['value', 'New Agency'], endClient: ['missing'] } });
+      return { reset: 1 };
+    });
+
+    render(<NavaPane bridge={fakeBridge} />);
+    await storedReadLands();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search agency in HMS' }), { target: { value: 'Old Agency' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm Old Agency' }, { timeout: 5000 }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset to AI' }));
+    expect(await screen.findByText(/Select this agency in HMS again/)).toBeDefined();
+    await act(async () => { loadCatalogue(); });
+    expect(screen.getByRole('button', { name: 'use no agency' })).toBeDefined();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  }, 15_000);
 
   it('stored: a human-written amendment extraction renders Find booking without a live read or ApproveCard', async () => {
     bridgeMockState.storedWork = STORED_AMENDMENT;
