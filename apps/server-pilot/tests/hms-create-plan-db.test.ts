@@ -156,6 +156,20 @@ describe('durable create-plan approval', () => {
     });
   });
 
+  it('refuses a different room recorded after the one-room claim was made', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const { itemId, input } = await seed(db);
+      const envelope = await prepareHmsCreatePlan(db, scope, input, PLAN_NOW);
+      const claimId = await claim(db, itemId);
+      const [item] = await db.select().from(workItem).where(eq(workItem.id, itemId));
+      await db.update(workItem).set({ state: { ...item!.state, stays: { ...(item!.state.stays as object),
+        other: { status: 'booked', confirmationNumber: '123456-1', screenshotRef: null },
+      } } }).where(eq(workItem.id, itemId));
+      await expect(consumeHmsCreatePlan(db, { ...scope, workItemId: itemId, planId: envelope.plan.id,
+        digest: envelope.digest, claimId }, PLAN_NOW)).rejects.toThrow('stay_already_attempted');
+    });
+  });
+
   it('refuses a newer staff quote even if it is still running or was requested by someone else', async () => {
     await withIngestionDb(async ({ db }) => {
       const { itemId, input } = await seed(db);

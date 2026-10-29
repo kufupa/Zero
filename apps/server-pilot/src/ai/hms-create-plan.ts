@@ -307,7 +307,11 @@ export async function consumeHmsCreatePlan(db: DB, scope: { transportId: string;
     if (!step || typeof step !== 'object' || typeof step.id !== 'string') refuse('plan_changed');
     const claims = item.state.paneStaySaveClaims as Record<string, unknown> | undefined;
     const claimed = stayCommitOf(item.state, step.id);
-    if (!claims || claims[step.id] !== scope.claimId || claimed?.status !== 'unknown' || claimed.confirmationNumber !== null) refuse('claim_missing');
+    const allStays = item.state.stays;
+    if (!claims || typeof claims !== 'object' || Array.isArray(claims) || Object.keys(claims).length !== 1 ||
+        claims[step.id] !== scope.claimId || claimed?.status !== 'unknown' || claimed.confirmationNumber !== null) refuse('claim_missing');
+    if (!allStays || typeof allStays !== 'object' || Array.isArray(allStays) || Object.keys(allStays).length !== 1 ||
+        !Object.hasOwn(allStays, step.id)) refuse('stay_already_attempted');
     const parsed = prepareHmsCreatePlanInput.safeParse({ workItemId: item.id, stayId: step.id,
       quoteRunId: plan.quote?.runId, revisionId: plan.quote?.revisionId, groupId: plan.quote?.groupId,
       previewDigest: step.previewDigest, stay: step.stay });
