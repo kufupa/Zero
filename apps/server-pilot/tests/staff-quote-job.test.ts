@@ -119,6 +119,7 @@ const STAFF_QUOTE_INPUT = {
       departureDate: '2026-11-14',
       quantity: 1,
       adults: 2,
+      childrenPerRoom: 0,
       childrenAges: [],
       board: 'room_only',
       roomCodes: ['SKNG'],
@@ -406,6 +407,20 @@ async function provisionalWorkerQuote(
 }
 
 describe('staff_quote HMS job execution', () => {
+  it.each([false, true])('holds incomplete Centurion child occupancy before manual or prepared HMS work (prepared=%s)', async (prepared) => {
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
+      groups: [{ ...STAFF_QUOTE_INPUT.groups[0], childrenPerRoom: 2, childrenAges: [] }],
+    }, prepared);
+
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(quoteRunMocks.snapshotRowPrices).not.toHaveBeenCalled();
+    expect(quoteRunMocks.getServices).not.toHaveBeenCalled();
+    expect(workflowMocks.executeStaffQuote).not.toHaveBeenCalled();
+    expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
+      readResult: { ok: false, message: expect.stringContaining('every child’s age') },
+    });
+  });
+
   it('records rate-pick history only for manual staff quotes', async () => {
     for (const autoStart of [false, true]) {
       jobMocks.runStaffQuote.mockClear();
@@ -450,6 +465,7 @@ describe('staff_quote HMS job execution', () => {
         departureDate: '2026-11-14',
         quantity: 2,
         adults: 1,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'bb',
         roomCodes: ['SKNG'],
@@ -498,6 +514,7 @@ describe('staff_quote HMS job execution', () => {
         departureDate: '2026-11-14',
         quantity: 1,
         adults: 2,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'dinner_bb',
         roomCodes: ['SKNG'],
@@ -560,6 +577,7 @@ describe('staff_quote HMS job execution', () => {
         departureDate: '2026-11-14',
         quantity: 1,
         adults: 2,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'dinner_bb',
         roomCodes: ['SKNG'],
@@ -629,6 +647,7 @@ describe('staff_quote HMS job execution', () => {
         departureDate: '2026-11-14',
         quantity: 1,
         adults: 2,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'dinner_bb',
         roomCodes: ['SKNG'],
@@ -701,6 +720,7 @@ describe('staff_quote HMS job execution', () => {
         departureDate: '2026-11-14',
         quantity: 2,
         adults: 1,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'room_only',
         roomCodes: ['SKNG'],

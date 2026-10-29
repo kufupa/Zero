@@ -10,7 +10,9 @@ import {
   staffQuoteDinnerGroupIdsToRetryAsBb,
   staffQuoteDinnerNoMatchFallback,
   staffQuoteGovernmentDinnerNote,
+  staffQuoteChildOccupancyComplete,
   staffQuoteSourceHash,
+  STAFF_QUOTE_CHILD_OCCUPANCY_MESSAGE,
   type StaffQuoteAttestation,
   type StaffQuoteDinnerAddOn,
   type StaffQuoteInput,
@@ -653,6 +655,9 @@ export async function runStaffQuote(
     messageText: mail.textBody ?? '',
     propertyCode: config.owner.propertyCode,
   };
+  if (!staffQuoteChildOccupancyComplete(input, scope.propertyCode)) {
+    refuseQuote('child_occupancy_incomplete', STAFF_QUOTE_CHILD_OCCUPANCY_MESSAGE);
+  }
   const signal = options.signal ?? AbortSignal.timeout(20 * 60000);
   // Pricing does not require a staff identity. The logged-in staff signer is added by PDF/Excel export.
   const signer = {

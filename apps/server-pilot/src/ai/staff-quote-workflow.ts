@@ -153,6 +153,16 @@ export const staffQuoteInput = z
   .strict();
 export type StaffQuoteInput = z.infer<typeof staffQuoteInput>;
 
+export const STAFF_QUOTE_CHILD_OCCUPANCY_MESSAGE =
+  'Confirm the number of children and every child’s age for each room, then get rates again.';
+
+/** Centurion prices must never infer zero children from an incomplete age list. */
+export function staffQuoteChildOccupancyComplete(input: StaffQuoteInput, propertyCode: string): boolean {
+  return propertyCode !== 'HRCEN' || input.groups.every((group) =>
+    typeof group.childrenPerRoom === 'number' && group.childrenPerRoom === group.childrenAges.length,
+  );
+}
+
 export type StaffQuoteDinnerAddOn = {
   amountMinor: number;
   unit: 'per_person_per_night' | 'per_room_per_night' | 'per_person';
@@ -368,6 +378,8 @@ export function prepareStaffQuote(
 ) {
   input = staffQuoteInput.parse(input);
   signal.throwIfAborted();
+  if (!staffQuoteChildOccupancyComplete(input, scope.propertyCode))
+    throw new Error('staff_quote_child_occupancy_incomplete');
   if (
     input.messageId !== scope.messageId ||
     input.sourceHash !== scope.sourceHash ||

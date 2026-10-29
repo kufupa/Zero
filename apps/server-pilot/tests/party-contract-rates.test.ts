@@ -152,6 +152,7 @@ function groupInput(
         departureDate: DEPARTURE,
         quantity: 1,
         adults: 1,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'room_only',
         ...(group.roomCodes ? { roomCodes: group.roomCodes } : {}),
