@@ -1540,13 +1540,23 @@ describe('pane stay preview persist', () => {
   it('does not report a ready work-item preview if its grant cannot be stored', async () => {
     enableSave();
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    paneStaySaveLoaders.previewPersist = { record: () => { throw new Error('unavailable'); }, take: () => false };
-    const result = await runPaneStay({
-      mode: 'preview', stay: labStay, owner: freshOwner(), workItemId: randomUUID(), stayId: 's_1',
+    const runDir = await mkdtemp(join(tmpdir(), 'pane-stay-failed-preview-'));
+    await writeFile(join(runDir, 'filled.png'), 'synthetic screenshot');
+    paneStaySaveLoaders.spawn = async () => ({
+      outcome: 'previewed', clickedSave: false, confirmationNumber: '', runId: randomUUID(), runDir,
     });
-    expect(result).toMatchObject({ status: 'refused', reason: 'pane_save_work_item_unavailable', clickedSave: false });
-    expect(result.previewDigest).toBeUndefined();
-    warning.mockRestore();
+    paneStaySaveLoaders.previewPersist = { record: () => { throw new Error('unavailable'); }, take: () => false };
+    try {
+      const result = await runPaneStay({
+        mode: 'preview', stay: labStay, owner: freshOwner(), workItemId: randomUUID(), stayId: 's_1',
+      });
+      expect(result).toMatchObject({ status: 'refused', reason: 'pane_save_work_item_unavailable', clickedSave: false });
+      expect(result.previewDigest).toBeUndefined();
+      await expect(stat(runDir)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+      warning.mockRestore();
+    }
   });
 
   it('does not transfer a preview grant to another work item or stay', async () => {

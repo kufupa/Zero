@@ -866,6 +866,7 @@ export async function runPaneStay(input: {
         stayId: input.stayId,
         workItemId: input.workItemId,
       });
+      if (spawned.runDir) await rm(spawned.runDir, { recursive: true, force: true }).catch(() => console.warn('pane_stay_run_cleanup_failed'));
       return paneStayNotSaved('pane_save_work_item_unavailable');
     }
   }
