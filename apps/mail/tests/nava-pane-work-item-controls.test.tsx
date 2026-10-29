@@ -407,6 +407,7 @@ describe('Nava pane work-item controls', () => {
     bridgeMockState.storedWorkLookups = 0;
     bridgeMockState.storedWorkLookupReject = false;
     bridgeMockState.analyseCalls = 0;
+    bridgeMockState.staffQuoteSourceCalls = 0;
     bridgeMockState.analyseFails = false;
     bridgeMockState.analysisOverride = null;
     bridgeMockState.staffQuoteSources = {};
@@ -469,6 +470,30 @@ describe('Nava pane work-item controls', () => {
     setMailCacheScope({ userId: 'staff-1', activeTransportId: transport });
     pane.rerender(<NavaPane bridge={bridge} preview />);
     expect(await screen.findByText('Ada Lovelace')).toBeDefined();
+    expect(screen.queryByText(/selected email could not be verified/i)).toBeNull();
+  });
+
+  it('waits for the request-header owner before reading or verifying a web source', async () => {
+    const header = '<header-owner@example.invalid>';
+    const transport = 'transport-centurion';
+    bridgeMockState.transportId = transport;
+    bridgeMockState.quotePaneConfig = { transportId: transport, propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [] };
+    bridgeMockState.storedWork = { ...READY_WORK, sourceMessageId: 'row-a',
+      sourceRead: { extractionId: 'ex-1', kind: 'quote', analysis: READY_WORK.analysis, refs: READY_WORK.refs } };
+    bridgeMockState.staffQuoteSources[header] = { messageId: 'row-a', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: null });
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, entryId: 'row-a',
+      storeId: transport, internetMessageId: header } } as PaneBridge;
+    render(<NavaPane bridge={bridge} preview />);
+    await act(async () => { await Promise.resolve(); });
+    expect(bridgeMockState.storedWorkLookups).toBe(0);
+    expect(bridgeMockState.staffQuoteSourceCalls).toBe(0);
+    expect(screen.queryByText(/selected email could not be verified/i)).toBeNull();
+
+    act(() => setMailCacheScope({ userId: 'staff-1', activeTransportId: transport }));
+    expect(await screen.findByText('Ada Lovelace')).toBeDefined();
+    await waitFor(() => expect(bridgeMockState.staffQuoteSourceCalls).toBeGreaterThan(0));
     expect(screen.queryByText(/selected email could not be verified/i)).toBeNull();
   });
 
@@ -545,7 +570,7 @@ describe('Nava pane work-item controls', () => {
     bridgeMockState.staffQuoteSources[header] = { messageId: 'row-b', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
     setMailCacheScope({ userId: 'staff-1', activeTransportId: transport });
     const legacyKey = paneEditKey(transport, header);
-    const legacy = [{ ...READY_WORK.analysis.groups[0]!, adults: 4 }];
+    const legacy = [{ ...READY_WORK.analysis.groups[0]!, board: 'bb' as const, adults: 4 }];
     rememberPaneEdits(legacyKey, legacy);
     const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, entryId: 'row-b',
       storeId: transport, internetMessageId: header } } as PaneBridge;

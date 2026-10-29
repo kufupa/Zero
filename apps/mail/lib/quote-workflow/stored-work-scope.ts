@@ -14,6 +14,22 @@ export function storedWorkScope(
   return `${scope}:web-work-v2=${owner}:${transportId}`;
 }
 
+/** The singleton used for request headers must name the user and mailbox encoded in this selected web row. */
+export function storedWorkOwnerMatches(scope: string | null | undefined, entryId: string, owner: {
+  userId: string | null; activeTransportId: string | null;
+}): boolean {
+  const { userId, activeTransportId } = owner;
+  if (!scope || !userId || !activeTransportId || !scope.endsWith(`:${activeTransportId}`)) return false;
+  const marker = ':web-work-v2=';
+  const start = scope.lastIndexOf(marker);
+  if (start < 0) return false;
+  try {
+    const identity = JSON.parse(decodeURIComponent(scope.slice(start + marker.length, -(activeTransportId.length + 1)))) as unknown;
+    return Array.isArray(identity) && identity.length === 3 && identity[0] === userId &&
+      typeof identity[1] === 'string' && identity[2] === entryId;
+  } catch { return false; }
+}
+
 /** The reducer's binding may lag one render behind the selected email. */
 export function isCurrentWorkSelection(
   binding: QuoteSelectionBinding,

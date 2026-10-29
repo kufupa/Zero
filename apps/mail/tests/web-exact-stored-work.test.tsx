@@ -2,7 +2,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setMailCacheScope } from '@/lib/mail/mail-cache-scope';
-import { isCurrentWorkSelection, storedWorkScope } from '@/lib/quote-workflow/stored-work-scope';
+import { isCurrentWorkSelection, storedWorkOwnerMatches, storedWorkScope } from '@/lib/quote-workflow/stored-work-scope';
 import { paneEditKey, recalledPaneEdits, rememberPaneEdits, resetPaneEditsForTests } from '@/lib/quote-workflow/pane-edits';
 import { useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import type { StoredWork } from '@/lib/quote-workflow/backend-bind';
@@ -52,6 +52,11 @@ describe('web selected-row stored work', () => {
     expect(first?.endsWith(`:${TRANSPORT}`)).toBe(true);
     expect(scope('row-a')).toEqual(scope('row-a'));
     expect(storedWorkScope(SCOPE, TRANSPORT, { entryId: 'row-a' }, null)).toBeNull();
+    const owner = { userId: 'staff', activeTransportId: TRANSPORT };
+    expect(storedWorkOwnerMatches(scope('row-a'), 'row-a', owner)).toBe(true);
+    expect(storedWorkOwnerMatches(scope('row-a'), 'row-b', owner)).toBe(false);
+    expect(storedWorkOwnerMatches(scope('row-a'), 'row-a', { ...owner, userId: 'other' })).toBe(false);
+    expect(storedWorkOwnerMatches(scope('row-a'), 'row-a', { ...owner, activeTransportId: null })).toBe(false);
   });
 
   it('isolates remembered rows for messages with the same header without deleting legacy edits', () => {
@@ -163,7 +168,7 @@ describe('web selected-row stored work', () => {
     expect(nextRow.result.current.saveError).toBeNull();
     nextRow.unmount();
     stored = ready('row-a', 'work-a');
-    setMailCacheScope({ userId: 'other', activeTransportId: TRANSPORT });
+    act(() => setMailCacheScope({ userId: 'other', activeTransportId: TRANSPORT }));
     const second = renderHook(() => useStoredWork({
       trpc, internetMessageId: HEADER, expectedMessageId: 'row-a', scope: scope('row-a', 'other'),
     }));
@@ -188,6 +193,52 @@ describe('web selected-row stored work', () => {
     rerender({ selectedScope: scope('row-a') });
     await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-a' }));
     expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for the exact signed-in mailbox scope before looking up a web row', async () => {
+    setMailCacheScope({ userId: 'staff', activeTransportId: null });
+    const query = vi.fn(async () => ready('row-a', 'work-a'));
+    const undo = vi.fn();
+    const redo = vi.fn();
+    const revisionCursor = vi.fn(async () => ({ revision: 1, revisionHead: 1, seq: 1 }));
+    const { result } = renderHook(() => useStoredWork({
+      trpc: { workItems: { getByMessage: { query }, undoRevision: { mutate: undo }, redoRevision: { mutate: redo },
+        revisionCursor: { query: revisionCursor } } }, internetMessageId: HEADER,
+      expectedMessageId: 'row-a', scope: scope('row-a'),
+    }));
+    expect(result.current.pane).toMatchObject({ state: 'loading' });
+    expect(query).not.toHaveBeenCalled();
+    act(() => setMailCacheScope({ userId: 'other', activeTransportId: TRANSPORT }));
+    expect(result.current.pane).toMatchObject({ state: 'loading' });
+    expect(query).not.toHaveBeenCalled();
+    act(() => setMailCacheScope({ userId: 'staff', activeTransportId: 'other-transport' }));
+    expect(result.current.pane).toMatchObject({ state: 'loading' });
+    expect(query).not.toHaveBeenCalled();
+    expect(undo).not.toHaveBeenCalled();
+    act(() => setMailCacheScope({ userId: 'staff', activeTransportId: TRANSPORT }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-a' }));
+    expect(query).toHaveBeenCalledWith(
+      { internetMessageId: HEADER, expectedMessageId: 'row-a' }, { context: { activeTransportId: TRANSPORT } },
+    );
+    await waitFor(() => expect(result.current.historyCursor?.revision).toBe(1));
+    const staleUndo = result.current.undo;
+    act(() => setMailCacheScope({ userId: 'other', activeTransportId: TRANSPORT }));
+    act(() => staleUndo('work-a', 1));
+    expect(undo).not.toHaveBeenCalled();
+  });
+
+  it('discards a late read if the signed-in owner changes before it returns', async () => {
+    setMailCacheScope({ userId: 'staff', activeTransportId: TRANSPORT });
+    let finish!: (value: StoredWork) => void;
+    const query = vi.fn(() => new Promise<StoredWork>((resolve) => { finish = resolve; }));
+    const { result } = renderHook(() => useStoredWork({
+      trpc: { workItems: { getByMessage: { query } } }, internetMessageId: HEADER,
+      expectedMessageId: 'row-a', scope: scope('row-a'),
+    }));
+    await waitFor(() => expect(query).toHaveBeenCalledTimes(1));
+    act(() => setMailCacheScope({ userId: 'other', activeTransportId: TRANSPORT }));
+    await act(async () => { finish(ready('row-a', 'work-a')); await Promise.resolve(); });
+    expect(result.current.pane).toMatchObject({ state: 'loading' });
   });
 
   it('holds a selected web row if the stored-read route is missing after scope resolves', () => {
@@ -271,11 +322,11 @@ describe('web selected-row stored work', () => {
     let discard!: Promise<boolean>;
     act(() => { discard = result.current.discardUnconfirmedEdits(); });
     await waitFor(() => expect(finishRead).toBeTypeOf('function'));
-    setMailCacheScope({ userId: 'other', activeTransportId: TRANSPORT });
+    act(() => setMailCacheScope({ userId: 'other', activeTransportId: TRANSPORT }));
     await act(async () => {
       finishRead({ status: 'failed', hold: true, reason: 'Selected source is unavailable.' });
       expect(await discard).toBe(false);
     });
-    expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-a' });
+    expect(result.current.pane).toMatchObject({ state: 'loading' });
   });
 });

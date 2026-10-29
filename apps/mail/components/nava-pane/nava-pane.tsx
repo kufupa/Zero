@@ -1087,7 +1087,8 @@ export function NavaPane({
     const binding = quoteSession.binding;
     if (!binding || !quoteAdmissionKey) return;
     // The binding follows the selected mail one render later. Until then it names the previous mail.
-    if (!isCurrentWorkSelection(binding, activeEmail, contextRevision.current) || (expectedMessageId && !session?.user?.id)) return;
+    if (!isCurrentWorkSelection(binding, activeEmail, contextRevision.current) ||
+        (expectedMessageId && (!session?.user?.id || !storedWork.webOwnerReady || !storedWork.webOwnerIsCurrent()))) return;
     if (expectedMessageId && rejectedWebSource.current === quoteAdmissionKey) return;
     dispatchQuote({ type: 'analysis_started' });
     const workflow = quoteWorkflowFromTrpc(trpcClient);
@@ -1151,7 +1152,7 @@ export function NavaPane({
       },
     })
       .then((remote) => {
-        if (cancelled || sourceRejected) return;
+        if (cancelled || sourceRejected || !storedWork.webOwnerIsCurrent()) return;
         if (remote.kind === 'unverified_source') {
           rejectedWebSource.current = quoteAdmissionKey;
           dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
@@ -1192,7 +1193,7 @@ export function NavaPane({
         dispatchQuote({ type: 'analysis_failed', message: remote.reason });
       })
       .catch((error: unknown) => {
-        if (cancelled || sourceRejected) return;
+        if (cancelled || sourceRejected || !storedWork.webOwnerIsCurrent()) return;
         const message =
           error instanceof Error && error.message.trim() ? error.message : 'Nava could not read this email. Select it again and try again.';
         dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
@@ -1203,7 +1204,7 @@ export function NavaPane({
       query: staff.workstation.staffQuoteSource?.query,
       internetMessageId: binding.internetMessageId,
     }).then((source) => {
-      if (cancelled) return;
+      if (cancelled || !storedWork.webOwnerIsCurrent()) return;
       if (expectedMessageId && (source.kind !== 'ready' || source.source.messageId !== expectedMessageId)) {
         sourceRejected = true;
         rejectedWebSource.current = quoteAdmissionKey;
@@ -1223,7 +1224,7 @@ export function NavaPane({
         get: staff.drafts.get?.query,
         threadId: source.source.threadId,
       }).then((actions) => {
-        if (cancelled || actions.kind !== 'ready') return;
+        if (cancelled || !storedWork.webOwnerIsCurrent() || actions.kind !== 'ready') return;
         dispatchQuote({ type: 'staff_actions_ready', actions: actions.actions });
       });
     });
@@ -1232,7 +1233,8 @@ export function NavaPane({
     };
     // Admission key is the selection identity. Body/subject are no longer read on the client.
     // Unsynced retries when mailbox committed count advances (sync finished ingesting this mail).
-  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMessage, activePaneConfig?.propertyCode, selectedIdentity, expectedMessageId]);
+  }, [quoteAnalysisRetryKey, storedGate, isNonActionableMessage, activePaneConfig?.propertyCode, selectedIdentity,
+    expectedMessageId, storedWork.webOwnerReady]);
 
   useEffect(() => {
     const fields = missingQuoteReplyFieldsForGroups(quoteSession.groups);

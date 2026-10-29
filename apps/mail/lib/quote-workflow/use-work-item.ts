@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { getMailCacheScope, inMailbox } from '@/lib/mail/mail-cache-scope';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { getMailCacheScope, inMailbox, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
+import { storedWorkOwnerMatches } from './stored-work-scope';
 import {
   bindStoredWork,
   checkedStoredMessage,
@@ -605,6 +606,9 @@ export function useStoredWork(args: {
   const expectedMessageId = args.expectedMessageId ?? null;
   const openMissingWorkItem = args.openMissingWorkItem !== false;
   const scope = args.scope ?? '';
+  const mailboxScope = useSyncExternalStore(subscribeMailCacheScope, getMailCacheScope, getMailCacheScope);
+  const webOwnerReady = !expectedMessageId || storedWorkOwnerMatches(scope, expectedMessageId, mailboxScope);
+  const webOwnerIsCurrent = () => !expectedMessageId || storedWorkOwnerMatches(scope, expectedMessageId, getMailCacheScope());
   // The lookup is for this mail in this mailbox. Either changing makes the last lookup someone else's.
   const lookupKey = internetMessageId ? `${scope}\n${internetMessageId}` : null;
   const [lookup, setLookup] = useState<Lookup | null>(null);
@@ -659,6 +663,10 @@ export function useStoredWork(args: {
   const trpcRef = useRef(trpc);
   const lookupKeyRef = useRef(lookupKey);
   lookupKeyRef.current = lookupKey;
+
+  useEffect(() => {
+    if (expectedMessageId && !webOwnerReady) setLookup(null);
+  }, [expectedMessageId, webOwnerReady]);
 
   useEffect(() => {
     trpcRef.current = trpc;
@@ -766,11 +774,13 @@ export function useStoredWork(args: {
   );
 
   // Without a stored-read route the pane reads live at once, with no extra render before the live read.
-  const canLookUp = Boolean(workItemsFromTrpc(trpc).getByMessage && (!expectedMessageId || args.scope));
+  const canLookUp = Boolean(workItemsFromTrpc(trpc).getByMessage && webOwnerReady);
 
   // One lookup per mail and mailbox. Switching either or unmounting sends the last mail's pending edits first.
   useEffect(() => {
     if (!internetMessageId || !lookupKey || !canLookUp) return;
+    const ownerCurrent = webOwnerIsCurrent;
+    if (!ownerCurrent()) return;
     let current = true;
     const epoch = selection.current.epoch;
     let settled = false;
@@ -779,7 +789,7 @@ export function useStoredWork(args: {
     // The lookup goes out under the active mailbox, so its work item lives there.
     const { activeTransportId: transportId, userId } = getMailCacheScope();
     const settle = (result: LookupResult) => {
-      if (!current || settled) return;
+      if (!current || settled || !ownerCurrent()) return;
       // A timeout starts the live read. A late ready payload or an explicit source hold supersedes that fallback;
       // a late miss or transport failure leaves the live-read state alone and keeps Retry available there.
       if (timedOut && result.status !== 'ready' && !(result.status === 'failed' && result.hold)) {
@@ -792,7 +802,7 @@ export function useStoredWork(args: {
       setLookup({ key: lookupKey, transportId, userId, result: lateHold ?? result, timedOut });
     };
     const timer = setTimeout(() => {
-      if (!current || settled) return;
+      if (!current || settled || !ownerCurrent()) return;
       timedOut = true;
       setLookup({ key: lookupKey, transportId, userId, result: null, timedOut: true });
     }, STORED_LOOKUP_TIMEOUT_MS);
@@ -805,11 +815,11 @@ export function useStoredWork(args: {
       internetMessageId,
       expectedMessageId,
       transportId,
-      isStale: () => !current,
+      isStale: () => !current || !ownerCurrent(),
       onRead: () => clearTimeout(timer),
       openTimeoutMs: STORED_LOOKUP_TIMEOUT_MS,
       onLateHold: (hold) => {
-        if (!current) return;
+        if (!current || !ownerCurrent()) return;
         lateHold = hold;
         setLookup({ key: lookupKey, transportId, userId, result: hold, timedOut });
       },
@@ -820,14 +830,14 @@ export function useStoredWork(args: {
       flushAll();
       if (selection.current.key === lookupKey && selection.current.epoch === epoch) selection.current.epoch += 1;
     };
-  }, [internetMessageId, expectedMessageId, lookupKey, canLookUp, openMissingWorkItem, flushAll]);
+  }, [internetMessageId, expectedMessageId, lookupKey, canLookUp, openMissingWorkItem, flushAll, scope]);
 
-  const currentLookup = lookup && lookup.key === lookupKey ? lookup : null;
+  const currentLookup = webOwnerReady && lookup && lookup.key === lookupKey ? lookup : null;
   const stored = currentLookup?.result ?? null;
   const retried = retries.messageId === internetMessageId ? retries.count : 0;
   let pane: StoredPane;
   if (!internetMessageId) pane = { state: 'reading' };
-  else if (expectedMessageId && !args.scope) pane = { state: 'loading' };
+  else if (expectedMessageId && !webOwnerReady) pane = { state: 'loading' };
   else if (!canLookUp && expectedMessageId) pane = {
     state: 'failed', hold: true, reason: 'The selected email could not be verified. Reopen it and try again.',
   };
@@ -1242,7 +1252,8 @@ export function useStoredWork(args: {
       if (!expectedMessageId) return true;
       const owner = getMailCacheScope();
       return selection.current.key === keyNow && selection.current.epoch === renderEpoch &&
-        Boolean(currentLookup?.userId) && owner.userId === currentLookup?.userId && owner.activeTransportId === readyTransportId;
+        Boolean(currentLookup?.userId && readyTransportId) && storedWorkOwnerMatches(scope, expectedMessageId, owner) &&
+        owner.userId === currentLookup?.userId && owner.activeTransportId === readyTransportId;
     };
     if (!isCurrent()) return Promise.resolve(false);
     const pinned = inMailbox(readyTransportId);
@@ -1277,7 +1288,7 @@ export function useStoredWork(args: {
         setHistoryNeedsReload(true);
         return false;
       });
-  }, [currentLookup?.userId, expectedMessageId, internetMessageId, lookupKey, readyTransportId, renderEpoch]);
+  }, [currentLookup?.userId, expectedMessageId, internetMessageId, lookupKey, readyTransportId, renderEpoch, scope]);
 
   /** The optional callback must synchronously clear the pane's old edits, or return false without changing them. */
   const discardUnconfirmedEdits = useCallback(async (beforePublish?: () => boolean): Promise<boolean> => {
@@ -1358,7 +1369,7 @@ export function useStoredWork(args: {
     void (pinned ? routes.revisionCursor.query(input, pinned) : routes.revisionCursor.query(input))
       .then((result) => {
         if (
-          current &&
+          current && webOwnerIsCurrent() &&
           result &&
           Number.isSafeInteger(result.revision) &&
           Number.isSafeInteger(result.revisionHead) &&
@@ -1373,14 +1384,17 @@ export function useStoredWork(args: {
     return () => {
       current = false;
     };
-  }, [readyWorkItemId, readyTransportId, historyEpoch, cursorEpoch]);
+  }, [readyWorkItemId, readyTransportId, historyEpoch, cursorEpoch, expectedMessageId, scope]);
 
   const runHistoryMove = useCallback(
     (mutate: HistoryMutate | undefined, message: string) => {
       const seq = historyCursor?.seq;
       if (!readyWorkItemId || !mutate || seq === undefined || discardInProgress.current ||
+          !webOwnerIsCurrent() || (expectedMessageId && selection.current.epoch !== renderEpoch) ||
           (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
       const keyNow = lookupKey;
+      const isCurrent = () => lookupKeyRef.current === keyNow && (!expectedMessageId ||
+        (selection.current.epoch === renderEpoch && webOwnerIsCurrent()));
       setHistoryPending(true);
       setHistoryError(null);
       setHistoryNeedsReload(false);
@@ -1389,12 +1403,12 @@ export function useStoredWork(args: {
       const input = { workItemId: readyWorkItemId, expectedSeq: seq };
       void Promise.allSettled(inFlight.current.values())
         .then(() => {
-          if (lookupKeyRef.current !== keyNow) return;
+          if (!isCurrent()) return;
           dropQueuedSaves();
           return pinned ? mutate(input, pinned) : mutate(input);
         })
         .then((result) => {
-          if (lookupKeyRef.current !== keyNow) return;
+          if (!isCurrent()) return;
           if (historyStaleOf(result)) {
             setHistoryError(HISTORY_STALE_COPY);
             return;
@@ -1406,13 +1420,13 @@ export function useStoredWork(args: {
           return refetchStored();
         })
         .catch((error) => {
-          setHistoryError(historyMoveErrorCopy(error, message));
+          if (!expectedMessageId || isCurrent()) setHistoryError(historyMoveErrorCopy(error, message));
         })
         .finally(() => {
-          setHistoryPending(false);
+          if (!expectedMessageId || isCurrent()) setHistoryPending(false);
         });
     },
-    [dropQueuedSaves, historyCursor, lookupKey, readyWorkItemId, readyTransportId, refetchStored],
+    [dropQueuedSaves, historyCursor, lookupKey, readyWorkItemId, readyTransportId, refetchStored, expectedMessageId, renderEpoch, scope],
   );
 
   const undo = useCallback(
@@ -1433,8 +1447,11 @@ export function useStoredWork(args: {
     (section: WorkItemSection) => {
       const mutate = historyRoutesFrom(trpcRef.current).resetSection?.mutate;
       if (!readyWorkItemId || !mutate || discardInProgress.current ||
+          !webOwnerIsCurrent() || (expectedMessageId && selection.current.epoch !== renderEpoch) ||
           (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
       const keyNow = lookupKey;
+      const isCurrent = () => lookupKeyRef.current === keyNow && (!expectedMessageId ||
+        (selection.current.epoch === renderEpoch && webOwnerIsCurrent()));
       setHistoryPending(true);
       setHistoryError(null);
       setHistoryNeedsReload(false);
@@ -1443,12 +1460,12 @@ export function useStoredWork(args: {
       const input = { workItemId: readyWorkItemId, section };
       void Promise.allSettled(inFlight.current.values())
         .then(() => {
-          if (lookupKeyRef.current !== keyNow) return;
+          if (!isCurrent()) return;
           dropQueuedSaves(section);
           return pinned ? mutate(input, pinned) : mutate(input);
         })
         .then((result) => {
-          if (lookupKeyRef.current !== keyNow) return;
+          if (!isCurrent()) return;
           if (historyStaleOf(result)) {
             setHistoryError(HISTORY_STALE_COPY);
             return;
@@ -1456,13 +1473,13 @@ export function useStoredWork(args: {
           return refetchStored();
         })
         .catch((error) => {
-          setHistoryError(historyMoveErrorCopy(error, "Couldn't reset — try again"));
+          if (!expectedMessageId || isCurrent()) setHistoryError(historyMoveErrorCopy(error, "Couldn't reset — try again"));
         })
         .finally(() => {
-          setHistoryPending(false);
+          if (!expectedMessageId || isCurrent()) setHistoryPending(false);
         });
     },
-    [dropQueuedSaves, lookupKey, readyWorkItemId, readyTransportId, refetchStored],
+    [dropQueuedSaves, lookupKey, readyWorkItemId, readyTransportId, refetchStored, expectedMessageId, renderEpoch, scope],
   );
 
   const reloadHistory = useCallback(() => {
@@ -1482,6 +1499,8 @@ export function useStoredWork(args: {
   return {
     pane,
     key,
+    webOwnerReady,
+    webOwnerIsCurrent,
     /** True when the stored lookup missed its deadline, independent of whether a ready payload later arrives. */
     lookupTimedOut: currentLookup?.timedOut ?? false,
     /** The mailbox the shown read was looked up in, which owns its work item. Null while no read is shown. */
