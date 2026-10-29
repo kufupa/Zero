@@ -65,8 +65,9 @@ const quoteSession = {
 } as unknown as QuoteSession;
 
 function outlookSendCommand() {
-  return vi.fn(async (action: string) => {
+  return vi.fn(async (action: string, _payload?: unknown, beforeNative?: () => void) => {
     if (action === 'GET_ACTIVE_EMAIL') return activeEmail;
+    beforeNative?.();
     if (action === 'CREATE_REPLY_DRAFT') {
       return { entryId: 'outlook-draft-1', storeId: 'store-1', folderEntryId: 'drafts', displayed: true };
     }
@@ -541,9 +542,45 @@ describe('Insert saved reply in Outlook', () => {
       if (heldAction === 'ADD_ATTACHMENT_TO_DRAFT') {
         expect(nativeWrites).toContain('CREATE_REPLY_DRAFT');
         expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist'));
+        expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
+      } else {
+        expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('quote changed in the pane'));
+        expect(toast.error).not.toHaveBeenCalledWith(expect.stringContaining('partial draft may exist'));
+        expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBeNull();
       }
     },
   );
+
+  it('retains an earlier unknown Outlook outcome when a retry is held before the native write', async () => {
+    let release!: () => void;
+    let creates = 0;
+    const nativeWrites: string[] = [];
+    const sendCommand = outlookSendCommand();
+    sendCommand.mockImplementation(async (action: string, _payload?: unknown, beforeNative?: () => void) => {
+      if (action === 'GET_ACTIVE_EMAIL') return activeEmail;
+      if (action === 'CREATE_REPLY_DRAFT' && ++creates === 1) {
+        beforeNative?.();
+        throw Object.assign(new Error('Outlook outcome unknown'), { code: 'OPERATION_OUTCOME_UNKNOWN' });
+      }
+      if (action === 'CREATE_REPLY_DRAFT') await new Promise<void>((resolve) => { release = resolve; });
+      beforeNative?.();
+      nativeWrites.push(action);
+      return { entryId: 'outlook-draft-1', storeId: 'store-1', folderEntryId: 'drafts', displayed: true };
+    });
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession());
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('did not confirm')));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    act(() => result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } }));
+    await act(async () => release());
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(nativeWrites).not.toContain('CREATE_REPLY_DRAFT');
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist'));
+    expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
+  });
 
   it('warns that a quote draft may be stale if the edit lands after Outlook receives its attachment', async () => {
     let release!: () => void;

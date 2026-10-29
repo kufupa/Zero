@@ -246,6 +246,16 @@ describe('quote session', () => {
     expect(late.groups).toEqual([typed]);
     expect(late.analysis?.caseActionsUncertain).toBe(true);
   });
+
+  it('does not offer missing-details or decline replies for a held source', () => {
+    const incomplete = { ...quoteAnalysis, missingQuoteReplyFields: ['Arrival date'],
+      groups: [{ ...quoteAnalysis.groups[0]!, arrivalDate: undefined, departureDate: undefined }] };
+    const ready = reduceQuoteSession({ ...initialQuoteSession(), binding: bind() }, { type: 'analysis_ready', analysis: incomplete });
+    expect(missingQuoteDetailsReplyOnly(ready)).toBe(true);
+    const held = reduceQuoteSession(ready, { type: 'analysis_failed', message: 'Review manually.', hold: true });
+    expect(missingQuoteDetailsReplyOnly(held)).toBe(false);
+    expect(quoteDeclineReplyOnly({ ...held, reviewedReplySource: 'quote_decline', reviewedReplyHtml: '<p>Unavailable</p>' })).toBe(false);
+  });
   it('does not tick shuttle for a bank transfer, but does for an airport transfer', () => {
     const analysisWith = (request: string) => ({
       ...quoteAnalysis,

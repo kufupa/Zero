@@ -1170,7 +1170,7 @@ export function missingQuoteDetailsReplyOnly(
   session: Pick<QuoteSession, 'analysis' | 'groups'>,
 ): boolean {
   return Boolean(
-    session.analysis?.intent === 'quote' &&
+    !caseReviewPending(session.analysis) && session.analysis?.intent === 'quote' &&
       session.analysis.missingQuoteReplyFields?.length &&
       !session.groups.some((group) => group.arrivalDate && group.departureDate),
   );
@@ -1178,9 +1178,10 @@ export function missingQuoteDetailsReplyOnly(
 
 /** A refused quote may be drafted without a PDF; alternatives remain available only in the staff pane. */
 export function quoteDeclineReplyOnly(
-  session: Pick<QuoteSession, 'reviewedReplyHtml' | 'reviewedReplySource'>,
+  session: Pick<QuoteSession, 'analysis' | 'reviewedReplyHtml' | 'reviewedReplySource'>,
 ): boolean {
-  return session.reviewedReplySource === 'quote_decline' && session.reviewedReplyHtml.trim().length > 0;
+  return !caseReviewPending(session.analysis) && session.reviewedReplySource === 'quote_decline' &&
+    session.reviewedReplyHtml.trim().length > 0;
 }
 
 /** The request-only reply follows current staff-edited rows, not the analysis snapshot. */

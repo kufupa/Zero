@@ -84,7 +84,7 @@ export function useQuoteDraftRevision(
   const trackedDispatch = useCallback((action: QuoteSessionAction | QuoteStrategySessionAction) => {
     if (action.type === 'party_lookup_pending') {
       // Pickers report this after every render, but a real transition must hold a pending draft.
-      if ((latestPendingKinds.current ?? []).some((kind) => kind === action.kind) !== action.pending) mark();
+      if ((latestPendingKinds.current ?? []).includes(action.kind) !== action.pending) mark();
     } else if (action.type !== 'quote_strategy_comparison_started' && action.type !== 'quote_strategy_comparison_result') {
       // Background comparison rows do not select or alter the reviewed quote.
       mark();
@@ -481,8 +481,9 @@ export function useInsertAiDraft({
         if (quoteDraftRevision.current !== proof.localRevision || !sameLocalQuote(proof.localQuote, quoteSessionRef.current))
           throw new QuoteDraftPreflightError('The quote changed in the pane. Prepare it again.');
       };
-      const sendDraftCommand = <TReq, TResp>(action: 'CREATE_REPLY_DRAFT' | 'ADD_ATTACHMENT_TO_DRAFT', payload: TReq) =>
-        attempt.quotePreflight ? sendCommand<TReq, TResp>(action, payload, checkLocalQuote) :
+      const sendDraftCommand = <TReq, TResp>(action: 'CREATE_REPLY_DRAFT' | 'ADD_ATTACHMENT_TO_DRAFT', payload: TReq,
+        onSubmit?: () => void) =>
+        attempt.quotePreflight ? sendCommand<TReq, TResp>(action, payload, () => { checkLocalQuote(); onSubmit?.(); }) :
           sendCommand<TReq, TResp>(action, payload);
       const recheckQuote = async () => {
         const proof = attempt.quotePreflight;
@@ -537,14 +538,17 @@ export function useInsertAiDraft({
         // A queued edit can run between the preflight promise resolving and this continuation.
         checkLocalQuote();
       }
-      attempt.replyPayload = replyPayload;
-      if (!attempt.draftLocation) {
+      const markCreateSubmitted = () => {
+        attempt.replyPayload = replyPayload;
         replyMarkerBelongsToCurrentScope.current = true;
         setUnresolvedReplyMarker(true);
-      }
+      };
+      // For a quote, the bridge runs this only after its ticket and local guard,
+      // immediately before postMessage. An earlier failed attempt stays marked.
+      if (!attempt.draftLocation && !attempt.quotePreflight) markCreateSubmitted();
       const result =
         attempt.draftLocation ??
-        (await sendDraftCommand<typeof replyPayload, MailLocation>('CREATE_REPLY_DRAFT', replyPayload));
+        (await sendDraftCommand<typeof replyPayload, MailLocation>('CREATE_REPLY_DRAFT', replyPayload, markCreateSubmitted));
       if (!sameStaffScope()) return;
       if (!result || typeof result !== 'object')
         throw new Error('Outlook did not confirm the reply draft.');
