@@ -43,7 +43,7 @@ function row(r: Row): NativeOption {
 }
 
 /** One room group asking for `quantity` rooms of the given room code and board, under the party. */
-function source(options: NativeOption[], ask: { roomCodes?: string[]; boardBases?: string[]; quantity?: number } = {}): QuoteSourceRecord {
+function source(options: NativeOption[], ask: { roomCodes?: string[]; boardBases?: string[]; quantity?: number } = {}, propertyCode = 'HRCEN'): QuoteSourceRecord {
   const room = {
     id: 'single',
     quantity: ask.quantity ?? 1,
@@ -61,7 +61,7 @@ function source(options: NativeOption[], ask: { roomCodes?: string[]; boardBases
     toolVersion: 'test',
     observedAt: '2026-10-09T10:00:00.000Z',
     request: {
-      propertyCode: 'HRCEN',
+      propertyCode,
       arrivalDate: ARRIVAL,
       departureDate: DEPARTURE,
       requestedCurrency: 'ZAR',
@@ -70,7 +70,7 @@ function source(options: NativeOption[], ask: { roomCodes?: string[]; boardBases
     },
     result: {
       outcome: 'quote',
-      propertyCode: 'HRCEN',
+      propertyCode,
       groups: [{ id: 'single', request: room, completeness: { search: 'complete', requiredFacts: 'complete' }, options }],
     },
   };
@@ -125,7 +125,7 @@ describe('rate cards from one summary read', () => {
       row({ id: 'SKNG:DBBX', rate: 'DBBX', board: 'Dinner, Bed & Breakfast R', match: 'unresolved', amount: '10.00' }),
       row({ id: 'SKNG:BCO6B', rate: 'BCO6B', board: 'Bed & Breakfast R', scope: 'contextual', match: 'alternative', eligibility: 'conditional', amount: '30.00' }),
     ];
-    const cards = buildRateOptions(source([selected, ...kept, ...excluded], ROOM_ONLY), [{ groupId: 'single', optionId: 'SKNG:BARRO' }]);
+    const cards = buildRateOptions(source([selected, ...kept, ...excluded], ROOM_ONLY, 'HRDAV'), [{ groupId: 'single', optionId: 'SKNG:BARRO' }]);
     expect(cards.map((card) => card.rateCode)).toEqual(['BARRO', 'BCO1B', 'BCO2B', 'BCO5B', 'BBP', 'DBBP']);
     expect(cards.find((card) => card.rateCode === 'BARRO')).toMatchObject({ selected: true, priced: 'full', matchesRequest: true });
     expect(cards.filter((card) => card.priced === 'full')).toHaveLength(1);
@@ -143,7 +143,7 @@ describe('rate cards from one summary read', () => {
         match: index === 0 ? 'match' : 'alternative',
       }),
     );
-    const cards = buildRateOptions(source(options, ROOM_ONLY), []);
+    const cards = buildRateOptions(source(options, ROOM_ONLY, 'HRDAV'), []);
     expect(cards.map((card) => card.rateCode).sort()).toEqual([...codes].sort());
   });
 
@@ -156,6 +156,7 @@ describe('rate cards from one summary read', () => {
           row({ id: 'SKNG:BBP', rate: 'BBP', board: 'Bed & Breakfast R', match: 'alternative', amount: '600.00' }),
         ],
         { ...ROOM_ONLY, quantity: 2 },
+        'HRDAV',
       ),
       [{ groupId: 'single', optionId: 'SKNG:BARRO' }],
     );
@@ -173,6 +174,7 @@ describe('rate cards from one summary read', () => {
           row({ id: 'SKNG:BBP', rate: 'BBP', board: 'Bed & Breakfast R', match: 'alternative', inventories: [5, 4] }),
         ],
         ROOM_ONLY,
+        'HRDAV',
       ),
       [],
     );
@@ -188,6 +190,14 @@ describe('rate cards from one summary read', () => {
     );
 
     expect(cards).toEqual([]);
+  });
+
+  it('does not treat a Centurion rate outside the public profile as public', () => {
+    const cards = buildRateOptions(source([
+      row({ id: 'bar', rate: 'BARRO' }),
+      row({ id: 'unknown', rate: 'BBP', board: 'Bed & Breakfast R', match: 'alternative' }),
+    ], ROOM_ONLY), []);
+    expect(cards.map((card) => card.rateCode)).toEqual(['BARRO']);
   });
 
   it('keeps the quoted option even when a cheaper room that was not requested exists', () => {

@@ -414,6 +414,52 @@ test('negotiated eligibility requires every applied context ID, not merely a ret
   assert.equal(mismatch.options[0].eligibility,'conditional');
   assert.equal(mismatch.options[0].matchStatus,'unresolved');
 });
+test('Centurion government rates stay conditional without guest entitlement, regardless of search or party',()=>{
+  const f=multipleSource();
+  const rate=f.data.children[0].children[0].children[0];
+  rate.code='NGOVDB';rate.desc='Local Government Rate Dinner';
+  f.calendar.options[0].rate='NGOVDB: Local Government Rate Dinner';
+  for(const [strategy,criteria,resolved,rateContext] of [
+    ['Government',{salesStrategy:'GOV'},{},undefined],
+    ['BAR',{salesStrategy:'BAR'},{},undefined],
+    ['Government',{salesStrategy:'GOV',travelAgencyID:'23'},{agency:{id:'23'}},{agency:{name:'Example Agency'}}],
+  ]){
+    const scoped={...request,search:{salesStrategy:strategy},...(rateContext?{rateContext}:{})};
+    const result=quote.extractOptions(scoped,request.rooms[0],[{data:f.data,calendar:f.calendar,criteria}],resolved);
+    const government=result.options.find(option=>option.rate.code==='NGOVDB');
+    assert.equal(government?.eligibility,'conditional');
+    assert.ok(government?.conditions.some(condition=>condition.field==='governmentEligibility'&&condition.status==='unknown'));
+    quote.reapplyBedAssessment(government,{matchStatus:'match',conditions:[]});
+    assert.ok(government.conditions.some(condition=>condition.field==='governmentEligibility'&&condition.status==='unknown'));
+    assert.equal(quote.pricedEligibleOptions([government]).length,0);
+    assert.equal(result.options.find(option=>option.rate.code==='BAR')?.eligibility,'verified');
+  }
+});
+test('Centurion BAR needs a known public code and an unnegotiated row; government hints override public codes',()=>{
+  for(const [code,label,negotiated,scope,eligibility] of [
+    ['WAL','Walk-in Rate',false,'public','verified'],
+    ['OTHER','Unclassified Special',false,'unknown','conditional'],
+    ['BAR','Government Special',false,'unknown','conditional'],
+    ['NGOVX','Special Rate',false,'unknown','conditional'],
+    ['BAR','Best Available Rate',null,'unknown','conditional'],
+  ]){
+    const f=multipleSource(),rate=f.data.children[0].children[0].children[0];
+    rate.code=code;rate.desc=label;rate.isNegotiatedRate=negotiated;
+    f.calendar.options[0].rate=`${code}: ${label}`;
+    const scoped={...request,search:{salesStrategy:'BAR'},rateContext:{agency:{name:'Agency'}}};
+    const result=quote.extractOptions(scoped,request.rooms[0],
+      [{data:f.data,calendar:f.calendar,criteria:{salesStrategy:'BAR',travelAgencyID:'23'}}],{agency:{id:'23'}});
+    const selected=result.options.find(option=>option.room.code==='STQN');
+    assert.equal(selected.rateScope,scope,code);
+    assert.equal(selected.eligibility,eligibility,code);
+    if(eligibility!=='verified') assert.equal(quote.pricedEligibleOptions([selected]).length,0,code);
+    if(scope==='unknown') {
+      const unfiltered=quote.extractOptions({...request,rateContext:scoped.rateContext},request.rooms[0],
+        [{data:f.data,calendar:f.calendar,criteria:{travelAgencyID:'23'}}],{agency:{id:'23'}});
+      assert.equal(unfiltered.issues.some(issue=>issue.code==='NO_SPECIAL_RATES'),false,code);
+    }
+  }
+});
 test('bound party with no negotiated rates returns public BAR and flags no special rates',()=>{
   const f=multipleSource();
   const scoped={...request,rateContext:{agency:{name:'CWT JNB'}}};

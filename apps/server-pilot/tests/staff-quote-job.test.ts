@@ -28,6 +28,7 @@ const quoteRunMocks = vi.hoisted(() => ({
 }));
 
 const workflowMocks = vi.hoisted(() => ({ executeStaffQuote: vi.fn() }));
+const originMocks = vi.hoisted(() => ({ guard: vi.fn() }));
 const quoteQueueMocks = vi.hoisted(() => ({ staffQuoteInFlight: vi.fn() }));
 const quoteOutcomeMocks = vi.hoisted(() => ({
   ensureQuoteOutcomeWorkItem: vi.fn(),
@@ -101,7 +102,7 @@ vi.mock('../src/ai/run-ledger.js', async (importOriginal) => ({
 
 vi.mock('../src/hms/mailbox-hms-origin-bind.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../src/hms/mailbox-hms-origin-bind.js')>()),
-  guardCenturionHmsMailboxOrigin: async () => ({ ok: true }),
+  guardCenturionHmsMailboxOrigin: originMocks.guard,
 }));
 
 import { executeHmsJob, hmsJobRequestSchema, HMS_JOB_PRIORITY_USER } from '../src/ai/hms-jobs.js';
@@ -170,6 +171,7 @@ function preparedFixture() {
 }
 
 beforeEach(async () => {
+  originMocks.guard.mockReset().mockResolvedValue({ ok: true });
   vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', 'synthetic');
   jobMocks.markSucceeded.mockReset().mockResolvedValue({ id: 'job-1' });
   jobMocks.markRetry.mockReset().mockResolvedValue({ id: 'job-1' });
@@ -566,7 +568,8 @@ describe('staff_quote HMS job execution', () => {
     );
   });
 
-  it('keeps a successful Government Dinner B&B quote and shows its rate note', async () => {
+  it('keeps a synthetic HRDAV Government Dinner B&B quote and shows its rate note', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
     const groups: StaffQuoteInput['groups'] = [
       {
         id: 'single',
@@ -574,19 +577,18 @@ describe('staff_quote HMS job execution', () => {
         departureDate: '2026-11-14',
         quantity: 1,
         adults: 2,
-        childrenPerRoom: 0,
         childrenAges: [],
         board: 'dinner_bb',
-        roomCodes: ['SKNG'],
+        roomCodes: ['STKNG'],
       },
     ];
     const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
       groups,
       salesStrategy: 'Government',
-    });
+    }, false, 'transport-davinci');
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel',
-      owner: { propertyCode: 'HRCEN' },
+      owner: { propertyCode: 'HRDAV' },
       outputDir: '/tmp/synthetic-staff-quote',
       dinnerAddOn: {
         amountMinor: 35_000,
@@ -609,11 +611,12 @@ describe('staff_quote HMS job execution', () => {
       return syntheticRevision(
         ['600.00', '600.00'],
         'Dinner, Bed & Breakfast R',
-        'SKNG',
+        'STKNG',
         undefined,
         '2026-11-12',
         prepared.authorizationId,
         { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] },
+        'HRDAV',
       );
     });
 
@@ -627,6 +630,8 @@ describe('staff_quote HMS job execution', () => {
         'Choose All public rates (BAR) if the guest is not entitled.',
     );
     expect(readResult.dinnerAddOnRequired).toBe(false);
+    expect(readResult).toMatchObject({ requestedSalesStrategy: 'Government', effectiveSalesStrategy: 'Government' });
+    expect(readResult).not.toHaveProperty('salesStrategyFallback');
   });
 
   it('keeps BAR Dinner B&B on the existing B&B-plus-dinner retry path', async () => {
@@ -699,7 +704,8 @@ describe('staff_quote HMS job execution', () => {
     });
   });
 
-  it('retries Government no-match on BAR B&B with dinner separately and explains the fallback', async () => {
+  it('retries synthetic HRDAV Government no-match on BAR B&B and explains the fallback', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
     const groups: StaffQuoteInput['groups'] = [
       {
         id: 'single',
@@ -707,19 +713,18 @@ describe('staff_quote HMS job execution', () => {
         departureDate: '2026-11-14',
         quantity: 1,
         adults: 2,
-        childrenPerRoom: 0,
         childrenAges: [],
         board: 'dinner_bb',
-        roomCodes: ['SKNG'],
+        roomCodes: ['STKNG'],
       },
     ];
     const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve(), undefined, {
       groups,
       salesStrategy: 'Government',
-    });
+    }, false, 'transport-davinci');
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel',
-      owner: { propertyCode: 'HRCEN' },
+      owner: { propertyCode: 'HRDAV' },
       outputDir: '/tmp/synthetic-staff-quote',
       dinnerAddOn: {
         amountMinor: 35_000,
@@ -743,11 +748,12 @@ describe('staff_quote HMS job execution', () => {
       return syntheticRevision(
         ['600.00', '600.00'],
         'Bed & Breakfast R',
-        'SKNG',
+        'STKNG',
         undefined,
         '2026-11-12',
         prepared.authorizationId,
         { id: 'single', quantity: 1, adults: 2, children: 0, childAges: [] },
+        'HRDAV',
       );
     });
 
@@ -766,6 +772,8 @@ describe('staff_quote HMS job execution', () => {
       dinnerAddOn: { amountMinor: 35_000, unit: 'per_person_per_night' },
       dinnerAddOnRequired: false,
       dinnerFallbackGroupIds: ['single'],
+      requestedSalesStrategy: 'Government', effectiveSalesStrategy: 'BAR',
+      salesStrategyFallback: { from: 'Government', to: 'BAR', reason: 'no_matching_rate' },
     });
     expect(inserted.find(({ table }) => table === aiWorkflowRun)?.values).toMatchObject({
       metrics: { staffQuoteAttestation: { salesStrategy: 'BAR' } },
@@ -1407,6 +1415,51 @@ describe('runStaffQuote property installation', () => {
     });
     return actual.runStaffQuote(input, { transportId, user }, staffQuoteRunDb(mail).db);
   }
+
+  it.each(['Government', 'GOV'] as const)('holds direct Centurion %s requests before installation or HMS', async (salesStrategy) => {
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
+    const mail = mailFor('transport-centurion');
+    const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail), salesStrategy });
+    await expect(actual.runStaffQuote(input, { transportId: 'transport-centurion', user }, staffQuoteRunDb(mail).db))
+      .rejects.toMatchObject({
+        code: 'PRECONDITION_FAILED', message: actual.CENTURION_GOVERNMENT_HOLD,
+        cause: expect.objectContaining({ reason: 'government_eligibility_unverified' }),
+      });
+    expect(quoteRunMocks.readConfiguration).not.toHaveBeenCalled();
+    expect(workflowMocks.executeStaffQuote).not.toHaveBeenCalled();
+  });
+
+  it.each(['Government', 'GOV'] as const)('does not apply the Centurion %s hold to a resolved HRDAV quote', async (salesStrategy) => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('DATABASE_URL', '');
+    originMocks.guard.mockResolvedValue({ ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin' });
+    quoteRunMocks.readConfiguration.mockReturnValue({ tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRDAV' } });
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
+    const mail = mailFor('transport-centurion');
+    const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail), salesStrategy });
+    await expect(actual.runStaffQuote(input, { transportId: 'transport-centurion', user }, staffQuoteRunDb(mail).db))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: 'Staff quotation database unavailable' });
+    expect(quoteRunMocks.readConfiguration).toHaveBeenCalledWith('HRDAV');
+  });
+
+  it.each([
+    ['manual', 'Government', false, false],
+    ['auto-start', 'Government', false, true],
+    ['system prefetch', 'GOV', true, false],
+  ] as const)('stores a non-retryable Government refusal for a %s job', async (_name, salesStrategy, prepared, autoStart) => {
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(
+      Promise.resolve(), undefined, { salesStrategy }, prepared, 'transport-centurion',
+    );
+    if (autoStart) run.metrics = { ...run.metrics, autoStart: true };
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded).toHaveBeenCalledWith(expect.objectContaining({
+      readResult: expect.objectContaining({ ok: false, message: actual.CENTURION_GOVERNMENT_HOLD }),
+    }), quoteDb);
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+    expect(quoteRunMocks.readConfiguration).not.toHaveBeenCalled();
+    expect(workflowMocks.executeStaffQuote).not.toHaveBeenCalled();
+  });
 
   it('uses the HRDAV installation for a Da Vinci transport when the quote flag is on', async () => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
