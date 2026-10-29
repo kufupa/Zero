@@ -1,5 +1,6 @@
 import { Fragment, useLayoutEffect, useRef } from 'react';
 import type { StoredContact } from '@/lib/quote-workflow/backend-bind';
+import { UNQUOTED_BOOKING_REVISION_REF } from '@/lib/quote-workflow/booking-draft-bind';
 import type { PaneStayClient } from '@/lib/quote-workflow/pane-stay-bind';
 import { caseReviewPending, isMultiStay, requestedQuoteKeys, stayIdOf } from '@/lib/quote-workflow/session';
 import { HRDAV_PROPERTY_CODE, type QuoteSession } from '@/lib/quote-workflow/types';
@@ -49,12 +50,17 @@ export function QuoteBookingHost({
   const row = session.groups.length === 1 ? session.groups[0] : undefined;
   const sourceRow = session.analysis?.groups.length === 1 ? session.analysis.groups[0] : undefined;
   const onlyDraft = shownDrafts.length === 1 ? session.bookingDrafts[shownDrafts[0]!] : undefined;
+  const draftRoom = onlyDraft?.draft.rooms.length === 1 ? onlyDraft.draft.rooms[0] : undefined;
+  // Unquoted prefill uses its date pair as the group id; quoted rooms use the saved row id.
+  const roomMatchesRow = Boolean(row && draftRoom && (draftRoom.groupId === row.id ||
+    (onlyDraft?.revisionRef === UNQUOTED_BOOKING_REVISION_REF && row.arrivalDate && row.departureDate &&
+      draftRoom.groupId === `${row.arrivalDate}:${row.departureDate}`)));
   // The People guest is keyed to a message, not to a case or room. Centurion requires a single confirmed room.
   const singleRoomGuest = Boolean(guestEditorKey && workItemId && session.binding && session.staffSource && session.analysis &&
     !caseReviewPending(session.analysis) &&
     row && sourceRow && row.id === sourceRow.id && stayIdOf(row) === stayIdOf(sourceRow) && row.quantity === 1 &&
     onlyDraft?.messageId === session.staffSource.messageId && onlyDraft.selectionEpoch === session.binding.selectionEpoch &&
-    onlyDraft.draft.rooms.length === 1 && onlyDraft.draft.rooms[0]?.groupId === row.id);
+    roomMatchesRow);
   const canUsePeopleGuest = Boolean(guestEditorKey && (propertyCode === HRDAV_PROPERTY_CODE || singleRoomGuest));
   const coveredStayIds = new Set(
     shownDrafts.flatMap((key) =>
