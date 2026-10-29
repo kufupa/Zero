@@ -276,11 +276,12 @@ describe('missing work item recovery', () => {
     mailbox();
     const { trpc, open, record } = harness();
     const corrected = { ...ROW, arrivalDate: '2027-10-22' };
-    open.mockRejectedValueOnce(new Error('initial')).mockResolvedValueOnce({
+    const saved: Ready = {
       ...OPENED,
       analysis: { ...OPENED.analysis, groups: [corrected] },
       fieldProvenance: { [ARRIVAL]: { source: 'staff', value: '2027-10-22' } },
-    });
+    };
+    open.mockRejectedValueOnce(new Error('initial')).mockResolvedValueOnce(saved);
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
     await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));
     act(() => result.current.recordGroups([ROW], [corrected]));
