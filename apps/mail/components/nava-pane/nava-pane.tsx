@@ -241,7 +241,6 @@ function staffQuoteAttemptKey(transportId: string, messageId: string, sourceHash
 const PANE_SOURCE_PREFIX = 'nava.pane-source.v1:';
 type PaneSourceRecord = { rows: string; source: PaneCaseSnapshot; pendingBefore?: QuoteAnalysis['groups'] };
 const paneSources = new Map<string, PaneSourceRecord>();
-
 function paneSourceRecord(key: string): PaneSourceRecord | null {
   try { return paneSources.get(key) ?? JSON.parse(sessionStorage.getItem(`${PANE_SOURCE_PREFIX}${key}`) ?? 'null'); }
   catch { return paneSources.get(key) ?? null; }
@@ -258,18 +257,18 @@ function rememberPaneSource(key: string, groups: QuoteAnalysis['groups'], source
   paneSources.set(key, record);
   try { sessionStorage.setItem(`${PANE_SOURCE_PREFIX}${key}`, JSON.stringify(record)); } catch { /* Memory still covers this mount. */ }
 }
-
 function recalledPaneSource(key: string, groups: QuoteAnalysis['groups']): PaneCaseSnapshot | null {
   try {
     const raw = paneSourceRecord(key);
     const source = raw?.source;
     if (raw?.rows !== JSON.stringify(groups) || !source ||
       (source.identity !== null && typeof source.identity !== 'string') || typeof source.tasks !== 'string' ||
-      (source.propertyCode !== null && typeof source.propertyCode !== 'string')) return null;
+      (source.propertyCode !== null && typeof source.propertyCode !== 'string') ||
+      (source.aliases !== undefined && (!source.aliases || typeof source.aliases !== 'object' ||
+        Array.isArray(source.aliases) || Object.values(source.aliases).some((value) => typeof value !== 'string')))) return null;
     return source as PaneCaseSnapshot;
   } catch { return null; }
 }
-
 function analysisWithPaneEdits(
   analysis: QuoteAnalysis,
   transportId: string,
@@ -841,9 +840,14 @@ export function NavaPane({
     const key = paneEditKey(binding.transportId, binding.internetMessageId);
     const record = paneSourceRecord(key);
     const current = paneCaseSnapshot(analysis);
+    if (record?.source && current?.aliases && record.source.identity !== current.identity) {
+      rememberPaneSource(key, quoteSession.groups, current, record.pendingBefore);
+    }
     const stored = paneCaseSnapshot(withPaneRead(storedWork.pane.analysis, null, null, activePaneConfig?.propertyCode ?? null));
+    const retainedRows = quoteSession.groups.map((group) => group.id);
     if (!Array.isArray(record?.pendingBefore) || !record.source || !current || !stored ||
-      !sameCaseSnapshot(record.source, current) || !sameCaseSnapshot(record.source, stored)) return;
+      !sameCaseSnapshot(record.source, current, false, retainedRows) ||
+      !sameCaseSnapshot(record.source, stored, false, retainedRows)) return;
     storedWork.recordGroups(record.pendingBefore, quoteSession.groups);
     rememberPaneEdits(key, quoteSession.groups);
     rememberPaneSource(key, quoteSession.groups, current);
@@ -1010,7 +1014,6 @@ export function NavaPane({
   const priorQuoteKey = [
     quoteSession.analysis?.luna?.workflow ?? '',
     caseReviewPending(quoteSession.analysis) ? 'case-held' : '',
-    (quoteSession.analysis?.luna?.tasks ?? []).map((task) => `${task.kind}:${task.groupIndexes.join(',')}`).join(';'),
     quoteSession.staffSource?.threadId ?? '',
     String(quoteSession.inputRevision),
     String(quoteSession.stayRevision),
