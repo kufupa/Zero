@@ -5,6 +5,7 @@ import type { DB } from '../db/client.js';
 import { mailExtraction, workItem } from '../db/schema/work.js';
 import { and, desc, eq } from 'drizzle-orm';
 import { addDays } from './stay-date-anchoring.js';
+import { formStays } from './work-items.js';
 import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
@@ -81,10 +82,15 @@ export function childOccupancyMatchesStored(
       const activeRows = allRows.filter((candidate) => candidate.stayId === row.stayId &&
         state[`stays[${candidate.stayId}].rows[${candidate.rowId}].removed`] !== true);
       const singleRow = activeRows.length === 1;
+      const previousNames = activeRows.slice(0, activeRows.indexOf(row)).reduce((total, candidate) => {
+        const path = `stays[${candidate.stayId}].rows[${candidate.rowId}].count`;
+        const count = Object.hasOwn(state, path) ? state[path] : candidate.rooms;
+        return total + (typeof count === 'number' && count > 0 ? count : 1);
+      }, 0);
       const hasGuestEvidence = row.adults != null ||
         (Object.hasOwn(state, adultsPath) && state[adultsPath] != null) ||
         (Array.isArray(ages) && ages.length > 0) ||
-        (singleRow && (stay?.guests ?? []).some((guest) => guest.name.trim().length > 0));
+        (stay?.guests ?? []).filter((guest) => guest.name.trim().length > 0).length > previousNames;
       rooms = singleRow && stay?.totalRooms != null ? stay.totalRooms : hasGuestEvidence ? 1 : null;
     }
     if (rooms !== group.quantity || adults !== group.adults) return false;
@@ -195,46 +201,50 @@ export async function draftQuoteOccupancyHold(db: DB, input: {
   return null;
 }
 
-/** Across messages, admit only a single unambiguous saved room row with identical occupancy. */
-export function singleStayOccupancyMatchesRevision(
+/** Across messages, find the pane's single unambiguous saved room row with identical occupancy. */
+export function singleStayOccupancyGroup(
   revision: { groups: StayOccupancy[] },
   payload: unknown,
   state: Record<string, unknown>,
-): boolean {
+): Group | null {
   const parsed = mailExtractionPayloadSchema.safeParse(payload);
-  if (!parsed.success || revision.groups.length !== 1) return false;
+  if (!parsed.success || revision.groups.length !== 1) return null;
   const quoted = revision.groups[0]!;
   const field = (key: string, fallback: unknown) => Object.hasOwn(state, key) ? state[key] : fallback;
-  const matches = parsed.data.stays.filter((stay) =>
-    state[`stays[${stay.id}].removed`] !== true &&
-    field(`stays[${stay.id}].requested.arrival`, stay.requested.arrival) === quoted.arrivalDate &&
-    field(`stays[${stay.id}].requested.departure`, stay.requested.departure) === quoted.departureDate,
-  );
-  if (matches.length !== 1) return false;
+  const matches = formStays(parsed.data, state).filter((stay) => {
+    const arrival = field(`stays[${stay.id}].requested.arrival`, stay.requested.arrival);
+    const departurePath = `stays[${stay.id}].requested.departure`;
+    let departure = field(departurePath, stay.requested.departure);
+    if (departure == null && !Object.hasOwn(state, departurePath) && typeof arrival === 'string' &&
+      /^\d{4}-\d{2}-\d{2}$/.test(arrival) && !parsed.data.missing.some((item) => item.field === 'stayDates')) {
+      const day = new Date(`${arrival}T00:00:00Z`);
+      if (Number.isFinite(day.getTime()) && day.toISOString().slice(0, 10) === arrival) departure = addDays(arrival, 1);
+    }
+    return arrival === quoted.arrivalDate && departure === quoted.departureDate;
+  });
+  if (matches.length !== 1) return null;
   const stay = matches[0]!;
-  if (stay.rows.length !== 1) return false;
+  if (stay.rows.length !== 1) return null;
   const row = stay.rows[0]!;
   const rowPath = `stays[${stay.id}].rows[${row.id}]`;
-  const rowKeys = /^stays\[([A-Za-z0-9_-]{1,40})\]\.rows\[([A-Za-z0-9_-]{1,40})\]\./;
-  const activeRows = new Set([row.id]);
-  for (const key of Object.keys(state)) {
-    const match = rowKeys.exec(key);
-    if (match?.[1] === stay.id && match[2] && state[`stays[${stay.id}].rows[${match[2]}].removed`] !== true)
-      activeRows.add(match[2]);
-  }
-  if (activeRows.size !== 1 || state[`${rowPath}.removed`] === true ||
-    field(`${rowPath}.count`, row.rooms ?? stay.totalRooms) !== quoted.quantity ||
-    field(`${rowPath}.adults`, row.adultsPerRoom) !== quoted.adults) return false;
-  const ages = field(`${rowPath}.childAges`, row.childAges);
+  const original = parsed.data.stays.find((item) => item.id === stay.id)?.rows.find((item) => item.id === row.id);
+  const ages = field(`${rowPath}.childAges`, original?.childAges);
   if (!Array.isArray(ages) || !Array.isArray(quoted.childAges) || !Number.isInteger(quoted.children) ||
-    quoted.children !== quoted.childAges.length || ages.length !== quoted.childAges.length) return false;
+    quoted.children !== quoted.childAges.length || ages.length !== quoted.childAges.length) return null;
   const quotedAges = [...quoted.childAges].sort((a, b) => a - b);
-  if ([...ages].sort((a, b) => a - b).some((age, i) => age !== quotedAges[i])) return false;
-  return childOccupancyMatchesStored([{
+  if ([...ages].sort((a, b) => a - b).some((age, i) => age !== quotedAges[i])) return null;
+  const group = {
     id: row.id, arrivalDate: quoted.arrivalDate, departureDate: quoted.departureDate,
     quantity: quoted.quantity, adults: quoted.adults,
     childrenPerRoom: quoted.children, childrenAges: ages,
-  }], parsed.data, state);
+  };
+  return childOccupancyMatchesStored([group], parsed.data, state) ? group : null;
+}
+
+export function singleStayOccupancyMatchesRevision(
+  revision: { groups: StayOccupancy[] }, payload: unknown, state: Record<string, unknown>,
+): boolean {
+  return !!singleStayOccupancyGroup(revision, payload, state);
 }
 
 export async function singleStayOccupancyIsCurrent(
