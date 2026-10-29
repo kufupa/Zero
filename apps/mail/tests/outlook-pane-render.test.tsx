@@ -12,6 +12,9 @@ import path from 'node:path';
 import { AUTHORISED_QUOTE_OFFERS, AUTHORISED_QUOTE_PDF, AUTHORISED_REPLY_HTML } from './helpers/authorised-quote-evidence';
 import { fillStayFactsMatchingAuthorisedOffer, prepareReviewedQuote, reviewedReplyHtml } from './helpers/prepare-reviewed-quote';
 import { quoteWrapperHtml } from '../lib/quote-proposal/copy';
+import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
+import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
+import { resetPaneEditsForTests } from '../lib/quote-workflow/pane-edits';
 import { OUTLOOK_CENTURION_ROOM_TYPES, OUTLOOK_QUOTE_ANALYSIS, outlookRecordEvent, outlookStoredQuote } from './helpers/outlook-stored-quote';
 
 const { sendCommandMock, pairDeviceMock, quotePdfMutate, qualifiedQuotePdfMock, quoteDraftPreflightMock, bridgeMockState } = vi.hoisted(() => ({
@@ -22,7 +25,7 @@ const { sendCommandMock, pairDeviceMock, quotePdfMutate, qualifiedQuotePdfMock, 
     fileName: 'Quote - CIDB 15-17 Sep.pdf',
     pdfBase64: 'JVBERw==',
   }),
-  sendCommandMock: vi.fn(async (action: string, _payload?: unknown): Promise<unknown> => {
+  sendCommandMock: vi.fn(async (action: string, _payload?: unknown, _beforeNative?: () => void): Promise<unknown> => {
     void _payload;
     if (action === 'GET_ACTIVE_EMAIL') return {
       entryId: bridgeMockState.selectedEntryId, storeId: 'store-1', folderEntryId: 'folder-inbox',
@@ -55,6 +58,14 @@ const { sendCommandMock, pairDeviceMock, quotePdfMutate, qualifiedQuotePdfMock, 
     screenshotReads: [] as string[],
   },
 }));
+
+// The authorised bridge runs this callback immediately before native dispatch.
+const authorisedSendCommand = (action: string, payload: unknown, beforeNative?: () => void) => {
+  beforeNative?.();
+  return beforeNative
+    ? sendCommandMock(action, payload, beforeNative)
+    : sendCommandMock(action, payload);
+};
 
 vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
@@ -112,7 +123,7 @@ vi.mock('../lib/workstation/use-outlook-bridge', () => ({
       bodyText: 'CIDB needs 3 rooms for 4 nights.',
       bodyHtml: '<p>We need 3 rooms for 4 nights.</p>',
     },
-    sendCommand: sendCommandMock,
+    sendCommand: authorisedSendCommand,
     pairDevice: pairDeviceMock,
   }),
 }));
@@ -269,10 +280,13 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
   });
 
   afterEach(() => {
+    cleanup();
+    setMailCacheScope({ userId: null, activeTransportId: null });
+    resetPaneEditsForTests();
+    resetGuestNameCacheForTests();
     localStorage.clear();
     sessionStorage.clear();
     vi.restoreAllMocks();
-    cleanup();
     sendCommandMock.mockReset();
     vi.mocked(toast.success).mockClear();
     vi.mocked(toast.warning).mockClear();
