@@ -881,6 +881,13 @@ export function storedAnalysis(
         const confirmationNumber = confirmationForGroup(sourceStay, payload, rowId, rooms, projectedRowCount) ??
           (!ambiguous && payload.stays.length === 1 && singleOriginalRoom(sourceStay, rowId, rooms, projectedRowCount)
             ? selectedConfirmation : null);
+        const originalCaseRow = sourceStay?.rows.length === 0
+          ? rowId === null
+          : sourceStay?.rows.length === 1 && sourceStay.rows[0]?.id === rowId;
+        // This can find the one case, without claiming that the number belongs to a particular room.
+        const caseLookupConfirmation = caseScoped && !confirmationNumber && !ambiguous && selectedConfirmation &&
+          payload.stays.length === 1 && stays.length === 1 && projectedRowCount === 1 && originalCaseRow
+          ? selectedConfirmation : null;
         const firstRowOfStay = order.findIndex((slot) => slot.stayId === stayId) === index;
         const onlyGuest = sourceStay?.guests?.length === 1 ? sourceStay.guests[0] : undefined;
         const originalRoomCount = sourceStay?.rows[0]?.rooms ?? sourceStay?.totalRooms;
@@ -895,6 +902,7 @@ export function storedAnalysis(
           roomTypeSuggestions: roomType.suggestions,
           stayId,
           ...(caseScoped ? { caseScoped: true } : {}),
+          ...(caseLookupConfirmation ? { caseLookupConfirmation } : {}),
           // Kept separately from room assignment so staff can see the names and numbers as reported in the email.
           ...(firstRowOfStay ? { stayGuests: guestsForStay(sourceStay) } : {}),
           // The People field may prefill only the one original room; the draft still must not match by row order.

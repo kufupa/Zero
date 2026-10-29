@@ -234,6 +234,28 @@ describe('stored case boundaries', () => {
     expect(single.groups[0]?.confirmationNumber).toBe('57291630-1');
   });
 
+  it('keeps the one selected-email number as a case lookup hint when no room count was stated', () => {
+    const payload = mixedMail();
+    payload.stays = [{ ...payload.stays[0]!, totalRooms: null, rows: [] }];
+    const selected = storedAnalysis({ kind: 'amendment', payload, attachments: [] }, {}).analysis;
+    expect(selected.groups[0]?.caseLookupConfirmation).toBe('57291630-1');
+    expect(selected.groups[0]?.confirmationNumber).toBeUndefined();
+
+    payload.confirmationNumbers = [];
+    payload.stays[0]!.guests![0]!.confirmationNumber = null;
+    const threadOnly = storedAnalysis(
+      { kind: 'amendment', payload, attachments: [] }, {},
+      { confirmation: '57291630-1', reason: null },
+    ).analysis;
+    expect(threadOnly.groups[0]?.caseLookupConfirmation).toBeUndefined();
+    expect(threadOnly.groups[0]?.confirmationNumber).toBeUndefined();
+
+    payload.confirmationNumbers = ['57291630-1'];
+    payload.stays[0]!.guests!.push({ name: 'Bea Example', confirmationNumber: null });
+    const ambiguous = storedAnalysis({ kind: 'amendment', payload, attachments: [] }, {}).analysis;
+    expect(ambiguous.groups[0]?.caseLookupConfirmation).toBeUndefined();
+  });
+
   it('does not assign a booking number when the original room count was unknown', () => {
     const payload = mixedMail();
     payload.stays = [payload.stays[0]!];

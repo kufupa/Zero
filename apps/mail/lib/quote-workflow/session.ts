@@ -78,6 +78,7 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
     ...base, confirmationNumber: null, guestLastName: null, arrival: null, departure: null,
     requestedArrival: null, requestedDeparture: null, requestedChange: null,
   });
+  if (caseReviewPending(session.analysis)) return unbound();
   const selectedKey = session.selectedStayKey;
   if (!selectedKey) return base;
   const rows = stayAskRows(session, selectedKey);
@@ -103,8 +104,9 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
       return { ...base, confirmationNumber: null };
     }
     const assigned = trimmedConfirmation(row.confirmationNumber);
-    // The stored projection assigns selected-email numbers only when this is the single original room.
-    return { ...base, confirmationNumber: assigned };
+    // A unique selected-email number can identify this case for lookup even when no room is identified.
+    const caseHint = trimmedConfirmation((original as StayAskRow).caseLookupConfirmation);
+    return { ...base, confirmationNumber: assigned ?? caseHint };
   }
   // Stored rosters are case-scoped; a newly added or copied stay cannot inherit another case's lookup.
   if (session.analysis?.groups.some((group) => 'stayGuests' in group && Array.isArray(group.stayGuests))) return unbound();
@@ -229,6 +231,7 @@ type StayAskRow = StayGroupRequirement & {
   /** Extraction-level guests; their position here does not assign them to this room. */
   stayGuests?: StayAskGuest[];
   caseScoped?: boolean;
+  caseLookupConfirmation?: string;
 };
 
 function quoteDateGroups(groups: StayGroupRequirement[]): StayGroupRequirement[] {
@@ -328,6 +331,52 @@ function taskStayIds(session: Pick<QuoteSession, 'analysis'>, task: LunaAnalysis
   });
 }
 
+/** Compare case actions by their source ids, not by the order of rows in the newer read. */
+function caseTaskSignature(analysis: QuoteAnalysis | null): string {
+  const tasks = analysis?.luna?.tasks ?? [];
+  return JSON.stringify(tasks.map((task) => JSON.stringify([
+    task.kind,
+    task.groupIndexes.map((index) => {
+      const group = analysis?.groups[index];
+      return group ? [stayIdOf(group), group.id] : null;
+    }).map((item) => JSON.stringify(item)).sort(),
+  ])).sort());
+}
+
+/** Stored case evidence must not be reattached to an edited row just because a later read reused its id. */
+function caseIdentitySignature(analysis: QuoteAnalysis | null): string | null {
+  const groups = (analysis?.groups ?? []) as StayAskRow[];
+  if (!groups.some((group) => Array.isArray(group.stayGuests) || group.caseScoped)) return null;
+  return JSON.stringify(groups.map((group) => {
+    const roster = group.stayGuests?.map((guest) => JSON.stringify([
+      guest.name.trim(), trimmedConfirmation(guest.confirmationNumber),
+    ])).sort() ?? null;
+    const confirmation = trimmedConfirmation(group.confirmationNumber) ?? trimmedConfirmation(group.caseLookupConfirmation);
+    return JSON.stringify([
+      group.id, stayIdOf(group), confirmation, roster,
+      !confirmation && !roster?.length ? [group.arrivalDate ?? null, group.departureDate ?? null] : null,
+    ]);
+  }).sort());
+}
+
+function changedCaseIdentity(before: QuoteAnalysis | null, after: QuoteAnalysis): boolean {
+  const oldIdentity = caseIdentitySignature(before);
+  const newIdentity = caseIdentitySignature(after);
+  return (oldIdentity !== null || newIdentity !== null) && oldIdentity !== newIdentity;
+}
+
+function caseReviewPending(analysis: QuoteAnalysis | null): boolean {
+  return Boolean(analysis && 'caseActionsUncertain' in analysis && analysis.caseActionsUncertain === true);
+}
+
+function withCaseReview(analysis: QuoteAnalysis, pending: boolean): QuoteAnalysis {
+  if (pending) return { ...analysis, caseActionsUncertain: true } as QuoteAnalysis;
+  if (!caseReviewPending(analysis)) return analysis;
+  const copy = { ...analysis } as QuoteAnalysis & { caseActionsUncertain?: boolean };
+  delete copy.caseActionsUncertain;
+  return copy;
+}
+
 /** The action this stay card should show. Tasks bind by stay id; a date-set card matches every row on those dates. */
 export function stayAskAction(session: Pick<QuoteSession, 'analysis' | 'groups'>, stayId: string): StayAskAction {
   const tasks = session.analysis?.luna?.tasks ?? [];
@@ -369,7 +418,11 @@ export function stayAskActionLabel(action: StayAskAction): string | null {
 /** An existing or unclear case must never be offered a new-booking draft. */
 function blocksNewBooking(session: Pick<QuoteSession, 'analysis' | 'groups'>, stayKey: string): boolean {
   const luna = session.analysis?.luna;
-  return luna?.workflow === 'create_booking' && (luna.tasks?.length ?? 0) > 0 && stayAskAction(session, stayKey) !== 'booking';
+  if (caseReviewPending(session.analysis)) return true;
+  if (luna?.workflow !== 'create_booking' || !luna.tasks?.length) return false;
+  const rows = stayAskRows(session, stayKey);
+  const targeted = new Set(luna.tasks.flatMap((task) => taskStayIds(session, task)));
+  return !rows.length || rows.some((row) => !targeted.has(stayIdOf(row))) || stayAskAction(session, stayKey) !== 'booking';
 }
 
 function allowedBookingDrafts(session: Pick<QuoteSession, 'analysis' | 'groups' | 'bookingDrafts'>): QuoteSession['bookingDrafts'] {
@@ -1400,6 +1453,7 @@ function copyRow(source: StayGroupRequirement, id: string, stayId: string): Stay
   delete details.confirmationNumber;
   delete details.stayGuests;
   delete details.caseScoped;
+  delete details.caseLookupConfirmation;
   return copy;
 }
 
@@ -1782,23 +1836,30 @@ export function reduceQuoteSession(
       const loadingDone = session.phase === 'analysing' ? 'requirements' : session.phase;
       if (staffEditedDuringRun) {
         // Staff corrected stay fields after this run started. Keep their groups and take
-        // only the new read-out, so a late result never overwrites those edits.
-        const staffActions = action.analysis.staffActions ?? session.staffActions;
-        const groups = action.analysis.intent === 'quote' ? quoteDateGroups(session.groups) : session.groups;
-        const reviewItems = projectQuoteReviewItems(action.analysis, groups, [], staffActions);
+        // only a compatible read-out, so a late result cannot retarget those edits to another case.
+        const caseChanged = session.analysis !== null && (
+          changedCaseIdentity(session.analysis, action.analysis) ||
+          caseTaskSignature(session.analysis) !== caseTaskSignature(action.analysis)
+        );
+        const analysis = caseChanged && session.analysis
+          ? withCaseReview(session.analysis, true)
+          : withCaseReview(action.analysis, false);
+        const staffActions = analysis.staffActions ?? session.staffActions;
+        const groups = analysis.intent === 'quote' ? quoteDateGroups(session.groups) : session.groups;
+        const reviewItems = projectQuoteReviewItems(analysis, groups, [], staffActions);
         const sourceKey = reviewSourceKey(session);
         const handled = session.handledSourceKey === sourceKey ? session.handledReviewItemIds : [];
         return {
           ...session,
           phase: loadingDone,
-          analysis: action.analysis,
+          analysis,
           groups,
-          bookingDrafts: allowedBookingDrafts({ ...session, groups, analysis: action.analysis }),
+          bookingDrafts: allowedBookingDrafts({ ...session, groups, analysis }),
           analysisStartStayRevision: null,
           staffActions,
           staffHeader: prefillStaffHeaderFromLuna(
             session.staffHeader,
-            action.analysis,
+            analysis,
             session.staffSalesStrategyEdited === true,
           ),
           reviewItems,
@@ -1816,7 +1877,16 @@ export function reduceQuoteSession(
         // workflow is taken, the edited stays are kept.
         const typeChanged =
           Boolean(session.treatAs) && action.analysis.luna?.workflow !== session.analysis?.luna?.workflow;
-        const analysis = typeChanged ? action.analysis : session.analysis;
+        const identityChanged = changedCaseIdentity(session.analysis, action.analysis);
+        const changedCaseTasks = caseTaskSignature(action.analysis) !== caseTaskSignature(session.analysis);
+        const holdCase = session.analysis && (identityChanged || (!typeChanged && changedCaseTasks));
+        const analysis = holdCase
+          ? withCaseReview(session.analysis!, true)
+          : typeChanged
+            ? withCaseReview(action.analysis, false)
+            : session.analysis && caseReviewPending(session.analysis)
+              ? withCaseReview(session.analysis, false)
+              : session.analysis;
         return {
           ...session,
           phase: loadingDone,

@@ -4313,6 +4313,32 @@ describe('multi-ask stay cards: guests, action, split', () => {
     expect(amendmentOf(session)?.confirmationNumber).toBeNull();
   });
 
+  it('can look up the single selected-email case without attaching its number to a room', () => {
+    const number = '11111111-1';
+    const group = {
+      ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a', caseScoped: true,
+      quantity: undefined, stayGuests: [], caseLookupConfirmation: number,
+    };
+    const session = analysisReady({
+      ...quoteAnalysis, intent: 'other', groups: [group],
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: number, guestLastName: null,
+        arrival: null, departure: null, requestedChange: null,
+      },
+    });
+    expect(amendmentOf(session)?.confirmationNumber).toBe(number);
+    expect('confirmationNumber' in session.groups[0]!).toBe(false);
+    const withCopy = reduceQuoteSession(session, { type: 'duplicate_row', groupId: 'r_1', token: 'copy' });
+    expect(amendmentOf(withCopy)?.confirmationNumber).toBeNull();
+    const onlyCopy = reduceQuoteSession(withCopy, { type: 'remove_row', groupId: 'r_1' });
+    expect(amendmentOf(onlyCopy)?.confirmationNumber).toBeNull();
+  });
+
   it('does not use the email-wide amendment for a selected cancellation stay', () => {
     const groups = [
       { ...quoteAnalysis.groups[0]!, id: 'r_amend', stayId: 'stay-amend', stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1' },
@@ -4650,5 +4676,84 @@ describe('multi-ask stay cards: guests, action, split', () => {
       type: 'analysis_ready', analysis: { ...onlyNew.analysis!, luna: { ...onlyNew.analysis!.luna!, tasks: [{ kind: 'other', groupIndexes: [0], note: '' }] } },
     });
     expect(reclassified.bookingDrafts).toEqual({});
+    expect(quoteRunBlockReason(reclassified, stepFor(reclassified, dateKey))).toMatch(/existing or unclear booking/i);
+    expect(reduceQuoteSession(reclassified, { type: 'booking_draft_ready', payload: draft, sourceHash: STAFF_HASH }).bookingDrafts).toEqual({});
+    const consistent = reduceQuoteSession(reclassified, { type: 'analysis_ready', analysis: onlyNew.analysis! });
+    expect(quoteRunBlockReason(consistent, stepFor(consistent, dateKey))).toBeNull();
+  });
+
+  it('holds a late read that reuses an edited case id for a different guest', () => {
+    const row = {
+      ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a',
+      stayGuests: [{ name: 'Ada Example', confirmationNumber: null }],
+    };
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis, groups: [row],
+      luna: {
+        workflow: 'create_booking', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }],
+      },
+    };
+    let session = withStaffSource(analysisReady(analysis));
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: row.id, patch: { adults: 3 } });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: { ...analysis, groups: [{ ...row, stayGuests: [{ name: 'Bea Example', confirmationNumber: null }] }] },
+    });
+    expect(session.groups[0]?.adults).toBe(3);
+    expect(stayAskGuests(session, 'stay-a')).toEqual(row.stayGuests);
+    expect(quoteRunBlockReason(session, stepFor(session, stayKeyForGroup(row)))).toMatch(/existing or unclear booking/i);
+  });
+
+  it('does not use either booking number when a late amendment read changes the edited case identity', () => {
+    const row = {
+      ...quoteAnalysis.groups[0]!, id: 'r_1', stayId: 'stay-a', caseScoped: true,
+      stayGuests: [{ name: 'Ada Example', confirmationNumber: '11111111-1' }], confirmationNumber: '11111111-1',
+    };
+    const analysis: QuoteAnalysis = {
+      ...quoteAnalysis, intent: 'other', groups: [row],
+      luna: {
+        workflow: 'amend', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'amend', groupIndexes: [0], note: '' }],
+      },
+      amendment: {
+        kind: 'amend', confirmationNumber: '11111111-1', guestLastName: 'Example',
+        arrival: '2026-11-12', departure: '2026-11-14', requestedChange: null,
+      },
+    };
+    let session = analysisReady(analysis);
+    session = reduceQuoteSession(session, { type: 'analysis_started' });
+    session = reduceQuoteSession(session, { type: 'patch_group', groupId: row.id, patch: { adults: 3 } });
+    session = reduceQuoteSession(session, {
+      type: 'analysis_ready',
+      analysis: {
+        ...analysis,
+        groups: [{ ...row, stayGuests: [{ name: 'Bea Example', confirmationNumber: '22222222-1' }], confirmationNumber: '22222222-1' }],
+        amendment: { ...analysis.amendment!, confirmationNumber: '22222222-1' },
+      },
+    });
+    expect(session.groups[0]?.adults).toBe(3);
+    expect(stayAskGuests(session, 'stay-a')).toEqual(row.stayGuests);
+    expect(amendmentOf(session)).toMatchObject({ confirmationNumber: null, guestLastName: null, arrival: null });
+  });
+
+  it('does not treat an unlinked edited stay as a new booking just because the email has another new case', () => {
+    const rows = [
+      { ...quoteAnalysis.groups[0]!, id: 'one', stayId: 'one' },
+      { ...quoteAnalysis.groups[0]!, id: 'two', stayId: 'two', arrivalDate: '2026-12-01', departureDate: '2026-12-03' },
+    ];
+    const session = analysisReady({
+      ...quoteAnalysis, groups: rows,
+      luna: {
+        workflow: 'create_booking', flags: [], groups: [],
+        party: { kind: null, name: null, reference: null },
+        rateClaims: [], missing: [], evidence: [], tasks: [{ kind: 'create_booking', groupIndexes: [0], note: '' }],
+      },
+    });
+    expect(quoteRunBlockReason(session, stepFor(session, stayKeyForGroup(rows[0]!)))).toBeNull();
+    expect(quoteRunBlockReason(session, stepFor(session, stayKeyForGroup(rows[1]!)))).toMatch(/existing or unclear booking/i);
   });
 });
