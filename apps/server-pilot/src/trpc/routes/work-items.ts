@@ -106,9 +106,31 @@ const fieldEventInput = z
   })
   .strict();
 
+const paneAcceptInput = z.object({
+  workItemId: z.string().uuid(),
+  fieldPaths: z.array(z.string().min(1).max(200)).min(1).max(200),
+}).strict();
+const paneRevisionInput = z.object({ workItemId: z.string().uuid(), expectedSeq: z.number().int().min(0) }).strict();
+const paneResetInput = z.object({
+  workItemId: z.string().uuid(),
+  section: z.discriminatedUnion('type', [
+    z.object({ type: z.literal('contact') }).strict(),
+    z.object({ type: z.literal('stay'), stayId: z.string().min(1).max(40) }).strict(),
+  ]),
+}).strict();
+const paneOwner = z.string().min(1).max(256);
+const ownedPaneActionInput = z.discriminatedUnion('action', [
+  paneAcceptInput.extend({ action: z.literal('accept'), expectedUserId: paneOwner }).strict(),
+  paneRevisionInput.extend({ action: z.literal('undo'), expectedUserId: paneOwner }).strict(),
+  paneRevisionInput.extend({ action: z.literal('redo'), expectedUserId: paneOwner }).strict(),
+  paneResetInput.extend({ action: z.literal('reset'), expectedUserId: paneOwner }).strict(),
+]);
+
+type PaneActor = { activeTransportId: string; sessionUser: { id: string } };
+
 async function saveFieldEvent(
   input: z.infer<typeof fieldEventInput>,
-  ctx: { activeTransportId: string; sessionUser: { id: string } },
+  ctx: PaneActor,
 ) {
   const result = await recordFieldEvent(getDb(), {
     transportId: ctx.activeTransportId,
@@ -126,6 +148,34 @@ async function saveFieldEvent(
   if (result.status === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The saved details changed. Reload and review your changes.' });
   if (result.status === 'busy') throw new TRPCError({ code: 'CONFLICT', message: 'The email is being updated. Wait a moment, then try again.' });
   return { aiValue: result.aiValue, value: result.value, ...(result.cursor ? { cursor: result.cursor } : {}) };
+}
+
+async function acceptPaneFields(input: z.infer<typeof paneAcceptInput>, ctx: PaneActor) {
+  const result = await acceptUneditedFields(getDb(), {
+    transportId: ctx.activeTransportId, workItemId: input.workItemId, userId: ctx.sessionUser.id, fieldPaths: input.fieldPaths,
+  });
+  if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+  if (result.status === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email was re-read. Refresh and review your changes.' });
+  if (result.status === 'busy') throw new TRPCError({ code: 'CONFLICT', message: 'The email is being updated. Wait a moment, then try again.' });
+  return { accepted: result.accepted };
+}
+
+async function movePaneHistory(input: z.infer<typeof paneRevisionInput>, ctx: PaneActor, action: 'undo' | 'redo') {
+  const move = action === 'undo' ? undoWorkItemRevision : redoWorkItemRevision;
+  return historyMoveResult(await move(getDb(), {
+    transportId: ctx.activeTransportId, workItemId: input.workItemId, userId: ctx.sessionUser.id, expectedSeq: input.expectedSeq,
+  }));
+}
+
+async function resetPaneSection(input: z.infer<typeof paneResetInput>, ctx: PaneActor) {
+  const result = await resetWorkSection(getDb(), {
+    transportId: ctx.activeTransportId, workItemId: input.workItemId, userId: ctx.sessionUser.id, section: input.section,
+  });
+  if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
+  if (result.status === 'invalid_section') throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown section.' });
+  if (result.status === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email was re-read. Refresh and review your changes.' });
+  if (result.status === 'busy') throw new TRPCError({ code: 'CONFLICT', message: 'The email is being updated. Wait a moment, then try again.' });
+  return { reset: result.reset };
 }
 
 export const workItemsRouter = router({
@@ -178,13 +228,22 @@ export const workItemsRouter = router({
   recordEvent: mailboxProcedure.input(fieldEventInput).mutation(({ input, ctx }) => saveFieldEvent(input, ctx)),
   // A separate route makes older servers fail closed rather than ignore an unrecognised owner fence.
   recordOwnedEvent: mailboxProcedure
-    .input(fieldEventInput.extend({ expectedUserId: z.string().min(1).max(256) }).strict())
+    .input(fieldEventInput.extend({ expectedUserId: paneOwner }).strict())
     .mutation(({ input, ctx }) => {
       if (input.expectedUserId !== ctx.sessionUser.id) {
         throw new TRPCError({ code: 'CONFLICT', message: 'The staff account changed. Reopen the email and retry.' });
       }
       return saveFieldEvent(input, ctx);
     }),
+  /** The actor is bound at the server, even when a cookie changes before the pane rerenders. */
+  ownedPaneAction: mailboxProcedure.input(ownedPaneActionInput).mutation(({ input, ctx }) => {
+    if (input.expectedUserId !== ctx.sessionUser.id) {
+      throw new TRPCError({ code: 'CONFLICT', message: 'The staff account changed. Reopen the email and retry.' });
+    }
+    if (input.action === 'accept') return acceptPaneFields(input, ctx);
+    if (input.action === 'reset') return resetPaneSection(input, ctx);
+    return movePaneHistory(input, ctx, input.action);
+  }),
   /** Owner/developer review of exactly the succeeded extraction shown by the workflow console. */
   adminReview: mailboxProcedure.input(adminReviewInput).mutation(async ({ input, ctx }) => {
     // Owner console only: hotel staff with member access must not change review counts.
@@ -303,27 +362,7 @@ export const workItemsRouter = router({
    * The fields the pane showed when a person proceeded with the read (B2). The server skips any field she edited and any
    * with no AI value, so a repeat call adds nothing. Accepted fields log the AI value.
    */
-  acceptFields: mailboxProcedure
-    .input(
-      z
-        .object({
-          workItemId: z.string().uuid(),
-          fieldPaths: z.array(z.string().min(1).max(200)).min(1).max(200),
-        })
-        .strict(),
-    )
-    .mutation(async ({ input, ctx }) => {
-      const result = await acceptUneditedFields(getDb(), {
-        transportId: ctx.activeTransportId,
-        workItemId: input.workItemId,
-        userId: ctx.sessionUser.id,
-        fieldPaths: input.fieldPaths,
-      });
-      if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
-      if (result.status === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email was re-read. Refresh and review your changes.' });
-      if (result.status === 'busy') throw new TRPCError({ code: 'CONFLICT', message: 'The email is being updated. Wait a moment, then try again.' });
-      return { accepted: result.accepted };
-    }),
+  acceptFields: mailboxProcedure.input(paneAcceptInput).mutation(({ input, ctx }) => acceptPaneFields(input, ctx)),
   /** Translates the read again (U16 Retry). Returns the translation the pane shows, or why it could not run. */
   retryTranslation: mailboxProcedure
     .input(z.object({ workItemId: z.string().uuid() }).strict())
@@ -400,57 +439,9 @@ export const workItemsRouter = router({
       if (!cursor) throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
       return cursor;
     }),
-  undoRevision: mailboxProcedure
-    .input(
-      z.object({ workItemId: z.string().uuid(), expectedSeq: z.number().int().min(0) }).strict(),
-    )
-    .mutation(async ({ input, ctx }) => {
-      const result = await undoWorkItemRevision(getDb(), {
-        transportId: ctx.activeTransportId,
-        workItemId: input.workItemId,
-        userId: ctx.sessionUser.id,
-        expectedSeq: input.expectedSeq,
-      });
-      return historyMoveResult(result);
-    }),
-  redoRevision: mailboxProcedure
-    .input(
-      z.object({ workItemId: z.string().uuid(), expectedSeq: z.number().int().min(0) }).strict(),
-    )
-    .mutation(async ({ input, ctx }) => {
-      const result = await redoWorkItemRevision(getDb(), {
-        transportId: ctx.activeTransportId,
-        workItemId: input.workItemId,
-        userId: ctx.sessionUser.id,
-        expectedSeq: input.expectedSeq,
-      });
-      return historyMoveResult(result);
-    }),
-  resetSection: mailboxProcedure
-    .input(
-      z
-        .object({
-          workItemId: z.string().uuid(),
-          section: z.discriminatedUnion('type', [
-            z.object({ type: z.literal('contact') }).strict(),
-            z.object({ type: z.literal('stay'), stayId: z.string().min(1).max(40) }).strict(),
-          ]),
-        })
-        .strict(),
-    )
-    .mutation(async ({ input, ctx }) => {
-      const result = await resetWorkSection(getDb(), {
-        transportId: ctx.activeTransportId,
-        workItemId: input.workItemId,
-        userId: ctx.sessionUser.id,
-        section: input.section,
-      });
-      if (result.status === 'not_found') throw new TRPCError({ code: 'NOT_FOUND', message: 'Work item not found.' });
-      if (result.status === 'invalid_section') throw new TRPCError({ code: 'BAD_REQUEST', message: 'Unknown section.' });
-      if (result.status === 'stale') throw new TRPCError({ code: 'CONFLICT', message: 'The email was re-read. Refresh and review your changes.' });
-      if (result.status === 'busy') throw new TRPCError({ code: 'CONFLICT', message: 'The email is being updated. Wait a moment, then try again.' });
-      return { reset: result.reset };
-    }),
+  undoRevision: mailboxProcedure.input(paneRevisionInput).mutation(({ input, ctx }) => movePaneHistory(input, ctx, 'undo')),
+  redoRevision: mailboxProcedure.input(paneRevisionInput).mutation(({ input, ctx }) => movePaneHistory(input, ctx, 'redo')),
+  resetSection: mailboxProcedure.input(paneResetInput).mutation(({ input, ctx }) => resetPaneSection(input, ctx)),
 });
 
 function historyMoveResult(

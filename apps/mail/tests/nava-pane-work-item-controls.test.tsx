@@ -291,6 +291,12 @@ vi.mock('../providers/query-provider', () => ({
         undoRevision: { mutate: (input: unknown) => bridgeMockState.undoRevision(input as never) },
         redoRevision: { mutate: (input: unknown) => bridgeMockState.redoRevision(input as never) },
         resetSection: { mutate: (input: unknown) => bridgeMockState.resetSection(input as never) },
+        ownedPaneAction: { mutate: (input: { action: string }) => {
+          if (input.action === 'undo') return bridgeMockState.undoRevision(input);
+          if (input.action === 'redo') return bridgeMockState.redoRevision(input);
+          if (input.action === 'reset') return bridgeMockState.resetSection(input);
+          return Promise.resolve({ accepted: 0 });
+        } },
       };
     },
     quoteWorkflow: {
@@ -631,7 +637,7 @@ describe('Nava pane work-item controls', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
     await waitFor(() => {
       expect(bridgeMockState.undoRevision).toHaveBeenCalledWith({
-        workItemId: WORK_ITEM_ID,
+        workItemId: WORK_ITEM_ID, action: 'undo', expectedUserId: 'staff-1',
         expectedSeq: HISTORY_CURSOR.seq,
       });
     });
@@ -645,7 +651,7 @@ describe('Nava pane work-item controls', () => {
     fireEvent.click(resets[0]!);
     await waitFor(() => {
       expect(bridgeMockState.resetSection).toHaveBeenCalledWith({
-        workItemId: WORK_ITEM_ID,
+        workItemId: WORK_ITEM_ID, action: 'reset', expectedUserId: 'staff-1',
         section: { type: 'contact' },
       });
     });

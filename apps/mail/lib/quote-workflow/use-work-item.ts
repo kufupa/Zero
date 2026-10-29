@@ -151,11 +151,13 @@ type FieldSend = {
   userId: string;
   /** A later account or competing edit requires staff review rather than an automatic retry. */
   needsReview?: boolean;
+  reviewReason?: 'history';
   path: string;
   value: RecordFieldEventInput['value'];
   msSinceOpen: number;
 };
-type PendingEvent = FieldSend & { timer: ReturnType<typeof setTimeout> };
+type PendingEvent = FieldSend & { timer: ReturnType<typeof setTimeout>; paused?: boolean };
+type PausedEvent = { key: string; entry: PendingEvent };
 export type FieldEvent = { path: string; value: RecordFieldEventInput['value'] };
 type Refs = Record<string, { stayId: string; rowId: string | null }>;
 type ReadyStored = Extract<StoredWork, { status: 'ready' }>;
@@ -187,14 +189,7 @@ export type WorkItemPaneControls = {
 };
 
 type HistorySeqCursor = WorkItemHistoryCursor & { seq: number };
-type HistoryMutate = (
-  input: { workItemId: string; expectedSeq: number },
-  opts?: ReturnType<typeof inMailbox>,
-) => Promise<unknown>;
-type ResetMutate = (
-  input: { workItemId: string; section: WorkItemSection },
-  opts?: ReturnType<typeof inMailbox>,
-) => Promise<unknown>;
+type PaneHistoryRequest = { action: 'undo' | 'redo'; expectedSeq: number } | { action: 'reset'; section: WorkItemSection };
 type CursorQuery = (
   input: { workItemId: string },
   opts?: ReturnType<typeof inMailbox>,
@@ -246,31 +241,19 @@ function historyMoveErrorCopy(error: unknown, fallback: string): string {
   return historyStaleOf(error) ? HISTORY_STALE_COPY : fallback;
 }
 
-/** Older servers omit these routes; the pane hides the controls then. */
-function historyRoutesFrom(trpc: unknown): {
-  revisionCursor: { query: CursorQuery } | null;
-  undoRevision: { mutate: HistoryMutate } | null;
-  redoRevision: { mutate: HistoryMutate } | null;
-  resetSection: { mutate: ResetMutate } | null;
-} {
+function historyAcknowledged(result: unknown, action: 'undo' | 'redo' | 'reset'): boolean {
+  if (!result || typeof result !== 'object') return false;
+  const value = result as Record<string, unknown>;
+  return action === 'reset' ? Number.isSafeInteger(value.reset) && (value.reset as number) >= 0
+    : Number.isSafeInteger(value.revision) && Number.isSafeInteger(value.revisionHead) && Number.isSafeInteger(value.seq);
+}
+
+function historyRoutesFrom(trpc: unknown): { revisionCursor: { query: CursorQuery } | null } {
   const workItems = (trpc as {
-    workItems?: {
-      revisionCursor?: { query?: CursorQuery };
-      undoRevision?: { mutate?: HistoryMutate };
-      redoRevision?: { mutate?: HistoryMutate };
-      resetSection?: { mutate?: ResetMutate };
-    };
+    workItems?: { revisionCursor?: { query?: CursorQuery } };
   } | null)?.workItems;
   const query = workItems?.revisionCursor?.query;
-  const undo = workItems?.undoRevision?.mutate;
-  const redo = workItems?.redoRevision?.mutate;
-  const reset = workItems?.resetSection?.mutate;
-  return {
-    revisionCursor: typeof query === 'function' ? { query } : null,
-    undoRevision: typeof undo === 'function' ? { mutate: undo } : null,
-    redoRevision: typeof redo === 'function' ? { mutate: redo } : null,
-    resetSection: typeof reset === 'function' ? { mutate: reset } : null,
-  };
+  return { revisionCursor: typeof query === 'function' ? { query } : null };
 }
 
 export function sectionHasStaffEdit(
@@ -675,6 +658,7 @@ export function useStoredWork(args: {
   const [historyPending, setHistoryPending] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyNeedsReload, setHistoryNeedsReload] = useState(false);
+  const historyBusy = useRef(new Set<string>());
   const [cursorEpoch, setCursorEpoch] = useState(0);
   const trpcRef = useRef(trpc);
   const lookupKeyRef = useRef(lookupKey);
@@ -740,7 +724,7 @@ export function useStoredWork(args: {
   const send = useCallback(
     (key: string) => {
       const entry = pending.current.get(key);
-      if (!entry) return;
+      if (!entry || entry.paused) return;
       clearTimeout(entry.timer);
       pending.current.delete(key);
       post(
@@ -774,14 +758,37 @@ export function useStoredWork(args: {
     for (const key of pending.current.keys()) send(key);
   }, [send]);
 
-  const dropQueuedSaves = useCallback((workItemId: string, userId: string, section?: WorkItemSection) => {
+  const pauseQueuedSaves = useCallback((workItemId: string, userId: string, section?: WorkItemSection): PausedEvent[] => {
+    const paused: PausedEvent[] = [];
     for (const [key, entry] of pending.current) {
       if (entry.workItemId !== workItemId || entry.userId !== userId) continue;
       if (section && !fieldPathInSection(entry.path, section)) continue;
       clearTimeout(entry.timer);
-      pending.current.delete(key);
+      entry.paused = true;
+      paused.push({ key, entry });
     }
+    return paused;
   }, []);
+
+  const settleQueuedSaves = useCallback((paused: PausedEvent[], outcome: 'resume' | 'hold' | 'discard') => {
+    let held = false;
+    for (const { key, entry } of paused) {
+      if (pending.current.get(key) !== entry) continue;
+      if (outcome === 'resume') {
+        entry.paused = false;
+        entry.timer = setTimeout(() => send(key), WORK_EVENT_DEBOUNCE_MS);
+      } else {
+        pending.current.delete(key);
+        if (outcome === 'hold') {
+          entry.needsReview = true;
+          entry.reviewReason = 'history';
+          failed.current.set(key, entry);
+          held = true;
+        }
+      }
+    }
+    if (held) setFailureRevision((n) => n + 1);
+  }, [send]);
 
   const schedule = useCallback(
     (path: string, workItemId: string, transportId: string | null, userId: string, value: RecordFieldEventInput['value']) => {
@@ -1143,8 +1150,13 @@ export function useStoredWork(args: {
     (before: StayGroupRequirement[], after: StayGroupRequirement[], options?: { verifiedRecovery?: boolean }): boolean => {
       if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch) { blockStaleSelection(selection.current.key); return false; }
       editEpoch.current += 1;
-      if (historyPending || historyNeedsReload || discardInProgress.current || sourceHeld) return false;
       const workItemId = readyWorkItemId ?? cachedWorkItemId;
+      if (workItemId && historyBusy.current.has(workItemId)) {
+        if (lookupKey) setRecoveryMarked(lookupKey, true);
+        setRecoveryProblem({ key: lookupKey ?? '', message: 'The saved details are changing. Review and re-enter your change.' });
+        return false;
+      }
+      if (historyPending || historyNeedsReload || discardInProgress.current || sourceHeld) return false;
       const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
       if (workItemId && !ownerId) {
         if (lookupKey) setRecoveryMarked(lookupKey, true);
@@ -1193,8 +1205,13 @@ export function useStoredWork(args: {
     (field: ContactField, value: string | null) => {
       if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch) { blockStaleSelection(selection.current.key); return; }
       editEpoch.current += 1;
-      if (historyPending || historyNeedsReload || sourceHeld) return;
       const workItemId = readyWorkItemId ?? cachedWorkItemId;
+      if (workItemId && historyBusy.current.has(workItemId)) {
+        if (lookupKey) setRecoveryMarked(lookupKey, true);
+        setRecoveryProblem({ key: lookupKey ?? '', message: 'The saved details are changing. Review and re-enter your change.' });
+        return;
+      }
+      if (historyPending || historyNeedsReload || sourceHeld) return;
       const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
       if (workItemId && !ownerId) {
         if (lookupKey) setRecoveryMarked(lookupKey, true);
@@ -1253,25 +1270,29 @@ export function useStoredWork(args: {
    */
   const acceptUnedited = useCallback(
     (groups: StayGroupRequirement[]) => {
-      const accept = workItemsFromTrpc(trpcRef.current).acceptFields;
-      if (!accept || !readyWorkItemId || !readyRefs || sourceHeld || selection.current.epoch !== renderEpoch ||
+      const accept = workItemsFromTrpc(trpcRef.current).ownedPaneAction;
+      if (!accept || !readyWorkItemId || !readyRefs || sourceHeld || !webOwnerIsCurrent() || selection.current.epoch !== renderEpoch ||
+          historyBusy.current.has(readyWorkItemId) ||
           (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
+      const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
+      if (!ownerId) return;
       flushAll();
       const workItemId = readyWorkItemId;
       const shown = shownFieldPaths(readyRefs, groups);
       const pinned = inMailbox(readyTransportId);
       void Promise.allSettled(inFlight.current.values())
         .then(() => {
-          if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch) return;
+          if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch ||
+              !webOwnerIsCurrent() || getMailCacheScope().userId !== ownerId || historyBusy.current.has(workItemId)) return;
           // Every field she edited on this screen, including one still pending, failed or retrying, is left out.
           const fieldPaths = shown.filter((path) => !edited.current.has(fieldSlot(workItemId, path)));
           if (!fieldPaths.length) return;
-          const input = { workItemId, fieldPaths };
+          const input = { action: 'accept' as const, expectedUserId: ownerId, workItemId, fieldPaths };
           return pinned ? accept.mutate(input, pinned) : accept.mutate(input);
         })
         .catch(() => undefined);
     },
-    [readyRefs, readyWorkItemId, readyTransportId, flushAll, lookupKey, renderEpoch, sourceHeld],
+    [currentLookup, expectedMessageId, readyRefs, readyWorkItemId, readyTransportId, flushAll, lookupKey, renderEpoch, scope, sourceHeld],
   );
 
   /**
@@ -1390,8 +1411,9 @@ export function useStoredWork(args: {
 
   const historyRoutes = historyRoutesFrom(trpc);
   const awaitingRecovery = Boolean(lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)));
-  const historyAvailable = Boolean(readyWorkItemId && !awaitingRecovery && historyRoutes.undoRevision && historyRoutes.redoRevision);
-  const resetAvailable = Boolean(readyWorkItemId && !awaitingRecovery && historyRoutes.resetSection);
+  const ownedActionAvailable = typeof workItemsFromTrpc(trpc).ownedPaneAction?.mutate === 'function';
+  const historyAvailable = Boolean(readyWorkItemId && !awaitingRecovery && historyRoutes.revisionCursor && ownedActionAvailable);
+  const resetAvailable = Boolean(readyWorkItemId && !awaitingRecovery && ownedActionAvailable);
 
   useEffect(() => {
     setHistoryRefresh((previous) => previous.key === lookupKey && previous.selectionEpoch === selection.current.epoch
@@ -1440,111 +1462,94 @@ export function useStoredWork(args: {
     };
   }, [readyWorkItemId, readyTransportId, historyEpoch, cursorEpoch, expectedMessageId, scope]);
 
-  const runHistoryMove = useCallback(
-    (mutate: HistoryMutate | undefined, message: string) => {
-      const seq = historyCursor?.seq;
-      if (!readyWorkItemId || !mutate || seq === undefined || discardInProgress.current ||
-          !webOwnerIsCurrent() || (expectedMessageId && selection.current.epoch !== renderEpoch) ||
-          (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
+  const runHistoryAction = useCallback(
+    (action: PaneHistoryRequest, message: string) => {
+      const mutate = workItemsFromTrpc(trpcRef.current).ownedPaneAction?.mutate;
+      if (!readyWorkItemId || !lookupKey || !mutate || discardInProgress.current || historyBusy.current.has(readyWorkItemId) ||
+          !webOwnerIsCurrent() || selection.current.epoch !== renderEpoch ||
+          deferred.current.has(lookupKey) || recoveryMarked(lookupKey)) return;
       const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
       if (!ownerId) {
         setHistoryError('The staff account changed. Reopen the email and try again.');
         return;
       }
-      const keyNow = lookupKey;
-      const isCurrent = () => lookupKeyRef.current === keyNow && (!expectedMessageId ||
-        (selection.current.epoch === renderEpoch && webOwnerIsCurrent()));
-      setHistoryPending(true);
-      setHistoryError(null);
-      setHistoryNeedsReload(false);
-      dropQueuedSaves(readyWorkItemId, ownerId);
-      const pinned = inMailbox(readyTransportId);
-      const input = { workItemId: readyWorkItemId, expectedSeq: seq };
-      void Promise.allSettled(inFlight.current.values())
-        .then(() => {
-          if (!isCurrent() || lookupOwner(currentLookup, scope, readyTransportId) !== ownerId) return;
-          dropQueuedSaves(readyWorkItemId, ownerId);
-          return pinned ? mutate(input, pinned) : mutate(input);
-        })
-        .then((result) => {
-          if (!isCurrent() || lookupOwner(currentLookup, scope, readyTransportId) !== ownerId) return;
-          if (historyStaleOf(result)) {
-            setHistoryError(HISTORY_STALE_COPY);
-            return;
-          }
-          if (result && typeof result === 'object' && 'seq' in result) {
-            const next = result as HistorySeqCursor;
-            if (Number.isSafeInteger(next.revision) && Number.isSafeInteger(next.seq)) setHistoryCursor(next);
-          }
-          return refetchStored();
-        })
-        .catch((error) => {
-          if (!expectedMessageId || isCurrent()) setHistoryError(historyMoveErrorCopy(error, message));
-        })
-        .finally(() => {
-          if (!expectedMessageId || isCurrent()) setHistoryPending(false);
-        });
-    },
-    [currentLookup, dropQueuedSaves, historyCursor, lookupKey, readyWorkItemId, readyTransportId, refetchStored, expectedMessageId, renderEpoch, scope],
-  );
-
-  const undo = useCallback(
-    (_workItemId: string, _expectedRevision: number) => {
-      runHistoryMove(historyRoutesFrom(trpcRef.current).undoRevision?.mutate, "Couldn't undo — try again");
-    },
-    [runHistoryMove],
-  );
-
-  const redo = useCallback(
-    (_workItemId: string, _expectedRevision: number) => {
-      runHistoryMove(historyRoutesFrom(trpcRef.current).redoRevision?.mutate, "Couldn't redo — try again");
-    },
-    [runHistoryMove],
-  );
-
-  const resetSection = useCallback(
-    (section: WorkItemSection) => {
-      const mutate = historyRoutesFrom(trpcRef.current).resetSection?.mutate;
-      if (!readyWorkItemId || !mutate || discardInProgress.current ||
-          !webOwnerIsCurrent() || (expectedMessageId && selection.current.epoch !== renderEpoch) ||
-          (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
-      const ownerId = lookupOwner(currentLookup, scope, readyTransportId);
-      if (!ownerId) {
-        setHistoryError('The staff account changed. Reopen the email and try again.');
+      const workItemId = readyWorkItemId;
+      const section = action.action === 'reset' ? action.section : undefined;
+      // A refresh after history would hide any unrelated, still-unsaved edits. Keep them and wait for a safe retry.
+      if ([...pending.current.values()].some((entry) => entry.workItemId === workItemId &&
+          (entry.userId !== ownerId || (section && !fieldPathInSection(entry.path, section))))) {
+        setHistoryError('Save or review the other unsaved changes before continuing.');
         return;
       }
+      const paused = pauseQueuedSaves(workItemId, ownerId, section);
       const keyNow = lookupKey;
-      const isCurrent = () => lookupKeyRef.current === keyNow && (!expectedMessageId ||
-        (selection.current.epoch === renderEpoch && webOwnerIsCurrent()));
+      const epoch = renderEpoch;
+      const editAtStart = editEpoch.current;
+      const stillSelected = () => {
+        const owner = getMailCacheScope();
+        return lookupKeyRef.current === keyNow && selection.current.epoch === epoch &&
+          owner.userId === ownerId && owner.activeTransportId === readyTransportId && webOwnerIsCurrent();
+      };
+      const pinned = inMailbox(readyTransportId);
+      historyBusy.current.add(workItemId);
       setHistoryPending(true);
       setHistoryError(null);
       setHistoryNeedsReload(false);
-      dropQueuedSaves(readyWorkItemId, ownerId, section);
-      const pinned = inMailbox(readyTransportId);
-      const input = { workItemId: readyWorkItemId, section };
-      void Promise.allSettled(inFlight.current.values())
-        .then(() => {
-          if (!isCurrent() || lookupOwner(currentLookup, scope, readyTransportId) !== ownerId) return;
-          dropQueuedSaves(readyWorkItemId, ownerId, section);
-          return pinned ? mutate(input, pinned) : mutate(input);
-        })
-        .then((result) => {
-          if (!isCurrent() || lookupOwner(currentLookup, scope, readyTransportId) !== ownerId) return;
-          if (historyStaleOf(result)) {
-            setHistoryError(HISTORY_STALE_COPY);
+      void (async () => {
+        let dispatched = false;
+        let acknowledged = false;
+        try {
+          const prefix = `${workItemId}\n`;
+          await Promise.allSettled([...inFlight.current.entries()]
+            .filter(([key]) => key.startsWith(prefix)).map(([, promise]) => promise));
+          if (!stillSelected()) return;
+          // Failed or unacknowledged saves can later land and undo the history action. Review them first.
+          if ([...latest.current.values(), ...failed.current.values()].some((entry) => entry.workItemId === workItemId) ||
+              [...pending.current.values()].some((entry) => entry.workItemId === workItemId &&
+                !paused.some((saved) => saved.entry === entry))) {
+            setHistoryError('Save or review the other unsaved changes before continuing.');
             return;
           }
-          return refetchStored();
-        })
-        .catch((error) => {
-          if (!expectedMessageId || isCurrent()) setHistoryError(historyMoveErrorCopy(error, "Couldn't reset — try again"));
-        })
-        .finally(() => {
-          if (!expectedMessageId || isCurrent()) setHistoryPending(false);
-        });
+          dispatched = true;
+          const input = { ...action, workItemId, expectedUserId: ownerId };
+          const result = await (pinned ? mutate(input, pinned) : mutate(input));
+          if (historyStaleOf(result)) throw result;
+          if (!historyAcknowledged(result, action.action)) throw new Error('Missing action acknowledgement');
+          acknowledged = true;
+          // Clear only the exact entries owned by this action, after the server confirms it.
+          settleQueuedSaves(paused, 'discard');
+          if (!stillSelected()) return;
+          if (editEpoch.current !== editAtStart) {
+            setHistoryError('The details changed while the action was saving. Reload and review them.');
+            setHistoryNeedsReload(true);
+            return;
+          }
+          if (action.action !== 'reset') setHistoryCursor(result as HistorySeqCursor);
+          await refetchStored();
+        } catch (error) {
+          if (stillSelected()) setHistoryError(historyMoveErrorCopy(error, message));
+        } finally {
+          if (!acknowledged) settleQueuedSaves(paused, dispatched ? 'hold' : 'resume');
+          historyBusy.current.delete(workItemId);
+          if (stillSelected()) setHistoryPending(false);
+        }
+      })();
     },
-    [currentLookup, dropQueuedSaves, lookupKey, readyWorkItemId, readyTransportId, refetchStored, expectedMessageId, renderEpoch, scope],
+    [currentLookup, lookupKey, pauseQueuedSaves, readyWorkItemId, readyTransportId, refetchStored,
+      expectedMessageId, renderEpoch, scope, settleQueuedSaves],
   );
+
+  const undo = useCallback((_workItemId: string, _expectedRevision: number) => {
+    if (historyCursor?.seq !== undefined) runHistoryAction({ action: 'undo', expectedSeq: historyCursor.seq }, "Couldn't undo — try again");
+  }, [historyCursor, runHistoryAction]);
+
+  const redo = useCallback((_workItemId: string, _expectedRevision: number) => {
+    if (historyCursor?.seq !== undefined) runHistoryAction({ action: 'redo', expectedSeq: historyCursor.seq }, "Couldn't redo — try again");
+  }, [historyCursor, runHistoryAction]);
+
+  const resetSection = useCallback((section: WorkItemSection) => {
+    runHistoryAction({ action: 'reset', section }, "Couldn't reset — try again");
+  }, [runHistoryAction]);
 
   const reloadHistory = useCallback(() => {
     if (discardInProgress.current || (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
@@ -1558,9 +1563,12 @@ export function useStoredWork(args: {
   const unattributedRecovery = Boolean(expectedMessageId && lookupKey && legacyRecoveryMarked(lookupKey));
   const needsOwnerReview = Boolean(currentLookup?.userId && [...failed.current.values()]
     .some((entry) => entry.userId === currentLookup.userId && entry.needsReview));
+  const needsHistoryReview = Boolean(currentLookup?.userId && [...failed.current.values()]
+    .some((entry) => entry.userId === currentLookup.userId && entry.reviewReason === 'history'));
   const saveError = unattributedRecovery ? 'Earlier changes are not assigned to this email. Reopen the original email to recover them.'
     : recoveryProblem && recoveryProblem.key === lookupKey ? recoveryProblem.message
     : missingRecoveryBaseline ? 'Earlier changes were not confirmed. Discard them and reload this request.'
+    : needsHistoryReview ? 'The action could not be confirmed. Review and re-enter your unsaved change.'
     : needsOwnerReview ? 'The staff account changed. Review and re-enter your unsaved change.' : null;
 
   return {

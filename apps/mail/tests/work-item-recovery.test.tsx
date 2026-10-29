@@ -497,11 +497,12 @@ describe('missing work item recovery', () => {
     mailbox();
     const { trpc, open, record } = harness();
     open.mockRejectedValueOnce(new Error('initial'));
-    const accept = vi.fn(async () => ({ accepted: 1 }));
-    const move = vi.fn(async () => ({ revision: 0, revisionHead: 0, seq: 0 }));
+    const accept = vi.fn(async (_input?: unknown) => ({ accepted: 1 }));
+    const move = vi.fn(async (_input?: unknown) => ({ revision: 0, revisionHead: 0, seq: 0 }));
     const guarded = { workItems: {
       ...trpc.workItems, acceptFields: { mutate: accept }, undoRevision: { mutate: move },
       redoRevision: { mutate: move }, resetSection: { mutate: move },
+      ownedPaneAction: { mutate: (input: { action: string }) => input.action === 'accept' ? accept(input) : move(input) },
     } };
     const first = renderHook(() => useStoredWork({ trpc: guarded, internetMessageId: 'm-1', scope: SCOPE }));
     await waitFor(() => expect(first.result.current.pane).toMatchObject({ state: 'ready', workItemId: null }));

@@ -108,7 +108,7 @@ describe('work-item field save owner', () => {
     const undo = vi.fn(async () => ({ revision: 0, revisionHead: 1, seq: 2 }));
     const cursor = vi.fn(async () => ({ revision: 1, revisionHead: 1, seq: 1 }));
     const trpc = { workItems: { ...h.trpc.workItems, revisionCursor: { query: cursor },
-      undoRevision: { mutate: undo }, redoRevision: { mutate: undo } } };
+      undoRevision: { mutate: undo }, redoRevision: { mutate: undo }, ownedPaneAction: { mutate: undo } } };
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: scope('staff-a') }));
     await waitFor(() => expect(result.current.historyCursor).toMatchObject({ revision: 1 }));
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });

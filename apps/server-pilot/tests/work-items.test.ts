@@ -1654,6 +1654,43 @@ describe('corrections carry to a re-read', () => {
 });
 
 describe('field events', () => {
+  it('fences accept, undo, redo and reset to the authenticated owner', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'pane-action-owner-fence');
+      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const opened = await readyWork(db, 'pane-action-owner-fence');
+      const owner = centurionCaller().workItems;
+      await owner.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath: 'contact.name', value: 'Edited' });
+      const cursor = await owner.revisionCursor({ workItemId: opened.workItemId });
+      const [before] = await db.select().from(workItem).where(eq(workItem.id, opened.workItemId));
+      const events = await eventsFor(db, opened.workItemId);
+      const other = appRouter.createCaller({
+        auth: null as never, reqHeaders: new Headers(),
+        sessionUser: { id: 'other-staff', email: 'other@example.invalid', name: null },
+        activeTransportId: CENTURION, transportEmail: CENTURION_EMAIL, accessRole: 'owner',
+      } as never).workItems;
+      const base = { workItemId: opened.workItemId, expectedUserId: USER };
+      const fieldPaths = [`stays[${STAY_ONE}].rows[${ROW_SINGLE}].count`];
+      const attempts = [
+        () => other.ownedPaneAction({ ...base, action: 'accept', fieldPaths }),
+        () => other.ownedPaneAction({ ...base, action: 'undo', expectedSeq: cursor.seq }),
+        () => other.ownedPaneAction({ ...base, action: 'redo', expectedSeq: cursor.seq }),
+        () => other.ownedPaneAction({ ...base, action: 'reset', section: { type: 'contact' } }),
+      ];
+      for (const attempt of attempts) await expect(attempt()).rejects.toMatchObject({ code: 'CONFLICT' });
+      expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]).toEqual(before);
+      expect(await eventsFor(db, opened.workItemId)).toEqual(events);
+
+      expect(await owner.ownedPaneAction({ ...base, action: 'accept', fieldPaths })).toEqual({ accepted: 1 });
+      const current = await owner.revisionCursor({ workItemId: opened.workItemId });
+      const undone = await owner.ownedPaneAction({ ...base, action: 'undo', expectedSeq: current.seq });
+      if (!('seq' in undone)) throw new Error('expected history acknowledgement');
+      const redone = await owner.ownedPaneAction({ ...base, action: 'redo', expectedSeq: undone.seq });
+      expect(redone).toHaveProperty('seq');
+      expect(await owner.ownedPaneAction({ ...base, action: 'reset', section: { type: 'contact' } })).toEqual({ reset: 1 });
+      expect((await eventsFor(db, opened.workItemId)).every((event) => event.actorUserId === USER)).toBe(true);
+    }));
+
   it('refuses an owner-bound field event under another authenticated account without writing', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'field-owner-fence');

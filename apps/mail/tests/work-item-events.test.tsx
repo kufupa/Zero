@@ -621,7 +621,7 @@ describe('useStoredWork', () => {
       const { trpc, mutate } = fakeTrpc(() => READY);
       mutate.mockRejectedValueOnce(new Error('offline'));
       const acceptFields = vi.fn(async (_input: unknown, _opts?: unknown) => ({ accepted: 1 }));
-      const routes = { workItems: { ...trpc.workItems, acceptFields: { mutate: acceptFields } } };
+      const routes = { workItems: { ...trpc.workItems, ownedPaneAction: { mutate: acceptFields } } };
       const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
       await act(async () => {
         await Promise.resolve();
@@ -662,7 +662,7 @@ describe('useStoredWork', () => {
           }),
       );
       const acceptFields = vi.fn(async (_input: unknown, _opts?: unknown) => ({ accepted: 1 }));
-      const routes = { workItems: { ...trpc.workItems, acceptFields: { mutate: acceptFields } } };
+      const routes = { workItems: { ...trpc.workItems, ownedPaneAction: { mutate: acceptFields } } };
       const { result } = renderHook(() => useStoredWork({ trpc: routes, internetMessageId: 'm-1' }));
       await act(async () => {
         await Promise.resolve();

@@ -268,6 +268,12 @@ export type RecordFieldEventInput = {
   expected?: { extractionId: string; seq: number; stateDigest: string };
 };
 
+export type OwnedPaneAction = { workItemId: string; expectedUserId: string } & (
+  | { action: 'accept'; fieldPaths: string[] }
+  | { action: 'undo' | 'redo'; expectedSeq: number }
+  | { action: 'reset'; section: { type: 'contact' } | { type: 'stay'; stayId: string } }
+);
+
 /** The outcome of a translation retry. Only `done` carries a translation; the rest say why it did not run. */
 export type TranslationRetryResult = { status: string; translation?: StoredTranslation };
 
@@ -302,6 +308,9 @@ type WorkItemsClient = {
   };
   recordOwnedEvent?: {
     mutate: (input: RecordFieldEventInput & { expectedUserId: string }, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
+  };
+  ownedPaneAction?: {
+    mutate: (input: OwnedPaneAction, opts?: { context: Record<string, unknown> }) => Promise<unknown>;
   };
   acceptFields?: {
     mutate: (
