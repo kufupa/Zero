@@ -44,6 +44,7 @@ async function fixture() {
       rows: [{ id: 'g1', roomType: null, rooms: 1, adultsPerRoom: 2, childrenPerRoom: 0, childAges: [], board: null }] }] };
   const state: Record<string, unknown> = {};
   const jobAvailable = { value: true };
+  const recordedHashes = { value: [hash] };
   const savedReply = { savedId: 'saved-reply:other:1', latestId: 'saved-reply:other:1',
     savedHtml: '<p>Synthetic</p>', savedAttachments: [] as unknown[], draftAttachments: [] as unknown[] };
   let savedReplyRevisionReads = 0;
@@ -76,7 +77,8 @@ async function fixture() {
         if (table === workItem) rows = [{ id: itemId, extractionId: 'extract-1', state }];
         if (table === aiDraftGeneration) rows = [{ id: 'generation-1', createdAt: new Date() }];
         if (table === aiWorkflowRun && selection && 'run' in selection) rows = [{ run }];
-        else if (table === aiWorkflowRun && selection && 'hash' in selection) rows = jobAvailable.value ? [{ hash }] : [];
+        else if (table === aiWorkflowRun && selection && 'hash' in selection)
+          rows = jobAvailable.value ? recordedHashes.value.map((recordedHash) => ({ hash: recordedHash })) : [];
         else if (table === aiWorkflowRun && selection && 'request' in selection)
           rows = jobAvailable.value && job.readRequest.propertyCode !== 'HRDAV' ? [{ request: job.readRequest }] : [];
         else if (table === aiWorkflowRun) rows = jobAvailable.value ? [job] : [];
@@ -94,7 +96,7 @@ async function fixture() {
   Object.assign(staff, { quoteSourceProof: proof });
   __setDbForTests({ db, conn: null as never });
   configureDraftArtifactStorage({ read: async () => pdf } as never);
-  return { revision, job, state, mail, transaction, transactionState, savedReply, jobAvailable, proposal };
+  return { revision, job, state, mail, transaction, transactionState, savedReply, jobAvailable, recordedHashes, proposal };
 }
 
 beforeEach(() => {
@@ -145,6 +147,27 @@ describe('priced draft preflight', () => {
     await expect(colleague()).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
   });
 
+  it('allows supporting files but requires every recorded quote to match this email', async () => {
+    const { recordedHashes, transaction } = await fixture();
+    const support = Buffer.from('%PDF-terms');
+    const supportHash = createHash('sha256').update(support).digest('hex');
+    const preflight = (pdfHashes: string[]) => caller().workstation.quoteDraftPreflight({ messageId: 'm1', threadId: 't1', pdfHashes });
+    await expect(preflight([hash, supportHash])).resolves.toEqual({ ready: true });
+    await expect(preflight([supportHash])).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    const attachment = (name: string, body: Buffer) => ({ name, type: 'application/pdf', size: body.length,
+      lastModified: 1, base64: body.toString('base64') });
+    await expect(caller().drafts.saveReply({ threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>',
+      replyKind: 'quote', attachments: [attachment('quote.pdf', pdf), attachment('terms.pdf', support)] }))
+      .rejects.toThrow('synthetic transaction reached');
+    transaction.mockClear();
+    recordedHashes.value.push(supportHash);
+    await expect(preflight([hash, supportHash])).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    await expect(caller().drafts.saveReply({ threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>',
+      replyKind: 'quote', attachments: [attachment('quote.pdf', pdf), attachment('other-quote.pdf', support)] }))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
   it('refuses stale webmail quote saves before creating or replacing a draft', async () => {
     const { revision, state, transaction, jobAvailable } = await fixture();
     const base = { threadId: 't1', replyToMessageId: 'm1', html: '<p>Synthetic</p>',
@@ -192,6 +215,19 @@ describe('priced draft preflight', () => {
       .resolves.toEqual({ ready: true });
     await expect(caller('transport-davinci').workstation.quoteDraftPreflight({ messageId: 'm1', threadId: 't1',
       pdfHashes: [] })).resolves.toEqual({ ready: true });
+  });
+
+  it('accepts the combined-document limit of 63 stay references on both draft paths', async () => {
+    const { transaction } = await fixture();
+    const preparedVersions = Array.from({ length: 63 }, (_, index) => ({ workflowRunId: `run-${index}`, revisionRef: `rev-${index}` }));
+    const preflight = { messageId: 'm1', threadId: 't1', pdfHashes: [], preparedVersions };
+    await expect(caller('transport-davinci').workstation.quoteDraftPreflight(preflight)).resolves.toEqual({ ready: true });
+    await expect(caller('transport-davinci').workstation.quoteDraftPreflight({ ...preflight,
+      preparedVersions: [...preparedVersions, { workflowRunId: 'run-extra', revisionRef: 'rev-extra' }] }))
+      .rejects.toMatchObject({ code: 'BAD_REQUEST' });
+    await expect(caller('transport-davinci').drafts.saveReply({ threadId: 't1', replyToMessageId: 'm1', html: '', preparedVersions }))
+      .rejects.toThrow('synthetic transaction reached');
+    expect(transaction).toHaveBeenCalledOnce();
   });
 
   it('does not exempt a recorded Centurion PDF when a thread later resolves to Da Vinci', async () => {
