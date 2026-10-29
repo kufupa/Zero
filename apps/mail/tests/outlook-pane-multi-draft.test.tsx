@@ -172,6 +172,7 @@ vi.mock('../providers/query-provider', () => {
               revisionRef: option.revisionRef,
               messageId: 'mail-1',
               threadId: 'thread-1',
+              propertyCode: 'HRCEN',
               factRefs: [],
               selectionEpoch: input.selectionEpoch,
               inputRevision: input.inputRevision,

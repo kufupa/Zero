@@ -154,6 +154,7 @@ vi.mock('../providers/query-provider', () => ({
           revisionRef: 'rev-auth',
           messageId: 'mail-1',
           threadId: 'thread-1',
+          propertyCode: sessionState.propertyCode,
           factRefs: [],
           selectionEpoch: input.selectionEpoch,
           inputRevision: input.inputRevision,
