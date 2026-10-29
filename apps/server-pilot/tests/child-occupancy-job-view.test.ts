@@ -1,12 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HMS_JOB_PRIORITY_USER, queueAutoStaffQuoteHmsJob, readHmsBatchView, readHmsJobView } from '../src/ai/hms-jobs.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
 import { HMS_JOB_PROMPT_VERSION, type AiWorkflowRun } from '../src/ai/run-ledger.js';
-import { aiWorkflowRun, message } from '../src/db/schema/mail.js';
+import { aiDraftGeneration, aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import type { DB } from '../src/db/client.js';
 import { draftQuoteOccupancyHold } from '../src/ai/child-occupancy.js';
 import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
+import { quotePropertyMatchesOrigin } from '../src/hms/hms-quote-target.js';
 
 const transportId = 'transport-centurion';
 const mail = { id: 'm1', transportId, threadId: 't1', direction: 'inbound',
@@ -58,6 +59,13 @@ const byIdReplies = (saved = item()) => [
   [aiWorkflowRun, [job()]], [message, [mail]], [mailExtraction, [extraction]], [workItem, [saved]],
 ] as Array<[unknown, unknown[]]>;
 
+beforeEach(() => {
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+    selectedFound: true, selected: { toAddresses: ['centurion@legacyhotels.co.za'] }, inbounds: [],
+  });
+});
+afterEach(() => { mailboxHmsOriginBindLoaders.loadThreadOriginScan = null; vi.unstubAllEnvs(); });
+
 async function withDavinciOrigin<T>(callback: () => Promise<T>): Promise<T> {
   const previous = mailboxHmsOriginBindLoaders.loadThreadOriginScan;
   mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
@@ -73,6 +81,14 @@ async function withDavinciOrigin<T>(callback: () => Promise<T>): Promise<T> {
 }
 
 describe('cached quote views use current selected occupancy', () => {
+  it('does not treat an unlocated selected message as evidence of a Da Vinci origin', async () => {
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+      selectedFound: false, selected: null, inbounds: [{ fromAddress: 'davinci@legacyhotels.co.za' }],
+    });
+    expect(await quotePropertyMatchesOrigin({ transportId, threadId: mail.threadId, messageId: mail.id,
+      propertyCode: 'HRDAV' })).toBe(false);
+  });
+
   it('holds a cached price if another inbound changes the thread hotel', async () => {
     await withDavinciOrigin(async () => {
       const view = await readHmsJobView(byId, fakeDb(byIdReplies()));
@@ -149,6 +165,25 @@ describe('cached quote views use current selected occupancy', () => {
     expect(stale).toMatchObject({ status: 'failed', result: { ok: false } });
   });
 
+  it('does not select a copied prepared price when the selected thread now belongs to another hotel', async () => {
+    vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
+    const copy = { ...mail, id: 'm2', threadId: 't2' };
+    const prepared = job();
+    prepared.priority = 0;
+    prepared.metrics = { quotePrepared: true, userId: null };
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async ({ threadId }) => ({
+      selectedFound: true, selected: { toAddresses: ['centurion@legacyhotels.co.za'] },
+      inbounds: threadId === copy.threadId ? [{ fromAddress: 'davinci@legacyhotels.co.za' }] : [],
+    });
+    const selectedInput = { ...input, messageId: copy.id, sourceHash: staffQuoteSourceHash(copy) };
+    const replies: Array<[unknown, unknown[]]> = [
+      [message, [copy]], [message, [{ id: mail.id }, { id: copy.id }]], [aiWorkflowRun, [prepared]],
+      [aiDraftGeneration, []], [message, [copy]],
+    ];
+    await expect(readHmsJobView({ transportId, userId: 'user-1', messageId: copy.id,
+      kind: 'staff_quote', input: selectedInput }, fakeDb(replies))).resolves.toBeNull();
+  });
+
   it('checks by-input read-back against the selected saved row', async () => {
     const replies: Array<[unknown, unknown[]]> = [
       [message, [mail]], [message, [{ id: mail.id }]], [aiWorkflowRun, [job()]],
@@ -180,11 +215,30 @@ describe('cached quote views use current selected occupancy', () => {
   });
 
   it('keeps an HRDAV quote available when the source is in a Centurion mailbox', async () => {
-    const { childrenPerRoom: _count, ...legacyGroup } = input.groups[0]!;
-    const davinci = job({ kind: 'staff_quote', input: { ...input, groups: [legacyGroup] } });
+    await withDavinciOrigin(async () => {
+      const { childrenPerRoom: _count, ...legacyGroup } = input.groups[0]!;
+      const davinci = job({ kind: 'staff_quote', input: { ...input, groups: [legacyGroup] } });
+      davinci.readResult = { ...davinci.readResult, propertyCode: 'HRDAV' };
+      const view = await readHmsJobView({ ...byId, messageId: undefined }, fakeDb([[aiWorkflowRun, [davinci]]]));
+      expect(view?.result).toMatchObject({ status: 'ready', totalMinor: 10000 });
+    });
+  });
+
+  it('does not expose an HRDAV price from another selected Centurion-origin copy', async () => {
+    const copy = { ...mail, id: 'm2', threadId: 't2' };
+    const davinci = job();
     davinci.readResult = { ...davinci.readResult, propertyCode: 'HRDAV' };
-    const view = await readHmsJobView({ ...byId, messageId: undefined }, fakeDb([[aiWorkflowRun, [davinci]]]));
-    expect(view?.result).toMatchObject({ status: 'ready', totalMinor: 10000 });
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async ({ threadId }) => ({
+      selectedFound: true, selected: { toAddresses: ['centurion@legacyhotels.co.za'] },
+      inbounds: threadId === mail.threadId ? [{ fromAddress: 'davinci@legacyhotels.co.za' }] : [],
+    });
+    const replies: Array<[unknown, unknown[]]> = [
+      [aiWorkflowRun, [davinci]], [message, [copy]], [message, [mail]], [message, [copy]],
+      [message, [{ id: mail.id }, { id: copy.id }]],
+    ];
+    const view = await readHmsJobView({ ...byId, messageId: copy.id }, fakeDb(replies));
+    expect(view).toMatchObject({ status: 'failed', result: { ok: false, code: 'staff_quote_source_changed' } });
+    expect(view?.result).not.toHaveProperty('totalMinor');
   });
 
   it('holds an actual Centurion result even if the earlier queued target was HRDAV', async () => {
@@ -210,12 +264,14 @@ describe('cached quote views use current selected occupancy', () => {
   });
 
   it('exposes a saved prepared revision\'s property without treating its queued target as evidence', async () => {
-    const prepared = job();
-    prepared.metrics = { ...prepared.metrics, propertyCode: 'HRCEN' };
-    prepared.readResult = { ...prepared.readResult, propertyCode: undefined,
-      preparedProposal: { revision: { propertyCode: 'HRDAV' } } };
-    const view = await readHmsJobView({ ...byId, messageId: undefined }, fakeDb([[aiWorkflowRun, [prepared]]]));
-    expect(view?.result).toMatchObject({ status: 'ready', propertyCode: 'HRDAV', totalMinor: 10000 });
+    await withDavinciOrigin(async () => {
+      const prepared = job();
+      prepared.metrics = { ...prepared.metrics, propertyCode: 'HRCEN' };
+      prepared.readResult = { ...prepared.readResult, propertyCode: undefined,
+        preparedProposal: { revision: { propertyCode: 'HRDAV' } } };
+      const view = await readHmsJobView({ ...byId, messageId: undefined }, fakeDb([[aiWorkflowRun, [prepared]]]));
+      expect(view?.result).toMatchObject({ status: 'ready', propertyCode: 'HRDAV', totalMinor: 10000 });
+    });
   });
 
   it('holds a result whose own property conflicts with the saved prepared revision', async () => {
@@ -256,6 +312,9 @@ describe('cached quote views use current selected occupancy', () => {
 
     legacy.readResult = { ...legacy.readResult, propertyCode: 'HRCEN' };
     expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });
+    await withDavinciOrigin(async () => {
+      expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: true });
+    });
     legacy.state = 'queued';
     legacy.readResult = null;
     expect(await queueAutoStaffQuoteHmsJob(request, fake)).toMatchObject({ created: false, run: { id: legacy.id } });

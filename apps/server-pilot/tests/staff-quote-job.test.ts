@@ -12,6 +12,7 @@ import { eq } from 'drizzle-orm';
 import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
+import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 
 const jobMocks = vi.hoisted(() => ({
   runStaffQuote: vi.fn(),
@@ -193,6 +194,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   __setDbForTests(null);
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
   jobMocks.runStaffQuote.mockReset();
   quoteRunMocks.readConfiguration.mockReset();
   quoteRunMocks.getServices.mockReset();
@@ -487,6 +489,20 @@ describe('staff_quote HMS job execution', () => {
     });
   });
 
+  it('refuses without persisting a price when the hotel changes at the final transaction fence', async () => {
+    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve());
+    run.triggerMessageId = STAFF_QUOTE_INPUT.messageId;
+    originMocks.guard.mockImplementation(async (input: { lock?: boolean }) => input.lock
+      ? { ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin' }
+      : { ok: true });
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
+    expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
+      readResult: { ok: false, message: expect.stringMatching(/hotel.*changed/i) },
+    });
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
+
   it('persists the hotel that priced when the mailbox origin changes after the worker check', async () => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
     const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
@@ -494,6 +510,9 @@ describe('staff_quote HMS job execution', () => {
     // The queue/worker initially sees Centurion; the quote runner's later recheck sees Da Vinci.
     originMocks.guard.mockResolvedValueOnce({ ok: true }).mockResolvedValue({
       ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin',
+    });
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+      selectedFound: true, selected: { toAddresses: ['davinci@legacyhotels.co.za'] }, inbounds: [],
     });
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRDAV' }, outputDir: '/tmp/synthetic-staff-quote',

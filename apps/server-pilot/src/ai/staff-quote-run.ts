@@ -62,7 +62,7 @@ import {
 import { beginQuoteRun, staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
-import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin, resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { HMS_OUTAGE_STAFF_COPY } from '../hms/property-outage.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
@@ -756,7 +756,8 @@ export async function runStaffQuote(
       !!current &&
       current.threadId === scope.threadId &&
       staffQuoteSourceHash(current) === input.sourceHash &&
-      await childOccupancyIsCurrent(db, input.groups, occupancyScope)
+      await childOccupancyIsCurrent(db, input.groups, occupancyScope) &&
+      await quotePropertyMatchesOrigin({ ...occupancyScope, db })
     );
   };
   const databaseUrl = process.env.DATABASE_URL;
@@ -985,6 +986,8 @@ export async function runStaffQuote(
       : null;
     const persistRun = (quoteResult: Record<string, unknown>) =>
       db.transaction(async (tx) => {
+        if (!(await quotePropertyMatchesOrigin({ ...occupancyScope, db: tx as unknown as DB, lock: true })))
+          refuseQuote('source_changed', QUOTE_HOTEL_CHANGED_MESSAGE);
         if (!systemPrepared) {
           await tx
             .update(aiDraftGeneration)
@@ -1144,6 +1147,8 @@ export async function runStaffQuote(
             `[staff-quote] run ${workflowRunId} not recorded: ${error instanceof Error ? error.message : 'unknown error'}`,
           );
           await markGenerationFailed('staff_quote_trace_finish_failed');
+          if (waitForTracePersistence && error instanceof TRPCError &&
+            (error.cause as { reason?: unknown } | undefined)?.reason === 'source_changed') throw error;
           if (waitForTracePersistence && !(error instanceof Error && error.message === 'staff_quote_superseded')) {
             const failure = new Error('staff_quote_native_unavailable');
             Object.assign(failure, {
@@ -1157,11 +1162,16 @@ export async function runStaffQuote(
         .finally(() => queued.end());
       registerPendingStaffQuote([workflowRunId, mail.id, ...(runId ? [runId] : [])], pending);
       if (waitForTracePersistence) await pending;
-      return summary();
+      const result = await summary();
+      if (!waitForTracePersistence && !(await stillCurrent()))
+        refuseQuote('source_changed', 'Selected email changed while pricing');
+      return result;
     }
     try {
       const result = await summary();
       await persistRun(result);
+      if (!waitForTracePersistence && !(await stillCurrent()))
+        refuseQuote('source_changed', 'Selected email changed while pricing');
       return result;
     } catch (error) {
       await markGenerationFailed('staff_quote_persist_failed');

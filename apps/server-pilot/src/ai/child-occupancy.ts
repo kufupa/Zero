@@ -7,6 +7,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { addDays } from './stay-date-anchoring.js';
 import { formStays } from './work-items.js';
 import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
+import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin } from '../hms/hms-quote-target.js';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
   'id' | 'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'childrenAges' | 'childrenPerRoom'>;
@@ -174,22 +175,38 @@ export function isCenturionQuoteScope(scope: { transportId: string; propertyCode
 /** A priced candidate must still match the selected email and persisted room facts at promotion and send. */
 export async function draftQuoteOccupancyHold(db: DB, input: {
   transportId: string; threadId: string; messageId: string | null; triggerMessageId: string | null; result: unknown;
+  lockOrigin?: boolean;
 }): Promise<string | null> {
   if (!input.result || typeof input.result !== 'object') return null;
   const result = input.result as { importedOffers?: unknown; quoteRevisions?: unknown; quoteRevisionIds?: unknown; approvedOverrides?: unknown };
   if ([result.importedOffers, result.quoteRevisions, result.quoteRevisionIds, result.approvedOverrides].some((value) => value != null && !Array.isArray(value)))
     return isCenturionQuoteTransport(input.transportId) ? draftQuoteOccupancyMessage : null;
-  if (Array.isArray(result.importedOffers) && result.importedOffers.some((offer) =>
-    isCenturionQuoteScope({ transportId: input.transportId, propertyCode: offer?.propertyCode }))) return importedOfferOccupancyHold;
+  if (Array.isArray(result.importedOffers)) {
+    for (const offer of result.importedOffers) {
+      if (isCenturionQuoteScope({ transportId: input.transportId, propertyCode: offer?.propertyCode }))
+        return importedOfferOccupancyHold;
+      if (isCenturionQuoteTransport(input.transportId) && (!input.messageId || input.messageId !== input.triggerMessageId))
+        return draftQuoteOccupancyMessage;
+      if (!(await quotePropertyMatchesOrigin({ db, transportId: input.transportId, threadId: input.threadId,
+        messageId: input.messageId ?? undefined, propertyCode: offer?.propertyCode, lock: input.lockOrigin }))) return QUOTE_HOTEL_CHANGED_MESSAGE;
+    }
+  }
   const quotes = (result.quoteRevisions ?? []) as QuoteRevision[];
   const overrides = (result.approvedOverrides ?? []) as { id: string; sourceRevision: QuoteRevision }[];
   const refs = (result.quoteRevisionIds ?? []) as unknown[];
   if (!quotes.length && !overrides.length && !refs.length) return null;
-  const selectedQuotes = [...quotes, ...overrides.map((offer) => offer.sourceRevision)].filter((quote) =>
+  const candidates = [...quotes, ...overrides.map((offer) => offer.sourceRevision)];
+  for (const quote of candidates) {
+    if (!(await quotePropertyMatchesOrigin({ db, transportId: input.transportId, threadId: input.threadId,
+      messageId: input.messageId ?? undefined, propertyCode: quote?.propertyCode, lock: input.lockOrigin }))) return QUOTE_HOTEL_CHANGED_MESSAGE;
+  }
+  const selectedQuotes = candidates.filter((quote) =>
     isCenturionQuoteScope({ transportId: input.transportId, propertyCode: quote?.propertyCode }));
+  if ((isCenturionQuoteTransport(input.transportId) || selectedQuotes.length > 0) &&
+    (!input.messageId || input.messageId !== input.triggerMessageId ||
+      refs.some((id) => ![...quotes, ...overrides].some((offer) => offer?.id === id)))) return draftQuoteOccupancyMessage;
   if (!selectedQuotes.length && (quotes.length || overrides.length || !isCenturionQuoteTransport(input.transportId))) return null;
-  if (!input.messageId || input.messageId !== input.triggerMessageId ||
-    refs.some((id) => ![...quotes, ...overrides].some((offer) => offer?.id === id))) return draftQuoteOccupancyMessage;
+  if (!input.messageId) return draftQuoteOccupancyMessage;
   try {
     for (const quote of selectedQuotes) {
       if (!(await childOccupancyIsCurrent(db, occupancyFromRevision(quote), {
