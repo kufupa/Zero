@@ -286,4 +286,47 @@ describe('cross-email reuse of a single stay', () => {
     }, {})).toBe(false);
     expect(singleStayOccupancyMatchesRevision(revision, evidence, { [`${base}.count`]: 2 })).toBe(false);
   });
+
+  it('uses the remaining saved row after other extracted rows are removed', () => {
+    const evidence = payload(2, [7, 9]);
+    const stay = evidence.stays[0]!;
+    const twoRows = { ...evidence, stays: [{ ...stay, rows: [...stay.rows, { ...stay.rows[0]!, id: 'r_2' }] }] };
+    expect(singleStayOccupancyMatchesRevision(revision, twoRows, { [`stays[${stayId}].rows[r_2].removed`]: true })).toBe(true);
+    expect(singleStayOccupancyMatchesRevision(revision, twoRows, {})).toBe(false);
+  });
+
+  it('uses a staff-added row when the original row was removed', () => {
+    const added = `stays[${stayId}].rows[r_added]`;
+    const state = { [`${base}.removed`]: true, [`${added}.count`]: 1, [`${added}.adults`]: 2,
+      [`${added}.childrenPerRoom`]: 2, [`${added}.childAges`]: [7, 9] };
+    expect(singleStayOccupancyMatchesRevision(revision, payload(2, [7, 9]), state)).toBe(true);
+    expect(singleStayOccupancyMatchesRevision(revision, payload(2, [7, 9]), { ...state, [`${added}.childrenPerRoom`]: null })).toBe(false);
+  });
+
+  it('finds a uniquely matching staff-added stay and its saved row', () => {
+    const added = 'stays[s_added]';
+    const row = `${added}.rows[r_added]`;
+    const state = { [`stays[${stayId}].removed`]: true, [`${added}.requested.arrival`]: revision.groups[0]!.arrivalDate,
+      [`${added}.requested.departure`]: revision.groups[0]!.departureDate, [`${row}.count`]: 1, [`${row}.adults`]: 2,
+      [`${row}.childrenPerRoom`]: 2, [`${row}.childAges`]: [7, 9] };
+    const evidence = payload(2, [7, 9]);
+    expect(singleStayOccupancyMatchesRevision(revision, evidence, state)).toBe(true);
+    expect(singleStayOccupancyMatchesRevision(revision, evidence, { ...state, [`stays[${stayId}].removed`]: false })).toBe(false);
+  });
+
+  it('finds a saved synthetic row for a dates-only stay', () => {
+    const evidence = payload(2, [7, 9]);
+    evidence.stays[0]!.rows = [];
+    const row = `stays[${stayId}].rows[${stayId}_row]`;
+    expect(singleStayOccupancyMatchesRevision(revision, evidence, {
+      [`${row}.count`]: 1, [`${row}.adults`]: 2, [`${row}.childrenPerRoom`]: 2, [`${row}.childAges`]: [7, 9],
+    })).toBe(true);
+  });
+
+  it('honours the same one-night default as the original quote admission', () => {
+    const evidence = payload(2, [7, 9]);
+    evidence.stays[0]!.requested.departure = null as never;
+    expect(singleStayOccupancyMatchesRevision(revision, evidence, {})).toBe(true);
+    expect(singleStayOccupancyMatchesRevision(revision, evidence, { [`stays[${stayId}].requested.departure`]: null })).toBe(false);
+  });
 });
