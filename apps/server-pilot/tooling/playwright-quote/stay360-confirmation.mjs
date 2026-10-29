@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installReadOnlyGuard } from './hms-read-only-guard.mjs';
 
-const SEARCH_TIMEOUT_MS = 8_000;
+const SEARCH_TIMEOUT_MS = 30_000;
 
 function saveNotePrivately(note) {
   const privateRoot = fileURLToPath(new URL('../../../../.private/', import.meta.url));
@@ -117,7 +117,7 @@ export async function dismissNotesOrThrow(root, { allowRecordFrame = false } = {
 }
 
 async function waitForSelectedDetails(page, popup, wanted) {
-  const deadline = Date.now() + 8_000;
+  const deadline = Date.now() + 30_000;
   const notes = [];
   let readySince = null;
   while (Date.now() < deadline) {
@@ -157,7 +157,7 @@ export async function readConfirmationFromStay360(page, confirmation) {
   await installReadOnlyGuard(page.context());
 
   const search = page.locator('input[name="search"]:visible');
-  await search.waitFor({ state: 'visible', timeout: 4_000 });
+  await search.waitFor({ state: 'visible' });
   const searchBox = await search.boundingBox();
   if (!searchBox) throw new Error('CONFIRMATION_SEARCH_NOT_VISIBLE');
   await search.fill(wanted);

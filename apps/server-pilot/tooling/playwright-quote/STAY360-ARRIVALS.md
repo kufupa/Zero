@@ -4,7 +4,9 @@
 Stay 360. Pass an async function to `withCenturionStay360Page` to use that page;
 the browser closes after the function returns. Each invocation owns its own
 browser. There is no fixed total runtime limit; individual readiness steps may
-still have their own timeouts.
+still have their own timeouts. Development and routine reads use headless mode,
+which supports Playwright screenshots. Pass `{ headless: false }` as the second
+argument when a headed comparison is needed.
 
 `arrival-ui.mjs` exports `readArrivalFromStay360(page, arrivalNumber)`.
 `read-arrival-ui.mjs` joins the two steps. From the worktree root:

@@ -65,31 +65,31 @@ function readCenturionSecret() {
   return validateCenturionSecret(secret);
 }
 
-function launchCenturionChromium() {
+function launchCenturionChromium(headless) {
   if (require('playwright/package.json').version !== playwrightVersion) {
     throw new Error('PLAYWRIGHT_VERSION_MISMATCH');
   }
-  return require('playwright').chromium.launch({ headless: true });
+  return require('playwright').chromium.launch({ headless });
 }
 
 async function openCenturionStay360(page) {
   const treeNode = (label) => page.locator('span.x-tree-node-text:visible')
     .filter({ hasText: new RegExp(`^${label}$`) });
 
-  await page.locator('a.app-menu-trigger:visible').click({ timeout: 1_600 });
+  await page.locator('a.app-menu-trigger:visible').click();
   const frontDesk = treeNode('Front Desk');
-  await frontDesk.waitFor({ state: 'visible', timeout: 1_800 });
+  await frontDesk.waitFor({ state: 'visible' });
   await frontDesk.scrollIntoViewIfNeeded({ timeout: 900 }).catch(() => {});
-  await frontDesk.click({ timeout: 1_600 });
+  await frontDesk.click();
   await page.waitForTimeout(800);
 
   const stay360 = treeNode('Stay 360');
-  await stay360.waitFor({ state: 'visible', timeout: 2_000 });
+  await stay360.waitFor({ state: 'visible' });
   await stay360.scrollIntoViewIfNeeded({ timeout: 900 }).catch(() => {});
-  await stay360.click({ timeout: 1_600 });
+  await stay360.click();
 }
 
-export async function withCenturionStay360Page(operation) {
+export async function withCenturionStay360Page(operation, { headless = true, beforeLaunch } = {}) {
   let browser;
   let context;
   let phase = 'credentials';
@@ -108,7 +108,8 @@ export async function withCenturionStay360Page(operation) {
     const secret = readCenturionSecret();
 
     phase = 'browser_launch';
-    browser = await launchCenturionChromium();
+    await beforeLaunch?.();
+    browser = await launchCenturionChromium(headless);
 
     phase = 'browser_context';
     context = await browser.newContext({ viewport });
