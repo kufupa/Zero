@@ -62,8 +62,8 @@ export function StayRateGrid({
           const rateLabel = cell.rateLabel.trim() || cell.rateCode;
           const boardLabel = cell.boardLabel.trim() || cell.board;
           const nightlyLabel = cell.nightlyPriceMinor === null
-            ? 'Nightly price not checked'
-            : `Nightly price ${draftMoney(cell.nightlyPriceMinor)}`;
+            ? 'Average price per room per night not checked'
+            : `Average price per room per night ${draftMoney(cell.nightlyPriceMinor)}`;
           const inventoryLabel = cell.roomsLeft === null
             ? 'Rooms left not checked'
             : `Rooms left ${cell.roomsLeft}`;
@@ -107,7 +107,7 @@ export function StayRateGrid({
               </span>
               <span className="min-w-0 break-words text-[#64748b]">{boardLabel}</span>
               <span className="text-right font-semibold text-[#1e293b]">
-                <span className="font-normal text-[#64748b]">Nightly: </span>
+                <span className="font-normal text-[#64748b]">Avg / room / night: </span>
                 {cell.nightlyPriceMinor === null
                   ? 'Not checked'
                   : draftMoney(cell.nightlyPriceMinor)}
