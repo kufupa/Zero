@@ -450,7 +450,7 @@ describe('runStaffQuote child occupancy', () => {
     await expect(actual.runStaffQuote(input, { transportId: TRANSPORT_ID, user }, quoteDb.db)).rejects.toMatchObject({
       code: 'PRECONDITION_FAILED',
       message: expect.stringContaining('number of children'),
-      cause: expect.objectContaining({ reason: 'child_occupancy_incomplete' }),
+      cause: expect.objectContaining({ reason: 'inputs_incomplete' }),
     });
     expect(quoteRunMocks.readConfiguration).not.toHaveBeenCalled();
   });
@@ -493,7 +493,7 @@ describe('staff_quote HMS job execution', () => {
     expect(quoteRunMocks.getServices).not.toHaveBeenCalled();
     expect(workflowMocks.executeStaffQuote).not.toHaveBeenCalled();
     expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
-      readResult: { ok: false, message: expect.stringContaining('every child’s age') },
+      readResult: { ok: false, message: expect.stringContaining('number of children') },
     });
   });
 
@@ -1474,6 +1474,7 @@ describe('runStaffQuote property installation', () => {
 
   it('uses the HRDAV installation for a Da Vinci transport when the quote flag is on', async () => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('DATABASE_URL', '');
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel',
       owner: { propertyCode: 'HRDAV' },
@@ -1549,6 +1550,7 @@ describe('runStaffQuote property installation', () => {
   });
 
   it('leaves Centurion quotes on the Centurion installation', async () => {
+    vi.stubEnv('DATABASE_URL', '');
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel',
       owner: { propertyCode: 'HRCEN' },

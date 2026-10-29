@@ -1583,8 +1583,9 @@ export function NavaPane({
   }
 
   const saveQuoteEdits = async () => {
+    if (activePaneConfig?.propertyCode !== HRCEN_PROPERTY_CODE) return true;
     if (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) {
-      return activePaneConfig?.propertyCode !== HRCEN_PROPERTY_CODE;
+      return false;
     }
     return storedWork.flushEdits();
   };
