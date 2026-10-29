@@ -1464,7 +1464,11 @@ describe('field events', () => {
           recordFieldEvent(db, { ...base, value: 8 }),
           recordFieldEvent(otherDb, { ...base, value: 9 }),
         ]);
-        expect(attempts.map((result) => result.status).sort()).toEqual(['recorded', 'stale']);
+        expect(attempts.filter((result) => result.status === 'recorded')).toHaveLength(1);
+        const loserIndex = attempts.findIndex((result) => result.status !== 'recorded');
+        expect(['stale', 'busy']).toContain(attempts[loserIndex]?.status);
+        // A lock timeout is retryable, but its original cursor must not overwrite the winner after the lock clears.
+        expect(await recordFieldEvent(db, { ...base, value: loserIndex === 0 ? 8 : 9 })).toEqual({ status: 'stale' });
         const winner = attempts.find((result) => result.status === 'recorded');
         if (!winner || winner.status !== 'recorded') throw new Error('missing winning write');
         expect(winner.cursor).toMatchObject({ extractionId: firstRead, seq: 1, stateDigest: expect.stringMatching(/^[a-f0-9]{64}$/) });
@@ -1526,10 +1530,18 @@ describe('field events', () => {
           } }),
           ensureWorkItem(otherDb, { ...link, extractionId: secondRead }),
         ]);
-        expect(['recorded', 'stale']).toContain(raceWrite.status);
+        expect(['recorded', 'stale', 'busy']).toContain(raceWrite.status);
         expect(forward.extractionId).toBe(secondRead);
         expect(forward.revisionSeq).toBe(raceWrite.status === 'recorded' ? 5 : 4);
         const currentCount = raceWrite.status === 'recorded' ? 6 : winner.value;
+        if (raceWrite.status === 'busy') {
+          const beforeRetry = await eventsFor(db, opened.workItemId);
+          expect(await recordFieldEvent(db, { ...base, value: 6, expected: {
+            extractionId: firstRead, seq: 3, stateDigest: afterBooking.stateDigest!,
+          } })).toEqual({ status: 'stale' });
+          expect(await eventsFor(db, opened.workItemId)).toHaveLength(beforeRetry.length);
+          expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]?.state[path]).toBe(currentCount);
+        }
         const back = await ensureWorkItem(db, { ...link, extractionId: firstRead });
         expect(back).toMatchObject({ extractionId: firstRead, revisionSeq: forward.revisionSeq + 1 });
         const beforeConflict = await eventsFor(db, opened.workItemId);
