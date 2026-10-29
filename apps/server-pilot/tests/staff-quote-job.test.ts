@@ -282,6 +282,10 @@ function staffQuoteRunDb(
   groups: StaffQuoteInput['groups'] = staffQuoteInput.parse(STAFF_QUOTE_INPUT).groups,
 ) {
   let latestGenerationId: string | undefined;
+  const hooks: { beforeTransaction: (() => void) | null; supersede: () => void } = {
+    beforeTransaction: null,
+    supersede: () => { latestGenerationId = 'later-approved-generation'; },
+  };
   const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [];
   const updated: unknown[] = [];
   const occupancyState: Record<string, unknown> = {};
@@ -323,7 +327,8 @@ function staffQuoteRunDb(
           return query;
         },
         limit() {
-          return Promise.resolve(rowsFor(table));
+          const rows = Promise.resolve(rowsFor(table));
+          return Object.assign(rows, { for: () => rows });
         },
       };
       return query;
@@ -350,6 +355,7 @@ function staffQuoteRunDb(
       };
     },
     transaction: async (callback: (transaction: unknown) => Promise<unknown>) => {
+      hooks.beforeTransaction?.();
       const insertedLength = inserted.length;
       const updatedLength = updated.length;
       try {
@@ -361,7 +367,7 @@ function staffQuoteRunDb(
       }
     },
   };
-  return { db: db as unknown as DB, inserted, updated, payload, occupancyState };
+  return { db: db as unknown as DB, inserted, updated, payload, occupancyState, hooks };
 }
 
 async function provisionalWorkerQuote(
@@ -435,7 +441,8 @@ async function provisionalWorkerQuote(
   }));
   vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
   vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
-  return { run, fence, db: quoteDb.db, inserted: quoteDb.inserted, occupancyState: quoteDb.occupancyState };
+  return { run, fence, db: quoteDb.db, inserted: quoteDb.inserted, occupancyState: quoteDb.occupancyState,
+    hooks: quoteDb.hooks, mail };
 }
 
 describe('runStaffQuote child occupancy', () => {
@@ -544,6 +551,25 @@ describe('staff_quote HMS job execution', () => {
     });
     expect(jobMocks.markRetry).not.toHaveBeenCalled();
   });
+
+  it.each(['saved rooms', 'email body', 'newer approval'])(
+    'refuses a price if %s changes just before the persistence transaction', async (change) => {
+      const { run, fence, db: quoteDb, inserted, occupancyState, hooks, mail } =
+        await provisionalWorkerQuote(Promise.resolve());
+      run.triggerMessageId = STAFF_QUOTE_INPUT.messageId;
+      hooks.beforeTransaction = () => {
+        if (change === 'saved rooms') occupancyState['stays[s_test].rows[single].childAges'] = null;
+        if (change === 'email body') mail.textBody = 'A different selected email body.';
+        if (change === 'newer approval') hooks.supersede();
+      };
+      await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+      expect(inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
+      expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
+        readResult: { ok: false, message: expect.stringMatching(/changed while pricing/i) },
+      });
+      expect(jobMocks.markRetry).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['message', 'later write'])('holds a quote when its %s source lock is busy', async (busyAt) => {
     const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());

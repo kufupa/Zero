@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import type { DB } from '../src/db/client.js';
 import { mailboxTransport, mailThread, message } from '../src/db/schema/mail.js';
-import { workItem } from '../src/db/schema/work.js';
+import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { TRANSPORT_EMAIL, TRANSPORT_ID, TRANSPORT_OWNER_HEADER } from '../src/db/seed.js';
+import { childOccupancyIsCurrent } from '../src/ai/child-occupancy.js';
 import { quotePropertyMatchesOrigin } from '../src/hms/hms-quote-target.js';
 import { withQuoteSourceBusyHold } from '../src/hms/quote-source-contention.js';
 import { refreshThreadAfterMessageRemoved } from '../src/trpc/routes/mail-helpers.js';
@@ -20,7 +21,7 @@ async function ensureTransport(db: DB) {
 describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('quote origin transaction fence (disposable DB)', () => {
   it('excludes inbound inserts and changes until the checked transaction commits', async () => {
     const setup = openTestDbSession(), locker = openTestDbSession(), writer = openTestDbSession();
-    const threadId = randomUUID(), selectedId = randomUUID(), newMessageId = randomUUID();
+    const threadId = randomUUID(), selectedId = randomUUID(), newMessageId = randomUUID(), extractionId = randomUUID();
     let release!: () => void, signalReady!: (current: boolean) => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const ready = new Promise<boolean>((resolve) => { signalReady = resolve; });
@@ -30,9 +31,20 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('quote origin transaction fenc
       await setup.db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID, threadRootId: threadId });
       await setup.db.insert(message).values({ id: selectedId, transportId: TRANSPORT_ID, threadId,
         direction: 'inbound', fromAddress: 'guest@example.invalid', toAddresses: ['centurion@legacyhotels.co.za'] });
+      const groups = [{ id: 'r1', arrivalDate: '2027-10-20', departureDate: '2027-10-21', quantity: 1,
+        adults: 2, childrenPerRoom: 0, childrenAges: [] }];
+      await setup.db.insert(mailExtraction).values({ id: extractionId, messageId: selectedId, extractorVersion: 'initial',
+        status: 'succeeded', kind: 'quote', payload: {
+          contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
+          confirmationNumbers: [], missing: [], stays: [{ id: 's1', hotel: null,
+            requested: { arrival: '2027-10-20', departure: '2027-10-21' }, booked: null, totalRooms: 1,
+            rows: [{ id: 'r1', roomType: null, rooms: 1, adultsPerRoom: 2, childrenPerRoom: 0, childAges: [], board: null }] }],
+        } });
       const scope = { transportId: TRANSPORT_ID, threadId, messageId: selectedId, propertyCode: 'HRCEN' };
       holding = locker.db.transaction(async (tx) => {
-        const current = await quotePropertyMatchesOrigin({ ...scope, db: tx as unknown as DB, lock: true });
+        const current = await quotePropertyMatchesOrigin({ ...scope, db: tx as unknown as DB, lock: true }) &&
+          await childOccupancyIsCurrent(tx as unknown as DB, groups,
+            { ...scope, lock: true, allowMissingWorkItem: true });
         signalReady(current);
         await gate;
       });
@@ -54,6 +66,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('quote origin transaction fenc
         threadId, direction: 'inbound', fromAddress: 'davinci@legacyhotels.co.za' }); })).toBe('55P03');
       expect(await blocked(async (db) => { await db.update(message).set({ toAddresses: ['davinci@legacyhotels.co.za'] })
         .where(eq(message.id, selectedId)); })).toBe('55P03');
+      expect(await blocked(async (db) => { await db.insert(mailExtraction).values({ messageId: selectedId,
+        extractorVersion: 'quote-lock-test', status: 'succeeded', kind: 'quote' }); })).toBe('55P03');
+      // This insert has no thread FK: the selected-message lock itself must exclude it.
+      expect(await blocked(async (db) => { await db.insert(workItem).values({ transportId: TRANSPORT_ID,
+        sourceMessageId: selectedId, kind: 'quote' }); })).toBe('55P03');
+      expect(await blocked(async (db) => { await db.update(mailExtraction).set({ kind: 'other' })
+        .where(eq(mailExtraction.id, extractionId)); })).toBe('55P03');
       release();
       await holding;
       await writer.db.insert(message).values({ id: newMessageId, transportId: TRANSPORT_ID,
@@ -64,6 +83,56 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('quote origin transaction fenc
       await holding?.catch(() => undefined);
       await setup.db.delete(mailThread).where(eq(mailThread.id, threadId)).catch(() => undefined);
       await Promise.all([setup.close(), locker.close(), writer.close()]);
+    }
+  }, 20_000);
+
+  it('holds rather than deadlocks when a sibling event precedes the source thread lock', async () => {
+    const setup = openTestDbSession(), quote = openTestDbSession(), editor = openTestDbSession();
+    const threadId = randomUUID(), selectedId = randomUUID(), siblingId = randomUUID();
+    let signalEventWritten!: () => void, startThreadUpdate!: () => void, signalThreadUpdate!: () => void;
+    const eventWritten = new Promise<void>((resolve) => { signalEventWritten = resolve; });
+    const updateThread = new Promise<void>((resolve) => { startThreadUpdate = resolve; });
+    const threadUpdateStarted = new Promise<void>((resolve) => { signalThreadUpdate = resolve; });
+    let writer: Promise<unknown> | undefined;
+    try {
+      await ensureTransport(setup.db);
+      await setup.db.insert(mailThread).values({ id: threadId, transportId: TRANSPORT_ID, threadRootId: threadId });
+      await setup.db.insert(message).values({ id: selectedId, transportId: TRANSPORT_ID, threadId,
+        direction: 'inbound', fromAddress: 'guest@example.invalid', toAddresses: ['centurion@legacyhotels.co.za'] });
+      await setup.db.insert(workItem).values({ id: siblingId, transportId: TRANSPORT_ID, threadId,
+        sourceMessageId: selectedId, kind: 'other' });
+      writer = editor.db.transaction(async (tx) => {
+        await tx.execute(sql`set local lock_timeout = '3s'`);
+        await tx.insert(workEvent).values({ workItemId: siblingId, actorKind: 'user', type: 'field.edit',
+          fieldPath: 'note', value: 'A saved correction' });
+        signalEventWritten();
+        await updateThread;
+        signalThreadUpdate();
+        await tx.update(mailThread).set({ snippet: 'Editor refresh' }).where(eq(mailThread.id, threadId));
+        // work_event is append-only; roll the synthetic event back so teardown can remove the fixture.
+        throw new Error('rollback synthetic event');
+      });
+      void writer.catch(() => signalEventWritten());
+      await eventWritten;
+      const scope = { transportId: TRANSPORT_ID, threadId, messageId: selectedId, propertyCode: 'HRCEN' };
+      const quoteAttempt = withQuoteSourceBusyHold(() => quote.db.transaction(async (tx) => {
+        expect(await quotePropertyMatchesOrigin({ ...scope, db: tx as unknown as DB, lock: true })).toBe(true);
+        startThreadUpdate();
+        await threadUpdateStarted;
+        // Model the combined source-proof fence: all same-message sibling rows, not just the latest kind.
+        await tx.select({ id: workItem.id }).from(workItem).where(and(
+          eq(workItem.transportId, TRANSPORT_ID), eq(workItem.threadId, threadId),
+          eq(workItem.sourceMessageId, selectedId),
+        )).orderBy(workItem.id).for('update', { noWait: true });
+      }));
+      await expect(quoteAttempt).rejects.toThrow('The email is being updated. Wait a moment, then try again.');
+      await expect(writer).rejects.toThrow('rollback synthetic event');
+    } finally {
+      startThreadUpdate();
+      await writer?.catch(() => undefined);
+      await setup.db.delete(workItem).where(eq(workItem.id, siblingId)).catch(() => undefined);
+      await setup.db.delete(mailThread).where(eq(mailThread.id, threadId)).catch(() => undefined);
+      await Promise.all([setup.close(), quote.close(), editor.close()]);
     }
   }, 20_000);
 
