@@ -238,7 +238,7 @@ function staffQuoteAttemptKey(transportId: string, messageId: string, sourceHash
 }
 
 const PANE_SOURCE_PREFIX = 'nava.pane-source.v1:';
-type PaneSourceRecord = { rows: string; source: PaneCaseSnapshot; pending?: boolean };
+type PaneSourceRecord = { rows: string; source: PaneCaseSnapshot; pendingBefore?: QuoteAnalysis['groups'] };
 const paneSources = new Map<string, PaneSourceRecord>();
 
 function paneSourceRecord(key: string): PaneSourceRecord | null {
@@ -246,13 +246,14 @@ function paneSourceRecord(key: string): PaneSourceRecord | null {
   catch { return paneSources.get(key) ?? null; }
 }
 
-function rememberPaneSource(key: string, groups: QuoteAnalysis['groups'], source: PaneCaseSnapshot | null, pending = false): void {
+function rememberPaneSource(key: string, groups: QuoteAnalysis['groups'], source: PaneCaseSnapshot | null,
+  pendingBefore?: QuoteAnalysis['groups']): void {
   if (!source) {
     paneSources.delete(key);
     try { sessionStorage.removeItem(`${PANE_SOURCE_PREFIX}${key}`); } catch { /* In-memory state is gone. */ }
     return;
   }
-  const record = { rows: JSON.stringify(groups), source, pending };
+  const record = { rows: JSON.stringify(groups), source, ...(pendingBefore ? { pendingBefore } : {}) };
   paneSources.set(key, record);
   try { sessionStorage.setItem(`${PANE_SOURCE_PREFIX}${key}`, JSON.stringify(record)); } catch { /* Memory still covers this mount. */ }
 }
@@ -825,9 +826,9 @@ export function NavaPane({
     const messageKey = after.binding?.internetMessageId ?? before.binding?.internetMessageId;
     if (after.binding?.transportId && messageKey) {
       const key = paneEditKey(after.binding.transportId, messageKey);
-      const pending = held || paneSourceRecord(key)?.pending === true;
+      const pendingBefore = paneSourceRecord(key)?.pendingBefore ?? (held ? before.groups : undefined);
       rememberPaneEdits(key, after.groups);
-      rememberPaneSource(key, after.groups, paneCaseSnapshot(after.analysis), pending);
+      rememberPaneSource(key, after.groups, paneCaseSnapshot(after.analysis), pendingBefore);
     }
   };
   // Deferred edits are logged only after the stored read proves it is the case they were made for.
@@ -840,9 +841,9 @@ export function NavaPane({
     const record = paneSourceRecord(key);
     const current = paneCaseSnapshot(analysis);
     const stored = paneCaseSnapshot(withPaneRead(storedWork.pane.analysis, null, null, activePaneConfig?.propertyCode ?? null));
-    if (!record?.pending || !record.source || !current || !stored ||
+    if (!Array.isArray(record?.pendingBefore) || !record.source || !current || !stored ||
       !sameCaseSnapshot(record.source, current) || !sameCaseSnapshot(record.source, stored)) return;
-    storedWork.recordGroups(storedWork.pane.analysis.groups, quoteSession.groups);
+    storedWork.recordGroups(record.pendingBefore, quoteSession.groups);
     rememberPaneEdits(key, quoteSession.groups);
     rememberPaneSource(key, quoteSession.groups, current);
   }, [quoteSession.binding, quoteSession.analysis, quoteSession.groups, storedWork.pane, storedWork.recordGroups,
@@ -885,7 +886,7 @@ export function NavaPane({
         else if (binding.internetMessageId) {
           const key = paneEditKey(binding.transportId, binding.internetMessageId);
           rememberPaneEdits(key, landed.groups);
-          rememberPaneSource(key, landed.groups, paneCaseSnapshot(landed.analysis), true);
+          rememberPaneSource(key, landed.groups, paneCaseSnapshot(landed.analysis), plain);
         }
       }
     } else if (decision.kind === 'failed') {
