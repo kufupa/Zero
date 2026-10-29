@@ -375,7 +375,7 @@ export const paneStayLookupRouter = router({
         ? {
             transportId: ctx.activeTransportId,
             runId: input.runId,
-            messageId: input.messageId,
+            ...(input.messageId ? { messageId: input.messageId } : {}),
             staffQuoteOwnerId: ctx.sessionUser.id,
           }
         : { transportId: ctx.activeTransportId, ...input };
