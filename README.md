@@ -291,9 +291,6 @@ If you'd like to help with translating Zero to other languages, check out our [t
 ## This project wouldn't be possible without these awesome companies
 
 <div style="display: flex; justify-content: center;">
-  <a href="https://vercel.com" style="text-decoration: none;">
-    <img src="public/vercel.png" alt="Vercel" width="96"/>
-  </a>
   <a href="https://better-auth.com" style="text-decoration: none;">
     <img src="public/better-auth.png" alt="Better Auth" width="96"/>
   </a>

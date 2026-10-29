@@ -9,7 +9,7 @@ import {
 } from './react-emails/email-sequences';
 import { createAuthMiddleware, phoneNumber, jwt, bearer, mcp } from 'better-auth/plugins';
 import { type Account, betterAuth, type BetterAuthOptions } from 'better-auth';
-import { getBrowserTimezone, isValidTimezone } from './timezones';
+import { getBrowserTimezone } from './timezones';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { getZeroDB, resetConnection } from './server-utils';
 import { getSocialProviders } from './auth-providers';
@@ -297,13 +297,7 @@ export const createAuth = () => {
             const existingSettings = await db.findUserSettings();
 
             if (!existingSettings) {
-              // get timezone from vercel's header
-              const headerTimezone = ctx.headers?.get('x-vercel-ip-timezone');
-              // validate timezone from header or fallback to browser timezone
-              const timezone =
-                headerTimezone && isValidTimezone(headerTimezone)
-                  ? headerTimezone
-                  : getBrowserTimezone();
+              const timezone = getBrowserTimezone();
               // write default settings against the user
               await db.insertUserSettings({
                 ...defaultUserSettings,
