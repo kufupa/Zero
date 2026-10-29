@@ -91,6 +91,28 @@ it.each([
   expect(result.current.saveError).toMatch(/refresh/i);
 });
 
+it('drops a late source refresh after the pane switches to another email', async () => {
+  setMailCacheScope({ userId: 'staff', activeTransportId: 'transport-a' });
+  const { trpc, query } = harness();
+  let finish!: (value: Ready) => void;
+  const { result, rerender } = renderHook(({ messageId }) => useStoredWork({
+    trpc, internetMessageId: messageId, scope: SCOPE, verifyQuotePartySource: true,
+  }), { initialProps: { messageId: 'm1' } });
+  await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready' }));
+  query.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  act(() => result.current.recordContact('company', 'New Agency'));
+  let pending!: Promise<boolean>;
+  act(() => { pending = result.current.flushEdits(); });
+  await waitFor(() => expect(query).toHaveBeenCalledTimes(2));
+  rerender({ messageId: 'm2' });
+  await act(async () => {
+    finish(saved({ company: ['value', 'New Agency'], endClient: ['missing'] }));
+    expect(await pending).toBe(false);
+  });
+  await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready' }));
+  expect(result.current.quoteSourceAfterFlush().sourcePartyDigest).toBe(OLD);
+});
+
 it('keeps unrelated contact edits and the legacy property on their existing save path', async () => {
   setMailCacheScope({ userId: 'staff', activeTransportId: 'transport-a' });
   const { trpc, query } = harness();

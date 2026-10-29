@@ -1013,7 +1013,8 @@ export function useStoredWork(args: {
           }
           confirmedParty.current.set(lookupKey, { epoch, extractionId: read.extractionId, digest: read.sourcePartyDigest });
           partyEdits.current.delete(lookupKey);
-          setLookup((prev) => prev && prev.key === lookupKey && prev.result?.status === 'ready' &&
+          setLookup((prev) => selection.current.key === lookupKey && selection.current.epoch === epoch &&
+            prev && prev.key === lookupKey && prev.result?.status === 'ready' &&
             prev.result.extractionId === read.extractionId
             ? { ...prev, result: { ...prev.result, sourcePartyDigest: read.sourcePartyDigest,
                 sourcePartyFields: read.sourcePartyFields } } : prev);

@@ -44,14 +44,23 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('draft quote source lock (disp
         groups: [{ id: 'g1', arrivalDate: '2027-10-20', departureDate: '2027-10-21', quantity: 1, adults: 2,
           childrenPerRoom: 0, childrenAges: [], board: 'room_only', sourcePreference: { roomType: null, board: null } }] });
       expect(pane.sourcePartyDigest).toBe(stale.sourcePartyDigest);
+      expect(pane.sourcePartyFields).toEqual({ company: ['missing'], endClient: ['missing'] });
       await api.recordEvent({ workItemId: item!.id, type: 'field.edit', fieldPath: 'contact.company', value: 'New Agency' });
       expect(await captureQuoteSourceProof(holder.db, stale, scope)).toBeNull();
       const refreshed = await api.getByMessage({ internetMessageId: `<${address}>` });
       if (refreshed.status !== 'ready') throw new Error('synthetic refreshed work item was not ready');
       expect(refreshed.sourcePartyDigest).not.toBe(stale.sourcePartyDigest);
+      expect(refreshed.sourcePartyFields).toEqual({ company: ['value', 'New Agency'], endClient: ['missing'] });
       const input = { ...stale, sourcePartyDigest: refreshed.sourcePartyDigest ?? undefined };
       const proof = await captureQuoteSourceProof(holder.db, input, scope);
       expect(proof).not.toBeNull();
+      await api.recordEvent({ workItemId: item!.id, type: 'field.edit', fieldPath: 'contact.company', value: null });
+      const cleared = await api.getByMessage({ internetMessageId: `<${address}>` });
+      if (cleared.status !== 'ready') throw new Error('synthetic cleared work item was not ready');
+      expect(cleared.sourcePartyFields).toEqual({ company: ['cleared'], endClient: ['missing'] });
+      expect(await captureQuoteSourceProof(holder.db, input, scope)).toBeNull();
+      expect(await captureQuoteSourceProof(holder.db, { ...input, sourcePartyDigest: cleared.sourcePartyDigest ?? undefined }, scope)).not.toBeNull();
+      await api.recordEvent({ workItemId: item!.id, type: 'field.edit', fieldPath: 'contact.company', value: 'New Agency' });
       const revision = await syntheticRevision(['600.00'], 'Room Only R', 'SKNG', undefined, '2027-10-20', 'auth-1',
         { id: 'g1', quantity: 1, adults: 2, children: 0, childAges: [] }, 'HRCEN');
       const sources = [{ revision, proof }];

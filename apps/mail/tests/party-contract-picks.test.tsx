@@ -288,6 +288,19 @@ describe('PartyPicker preselects the top suggestion', () => {
 });
 
 describe('the quote workflow header: each field finds in HMS with its own text', () => {
+  it('lets staff explicitly choose no agency after a source change', async () => {
+    const { QuoteWorkflowPanel } = await import('../components/quote-workflow/quote-workflow-panel');
+    const { initialQuoteSession } = await import('../lib/quote-workflow/session');
+    const onPatchStaffHeader = vi.fn();
+    const onPartyReviewed = vi.fn();
+    const session = { ...initialQuoteSession(), phase: 'review' as const, sourcePartyReview: ['agency' as const],
+      sourcePartyAutoPickDisabled: true, staffHeader: { ...emptyStaffQuoteHeader(), agency: 'Prior Agency' } };
+    render(<QuoteWorkflowPanel session={session} onPatchStaffHeader={onPatchStaffHeader} onPartyReviewed={onPartyReviewed} />);
+    fireEvent.click(screen.getByRole('button', { name: 'use no agency' }));
+    expect(onPatchStaffHeader).toHaveBeenCalledWith({ agency: '', parties: { agency: undefined } }, { staffEdit: true });
+    expect(onPartyReviewed).toHaveBeenCalledWith('agency');
+  });
+
   it('Nava searches the Company text in HMS by itself and waits for staff to confirm the best company', async () => {
     const { QuoteWorkflowPanel } = await import('../components/quote-workflow/quote-workflow-panel');
     const { initialQuoteSession } = await import('../lib/quote-workflow/session');
