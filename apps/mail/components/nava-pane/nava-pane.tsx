@@ -851,7 +851,7 @@ export function NavaPane({
     const linked = current.aliases && JSON.stringify(current.aliases) ===
       JSON.stringify(singleCaseReclassification(storedWork.pane.analysis, analysis, quoteSession.treatAs));
     if (!sameCaseSnapshot(record.source, stored, false, retainedRows) &&
-      (!linked || (record.source.propertyCode && record.source.propertyCode !== stored.propertyCode))) return;
+      (!linked || !current.propertyCode || current.propertyCode !== stored.propertyCode)) return;
     storedWork.recordGroups(record.pendingBefore, quoteSession.groups);
     rememberPaneEdits(key, quoteSession.groups);
     rememberPaneSource(key, quoteSession.groups, current);
