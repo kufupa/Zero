@@ -336,15 +336,11 @@ export function sameCaseSnapshot(before: PaneCaseSnapshot, after: PaneCaseSnapsh
     (!before.propertyCode || before.propertyCode === after.propertyCode);
 }
 
+const CASE_IDENTITY_FIELDS = ['guestNames', 'confirmationNumber', 'stayGuests', 'caseLookupConfirmation', 'hotel', 'propertyCode'] as const;
 /** Case evidence is not a staff edit. Do not attach it to rows while their source is uncertain. */
 function withoutCaseIdentity(group: StayGroupRequirement): StayGroupRequirement {
   const copy = { ...group } as StayAskRow;
-  delete copy.guestNames;
-  delete copy.confirmationNumber;
-  delete copy.stayGuests;
-  delete copy.caseLookupConfirmation;
-  delete copy.hotel;
-  delete copy.propertyCode;
+  for (const field of CASE_IDENTITY_FIELDS) delete copy[field];
   return copy;
 }
 
@@ -353,12 +349,7 @@ function restoreCaseIdentity(groups: StayGroupRequirement[], source: StayGroupRe
     const original = source.find((row) => row.id === group.id && stayIdOf(row) === stayIdOf(group)) as StayAskRow | undefined;
     const copy = withoutCaseIdentity(group) as StayAskRow;
     if (!original) return copy;
-    if (original.guestNames) copy.guestNames = original.guestNames;
-    if (original.confirmationNumber) copy.confirmationNumber = original.confirmationNumber;
-    if (original.stayGuests) copy.stayGuests = original.stayGuests;
-    if (original.caseLookupConfirmation) copy.caseLookupConfirmation = original.caseLookupConfirmation;
-    if (original.hotel) copy.hotel = original.hotel;
-    if (original.propertyCode) copy.propertyCode = original.propertyCode;
+    for (const field of CASE_IDENTITY_FIELDS) if (original[field]) Object.assign(copy, { [field]: original[field] });
     return copy;
   });
 }
@@ -527,9 +518,7 @@ function heldCaseAnalysis(analysis: QuoteAnalysis, baseline: PaneCaseSnapshot | 
     return copy;
   }) } as LunaAnalysisWire & Record<string, unknown> : analysis.luna;
   if (luna) {
-    for (const field of ['confirmationNumber', 'guestLastName', 'arrival', 'departure', 'requestedArrival', 'requestedDeparture', 'requestedChange']) {
-      delete luna[field];
-    }
+    for (const field of ['confirmationNumber', 'guestLastName', 'arrival', 'departure', 'requestedArrival', 'requestedDeparture', 'requestedChange']) delete luna[field];
   }
   return {
     ...analysis, groups: analysis.groups.map(withoutCaseIdentity), luna, amendment: null, hmsTodoCard: null,

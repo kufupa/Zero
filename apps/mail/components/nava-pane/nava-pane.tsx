@@ -42,10 +42,11 @@ import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft'
 import type { QuoteAnalysis, QuotePaneConfig, QuoteSessionAction } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
+  workItemsFromTrpc,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
 import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
-import { sectionHasStaffEdit, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
+import { sectionHasStaffEdit, shownFieldPaths, storedDecision, useStoredWork } from '@/lib/quote-workflow/use-work-item';
 import { WorkItemHistoryControls } from './screens/work-item-history-controls';
 import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
 import { bindPaneTelemetry, currentPaneOwner, setPaneTelemetryScope, trackPaneAction } from '@/lib/quote-workflow/pane-telemetry';
@@ -240,6 +241,7 @@ function staffQuoteAttemptKey(transportId: string, messageId: string, sourceHash
 
 const PANE_SOURCE_PREFIX = 'nava.pane-source.v1:';
 type PaneSourceRecord = { rows: string; source: PaneCaseSnapshot; pendingBefore?: QuoteAnalysis['groups'] };
+type PendingPaneAnalysis = QuoteAnalysis & { pendingRead?: QuoteAnalysis; caseAliases?: Record<string, string> };
 const paneSources = new Map<string, PaneSourceRecord>();
 function paneSourceRecord(key: string): PaneSourceRecord | null {
   try { return paneSources.get(key) ?? JSON.parse(sessionStorage.getItem(`${PANE_SOURCE_PREFIX}${key}`) ?? 'null'); }
@@ -280,8 +282,10 @@ function analysisWithPaneEdits(
   if (key && remembered === null) rememberPaneSource(key, [], null);
   const groups = overlayRememberedGroups(analysis.groups, remembered);
   const overlaid = remembered !== null && groups !== analysis.groups;
-  return withPaneRead(analysis, overlaid ? groups : null,
+  const read = withPaneRead(analysis, overlaid ? groups : null,
     overlaid && key && remembered ? recalledPaneSource(key, remembered) : null, propertyCode);
+  return key && Array.isArray(paneSourceRecord(key)?.pendingBefore)
+    ? { ...read, caseActionsUncertain: true, pendingRead: read } as QuoteAnalysis : read;
 }
 
 function staffQuoteNoticeView(jobId: string, result: BoundExecuteStaffQuote): HmsJobView {
@@ -834,9 +838,12 @@ export function NavaPane({
   // Deferred edits are logged only after the stored read proves it is the case they were made for.
   useEffect(() => {
     const binding = quoteSession.binding;
-    const analysis = quoteSession.analysis;
+    const held = quoteSession.analysis as PendingPaneAnalysis | null;
+    const analysis = held?.pendingRead ?? held;
     if (!binding?.internetMessageId || binding.internetMessageId !== activeEmail?.internetMessageId ||
-      !analysis || caseReviewPending(analysis) || storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) return;
+      !analysis || (caseReviewPending(held) && !held?.pendingRead) || storedWork.pane.state !== 'ready' ||
+      !storedWork.pane.workItemId || !storedWork.pane.refs || storedWork.historyPending || storedWork.historyNeedsReload ||
+      typeof workItemsFromTrpc(trpcClient).recordEvent?.mutate !== 'function') return;
     const key = paneEditKey(binding.transportId, binding.internetMessageId);
     let record = paneSourceRecord(key);
     const current = paneCaseSnapshot(analysis);
@@ -846,17 +853,19 @@ export function NavaPane({
     }
     const stored = paneCaseSnapshot(withPaneRead(storedWork.pane.analysis, null, null, activePaneConfig?.propertyCode ?? null));
     const retainedRows = quoteSession.groups.map((group) => group.id);
-    if (!Array.isArray(record?.pendingBefore) || !record.source || !current || !stored ||
-      !sameCaseSnapshot(record.source, current, false, retainedRows)) return;
-    const linked = current.aliases && JSON.stringify(current.aliases) ===
-      JSON.stringify(singleCaseReclassification(storedWork.pane.analysis, analysis, quoteSession.treatAs));
-    if (!sameCaseSnapshot(record.source, stored, false, retainedRows) &&
-      (!linked || !current.propertyCode || current.propertyCode !== stored.propertyCode)) return;
+    if (!Array.isArray(record?.pendingBefore) || !record.source?.propertyCode || !current || !stored ||
+      current.propertyCode !== stored.propertyCode || !sameCaseSnapshot(record.source, current, false, retainedRows) ||
+      [...record.pendingBefore, ...quoteSession.groups].some((group) =>
+        !shownFieldPaths(storedWork.pane.refs!, [group]).some((path) => path.includes('.rows[')))) return;
+    const aliases = current.aliases ?? record.source.aliases;
+    if (!sameCaseSnapshot(record.source, stored, false, retainedRows) && (!aliases || JSON.stringify(aliases) !==
+      JSON.stringify(singleCaseReclassification(storedWork.pane.analysis, analysis, quoteSession.treatAs)))) return;
     storedWork.recordGroups(record.pendingBefore, quoteSession.groups);
-    rememberPaneEdits(key, quoteSession.groups);
-    rememberPaneSource(key, quoteSession.groups, current);
+    rememberPaneSource(key, quoteSession.groups, { ...current, ...(aliases ? { aliases } : {}) });
+    if (held?.pendingRead) dispatchQuote({ type: 'analysis_ready',
+      analysis: { ...analysis, ...(aliases ? { caseAliases: aliases } : {}) } as QuoteAnalysis });
   }, [quoteSession.binding, quoteSession.analysis, quoteSession.groups, quoteSession.treatAs, storedWork.pane, storedWork.recordGroups,
-    activeEmail?.internetMessageId, activePaneConfig?.propertyCode]);
+    storedWork.historyPending, storedWork.historyNeedsReload, activeEmail?.internetMessageId, activePaneConfig?.propertyCode]);
   // Keep the lookup deadline separate from its payload: a late ready result changes the decision to stored, not to
   // another live read. With a treat-as or note, only Retry read (its count) re-runs the live analysis.
   const storedGate = storedOverridden
