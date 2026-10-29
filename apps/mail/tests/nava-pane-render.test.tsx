@@ -877,6 +877,8 @@ describe('NavaPane', () => {
     workItemId: 'wi-1',
     workItemStatus: 'needs_you',
     extractionId: 'ex-1',
+    sourcePartyDigest: 'a'.repeat(64),
+    sourcePartyFields: { company: ['missing'], endClient: ['missing'] },
     refs: { r_1: { stayId: 's_1', rowId: 'r_1' } },
     analysis: {
       intent: 'quote',
@@ -2469,6 +2471,7 @@ describe('NavaPane', () => {
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
     bridgeMockState.storedWork = {
       ...STORED_READY,
+      sourcePartyFields: { company: ['value', 'Example Agency'], endClient: ['value', 'Example Company'] },
       contact: {
         name: 'Guest Example',
         company: 'Example Agency',

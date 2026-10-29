@@ -49,6 +49,7 @@ function row(
     quantity: 30,
     roomPreference: roomCode,
     adults,
+    childrenPerRoom: 0,
     childrenAges: [],
     board: 'bb',
     specialRequests: [],
@@ -139,6 +140,32 @@ async function runStay(
 }
 
 describe('AE1 multi-stay: a succeeded stay run counts as rated', () => {
+  it('holds an old auto-picked HMS party when the saved source changes until staff chooses again', () => {
+    const picked = reduceQuoteSession(aeSession(), { type: 'patch_staff_header', header: PICK });
+    const oldEpoch = picked.sourcePartyEpoch ?? 0;
+    const changed = reduceQuoteSession(picked, { type: 'quote_source_changed',
+      sourceParty: { agency: null, company: 'New Company' } });
+    expect(changed.staffHeader.parties).toBeUndefined();
+    expect(changed.staffHeader.company).toBe('New Company');
+    expect(changed.sourcePartyReview).toEqual(['company']);
+    expect(changed.sourcePartyAutoPickDisabled).toBe(true);
+    expect(partyLookupWaitReason(changed)).toMatch(/select or clear/i);
+    // An automatic lookup started against the old source cannot reapply its pick or clear the review.
+    expect(reduceQuoteSession(changed, { type: 'patch_staff_header', header: PICK, sourcePartyEpoch: oldEpoch })).toBe(changed);
+    expect(reduceQuoteSession(changed, { type: 'quote_party_reviewed', kind: 'company', sourcePartyEpoch: oldEpoch })).toBe(changed);
+    const newPick = { ...PICK, company: 'New Company',
+      parties: { company: { kind: 'company' as const, nativeId: 'hms-2', name: 'New Company' } } };
+    const selected = reduceQuoteSession(changed, { type: 'patch_staff_header', header: newPick,
+      sourcePartyEpoch: changed.sourcePartyEpoch });
+    const reviewed = reduceQuoteSession(selected, { type: 'quote_party_reviewed', kind: 'company',
+      sourcePartyEpoch: changed.sourcePartyEpoch! });
+    expect(reviewed.staffHeader.parties?.company?.nativeId).toBe('hms-2');
+    expect(partyLookupWaitReason(reviewed)).toBeNull();
+    const edited = reduceQuoteSession(reviewed, { type: 'patch_staff_header', header: { notes: 'same source' },
+      sourcePartyEpoch: reviewed.sourcePartyEpoch });
+    expect(edited.staffHeader.parties?.company?.nativeId).toBe('hms-2');
+  });
+
   it('clears visible quote results when the saved source changes', async () => {
     const session = aeSession();
     const { session: priced } = await runStay(session, A, async () =>

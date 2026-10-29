@@ -748,7 +748,7 @@ describe('staff quote HMS job binding', () => {
   it('does not relabel a prepared contract price as the selected Centurion strategy', async () => {
     const header = {
       ...emptyStaffQuoteHeader(),
-      salesStrategy: 'Government' as const,
+      salesStrategy: 'BAR' as const,
       agency: 'Example Agency',
       parties: { agency: { kind: 'agency' as const, nativeId: 'A123', name: 'Example Agency' } },
     };
