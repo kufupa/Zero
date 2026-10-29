@@ -864,11 +864,11 @@ export function NavaPane({
       record = paneSourceRecord(key);
     }
     const stored = paneCaseSnapshot(withPaneRead(storedWork.pane.analysis, null, null, activePaneConfig?.propertyCode ?? null));
-    const retainedRows = quoteSession.groups.map((group) => group.id);
+    const retainedRows = quoteSession.groups.map((group) => group.id), refs = storedWork.pane.refs;
     if (!Array.isArray(record?.pendingBefore) || !record.source?.propertyCode || !current || !stored ||
       current.propertyCode !== stored.propertyCode || !sameCaseSnapshot(record.source, current, false, retainedRows) ||
       [...record.pendingBefore, ...quoteSession.groups].some((group) =>
-        !shownFieldPaths(storedWork.pane.refs!, [group]).some((path) => path.includes('.rows[')))) return;
+        !shownFieldPaths(refs, [group]).some((path) => path.includes('.rows[')))) return;
     const aliases = current.aliases ?? record.source.aliases;
     if (!sameCaseSnapshot(record.source, stored, false, retainedRows) && (!aliases || JSON.stringify(aliases) !==
       JSON.stringify(singleCaseReclassification(storedWork.pane.analysis, analysis, quoteSession.treatAs)))) return;
