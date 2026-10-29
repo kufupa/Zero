@@ -10,6 +10,7 @@ import { __resetInboundExtractionCapForTests, enqueueInboundExtraction } from '.
 import { claimNextAiRun } from '../src/ai/run-ledger.js';
 import { storedWorkFor } from '../src/ai/work-items.js';
 import { executeAiRun, storeWorkflowClassifierForInbound } from '../src/ai/worker.js';
+import { FakeS3Storage, resetS3Storage, setS3Storage } from '../src/storage/s3.js';
 import { AE1_OUTPUT, fakeModel } from './fixtures/inbound-extraction.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
@@ -19,8 +20,8 @@ const email = 'centurion@legacyhotels.co.za';
 const body = 'Please quote two rooms in October 2027.';
 const classification = { workflow: 'billing', confidence: 'high' } as const;
 
-beforeEach(() => __resetInboundExtractionCapForTests());
-afterEach(() => { __setDbForTests(null); vi.unstubAllEnvs(); });
+beforeEach(() => { __resetInboundExtractionCapForTests(); setS3Storage(new FakeS3Storage()); });
+afterEach(() => { __setDbForTests(null); resetS3Storage(); vi.unstubAllEnvs(); });
 
 function configureWorker(url: string) {
   for (const [name, value] of Object.entries({
