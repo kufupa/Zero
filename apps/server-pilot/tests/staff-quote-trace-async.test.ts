@@ -5,7 +5,7 @@ import {
   runProvisionalQuoteChild,
 } from '../src/ai/staff-quote-trace-async.js';
 import { setTimeout as delay } from 'node:timers/promises';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -28,6 +28,33 @@ function provisionalChild({
 }
 
 const noVerify = async () => undefined;
+
+async function waitForFile(path: string): Promise<string> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      return await readFile(path, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    await delay(20);
+  }
+  throw new Error('child did not write the expected marker');
+}
+
+async function childExited(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return true;
+      throw error;
+    }
+    await delay(20);
+  }
+  return false;
+}
 
 async function run(
   script: string,
@@ -190,6 +217,54 @@ describe('provisional staff quote capture', () => {
       await rm(run1.dir, { recursive: true, force: true });
     }
   }, 15_000);
+
+  it.each(['before', 'after'] as const)(
+    'waits for child close after abort %s a provisional capture',
+    async (stage) => {
+      const controller = new AbortController();
+      const script = `
+        const fs = require('node:fs');
+        const [result, evidence] = process.argv.slice(1);
+        process.on('SIGTERM', () => fs.writeFileSync(result + '.term', 'received'));
+        fs.writeFileSync(result + '.pid', String(process.pid));
+        if (${JSON.stringify(stage)} === 'after') {
+          fs.writeFileSync(result, JSON.stringify({ evidenceDirectory: evidence, traceFinish: 'pending' }));
+        }
+        setInterval(() => { if (fs.existsSync(result + '.release')) process.exit(0); }, 20);
+      `;
+      const run1 = await run(script, { signal: controller.signal, timeoutMs: 8_000 });
+      // Attach a handler immediately: an abort before the capture rejects this promise.
+      void run1.promise.catch(() => undefined);
+      let pid: number | undefined;
+      try {
+        pid = Number(await waitForFile(`${run1.resultPath}.pid`));
+        expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+        let completion: Promise<'resolved' | 'rejected'>;
+        if (stage === 'after') {
+          const outcome = await run1.promise;
+          if (outcome.kind !== 'provisional') throw new Error('expected a provisional capture');
+          completion = outcome.finished.then(() => 'resolved' as const, () => 'rejected' as const);
+        } else {
+          completion = run1.promise.then(() => 'resolved' as const, () => 'rejected' as const);
+        }
+        controller.abort(new Error('caller_gone'));
+        await waitForFile(`${run1.resultPath}.term`);
+        expect(await Promise.race([completion, delay(250).then(() => 'pending')])).toBe('pending');
+        await writeFile(`${run1.resultPath}.release`, 'release');
+        expect(await completion).toBe('rejected');
+        expect(await childExited(pid, 1_000)).toBe(true);
+      } finally {
+        await writeFile(`${run1.resultPath}.release`, 'release').catch(() => undefined);
+        if (pid && !(await childExited(pid, 3_000))) {
+          try { process.kill(pid, 'SIGKILL'); } catch { /* This owned child may already have exited. */ }
+          await childExited(pid, 1_000);
+        }
+        await run1.promise.catch(() => undefined);
+        await rm(run1.dir, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
 });
 
 describe('pending staff quote finishes', () => {
