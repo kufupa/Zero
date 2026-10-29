@@ -1098,6 +1098,35 @@ describe('NavaPane', () => {
     };
   }
 
+  it('discards only the selected web row and user when reloading early edits', async () => {
+    configureCenturionPane();
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
+    const messageId = '<shared-web-discard@example.invalid>';
+    const selectedKey = paneEditKey('transport-1', messageId, 'row-a', 'staff-1');
+    const otherRowKey = paneEditKey('transport-1', messageId, 'row-b', 'staff-1');
+    const otherUserKey = paneEditKey('transport-1', messageId, 'row-a', 'staff-2');
+    const stored = twoCaseStoredWork();
+    const early = [{ ...stored.analysis.groups[0]!, id: 'draft-stay', arrivalDate: '2027-10-25',
+      fields: { arrivalDate: 'staff_corrected' as const } }];
+    const otherRow = [{ ...stored.analysis.groups[0]!, adults: 4 }];
+    const otherUser = [{ ...stored.analysis.groups[0]!, adults: 5 }];
+    rememberPaneEdits(selectedKey, early);
+    rememberPaneEdits(otherRowKey, otherRow);
+    rememberPaneEdits(otherUserKey, otherUser);
+    bridgeMockState.storedWork = { ...stored, sourceMessageId: 'row-a' };
+    bridgeMockState.staffQuoteSources[messageId] = { messageId: 'row-a', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, entryId: 'row-a',
+      internetMessageId: messageId } } as PaneBridge;
+    render(<NavaPane bridge={bridge} preview />);
+
+    expect(await screen.findByText(/early edits are not assigned to a stay/i)).toBeDefined();
+    fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved changes and reload' }));
+    await waitFor(() => expect(recalledPaneEdits(selectedKey)).toBeNull(), { timeout: 5000 });
+    expect(recalledPaneEdits(otherRowKey)).toEqual(otherRow);
+    expect(recalledPaneEdits(otherUserKey)).toEqual(otherUser);
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+  }, 15000);
+
   it('holds an early edit across a two-case read and remount until staff discard it', async () => {
     configureCenturionPane();
     setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
