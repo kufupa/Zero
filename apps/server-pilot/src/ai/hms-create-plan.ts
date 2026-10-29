@@ -96,12 +96,13 @@ async function selectedMailHash(db: DB, mail: typeof message.$inferSelect): Prom
 }
 
 /** The first slice cannot silently approve one room from a case with other displayed rooms. */
-export function assertOneRoomCaseScope(payload: unknown, state: Record<string, unknown>): void {
+export function assertOneRoomCaseScope(payload: unknown, state: Record<string, unknown>, stayId: string): void {
   const parsed = mailExtractionPayloadSchema.safeParse(payload);
   if (!parsed.success) refuse('case_scope_unverified');
   const stays = formStays(parsed.data, state);
   if (stays.length !== 1 || stays[0]!.rows.length > 1 ||
       (stays[0]!.totalRooms !== null && stays[0]!.totalRooms !== 1)) refuse('case_multiple_rooms_unsupported');
+  if (stayId !== `${stays[0]!.id}_1`) refuse('case_room_identity_changed');
   const guests = parsed.data.stays.find((stay) => stay.id === stays[0]!.id)?.guests ?? [];
   if (guests.length > 1) refuse('case_multiple_guests_unsupported');
   const row = stays[0]!.rows[0];
@@ -184,7 +185,7 @@ async function loadContext(db: DB, item: WorkRow, input: ParsedInput, now: Date)
   )).orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
   const caseRead = caseReads[0];
   if (!caseRead || caseRead.kind !== item.kind) refuse('case_scope_unverified');
-  assertOneRoomCaseScope(caseRead.payload, item.state);
+  assertOneRoomCaseScope(caseRead.payload, item.state, input.stayId);
   const [run] = await db.select().from(aiWorkflowRun).where(and(
     eq(aiWorkflowRun.id, input.quoteRunId), eq(aiWorkflowRun.transportId, item.transportId),
     eq(aiWorkflowRun.threadId, item.threadId), eq(aiWorkflowRun.runKind, 'candidate_draft'), eq(aiWorkflowRun.state, 'succeeded'),
@@ -264,7 +265,9 @@ export async function prepareHmsCreatePlan(db: DB, scope: { transportId: string;
   return db.transaction(async (tx) => {
     const [item] = await tx.select().from(workItem).where(and(eq(workItem.id, input.workItemId), eq(workItem.transportId, scope.transportId))).limit(1).for('update');
     if (!item) refuse('work_item_missing');
-    if (stayCommitOf(item.state, input.stayId) || item.state.paneStaySaveClaims) refuse('stay_already_attempted');
+    const priorStays = item.state.stays;
+    if ((priorStays !== undefined && (!priorStays || typeof priorStays !== 'object' || Array.isArray(priorStays) ||
+        Object.keys(priorStays).length)) || item.state.paneStaySaveClaims) refuse('stay_already_attempted');
     const context = await loadContext(tx as DB, item, input, now);
     const plan = buildPlan(input, context, { id: randomUUID(), at: now.toISOString(), by: scope.actorUserId });
     const envelope = { plan, digest: hmsStateDigest(plan) };

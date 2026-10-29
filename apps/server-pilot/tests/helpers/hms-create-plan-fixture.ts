@@ -3,6 +3,7 @@ import { resolveQuoteRevision, type QuoteSourceRecord } from '../../src/quote-pr
 import type { HmsCreatePlanInput } from '../../src/ai/hms-create-plan.js';
 
 export const PLAN_NOW = new Date('2026-10-29T12:00:00.000Z');
+export const CASE_STAY_ID = 'case-stay_1';
 export const PLAN_STAY = {
   firstName: 'Proof', lastName: 'Labtest', arrival: '2027-09-14', departure: '2027-09-16',
   adults: 2, childAges: [6], sourceOfBusiness: 'Walk in', roomType: 'STQN', ratePlan: 'BAR',
@@ -42,6 +43,6 @@ export async function quotedPlanFixture(): Promise<{ revision: Awaited<ReturnTyp
     admission: { authorizationId: 'auth-1', sourceEvaluationAt: PLAN_NOW.toISOString(),
       maxSourceAgeMs: 60_000, expectedRequests: { [source.ref]: source.request }, authorizeSource: async () => true },
   });
-  return { revision, input: { workItemId: '00000000-0000-4000-8000-000000000001', stayId: 'room1',
+  return { revision, input: { workItemId: '00000000-0000-4000-8000-000000000001', stayId: CASE_STAY_ID,
     quoteRunId: 'quote-run', revisionId: revision.id, groupId: 'g1', previewDigest: paneStayDigest(PLAN_STAY), stay: PLAN_STAY } };
 }

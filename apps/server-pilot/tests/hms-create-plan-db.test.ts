@@ -10,7 +10,7 @@ import { mailExtraction, workEvent, workItem } from '../src/db/schema/work.js';
 import { consumeHmsCreatePlan, loadHmsCreatePlan, prepareHmsCreatePlan } from '../src/ai/hms-create-plan.js';
 import { approveHmsWrite } from '../src/ai/hms-approval.js';
 import { staffQuoteSourceHash } from '../src/ai/staff-quote-workflow.js';
-import { CASE_READ, PLAN_NOW, quotedPlanFixture } from './helpers/hms-create-plan-fixture.js';
+import { CASE_READ, CASE_STAY_ID, PLAN_NOW, quotedPlanFixture } from './helpers/hms-create-plan-fixture.js';
 import { seedInboxThread } from './helpers/seed-inbox-thread.js';
 import { withIngestionDb } from './helpers/ingestion-db.js';
 
@@ -28,7 +28,7 @@ async function seed(db: DB) {
     status: 'succeeded', kind: 'booking', payload: CASE_READ }).returning();
   const [item] = await db.insert(workItem).values({ transportId: scope.transportId, threadId: 'thread-1',
     sourceMessageId: 'selected-message', kind: 'booking', extractionId: caseRead!.id, state: { selectedCase: 'case-1', stayPreviews: {
-      room1: { status: 'previewed', digest: template.previewDigest, expiresAt: PLAN_NOW.getTime() + 600_000 },
+      [CASE_STAY_ID]: { status: 'previewed', digest: template.previewDigest, expiresAt: PLAN_NOW.getTime() + 600_000 },
     } } }).returning();
   await db.insert(aiDraftGeneration).values({ id: 'quote-generation', transportId: scope.transportId,
     threadId: 'thread-1', requestedByUserId: scope.actorUserId, contextMessageIds: ['quote-message'],
@@ -49,8 +49,8 @@ async function seed(db: DB) {
 async function claim(db: DB, itemId: string) {
   const [item] = await db.select().from(workItem).where(eq(workItem.id, itemId));
   const claimId = randomUUID();
-  await db.update(workItem).set({ state: { ...item!.state, paneStaySaveClaims: { room1: claimId },
-    stays: { room1: { status: 'unknown', confirmationNumber: null, screenshotRef: null } } } }).where(eq(workItem.id, itemId));
+  await db.update(workItem).set({ state: { ...item!.state, paneStaySaveClaims: { [CASE_STAY_ID]: claimId },
+    stays: { [CASE_STAY_ID]: { status: 'unknown', confirmationNumber: null, screenshotRef: null } } } }).where(eq(workItem.id, itemId));
   return claimId;
 }
 
@@ -62,7 +62,7 @@ describe('durable create-plan approval', () => {
       expect(envelope.plan).toMatchObject({ propertyCode: 'HRCEN', workItemId: itemId,
         sourceMessageId: 'selected-message', quote: { sourceMessageId: 'quote-message', totalMinor: 22051,
           appliedToBooking: 'unverified', inventoryHeld: false },
-        steps: [{ id: 'room1', stay: { firstName: 'Proof', lastName: 'Labtest', childAges: [6] },
+        steps: [{ id: CASE_STAY_ID, stay: { firstName: 'Proof', lastName: 'Labtest', childAges: [6] },
           sideEffects: { confirmationSendMail: false, confirmationRecipient: null, nativeAddOns: [] } }] });
       expect(envelope.plan.quote.nightly).toEqual([
         { date: '2027-09-14', amountMinor: 10001 }, { date: '2027-09-15', amountMinor: 12050 },
@@ -142,6 +142,17 @@ describe('durable create-plan approval', () => {
         triggerMessageId: 'selected-message', runKind: 'hms_write', idempotencyKey: 'hms-write:fixture',
         modelId: 'none', promptVersion: 'hms-write/1', state: 'queued', workItemId: itemId });
       await expect(prepareHmsCreatePlan(db, scope, input, PLAN_NOW)).rejects.toMatchObject({ refusal: 'write_in_flight' });
+    });
+  });
+
+  it('refuses another one-room plan after any saved or uncertain room in that case', async () => {
+    await withIngestionDb(async ({ db }) => {
+      const { itemId, input } = await seed(db);
+      const [item] = await db.select().from(workItem).where(eq(workItem.id, itemId));
+      await db.update(workItem).set({ state: { ...item!.state, stays: {
+        other: { status: 'booked', confirmationNumber: '123456-1', screenshotRef: null },
+      } } }).where(eq(workItem.id, itemId));
+      await expect(prepareHmsCreatePlan(db, scope, input, PLAN_NOW)).rejects.toThrow('stay_already_attempted');
     });
   });
 
