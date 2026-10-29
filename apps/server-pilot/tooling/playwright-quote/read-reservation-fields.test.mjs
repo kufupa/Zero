@@ -512,6 +512,45 @@ test('UI read refuses a record showing another confirmation', async () => {
   assert.equal('fields' in row, false);
 });
 
+test('UI read keeps observed commercial facts and aggregate controls only for the found confirmation', async () => {
+  const values = {
+    confirmationnumber: '73165771-1', lastname: 'Labtest', rateplan: 'BAR',
+    averagerate: '1250.00', averageratecurr: 'ZAR', totalrate: '2500.00', totalratecurr: 'ZAR',
+    grandtotal: '2500.00', grandtotalcurr: 'ZAR', bookingagency1iatanumber: '12345678',
+  };
+  const doc = {
+    querySelectorAll(selector) {
+      const name = /name="([^"]+)"/.exec(selector)?.[1];
+      return Object.hasOwn(values, name) ? [fakeInput({ value: values[name] })] : [];
+    },
+  };
+  const page = { evaluate: async (fn, names) => fn(names, doc) };
+  const commercial = { agency: { name: 'Agency X', iata: '12345678' }, ratePlan: 'BAR' };
+  const find = async () => ({
+    outcome: 'found', stay: { confirmation: '73165771-1' }, commercial, conflicts: ['ratePlan'],
+  });
+  const row = await reader.readOneUi(page, { conf: '73165771-1' }, find, async () => true);
+  assert.equal(row.outcome, 'read');
+  assert.deepEqual(row.commercial, commercial);
+  assert.deepEqual(row.commercialConflicts, ['ratePlan']);
+  for (const name of ['averageratecurr', 'totalrate', 'totalratecurr', 'grandtotal', 'grandtotalcurr', 'bookingagency1iatanumber']) {
+    assert.equal(row.fields[name], values[name]);
+  }
+  const stdout = JSON.stringify(reader.stdoutPayload(row));
+  assert.equal(stdout.includes('Agency X'), false);
+  assert.equal(stdout.includes('12345678'), false);
+
+  const mismatch = await reader.readOneUi(page, { conf: '73165771-1' },
+    async () => ({ outcome: 'found', stay: { confirmation: '99999999-1' }, commercial }), async () => true);
+  assert.equal(mismatch.outcome, 'identity_mismatch');
+  assert.equal('commercial' in mismatch, false);
+  assert.equal('fields' in mismatch, false);
+
+  const noBoundStay = await reader.readOneUi(page, { conf: '73165771-1' },
+    async () => ({ outcome: 'found', commercial }), async () => true);
+  assert.equal('commercial' in noBoundStay, false);
+});
+
 test('UI read retries a miss or a thrown find once after settling; ambiguous and mismatch are not retried', async () => {
   let settles = 0;
   const settle = async () => {

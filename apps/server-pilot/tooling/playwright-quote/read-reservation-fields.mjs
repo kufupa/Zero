@@ -21,8 +21,9 @@ const FIELDS = [
   'confirmationnumber', 'status', 'arrivaldate', 'departuredate', 'nights', 'adults', 'children',
   'roomtype', 'rateplan', 'mealplan', 'track', 'guaranteetype', 'sourceofbusinessdesc',
   'marketsegment', 'company', 'araccountname', 'ta1', 'ta1commission', 'groupname',
-  'grouprateschedulecode', 'settlementtype', 'reasonforstay', 'promotioncode', 'averagerate',
-  'totalrate', 'depositreceived', 'createdby', 'created', 'reservationdate', 'updatedby',
+  'grouprateschedulecode', 'settlementtype', 'reasonforstay', 'promotioncode', 'averagerate', 'averageratecurr',
+  'totalrate', 'totalratecurr', 'grandtotal', 'grandtotalcurr', 'bookingagency1iatanumber',
+  'depositreceived', 'createdby', 'created', 'reservationdate', 'updatedby',
   'externalreference1', 'billingreference', 'caller', 'reservationnote', 'cancellationnote',
   'confidentialratecb', 'viplevel', 'revenuedesc',
   'child1', 'child2', 'child3', 'udfchar09', 'udfchar13', 'udfchkbox04', 'udfchar06',
@@ -543,6 +544,8 @@ export async function readOneUi(page, hint, find = findOnOpenGuestStay, settle =
   const { fields, keys } = await page.evaluate(visibleFieldValues, FIELDS);
   const envelope = { type: 'ui_form', keys: [...keys].sort() };
   if (fields.confirmationnumber !== conf) return { conf, outcome: 'identity_mismatch', envelope };
+  const foundConfirmation = typeof found.stay?.confirmation === 'string' ? found.stay.confirmation.trim() : '';
+  if (foundConfirmation && foundConfirmation !== conf) return { conf, outcome: 'identity_mismatch', envelope };
   const bookingState = Object.fromEntries(
     Object.entries(BOOKING_STATE_KEYS).map(([key, name]) => [key, fields[name] ?? null]),
   );
@@ -551,6 +554,10 @@ export async function readOneUi(page, hint, find = findOnOpenGuestStay, settle =
     outcome: Object.keys(fields).length > 3 ? 'read' : 'thin',
     fields,
     bookingState,
+    ...(foundConfirmation && found.commercial ? {
+      commercial: found.commercial,
+      commercialConflicts: Array.isArray(found.conflicts) ? found.conflicts : null,
+    } : {}),
     grid: {},
     findMethod: found.findMethod ?? null,
     envelope,
