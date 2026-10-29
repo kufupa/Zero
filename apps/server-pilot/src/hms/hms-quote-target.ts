@@ -10,12 +10,17 @@ import {
 import {
   guardCenturionHmsMailboxOrigin,
   isDaVinciMailboxOrigin,
+  loadThreadMailboxHmsOriginScan,
   type MailboxHmsOriginFields,
   type MailboxHmsOriginLoadInput,
 } from './mailbox-hms-origin-bind.js';
+import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
+import { isQuoteSourceLockBusy, quoteSourceBusyError } from './quote-source-contention.js';
 
 /** Same staff copy as the Centurion refuse. Quote flag off keeps that refuse. */
 export const DAVINCI_QUOTE_REFUSED_MESSAGE = DAVINCI_ORIGIN_REFUSED_MESSAGE;
+export const QUOTE_HOTEL_CHANGED_MESSAGE =
+  'The hotel for this email changed. Open it in the correct hotel mailbox and search rates again.';
 
 export type HmsQuoteJobTargetResult =
   | { ok: true; target: HmsReadTarget }
@@ -73,6 +78,29 @@ export async function resolveHmsQuoteJobTarget(
   const guard = await guardCenturionHmsMailboxOrigin(input);
   if (guard.ok) return { ok: true, target };
   return davinciQuoteOrRefuse(input.env);
+}
+
+/** A saved price must still belong to the hotel the current thread resolves to. */
+export async function quotePropertyMatchesOrigin(
+  input: MailboxHmsOriginLoadInput & { propertyCode?: string | null; env?: NodeJS.Dict<string> },
+): Promise<boolean> {
+  const transport = resolvePropertyTransport(input.transportId);
+  if (input.propertyCode !== 'HRCEN' &&
+    !(transport.kind === 'property' && transport.property.propertyCode === 'HRCEN')) return true;
+  if (!input.messageId || !input.propertyCode) return false;
+  try {
+    if (transport.kind !== 'property') return false;
+    if (transport.property.propertyCode !== 'HRCEN') return transport.property.propertyCode === input.propertyCode;
+    const guard = await guardCenturionHmsMailboxOrigin(input);
+    if (input.propertyCode === 'HRCEN') return guard.ok;
+    if (input.propertyCode !== 'HRDAV' || guard.ok) return false;
+    // A missing selected message and a Da Vinci origin both refuse the Centurion guard.
+    const scan = await loadThreadMailboxHmsOriginScan(input);
+    return scan.selectedFound && !!scan.selected && [scan.selected, ...scan.inbounds].some(isDaVinciMailboxOrigin);
+  } catch (error) {
+    if (input.lock && isQuoteSourceLockBusy(error)) throw quoteSourceBusyError();
+    return false;
+  }
 }
 
 /** Quote routes: Da Vinci origins pass only when HMS_DAVINCI_MAKE_QUOTE=on. */

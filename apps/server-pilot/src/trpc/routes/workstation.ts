@@ -89,6 +89,8 @@ import { and, eq, desc, sql } from 'drizzle-orm';
 import { getDb } from '../../db/client.js';
 import {
   assertHmsQuoteOriginAllowed,
+  QUOTE_HOTEL_CHANGED_MESSAGE,
+  quotePropertyMatchesOrigin,
   resolveHmsQuoteJobTarget,
 } from '../../hms/hms-quote-target.js';
 import { hmsReadTargetForTransport, hmsReadTargetJobMetrics } from '../../hms/hms-read-target.js';
@@ -711,6 +713,10 @@ async function proposalStaysFor(
     } catch {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: resolveFailure });
     }
+    if (!(await quotePropertyMatchesOrigin({ db, transportId: ctx.activeTransportId, threadId: current.threadId,
+      messageId: input.messageId, propertyCode: resolved.revision.propertyCode }))) {
+      throw new TRPCError({ code: 'PRECONDITION_FAILED', message: QUOTE_HOTEL_CHANGED_MESSAGE });
+    }
     if (!(await childOccupancyIsCurrent(db, occupancyFromRevision(resolved.revision), {
       transportId: ctx.activeTransportId, threadId: current.threadId, messageId: input.messageId,
       propertyCode: resolved.revision.propertyCode,
@@ -1062,6 +1068,9 @@ export const workstationRouter = router({
           transportId: ctx.activeTransportId, threadId: bound.run.threadId, messageId: input.messageId,
           propertyCode: revision.propertyCode,
         };
+        if (!(await quotePropertyMatchesOrigin({ ...occupancyScope, db: getDb() }))) {
+          return { status: 'unavailable' as const, reason: QUOTE_HOTEL_CHANGED_MESSAGE };
+        }
         if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(revision), occupancyScope))) {
           return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' };
         }
@@ -1077,6 +1086,9 @@ export const workstationRouter = router({
           extraTotalMinor,
           rowPrices,
         });
+        if (!(await quotePropertyMatchesOrigin({ ...occupancyScope, db: getDb() }))) {
+          return { status: 'unavailable' as const, reason: QUOTE_HOTEL_CHANGED_MESSAGE };
+        }
         if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(revision), occupancyScope))) {
           return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' };
         }
@@ -1253,6 +1265,11 @@ export const workstationRouter = router({
       if (resolved.status !== 'ready') return resolved;
       const occupancyScope = { transportId: ctx.activeTransportId, threadId: input.threadId, messageId: input.messageId,
         propertyCode: resolved.revision.propertyCode };
+      const originCurrent = async () => await quotePropertyMatchesOrigin({ ...occupancyScope, db: getDb(),
+        messageId: run.triggerMessageId ?? undefined }) &&
+        (run.triggerMessageId === input.messageId || await quotePropertyMatchesOrigin({ ...occupancyScope, db: getDb() }));
+      if (!(await originCurrent())) return { status: 'unavailable' as const, reason: 'fresh_quote_required' as const,
+        message: QUOTE_HOTEL_CHANGED_MESSAGE };
       // Across emails, only a single unambiguous saved room row can establish the same child occupancy.
       const occupancyCurrent = () => run.triggerMessageId === input.messageId
         ? childOccupancyIsCurrent(getDb(), occupancyFromRevision(resolved.revision), occupancyScope)
@@ -1272,6 +1289,8 @@ export const workstationRouter = router({
         extraTotalMinor,
         rowPrices,
       });
+      if (!(await originCurrent())) return { status: 'unavailable' as const, reason: 'fresh_quote_required' as const,
+        message: QUOTE_HOTEL_CHANGED_MESSAGE };
       if (!(await occupancyCurrent())) return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' as const };
       return {
         status: 'ready' as const,
@@ -1424,6 +1443,8 @@ export const workstationRouter = router({
               revisionRef: ref,
               factRefs,
             });
+            if (!(await quotePropertyMatchesOrigin({ db: getDb(), transportId: ctx.activeTransportId,
+              threadId: mail.threadId, messageId: mail.id, propertyCode: revision.propertyCode }))) continue;
             if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(revision), {
               transportId: ctx.activeTransportId, threadId: mail.threadId, messageId: mail.id,
               propertyCode: revision.propertyCode,
@@ -1478,6 +1499,8 @@ export const workstationRouter = router({
               factRefs: [],
               kind: 'imported_offer',
             });
+            if (!(await quotePropertyMatchesOrigin({ db: getDb(), transportId: ctx.activeTransportId,
+              threadId: mail.threadId, messageId: mail.id, propertyCode: offer.propertyCode }))) continue;
             renderImportedProposalHtml(offer, {
               attention: '',
               company: '',
@@ -1511,6 +1534,8 @@ export const workstationRouter = router({
               factRefs: [],
               kind: 'approved_override',
             });
+            if (!(await quotePropertyMatchesOrigin({ db: getDb(), transportId: ctx.activeTransportId,
+              threadId: mail.threadId, messageId: mail.id, propertyCode: offer.sourceRevision.propertyCode }))) continue;
             if (!(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(offer.sourceRevision), {
               transportId: ctx.activeTransportId, threadId: mail.threadId, messageId: mail.id,
               propertyCode: offer.sourceRevision.propertyCode,
@@ -1639,7 +1664,6 @@ export const workstationRouter = router({
         .where(and(eq(aiWorkflowRun.id, job.runId), eq(aiWorkflowRun.transportId, ctx.activeTransportId)))
         .limit(1);
       const request = quotePdfRequestSchema.safeParse(stored?.request);
-      if (request.success && request.data.propertyCode === 'HRDAV') return job;
       const proposal = qualifiedProposalInput.safeParse(request.success ? request.data.proposal : null);
       if (!request.success || !proposal.success || request.data.workItemId !== input.workItemId ||
         request.data.transportId !== ctx.activeTransportId || proposal.data.workItemId !== input.workItemId ||
@@ -1758,6 +1782,11 @@ export const workstationRouter = router({
         isCenturionQuoteScope({ transportId: ctx.activeTransportId, propertyCode: selected.propertyCode }))
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: importedOfferOccupancyHold });
       const assertSourceOccupancy = async () => {
+        const propertyCode = selected.kind === 'imported_offer' ? selected.propertyCode : selected.sourceRevision.propertyCode;
+        if (!(await quotePropertyMatchesOrigin({ db: getDb(), transportId: ctx.activeTransportId,
+          threadId: bound.run.threadId, messageId: input.messageId, propertyCode }))) {
+          throw new TRPCError({ code: 'PRECONDITION_FAILED', message: QUOTE_HOTEL_CHANGED_MESSAGE });
+        }
         if (selected.kind === 'approved_override' &&
           !(await childOccupancyIsCurrent(getDb(), occupancyFromRevision(selected.sourceRevision), {
             transportId: ctx.activeTransportId, threadId: bound.run.threadId, messageId: input.messageId,

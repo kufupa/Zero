@@ -26,11 +26,13 @@ import { persistMailBaselineProjection } from '../../metrics/mail-baseline-proje
 import { MAIL_BASELINE_INTERPRETATION_VERSION } from '../../metrics/mail-baseline.js';
 import { refreshThreadAfterMessageRemoved } from '../../trpc/routes/mail-helpers.js';
 import { extractMailBaselineEvidence } from '../../ai/mail-baseline-extraction.js';
-import { and, eq, gt, isNotNull, isNull, lte, or } from 'drizzle-orm';
+import { and, eq, gt, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import { mailBaselineGenerationKey } from '../../ai/run-ledger.js';
 import { refreshThreadWork } from '../../ai/work-items.js';
 import { loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { maybeEnqueueLoopback } from '../fixture-loopback.js';
+import { isCenturionQuoteTransport } from '../../ai/child-occupancy.js';
+import { isQuoteSourceLockBusy, withQuoteSourceBusyHold } from '../../hms/quote-source-contention.js';
 import { getDb, type DB } from '../../db/client.js';
 import { randomUUID } from 'node:crypto';
 
@@ -204,6 +206,7 @@ export async function assertQueuedDraftApproval(
   payload: OutboundMailPayload,
   db: DB,
   messageId?: string,
+  options: { lockQuoteOrigin?: boolean } = {},
 ): Promise<DraftApproval> {
   try {
     const signingSecret = getDraftApprovalSigningSecret();
@@ -213,6 +216,7 @@ export async function assertQueuedDraftApproval(
       approval,
       payload: approvalPayloadFromQueuedSmtp(approval, payload),
       queueMessageId: messageId,
+      lockQuoteOrigin: options.lockQuoteOrigin,
       loadThreadStateVersion: (stateDb, state) =>
         loadLiveThreadStateVersion(stateDb, {
           ...state,
@@ -519,7 +523,8 @@ async function claimApprovedSmtpAttempt(
   rawApproval: unknown,
   db: DB,
 ): Promise<void> {
-  await db.transaction(async (tx) => {
+  const claim = () => db.transaction(async (tx) => {
+    if (isCenturionQuoteTransport(row.transportId)) await tx.execute(sql`set local lock_timeout = '250ms'`);
     const [lockedQueue] = await tx
       .select({ id: outboundSendQueue.id })
       .from(outboundSendQueue)
@@ -569,7 +574,8 @@ async function claimApprovedSmtpAttempt(
       .for('update');
     if (!lockedThread) throw new DraftApprovalInvalidError('approved thread disappeared');
 
-    await assertQueuedDraftApproval(rawApproval, payload, tx as unknown as DB, row.messageId);
+    await assertQueuedDraftApproval(rawApproval, payload, tx as unknown as DB, row.messageId,
+      { lockQuoteOrigin: true });
 
     const [marked] = await tx
       .update(outboundSendQueue)
@@ -578,6 +584,8 @@ async function claimApprovedSmtpAttempt(
       .returning({ id: outboundSendQueue.id });
     if (!marked) throw new OutboundClaimLostError();
   });
+  if (isCenturionQuoteTransport(row.transportId)) await withQuoteSourceBusyHold(claim);
+  else await claim();
 }
 
 async function clearSmtpAttemptStarted(row: ClaimedQueueRow, db: DB): Promise<boolean> {
@@ -932,6 +940,15 @@ async function deliverClaimed(row: ClaimedQueueRow, db: DB): Promise<OutboundDel
 
 async function markFlushError(row: ClaimedQueueRow, err: unknown, db: DB): Promise<boolean> {
   const now = new Date();
+  if (isQuoteSourceLockBusy(err)) {
+    // The approval is still valid and no SMTP attempt began. Retry after the source editor releases it.
+    const [deferred] = await db.update(outboundSendQueue).set({
+      status: 'pending', claimedAt: null, sendAt: new Date(now.getTime() + 5_000),
+      lastError: JSON.stringify({ code: 'QUOTE_SOURCE_BUSY' }), updatedAt: now,
+    }).where(and(claimFence(row), isNull(outboundSendQueue.smtpAttemptedAt)))
+      .returning({ id: outboundSendQueue.id });
+    if (deferred) return true;
+  }
   if (err instanceof DraftApprovalInvalidError) {
     return db.transaction(async (tx) => {
       const [updated] = await tx

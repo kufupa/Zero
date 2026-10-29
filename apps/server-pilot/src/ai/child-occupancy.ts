@@ -7,6 +7,8 @@ import { and, desc, eq } from 'drizzle-orm';
 import { addDays } from './stay-date-anchoring.js';
 import { formStays } from './work-items.js';
 import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
+import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin } from '../hms/hms-quote-target.js';
+import { isQuoteSourceLockBusy, quoteSourceBusyError } from '../hms/quote-source-contention.js';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
   'id' | 'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'childrenAges' | 'childrenPerRoom'>;
@@ -121,8 +123,19 @@ export function occupancyFromRevision(revision: QuoteRevision): Group[] {
 /** Load the same extraction version and saved edits as the selected email's pane. */
 async function loadChildOccupancyEvidence(
   db: DB,
-  scope: { transportId: string; threadId: string; messageId: string; lock?: boolean },
+  scope: { transportId: string; threadId: string; messageId: string; lock?: boolean; allowMissingWorkItem?: boolean },
 ) {
+  if (scope.lock) {
+    // A source-locking caller also holds the selected message FOR UPDATE, preventing new extraction FK inserts.
+    await db.select({ id: mailExtraction.id }).from(mailExtraction)
+      .where(eq(mailExtraction.messageId, scope.messageId)).orderBy(mailExtraction.id)
+      .for('share', { noWait: true });
+    // A decision on a different kind can change the saved source without updating the current item.
+    await db.select({ id: workItem.id }).from(workItem).where(and(
+      eq(workItem.transportId, scope.transportId), eq(workItem.threadId, scope.threadId),
+      eq(workItem.sourceMessageId, scope.messageId),
+    )).orderBy(workItem.id).for('update', { noWait: true });
+  }
   const [latest] = await db
     .select({ id: mailExtraction.id, kind: mailExtraction.kind, payload: mailExtraction.payload })
     .from(mailExtraction)
@@ -140,17 +153,17 @@ async function loadChildOccupancyEvidence(
       eq(workItem.kind, latest.kind),
     ))
     .limit(1);
-  const [item] = await (scope.lock ? itemQuery.for('share') : itemQuery);
+  const [item] = await (scope.lock ? itemQuery.for('share', { noWait: true }) : itemQuery);
   // A newer read has not been adopted yet. Do not apply old corrections to that read, or keep pricing the older one.
   // The existing work-item relink decides whether edits can safely carry; once it moves, the latest evidence is used.
-  if ((!item && scope.lock) || (item && item.extractionId !== latest.id)) return null;
+  if ((!item && scope.lock && !scope.allowMissingWorkItem) || (item && item.extractionId !== latest.id)) return null;
   return { payload: latest.payload, state: item?.state ?? {} };
 }
 
 export async function childOccupancyIsCurrent(
   db: DB,
   groups: Group[],
-  scope: { transportId: string; threadId: string; messageId: string; propertyCode?: string; lock?: boolean },
+  scope: { transportId: string; threadId: string; messageId: string; propertyCode?: string; lock?: boolean; allowMissingWorkItem?: boolean },
 ): Promise<boolean> {
   if (!isCenturionQuoteScope(scope)) return true;
   const evidence = await loadChildOccupancyEvidence(db, scope);
@@ -174,22 +187,38 @@ export function isCenturionQuoteScope(scope: { transportId: string; propertyCode
 /** A priced candidate must still match the selected email and persisted room facts at promotion and send. */
 export async function draftQuoteOccupancyHold(db: DB, input: {
   transportId: string; threadId: string; messageId: string | null; triggerMessageId: string | null; result: unknown;
+  lockOrigin?: boolean;
 }): Promise<string | null> {
   if (!input.result || typeof input.result !== 'object') return null;
   const result = input.result as { importedOffers?: unknown; quoteRevisions?: unknown; quoteRevisionIds?: unknown; approvedOverrides?: unknown };
   if ([result.importedOffers, result.quoteRevisions, result.quoteRevisionIds, result.approvedOverrides].some((value) => value != null && !Array.isArray(value)))
     return isCenturionQuoteTransport(input.transportId) ? draftQuoteOccupancyMessage : null;
-  if (Array.isArray(result.importedOffers) && result.importedOffers.some((offer) =>
-    isCenturionQuoteScope({ transportId: input.transportId, propertyCode: offer?.propertyCode }))) return importedOfferOccupancyHold;
+  if (Array.isArray(result.importedOffers)) {
+    for (const offer of result.importedOffers) {
+      if (isCenturionQuoteScope({ transportId: input.transportId, propertyCode: offer?.propertyCode }))
+        return importedOfferOccupancyHold;
+      if (isCenturionQuoteTransport(input.transportId) && (!input.messageId || input.messageId !== input.triggerMessageId))
+        return draftQuoteOccupancyMessage;
+      if (!(await quotePropertyMatchesOrigin({ db, transportId: input.transportId, threadId: input.threadId,
+        messageId: input.messageId ?? undefined, propertyCode: offer?.propertyCode, lock: input.lockOrigin }))) return QUOTE_HOTEL_CHANGED_MESSAGE;
+    }
+  }
   const quotes = (result.quoteRevisions ?? []) as QuoteRevision[];
   const overrides = (result.approvedOverrides ?? []) as { id: string; sourceRevision: QuoteRevision }[];
   const refs = (result.quoteRevisionIds ?? []) as unknown[];
   if (!quotes.length && !overrides.length && !refs.length) return null;
-  const selectedQuotes = [...quotes, ...overrides.map((offer) => offer.sourceRevision)].filter((quote) =>
+  const candidates = [...quotes, ...overrides.map((offer) => offer.sourceRevision)];
+  for (const quote of candidates) {
+    if (!(await quotePropertyMatchesOrigin({ db, transportId: input.transportId, threadId: input.threadId,
+      messageId: input.messageId ?? undefined, propertyCode: quote?.propertyCode, lock: input.lockOrigin }))) return QUOTE_HOTEL_CHANGED_MESSAGE;
+  }
+  const selectedQuotes = candidates.filter((quote) =>
     isCenturionQuoteScope({ transportId: input.transportId, propertyCode: quote?.propertyCode }));
+  if ((isCenturionQuoteTransport(input.transportId) || selectedQuotes.length > 0) &&
+    (!input.messageId || input.messageId !== input.triggerMessageId ||
+      refs.some((id) => ![...quotes, ...overrides].some((offer) => offer?.id === id)))) return draftQuoteOccupancyMessage;
   if (!selectedQuotes.length && (quotes.length || overrides.length || !isCenturionQuoteTransport(input.transportId))) return null;
-  if (!input.messageId || input.messageId !== input.triggerMessageId ||
-    refs.some((id) => ![...quotes, ...overrides].some((offer) => offer?.id === id))) return draftQuoteOccupancyMessage;
+  if (!input.messageId) return draftQuoteOccupancyMessage;
   try {
     for (const quote of selectedQuotes) {
       if (!(await childOccupancyIsCurrent(db, occupancyFromRevision(quote), {
@@ -197,7 +226,10 @@ export async function draftQuoteOccupancyHold(db: DB, input: {
         propertyCode: quote.propertyCode, lock: true,
       }))) return draftQuoteOccupancyMessage;
     }
-  } catch { return draftQuoteOccupancyMessage; }
+  } catch (error) {
+    if (isQuoteSourceLockBusy(error)) throw quoteSourceBusyError();
+    return draftQuoteOccupancyMessage;
+  }
   return null;
 }
 

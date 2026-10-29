@@ -62,7 +62,8 @@ import {
 import { beginQuoteRun, staffQuoteInFlight } from '../hms/property-queue-state.js';
 import { snapshotRowPrices } from '../trpc/routes/rates.js';
 import { verifyPartyPick } from './pane-party-lookup.js';
-import { resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { QUOTE_HOTEL_CHANGED_MESSAGE, quotePropertyMatchesOrigin, resolveHmsQuoteJobTarget } from '../hms/hms-quote-target.js';
+import { isQuoteSourceLockBusy, withQuoteSourceBusyHold } from '../hms/quote-source-contention.js';
 import type { HmsReadTarget } from '../hms/hms-read-target.js';
 import { HMS_OUTAGE_STAFF_COPY } from '../hms/property-outage.js';
 import { and, desc, eq, sql } from 'drizzle-orm';
@@ -729,15 +730,15 @@ export async function runStaffQuote(
       createdAt: sql`clock_timestamp()`,
     });
   }
-  const stillCurrent = async () => {
-    const [current] = await db
+  const stillCurrent = async (currentDb: DB = db) => {
+    const [current] = await currentDb
       .select()
       .from(message)
       .where(and(eq(message.id, mail.id), eq(message.transportId, identity.transportId)))
       .limit(1);
     const [latest] = systemPrepared
       ? [undefined]
-      : await db
+      : await currentDb
           .select({ id: aiDraftGeneration.id })
           .from(aiDraftGeneration)
           .where(
@@ -756,7 +757,8 @@ export async function runStaffQuote(
       !!current &&
       current.threadId === scope.threadId &&
       staffQuoteSourceHash(current) === input.sourceHash &&
-      await childOccupancyIsCurrent(db, input.groups, occupancyScope)
+      await childOccupancyIsCurrent(currentDb, input.groups, occupancyScope) &&
+      await quotePropertyMatchesOrigin({ ...occupancyScope, db: currentDb })
     );
   };
   const databaseUrl = process.env.DATABASE_URL;
@@ -984,7 +986,15 @@ export async function runStaffQuote(
       ? quoteRunIdFromEvidenceDirectory(config.outputDir, evidence.directory)
       : null;
     const persistRun = (quoteResult: Record<string, unknown>) =>
-      db.transaction(async (tx) => {
+      withQuoteSourceBusyHold(() => db.transaction(async (tx) => {
+        if (!(await quotePropertyMatchesOrigin({ ...occupancyScope, db: tx as unknown as DB, lock: true })))
+          refuseQuote('source_changed', QUOTE_HOTEL_CHANGED_MESSAGE);
+        // Recheck the message, newest approval and saved occupancy after taking the source locks.
+        // Prepared quote-on-open may not have created a work item yet; the message/thread locks
+        // prevent a matching work item or extraction from committing until this transaction ends.
+        if (!(await stillCurrent(tx as unknown as DB)) || !(await childOccupancyIsCurrent(
+          tx as unknown as DB, input.groups, { ...occupancyScope, lock: true, allowMissingWorkItem: true },
+        ))) refuseQuote('source_changed', 'Selected email or saved stay details changed while pricing. Run rates again.');
         if (!systemPrepared) {
           await tx
             .update(aiDraftGeneration)
@@ -1082,7 +1092,7 @@ export async function runStaffQuote(
         ) {
           throw Object.assign(new Error('staff_quote_claim_lost'), { code: 'HMS_JOB_CLAIM_LOST' });
         }
-      });
+      }));
     const summary = async () => ({
       status: 'ready' as const,
       // The mailbox origin may have changed since this job was queued.
@@ -1144,6 +1154,9 @@ export async function runStaffQuote(
             `[staff-quote] run ${workflowRunId} not recorded: ${error instanceof Error ? error.message : 'unknown error'}`,
           );
           await markGenerationFailed('staff_quote_trace_finish_failed');
+          if (waitForTracePersistence && error instanceof TRPCError &&
+            ((error.cause as { reason?: unknown } | undefined)?.reason === 'source_changed' ||
+              isQuoteSourceLockBusy(error))) throw error;
           if (waitForTracePersistence && !(error instanceof Error && error.message === 'staff_quote_superseded')) {
             const failure = new Error('staff_quote_native_unavailable');
             Object.assign(failure, {
@@ -1157,11 +1170,16 @@ export async function runStaffQuote(
         .finally(() => queued.end());
       registerPendingStaffQuote([workflowRunId, mail.id, ...(runId ? [runId] : [])], pending);
       if (waitForTracePersistence) await pending;
-      return summary();
+      const result = await summary();
+      if (!waitForTracePersistence && !(await stillCurrent()))
+        refuseQuote('source_changed', 'Selected email changed while pricing');
+      return result;
     }
     try {
       const result = await summary();
       await persistRun(result);
+      if (!waitForTracePersistence && !(await stillCurrent()))
+        refuseQuote('source_changed', 'Selected email changed while pricing');
       return result;
     } catch (error) {
       await markGenerationFailed('staff_quote_persist_failed');

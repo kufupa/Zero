@@ -12,6 +12,7 @@ import { eq } from 'drizzle-orm';
 import { CENTURION_USER_ID, TRANSPORT_ID } from '../src/db/seed.js';
 import { syntheticRevision } from './helpers/synthetic-quote-revision.js';
 import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test-db.js';
+import { mailboxHmsOriginBindLoaders } from '../src/hms/mailbox-hms-origin-bind.js';
 
 const jobMocks = vi.hoisted(() => ({
   runStaffQuote: vi.fn(),
@@ -193,6 +194,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   __setDbForTests(null);
+  mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
   jobMocks.runStaffQuote.mockReset();
   quoteRunMocks.readConfiguration.mockReset();
   quoteRunMocks.getServices.mockReset();
@@ -276,6 +278,10 @@ function staffQuoteRunDb(
   groups: StaffQuoteInput['groups'] = staffQuoteInput.parse(STAFF_QUOTE_INPUT).groups,
 ) {
   let latestGenerationId: string | undefined;
+  const hooks: { beforeTransaction: (() => void) | null; supersede: () => void } = {
+    beforeTransaction: null,
+    supersede: () => { latestGenerationId = 'later-approved-generation'; },
+  };
   const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [];
   const updated: unknown[] = [];
   const occupancyState: Record<string, unknown> = {};
@@ -317,7 +323,8 @@ function staffQuoteRunDb(
           return query;
         },
         limit() {
-          return Promise.resolve(rowsFor(table));
+          const rows = Promise.resolve(rowsFor(table));
+          return Object.assign(rows, { for: () => rows });
         },
       };
       return query;
@@ -344,6 +351,7 @@ function staffQuoteRunDb(
       };
     },
     transaction: async (callback: (transaction: unknown) => Promise<unknown>) => {
+      hooks.beforeTransaction?.();
       const insertedLength = inserted.length;
       const updatedLength = updated.length;
       try {
@@ -355,7 +363,7 @@ function staffQuoteRunDb(
       }
     },
   };
-  return { db: db as unknown as DB, inserted, updated, payload, occupancyState };
+  return { db: db as unknown as DB, inserted, updated, payload, occupancyState, hooks };
 }
 
 async function provisionalWorkerQuote(
@@ -425,7 +433,8 @@ async function provisionalWorkerQuote(
   }));
   vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
   vi.stubEnv('QUOTE_TRACE_ASYNC', 'on');
-  return { run, fence, db: quoteDb.db, inserted: quoteDb.inserted, occupancyState: quoteDb.occupancyState };
+  return { run, fence, db: quoteDb.db, inserted: quoteDb.inserted, occupancyState: quoteDb.occupancyState,
+    hooks: quoteDb.hooks, mail };
 }
 
 describe('runStaffQuote child occupancy', () => {
@@ -470,6 +479,75 @@ describe('runStaffQuote child occupancy', () => {
 });
 
 describe('staff_quote HMS job execution', () => {
+  it('does not publish a price if the thread hotel changes while the job is pricing', async () => {
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
+    run.triggerMessageId = STAFF_QUOTE_INPUT.messageId;
+    workflowMocks.executeStaffQuote.mockImplementationOnce((prepared: { authorizationId: string }) => {
+      originMocks.guard.mockResolvedValue({
+        ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin',
+      });
+      return syntheticRevision(
+        ['600.00', '600.00'], 'Room Only R', 'SKNG', undefined, '2026-11-12', prepared.authorizationId,
+      );
+    });
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
+      readResult: { ok: false },
+    });
+  });
+
+  it('refuses without persisting a price when the hotel changes at the final transaction fence', async () => {
+    const { run, fence, db: quoteDb, inserted } = await provisionalWorkerQuote(Promise.resolve());
+    run.triggerMessageId = STAFF_QUOTE_INPUT.messageId;
+    originMocks.guard.mockImplementation(async (input: { lock?: boolean }) => input.lock
+      ? { ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin' }
+      : { ok: true });
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
+    expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
+      readResult: { ok: false, message: expect.stringMatching(/hotel.*changed/i) },
+    });
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
+
+  it.each(['saved rooms', 'email body', 'newer approval'])(
+    'refuses a price if %s changes just before the persistence transaction', async (change) => {
+      const { run, fence, db: quoteDb, inserted, occupancyState, hooks, mail } =
+        await provisionalWorkerQuote(Promise.resolve());
+      run.triggerMessageId = STAFF_QUOTE_INPUT.messageId;
+      hooks.beforeTransaction = () => {
+        if (change === 'saved rooms') occupancyState['stays[s_test].rows[single].childAges'] = null;
+        if (change === 'email body') mail.textBody = 'A different selected email body.';
+        if (change === 'newer approval') hooks.supersede();
+      };
+      await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+      expect(inserted.some((entry) => entry.table === aiWorkflowRun)).toBe(false);
+      expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
+        readResult: { ok: false, message: expect.stringMatching(/changed while pricing/i) },
+      });
+      expect(jobMocks.markRetry).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['message', 'later write'])('holds a quote when its %s source lock is busy', async (busyAt) => {
+    const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
+    run.triggerMessageId = STAFF_QUOTE_INPUT.messageId;
+    const lockUnavailable = Object.assign(new Error('lock unavailable'), { code: '55P03' });
+    if (busyAt === 'message') {
+      originMocks.guard.mockImplementation(async (input: { lock?: boolean }) => {
+        if (input.lock) throw lockUnavailable;
+        return { ok: true };
+      });
+    } else {
+      quoteOutcomeMocks.ensureQuoteOutcomeWorkItem.mockRejectedValueOnce(lockUnavailable);
+    }
+    await expect(executeHmsJob({ run, fence, db: quoteDb })).resolves.toBe('succeeded');
+    expect(jobMocks.markSucceeded.mock.calls.at(-1)?.[0]).toMatchObject({
+      readResult: { ok: false, message: 'The email is being updated. Wait a moment, then try again.' },
+    });
+    expect(jobMocks.markRetry).not.toHaveBeenCalled();
+  });
+
   it('persists the hotel that priced when the mailbox origin changes after the worker check', async () => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
     const { run, fence, db: quoteDb } = await provisionalWorkerQuote(Promise.resolve());
@@ -477,6 +555,9 @@ describe('staff_quote HMS job execution', () => {
     // The queue/worker initially sees Centurion; the quote runner's later recheck sees Da Vinci.
     originMocks.guard.mockResolvedValueOnce({ ok: true }).mockResolvedValue({
       ok: false, code: 'READ_DAVINCI_ORIGIN_REFUSED', message: 'Da Vinci origin',
+    });
+    mailboxHmsOriginBindLoaders.loadThreadOriginScan = async () => ({
+      selectedFound: true, selected: { toAddresses: ['davinci@legacyhotels.co.za'] }, inbounds: [],
     });
     quoteRunMocks.readConfiguration.mockReturnValue({
       tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRDAV' }, outputDir: '/tmp/synthetic-staff-quote',

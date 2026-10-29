@@ -48,6 +48,7 @@ import {
   mailDraftRevision,
   mailCategory,
   mailThreadCategory,
+  outboundSendQueue,
 } from '../../db/schema/mail.js';
 import {
   loadConversationMetaForThread,
@@ -91,6 +92,8 @@ import { mailboxProcedure, router as tRouter } from '../trpc.js';
 import { loadLiveThreadStateVersion } from '../../ai/drafts.js';
 import { markThreadRead } from '../../mail/thread-read.js';
 import { assertHmsDraftFreshForAction } from './drafts.js';
+import { isQuoteSourceLockBusy, withQuoteSourceBusyHold } from '../../hms/quote-source-contention.js';
+import { isCenturionQuoteTransport } from '../../ai/child-occupancy.js';
 import { latestWorkflowThreads, WORKFLOW_FOLDER_IDS } from '../../mail/workflow-folders.js';
 import { getDb, type DB } from '../../db/client.js';
 import { toDraftWire } from './draft-wire.js';
@@ -1435,8 +1438,9 @@ export const mailRouter = tRouter({
       ? new Date(scheduleAtMs)
       : new Date(now.getTime() + undoSecs * 1000);
 
-    await db.transaction(async (tx) => {
+    const persistSend = () => db.transaction(async (tx) => {
       if (approvedDraft && sendingDraft?.origin === 'ai') {
+        if (isCenturionQuoteTransport(transportId)) await tx.execute(sql`set local lock_timeout = '250ms'`);
         try {
           await claimDraftApprovalForSend({
             db: tx as unknown as DB,
@@ -1531,6 +1535,8 @@ export const mailRouter = tRouter({
         }
       }
     });
+    if (approvedDraft && sendingDraft?.origin === 'ai') await withQuoteSourceBusyHold(persistSend);
+    else await persistSend();
 
     if (isUserScheduled) {
       return {
@@ -1545,6 +1551,20 @@ export const mailRouter = tRouter({
       try {
         smtpResult = await flushOne(messageId, transportId, db);
       } catch (error) {
+        if (isQuoteSourceLockBusy(error)) {
+          const [deferred] = await db.select({ status: outboundSendQueue.status, sendAt: outboundSendQueue.sendAt })
+            .from(outboundSendQueue).where(and(eq(outboundSendQueue.messageId, messageId),
+              eq(outboundSendQueue.transportId, transportId))).limit(1);
+          if (deferred && ['pending', 'sending'].includes(deferred.status))
+            return { queued: true as const, messageId, sendAt: deferred.sendAt.getTime() };
+          if (deferred?.status === 'sent') {
+            const [sent] = await db.select({ smtpMessageId: message.messageIdHeader }).from(message)
+              .where(and(eq(message.id, messageId), eq(message.transportId, transportId))).limit(1);
+            if (sent?.smtpMessageId) return { sent: true as const, delivery: 'unknown' as const,
+              messageId, threadId, fromEmail: ctx.transportEmail, smtpMessageId: sent.smtpMessageId };
+            return { sent: false as const, delivery: 'unknown' as const, messageId, threadId, fromEmail: ctx.transportEmail };
+          }
+        }
         if (error instanceof OutboundDeliveryUncertainError) {
           return {
             sent: false as const,

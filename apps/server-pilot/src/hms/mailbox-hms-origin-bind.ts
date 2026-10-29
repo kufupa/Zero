@@ -1,6 +1,6 @@
 import { normalizeEmailAddress } from '../ai/never-spam.js';
-import { getDb } from '../db/client.js';
-import { message } from '../db/schema/mail.js';
+import { getDb, type DB } from '../db/client.js';
+import { mailThread, message } from '../db/schema/mail.js';
 import { workItem } from '../db/schema/work.js';
 import { getPropertyRegistration } from '../../tooling/playwright-quote/property-registry.mjs';
 import { TRPCError } from '@trpc/server';
@@ -90,6 +90,10 @@ export type MailboxHmsOriginLoadInput = {
   transportId: string;
   threadId: string;
   messageId?: string;
+  /** Use the caller's transaction when checking an action against its current source. */
+  db?: DB;
+  /** Hold source rows and the thread until the caller's short transaction commits. */
+  lock?: boolean;
 };
 
 export type MailboxHmsWorkItemAnchor = {
@@ -204,7 +208,18 @@ export async function loadWorkItemMailboxHmsOriginAnchors(input: {
 async function loadThreadMailboxHmsOriginScanFromDb(
   input: MailboxHmsOriginLoadInput,
 ): Promise<MailboxHmsOriginScan> {
-  const rows = await getDb()
+  const db = input.db ?? getDb();
+  if (input.lock) {
+    if (!input.db) throw new Error('source lock requires a caller transaction');
+    // Other mail writers can take child rows before the thread. Bound every remaining wait in this
+    // short transaction, including implicit unique/FK locks after the explicit message locks.
+    await db.execute(sql`set local lock_timeout = '250ms'`);
+    const [thread] = await db.select({ id: mailThread.id }).from(mailThread)
+      .where(and(eq(mailThread.id, input.threadId), eq(mailThread.transportId, input.transportId)))
+      .limit(1).for('update');
+    if (!thread) return { selected: null, selectedFound: false, inbounds: [] };
+  }
+  const query = db
     .select({
       id: message.id,
       direction: message.direction,
@@ -220,6 +235,7 @@ async function loadThreadMailboxHmsOriginScanFromDb(
       desc(message.createdAt),
       desc(message.id),
     );
+  const rows = await (input.lock ? query.for('update', { noWait: true }) : query);
   const inbounds = rows
     .filter((row) => row.direction === 'inbound')
     .map((row) => originFields(row));
@@ -231,7 +247,7 @@ async function loadThreadMailboxHmsOriginScanFromDb(
   };
 }
 
-async function loadThreadMailboxHmsOriginScan(
+export async function loadThreadMailboxHmsOriginScan(
   input: MailboxHmsOriginLoadInput,
 ): Promise<MailboxHmsOriginScan> {
   if (mailboxHmsOriginBindLoaders.loadThreadOriginScan) {
