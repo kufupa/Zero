@@ -37,6 +37,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('approved draft evidence trans
     const gate = new Promise<void>((resolve) => { releaseWriter = resolve; });
     const ready = new Promise<unknown>((resolve) => { signalWriter = resolve; });
     let holding: Promise<unknown> | undefined;
+    let releaseReader = () => {};
+    let holdingReader: Promise<unknown> | undefined;
     try {
       vi.stubEnv('BETTER_AUTH_SECRET', signingSecret);
       vi.stubEnv('AI_MODEL_ROUTE', 'approved-local');
@@ -98,9 +100,43 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('approved draft evidence trans
       await expect(assertDraftApprovalCurrent({ db: setup.db, approval, payload, signingSecret,
         loadThreadStateVersion: async () => threadStateVersion })).rejects.toThrow(changing === 'generation evidence'
           ? 'draft evidence changed after approval' : 'approved draft route unavailable');
+      if (claim === 'enqueue' && changing === 'selected run') {
+        await setup.db.update(aiWorkflowRun).set({ metrics: { routeBinding: { ...route, release } } })
+          .where(eq(aiWorkflowRun.id, selectedRunId));
+        let signalReader!: (error?: unknown) => void;
+        const readerGate = new Promise<void>((resolve) => { releaseReader = resolve; });
+        const readerReady = new Promise<unknown>((resolve) => { signalReader = resolve; });
+        holdingReader = reader.db.transaction(async (tx) => {
+          await assertDraftApprovalCurrent({ db: tx as unknown as DB, approval, payload, signingSecret,
+            loadThreadStateVersion: async () => threadStateVersion, lockQuoteOrigin: true });
+          signalReader();
+          await readerGate;
+        });
+        void holdingReader.catch((error) => signalReader(error));
+        const readerError = await readerReady;
+        if (readerError) throw readerError;
+        const blocked = (action: (db: DB) => Promise<unknown>) => withQuoteSourceBusyHold(() =>
+          writer.db.transaction(async (tx) => {
+            await tx.execute(sql`set local lock_timeout = '250ms'`);
+            await action(tx as unknown as DB);
+          }));
+        for (const id of [selectedRunId, pendingRunId]) {
+          await expect(blocked(async (db) => { await db.update(aiWorkflowRun).set({ metrics: { changed: true } })
+            .where(eq(aiWorkflowRun.id, id)); })).rejects.toThrow('The email is being updated.');
+        }
+        await expect(blocked(async (db) => { await db.update(aiDraftGeneration).set({ evidence: [{ changed: true }] })
+          .where(eq(aiDraftGeneration.id, generationId)); })).rejects.toThrow('The email is being updated.');
+        const newRunId = randomUUID();
+        await expect(blocked(async (db) => { await db.insert(aiWorkflowRun).values({ ...runBase, id: newRunId,
+          idempotencyKey: newRunId, state: 'running' }); })).rejects.toThrow('The email is being updated.');
+        releaseReader();
+        await holdingReader;
+      }
     } finally {
       releaseWriter();
+      releaseReader();
       await holding?.catch(() => undefined);
+      await holdingReader?.catch(() => undefined);
       await setup.db.delete(mailThread).where(eq(mailThread.id, threadId)).catch(() => undefined);
       await setup.db.delete(user).where(eq(user.id, userId)).catch(() => undefined);
       await Promise.all([setup.close(), reader.close(), writer.close()]);
