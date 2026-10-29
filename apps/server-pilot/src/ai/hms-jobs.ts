@@ -3785,6 +3785,9 @@ export async function executeHmsJob(input: {
       );
       const scoped = tx as unknown as DB;
       const now = new Date();
+      const property = resolvePropertyTransport(run.transportId);
+      const centurionExtraction = property.kind === 'property' && property.property.propertyCode === 'HRCEN';
+      const sourceExtractionId = request.kind === 'staff_quote' ? request.input.sourceExtractionId ?? null : null;
       const batchScope = and(
         eq(aiWorkflowRun.transportId, run.transportId),
         eq(aiWorkflowRun.promptVersion, HMS_JOB_PROMPT_VERSION),
@@ -3793,6 +3796,9 @@ export async function executeHmsJob(input: {
           : eq(aiWorkflowRun.id, run.id),
         sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`,
         sql`${aiWorkflowRun.readRequest}->>'kind' = 'staff_quote'`,
+        ...(centurionExtraction
+          ? [sql`${aiWorkflowRun.readRequest}->'input'->>'sourceExtractionId' IS NOT DISTINCT FROM ${sourceExtractionId}`]
+          : []),
       );
       const batchRows = await scoped
         .select({ id: aiWorkflowRun.id, state: aiWorkflowRun.state, metrics: aiWorkflowRun.metrics })
@@ -3867,7 +3873,9 @@ export async function executeHmsJob(input: {
         batchSize: wakeBatchSize,
         now,
         excludeRunId: run.id,
-        excludeTriggerMessageId: run.triggerMessageId ?? undefined,
+        ...(centurionExtraction && run.triggerMessageId
+          ? { excludeQuoteBatch: { triggerMessageId: run.triggerMessageId, sourceExtractionId } }
+          : { excludeTriggerMessageId: run.triggerMessageId ?? undefined }),
       });
       if (capacity.action === 'disable') {
         await markAiRunPolicyRefused({ ...mark, lastError: 'quote_preparation_disabled' }, scoped);

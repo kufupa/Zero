@@ -2,6 +2,7 @@ import { and, eq, gt, ne, sql } from 'drizzle-orm';
 import type { DB } from '../db/client.js';
 import { aiWorkflowRun } from '../db/schema/mail.js';
 import { HMS_JOB_PROMPT_VERSION } from './run-ledger.js';
+import { resolvePropertyTransport } from '../../tooling/playwright-quote/property-registry.mjs';
 
 /** Prefetch kinds that share the hourly reservation helper. Unknown kinds are a type error. */
 export type PrefetchKind = 'find' | 'search_guest' | 'party' | 'availability' | 'staff_quote';
@@ -80,6 +81,7 @@ export async function countPrefetchReservations(
     since: Date;
     excludeRunId?: string;
     excludeTriggerMessageId?: string;
+    excludeQuoteBatch?: { triggerMessageId: string; sourceExtractionId: string | null };
   },
 ): Promise<PrefetchReservationCount> {
   const filters = and(
@@ -96,14 +98,21 @@ export async function countPrefetchReservations(
     ...(input.excludeTriggerMessageId
       ? [sql`${aiWorkflowRun.triggerMessageId} IS DISTINCT FROM ${input.excludeTriggerMessageId}`]
       : []),
+    ...(input.excludeQuoteBatch
+      ? [sql`(${aiWorkflowRun.triggerMessageId} IS DISTINCT FROM ${input.excludeQuoteBatch.triggerMessageId}
+          OR ${aiWorkflowRun.readRequest}->'input'->>'sourceExtractionId' IS DISTINCT FROM ${input.excludeQuoteBatch.sourceExtractionId})`]
+      : []),
   );
 
   if (input.kind === 'staff_quote') {
-    // Each Centurion extraction reserves its own strategy fan-out; other hotels' legacy rows share the mail key.
-    const sourceKey = sql<string>`jsonb_build_array(
-      coalesce(${aiWorkflowRun.triggerMessageId}, ${aiWorkflowRun.id}),
-      ${aiWorkflowRun.readRequest}->'input'->>'sourceExtractionId'
-    )::text`;
+    // Each Centurion extraction reserves its own strategy fan-out; other hotels keep their existing mail key.
+    const property = resolvePropertyTransport(input.transportId);
+    const sourceKey = property.kind === 'property' && property.property.propertyCode === 'HRCEN'
+      ? sql<string>`jsonb_build_array(
+          coalesce(${aiWorkflowRun.triggerMessageId}, ${aiWorkflowRun.id}),
+          ${aiWorkflowRun.readRequest}->'input'->>'sourceExtractionId'
+        )::text`
+      : sql<string>`coalesce(${aiWorkflowRun.triggerMessageId}, ${aiWorkflowRun.id})`;
     const batchSize = sql<number>`greatest(
       coalesce(max(
         case
@@ -159,6 +168,7 @@ export async function reservePrefetchCapacity(
     now?: Date;
     excludeRunId?: string;
     excludeTriggerMessageId?: string;
+    excludeQuoteBatch?: { triggerMessageId: string; sourceExtractionId: string | null };
   },
 ): Promise<PrefetchCapacityDecision> {
   const now = input.now ?? new Date();
@@ -168,6 +178,7 @@ export async function reservePrefetchCapacity(
     since: new Date(now.getTime() - PREFETCH_CAPACITY_WINDOW_MS),
     excludeRunId: input.excludeRunId,
     excludeTriggerMessageId: input.excludeTriggerMessageId,
+    excludeQuoteBatch: input.excludeQuoteBatch,
   });
   return decidePrefetchCapacity({
     used: counted.used,

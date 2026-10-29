@@ -1,8 +1,9 @@
 import { and, eq, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { countPrefetchReservations } from '../src/ai/prefetch-capacity.js';
-import { evaluateQuoteReadyForMessage, prefetchQuoteReadyForExtraction } from '../src/ai/hms-jobs.js';
+import { evaluateQuoteReadyForMessage, executeHmsJob, prefetchQuoteReadyForExtraction } from '../src/ai/hms-jobs.js';
+import { claimNextAiRun, HMS_JOB_PROMPT_VERSION, markAiRunRunning } from '../src/ai/run-ledger.js';
 import {
   CENTURION_HMS_READ_TARGET,
   DAVINCI_HMS_READ_TARGET,
@@ -22,9 +23,17 @@ import { probeTestDb, TEST_DB_AVAILABLE, withSeededTestDb } from './helpers/test
 
 const reachable = await probeTestDb();
 
+const staffQuoteRunner = vi.hoisted(() => vi.fn());
+vi.mock('../src/ai/staff-quote-run.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../src/ai/staff-quote-run.js')>()),
+  runStaffQuote: staffQuoteRunner,
+}));
+
 afterEach(() => {
   mailboxHmsOriginBindLoaders.loadThreadOrigin = null;
   mailboxHmsOriginBindLoaders.loadThreadOriginScan = null;
+  staffQuoteRunner.mockReset();
+  vi.unstubAllEnvs();
 });
 
 const QUOTE_ON = {
@@ -191,6 +200,50 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote profile cap', 
         row.nextRunAt !== null && row.nextRunAt.getTime() > Date.now())).toBe(true);
       expect(await countPrefetchReservations(db, { transportId: TRANSPORT_ID, kind: 'staff_quote',
         since: new Date(Date.now() - 60 * 60_000) })).toMatchObject({ used: count * 2 });
+    }));
+
+  it('keeps a deferred reread behind the older extraction when the worker wakes', async () =>
+    withSeededTestDb(async (db) => {
+      const source = await seedExtraction(db, TRANSPORT_ID);
+      await db.update(message).set({ messageIdHeader: `${randomUUID()}@example.test` })
+        .where(eq(message.id, source.messageId));
+      const config = await quotePaneConfigForProperty('HRCEN', TRANSPORT_ID);
+      const count = config?.salesStrategies.length ?? 0;
+      expect(count).toBeGreaterThan(0);
+      const env = { ...QUOTE_ON, RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRCEN: '/tmp/centurion-quote.json',
+        HMS_QUOTE_PREPARE_PER_HOUR: String(Math.max(1, count - 1)) };
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+
+      expect(await prefetchQuoteReadyForExtraction(source.run, db, env)).toBe(count);
+      await db.update(aiWorkflowRun).set({ state: 'succeeded', finishedAt: new Date() })
+        .where(and(eq(aiWorkflowRun.triggerMessageId, source.messageId), sql`${aiWorkflowRun.metrics}->>'quotePrepared' = 'true'`));
+
+      const nextId = randomUUID();
+      await db.insert(mailExtraction).values({ id: nextId, messageId: source.messageId,
+        extractorVersion: `prepared-quote-wake-${randomUUID()}`, status: 'succeeded', kind: 'quote',
+        payload: quotePayload(), createdAt: new Date(Date.now() + 1000) });
+      expect(await prefetchQuoteReadyForExtraction(source.run, db, env)).toBe(count);
+      const freshScope = and(eq(aiWorkflowRun.triggerMessageId, source.messageId),
+        sql`${aiWorkflowRun.readRequest}->'input'->>'sourceExtractionId' = ${nextId}`);
+      const fresh = await db.select().from(aiWorkflowRun).where(freshScope);
+      expect(fresh).toHaveLength(count);
+      expect(fresh.every((row) => (row.metrics as { prefetchDeferred?: boolean }).prefetchDeferred === true)).toBe(true);
+      expect(await countPrefetchReservations(db, { transportId: TRANSPORT_ID, kind: 'staff_quote',
+        since: new Date(Date.now() - 60 * 60_000),
+        excludeQuoteBatch: { triggerMessageId: source.messageId, sourceExtractionId: nextId } })).toMatchObject({ used: count });
+
+      await db.update(aiWorkflowRun).set({ nextRunAt: new Date() }).where(eq(aiWorkflowRun.id, fresh[0]!.id));
+      const claimed = await claimNextAiRun({ ownerId: 'test-reread-worker', lane: 'hms', runKind: 'read_tool',
+        promptVersion: HMS_JOB_PROMPT_VERSION, db });
+      expect(claimed?.id).toBe(fresh[0]!.id);
+      if (!claimed) throw new Error('expected deferred quote claim');
+      const fence = { runId: claimed.id, claimOwner: claimed.claimOwner!, claimToken: claimed.claimToken!, deadlineAt: claimed.deadlineAt! };
+      expect(await markAiRunRunning(fence, db)).toBeTruthy();
+      expect(await executeHmsJob({ run: claimed, fence, db })).toBe('retry_wait');
+      expect(staffQuoteRunner).not.toHaveBeenCalled();
+      const after = await db.select().from(aiWorkflowRun).where(freshScope);
+      expect(after.every((row) => (row.metrics as { prefetchDeferred?: boolean; prefetchBatchSize?: number }).prefetchDeferred === true &&
+        (row.metrics as { prefetchBatchSize?: number }).prefetchBatchSize === count)).toBe(true);
     }));
 
   it.each(PROPERTY_TARGETS)('admits a complete profile strategy set as one batch for $transportId', async (target) =>
