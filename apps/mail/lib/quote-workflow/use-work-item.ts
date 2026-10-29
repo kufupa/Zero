@@ -827,6 +827,7 @@ export function useStoredWork(args: {
   const retried = retries.messageId === internetMessageId ? retries.count : 0;
   let pane: StoredPane;
   if (!internetMessageId) pane = { state: 'reading' };
+  else if (expectedMessageId && !args.scope) pane = { state: 'loading' };
   else if (!canLookUp && expectedMessageId) pane = {
     state: 'failed', hold: true, reason: 'The selected email could not be verified. Reopen it and try again.',
   };
@@ -1236,12 +1237,20 @@ export function useStoredWork(args: {
     const keyNow = lookupKey;
     if (!getByMessage || !messageId || !keyNow) return Promise.resolve(false);
     const epochNow = selection.current.epoch;
+    const isCurrent = () => {
+      if (lookupKeyRef.current !== keyNow || selection.current.epoch !== epochNow) return false;
+      if (!expectedMessageId) return true;
+      const owner = getMailCacheScope();
+      return selection.current.key === keyNow && selection.current.epoch === renderEpoch &&
+        Boolean(currentLookup?.userId) && owner.userId === currentLookup?.userId && owner.activeTransportId === readyTransportId;
+    };
+    if (!isCurrent()) return Promise.resolve(false);
     const pinned = inMailbox(readyTransportId);
     const input = { internetMessageId: messageId, ...(expectedMessageId ? { expectedMessageId } : {}) };
     return (pinned ? getByMessage.query(input, pinned) : getByMessage.query(input))
       .then((unchecked) => {
         const result = checkedStoredMessage(unchecked, expectedMessageId);
-        if (lookupKeyRef.current !== keyNow || selection.current.epoch !== epochNow) return false;
+        if (!isCurrent()) return false;
         if (expectedMessageId && result.status === 'failed' && result.hold) {
           setLookup((prev) => (prev && prev.key === keyNow ? { ...prev, result } : prev));
           setHistoryError(HISTORY_REFRESH_COPY);
@@ -1263,12 +1272,12 @@ export function useStoredWork(args: {
         return true;
       })
       .catch(() => {
-        if (lookupKeyRef.current !== keyNow || selection.current.epoch !== epochNow) return false;
+        if (!isCurrent()) return false;
         setHistoryError(HISTORY_REFRESH_COPY);
         setHistoryNeedsReload(true);
         return false;
       });
-  }, [expectedMessageId, internetMessageId, lookupKey, readyTransportId]);
+  }, [currentLookup?.userId, expectedMessageId, internetMessageId, lookupKey, readyTransportId, renderEpoch]);
 
   /** The optional callback must synchronously clear the pane's old edits, or return false without changing them. */
   const discardUnconfirmedEdits = useCallback(async (beforePublish?: () => boolean): Promise<boolean> => {

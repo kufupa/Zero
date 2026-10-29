@@ -160,6 +160,10 @@ import { GOLD_ACTION_FOR_READ_AS } from '@/lib/workflow-action-labels';
 type PaneScreen = 'welcome' | 'diagnostics' | 'tour' | 'tool' | 'needs-you';
 type SenderFallback = Pick<StoredContact, 'name' | 'email'>;
 
+function webSourceHoldMessage(reason: string): string {
+  return `${reason.replace(/ Reopen it and try again\.$/, '')} To retry, select a different email, then select this email again.`;
+}
+
 /** Returns only a proven external sender. If either identity is missing, the fallback stays blank. */
 function externalSenderFallback(
   activeEmail: NonNullable<PaneBridge['activeEmail']> | null,
@@ -716,9 +720,10 @@ export function NavaPane({
   );
   // A source can change before the hotel catalogue has loaded.
   const verifyQuotePartySource = !activePaneConfig || activePaneConfig.propertyCode === HRCEN_PROPERTY_CODE;
-  // Webmail entryId is the selected database row. Outlook EntryIDs are native and cannot be used here.
+  // Webmail entryId is the selected database row. Wait for the web scope before choosing its lookup contract;
+  // Outlook EntryIDs are native and cannot be used here.
   const expectedMessageId = preview &&
-    (activeConnection?.id === 'transport-centurion' || activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE)
+    (!currentScope || activeConnection?.id === 'transport-centurion' || activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE)
     ? activeEmail?.entryId ?? null : null;
   // The stored read for the selected mail. A ready or failed read stands in for the live read. A treat-as or a staff
   // note asks for a fresh read, so the stored read is not used then, and it does not re-trigger the effect below.
@@ -1122,9 +1127,13 @@ export function NavaPane({
         }
       }
     } else if (decision.kind === 'failed') {
+      const webHold = Boolean(expectedMessageId && pane.state === 'failed' && pane.hold);
+      if (webHold) rejectedWebSource.current = quoteAdmissionKey;
       dispatchQuote({ type: 'mailbox_status', status: 'ready' });
-      dispatchQuote({ type: 'analysis_failed', message: decision.reason,
+      dispatchQuote({ type: 'analysis_failed', message: webHold ? webSourceHoldMessage(decision.reason) : decision.reason,
         ...(pane.state === 'failed' && pane.hold ? { hold: true } : {}) });
+      // A late ready read cannot clear this selection's held case. Keep the failure visible until it is reselected.
+      if (webHold) return;
     }
     let cancelled = false;
     let sourceRejected = false;
@@ -1145,8 +1154,8 @@ export function NavaPane({
         if (cancelled || sourceRejected) return;
         if (remote.kind === 'unverified_source') {
           rejectedWebSource.current = quoteAdmissionKey;
-          dispatchQuote({ type: 'mailbox_status', status: 'unsynced' });
-          dispatchQuote({ type: 'analysis_failed', message: remote.reason, hold: true });
+          dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
+          dispatchQuote({ type: 'analysis_failed', message: webSourceHoldMessage(remote.reason), hold: true });
           return;
         }
         if (remote.kind === 'ready') {
@@ -1198,9 +1207,9 @@ export function NavaPane({
       if (expectedMessageId && (source.kind !== 'ready' || source.source.messageId !== expectedMessageId)) {
         sourceRejected = true;
         rejectedWebSource.current = quoteAdmissionKey;
-        dispatchQuote({ type: 'mailbox_status', status: 'unsynced' });
+        dispatchQuote({ type: 'mailbox_status', status: 'unavailable' });
         dispatchQuote({ type: 'analysis_failed', hold: true,
-          message: 'The selected email could not be verified. Reopen it and try again.' });
+          message: webSourceHoldMessage('The selected email could not be verified.') });
         return;
       }
       if (source.kind === 'message_not_synced') {
@@ -2775,7 +2784,8 @@ export function NavaPane({
               rates={PANE_SAVED_RATES}
               onPatchGroup={(groupId, patch) => editStayRows({ type: 'patch_group', groupId, patch })}
               // Shown only on a failed-read item, which stays listed after she starts typing in the form.
-              onRetryRead={storedWork.pane.state === 'failed' && storedWork.pane.hold ? undefined : storedWork.retry}
+              onRetryRead={(storedWork.pane.state === 'failed' && storedWork.pane.hold) ||
+                (Boolean(expectedMessageId) && rejectedWebSource.current === quoteAdmissionKey) ? undefined : storedWork.retry}
               onStayAction={(action) => {
                 if (action.type !== 'remove_stay') {
                   editStayRows(action);

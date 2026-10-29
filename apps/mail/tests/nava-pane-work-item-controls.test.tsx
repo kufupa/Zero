@@ -50,8 +50,10 @@ const {
   bridgeMockState: {
     userId: 'staff-1',
     sessionId: 'session-1',
+    authLoading: false,
     transportId: 'transport-1',
     transportEmail: 'ropperman@legacyhotels.co.za',
+    transportLoading: false,
     holdStaffQuote: false,
     releaseStaffQuote: null as null | (() => void),
     hmsQueueStatus: null as null | Record<string, unknown>,
@@ -141,19 +143,19 @@ const fakeBridge = {
 
 vi.mock('../lib/auth-client', () => ({
   useSession: () => ({
-    data: {
+    data: bridgeMockState.authLoading ? undefined : {
       user: { id: bridgeMockState.userId, email: 'ropperman@legacyhotels.co.za', name: 'R Opperman' },
       session: { id: bridgeMockState.sessionId },
     },
-    isLoading: false,
+    isLoading: bridgeMockState.authLoading,
   }),
   signIn: { email: vi.fn() },
 }));
 
 vi.mock('../hooks/use-connections', () => ({
   useActiveConnection: () => ({
-    data: { id: bridgeMockState.transportId, email: bridgeMockState.transportEmail },
-    isLoading: false,
+    data: bridgeMockState.transportLoading ? undefined : { id: bridgeMockState.transportId, email: bridgeMockState.transportEmail },
+    isLoading: bridgeMockState.transportLoading,
   }),
 }));
 
@@ -396,8 +398,10 @@ async function renderReadyPane() {
 describe('Nava pane work-item controls', () => {
   beforeEach(() => {
     localStorage.setItem('nava_onboarding_completed', 'true');
+    bridgeMockState.authLoading = false;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
+    bridgeMockState.transportLoading = false;
     bridgeMockState.storedWork = null;
     bridgeMockState.storedLookupGate = null;
     bridgeMockState.storedWorkLookups = 0;
@@ -435,9 +439,99 @@ describe('Nava pane work-item controls', () => {
       storeId: 'transport-centurion', internetMessageId: header } } as PaneBridge;
     const pane = render(<NavaPane bridge={bridge} preview />);
     expect((await screen.findAllByText(/selected email could not be verified/i)).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/select a different email, then select this email again/i).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Retry reading this email' })).toBeNull();
     pane.rerender(<NavaPane bridge={bridge} preview />);
     expect(screen.getAllByText(/selected email could not be verified/i).length).toBeGreaterThan(0);
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
+  it('waits for web session and mailbox scope before looking up the selected email', async () => {
+    const header = '<loading-source@example.invalid>';
+    const transport = 'transport-centurion';
+    bridgeMockState.authLoading = true;
+    bridgeMockState.transportLoading = true;
+    bridgeMockState.transportId = transport;
+    bridgeMockState.quotePaneConfig = { transportId: transport, propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [] };
+    bridgeMockState.storedWork = { ...READY_WORK, sourceMessageId: 'row-a',
+      sourceRead: { extractionId: 'ex-1', kind: 'quote', analysis: READY_WORK.analysis, refs: READY_WORK.refs } };
+    bridgeMockState.staffQuoteSources[header] = { messageId: 'row-a', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, entryId: 'row-a',
+      storeId: transport, internetMessageId: header } } as PaneBridge;
+    const pane = render(<NavaPane bridge={bridge} preview />);
+    expect(screen.getByText('Loading session…')).toBeDefined();
+    await act(async () => { await Promise.resolve(); });
+    expect(bridgeMockState.storedWorkLookups).toBe(0);
+
+    bridgeMockState.authLoading = false;
+    bridgeMockState.transportLoading = false;
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: transport });
+    pane.rerender(<NavaPane bridge={bridge} preview />);
+    expect(await screen.findByText('Ada Lovelace')).toBeDefined();
+    expect(screen.queryByText(/selected email could not be verified/i)).toBeNull();
+  });
+
+  it('keeps a verified-source hold visible when the stored read arrives after its timeout', async () => {
+    const header = '<late-source@example.invalid>';
+    const transport = 'transport-centurion';
+    bridgeMockState.transportId = transport;
+    bridgeMockState.quotePaneConfig = { transportId: transport, propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [] };
+    bridgeMockState.storedWork = { ...READY_WORK, sourceMessageId: 'row-b',
+      sourceRead: { extractionId: 'ex-1', kind: 'quote', analysis: READY_WORK.analysis, refs: READY_WORK.refs } };
+    bridgeMockState.staffQuoteSources[header] = { messageId: 'row-b', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+    let release!: () => void;
+    let released = false;
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { release = resolve; }).then(() => { released = true; });
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: transport });
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!, entryId: 'row-b',
+      storeId: transport, internetMessageId: header } } as PaneBridge;
+    render(<NavaPane bridge={bridge} preview />);
+
+    expect((await screen.findAllByText(/select a different email, then select this email again/i, {}, { timeout: 6000 })).length)
+      .toBeGreaterThan(0);
+    await act(async () => { release(); await bridgeMockState.storedLookupGate; });
+    expect(released).toBe(true);
+    expect(await screen.findByText('Ada Lovelace')).toBeDefined(); // The late stored read reached the pane.
+    expect(screen.queryByText('Nava is reading the email…')).toBeNull();
+    expect(screen.getAllByText(/select a different email, then select this email again/i).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Retry reading this email' })).toBeNull();
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  }, 10000);
+
+  it('can verify the selected web row after switching away and selecting it again', async () => {
+    const firstHeader = '<first-source@example.invalid>';
+    const otherHeader = '<other-source@example.invalid>';
+    const transport = 'transport-centurion';
+    bridgeMockState.transportId = transport;
+    bridgeMockState.quotePaneConfig = { transportId: transport, propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [] };
+    const sourceRead = { extractionId: 'ex-1', kind: 'quote', analysis: READY_WORK.analysis, refs: READY_WORK.refs };
+    const bridgeFor = (entryId: string, internetMessageId: string) => ({ ...fakeBridge,
+      activeEmail: { ...fakeBridge.activeEmail!, entryId, storeId: transport, internetMessageId } }) as PaneBridge;
+    bridgeMockState.storedWork = { ...READY_WORK, sourceMessageId: 'row-a', sourceRead };
+    bridgeMockState.staffQuoteSources[firstHeader] = { messageId: 'wrong-row', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+    setMailCacheScope({ userId: 'staff-1', activeTransportId: transport });
+    const pane = render(<NavaPane bridge={bridgeFor('row-a', firstHeader)} preview />);
+    expect((await screen.findAllByText(/select a different email, then select this email again/i)).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Retry reading this email' })).toBeNull();
+
+    bridgeMockState.storedWork = { ...READY_WORK, sourceMessageId: 'row-b', sourceRead,
+      contact: { ...READY_WORK.contact, name: 'Other contact' } };
+    bridgeMockState.staffQuoteSources[otherHeader] = { messageId: 'row-b', threadId: 'thread-1', sourceHash: 'cd'.repeat(32) };
+    pane.rerender(<NavaPane bridge={bridgeFor('row-b', otherHeader)} preview />);
+    expect(await screen.findByText('Other contact')).toBeDefined();
+
+    bridgeMockState.storedWork = { ...READY_WORK, sourceMessageId: 'row-a', sourceRead };
+    bridgeMockState.staffQuoteSources[firstHeader] = { messageId: 'row-a', threadId: 'thread-1', sourceHash: 'ab'.repeat(32) };
+    pane.rerender(<NavaPane bridge={bridgeFor('row-a', firstHeader)} preview />);
+    expect(await screen.findByText('Ada Lovelace')).toBeDefined();
+    await waitFor(() => {
+      expect(screen.queryByText('Nava is reading the email…')).toBeNull();
+      expect(screen.queryByText(/selected email could not be verified/i)).toBeNull();
+    });
   });
 
   it('holds a different legacy same-header edit without displaying or saving it to the web row', async () => {

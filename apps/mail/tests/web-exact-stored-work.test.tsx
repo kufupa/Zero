@@ -175,14 +175,107 @@ describe('web selected-row stored work', () => {
     expect(sessionStorage.getItem(storageKey!)).toBe('1');
   });
 
-  it('does not look up a web row without a signed-in owner', () => {
+  it('waits for a signed-in scope before looking up the selected web row', async () => {
     setMailCacheScope({ userId: null, activeTransportId: TRANSPORT });
-    const query = vi.fn();
-    const { result } = renderHook(() => useStoredWork({
+    const query = vi.fn(async () => ready('row-a', 'work-a'));
+    const { result, rerender } = renderHook(({ selectedScope }: { selectedScope: string | null }) => useStoredWork({
       trpc: { workItems: { getByMessage: { query } } }, internetMessageId: HEADER,
-      expectedMessageId: 'row-a', scope: null,
+      expectedMessageId: 'row-a', scope: selectedScope,
+    }), { initialProps: { selectedScope: null as string | null } });
+    expect(result.current.pane).toMatchObject({ state: 'loading' });
+    expect(query).not.toHaveBeenCalled();
+    setMailCacheScope({ userId: 'staff', activeTransportId: TRANSPORT });
+    rerender({ selectedScope: scope('row-a') });
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-a' }));
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds a selected web row if the stored-read route is missing after scope resolves', () => {
+    setMailCacheScope({ userId: 'staff', activeTransportId: TRANSPORT });
+    const { result } = renderHook(() => useStoredWork({
+      trpc: { workItems: {} }, internetMessageId: HEADER, expectedMessageId: 'row-a', scope: scope('row-a'),
     }));
     expect(result.current.pane).toMatchObject({ state: 'failed', hold: true });
-    expect(query).not.toHaveBeenCalled();
+  });
+
+  it('holds a selected web row when the stored read identifies another row', async () => {
+    setMailCacheScope({ userId: 'staff', activeTransportId: TRANSPORT });
+    const query = vi.fn(async () => ready('row-a', 'work-a'));
+    const { result } = renderHook(() => useStoredWork({
+      trpc: { workItems: { getByMessage: { query } } }, internetMessageId: HEADER,
+      expectedMessageId: 'row-b', scope: scope('row-b'),
+    }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'failed', hold: true }));
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('publishes a mismatched source hold when discarding changes refreshes the selected web row', async () => {
+    setMailCacheScope({ userId: 'staff', activeTransportId: TRANSPORT });
+    let source = ready('row-a', 'work-a');
+    const query = vi.fn(async () => source);
+    const { result } = renderHook(() => useStoredWork({
+      trpc: { workItems: { getByMessage: { query } } }, internetMessageId: HEADER,
+      expectedMessageId: 'row-a', scope: scope('row-a'),
+    }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-a' }));
+    source = ready('row-b', 'work-b');
+    await act(async () => expect(await result.current.discardUnconfirmedEdits()).toBe(false));
+    expect(result.current.pane).toMatchObject({ state: 'failed', hold: true });
+    expect(result.current.historyNeedsReload).toBe(true);
+  });
+
+  it('ignores a stale discard hold after switching away and back to the same web row', async () => {
+    setMailCacheScope({ userId: 'staff', activeTransportId: TRANSPORT });
+    let finishRead!: (value: StoredWork) => void;
+    let delayNext = false;
+    const query = vi.fn(({ expectedMessageId }: { expectedMessageId?: string }) => {
+      if (expectedMessageId === 'row-a' && delayNext) {
+        delayNext = false;
+        return new Promise<StoredWork>((resolve) => { finishRead = resolve; });
+      }
+      return Promise.resolve(ready(expectedMessageId!, expectedMessageId === 'row-a' ? 'work-a' : 'work-b'));
+    });
+    const trpc = { workItems: { getByMessage: { query } } };
+    const { result, rerender } = renderHook(({ entryId }) => useStoredWork({
+      trpc, internetMessageId: HEADER, expectedMessageId: entryId, scope: scope(entryId),
+    }), { initialProps: { entryId: 'row-a' } });
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-a' }));
+    delayNext = true;
+    let discard!: Promise<boolean>;
+    act(() => { discard = result.current.discardUnconfirmedEdits(); });
+    await waitFor(() => expect(finishRead).toBeTypeOf('function'));
+    rerender({ entryId: 'row-b' });
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-b' }));
+    rerender({ entryId: 'row-a' });
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-a' }));
+    await act(async () => {
+      finishRead({ status: 'failed', hold: true, reason: 'Selected source is unavailable.' });
+      expect(await discard).toBe(false);
+    });
+    expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-a' });
+  });
+
+  it('does not apply a discard source hold after the signed-in user changes', async () => {
+    setMailCacheScope({ userId: 'staff', activeTransportId: TRANSPORT });
+    let finishRead!: (value: StoredWork) => void;
+    let delayNext = false;
+    const query = vi.fn(() => delayNext
+      ? new Promise<StoredWork>((resolve) => { finishRead = resolve; })
+      : Promise.resolve(ready('row-a', 'work-a')));
+    const { result } = renderHook(() => useStoredWork({
+      trpc: { workItems: { getByMessage: { query } } }, internetMessageId: HEADER,
+      expectedMessageId: 'row-a', scope: scope('row-a'),
+    }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-a' }));
+    delayNext = true;
+    let discard!: Promise<boolean>;
+    act(() => { discard = result.current.discardUnconfirmedEdits(); });
+    await waitFor(() => expect(finishRead).toBeTypeOf('function'));
+    setMailCacheScope({ userId: 'other', activeTransportId: TRANSPORT });
+    await act(async () => {
+      finishRead({ status: 'failed', hold: true, reason: 'Selected source is unavailable.' });
+      expect(await discard).toBe(false);
+    });
+    expect(result.current.pane).toMatchObject({ state: 'ready', workItemId: 'work-a' });
   });
 });
