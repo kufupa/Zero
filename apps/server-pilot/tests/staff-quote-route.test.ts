@@ -4,6 +4,8 @@ import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { occupiedDates, type QuoteSourceRecord } from '../src/quote-proposal/quote-revision.js';
 import { staffQuoteSourceHash, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
 import { ensureWorkItemForMessage } from '../src/ai/work-items.js';
+import { EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
+import { mailExtractionPayloadSchema } from '../src/ai/extraction/schema.js';
 import { enqueueHmsJob, HMS_JOB_PRIORITY_PREFETCH } from '../src/ai/hms-jobs.js';
 import { claimNextAiRun } from '../src/ai/run-ledger.js';
 import { executeAiRun } from '../src/ai/worker.js';
@@ -21,6 +23,7 @@ import { unzipSync } from 'fflate';
 import { and, eq } from 'drizzle-orm';
 import { QUOTE_PDF_PROMPT_VERSION } from '../src/ai/quote-pdf-jobs.js';
 import { quoteSourcePartyDigest } from '../src/ai/quote-source-party.js';
+import { AE1_OUTPUT, fakeModel } from './fixtures/inbound-extraction.js';
 
 const installation = vi.hoisted(() => ({ configure: vi.fn(), services: vi.fn() }));
 vi.mock('../src/ai/staff-quote-installation.js', () => ({
@@ -116,6 +119,43 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
   input.sourcePartyDigest = quoteSourcePartyDigest({ agency: null, endClient: null }, {})!;
   input.sourceExtractionId = extraction!.id;
   return { mail, input, internetMessageId, storedMessageId, workItemId: item!.id };
+}
+
+/** Real selection and extraction persistence, with only the model response controlled. */
+async function seedExtractedRequest(db: DB) {
+  const transportId = 'transport-centurion', threadId = randomUUID(), messageId = randomUUID();
+  const internetMessageId = `<${messageId}@example.invalid>`;
+  const body = 'Please quote two rooms, one adult and no children in each, from 12 to 15 October 2027.';
+  await db.insert(mailThread).values({ id: threadId, transportId, threadRootId: threadId });
+  const [mail] = await db.insert(message).values({
+    id: messageId, transportId, threadId, direction: 'inbound', fromAddress: 'guest@example.invalid',
+    messageIdHeader: `${messageId}@example.invalid`, subject: 'Accommodation quote', textBody: body,
+    receivedAt: new Date('2026-10-29T08:00:00Z'),
+  }).returning();
+  const model = fakeModel(() => ({
+    ...AE1_OUTPUT, agency: null, endClient: null, contact: { name: null, email: null, phone: null },
+    stays: [{ hotel: null, requested: { arrival: '2027-10-12', departure: '2027-10-15' }, booked: null,
+      totalRooms: 2, rows: [{ roomType: null, rooms: 2, adultsPerRoom: 1, childrenPerRoom: 0, childAges: [], board: null }] }],
+    missing: [],
+  }));
+  expect(await runInboundExtraction({ transportId, triggerMessageId: messageId, promptVersion: EXTRACTION_VERSION },
+    { db, env: { INBOUND_EXTRACTION: 'on' }, adapter: model.adapter })).toBe('stored');
+  expect(model.calls).toHaveLength(1);
+  expect(model.calls[0]?.userPrompt).toContain(body);
+  const [read] = await db.select().from(mailExtraction).where(eq(mailExtraction.messageId, messageId));
+  const [item] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
+  const parsed = mailExtractionPayloadSchema.parse(read?.payload);
+  const stay = parsed.stays[0], row = stay?.rows[0];
+  if (!mail || !read || !item || !stay || !row) throw new Error('synthetic extraction did not create a complete work item');
+  const input: StaffQuoteInput = {
+    messageId, sourceHash: staffQuoteSourceHash(mail), selectionEpoch: 1, inputRevision: 1,
+    sourceExtractionId: read.id, sourcePartyDigest: quoteSourcePartyDigest(parsed, {})!,
+    groups: [{ id: row.id, arrivalDate: '2027-10-12', departureDate: '2027-10-15', quantity: 2,
+      adults: 1, childrenPerRoom: 0, childrenAges: [], board: 'room_only', roomCodes: ['SKNG'],
+      sourcePreference: { roomType: null, board: null } }],
+    salesStrategy: 'BAR', company: '', agency: '', attention: '', clientEmail: '', clientTelephone: '',
+  };
+  return { mail, input, internetMessageId, workItemId: item.id, stayId: stay.id, rowId: row.id };
 }
 
 const stayRowId = (arrival: string) => arrival === '2026-10-26' ? 'single_oct' : 'single_nov';
@@ -667,13 +707,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           stage: async (key, body) => { objects.set(key, Buffer.from(body)); },
           read: async (key) => objects.get(key) ?? null,
         });
-        const request = await seedRequest(db), api = caller();
+        const request = await seedExtractedRequest(db), api = caller();
         await expect(api.workstation.staffQuoteSource({ internetMessageId: request.internetMessageId }))
           .resolves.toMatchObject({ status: 'ready', messageId: request.mail.id });
 
         for (const [field, value] of [['arrival', '2027-10-12'], ['departure', '2027-10-15']] as const) {
           await api.workItems.recordEvent({ workItemId: request.workItemId, type: 'field.edit',
-            fieldPath: `stays[s_default].requested.${field}`, value });
+            fieldPath: `stays[${request.stayId}].requested.${field}`, value });
         }
         const input = { ...request.input, groups: [{ ...request.input.groups[0]!,
           arrivalDate: '2027-10-12', departureDate: '2027-10-15' }] };
@@ -727,7 +767,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           eq(message.direction, 'outbound')))).toEqual([]);
 
         await api.workItems.recordEvent({ workItemId: request.workItemId, type: 'field.edit',
-          fieldPath: 'stays[s_default].rows[single].adults', value: 2 });
+          fieldPath: `stays[${request.stayId}].rows[${request.rowId}].adults`, value: 2 });
         await expect(api.workstation.quoteDraftPreflight(preflight)).rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
       });
     }, 60_000);
