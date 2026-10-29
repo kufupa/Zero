@@ -127,6 +127,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
             id: saved.id,
             html: drafts[0]?.htmlBody,
             attachments: [{ fileName: 'Quotation.pdf', pdfBase64: PDF_BASE64 }],
+            quoteBound: false,
           });
         });
       },
