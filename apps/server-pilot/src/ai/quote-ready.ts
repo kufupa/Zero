@@ -138,10 +138,10 @@ function groupForStay(
       return { groups: [], reason: 'missing_rooms' };
     }
     const adults = row.adultsPerRoom ?? 2;
-    if (row.childrenPerRoom === null || row.childrenPerRoom === undefined) {
+    if ((!propertyCode || propertyCode === 'HRCEN') && row.childrenPerRoom == null) {
       return { groups: [], reason: 'missing_children_count' };
     }
-    if (row.childrenPerRoom !== row.childAges.length) {
+    if ((!propertyCode || propertyCode === 'HRCEN') && row.childrenPerRoom !== row.childAges.length) {
       return { groups: [], reason: 'missing_child_ages' };
     }
     if (
@@ -164,7 +164,7 @@ function groupForStay(
       departureDate: departure,
       quantity,
       adults,
-      childrenPerRoom: row.childrenPerRoom,
+      ...(!propertyCode || propertyCode === 'HRCEN' ? { childrenPerRoom: row.childrenPerRoom } : {}),
       childrenAges: row.childAges,
       board: row.board === 'room_only' ? 'room_only' : row.board === 'dbb' ? 'dinner_bb' : 'bb',
       ...(roomCode ? { roomCodes: [roomCode] } : {}),

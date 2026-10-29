@@ -1401,6 +1401,30 @@ describe('runStaffQuote property installation', () => {
     expect(quoteRunMocks.readConfiguration.mock.calls).toEqual([['HRDAV']]);
   });
 
+  it('allows an HRDAV quote to reach and recheck the reader without saved child evidence', async () => {
+    vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+    vi.stubEnv('DATABASE_URL', 'postgres://127.0.0.1/synthetic');
+    const actual = await vi.importActual<typeof import('../src/ai/staff-quote-run.js')>('../src/ai/staff-quote-run.js');
+    const mail = mailFor('transport-davinci');
+    const input = staffQuoteInput.parse({ ...STAFF_QUOTE_INPUT, sourceHash: staffQuoteSourceHash(mail),
+      groups: [{ ...STAFF_QUOTE_INPUT.groups[0], childrenPerRoom: null }] });
+    const quoteDb = staffQuoteRunDb(mail, input.groups);
+    quoteDb.occupancyState['stays[s_test].rows[single].childrenPerRoom'] = null;
+    quoteRunMocks.readConfiguration.mockReturnValue({ tenantId: 'synthetic-hotel', owner: { propertyCode: 'HRDAV' } });
+    quoteRunMocks.snapshotRowPrices.mockResolvedValue([]);
+    quoteRunMocks.createPropertyReadLock.mockReturnValue({ withLock: (callback: () => Promise<unknown>) => callback() });
+    quoteRunMocks.getServices.mockReturnValue({});
+    let stillCurrent = false;
+    workflowMocks.executeStaffQuote.mockImplementation(async (_prepared, _services, isCurrent) => {
+      stillCurrent = await isCurrent();
+      throw new Error('synthetic_reader_stop');
+    });
+    await expect(actual.runStaffQuote(input, { transportId: 'transport-davinci', user }, quoteDb.db))
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED' });
+    expect(workflowMocks.executeStaffQuote).toHaveBeenCalledOnce();
+    expect(stillCurrent).toBe(true);
+  });
+
   it('refuses a Da Vinci quote when the HRDAV install is missing and does not read Centurion', async () => {
     vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
     quoteRunMocks.readConfiguration.mockImplementation((propertyCode?: string) => {

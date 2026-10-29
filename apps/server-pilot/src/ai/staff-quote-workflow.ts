@@ -368,7 +368,7 @@ export function prepareStaffQuote(
 ) {
   input = staffQuoteInput.parse(input);
   signal.throwIfAborted();
-  if (input.groups.some((group) =>
+  if (scope.propertyCode === 'HRCEN' && input.groups.some((group) =>
     group.childrenPerRoom !== undefined &&
     (group.childrenPerRoom === null || group.childrenPerRoom !== group.childrenAges.length),
   )) throw new Error('staff_quote_child_occupancy_incomplete');

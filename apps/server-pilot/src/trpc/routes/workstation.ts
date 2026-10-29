@@ -1106,23 +1106,23 @@ export const workstationRouter = router({
       const group = groups[0];
       if (
         !group?.arrival ||
-        !group.departure ||
+        (isCenturionQuoteTransport(ctx.activeTransportId) && !group.departure) ||
         groups.length !== 1 ||
         groups.some((r) => !Number.isInteger(r.rooms) || (r.rooms ?? 0) < 1 || !Number.isInteger(r.adultsPerRoom) || (r.adultsPerRoom ?? 0) < 1)
       ) {
         return unavailable;
       }
-      const [selected] = await getDb().select({ threadId: message.threadId }).from(message)
+      const [selected] = isCenturionQuoteTransport(ctx.activeTransportId) ? await getDb().select({ threadId: message.threadId }).from(message)
         .where(and(eq(message.id, input.messageId), eq(message.transportId, ctx.activeTransportId)))
-        .limit(1);
+        .limit(1) : [{ threadId: '' }];
       if (!selected) return unavailable;
       const occupancyScope = { transportId: ctx.activeTransportId, threadId: selected.threadId, messageId: input.messageId };
       const occupancy = { groups: [{
-        arrivalDate: group.arrival, departureDate: group.departure,
+        arrivalDate: group.arrival, departureDate: group.departure ?? '',
         quantity: group.rooms ?? 0, adults: group.adultsPerRoom ?? 0,
         children: group.childAges.length, childAges: group.childAges,
       }] };
-      if (!(await singleStayOccupancyIsCurrent(getDb(), occupancy, occupancyScope))) {
+      if (isCenturionQuoteTransport(ctx.activeTransportId) && !(await singleStayOccupancyIsCurrent(getDb(), occupancy, occupancyScope))) {
         return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' };
       }
       const party = input.analysis.party;
@@ -1142,7 +1142,7 @@ export const workstationRouter = router({
           propertyCode,
         });
         if (!prefill.requests.length) return unavailable;
-        if (!(await singleStayOccupancyIsCurrent(getDb(), occupancy, occupancyScope))) {
+        if (isCenturionQuoteTransport(ctx.activeTransportId) && !(await singleStayOccupancyIsCurrent(getDb(), occupancy, occupancyScope))) {
           return { status: 'unavailable' as const, reason: 'child_occupancy_incomplete' };
         }
         return {
@@ -1626,7 +1626,7 @@ export const workstationRouter = router({
         workItemId: input.workItemId,
         revisionId: quotePdfJobIdentity(input),
       });
-      if (!job?.result) return job;
+      if (!job?.result || !isCenturionQuoteTransport(ctx.activeTransportId)) return job;
       const [stored] = await getDb().select({ request: aiWorkflowRun.readRequest, messageId: aiWorkflowRun.triggerMessageId })
         .from(aiWorkflowRun)
         .where(and(eq(aiWorkflowRun.id, job.runId), eq(aiWorkflowRun.transportId, ctx.activeTransportId)))

@@ -17,17 +17,20 @@ const userId = 'user-1';
 const itemId = '00000000-0000-4000-8000-000000000001';
 const rowPath = 'stays[s_test].rows[g1]';
 
-function caller() {
+function caller(activeTransportId = transportId) {
   return appRouter.createCaller({
     auth: null as never, reqHeaders: new Headers(),
     sessionUser: { id: userId, email: 'staff@example.invalid', name: 'Staff' },
-    activeTransportId: transportId, accessRole: 'owner', transportEmail: 'centurion@legacyhotels.co.za',
+    activeTransportId, accessRole: 'owner', transportEmail: activeTransportId === transportId
+      ? 'centurion@legacyhotels.co.za' : 'davinci@legacyhotels.co.za',
   } as never);
 }
 
-async function fixture() {
+async function fixture(targetTransport = transportId) {
+  const transportId = targetTransport;
   const now = new Date(Date.now() - 1000).toISOString();
-  const revision = await syntheticRevision(['600.00'], 'Room Only R', 'SKNG', now, '2027-10-20', 'auth-1');
+  const revision = await syntheticRevision(['600.00'], 'Room Only R', transportId === 'transport-centurion' ? 'SKNG' : 'STKNG', now, '2027-10-20', 'auth-1',
+    { id: 'g1', quantity: 2, adults: 1, children: 0, childAges: [] }, transportId === 'transport-centurion' ? 'HRCEN' : 'HRDAV');
   const mail = { id: 'm1', transportId, threadId: 't1', direction: 'inbound',
     subject: 'Synthetic quote', textBody: 'Please quote accommodation.', htmlBody: null,
     fromAddress: 'guest@example.invalid' };
@@ -53,12 +56,13 @@ async function fixture() {
   const state: Record<string, unknown> = {};
   const draft = { id: 'draft-1', origin: 'ai', generationId: 'generation-1', threadId: 't1', replyToMessageId: mail.id };
   const proposal = { workflowRunId: run.id, revisionRef: revision.id, messageId: mail.id,
-    outlookEmail: 'centurion@legacyhotels.co.za', factRefs: [], company: '', agency: '', workItemId: itemId };
+    outlookEmail: transportId === 'transport-centurion' ? 'centurion@legacyhotels.co.za' : 'davinci@legacyhotels.co.za',
+    factRefs: [], company: '', agency: '', workItemId: itemId };
   const artifact = { kind: 'quote_pdf', revisionId: revision.id, pdfHash: 'a'.repeat(64),
     fileName: 'synthetic.pdf', totalMinor: revision.totalMinor, pdfBase64: 'JVBERi0xLjQ=' };
   const job = { id: 'pdf-job', state: 'succeeded', triggerMessageId: mail.id, readResult: artifact,
     readRequest: { kind: 'quote_pdf', workItemId: itemId, revisionId: revision.id,
-      propertyCode: 'HRCEN', transportId, userId, proposal } };
+      propertyCode: transportId === 'transport-centurion' ? 'HRCEN' : 'HRDAV', transportId, userId, proposal } };
   const db = {
     select(selection?: Record<string, unknown>) {
       let table: unknown;
@@ -80,6 +84,8 @@ async function fixture() {
           if (table === aiWorkflowRun && selection && 'run' in selection) return Promise.resolve([{ run }]);
           if (table === aiWorkflowRun && selection && 'request' in selection)
             return Promise.resolve([{ request: job.readRequest, messageId: mail.id }]);
+          if (table === aiWorkflowRun && selection && 'id' in selection && 'metrics' in selection)
+            return Promise.resolve([run]);
           if (table === aiWorkflowRun && selection && 'metrics' in selection)
             return Promise.resolve([{ metrics: run.metrics, triggerMessageId: run.triggerMessageId }]);
           if (table === aiWorkflowRun) return Promise.resolve([job]);
@@ -96,6 +102,37 @@ async function fixture() {
 afterEach(() => { __setDbForTests(null); vi.unstubAllEnvs(); });
 
 describe('stored quote export and draft occupancy', () => {
+  it('preserves HRDAV quote choices, export and booking use without Centurion child evidence', async () => {
+    const davinci = 'transport-davinci';
+    const { proposal, revision, run, state, artifact } = await fixture(davinci);
+    state[`${rowPath}.childAges`] = null;
+    const api = caller(davinci).workstation;
+    const { workItemId: _item, ...uncached } = proposal;
+    vi.stubEnv('GOTENBERG_URL', '');
+    expect((await api.qualifiedProposalChoices({ internetMessageId: '<synthetic@example.invalid>' })).choices)
+      .toHaveLength(1);
+    await expect(api.qualifiedQuoteProposalPdf(uncached)).rejects.toThrow('GOTENBERG_URL missing');
+    expect((await api.quoteWorkbook(uncached)).xlsxBase64).toBeTruthy();
+    expect((await api.quotePdfJob({ workItemId: itemId, revisionRef: revision.id, company: '', agency: '' }))?.result)
+      .toEqual(artifact);
+    const now = new Date().toISOString();
+    const offer = await resolveApprovedOverride({ revision, ref: 'override', evaluationAt: now,
+      resolveApproval: async () => ({ ref: 'override', authorizationId: revision.authorizationId,
+        revisionId: revision.id, sourceHash: 'a'.repeat(64), actorRef: 'staff', reason: 'Synthetic adjustment',
+        approvedAt: now, amount: '550.00', currency: 'ZAR' }), authorizeActor: async () => true });
+    Object.assign(run.metrics.reservationistResult, { approvedOverrides: [offer] });
+    await expect(api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'approved_override' }))
+      .rejects.toThrow('GOTENBERG_URL missing');
+    const analysis = { workflow: 'create_booking' as const, flags: [], groups: [{
+      arrival: '2027-10-20', departure: '2027-10-21', rooms: 2, adultsPerRoom: 1,
+      childAges: [], board: 'room_only' as const, roomPreference: null, guestNames: [],
+    }], party: { kind: null, name: null, reference: null }, rateClaims: [], missing: [], evidence: [], tasks: [] };
+    const shared = { workflowRunId: proposal.workflowRunId, revisionRef: proposal.revisionRef,
+      messageId: proposal.messageId, selectionEpoch: 1, inputRevision: 1, analysis };
+    expect((await api.prepareBookingDraft(shared)).status).toBe('ready');
+    expect((await api.usePriorQuoteForBooking({ ...shared, threadId: 't1' })).status).toBe('ready');
+  });
+
   it('refuses PDF and workbook after a saved child age is cleared', async () => {
     const { proposal, state } = await fixture();
     const api = caller().workstation;

@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   bookingDraftFromPrefill,
   buildBookingDrafts,
@@ -15,6 +15,8 @@ import {
 } from '../src/ai/booking-draft.js';
 import type { LunaAnalysis } from '../src/ai/reservationist-decision.js';
 import { __setDbForTests, type DB } from '../src/db/client.js';
+import { message } from '../src/db/schema/mail.js';
+import { mailExtraction, workItem } from '../src/db/schema/work.js';
 import { appRouter } from '../src/trpc/router.js';
 import {
   prepareBookingDraftInput,
@@ -478,10 +480,10 @@ describe('buildBookingDrafts', () => {
       messageId: 'message-1',
       validate: validateCreate,
     });
-    const ada = draft.rooms.filter((room) => room.groupId === revision.groups[0]!.id);
-    const bea = draft.rooms.filter((room) => room.groupId === 'g2');
-    expect(ada[0]!.request).toMatchObject({ firstName: 'Ada', lastName: 'Example' });
-    expect(bea[0]!.request).toMatchObject({ firstName: 'Bea', lastName: 'Example' });
+    const ada = draft.rooms.find((room) => room.groupId === revision.groups[0]!.id);
+    const bea = draft.rooms.find((room) => room.groupId === 'g2');
+    expect(ada!.request).toMatchObject({ firstName: 'Ada', lastName: 'Example' });
+    expect(bea!.request).toMatchObject({ firstName: 'Bea', lastName: 'Example' });
   });
 
   it('gives each room of one stay its own guest', async () => {
@@ -893,6 +895,26 @@ const unquotedInput = {
 };
 
 describe('prepareUnquotedBookingDraft route', () => {
+  beforeEach(() => {
+    const payload = { contact: { name: null, email: null, phone: null }, agency: null, endClient: null,
+      confirmationNumbers: [], missing: [], stays: [{ id: 'stay-1', hotel: null,
+        requested: { arrival: '2026-10-12', departure: '2026-10-13' }, booked: null, totalRooms: 2,
+        rows: [{ id: 'row-1', roomType: null, rooms: 2, adultsPerRoom: 1, childrenPerRoom: 0, childAges: [], board: null }],
+      }] };
+    const db = { select() {
+      let table: unknown;
+      const query = { from(value: unknown) { table = value; return query; }, where() { return query; },
+        orderBy() { return query; }, limit() {
+          if (table === message) return Promise.resolve([{ threadId: 'thread-1' }]);
+          if (table === mailExtraction) return Promise.resolve([{ id: 'extract-1', kind: 'booking', payload }]);
+          if (table === workItem) return Promise.resolve([{ extractionId: 'extract-1', state: {} }]);
+          return Promise.resolve([]);
+        } };
+      return query;
+    } } as unknown as DB;
+    __setDbForTests({ db, conn: null as never });
+  });
+
   it('rejects an extra input key', () => {
     expect(prepareUnquotedBookingDraftInput.parse(unquotedInput).messageId).toBe('message-1');
     expect(() => prepareUnquotedBookingDraftInput.parse({ ...unquotedInput, extra: true })).toThrow();
@@ -912,6 +934,16 @@ describe('prepareUnquotedBookingDraft route', () => {
       lastName: 'Smith',
     });
     expect(result.draft.rooms[0]?.request).not.toHaveProperty('ratePlan');
+  });
+
+  it('keeps HRDAV unquoted prefill available without a saved extraction or departure date', async () => {
+    __setDbForTests(null);
+    const first = analysis().groups[0]!;
+    const result = await draftCaller('transport-faith').workstation.prepareUnquotedBookingDraft({
+      ...unquotedInput, analysis: analysis({ groups: [{ ...first, departure: null }] }),
+    });
+    expect(result.status).toBe('ready');
+    if (result.status === 'ready') expect(result.draft.missing).toContainEqual(expect.objectContaining({ field: 'departure' }));
   });
 
   it('returns hotel-specific create lists and required fields from the active transport', async () => {

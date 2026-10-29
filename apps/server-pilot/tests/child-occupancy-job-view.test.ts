@@ -126,6 +126,16 @@ describe('cached quote views use current selected occupancy', () => {
     expect(batch?.items[0]?.job?.result).not.toHaveProperty('totalMinor');
   });
 
+  it('keeps single and batch HRDAV quote views available without the Centurion evidence context', async () => {
+    const davinci = { ...job(), transportId: 'transport-davinci' };
+    const view = await readHmsJobView({ ...byId, transportId: 'transport-davinci', messageId: undefined },
+      fakeDb([[aiWorkflowRun, [davinci]]]));
+    expect(view?.result).toMatchObject({ status: 'ready', totalMinor: 10000 });
+    const batch = await readHmsBatchView({ transportId: 'transport-davinci', batchId: 'batch-1' },
+      fakeDb([[aiWorkflowRun, [davinci]]]));
+    expect(batch).toMatchObject({ status: 'done', items: [{ job: { result: { totalMinor: 10000 } } }] });
+  });
+
   it('keeps a non-quote job view unchanged without quote context', async () => {
     const find = job({ kind: 'find', confirmation: '123-1' });
     find.readResult = { kind: 'find', result: 'synthetic' };
