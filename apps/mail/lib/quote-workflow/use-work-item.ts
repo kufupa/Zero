@@ -9,6 +9,7 @@ import {
   type RecordFieldEventInput,
   type StoredContact,
   type StoredStayCommit,
+  type StoredSourceConflict,
   type StoredTranslation,
   type StoredWork,
 } from './backend-bind';
@@ -76,6 +77,7 @@ export type StoredPane =
       extractionId: string;
       /** Source identity comes from the latest extraction, not the editable staff-projected form. */
       sourceRead?: { extractionId: string; kind: string; analysis: QuoteAnalysis; refs: Refs } | null;
+      sourceConflict?: StoredSourceConflict | null;
       contact: StoredContact;
       /** Last HMS commits for this mail. The Book step shows them again after a reload. */
       savedStays?: Record<string, StoredStayCommit>;
@@ -794,6 +796,7 @@ export function useStoredWork(args: {
       sourceRead: stored.sourceRead ? {
         ...stored.sourceRead, analysis: quoteAnalysisOf(stored.sourceRead.analysis),
       } : null,
+      sourceConflict: stored.sourceConflict ?? null,
       contact: stored.contact,
       savedStays: stored.stays,
       language: stored.language,

@@ -384,6 +384,78 @@ describe('stored read for the pane', () => {
       expect(work.refs.r_staff).toEqual({ stayId: STAY_ONE, rowId: 'r_staff' });
     }));
 
+  it('holds a reclassified read when an older kind has staff edits, without opening a replacement', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'cross-kind-saved');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', kind: 'quote', payload: payload() });
+      const old = await readyWork(db, 'cross-kind-saved');
+      const savedPath = `stays[${STAY_ONE}].requested.arrival`;
+      await recordFieldEvent(db, {
+        transportId: CENTURION, workItemId: old.workItemId, userId: USER,
+        type: 'field.edit', fieldPath: savedPath, value: '2027-10-25',
+      });
+      const latest = await insertRead(db, messageId, { version: 'extract-v2', kind: 'booking', payload: payload() });
+      const lookup = { transportId: CENTURION, internetMessageId: '<cross-kind-saved@example.com>' };
+      const conflict = {
+        reason: 'workflow_reclassified',
+        previousItems: [{ workItemId: old.workItemId, kind: 'quote', status: 'needs_you' }],
+      };
+      expect(await storedWorkFor(db, lookup)).toMatchObject({
+        status: 'ready', kind: 'booking', workItemId: null, extractionId: latest,
+        sourceRead: { extractionId: latest }, sourceConflict: conflict, analysis: { caseActionsUncertain: true },
+      });
+      expect(await openStoredWork(db, lookup)).toMatchObject({
+        status: 'ready', workItemId: null, sourceConflict: conflict, analysis: { caseActionsUncertain: true },
+      });
+      const items = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
+      expect(items).toHaveLength(1);
+      expect(items[0]).toMatchObject({ id: old.workItemId, extractionId: first, state: { [savedPath]: '2027-10-25' } });
+
+      // An inbound worker may have made the new item already. Its presence does not erase the hold or old state.
+      const next = await ensureWorkItem(db, {
+        transportId: CENTURION, threadId: 'thread-cross-kind-saved', messageId, kind: 'booking', extractionId: latest,
+      });
+      expect(await openStoredWork(db, lookup)).toMatchObject({
+        workItemId: next.id, sourceConflict: conflict, analysis: { caseActionsUncertain: true },
+      });
+      expect((await db.select().from(workItem).where(eq(workItem.id, old.workItemId)))[0]?.state[savedPath]).toBe('2027-10-25');
+    }));
+
+  it('holds reclassification for a staff decision even when no field state remains', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'cross-kind-decision');
+      await insertRead(db, messageId, { version: 'extract-v1', kind: 'quote', payload: payload() });
+      const old = await readyWork(db, 'cross-kind-decision');
+      await db.insert(workEvent).values({
+        workItemId: old.workItemId, actorKind: 'user', actorUserId: USER, type: 'note.staff', value: { masked: true },
+      });
+      await insertRead(db, messageId, { version: 'extract-v2', kind: 'booking', payload: payload() });
+      expect(await storedWorkFor(db, {
+        transportId: CENTURION, internetMessageId: '<cross-kind-decision@example.com>',
+      })).toMatchObject({ sourceConflict: { previousItems: [{ workItemId: old.workItemId }] },
+        analysis: { caseActionsUncertain: true } });
+    }));
+
+  it('opens a reclassified read normally when the prior kind was only accepted as read', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'cross-kind-untouched');
+      await insertRead(db, messageId, { version: 'extract-v1', kind: 'quote', payload: payload() });
+      const old = await readyWork(db, 'cross-kind-untouched');
+      await recordFieldEvent(db, {
+        transportId: CENTURION, workItemId: old.workItemId, userId: USER,
+        type: 'field.accept', fieldPath: `stays[${STAY_ONE}].requested.arrival`,
+      });
+      await insertRead(db, messageId, { version: 'extract-v2', kind: 'booking', payload: payload() });
+      const opened = await openStoredWork(db, {
+        transportId: CENTURION, internetMessageId: '<cross-kind-untouched@example.com>',
+      });
+      expect(opened).toMatchObject({ status: 'ready', kind: 'booking', workItemId: expect.any(String) });
+      if (opened.status !== 'ready') throw new Error('expected ready');
+      expect(opened.sourceConflict).toBeUndefined();
+      expect(opened.analysis.caseActionsUncertain).toBeUndefined();
+      expect(opened.workItemId).not.toBe(old.workItemId);
+    }));
+
   it('the open route makes the work item, and the lookup route only reads', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'ro2');

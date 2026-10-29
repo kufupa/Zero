@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { setMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import type { RecordFieldEventInput, StoredWork } from '@/lib/quote-workflow/backend-bind';
 import type { StayGroupRequirement } from '@/lib/quote-workflow/types';
+import { caseQuoteBlocked, caseReviewPending } from '@/lib/quote-workflow/session';
 import { STORED_LOOKUP_TIMEOUT_MS, useStoredWork, type WorkItemProvenanceMap } from '@/lib/quote-workflow/use-work-item';
 
 type Ready = Extract<StoredWork, { status: 'ready' }> & { fieldProvenance: WorkItemProvenanceMap };
@@ -83,6 +84,24 @@ describe('missing work item recovery', () => {
     expect(result.current.pane.analysis.groups[0]?.arrivalDate).toBe('2027-10-22');
     expect(result.current.pane.sourceRead?.analysis.groups[0]?.arrivalDate).toBe('2027-10-20');
     expect(result.current.pane.sourceRead?.refs).toEqual(READ.refs);
+  });
+
+  it('exposes a reclassification conflict and blocks pane quote actions', async () => {
+    mailbox();
+    const { trpc, query } = harness();
+    const conflict = {
+      reason: 'workflow_reclassified' as const,
+      previousItems: [{ workItemId: 'old', kind: 'booking', status: 'needs_you' }],
+    };
+    query.mockResolvedValueOnce({
+      ...OPENED, sourceConflict: conflict, analysis: { ...OPENED.analysis, caseActionsUncertain: true },
+    });
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1', scope: SCOPE }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', sourceConflict: conflict }));
+    if (result.current.pane.state !== 'ready') throw new Error('expected ready pane');
+    const analysis = result.current.pane.analysis;
+    expect(caseReviewPending(analysis)).toBe(true);
+    expect(caseQuoteBlocked({ analysis, groups: analysis.groups }, 's_1')).toBe(true);
   });
 
   it('holds recovery when the initial server read has no source identity', async () => {

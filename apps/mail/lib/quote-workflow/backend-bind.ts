@@ -196,6 +196,10 @@ export type StoredTranslation =
   | { status: 'succeeded'; segments: Array<{ clean: string; literal: string }>; truncated: boolean }
   | { status: 'failed' }
   | null;
+export type StoredSourceConflict = {
+  reason: 'workflow_reclassified';
+  previousItems: Array<{ workItemId: string; kind: string; status: string }>;
+};
 
 /**
  * A mail's stored read from workItems.getByMessage. Ready carries its analysis and its work item (null until one is
@@ -226,6 +230,7 @@ export type StoredWork =
         analysis: ReadyAnalyse;
         refs: Record<string, { stayId: string; rowId: string | null }>;
       };
+      sourceConflict?: StoredSourceConflict;
       contact: StoredContact;
       /** Last HMS commit per stay id, including durable before/saved shots. Absent on older reads. */
       stays?: Record<string, StoredStayCommit>;

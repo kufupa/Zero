@@ -1767,6 +1767,10 @@ export function storedTranslation(raw: unknown): StoredTranslation {
 
 export type FieldProvenanceSource = 'ai' | 'staff' | 'unknown';
 export type FieldProvenance = Record<string, { source: FieldProvenanceSource; value: unknown }>;
+export type StoredSourceConflict = {
+  reason: 'workflow_reclassified';
+  previousItems: Array<{ workItemId: string; kind: string; status: string }>;
+};
 
 export type StoredWork =
   | { status: 'none' }
@@ -1790,6 +1794,8 @@ export type StoredWork =
       refs: Record<string, GroupRef>;
       /** Latest extraction mapped without work-item edits. It may differ from the linked, projected analysis below. */
       sourceRead: { extractionId: string; kind: string; analysis: StoredAnalysis; refs: Record<string, GroupRef> };
+      /** A different kind has saved work that cannot safely be carried to this read. */
+      sourceConflict?: StoredSourceConflict;
       /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
       analysis: StoredAnalysis & {
         noReplySender: boolean;
@@ -1905,6 +1911,7 @@ async function readyView(
   latest: ReadyRead,
   item: WorkItemRef | null,
   transportId: string,
+  sourceConflict?: StoredSourceConflict,
 ): Promise<StoredWork> {
   const messageId = msg.id;
   const read =
@@ -1985,11 +1992,13 @@ async function readyView(
       analysis: source.analysis,
       refs: source.refs,
     },
+    ...(sourceConflict ? { sourceConflict } : {}),
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
     analysis: {
       ...stored.analysis,
       // An old pinned read can no longer stand in for a newer extraction, even if it looks similar.
-      ...(paneItem?.extractionId && paneItem.extractionId !== latest.id ? { caseActionsUncertain: true } : {}),
+      ...(sourceConflict || (paneItem?.extractionId && paneItem.extractionId !== latest.id)
+        ? { caseActionsUncertain: true } : {}),
       noReplySender: isNoReplyAddress(msg.fromAddress),
       hmsTodoCard,
     },
@@ -2005,6 +2014,45 @@ async function readyView(
   };
 }
 
+/** Do not hide decisions or saved state on an older workflow when this mail is reclassified. */
+export async function priorKindConflict(
+  db: DB,
+  input: { transportId: string; threadId: string; messageId: string; latestKind: string },
+): Promise<StoredSourceConflict | undefined> {
+  const previousItems = await db
+    .select({ workItemId: workItem.id, kind: workItem.kind, status: workItem.status })
+    .from(workItem)
+    .where(and(
+      eq(workItem.transportId, input.transportId),
+      eq(workItem.threadId, input.threadId),
+      eq(workItem.sourceMessageId, input.messageId),
+      ne(workItem.kind, input.latestKind),
+      or(
+        sql`${workItem.state} <> '{}'::jsonb`,
+        inArray(workItem.status, ['done', 'review']),
+        sql`exists (select 1 from ${workEvent} as prior_event
+          where prior_event.work_item_id = ${workItem.id} and ${personTouchSql('prior_event')})`,
+      ),
+    ))
+    .orderBy(desc(workItem.updatedAt), desc(workItem.id));
+  return previousItems.length ? { reason: 'workflow_reclassified', previousItems } : undefined;
+}
+
+async function workItemForKind(
+  db: DB,
+  input: { transportId: string; threadId: string; messageId: string; kind: MailKind },
+): Promise<WorkItemRef | null> {
+  const [item] = await db
+    .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId, revisionSeq: workItem.revisionSeq })
+    .from(workItem)
+    .where(and(
+      eq(workItem.transportId, input.transportId), eq(workItem.threadId, input.threadId),
+      eq(workItem.kind, input.kind), eq(workItem.sourceMessageId, input.messageId),
+    ))
+    .limit(1);
+  return item ?? null;
+}
+
 /**
  * What the pane shows for one mail: the latest succeeded read with its work item, the latest failed read as a reason,
  * or nothing (the pane then reads the mail live). A read only: no model call, and no row is written. The inbound run
@@ -2018,26 +2066,20 @@ export async function storedWorkFor(
   if (!msg) return { status: 'none' };
   const latest = await succeededRead(db, msg.id);
   if (!latest) return failureFor(db, msg.id);
+  const sourceConflict = await priorKindConflict(db, {
+    transportId: input.transportId, threadId: msg.threadId, messageId: msg.id, latestKind: latest.kind,
+  });
   const existingStayInformation = isSelfSentPreStayInformationMail({
     fromAddress: msg.fromAddress,
     mailboxAddress: msg.mailboxAddress,
     subject: msg.subject,
     confirmationNumbers: payloadConfirmationNumbers(latest.payload),
   });
-  if (existingStayInformation) return readyView(db, msg, latest, null, input.transportId);
-  const [item] = await db
-    .select({ id: workItem.id, status: workItem.status, state: workItem.state, extractionId: workItem.extractionId, revisionSeq: workItem.revisionSeq })
-    .from(workItem)
-    .where(
-      and(
-        eq(workItem.transportId, input.transportId),
-        eq(workItem.threadId, msg.threadId),
-        eq(workItem.kind, latest.kind),
-        eq(workItem.sourceMessageId, msg.id),
-      ),
-    )
-    .limit(1);
-  return readyView(db, msg, latest, item ?? null, input.transportId);
+  if (existingStayInformation) return readyView(db, msg, latest, null, input.transportId, sourceConflict);
+  const item = await workItemForKind(db, {
+    transportId: input.transportId, threadId: msg.threadId, messageId: msg.id, kind: latest.kind,
+  });
+  return readyView(db, msg, latest, item, input.transportId, sourceConflict);
 }
 
 /**
@@ -2052,6 +2094,9 @@ export async function openStoredWork(
   if (!msg) return { status: 'none' };
   const latest = await succeededRead(db, msg.id);
   if (!latest) return failureFor(db, msg.id);
+  const sourceConflict = await priorKindConflict(db, {
+    transportId: input.transportId, threadId: msg.threadId, messageId: msg.id, latestKind: latest.kind,
+  });
   if (
     isSelfSentPreStayInformationMail({
       fromAddress: msg.fromAddress,
@@ -2060,7 +2105,13 @@ export async function openStoredWork(
       confirmationNumbers: payloadConfirmationNumbers(latest.payload),
     })
   ) {
-    return readyView(db, msg, latest, null, input.transportId);
+    return readyView(db, msg, latest, null, input.transportId, sourceConflict);
+  }
+  if (sourceConflict) {
+    const item = await workItemForKind(db, {
+      transportId: input.transportId, threadId: msg.threadId, messageId: msg.id, kind: latest.kind,
+    });
+    return readyView(db, msg, latest, item, input.transportId, sourceConflict);
   }
   const item = await ensureWorkItem(db, {
     transportId: input.transportId,
