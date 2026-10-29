@@ -672,6 +672,7 @@ export function NavaPane({
     internetMessageId: activeEmail?.internetMessageId ?? null,
     openMissingWorkItem: !isNonActionableBySourceOrSubject,
     scope: currentScope,
+    verifyQuotePartySource: activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE,
   });
   const storedPaneRef = useRef(storedWork.pane);
   storedPaneRef.current = storedWork.pane;
@@ -680,22 +681,30 @@ export function NavaPane({
     ? { sourcePartyDigest: storedWork.pane.sourcePartyDigest ?? null, sourceExtractionId: storedWork.pane.extractionId }
     : { sourcePartyDigest: null, sourceExtractionId: null };
   const previousQuoteSource = useRef<{ key: string; party: string | null; extraction: string | null } | null>(null);
-  useEffect(() => {
+  const localQuotePartyEdit = useRef<string | null>(null);
+  useLayoutEffect(() => {
     const binding = quoteSession.binding;
     if (activePaneConfig?.propertyCode !== HRCEN_PROPERTY_CODE || !binding) {
       previousQuoteSource.current = null;
+      localQuotePartyEdit.current = null;
       return;
     }
     const next = { key: JSON.stringify([binding.transportId, binding.entryId, binding.selectionEpoch]), party: quoteSourceBinding.sourcePartyDigest,
       extraction: quoteSourceBinding.sourceExtractionId };
     const previous = previousQuoteSource.current;
     previousQuoteSource.current = next;
-    if (previous?.key === next.key && previous.party &&
-      (previous.party !== next.party || previous.extraction !== next.extraction)) {
-      dispatchQuote({ type: 'quote_source_changed' });
+    if (localQuotePartyEdit.current === next.key) return;
+    localQuotePartyEdit.current = null;
+    const changed = previous?.key === next.key && previous.party &&
+      (previous.party !== next.party || previous.extraction !== next.extraction);
+    const readyAfterHold = previous?.key === next.key && !previous.party && next.party && quoteSession.sourcePartyAutoPickDisabled;
+    if (changed || readyAfterHold) {
+      const contact = storedWork.pane.state === 'ready' ? storedWork.pane.contact : null;
+      dispatchQuote({ type: 'quote_source_changed',
+        ...(contact ? { sourceParty: { agency: contact.company, company: contact.endClient } } : {}) });
     }
   }, [activePaneConfig?.propertyCode, quoteSession.binding?.transportId, quoteSession.binding?.entryId, quoteSession.binding?.selectionEpoch,
-    quoteSourceBinding.sourcePartyDigest, quoteSourceBinding.sourceExtractionId]);
+    quoteSession.sourcePartyAutoPickDisabled, quoteSourceBinding.sourcePartyDigest, quoteSourceBinding.sourceExtractionId]);
   const isExistingStayInformation =
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
@@ -775,6 +784,11 @@ export function NavaPane({
       phone: null,
     };
     const contact = { ...previous, [field]: value };
+    if (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && (field === 'company' || field === 'endClient')) {
+      const binding = quoteSession.binding;
+      localQuotePartyEdit.current = binding ? JSON.stringify([binding.transportId, binding.entryId, binding.selectionEpoch]) : null;
+      dispatchQuote({ type: 'quote_source_changed', sourceParty: { agency: contact.company, company: contact.endClient } });
+    }
     documentContactRef.current = contact;
     setContactCorrection((prior) => ({
       key: contactCorrectionKey,
@@ -1794,7 +1808,16 @@ export function NavaPane({
     if (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE) {
       if (storedWork.pane.state !== 'ready' || storedWork.pane.sourceConflict ||
           storedWork.pane.analysis.caseActionsUncertain) return false;
-      return storedWork.flushEdits();
+      const saved = await storedWork.flushEdits();
+      if (saved && localQuotePartyEdit.current) {
+        const source = storedWork.quoteSourceAfterFlush();
+        if (source.sourcePartyDigest && source.sourceExtractionId) {
+          previousQuoteSource.current = { key: localQuotePartyEdit.current, party: source.sourcePartyDigest,
+            extraction: source.sourceExtractionId };
+          localQuotePartyEdit.current = null;
+        }
+      }
+      return saved;
     }
     if (storedWork.pane.state !== 'ready' || !storedWork.pane.workItemId) return true;
     return storedWork.flushEdits();
@@ -1859,7 +1882,7 @@ export function NavaPane({
         queue: staff.workstation.queueStaffQuote?.mutate,
         staffQuoteJob: trackRatesJob(staff.workstation.staffQuoteJob?.query, source),
         source,
-        ...quoteSourceBinding,
+        ...storedWork.quoteSourceAfterFlush(),
         selectionEpoch,
         inputRevision,
         groups,
@@ -2045,7 +2068,7 @@ export function NavaPane({
           query: (input, options) =>
             originalStaffQuoteJob('input' in input ? { runId: lostRunId, messageId: source.messageId } : input, options),
           source,
-          ...quoteSourceBinding,
+          ...storedWork.quoteSourceAfterFlush(),
           selectionEpoch,
           inputRevision,
           groups: stayGroups,
@@ -2056,14 +2079,14 @@ export function NavaPane({
       }
       if (readBack && !retrying) {
         return bindReadBackStaffQuote({
-          query: observedStaffQuoteJob, source, ...quoteSourceBinding, selectionEpoch, inputRevision, groups: stayGroups,
+          query: observedStaffQuoteJob, source, ...storedWork.quoteSourceAfterFlush(), selectionEpoch, inputRevision, groups: stayGroups,
           header: runHeader, propertyCode: activePaneConfig?.propertyCode, stayKey: step.shareKey,
         });
       }
       if (autoStart && !retrying) {
         return bindAutoStartStaffQuote({
           queue: staff.workstation.queueStaffQuote?.mutate, staffQuoteJob: observedStaffQuoteJob,
-          source, ...quoteSourceBinding, selectionEpoch, inputRevision, groups: stayGroups, header: runHeader,
+          source, ...storedWork.quoteSourceAfterFlush(), selectionEpoch, inputRevision, groups: stayGroups, header: runHeader,
           propertyCode: activePaneConfig?.propertyCode, stayKey: step.shareKey,
         });
       }
@@ -2072,7 +2095,7 @@ export function NavaPane({
         queue: staff.workstation.queueStaffQuote?.mutate,
         staffQuoteJob: observedStaffQuoteJob,
         source,
-        ...quoteSourceBinding,
+        ...storedWork.quoteSourceAfterFlush(),
         selectionEpoch,
         inputRevision,
         groups: stayGroups,
@@ -2583,6 +2606,8 @@ export function NavaPane({
               findParty={PANE_PARTY_FINDER}
               partySuggestions={partySuggestions}
               onPartyLookupPending={(kind, pending) => dispatchQuote({ type: 'party_lookup_pending', kind, pending })}
+              onPartyReviewed={(kind) => dispatchQuote({ type: 'quote_party_reviewed', kind,
+                sourcePartyEpoch: quoteSession.sourcePartyEpoch ?? 0 })}
               partyIndex={PANE_PARTY_INDEX}
               partyJobTransport={partyJobTransport}
               rates={PANE_SAVED_RATES}
@@ -2615,7 +2640,7 @@ export function NavaPane({
               onUndoReviewItem={(itemId) => dispatchQuote({ type: 'unhandle_review_item', itemId })}
               onPatchStaffHeader={(header, options) => {
                 if (options?.staffEdit) suppressAutoStaffQuoteForCurrentEmail();
-                dispatchQuote({ type: 'patch_staff_header', header });
+                dispatchQuote({ type: 'patch_staff_header', header, sourcePartyEpoch: quoteSession.sourcePartyEpoch ?? 0 });
               }}
               onPatchStayExtras={(stayKey, extras) => {
                 suppressAutoStaffQuoteForCurrentEmail();

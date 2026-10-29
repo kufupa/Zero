@@ -209,6 +209,22 @@ describe('PartyPicker scoped to one field of the header', () => {
 });
 
 describe('PartyPicker preselects the top suggestion', () => {
+  it('requires an explicit pick after the source changed even when the old body suggestion matches', async () => {
+    const onPick = vi.fn();
+    const onAutoPick = vi.fn();
+    const agency = { kind: 'agency' as const, nativeId: '290', name: 'CWT JNB' };
+    const find = vi.fn(async (): Promise<PartyFindReply> => ({
+      outcome: 'resolved', results: [agency], truncated: false, best: agency, searchedFor: agency.name,
+    }));
+    render(<PartyPicker autoLookup allowAutoPick={false} kind="agency" name={agency.name} parties={{}} find={find}
+      suggestions={[{ ...CWT, source: 'body' }]} onPick={onPick} onAutoPick={onAutoPick} onClear={vi.fn()} />);
+    const confirm = await screen.findByRole('button', { name: 'Confirm CWT JNB' });
+    expect(onAutoPick).not.toHaveBeenCalled();
+    expect(onPick).not.toHaveBeenCalled();
+    fireEvent.click(confirm);
+    expect(onPick).toHaveBeenCalledWith(agency);
+  });
+
   it('never binds a domain suggestion when HMS returns a matching best row', async () => {
     const picked: StaffQuoteParty[] = [];
     const agency = { kind: 'agency' as const, nativeId: '290', name: 'CWT JNB' };

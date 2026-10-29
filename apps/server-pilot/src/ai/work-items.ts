@@ -64,7 +64,7 @@ import {
 import type { LunaAnalysis } from './reservationist-decision.js';
 import { enqueueReplyCheckIfNeeded, REPLY_NEEDS_ACTION } from './reply-check.js';
 import { advancePaneRevision } from './work-item-revision.js';
-import { quoteSourcePartyDigest } from './quote-source-party.js';
+import { quoteSourcePartyDigest, quoteSourcePartyFields } from './quote-source-party.js';
 import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-persist.js';
 import { personTouchSql, priorKindConflict, type StoredSourceConflict } from './work-item-source-conflict.js';
 export { personTouchSql, priorKindConflict } from './work-item-source-conflict.js';
@@ -1789,6 +1789,8 @@ export type StoredWork =
       contact: StoredContact;
       /** Opaque snapshot of the saved agency and end client shown to the quote pane. */
       sourcePartyDigest: string | null;
+      /** The saved party fields, including missing versus explicitly cleared. */
+      sourcePartyFields: ReturnType<typeof quoteSourcePartyFields>;
       /** Last HMS commit per stay, keyed by extraction stay id. Empty until a stay is booked. */
       stays: Record<string, StayCommitRecord>;
       /** Last Book preview grant per stay. Digest-bound status, never a reusable token. */
@@ -1990,6 +1992,7 @@ async function readyView(
     },
     contact: storedContact(read.payload, state),
     sourcePartyDigest: quoteSourcePartyDigest(read.payload, state),
+    sourcePartyFields: quoteSourcePartyFields(read.payload, state),
     stays: stayCommitsOf(state),
     stayPreviews: stayPreviewsOf(state),
     fieldProvenance: await latestFieldProvenance(db, {
