@@ -32,7 +32,12 @@ function connection(url: string) {
 
 /** Each callback owns an entire database; schema drift cannot leak into another suite. */
 export async function withIngestionDb<T>(
-  cb: (context: { db: DB; sql: ReturnType<typeof postgres>; url: string }) => Promise<T>,
+  cb: (context: {
+    db: DB;
+    sql: ReturnType<typeof postgres>;
+    url: string;
+    openConnection: () => ReturnType<typeof postgres>;
+  }) => Promise<T>,
   options: { through?: number; seed?: boolean } = {},
 ): Promise<T> {
   const admin = connection(confirmedUrl);
@@ -71,7 +76,7 @@ export async function withIngestionDb<T>(
         sendFromConfig: { aliases: ['centurion@legacyhotel.com'] },
       });
     }
-    return await cb({ db, sql, url: url.toString() });
+    return await cb({ db, sql, url: url.toString(), openConnection: () => connection(url.toString()) });
   } finally {
     await sql?.end();
     if (created) await admin.unsafe(`DROP DATABASE "${name}" WITH (FORCE)`);

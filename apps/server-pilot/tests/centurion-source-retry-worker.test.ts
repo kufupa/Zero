@@ -1,6 +1,5 @@
 import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
-import postgres from 'postgres';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { __setDbForTests, type DB } from '../src/db/client.js';
 import * as schema from '../src/db/schema/index.js';
@@ -80,10 +79,10 @@ async function claimRetry(db: DB, runId: string) {
 
 describe('Centurion source retries in the actual worker', () => {
   it('reclaims fresh reads after capture/recheck contention or a source change, with a new bounded deadline', () =>
-    withIngestionDb(async ({ db, sql, url }) => {
+    withIngestionDb(async ({ db, sql, url, openConnection }) => {
       __setDbForTests({ db, conn: sql });
       configureWorker(url);
-      const other = postgres(url, { max: 1, connect_timeout: 5, ssl: false, onnotice: () => undefined });
+      const other = openConnection();
       const otherDb = drizzle(other, { schema });
       try {
         for (const phase of ['capture', 'recheck', 'changed'] as const) {
@@ -130,12 +129,12 @@ describe('Centurion source retries in the actual worker', () => {
     }));
 
   it('keeps one retry maximum and does not reset the deadline of another job kind', () =>
-    withIngestionDb(async ({ db, sql, url }) => {
+    withIngestionDb(async ({ db, sql, url, openConnection }) => {
       __setDbForTests({ db, conn: sql });
       configureWorker(url);
       const scope = await seed(db, 'cap');
       const { runId } = await queueFirstClaim(db, scope);
-      const other = postgres(url, { max: 1, connect_timeout: 5, ssl: false, onnotice: () => undefined });
+      const other = openConnection();
       const otherDb = drizzle(other, { schema });
       let lock = lockMessage(otherDb, scope.messageId);
       try {
@@ -169,14 +168,14 @@ describe('Centurion source retries in the actual worker', () => {
     }));
 
   it('does not classify or expose a captured classifier while its source lock is busy', () =>
-    withIngestionDb(async ({ db, sql, url }) => {
+    withIngestionDb(async ({ db, sql, url, openConnection }) => {
       __setDbForTests({ db, conn: sql });
       configureWorker(url);
       const scope = await seed(db, 'classifier');
       const { runId } = await queueFirstClaim(db, scope);
       expect(await executeAiRun(runId, { inboundExtractionAdapter: fakeModel(() => AE1_OUTPUT).adapter,
         ingestClassify: async () => null })).toMatchObject({ state: 'succeeded' });
-      const other = postgres(url, { max: 1, connect_timeout: 5, ssl: false, onnotice: () => undefined });
+      const other = openConnection();
       const otherDb = drizzle(other, { schema });
       let lock = lockMessage(otherDb, scope.messageId);
       try {
