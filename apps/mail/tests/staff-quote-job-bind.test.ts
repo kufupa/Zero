@@ -164,6 +164,7 @@ describe('staff quote HMS job binding', () => {
     const staffQuoteJob = vi.fn(async (_input: unknown) => view('done', READY, undefined, true));
 
     const result = await bindReadBackStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
       query: staffQuoteJob,
       source: selectedSource,
       selectionEpoch: 3,
@@ -559,6 +560,32 @@ describe('staff quote HMS job binding', () => {
     const staffQuoteJob = vi.fn(async () => ({
       ...view('done', { ...READY, selectionEpoch: 0, inputRevision: 0 }, undefined, true),
       request: storedStaffQuoteRequest(queue.mock.calls[0]![0], { sourceHash: 'c'.repeat(64) }),
+    }));
+
+    const result = await bindAutoStartStaffQuote({
+      propertyCode: HRCEN_PROPERTY_CODE,
+      queue,
+      staffQuoteJob,
+      source,
+      selectionEpoch: 3,
+      inputRevision: 4,
+      groups,
+      header: emptyStaffQuoteHeader(),
+    });
+
+    expect(result).toMatchObject({
+      status: 'unavailable',
+      reason: 'The quote is out of date because the stay details changed. Run it again.',
+    });
+  });
+
+  it('rejects a prepared quote whose child occupancy differs even when pane counters match', async () => {
+    const queue = vi.fn(async (_input: ExecuteStaffQuoteInput) => ({ runId: 'prepared-job' }));
+    const staffQuoteJob = vi.fn(async () => ({
+      ...view('done', READY, undefined, true),
+      request: storedStaffQuoteRequest(queue.mock.calls[0]![0], {
+        groups: [{ ...queue.mock.calls[0]![0].groups[0]!, childrenPerRoom: 1, childrenAges: [4] }],
+      }),
     }));
 
     const result = await bindAutoStartStaffQuote({

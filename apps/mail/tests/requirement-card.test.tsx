@@ -365,7 +365,7 @@ describe('StayCard rooms', () => {
 
   it('asks staff to confirm unknown child occupancy and preserves incomplete ages as incomplete', () => {
     const { onPatch, unmount } = renderStay([stay({ childrenPerRoom: null })]);
-    expect(selectByLabel('Children per room').value).toBe('');
+    expect(selectByLabel('Children per room').value).toBe('unknown');
     fireEvent.change(selectByLabel('Children per room'), { target: { value: '0' } });
     expect(onPatch).toHaveBeenLastCalledWith('g1', { childrenPerRoom: 0, childrenAges: [] });
     unmount();

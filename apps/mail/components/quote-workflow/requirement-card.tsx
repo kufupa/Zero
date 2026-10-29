@@ -551,14 +551,14 @@ export function RequirementCard({
                 id={`${id}-children-count`}
                 aria-label="Children per room"
                 className={paneFieldClass}
-                value={group.childrenPerRoom ?? ''}
+                value={group.childrenPerRoom ?? 'unknown'}
                 onChange={(event) => {
-                  const count = event.target.value === '' ? null : Number(event.target.value);
+                  const count = event.target.value === 'unknown' ? null : Number(event.target.value);
                   if (count === 0) setAgeInput('');
                   onPatch?.(group.id, { childrenPerRoom: count, ...(count === 0 ? { childrenAges: [] } : {}) });
                 }}
               >
-                <option value="">Not confirmed</option>
+                <option value="unknown">Not confirmed</option>
                 {Array.from({ length: 7 }, (_, count) => (
                   <option key={count} value={count}>{count}</option>
                 ))}
