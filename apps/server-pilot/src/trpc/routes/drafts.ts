@@ -45,7 +45,7 @@ import { deriveQuoteLines, deriveAuthorizedExtraLines, type AuthorizedProposalFa
 import type { QuoteRevision } from '../../quote-proposal/quote-revision.js';
 import { draftQuoteOccupancyHold, isCenturionQuoteTransport, quoteSourceProofFromRun } from '../../ai/child-occupancy.js';
 import { QUOTE_PDF_PROMPT_VERSION } from '../../ai/quote-pdf-jobs.js';
-import { assertCurrentDraftQuotePdf } from './workstation.js';
+import { assertCurrentDraftQuotePdf, assertDraftQuoteSourcesLocked } from './workstation.js';
 import { readAuthorizedArtifactBytes } from '../../mail/artifacts/read-artifact.js';
 import { createDraftInput, serializedAttachmentInput } from '../wire-compat.js';
 import { enqueueAiRun } from '../../ai/run-ledger.js';
@@ -1841,12 +1841,12 @@ export const draftsRouter = tRouter({
       }
       const recorded = await recordedQuotePdfHashes(db, transportId, decodedAttachments.map(({ sourceHash }) => sourceHash));
       const quoteBound = input.replyKind === 'quote' || input.preparedVersions.length > 0 || recorded.size > 0;
-      if (quoteBound) await assertCurrentDraftQuotePdf({
+      const quoteSources = quoteBound ? await assertCurrentDraftQuotePdf({
         messageId: input.replyToMessageId, threadId: input.threadId,
         pdfHashes: decodedAttachments.filter(({ file, body, sourceHash }) =>
           (file.type === 'application/pdf' && body.length > 0) || recorded.has(sourceHash)).map(({ sourceHash }) => sourceHash),
         ...(input.preparedVersions.length ? { preparedVersions: input.preparedVersions } : {}),
-      }, ctx);
+      }, ctx) : [];
       const html = sanitizeHtmlBodyForStorage(input.html) ?? '';
       try {
         return await db.transaction(async (tx) => {
@@ -1956,6 +1956,10 @@ export const draftsRouter = tRouter({
             preparedVersions: input.preparedVersions,
             attachments: decodedAttachments,
           });
+          // Edits and relinks lock the same work item. Recheck after staging and hold the share lock only until commit.
+          await assertDraftQuoteSourcesLocked(tx as unknown as DB, {
+            transportId, threadId: input.threadId, messageId: input.replyToMessageId,
+          }, quoteSources);
           return { id: draftId, replaced: prior !== undefined && !untouchedSavedReply };
         });
       } catch (error) {

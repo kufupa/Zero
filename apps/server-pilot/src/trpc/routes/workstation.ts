@@ -87,7 +87,7 @@ import {
   retargetQuotePdfFileName,
 } from '../../quote-proposal/filename.js';
 import { and, eq, desc, sql } from 'drizzle-orm';
-import { getDb } from '../../db/client.js';
+import { getDb, type DB } from '../../db/client.js';
 import {
   assertHmsQuoteOriginAllowed,
   resolveHmsQuoteJobTarget,
@@ -510,6 +510,8 @@ type ProposalStay = {
   rowPrices?: RowPrice[];
 };
 
+type DraftQuoteSource = { revision: QuoteRevision; proof: unknown };
+
 /** The dates an approval covers, read from the revision its run attested. Null when unknown. */
 function attestedStaySpan(metrics: Record<string, unknown> | null | undefined): string | null {
   const staff = metrics?.staffQuoteAttestation as StaffQuoteAttestation | undefined;
@@ -567,6 +569,7 @@ async function proposalStaysFor(
   input: z.infer<typeof qualifiedProposalInput>,
   ctx: { activeTransportId: string; sessionUser: { id: string; email: string; name: string | null } },
   resolveFailure: string,
+  draftSources?: DraftQuoteSource[],
 ): Promise<ProposalStay[]> {
   const requests = [
     {
@@ -721,16 +724,17 @@ async function proposalStaysFor(
     } catch {
       throw new TRPCError({ code: 'PRECONDITION_FAILED', message: resolveFailure });
     }
-    const proof = quoteSourceProofFromRun(run);
+    const sourceProof = quoteSourceProofFromRun(run);
     if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(resolved.revision), {
       transportId: ctx.activeTransportId, threadId: current.threadId, messageId: input.messageId,
       propertyCode: resolved.revision.propertyCode,
-    }, proof))) {
+    }, sourceProof))) {
       throw new TRPCError({
         code: 'PRECONDITION_FAILED',
-        message: quoteSourceProofPredatesPolicy(proof) ? quoteSourcePolicyChangedMessage : draftQuoteOccupancyMessage,
+        message: quoteSourceProofPredatesPolicy(sourceProof) ? quoteSourcePolicyChangedMessage : draftQuoteOccupancyMessage,
       });
     }
+    draftSources?.push({ revision: resolved.revision, proof: sourceProof });
     stays.push({
       ...resolved,
       staff,
@@ -745,19 +749,20 @@ async function proposalStaysFor(
 export async function assertCurrentDraftQuotePdf(
   input: z.infer<typeof quoteDraftPreflightInput>,
   ctx: { activeTransportId: string; sessionUser: { id: string; email: string; name: string | null } },
-): Promise<void> {
-  if (!isCenturionQuoteTransport(ctx.activeTransportId)) return;
+): Promise<DraftQuoteSource[]> {
+  if (!isCenturionQuoteTransport(ctx.activeTransportId)) return [];
   const unavailable = () => new TRPCError({ code: 'PRECONDITION_FAILED',
     message: 'The quote PDF could not be verified for this email. Refresh the email and prepare the quote again.' });
   const target = await resolveHmsQuoteJobTarget({ transportId: ctx.activeTransportId,
     threadId: input.threadId, messageId: input.messageId });
   if (!target.ok) throw unavailable();
-  if (target.target.propertyCode !== 'HRCEN') return;
+  if (target.target.propertyCode !== 'HRCEN') return [];
   if (!input.pdfHashes.length) throw unavailable();
   if (input.preparedVersions && (!input.preparedVersions.length ||
     new Set(input.preparedVersions.map((ref) => `${ref.workflowRunId}\n${ref.revisionRef}`)).size !== input.preparedVersions.length))
     throw unavailable();
   const foundRefs: string[] = [];
+  const sources: DraftQuoteSource[] = [];
   const db = getDb();
   for (const hash of new Set(input.pdfHashes)) {
     const candidates = await db.select().from(aiWorkflowRun).where(and(
@@ -778,8 +783,10 @@ export async function assertCurrentDraftQuotePdf(
         request.data.revisionId !== quotePdfJobIdentity(proposal.data) || result.pdfHash !== hash ||
         createHash('sha256').update(Buffer.from(result.pdfBase64, 'base64')).digest('hex') !== hash) continue;
       try {
-        const stays = await proposalStaysFor(proposal.data, ctx, 'The quote PDF is no longer ready.');
+        const candidateSources: DraftQuoteSource[] = [];
+        const stays = await proposalStaysFor(proposal.data, ctx, 'The quote PDF is no longer ready.', candidateSources);
         if (stays.some((stay) => stay.revision.propertyCode !== 'HRCEN')) continue;
+        sources.push(...candidateSources);
       } catch (problem) { error = problem; continue; }
       foundRefs.push(...[proposal.data, ...proposal.data.additionalStays].map((ref) => `${ref.workflowRunId}\n${ref.revisionRef}`));
       matched = true;
@@ -790,6 +797,18 @@ export async function assertCurrentDraftQuotePdf(
   if (input.preparedVersions) {
     const expected = input.preparedVersions.map((ref) => `${ref.workflowRunId}\n${ref.revisionRef}`).sort();
     if (JSON.stringify(foundRefs.sort()) !== JSON.stringify(expected)) throw unavailable();
+  }
+  return sources;
+}
+
+/** Hold the saved source stable from its final check until the draft transaction commits. */
+export async function assertDraftQuoteSourcesLocked(
+  db: DB, scope: { transportId: string; threadId: string; messageId: string }, sources: DraftQuoteSource[],
+): Promise<void> {
+  for (const source of sources) {
+    if (!(await quoteSourceProofIsCurrent(db, occupancyFromRevision(source.revision), {
+      ...scope, propertyCode: source.revision.propertyCode, lock: true,
+    }, source.proof))) throw new TRPCError({ code: 'PRECONDITION_FAILED', message: draftQuoteOccupancyMessage });
   }
 }
 

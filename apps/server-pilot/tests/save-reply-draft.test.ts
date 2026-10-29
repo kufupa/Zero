@@ -126,6 +126,7 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           expect(read).toEqual({
             id: saved.id,
             html: drafts[0]?.htmlBody,
+            quoteBound: false,
             attachments: [{ fileName: 'Quotation.pdf', pdfBase64: PDF_BASE64 }],
           });
         });
