@@ -8,8 +8,9 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createAudit } from './audit.mjs';
-import { getHmsPropertyRegistration, installRegisteredAvailabilityReadOnlyGuard, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
+import { getHmsPropertyRegistration, resolveSecretSource, validateHmsPropertySecret } from './property-registry.mjs';
 import { isAvailabilityReadRequest } from './hms-read-only-guard.mjs';
+import { attachGuardedQuoteSession, prepareQuoteRequestPolicy } from './quote-request-guard.mjs';
 import { normalizeQuoteRequest, assessConstraints, sumDisplayedRates, orderOptions, aggregateOutcome, composeAllocation, restrictedNightsOf } from './quote-contract.mjs';
 import { attachBorrowedSession, authenticatedShellReady, login, newBorrowedContext, saveSlotStorageState, slotStorageStatePath } from './session-reuse.mjs';
 import { lookupActiveProperty, withReadCliPage } from './read-cli-lease.mjs';
@@ -972,7 +973,7 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
   if (outputRoot!==root && !outputRoot.startsWith(root+'/')) throw new Error('OUTPUT_MUST_BE_PRIVATE_PLAYWRIGHT_QUOTE_DIRECTORY');
   const directory=join(outputRoot,new Date().toISOString().replace(/[:.]/g,'-')+'-'+randomUUID().slice(0,8));
   await mkdir(directory,{recursive:true,mode:0o700});
-  let browser,context,page,secret,propertyRegistration,phase='input',result,auditReport;
+  let browser,context,page,secret,quoteGuard,phase='input',result,auditReport;
   const audit=await createAudit(directory,{video});
   const started=Date.now();
   const clock=createPhaseClock();
@@ -986,52 +987,55 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
       searchCompleteness:{status:'not_started',searchCount:0}});
     else {
       const request=normalized.request;
-      if(!lookupActiveProperty(request.propertyCode)) throw new Error('PROPERTY_UNKNOWN');
+      const property=lookupActiveProperty(request.propertyCode);
+      if(!property) throw new Error('PROPERTY_UNKNOWN');
       await saveEvidence(directory,'request.json',request);
       event('configuration');
       const url=new URL(env.HMS_STAGEHAND_CDP_URL);
       if(!['http:','ws:'].includes(url.protocol)||!['127.0.0.1','localhost','[::1]'].includes(url.hostname)||url.username||url.password||url.search) throw new Error('PRIVATE_CDP_REQUIRED');
       if(env.HMS_STAGEHAND_BROWSER_OWNERSHIP!=='borrowed') throw new Error('ATTACH_ONLY_REQUIRES_borrowed_OWNERSHIP');
-      if(env.HMS_PROPERTY_TRANSPORT_ID!==undefined)
-        propertyRegistration=getHmsPropertyRegistration(env.HMS_PROPERTY_TRANSPORT_ID);
+      if(env.HMS_PROPERTY_TRANSPORT_ID!==undefined &&
+        getHmsPropertyRegistration(env.HMS_PROPERTY_TRANSPORT_ID).propertyCode!==request.propertyCode)
+        throw new Error('ACCOUNT_PROPERTY_MISMATCH');
       secret=await clock.time('secret',()=>readSecret(env));
       if(secret.expectedPropertyCode!==request.propertyCode) throw new Error('ACCOUNT_PROPERTY_MISMATCH');
+      const policy=await prepareQuoteRequestPolicy({secret,property});
       event('attach');
       await clock.time('cdp',async()=>{
-        // Trace only our isolated context, never the borrowed owner's tabs.
-        // Lease creates the only page; attachBorrowedSession's blank page is unused.
-        const attached=await attachBorrowedSession({
+        // The canonical policy and event guards are installed on our isolated
+        // context before the attach helper creates even its blank page.
+        const attached=await attachGuardedQuoteSession({
           href:url.href,
           env,
+          policy,
           connectOverCDP:(href,opts)=>playwright().chromium.connectOverCDP(href,opts),
-          newContext:(nextBrowser,options,nextEnv)=>newBorrowedContext(nextBrowser,options,nextEnv),
         });
         browser=attached.browser;
         context=attached.context;
-        await attached.page.close().catch(()=>{});
+        quoteGuard=attached.guard;
       });
+      event('login');
       result=await withReadCliPage({propertyCode:request.propertyCode,secret,context,browser,env},async({page:leased})=>{
         page=leased;
+        quoteGuard.assertActive();
         page.setDefaultTimeout?.(20000);
-        event('login'); await clock.time('login',()=>Promise.resolve());
+        await clock.time('login',()=>Promise.resolve());
         event('audit_start'); await audit.start(page,[secret.password,secret.username,secret.loginUrl]);
         await audit.checkpoint('login-complete');
+        quoteGuard.assertActive();
         event('hotel_availability'); await clock.time('nav',()=>openHotelAvailability(page));
         await audit.checkpoint('hotel-availability');
-        if(propertyRegistration)
-          await installRegisteredAvailabilityReadOnlyGuard(context,propertyRegistration.transportId,new URL(secret.loginUrl).origin);
         const next=await runInPage(page,request,directory,event,audit.checkpoint,clock,env);
+        quoteGuard.assertActive();
         event(`result_${next.outcome}`);
-        if(onCaptured&&quoteTraceAsyncEnabled(env)) {
-          const provisional=provisionalQuoteCapture({result:{...next,phaseMs:{...clock.ms}},audit,directory,started});
-          if(provisional){await saveEvidence(directory,'result.provisional.json',provisional);onCaptured(provisional);}
-        }
         return next;
       });
+      quoteGuard.assertActive();
     }
   } catch(error) {
-    result=executionFailure(error,phase,secret);
-    if(page && phase!=='login' && !await page.locator('input[type="password"]:visible').count().catch(()=>1))
+    const policyError=quoteGuard?.failureError();
+    result=executionFailure(policyError??error,phase,secret);
+    if(!policyError && page && phase!=='login' && !await page.locator('input[type="password"]:visible').count().catch(()=>1))
       await audit.checkpoint('failure').catch(()=>{});
   } finally {
     // Flush recording and trace while our page is still alive. Capture failure
@@ -1044,8 +1048,20 @@ export async function fetchQuote({requestPath,outputDir,env=process.env,video=fa
     // Verified in coreBundle _connectOverCDPImpl and against the retained live tab.
     try { if(browser) await browser.close(); }
     catch { result={...result,outcome:'execution_failure',cleanupError:'CDP_DETACH_FAILED'}; }
+    const policyError=quoteGuard?.failureError();
+    if(policyError) result={...executionFailure(policyError,phase,secret),
+      ...(result?.cleanupError?{cleanupError:result.cleanupError}:{})};
   }
   result=applyQuoteScreenshotContract({...result,audit:auditReport,elapsedMs:Date.now()-started,evidenceDirectory:directory,phaseMs:{...clock.ms}});
+  // A provisional quote must not escape while a late request can still trip
+  // the policy. Publish only after the guarded context has closed.
+  if(onCaptured&&quoteTraceAsyncEnabled(env)&&quoteGuard&&!quoteGuard.failureError()) {
+    try {
+      const provisional=provisionalQuoteCapture({result,audit,directory,started});
+      if(provisional){await saveEvidence(directory,'result.provisional.json',provisional);onCaptured(provisional);}
+    } catch(error) {result={...executionFailure(error,'capture',secret),audit:auditReport,
+      elapsedMs:Date.now()-started,evidenceDirectory:directory,phaseMs:{...clock.ms}};}
+  }
   audit.event('phase_timings',{phaseMs:result.phaseMs});
   event('run_finished');
   await saveEvidence(directory,'result.json',result);
