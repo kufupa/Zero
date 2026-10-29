@@ -123,6 +123,11 @@ export async function readFromHeader(
   }
 }
 
+export async function savePdfBytes(pdfPath: string, bytes: Buffer): Promise<void> {
+  await writeFile(pdfPath, bytes, { mode: 0o600, flag: 'wx' });
+  await chmod(pdfPath, 0o600);
+}
+
 async function main(): Promise<void> {
   await attestApprovedInstance();
   const databaseUrl = process.env.DATABASE_URL;
@@ -160,7 +165,7 @@ async function main(): Promise<void> {
   });
   const storage = new RealS3Storage(region, bucket);
   try {
-    const candidates = await sql<Candidate>`
+    const candidates = await sql<Candidate[]>`
       SELECT
         a.id AS "attachmentId",
         a.message_id AS "messageDbId",
@@ -230,31 +235,9 @@ async function main(): Promise<void> {
           file: { status: 'malformed_size', path: relativePath },
         };
       }
+      let object: Awaited<ReturnType<RealS3Storage['getObjectBounded']>>;
       try {
-        const object = await storage.getObjectBounded(candidate.s3Key, MAX_PDF_BYTES);
-        if (!object) {
-          return {
-            schemaVersion: 1,
-            selection: { transportId: 'transport-centurion', direction: 'outbound', filenamePattern: FILENAME_PATTERN },
-            attachment: { attachmentId: candidate.attachmentId, filename: candidate.filename, mimeType: candidate.mimeType, byteSize: parsedByteSize, s3Key: candidate.s3Key },
-            parentMessage,
-            fromHeaderEvidence: evidence,
-            file: { status: 'missing', path: relativePath },
-          };
-        }
-        const digest = sha256(object.body);
-        const pdfMagicValid = object.body.subarray(0, 5).toString('ascii') === '%PDF-';
-        const absolutePath = path.join(outputDir, relativePath);
-        await writeFile(absolutePath, object.body, { mode: 0o600, flag: 'wx' });
-        await chmod(absolutePath, 0o600);
-        return {
-          schemaVersion: 1,
-          selection: { transportId: 'transport-centurion', direction: 'outbound', filenamePattern: FILENAME_PATTERN },
-          attachment: { attachmentId: candidate.attachmentId, filename: candidate.filename, mimeType: candidate.mimeType, byteSize: parsedByteSize, s3Key: candidate.s3Key },
-          parentMessage,
-          fromHeaderEvidence: evidence,
-          file: { status: 'available', path: relativePath, bytes: object.body.byteLength, sha256: digest, pdfMagicValid, sizeMatchesMetadata: object.body.byteLength === parsedByteSize },
-        };
+        object = await storage.getObjectBounded(candidate.s3Key, MAX_PDF_BYTES);
       } catch (error) {
         const name = error instanceof Error ? error.name : '';
         return {
@@ -266,6 +249,27 @@ async function main(): Promise<void> {
           file: { status: name === 'S3ObjectTooLargeError' ? 'too_large' : 'read_failed', path: relativePath },
         };
       }
+      if (!object) {
+        return {
+          schemaVersion: 1,
+          selection: { transportId: 'transport-centurion', direction: 'outbound', filenamePattern: FILENAME_PATTERN },
+          attachment: { attachmentId: candidate.attachmentId, filename: candidate.filename, mimeType: candidate.mimeType, byteSize: parsedByteSize, s3Key: candidate.s3Key },
+          parentMessage,
+          fromHeaderEvidence: evidence,
+          file: { status: 'missing', path: relativePath },
+        };
+      }
+      const digest = sha256(object.body);
+      const pdfMagicValid = object.body.subarray(0, 5).toString('ascii') === '%PDF-';
+      await savePdfBytes(path.join(outputDir, relativePath), object.body);
+      return {
+        schemaVersion: 1,
+        selection: { transportId: 'transport-centurion', direction: 'outbound', filenamePattern: FILENAME_PATTERN },
+        attachment: { attachmentId: candidate.attachmentId, filename: candidate.filename, mimeType: candidate.mimeType, byteSize: parsedByteSize, s3Key: candidate.s3Key },
+        parentMessage,
+        fromHeaderEvidence: evidence,
+        file: { status: 'available', path: relativePath, bytes: object.body.byteLength, sha256: digest, pdfMagicValid, sizeMatchesMetadata: object.body.byteLength === parsedByteSize },
+      };
     });
 
     const recordsJsonl = `${records.map((record) => JSON.stringify(record)).join('\n')}\n`;

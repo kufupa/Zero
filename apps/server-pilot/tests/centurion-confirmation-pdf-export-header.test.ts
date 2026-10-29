@@ -1,9 +1,24 @@
 import { createHash } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { readFromHeader } from '../scripts/export-centurion-confirmation-pdf-dataset-live.js';
+import { readFromHeader, savePdfBytes } from '../scripts/export-centurion-confirmation-pdf-dataset-live.js';
 import type { RealS3Storage } from '../src/storage/s3.js';
 
 describe('confirmation PDF exporter header evidence', () => {
+  it('propagates local PDF write failures without replacing existing files', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'centurion-export-'));
+    const target = path.join(directory, 'existing.pdf');
+    try {
+      writeFileSync(target, 'original');
+      await expect(savePdfBytes(target, Buffer.from('replacement'))).rejects.toMatchObject({ code: 'EEXIST' });
+      expect(readFileSync(target, 'utf8')).toBe('original');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     { header: 'Subject: Synthetic\r\n\r\n', status: 'unreadable' },
     { header: 'From: <>\r\nSubject: Synthetic\r\n\r\n', status: 'unreadable' },
