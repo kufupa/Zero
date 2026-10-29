@@ -5,12 +5,13 @@ import { caseReviewPending, isMultiStay, requestedQuoteKeys, stayIdOf } from '@/
 import type { QuoteSession } from '@/lib/quote-workflow/types';
 import { appliedSavedStayIds, BookingCards, SavedStayReceipt, type SavedStayCommit } from './booking-card';
 import { saveConfirmationDefault, useConfirmationSources, type ConfirmationSetting } from './confirmation-recipient';
-import { guestEditorKeyFor, stayingGuestName } from './quote-people-step';
+import { stayingGuestName } from './quote-people-step';
 
 export function QuoteBookingHost({
   session,
   paneSave,
   contact,
+  guestEditorKey,
   workItemId,
   savedStays,
   screenshot,
@@ -20,6 +21,7 @@ export function QuoteBookingHost({
   session: QuoteSession;
   paneSave?: PaneStayClient | null;
   contact?: StoredContact | null;
+  guestEditorKey?: string | null;
   workItemId?: string;
   savedStays?: Record<string, SavedStayCommit>;
   /** Reads a stored screenshot when Book writes are off. */
@@ -43,7 +45,7 @@ export function QuoteBookingHost({
   const sourceRow = session.analysis?.groups.length === 1 ? session.analysis.groups[0] : undefined;
   const onlyDraft = shownDrafts.length === 1 ? session.bookingDrafts[shownDrafts[0]!] : undefined;
   // The People guest is keyed to a message, not to a case or room. Never apply it across rooms or a held source.
-  const singleRoomGuest = Boolean(workItemId && session.binding && session.staffSource && session.analysis &&
+  const singleRoomGuest = Boolean(guestEditorKey && workItemId && session.binding && session.staffSource && session.analysis &&
     !caseReviewPending(session.analysis) &&
     row && sourceRow && row.id === sourceRow.id && stayIdOf(row) === stayIdOf(sourceRow) && row.quantity === 1 &&
     onlyDraft?.messageId === session.staffSource.messageId && onlyDraft.selectionEpoch === session.binding.selectionEpoch &&
@@ -57,9 +59,13 @@ export function QuoteBookingHost({
 
   return (
     <>
-      {shownDrafts.length > 0 && !singleRoomGuest ? (
+      {shownDrafts.length > 0 && guestEditorKey === null ? (
+        <p className="text-[13px] text-[#64748b]">Select a signed-in mailbox and email to review bookings.</p>
+      ) : null}
+      {shownDrafts.length > 0 && guestEditorKey !== null && !singleRoomGuest ? (
         <p className="text-[13px] text-[#64748b]">Check each room’s guest name.</p>
       ) : null}
+      <div hidden={guestEditorKey === null}>
       {shownDrafts.map((key) => (
           <Fragment key={`${requestKey}:${key}`}>
             {isMultiStay(session) ? (
@@ -74,8 +80,8 @@ export function QuoteBookingHost({
               savedStays={savedStays}
               screenshot={screenshot ?? paneSave?.screenshot}
               parties={session.staffHeader.parties}
-              guestName={singleRoomGuest ? stayingGuestName(session, contact ?? null) : ''}
-              guestEditorKey={singleRoomGuest ? guestEditorKeyFor(session) : undefined}
+              guestName={singleRoomGuest ? stayingGuestName(session, contact ?? null, guestEditorKey ?? undefined) : ''}
+              guestEditorKey={singleRoomGuest ? guestEditorKey ?? undefined : undefined}
               session={session}
               propertyCode={propertyCode}
               confirmation={confirmation}
@@ -86,6 +92,7 @@ export function QuoteBookingHost({
       {uncoveredStays.map(([stayId, saved]) => (
         <SavedStayReceipt key={stayId} saved={saved} screenshot={screenshot ?? paneSave?.screenshot} />
       ))}
+      </div>
     </>
   );
 }

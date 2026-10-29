@@ -1,4 +1,5 @@
-const PREFIX = 'nava.guest-name.v1:';
+// The old namespace was not scoped to a signed-in user and cannot be safely adopted.
+const PREFIX = 'nava.guest-name.v2:';
 const memory = new Map<string, string | null>();
 const revisions = new Map<string, number>();
 const listeners = new Set<() => void>();

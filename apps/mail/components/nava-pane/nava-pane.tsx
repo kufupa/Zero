@@ -22,7 +22,7 @@ import {
 } from '@/lib/quote-proposal/copy';
 import type { PaneBridge } from '@/lib/workstation/pane-bridge-types';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import { ConfirmationSourcesBridge } from '@/components/quote-workflow/confirmation-recipient';
 import { hideQuoteWorkspace, QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
 import { guestEditorKeyFor } from '@/components/quote-workflow/quote-people-step';
@@ -49,6 +49,7 @@ import {
 } from '@/lib/quote-workflow/backend-bind';
 import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, recoverLegacySourcePreferences, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
 import { forgetGuestName, guestNameRevision, recalledGuestName } from '@/lib/quote-workflow/guest-name-cache';
+import { getMailCacheScope, subscribeMailCacheScope } from '@/lib/mail/mail-cache-scope';
 import { sectionHasStaffEdit, shownFieldPaths, storedDecision, useStoredWork, type StoredPane } from '@/lib/quote-workflow/use-work-item';
 import { WorkItemHistoryControls } from './screens/work-item-history-controls';
 import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
@@ -595,6 +596,19 @@ export function NavaPane({
     contextRevision.current = { ...contextRevision.current, selection: selectedIdentity,
       selectionEpoch: contextRevision.current.selectionEpoch + 1 };
   }
+  const cacheScope = useSyncExternalStore(subscribeMailCacheScope, getMailCacheScope, getMailCacheScope);
+  const guestBinding = quoteSession.binding;
+  // The cache-scope singleton catches up in an effect. Never use its previous owner during an auth or selection change.
+  const guestEditorKey = !isLoading && !transportLoading && !requiresRelogin && !authorizationUnavailable &&
+    !selectionOutsideMailbox && currentScope && session?.user?.id && activeConnection?.id && guestBinding &&
+    cacheScope.userId === session.user.id && cacheScope.activeTransportId === activeConnection.id &&
+    guestBinding.transportId === activeConnection.id && guestBinding.scopeEpoch === contextRevision.current.scopeEpoch &&
+    guestBinding.selectionEpoch === contextRevision.current.selectionEpoch && guestBinding.entryId === activeEmail?.entryId &&
+    guestBinding.storeId === (activeEmail?.storeId ?? '') && guestBinding.folderEntryId === (activeEmail?.folderEntryId ?? '') &&
+    (guestBinding.internetMessageId ?? '') === (activeEmail?.internetMessageId ?? '')
+    ? guestEditorKeyFor(quoteSession, session.user.id) : null;
+  const guestEditorKeyRef = useRef(guestEditorKey);
+  guestEditorKeyRef.current = guestEditorKey;
   const flushQuoteEditsRef = useRef<() => Promise<boolean>>(async () => false);
   const previousScope = useRef(currentScope);
   const detectedEmail = activeConnection?.email || 'Select an authorized mailbox';
@@ -2630,7 +2644,11 @@ export function NavaPane({
               <button type="button" className="self-start px-1 text-[11px] font-semibold underline text-[#b45309]"
                 onClick={() => {
                   const binding = quoteSessionRef.current.binding;
-                  const guestKey = guestEditorKeyFor(quoteSessionRef.current);
+                  const guestKey = guestEditorKeyRef.current;
+                  if (!guestKey) {
+                    toast.warning('Select a signed-in mailbox and email before discarding changes.');
+                    return;
+                  }
                   const guestName = recalledGuestName(guestKey);
                   const guestRevision = guestNameRevision(guestKey);
                   void storedWork.discardUnconfirmedEdits().then((discarded) => {
@@ -2641,7 +2659,9 @@ export function NavaPane({
                     const current = quoteSessionRef.current.binding;
                     if (!binding || !current || current.transportId !== binding.transportId ||
                         current.internetMessageId !== binding.internetMessageId || current.selectionEpoch !== binding.selectionEpoch ||
-                        current.scopeEpoch !== binding.scopeEpoch) return;
+                        current.scopeEpoch !== binding.scopeEpoch || guestEditorKeyRef.current !== guestKey ||
+                        contextRevision.current.scopeEpoch !== binding.scopeEpoch ||
+                        contextRevision.current.selectionEpoch !== binding.selectionEpoch) return;
                     if (guestName !== null && !forgetGuestName(guestKey, guestRevision) &&
                         guestNameRevision(guestKey) === guestRevision) {
                       toast.warning("Couldn't discard the guest name. Check it before booking.");
@@ -2688,6 +2708,7 @@ export function NavaPane({
               paneSave={paneSaveOn ? PANE_STAY_CLIENT : null}
               contact={documentContact}
               contactEditorKey={contactEditorKey}
+              guestEditorKey={guestEditorKey}
               onContactEdit={contactInPeople ? recordContact : undefined}
               contactReadOnly={contactCaseHeld || storedWork.historyPending || storedWork.historyNeedsReload}
               workItemPane={workItemPane}

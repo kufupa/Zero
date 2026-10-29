@@ -491,6 +491,8 @@ describe('NavaPane', () => {
   afterEach(() => {
     vi.useRealTimers();
     setMailCacheScope({ userId: null, activeTransportId: null });
+    bridgeMockState.userId = 'staff-1';
+    bridgeMockState.sessionId = 'session-1';
     vi.mocked(reloadPane).mockClear();
     localStorage.clear();
     sessionStorage.clear();
@@ -783,11 +785,14 @@ describe('NavaPane', () => {
     bridgeMockState.storedLookupGate = null;
     bridgeMockState.staffQuoteJobCalls.length = 0;
     setMailCacheScope({ userId: null, activeTransportId: null });
+    bridgeMockState.userId = 'staff-1';
+    bridgeMockState.sessionId = 'session-1';
     bridgeMockState.recordEvent.mockReset();
     bridgeMockState.recordEvent.mockResolvedValue({ aiValue: null, value: null });
     localStorage.clear();
     sessionStorage.clear();
     resetPaneEditsForTests();
+    resetGuestNameCacheForTests();
     cleanup();
   });
 
@@ -1175,8 +1180,49 @@ describe('NavaPane', () => {
     await waitFor(() => expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe(''));
     fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Second Guest' } });
     await act(async () => releaseDiscard());
-    expect(recalledGuestName(paneEditKey('transport-1', firstMessage))).toBe('First Guest');
-    expect(recalledGuestName(paneEditKey('transport-1', secondMessage))).toBe('Second Guest');
+    expect(recalledGuestName(JSON.stringify([bridgeMockState.userId, 'transport-1', ['message', firstMessage]]))).toBe('First Guest');
+    expect(recalledGuestName(JSON.stringify([bridgeMockState.userId, 'transport-1', ['message', secondMessage]]))).toBe('Second Guest');
+  }, 15000);
+
+  it('isolates guest edits when the signed-in user changes before the mailbox scope catches up', async () => {
+    configureCenturionPane();
+    bridgeMockState.userId = 'staff-a';
+    bridgeMockState.sessionId = 'session-a';
+    setMailCacheScope({ userId: 'staff-a', activeTransportId: 'transport-1' });
+    bridgeMockState.storedWork = twoCaseStoredWork();
+    const firstMessage = '<guest-scope-first@example.invalid>';
+    const secondMessage = '<guest-scope-second@example.invalid>';
+    const bridge = (entryId: string, internetMessageId: string) => ({ ...fakeBridge,
+      activeEmail: { ...fakeBridge.activeEmail!, entryId, internetMessageId } } as PaneBridge);
+    sessionStorage.setItem(`nava.guest-name.v1:${paneEditKey('transport-1', firstMessage)}`, 'Unowned Guest');
+    let pane = render(<NavaPane bridge={bridge('001', firstMessage)} />);
+    const guest = () => screen.queryByLabelText('Guest') as HTMLInputElement | null;
+    await waitFor(() => expect(guest()?.disabled).toBe(false));
+    expect(guest()?.value).toBe('');
+    fireEvent.change(guest()!, { target: { value: 'First User Guest' } });
+
+    bridgeMockState.userId = 'staff-b';
+    bridgeMockState.sessionId = 'session-b';
+    pane.rerender(<NavaPane bridge={bridge('001', firstMessage)} />);
+    await waitFor(() => expect(!guest() || (guest()!.disabled && guest()!.value === '')).toBe(true));
+    act(() => setMailCacheScope({ userId: 'staff-b', activeTransportId: 'transport-1' }));
+    await waitFor(() => expect(guest()?.disabled).toBe(false));
+    expect(guest()?.value).toBe('');
+    fireEvent.change(guest()!, { target: { value: 'Second User Guest' } });
+    pane.unmount();
+    pane = render(<NavaPane bridge={bridge('001', firstMessage)} />);
+    await waitFor(() => expect(guest()?.value).toBe('Second User Guest'));
+
+    act(() => setMailCacheScope({ userId: 'staff-a', activeTransportId: 'transport-1' }));
+    await waitFor(() => expect(!guest() || (guest()!.disabled && guest()!.value === '')).toBe(true));
+    bridgeMockState.userId = 'staff-a';
+    bridgeMockState.sessionId = 'session-a';
+    pane.rerender(<NavaPane bridge={bridge('001', firstMessage)} />);
+    await waitFor(() => expect(guest()?.value).toBe('First User Guest'));
+    pane.rerender(<NavaPane bridge={bridge('002', secondMessage)} />);
+    await waitFor(() => expect(guest()?.disabled === false && guest()?.value === '').toBe(true));
+    pane.rerender(<NavaPane bridge={bridge('001', firstMessage)} />);
+    await waitFor(() => expect(guest()?.value).toBe('First User Guest'));
   }, 15000);
 
   it('stored: a human-written amendment extraction renders Find booking without a live read or ApproveCard', async () => {
