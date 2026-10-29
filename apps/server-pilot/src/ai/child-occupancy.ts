@@ -123,8 +123,14 @@ export function occupancyFromRevision(revision: QuoteRevision): Group[] {
 /** Load the same extraction version and saved edits as the selected email's pane. */
 async function loadChildOccupancyEvidence(
   db: DB,
-  scope: { transportId: string; threadId: string; messageId: string; lock?: boolean },
+  scope: { transportId: string; threadId: string; messageId: string; lock?: boolean; allowMissingWorkItem?: boolean },
 ) {
+  if (scope.lock) {
+    // A source-locking caller also holds the selected message FOR UPDATE, preventing new extraction FK inserts.
+    await db.select({ id: mailExtraction.id }).from(mailExtraction)
+      .where(eq(mailExtraction.messageId, scope.messageId)).orderBy(mailExtraction.id)
+      .for('share', { noWait: true });
+  }
   const [latest] = await db
     .select({ id: mailExtraction.id, kind: mailExtraction.kind, payload: mailExtraction.payload })
     .from(mailExtraction)
@@ -145,14 +151,14 @@ async function loadChildOccupancyEvidence(
   const [item] = await (scope.lock ? itemQuery.for('share', { noWait: true }) : itemQuery);
   // A newer read has not been adopted yet. Do not apply old corrections to that read, or keep pricing the older one.
   // The existing work-item relink decides whether edits can safely carry; once it moves, the latest evidence is used.
-  if ((!item && scope.lock) || (item && item.extractionId !== latest.id)) return null;
+  if ((!item && scope.lock && !scope.allowMissingWorkItem) || (item && item.extractionId !== latest.id)) return null;
   return { payload: latest.payload, state: item?.state ?? {} };
 }
 
 export async function childOccupancyIsCurrent(
   db: DB,
   groups: Group[],
-  scope: { transportId: string; threadId: string; messageId: string; propertyCode?: string; lock?: boolean },
+  scope: { transportId: string; threadId: string; messageId: string; propertyCode?: string; lock?: boolean; allowMissingWorkItem?: boolean },
 ): Promise<boolean> {
   if (!isCenturionQuoteScope(scope)) return true;
   const evidence = await loadChildOccupancyEvidence(db, scope);

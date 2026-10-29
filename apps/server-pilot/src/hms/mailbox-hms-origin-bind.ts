@@ -235,7 +235,7 @@ async function loadThreadMailboxHmsOriginScanFromDb(
       desc(message.createdAt),
       desc(message.id),
     );
-  const rows = await (input.lock ? query.for('share', { noWait: true }) : query);
+  const rows = await (input.lock ? query.for('update', { noWait: true }) : query);
   const inbounds = rows
     .filter((row) => row.direction === 'inbound')
     .map((row) => originFields(row));

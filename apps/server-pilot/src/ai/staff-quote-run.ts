@@ -730,15 +730,15 @@ export async function runStaffQuote(
       createdAt: sql`clock_timestamp()`,
     });
   }
-  const stillCurrent = async () => {
-    const [current] = await db
+  const stillCurrent = async (currentDb: DB = db) => {
+    const [current] = await currentDb
       .select()
       .from(message)
       .where(and(eq(message.id, mail.id), eq(message.transportId, identity.transportId)))
       .limit(1);
     const [latest] = systemPrepared
       ? [undefined]
-      : await db
+      : await currentDb
           .select({ id: aiDraftGeneration.id })
           .from(aiDraftGeneration)
           .where(
@@ -757,8 +757,8 @@ export async function runStaffQuote(
       !!current &&
       current.threadId === scope.threadId &&
       staffQuoteSourceHash(current) === input.sourceHash &&
-      await childOccupancyIsCurrent(db, input.groups, occupancyScope) &&
-      await quotePropertyMatchesOrigin({ ...occupancyScope, db })
+      await childOccupancyIsCurrent(currentDb, input.groups, occupancyScope) &&
+      await quotePropertyMatchesOrigin({ ...occupancyScope, db: currentDb })
     );
   };
   const databaseUrl = process.env.DATABASE_URL;
@@ -989,6 +989,12 @@ export async function runStaffQuote(
       withQuoteSourceBusyHold(() => db.transaction(async (tx) => {
         if (!(await quotePropertyMatchesOrigin({ ...occupancyScope, db: tx as unknown as DB, lock: true })))
           refuseQuote('source_changed', QUOTE_HOTEL_CHANGED_MESSAGE);
+        // Recheck the message, newest approval and saved occupancy after taking the source locks.
+        // Prepared quote-on-open may not have created a work item yet; the message/thread locks
+        // prevent a matching work item or extraction from committing until this transaction ends.
+        if (!(await stillCurrent(tx as unknown as DB)) || !(await childOccupancyIsCurrent(
+          tx as unknown as DB, input.groups, { ...occupancyScope, lock: true, allowMissingWorkItem: true },
+        ))) refuseQuote('source_changed', 'Selected email or saved stay details changed while pricing. Run rates again.');
         if (!systemPrepared) {
           await tx
             .update(aiDraftGeneration)

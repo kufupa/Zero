@@ -72,6 +72,7 @@ async function fixture(targetTransport = transportId, propertyCode = targetTrans
         innerJoin() { return query; },
         where() { return query; },
         orderBy() { return query; },
+        for() { return Promise.resolve([{ id: 'extract-1' }]); },
         limit() {
           if (table === message) return Promise.resolve([mail]);
           if (table === mailExtraction) return Promise.resolve([{ id: 'extract-1', kind: 'quote', payload }]);
