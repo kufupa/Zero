@@ -632,7 +632,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     expect(retryPayload.operationId).toBe(firstPayload.operationId);
   });
 
-  it('keeps an unresolved reply ID when another message reply succeeds', async () => {
+  it('holds the unresolved reply when returning after another message reply succeeds', async () => {
     queueSelectedEmail();
     sendCommandMock
       .mockRejectedValueOnce(new Error('Bridge command CREATE_REPLY_DRAFT timed out'))
@@ -658,13 +658,15 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     pane.rerender(<OutlookPanePage />);
     await prepareReviewedQuote();
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
-    await waitFor(() => expect(createReplyCalls()).toHaveLength(3));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(
+      expect.stringMatching(/selected email changed.*Check Outlook Drafts/i),
+    ));
+    expect(createReplyCalls()).toHaveLength(2);
+    expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
 
     const firstPayload = createReplyCalls()[0]?.[1] as { operationId: string };
     const secondPayload = createReplyCalls()[1]?.[1] as { operationId: string };
-    const retryPayload = createReplyCalls()[2]?.[1] as { operationId: string };
     expect(firstPayload.operationId).not.toBe(secondPayload.operationId);
-    expect(retryPayload.operationId).toBe(firstPayload.operationId);
   }, 60_000);
 
   it('allows a fresh reply operation after warning about an expired retry ID', async () => {
@@ -956,7 +958,7 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
     expect(screen.queryByText(/Draft (?:opened|saved in Outlook)|Outlook may have created the draft/i)).toBeNull();
   });
 
-  it('identifies the original message in a late reply success toast', async () => {
+  it('warns about the original partial reply when selection changes before PDF attachment', async () => {
     let finish!: (value: unknown) => void;
     queueSelectedEmail();
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
@@ -969,16 +971,15 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
 
     await act(async () => finish({ ...draftFolder, entryId: 'draft-for-001', displayed: true }));
 
-    expect(toast.success).toHaveBeenCalledWith(
-      expect.stringContaining('Suite Availability Request'),
-    );
-    expect(toast.success).not.toHaveBeenCalledWith(
-      expect.stringContaining('Different Guest Request'),
-    );
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(
+      /Suite Availability Request.*selected email changed.*Check Outlook Drafts/i,
+    ));
+    expect(sendCommandMock.mock.calls.filter(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toHaveLength(0);
+    expect(toast.success).not.toHaveBeenCalled();
     expect(screen.queryByText(/Draft (?:opened|saved in Outlook)|Outlook may have created the draft/i)).toBeNull();
   });
 
-  it('preserves warnings and identifies the original message in a late reply warning toast', async () => {
+  it('holds a late reply with an Outlook warning when the selected message has changed', async () => {
     let finish!: (value: unknown) => void;
     queueSelectedEmail();
     sendCommandMock.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
@@ -998,12 +999,11 @@ describe('OutlookPanePage', { timeout: 15_000 }, () => {
       }),
     );
 
-    expect(toast.warning).toHaveBeenCalledWith(
-      expect.stringContaining('Suite Availability Request'),
-    );
-    expect(toast.warning).toHaveBeenCalledWith(
-      expect.stringContaining('Outlook blocked the composer'),
-    );
+    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(
+      /Suite Availability Request.*selected email changed.*Check Outlook Drafts/i,
+    ));
+    expect(sendCommandMock.mock.calls.filter(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toHaveLength(0);
+    expect(toast.success).not.toHaveBeenCalled();
     expect(screen.queryByText(/Draft (?:opened|saved in Outlook)|Outlook may have created the draft/i)).toBeNull();
   });
 
