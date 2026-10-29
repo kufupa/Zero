@@ -4,6 +4,7 @@ import { __setDbForTests, type DB } from '../src/db/client.js';
 import { attachment, mailboxTransport, message } from '../src/db/schema/mail.js';
 import { mailExtraction } from '../src/db/schema/work.js';
 import { __resetInboundExtractionCapForTests, EXTRACTION_VERSION, runInboundExtraction } from '../src/ai/extraction/inbound-run.js';
+import * as quoteAnalysis from '../src/ai/quote-workflow-analyse-selection.js';
 import { classifierForExtraction } from '../src/ai/workflow-classifier/source-fence.js';
 import { storedWorkFor } from '../src/ai/work-items.js';
 import { storeWorkflowClassifierForInbound } from '../src/ai/worker.js';
@@ -22,7 +23,7 @@ const body = 'Please quote two rooms for 12 to 15 October 2027.';
 const result = { workflow: 'billing', confidence: 'high' } as const;
 
 beforeEach(() => { __resetInboundExtractionCapForTests(); storage.mockClear(); });
-afterEach(() => __setDbForTests(null));
+afterEach(() => { __setDbForTests(null); vi.restoreAllMocks(); });
 
 async function seed(db: DB, name: string, transport = transportId) {
   const threadId = `classifier-${name}`, messageId = `classifier-mail-${name}`, priorId = `classifier-prior-${name}`;
@@ -76,6 +77,14 @@ describe('Centurion classifier source fence', () => {
       const lookup = { transportId, internetMessageId: `${scope.threadId}@example.com` };
       expect(await storedWorkFor(db, lookup)).toMatchObject({ status: 'ready', analysis: { luna: { workflow: 'send_document' } } });
 
+      const originalCard = quoteAnalysis.hmsTodoCardFromLuna;
+      const duringView = vi.spyOn(quoteAnalysis, 'hmsTodoCardFromLuna').mockImplementationOnce(async (...args) => {
+        await db.update(message).set({ textBody: 'Please cancel instead.' }).where(eq(message.id, scope.messageId));
+        return originalCard(...args);
+      });
+      expect(await storedWorkFor(db, lookup)).toMatchObject({ status: 'failed', hold: true });
+      expect(duringView).toHaveBeenCalledOnce();
+      duringView.mockRestore();
       await db.update(message).set({ textBody: 'Please cancel instead.' }).where(eq(message.id, scope.messageId));
       expect(await storedWorkFor(db, lookup)).toMatchObject({ status: 'ready', analysis: { luna: { workflow: 'quote' } } });
       await db.update(message).set({ textBody: body }).where(eq(message.id, scope.messageId));

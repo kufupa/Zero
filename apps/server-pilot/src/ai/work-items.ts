@@ -1980,12 +1980,6 @@ async function readyView(
       !mailExtractionPayloadSchema.safeParse(prior.payload).success))));
   const held = Boolean(centurion && item && (priorMissing || item.extractionId !== latest.id));
   const read = priorMissing ? latest : prior ?? latest;
-  const currentClassifier = async (selected: ReadyRead) => selected.classifier && selected.classifierExtractionDigest
-    ? currentCapturedClassifier(db, { transportId, threadId: msg.threadId, messageId }, selected.id,
-        selected.classifierExtractionDigest)
-    : selected.classifier;
-  const readClassifier = await currentClassifier(read);
-  const latestClassifier = read.id === latest.id ? readClassifier : await currentClassifier(latest);
   const confirmationNumbers = payloadConfirmationNumbers(read.payload);
   const existingStayInformation = isSelfSentPreStayInformationMail({
     fromAddress: msg.fromAddress,
@@ -2003,6 +1997,12 @@ async function readyView(
   const threadConfirmation = isHmsConfirmation(selectedConfirmation)
     ? undefined
     : synced?.threadConfirmation;
+  const currentClassifier = async (selected: ReadyRead) => selected.classifier && selected.classifierExtractionDigest
+    ? currentCapturedClassifier(db, { transportId, threadId: msg.threadId, messageId }, selected.id,
+        selected.classifierExtractionDigest)
+    : selected.classifier;
+  const readClassifier = await currentClassifier(read);
+  const latestClassifier = read.id === latest.id ? readClassifier : await currentClassifier(latest);
   const resolvedProperty = resolvePropertyTransport(transportId);
   const stored = storedAnalysis(
     {
@@ -2045,6 +2045,18 @@ async function readyView(
   if (hmsTodoCard?.kind === 'amend' && todoGuests.length) {
     hmsTodoCard.steps.push({ label: 'Guests named in email', value: todoGuests.map((guest) => guest.name).join(', '), source: 'mail' });
   }
+  const fieldProvenance = priorMissing ? {} : await latestFieldProvenance(db, {
+    transportId,
+    workItemId: paneItem?.id ?? null,
+  });
+  // The view may have awaited artifact and card work. Do not return a classifier that changed meanwhile.
+  const stillSame = async (selected: ReadyRead, expected: ClassifierResult | null) => {
+    if (!expected || !selected.classifierExtractionDigest) return true;
+    const current = await currentClassifier(selected);
+    return Boolean(current && current.workflow === expected.workflow && current.confidence === expected.confidence);
+  };
+  if (!await stillSame(read, readClassifier) ||
+      (read.id !== latest.id && !await stillSame(latest, latestClassifier))) return BUSY_CENTURION_READ;
   return {
     status: 'ready',
     kind: existingStayInformation ? 'other' : read.kind,
@@ -2078,10 +2090,7 @@ async function readyView(
     sourcePartyFields: quoteSourcePartyFields(read.payload, projection),
     stays: priorMissing ? {} : stayCommitsOf(state),
     stayPreviews: priorMissing ? {} : stayPreviewsOf(state),
-    fieldProvenance: priorMissing ? {} : await latestFieldProvenance(db, {
-      transportId,
-      workItemId: paneItem?.id ?? null,
-    }),
+    fieldProvenance,
     language: read.language,
     translation: storedTranslation(read.translation),
   };
