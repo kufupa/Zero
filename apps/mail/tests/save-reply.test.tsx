@@ -107,7 +107,7 @@ function renderEditableInsertHook(
   const contextRevision = { current: { scopeEpoch: 1, selectionEpoch: 1 } };
   return renderHook(() => {
     const [currentSession, dispatch] = useReducer(reduceQuoteSession, session);
-    const revision = useQuoteDraftRevision(dispatch);
+    const revision = useQuoteDraftRevision(dispatch, currentSession.pendingPartyKinds);
     const current = useRef(currentSession);
     current.current = currentSession;
     const insertion = useInsertAiDraft({
@@ -125,7 +125,7 @@ function renderEditableInsertHook(
       sendCommand: sendCommand as unknown as PaneBridge['sendCommand'],
       supportsAction: () => true,
     });
-    return { ...insertion, edit: revision.dispatch };
+    return { ...insertion, edit: revision.dispatch, currentSession };
   });
 }
 
@@ -388,11 +388,13 @@ describe('Insert saved reply in Outlook', () => {
           fileName: 'Quotation.pdf',
           base64Data: SAVED_PDF,
         }),
+        expect.any(Function),
       ),
     );
     expect(sendCommand).toHaveBeenCalledWith(
       'CREATE_REPLY_DRAFT',
       expect.objectContaining({ entryId: 'entry-1', htmlBody: SAVED_HTML, replyAll: false }),
+      expect.any(Function),
     );
     expect(saveReplyMutate).not.toHaveBeenCalled();
     expect(quoteDraftPreflight).toHaveBeenCalledTimes(2);
@@ -433,6 +435,125 @@ describe('Insert saved reply in Outlook', () => {
 
     expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
     expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
+  });
+
+  it('does not hold an unchanged quote when the party picker repeats its idle status', async () => {
+    let release!: (value: { ready: boolean }) => void;
+    quoteDraftPreflight.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const sendCommand = outlookSendCommand();
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession());
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(quoteDraftPreflight).toHaveBeenCalledTimes(1));
+    act(() => result.current.edit({ type: 'party_lookup_pending', kind: 'company', pending: false }));
+    await act(async () => release({ ready: true }));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(true);
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(true);
+  });
+
+  it('holds a quote when a party lookup starts while the Outlook ticket is pending', async () => {
+    let release!: () => void;
+    const nativeWrites: string[] = [];
+    const sendCommand = outlookSendCommand();
+    sendCommand.mockImplementation(async (action: string, _payload?: unknown, beforeNative?: () => void) => {
+      if (action === 'GET_ACTIVE_EMAIL') return activeEmail;
+      if (action === 'CREATE_REPLY_DRAFT') await new Promise<void>((resolve) => { release = resolve; });
+      beforeNative?.();
+      nativeWrites.push(action);
+      return { entryId: 'outlook-draft-1', storeId: 'store-1', folderEntryId: 'drafts', displayed: true };
+    });
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession());
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    act(() => result.current.edit({ type: 'party_lookup_pending', kind: 'company', pending: true }));
+    await act(async () => release());
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(nativeWrites).not.toContain('CREATE_REPLY_DRAFT');
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('lookup to finish'));
+  });
+
+  it('waits for a party lookup already pending when staff insert the quote', async () => {
+    const sendCommand = outlookSendCommand();
+    const session = { ...editableQuotedSession(), pendingPartyKinds: ['company'] as const } as unknown as QuoteSession;
+    const { result } = renderEditableInsertHook(sendCommand, session);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('lookup to finish'));
+  });
+
+  it('allows an unchanged reviewed draft when a background comparison result arrives', async () => {
+    let release!: (value: { ready: boolean }) => void;
+    quoteDraftPreflight.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const sendCommand = outlookSendCommand();
+    const stayKey = '2027-11-12:2027-11-14';
+    const session = { ...editableQuotedSession(),
+      binding: { transportId: 'transport-centurion', mailboxEmail: 'centurion@legacyhotels.co.za',
+        entryId: 'entry-1', storeId: 'store-1', folderEntryId: 'folder-inbox', selectionEpoch: 1, scopeEpoch: 1 },
+      quoteStrategyRows: { [stayKey]: { WS: { status: 'pending' } } }, quoteStrategyResults: {},
+      quoteStrategyRevisions: { [stayKey]: 1 }, quoteStrategySelections: {},
+    } as unknown as QuoteSession;
+    const { result } = renderEditableInsertHook(sendCommand, session);
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(quoteDraftPreflight).toHaveBeenCalledTimes(1));
+    act(() => result.current.edit({ type: 'quote_strategy_comparison_result', stayKey, strategyCode: 'WS',
+      selectionEpoch: 1, stayRevision: 1, outcome: { strategyCode: 'WS', row: { status: 'failed', message: 'Unavailable' } } }));
+    await waitFor(() => expect((result.current.currentSession as unknown as {
+      quoteStrategyRows: Record<string, { WS: { status: string } }>;
+    }).quoteStrategyRows[stayKey]?.WS.status).toBe('failed'));
+    await act(async () => release({ ready: true }));
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(true);
+    expect(sendCommand.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(true);
+  });
+
+  it.each(['CREATE_REPLY_DRAFT', 'ADD_ATTACHMENT_TO_DRAFT'] as const)(
+    'holds an Outlook %s when the quote changes while its ticket is pending', async (heldAction) => {
+      let release!: () => void;
+      const nativeWrites: string[] = [];
+      const sendCommand = outlookSendCommand();
+      sendCommand.mockImplementation(async (action: string, _payload?: unknown, beforeNative?: () => void) => {
+        if (action === 'GET_ACTIVE_EMAIL') return activeEmail;
+        if (action === heldAction) await new Promise<void>((resolve) => { release = resolve; });
+        beforeNative?.();
+        nativeWrites.push(action);
+        return action === 'CREATE_REPLY_DRAFT'
+          ? { entryId: 'outlook-draft-1', storeId: 'store-1', folderEntryId: 'drafts', displayed: true }
+          : undefined;
+      });
+      const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession());
+      act(() => result.current.trackedDraft('selected'));
+      await waitFor(() => expect(release).toBeTypeOf('function'));
+      act(() => result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } }));
+      await act(async () => release());
+      await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+      expect(nativeWrites).not.toContain(heldAction);
+      if (heldAction === 'ADD_ATTACHMENT_TO_DRAFT') {
+        expect(nativeWrites).toContain('CREATE_REPLY_DRAFT');
+        expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist'));
+      }
+    },
+  );
+
+  it('warns that a quote draft may be stale if the edit lands after Outlook receives its attachment', async () => {
+    let release!: () => void;
+    const sendCommand = outlookSendCommand();
+    sendCommand.mockImplementation(async (action: string, _payload?: unknown, beforeNative?: () => void) => {
+      if (action === 'GET_ACTIVE_EMAIL') return activeEmail;
+      beforeNative?.();
+      if (action === 'ADD_ATTACHMENT_TO_DRAFT') await new Promise<void>((resolve) => { release = resolve; });
+      return action === 'CREATE_REPLY_DRAFT'
+        ? { entryId: 'outlook-draft-1', storeId: 'store-1', folderEntryId: 'drafts', displayed: true }
+        : undefined;
+    });
+    const { result } = renderEditableInsertHook(sendCommand, editableQuotedSession());
+    act(() => result.current.trackedDraft('selected'));
+    await waitFor(() => expect(release).toBeTypeOf('function'));
+    act(() => result.current.edit({ type: 'patch_group', groupId: 'room-1', patch: { quantity: 2 } }));
+    await act(async () => release());
+    await waitFor(() => expect(result.current.isDraftPending).toBe(false));
+    expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist'));
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it('does not attach the old PDF when the stay is edited during the second preflight', async () => {
@@ -540,7 +661,7 @@ describe('Insert saved reply in Outlook', () => {
     const contextRevision = { current: { scopeEpoch: 1, selectionEpoch: 1 } };
     const { result } = renderInsertHook(sendCommand, quoteSession, contextRevision);
     act(() => result.current.trackedDraft('selected'));
-    await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything()));
+    await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything(), expect.any(Function)));
     contextRevision.current.selectionEpoch = 2;
     await act(async () => finish({ entryId: 'original-draft', storeId: 'store-1', folderEntryId: 'drafts', displayed: true }));
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist')));
@@ -555,6 +676,16 @@ describe('Insert saved reply in Outlook', () => {
       attachments: [{ fileName: 'document.pdf', pdfBase64: SAVED_PDF }] }));
     await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything()));
     expect(quoteDraftPreflight).not.toHaveBeenCalled();
+  });
+
+  it('explains how to recover when an older saved attachment has unknown quote provenance', async () => {
+    quoteDraftPreflight.mockRejectedValueOnce(new Error('unverified attachment'));
+    const sendCommand = outlookSendCommand();
+    const { result } = renderInsertHook(sendCommand);
+    act(() => result.current.trackedDraft('saved', { html: SAVED_HTML,
+      attachments: [{ fileName: 'supporting.pdf', pdfBase64: SAVED_PDF }] }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('Remove it from the saved reply')));
+    expect(sendCommand.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
   });
 
   it('does not record a missing-details Outlook reply as a quote outcome', async () => {

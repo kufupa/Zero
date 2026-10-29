@@ -1361,7 +1361,7 @@ describe('NavaPane', () => {
       'CREATE_REPLY_DRAFT',
       expect.objectContaining({ htmlBody: expected }),
     ));
-    expect(sendCommandMock).not.toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything());
+    expect(sendCommandMock.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 
@@ -1426,7 +1426,7 @@ describe('NavaPane', () => {
         expect.objectContaining({ htmlBody: editedReply }),
       ),
     );
-    expect(sendCommandMock).not.toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything());
+    expect(sendCommandMock.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 
@@ -1538,7 +1538,7 @@ describe('NavaPane', () => {
       expect.objectContaining({ html: expected, attachments: [] }),
     ));
     expect(screen.getByText('Saved the reply asking for the missing details. Nothing is sent.')).toBeDefined();
-    expect(sendCommandMock).not.toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything());
+    expect(sendCommandMock.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
   });
 
@@ -1636,7 +1636,7 @@ describe('NavaPane', () => {
         }),
       );
     });
-    expect(sendCommandMock).not.toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything());
+    expect(sendCommandMock.mock.calls.some(([action]) => action === 'CREATE_REPLY_DRAFT')).toBe(false);
   }, 15_000);
 
   // These render the pane after the snapshots above, so the useId values in those snapshots do not shift.
@@ -2453,7 +2453,7 @@ describe('NavaPane', () => {
         expect.objectContaining({ htmlBody: declineHtml }),
       ),
     );
-    expect(sendCommandMock).not.toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything());
+    expect(sendCommandMock.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
 
     fireEvent.click(screen.getByRole('button', { name: 'Use this' }));
     await waitFor(() => {
@@ -2509,7 +2509,7 @@ describe('NavaPane', () => {
         expect.objectContaining({ htmlBody: declineHtml }),
       ),
     );
-    expect(sendCommandMock).not.toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.anything());
+    expect(sendCommandMock.mock.calls.some(([action]) => action === 'ADD_ATTACHMENT_TO_DRAFT')).toBe(false);
   });
 
   it('saves a refused quote decline without attaching or mentioning staff alternatives', async () => {

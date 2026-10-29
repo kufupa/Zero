@@ -368,7 +368,7 @@ describe('stored quote export and draft occupancy', () => {
       .rejects.toMatchObject({ code: 'CONFLICT', message: importedOfferOccupancyHold });
   });
 
-  it('hides and refuses an approved override after its original room occupancy changes', async () => {
+  it('holds direct Centurion override PDFs and hides an override after occupancy changes', async () => {
     const { revision, proposal, run, state } = await fixture();
     const now = new Date().toISOString();
     const offer = await resolveApprovedOverride({ revision, ref: 'override', evaluationAt: now,
@@ -382,15 +382,15 @@ describe('stored quote export and draft occupancy', () => {
     const { workItemId: _item, ...uncached } = proposal;
     vi.stubEnv('GOTENBERG_URL', '');
     await expect(api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'approved_override' }))
-      .rejects.toThrow('GOTENBERG_URL missing');
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining('reviewed quotation') });
     state['contact.name'] = 'Corrected Name';
     await expect(api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'approved_override' }))
-      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining('contact changed') });
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining('reviewed quotation') });
     delete state['contact.name'];
     state[`${rowPath}.childrenPerRoom`] = 1;
     expect((await api.qualifiedProposalChoices(input)).choices).toHaveLength(0);
     await expect(api.sourceQuoteProposalPdf({ ...uncached, revisionRef: offer.id, kind: 'approved_override' }))
-      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining('children per room') });
+      .rejects.toMatchObject({ code: 'PRECONDITION_FAILED', message: expect.stringContaining('reviewed quotation') });
   });
 
   it('keeps non-quote candidates available and holds old priced candidates after an edit', async () => {

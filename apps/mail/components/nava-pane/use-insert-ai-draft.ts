@@ -73,11 +73,22 @@ type ReplyKind = 'quote' | 'decline' | 'missing_details' | 'other';
 type PreparedQuoteRef = { workflowRunId: string; revisionRef: string };
 
 /** Changes are marked at dispatch time, before React renders or debounced work-item saves finish. */
-export function useQuoteDraftRevision<Action>(dispatch: (action: Action) => void) {
+export function useQuoteDraftRevision<Action extends { type: string }>(
+  dispatch: (action: Action) => void, pendingPartyKinds: QuoteSession['pendingPartyKinds'],
+) {
   const live = useRef(0);
+  const latestPendingKinds = useRef(pendingPartyKinds);
+  latestPendingKinds.current = pendingPartyKinds;
   const mark = useCallback(() => { live.current += 1; }, []);
   const trackedDispatch = useCallback((action: Action) => {
-    mark();
+    if (action.type === 'party_lookup_pending') {
+      // Pickers report this after every render, but a real transition must hold a pending draft.
+      const lookup = action as { kind: string; pending: boolean };
+      if ((latestPendingKinds.current ?? []).some((kind) => kind === lookup.kind) !== lookup.pending) mark();
+    } else if (action.type !== 'quote_strategy_comparison_started' && action.type !== 'quote_strategy_comparison_result') {
+      // Background comparison rows do not select or alter the reviewed quote.
+      mark();
+    }
     dispatch(action);
   }, [dispatch, mark]);
   return { live, rendered: live.current, mark, dispatch: trackedDispatch };
@@ -464,9 +475,14 @@ export function useInsertAiDraft({
         if (!proof) return;
         if (!sameStaffScope() || contextRevision.current.selectionEpoch !== proof.localSelectionEpoch)
           throw new QuoteDraftPreflightError('The selected email changed. Select it again.');
+        if (quoteSessionRef.current.pendingPartyKinds?.length)
+          throw new QuoteDraftPreflightError('Wait for the company or agency lookup to finish, then try again.');
         if (quoteDraftRevision.current !== proof.localRevision || !sameLocalQuote(proof.localQuote, quoteSessionRef.current))
           throw new QuoteDraftPreflightError('The quote changed in the pane. Prepare it again.');
       };
+      const sendDraftCommand = <TReq, TResp>(action: 'CREATE_REPLY_DRAFT' | 'ADD_ATTACHMENT_TO_DRAFT', payload: TReq) =>
+        attempt.quotePreflight ? sendCommand<TReq, TResp>(action, payload, checkLocalQuote) :
+          sendCommand<TReq, TResp>(action, payload);
       const recheckQuote = async () => {
         const proof = attempt.quotePreflight;
         if (!proof) return;
@@ -481,7 +497,10 @@ export function useInsertAiDraft({
           await preflight({ messageId: proof.messageId, threadId: proof.threadId, pdfHashes: proof.pdfHashes,
             ...(proof.preparedVersions ? { preparedVersions: proof.preparedVersions } : {}) }, inMailbox(proof.transportId));
         } catch {
-          throw new QuoteDraftPreflightError('The quote changed or could not be verified. Refresh the email and prepare it again.');
+          const message = scope === 'saved' && reviewedDraft.quoteBound === undefined
+            ? 'The saved reply has an attachment Nava could not verify. Remove it from the saved reply or prepare a new quote.'
+            : 'The quote changed or could not be verified. Refresh the email and prepare it again.';
+          throw new QuoteDraftPreflightError(message);
         }
         checkLocalQuote();
       };
@@ -524,7 +543,7 @@ export function useInsertAiDraft({
       }
       const result =
         attempt.draftLocation ??
-        (await sendCommand<typeof replyPayload, MailLocation>('CREATE_REPLY_DRAFT', replyPayload));
+        (await sendDraftCommand<typeof replyPayload, MailLocation>('CREATE_REPLY_DRAFT', replyPayload));
       if (!sameStaffScope()) return;
       if (!result || typeof result !== 'object')
         throw new Error('Outlook did not confirm the reply draft.');
@@ -553,9 +572,10 @@ export function useInsertAiDraft({
         if (index < alreadyAdded) continue;
         await recheckQuote();
         checkLocalQuote();
-        await sendCommand('ADD_ATTACHMENT_TO_DRAFT', payload);
+        await sendDraftCommand('ADD_ATTACHMENT_TO_DRAFT', payload);
         attempt.attachmentsAdded = index + 1;
         if (!sameStaffScope()) return;
+        checkLocalQuote();
       }
       const outcomeRoute = (trpcClient as unknown as {
         workItems?: { recordQuoteOutcome?: { mutate?: (input: unknown) => Promise<unknown> } };

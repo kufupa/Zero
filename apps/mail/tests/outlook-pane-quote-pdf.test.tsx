@@ -379,8 +379,8 @@ describe('Outlook pane quote proposal PDF', () => {
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
     setReviewedReply('<p>Different quotation reply</p>');
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.objectContaining({ htmlBody: '<p>Different quotation reply</p>' })));
-    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.objectContaining({ base64Data: AUTHORISED_QUOTE_PDF.pdfBase64 })));
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.objectContaining({ htmlBody: '<p>Different quotation reply</p>' }), expect.any(Function)));
+    await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith('ADD_ATTACHMENT_TO_DRAFT', expect.objectContaining({ base64Data: AUTHORISED_QUOTE_PDF.pdfBase64 }), expect.any(Function)));
   }, 15_000);
 
   it('rehydrates the same work-item PDF after switching away and back without preparing or sending again', async () => {
@@ -717,6 +717,7 @@ describe('Outlook pane quote proposal PDF', () => {
           folderEntryId: 'folder-inbox',
           operationId: expect.any(String),
         }),
+        expect.any(Function),
       ),
     );
     await waitFor(() =>
@@ -729,6 +730,7 @@ describe('Outlook pane quote proposal PDF', () => {
           fileName: AUTHORISED_QUOTE_PDF.fileName,
           base64Data: AUTHORISED_QUOTE_PDF.pdfBase64,
         }),
+        expect.any(Function),
       ),
     );
     const replyId = sendCommandMock.mock.calls.find((call) => call[0] === 'CREATE_REPLY_DRAFT')?.[1]
@@ -810,6 +812,7 @@ describe('Outlook pane quote proposal PDF', () => {
         expect.objectContaining({
           htmlBody: expect.stringContaining('Da Vinci Hotel and Suites'),
         }),
+        expect.any(Function),
       );
     });
     const createCall = sendCommandMock.mock.calls.find((call) => call[0] === 'CREATE_REPLY_DRAFT');
@@ -830,6 +833,7 @@ describe('Outlook pane quote proposal PDF', () => {
           fileName: AUTHORISED_QUOTE_PDF.fileName,
           base64Data: AUTHORISED_QUOTE_PDF.pdfBase64,
         }),
+        expect.any(Function),
       );
     });
   });
@@ -954,6 +958,7 @@ describe('Outlook pane quote proposal PDF', () => {
       expect(sendCommandMock).toHaveBeenCalledWith(
         'ADD_ATTACHMENT_TO_DRAFT',
         expect.objectContaining({ base64Data: AUTHORISED_QUOTE_PDF.pdfBase64 }),
+        expect.any(Function),
       ),
     );
     expect(quotePdfMutateMock).not.toHaveBeenCalled();
@@ -968,7 +973,7 @@ describe('Outlook pane quote proposal PDF', () => {
     await prepareReviewedQuote();
     fireEvent.click(screen.getByRole('button', { name: /Draft quotation into email reply/i }));
     await waitFor(() => expect(sendCommandMock).toHaveBeenCalledWith(
-      'CREATE_REPLY_DRAFT', expect.anything(),
+      'CREATE_REPLY_DRAFT', expect.anything(), expect.any(Function),
     ));
     expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
     expect(JSON.stringify(Object.entries(sessionStorage))).not.toContain('JVBER');

@@ -1992,6 +1992,10 @@ export const workstationRouter = router({
       if (selected.kind === 'imported_offer' &&
         isCenturionQuoteScope({ transportId: ctx.activeTransportId, propertyCode: selected.propertyCode }))
         throw new TRPCError({ code: 'PRECONDITION_FAILED', message: importedOfferOccupancyHold });
+      // This direct source export has no durable PDF job for draft preflight.
+      if (selected.kind === 'approved_override' && selected.sourceRevision.propertyCode === 'HRCEN')
+        throw new TRPCError({ code: 'PRECONDITION_FAILED',
+          message: 'Prepare the PDF from the reviewed quotation instead.' });
       const assertSourceOccupancy = async () => {
         const propertyCode = selected.kind === 'imported_offer' ? selected.propertyCode : selected.sourceRevision.propertyCode;
         if (!(await quotePropertyMatchesOrigin({ db: getDb(), transportId: ctx.activeTransportId,
@@ -2006,9 +2010,6 @@ export const workstationRouter = router({
           throw new TRPCError({ code: 'PRECONDITION_FAILED',
             message: draftQuoteOccupancyMessage });
         }
-        if (selected.kind === 'approved_override' && selected.sourceRevision.propertyCode === 'HRCEN')
-          await assertCurrentQuoteDocumentContact(input, getDb(), { transportId: ctx.activeTransportId,
-            threadId: bound.run.threadId });
       };
       await assertSourceOccupancy();
       const header = {
