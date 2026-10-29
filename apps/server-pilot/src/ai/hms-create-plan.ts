@@ -181,9 +181,9 @@ async function loadContext(db: DB, item: WorkRow, input: ParsedInput, now: Date)
   const caseReads = await db.select({ id: mailExtraction.id, kind: mailExtraction.kind, payload: mailExtraction.payload,
     translation: mailExtraction.translation, attachments: mailExtraction.attachments }).from(mailExtraction).where(and(
     eq(mailExtraction.messageId, selected.id), eq(mailExtraction.status, 'succeeded'),
-    ...(item.extractionId ? [eq(mailExtraction.id, item.extractionId)] : []),
   )).orderBy(desc(mailExtraction.createdAt), desc(mailExtraction.id)).limit(1);
   const caseRead = caseReads[0];
+  if (caseRead && item.extractionId && caseRead.id !== item.extractionId) refuse('case_read_superseded');
   if (!caseRead || caseRead.kind !== item.kind) refuse('case_scope_unverified');
   assertOneRoomCaseScope(caseRead.payload, item.state, input.stayId);
   const [run] = await db.select().from(aiWorkflowRun).where(and(

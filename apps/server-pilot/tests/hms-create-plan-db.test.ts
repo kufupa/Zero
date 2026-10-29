@@ -25,7 +25,7 @@ async function seed(db: DB) {
     messageId: 'selected-message', subject: 'Please book', textBody: 'The selected booking request' });
   const [quoteMail] = await db.select().from(message).where(eq(message.id, 'quote-message')).limit(1);
   const [caseRead] = await db.insert(mailExtraction).values({ messageId: 'selected-message', extractorVersion: 'test-v1',
-    status: 'succeeded', kind: 'booking', payload: CASE_READ }).returning();
+    status: 'succeeded', kind: 'booking', payload: CASE_READ, createdAt: new Date(PLAN_NOW.getTime() - 120_000) }).returning();
   const [item] = await db.insert(workItem).values({ transportId: scope.transportId, threadId: 'thread-1',
     sourceMessageId: 'selected-message', kind: 'booking', extractionId: caseRead!.id, state: { selectedCase: 'case-1', stayPreviews: {
       [CASE_STAY_ID]: { status: 'previewed', digest: template.previewDigest, expiresAt: PLAN_NOW.getTime() + 600_000 },
@@ -178,10 +178,12 @@ describe('durable create-plan approval', () => {
       expect(envelope.plan.caseRead?.id).toBeTruthy();
       const claimId = await claim(db, itemId);
       const [changed] = await db.insert(mailExtraction).values({ messageId: 'selected-message', extractorVersion: 'test-v2',
-        status: 'succeeded', kind: 'booking', payload: { ...CASE_READ, contact: { name: 'Changed', email: null, phone: null } } }).returning();
+        status: 'succeeded', kind: 'booking', createdAt: PLAN_NOW,
+        payload: { ...CASE_READ, contact: { name: 'Changed', email: null, phone: null } } }).returning();
+      const ref = { ...scope, workItemId: itemId, planId: envelope.plan.id, digest: envelope.digest, claimId };
+      await expect(consumeHmsCreatePlan(db, ref, PLAN_NOW)).rejects.toThrow('case_read_superseded');
       await db.update(workItem).set({ extractionId: changed!.id }).where(eq(workItem.id, itemId));
-      await expect(consumeHmsCreatePlan(db, { ...scope, workItemId: itemId, planId: envelope.plan.id,
-        digest: envelope.digest, claimId }, PLAN_NOW)).rejects.toThrow('plan_changed');
+      await expect(consumeHmsCreatePlan(db, ref, PLAN_NOW)).rejects.toThrow('plan_changed');
     });
   });
 });
