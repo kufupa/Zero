@@ -161,6 +161,7 @@ export function paneStayAvailabilityRequestFor(
       !roomPreference?.trim() ||
       typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity < 1 ||
       typeof adults !== 'number' || !Number.isInteger(adults) || adults < 1 ||
+      !Array.isArray(childrenAges) ||
       (propertyCode !== HRDAV_PROPERTY_CODE && !childOccupancyReady(row))
     ) return null;
     rooms.push({ roomType: roomPreference, quantity, adults, childAges: childrenAges });

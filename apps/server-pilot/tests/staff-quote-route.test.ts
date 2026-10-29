@@ -529,7 +529,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
           propertyCode: 'HRCEN', arrivalDate: '2027-10-12', departureDate: '2027-10-15',
         }), expect.any(AbortSignal));
 
-        const proposal = { ...pdfInput(quote), workItemId: request.workItemId };
+        const proposal = { ...pdfInput({ workflowRunId: quote.workflowRunId,
+          revisionRef: quote.revisionRef, messageId: quote.messageId }), workItemId: request.workItemId };
         const pdf = await api.workstation.qualifiedQuoteProposalPdf(proposal);
         expect(pdf).toMatchObject({ revisionId: quote.revisionRef, totalMinor: quote.totalMinor });
         const versions = [{ workflowRunId: quote.workflowRunId, revisionRef: quote.revisionRef }];

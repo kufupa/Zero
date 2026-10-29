@@ -1741,6 +1741,8 @@ describe('NavaPane', () => {
     'saves a reclassified deferred edit only with verified property $propertyCode', async ({ propertyCode, saves }) => {
     const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!,
       internetMessageId: `<deferred-${propertyCode ?? 'unknown'}@example.invalid>` } } as PaneBridge;
+    // The real provider installs this scope; this test mocks that provider.
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
     bridgeMockState.quotePaneConfig = propertyCode ? {
       transportId: 'transport-1', propertyCode, roomTypes: [], ratePlans: [], boards: ['bb'], salesStrategies: [],
       overrideRateCodes: [], eventRateCodes: [],
