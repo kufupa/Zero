@@ -26,7 +26,8 @@ import { AMEND_SAVE_COPY } from '../lib/quote-workflow/amend-cancel';
 import { missingQuoteDetailsWrapperHtml, quoteWrapperHtml } from '../lib/quote-proposal/copy';
 import { HmsJobNoticeProvider } from '../components/quote-workflow/hms-job-notices';
 import { setMailCacheScope } from '../lib/mail/mail-cache-scope';
-import { resetPaneEditsForTests } from '../lib/quote-workflow/pane-edits';
+import { paneEditKey, resetPaneEditsForTests } from '../lib/quote-workflow/pane-edits';
+import { recalledGuestName, resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 
 // The pane reloads only through reloadPane(). Tests observe it; the real reload is never called.
 vi.mock('../lib/workstation/pane-release-watch', async (importOriginal) => ({
@@ -494,6 +495,7 @@ describe('NavaPane', () => {
     localStorage.clear();
     sessionStorage.clear();
     resetPaneEditsForTests();
+    resetGuestNameCacheForTests();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
     document.head.querySelectorAll('meta[name="nava-pane-build"]').forEach((meta) => meta.remove());
@@ -1079,27 +1081,33 @@ describe('NavaPane', () => {
     expect(screen.getByLabelText('Stay action').textContent).toBe('Quote');
   });
 
-  it('holds an early edit across a two-case read and remount until staff discard it', async () => {
-    configureCenturionPane();
-    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
+  function twoCaseStoredWork() {
     const first = { ...STORED_READY.analysis.groups[0]!, stayId: 's_1', quantity: 1, childrenPerRoom: 0,
       arrivalDate: '2027-10-20', departureDate: '2027-10-21' };
     const second = { ...first, id: 'r_2', stayId: 's_2', arrivalDate: '2027-11-20', departureDate: '2027-11-21' };
     const refs = { r_1: { stayId: 's_1', rowId: 'r_1' }, r_2: { stayId: 's_2', rowId: 'r_2' } };
     const analysis = { ...STORED_READY.analysis, groups: [first, second] };
-    bridgeMockState.storedWork = {
+    return {
       ...STORED_READY, refs, analysis,
       sourceRead: { extractionId: 'ex-1', kind: 'quote', analysis, refs, payloadDigest: 'a'.repeat(64) },
     };
+  }
+
+  it('holds an early edit across a two-case read and remount until staff discard it', async () => {
+    configureCenturionPane();
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
+    bridgeMockState.storedWork = twoCaseStoredWork();
     let releaseLookup = () => {};
     bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { releaseLookup = resolve; });
     const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!,
       internetMessageId: '<unassigned-loading-edit@example.invalid>' } } as PaneBridge;
     const pane = render(<NavaPane bridge={bridge} />);
     fireEvent.change(await screen.findByLabelText(/Arrival/i), { target: { value: '2027-10-25' } });
+    fireEvent.change(await screen.findByLabelText('Guest'), { target: { value: 'Early Guest' } });
     await act(async () => releaseLookup());
     expect(await screen.findByText(/early edits are not assigned to a stay/i)).toBeDefined();
     expect((screen.getByLabelText(/Arrival/i) as HTMLInputElement).value).toBe('2027-10-25');
+    expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('Early Guest');
     expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
 
@@ -1113,7 +1121,62 @@ describe('NavaPane', () => {
     await waitFor(() => expect(screen.getAllByLabelText(/Arrival/i)).toHaveLength(2), { timeout: 5000 });
     expect((screen.getAllByLabelText(/Arrival/i) as HTMLInputElement[]).map((input) => input.value))
       .toEqual(['2027-10-20', '2027-11-20']);
+    await waitFor(() => expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe(''));
     expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+  }, 15000);
+
+  it('retains a guest edited while the explicit discard is awaiting its server read', async () => {
+    configureCenturionPane();
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
+    bridgeMockState.storedWork = twoCaseStoredWork();
+    let releaseInitial = () => {};
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { releaseInitial = resolve; });
+    const bridge = { ...fakeBridge, activeEmail: { ...fakeBridge.activeEmail!,
+      internetMessageId: '<discard-later-guest@example.invalid>' } } as PaneBridge;
+    render(<NavaPane bridge={bridge} />);
+    fireEvent.change(await screen.findByLabelText(/Arrival/i), { target: { value: '2027-10-25' } });
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Early Guest' } });
+    await act(async () => releaseInitial());
+    await screen.findByText(/early edits are not assigned to a stay/i);
+
+    let releaseDiscard = () => {};
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { releaseDiscard = resolve; });
+    const lookups = bridgeMockState.storedWorkLookups;
+    fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved changes and reload' }));
+    await waitFor(() => expect(bridgeMockState.storedWorkLookups).toBeGreaterThan(lookups));
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Later Guest' } });
+    await act(async () => releaseDiscard());
+    await waitFor(() => expect(screen.queryByText(/early edits are not assigned to a stay/i)).toBeNull());
+    expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe('Later Guest');
+  }, 15000);
+
+  it('does not discard either message’s guest after the selection changes during reload', async () => {
+    configureCenturionPane();
+    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
+    bridgeMockState.storedWork = twoCaseStoredWork();
+    let releaseInitial = () => {};
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { releaseInitial = resolve; });
+    const firstMessage = '<discard-switched-first@example.invalid>';
+    const secondMessage = '<discard-switched-second@example.invalid>';
+    const bridge = (entryId: string, internetMessageId: string) => ({ ...fakeBridge,
+      activeEmail: { ...fakeBridge.activeEmail!, entryId, internetMessageId } } as PaneBridge);
+    const pane = render(<NavaPane bridge={bridge('001', firstMessage)} />);
+    fireEvent.change(await screen.findByLabelText(/Arrival/i), { target: { value: '2027-10-25' } });
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'First Guest' } });
+    await act(async () => releaseInitial());
+    await screen.findByText(/early edits are not assigned to a stay/i);
+
+    let releaseDiscard = () => {};
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { releaseDiscard = resolve; });
+    const lookups = bridgeMockState.storedWorkLookups;
+    fireEvent.click(screen.getByRole('button', { name: 'Discard unsaved changes and reload' }));
+    await waitFor(() => expect(bridgeMockState.storedWorkLookups).toBeGreaterThan(lookups));
+    pane.rerender(<NavaPane bridge={bridge('002', secondMessage)} />);
+    await waitFor(() => expect((screen.getByLabelText('Guest') as HTMLInputElement).value).toBe(''));
+    fireEvent.change(screen.getByLabelText('Guest'), { target: { value: 'Second Guest' } });
+    await act(async () => releaseDiscard());
+    expect(recalledGuestName(paneEditKey('transport-1', firstMessage))).toBe('First Guest');
+    expect(recalledGuestName(paneEditKey('transport-1', secondMessage))).toBe('Second Guest');
   }, 15000);
 
   it('stored: a human-written amendment extraction renders Find booking without a live read or ApproveCard', async () => {

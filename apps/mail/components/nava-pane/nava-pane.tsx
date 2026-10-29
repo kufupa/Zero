@@ -25,6 +25,7 @@ import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-b
 import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { ConfirmationSourcesBridge } from '@/components/quote-workflow/confirmation-recipient';
 import { hideQuoteWorkspace, QuoteWorkflowPanel } from '@/components/quote-workflow/quote-workflow-panel';
+import { guestEditorKeyFor } from '@/components/quote-workflow/quote-people-step';
 import { WorkflowBadge } from '@/components/quote-workflow/workflow-badge';
 import {
   HmsJobNoticeBanner,
@@ -47,6 +48,7 @@ import {
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
 import { forgetPaneEdits, overlayRememberedGroups, paneEditKey, recalledPaneEdits, recoverLegacySourcePreferences, rememberPaneEdits } from '@/lib/quote-workflow/pane-edits';
+import { forgetGuestName, guestNameRevision, recalledGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { sectionHasStaffEdit, shownFieldPaths, storedDecision, useStoredWork, type StoredPane } from '@/lib/quote-workflow/use-work-item';
 import { WorkItemHistoryControls } from './screens/work-item-history-controls';
 import { readTreatAs, rememberTreatAs } from '@/lib/quote-workflow/treat-as-cache';
@@ -2628,6 +2630,9 @@ export function NavaPane({
               <button type="button" className="self-start px-1 text-[11px] font-semibold underline text-[#b45309]"
                 onClick={() => {
                   const binding = quoteSessionRef.current.binding;
+                  const guestKey = guestEditorKeyFor(quoteSessionRef.current);
+                  const guestName = recalledGuestName(guestKey);
+                  const guestRevision = guestNameRevision(guestKey);
                   void storedWork.discardUnconfirmedEdits().then((discarded) => {
                     if (!discarded) {
                       toast.warning("Couldn't reload these changes yet. Retry saving or try again.");
@@ -2637,6 +2642,10 @@ export function NavaPane({
                     if (!binding || !current || current.transportId !== binding.transportId ||
                         current.internetMessageId !== binding.internetMessageId || current.selectionEpoch !== binding.selectionEpoch ||
                         current.scopeEpoch !== binding.scopeEpoch) return;
+                    if (guestName !== null && !forgetGuestName(guestKey, guestRevision) &&
+                        guestNameRevision(guestKey) === guestRevision) {
+                      toast.warning("Couldn't discard the guest name. Check it before booking.");
+                    }
                     // Invalidate in-flight pane results and start again from the server read.
                     contextRevision.current.selectionEpoch += 1;
                     const fresh = { ...binding, selectionEpoch: contextRevision.current.selectionEpoch };

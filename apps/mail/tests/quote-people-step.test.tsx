@@ -5,7 +5,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QuotePeopleStep, stayingGuestName } from '../components/quote-workflow/quote-people-step';
 import type { ContactField, StoredContact } from '../lib/quote-workflow/backend-bind';
-import { resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
+import { forgetGuestName, guestNameRevision, recalledGuestName, rememberGuestName, resetGuestNameCacheForTests } from '../lib/quote-workflow/guest-name-cache';
 import type { PartyFindReply } from '../lib/quote-workflow/party-lookup';
 import { emptyStaffQuoteHeader } from '../lib/quote-workflow/types';
 import type { QuoteSession, StaffQuoteParty } from '../lib/quote-workflow/types';
@@ -37,6 +37,27 @@ const contact: StoredContact = {
 };
 
 describe('QuotePeopleStep', () => {
+  it('discards only the captured guest edit and keeps the name visible if storage cannot remove it', () => {
+    const key = 'discard-test';
+    rememberGuestName(key, 'Ada Example');
+    const firstRevision = guestNameRevision(key);
+    rememberGuestName(key, 'Ada Example');
+    expect(forgetGuestName(key, firstRevision)).toBe(false);
+    expect(recalledGuestName(key)).toBe('Ada Example');
+
+    const currentRevision = guestNameRevision(key);
+    const storage = vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => { throw new Error('blocked'); });
+    try {
+      expect(forgetGuestName(key, currentRevision)).toBe(false);
+      expect(recalledGuestName(key)).toBe('Ada Example');
+    } finally {
+      storage.mockRestore();
+    }
+    expect(forgetGuestName(key, currentRevision)).toBe(true);
+    resetGuestNameCacheForTests({ keepSession: true });
+    expect(recalledGuestName(key)).toBeNull();
+  });
+
   it('keeps request contact edits separate from distinct HMS agency and company profiles', () => {
     const onContactEdit = vi.fn<(field: ContactField, value: string | null) => void>();
     const onPatchStaffHeader = vi.fn();

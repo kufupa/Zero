@@ -1,27 +1,14 @@
-import { useState } from 'react';
+import { useSyncExternalStore } from 'react';
 import { Field, Section, SecondaryButton, StepState, paneFieldClass } from '@/components/nava-pane/pane-ui';
 import { ContactBlock } from '@/components/nava-pane/blocks/contact-block';
 import type { HmsJobTransport } from '@/lib/quote-workflow/amend-find';
 import type { ContactField, StoredContact } from '@/lib/quote-workflow/backend-bind';
-import { recalledGuestName, rememberGuestName } from '@/lib/quote-workflow/guest-name-cache';
+import { recalledGuestName, rememberGuestName, subscribeStayingGuestName } from '@/lib/quote-workflow/guest-name-cache';
 import { paneEditKey } from '@/lib/quote-workflow/pane-edits';
 import type { PartyFinder, PartyIndexSearcher, PartySuggestion } from '@/lib/quote-workflow/party-lookup';
 import type { QuoteSession, StaffQuoteHeader, StaffQuoteParty } from '@/lib/quote-workflow/types';
 import { sectionHasStaffEdit, type WorkItemPaneControls } from '@/lib/quote-workflow/use-work-item';
 import { PartyPicker } from './party-picker';
-
-const stayingGuestListeners = new Set<() => void>();
-
-export function subscribeStayingGuestName(onStoreChange: () => void): () => void {
-  stayingGuestListeners.add(onStoreChange);
-  return () => {
-    stayingGuestListeners.delete(onStoreChange);
-  };
-}
-
-function notifyStayingGuestName(): void {
-  stayingGuestListeners.forEach((listener) => listener());
-}
 
 function inferredGuestName(session: QuoteSession, contact?: StoredContact | null): string {
   const sourceGroups = session.analysis?.groups ?? [];
@@ -87,7 +74,8 @@ function GuestNameField({
   contact?: StoredContact | null;
   guestEditorKey: string;
 }) {
-  const [editedName, setEditedName] = useState<string | null>(() => recalledGuestName(guestEditorKey));
+  const editedName = useSyncExternalStore(subscribeStayingGuestName,
+    () => recalledGuestName(guestEditorKey), () => null);
   const guestName = editedName ?? inferredGuestName(session, contact);
   const needsPrompt = guestName.trim().length === 0;
 
@@ -102,8 +90,6 @@ function GuestNameField({
         onChange={(event) => {
           const name = event.target.value;
           rememberGuestName(guestEditorKey, name);
-          notifyStayingGuestName();
-          setEditedName(name);
         }}
       />
       {needsPrompt ? (
