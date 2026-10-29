@@ -1619,12 +1619,15 @@ describe('NavaPane', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1000)); });
     expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
     heldPane.unmount();
-    bridgeMockState.storedWork = original;
+    bridgeMockState.storedWork = { ...original, analysis: { ...original.analysis, groups: [group,
+      { ...group, id: 'r_external', stayId: 's_external', staffCreated: true }] } };
     render(<NavaPane bridge={fakeBridge} />);
     expect(await screen.findByText('4 adults per room')).toBeDefined();
     await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(expect.objectContaining({
       fieldPath: 'stays[s_1].rows[r_1].adults', value: 4,
     })));
+    expect(bridgeMockState.recordEvent.mock.calls.some(([event]) =>
+      String((event as { fieldPath?: string }).fieldPath).includes('s_external'))).toBe(false);
   });
 
   it('shows finished rates after an email switch without queueing another staff_quote', async () => {
