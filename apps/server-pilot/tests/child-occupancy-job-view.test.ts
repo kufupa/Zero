@@ -43,9 +43,10 @@ beforeAll(async () => {
 /** Each select has an explicit reply so the test exercises the real view and evidence readers. */
 function fakeDb(replies: Array<[unknown, unknown[]]>): DB {
   const remaining = [...replies];
-  return { select() {
+  return { select(selection?: Record<string, unknown>) {
     let table: unknown;
     const read = () => {
+      if (selection && 'workItemId' in selection && 'kind' in selection && 'status' in selection) return [];
       const next = remaining.shift();
       if (!next || next[0] !== table) throw new Error('unexpected synthetic DB read');
       return next[1];

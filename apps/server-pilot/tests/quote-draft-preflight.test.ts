@@ -51,7 +51,10 @@ async function fixture() {
   const select = (selection?: Record<string, unknown>) => {
     let table: unknown;
     const query = { from(value: unknown) { table = value; return query; }, innerJoin() { return query; },
-      where() { return query; }, orderBy() { return query; }, limit() {
+      where() { return query; }, orderBy() {
+        return selection && 'workItemId' in selection && 'kind' in selection && 'status' in selection
+          ? Promise.resolve([]) : query;
+      }, limit() {
         if (table === mailThread) return Promise.resolve([{ id: 't1', transportId }]);
         if (table === mailDraft) return Promise.resolve([{ id: 'draft-1', htmlBody: '<p>Synthetic</p>', attachments: savedReply.draftAttachments }]);
         if (table === mailDraftRevision) return Promise.resolve([savedReplyRevisionReads++ % 2 === 0

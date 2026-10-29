@@ -16,10 +16,12 @@ function evidence(stayId = 's1', rowId = 'r1') {
       requested: { arrival: '2027-10-20', departure: '2027-10-21' }, booked: null, totalRooms: 1,
       rows: [{ id: rowId, roomType: 'Standard King' as string | null, rooms: 1, adultsPerRoom: 2,
         childrenPerRoom: 0, childAges: [] as number[], board: 'dbb' as string | null }] }] },
-    state: {} as Record<string, unknown>, pinned: 'extract-1', latest: 'extract-1' };
-  const db = { select() {
+    state: {} as Record<string, unknown>, pinned: 'extract-1', latest: 'extract-1',
+    conflicts: [] as Array<{ workItemId: string; kind: string; status: string }> };
+  const db = { select(selection?: Record<string, unknown>) {
     let table: unknown;
-    const read = () => table === mailExtraction ? [{ id: data.latest, kind: 'quote', payload: data.payload }] :
+    const conflict = selection && 'workItemId' in selection && 'kind' in selection && 'status' in selection;
+    const read = () => conflict ? data.conflicts : table === mailExtraction ? [{ id: data.latest, kind: 'quote', payload: data.payload }] :
       table === workItem ? [{ extractionId: data.pinned, state: data.state }] : [];
     const query = Object.assign(Promise.resolve().then(read), {
       from(value: unknown) { table = value; return query; }, where() { return query; }, orderBy() { return query; },
@@ -31,6 +33,17 @@ function evidence(stayId = 's1', rowId = 'r1') {
 }
 
 describe('source preferences bound to a Centurion price', () => {
+  it('holds new and cached quotes when another workflow has prior staff work', async () => {
+    const { db, data } = evidence();
+    const proof = await captureQuoteSourceProof(db, input, scope);
+    expect(proof).not.toBeNull();
+    data.conflicts.push({ workItemId: 'old-item', kind: 'booking', status: 'needs_you' });
+    expect(await captureQuoteSourceProof(db, input, scope)).toBeNull();
+    expect(await quoteSourceProofIsCurrent(db, input.groups, scope, proof)).toBe(false);
+    expect(await quoteSourceProofMatchesCopy(db, input.groups, scope, proof)).toBe(false);
+    expect(await captureQuoteSourceProof(db, input, { ...scope, propertyCode: 'HRDAV' })).not.toBeNull();
+  });
+
   it('rejects pre-policy proofs on every Centurion reuse path but preserves HRDAV', async () => {
     const { db } = evidence();
     const current = await captureQuoteSourceProof(db, input, scope);

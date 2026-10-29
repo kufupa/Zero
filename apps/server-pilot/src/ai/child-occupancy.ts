@@ -6,6 +6,7 @@ import { mailExtraction, workItem } from '../db/schema/work.js';
 import { and, desc, eq } from 'drizzle-orm';
 import { addDays } from './stay-date-anchoring.js';
 import { getPropertyTransportIds } from '../../tooling/playwright-quote/property-registry.mjs';
+import { priorKindConflict } from './work-item-source-conflict.js';
 
 type Group = Pick<StaffQuoteInput['groups'][number],
   'id' | 'arrivalDate' | 'departureDate' | 'quantity' | 'adults' | 'childrenAges' | 'childrenPerRoom'>;
@@ -115,7 +116,7 @@ export function occupancyFromRevision(revision: QuoteRevision): Group[] {
 /** Load the same extraction version and saved edits as the selected email's pane. */
 async function loadChildOccupancyEvidence(
   db: DB,
-  scope: { transportId: string; threadId: string; messageId: string; lock?: boolean },
+  scope: QuoteSourceScope,
 ) {
   const [latest] = await db
     .select({ id: mailExtraction.id, kind: mailExtraction.kind, payload: mailExtraction.payload })
@@ -124,6 +125,9 @@ async function loadChildOccupancyEvidence(
     .orderBy(desc(mailExtraction.createdAt))
     .limit(1);
   if (!latest?.kind || !latest.payload) return null;
+  // A reclassification cannot silently discard a person's earlier work, even
+  // when a caller bypasses the pane or asks for a cached quote directly.
+  if (isCenturionQuoteScope(scope) && await priorKindConflict(db, { ...scope, latestKind: latest.kind })) return null;
   const itemQuery = db
     .select({ extractionId: workItem.extractionId, state: workItem.state })
     .from(workItem)
