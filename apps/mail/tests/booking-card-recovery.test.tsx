@@ -197,6 +197,39 @@ describe('multi-room save recovery', () => {
     expect(await screen.findByText('Booked 2 of 2 – TEST-FIRST, TEST-SECOND')).toBeDefined();
   });
 
+  it('lets the remaining room proceed when a verified receipt arrives before a lost response', async () => {
+    let fail!: (reason: Error) => void;
+    const commit = vi.fn<PaneStayClient['commit']>()
+      .mockReturnValueOnce(new Promise((_, reject) => { fail = reject; }))
+      .mockResolvedValueOnce(secondVerified);
+    const view = renderCase(commit);
+    const batch = await previewBoth();
+    fireEvent.click(batch);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    view.rerenderWithSaved({ s_aaaa1111_1: { confirmationNumber: 'TEST-FIRST', status: 'booked', screenshotRef: null } });
+    expect(await screen.findByText('Booked in HMS – confirmation TEST-FIRST')).toBeDefined();
+    await act(async () => fail(new Error('Synthetic lost response')));
+    await waitFor(() => expect(batch).toHaveProperty('disabled', false));
+    fireEvent.click(batch);
+    expect(await screen.findByText('Booked 2 of 2 – TEST-FIRST, TEST-SECOND')).toBeDefined();
+    expect(commit.mock.calls[1]?.[0]).toMatchObject({ parentStayId: 's_aaaa1111_1' });
+  });
+
+  it('keeps the hold if a later unverified number conflicts with the loaded receipt', async () => {
+    let finish!: (value: PaneStayResult) => void;
+    const commit = vi.fn<PaneStayClient['commit']>().mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const view = renderCase(commit);
+    const batch = await previewBoth();
+    fireEvent.click(batch);
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    view.rerenderWithSaved({ s_aaaa1111_1: { confirmationNumber: 'TEST-FIRST', status: 'booked', screenshotRef: null } });
+    await act(async () => finish({
+      status: 'ok', outcome: 'committed_unverified', confirmationNumber: 'TEST-OTHER', screenshots: [],
+    }));
+    expect(batch).toHaveProperty('disabled', true);
+    expect(commit).toHaveBeenCalledTimes(1);
+  });
+
   it('shows a number returned after an in-flight claim was loaded, while keeping the hold', async () => {
     let finish!: (value: PaneStayResult) => void;
     const commit = vi.fn<PaneStayClient['commit']>().mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));

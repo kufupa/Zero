@@ -1201,8 +1201,11 @@ export function BookingCards({
     }) ||
       Object.entries(savesRef.current).some(([key, save]) =>
         isUncertainCommit(save.commit) && !verifiedAfterClaim(key, save.commit)) ||
-      Object.values(recentCommitsRef.current).some((recent) =>
-        recent.workItemId === workItemId && isUncertainCommit(recent.commit));
+      Object.values(recentCommitsRef.current).some((recent) => {
+        const saved = savedStaysRef.current?.[recent.stayId ?? ''];
+        return recent.workItemId === workItemId && isUncertainCommit(recent.commit) && !(saved?.status === 'booked' &&
+          saved.confirmationNumber && (recent.commit.status !== 'booked' || saved.confirmationNumber === recent.commit.confirmationNumber));
+      });
   }
 
   function patchSave(roomKey: string, patch: RoomSaveState, finishClaim = false) {
@@ -1495,7 +1498,6 @@ export function BookingCards({
     } catch {
       commit = { status: 'refused', key, message: PANE_COMMIT_UNREACHABLE_COPY, statusChip: 'check' };
     }
-    // Guard immediately even before React has rendered the new room state.
     recentCommitsRef.current[roomKey] = {
       workItemId, stayId: room ? stayIdForRoom(room, groups) : null, commit,
     };

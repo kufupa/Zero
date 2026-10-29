@@ -331,7 +331,6 @@ export const quoteWorkflowRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { previewDigest, stayId, workItemId, parentStayId, ...stay } = input;
-      // Without a durable work-item identity the server cannot see a prior uncertain room.
       if (!workItemId || !stayId) return { status: 'refused' as const, reason: 'pane_save_identity_required' };
       const owner = `${ctx.sessionUser.id}:${ctx.activeTransportId}`;
       const scope = { transportId: ctx.activeTransportId, workItemId, stayId, parentStayId };
@@ -380,7 +379,6 @@ export const quoteWorkflowRouter = router({
         const fallback = stayCommitFromPaneResult(unverified);
         if (fallback?.confirmationNumber) {
           try {
-            // A transient receipt failure must not discard a known number on reload.
             await finishPaneStayCommit(db, { ...scope, claimId: claim.claimId, record: fallback });
           } catch {
             // The original unknown claim still prevents another save.
