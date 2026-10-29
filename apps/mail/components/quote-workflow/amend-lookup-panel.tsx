@@ -59,7 +59,7 @@ import {
   type StayPick,
   type StayRecordWire,
 } from '@/lib/quote-workflow/amend-find';
-import { amendmentOf } from '@/lib/quote-workflow/session';
+import { amendmentOf, amendLookupScope } from '@/lib/quote-workflow/session';
 import { knownRoomCode, ROOM_TYPE_NAMES } from '@/lib/quote-workflow/room-types';
 import type { QuoteAmendment, QuoteSession } from '@/lib/quote-workflow/types';
 import { useHmsJob } from '@/lib/quote-workflow/use-hms-job';
@@ -124,7 +124,11 @@ function resolvedSavedStayId(
  * With no usable number, staff find the booking by surname and arrival instead. Renders nothing unless the analysis
  * carries an amendment. Lookups are persisted HMS jobs: the panel shows the job's state and its dated snapshot.
  */
-export function AmendLookupPanel({
+export function AmendLookupPanel(props: Parameters<typeof ScopedAmendLookupPanel>[0]) {
+  return <ScopedAmendLookupPanel key={amendLookupScope(props.session)} {...props} />;
+}
+
+function ScopedAmendLookupPanel({
   session,
   trpc,
   savedStays,

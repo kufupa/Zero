@@ -608,11 +608,8 @@ function stayOwningConfirmation(
   return payload.stays.find((stay) => stayGuestConfirmations(stay).includes(confirmation));
 }
 
-/** The top-level workflow is a summary; retain any explicit per-stay actions on their own rows. */
-function taskKindForStay(
-  stay: ExtractionStay | undefined, workflow: LunaAnalysis['workflow'],
-  hasUnassignedConfirmation: boolean,
-): LunaAnalysis['tasks'][number]['kind'] | null {
+function taskKindForStay(stay: ExtractionStay | undefined, workflow: LunaAnalysis['workflow'],
+  hasUnassignedConfirmation: boolean, legacyActions: boolean): LunaAnalysis['tasks'][number]['kind'] | null {
   switch (stay?.action) {
     case 'quote_availability': return 'quote';
     case 'new_booking': return stay.booked || stayGuestConfirmations(stay).length || hasUnassignedConfirmation ? 'other' : 'create_booking';
@@ -621,8 +618,8 @@ function taskKindForStay(
     default:
       if (stay?.action) return 'other';
       // Legacy extractions may not have per-stay actions. Existing-booking evidence is not a new booking.
-      return stay && workflow === 'create_booking' && (stay.booked || stayGuestConfirmations(stay).length || hasUnassignedConfirmation)
-        ? 'other'
+      return stay && workflow === 'create_booking'
+        ? stay.booked || stayGuestConfirmations(stay).length || hasUnassignedConfirmation ? 'other' : legacyActions ? 'create_booking' : null
         : null;
   }
 }
@@ -748,6 +745,7 @@ export function storedAnalysis(
   const booked = bookedStay?.booked;
   const requested = bookedStay?.requested;
   const workflow = workflowForStoredRead(read);
+  const legacyActions = payload.stays.every((stay) => !stay.action);
   const luna: LunaAnalysis = {
     workflow,
     flags,
@@ -763,7 +761,7 @@ export function storedAnalysis(
       : payload.missing,
     evidence: [],
     tasks: stays.flatMap((stay) => {
-      const kind = taskKindForStay(payload.stays.find((item) => item.id === stay.id), workflow, hasUnassignedConfirmation);
+      const kind = taskKindForStay(payload.stays.find((item) => item.id === stay.id), workflow, hasUnassignedConfirmation, legacyActions);
       if (!kind) return [];
       const groupIndexes = order.flatMap((slot, index) => slot.stayId === stay.id ? [index] : []);
       return groupIndexes.length ? [{ kind, groupIndexes, note: '' }] : [];
@@ -794,15 +792,11 @@ export function storedAnalysis(
     }),
     ...(propertyCode ? { propertyCode } : {}),
   });
-  // The ordinary mapper suppresses non-quote groups. Keep existing cases for staff to choose in the pane,
-  // while retaining the non-quote intent and never creating quote or booking defaults for them.
+  // Map existing cases for staff to choose without changing the non-quote intent.
   const caseScoped = (workflow === 'amend' || workflow === 'cancel') && groups.length > 0;
-  if (caseScoped) {
-    mapped.groups = mapLlmDecision(luna, {
-      treatAs: 'create_booking',
-      ...(propertyCode ? { propertyCode } : {}),
-    }).groups;
-  }
+  if (caseScoped) mapped.groups = mapLlmDecision(luna, {
+    treatAs: 'create_booking', ...(propertyCode ? { propertyCode } : {}),
+  }).groups;
   mapped.groups.forEach((group, index) => {
     const slot = order[index];
     if (!slot) return;
@@ -840,7 +834,6 @@ export function storedAnalysis(
       }
     }
   });
-  // The mapper computed this list before the saved clears above were restored.
   if (mapped.intent === 'quote' && mapped.groups.some((group) => !group.arrivalDate || !group.departureDate)) {
     mapped.missingQuoteReplyFields = mapped.groups.flatMap((group, index) => {
       const stay = index + 1;
@@ -894,9 +887,7 @@ export function storedAnalysis(
           ...(!sourceStay ? { staffCreated: true } : {}),
           ...(caseScoped ? { caseScoped: true } : {}),
           ...(caseLookupConfirmation ? { caseLookupConfirmation } : {}),
-          // Kept separately from room assignment so staff can see the names and numbers as reported in the email.
           ...(firstRowOfStay ? { stayGuests: guestsForStay(sourceStay) } : {}),
-          // The People field may prefill only the one original room; the draft still must not match by row order.
           ...(singleRoomGuest ? { guestNames: [singleRoomGuest] } : {}),
           ...(confirmationNumber ? { confirmationNumber } : {}),
         };
@@ -938,9 +929,7 @@ function contentKeepsId<T extends { id: string }>(
   return hits.length === 1 && hits[0]!.id === id;
 }
 
-function sameStrings(left: Set<string>, right: Set<string>): boolean {
-  return left.size === right.size && [...left].every((value) => right.has(value));
-}
+const sameStrings = (left: Set<string>, right: Set<string>): boolean => left.size === right.size && [...left].every((value) => right.has(value));
 
 /** A unique date key is insufficient when the reads name conflicting properties, bookings or guests. */
 function stayKeepsIdentity(id: string, before: MailExtractionPayload, after: MailExtractionPayload): boolean {
@@ -948,9 +937,7 @@ function stayKeepsIdentity(id: string, before: MailExtractionPayload, after: Mai
   const prior = before.stays.find((stay) => stay.id === id);
   const next = after.stays.find((stay) => stay.id === id);
   if (!prior || !next) return true; // A staff-added stay has no extraction counterpart in either read.
-  const priorHotel = prior.hotel?.trim().toLowerCase() ?? '';
-  const nextHotel = next.hotel?.trim().toLowerCase() ?? '';
-  if (priorHotel !== nextHotel) return false;
+  if ((prior.hotel?.trim().toLowerCase() ?? '') !== (next.hotel?.trim().toLowerCase() ?? '')) return false;
   // A top-level number with no unique owner could refer to any edited case in the mail.
   const unassigned = (payload: MailExtractionPayload) => new Set(payload.confirmationNumbers.flatMap((value) => {
     const number = trimmedConfirmation(value);

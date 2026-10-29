@@ -94,6 +94,18 @@ describe('stored case boundaries', () => {
     expect(other.groups.map((group) => group.roomTypeCode)).toEqual(['STKNG', 'STKNG']);
   });
 
+  it('retains the booking fallback for legacy stays without per-stay actions', () => {
+    const payload = mixedMail();
+    delete payload.stays[0]!.action;
+    delete payload.stays[1]!.action;
+    const legacy = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}).analysis;
+    expect(legacy.luna.tasks.map((task) => task.kind)).toEqual(['other', 'create_booking']);
+
+    payload.stays[0]!.action = 'amend';
+    const partiallyClassified = storedAnalysis({ kind: 'booking', payload, attachments: [] }, {}).analysis;
+    expect(partiallyClassified.luna.tasks.map((task) => task.kind)).toEqual(['amend']);
+  });
+
   it('does not guess which same-date stay owns a top-level or thread-only booking number', () => {
     const payload = mixedMail();
     payload.stays[0]!.guests = [];

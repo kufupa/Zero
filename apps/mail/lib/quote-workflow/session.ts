@@ -108,7 +108,6 @@ export function amendmentOf(session: QuoteSession): QuoteAmendment | null {
       return { ...base, ...requested, confirmationNumber: null };
     }
     const assigned = trimmedConfirmation(row.confirmationNumber);
-    // A unique mail or thread number can find this case even when no room is identified.
     const caseHint = trimmedConfirmation((original as StayAskRow).caseLookupConfirmation);
     return { ...base, ...requested, confirmationNumber: assigned ?? caseHint };
   }
@@ -288,7 +287,6 @@ function lunaGroupsMatchingStay(session: QuoteSession, stayId: string): LunaStay
   return [];
 }
 
-/** The roster belongs to the source stay, even when staff remove or duplicate a room row. */
 function storedStayGuests(session: QuoteSession, stayId: string): StayAskGuest[] | null {
   const ids = new Set(stayAskRows(session, stayId).map(stayIdOf));
   const source = ((session.analysis?.groups ?? []) as StayAskRow[])
@@ -327,22 +325,27 @@ function stayAskActionFromTask(kind: LunaAnalysisWire['tasks'][number]['kind']):
   return null;
 }
 
-/** Stay ids a task named, taken from the analysis groups at those indexes so a later remove cannot retarget it. */
+/** A task's indexes refer to the original Luna rows, not the remembered rows currently in the pane. */
 function taskStayIds(session: Pick<QuoteSession, 'analysis'>, task: LunaAnalysisWire['tasks'][number]): string[] {
   const analysisGroups = session.analysis?.groups ?? [];
+  const sourceGroups = session.analysis?.luna?.groups ?? [];
   return task.groupIndexes.flatMap((index) => {
-    const group = analysisGroups[index];
+    const source = sourceGroups[index];
+    const group = source?.stayId ? analysisGroups.find((row) => stayIdOf(row) === source.stayId)
+      : source ? analysisGroups.find((row) => row.id === `g${index + 1}`)
+      : sourceGroups.length ? undefined : analysisGroups[index];
     return group ? [stayIdOf(group)] : [];
   });
 }
 
-/** Compare case actions by their source ids, not by the order of rows in the newer read. */
 function caseTaskSignature(analysis: QuoteAnalysis | null): string {
-  const tasks = analysis?.luna?.tasks ?? [];
-  return JSON.stringify(tasks.map((task) => JSON.stringify([
+  return JSON.stringify((analysis?.luna?.tasks ?? []).map((task) => JSON.stringify([
     task.kind,
-    task.groupIndexes.map((index) => analysis?.groups[index])
-      .map((group) => JSON.stringify(group ? [stayIdOf(group), group.id] : null)).sort(),
+    task.groupIndexes.map((index) => {
+      const source = analysis?.luna?.groups[index], row = analysis?.groups[index];
+      return source ? [source.stayId ?? `g${index + 1}`, source.stayId ? null : [source.guestNames, source.arrival, source.departure]]
+        : row ? [stayIdOf(row), row.id] : null;
+    }).map((item) => JSON.stringify(item)).sort(),
   ])).sort());
 }
 
@@ -354,21 +357,21 @@ function caseIdentitySignature(analysis: QuoteAnalysis | null): string | null {
     const roster = group.stayGuests?.map((guest) =>
       JSON.stringify([guest.name.trim(), trimmedConfirmation(guest.confirmationNumber)])).sort() ?? null;
     const confirmation = trimmedConfirmation(group.confirmationNumber) ?? trimmedConfirmation(group.caseLookupConfirmation);
-    return JSON.stringify([
-      group.id, stayIdOf(group), confirmation, roster,
-      !confirmation && !roster?.length ? [group.arrivalDate ?? null, group.departureDate ?? null] : null,
-    ]);
+    return JSON.stringify([group.id, stayIdOf(group), confirmation, roster,
+      !confirmation && !roster?.length ? [group.arrivalDate ?? null, group.departureDate ?? null] : null]);
   }).sort());
-}
-
-function changedCaseIdentity(before: QuoteAnalysis | null, after: QuoteAnalysis): boolean {
-  const oldIdentity = caseIdentitySignature(before);
-  const newIdentity = caseIdentitySignature(after);
-  return (oldIdentity !== null || newIdentity !== null) && oldIdentity !== newIdentity;
 }
 
 function caseReviewPending(analysis: QuoteAnalysis | null): boolean {
   return Boolean(analysis && 'caseActionsUncertain' in analysis && analysis.caseActionsUncertain === true);
+}
+
+/** Keep lookup and unsaved amendment state only while the selected case identity is unchanged. */
+export function amendLookupScope(session: QuoteSession): string {
+  const amendment = amendmentOf(session);
+  return JSON.stringify([session.binding, session.staffSource, session.selectedStayKey,
+    caseIdentitySignature(session.analysis), caseTaskSignature(session.analysis), caseReviewPending(session.analysis),
+    amendment && [amendment.kind, amendment.confirmationNumber, amendment.guestLastName, amendment.arrival, amendment.departure]]);
 }
 
 function withCaseReview(analysis: QuoteAnalysis, pending: boolean): QuoteAnalysis {
@@ -395,7 +398,6 @@ export function stayAskAction(session: Pick<QuoteSession, 'analysis' | 'groups'>
       matching.forEach((id) => covered.add(id));
     }
   }
-  // The pane can still group separate cases by date. Never label their combined card as just one action.
   if (actions.size > 1 || (actions.size && rowIds.size > 1 && [...rowIds].some((id) => !covered.has(id)))) return 'other';
   if (actions.size === 1) return [...actions][0]!;
   const workflow = session.analysis?.luna?.workflow;
@@ -417,7 +419,6 @@ export function stayAskActionLabel(action: StayAskAction): string | null {
   return null;
 }
 
-/** An existing or unclear case must never be offered a new-booking draft. */
 function blocksNewBooking(session: Pick<QuoteSession, 'analysis' | 'groups'>, stayKey: string): boolean {
   const luna = session.analysis?.luna;
   if (caseReviewPending(session.analysis)) return true;
@@ -1862,7 +1863,7 @@ export function reduceQuoteSession(
         // Staff corrected stay fields after this run started. Keep their groups and take
         // only a compatible read-out, so a late result cannot retarget those edits to another case.
         const caseChanged = session.analysis !== null && !singleOverride && (
-          changedCaseIdentity(session.analysis, action.analysis) ||
+          caseIdentitySignature(session.analysis) !== caseIdentitySignature(action.analysis) ||
           caseTaskSignature(session.analysis) !== caseTaskSignature(action.analysis)
         );
         const analysis = caseChanged && session.analysis
@@ -1901,7 +1902,7 @@ export function reduceQuoteSession(
         // workflow is taken, the edited stays are kept.
         const typeChanged =
           Boolean(session.treatAs) && action.analysis.luna?.workflow !== session.analysis?.luna?.workflow;
-        const identityChanged = !singleOverride && changedCaseIdentity(session.analysis, action.analysis);
+        const identityChanged = !singleOverride && caseIdentitySignature(session.analysis) !== caseIdentitySignature(action.analysis);
         const changedCaseTasks = caseTaskSignature(action.analysis) !== caseTaskSignature(session.analysis);
         const holdCase = session.analysis && (identityChanged || (!typeChanged && !singleOverride && changedCaseTasks));
         const analysis = holdCase
