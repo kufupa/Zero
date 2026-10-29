@@ -219,6 +219,72 @@ function centurionCaller(activeTransportId = CENTURION) {
 }
 
 describe('stored read for the pane', () => {
+  it('holds an older Centurion source and does not project saved data when that source is missing or invalid', () =>
+    withDb(async (db) => {
+      const messageId = await seedMail(db, 'held-source');
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') }).where(eq(mailExtraction.id, first));
+      const opened = await readyWork(db, 'held-source');
+      const caller = centurionCaller().workItems;
+      const rowPath = `stays[${STAY_ONE}].rows[${ROW_SINGLE}].adults`;
+      await caller.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath: rowPath, value: 3 });
+      await caller.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath: 'contact.name', value: 'Old saved' });
+      await recordStayCommit(db, { transportId: CENTURION, workItemId: opened.workItemId, stayId: STAY_ONE,
+        record: { confirmationNumber: 'LAB-1', status: 'booked', screenshotRef: null } });
+      const [saved] = await db.select().from(workItem).where(eq(workItem.id, opened.workItemId));
+      const nextPayload = { ...payload({ stayOneArrival: '2027-10-25' }), contact: { name: 'New source', email: null, phone: null } };
+      const next = await insertRead(db, messageId, { version: 'extract-v2', payload: nextPayload });
+      const input = { internetMessageId: '<held-source@example.com>' };
+
+      for (const read of [await caller.getByMessage(input), await caller.open(input)]) {
+        expect(read).toMatchObject({ status: 'ready', extractionId: first, sourceRead: { extractionId: next },
+          analysis: { caseActionsUncertain: true, hmsTodoCard: null }, contact: { name: 'Old saved' } });
+        if (read.status !== 'ready') throw new Error('missing old source');
+        expect(read.analysis.groups.find((group) => group.id === ROW_SINGLE)?.adults).toBe(3);
+        expect(read.stays[STAY_ONE]?.confirmationNumber).toBe('LAB-1');
+      }
+
+      const assertMissing = async () => {
+        for (const read of [await caller.getByMessage(input), await caller.open(input)]) {
+          expect(read).toMatchObject({ status: 'ready', workItemId: opened.workItemId, extractionId: next,
+            sourceRead: { extractionId: next }, analysis: { caseActionsUncertain: true, hmsTodoCard: null },
+            contact: { name: 'New source' }, stays: {}, stayPreviews: {}, fieldProvenance: {} });
+          if (read.status !== 'ready') throw new Error('missing latest source');
+          expect(read.analysis.groups.find((group) => group.id === ROW_SINGLE)?.adults).toBe(1);
+        }
+        const [after] = await db.select().from(workItem).where(eq(workItem.id, opened.workItemId));
+        expect(after?.state).toEqual(saved?.state);
+        await expect(caller.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath: rowPath, value: 5 }))
+          .rejects.toMatchObject({ code: 'CONFLICT' });
+      };
+      await db.update(mailExtraction).set({ payload: null }).where(eq(mailExtraction.id, first));
+      await assertMissing();
+      await db.update(mailExtraction).set({ payload: { stays: [] } }).where(eq(mailExtraction.id, first));
+      await assertMissing();
+      await db.delete(mailExtraction).where(eq(mailExtraction.id, first));
+      await assertMissing();
+      expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]?.extractionId).toBeNull();
+    }));
+
+  it('keeps other-property relinking behavior when a prior extraction is missing', () =>
+    withDb(async (db) => {
+      await addDaVinciMailboxes(db);
+      const messageId = await seedMailForTransport(db, 'held-davinci', DAVINCI, DAVINCI_TRANSPORT_EMAIL);
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') }).where(eq(mailExtraction.id, first));
+      const caller = callerForTransport(DAVINCI, DAVINCI_TRANSPORT_EMAIL).workItems;
+      const input = { internetMessageId: '<held-davinci@example.com>' };
+      const opened = await caller.open(input);
+      if (opened.status !== 'ready' || !opened.workItemId) throw new Error('missing item');
+      await caller.recordEvent({ workItemId: opened.workItemId, type: 'field.edit', fieldPath: 'contact.name', value: 'Saved' });
+      const next = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
+      await db.delete(mailExtraction).where(eq(mailExtraction.id, first));
+      const reopened = await caller.open(input);
+      expect(reopened).toMatchObject({ status: 'ready', extractionId: next, contact: { name: 'Saved' } });
+      if (reopened.status !== 'ready') throw new Error('missing reopened item');
+      expect(reopened.analysis.caseActionsUncertain).toBeUndefined();
+    }));
+
   it('shows the stored read as ready, with its groups keyed by row id', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'q1');
@@ -342,7 +408,7 @@ describe('stored read for the pane', () => {
       expect(opened).toMatchObject({ status: 'ready', workItemId: expect.any(String), workItemStatus: 'needs_you' });
       expect(await storedWorkFor(db, lookup)).toEqual(opened);
 
-      // A newer read is linked by the inbound run, not by the lookup.
+      // Even an untouched Centurion item remains pinned until the newer source is explicitly checked.
       const [before] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
       const second = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
       expect(await storedWorkFor(db, lookup)).toMatchObject({
@@ -351,9 +417,8 @@ describe('stored read for the pane', () => {
       const [after] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
       expect(after).toEqual(before);
       await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
-      const relinked = await storedWorkFor(db, lookup);
-      expect(relinked).toMatchObject({ extractionId: second });
-      expect(relinked.status === 'ready' && relinked.analysis.caseActionsUncertain).toBeFalsy();
+      expect(await storedWorkFor(db, lookup)).toMatchObject({ extractionId: first,
+        sourceRead: { extractionId: second }, analysis: { caseActionsUncertain: true } });
     }));
 
   it('returns the unedited extraction separately from saved dates and staff-added rows', () =>
@@ -924,7 +989,7 @@ describe('work item upsert', () => {
       expect(await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId))).toHaveLength(1);
     }));
 
-  it('moves the work item to a newer read and keeps its id', () =>
+  it('pins an untouched Centurion item on a newer read and keeps its id', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'up1');
       const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
@@ -934,7 +999,7 @@ describe('work item upsert', () => {
       expect(first).not.toBe(second);
       expect(b?.id).toBe(a?.id);
       const [item] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
-      expect(item!.extractionId).toBe(second);
+      expect(item!.extractionId).toBe(first);
     }));
 
   it('a new-version read that changes the kind (an internal forward read again as a quote) is what the pane shows', () =>
@@ -1091,10 +1156,10 @@ describe('work item upsert', () => {
       expect(row!.extractionId).toBe(newer);
     }));
 
-  it('keeps her arrival edit on the same stay when a re-read only swaps stay order', () =>
+  it('holds the original Centurion stay edit when a re-read swaps stay order', () =>
     withDb(async (db) => {
       const messageId = await seedMail(db, 'up3');
-      await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
+      const first = await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
       const work = await readyWork(db, 'up3');
       await recordFieldEvent(db, {
         transportId: CENTURION,
@@ -1109,11 +1174,13 @@ describe('work item upsert', () => {
       const second = await insertRead(db, messageId, { version: 'extract-v2', payload: swapped });
 
       const after = await readyWork(db, 'up3');
-      expect(after.extractionId).toBe(second);
+      expect(after.extractionId).toBe(first);
+      expect(after.sourceRead.extractionId).toBe(second);
+      expect(after.analysis.caseActionsUncertain).toBe(true);
       expect(after.analysis.groups.map((group) => [group.roomPreference, group.arrivalDate])).toEqual([
-        ['Double/Twin', '2027-11-17'],
         ['Single', '2027-10-25'],
         ['Double/Twin', '2027-10-25'],
+        ['Double/Twin', '2027-11-17'],
       ]);
     }));
 });
@@ -1517,11 +1584,11 @@ describe('field events', () => {
         expect(await eventsFor(db, opened.workItemId)).toHaveLength(beforeBookingConflict.length);
         expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]?.state[path]).toBe(winner.value);
 
-        // Equal timestamps can otherwise permit A→B→A. Each relink must invalidate an older token.
+        // A newer read holds Centurion writes and leaves the item pinned, even under a competing open.
         const secondRead = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
         await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') })
           .where(eq(mailExtraction.id, firstRead));
-        await db.update(mailExtraction).set({ createdAt: new Date('2026-01-01T00:00:00Z') })
+        await db.update(mailExtraction).set({ createdAt: new Date('2026-01-02T00:00:00Z') })
           .where(eq(mailExtraction.id, secondRead));
         const link = { transportId: CENTURION, threadId: 'thread-cas-1', messageId, kind: 'quote' as const };
         const [raceWrite, forward] = await Promise.all([
@@ -1530,10 +1597,10 @@ describe('field events', () => {
           } }),
           ensureWorkItem(otherDb, { ...link, extractionId: secondRead }),
         ]);
-        expect(['recorded', 'stale', 'busy']).toContain(raceWrite.status);
-        expect(forward.extractionId).toBe(secondRead);
-        expect(forward.revisionSeq).toBe(raceWrite.status === 'recorded' ? 5 : 4);
-        const currentCount = raceWrite.status === 'recorded' ? 6 : winner.value;
+        expect(['stale', 'busy']).toContain(raceWrite.status);
+        expect(forward.extractionId).toBe(firstRead);
+        expect(forward.revisionSeq).toBe(3);
+        const currentCount = winner.value;
         if (raceWrite.status === 'busy') {
           const beforeRetry = await eventsFor(db, opened.workItemId);
           expect(await recordFieldEvent(db, { ...base, value: 6, expected: {
@@ -1543,7 +1610,7 @@ describe('field events', () => {
           expect((await db.select().from(workItem).where(eq(workItem.id, opened.workItemId)))[0]?.state[path]).toBe(currentCount);
         }
         const back = await ensureWorkItem(db, { ...link, extractionId: firstRead });
-        expect(back).toMatchObject({ extractionId: firstRead, revisionSeq: forward.revisionSeq + 1 });
+        expect(back).toMatchObject({ extractionId: firstRead, revisionSeq: forward.revisionSeq });
         const beforeConflict = await eventsFor(db, opened.workItemId);
         await expect(caller.recordEvent({ ...event, expected: {
           extractionId: firstRead, seq: 3, stateDigest: afterBooking.stateDigest!,
@@ -4914,14 +4981,16 @@ describe('pane revision undo/redo', () => {
       expect(await eventsFor(db, work.workItemId)).toHaveLength(events.length);
     }));
 
-  it('undo then relink then redo rejects history_stale and leaves state unchanged', () =>
+  it('other-property undo then relink then redo rejects history_stale and leaves state unchanged', () =>
     withDb(async (db) => {
-      const messageId = await seedMail(db, 'rev-stale-1');
+      await addDaVinciMailboxes(db);
+      const messageId = await seedMailForTransport(db, 'rev-stale-1', DAVINCI, DAVINCI_TRANSPORT_EMAIL);
       await insertRead(db, messageId, { version: 'extract-v1', payload: payload() });
-      const work = await readyWork(db, 'rev-stale-1');
+      const work = await openStoredWork(db, { transportId: DAVINCI, internetMessageId: '<rev-stale-1@example.com>' });
+      if (work.status !== 'ready' || !work.workItemId) throw new Error('missing opened item');
       const path = `stays[${STAY_ONE}].requested.arrival`;
       await recordFieldEvent(db, {
-        transportId: CENTURION,
+        transportId: DAVINCI,
         workItemId: work.workItemId,
         userId: USER,
         type: 'field.edit',
@@ -4929,7 +4998,7 @@ describe('pane revision undo/redo', () => {
         value: '2027-10-25',
       });
       const undone = await undoWorkItemRevision(db, {
-        transportId: CENTURION,
+        transportId: DAVINCI,
         workItemId: work.workItemId,
         userId: USER,
         expectedSeq: 1,
@@ -4954,7 +5023,7 @@ describe('pane revision undo/redo', () => {
       };
       const second = await insertRead(db, messageId, { version: 'extract-v2', payload: relinked });
       const moved = await ensureWorkItem(db, {
-        transportId: CENTURION,
+        transportId: DAVINCI,
         threadId: 'thread-rev-stale-1',
         messageId,
         kind: 'quote',
@@ -4976,14 +5045,14 @@ describe('pane revision undo/redo', () => {
       const eventsBefore = await eventsFor(db, work.workItemId);
 
       const stale = await redoWorkItemRevision(db, {
-        transportId: CENTURION,
+        transportId: DAVINCI,
         workItemId: work.workItemId,
         userId: USER,
         expectedSeq: 2,
       });
       expect(stale).toMatchObject({ status: 'stale', revision: 0, revisionHead: 1, seq: 3 });
       const redone = await redoWorkItemRevision(db, {
-        transportId: CENTURION,
+        transportId: DAVINCI,
         workItemId: work.workItemId,
         userId: USER,
         expectedSeq: 3,

@@ -251,6 +251,8 @@ export type QuoteAnalysis = {
   /** Saved corrections still point at an older read of this email. */
   caseActionsUncertain?: boolean;
   groups: StayGroupRequirement[];
+  /** The saved case is pinned to a different or unavailable source read. */
+  caseActionsUncertain?: boolean;
   /** Extraction totals kept at stay level so row-count changes can promote or demote the one-row default. */
   requestedRoomsByStay?: Record<string, number>;
   secondaryAsks: string[];

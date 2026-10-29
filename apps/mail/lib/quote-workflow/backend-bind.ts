@@ -57,6 +57,7 @@ export type AnalyseSelectionResult =
       intent: QuoteAnalysis['intent'];
       caseActionsUncertain?: boolean;
       groups: QuoteAnalysis['groups'];
+      caseActionsUncertain?: boolean;
       requestedRoomsByStay?: QuoteAnalysis['requestedRoomsByStay'];
       missingQuoteReplyFields?: QuoteAnalysis['missingQuoteReplyFields'];
       secondaryAsks: QuoteAnalysis['secondaryAsks'];
@@ -165,6 +166,7 @@ export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
     intent: ready.intent,
     ...(ready.caseActionsUncertain ? { caseActionsUncertain: true } : {}),
     groups: ready.groups,
+    ...(ready.caseActionsUncertain ? { caseActionsUncertain: true } : {}),
     ...(ready.requestedRoomsByStay ? { requestedRoomsByStay: ready.requestedRoomsByStay } : {}),
     ...(ready.missingQuoteReplyFields ? { missingQuoteReplyFields: ready.missingQuoteReplyFields } : {}),
     secondaryAsks: ready.secondaryAsks,

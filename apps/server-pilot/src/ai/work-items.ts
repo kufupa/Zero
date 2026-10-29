@@ -26,6 +26,7 @@ import {
 } from '../db/schema/work.js';
 import type { AttachmentRead } from './extraction/extract.js';
 import {
+  mailExtractionPayloadSchema,
   rowContentKey,
   stayContentKey,
   type ExtractionStay,
@@ -1090,6 +1091,8 @@ export async function ensureWorkItem(
     const [row] = await select(tx).for('update');
     if (!row) throw new Error('work item missing after upsert');
     if (row.extractionId === input.extractionId) return row;
+    // Centurion requires an explicit, source-checked relink before a newer read can inherit this item.
+    if (centurionSourceFence(input.transportId)) return row;
     if (!(await shouldRelink(tx, row.extractionId, input.extractionId, row.state))) return row;
     // A re-read changes the recovery snapshot, even if a later re-read points back to this extraction.
     await tx
@@ -1786,6 +1789,7 @@ export type StoredWork =
         noReplySender: boolean;
         caseActionsUncertain?: boolean;
         hmsTodoCard: Awaited<ReturnType<typeof hmsTodoCardFromLuna>>;
+        caseActionsUncertain?: boolean;
       };
       contact: StoredContact;
       /** Opaque snapshot of the saved agency and end client shown to the quote pane. */
@@ -1903,10 +1907,16 @@ async function readyView(
   sourceConflict?: StoredSourceConflict,
 ): Promise<StoredWork> {
   const messageId = msg.id;
-  const read =
+  const prior =
     item?.extractionId && item.extractionId !== latest.id
-      ? ((await succeededRead(db, messageId, item.extractionId)) ?? latest)
-      : latest;
+      ? await succeededRead(db, messageId, item.extractionId)
+      : null;
+  const centurion = centurionSourceFence(transportId);
+  const priorMissing = Boolean(centurion && item && (!item.extractionId ||
+    (item.extractionId !== latest.id && (!prior || prior.kind !== latest.kind ||
+      !mailExtractionPayloadSchema.safeParse(prior.payload).success))));
+  const held = Boolean(centurion && item && (priorMissing || item.extractionId !== latest.id));
+  const read = priorMissing ? latest : prior ?? latest;
   const confirmationNumbers = payloadConfirmationNumbers(read.payload);
   const existingStayInformation = isSelfSentPreStayInformationMail({
     fromAddress: msg.fromAddress,
@@ -1916,6 +1926,7 @@ async function readyView(
   });
   const paneItem = existingStayInformation ? null : item;
   const state = paneItem?.state ?? {};
+  const projection = priorMissing ? {} : state;
   const selectedConfirmation = confirmationNumbers[0] ?? '';
   const synced = existingStayInformation
     ? null
@@ -1931,7 +1942,7 @@ async function readyView(
       subject: msg.subject,
       bodyText: msg.textBody,
     },
-    state,
+    projection,
     threadConfirmation,
     resolvedProperty.kind === 'property' ? resolvedProperty.property.propertyCode : undefined,
   );
@@ -1951,7 +1962,7 @@ async function readyView(
   const sourceText = synced
     ? currentSourceText(synced)
     : [msg.subject ?? '', msg.textBody ?? ''].join('\n');
-  const hmsTodoCard = existingStayInformation
+  const hmsTodoCard = existingStayInformation || held || sourceConflict
     ? null
     : await hmsTodoCardFromLuna(
         stored.analysis.luna,
@@ -1990,13 +2001,14 @@ async function readyView(
         ? { caseActionsUncertain: true } : {}),
       noReplySender: isNoReplyAddress(msg.fromAddress),
       hmsTodoCard,
+      ...(held ? { caseActionsUncertain: true } : {}),
     },
-    contact: storedContact(read.payload, state),
-    sourcePartyDigest: quoteSourcePartyDigest(read.payload, state),
-    sourcePartyFields: quoteSourcePartyFields(read.payload, state),
-    stays: stayCommitsOf(state),
-    stayPreviews: stayPreviewsOf(state),
-    fieldProvenance: await latestFieldProvenance(db, {
+    contact: storedContact(read.payload, projection),
+    sourcePartyDigest: quoteSourcePartyDigest(read.payload, projection),
+    sourcePartyFields: quoteSourcePartyFields(read.payload, projection),
+    stays: priorMissing ? {} : stayCommitsOf(state),
+    stayPreviews: priorMissing ? {} : stayPreviewsOf(state),
+    fieldProvenance: priorMissing ? {} : await latestFieldProvenance(db, {
       transportId,
       workItemId: paneItem?.id ?? null,
     }),

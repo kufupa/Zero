@@ -834,6 +834,7 @@ export function useStoredWork(args: {
   const readyRefs = stored?.status === 'ready' ? stored.refs : null;
   const readyWorkItemId = stored?.status === 'ready' ? stored.workItemId : null;
   const readyTransportId = currentLookup?.transportId ?? null;
+  const sourceHeld = stored?.status === 'ready' && Boolean(stored.sourceConflict || stored.analysis.caseActionsUncertain);
   const cached = lookupKey ? recovered.current.get(lookupKey) : undefined;
   const cachedWorkItemId = cached && stored?.status === 'ready' && cached.extractionId === stored.extractionId &&
     cached.transportId === readyTransportId ? cached.workItemId : null;
@@ -1046,7 +1047,7 @@ export function useStoredWork(args: {
     (before: StayGroupRequirement[], after: StayGroupRequirement[], options?: { verifiedRecovery?: boolean }): boolean => {
       if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch) { blockStaleSelection(selection.current.key); return false; }
       editEpoch.current += 1;
-      if (historyPending || historyNeedsReload || discardInProgress.current) return false;
+      if (historyPending || historyNeedsReload || discardInProgress.current || sourceHeld) return false;
       const workItemId = readyWorkItemId ?? cachedWorkItemId;
       let events: FieldEvent[];
       if (options?.verifiedRecovery || !readyRefs || !workItemId || (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) {
@@ -1082,7 +1083,7 @@ export function useStoredWork(args: {
       return true;
     },
     [blockStaleSelection, cachedWorkItemId, draftForSelection, historyNeedsReload, historyPending, lookupKey, readyRefs,
-      readyWorkItemId, readyTransportId, renderEpoch, schedule],
+      readyWorkItemId, readyTransportId, renderEpoch, schedule, sourceHeld],
   );
 
   /** Logs one contact edit as a `contact.<field>` event. Nothing is logged until the mail has a stored read. */
@@ -1090,7 +1091,7 @@ export function useStoredWork(args: {
     (field: ContactField, value: string | null) => {
       if (selection.current.key !== lookupKey || selection.current.epoch !== renderEpoch) { blockStaleSelection(selection.current.key); return; }
       editEpoch.current += 1;
-      if (historyPending || historyNeedsReload) return;
+      if (historyPending || historyNeedsReload || sourceHeld) return;
       if (args.verifyQuotePartySource && lookupKey && (field === 'company' || field === 'endClient')) {
         const current = lookupRef.current;
         const previous = partyEdits.current.get(lookupKey);
@@ -1131,7 +1132,7 @@ export function useStoredWork(args: {
       schedule(`contact.${field}`, workItemId, readyTransportId, value);
     },
     [args.verifyQuotePartySource, blockStaleSelection, cachedWorkItemId, draftForSelection, historyNeedsReload, historyPending, lookupKey, readyWorkItemId,
-      readyTransportId, renderEpoch, schedule],
+      readyTransportId, renderEpoch, schedule, sourceHeld],
   );
 
   /**
@@ -1145,7 +1146,7 @@ export function useStoredWork(args: {
   const acceptUnedited = useCallback(
     (groups: StayGroupRequirement[]) => {
       const accept = workItemsFromTrpc(trpcRef.current).acceptFields;
-      if (!accept || !readyWorkItemId || !readyRefs || selection.current.epoch !== renderEpoch ||
+      if (!accept || !readyWorkItemId || !readyRefs || sourceHeld || selection.current.epoch !== renderEpoch ||
           (lookupKey && (deferred.current.has(lookupKey) || recoveryMarked(lookupKey)))) return;
       flushAll();
       const workItemId = readyWorkItemId;
@@ -1162,7 +1163,7 @@ export function useStoredWork(args: {
         })
         .catch(() => undefined);
     },
-    [readyRefs, readyWorkItemId, readyTransportId, flushAll, lookupKey, renderEpoch],
+    [readyRefs, readyWorkItemId, readyTransportId, flushAll, lookupKey, renderEpoch, sourceHeld],
   );
 
   /**

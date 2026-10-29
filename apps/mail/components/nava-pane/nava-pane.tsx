@@ -284,6 +284,11 @@ function analysisWithPaneEdits(
 ): QuoteAnalysis {
   const source = storedPane?.sourceRead;
   const sourceVerified = Boolean(storedPane && source && source.extractionId === storedPane.extractionId && source.kind === storedPane.kind);
+  // Keep remembered edits separate until the server has proved their source.
+  if (analysis.caseActionsUncertain || storedPane?.sourceConflict ||
+      (storedPane && propertyCode === HRCEN_PROPERTY_CODE && !sourceVerified)) {
+    return { ...withPaneRead(analysis, null, null, propertyCode), caseActionsUncertain: true };
+  }
   // Keep the source case separate from the saved form. Only the server's
   // same-extraction projection may supply the initial edited rows.
   const original = sourceVerified && source ? { ...analysis, intent: source.analysis.intent,
@@ -727,6 +732,7 @@ export function NavaPane({
     selfSentPreStayBySubject ||
     (storedWork.pane.state === 'ready' && storedWork.pane.existingStayInformation === true);
   const isNonActionableMessage = isNonActionableMailSource || isExistingStayInformation;
+  const sourceHeld = storedWork.pane.state === 'ready' && storedWork.pane.analysis.caseActionsUncertain === true;
   const contactMessageKey = activeEmail?.internetMessageId?.trim() ||
     (activeEmail ? `${activeEmail.storeId ?? ''}:${activeEmail.entryId}` : '');
   const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
@@ -735,7 +741,7 @@ export function NavaPane({
     (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && (storedWork.pane.state !== 'ready' ||
       !storedWork.pane.sourceRead || storedWork.pane.sourceRead.extractionId !== storedWork.pane.extractionId ||
       storedWork.pane.sourceRead.kind !== storedWork.pane.kind));
-  const contactEditorKey = `${contactCorrectionKey}|${
+  const contactEditorKey = `${contactCorrectionKey}|${contactCaseHeld ? 'held|' : ''}${
     storedWork.pane.state === 'ready'
       ? `ready:${storedWork.pane.workItemId ?? ''}${storedWork.historyEpoch ? `:h${storedWork.historyEpoch}` : ''}`
       : storedWork.pane.state
@@ -757,7 +763,7 @@ export function NavaPane({
     key: string;
     fields: Partial<Record<ContactField, string | null>>;
   } | null>(null);
-  const contactFields = contactCorrection?.key === contactCorrectionKey ? contactCorrection.fields : null;
+  const contactFields = !contactCaseHeld && contactCorrection?.key === contactCorrectionKey ? contactCorrection.fields : null;
   const documentContact = contactFields
     ? {
         ...(normalizedContact ?? { name: null, company: null, endClient: null, email: null, phone: null }),
@@ -934,7 +940,7 @@ export function NavaPane({
     // snapshot must include the earlier patches from that same action.
     quoteSessionRef.current = after;
     dispatchQuote(action);
-    const held = caseReviewPending(after.analysis);
+    const held = sourceHeld || caseReviewPending(after.analysis);
     if (!held) storedWork.recordGroups(before.groups, after.groups);
     const messageKey = after.binding?.internetMessageId ?? before.binding?.internetMessageId;
     if (after.binding?.transportId && messageKey) {

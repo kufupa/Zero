@@ -102,6 +102,11 @@ describe('storedDecision', () => {
     expect(storedDecision({ state: 'loading' }, true)).toEqual({ kind: 'live' });
   });
 
+  it('keeps a server-held case when the person asks for a different reading', () => {
+    const held = { ...ready, analysis: { ...ANALYSIS, caseActionsUncertain: true } };
+    expect(storedDecision(held, true)).toEqual({ kind: 'ready', analysis: held.analysis });
+  });
+
   it('waits while the stored read is loading, so the live read does not start twice', () => {
     expect(storedDecision({ state: 'loading' }, false)).toEqual({ kind: 'wait' });
   });
@@ -303,6 +308,20 @@ describe('fieldEventsBetween', () => {
 });
 
 describe('useStoredWork', () => {
+  it('holds contact and stay edits while the server source is uncertain', async () => {
+    const held = { ...READY, analysis: { ...ANALYSIS, caseActionsUncertain: true } };
+    const { trpc, mutate } = fakeTrpc(() => held);
+    const { result, unmount } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'held-source' }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({ state: 'ready', analysis: { caseActionsUncertain: true } }));
+    if (result.current.pane.state !== 'ready') throw new Error('missing held pane');
+    expect(storedDecision(result.current.pane, true)).toMatchObject({ kind: 'ready', analysis: { caseActionsUncertain: true } });
+    act(() => result.current.recordGroups([G1], [{ ...G1, quantity: 3 }]));
+    act(() => result.current.recordContact('name', 'Changed'));
+    expect(result.current.pane.state === 'ready' && result.current.pane.contact.name).toBeNull();
+    unmount();
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
   it('waits for all saved child edits before allowing a price request', async () => {
     let finish!: (value: unknown) => void;
     const saved = new Promise<unknown>((resolve) => { finish = resolve; });

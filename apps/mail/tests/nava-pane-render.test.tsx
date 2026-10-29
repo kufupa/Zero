@@ -1636,6 +1636,30 @@ describe('NavaPane', () => {
   }, 15_000);
 
   // These render the pane after the snapshots above, so the useId values in those snapshots do not shift.
+  it('holds a late changed-source read even after treat-as and does not save contact or stay edits', async () => {
+    bridgeMockState.quotePaneConfig = {
+      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [], boards: ['bb'],
+      salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
+    };
+    bridgeMockState.storedWork = { ...STORED_READY, contact: { name: 'Source', company: null, endClient: null,
+      email: null, phone: null }, analysis: { ...STORED_READY.analysis, caseActionsUncertain: true } };
+    let release!: () => void;
+    bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { release = resolve; });
+    const { container } = render(<NavaPane bridge={fakeBridge} />);
+    fireEvent.change(await screen.findByLabelText('Change how Nava reads this email'), { target: { value: 'create_booking' } });
+    await waitFor(() => expect(bridgeMockState.analyseCalls).toBeGreaterThan(0));
+    release();
+    expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
+    const reads = bridgeMockState.analyseCalls;
+    fireEvent.change(screen.getByLabelText('Change how Nava reads this email'), { target: { value: 'quote' } });
+    await settle();
+    expect(screen.getByText(/The email case changed or could not be verified/)).toBeDefined();
+    expect(bridgeMockState.analyseCalls).toBe(reads);
+    expect((container.querySelector('#quote-contact button') as HTMLButtonElement | null)?.disabled).toBe(true);
+    expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
+  });
+
   it('keeps a stay edit after switching to two other mails and back', async () => {
     bridgeMockState.storedWork = STORED_READY;
     const other = {
