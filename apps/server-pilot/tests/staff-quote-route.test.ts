@@ -76,6 +76,7 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
         departureDate: '2026-10-15',
         quantity: 2,
         adults: 1,
+        childrenPerRoom: 0,
         childrenAges: [],
         board: 'room_only',
         roomCodes: ['SKNG'],
@@ -564,6 +565,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
     it('exports a prepared quote only from its original mailbox and source messageId', async () => {
       await withSeededTestDb(async (db) => {
         installFixture(db, 'HRDAV');
+        vi.stubEnv('HMS_DAVINCI_MAKE_QUOTE', 'on');
+        vi.stubEnv('RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRDAV', '/tmp/hrdav-quote.json');
         vi.stubEnv('HMS_JOB_QUEUE', 'on');
         vi.stubEnv('HMS_QUOTE_PREPARE', 'true');
         vi.stubEnv('QUOTE_PDF_RENDERER', 'html');
