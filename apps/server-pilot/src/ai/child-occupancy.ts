@@ -42,7 +42,9 @@ export function childOccupancyMatchesStored(
     return [{ stayId, rowId, rooms: undefined, adults: undefined, count: undefined, ages: undefined }];
   }).filter((row, index, found) => found.findIndex((item) => item.stayId === row.stayId && item.rowId === row.rowId) === index);
   const allRows: RowEvidence[] = [...rows, ...addedRows];
-  return groups.every((group) => {
+  const selectedRows = new Set<string>();
+  const selectedStays = new Set<string>();
+  const matches = groups.every((group) => {
     if (typeof group.id !== 'string' || !Array.isArray(group.childrenAges)) return false;
     // A dates-only extraction uses the stay id until the first edit creates a stable row.
     const emptyStay = parsed.data.stays.find((stay) => stay.id === group.id && stay.rows.length === 0);
@@ -85,12 +87,20 @@ export function childOccupancyMatchesStored(
       rooms = singleRow && stay?.totalRooms != null ? stay.totalRooms : hasGuestEvidence ? 1 : null;
     }
     if (rooms !== group.quantity || adults !== group.adults) return false;
-    return typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 6 &&
+    const valid = typeof count === 'number' && Number.isInteger(count) && count >= 0 && count <= 6 &&
       (group.childrenPerRoom === undefined || group.childrenPerRoom === count) &&
       Array.isArray(ages) && ages.length === count &&
       ages.every((age) => typeof age === 'number' && Number.isInteger(age) && age >= 0 && age <= 17) &&
       ages.length === group.childrenAges.length && ages.every((age, index) => age === group.childrenAges[index]);
+    if (valid) {
+      selectedStays.add(row.stayId);
+      selectedRows.add(`${row.stayId}\n${row.rowId}`);
+    }
+    return valid;
   });
+  return matches && allRows.every((row) => !selectedStays.has(row.stayId) ||
+    state[`stays[${row.stayId}].rows[${row.rowId}].removed`] === true ||
+    selectedRows.has(`${row.stayId}\n${row.rowId}`));
 }
 
 export function occupancyFromRevision(revision: QuoteRevision): Group[] {
@@ -123,20 +133,10 @@ async function loadChildOccupancyEvidence(
       eq(workItem.kind, latest.kind),
     ))
     .limit(1);
-  let payload = latest.payload;
-  if (item?.extractionId && item.extractionId !== latest.id) {
-    const [pinned] = await db
-      .select({ payload: mailExtraction.payload })
-      .from(mailExtraction)
-      .where(and(
-        eq(mailExtraction.id, item.extractionId),
-        eq(mailExtraction.messageId, scope.messageId),
-        eq(mailExtraction.status, 'succeeded'),
-      ))
-      .limit(1);
-    if (pinned?.payload) payload = pinned.payload;
-  }
-  return { payload, state: item?.state ?? {} };
+  // A newer read has not been adopted yet. Do not apply old corrections to that read, or keep pricing the older one.
+  // The existing work-item relink decides whether edits can safely carry; once it moves, the latest evidence is used.
+  if (item && item.extractionId !== latest.id) return null;
+  return { payload: latest.payload, state: item?.state ?? {} };
 }
 
 export async function childOccupancyIsCurrent(
