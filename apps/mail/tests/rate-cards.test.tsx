@@ -271,10 +271,10 @@ describe('rate cards in the quote panel', () => {
         : session.staffQuotes,
     };
     render(<QuoteWorkflowPanel session={withBoard} />);
-    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    const grid = screen.getByRole('group', { name: 'Room, rate and board choices' });
     expect(within(grid).getByText('Standard Twin (STWN)')).toBeDefined();
     expect(within(grid).getByText('Standard Queen (STQN)')).toBeDefined();
-    expect(within(grid).getAllByText('not checked').length).toBeGreaterThan(0);
+    expect(within(grid).getByRole('button', { name: /Select Standard Queen.*Nightly price not checked.*Rooms left not checked/i })).toBeDefined();
     expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
     expect(within(grid).getAllByText('Public').length).toBe(2);
     expect(within(grid).queryByText('Contract')).toBeNull();
@@ -340,11 +340,14 @@ describe('rate cards in the quote panel', () => {
         ]}
       />,
     );
-    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    const grid = screen.getByRole('group', { name: 'Room, rate and board choices' });
     expect(screen.queryByText('Public rates — contract not checked')).toBeNull();
     expect(within(grid).getByText('Contract')).toBeDefined();
     expect(within(grid).getByText('Public')).toBeDefined();
     expect(within(grid).getByText('Government')).toBeDefined();
+    expect(within(grid).getByRole('button', { name: /Corporate negotiated \(NCOR\), Contract/i })).toBeDefined();
+    expect(within(grid).getByRole('button', { name: /Best available rate \(BAR\), Public/i })).toBeDefined();
+    expect(within(grid).getByRole('button', { name: /Local Government Rate Breakfast \(NGOVB\), Government/i })).toBeDefined();
   });
 
   it('does not invent a contract tag from a public rate code when the party read did not run', async () => {
@@ -376,7 +379,7 @@ describe('rate cards in the quote panel', () => {
         rateCatalogue={[{ code: 'NCOR', name: 'Corporate negotiated', board: 'bed_breakfast', contract: true }]}
       />,
     );
-    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    const grid = screen.getByRole('group', { name: 'Room, rate and board choices' });
     expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
     expect(within(grid).queryByText('Contract')).toBeNull();
   });
@@ -409,10 +412,10 @@ describe('rate cards in the quote panel', () => {
         : withParty.staffQuotes,
     };
     const { unmount } = render(<QuoteWorkflowPanel session={partySession} />);
-    const grid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    const grid = screen.getByRole('group', { name: 'Room, rate and board choices' });
     expect(screen.queryByText('Public rates — contract not checked')).toBeNull();
     expect(within(grid).getByText('Contract')).toBeDefined();
-    expect(within(grid).getByText('BCO1B')).toBeDefined();
+    expect(within(grid).getByRole('button', { name: /Negotiated \(BCO1B\), Contract/i })).toBeDefined();
     expect(rateCards().some((card) => card.textContent?.includes('BCO1B'))).toBe(false);
     unmount();
 
@@ -426,7 +429,7 @@ describe('rate cards in the quote panel', () => {
         : noParty.staffQuotes,
     };
     render(<QuoteWorkflowPanel session={noPartySession} />);
-    const publicGrid = screen.getByRole('table', { name: 'BAR by room, rate and board' });
+    const publicGrid = screen.getByRole('group', { name: 'Room, rate and board choices' });
     expect(screen.getByText('Public rates — contract not checked')).toBeDefined();
     expect(within(publicGrid).queryByText('Contract')).toBeNull();
   });

@@ -944,7 +944,8 @@ describe('NavaPane', () => {
 
   function configureCenturionPane() {
     bridgeMockState.quotePaneConfig = {
-      transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
+      transportId: 'transport-1', propertyCode: 'HRCEN',
+      roomTypes: [{ code: 'SKNG', label: 'Standard King' }, { code: 'STQN', label: 'Standard Queen' }], ratePlans: [],
       boards: ['room_only', 'bb', 'dinner_bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [],
     };
   }
@@ -1711,6 +1712,7 @@ describe('NavaPane', () => {
   });
 
   it('shows finished rates after an email switch without queueing another staff_quote', async () => {
+    configureCenturionPane();
     bridgeMockState.storedWork = {
       ...STORED_READY,
       analysis: {
@@ -2095,6 +2097,7 @@ describe('NavaPane', () => {
   });
 
   it('restores a finished staff rate from the persisted job after pane mount', async () => {
+    configureCenturionPane();
     bridgeMockState.storedWork = bookingStoredWork();
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
     bridgeMockState.staffQuoteJobQuery.mockResolvedValue(completedStaffQuoteJob(STAFF_QUOTE_READY));
@@ -2115,6 +2118,7 @@ describe('NavaPane', () => {
   });
 
   it('asks for an unquoted booking draft on open without waiting for staff-quote polling', async () => {
+    configureCenturionPane();
     let resolveJob!: (view: unknown) => void;
     bridgeMockState.storedWork = bookingStoredWork();
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
@@ -2174,6 +2178,7 @@ describe('NavaPane', () => {
   });
 
   it('keeps a persisted staff-quote refusal instead of falling back to an older quote', async () => {
+    configureCenturionPane();
     const refusal = 'HMS has no rate for this meal plan under BAR. Try another meal plan.';
     bridgeMockState.storedWork = bookingStoredWork();
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(true);
@@ -2194,6 +2199,7 @@ describe('NavaPane', () => {
   });
 
   it('keeps a refused quote reply to one decline line while room alternatives stay staff-side', async () => {
+    configureCenturionPane();
     bridgeMockState.storedWork = {
       ...STORED_READY,
       analysis: {
@@ -2243,6 +2249,7 @@ describe('NavaPane', () => {
   });
 
   it('drafts a one-line decline for a queued inventory refusal and keeps alternatives staff-side', async () => {
+    configureCenturionPane();
     sessionStorage.setItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>', '1');
     bridgeMockState.storedWork = {
       ...STORED_READY,
@@ -2291,6 +2298,7 @@ describe('NavaPane', () => {
   });
 
   it('saves a refused quote decline without attaching or mentioning staff alternatives', async () => {
+    configureCenturionPane();
     bridgeMockState.storedWork = {
       ...STORED_READY,
       analysis: {
@@ -2563,7 +2571,8 @@ describe('NavaPane', () => {
     expect(within(notice).getByRole('button', { name: 'Show' }).getAttribute('aria-controls')).toBe('quote-rates');
   });
 
-  it('auto-queues a Dinner B&B ask on the Government strategy the background prepare uses', async () => {
+  it('auto-queues a Centurion Dinner B&B ask on the public BAR strategy', async () => {
+    configureCenturionPane();
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
     bridgeMockState.storedWork = {
       ...STORED_READY,
@@ -2582,10 +2591,11 @@ describe('NavaPane', () => {
     render(<NavaPane bridge={fakeBridge} />);
     await storedReadLands();
     await waitFor(() => expect(bridgeMockState.queueStaffQuoteMutation).toHaveBeenCalledTimes(1));
-    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({ autoStart: true, salesStrategy: 'Government' });
+    expect(bridgeMockState.lastStaffQuoteInput).toMatchObject({ autoStart: true, salesStrategy: 'BAR' });
   });
 
   it('auto-queues each complete date option once', async () => {
+    configureCenturionPane();
     const firstGroup = STORED_READY.analysis.groups[0]!;
     bridgeMockState.storedWork = {
       ...STORED_READY,
@@ -2642,6 +2652,7 @@ describe('NavaPane', () => {
   });
 
   it('reads back the first email’s fresh quote when returning from another email', async () => {
+    configureCenturionPane();
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<quote-request@example.invalid>');
     sessionStorage.removeItem('nava.staff-quote-auto-suppressed:<other-quote@example.invalid>');
     bridgeMockState.storedWork = STORED_READY;
@@ -2847,6 +2858,7 @@ describe('NavaPane', () => {
   });
 
   it('keeps the rates progress line while an overlapping prior-quote read settles', async () => {
+    configureCenturionPane();
     const finishPriorReads: Array<(view: null) => void> = [];
     bridgeMockState.storedWork = {
       ...STORED_READY,
@@ -2979,6 +2991,7 @@ describe('NavaPane', () => {
   });
 
   it('keeps the completed rate notice global when Needs-you is gated off and on channel mail', async () => {
+    configureCenturionPane();
     bridgeMockState.storedWork = STORED_READY;
     bridgeMockState.holdStaffQuote = true;
     bridgeMockState.jobQueueEnabledQuery.mockResolvedValue(false);
@@ -3024,6 +3037,7 @@ describe('NavaPane', () => {
   });
 
   it('keeps one stay search valid when staff edit a different stay, then lets them search that stay', async () => {
+    configureCenturionPane();
     const firstGroup = STORED_READY.analysis.groups[0]!;
     bridgeMockState.storedWork = {
       ...STORED_READY,
