@@ -3,6 +3,7 @@ import {
   groupsForQuoteStep,
   initialQuoteSession,
   partyLookupWaitReason,
+  quotePartySourceTransition,
   quoteRunBlockReason,
   ratedStayCount,
   reduceQuoteSession,
@@ -140,6 +141,19 @@ async function runStay(
 }
 
 describe('AE1 multi-stay: a succeeded stay run counts as rated', () => {
+  it('requires party review if a failed save exposes a source change during a local edit', () => {
+    const original = { key: 'mail', party: 'old-source', extraction: 'ex-1' };
+    const changed = { ...original, party: 'new-source' };
+    expect(quotePartySourceTransition(original, changed, true, false, true)).toBe('defer');
+    expect(quotePartySourceTransition(original, changed, true, true, true)).toBe('review');
+    expect(quotePartySourceTransition(changed, changed, false, true, true)).toBe('none');
+    const picked = reduceQuoteSession(aeSession(), { type: 'patch_staff_header', header: PICK });
+    const held = reduceQuoteSession(picked, { type: 'quote_source_changed',
+      sourceParty: { agency: null, company: 'New Company' } });
+    expect(held.staffHeader.parties).toBeUndefined();
+    expect(partyLookupWaitReason(held)).toMatch(/select or clear/i);
+  });
+
   it('holds an old auto-picked HMS party when the saved source changes until staff chooses again', () => {
     const picked = reduceQuoteSession(aeSession(), { type: 'patch_staff_header', header: PICK });
     const oldEpoch = picked.sourcePartyEpoch ?? 0;

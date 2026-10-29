@@ -76,6 +76,7 @@ describe('storedDecision', () => {
     kind: 'quote',
     workItemStatus: 'needs_you',
     workItemId: 'wi-1',
+    extractionId: 'ex-1',
     contact: NO_CONTACT,
     language: null,
     translation: null,

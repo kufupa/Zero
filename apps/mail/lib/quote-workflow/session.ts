@@ -397,6 +397,20 @@ export function partyLookupWaitReason(session: Pick<QuoteSession, 'pendingPartyK
   return `Finding the ${names.join(' and ')} in HMS…`;
 }
 
+/** A local edit waits for its save, but a failed source refresh must be reviewed immediately. */
+export function quotePartySourceTransition(
+  previous: { key: string; party: string | null; extraction: string | null } | null,
+  next: { key: string; party: string | null; extraction: string | null },
+  localEditPending: boolean,
+  saveProblem: boolean,
+  autoPickDisabled: boolean,
+): 'defer' | 'review' | 'none' {
+  if (localEditPending && !saveProblem) return 'defer';
+  if (previous?.key !== next.key) return 'none';
+  if (previous.party && (previous.party !== next.party || previous.extraction !== next.extraction)) return 'review';
+  return !previous.party && next.party && autoPickDisabled ? 'review' : 'none';
+}
+
 /** Plain-English reason this date option must wait, or null when it may run. */
 export function quoteRunBlockReason(
   session: Pick<QuoteSession, 'groups' | 'staffQuotes' | 'stayPdfs' | 'staffHeader' | 'pendingPartyKinds'> &
