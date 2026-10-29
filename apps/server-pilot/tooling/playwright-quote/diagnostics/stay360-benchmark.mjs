@@ -34,6 +34,7 @@ function safeCode(error) {
 
 async function worker(mode) {
   const start = performance.now();
+  let launchStarted;
   try {
     const input = JSON.parse(readFileSync(0, 'utf8'));
     const beforeLaunch = () => new Promise((resolve, reject) => {
@@ -43,8 +44,10 @@ async function worker(mode) {
       process.once('message', (message) => {
         process.removeListener('disconnect', disconnected);
         process.disconnect();
-        if (message?.type === 'launch') resolve();
-        else reject(new Error('INVALID_LAUNCH_SIGNAL'));
+        if (message?.type === 'launch') {
+          launchStarted = performance.now();
+          resolve();
+        } else reject(new Error('INVALID_LAUNCH_SIGNAL'));
       });
       process.send({ type: 'ready' }, (error) => { if (error) reject(error); });
     });
@@ -74,10 +77,12 @@ async function worker(mode) {
       checkboxes: checkboxes.length > 0 && checkboxes.every((field) => typeof field.value === 'boolean'),
     };
     const ok = Object.values(checks).every(Boolean);
+    const finished = performance.now();
     process.stdout.write(`${JSON.stringify({
       ok, checks, fieldCount: fields.length,
       notes: stay360.notes.length + recordView.notes.length,
-      elapsedMs: Math.round(performance.now() - start),
+      elapsedMs: Math.round(finished - start),
+      browserMs: Math.round(finished - launchStarted),
     })}\n`);
     if (!ok) process.exitCode = 1;
   } catch (error) {
@@ -190,11 +195,25 @@ async function benchmark() {
   const browserStarts = new Map();
   const children = new Set();
   const jobs = [];
+  let shutdown;
 
   const stop = (reason) => {
     if (aborted) return;
     aborted = reason;
+    countBrowsers(group.read, browserStarts, children);
     for (const child of children) child.kill('SIGTERM');
+    shutdown = new Promise((resolve) => setTimeout(() => {
+      const browserGroups = new Set(browserStarts.keys());
+      for (const pid of group.read('cgroup.procs').split('\n')) {
+        try {
+          const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+          const processGroup = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2];
+          if (browserGroups.delete(processGroup)) process.kill(-Number(processGroup), 'SIGKILL');
+        } catch { /* Process or browser group already exited. */ }
+      }
+      for (const child of children) child.kill('SIGKILL');
+      resolve();
+    }, 5_000));
   };
   process.on('SIGINT', () => stop('INTERRUPTED'));
   process.on('SIGTERM', () => stop('INTERRUPTED'));
@@ -262,13 +281,14 @@ async function benchmark() {
     if (i + 1 < jobs.length) await sleep(delayMs);
   }
   const results = await Promise.all(jobs.map((job) => job.finished));
+  if (shutdown) await shutdown;
   clearInterval(sampler);
   sample();
   const elapsedMs = Math.round(performance.now() - started);
   const cpuSeconds = (cpuUsage(group.read) - initialCpu) / 1_000_000;
   const io = ioTotals(group.read);
   const successful = results.filter((result) => result.ok);
-  const latencies = successful.map((result) => result.elapsedMs).sort((a, b) => a - b);
+  const latencies = successful.map((result) => result.browserMs).sort((a, b) => a - b);
   const starts = [...browserStarts.values()].sort((a, b) => a - b);
   const intervals = starts.slice(1).map((start, i) => Math.round((start - starts[i]) * 1000 / clockTicks)).sort((a, b) => a - b);
   const summary = {
@@ -282,8 +302,8 @@ async function benchmark() {
     browserStartIntervalsMs: intervals.length ? {
       min: intervals[0], median: intervals[Math.floor(intervals.length / 2)], max: intervals.at(-1),
     } : null,
-    medianLookupMs: latencies.length ? latencies[Math.floor(latencies.length / 2)] : null,
-    p95LookupMs: latencies.length ? latencies[Math.ceil(latencies.length * 0.95) - 1] : null,
+    medianBrowserMs: latencies.length ? latencies[Math.floor(latencies.length / 2)] : null,
+    p95BrowserMs: latencies.length ? latencies[Math.ceil(latencies.length * 0.95) - 1] : null,
     cpuSeconds: Number(cpuSeconds.toFixed(2)),
     averageCpuCores: Number((cpuSeconds / (elapsedMs / 1000)).toFixed(2)),
     peakCpuCores: Number(peakCpuCores.toFixed(2)),

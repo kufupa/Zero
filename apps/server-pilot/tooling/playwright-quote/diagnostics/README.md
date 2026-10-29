@@ -38,7 +38,8 @@ item supplies `confirmation`, `guest`, `arrival`, `departure`, `adults`,
 `averageRate` and `totalRate` as expected values. Guest data is
 never printed by the benchmark.
 
-Run it inside a cgroup v2 scope with a finite memory limit, for example:
+Run each invocation inside a fresh, dedicated cgroup v2 scope with a finite
+memory limit; a reused scope can carry an earlier run's peak. For example:
 
 ```sh
 sudo systemd-run --scope --uid=orca -p MemoryMax=10G -p MemorySwapMax=1G -p CPUQuota=600% -p TasksMax=8192 \
@@ -53,8 +54,10 @@ length. It fetches credentials before spacing Chromium launch requests by the
 requested delay, and reports the observed process-start intervals: actual starts
 can bunch up under load. It samples CPU, cgroup memory (including cache), browser
 count and disk I/O, and stops its workers if scope memory reaches 85% of the
-limit or host available memory falls below 4 GiB. It reports aggregate checks
-and timings only.
+limit or host available memory falls below 4 GiB. Remaining workers and browser
+process groups are force-stopped after five seconds. It reports aggregate checks
+and timings only. Browser latency runs from the launch grant through shutdown;
+batch wall time also includes credential fetching and waiting for launch grants.
 
 ### 2026-10-29 measurements
 
