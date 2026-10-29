@@ -780,7 +780,8 @@ export function NavaPane({
   const contactMessageKey = expectedMessageId
     ? JSON.stringify([session?.user?.id ?? null, contactMessageId, expectedMessageId]) : contactMessageId;
   const contactCorrectionKey = `${currentScope ?? ''}::${contactMessageKey}`;
-  const contactCaseHeld = caseReviewPending(quoteSession.analysis) || (storedWork.pane.state === 'ready' &&
+  // Until the property is known, contact edits may require a verified Centurion source.
+  const contactCaseHeld = !activePaneConfig?.propertyCode || caseReviewPending(quoteSession.analysis) || (storedWork.pane.state === 'ready' &&
     Boolean(storedWork.pane.sourceConflict || storedWork.pane.analysis.caseActionsUncertain)) ||
     (activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && (storedWork.pane.state !== 'ready' ||
       !storedWork.pane.sourceRead || storedWork.pane.sourceRead.extractionId !== storedWork.pane.extractionId ||
