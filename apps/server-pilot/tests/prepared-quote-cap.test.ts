@@ -159,6 +159,41 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)('prepared quote profile cap', 
       expect(result.plan?.inputs[0]?.groups[0]).not.toHaveProperty('childrenPerRoom');
     }));
 
+  it('reserves a fresh, capped Centurion strategy batch for a newer extraction of the same message', async () =>
+    withSeededTestDb(async (db) => {
+      const source = await seedExtraction(db, TRANSPORT_ID);
+      await db.update(message).set({ messageIdHeader: `${randomUUID()}@example.test` })
+        .where(eq(message.id, source.messageId));
+      const config = await quotePaneConfigForProperty('HRCEN', TRANSPORT_ID);
+      const count = config?.salesStrategies.length ?? 0;
+      expect(count).toBeGreaterThan(0);
+      const env = { ...QUOTE_ON, RESERVATIONIST_STAFF_QUOTE_CONFIGURATION_HRCEN: '/tmp/centurion-quote.json',
+        HMS_QUOTE_PREPARE_PER_HOUR: String(Math.max(1, count - 1)) };
+
+      expect(await prefetchQuoteReadyForExtraction(source.run, db, env)).toBe(count);
+      expect(await prefetchQuoteReadyForExtraction(source.run, db, env)).toBe(0);
+      const first = await preparedRows(db, source.messageId);
+      expect(first).toHaveLength(count);
+      const originalId = (first[0]!.readRequest as { input: { sourceExtractionId: string } }).input.sourceExtractionId;
+      expect(originalId).toBeTruthy();
+
+      const nextId = randomUUID();
+      await db.insert(mailExtraction).values({
+        id: nextId, messageId: source.messageId, extractorVersion: `prepared-quote-reread-${randomUUID()}`,
+        status: 'succeeded', kind: 'quote', payload: quotePayload(), createdAt: new Date(Date.now() + 1000),
+      });
+      expect(await prefetchQuoteReadyForExtraction(source.run, db, env)).toBe(count);
+      const all = await preparedRows(db, source.messageId);
+      const fresh = all.filter((row) =>
+        (row.readRequest as { input: { sourceExtractionId?: string } }).input.sourceExtractionId === nextId);
+      expect(all).toHaveLength(count * 2);
+      expect(fresh).toHaveLength(count);
+      expect(fresh.every((row) => (row.metrics as { prefetchDeferred?: boolean }).prefetchDeferred === true &&
+        row.nextRunAt !== null && row.nextRunAt.getTime() > Date.now())).toBe(true);
+      expect(await countPrefetchReservations(db, { transportId: TRANSPORT_ID, kind: 'staff_quote',
+        since: new Date(Date.now() - 60 * 60_000) })).toMatchObject({ used: count * 2 });
+    }));
+
   it.each(PROPERTY_TARGETS)('admits a complete profile strategy set as one batch for $transportId', async (target) =>
     withSeededTestDb(async (db) => {
       const config = await quotePaneConfigForProperty(target.propertyCode, target.transportId);

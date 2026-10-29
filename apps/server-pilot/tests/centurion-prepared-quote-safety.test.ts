@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { queueAutoStaffQuoteHmsJob, readHmsJobView } from '../src/ai/hms-jobs.js';
 import { staffQuoteInput, type StaffQuoteInput } from '../src/ai/staff-quote-workflow.js';
-import { aiDraftGeneration, aiWorkflowRun } from '../src/db/schema/mail.js';
+import { aiDraftGeneration, aiWorkflowRun, message } from '../src/db/schema/mail.js';
 import type { DB } from '../src/db/client.js';
 import { DAVINCI_TRANSPORT_ID, TRANSPORT_ID } from '../src/db/seed.js';
 
@@ -101,6 +101,38 @@ describe('prepared quote reuse', () => {
     const result = await queueAutoStaffQuoteHmsJob({ ...autoStart(DAVINCI_TRANSPORT_ID),
       request: { kind: 'staff_quote', input: { ...oldInput, sourceExtractionId: 'new-read' } } }, quoteDb([run]));
     expect(result).toMatchObject({ created: false, run: { id: 'dav' } });
+  });
+
+  it.each([
+    ['queued', 'ready', false], ['succeeded', 'refused', false],
+    ['succeeded', 'ready', true], ['succeeded', 'expired', false],
+  ])('only considers a ready, fresh cross-copy Centurion price (%s, %s)', async (state, status, considered) => {
+    const source = { ...input, sourceExtractionId: 'old-read' };
+    const run = preparedRun('copy', TRANSPORT_ID, source, false);
+    run.state = state;
+    run.readResult = { ...run.readResult, status: status === 'expired' ? 'ready' : status,
+      asOf: status === 'expired' ? new Date(Date.now() - 48 * 60 * 60_000).toISOString() : new Date().toISOString() };
+    if (status === 'expired') run.readResultExpiresAt = new Date(Date.now() - 1000);
+    const selected = { ...source, messageId: 'message-2', sourceExtractionId: 'new-read' };
+    let messageRead = 0;
+    const fake = {
+      select: () => ({ from: (table: unknown) => {
+        if (table === message) {
+          messageRead += 1;
+          const rows = messageRead === 1 ? [{ id: selected.messageId, messageIdHeader: 'copy@example.test' }]
+            : messageRead === 2 ? [{ id: source.messageId }, { id: selected.messageId }] : [];
+          return { where: () => Object.assign(Promise.resolve(rows), { limit: async () => rows }) };
+        }
+        if (table === aiWorkflowRun) return { where: () => ({ orderBy: async () => [run] }) };
+        if (table === aiDraftGeneration) return { where: () => ({ orderBy: () => ({ limit: async () => [] }) }) };
+        throw new Error('unexpected query');
+      } }),
+    } as unknown as DB;
+    const view = await readHmsJobView({ transportId: TRANSPORT_ID, userId: 'staff-1',
+      messageId: selected.messageId, kind: 'staff_quote', input: selected }, fake);
+    // A considered result still needs independent selected-source proof before a price is exposed.
+    if (considered) expect(view).toMatchObject({ status: 'failed', result: { ok: false } });
+    else expect(view).toBeNull();
   });
 
   it('uses the matching Centurion strategy even when an incompatible contract is first', async () => {

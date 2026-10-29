@@ -99,8 +99,11 @@ export async function countPrefetchReservations(
   );
 
   if (input.kind === 'staff_quote') {
-    // Every row from one inbound mail reserves that mail's full strategy fan-out, not one slot per row.
-    const sourceKey = sql<string>`coalesce(${aiWorkflowRun.triggerMessageId}, ${aiWorkflowRun.id})`;
+    // Each Centurion extraction reserves its own strategy fan-out; other hotels' legacy rows share the mail key.
+    const sourceKey = sql<string>`jsonb_build_array(
+      coalesce(${aiWorkflowRun.triggerMessageId}, ${aiWorkflowRun.id}),
+      ${aiWorkflowRun.readRequest}->'input'->>'sourceExtractionId'
+    )::text`;
     const batchSize = sql<number>`greatest(
       coalesce(max(
         case
