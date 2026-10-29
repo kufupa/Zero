@@ -1007,7 +1007,8 @@ export function BookingCards({
   useEffect(() => {
     const restored = Object.entries(savesFromSavedStays(draft, groups, savedStays));
     for (const [key, stored] of restored) {
-      if (stored.commit?.status === 'booked' && !stored.commit.unverified) delete recentCommitsRef.current[key];
+      const recent = recentCommitForRoom(key);
+      if (stored.commit?.status === 'booked' && !stored.commit.unverified && !(recent?.status === 'booked' && recent.unverified && recent.confirmationNumber !== stored.commit.confirmationNumber)) delete recentCommitsRef.current[key];
     }
     setSaves((current) => {
       let next: typeof current | undefined;

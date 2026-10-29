@@ -227,6 +227,8 @@ describe('multi-room save recovery', () => {
       status: 'ok', outcome: 'committed_unverified', confirmationNumber: 'TEST-OTHER', screenshots: [],
     }));
     expect(batch).toHaveProperty('disabled', true);
+    view.rerenderWithSaved({ s_aaaa1111_1: { confirmationNumber: 'TEST-FIRST', status: 'booked', screenshotRef: null } });
+    expect(batch).toHaveProperty('disabled', true);
     expect(commit).toHaveBeenCalledTimes(1);
   });
 

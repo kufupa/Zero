@@ -13,7 +13,6 @@ type ClaimResult = { status: 'ready'; claimId: string; parentConfirmation?: stri
 const object = (value: unknown): State | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as State : null;
 
-/** Fence pane commits at the property until an earlier save is verified or cleared. */
 export async function claimPaneStayCommit(db: DB, input: ClaimInput): Promise<ClaimResult> {
   const property = resolvePropertyTransport(input.transportId);
   if (property.kind !== 'property') return { status: 'refused', reason: 'pane_save_work_item_unavailable' };
