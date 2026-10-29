@@ -103,6 +103,12 @@ describe('storedDecision', () => {
 });
 
 describe('fieldEventsBetween', () => {
+  it('persists an explicit child count and ages under the selected row', () => {
+    expect(fieldEventsBetween(READY.refs, [G1], [{ ...G1, childrenPerRoom: 1, childrenAges: [7] }])).toEqual([
+      { path: 'stays[st-1].rows[rw-1].childrenPerRoom', value: 1 },
+      { path: 'stays[st-1].rows[rw-1].childAges', value: [7] },
+    ]);
+  });
   it('maps a row edit to its stable stay and row ids, and a stay date to the stay', () => {
     expect(
       fieldEventsBetween(READY.refs, [G1, G2], [row('g1', 'st-1', { arrivalDate: '2026-10-11', quantity: 2, board: 'dinner_bb' }), G2]),
@@ -253,6 +259,44 @@ describe('fieldEventsBetween', () => {
 });
 
 describe('useStoredWork', () => {
+  it('waits for all saved child edits before allowing a price request', async () => {
+    let finish!: (value: unknown) => void;
+    const saved = new Promise<unknown>((resolve) => { finish = resolve; });
+    const mutate = vi.fn(() => saved);
+    const trpc = { workItems: { getByMessage: { query: async () => READY }, recordEvent: { mutate } } };
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
+    await waitFor(() => expect(result.current.pane.state).toBe('ready'));
+    act(() => result.current.recordGroups([G1], [{ ...G1, childrenPerRoom: 1, childrenAges: [7] }]));
+    let done = false;
+    let flushed!: Promise<boolean>;
+    act(() => { flushed = result.current.flushEdits(); void flushed.then(() => { done = true; }); });
+    expect(mutate).toHaveBeenCalledTimes(2);
+    expect(done).toBe(false);
+    await act(async () => { finish({}); expect(await flushed).toBe(true); });
+  });
+
+  it('refuses to price while an edit is waiting for its retry', async () => {
+    const { trpc, mutate } = fakeTrpc(() => READY);
+    mutate.mockRejectedValue(new Error('offline'));
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
+    await waitFor(() => expect(result.current.pane.state).toBe('ready'));
+    vi.useFakeTimers();
+    try {
+      act(() => result.current.recordGroups([G1], [{ ...G1, childrenPerRoom: 0 }]));
+      await act(async () => expect(await result.current.flushEdits()).toBe(false));
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it('carries an explicit newer-read hold into the pane', async () => {
+    const { trpc } = fakeTrpc(() => ({ ...READY, analysis: { ...ANALYSIS, caseActionsUncertain: true } }));
+    const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));
+    await waitFor(() => expect(result.current.pane).toMatchObject({
+      state: 'ready', analysis: { caseActionsUncertain: true },
+    }));
+  });
   it('shows a ready read from the server for this mail', async () => {
     const { trpc, query } = fakeTrpc(() => READY);
     const { result } = renderHook(() => useStoredWork({ trpc, internetMessageId: 'm-1' }));

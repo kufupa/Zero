@@ -25,6 +25,7 @@ const groups: StayGroupRequirement[] = [
     departureDate: '2026-11-14',
     quantity: 1,
     adults: 2,
+    childrenPerRoom: 0,
     childrenAges: [],
     board: 'room_only',
     roomCodes: ['SKNG'],
@@ -214,8 +215,8 @@ describe('staff quote HMS job binding', () => {
       groups: [{ id: 'single', arrivalDate: '2026-11-12', roomCodes: ['SKNG'] }],
     });
     expect(staffQuoteJob.mock.calls.map(([input]) => input)).toEqual([
-      { runId: 'staff-job-1' },
-      { runId: 'staff-job-1' },
+      { runId: 'staff-job-1', messageId: source.messageId },
+      { runId: 'staff-job-1', messageId: source.messageId },
     ]);
     expect(mutate).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: 'ok', staffQuote: { workflowRunId: 'workflow-1' } });
@@ -494,7 +495,7 @@ describe('staff quote HMS job binding', () => {
 
     expect(result).toMatchObject({ status: 'ok', staffQuote: { workflowRunId: 'workflow-1' } });
     expect(queue).toHaveBeenCalledTimes(1);
-    expect(staffQuoteJob).toHaveBeenCalledWith({ runId: 'staff-job-1' });
+    expect(staffQuoteJob).toHaveBeenCalledWith({ runId: 'staff-job-1', messageId: source.messageId });
     expect(mutate).not.toHaveBeenCalled();
   });
 
@@ -639,7 +640,7 @@ describe('staff quote HMS job binding', () => {
 
     expect(query.mock.calls.map(([input]) => input)).toEqual([
       { input: expect.objectContaining({ messageId: source.messageId }) },
-      { runId: 'staff-job-1' },
+      { runId: 'staff-job-1', messageId: source.messageId },
     ]);
     expect(result).toMatchObject({
       status: 'ok',
@@ -664,6 +665,7 @@ describe('staff quote HMS job binding', () => {
               departureDate: '2026-11-14',
               quantity: 1,
               adults: 9,
+              childrenPerRoom: 0,
               childrenAges: [],
               board: 'room_only',
               roomCodes: ['SKNG'],
@@ -706,6 +708,7 @@ describe('staff quote HMS job binding', () => {
               departureDate: '2026-11-14',
               quantity: 1,
               adults: 2,
+              childrenPerRoom: 0,
               childrenAges: [],
               board: 'room_only',
               roomCodes: ['SKNG'],
@@ -760,6 +763,7 @@ describe('staff quote HMS job binding', () => {
                 departureDate: '2026-11-14',
                 quantity: 1,
                 adults: 2,
+                childrenPerRoom: 0,
                 childrenAges: [],
                 board: 'room_only',
                 roomCodes: ['SKNG'],
@@ -790,6 +794,7 @@ describe('staff quote HMS job binding', () => {
                 departureDate: '2026-12-03',
                 quantity: 1,
                 adults: 2,
+                childrenPerRoom: 0,
                 childrenAges: [],
                 board: 'room_only',
                 roomCodes: ['SKNG'],

@@ -81,7 +81,7 @@ import { stayPreviewsOf, type StayPreviewRecord } from './pane-stay-preview-pers
  * `contact.phone`. `contact.company` reads the extraction's agency. The other fields read their extraction values.
  */
 
-export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childAges', 'board'] as const;
+export const ROW_FIELDS = ['count', 'adults', 'roomType', 'childrenPerRoom', 'childAges', 'board'] as const;
 export type RowField = (typeof ROW_FIELDS)[number];
 export type FieldPath =
   | { stayId: string; rowId: null; field: 'arrival' | 'departure' | 'removed' }
@@ -97,6 +97,7 @@ const ROW_KEYS = {
   count: 'rooms',
   adults: 'adultsPerRoom',
   roomType: 'roomType',
+  childrenPerRoom: 'childrenPerRoom',
   childAges: 'childAges',
   board: 'board',
 } as const;
@@ -404,6 +405,8 @@ export function validFieldValue(field: FieldPath['field'], value: unknown): bool
       return isInt(value, 1, 999);
     case 'adults':
       return isInt(value, 1, 9);
+    case 'childrenPerRoom':
+      return isInt(value, 0, 6);
     case 'roomType':
       return typeof value === 'string' && value.length > 0 && value.length <= 120;
     case 'childAges':
@@ -691,8 +694,9 @@ export function storedAnalysis(
       groups.push({
         ...dates,
         dateEvidence: null,
-        rooms: null,
+        rooms: stay.totalRooms,
         adultsPerRoom: null,
+        childrenPerRoom: null,
         childAges: [],
         board: null,
         roomPreference: null,
@@ -704,13 +708,15 @@ export function storedAnalysis(
     for (const row of stay.rows) {
       const at = (field: RowField) => `stays[${stay.id}].rows[${row.id}].${field}`;
       const rooms = pick(at('count'), row.rooms);
+      const childAges = pick<number[] | null>(at('childAges'), row.childAges);
       order.push({ groupId: row.id, stayId: stay.id, rowId: row.id });
       groups.push({
         ...dates,
         dateEvidence: null,
         rooms,
         adultsPerRoom: pick(at('adults'), row.adultsPerRoom),
-        childAges: pick<number[] | null>(at('childAges'), row.childAges) ?? [],
+        childrenPerRoom: childAges === null ? null : pick(at('childrenPerRoom'), row.childrenPerRoom ?? null),
+        childAges: childAges ?? [],
         board: pick(at('board'), row.board),
         roomPreference: pick(at('roomType'), row.roomType),
         // The booking draft matches rows by position after edits; a stay-level name is not a room assignment.
@@ -816,6 +822,8 @@ export function storedAnalysis(
       corrected.push(
         ['quantity', `${rowPath}.count`],
         ['adults', `${rowPath}.adults`],
+        ['childrenPerRoom', `${rowPath}.childrenPerRoom`],
+        ['childrenAges', `${rowPath}.childAges`],
         ['board', `${rowPath}.board`],
         ['roomPreference', `${rowPath}.roomType`],
       );
@@ -884,6 +892,7 @@ export function storedAnalysis(
           ...(roomType.code ? { roomTypeCode: roomType.code } : {}),
           roomTypeSuggestions: roomType.suggestions,
           stayId,
+          ...(sourceStay ? { stayHotel: sourceStay.hotel } : {}),
           ...(!sourceStay ? { staffCreated: true } : {}),
           ...(caseScoped ? { caseScoped: true } : {}),
           ...(caseLookupConfirmation ? { caseLookupConfirmation } : {}),
@@ -1753,6 +1762,7 @@ export type StoredWork =
       /** noReplySender: the sender is an automated mailbox, so the pane shows no reply controls (as the live read). */
       analysis: StoredAnalysis & {
         noReplySender: boolean;
+        caseActionsUncertain?: boolean;
         hmsTodoCard: Awaited<ReturnType<typeof hmsTodoCardFromLuna>>;
       };
       contact: StoredContact;
@@ -1926,6 +1936,8 @@ async function readyView(
     // As the live read does (quote-workflow route): a do-not-reply sender gets no reply controls.
     analysis: {
       ...stored.analysis,
+      // An old pinned read can no longer stand in for a newer extraction, even if it looks similar.
+      ...(paneItem?.extractionId && paneItem.extractionId !== latest.id ? { caseActionsUncertain: true } : {}),
       noReplySender: isNoReplyAddress(msg.fromAddress),
       hmsTodoCard,
     },

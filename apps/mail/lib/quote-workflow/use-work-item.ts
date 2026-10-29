@@ -238,6 +238,7 @@ function rowFieldsAt(row: string, group: StayGroupRequirement): FieldEvent[] {
     { path: `${row}.count`, value: group.quantity ?? null },
     { path: `${row}.adults`, value: group.adults ?? null },
     { path: `${row}.roomType`, value: group.roomPreference || null },
+    { path: `${row}.childrenPerRoom`, value: group.childrenPerRoom ?? null },
     { path: `${row}.childAges`, value: group.childrenAges },
     { path: `${row}.board`, value: extractionBoard(group.board) },
   ];
@@ -583,6 +584,25 @@ export function useStoredWork(args: {
   const readyWorkItemId = stored?.status === 'ready' ? stored.workItemId : null;
   const readyTransportId = currentLookup?.transportId ?? null;
 
+  /** A price request must see the edits the person just made, not an older saved row. */
+  const flushEdits = useCallback(async (): Promise<boolean> => {
+    if (!readyWorkItemId || !lookupKey || historyPending || historyNeedsReload ||
+        !workItemsFromTrpc(trpcRef.current).recordEvent) return false;
+    const prefix = `${readyWorkItemId}\n`;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      flushAll();
+      const active = [...inFlight.current.entries()]
+        .filter(([key]) => key.startsWith(prefix)).map(([, promise]) => promise);
+      if (active.length) await Promise.allSettled(active);
+      if (lookupKeyRef.current !== lookupKey) return false;
+      if ([...pending.current.keys()].some((key) => key.startsWith(prefix))) continue;
+      // A failed send may have scheduled its automatic retry after its promise settled.
+      if ([...latest.current.keys(), ...failed.current.keys()].some((key) => key.startsWith(prefix))) return false;
+      return true;
+    }
+    return false;
+  }, [flushAll, historyNeedsReload, historyPending, lookupKey, readyWorkItemId]);
+
   const retry = useCallback(() => {
     if (!internetMessageId) return;
     setRetries((prev) => ({
@@ -757,7 +777,7 @@ export function useStoredWork(args: {
       dropQueuedSaves();
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, expectedSeq: seq };
-      void Promise.allSettled([...inFlight.current.values()])
+      void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (lookupKeyRef.current !== keyNow) return;
           dropQueuedSaves();
@@ -810,7 +830,7 @@ export function useStoredWork(args: {
       dropQueuedSaves(section);
       const pinned = inMailbox(readyTransportId);
       const input = { workItemId: readyWorkItemId, section };
-      void Promise.allSettled([...inFlight.current.values()])
+      void Promise.allSettled(inFlight.current.values())
         .then(() => {
           if (lookupKeyRef.current !== keyNow) return;
           dropQueuedSaves(section);
@@ -854,6 +874,7 @@ export function useStoredWork(args: {
     recordGroups,
     recordContact,
     acceptUnedited,
+    flushEdits,
     retryTranslation,
     translationBusy: translating !== null && translating === readyWorkItemId,
     saveFailed,
@@ -876,7 +897,7 @@ export function useStoredWork(args: {
 
 function withStaffPaths(stored: StoredWork, events: FieldEvent[]): StoredWork {
   if (stored.status !== 'ready' || !events.length) return stored;
-  const fieldProvenance: WorkItemProvenanceMap = { ...(provenanceOf(stored) ?? {}) };
+  const fieldProvenance: WorkItemProvenanceMap = { ...provenanceOf(stored) };
   for (const event of events) {
     fieldProvenance[event.path] = { source: 'staff', value: event.value };
   }

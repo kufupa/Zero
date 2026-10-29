@@ -26,6 +26,7 @@ const stay = (overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
   departureDate: '2026-11-17',
   quantity: 1,
   adults: 1,
+  childrenPerRoom: 0,
   childrenAges: [],
   board: 'bb',
   specialRequests: [],
@@ -228,6 +229,14 @@ describe('HRDAV native room and board maps', () => {
 });
 
 describe('staff quote strategy comparisons', () => {
+  it('does not price missing or incomplete child occupancy', () => {
+    const incomplete = /confirm the number of children/i;
+    expect(staffQuoteGroupsFromStay([stay({ childrenPerRoom: undefined })])).toEqual({ error: expect.stringMatching(incomplete) });
+    expect(staffQuoteGroupsFromStay([stay({ childrenPerRoom: 2, childrenAges: [7] })])).toEqual({ error: expect.stringMatching(incomplete) });
+    expect(staffQuoteGroupsFromStay([stay({ childrenPerRoom: 1, childrenAges: [17] })])).toMatchObject({
+      ok: [{ childrenPerRoom: 1, childrenAges: [17] }],
+    });
+  });
   const strategies: QuoteSalesStrategy[] = [
     { code: 'PROMO', label: 'Promotions', requestValue: 'PROMO' },
     { code: 'BAR', label: 'BAR', requestValue: 'BAR' },

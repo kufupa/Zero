@@ -6,6 +6,7 @@ import type {
   UsePriorQuoteForBookingReady,
 } from './booking-draft-bind';
 import { HMS_JOB_MAX_MISSES, HMS_JOB_POLL_MS } from './amend-find';
+import { childOccupancyReady } from './child-occupancy';
 import { getMailCacheScope, inMailbox } from '../mail/mail-cache-scope';
 import type {
   QueueStatus,
@@ -73,6 +74,7 @@ export type StaffQuoteGroupInput = {
   departureDate: string;
   quantity: number;
   adults: number;
+  childrenPerRoom?: number | null;
   childrenAges: number[];
   board: 'room_only' | 'bb' | 'dinner_bb';
   roomCodes?: string[];
@@ -193,7 +195,7 @@ function staffQuoteRequestMatches(
     ...(canIgnoreStrategy ? { salesStrategy: expected.salesStrategy } : {}),
     groups: input.groups.map((group) => ({
       id: group.id, arrivalDate: group.arrivalDate, departureDate: group.departureDate, quantity: group.quantity,
-      adults: group.adults, childrenAges: group.childrenAges, board: group.board,
+      adults: group.adults, childrenPerRoom: group.childrenPerRoom ?? null, childrenAges: group.childrenAges, board: group.board,
       roomCodes: [...(group.roomCodes ?? [])].sort(), rateCode: group.rateCode ?? null,
     })),
   });
@@ -212,6 +214,7 @@ function staffQuoteStayTermsMatch(
         departureDate: group.departureDate,
         quantity: group.quantity,
         adults: group.adults,
+        childrenPerRoom: group.childrenPerRoom ?? null,
         childrenAges: group.childrenAges,
         board: group.board,
         roomCodes: [...(group.roomCodes ?? [])].sort(),
@@ -226,7 +229,7 @@ type StaffQuoteCallOptions = {
 };
 
 export type StaffQuoteJobQuery = (
-  input: { runId: string } | { input: ExecuteStaffQuoteInput },
+  input: { runId: string; messageId: string } | { input: ExecuteStaffQuoteInput },
   options?: StaffQuoteCallOptions,
 ) => Promise<StaffQuoteJobView | null>;
 
@@ -513,6 +516,9 @@ export function staffQuoteGroupsFromStay(
     if (typeof group.quantity !== 'number' || typeof group.adults !== 'number') {
       return { error: 'Enter the number of rooms and adults before running the quote.' };
     }
+    if (!childOccupancyReady(group)) {
+      return { error: 'Confirm the number of children per room and enter an age for each child.' };
+    }
     // Empty preference (no staff room pick) omits roomCodes so HMS returns every type for the BAR grid.
     // An explicit code list or a known preference still binds; garbage codes still refuse below.
     const rooms = resolveNativeRoomCodes({
@@ -532,6 +538,7 @@ export function staffQuoteGroupsFromStay(
       departureDate: group.departureDate,
       quantity: group.quantity,
       adults: group.adults,
+      childrenPerRoom: group.childrenPerRoom,
       childrenAges: [...group.childrenAges],
       board: group.board,
       ...(rooms.status === 'codes' ? { roomCodes: rooms.codes } : {}),
@@ -1263,6 +1270,7 @@ function waitForStaffQuotePoll(ms: number, signal: AbortSignal): Promise<boolean
 async function pollStaffQuoteJob(
   query: StaffQuoteJobQuery,
   initial: StaffQuoteJobView,
+  messageId: string,
   signal?: AbortSignal,
 ): Promise<StaffQuoteJobView> {
   let view = initial;
@@ -1286,7 +1294,7 @@ async function pollStaffQuoteJob(
       if (Date.now() - startedAt >= STAFF_QUOTE_POLL_MAX_MS) {
         return { kind: 'settled', view: { ...view, status: 'failed', failureClass: 'POLL_LOST' } };
       }
-      const next = await query({ runId: view.runId }, { signal: controller.signal }).catch(() => null);
+      const next = await query({ runId: view.runId, messageId }, { signal: controller.signal }).catch(() => null);
       if (controller.signal.aborted) break;
       if (Date.now() - startedAt >= STAFF_QUOTE_POLL_MAX_MS) {
         return { kind: 'settled', view: { ...view, status: 'failed', failureClass: 'POLL_LOST' } };
@@ -1401,13 +1409,13 @@ export async function bindExecuteStaffQuote(
               'The queued quote status is not connected to this pane. Refresh the pane and try again.',
           };
         }
-        const first = await args.staffQuoteJob({ runId: queued.runId });
+        const first = await args.staffQuoteJob({ runId: queued.runId, messageId: built.input.messageId });
         if (!first)
           return {
             status: 'unavailable',
             reason: 'Nava could not read the queued quote. Try again in a minute.',
           };
-        return boundStaffQuoteJob(await pollStaffQuoteJob(args.staffQuoteJob, first), args, built);
+        return boundStaffQuoteJob(await pollStaffQuoteJob(args.staffQuoteJob, first, built.input.messageId), args, built);
       }
       if (queued?.runId !== null) {
         return { status: 'unavailable', reason: 'Nava did not return a queued quote. Try again.' };
@@ -1446,11 +1454,11 @@ export async function bindAutoStartStaffQuote(
         reason: 'The queued quote status is not connected to this pane. Refresh the pane and try again.',
       };
     }
-    const first = await args.staffQuoteJob({ runId: queued.runId });
+    const first = await args.staffQuoteJob({ runId: queued.runId, messageId: built.input.messageId });
     if (!first) {
       return { status: 'unavailable', reason: 'Nava could not read the queued quote. Try again in a minute.' };
     }
-    const settled = await pollStaffQuoteJob(args.staffQuoteJob, first);
+    const settled = await pollStaffQuoteJob(args.staffQuoteJob, first, built.input.messageId);
     // The queue route returns a prepared run only after its server-side price-shape match. Its extracted display header
     // can legitimately differ from the pane's edited header, so rebase counters for that same source as well.
     const preparedForSource =
@@ -1501,7 +1509,7 @@ export async function bindReadBackStaffQuote(
     ) {
       return null;
     }
-    const settled = await pollStaffQuoteJob(args.query, first, args.signal);
+    const settled = await pollStaffQuoteJob(args.query, first, built.input.messageId, args.signal);
     if (args.signal?.aborted) return null;
     if (settled.request && !staffQuoteRequestMatches(settled.request, built.input, settled.prefetch === true)) return null;
     const rebased = settled.result

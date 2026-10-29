@@ -55,6 +55,7 @@ export type AnalyseSelectionResult =
   | {
       status: 'ready';
       intent: QuoteAnalysis['intent'];
+      caseActionsUncertain?: boolean;
       groups: QuoteAnalysis['groups'];
       requestedRoomsByStay?: QuoteAnalysis['requestedRoomsByStay'];
       missingQuoteReplyFields?: QuoteAnalysis['missingQuoteReplyFields'];
@@ -162,6 +163,7 @@ export type ReadyAnalyse = Omit<Extract<AnalyseSelectionResult, { status: 'ready
 export function quoteAnalysisOf(ready: ReadyAnalyse): QuoteAnalysis {
   return {
     intent: ready.intent,
+    ...(ready.caseActionsUncertain ? { caseActionsUncertain: true } : {}),
     groups: ready.groups,
     ...(ready.requestedRoomsByStay ? { requestedRoomsByStay: ready.requestedRoomsByStay } : {}),
     ...(ready.missingQuoteReplyFields ? { missingQuoteReplyFields: ready.missingQuoteReplyFields } : {}),

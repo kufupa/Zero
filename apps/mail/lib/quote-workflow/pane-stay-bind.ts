@@ -2,6 +2,7 @@
 // availability reads only return an already-stored admission result and never start an HMS read.
 
 import type { StayGroupRequirement } from './types';
+import { childOccupancyReady } from './child-occupancy';
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -159,7 +160,7 @@ export function paneStayAvailabilityRequestFor(
       !roomPreference?.trim() ||
       typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity < 1 ||
       typeof adults !== 'number' || !Number.isInteger(adults) || adults < 1 ||
-      !Array.isArray(childrenAges)
+      !childOccupancyReady(row)
     ) return null;
     rooms.push({ roomType: roomPreference, quantity, adults, childAges: childrenAges });
   }

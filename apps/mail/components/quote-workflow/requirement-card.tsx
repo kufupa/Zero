@@ -53,6 +53,15 @@ function quotesFor(
   return evidence.filter((item) => aliases.includes(item.field));
 }
 
+/** Keep partially typed or invalid ages out of a quote until staff finish correcting them. */
+function enteredChildAges(raw: string): number[] | null {
+  if (!raw.trim()) return [];
+  const parts = raw.split(',').map((part) => part.trim());
+  if (parts.some((part) => !/^\d{1,2}$/.test(part))) return null;
+  const ages = parseChildrenAges(raw);
+  return ages.length === parts.length ? ages : null;
+}
+
 function FieldEvidence({ quotes }: { quotes: Array<{ quote: string; source?: 'staff_note' }> }) {
   if (!quotes.length) return null;
   const fromStaff = quotes.some((item) => item.source === 'staff_note');
@@ -348,7 +357,14 @@ export function RequirementCard({
     .slice(0, 3);
   const roomSelect = useRef<HTMLSelectElement>(null);
   const [editingAdults, setEditingAdults] = useState(false);
-  const hasOptionalDetails = group.childrenAges.length > 0 || group.specialRequests.length > 0;
+  const [ageInput, setAgeInput] = useState(() => group.childrenAges.join(', '));
+  const editingAges = useRef(false);
+  const agesLabel = group.childrenAges.join(', ');
+  useEffect(() => {
+    if (!editingAges.current) setAgeInput(agesLabel);
+  }, [group.id, agesLabel]);
+  const hasOptionalDetails = group.childrenPerRoom == null || group.childrenPerRoom > 0 ||
+    group.childrenAges.length > 0 || group.specialRequests.length > 0;
   const [showOptionalDetails, setShowOptionalDetails] = useState(hasOptionalDetails);
   const hadOptionalDetails = useRef(hasOptionalDetails);
   useEffect(() => {
@@ -530,13 +546,43 @@ export function RequirementCard({
         </button>
         {showOptionalDetails ? (
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <Field label="Children ages" htmlFor={`${id}-children`} hint="Separate ages with commas.">
+            <Field label="Children per room" htmlFor={`${id}-children-count`}>
+              <select
+                id={`${id}-children-count`}
+                aria-label="Children per room"
+                className={paneFieldClass}
+                value={group.childrenPerRoom ?? ''}
+                onChange={(event) => {
+                  const count = event.target.value === '' ? null : Number(event.target.value);
+                  if (count === 0) setAgeInput('');
+                  onPatch?.(group.id, { childrenPerRoom: count, ...(count === 0 ? { childrenAges: [] } : {}) });
+                }}
+              >
+                <option value="">Not confirmed</option>
+                {Array.from({ length: 7 }, (_, count) => (
+                  <option key={count} value={count}>{count}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Children ages" htmlFor={`${id}-children`} hint="Enter one age per child, separated by commas.">
               <input
                 id={`${id}-children`}
                 aria-label="Children ages"
                 className={paneFieldClass}
-                value={group.childrenAges.join(', ')}
-                onChange={(event) => onPatch?.(group.id, { childrenAges: parseChildrenAges(event.target.value) })}
+                value={ageInput}
+                disabled={group.childrenPerRoom === 0}
+                aria-invalid={enteredChildAges(ageInput) === null || undefined}
+                onFocus={() => { editingAges.current = true; }}
+                onBlur={() => {
+                  editingAges.current = false;
+                  const ages = enteredChildAges(ageInput);
+                  if (ages) setAgeInput(ages.join(', '));
+                }}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setAgeInput(value);
+                  onPatch?.(group.id, { childrenAges: enteredChildAges(value) ?? [] });
+                }}
               />
               <FieldEvidence quotes={quotesFor('childrenAges', evidence)} />
             </Field>

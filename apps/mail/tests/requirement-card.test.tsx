@@ -22,6 +22,7 @@ function stay(overrides: Partial<StayGroupRequirement> = {}): StayGroupRequireme
     departureDate: '2026-10-17',
     quantity: 1,
     adults: 2,
+    childrenPerRoom: 0,
     childrenAges: [],
     board: 'bb',
     specialRequests: [],
@@ -352,7 +353,7 @@ describe('StayCard rooms', () => {
     expect(screen.getByLabelText('Special requests')).toBeTruthy();
     unmount();
 
-    renderStay([stay({ childrenAges: [4], specialRequests: ['cot'] })]);
+    renderStay([stay({ childrenPerRoom: 1, childrenAges: [4], specialRequests: ['cot'] })]);
     expect(screen.getByLabelText('Children ages')).toBeTruthy();
     expect(screen.getByLabelText('Special requests')).toBeTruthy();
   });
@@ -360,6 +361,24 @@ describe('StayCard rooms', () => {
   it('removes the per-row company or agency field', () => {
     renderStay([stay()]);
     expect(screen.queryByLabelText('Company or agency')).toBeNull();
+  });
+
+  it('asks staff to confirm unknown child occupancy and preserves incomplete ages as incomplete', () => {
+    const { onPatch, unmount } = renderStay([stay({ childrenPerRoom: null })]);
+    expect(selectByLabel('Children per room').value).toBe('');
+    fireEvent.change(selectByLabel('Children per room'), { target: { value: '0' } });
+    expect(onPatch).toHaveBeenLastCalledWith('g1', { childrenPerRoom: 0, childrenAges: [] });
+    unmount();
+
+    const edited = renderStay([stay({ childrenPerRoom: 2, childrenAges: [4, 7] })]);
+    const ages = screen.getByLabelText('Children ages') as HTMLInputElement;
+    fireEvent.focus(ages);
+    fireEvent.change(ages, { target: { value: '4, ' } });
+    expect(ages.value).toBe('4, ');
+    expect(ages.getAttribute('aria-invalid')).toBe('true');
+    expect(edited.onPatch).toHaveBeenLastCalledWith('g1', { childrenAges: [] });
+    fireEvent.change(ages, { target: { value: '4, 7' } });
+    expect(edited.onPatch).toHaveBeenLastCalledWith('g1', { childrenAges: [4, 7] });
   });
 });
 

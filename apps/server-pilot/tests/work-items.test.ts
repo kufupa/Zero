@@ -343,11 +343,15 @@ describe('stored read for the pane', () => {
       // A newer read is linked by the inbound run, not by the lookup.
       const [before] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
       const second = await insertRead(db, messageId, { version: 'extract-v2', payload: payload() });
-      expect(await storedWorkFor(db, lookup)).toMatchObject({ extractionId: first });
+      expect(await storedWorkFor(db, lookup)).toMatchObject({
+        extractionId: first, analysis: { caseActionsUncertain: true },
+      });
       const [after] = await db.select().from(workItem).where(eq(workItem.sourceMessageId, messageId));
       expect(after).toEqual(before);
       await ensureWorkItemForMessage(db, { transportId: CENTURION, messageId });
-      expect(await storedWorkFor(db, lookup)).toMatchObject({ extractionId: second });
+      const relinked = await storedWorkFor(db, lookup);
+      expect(relinked).toMatchObject({ extractionId: second });
+      expect(relinked.status === 'ready' && relinked.analysis.caseActionsUncertain).toBeFalsy();
     }));
 
   it('the open route makes the work item, and the lookup route only reads', () =>
@@ -1107,6 +1111,9 @@ describe('corrections carry to a re-read', () => {
       });
       expect(moved.extractionId).toBe(first);
       expect(second).not.toBe(first);
+      expect(await storedWorkFor(db, {
+        transportId: CENTURION, internetMessageId: '<up4@example.com>',
+      })).toMatchObject({ extractionId: first, analysis: { caseActionsUncertain: true } });
     }));
 
   it('keeps a cleared field on its original read when an ambiguous same-date re-read reuses ids', () =>
@@ -1334,6 +1341,30 @@ describe('field events', () => {
     expect(projected.quantity).toBe(6);
     expect(projected.fields.quantity).toBe('defaulted');
     expect(analysis.requestedRoomsByStay).toEqual({ [STAY_TWO]: 6 });
+  });
+
+  it('preserves a one-room total when extraction contains no room row', () => {
+    const extracted = payload();
+    extracted.stays = [extracted.stays[0]!];
+    extracted.stays[0]!.totalRooms = 1;
+    extracted.stays[0]!.rows = [];
+    const { analysis } = storedAnalysis({ kind: 'quote', payload: extracted, attachments: [] }, {});
+    expect(analysis.groups[0]).toMatchObject({ quantity: 1, childrenPerRoom: null, childrenAges: [] });
+    expect(analysis.groups[0]).toMatchObject({ stayHotel: 'Grand Hotel' });
+  });
+
+  it('keeps staff child-count and age corrections distinct, including a cleared age list', () => {
+    const extracted = payload();
+    const base = `stays[${STAY_ONE}].rows[${ROW_SINGLE}]`;
+    const read = { kind: 'quote' as const, payload: extracted, attachments: [] };
+    const incomplete = storedAnalysis(read, { [`${base}.childrenPerRoom`]: 2, [`${base}.childAges`]: [7] });
+    expect(incomplete.analysis.groups[0]).toMatchObject({ childrenPerRoom: 2, childrenAges: [7] });
+    const noChildren = storedAnalysis(read, { [`${base}.childrenPerRoom`]: 0, [`${base}.childAges`]: [] });
+    expect(noChildren.analysis.groups[0]).toMatchObject({ childrenPerRoom: 0, childrenAges: [] });
+    const cleared = storedAnalysis(read, { [`${base}.childrenPerRoom`]: 0, [`${base}.childAges`]: null });
+    expect(cleared.analysis.groups[0]).toMatchObject({ childrenPerRoom: null, childrenAges: [] });
+    expect(validFieldValue('childrenPerRoom', 0)).toBe(true);
+    expect(validFieldValue('childrenPerRoom', -1)).toBe(false);
   });
 
   it('keeps totalRooms at stay level when a second row makes the projected stay multi-row', () => {
