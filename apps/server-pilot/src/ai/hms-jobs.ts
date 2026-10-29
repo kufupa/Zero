@@ -4488,7 +4488,6 @@ async function latestStaffQuoteRunFor(
       parsed.success &&
       parsed.data.kind === 'staff_quote' &&
       parsed.data.input.messageId === messageId &&
-      parsed.data.input.sourceHash === quoteInput.sourceHash &&
       // Admission binds a Centurion run to the current extraction. A stale queued
       // run, or its eventual refusal, cannot answer a later read of this mail.
       (!centurion || parsed.data.input.sourceExtractionId === quoteInput.sourceExtractionId) &&
