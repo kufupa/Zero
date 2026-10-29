@@ -738,7 +738,6 @@ describe('NavaPane', () => {
     localStorage.setItem('nava_onboarding_completed', 'true');
     sessionStorage.clear();
     bridgeMockState.analysisOverride = null;
-    bridgeMockState.quotePaneConfig = null;
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     sendCommandMock.mockClear();
@@ -773,7 +772,6 @@ describe('NavaPane', () => {
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     bridgeMockState.analysisOverride = null;
-    bridgeMockState.quotePaneConfig = null;
     bridgeMockState.analyseCalls = 0;
     bridgeMockState.analyseFails = false;
     bridgeMockState.storedWork = null;
