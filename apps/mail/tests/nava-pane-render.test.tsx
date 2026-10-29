@@ -1683,7 +1683,12 @@ describe('NavaPane', () => {
       String((event as { fieldPath?: string }).fieldPath).includes('s_external'))).toBe(false);
   });
 
-  it('saves deferred edits once a reclassified stored case is verified again', async () => {
+  it.each([{ propertyCode: 'HRCEN', saves: true }, { propertyCode: null, saves: false }])(
+    'saves a reclassified deferred edit only with verified property $propertyCode', async ({ propertyCode, saves }) => {
+    bridgeMockState.quotePaneConfig = propertyCode ? {
+      transportId: 'transport-1', propertyCode, roomTypes: [], ratePlans: [], boards: ['bb'], salesStrategies: [],
+      overrideRateCodes: [], eventRateCodes: [],
+    } : null;
     const storedRow = { ...STORED_READY.analysis.groups[0]!, stayId: 's_1', quantity: 1,
       stayGuests: [{ name: 'Ada Example', confirmationNumber: null }] };
     const lunaRow = { arrival: storedRow.arrivalDate, departure: storedRow.departureDate, rooms: 1,
@@ -1737,9 +1742,14 @@ describe('NavaPane', () => {
     bridgeMockState.storedWork = stored;
     render(<NavaPane bridge={fakeBridge} />);
     expect(await screen.findByText('4 adults per room')).toBeDefined();
-    await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(expect.objectContaining({
-      fieldPath: 'stays[s_1].rows[r_1].adults', value: 4,
-    })), { timeout: 4000 });
+    if (saves) {
+      await waitFor(() => expect(bridgeMockState.recordEvent).toHaveBeenCalledWith(expect.objectContaining({
+        fieldPath: 'stays[s_1].rows[r_1].adults', value: 4,
+      })), { timeout: 4000 });
+    } else {
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1000)); });
+      expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
+    }
   }, 20_000);
 
   it('shows finished rates after an email switch without queueing another staff_quote', async () => {
