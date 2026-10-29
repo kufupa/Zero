@@ -489,6 +489,7 @@ describe('NavaPane', () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.useRealTimers();
     setMailCacheScope({ userId: null, activeTransportId: null });
     bridgeMockState.userId = 'staff-1';
@@ -501,7 +502,6 @@ describe('NavaPane', () => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
     document.head.querySelectorAll('meta[name="nava-pane-build"]').forEach((meta) => meta.remove());
-    cleanup();
   });
 
   it('renders the header, main body and footer landmarks from a bridge prop alone', () => {
@@ -775,6 +775,7 @@ describe('NavaPane', () => {
   });
 
   afterEach(() => {
+    cleanup();
     bridgeMockState.transportId = 'transport-1';
     bridgeMockState.transportEmail = 'ropperman@legacyhotels.co.za';
     bridgeMockState.analysisOverride = null;
@@ -793,7 +794,6 @@ describe('NavaPane', () => {
     sessionStorage.clear();
     resetPaneEditsForTests();
     resetGuestNameCacheForTests();
-    cleanup();
   });
 
   /** Lets the analysis, source and voucher reads that follow the first render land before the DOM is read. */
@@ -3675,12 +3675,17 @@ describe('NavaPane contact and translation on both surfaces', () => {
   });
 
   afterEach(() => {
+    cleanup();
     bridgeMockState.storedWork = null;
     bridgeMockState.quotePaneConfig = null;
     bridgeMockState.retryTranslation.mockClear();
+    setMailCacheScope({ userId: null, activeTransportId: null });
+    bridgeMockState.userId = 'staff-1';
+    bridgeMockState.sessionId = 'session-1';
     localStorage.clear();
     sessionStorage.clear();
-    cleanup();
+    resetPaneEditsForTests();
+    resetGuestNameCacheForTests();
   });
 
   it('the webmail panel: shows mailbox copy progress without native sync controls', async () => {
