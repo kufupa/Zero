@@ -700,8 +700,9 @@ describe('Insert saved reply in Outlook', () => {
     type CreatedReply = { entryId: string; storeId: string; folderEntryId: string; displayed: boolean };
     let finish!: (value: CreatedReply) => void;
     const sendCommand = outlookSendCommand();
-    sendCommand.mockImplementation(async (action: string) => {
+    sendCommand.mockImplementation(async (action: string, _payload?: unknown, beforeNative?: () => void) => {
       if (action === 'GET_ACTIVE_EMAIL') return activeEmail;
+      beforeNative?.();
       if (action === 'CREATE_REPLY_DRAFT') return await new Promise<CreatedReply>((resolve) => { finish = resolve; });
       return undefined;
     });
@@ -709,6 +710,7 @@ describe('Insert saved reply in Outlook', () => {
     const { result } = renderInsertHook(sendCommand, quoteSession, contextRevision);
     act(() => result.current.trackedDraft('selected'));
     await waitFor(() => expect(sendCommand).toHaveBeenCalledWith('CREATE_REPLY_DRAFT', expect.anything(), expect.any(Function)));
+    expect(sessionStorage.getItem('nava_outlook_unresolved_reply_v1')).toBe('1');
     contextRevision.current.selectionEpoch = 2;
     await act(async () => finish({ entryId: 'original-draft', storeId: 'store-1', folderEntryId: 'drafts', displayed: true }));
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('partial draft may exist')));

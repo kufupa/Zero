@@ -25,6 +25,10 @@ import {
 vi.mock('../../server-pilot/src/quote-proposal/quote-revision.js', () => ({
   quoteDigest: () => { throw new Error('quote digest is not used by this test'); },
 }));
+vi.mock('../../server-pilot/src/ai/work-items.js', () => ({
+  formStays: () => { throw new Error('stored work is not used by this test'); },
+  storedContact: () => { throw new Error('stored work is not used by this test'); },
+}));
 
 type Ready = Extract<StoredWork, { status: 'ready' }>;
 

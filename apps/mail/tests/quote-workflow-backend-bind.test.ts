@@ -516,10 +516,10 @@ describe('staff quote execute/PDF header bind', () => {
   });
 
   it('still forwards a Government quote in the legacy HRDAV context', async () => {
-    const mutate = vi.fn(async (_input: unknown) => readyResult);
+    const mutate = vi.fn(async (_input: unknown) => ({ ...readyResult, propertyCode: HRDAV_PROPERTY_CODE }));
     const result = await bindPropertyScopedStaffQuote({
       propertyCode: HRDAV_PROPERTY_CODE, mutate, source, selectionEpoch: 1, inputRevision: 1,
-      groups: [{ ...stay, roomPreference: 'STWN' }],
+      groups: [{ ...stay, roomPreference: 'STKNG' }],
       header: { ...barHeader, salesStrategy: 'Government' },
     });
     expect(result.status).toBe('ok');
