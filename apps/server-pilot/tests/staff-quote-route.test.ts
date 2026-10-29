@@ -132,7 +132,7 @@ async function seedRequest(db: DB, transportId = 'transport-centurion') {
 }
 
 /** Real selection and extraction persistence, with only the model response controlled. */
-async function seedExtractedRequest(db: DB, includePrior = false) {
+async function seedExtractedRequest(db: DB, includePrior = false, kind: 'quote' | 'booking' = 'quote') {
   vi.stubEnv('EXTRACTION_VISION', 'on');
   vi.stubEnv('EXTRACTION_REASONING_EFFORT', 'max');
   vi.stubEnv('EXTRACTION_PROMPT_MAX_CHARS', '200000');
@@ -150,7 +150,8 @@ async function seedExtractedRequest(db: DB, includePrior = false) {
     fromAddress: 'guest@example.invalid', subject: 'Earlier room request', textBody: 'Earlier requirements',
     receivedAt: new Date('2026-10-28T08:00:00Z'), createdAt: new Date('2026-10-28T08:00:00Z') });
   const model = fakeModel(() => ({
-    ...AE1_OUTPUT, agency: null, endClient: null, contact: { name: null, email: null, phone: null },
+    ...AE1_OUTPUT, kind, action: kind === 'booking' ? 'new_booking' : 'quote_availability',
+    agency: null, endClient: null, contact: { name: null, email: null, phone: null },
     stays: [{ hotel: null, requested: { arrival: '2027-10-12', departure: '2027-10-15' }, booked: null,
       totalRooms: 2, rows: [{ roomType: null, rooms: 2, adultsPerRoom: 1, childrenPerRoom: 0, childAges: [], board: null }] }],
     missing: [],
@@ -735,8 +736,8 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         vi.stubEnv('AI_WORKER_LANE', 'hms');
         vi.stubEnv('HMS_RUN_DEADLINE_MS', '150000');
 
-        async function enqueueWithoutItem() {
-          const source = await seedExtractedRequest(db);
+        async function enqueueWithoutItem(kind: 'quote' | 'booking' = 'quote') {
+          const source = await seedExtractedRequest(db, false, kind);
           // Represents a witnessed, complete extraction awaiting work-item creation; no edits exist here.
           await db.delete(workItem).where(eq(workItem.id, source.workItemId));
           const input = { ...source.input, selectionEpoch: 0, inputRevision: 0 };
@@ -771,6 +772,13 @@ describe.skipIf(!TEST_DB_AVAILABLE || !reachable)(
         const [held] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, raced.run.id));
         expect(held?.readResult).toMatchObject({ ok: false });
         expect(held?.readResult).not.toHaveProperty('totalMinor');
+
+        const booking = await enqueueWithoutItem('booking');
+        const calls = nativeRead.mock.calls.length;
+        await expect(executeAiRun(booking.run.id)).resolves.toEqual({ runId: booking.run.id, state: 'succeeded' });
+        const [bookingHold] = await db.select().from(aiWorkflowRun).where(eq(aiWorkflowRun.id, booking.run.id));
+        expect(bookingHold?.readResult).toMatchObject({ ok: false });
+        expect(nativeRead).toHaveBeenCalledTimes(calls);
       });
     }, 60_000);
 

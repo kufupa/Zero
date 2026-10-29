@@ -165,7 +165,10 @@ async function loadChildOccupancyEvidence(
   const [item] = await (scope.lock ? itemQuery.for('share', { noWait: true }) : itemQuery);
   // A newer read has not been adopted yet. Do not apply old corrections to that read, or keep pricing the older one.
   // The existing work-item relink decides whether edits can safely carry; once it moves, the latest evidence is used.
-  if ((!item && scope.lock && !scope.allowMissingWorkItem) || (item && item.extractionId !== latest.id)) return null;
+  // A no-item prepared quote can create a quote item at commit. A booking read needs its own booking item,
+  // so holding it here avoids spending an HMS read on a result that cannot pass later source checks.
+  if ((!item && scope.lock && (!scope.allowMissingWorkItem || latest.kind !== 'quote')) ||
+    (item && item.extractionId !== latest.id)) return null;
   return { extractionId: latest.id, kind: latest.kind, payload: latest.payload, state: item?.state ?? {} };
 }
 
