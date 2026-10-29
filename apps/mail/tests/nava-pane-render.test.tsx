@@ -99,7 +99,6 @@ const { quotePdfMutate, qualifiedQuotePdfMutate, sendCommandMock, bridgeMockStat
     prepareBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
     prepareUnquotedBookingDraftMutation: vi.fn().mockResolvedValue({ status: 'unavailable', reason: 'No draft.' }),
     recordEvent: vi.fn(async (_input: unknown): Promise<unknown> => ({ aiValue: null, value: null })),
-    retryRelinkMutation: vi.fn(async (_input: unknown): Promise<unknown> => ({ status: 'held' })),
     retryTranslation: vi.fn(async (_input: unknown): Promise<unknown> => ({ status: 'capped', translation: null })),
   },
 }));
@@ -290,7 +289,6 @@ vi.mock('../providers/query-provider', () => ({
         ...(bridgeMockState.quotePaneConfig?.propertyCode === 'HRCEN'
           ? { open: { mutate: async () => currentStored() } } : {}),
         recordEvent: { mutate: (input: unknown) => bridgeMockState.recordEvent(input) },
-        retryRelink: { mutate: (input: unknown) => bridgeMockState.retryRelinkMutation(input) },
         retryTranslation: { mutate: (input: unknown) => bridgeMockState.retryTranslation(input) },
       };
     },
@@ -485,7 +483,6 @@ describe('NavaPane', () => {
     bridgeMockState.prepareUnquotedBookingDraftMutation
       .mockReset()
       .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
-    bridgeMockState.retryRelinkMutation.mockReset().mockResolvedValue({ status: 'held' });
     vi.mocked(toast.warning).mockClear();
     vi.mocked(toast.success).mockClear();
   });
@@ -769,7 +766,6 @@ describe('NavaPane', () => {
     bridgeMockState.prepareUnquotedBookingDraftMutation
       .mockReset()
       .mockResolvedValue({ status: 'unavailable', reason: 'No draft.' });
-    bridgeMockState.retryRelinkMutation.mockReset().mockResolvedValue({ status: 'held' });
     vi.mocked(toast.warning).mockClear();
   });
 
@@ -1650,8 +1646,7 @@ describe('NavaPane', () => {
     let release!: () => void;
     bridgeMockState.storedLookupGate = new Promise<void>((resolve) => { release = resolve; });
     const { container } = render(<NavaPane bridge={fakeBridge} />);
-    fireEvent.change(await screen.findByLabelText('Change how Nava reads this email', {}, { timeout: 6500 }),
-      { target: { value: 'create_booking' } });
+    fireEvent.change(await screen.findByLabelText('Change how Nava reads this email'), { target: { value: 'create_booking' } });
     await waitFor(() => expect(bridgeMockState.analyseCalls).toBeGreaterThan(0));
     release();
     expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
@@ -1663,56 +1658,6 @@ describe('NavaPane', () => {
     expect((container.querySelector('#quote-contact button') as HTMLButtonElement | null)?.disabled).toBe(true);
     expect(bridgeMockState.recordEvent).not.toHaveBeenCalled();
     expect(bridgeMockState.queueStaffQuoteMutation).not.toHaveBeenCalled();
-  }, 12_000);
-
-  it('recovers an identical newer Centurion read with saved room corrections', async () => {
-    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
-    bridgeMockState.quotePaneConfig = { transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
-      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [] };
-    const contact = { name: null, company: null, endClient: null, email: null, phone: null };
-    const saved = { ...STORED_READY.analysis, groups: [{ ...STORED_READY.analysis.groups[0]!, adults: 3 }] };
-    const held = { ...STORED_READY, contact, sourceMessageId: 'message-row-1', sourceMessageDigest: 'c'.repeat(64),
-      extractionDigest: 'a'.repeat(64), revisionSeq: 5, stateDigest: 'd'.repeat(64),
-      analysis: { ...saved, caseActionsUncertain: true },
-      sourceRead: { extractionId: 'ex-2', kind: 'quote', digest: 'a'.repeat(64), analysis: STORED_READY.analysis, refs: STORED_READY.refs } };
-    bridgeMockState.storedWork = held;
-    bridgeMockState.retryRelinkMutation.mockImplementation(async () => {
-      bridgeMockState.storedWork = { ...held, extractionId: 'ex-2', revisionSeq: 6, analysis: saved };
-      return { status: 'linked', extractionId: 'ex-2', seq: 6, stateDigest: 'd'.repeat(64) };
-    });
-    render(<NavaPane bridge={fakeBridge} />);
-    expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
-    expect(screen.getByText('3 adults per room')).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Use newer email read' }));
-    await waitFor(() => expect(bridgeMockState.retryRelinkMutation).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.queryByText(/The email case changed or could not be verified/)).toBeNull());
-    expect(screen.getByText('3 adults per room')).toBeDefined();
-  });
-
-  it('keeps changed or locally edited held details instead of adopting them', async () => {
-    setMailCacheScope({ userId: bridgeMockState.userId, activeTransportId: 'transport-1' });
-    bridgeMockState.quotePaneConfig = { transportId: 'transport-1', propertyCode: 'HRCEN', roomTypes: [], ratePlans: [],
-      boards: ['bb'], salesStrategies: [], overrideRateCodes: [], eventRateCodes: [] };
-    const contact = { name: null, company: null, endClient: null, email: null, phone: null };
-    const held = { ...STORED_READY, contact, sourceMessageId: 'message-row-1', sourceMessageDigest: 'c'.repeat(64),
-      extractionDigest: 'a'.repeat(64), revisionSeq: 5, stateDigest: 'd'.repeat(64),
-      analysis: { ...STORED_READY.analysis, caseActionsUncertain: true },
-      sourceRead: { extractionId: 'ex-2', kind: 'quote', digest: 'b'.repeat(64), analysis: STORED_READY.analysis, refs: STORED_READY.refs } };
-    bridgeMockState.storedWork = held;
-    const pane = render(<NavaPane bridge={fakeBridge} />);
-    expect(await screen.findByText(/The newer email read has different details/)).toBeDefined();
-    expect(screen.queryByRole('button', { name: 'Use newer email read' })).toBeNull();
-    expect(bridgeMockState.retryRelinkMutation).not.toHaveBeenCalled();
-    pane.unmount();
-    bridgeMockState.storedWork = { ...held, sourceRead: { ...held.sourceRead, digest: 'a'.repeat(64) } };
-    render(<NavaPane bridge={fakeBridge} />);
-    expect(await screen.findByText(/The email case changed or could not be verified/)).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Edit adults per room for stay 1, room 1' }));
-    fireEvent.click(screen.getByRole('button', { name: 'More: Adult guests per room for stay 1, room 1' }));
-    expect(await screen.findByText('3 adults per room')).toBeDefined();
-    fireEvent.click(screen.getByRole('button', { name: 'Use newer email read' }));
-    expect(bridgeMockState.retryRelinkMutation).not.toHaveBeenCalled();
-    expect(screen.getByText('3 adults per room')).toBeDefined();
   });
 
   it('keeps a stay edit after switching to two other mails and back', async () => {

@@ -16,7 +16,6 @@ import {
   recordFieldEvent,
   redoWorkItemRevision,
   resetWorkSection,
-  retryStoredRelink,
   storedTranslation,
   storedWorkFor,
   undoWorkItemRevision,
@@ -124,23 +123,6 @@ export const workItemsRouter = router({
         internetMessageId: input.internetMessageId,
       }),
     ),
-  /** Adopt an identical newer read only if the reviewed source and saved state are still current. */
-  retryRelink: mailboxProcedure.input(z.object({
-    internetMessageId,
-    sourceMessageId: z.string().min(1).max(998),
-    expected: z.object({
-      workItemId: z.string().uuid(),
-      messageDigest: z.string().regex(/^[a-f0-9]{64}$/),
-      extractionId: z.string().uuid(),
-      extractionDigest: z.string().regex(/^[a-f0-9]{64}$/),
-      latestExtractionId: z.string().uuid(),
-      latestDigest: z.string().regex(/^[a-f0-9]{64}$/),
-      seq: z.number().int().min(0),
-      stateDigest: z.string().regex(/^[a-f0-9]{64}$/),
-    }).strict(),
-  }).strict()).mutation(({ input, ctx }) =>
-    retryStoredRelink(getDb(), { ...input, transportId: ctx.activeTransportId }),
-  ),
   list: mailboxProcedure
     .input(
       z

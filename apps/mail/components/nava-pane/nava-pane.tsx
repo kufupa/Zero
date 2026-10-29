@@ -43,7 +43,6 @@ import type { CombinedReplyEdit } from '@/lib/quote-workflow/multi-option-draft'
 import { HRCEN_PROPERTY_CODE, type QuoteAnalysis, type QuotePaneConfig, type QuoteSessionAction } from '@/lib/quote-workflow/types';
 import {
   bindAnalyseSelection,
-  quoteAnalysisOf,
   workItemsFromTrpc,
   quoteWorkflowFromTrpc,
 } from '@/lib/quote-workflow/backend-bind';
@@ -110,7 +109,6 @@ import {
   initialQuoteSession,
   caseQuoteBlocked,
   caseReviewPending,
-  heldFormMatchesSaved,
   paneCaseSnapshot,
   sameCaseSnapshot, singleCaseReclassification,
   restoreCaseIdentity,
@@ -591,8 +589,6 @@ export function NavaPane({
       selectionEpoch: contextRevision.current.selectionEpoch + 1 };
   }
   const flushQuoteEditsRef = useRef<() => Promise<boolean>>(async () => false);
-  const relinkSelectionRef = useRef({ activeEmail, activePaneConfig, currentScope });
-  relinkSelectionRef.current = { activeEmail, activePaneConfig, currentScope };
   const previousScope = useRef(currentScope);
   const detectedEmail = activeConnection?.email || 'Select an authorized mailbox';
   const {
@@ -763,8 +759,6 @@ export function NavaPane({
     key: string;
     fields: Partial<Record<ContactField, string | null>>;
   } | null>(null);
-  const contactCorrectionRef = useRef(contactCorrection);
-  contactCorrectionRef.current = contactCorrection;
   const pendingContactCorrections = useRef<{
     key: string;
     fields: Partial<Record<ContactField, string | null>>;
@@ -1897,61 +1891,6 @@ export function NavaPane({
     return storedWork.flushEdits();
   };
 
-  const adoptNewerRead = async () => {
-    const before = quoteSessionRef.current;
-    const binding = before.binding;
-    const pane = storedPaneRef.current;
-    if (!binding?.internetMessageId || pane.state !== 'ready' || !caseReviewPending(before.analysis) ||
-        before.staffNote || before.treatAs || before.reviewedReplyEdited || pendingContactCorrections.current) {
-      toast.warning('Resolve unsaved changes before updating the email read.');
-      return;
-    }
-    const key = paneEditKey(binding.transportId, binding.internetMessageId);
-    const snapshot = JSON.stringify(before);
-    const contact = JSON.stringify(documentContactRef.current);
-    const samePane = () => {
-      const current = quoteSessionRef.current;
-      const selected = relinkSelectionRef.current;
-      const email = selected.activeEmail;
-      const correction = contactCorrectionRef.current;
-      const remembered = recalledPaneEdits(key);
-      return JSON.stringify(current) === snapshot && JSON.stringify(documentContactRef.current) === contact &&
-        selected.currentScope === currentScope && selected.activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE &&
-        selected.activePaneConfig.transportId === binding.transportId &&
-        contextRevision.current.selectionEpoch === binding.selectionEpoch && contextRevision.current.scopeEpoch === binding.scopeEpoch &&
-        email != null && email.internetMessageId === binding.internetMessageId && email.entryId === binding.entryId &&
-        (email.storeId ?? '') === binding.storeId && (email.folderEntryId ?? '') === binding.folderEntryId &&
-        !pendingContactCorrections.current && !paneSourceRecord(key)?.pendingBefore &&
-        (!correction || correction.key !== contactCorrectionKey || Object.entries(correction.fields)
-          .every(([field, value]) => pane.contact[field as ContactField] === value)) &&
-        heldFormMatchesSaved(current.groups, pane.analysis.groups) &&
-        (!remembered || heldFormMatchesSaved(current.groups, remembered));
-    };
-    if (!samePane()) {
-      toast.warning('Save or discard unsaved changes before updating the email read.');
-      return;
-    }
-    const result = await storedWork.retryRelink(samePane);
-    if (result.status !== 'linked') {
-      toast.warning(result.status === 'held' ? 'The newer read could not be matched safely. Review this email manually.'
-        : result.status === 'busy' ? 'The email is being updated. Wait a moment, then try again.'
-        : result.status === 'stale' ? 'This request changed. Close and reopen it before continuing.'
-        : 'Save or resolve pending changes before updating the email read.');
-      return;
-    }
-    if (!samePane() || !result.read.sourceRead) return;
-    const saved = quoteAnalysisOf(result.read.analysis);
-    const source = quoteAnalysisOf(result.read.sourceRead.analysis);
-    const original = { ...saved, intent: source.intent, groups: source.groups, luna: source.luna,
-      amendment: source.amendment, requestedRoomsByStay: source.requestedRoomsByStay };
-    const action: QuoteSessionAction = { type: 'adopt_verified_read',
-      analysis: withPaneRead(original, saved.groups, null, HRCEN_PROPERTY_CODE), expectedSnapshot: snapshot };
-    const next = reduceQuoteSession(quoteSessionRef.current, action);
-    if (next === quoteSessionRef.current || caseReviewPending(next.analysis)) return;
-    quoteSessionRef.current = next;
-    dispatchQuote(action);
-  };
-
   requoteSameStayRef.current = (row) => {
     const session = quoteSessionRef.current;
     // Same as Get rates: a party lookup that still decides the pick would reset this run.
@@ -2700,31 +2639,6 @@ export function NavaPane({
                 Discard unsaved changes and reload
               </button>
             ) : null}
-
-            {activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && storedWork.canRetryRelink &&
-              caseReviewPending(quoteSession.analysis) ? (
-              <div className="flex flex-col gap-1 px-1 text-[11px] text-[#b45309]">
-                <span>An identical newer email read is available. Saved corrections will be kept; check the details.</span>
-                <button type="button" className="self-start font-semibold underline" disabled={storedWork.historyPending}
-                  onClick={() => void adoptNewerRead()}>
-                  Use newer email read
-                </button>
-              </div>
-            ) : null}
-            {activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && caseReviewPending(quoteSession.analysis) &&
-              storedWork.pane.state === 'ready' && storedWork.pane.extractionDigest && storedWork.pane.sourceRead?.digest &&
-              storedWork.pane.sourceRead.extractionId !== storedWork.pane.extractionId &&
-              storedWork.pane.sourceRead.digest !== storedWork.pane.extractionDigest ? (
-                <p role="status" className="px-1 text-[11px] text-[#b45309]">
-                  The newer email read has different details. Your saved corrections are kept; review this request manually.
-                </p>
-              ) : null}
-            {activePaneConfig?.propertyCode === HRCEN_PROPERTY_CODE && caseReviewPending(quoteSession.analysis) &&
-              storedWork.pane.state === 'ready' && storedWork.pane.extractionDigest === null ? (
-                <p role="status" className="px-1 text-[11px] text-[#b45309]">
-                  The earlier email read is unavailable. Your saved corrections are kept; review this request manually.
-                </p>
-              ) : null}
 
             {activeEmail && !quoteSession.staffQuote && quoteOrBookingEmail ? (
               <p className="px-1 text-[13px] text-[#64748b]">
