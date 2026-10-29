@@ -31,7 +31,7 @@ function preparedRun(id: string, transportId: string, quote: StaffQuoteInput, co
 }
 
 /** A query stub for the actual auto-start picker; inserted rows are returned as fresh jobs. */
-function quoteDb(rows: ReturnType<typeof preparedRun>[]) {
+function quoteDb(rows: unknown[]) {
   const database = {
     transaction: async (run: (tx: unknown) => Promise<unknown>) => run(database),
     execute: async () => undefined,
